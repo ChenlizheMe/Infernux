@@ -1,5 +1,4 @@
 import os
-import sys
 import time
 
 from InfEngine.lib import InfEngine, InfGUIRenderable, LogLevel, lib_dir

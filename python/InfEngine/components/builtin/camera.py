@@ -22,7 +22,6 @@ Example::
 
 from __future__ import annotations
 
-import math
 from typing import Any, Optional, Tuple
 
 from InfEngine.components.builtin_component import BuiltinComponent, CppProperty
@@ -238,22 +237,22 @@ class Camera(BuiltinComponent):
 
         if self._get_bound_native_component() is None:
             return
-        go = self.game_object
-        if go is None:
-            return
-        transform = go.get_transform()
+        transform = self.transform
         if transform is None:
             return
 
         # Read transform basis vectors
-        pos = transform.position
-        position = (pos.x, pos.y, pos.z)
-        fwd = transform.forward
-        forward = (fwd.x, fwd.y, fwd.z)
-        u = transform.up
-        up = (u.x, u.y, u.z)
-        r = transform.right
-        right = (r.x, r.y, r.z)
+        try:
+            pos = transform.position
+            position = (pos.x, pos.y, pos.z)
+            fwd = transform.forward
+            forward = (fwd.x, fwd.y, fwd.z)
+            u = transform.up
+            up = (u.x, u.y, u.z)
+            r = transform.right
+            right = (r.x, r.y, r.z)
+        except RuntimeError:
+            return
 
         fov = self.field_of_view
         aspect = self.aspect_ratio

@@ -5,6 +5,7 @@ Unity-style Scene View panel with 3D viewport and camera controls.
 import math
 import os
 from InfEngine.lib import InfGUIContext, TextureLoader
+from InfEngine.engine.i18n import t
 from .editor_panel import EditorPanel
 from .panel_registry import editor_panel
 from .theme import Theme, ImGuiCol, ImGuiStyleVar
@@ -91,7 +92,7 @@ def _axis_angle_to_quat(ax, ay, az, angle_deg):
     return (math.cos(half), ax * s, ay * s, az * s)
 
 
-@editor_panel("场景 Scene", type_id="scene_view")
+@editor_panel("Scene", type_id="scene_view", title_key="panel.scene")
 class SceneViewPanel(EditorPanel):
     """
     Unity-style Scene View panel with 3D viewport and camera controls.
@@ -106,7 +107,7 @@ class SceneViewPanel(EditorPanel):
     """
     
     WINDOW_TYPE_ID = "scene_view"
-    WINDOW_DISPLAY_NAME = "场景 Scene"
+    WINDOW_DISPLAY_NAME = "Scene"
 
     # Key codes imported from shared imgui_keys module
     KEY_W = _keys.KEY_W
@@ -119,7 +120,7 @@ class SceneViewPanel(EditorPanel):
     KEY_LEFT_SHIFT = _keys.KEY_LEFT_SHIFT
     KEY_RIGHT_SHIFT = _keys.KEY_RIGHT_SHIFT
     
-    def __init__(self, title: str = "场景 Scene", engine=None):
+    def __init__(self, title: str = "Scene", engine=None):
         super().__init__(title, window_id="scene_view")
         self._engine = engine
         self._play_mode_manager = None
@@ -399,7 +400,7 @@ class SceneViewPanel(EditorPanel):
             ctx.invisible_button("scene_placeholder", float(scene_width), float(scene_height))
             ctx.set_cursor_pos_x(cursor_start_x + 8)
             ctx.set_cursor_pos_y(cursor_start_y + 8)
-            ctx.label("场景加载中...")
+            ctx.label(t("scene_view.loading"))
     
     def _draw_gizmo_overlay(self, ctx: InfGUIContext) -> bool:
         """Draw the top-left gizmo controls and return whether they are hovered."""
@@ -412,7 +413,7 @@ class SceneViewPanel(EditorPanel):
 
     def _draw_coord_space_dropdown(self, ctx: InfGUIContext) -> bool:
         """Draw Global/Local coordinate-space dropdown in the top-left corner."""
-        _SPACE_LABELS = ["Global", "Local"]
+        _SPACE_LABELS = [t("scene_view.global"), t("scene_view.local")]
         ctx.push_id_str("coord_space_dropdown")
         # Style the combo to look like a semi-transparent overlay control
         ctx.push_style_color(ImGuiCol.FrameBg, *Theme.SCENE_OVERLAY_COMBO_BG)
@@ -467,10 +468,10 @@ class SceneViewPanel(EditorPanel):
         """Draw horizontally aligned gizmo-tool icon buttons matching the combo height."""
         self._ensure_tool_icons()
         items = [
-            (TOOL_NONE,      "Select (Q)", "##tool_none"),
-            (TOOL_TRANSLATE, "Move (W)",   "##tool_move"),
-            (TOOL_ROTATE,    "Rotate (E)", "##tool_rotate"),
-            (TOOL_SCALE,     "Scale (R)",  "##tool_scale"),
+            (TOOL_NONE,      t("scene_view.tool_select"), "##tool_none"),
+            (TOOL_TRANSLATE, t("scene_view.tool_move"),   "##tool_move"),
+            (TOOL_ROTATE,    t("scene_view.tool_rotate"), "##tool_rotate"),
+            (TOOL_SCALE,     t("scene_view.tool_scale"),  "##tool_scale"),
         ]
         pad = Theme.SCENE_GIZMO_TOOL_BTN_PAD
         icon_size = max(combo_h - pad[1] * 2, 8.0)

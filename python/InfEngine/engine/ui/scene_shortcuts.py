@@ -30,8 +30,6 @@ from .imgui_keys import (
     KEY_F,
     KEY_LEFT_SHIFT,
     KEY_RIGHT_SHIFT,
-    KEY_DELETE,
-    KEY_ESCAPE,
 )
 
 # Tool-mode constants (must match C++ EditorTools::ToolMode)

@@ -13,6 +13,7 @@ import json
 import os
 from enum import Enum, auto
 from InfEngine.lib import InfGUIContext, TextureLoader
+from InfEngine.engine.i18n import t
 from InfEngine.components.component import InfComponent
 from InfEngine.resources import component_icons_dir
 from InfEngine.core.asset_types import asset_category_from_extension
@@ -39,7 +40,7 @@ class InspectorMode(Enum):
     PREVIEW = auto()   # Non-editable file preview
 
 
-@editor_panel("检视器 Inspector", type_id="inspector")
+@editor_panel("Inspector", type_id="inspector", title_key="panel.inspector")
 class InspectorPanel(EditorPanel):
     """
     Unity-style Inspector panel with two modules:
@@ -54,14 +55,14 @@ class InspectorPanel(EditorPanel):
     """
     
     WINDOW_TYPE_ID = "inspector"
-    WINDOW_DISPLAY_NAME = "检视器 Inspector"
+    WINDOW_DISPLAY_NAME = "Inspector"
     
     # Minimum heights for splitter
     MIN_PROPERTIES_HEIGHT = Theme.INSPECTOR_MIN_PROPS_H
     MIN_RAW_DATA_HEIGHT = Theme.INSPECTOR_MIN_RAWDATA_H
     SPLITTER_HEIGHT = Theme.INSPECTOR_SPLITTER_H
     
-    def __init__(self, title: str = "检视器 Inspector", engine=None):
+    def __init__(self, title: str = "Inspector", engine=None):
         super().__init__(title, window_id="inspector")
         self.__engine = None
         self.__preview_manager = None  # ResourcePreviewManager from backend
@@ -95,6 +96,10 @@ class InspectorPanel(EditorPanel):
         self.__inline_shader_cache: dict = {".vert": None, ".frag": None}
         self.__inline_mat_frag_shader_id: str = ""
         self._inline_mat_sync_key: str = ""
+
+        # Unified undo tracking
+        from InfEngine.engine.undo import InspectorUndoTracker
+        self._undo_tracker = InspectorUndoTracker()
 
         # Register MeshRenderer into the component renderer registry so
         # dispatch is fully unified (uses bound method for panel-level state).
@@ -360,8 +365,8 @@ class InspectorPanel(EditorPanel):
             elif self.__selected_file:
                 self._render_file_preview(ctx)
             else:
-                ctx.label("No selection")
-                ctx.label("Select a file in the Project panel to preview")
+                ctx.label(t("inspector.no_selection"))
+                ctx.label(t("inspector.select_file_hint"))
         ctx.end_child()
 
     def _render_asset_inspector(self, ctx: InfGUIContext):
@@ -377,26 +382,26 @@ class InspectorPanel(EditorPanel):
         """Render file preview using backend ResourcePreviewManager."""
         if os.path.isdir(self.__selected_file):
             folder_name = os.path.basename(self.__selected_file)
-            ctx.label(f"Folder: {folder_name}")
+            ctx.label(t("inspector.folder_label").format(name=folder_name))
             ctx.separator()
-            ctx.label(f"Path: {self.__selected_file}")
+            ctx.label(t("inspector.path_label").format(path=self.__selected_file))
         elif not self.__preview_manager:
             filename = os.path.basename(self.__selected_file)
-            ctx.label(f"File: {filename}")
+            ctx.label(t("inspector.file_label").format(name=filename))
             ctx.separator()
-            ctx.label("(Preview system not initialized)")
+            ctx.label(t("inspector.preview_not_init"))
         elif not self._can_preview_file(self.__selected_file):
             filename = os.path.basename(self.__selected_file)
-            ctx.label(f"File: {filename}")
+            ctx.label(t("inspector.file_label").format(name=filename))
             ctx.separator()
-            ctx.label("(No previewer available for this file type)")
+            ctx.label(t("inspector.no_previewer"))
             ext = self._get_file_extension(self.__selected_file)
-            ctx.label(f"Extension: {ext}")
+            ctx.label(t("inspector.extension_label").format(ext=ext))
         elif not self._load_preview(self.__selected_file):
             filename = os.path.basename(self.__selected_file)
-            ctx.label(f"File: {filename}")
+            ctx.label(t("inspector.file_label").format(name=filename))
             ctx.separator()
-            ctx.label("(Failed to load preview)")
+            ctx.label(t("inspector.preview_failed"))
         else:
             # Render metadata from backend
             self.__preview_manager.render_metadata(ctx)
@@ -497,7 +502,7 @@ class InspectorPanel(EditorPanel):
         half_w = avail_w * 0.5 - 4
 
         # --- Tag (left column) ---
-        ctx.label("Tag")
+        ctx.label(t("inspector.tag"))
         ctx.same_line(0, 4)
         new_tag_idx = IGUI.searchable_combo(ctx, "Tag", tag_idx, tag_items, width=half_w - 30)
         if new_tag_idx != tag_idx:
@@ -510,7 +515,7 @@ class InspectorPanel(EditorPanel):
 
         # --- Layer (right column) — start at fixed half-width mark ---
         ctx.same_line(half_w + 8)
-        ctx.label("Layer")
+        ctx.label(t("inspector.layer"))
         ctx.same_line(0, 4)
         layer_combo_w = ctx.get_content_region_avail_width()
         new_layer = IGUI.searchable_combo(ctx, "Layer", current_layer, layer_items, width=layer_combo_w)
@@ -531,15 +536,15 @@ class InspectorPanel(EditorPanel):
         ctx.begin_child("##prefab_header_bar", 0, 28, True)
 
         ctx.push_style_color(ImGuiCol.Text, *Theme.PREFAB_TEXT)
-        ctx.label("Prefab")
+        ctx.label(t("inspector.prefab_label"))
         ctx.pop_style_color(1)
 
         ctx.same_line(0, 8)
-        if ctx.small_button("Select##prefab_select"):
+        if ctx.small_button(t("inspector.prefab_select") + "##prefab_select"):
             self._prefab_select_asset(obj)
 
         ctx.same_line(0, 4)
-        if ctx.small_button("Open##prefab_open"):
+        if ctx.small_button(t("inspector.prefab_open") + "##prefab_open"):
             self._prefab_open_asset(obj)
 
         ctx.same_line(0, 12)
@@ -550,17 +555,17 @@ class InspectorPanel(EditorPanel):
 
         if override_count > 0:
             ctx.push_style_color(ImGuiCol.Text, *Theme.WARNING_TEXT)
-            ctx.label(f"{override_count} Override(s)")
+            ctx.label(f"{override_count} " + t("inspector.overrides"))
             ctx.pop_style_color(1)
             ctx.same_line(0, 8)
-            if ctx.small_button("Apply##prefab_apply"):
+            if ctx.small_button(t("inspector.prefab_apply") + "##prefab_apply"):
                 self._prefab_apply(obj)
             ctx.same_line(0, 4)
-            if ctx.small_button("Revert##prefab_revert"):
+            if ctx.small_button(t("inspector.prefab_revert") + "##prefab_revert"):
                 self._prefab_revert(obj)
         else:
             ctx.push_style_color(ImGuiCol.Text, *Theme.TEXT_DIM)
-            ctx.label("No Overrides")
+            ctx.label(t("inspector.no_overrides"))
             ctx.pop_style_color(1)
 
         ctx.end_child()
@@ -663,10 +668,10 @@ class InspectorPanel(EditorPanel):
             except Exception:
                 _submesh_infos = []
 
-        lw = self._max_label_w(ctx, ["Mesh", "Materials", "Element 0"])
+        lw = self._max_label_w(ctx, [t("inspector.mesh"), t("inspector.materials"), "Element 0"])
 
         # ── Mesh field ─────────────────────────────────────────────────
-        self._field_label(ctx, "Mesh", lw)
+        self._field_label(ctx, t("inspector.mesh"), lw)
         if renderer.has_inline_mesh():
             inline_name = getattr(renderer, 'inline_mesh_name', '') or ''
             mesh_display = inline_name if inline_name else "(Primitive)"
@@ -763,7 +768,7 @@ class InspectorPanel(EditorPanel):
         ctx.dummy(0, Theme.INSPECTOR_SECTION_GAP * 1.5)
         ctx.separator()
         ctx.push_style_color(ImGuiCol.Text, *Theme.TEXT)
-        ctx.label("Material Overrides")
+        ctx.label(t("inspector.material_overrides"))
         ctx.pop_style_color(1)
         ctx.separator()
         ctx.set_next_item_open(True, Theme.COND_FIRST_USE_EVER)
@@ -853,8 +858,30 @@ class InspectorPanel(EditorPanel):
         changed = False
         requires_deserialize = False
         requires_pipeline_refresh = False
-        # Capture pre-edit JSON only when the undo system actually needs it
-        # (deferred to the 'changed' block below to avoid per-frame serialize).
+
+        # --- Register inline material for undo tracking ---
+        _nmat = native_mat  # capture
+        _mat_guid = getattr(native_mat, "guid", "") or str(mat_id)
+        def _mat_snapshot(_m=_nmat):
+            try:
+                return _m.serialize()
+            except RuntimeError:
+                return ""
+        def _mat_restore(s, _m=_nmat, _self=self):
+            try:
+                _m.deserialize(s)
+                engine = _self._get_native_engine()
+                if engine and hasattr(engine, 'refresh_material_pipeline'):
+                    engine.refresh_material_pipeline(_m)
+                if hasattr(_m, 'save'):
+                    _m.save()
+                _self._inline_mat_version = -1  # force cache refresh
+            except (RuntimeError, ValueError):
+                pass
+        self._undo_tracker.track(
+            f"material:{_mat_guid}",
+            _mat_snapshot, _mat_restore, "Edit Material",
+        )
 
         # Sync shader annotations
         frag_shader_id = mat_data.get("shaders", {}).get("fragment", "")
@@ -1120,7 +1147,7 @@ class InspectorPanel(EditorPanel):
         if render_compact_section_header(ctx, "Properties##inline_mat", level="secondary"):
             props = mat_data.get("properties", {})
             if not props:
-                ctx.label("(No properties)")
+                ctx.label(t("inspector.no_properties"))
             else:
                 prop_names = shader_utils.get_material_property_display_order(mat_data)
                 plw = max_label_w(ctx, prop_names)
@@ -1144,8 +1171,6 @@ class InspectorPanel(EditorPanel):
             if hasattr(native_mat, 'is_deleted') and native_mat.is_deleted():
                 return
             try:
-                # Capture pre-edit state for undo (only on actual change)
-                old_json = native_mat.serialize()
                 if requires_deserialize:
                     native_mat.deserialize(json.dumps(mat_data))
                 if requires_pipeline_refresh:
@@ -1155,20 +1180,7 @@ class InspectorPanel(EditorPanel):
                 self._ensure_material_file_path(native_mat)
                 if hasattr(native_mat, 'save'):
                     native_mat.save()
-                from InfEngine.engine.undo import UndoManager, MaterialJsonCommand
-                mgr = UndoManager.instance()
-                new_json = native_mat.serialize()
                 self._inline_mat_version = -1  # force cache refresh next frame
-                if mgr and not mgr.is_executing and mgr.enabled and old_json and new_json != old_json:
-                    mgr.record(MaterialJsonCommand(
-                        native_mat,
-                        old_json,
-                        new_json,
-                        "Edit Material",
-                        refresh_callback=lambda _mat: self._get_native_engine().refresh_material_pipeline(_mat)
-                        if (self._get_native_engine() and hasattr(self._get_native_engine(), 'refresh_material_pipeline'))
-                        else None,
-                    ))
             except (RuntimeError, ValueError):
                 pass
 
@@ -1338,7 +1350,7 @@ class InspectorPanel(EditorPanel):
         
         # Search field
         ctx.set_next_item_width(Theme.ADD_COMP_SEARCH_W)
-        new_text = ctx.input_text_with_hint("##comp_search", "Search components...",
+        new_text = ctx.input_text_with_hint("##comp_search", t("inspector.search_components"),
                                             self.__add_component_search)
         if isinstance(new_text, str):
             self.__add_component_search = new_text
@@ -1379,7 +1391,7 @@ class InspectorPanel(EditorPanel):
 
             # Any remaining native types not in a known category
             if uncategorized_native:
-                ctx.label("Miscellaneous")
+                ctx.label(t("inspector.miscellaneous"))
                 ctx.separator()
                 for type_name in uncategorized_native:
                     found_any = True
@@ -1441,7 +1453,7 @@ class InspectorPanel(EditorPanel):
 
             # Render uncategorized scripts
             if uncategorized:
-                ctx.label("Scripts")
+                ctx.label(t("inspector.scripts"))
                 ctx.separator()
                 for display_name, spath in uncategorized:
                     found_any = True
@@ -1450,7 +1462,7 @@ class InspectorPanel(EditorPanel):
                         ctx.close_current_popup()
         
         if not found_any:
-            ctx.label("No components found")
+            ctx.label(t("inspector.no_components_found"))
         
         ctx.pop_style_var(2)
 
@@ -1759,6 +1771,8 @@ class InspectorPanel(EditorPanel):
     # ------------------------------------------------------------------
     def _render_single_object(self, ctx: InfGUIContext, selected_object):
         """Render inspector for a single selected object."""
+        from InfEngine.engine.undo import snapshot_renderstack, restore_renderstack
+
         components = []
         if hasattr(selected_object, 'get_components'):
             try:
@@ -1772,6 +1786,73 @@ class InspectorPanel(EditorPanel):
                 py_components = list(selected_object.get_py_components())
             except RuntimeError:
                 py_components = []
+
+        # --- Register undo tracking for all inspectable targets ---
+        tracker = self._undo_tracker
+        obj_id = selected_object.id
+
+        # Track GameObject name / active
+        def _go_snapshot():
+            import json as _j
+            return _j.dumps({"name": selected_object.name,
+                             "active": selected_object.active})
+        def _go_restore(s):
+            import json as _j
+            d = _j.loads(s)
+            selected_object.name = d["name"]
+            selected_object.active = d["active"]
+        tracker.track(f"go:{obj_id}", _go_snapshot, _go_restore, "Edit GameObject")
+
+        # Track Transform
+        trans = selected_object.get_transform()
+        if trans:
+            _trans = trans  # capture
+            tracker.track(
+                f"transform:{obj_id}",
+                lambda: _trans.serialize(),
+                lambda s: _trans.deserialize(s),
+                "Edit Transform",
+            )
+
+        # Track C++ components
+        for comp in components:
+            try:
+                tn = comp.type_name
+                if tn == "Transform":
+                    continue
+                if hasattr(comp, 'get_py_component'):
+                    continue
+                cid = getattr(comp, "component_id", None) or id(comp)
+                _c = comp  # capture
+                tracker.track(
+                    f"native:{cid}",
+                    lambda _cc=_c: _cc.serialize(),
+                    lambda s, _cc=_c: _cc.deserialize(s),
+                    f"Edit {tn}",
+                )
+            except (RuntimeError, AttributeError):
+                pass
+
+        # Track Python components (includes RenderStack)
+        for py_comp in py_components:
+            pc_id = getattr(py_comp, "component_id", None) or id(py_comp)
+            from InfEngine.renderstack.render_stack import RenderStack
+            if isinstance(py_comp, RenderStack):
+                _rs = py_comp  # capture
+                tracker.track(
+                    f"renderstack:{pc_id}",
+                    lambda _s=_rs: snapshot_renderstack(_s),
+                    lambda s, _s=_rs: restore_renderstack(_s, s),
+                    "Edit RenderStack",
+                )
+            else:
+                _pc = py_comp  # capture
+                tracker.track(
+                    f"pycomp:{pc_id}",
+                    lambda _p=_pc: _p._serialize_fields(),
+                    lambda s, _p=_pc: _p._deserialize_fields(s),
+                    f"Edit {py_comp.type_name}",
+                )
 
         ctx.push_id_str(f"selected_obj_{selected_object.id}")
         # Active checkbox (no label — matches Unity's checkbox-only style)
@@ -1850,24 +1931,24 @@ class InspectorPanel(EditorPanel):
                 # Right-click context menu
                 if self.__right_click_remove_enabled and ctx.begin_popup_context_item("comp_ctx"):
                     # -- Copy Properties --
-                    if ctx.selectable("Copy Properties"):
+                    if ctx.selectable(t("inspector.copy_properties")):
                         self._copy_component_properties(comp, type_name, is_native=True)
                     # -- Paste as New Component --
                     cb_type = self._get_clipboard_type_name()
                     has_cb = cb_type is not None
                     ctx.begin_disabled(not has_cb)
-                    if ctx.selectable("Paste as New Component"):
+                    if ctx.selectable(t("inspector.paste_as_new")):
                         self._paste_component_as_new(selected_object)
                     ctx.end_disabled()
                     # -- Paste as Properties --
                     can_paste_props = has_cb and cb_type == type_name
                     ctx.begin_disabled(not can_paste_props)
-                    if ctx.selectable("Paste as Properties"):
+                    if ctx.selectable(t("inspector.paste_properties")):
                         self._paste_properties_onto(comp, type_name, is_native=True)
                     ctx.end_disabled()
                     ctx.separator()
                     # -- Remove --
-                    if ctx.selectable("Remove"):
+                    if ctx.selectable(t("inspector.remove")):
                         if hasattr(selected_object, 'remove_component'):
                             blockers = []
                             if hasattr(selected_object, 'get_remove_component_blockers'):
@@ -1942,19 +2023,19 @@ class InspectorPanel(EditorPanel):
                 # Right-click context menu
                 if self.__right_click_remove_enabled and ctx.begin_popup_context_item("py_comp_ctx"):
                     # -- Copy Properties --
-                    if ctx.selectable("Copy Properties"):
+                    if ctx.selectable(t("inspector.copy_properties")):
                         self._copy_component_properties(py_comp, type_name, is_native=False)
                     # -- Paste as New Component --
                     cb_type = self._get_clipboard_type_name()
                     has_cb = cb_type is not None
                     ctx.begin_disabled(not has_cb)
-                    if ctx.selectable("Paste as New Component"):
+                    if ctx.selectable(t("inspector.paste_as_new")):
                         self._paste_component_as_new(selected_object)
                     ctx.end_disabled()
                     # -- Paste as Properties --
                     can_paste_props = has_cb and cb_type == type_name
                     ctx.begin_disabled(not can_paste_props)
-                    if ctx.selectable("Paste as Properties"):
+                    if ctx.selectable(t("inspector.paste_properties")):
                         self._paste_properties_onto(py_comp, type_name, is_native=False)
                     ctx.end_disabled()
                     ctx.separator()
@@ -1966,11 +2047,11 @@ class InspectorPanel(EditorPanel):
                     from InfEngine.components.builtin_component import BuiltinComponent
                     _is_builtin = isinstance(py_comp, BuiltinComponent)
                     if not _is_builtin and _script_path:
-                        if ctx.selectable("Show Script"):
+                        if ctx.selectable(t("inspector.show_script")):
                             self._open_script_in_editor(_script_path)
                     ctx.separator()
                     # -- Remove --
-                    if ctx.selectable("Remove"):
+                    if ctx.selectable(t("inspector.remove")):
                         if hasattr(selected_object, 'remove_py_component'):
                             from InfEngine.engine.undo import UndoManager, RemovePyComponentCommand
                             mgr = UndoManager.instance()
@@ -2020,7 +2101,7 @@ class InspectorPanel(EditorPanel):
 
         ctx.push_style_var_vec2(ImGuiStyleVar.FramePadding, *Theme.ADD_COMP_FRAME_PAD)
         ctx.set_cursor_pos_x(Theme.INSPECTOR_ACTION_ALIGN_X)
-        ctx.button("Add Component", lambda: self._open_add_component_popup(ctx), -1, 0)
+        ctx.button(t("inspector.add_component"), lambda: self._open_add_component_popup(ctx), -1, 0)
         ctx.pop_style_var(1)
 
         ctx.dummy(0, Theme.INSPECTOR_SECTION_GAP)
@@ -2173,6 +2254,81 @@ class InspectorPanel(EditorPanel):
     # ------------------------------------------------------------------
     def _render_multi_edit(self, ctx: InfGUIContext, objects: list):
         """Render inspector for multiple selected objects (Unity-style multi-edit)."""
+        from InfEngine.engine.undo import snapshot_renderstack, restore_renderstack
+
+        # --- Register undo tracking for all selected objects ---
+        tracker = self._undo_tracker
+        for obj in objects:
+            oid = obj.id
+            _o = obj  # capture
+            # Track GameObject name / active
+            def _go_snap(_oo=_o):
+                import json as _j
+                return _j.dumps({"name": _oo.name, "active": _oo.active})
+            def _go_rest(s, _oo=_o):
+                import json as _j
+                d = _j.loads(s)
+                _oo.name = d["name"]
+                _oo.active = d["active"]
+            tracker.track(f"go:{oid}", _go_snap, _go_rest, "Edit Objects (Multi)")
+
+            # Track Transform
+            trans = obj.get_transform()
+            if trans:
+                _t = trans
+                tracker.track(
+                    f"transform:{oid}",
+                    lambda _tt=_t: _tt.serialize(),
+                    lambda s, _tt=_t: _tt.deserialize(s),
+                    "Edit Transform (Multi)",
+                )
+
+            # Track C++ components
+            try:
+                comps = list(obj.get_components()) if hasattr(obj, 'get_components') else []
+            except RuntimeError:
+                comps = []
+            for comp in comps:
+                try:
+                    tn = comp.type_name
+                    if tn == "Transform" or hasattr(comp, 'get_py_component'):
+                        continue
+                    cid = getattr(comp, "component_id", None) or id(comp)
+                    _c = comp
+                    tracker.track(
+                        f"native:{cid}",
+                        lambda _cc=_c: _cc.serialize(),
+                        lambda s, _cc=_c: _cc.deserialize(s),
+                        f"Edit {tn} (Multi)",
+                    )
+                except (RuntimeError, AttributeError):
+                    pass
+
+            # Track Python components
+            try:
+                pcs = list(obj.get_py_components()) if hasattr(obj, 'get_py_components') else []
+            except RuntimeError:
+                pcs = []
+            for pc in pcs:
+                pc_id = getattr(pc, "component_id", None) or id(pc)
+                from InfEngine.renderstack.render_stack import RenderStack
+                if isinstance(pc, RenderStack):
+                    _rs = pc
+                    tracker.track(
+                        f"renderstack:{pc_id}",
+                        lambda _s=_rs: snapshot_renderstack(_s),
+                        lambda s, _s=_rs: restore_renderstack(_s, s),
+                        "Edit RenderStack (Multi)",
+                    )
+                else:
+                    _pc = pc
+                    tracker.track(
+                        f"pycomp:{pc_id}",
+                        lambda _p=_pc: _p._serialize_fields(),
+                        lambda s, _p=_pc: _p._deserialize_fields(s),
+                        f"Edit {pc.type_name} (Multi)",
+                    )
+
         n = len(objects)
         ctx.push_id_str("multi_edit")
 
@@ -2315,7 +2471,7 @@ class InspectorPanel(EditorPanel):
         ctx.dummy(0, Theme.INSPECTOR_SECTION_GAP)
         ctx.push_style_var_vec2(ImGuiStyleVar.FramePadding, *Theme.ADD_COMP_FRAME_PAD)
         ctx.set_cursor_pos_x(Theme.INSPECTOR_ACTION_ALIGN_X)
-        ctx.button("Add Component", lambda: self._open_add_component_popup(ctx), -1, 0)
+        ctx.button(t("inspector.add_component"), lambda: self._open_add_component_popup(ctx), -1, 0)
         ctx.pop_style_var(1)
         ctx.dummy(0, Theme.INSPECTOR_SECTION_GAP)
 
@@ -2333,6 +2489,11 @@ class InspectorPanel(EditorPanel):
             if native:
                 self._load_component_icons(native)
 
+        # Begin undo tracking frame — snapshots are captured before/after
+        from InfEngine.engine.undo import UndoManager
+        mgr = UndoManager.instance()
+        self._undo_tracker.begin_frame()
+
         child_visible = ctx.begin_child("PropertiesModule", 0, height, True)
         if child_visible:
             ctx.push_style_var_vec2(ImGuiStyleVar.FramePadding, *Theme.INSPECTOR_FRAME_PAD)
@@ -2341,20 +2502,41 @@ class InspectorPanel(EditorPanel):
             # Multi-selection: delegate to multi-edit renderer
             from .selection_manager import SelectionManager
             sel = SelectionManager.instance()
-            if sel.is_multi():
-                all_objects = self._get_all_selected_objects()
-                if len(all_objects) > 1:
-                    self._render_multi_edit(ctx, all_objects)
-                else:
-                    ctx.label("No objects selected")
+
+            # Suppress old per-widget undo recording; the tracker handles it
+            if mgr:
+                with mgr.suppress_property_recording():
+                    if sel.is_multi():
+                        all_objects = self._get_all_selected_objects()
+                        if len(all_objects) > 1:
+                            self._render_multi_edit(ctx, all_objects)
+                        else:
+                            ctx.label(t("inspector.no_objects_selected"))
+                    else:
+                        selected_object = self._get_selected_object()
+                        if selected_object:
+                            self._render_single_object(ctx, selected_object)
+                        else:
+                            ctx.label(t("inspector.no_object_selected"))
             else:
-                selected_object = self._get_selected_object()
-                if selected_object:
-                    self._render_single_object(ctx, selected_object)
+                if sel.is_multi():
+                    all_objects = self._get_all_selected_objects()
+                    if len(all_objects) > 1:
+                        self._render_multi_edit(ctx, all_objects)
+                    else:
+                        ctx.label(t("inspector.no_objects_selected"))
                 else:
-                    ctx.label("No object selected")
+                    selected_object = self._get_selected_object()
+                    if selected_object:
+                        self._render_single_object(ctx, selected_object)
+                    else:
+                        ctx.label(t("inspector.no_object_selected"))
+
             ctx.pop_style_var(2)
         ctx.end_child()
+
+        # End undo tracking frame — compare and record changes
+        self._undo_tracker.end_frame()
 
         # Drag-drop target on the entire PropertiesModule child window.
         # Must be called AFTER end_child() — EndChild() submits the child as an item,

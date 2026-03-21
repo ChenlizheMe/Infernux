@@ -8,7 +8,7 @@ Provides IDE autocompletion for all C++ types exposed to Python.
 from __future__ import annotations
 
 from enum import IntEnum
-from typing import Any, Iterator, List, Optional, Sequence, Tuple, Union, overload
+from typing import Any, Callable, Iterator, List, Optional, Sequence, Tuple, Union, overload
 
 import numpy as np
 import numpy.typing as npt
@@ -126,6 +126,11 @@ class VkFormat(IntEnum):
     R16G16B16A16_SFLOAT: int
     R32G32B32A32_SFLOAT: int
     R32_SFLOAT: int
+    R8_UNORM: int
+    R8G8_UNORM: int
+    R16G16_SFLOAT: int
+    A2R10G10B10_UNORM_PACK32: int
+    R16_SFLOAT: int
     D32_SFLOAT: int
     D24_UNORM_S8_UINT: int
 
@@ -775,11 +780,11 @@ class MeshRenderer(Component):
     @submesh_index.setter
     def submesh_index(self, value: int) -> None: ...
     @property
-    def mesh_pivot_offset(self) -> Vec3:
+    def mesh_pivot_offset(self) -> Vector3:
         """Pivot offset to re-center submesh geometry around the transform."""
         ...
     @mesh_pivot_offset.setter
-    def mesh_pivot_offset(self, value: Vec3) -> None: ...
+    def mesh_pivot_offset(self, value: Vector3) -> None: ...
     def serialize(self) -> str:
         """Serialize the mesh renderer to JSON."""
         ...
@@ -842,16 +847,16 @@ class Light(Component):
         ...
     @shadow_bias.setter
     def shadow_bias(self, value: float) -> None: ...
-    def get_light_view_matrix(self) -> Any:
-        """Get the light's view matrix for shadow mapping."""
+    def get_light_view_matrix(self) -> List[float]:
+        """Get the light's view matrix for shadow mapping (16 floats, column-major)."""
         ...
     def get_light_projection_matrix(
         self,
         shadow_extent: float = 20.0,
         near_plane: float = 0.1,
         far_plane: float = 100.0,
-    ) -> Any:
-        """Get the light's projection matrix for shadow mapping."""
+    ) -> List[float]:
+        """Get the light's projection matrix for shadow mapping (16 floats, column-major)."""
         ...
     def serialize(self) -> str:
         """Serialize the light component to JSON."""
@@ -1288,6 +1293,9 @@ class Scene:
     def start(self) -> None:
         """Trigger Awake+Start on all components (idempotent — skipped if already started)."""
         ...
+    def awake_object(self, game_object: GameObject) -> None:
+        """Re-run Awake+OnEnable on a GameObject and its descendants (used after undo deserialization)."""
+        ...
     def serialize(self) -> str:
         """Serialize scene to JSON string."""
         ...
@@ -1536,7 +1544,7 @@ class InfMaterial:
     def set_int(self, name: str, value: int) -> None:
         """Set an int property."""
         ...
-    def set_matrix(self, name: str, value: Any) -> None:
+    def set_matrix(self, name: str, value: List[float]) -> None:
         """Set a mat4 property."""
         ...
     def set_texture(self, name: str, texture_path: str) -> None:
@@ -2202,7 +2210,7 @@ class InfGUIContext:
         step_fast: float = 0.0,
         flags: int = 0,
     ) -> float: ...
-    def color_edit(self, label: str, color: Any) -> Any: ...
+    def color_edit(self, label: str, color: List[float]) -> Optional[List[float]]: ...
     def color_picker(
         self, label: str, r: float, g: float, b: float, a: float = 1.0, flags: int = 0
     ) -> Tuple[bool, float, float, float, float]: ...
@@ -2596,17 +2604,6 @@ class InfEngine:
         """Resize the scene render target."""
         ...
 
-    # UI batch (Phase 0)
-    def submit_ui_batch(self, vertices: List[float], indices: List[int], pass_target: int = 0, sort_order: int = 0) -> None:
-        """Submit a UI batch with vertex stride 9: [x,y,u,v,r,g,b,a,tex_id]."""
-        ...
-    def clear_ui_batches(self) -> None:
-        """Clear all queued UI batches."""
-        ...
-    def render_submitted_ui_batches(self, ctx: InfGUIContext, viewport_origin_x: float, viewport_origin_y: float, viewport_width: float, viewport_height: float) -> bool:
-        """Render queued UI batches into current ImGui window draw list."""
-        ...
-
     # Scene picking
     def pick_scene_object_id(
         self,
@@ -2683,6 +2680,619 @@ class InfEngine:
     def get_msaa_samples(self) -> int:
         """Get current MSAA sample count (1=off)."""
         ...
+
+    # Window management
+    def get_display_scale(self) -> float:
+        """Get the OS display scale factor (e.g. 2.0 for 200% scaling)."""
+        ...
+    def set_window_icon(self, icon_path: str) -> None:
+        """Set the window icon from a PNG file."""
+        ...
+    def set_fullscreen(self, fullscreen: bool) -> None:
+        """Set the window to fullscreen or windowed mode."""
+        ...
+    def set_window_title(self, title: str) -> None:
+        """Set the window title bar text."""
+        ...
+    def reset_imgui_layout(self) -> None:
+        """Clear ImGui docking layout and delete saved ini."""
+        ...
+    def cleanup(self) -> None:
+        """Destroy renderer and release all GPU resources."""
+        ...
+    def set_pre_gui_callback(self, callback: Optional[Callable[[], None]]) -> None:
+        """Set a Python callback invoked each frame before GUI rendering."""
+        ...
+
+    # Asset hot-reload
+    def reload_texture(self, texture_path: str) -> None:
+        """Invalidate cached texture and force materials to reload it."""
+        ...
+    def reload_mesh(self, mesh_path: str) -> None:
+        """Reload a mesh asset and notify dependent MeshRenderers."""
+        ...
+    def reload_audio(self, audio_path: str) -> None:
+        """Reload an audio clip asset and notify dependents."""
+        ...
+
+    # GPU sync
+    def wait_for_gpu_idle(self) -> None:
+        """Drain pending GPU work before destructive scene replacement."""
+        ...
+
+    # Game render target
+    def get_game_texture_id(self) -> int:
+        """Get game render target texture ID for ImGui display."""
+        ...
+    def resize_game_render_target(self, width: int, height: int) -> None:
+        """Resize the game render target (lazy-initializes on first call)."""
+        ...
+    def set_game_camera_enabled(self, enabled: bool) -> None:
+        """Enable/disable game camera rendering."""
+        ...
+    def is_game_camera_enabled(self) -> bool:
+        """Check if game camera rendering is enabled."""
+        ...
+    def set_scene_view_visible(self, visible: bool) -> None:
+        """Enable/disable scene view rendering."""
+        ...
+
+    # Screen UI
+    def get_screen_ui_renderer(self) -> Optional[InfScreenUIRenderer]:
+        """Get the screen UI renderer for GPU-based 2D screen-space UI."""
+        ...
+
+    # Present mode
+    def set_present_mode(self, mode: int) -> None:
+        """Set present mode: 0=IMMEDIATE, 1=MAILBOX, 2=FIFO, 3=FIFO_RELAXED."""
+        ...
+    def get_present_mode(self) -> int:
+        """Get current present mode."""
+        ...
+
+    # Extended editor tools
+    def pick_gizmo_axis(self, screen_x: float, screen_y: float, viewport_width: float, viewport_height: float) -> int:
+        """Lightweight gizmo axis proximity test for hover highlighting."""
+        ...
+    def set_editor_tool_mode(self, mode: int) -> None:
+        """Set the active tool mode. 0=None, 1=Translate, 2=Rotate, 3=Scale."""
+        ...
+    def get_editor_tool_mode(self) -> int:
+        """Get the active tool mode."""
+        ...
+    def set_editor_tool_local_mode(self, local: bool) -> None:
+        """Enable/disable local coordinate mode for editor tools."""
+        ...
+
+    # Component gizmos
+    def upload_component_gizmos(self, vertices: Any, vertex_count: int, indices: Any, descriptors: Any, descriptor_count: int) -> None:
+        """Upload per-component gizmo geometry via buffer protocol."""
+        ...
+    def clear_component_gizmos(self) -> None:
+        """Clear all component gizmo geometry."""
+        ...
+    def upload_component_gizmo_icons(self, positions: Any, object_ids: Any, icon_count: int) -> None:
+        """Upload component gizmo icon entries via buffer protocol."""
+        ...
+    def clear_component_gizmo_icons(self) -> None:
+        """Clear all component gizmo icon data."""
+        ...
+
+    # Material pipeline cleanup
+    def remove_material_pipeline(self, material_name: str) -> None:
+        """Remove pipeline render data for a deleted material."""
+        ...
+
+
+# =============================================================================
+# Physics enums
+# =============================================================================
+
+
+class ForceMode(IntEnum):
+    """Force application mode for Rigidbody."""
+
+    Force: int
+    Acceleration: int
+    Impulse: int
+    VelocityChange: int
+
+
+class RigidbodyConstraints(IntEnum):
+    """Bitmask for freezing Rigidbody axes."""
+
+    NoneFlag: int
+    FreezePositionX: int
+    FreezePositionY: int
+    FreezePositionZ: int
+    FreezeRotationX: int
+    FreezeRotationY: int
+    FreezeRotationZ: int
+    FreezePosition: int
+    FreezeRotation: int
+    FreezeAll: int
+
+
+class CollisionDetectionMode(IntEnum):
+    """Collision detection algorithm for Rigidbody."""
+
+    Discrete: int
+    Continuous: int
+    ContinuousDynamic: int
+    ContinuousSpeculative: int
+
+
+class RigidbodyInterpolation(IntEnum):
+    """Rigidbody interpolation mode."""
+
+    NoneFlag: int
+    Interpolate: int
+
+
+class ScreenUIList(IntEnum):
+    """Screen UI draw list selection."""
+
+    Camera: int
+    Overlay: int
+
+
+# =============================================================================
+# Render target handle
+# =============================================================================
+
+
+class RenderTargetHandle:
+    """Opaque handle to a temporary or persistent render target."""
+
+    @property
+    def id(self) -> int: ...
+    def is_valid(self) -> bool: ...
+    def __eq__(self, other: object) -> bool: ...
+    def __ne__(self, other: object) -> bool: ...
+    def __repr__(self) -> str: ...
+
+
+# =============================================================================
+# CommandBuffer
+# =============================================================================
+
+
+class CommandBuffer:
+    """Deferred rendering command buffer."""
+
+    def __init__(self, name: str = "") -> None: ...
+
+    # Render target management
+    def get_temporary_rt(
+        self,
+        width: int,
+        height: int,
+        format: VkFormat = ...,
+        samples: VkSampleCount = ...,
+    ) -> RenderTargetHandle:
+        """Allocate a temporary render target."""
+        ...
+    def release_temporary_rt(self, handle: RenderTargetHandle) -> None:
+        """Release a temporary render target back to the pool."""
+        ...
+    def set_render_target(self, color: RenderTargetHandle) -> None:
+        """Set the active color render target."""
+        ...
+    def set_render_target_with_depth(self, color: RenderTargetHandle, depth: RenderTargetHandle) -> None:
+        """Set the active color and depth render targets."""
+        ...
+    def clear_render_target(
+        self,
+        clear_color: bool,
+        clear_depth: bool,
+        r: float,
+        g: float,
+        b: float,
+        a: float,
+        depth: float = 1.0,
+    ) -> None:
+        """Clear the active render target."""
+        ...
+
+    # Global shader parameters
+    def set_global_texture(self, name: str, handle: RenderTargetHandle) -> None: ...
+    def set_global_float(self, name: str, value: float) -> None: ...
+    def set_global_vector(self, name: str, x: float, y: float, z: float, w: float) -> None: ...
+    def set_global_matrix(self, name: str, data: List[float]) -> None:
+        """Set a global 4x4 matrix (16 floats, column-major)."""
+        ...
+
+    # Async readback
+    def request_async_readback(self, handle: RenderTargetHandle, callback_id: int) -> None: ...
+
+    # Misc
+    def clear(self) -> None:
+        """Clear all recorded commands."""
+        ...
+    @property
+    def name(self) -> str: ...
+    @property
+    def command_count(self) -> int: ...
+
+
+# =============================================================================
+# Physics types
+# =============================================================================
+
+
+class CollisionInfo:
+    """Collision event data passed to on_collision callbacks."""
+
+    @property
+    def collider(self) -> Collider: ...
+    @property
+    def game_object(self) -> GameObject: ...
+    @property
+    def contact_point(self) -> Vector3: ...
+    @property
+    def contact_normal(self) -> Vector3: ...
+    @property
+    def relative_velocity(self) -> Vector3: ...
+    @property
+    def impulse(self) -> float: ...
+
+
+class RaycastHit:
+    """Result of a physics raycast query."""
+
+    @property
+    def point(self) -> Vector3: ...
+    @property
+    def normal(self) -> Vector3: ...
+    @property
+    def distance(self) -> float: ...
+    @property
+    def game_object(self) -> GameObject: ...
+    @property
+    def collider(self) -> Collider: ...
+
+
+class Collider(Component):
+    """Base class for all physics collider components."""
+
+    is_trigger: bool
+    center: Vector3
+    friction: float
+    bounciness: float
+    def serialize(self) -> str: ...
+    def deserialize(self, json_str: str) -> None: ...
+
+
+class BoxCollider(Collider):
+    """Axis-aligned box collider."""
+
+    size: Vector3
+    def serialize(self) -> str: ...
+    def deserialize(self, json_str: str) -> None: ...
+
+
+class SphereCollider(Collider):
+    """Sphere collider."""
+
+    radius: float
+    def serialize(self) -> str: ...
+    def deserialize(self, json_str: str) -> None: ...
+
+
+class CapsuleCollider(Collider):
+    """Capsule collider (cylinder + hemisphere caps)."""
+
+    radius: float
+    height: float
+    direction: int
+    def serialize(self) -> str: ...
+    def deserialize(self, json_str: str) -> None: ...
+
+
+class MeshCollider(Collider):
+    """Mesh-based collider."""
+
+    convex: bool
+    def serialize(self) -> str: ...
+    def deserialize(self, json_str: str) -> None: ...
+
+
+class Rigidbody(Component):
+    """Physics rigid body component."""
+
+    mass: float
+    drag: float
+    angular_drag: float
+    use_gravity: bool
+    is_kinematic: bool
+    constraints: int
+    freeze_rotation: bool
+    collision_detection_mode: CollisionDetectionMode
+    interpolation: RigidbodyInterpolation
+    max_angular_velocity: float
+    max_linear_velocity: float
+    velocity: Vector3
+    angular_velocity: Vector3
+
+    @property
+    def world_center_of_mass(self) -> Vector3: ...
+    @property
+    def position(self) -> Vector3: ...
+    @property
+    def rotation(self) -> quatf: ...
+
+    def add_force(self, force: Vector3, mode: ForceMode = ...) -> None: ...
+    def add_torque(self, torque: Vector3, mode: ForceMode = ...) -> None: ...
+    def add_force_at_position(self, force: Vector3, position: Vector3, mode: ForceMode = ...) -> None: ...
+    def move_position(self, position: Vector3) -> None: ...
+    def move_rotation(self, rotation: quatf) -> None: ...
+    def is_sleeping(self) -> bool: ...
+    def wake_up(self) -> None: ...
+    def sleep(self) -> None: ...
+    def serialize(self) -> str: ...
+    def deserialize(self, json_str: str) -> None: ...
+
+
+class Physics:
+    """Static physics query interface."""
+
+    @staticmethod
+    def raycast(
+        origin: Vector3,
+        direction: Vector3,
+        max_distance: float = 1000.0,
+        layer_mask: int = 0xFFFFFFFF,
+        query_triggers: bool = True,
+    ) -> Optional[RaycastHit]:
+        """Cast a ray and return the closest hit, or None."""
+        ...
+    @staticmethod
+    def raycast_all(
+        origin: Vector3,
+        direction: Vector3,
+        max_distance: float = 1000.0,
+        layer_mask: int = 0xFFFFFFFF,
+        query_triggers: bool = True,
+    ) -> List[RaycastHit]:
+        """Cast a ray and return all hits."""
+        ...
+    @staticmethod
+    def overlap_sphere(
+        center: Vector3,
+        radius: float,
+        layer_mask: int = 0xFFFFFFFF,
+        query_triggers: bool = True,
+    ) -> List[Collider]:
+        """Find all colliders within a sphere."""
+        ...
+    @staticmethod
+    def overlap_box(
+        center: Vector3,
+        half_extents: Vector3,
+        layer_mask: int = 0xFFFFFFFF,
+        query_triggers: bool = True,
+    ) -> List[Collider]:
+        """Find all colliders within an axis-aligned box."""
+        ...
+    @staticmethod
+    def sphere_cast(
+        origin: Vector3,
+        radius: float,
+        direction: Vector3,
+        max_distance: float = 1000.0,
+        layer_mask: int = 0xFFFFFFFF,
+        query_triggers: bool = True,
+    ) -> Optional[RaycastHit]:
+        """Sweep a sphere and return the closest hit."""
+        ...
+    @staticmethod
+    def box_cast(
+        center: Vector3,
+        half_extents: Vector3,
+        direction: Vector3,
+        max_distance: float = 1000.0,
+        layer_mask: int = 0xFFFFFFFF,
+        query_triggers: bool = True,
+    ) -> Optional[RaycastHit]:
+        """Sweep a box and return the closest hit."""
+        ...
+    @staticmethod
+    def get_gravity() -> Vector3: ...
+    @staticmethod
+    def set_gravity(gravity: Vector3) -> None: ...
+    @staticmethod
+    def ignore_layer_collision(layer1: int, layer2: int, ignore: bool = True) -> None: ...
+    @staticmethod
+    def get_ignore_layer_collision(layer1: int, layer2: int) -> bool: ...
+
+
+# =============================================================================
+# TagLayerManager
+# =============================================================================
+
+
+class TagLayerManager:
+    """Singleton manager for tags and physics layers."""
+
+    @staticmethod
+    def instance() -> TagLayerManager: ...
+
+    # Tags
+    def get_tag(self, index: int) -> str: ...
+    def get_tag_index(self, tag: str) -> int:
+        """Return tag index, or -1 if not found."""
+        ...
+    def add_tag(self, tag: str) -> int:
+        """Add a tag and return its index."""
+        ...
+    def remove_tag(self, tag: str) -> None: ...
+    def get_all_tags(self) -> List[str]: ...
+    def is_builtin_tag(self, tag: str) -> bool: ...
+
+    # Layers
+    def get_layer_name(self, layer: int) -> str: ...
+    def get_layer_by_name(self, name: str) -> int:
+        """Return layer index, or -1 if not found."""
+        ...
+    def set_layer_name(self, layer: int, name: str) -> None: ...
+    def get_all_layers(self) -> List[str]: ...
+    def is_builtin_layer(self, layer: int) -> bool: ...
+    def get_layer_collision_mask(self, layer: int) -> int: ...
+    def set_layer_collision_mask(self, layer: int, mask: int) -> None: ...
+    def get_layers_collide(self, layer_a: int, layer_b: int) -> bool: ...
+    def set_layers_collide(self, layer_a: int, layer_b: int, should_collide: bool) -> None: ...
+
+    @staticmethod
+    def layer_to_mask(layer: int) -> int: ...
+    def get_mask(self, layer_names: List[str]) -> int: ...
+
+    # Serialization
+    def serialize(self) -> str: ...
+    def deserialize(self, json_str: str) -> None: ...
+    def save_to_file(self, path: str) -> None: ...
+    def load_from_file(self, path: str) -> None: ...
+
+
+# =============================================================================
+# EngineConfig
+# =============================================================================
+
+
+class EngineConfig:
+    """Singleton engine configuration."""
+
+    @staticmethod
+    def get() -> EngineConfig: ...
+
+    # Rendering
+    max_materials_per_pool: int
+    ubo_descriptors_per_material: int
+    sampler_descriptors_per_material: int
+    enable_mipmap: bool
+    anisotropy_scale: float
+    preferred_swapchain_image_count: int
+    max_frames_in_flight: int
+
+    # Physics
+    physics_temp_allocator_size: int
+    physics_max_jobs: int
+    physics_max_barriers: int
+    physics_max_bodies: int
+    physics_max_body_pairs: int
+    physics_max_contact_constraints: int
+    physics_collision_steps: int
+    physics_gravity: Vector3
+    physics_max_worker_threads: int
+
+    # Default collider properties
+    default_collider_friction: float
+    default_collider_bounciness: float
+
+    # Default rigidbody properties
+    default_rigidbody_mass: float
+    default_rigidbody_drag: float
+    default_rigidbody_angular_drag: float
+    default_max_angular_velocity: float
+    default_max_linear_velocity: float
+    default_max_depenetration_velocity: float
+
+    # Physics layers
+    physics_layer_count: int
+    default_query_layer_mask: int
+
+    # Render queue ranges
+    component_gizmo_queue_min: int
+    component_gizmo_queue_max: int
+    editor_gizmo_queue_min: int
+    editor_gizmo_queue_max: int
+    editor_tools_queue_min: int
+    editor_tools_queue_max: int
+    skybox_queue: int
+
+
+# =============================================================================
+# InfScreenUIRenderer
+# =============================================================================
+
+
+class InfScreenUIRenderer:
+    """GPU-based 2D screen-space UI renderer."""
+
+    def begin_frame(self, width: int, height: int) -> None: ...
+
+    def add_filled_rect(
+        self,
+        list: ScreenUIList,
+        min_x: float,
+        min_y: float,
+        max_x: float,
+        max_y: float,
+        r: float = 1.0,
+        g: float = 1.0,
+        b: float = 1.0,
+        a: float = 1.0,
+        rounding: float = 0.0,
+    ) -> None: ...
+
+    def add_image(
+        self,
+        list: ScreenUIList,
+        texture_id: int,
+        min_x: float,
+        min_y: float,
+        max_x: float,
+        max_y: float,
+        uv0_x: float = 0.0,
+        uv0_y: float = 0.0,
+        uv1_x: float = 1.0,
+        uv1_y: float = 1.0,
+        r: float = 1.0,
+        g: float = 1.0,
+        b: float = 1.0,
+        a: float = 1.0,
+        rotation: float = 0.0,
+        mirror_h: bool = False,
+        mirror_v: bool = False,
+        rounding: float = 0.0,
+    ) -> None: ...
+
+    def add_text(
+        self,
+        list: ScreenUIList,
+        min_x: float,
+        min_y: float,
+        max_x: float,
+        max_y: float,
+        text: str,
+        r: float = 1.0,
+        g: float = 1.0,
+        b: float = 1.0,
+        a: float = 1.0,
+        align_x: float = 0.5,
+        align_y: float = 0.5,
+        font_size: float = 0.0,
+        wrap_width: float = 0.0,
+        rotation: float = 0.0,
+        mirror_h: bool = False,
+        mirror_v: bool = False,
+        font_path: str = "",
+        line_height: float = 1.0,
+        letter_spacing: float = 0.0,
+    ) -> None: ...
+
+    def measure_text(
+        self,
+        text: str,
+        font_size: float = 0.0,
+        wrap_width: float = 0.0,
+        font_path: str = "",
+        line_height: float = 1.0,
+        letter_spacing: float = 0.0,
+    ) -> Tuple[float, float]: ...
+
+    def has_commands(self, list: ScreenUIList) -> bool: ...
+    def set_enabled(self, enabled: bool) -> None: ...
+    def is_enabled(self) -> bool: ...
 
 
 # =============================================================================
@@ -2791,3 +3401,49 @@ class InputManager:
     def scancode_to_name(scancode: int) -> str:
         """Get human-readable name for a scancode."""
         ...
+
+
+# =============================================================================
+# Module-level functions
+# =============================================================================
+
+
+def generate_wire_sphere(
+    cx: float,
+    cy: float,
+    cz: float,
+    radius: float,
+    segments: int,
+    cr: float,
+    cg: float,
+    cb: float,
+) -> Tuple[npt.NDArray[np.float32], int, npt.NDArray[np.int32]]:
+    """Generate 3 axis-aligned wire circles.
+
+    Returns ``(vertices_flat, vertex_count, indices_flat)``.
+    Vertex format: 6 floats per vertex (x, y, z, r, g, b).
+    """
+    ...
+
+
+def generate_wire_arc(
+    cx: float,
+    cy: float,
+    cz: float,
+    nx: float,
+    ny: float,
+    nz: float,
+    radius: float,
+    start_deg: float,
+    arc_deg: float,
+    segments: int,
+    cr: float,
+    cg: float,
+    cb: float,
+) -> Tuple[npt.NDArray[np.float32], int, npt.NDArray[np.int32]]:
+    """Generate a wire arc in the plane perpendicular to the given normal.
+
+    Returns ``(vertices_flat, vertex_count, indices_flat)``.
+    Vertex format: 6 floats per vertex (x, y, z, r, g, b).
+    """
+    ...

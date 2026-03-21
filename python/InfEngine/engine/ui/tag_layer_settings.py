@@ -7,6 +7,7 @@ Physics settings are exposed through a separate standalone floating window.
 
 import json
 
+from InfEngine.engine.i18n import t
 from InfEngine.lib import InfGUIContext
 from InfEngine.physics import settings as _phys_settings
 from .editor_panel import EditorPanel
@@ -25,15 +26,15 @@ def _save_mgr_to_project(mgr, project_path: str):
     mgr.save_to_file(path)
 
 
-@editor_panel("标签与图层 Tags & Layers", type_id="tag_layer_settings")
+@editor_panel("Tags & Layers", type_id="tag_layer_settings", title_key="panel.tags_layers")
 class TagLayerSettingsPanel(EditorPanel):
     """Inspector-style panel for managing project-wide tags and layers."""
 
     WINDOW_TYPE_ID = "tag_layer_settings"
-    WINDOW_DISPLAY_NAME = "标签与图层 Tags & Layers"
+    WINDOW_DISPLAY_NAME = "Tags & Layers"
 
     def __init__(self):
-        super().__init__(title="标签与图层 Tags & Layers", window_id="tag_layer_settings")
+        super().__init__(title="Tags & Layers", window_id="tag_layer_settings")
         self._new_tag_name = ""
         self._new_layer_idx = -1
         self._new_layer_name = ""
@@ -58,7 +59,7 @@ class TagLayerSettingsPanel(EditorPanel):
     def on_render_content(self, ctx: InfGUIContext):
         mgr = self._get_mgr()
         if mgr is None:
-            ctx.label("TagLayerManager not available")
+            ctx.label(t("tags.manager_unavailable"))
         else:
             self._render_tags_section(ctx, mgr)
             self._render_layers_section(ctx, mgr)
@@ -66,7 +67,7 @@ class TagLayerSettingsPanel(EditorPanel):
 
     def _render_tags_section(self, ctx: InfGUIContext, mgr):
         ctx.set_next_item_open(True, Theme.COND_FIRST_USE_EVER)
-        if ctx.collapsing_header("Tags"):
+        if ctx.collapsing_header(t("tags.tags_header")):
             all_tags = list(mgr.get_all_tags())
 
             for i, tag in enumerate(all_tags):
@@ -87,7 +88,7 @@ class TagLayerSettingsPanel(EditorPanel):
                 ctx.pop_id()
 
             ctx.separator()
-            ctx.label("Add Tag:")
+            ctx.label(t("tags.add_tag"))
             ctx.same_line(70)
             ctx.set_next_item_width(ctx.get_content_region_avail_width() - 60)
             self._new_tag_name = ctx.text_input("##new_tag", self._new_tag_name, 128)
@@ -97,7 +98,7 @@ class TagLayerSettingsPanel(EditorPanel):
 
     def _render_layers_section(self, ctx: InfGUIContext, mgr):
         ctx.set_next_item_open(True, Theme.COND_FIRST_USE_EVER)
-        if ctx.collapsing_header("Layers"):
+        if ctx.collapsing_header(t("tags.layers_header")):
             all_layers = list(mgr.get_all_layers())
 
             for i in range(32):
@@ -112,7 +113,7 @@ class TagLayerSettingsPanel(EditorPanel):
                     ctx.push_style_color(ImGuiCol.Text, *Theme.TEXT_DIM)
                     ctx.label(name if name else "---")
                     ctx.same_line(ctx.get_window_width() - 80)
-                    ctx.label("(built-in)")
+                    ctx.label(t("tags.built_in"))
                     ctx.pop_style_color(1)
                 else:
                     ctx.set_next_item_width(ctx.get_content_region_avail_width() - 10)
@@ -127,14 +128,14 @@ class TagLayerSettingsPanel(EditorPanel):
 
     def _render_footer(self, ctx: InfGUIContext, mgr):
         ctx.separator()
-        ctx.button("Save Settings", lambda: self._save(mgr))
+        ctx.button(t("tags.save_settings"), lambda: self._save(mgr))
         ctx.same_line()
 
         def _reset():
             mgr.deserialize('{"custom_tags":[], "layers":[]}')
             self._auto_save(mgr)
 
-        ctx.button("Reset to Defaults", _reset)
+        ctx.button(t("tags.reset_defaults"), _reset)
 
     def _do_remove_tag(self, tag: str):
         mgr = self._get_mgr()
@@ -160,7 +161,7 @@ class TagLayerSettingsPanel(EditorPanel):
 class PhysicsLayerMatrixPanel:
     """Standalone floating panel for project-wide physics settings and collision matrix."""
 
-    _WIN_FLAGS = Theme.WINDOW_FLAGS_FLOATING | ImGuiWindowFlags.NoDocking
+    _WIN_FLAGS = Theme.WINDOW_FLAGS_DIALOG
 
     def __init__(self):
         self._visible = False
@@ -234,16 +235,13 @@ class PhysicsLayerMatrixPanel:
         if not self._visible:
             return
 
-        if self._first_open:
-            x0, y0, dw, dh = ctx.get_main_viewport_bounds()
-            cx = x0 + (dw - 980) * 0.5
-            cy = y0 + (dh - 720) * 0.5
-            ctx.set_next_window_pos(cx, cy, Theme.COND_FIRST_USE_EVER, 0.0, 0.0)
-            self._first_open = False
-
-        ctx.set_next_window_size(980, 720, Theme.COND_FIRST_USE_EVER)
+        x0, y0, dw, dh = ctx.get_main_viewport_bounds()
+        cx = x0 + (dw - 980) * 0.5
+        cy = y0 + (dh - 720) * 0.5
+        ctx.set_next_window_pos(cx, cy, Theme.COND_ALWAYS, 0.0, 0.0)
+        ctx.set_next_window_size(980, 720, Theme.COND_ALWAYS)
         visible, still_open = ctx.begin_window_closable(
-            "物理设置 Physics Settings", self._visible, self._WIN_FLAGS
+            t("physics.title") + "###physics_settings", self._visible, self._WIN_FLAGS
         )
 
         if not still_open:
@@ -254,7 +252,7 @@ class PhysicsLayerMatrixPanel:
         if visible:
             mgr = self._get_mgr()
             if mgr is None:
-                ctx.label("TagLayerManager not available")
+                ctx.label(t("tags.manager_unavailable"))
             else:
                 self._render_body(ctx, mgr)
 
@@ -264,7 +262,7 @@ class PhysicsLayerMatrixPanel:
         self._render_settings_section(ctx)
         ctx.separator()
         ctx.push_style_color(ImGuiCol.Text, *Theme.TEXT_DIM)
-        ctx.label("Collision Matrix — upper triangle only. Changes are saved immediately.")
+        ctx.label(t("physics.collision_matrix_hint"))
         ctx.pop_style_color(1)
         ctx.spacing()
 
@@ -276,7 +274,7 @@ class PhysicsLayerMatrixPanel:
                 visible_layers.append((i, name if name else f"Layer {i}"))
 
         if not visible_layers:
-            ctx.label("No layers available")
+            ctx.label(t("physics.no_layers"))
             return
 
         name_col_w = 180.0
@@ -320,28 +318,28 @@ class PhysicsLayerMatrixPanel:
         ctx.end_child()
 
     def _render_settings_section(self, ctx: InfGUIContext):
-        ctx.label("Simulation")
+        ctx.label(t("physics.simulation"))
 
         hz = 1.0 / max(self._fixed_delta_time, 0.001)
-        new_hz = ctx.drag_float("Physics Iteration Rate (Hz)", hz, 0.5, 1.0, 1000.0)
+        new_hz = ctx.drag_float(t("physics.iteration_rate"), hz, 0.5, 1.0, 1000.0)
         if abs(new_hz - hz) > 1e-6:
             self._fixed_delta_time = max(0.001, 1.0 / max(new_hz, 1.0))
             self._max_fixed_delta_time = max(self._max_fixed_delta_time, self._fixed_delta_time)
             self._save_project_settings()
 
-        new_fixed_dt = ctx.input_float("Fixed Time Step (s)", self._fixed_delta_time, 0.001, 0.01, 0)
+        new_fixed_dt = ctx.input_float(t("physics.fixed_time_step"), self._fixed_delta_time, 0.001, 0.01, 0)
         if abs(new_fixed_dt - self._fixed_delta_time) > 1e-6:
             self._fixed_delta_time = max(0.001, float(new_fixed_dt))
             self._max_fixed_delta_time = max(self._max_fixed_delta_time, self._fixed_delta_time)
             self._save_project_settings()
 
-        new_max_dt = ctx.input_float("Max Catch-up Delta (s)", self._max_fixed_delta_time, 0.01, 0.05, 0)
+        new_max_dt = ctx.input_float(t("physics.max_catchup_delta"), self._max_fixed_delta_time, 0.01, 0.05, 0)
         if abs(new_max_dt - self._max_fixed_delta_time) > 1e-6:
             self._max_fixed_delta_time = max(self._fixed_delta_time, float(new_max_dt))
             self._save_project_settings()
 
         ctx.spacing()
-        ctx.label("Gravity")
+        ctx.label(t("physics.gravity"))
         gx = ctx.input_float("Gravity X", float(self._gravity[0]), 0.1, 1.0, 0)
         gy = ctx.input_float("Gravity Y", float(self._gravity[1]), 0.1, 1.0, 0)
         gz = ctx.input_float("Gravity Z", float(self._gravity[2]), 0.1, 1.0, 0)

@@ -13,7 +13,6 @@ Handles:
 """
 
 import time
-import json
 import os
 from enum import Enum, auto
 from typing import Optional, List, Dict, Any, Callable, TYPE_CHECKING
@@ -861,30 +860,6 @@ class PlayModeManager:
             Debug.log_internal("Scene state saved (C++ serialization)")
         else:
             Debug.log_warning("No active scene to save")
-    
-    def _restore_scene_state(self):
-        """
-        Restore scene state after exiting play mode.
-        Uses C++ Scene::Deserialize() which recreates:
-        - All GameObjects with correct IDs
-        - Transform data
-        - C++ components (MeshRenderer with mesh data, etc.)
-        - Pending Python component info (for Python-side recreation)
-
-        If the user switched scenes during play, we restore the original
-        scene file path so the editor returns to the correct scene.
-        """
-        if self._scene_backup is None:
-            Debug.log_warning("No scene backup to restore")
-            return
-        
-        if self._rebuild_active_scene(self._scene_backup, for_play=False, restore_scene_path=True):
-            Debug.log_internal("Scene state restored (fresh scene rebuild)")
-        else:
-            Debug.log_error("Scene restore failed")
-        self._scene_backup = None
-        self._scene_path_backup = None
-        self._scene_dirty_backup = False
 
     def _restore_scene_file_path(self):
         """Restore SceneFileManager's current path and camera to the pre-play scene."""

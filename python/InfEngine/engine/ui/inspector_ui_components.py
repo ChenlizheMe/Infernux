@@ -14,6 +14,7 @@ from InfEngine.ui.enums import RenderMode, TextAlignH, TextAlignV
 from InfEngine.engine.project_context import get_project_root
 
 from .inspector_components import _record_property, register_py_component_renderer
+from InfEngine.engine.i18n import t
 from .inspector_utils import field_label, max_label_w, render_compact_section_header, _render_color_bar, render_inspector_checkbox
 from .theme import Theme
 
@@ -46,7 +47,7 @@ def _get_project_font_options():
         return _font_cache
 
     root = get_project_root()
-    options = [("Default", "")]
+    options = [(t("ui_comp.default_font"), "")]
     if not root or not os.path.isdir(root):
         _font_cache = options
         _font_cache_time = now
@@ -238,24 +239,24 @@ def _align_component(comp, axis: str, mode: str):
 
 
 def _render_common_position(ctx, comp):
-    if not render_compact_section_header(ctx, "Location", level="primary"):
+    if not render_compact_section_header(ctx, t("ui_comp.location"), level="primary"):
         return
 
-    section_lw = max_label_w(ctx, ["Alignment", "Position", "Rotation"])
+    section_lw = max_label_w(ctx, [t("ui_comp.alignment"), t("ui_comp.position"), t("ui_comp.rotation")])
 
     # ── Alignment ──
-    if render_compact_section_header(ctx, "Alignment", level="secondary"):
-        field_label(ctx, "Alignment", section_lw)
+    if render_compact_section_header(ctx, t("ui_comp.alignment"), level="secondary"):
+        field_label(ctx, t("ui_comp.alignment"), section_lw)
         clicked = Theme.render_inline_button_row(
             ctx,
             "ui_align_row",
             [
-                ("left", "Left"),
-                ("center_x", "CX"),
-                ("right", "Right"),
-                ("top", "Top"),
-                ("middle", "Mid"),
-                ("bottom", "Bot"),
+                ("left", t("ui_comp.align_left")),
+                ("center_x", t("ui_comp.align_cx")),
+                ("right", t("ui_comp.align_right")),
+                ("top", t("ui_comp.align_top")),
+                ("middle", t("ui_comp.align_mid")),
+                ("bottom", t("ui_comp.align_bot")),
             ],
         )
         if clicked == "left":
@@ -272,10 +273,10 @@ def _render_common_position(ctx, comp):
             _align_component(comp, "y", "bottom")
 
     # ── Position (shows visual AABB position) ──
-    if render_compact_section_header(ctx, "Position", level="secondary"):
+    if render_compact_section_header(ctx, t("ui_comp.position"), level="secondary"):
         canvas, cw, ch = _canvas_dims(comp)
         if canvas is None:
-            ctx.label("No canvas context")
+            ctx.label(t("ui_comp.no_canvas_context"))
         else:
             vis_x, vis_y, vis_w, vis_h = comp.get_visual_rect(cw, ch)
             new_x, new_y = ctx.vector2("Position", float(vis_x), float(vis_y), 1.0, section_lw)
@@ -283,8 +284,8 @@ def _render_common_position(ctx, comp):
                 _apply_visual_position(comp, float(new_x), float(new_y), canvas)
 
     # ── Rotation ──
-    if render_compact_section_header(ctx, "Rotation", level="secondary"):
-        field_label(ctx, "Rotation", section_lw)
+    if render_compact_section_header(ctx, t("ui_comp.rotation"), level="secondary"):
+        field_label(ctx, t("ui_comp.rotation"), section_lw)
         new_rot = ctx.drag_float("##ui_rotation", float(comp.rotation), 1.0, -3600.0, 3600.0)
         if float(new_rot) != float(comp.rotation):
             _apply_if_changed(comp, "rotation", comp.rotation, float(new_rot))
@@ -293,9 +294,9 @@ def _render_common_position(ctx, comp):
             ctx,
             "ui_rotation_row",
             [
-                ("rotate_90", "+90"),
-                ("mirror_x", "Mirror H"),
-                ("mirror_y", "Mirror V"),
+                ("rotate_90", t("ui_comp.rotate_90")),
+                ("mirror_x", t("ui_comp.mirror_h")),
+                ("mirror_y", t("ui_comp.mirror_v")),
             ],
             active_items=[
                 item_id for item_id, enabled in (
@@ -352,26 +353,26 @@ def _set_text_resize_mode(ctx, text_comp: UIText, mode: TextResizeMode):
 
 
 def _render_common_layout(ctx, comp):
-    if not render_compact_section_header(ctx, "Layout", level="primary"):
+    if not render_compact_section_header(ctx, t("ui_comp.layout"), level="primary"):
         return
 
-    labels = ["Dimensions", "Size", "Modify"]
+    labels = [t("ui_comp.dimensions"), t("ui_comp.size"), t("ui_comp.modify")]
     if isinstance(comp, UIText):
-        labels.append("Resizing")
+        labels.append(t("ui_comp.resizing"))
     section_lw = max_label_w(ctx, labels)
 
     if isinstance(comp, UIText):
         _sync_text_layout_from_ctx(ctx, comp)
 
-    if render_compact_section_header(ctx, "Dimensions", level="secondary"):
-        field_label(ctx, "Modify", section_lw)
+    if render_compact_section_header(ctx, t("ui_comp.dimensions"), level="secondary"):
+        field_label(ctx, t("ui_comp.modify"), section_lw)
 
         # Build button list: Lock is always present;
         # Set Native Size appears for UIImage / UIButton with texture_path.
-        modify_buttons = [("lock", "Lock")]
+        modify_buttons = [("lock", t("ui_comp.lock"))]
         has_texture = bool(getattr(comp, "texture_path", "") or "")
         if has_texture:
-            modify_buttons.append(("native_size", "Set Native Size"))
+            modify_buttons.append(("native_size", t("ui_comp.set_native_size")))
 
         clicked = Theme.render_inline_button_row(
             ctx,
@@ -387,7 +388,7 @@ def _render_common_layout(ctx, comp):
         elif clicked == "native_size" and has_texture:
             _set_native_size(comp)
 
-        field_label(ctx, "Size", section_lw)
+        field_label(ctx, t("ui_comp.size"), section_lw)
         size_x, size_y = ctx.vector2("Size", float(comp.width), float(comp.height), 1.0, section_lw)
         width_changed = float(size_x) != float(comp.width)
         height_changed = float(size_y) != float(comp.height)
@@ -433,8 +434,8 @@ def _render_common_layout(ctx, comp):
             else:
                 _apply_size_preserve_top_left(comp, float(comp.width), target_h, canvas)
 
-    if isinstance(comp, UIText) and render_compact_section_header(ctx, "Resizing", level="secondary"):
-        field_label(ctx, "Resizing", section_lw)
+    if isinstance(comp, UIText) and render_compact_section_header(ctx, t("ui_comp.resizing"), level="secondary"):
+        field_label(ctx, t("ui_comp.resizing"), section_lw)
         active = {
             TextResizeMode.AutoWidth: "auto_width",
             TextResizeMode.AutoHeight: "auto_height",
@@ -444,9 +445,9 @@ def _render_common_layout(ctx, comp):
             ctx,
             "ui_text_resizing_row",
             [
-                ("auto_width", "Auto Width"),
-                ("auto_height", "Auto Height"),
-                ("fixed_size", "Fixed Size"),
+                ("auto_width", t("ui_comp.auto_width")),
+                ("auto_height", t("ui_comp.auto_height")),
+                ("fixed_size", t("ui_comp.fixed_size")),
             ],
             active_items=[active],
         )
@@ -459,19 +460,19 @@ def _render_common_layout(ctx, comp):
 
 
 def _render_common_appearance(ctx, comp):
-    if not render_compact_section_header(ctx, "Appearance", level="primary"):
+    if not render_compact_section_header(ctx, t("ui_comp.appearance"), level="primary"):
         return
 
-    section_lw = max_label_w(ctx, ["Opacity", "Corner Radius"])
+    section_lw = max_label_w(ctx, [t("ui_comp.opacity"), t("ui_comp.corner_radius")])
 
-    field_label(ctx, "Opacity", section_lw)
+    field_label(ctx, t("ui_comp.opacity"), section_lw)
     opacity_pct = max(0.0, min(100.0, float(getattr(comp, "opacity", 1.0)) * 100.0))
     new_opacity_pct = ctx.drag_float("##ui_opacity_pct", opacity_pct, 1.0, 0.0, 100.0)
     new_opacity = max(0.0, min(1.0, float(new_opacity_pct) / 100.0))
     if not math.isclose(new_opacity, float(getattr(comp, "opacity", 1.0)), rel_tol=1e-5, abs_tol=1e-6):
         _apply_if_changed(comp, "opacity", comp.opacity, new_opacity)
 
-    field_label(ctx, "Corner Radius", section_lw)
+    field_label(ctx, t("ui_comp.corner_radius"), section_lw)
     is_text = isinstance(comp, UIText)
     if is_text and abs(float(getattr(comp, "corner_radius", 0.0))) > 1e-6:
         _apply_if_changed(comp, "corner_radius", comp.corner_radius, 0.0)
@@ -495,21 +496,19 @@ def _render_common_appearance(ctx, comp):
 
 def _render_text_typography(ctx, text_comp: UIText):
     IGUI = _igui()
-    if not render_compact_section_header(ctx, "Typography", level="primary"):
+    if not render_compact_section_header(ctx, t("ui_comp.typography"), level="primary"):
         return
 
-    section_lw = max_label_w(ctx, ["Content", "Font", "Font Size", "Line Height", "Letter Spacing", "Text Alignment"])
+    section_lw = max_label_w(ctx, [t("ui_comp.content"), t("ui_comp.font"), t("ui_comp.font_size"), t("ui_comp.line_height"), t("ui_comp.letter_spacing"), t("ui_comp.text_alignment")])
 
-    field_label(ctx, "Content", section_lw)
+    field_label(ctx, t("ui_comp.content"), section_lw)
     current_text = str(getattr(text_comp, "text", "") or "")
     new_text = ctx.input_text_multiline("##ui_text_content", current_text, 16384, -1.0, 96.0, 0)
     if new_text != current_text:
         _apply_if_changed(text_comp, "text", current_text, new_text)
         _sync_text_layout_from_ctx(ctx, text_comp)
 
-    field_label(ctx, "Font", section_lw)
-    font_path = str(getattr(text_comp, "font_path", "") or "")
-    font_options = _get_project_font_options()
+    field_label(ctx, t("ui_comp.font"), section_lw)
     font_values = [value for _, value in font_options]
     font_labels = [label for label, _ in font_options]
     if font_path not in font_values and font_path:
@@ -525,29 +524,26 @@ def _render_text_typography(ctx, text_comp: UIText):
         _apply_if_changed(text_comp, "font_path", font_path, new_font_path)
         _sync_text_layout_from_ctx(ctx, text_comp)
 
-    field_label(ctx, "Font Size", section_lw)
-    new_font_size = ctx.drag_float("##ui_text_font_size", float(text_comp.font_size), 0.5, 4.0, 1000000.0)
+    field_label(ctx, t("ui_comp.font_size"), section_lw)
     target_font_size = max(4.0, min(1000000.0, float(new_font_size)))
     if not math.isclose(target_font_size, float(text_comp.font_size), rel_tol=1e-5, abs_tol=1e-6):
         _apply_if_changed(text_comp, "font_size", text_comp.font_size, target_font_size)
         _sync_text_layout_from_ctx(ctx, text_comp)
 
-    field_label(ctx, "Line Height", section_lw)
-    new_line_height = ctx.drag_float("##ui_text_line_height", float(text_comp.line_height), 0.01, 0.5, 5.0)
+    field_label(ctx, t("ui_comp.line_height"), section_lw)
     target_line_height = max(0.5, min(5.0, float(new_line_height)))
     if not math.isclose(target_line_height, float(text_comp.line_height), rel_tol=1e-5, abs_tol=1e-6):
         _apply_if_changed(text_comp, "line_height", text_comp.line_height, target_line_height)
         _sync_text_layout_from_ctx(ctx, text_comp)
 
-    field_label(ctx, "Letter Spacing", section_lw)
-    new_letter_spacing = ctx.drag_float("##ui_text_letter_spacing", float(text_comp.letter_spacing), 0.1, -20.0, 100.0)
+    field_label(ctx, t("ui_comp.letter_spacing"), section_lw)
     target_letter_spacing = max(-20.0, min(100.0, float(new_letter_spacing)))
     if not math.isclose(target_letter_spacing, float(text_comp.letter_spacing), rel_tol=1e-5, abs_tol=1e-6):
         _apply_if_changed(text_comp, "letter_spacing", text_comp.letter_spacing, target_letter_spacing)
         _sync_text_layout_from_ctx(ctx, text_comp)
 
-    if render_compact_section_header(ctx, "Text Alignment", level="secondary"):
-        field_label(ctx, "Text Alignment", section_lw)
+    if render_compact_section_header(ctx, t("ui_comp.text_alignment"), level="secondary"):
+        field_label(ctx, t("ui_comp.text_alignment"), section_lw)
         active_items = []
         horiz = getattr(text_comp, "text_align_h", TextAlignH.Left)
         vert = getattr(text_comp, "text_align_v", TextAlignV.Top)
@@ -566,12 +562,12 @@ def _render_text_typography(ctx, text_comp: UIText):
             ctx,
             "ui_text_alignment_row",
             [
-                ("text_left", "Left"),
-                ("text_center_h", "Center"),
-                ("text_right", "Right"),
-                ("text_top", "Top"),
-                ("text_center_v", "Middle"),
-                ("text_bottom", "Bottom"),
+                ("text_left", t("ui_comp.text_left")),
+                ("text_center_h", t("ui_comp.text_center")),
+                ("text_right", t("ui_comp.text_right")),
+                ("text_top", t("ui_comp.text_top")),
+                ("text_center_v", t("ui_comp.text_middle")),
+                ("text_bottom", t("ui_comp.text_bottom")),
             ],
             active_items=active_items,
         )
@@ -590,15 +586,15 @@ def _render_text_typography(ctx, text_comp: UIText):
 
 
 def _render_text_fill(ctx, text_comp: UIText):
-    if not render_compact_section_header(ctx, "Fill", level="primary"):
+    if not render_compact_section_header(ctx, t("ui_comp.fill"), level="primary"):
         return
 
-    section_lw = max_label_w(ctx, ["Color"])
+    section_lw = max_label_w(ctx, [t("ui_comp.color")])
     current = getattr(text_comp, "color", [1.0, 1.0, 1.0, 1.0]) or [1.0, 1.0, 1.0, 1.0]
     while len(current) < 4:
         current = list(current) + [1.0]
 
-    field_label(ctx, "Color", section_lw)
+    field_label(ctx, t("ui_comp.color"), section_lw)
     nr, ng, nb, na = _render_color_bar(ctx, "##ui_text_fill_color", current[0], current[1], current[2], current[3])
     new_color = [nr, ng, nb, na]
     if tuple(new_color) != tuple(current[:4]):
@@ -606,25 +602,25 @@ def _render_text_fill(ctx, text_comp: UIText):
 
 
 def _render_canvas_inspector(ctx, canvas: UICanvas):
-    lw = max_label_w(ctx, ["Render Mode", "Sort Order", "Target Camera", "Reference Size"])
-    if render_compact_section_header(ctx, "Canvas", level="secondary"):
+    lw = max_label_w(ctx, [t("ui_comp.render_mode"), t("ui_comp.sort_order"), t("ui_comp.target_camera"), t("ui_comp.reference_size")])
+    if render_compact_section_header(ctx, t("ui_comp.canvas"), level="secondary"):
         members = list(RenderMode)
         labels = [member.name for member in members]
         try:
             current_idx = members.index(canvas.render_mode)
         except ValueError:
             current_idx = 0
-        field_label(ctx, "Render Mode", lw)
+        field_label(ctx, t("ui_comp.render_mode"), lw)
         new_idx = ctx.combo("##canvas_render_mode", current_idx, labels, -1)
         new_render_mode = members[new_idx]
         _apply_if_changed(canvas, "render_mode", canvas.render_mode, new_render_mode)
 
-        field_label(ctx, "Sort Order", lw)
+        field_label(ctx, t("ui_comp.sort_order"), lw)
         new_sort_order = int(ctx.drag_int("##canvas_sort_order", int(canvas.sort_order), 1.0, -1000, 1000))
         _apply_if_changed(canvas, "sort_order", canvas.sort_order, new_sort_order)
 
         if canvas.render_mode == RenderMode.CameraOverlay:
-            field_label(ctx, "Target Camera", lw)
+            field_label(ctx, t("ui_comp.target_camera"), lw)
             new_target_camera = int(ctx.drag_int("##canvas_target_camera", int(canvas.target_camera_id), 1.0, -1, 1000000))
             _apply_if_changed(canvas, "target_camera_id", canvas.target_camera_id, new_target_camera)
 
@@ -646,15 +642,15 @@ def _render_text_inspector(ctx, text_comp: UIText):
 # ========================================================================
 
 def _render_image_fill(ctx, img_comp: UIImage):
-    if not render_compact_section_header(ctx, "Fill", level="primary"):
+    if not render_compact_section_header(ctx, t("ui_comp.fill"), level="primary"):
         return
 
-    section_lw = max_label_w(ctx, ["Texture", "Color"])
+    section_lw = max_label_w(ctx, [t("ui_comp.texture"), t("ui_comp.color")])
 
     # ── Texture field with IGUI object field + picker ──
-    field_label(ctx, "Texture", section_lw)
+    field_label(ctx, t("ui_comp.texture"), section_lw)
     tex_path = str(getattr(img_comp, "texture_path", "") or "")
-    display = os.path.basename(tex_path) if tex_path else "None"
+    display = os.path.basename(tex_path) if tex_path else t("igui.none")
     IGUI = _igui()
     from .inspector_components import _picker_assets
 
@@ -691,7 +687,7 @@ def _render_image_fill(ctx, img_comp: UIImage):
     current = getattr(img_comp, "color", [1.0, 1.0, 1.0, 1.0]) or [1.0, 1.0, 1.0, 1.0]
     while len(current) < 4:
         current = list(current) + [1.0]
-    field_label(ctx, "Color", section_lw)
+    field_label(ctx, t("ui_comp.color"), section_lw)
     nr, ng, nb, na = _render_color_bar(ctx, "##ui_image_fill_color", current[0], current[1], current[2], current[3])
     new_color = [nr, ng, nb, na]
     if tuple(new_color) != tuple(current[:4]):
@@ -719,22 +715,22 @@ def _render_button_inspector(ctx, btn_comp: UIButton):
     _render_common_appearance(ctx, btn_comp)
 
     # ── 交互 Interaction ──
-    if render_compact_section_header(ctx, "Interaction", level="primary"):
-        new_inter = render_inspector_checkbox(ctx, "Interactable", btn_comp.interactable)
+    if render_compact_section_header(ctx, t("ui_comp.interaction"), level="primary"):
+        new_inter = render_inspector_checkbox(ctx, t("ui_comp.interactable"), btn_comp.interactable)
         _apply_if_changed(btn_comp, "interactable", btn_comp.interactable, new_inter)
 
-        new_rc = render_inspector_checkbox(ctx, "Raycast Target", btn_comp.raycast_target)
+        new_rc = render_inspector_checkbox(ctx, t("ui_comp.raycast_target"), btn_comp.raycast_target)
         _apply_if_changed(btn_comp, "raycast_target", btn_comp.raycast_target, new_rc)
 
     # ── 内容 Content ──
-    if render_compact_section_header(ctx, "Content", level="primary"):
-        lw = max_label_w(ctx, ["Label", "Font", "Font Size", "Label Color",
-                                "Line Height", "Letter Spacing"])
-        field_label(ctx, "Label", lw)
+    if render_compact_section_header(ctx, t("ui_comp.content"), level="primary"):
+        lw = max_label_w(ctx, [t("ui_comp.label"), t("ui_comp.font"), t("ui_comp.font_size"), t("ui_comp.label_color"),
+                                t("ui_comp.line_height"), t("ui_comp.letter_spacing")])
+        field_label(ctx, t("ui_comp.label"), lw)
         new_label = ctx.text_input("##btn_label", str(btn_comp.label or ""), 256)
         _apply_if_changed(btn_comp, "label", btn_comp.label, new_label)
 
-        field_label(ctx, "Font", lw)
+        field_label(ctx, t("ui_comp.font"), lw)
         font_path = str(getattr(btn_comp, "font_path", "") or "")
         font_options = _get_project_font_options()
         font_values = [value for _, value in font_options]
@@ -751,11 +747,11 @@ def _render_button_inspector(ctx, btn_comp: UIButton):
         if new_font_path != font_path:
             _apply_if_changed(btn_comp, "font_path", font_path, new_font_path)
 
-        field_label(ctx, "Font Size", lw)
+        field_label(ctx, t("ui_comp.font_size"), lw)
         new_fs = ctx.drag_float("##btn_font_size", btn_comp.font_size, 0.5, 4.0, 256.0)
         _apply_if_changed(btn_comp, "font_size", btn_comp.font_size, new_fs)
 
-        field_label(ctx, "Label Color", lw)
+        field_label(ctx, t("ui_comp.label_color"), lw)
         cur_lc = list(btn_comp.label_color or [1, 1, 1, 1])
         while len(cur_lc) < 4:
             cur_lc.append(1.0)
@@ -764,21 +760,19 @@ def _render_button_inspector(ctx, btn_comp: UIButton):
         if tuple(new_lc) != tuple(cur_lc[:4]):
             _apply_if_changed(btn_comp, "label_color", cur_lc[:4], new_lc)
 
-        field_label(ctx, "Line Height", lw)
-        new_lh = ctx.drag_float("##btn_line_height", float(btn_comp.line_height), 0.01, 0.5, 5.0)
+        field_label(ctx, t("ui_comp.line_height"), lw)
         target_lh = max(0.5, min(5.0, float(new_lh)))
         if not math.isclose(target_lh, float(btn_comp.line_height), rel_tol=1e-5, abs_tol=1e-6):
             _apply_if_changed(btn_comp, "line_height", btn_comp.line_height, target_lh)
 
-        field_label(ctx, "Letter Spacing", lw)
-        new_ls = ctx.drag_float("##btn_letter_spacing", float(btn_comp.letter_spacing), 0.1, -20.0, 100.0)
+        field_label(ctx, t("ui_comp.letter_spacing"), lw)
         target_ls = max(-20.0, min(100.0, float(new_ls)))
         if not math.isclose(target_ls, float(btn_comp.letter_spacing), rel_tol=1e-5, abs_tol=1e-6):
             _apply_if_changed(btn_comp, "letter_spacing", btn_comp.letter_spacing, target_ls)
 
         # Text alignment buttons
-        if render_compact_section_header(ctx, "Text Alignment", level="secondary"):
-            field_label(ctx, "Text Alignment", lw)
+        if render_compact_section_header(ctx, t("ui_comp.text_alignment"), level="secondary"):
+            field_label(ctx, t("ui_comp.text_alignment"), lw)
             active_items = []
             horiz = getattr(btn_comp, "text_align_h", TextAlignH.Center)
             vert = getattr(btn_comp, "text_align_v", TextAlignV.Center)
@@ -797,12 +791,12 @@ def _render_button_inspector(ctx, btn_comp: UIButton):
                 ctx,
                 "btn_text_alignment_row",
                 [
-                    ("text_left", "Left"),
-                    ("text_center_h", "Center"),
-                    ("text_right", "Right"),
-                    ("text_top", "Top"),
-                    ("text_center_v", "Middle"),
-                    ("text_bottom", "Bottom"),
+                    ("text_left", t("ui_comp.text_left")),
+                    ("text_center_h", t("ui_comp.text_center")),
+                    ("text_right", t("ui_comp.text_right")),
+                    ("text_top", t("ui_comp.text_top")),
+                    ("text_center_v", t("ui_comp.text_middle")),
+                    ("text_bottom", t("ui_comp.text_bottom")),
                 ],
                 active_items=active_items,
             )
@@ -820,13 +814,13 @@ def _render_button_inspector(ctx, btn_comp: UIButton):
                 _apply_if_changed(btn_comp, "text_align_v", btn_comp.text_align_v, TextAlignV.Bottom)
 
     # ── 填充 Fill ──
-    if render_compact_section_header(ctx, "Fill", level="primary"):
-        lw = max_label_w(ctx, ["Texture", "Background"])
+    if render_compact_section_header(ctx, t("ui_comp.fill"), level="primary"):
+        lw = max_label_w(ctx, [t("ui_comp.texture"), t("ui_comp.background")])
 
         # Texture field with IGUI object field + picker
-        field_label(ctx, "Texture", lw)
+        field_label(ctx, t("ui_comp.texture"), lw)
         tex_path = str(getattr(btn_comp, "texture_path", "") or "")
-        display = os.path.basename(tex_path) if tex_path else "None"
+        display = os.path.basename(tex_path) if tex_path else t("igui.none")
         IGUI = _igui()
         from .inspector_components import _picker_assets
 
@@ -859,7 +853,7 @@ def _render_button_inspector(ctx, btn_comp: UIButton):
             on_clear=_on_tex_clear,
         )
 
-        field_label(ctx, "Background", lw)
+        field_label(ctx, t("ui_comp.background"), lw)
         cur_bg = list(btn_comp.background_color or list(Theme.UI_DEFAULT_BUTTON_BG))
         while len(cur_bg) < 4:
             cur_bg.append(1.0)
@@ -869,13 +863,13 @@ def _render_button_inspector(ctx, btn_comp: UIButton):
             _apply_if_changed(btn_comp, "background_color", cur_bg[:4], new_bg)
 
     # ── 色调 ColorTint ──
-    if render_compact_section_header(ctx, "ColorTint", level="secondary"):
-        lw = max_label_w(ctx, ["Normal", "Highlighted", "Pressed", "Disabled"])
+    if render_compact_section_header(ctx, t("ui_comp.color_tint"), level="secondary"):
+        lw = max_label_w(ctx, [t("ui_comp.tint_normal"), t("ui_comp.tint_highlighted"), t("ui_comp.tint_pressed"), t("ui_comp.tint_disabled")])
         for label_str, field_name in [
-            ("Normal", "normal_color"),
-            ("Highlighted", "highlighted_color"),
-            ("Pressed", "pressed_color"),
-            ("Disabled", "disabled_color"),
+            (t("ui_comp.tint_normal"), "normal_color"),
+            (t("ui_comp.tint_highlighted"), "highlighted_color"),
+            (t("ui_comp.tint_pressed"), "pressed_color"),
+            (t("ui_comp.tint_disabled"), "disabled_color"),
         ]:
             field_label(ctx, label_str, lw)
             cur = list(getattr(btn_comp, field_name) or [1, 1, 1, 1])
@@ -925,7 +919,7 @@ def _render_on_click_events(ctx, btn_comp):
         _apply_if_changed(btn_comp, "on_click_entries", entries, new_entries)
 
     header_open = IGUI.list_header(
-        ctx, "On Click", len(entries),
+        ctx, t("ui_comp.on_click"), len(entries),
         on_add=_on_add,
         level="primary",
     )
@@ -935,14 +929,14 @@ def _render_on_click_events(ctx, btn_comp):
     _BTN_W = 24.0
     remove_index = None
     changed = False
-    lw = max_label_w(ctx, ["Target", "Component", "Method", "Arguments"])
+    lw = max_label_w(ctx, [t("ui_comp.target"), t("ui_comp.component"), t("ui_comp.method"), t("ui_comp.arguments")])
 
     for i, entry in enumerate(entries):
         ctx.push_id(i)
 
         # Collapsible per-entry header with right-aligned [-]
         entry_open = render_compact_section_header(
-            ctx, f"Click {i + 1}", level="tertiary", allow_overlap=True,
+            ctx, t("ui_comp.click_entry").format(n=i + 1), level="tertiary", allow_overlap=True,
         )
 
         # Right-aligned remove button on the header row
@@ -960,7 +954,7 @@ def _render_on_click_events(ctx, btn_comp):
             # ── Target GameObject ──
             target_ref = getattr(entry, "target", None)
             resolved_go = target_ref.resolve() if target_ref and hasattr(target_ref, "resolve") else None
-            display = resolved_go.name if resolved_go else "None"
+            display = resolved_go.name if resolved_go else t("igui.none")
 
             def _make_drop_cb(_idx=i):
                 def _on_drop(payload):
@@ -999,7 +993,7 @@ def _render_on_click_events(ctx, btn_comp):
                     _apply_if_changed(btn_comp, "on_click_entries", entries, new_entries)
                 return _on_clear
 
-            field_label(ctx, "Target", lw)
+            field_label(ctx, t("ui_comp.target"), lw)
             render_object_field(
                 ctx, f"onclick_target_{i}", display, "GameObject",
                 clickable=False,
@@ -1019,15 +1013,14 @@ def _render_on_click_events(ctx, btn_comp):
                         comp_names.append(cname)
 
             cur_comp_name = getattr(entry, "component_name", "") or ""
-            comp_labels = ["(None)"] + comp_names
+            comp_labels = [t("ui_comp.none")] + comp_names
             comp_values = [""] + comp_names
             try:
                 comp_idx = comp_values.index(cur_comp_name)
             except ValueError:
                 comp_idx = 0
 
-            field_label(ctx, "Component", lw)
-            new_comp_idx = IGUI.searchable_combo(ctx, f"onclick_comp_{i}", comp_idx, comp_labels)
+            field_label(ctx, t("ui_comp.component"), lw)
             new_comp_name = comp_values[new_comp_idx] if 0 <= new_comp_idx < len(comp_values) else cur_comp_name
             if new_comp_name != cur_comp_name:
                 new_entries = _clone_entries(entries)
@@ -1049,15 +1042,14 @@ def _render_on_click_events(ctx, btn_comp):
                         break
 
             cur_method = getattr(entry, "method_name", "") or ""
-            method_labels = ["(None)"] + method_names
+            method_labels = [t("ui_comp.none")] + method_names
             method_values = [""] + method_names
             try:
                 method_idx = method_values.index(cur_method)
             except ValueError:
                 method_idx = 0
 
-            field_label(ctx, "Method", lw)
-            new_method_idx = IGUI.searchable_combo(ctx, f"onclick_method_{i}", method_idx, method_labels)
+            field_label(ctx, t("ui_comp.method"), lw)
             new_method = method_values[new_method_idx] if 0 <= new_method_idx < len(method_values) else cur_method
             if new_method != cur_method:
                 new_entries = _clone_entries(entries)
@@ -1087,9 +1079,9 @@ def _render_on_click_events(ctx, btn_comp):
                     current_args = normalized_args
 
                 if specs:
-                    if render_compact_section_header(ctx, "Arguments", level="secondary"):
-                        field_label(ctx, "Arguments", lw)
-                        ctx.label(f"{len(specs)} parameter(s)")
+                    if render_compact_section_header(ctx, t("ui_comp.arguments"), level="secondary"):
+                        field_label(ctx, t("ui_comp.arguments"), lw)
+                        ctx.label(t("ui_comp.params_count").format(n=len(specs)))
                         for arg_index, spec in enumerate(specs):
                             arg = current_args[arg_index]
                             ctx.push_id(arg_index)
@@ -1128,7 +1120,7 @@ def _render_on_click_events(ctx, btn_comp):
                             elif kind == "game_object":
                                 target_ref = getattr(arg, "game_object", None)
                                 resolved_arg_go = target_ref.resolve() if target_ref and hasattr(target_ref, "resolve") else None
-                                display = resolved_arg_go.name if resolved_arg_go else "None"
+                                display = resolved_arg_go.name if resolved_arg_go else t("igui.none")
 
                                 def _make_arg_go_drop_cb(_entry_idx=i, _arg_idx=arg_index):
                                     def _on_drop(payload):
@@ -1173,7 +1165,7 @@ def _render_on_click_events(ctx, btn_comp):
                                 )
                             elif kind == "component":
                                 comp_ref = getattr(arg, "component", None)
-                                display = comp_ref.display_name if isinstance(comp_ref, ComponentRef) else "None"
+                                display = comp_ref.display_name if isinstance(comp_ref, ComponentRef) else t("igui.none")
                                 type_hint = spec.component_type or "Component"
 
                                 def _make_arg_comp_drop_cb(_entry_idx=i, _arg_idx=arg_index, _comp_type=spec.component_type):
@@ -1236,8 +1228,8 @@ def _render_on_click_events(ctx, btn_comp):
 
                             ctx.pop_id()
                 elif cur_method:
-                    field_label(ctx, "Arguments", lw)
-                    ctx.label("No parameters")
+                    field_label(ctx, t("ui_comp.arguments"), lw)
+                    ctx.label(t("ui_comp.no_parameters"))
 
         ctx.pop_id()
 

@@ -40,7 +40,7 @@ import json as _json
 import sys
 import warnings
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Set, Type, TYPE_CHECKING
+from typing import Dict, List, Optional, Set, TYPE_CHECKING
 
 from InfEngine.components.component import InfComponent
 from InfEngine.components.decorators import disallow_multiple, add_component_menu

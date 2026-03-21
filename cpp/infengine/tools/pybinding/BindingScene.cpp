@@ -1328,6 +1328,8 @@ void RegisterSceneBindings(py::module_ &m)
         .def("process_pending_destroys", &Scene::ProcessPendingDestroys, "Process pending GameObject destroys")
         .def("is_playing", &Scene::IsPlaying, "Check if the scene is in play mode")
         .def("start", &Scene::Start, "Trigger Awake+Start on all components (idempotent — skipped if already started)")
+        .def("awake_object", &Scene::AwakeObject, py::arg("game_object"),
+             "Re-run Awake+OnEnable on a GameObject and its descendants (used after undo deserialization)")
         .def("serialize", &Scene::Serialize, "Serialize scene to JSON string")
         .def("deserialize", &Scene::Deserialize, py::arg("json_str"), "Deserialize scene from JSON string")
         .def("save_to_file", &Scene::SaveToFile, py::arg("path"), "Save scene to a JSON file")

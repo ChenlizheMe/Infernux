@@ -14,9 +14,7 @@ Features:
 import ast
 import py_compile
 import os
-import sys
-import traceback
-from typing import Optional, List, Tuple
+from typing import Optional, List
 from dataclasses import dataclass
 
 from InfEngine.debug import Debug

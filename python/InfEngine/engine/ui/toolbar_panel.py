@@ -3,6 +3,7 @@
 from typing import Optional, TYPE_CHECKING
 from InfEngine.lib import InfGUIRenderable, InfGUIContext
 from InfEngine.engine.play_mode import PlayModeManager, PlayModeState
+from InfEngine.engine.i18n import t
 from .editor_panel import EditorPanel
 from .panel_registry import editor_panel
 from .theme import Theme, ImGuiCol, ImGuiStyleVar
@@ -12,12 +13,12 @@ def _noop():
     pass
 
 
-@editor_panel("工具栏 Toolbar", type_id="toolbar")
+@editor_panel("Toolbar", type_id="toolbar", title_key="panel.toolbar")
 class ToolbarPanel(EditorPanel):
     WINDOW_TYPE_ID = "toolbar"
-    WINDOW_DISPLAY_NAME = "工具栏 Toolbar"
+    WINDOW_DISPLAY_NAME = "Toolbar"
 
-    def __init__(self, title: str = "工具栏 Toolbar", engine=None,
+    def __init__(self, title: str = "Toolbar", engine=None,
                  play_mode_manager: Optional[PlayModeManager] = None):
         super().__init__(title, window_id="toolbar")
         self._engine = engine
@@ -72,7 +73,7 @@ class ToolbarPanel(EditorPanel):
                 Theme.push_flat_button_style(ctx, *Theme.PLAY_ACTIVE)
             else:
                 Theme.push_flat_button_style(ctx, *Theme.BTN_IDLE)
-            ctx.button("Stop" if is_playing else "Play", self._on_play)
+            ctx.button(t("toolbar.stop") if is_playing else t("toolbar.play"), self._on_play)
             ctx.pop_style_color(3)
 
             ctx.same_line(0, 2)
@@ -84,7 +85,7 @@ class ToolbarPanel(EditorPanel):
                 Theme.push_flat_button_style(ctx, *Theme.PAUSE_ACTIVE)
             else:
                 Theme.push_flat_button_style(ctx, *Theme.BTN_IDLE)
-            ctx.button("Resume" if is_paused else "Pause",
+            ctx.button(t("toolbar.resume") if is_paused else t("toolbar.pause"),
                        self._on_pause if is_playing else _noop)
             ctx.pop_style_color(3)
 
@@ -95,18 +96,18 @@ class ToolbarPanel(EditorPanel):
                 Theme.push_flat_button_style(ctx, *Theme.BTN_IDLE)
             else:
                 Theme.push_flat_button_style(ctx, *Theme.BTN_DISABLED)
-            ctx.button("Step", self._on_step if is_paused else _noop)
+            ctx.button(t("toolbar.step"), self._on_step if is_paused else _noop)
             ctx.pop_style_color(3)
 
             # Time label while playing
             if is_playing:
                 ctx.same_line(0, 8)
-                tag = "PAUSED" if is_paused else "PLAYING"
+                tag = t("toolbar.status_paused") if is_paused else t("toolbar.status_playing")
                 ctx.label(f"{tag}  {self._time_str()}")
 
             # --- Right dropdowns ---
             ctx.same_line(right_x)
-            self._ghost_btn(ctx, "Gizmos  v", "##giz")
+            self._ghost_btn(ctx, t("toolbar.gizmos"), "##giz")
             if ctx.begin_popup("##giz"):
                 Theme.push_popup_vars(ctx)  # 3 style vars
                 self._popup_gizmos(ctx)
@@ -114,7 +115,7 @@ class ToolbarPanel(EditorPanel):
                 ctx.end_popup()
 
             ctx.same_line(0, 4)
-            self._ghost_btn(ctx, "Camera  v", "##cam")
+            self._ghost_btn(ctx, t("toolbar.camera"), "##cam")
             if ctx.begin_popup("##cam"):
                 Theme.push_popup_vars(ctx)  # 3 style vars
                 self._popup_camera(ctx)
@@ -137,14 +138,14 @@ class ToolbarPanel(EditorPanel):
     # ---------- popup contents ----
     def _popup_gizmos(self, ctx: InfGUIContext):
         if not self._engine:
-            ctx.label("Engine not available")
+            ctx.label(t("toolbar.engine_not_available"))
             return
         ctx.dummy(200, 0)  # force minimum popup width
-        ctx.label("Gizmos")
+        ctx.label(t("toolbar.gizmos_header"))
         ctx.separator()
         ctx.dummy(0, 4)
         g = self._engine.is_show_grid()
-        ng = ctx.checkbox("Show Grid", g)
+        ng = ctx.checkbox(t("toolbar.show_grid"), g)
         if ng != g:
             self._engine.set_show_grid(ng)
         ctx.dummy(0, 4)
@@ -152,14 +153,14 @@ class ToolbarPanel(EditorPanel):
     def _popup_camera(self, ctx: InfGUIContext):
         cam = self._engine.editor_camera if self._engine else None
         if not cam:
-            ctx.label("Camera not available")
+            ctx.label(t("toolbar.camera_not_available"))
             return
         ctx.dummy(240, 0)  # force minimum popup width
-        ctx.label("Scene Camera")
+        ctx.label(t("toolbar.scene_camera"))
         ctx.separator()
         ctx.dummy(0, 4)
         fov = cam.fov
-        ctx.label("Field of View")
+        ctx.label(t("toolbar.field_of_view"))
         ctx.same_line(120)
         ctx.set_next_item_width(120)
         nf = ctx.float_slider("##fov", fov, 10.0, 120.0)

@@ -19,7 +19,6 @@ Usage::
 
 from __future__ import annotations
 
-import os
 from typing import Optional
 
 from InfEngine.lib import AudioClip as CppAudioClip

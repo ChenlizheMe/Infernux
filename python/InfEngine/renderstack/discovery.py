@@ -17,7 +17,7 @@ from __future__ import annotations
 import importlib.util
 import os
 import sys
-from typing import Dict, Optional, Set, Type
+from typing import Dict, Optional, Set
 
 
 _pipeline_cache: Optional[Dict[str, type]] = None

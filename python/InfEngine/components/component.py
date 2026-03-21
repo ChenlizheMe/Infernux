@@ -23,6 +23,8 @@ import copy
 import threading
 import weakref
 
+from InfEngine.lib import GameObject
+
 if TYPE_CHECKING:
     from InfEngine.lib import GameObject, Transform
     from InfEngine.coroutine import Coroutine
@@ -272,6 +274,26 @@ class InfComponent:
     # ========================================================================
     # Property Injection (set by the engine)
     # ========================================================================
+
+    @staticmethod
+    def _is_native_game_object_alive(game_object: Optional['GameObject']) -> bool:
+        """Return True when a native GameObject wrapper still points to live data."""
+        if game_object is None:
+            return False
+        try:
+            return isinstance(game_object, GameObject) and int(game_object.id) > 0
+        except Exception:
+            return False
+
+    @staticmethod
+    def _is_native_component_alive(component: Any) -> bool:
+        """Return True when a native Component wrapper still points to live data."""
+        if component is None:
+            return False
+        try:
+            return int(component.component_id) > 0
+        except Exception:
+            return False
     
     @property
     def game_object(self) -> Optional['GameObject']:
@@ -288,6 +310,9 @@ class InfComponent:
             if go is None:
                 self._invalidate_native_binding()
                 return None
+            if not self._is_native_game_object_alive(go):
+                self._invalidate_native_binding()
+                return None
             self._game_object = go
             self._game_object_ref = weakref.ref(go)
             return go
@@ -298,7 +323,13 @@ class InfComponent:
                 # GameObject was destroyed, mark component as invalid
                 self._game_object = None
                 return None
+            if not self._is_native_game_object_alive(go):
+                self._invalidate_native_binding()
+                return None
             return go
+        if self._game_object is not None and not self._is_native_game_object_alive(self._game_object):
+            self._invalidate_native_binding()
+            return None
         return self._game_object
     
     @property
@@ -500,8 +531,14 @@ class InfComponent:
         if cpp_component is None:
             return None
         try:
-            cpp_component.component_id
+            comp_id = int(cpp_component.component_id)
         except RuntimeError:
+            self._invalidate_native_binding()
+            return None
+        except Exception:
+            self._invalidate_native_binding()
+            return None
+        if comp_id <= 0:
             self._invalidate_native_binding()
             return None
         return cpp_component

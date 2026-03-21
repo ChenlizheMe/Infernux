@@ -1,0 +1,437 @@
+"""Tests for InfEngine.rendergraph.graph — RenderGraph, Format, TextureHandle (real C++ backend)."""
+
+from __future__ import annotations
+
+import pytest
+
+from InfEngine.lib import (
+    RenderGraphDescription, GraphPassDesc, GraphTextureDesc,
+    GraphPassActionType, VkFormat,
+)
+from InfEngine.rendergraph.graph import RenderGraph, Format, TextureHandle
+
+
+# ── Helpers ──
+
+def _make_graph():
+    graph = RenderGraph("TestGraph")
+    graph.create_texture("color", camera_target=True)
+    graph.create_texture("depth", format=Format.D32_SFLOAT)
+    return graph
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Format enum
+# ══════════════════════════════════════════════════════════════════════
+
+class TestFormat:
+    def test_color_formats(self):
+        assert Format.RGBA8_UNORM == 37
+        assert Format.RGBA16_SFLOAT == 97
+
+    def test_depth_formats(self):
+        assert Format.D32_SFLOAT.is_depth
+        assert Format.D24_UNORM_S8_UINT.is_depth
+        assert not Format.RGBA8_UNORM.is_depth
+
+
+# ══════════════════════════════════════════════════════════════════════
+# TextureHandle
+# ══════════════════════════════════════════════════════════════════════
+
+class TestTextureHandle:
+    def test_default_properties(self):
+        h = TextureHandle("color", Format.RGBA8_UNORM, is_camera_target=True)
+        assert h.name == "color"
+        assert h.is_camera_target
+        assert not h.is_depth
+
+    def test_depth_handle(self):
+        h = TextureHandle("depth", Format.D32_SFLOAT)
+        assert h.is_depth
+
+    def test_eq_by_name(self):
+        a = TextureHandle("x", Format.RGBA8_UNORM)
+        b = TextureHandle("x", Format.RGBA16_SFLOAT)
+        assert a == b
+
+    def test_hash_by_name(self):
+        a = TextureHandle("x", Format.RGBA8_UNORM)
+        b = TextureHandle("x", Format.RGBA16_SFLOAT)
+        assert hash(a) == hash(b)
+
+    def test_repr(self):
+        h = TextureHandle("color", Format.RGBA8_UNORM, is_camera_target=True)
+        r = repr(h)
+        assert "color" in r
+        assert "camera_target" in r
+
+
+# ══════════════════════════════════════════════════════════════════════
+# RenderPassBuilder
+# ══════════════════════════════════════════════════════════════════════
+
+class TestRenderPassBuilder:
+    def test_context_manager(self):
+        graph = _make_graph()
+        with graph.add_pass("Test") as p:
+            p.write_color("color")
+            p.draw_renderers()
+        assert p._action == "draw_renderers"
+
+    def test_draw_skybox(self):
+        graph = _make_graph()
+        with graph.add_pass("Sky") as p:
+            p.write_color("color")
+            p.draw_skybox()
+        assert p._action == "draw_skybox"
+
+    def test_draw_shadow_casters(self):
+        graph = _make_graph()
+        graph.create_texture("shadow", format=Format.D32_SFLOAT, size=(2048, 2048))
+        with graph.add_pass("Shadow") as p:
+            p.write_depth("shadow")
+            p.set_clear(depth=1.0)
+            p.draw_shadow_casters(light_index=0, shadow_type="hard")
+        assert p._action == "draw_shadow_casters"
+        assert p._light_index == 0
+
+    def test_fullscreen_quad_with_params(self):
+        graph = _make_graph()
+        graph.create_texture("fx", format=Format.RGBA16_SFLOAT)
+        with graph.add_pass("FX") as p:
+            p.set_texture("_Src", "color")
+            p.write_color("fx")
+            p.set_param("intensity", 0.5)
+            p.fullscreen_quad("my_shader")
+        assert p._action == "fullscreen_quad"
+        assert p._shader_name == "my_shader"
+        assert p._push_constants["intensity"] == 0.5
+
+    def test_draw_screen_ui_camera(self):
+        graph = _make_graph()
+        with graph.add_pass("UI") as p:
+            p.write_color("color")
+            p.draw_screen_ui(list="camera")
+        assert p._screen_ui_list == 0
+
+    def test_draw_screen_ui_overlay(self):
+        graph = _make_graph()
+        with graph.add_pass("UI") as p:
+            p.write_color("color")
+            p.draw_screen_ui(list="overlay")
+        assert p._screen_ui_list == 1
+
+    def test_draw_screen_ui_invalid_raises(self):
+        graph = _make_graph()
+        with graph.add_pass("UI") as p:
+            with pytest.raises(ValueError):
+                p.draw_screen_ui(list="nonsense")
+
+    def test_repr(self):
+        graph = _make_graph()
+        with graph.add_pass("Test") as p:
+            p.draw_renderers()
+        assert "Test" in repr(p)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# RenderGraph — texture management
+# ══════════════════════════════════════════════════════════════════════
+
+class TestGraphTextures:
+    def test_create_and_get(self):
+        g = RenderGraph("G")
+        h = g.create_texture("t", format=Format.RGBA8_UNORM)
+        assert g.get_texture("t") is h
+        assert g.texture_count == 1
+
+    def test_duplicate_name_raises(self):
+        g = _make_graph()
+        with pytest.raises(ValueError, match="already exists"):
+            g.create_texture("color")
+
+    def test_camera_target_depth_raises(self):
+        g = RenderGraph("G")
+        with pytest.raises(ValueError):
+            g.create_texture("d", format=Format.D32_SFLOAT, camera_target=True)
+
+    def test_size_and_divisor_mutually_exclusive(self):
+        g = RenderGraph("G")
+        with pytest.raises(ValueError):
+            g.create_texture("t", size=(100, 100), size_divisor=2)
+
+    def test_invalid_size_raises(self):
+        g = RenderGraph("G")
+        with pytest.raises(ValueError):
+            g.create_texture("t", size=(0, 100))
+
+    def test_divisor_one_raises(self):
+        g = RenderGraph("G")
+        with pytest.raises(ValueError):
+            g.create_texture("t", size_divisor=1)
+
+    def test_get_nonexistent_returns_none(self):
+        g = RenderGraph("G")
+        assert g.get_texture("nope") is None
+
+    def test_msaa_valid_values(self):
+        g = RenderGraph("G")
+        for v in (0, 1, 2, 4, 8):
+            g.set_msaa_samples(v)
+        with pytest.raises(ValueError):
+            g.set_msaa_samples(3)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# RenderGraph — pass management
+# ══════════════════════════════════════════════════════════════════════
+
+class TestPassManagement:
+    def test_remove_pass_returns_builder(self):
+        graph = _make_graph()
+        with graph.add_pass("A") as p:
+            p.write_color("color")
+            p.draw_renderers()
+        removed = graph.remove_pass("A")
+        assert removed is not None
+        assert removed._name == "A"
+        assert graph.pass_count == 0
+
+    def test_remove_nonexistent_returns_none(self):
+        graph = _make_graph()
+        assert graph.remove_pass("DoesNotExist") is None
+
+    def test_remove_clears_topology(self):
+        graph = _make_graph()
+        with graph.add_pass("A") as p:
+            p.write_color("color")
+            p.draw_renderers()
+        graph.remove_pass("A")
+        assert not any(label == "A" for _, label in graph.topology_sequence)
+
+    def test_append_pass_adds_to_end(self):
+        graph = _make_graph()
+        with graph.add_pass("A") as p:
+            p.write_color("color")
+            p.draw_renderers()
+        with graph.add_pass("B") as p:
+            p.write_color("color")
+            p.draw_renderers()
+        removed = graph.remove_pass("A")
+        graph.append_pass(removed)
+        names = [label for kind, label in graph.topology_sequence if kind == "pass"]
+        assert names == ["B", "A"]
+
+    def test_has_pass(self):
+        graph = _make_graph()
+        graph.add_pass("X")
+        assert graph.has_pass("X")
+        assert not graph.has_pass("Y")
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Injection point callbacks
+# ══════════════════════════════════════════════════════════════════════
+
+class TestInjectionPointCallback:
+    def test_callback_fires_for_explicit_ip(self):
+        graph = _make_graph()
+        fired = []
+        graph._injection_callback = lambda name: fired.append(name)
+        with graph.add_pass("Opaque") as p:
+            p.write_color("color")
+            p.draw_renderers()
+        graph.injection_point("after_opaque", resources={"color", "depth"})
+        assert "after_opaque" in fired
+
+    def test_callback_fires_for_screen_ui_section(self):
+        graph = _make_graph()
+        fired = []
+        graph._injection_callback = lambda name: fired.append(name)
+        with graph.add_pass("Opaque") as p:
+            p.write_color("color")
+            p.draw_renderers()
+        graph.screen_ui_section()
+        assert "before_post_process" in fired
+        assert "after_post_process" in fired
+
+    def test_auto_inject_does_not_fire_callback(self):
+        graph = _make_graph()
+        with graph.add_pass("Opaque") as p:
+            p.write_color("color")
+            p.draw_renderers()
+        fired = []
+        graph._injection_callback = lambda name: fired.append(name)
+        graph._injection_callback = None
+        graph.set_output("color")
+        graph.build()
+        assert "before_post_process" not in fired
+
+    def test_manual_inject_before_build(self):
+        graph = _make_graph()
+        with graph.add_pass("Opaque") as p:
+            p.write_color("color")
+            p.draw_renderers()
+        fired = []
+        graph._injection_callback = lambda name: fired.append(name)
+        if not graph.has_injection_point("before_post_process"):
+            graph.injection_point("before_post_process", resources={"color"})
+        if not graph.has_injection_point("after_post_process"):
+            graph.injection_point("after_post_process", resources={"color"})
+        assert "before_post_process" in fired
+        assert "after_post_process" in fired
+        graph._injection_callback = None
+        graph.set_output("color")
+        desc = graph.build()
+        ip_names = [ip.name for ip in graph.injection_points]
+        assert ip_names.count("before_post_process") == 1
+        assert ip_names.count("after_post_process") == 1
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Overlay reordering
+# ══════════════════════════════════════════════════════════════════════
+
+class TestOverlayReordering:
+    def test_overlay_moved_after_blit(self):
+        graph = _make_graph()
+        with graph.add_pass("Opaque") as p:
+            p.write_color("color")
+            p.draw_renderers()
+        with graph.add_pass("_ScreenUI_Overlay") as p:
+            p.write_color("color")
+            p.draw_screen_ui(list="overlay")
+        overlay = graph.remove_pass("_ScreenUI_Overlay")
+        assert overlay is not None
+        with graph.add_pass("_FinalCompositeBlit") as p:
+            p.set_texture("_SourceTex", "color")
+            p.write_color("color")
+            p.fullscreen_quad("fullscreen_blit")
+        graph.append_pass(overlay)
+        names = [label for kind, label in graph.topology_sequence if kind == "pass"]
+        assert names == ["Opaque", "_FinalCompositeBlit", "_ScreenUI_Overlay"]
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Build & validation
+# ══════════════════════════════════════════════════════════════════════
+
+class TestBuild:
+    def test_basic_build_succeeds(self):
+        graph = _make_graph()
+        with graph.add_pass("Opaque") as p:
+            p.write_color("color")
+            p.write_depth("depth")
+            p.draw_renderers()
+        graph.set_output("color")
+        desc = graph.build()
+        assert desc.name == "TestGraph"
+        assert desc.output_texture == "color"
+        assert graph.has_injection_point("before_post_process")
+        assert graph.has_injection_point("after_post_process")
+
+    def test_shadow_pass_preserves_light_index(self):
+        graph = _make_graph()
+        graph.create_texture("shadow_map", format=Format.D32_SFLOAT, size=(4096, 4096))
+        with graph.add_pass("ShadowCaster") as p:
+            p.write_depth("shadow_map")
+            p.set_clear(depth=1.0)
+            p.draw_shadow_casters(light_index=0, shadow_type="hard")
+        with graph.add_pass("Opaque") as p:
+            p.write_color("color")
+            p.write_depth("depth")
+            p.draw_renderers()
+        graph.set_output("color")
+        desc = graph.build()
+        shadow_pass = next(p for p in desc.passes if p.name == "ShadowCaster")
+        assert shadow_pass.light_index == 0
+        assert shadow_pass.shadow_type == "hard"
+
+    def test_fullscreen_quad_push_constants(self):
+        graph = _make_graph()
+        with graph.add_pass("Opaque") as p:
+            p.write_color("color")
+            p.draw_renderers()
+        graph.create_texture("_fx_out", format=Format.RGBA16_SFLOAT)
+        with graph.add_pass("FX") as p:
+            p.set_texture("_SourceTex", "color")
+            p.write_color("_fx_out")
+            p.set_param("intensity", 0.5)
+            p.set_param("threshold", 1.0)
+            p.fullscreen_quad("my_effect")
+        graph.set_output("_fx_out")
+        desc = graph.build()
+        fx_pass = next(p for p in desc.passes if p.name == "FX")
+        assert fx_pass.shader_name == "my_effect"
+        pc_dict = dict(fx_pass.push_constants)
+        assert pc_dict["intensity"] == 0.5
+        assert pc_dict["threshold"] == 1.0
+
+    def test_empty_graph_raises(self):
+        g = RenderGraph("Empty")
+        with pytest.raises(ValueError, match="no passes"):
+            g.build()
+
+    def test_output_unknown_raises(self):
+        graph = _make_graph()
+        with graph.add_pass("A") as p:
+            p.write_color("color")
+            p.draw_renderers()
+        with pytest.raises(ValueError, match="not found"):
+            graph.set_output("nope")
+
+    def test_auto_output_from_camera_target(self):
+        graph = _make_graph()
+        with graph.add_pass("A") as p:
+            p.write_color("color")
+            p.draw_renderers()
+        desc = graph.build()
+        assert desc.output_texture == "color"
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Validation error cases
+# ══════════════════════════════════════════════════════════════════════
+
+class TestValidation:
+    def test_shadow_caster_with_color_raises(self):
+        graph = _make_graph()
+        graph.create_texture("sm", format=Format.D32_SFLOAT, size=(1024, 1024))
+        with graph.add_pass("Bad") as p:
+            p.write_color("color")
+            p.write_depth("sm")
+            p.draw_shadow_casters()
+        graph.set_output("color")
+        with pytest.raises(ValueError, match="depth-only"):
+            graph.build()
+
+    def test_clear_depth_without_depth_output_raises(self):
+        graph = _make_graph()
+        with graph.add_pass("Bad") as p:
+            p.write_color("color")
+            p.set_clear(depth=1.0)
+            p.draw_renderers()
+        graph.set_output("color")
+        with pytest.raises(ValueError, match="clears depth"):
+            graph.build()
+
+    def test_read_unknown_texture_raises(self):
+        graph = _make_graph()
+        with graph.add_pass("Bad") as p:
+            p._reads.append("nonexistent")
+            p.write_color("color")
+            p.draw_renderers()
+        graph.set_output("color")
+        with pytest.raises(ValueError, match="unknown texture"):
+            graph.build()
+
+    def test_write_depth_on_color_texture_raises(self):
+        graph = _make_graph()
+        with graph.add_pass("Bad") as p:
+            p._write_depth = "color"
+            p.write_color("color")
+            p.draw_renderers()
+        graph.set_output("color")
+        with pytest.raises(ValueError, match="color texture"):
+            graph.build()

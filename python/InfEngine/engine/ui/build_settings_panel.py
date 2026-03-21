@@ -19,6 +19,7 @@ from typing import Dict, List, Optional
 
 from InfEngine.debug import Debug
 from InfEngine.engine.project_context import get_project_root
+from InfEngine.engine.i18n import t
 from .theme import Theme, ImGuiCol, ImGuiStyleVar
 
 
@@ -31,10 +32,7 @@ BUILD_SETTINGS_FILE = "BuildSettings.json"
 _VIDEO_EXTS = {".mp4", ".avi", ".mov", ".mkv", ".webm"}
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".tga"}
 
-_DISPLAY_MODES = [
-    "全屏无边框 Fullscreen Borderless",
-    "窗口模式 Windowed",
-]
+_DISPLAY_MODES_KEYS = ["build.fullscreen_borderless", "build.windowed"]
 _DISPLAY_MODE_KEYS = ["fullscreen_borderless", "windowed"]
 
 
@@ -76,7 +74,7 @@ def save_build_settings(settings: dict):
 DRAG_DROP_SCENE = "SCENE_FILE"
 DRAG_DROP_REORDER = "BUILD_REORDER"
 _DRAG_TARGET_COLOR = Theme.DRAG_DROP_TARGET
-_WIN_FLAGS = Theme.WINDOW_FLAGS_FLOATING
+_WIN_FLAGS = Theme.WINDOW_FLAGS_DIALOG
 
 
 class BuildSettingsPanel:
@@ -154,17 +152,14 @@ class BuildSettingsPanel:
         if not self._visible:
             return
 
-        if self._first_open:
-            x0, y0, dw, dh = ctx.get_main_viewport_bounds()
-            cx = x0 + (dw - 640) * 0.5
-            cy = y0 + (dh - 580) * 0.5
-            ctx.set_next_window_pos(cx, cy, Theme.COND_FIRST_USE_EVER, 0.0, 0.0)
-            self._first_open = False
-
-        ctx.set_next_window_size(640, 580, Theme.COND_FIRST_USE_EVER)
+        x0, y0, dw, dh = ctx.get_main_viewport_bounds()
+        cx = x0 + (dw - 980) * 0.5
+        cy = y0 + (dh - 720) * 0.5
+        ctx.set_next_window_pos(cx, cy, Theme.COND_ALWAYS, 0.0, 0.0)
+        ctx.set_next_window_size(980, 720, Theme.COND_ALWAYS)
 
         visible, still_open = ctx.begin_window_closable(
-            "构建设置 Build Settings", self._visible, _WIN_FLAGS
+            t("menu.build_settings") + "###build_settings", self._visible, _WIN_FLAGS
         )
 
         if not still_open:
@@ -204,13 +199,13 @@ class BuildSettingsPanel:
     # ------------------------------------------------------------------
 
     def _render_output_section(self, ctx):
-        ctx.label("输出目录 Output Directory")
+        ctx.label(t("build.output_directory"))
         new_val = ctx.text_input("##output_dir", self._output_dir, 512)
         if new_val != self._output_dir:
             self._output_dir = new_val
             self._save()
         ctx.same_line()
-        ctx.button("浏览...##browse_out", self._browse_output_dir, width=70)
+        ctx.button(t("build.browse") + "##browse_out", self._browse_output_dir, width=70)
 
     def _browse_output_dir(self):
         def _do():
@@ -236,20 +231,21 @@ class BuildSettingsPanel:
     # ------------------------------------------------------------------
 
     def _render_display_section(self, ctx):
-        ctx.label("显示模式 Display Mode")
-        new_idx = ctx.combo("##display_mode", self._display_mode_idx, _DISPLAY_MODES)
+        ctx.label(t("build.display_mode"))
+        display_modes = [t(k) for k in _DISPLAY_MODES_KEYS]
+        new_idx = ctx.combo("##display_mode", self._display_mode_idx, display_modes)
         if new_idx != self._display_mode_idx:
             self._display_mode_idx = new_idx
             self._save()
 
         if self._display_mode_idx == 1:  # Windowed
-            ctx.label("窗口大小 Window Size")
-            new_w = ctx.input_int("宽 W##win_w", self._window_width, 16, 160)
+            ctx.label(t("build.window_size"))
+            new_w = ctx.input_int(t("build.width") + "##win_w", self._window_width, 16, 160)
             if new_w != self._window_width:
                 self._window_width = max(320, min(7680, new_w))
                 self._save()
             ctx.same_line()
-            new_h = ctx.input_int("高 H##win_h", self._window_height, 16, 160)
+            new_h = ctx.input_int(t("build.height") + "##win_h", self._window_height, 16, 160)
             if new_h != self._window_height:
                 self._window_height = max(240, min(4320, new_h))
                 self._save()
@@ -261,8 +257,8 @@ class BuildSettingsPanel:
     # ------------------------------------------------------------------
 
     def _render_splash_section(self, ctx):
-        ctx.label("开场画面 Splash Sequence")
-        ctx.button("添加图片/视频 Add Image/Video##add_splash", self._browse_splash_file, width=200)
+        ctx.label(t("build.splash_sequence"))
+        ctx.button(t("build.add_splash") + "##add_splash", self._browse_splash_file, width=200)
 
         remove_idx: Optional[int] = None
 
@@ -282,20 +278,20 @@ class BuildSettingsPanel:
             if item_type == "image":
                 # Duration
                 ctx.same_line(280)
-                new_dur = ctx.input_float(f"时长##dur{i}", item.get("duration", 3.0), 0.1, 1.0)
+                new_dur = ctx.input_float(t("build.duration") + f"##dur{i}", item.get("duration", 3.0), 0.1, 1.0)
                 if new_dur != item.get("duration", 3.0):
                     item["duration"] = max(0.1, new_dur)
                     self._save()
 
             # Fade in/out
             ctx.same_line(420)
-            new_fi = ctx.input_float(f"入##fi{i}", item.get("fade_in", 0.5), 0.1, 0.5)
+            new_fi = ctx.input_float(t("build.fade_in") + f"##fi{i}", item.get("fade_in", 0.5), 0.1, 0.5)
             if new_fi != item.get("fade_in", 0.5):
                 item["fade_in"] = max(0.0, new_fi)
                 self._save()
 
             ctx.same_line(490)
-            new_fo = ctx.input_float(f"出##fo{i}", item.get("fade_out", 0.5), 0.1, 0.5)
+            new_fo = ctx.input_float(t("build.fade_out") + f"##fo{i}", item.get("fade_out", 0.5), 0.1, 0.5)
             if new_fo != item.get("fade_out", 0.5):
                 item["fade_out"] = max(0.0, new_fo)
                 self._save()
@@ -333,7 +329,7 @@ class BuildSettingsPanel:
             self._save()
 
         if not self._splash_items:
-            ctx.label("  (无开场画面 — No splash items)")
+            ctx.label("  " + t("build.no_splash_items"))
 
     def _browse_splash_file(self):
         def _do():
@@ -373,7 +369,7 @@ class BuildSettingsPanel:
     # ------------------------------------------------------------------
 
     def _render_scene_section(self, ctx):
-        ctx.label("Scenes in Build")
+        ctx.label(t("build.scenes_in_build"))
 
         def _add_current():
             from InfEngine.engine.scene_manager import SceneFileManager
@@ -381,7 +377,7 @@ class BuildSettingsPanel:
             if sfm and sfm.current_scene_path:
                 self._add_scene(sfm.current_scene_path)
 
-        ctx.button("  添加当前场景  Add Open Scene  ", _add_current)
+        ctx.button("  " + t("build.add_open_scene") + "  ", _add_current)
 
         remove_idx: Optional[int] = None
         swap_pair: Optional[tuple] = None
@@ -452,8 +448,8 @@ class BuildSettingsPanel:
 
         if not self._scenes:
             ctx.label("")
-            ctx.label("  (构建列表为空 — Build list is empty)")
-            ctx.label("  将场景从项目面板拖入此处。")
+            ctx.label("  " + t("build.list_empty"))
+            ctx.label("  " + t("build.drag_scenes_hint"))
 
     # ------------------------------------------------------------------
     # Build controls
@@ -461,17 +457,17 @@ class BuildSettingsPanel:
 
     def _render_build_controls(self, ctx):
         if self._building:
-            ctx.label(self._build_message or "Building...")
+            ctx.label(self._build_message or t("build.building"))
             ctx.progress_bar(self._build_progress, -1.0, 20.0, "")
         elif self._build_error:
             ctx.push_style_color(ImGuiCol.Text, 1.0, 0.3, 0.3, 1.0)
-            ctx.label(f"Build failed: {self._build_error}")
+            ctx.label(t("build.failed").format(err=self._build_error))
             ctx.pop_style_color(1)
             ctx.same_line()
             ctx.button("OK##dismiss_err", self._dismiss_build_error)
         elif self._build_output_dir:
             ctx.push_style_color(ImGuiCol.Text, 0.3, 1.0, 0.3, 1.0)
-            ctx.label(f"Build succeeded → {os.path.basename(self._build_output_dir)}/")
+            ctx.label(t("build.succeeded").format(path=os.path.basename(self._build_output_dir) + "/"))
             ctx.pop_style_color(1)
             ctx.same_line()
 
@@ -485,7 +481,7 @@ class BuildSettingsPanel:
                 else:
                     _sp.Popen(["xdg-open", self._build_output_dir])
 
-            ctx.button("打开文件夹 Open Folder", _open_folder)
+            ctx.button(t("build.open_folder"), _open_folder)
             ctx.same_line()
             ctx.button("OK##dismiss_ok", self._dismiss_build_result)
         else:
@@ -496,11 +492,11 @@ class BuildSettingsPanel:
                 ctx.push_style_color(ImGuiCol.ButtonHovered, 0.3, 0.3, 0.3, 1.0)
                 ctx.push_style_color(ImGuiCol.ButtonActive, 0.3, 0.3, 0.3, 1.0)
 
-            ctx.button("  构建 Build  ",
+            ctx.button("  " + t("build.build") + "  ",
                         self._start_build if can_build else lambda: None,
                         width=120, height=30)
             ctx.same_line(0, 12)
-            ctx.button("  构建并运行 Build And Run  ",
+            ctx.button("  " + t("build.build_and_run") + "  ",
                         self._start_build_and_run if can_build else lambda: None,
                         width=200, height=30)
 

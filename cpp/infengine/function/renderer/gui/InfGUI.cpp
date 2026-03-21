@@ -413,20 +413,24 @@ void InfGUI::BuildFrame()
                                        ImGuiDockNodeFlags_NoUndocking);
         }
 
-        // Dock windows to their positions (using Chinese+English titles from Python panels)
-        ImGui::DockBuilderDockWindow(u8"层级 Hierarchy", dockLeft);
-        ImGui::DockBuilderDockWindow(u8"检视器 Inspector", dockRight);
-        ImGui::DockBuilderDockWindow(u8"工具栏 Toolbar", dockToolbar);
-        ImGui::DockBuilderDockWindow(u8"场景 Scene", dockScene);
-        ImGui::DockBuilderDockWindow(u8"游戏 Game", dockScene);
-        ImGui::DockBuilderDockWindow(u8"UI编辑器 UI Editor", dockScene);
-        ImGui::DockBuilderDockWindow(u8"控制台 Console", dockBottom);
-        ImGui::DockBuilderDockWindow(u8"项目 Project", dockBottom);
+        // Dock windows to their positions.
+        // Window IDs use the ### separator so the docking layout is
+        // independent of the displayed (localised) title.  The text
+        // before ### is ignored for ID purposes; only the part after
+        // ### must match what the Python panel passes to ImGui::Begin.
+        ImGui::DockBuilderDockWindow("###hierarchy", dockLeft);
+        ImGui::DockBuilderDockWindow("###inspector", dockRight);
+        ImGui::DockBuilderDockWindow("###toolbar", dockToolbar);
+        ImGui::DockBuilderDockWindow("###scene_view", dockScene);
+        ImGui::DockBuilderDockWindow("###game_view", dockScene);
+        ImGui::DockBuilderDockWindow("###ui_editor", dockScene);
+        ImGui::DockBuilderDockWindow("###console", dockBottom);
+        ImGui::DockBuilderDockWindow("###project", dockBottom);
 
         ImGui::DockBuilderFinish(dockspaceId);
 
         // Ensure Scene tab is the active/selected tab after initial layout
-        ImGui::SetWindowFocus(u8"场景 Scene");
+        ImGui::SetWindowFocus("###scene_view");
     }
 
     ImGui::End();

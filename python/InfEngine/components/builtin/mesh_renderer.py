@@ -17,7 +17,7 @@ Example::
 
 from __future__ import annotations
 
-from typing import Any, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 from InfEngine.components.builtin_component import BuiltinComponent, CppProperty
 from InfEngine.components.serialized_field import FieldType

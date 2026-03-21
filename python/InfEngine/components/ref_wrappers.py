@@ -16,13 +16,10 @@ here for backward compatibility.
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional, TYPE_CHECKING
+from typing import Any, Optional
 
 # Re-export MaterialRef from core so existing callers still work.
 from InfEngine.core.asset_ref import MaterialRef  # noqa: F401
-
-if TYPE_CHECKING:
-    pass
 
 _log = logging.getLogger("InfEngine.ref")
 

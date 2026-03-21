@@ -271,9 +271,13 @@ class Scene
         return !m_pendingPyComponents.empty();
     }
 
+    /// @brief Re-run Awake+OnEnable on a GameObject and its descendants.
+    /// Used after undo-driven deserialization to initialise newly-created
+    /// C++ components (e.g. MeshRenderer registration).
+    void AwakeObject(GameObject *obj);
+
   private:
     void CollectAllObjects(GameObject *obj, std::vector<GameObject *> &result) const;
-    void AwakeObject(GameObject *obj);
     void StartObject(GameObject *obj);
     void UpdateObject(GameObject *obj, float deltaTime);
     void FixedUpdateObject(GameObject *obj, float fixedDeltaTime);

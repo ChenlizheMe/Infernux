@@ -5,6 +5,7 @@ Unity-style Hierarchy panel showing scene objects tree.
 import os
 
 from InfEngine.lib import InfGUIContext
+from InfEngine.engine.i18n import t
 from .editor_panel import EditorPanel
 from .panel_registry import editor_panel
 from .selection_manager import SelectionManager
@@ -12,7 +13,7 @@ from .theme import Theme, ImGuiCol, ImGuiStyleVar, ImGuiTreeNodeFlags
 from .imgui_keys import KEY_LEFT_CTRL, KEY_RIGHT_CTRL, KEY_LEFT_SHIFT, KEY_RIGHT_SHIFT
 
 
-@editor_panel("层级 Hierarchy", type_id="hierarchy")
+@editor_panel("Hierarchy", type_id="hierarchy", title_key="panel.hierarchy")
 class HierarchyPanel(EditorPanel):
     """
     Unity-style Hierarchy panel showing scene objects tree.
@@ -21,15 +22,16 @@ class HierarchyPanel(EditorPanel):
     """
     
     WINDOW_TYPE_ID = "hierarchy"
-    WINDOW_DISPLAY_NAME = "层级 Hierarchy"
+    WINDOW_DISPLAY_NAME = "Hierarchy"
     
     # Drag-drop payload type
     DRAG_DROP_TYPE = "HIERARCHY_GAMEOBJECT"
     
-    def __init__(self, title: str = "层级 Hierarchy"):
+    def __init__(self, title: str = "Hierarchy"):
         super().__init__(title, window_id="hierarchy")
         self._sel = SelectionManager.instance()
-        self._scene_dirty: bool = True
+        from InfEngine.engine.undo import HierarchyUndoTracker
+        self._undo = HierarchyUndoTracker()
         self._right_clicked_object_id: int = 0  # Track which object was right-clicked
         self._pending_expand_id: int = 0  # To auto-expand parent after drag-drop
         self._pending_expand_ids: set = set()  # Set of IDs to auto-expand (parent chain)
@@ -127,74 +129,19 @@ class HierarchyPanel(EditorPanel):
             self._cached_canvas_roots = self._filter_canvas_roots(root_objects)
         return self._cached_canvas_roots
 
-    def _mark_scene_dirty(self):
-        """Mark the scene as dirty (modified) both locally and in SceneFileManager."""
-        self._scene_dirty = True
-        from InfEngine.engine.scene_manager import SceneFileManager
-        sfm = SceneFileManager.instance()
-        if sfm:
-            sfm.mark_dirty()
-
     def _record_create(self, object_id: int, description: str = "Create GameObject"):
         """Record a GameObject creation through the undo system (or just mark dirty)."""
-        from InfEngine.engine.undo import UndoManager, CreateGameObjectCommand
-        mgr = UndoManager.instance()
-        if mgr:
-            mgr.record(CreateGameObjectCommand(object_id, description))
-            return
-        self._mark_scene_dirty()
+        self._undo.record_create(object_id, description)
 
     def _execute_reparent(self, obj_id: int, old_parent_id, new_parent_id):
         """Execute a reparent through the undo system (or directly as fallback)."""
-        from InfEngine.engine.undo import UndoManager, ReparentCommand
-        mgr = UndoManager.instance()
-        if mgr:
-            mgr.execute(ReparentCommand(obj_id, old_parent_id, new_parent_id, "Reparent"))
-            return
-        # Fallback: direct reparent + mark dirty
-        from InfEngine.lib import SceneManager
-        from InfEngine.engine.undo import _preserve_ui_world_position
-        scene = SceneManager.instance().get_active_scene()
-        if scene:
-            obj = scene.find_by_id(obj_id)
-            if obj:
-                if new_parent_id is not None:
-                    parent = scene.find_by_id(new_parent_id)
-                    _preserve_ui_world_position(obj, parent)
-                    obj.set_parent(parent)
-                else:
-                    _preserve_ui_world_position(obj, None)
-                    obj.set_parent(None)
-        self._mark_scene_dirty()
+        self._undo.record_reparent(obj_id, old_parent_id, new_parent_id)
 
     def _execute_hierarchy_move(self, obj_id: int, old_parent_id, new_parent_id,
                                 old_sibling_index: int, new_sibling_index: int):
         """Execute a parent/order move through the undo system when available."""
-        from InfEngine.engine.undo import UndoManager, MoveGameObjectCommand
-        mgr = UndoManager.instance()
-        if mgr:
-            mgr.execute(MoveGameObjectCommand(
-                obj_id,
-                old_parent_id,
-                new_parent_id,
-                old_sibling_index,
-                new_sibling_index,
-                "Move In Hierarchy",
-            ))
-            return
-
-        from InfEngine.lib import SceneManager
-        scene = SceneManager.instance().get_active_scene()
-        if scene:
-            obj = scene.find_by_id(obj_id)
-            if obj:
-                parent = scene.find_by_id(new_parent_id) if new_parent_id is not None else None
-                from InfEngine.engine.undo import _preserve_ui_world_position
-                _preserve_ui_world_position(obj, parent)
-                obj.set_parent(parent)
-                if getattr(obj, "transform", None) is not None:
-                    obj.transform.set_sibling_index(max(0, int(new_sibling_index)))
-        self._mark_scene_dirty()
+        self._undo.record_move(obj_id, old_parent_id, new_parent_id,
+                               old_sibling_index, new_sibling_index)
 
     def clear_selection(self):
         """Clear current selection and notify listeners."""
@@ -203,13 +150,31 @@ class HierarchyPanel(EditorPanel):
             self._notify_selection_changed()
 
     def set_selected_object_by_id(self, object_id: int):
-        """Set selection by GameObject ID and notify listeners."""
+        """Set selection by GameObject ID and notify listeners.
+
+        Automatically expands all parent levels so the selected object
+        is visible in the hierarchy tree.
+        """
         if object_id is None:
             object_id = 0
         object_id = int(object_id)
 
-        if self._sel.get_primary() != object_id or self._sel.count() != 1:
+        changed = (self._sel.get_primary() != object_id or self._sel.count() != 1)
+        if changed:
             self._sel.select(object_id)
+
+        # Always expand the parent chain so the object is visible in the tree,
+        # even if the selection state didn't change (e.g. scene-view pick
+        # already updated SelectionManager).
+        if object_id:
+            from InfEngine.lib import SceneManager
+            scene = SceneManager.instance().get_active_scene()
+            if scene:
+                go = scene.find_by_id(object_id)
+                if go:
+                    self.expand_to_object(go)
+
+        if changed:
             self._notify_selection_changed()
 
     def expand_to_object(self, go):
@@ -280,8 +245,8 @@ class HierarchyPanel(EditorPanel):
         if ctx.is_item_clicked(0):
             # Record candidate; will be committed in on_render when button released
             self._pending_select_id = obj.id
-            self._pending_ctrl = False
-            self._pending_shift = False
+            self._pending_ctrl = self._is_ctrl(ctx)
+            self._pending_shift = self._is_shift(ctx)
         if ctx.is_item_clicked(1):
             # Right-click selects immediately (needed for context menu)
             if not self._sel.is_selected(obj.id):
@@ -296,13 +261,13 @@ class HierarchyPanel(EditorPanel):
         # Right-click context menu for this specific object
         if ctx.begin_popup_context_item(f"ctx_menu_{obj.id}", 1):
             self._right_clicked_object_id = obj.id
-            if ctx.begin_menu("创建子对象  Create Child"):
+            if ctx.begin_menu(t("hierarchy.create_child")):
                 self._show_create_primitive_menu(ctx, parent_id=obj.id)
-                if ctx.selectable("空对象  Empty", False, 0, 0, 0):
+                if ctx.selectable(t("hierarchy.empty_object"), False, 0, 0, 0):
                     self._create_empty_object(parent_id=obj.id)
                 ctx.end_menu()
             ctx.separator()
-            if ctx.selectable("保存为预制体  Save as Prefab", False, 0, 0, 0):
+            if ctx.selectable(t("hierarchy.save_as_prefab"), False, 0, 0, 0):
                 self._save_as_prefab(obj)
 
             # Prefab instance actions
@@ -310,22 +275,22 @@ class HierarchyPanel(EditorPanel):
             if _is_prefab:
                 ctx.separator()
                 ctx.push_style_color(ImGuiCol.Text, *Theme.PREFAB_TEXT)
-                ctx.label("Prefab")
+                ctx.label(t("hierarchy.prefab_label"))
                 ctx.pop_style_color(1)
-                if ctx.selectable("选择预制体资产  Select Prefab Asset", False, 0, 0, 0):
+                if ctx.selectable(t("hierarchy.select_prefab_asset"), False, 0, 0, 0):
                     self._prefab_select_asset(obj)
-                if ctx.selectable("打开预制体  Open Prefab", False, 0, 0, 0):
+                if ctx.selectable(t("hierarchy.open_prefab"), False, 0, 0, 0):
                     self._prefab_open_asset(obj)
-                if ctx.selectable("应用所有覆盖  Apply All Overrides", False, 0, 0, 0):
+                if ctx.selectable(t("hierarchy.apply_all_overrides"), False, 0, 0, 0):
                     self._prefab_apply_overrides(obj)
-                if ctx.selectable("还原所有覆盖  Revert All Overrides", False, 0, 0, 0):
+                if ctx.selectable(t("hierarchy.revert_all_overrides"), False, 0, 0, 0):
                     self._prefab_revert_overrides(obj)
                 ctx.separator()
-                if ctx.selectable("解除预制体链接  Unpack Prefab", False, 0, 0, 0):
+                if ctx.selectable(t("hierarchy.unpack_prefab"), False, 0, 0, 0):
                     self._prefab_unpack(obj)
 
             ctx.separator()
-            if ctx.selectable("删除  Delete", False, 0, 0, 0):
+            if ctx.selectable(t("hierarchy.delete"), False, 0, 0, 0):
                 self._delete_object(obj)
             ctx.end_popup()
 
@@ -448,24 +413,11 @@ class HierarchyPanel(EditorPanel):
     
     def _delete_object(self, obj) -> None:
         """Delete a GameObject from the scene via the undo system."""
-        from InfEngine.engine.undo import UndoManager, DeleteGameObjectCommand
-        mgr = UndoManager.instance()
-        if mgr:
-            obj_id = obj.id
-            mgr.execute(DeleteGameObjectCommand(obj_id, "Delete GameObject"))
-            if self._sel.is_selected(obj_id):
-                self._sel.clear()
-                self._notify_selection_changed()
-            return
-        # Fallback: direct delete if undo unavailable
-        from InfEngine.lib import SceneManager
-        scene = SceneManager.instance().get_active_scene()
-        if scene:
-            if self._sel.is_selected(obj.id):
-                self._sel.clear()
-                self._notify_selection_changed()
-            scene.destroy_game_object(obj)
-            self._mark_scene_dirty()
+        obj_id = obj.id
+        self._undo.record_delete(obj_id, "Delete GameObject")
+        if self._sel.is_selected(obj_id):
+            self._sel.clear()
+            self._notify_selection_changed()
     
     # ------------------------------------------------------------------
     # EditorPanel hooks
@@ -504,7 +456,7 @@ class HierarchyPanel(EditorPanel):
         from InfEngine.engine.scene_manager import SceneFileManager
         sfm = SceneFileManager.instance()
         if self._ui_mode:
-            ctx.label("UI Mode")
+            ctx.label(t("hierarchy.ui_mode"))
         elif sfm:
             ctx.label(sfm.get_display_name())
         else:
@@ -513,7 +465,7 @@ class HierarchyPanel(EditorPanel):
             if scene:
                 ctx.label(f"{scene.name}")
             else:
-                ctx.label("(无场景 No Scene)")
+                ctx.label(t("hierarchy.no_scene"))
         
         ctx.separator()
         
@@ -597,18 +549,18 @@ class HierarchyPanel(EditorPanel):
             if self._ui_mode:
                 self._show_ui_mode_context_menu(ctx, parent_id=parent_id_for_new)
             else:
-                if ctx.begin_menu("创建 3D 对象  Create 3D Object"):
+                if ctx.begin_menu(t("hierarchy.create_3d_object")):
                     self._show_create_primitive_menu(ctx, parent_id=parent_id_for_new)
                     ctx.end_menu()
-                if ctx.begin_menu("灯光 Light"):
+                if ctx.begin_menu(t("hierarchy.light_menu")):
                     self._show_create_light_menu(ctx, parent_id=parent_id_for_new)
                     ctx.end_menu()
-                if ctx.selectable("创建空对象  Create Empty", False, 0, 0, 0):
+                if ctx.selectable(t("hierarchy.create_empty"), False, 0, 0, 0):
                     self._create_empty_object(parent_id=parent_id_for_new)
             
             if not self._sel.is_empty():
                 ctx.separator()
-                if ctx.selectable("删除选中对象 Delete Selected", False, 0, 0, 0):
+                if ctx.selectable(t("hierarchy.delete_selected"), False, 0, 0, 0):
                     self._delete_selected_object()
             
             ctx.end_popup()
@@ -650,15 +602,15 @@ class HierarchyPanel(EditorPanel):
         from InfEngine.lib import SceneManager, PrimitiveType
         scene = SceneManager.instance().get_active_scene()
         if not scene:
-            ctx.label("(无场景)")
+            ctx.label(t("hierarchy.no_scene"))
             return
 
         primitives = [
-            ("立方体 Cube", PrimitiveType.Cube),
-            ("球体 Sphere", PrimitiveType.Sphere),
-            ("胶囊体 Capsule", PrimitiveType.Capsule),
-            ("圆柱体 Cylinder", PrimitiveType.Cylinder),
-            ("平面 Plane", PrimitiveType.Plane),
+            (t("hierarchy.primitive_cube"), PrimitiveType.Cube),
+            (t("hierarchy.primitive_sphere"), PrimitiveType.Sphere),
+            (t("hierarchy.primitive_capsule"), PrimitiveType.Capsule),
+            (t("hierarchy.primitive_cylinder"), PrimitiveType.Cylinder),
+            (t("hierarchy.primitive_plane"), PrimitiveType.Plane),
         ]
 
         for name, prim_type in primitives:
@@ -681,13 +633,13 @@ class HierarchyPanel(EditorPanel):
         from InfEngine.lib import SceneManager, LightType, LightShadows, Vector3
         scene = SceneManager.instance().get_active_scene()
         if not scene:
-            ctx.label("(无场景)")
+            ctx.label(t("hierarchy.no_scene"))
             return
 
         light_types = [
-            ("平行光 Directional Light", LightType.Directional),
-            ("点光源 Point Light", LightType.Point),
-            ("聚光灯 Spot Light", LightType.Spot),
+            (t("hierarchy.light_directional"), LightType.Directional),
+            (t("hierarchy.light_point"), LightType.Point),
+            (t("hierarchy.light_spot"), LightType.Spot),
         ]
 
         for name, light_type in light_types:
@@ -976,14 +928,14 @@ class HierarchyPanel(EditorPanel):
         from InfEngine.lib import SceneManager
         scene = SceneManager.instance().get_active_scene()
         if not scene:
-            ctx.label("(无场景)")
+            ctx.label(t("hierarchy.no_scene"))
             return
 
-        if ctx.selectable("Canvas", False, 0, 0, 0):
+        if ctx.selectable(t("hierarchy.ui_canvas"), False, 0, 0, 0):
             self._create_ui_canvas(parent_id=parent_id)
-        if ctx.selectable("T 文本 Text", False, 0, 0, 0):
+        if ctx.selectable(t("hierarchy.ui_text"), False, 0, 0, 0):
             self._create_ui_text(parent_id=parent_id)
-        if ctx.selectable("🔘 按钮 Button", False, 0, 0, 0):
+        if ctx.selectable(t("hierarchy.ui_button"), False, 0, 0, 0):
             self._create_ui_button(parent_id=parent_id)
 
     def _create_ui_canvas(self, parent_id: int = None):

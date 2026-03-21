@@ -40,7 +40,7 @@ Usage::
 from __future__ import annotations
 
 from enum import IntEnum
-from typing import List, TYPE_CHECKING
+from typing import TYPE_CHECKING
 
 from InfEngine.renderstack.render_pipeline import RenderPipeline
 from InfEngine.components.serialized_field import serialized_field

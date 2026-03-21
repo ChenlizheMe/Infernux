@@ -13,8 +13,8 @@ serialize→edit→deserialize renderer.  To provide a custom renderer, call
 import json
 import math
 from dataclasses import replace
-from enum import Enum
 from InfEngine.lib import InfGUIContext
+from InfEngine.engine.i18n import t
 from .inspector_utils import (
     max_label_w, field_label, render_serialized_field, has_field_changed,
     render_compact_section_header, render_info_text, render_component_header,
@@ -950,7 +950,7 @@ def _render_serializable_object_field(
     so_class = type(current_value) if current_value is not None else getattr(metadata, 'serializable_class', None)
     if so_class is None:
         field_label(ctx, field_name, lw)
-        ctx.label("(unknown type)")
+        ctx.label(t("inspector.unknown_type"))
         return
 
     header = f"{field_name} ({so_class.__name__})"
@@ -998,7 +998,7 @@ def _render_nested_so(
 
     so_class = type(so_val) if so_val is not None else getattr(so_meta, 'serializable_class', None)
     if so_class is None:
-        ctx.label(f"{so_fn}: (unknown type)")
+        ctx.label(f"{so_fn}: " + t("inspector.unknown_type"))
         return
 
     header = f"{so_fn} ({so_class.__name__})"

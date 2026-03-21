@@ -15,6 +15,7 @@ import os
 from typing import Optional
 
 from InfEngine.lib import InfGUIContext
+from InfEngine.engine.i18n import t
 from .inspector_utils import (
     max_label_w,
     field_label,
@@ -106,7 +107,7 @@ def render_material_property(
         if not isinstance(tex_guid, str):
             tex_guid = ""
         has_texture = bool(tex_guid)
-        display = "None"
+        display = t("igui.none")
         if has_texture:
             try:
                 from .editor_services import EditorServices
@@ -247,7 +248,7 @@ def render_material_body(ctx: InfGUIContext, panel, state):
     is_builtin = mat_data.get("builtin", False)
 
     if is_builtin:
-        ctx.label("(Built-in — Shader locked)")
+        ctx.label(t("material.builtin_locked"))
 
     ctx.push_style_var_vec2(ImGuiStyleVar.FramePadding, *Theme.INSPECTOR_FRAME_PAD)
     ctx.push_style_var_vec2(ImGuiStyleVar.ItemSpacing, *Theme.INSPECTOR_ITEM_SPC)
@@ -274,15 +275,15 @@ def render_material_body(ctx: InfGUIContext, panel, state):
     # ── Shader Section ─────────────────────────────────────────────────
     if is_builtin:
         ctx.begin_disabled(True)
-    if render_compact_section_header(ctx, "Shader", level="secondary"):
+    if render_compact_section_header(ctx, t("material.shader_section"), level="secondary"):
         shaders = mat_data.setdefault("shaders", {})
         vert_path = shaders.get("vertex", "")
         frag_path = shaders.get("fragment", "")
-        s_lw = max_label_w(ctx, ["Vertex", "Fragment"])
+        s_lw = max_label_w(ctx, [t("material.vertex"), t("material.fragment")])
         from .inspector_components import _picker_assets
 
         # Vertex shader
-        field_label(ctx, "Vertex", s_lw)
+        field_label(ctx, t("material.vertex"), s_lw)
         vert_items = shader_utils.get_shader_candidates(".vert", _shader_cache)
         vert_display = shader_utils.shader_display_from_value(vert_path, vert_items)
 
@@ -308,7 +309,7 @@ def render_material_body(ctx: InfGUIContext, panel, state):
             ctx.end_popup()
 
         # Fragment shader
-        field_label(ctx, "Fragment", s_lw)
+        field_label(ctx, t("material.fragment"), s_lw)
         frag_items = shader_utils.get_shader_candidates(".frag", _shader_cache)
         frag_display = shader_utils.shader_display_from_value(frag_path, frag_items)
 
@@ -348,19 +349,19 @@ def render_material_body(ctx: InfGUIContext, panel, state):
     # ── Surface Options (Render Settings) ──────────────────────────────
     if is_builtin:
         ctx.begin_disabled(True)
-    if render_compact_section_header(ctx, "Surface Options", level="secondary"):
+    if render_compact_section_header(ctx, t("material.surface_options"), level="secondary"):
         rs = mat_data.setdefault("renderState", {})
         overrides = int(mat_data.get("renderStateOverrides", 0))
 
-        so_labels = ["Surface Type", "Cull Mode", "Depth Write",
-                     "Depth Test", "Blend Mode", "Alpha Clip",
-                     "Render Queue"]
+        so_labels = [t("material.surface_type"), t("material.cull_mode"), t("material.depth_write"),
+                     t("material.depth_test"), t("material.blend_mode"), t("material.alpha_clip"),
+                     t("material.render_queue")]
         so_lw = max_label_w(ctx, so_labels)
 
         # --- Surface Type (Opaque / Transparent) ---
-        surface_items = ["Opaque", "Transparent"]
+        surface_items = [t("material.opaque"), t("material.transparent")]
         cur_surface = 1 if rs.get("blendEnable", False) else 0
-        field_label(ctx, "Surface Type", so_lw)
+        field_label(ctx, t("material.surface_type"), so_lw)
         new_surface = ctx.combo("##mat_surface_type", cur_surface, surface_items)
         if new_surface != cur_surface:
             if new_surface == 1:  # Transparent
@@ -392,11 +393,11 @@ def render_material_body(ctx: InfGUIContext, panel, state):
             requires_pipeline_refresh = True
 
         # --- Cull Mode ---
-        cull_items = ["None", "Front", "Back"]
+        cull_items = [t("material.cull_none"), t("material.cull_front"), t("material.cull_back")]
         cull_map = {0: 0, 1: 1, 2: 2}     # VkCullModeFlags: 0=None, 1=Front, 2=Back
         cull_val = int(rs.get("cullMode", 2))
         cull_idx = {0: 0, 1: 1, 2: 2}.get(cull_val, 2)
-        field_label(ctx, "Cull Mode", so_lw)
+        field_label(ctx, t("material.cull_mode"), so_lw)
         new_cull_idx = ctx.combo("##mat_cull_mode", cull_idx, cull_items)
         if new_cull_idx != cull_idx:
             rs["cullMode"] = cull_map[new_cull_idx]
@@ -408,7 +409,7 @@ def render_material_body(ctx: InfGUIContext, panel, state):
 
         # --- Depth Write ---
         dw_val = rs.get("depthWriteEnable", True)
-        field_label(ctx, "Depth Write", so_lw)
+        field_label(ctx, t("material.depth_write"), so_lw)
         new_dw = ctx.checkbox("##mat_depth_write", dw_val)
         if new_dw != dw_val:
             rs["depthWriteEnable"] = new_dw
@@ -419,11 +420,11 @@ def render_material_body(ctx: InfGUIContext, panel, state):
             requires_pipeline_refresh = True
 
         # --- Depth Test ---
-        compare_items = ["Never", "Less", "Equal", "Less or Equal",
-                         "Greater", "Not Equal", "Greater or Equal", "Always"]
+        compare_items = [t("material.compare_never"), t("material.compare_less"), t("material.compare_equal"), t("material.compare_less_equal"),
+                         t("material.compare_greater"), t("material.compare_not_equal"), t("material.compare_greater_equal"), t("material.compare_always")]
         dt_enable = rs.get("depthTestEnable", True)
         dt_op = int(rs.get("depthCompareOp", 1))  # VkCompareOp: default Less=1
-        field_label(ctx, "Depth Test", so_lw)
+        field_label(ctx, t("material.depth_test"), so_lw)
         if dt_enable:
             new_op = ctx.combo("##mat_depth_test", dt_op, compare_items)
         else:
@@ -449,7 +450,7 @@ def render_material_body(ctx: InfGUIContext, panel, state):
 
         # --- Blend Mode (only visible when transparent) ---
         if rs.get("blendEnable", False):
-            blend_items = ["Alpha", "Additive", "Premultiply"]
+            blend_items = [t("material.blend_alpha"), t("material.blend_additive"), t("material.blend_premultiply")]
             # Detect current blend mode from factors
             src = int(rs.get("srcColorBlendFactor", 6))
             dst = int(rs.get("dstColorBlendFactor", 7))
@@ -459,7 +460,7 @@ def render_material_body(ctx: InfGUIContext, panel, state):
                 cur_blend_idx = 2  # Premultiply
             else:
                 cur_blend_idx = 0  # Alpha (default)
-            field_label(ctx, "Blend Mode", so_lw)
+            field_label(ctx, t("material.blend_mode"), so_lw)
             new_blend_idx = ctx.combo("##mat_blend_mode", cur_blend_idx, blend_items)
             if new_blend_idx != cur_blend_idx:
                 if new_blend_idx == 0:      # Alpha
@@ -481,7 +482,7 @@ def render_material_body(ctx: InfGUIContext, panel, state):
         # --- Alpha Clip ---
         ac_enabled = rs.get("alphaClipEnabled", False)
         ac_threshold = float(rs.get("alphaClipThreshold", 0.5))
-        field_label(ctx, "Alpha Clip", so_lw)
+        field_label(ctx, t("material.alpha_clip"), so_lw)
         new_ac = ctx.checkbox("##mat_alpha_clip", ac_enabled)
         if new_ac != ac_enabled:
             rs["alphaClipEnabled"] = new_ac
@@ -493,7 +494,7 @@ def render_material_body(ctx: InfGUIContext, panel, state):
             requires_deserialize = True
             requires_pipeline_refresh = True
         if rs.get("alphaClipEnabled", False):
-            field_label(ctx, "Threshold", so_lw)
+            field_label(ctx, t("material.threshold"), so_lw)
             new_threshold = ctx.float_slider("##mat_alpha_threshold", ac_threshold, 0.0, 1.0)
             if abs(new_threshold - ac_threshold) > 1e-5:
                 rs["alphaClipThreshold"] = new_threshold
@@ -508,7 +509,7 @@ def render_material_body(ctx: InfGUIContext, panel, state):
         rq_min, rq_max = (2501, 5000) if is_transparent else (0, 2500)
         rq = int(rs.get("renderQueue", 2000))
         rq = max(rq_min, min(rq, rq_max))  # clamp display value
-        field_label(ctx, "Render Queue", so_lw)
+        field_label(ctx, t("material.render_queue"), so_lw)
         new_rq = int(ctx.drag_int("##mat_render_queue", rq, 1.0, rq_min, rq_max))
         if new_rq != rq:
             rs["renderQueue"] = new_rq
@@ -524,10 +525,10 @@ def render_material_body(ctx: InfGUIContext, panel, state):
     ctx.separator()
 
     # ── Properties ─────────────────────────────────────────────────────
-    if render_compact_section_header(ctx, "Properties", level="secondary"):
+    if render_compact_section_header(ctx, t("material.properties_section"), level="secondary"):
         props = mat_data.get("properties", {})
         if not props:
-            ctx.label("(No properties)")
+            ctx.label(t("material.no_properties"))
         else:
             prop_names = shader_utils.get_material_property_display_order(mat_data)
             plw = max_label_w(ctx, prop_names)

@@ -9,6 +9,7 @@ import os
 import shutil
 import threading
 from InfEngine.lib import InfGUIContext, TextureLoader, InputManager
+from InfEngine.engine.i18n import t
 from InfEngine.resources import file_type_icons_dir
 from .editor_panel import EditorPanel
 from .panel_registry import editor_panel
@@ -145,7 +146,7 @@ class _ThumbnailPixelCache:
 _thumb_pixel_cache = _ThumbnailPixelCache(max_px=128)
 
 
-@editor_panel("项目 Project", type_id="project")
+@editor_panel("Project", type_id="project", title_key="panel.project")
 class ProjectPanel(EditorPanel):
     """
     Unity-style Project panel for browsing assets.
@@ -155,7 +156,7 @@ class ProjectPanel(EditorPanel):
     """
     
     WINDOW_TYPE_ID = "project"
-    WINDOW_DISPLAY_NAME = "项目 Project"
+    WINDOW_DISPLAY_NAME = "Project"
     
     # File extensions to hide
     HIDDEN_EXTENSIONS = {'.meta', '.pyc', '.pyo'}
@@ -260,7 +261,7 @@ class ProjectPanel(EditorPanel):
         '.stl':    ("MODEL_GUID",  "MODEL_FILE",  "Model"),
     }
 
-    def __init__(self, root_path: str = "", title: str = "项目 Project", engine=None):
+    def __init__(self, root_path: str = "", title: str = "Project", engine=None):
         super().__init__(title, window_id="project")
         self.__root_path = root_path
         # Default to Assets folder if it exists
@@ -914,56 +915,56 @@ class ProjectPanel(EditorPanel):
     def _render_context_menu(self, ctx: InfGUIContext):
         """Render right-click context menu for creating items."""
         if ctx.begin_popup_context_window("ProjectContextMenu", 1):
-            if ctx.begin_menu("创建  Create"):
-                if ctx.selectable("文件夹  Folder", False, 0, 0, 0):
+            if ctx.begin_menu(t("project.create_menu")):
+                if ctx.selectable(t("project.create_folder"), False, 0, 0, 0):
                     self._create_and_rename(self._create_folder, "NewFolder")
                 ctx.separator()
-                if ctx.selectable("脚本  Script (.py)", False, 0, 0, 0):
+                if ctx.selectable(t("project.create_script"), False, 0, 0, 0):
                     self._create_and_rename(self._create_script, "NewComponent", ".py")
                 ctx.separator()
-                if ctx.selectable("顶点着色器  Vertex Shader (.vert)", False, 0, 0, 0):
+                if ctx.selectable(t("project.create_vert_shader"), False, 0, 0, 0):
                     self._create_and_rename(
                         lambda n: self._create_shader(n, "vert"), "NewShader", ".vert")
-                if ctx.selectable("片段着色器  Fragment Shader (.frag)", False, 0, 0, 0):
+                if ctx.selectable(t("project.create_frag_shader"), False, 0, 0, 0):
                     self._create_and_rename(
                         lambda n: self._create_shader(n, "frag"), "NewShader", ".frag")
                 ctx.separator()
-                if ctx.selectable("材质  Material (.mat)", False, 0, 0, 0):
+                if ctx.selectable(t("project.create_material"), False, 0, 0, 0):
                     self._create_and_rename(self._create_material, "NewMaterial", ".mat")
                 ctx.separator()
-                if ctx.selectable("场景  Scene (.scene)", False, 0, 0, 0):
+                if ctx.selectable(t("project.create_scene"), False, 0, 0, 0):
                     self._create_and_rename(self._create_scene, "NewScene", ".scene")
                 ctx.end_menu()
             
             if self.__selected_file and os.path.exists(self.__selected_file):
                 ctx.separator()
-                if ctx.selectable("在资源管理器中显示  Reveal in File Explorer", False, 0, 0, 0):
+                if ctx.selectable(t("project.reveal_in_explorer"), False, 0, 0, 0):
                     self._reveal_in_file_explorer(self.__selected_file)
                 ctx.separator()
-                if ctx.selectable("复制  Copy           (Ctrl+C)", False, 0, 0, 0):
+                if ctx.selectable(t("project.copy"), False, 0, 0, 0):
                     self._clipboard_copy(self.__selected_file)
-                if ctx.selectable("剪切  Cut            (Ctrl+X)", False, 0, 0, 0):
+                if ctx.selectable(t("project.cut"), False, 0, 0, 0):
                     self._clipboard_cut(self.__selected_file)
                 if self.__clipboard_path and os.path.exists(self.__clipboard_path):
-                    if ctx.selectable("粘贴  Paste          (Ctrl+V)", False, 0, 0, 0):
+                    if ctx.selectable(t("project.paste"), False, 0, 0, 0):
                         self._clipboard_paste()
                 ctx.separator()
-                if ctx.selectable("重命名  Rename        (F2)", False, 0, 0, 0):
+                if ctx.selectable(t("project.rename"), False, 0, 0, 0):
                     self.__renaming_path = self.__selected_file
                     name = os.path.basename(self.__selected_file)
                     if os.path.isfile(self.__renaming_path):
                         name = os.path.splitext(name)[0]
                     self.__renaming_name = name
                     self.__rename_focus_requested = True
-                if ctx.selectable("删除  Delete         (Del)", False, 0, 0, 0):
+                if ctx.selectable(t("project.delete"), False, 0, 0, 0):
                     self._delete_item(self.__selected_file)
             else:
                 # No item selected — still offer paste & reveal on folder
                 ctx.separator()
-                if ctx.selectable("在资源管理器中显示  Reveal in File Explorer", False, 0, 0, 0):
+                if ctx.selectable(t("project.reveal_in_explorer"), False, 0, 0, 0):
                     self._reveal_in_file_explorer(self.__current_path)
                 if self.__clipboard_path and os.path.exists(self.__clipboard_path):
-                    if ctx.selectable("粘贴  Paste          (Ctrl+V)", False, 0, 0, 0):
+                    if ctx.selectable(t("project.paste"), False, 0, 0, 0):
                         self._clipboard_paste()
             
             ctx.end_popup()
@@ -1041,7 +1042,7 @@ class ProjectPanel(EditorPanel):
                         self._render_folder_tree(ctx, self.__root_path)
                         ctx.tree_pop()
                 else:
-                    ctx.label("No project path set")
+                    ctx.label(t("project.no_project_path"))
             ctx.end_child()
             
             ctx.same_line()
@@ -1103,8 +1104,8 @@ class ProjectPanel(EditorPanel):
                     if cols < 1: cols = 1
 
                     if not items and self.__current_path == self.__root_path:
-                        ctx.label("(Empty folder)")
-                        ctx.label("Right-click to create new items")
+                        ctx.label(t("project.empty_folder"))
+                        ctx.label(t("project.right_click_hint"))
 
                     # Handle F2 for rename, Delete, Ctrl+C/X/V
                     if self.__selected_file and not self.__renaming_path:
@@ -1256,7 +1257,7 @@ class ProjectPanel(EditorPanel):
                         ctx.end_table()
 
                 else:
-                    ctx.label("Invalid path")
+                    ctx.label(t("project.invalid_path"))
 
                 # Drop target: accept hierarchy GameObjects to create prefab files
                 remaining_h = ctx.get_content_region_avail_height()

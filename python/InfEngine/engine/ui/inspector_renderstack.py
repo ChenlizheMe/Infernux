@@ -13,6 +13,7 @@ from __future__ import annotations
 from typing import Dict, List, TYPE_CHECKING
 
 from InfEngine.lib import InfGUIContext
+from InfEngine.engine.i18n import t
 from .inspector_utils import (
     max_label_w, field_label, render_serialized_field, has_field_changed,
     render_compact_section_header, render_info_text, render_inspector_checkbox, pretty_field_name,
@@ -166,7 +167,7 @@ def render_renderstack_inspector(ctx: InfGUIContext, stack: "RenderStack") -> No
 # -- Pipeline selector ---------------------------------------------------
 
 def _render_pipeline(ctx: InfGUIContext, stack: "RenderStack") -> None:
-    lw = max_label_w(ctx, ["Pipeline"])
+    lw = max_label_w(ctx, [t("renderstack.pipeline")])
     pipelines = stack.discover_pipelines()
     names = ["Default Forward"] + sorted(
         n for n in pipelines if n != "Default Forward"
@@ -176,7 +177,7 @@ def _render_pipeline(ctx: InfGUIContext, stack: "RenderStack") -> None:
         stack.set_pipeline("")
         cur = "Default Forward"
     idx = names.index(cur)
-    field_label(ctx, "Pipeline", lw)
+    field_label(ctx, t("renderstack.pipeline"), lw)
     new_idx = ctx.combo("##rs_pipeline", idx, names, -1)
     if new_idx != idx:
         sel = names[new_idx]
@@ -201,7 +202,7 @@ def _render_pipeline_params(ctx: InfGUIContext, stack: "RenderStack") -> None:
         return
 
     ctx.separator()
-    ctx.label("Pipeline Settings")
+    ctx.label(t("renderstack.pipeline_settings"))
 
     display_names = [pretty_field_name(n) for n in fields.keys()]
     lw = max_label_w(ctx, display_names) if fields else 0.0
@@ -272,7 +273,7 @@ def _render_topology_with_effects(ctx: InfGUIContext, stack: "RenderStack") -> N
 
     if not seq:
         ctx.push_style_color(ImGuiCol.Text, *Theme.META_TEXT)
-        ctx.label("  (empty topology)")
+        ctx.label("  " + t("renderstack.empty_topology"))
         ctx.pop_style_color(1)
         return
 
@@ -360,7 +361,7 @@ def _render_injection_point_row(
         if not has_addable_passes:
             ctx.begin_disabled(True)
         ctx.button(
-            f"Add Pass...##add_{uid}_{ip_name}",
+            f"{t('renderstack.add_pass')}##add_{uid}_{ip_name}",
             lambda: ctx.open_popup(popup_id),
             -1,
             0,
@@ -396,7 +397,7 @@ def _render_add_pass_popup(
 
     if not candidates:
         ctx.push_style_color(ImGuiCol.Text, *Theme.META_TEXT)
-        ctx.label("  No passes available")
+        ctx.label("  " + t("renderstack.no_passes"))
         ctx.pop_style_color(1)
         return
 
@@ -443,7 +444,7 @@ def _render_add_pass_popup(
         if effect_uncategorized:
             if effect_categorized:
                 ctx.dummy(0, 4)
-            ctx.label("Post-processing")
+            ctx.label(t("renderstack.post_processing"))
             ctx.separator()
             _render_items(effect_uncategorized)
 
@@ -451,7 +452,7 @@ def _render_add_pass_popup(
     if geometry_passes:
         if effect_categorized or effect_uncategorized:
             ctx.dummy(0, 4)
-        ctx.label("Geometry")
+        ctx.label(t("renderstack.geometry"))
         ctx.separator()
         _render_items(geometry_passes)
 
@@ -459,7 +460,7 @@ def _render_add_pass_popup(
     if other_passes:
         if effect_categorized or effect_uncategorized or geometry_passes:
             ctx.dummy(0, 4)
-        ctx.label("Other")
+        ctx.label(t("renderstack.other"))
         ctx.separator()
         _render_items(other_passes)
 
@@ -567,7 +568,7 @@ def _render_mounted_effect(
 
     # Right-click context menu for removal
     if ctx.begin_popup_context_item(f"ctx_{uid}_{effect_name}"):
-        if ctx.selectable(f"Remove##{uid}"):
+        if ctx.selectable(f"{t('renderstack.remove')}##{uid}"):
             from InfEngine.engine.undo import RenderStackRemovePassCommand
 
             mgr = _undo_manager()

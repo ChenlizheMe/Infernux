@@ -136,6 +136,18 @@ class SelectionManager:
         self._primary = 0
         self._notify()
 
+    def set_ids(self, ids: Sequence[int]) -> None:
+        """Replace the entire selection with *ids* (last element = primary).
+
+        Used by undo/redo to restore a previous selection state.
+        """
+        new = list(ids)
+        if new == self._ids:
+            return
+        self._ids = new
+        self._primary = new[-1] if new else 0
+        self._notify()
+
     # ── Queries ───────────────────────────────────────────────────────
 
     def get_ids(self) -> list[int]:

@@ -35,12 +35,7 @@ Key points:
 
 ---
 
-## Design stance
-
-### 1. Rendering should be scriptable, not mystical
-
-Infernux exposes a render architecture that can be reasoned about. Python authoring flows into a RenderGraph-oriented native backend instead of disappearing into a black-box editor pipeline.
-goals
+## Design Stance
 
 ### Scriptable rendering
 
@@ -52,15 +47,13 @@ Python handles not just gameplay code but also editor extensions, asset workflow
 
 ### No licensing surprises
 
-MIT license. No royalties, no runtime fees, no vendor lock-in
-Infernux is not just a renderer demo. The current repository already contains a coherent technical-preview stack.
+MIT license. No royalties, no runtime fees, no vendor lock-in.
+
+---
+
+## Features
 
 ### Runtime foundation
-Features
-
-The current build includes a working
-- RenderGraph-based pass orchestration
-- Jolt-back
 
 - Vulkan forward and deferred rendering
 - PBR materials, cascaded shadows, MSAA, post-processing
@@ -80,18 +73,23 @@ The current build includes a working
 
 - Hierarchy, Inspector, Scene View, Game View, Console, Project panel
 - Selection, gizmos, undo/redo, play-mode scene isolation
-## Why the C++ + Python split matters
+
+---
+
+## Why the C++ / Python Split Matters
 
 The engine is structured around a practical division of labor.
 
 | Layer | Role |
-|--C++ / Python split
-
-| Layer | Role |
-|---|---|
+|:------|:-----|
 | C++17 / Vulkan | Renderer, scene systems, resources, physics, platform |
 | pybind11 bridge | Bindings between native systems and the Python API |
 | Python | Gameplay, editor logic, render authoring, tooling |
+
+---
+
+## Quick Start
+
 ### Prerequisites
 
 | Dependency | Version |
@@ -159,23 +157,14 @@ External stack
 
 1. Author gameplay or rendering logic in Python.
 2. Bind that logic to editor-visible data and scene objects.
-3. Translate render intent into graph descriptions and runtime commands.
-4. Execute through the native backend where scheduling, memory, and GPU work stay in C++.
+3. Describe render passes through the RenderGraph API.
+4. The native backend handles scheduling, memory, and GPU execution.
 
 This is the main architectural promise of the engine: **high-level iteration without surrendering low-level ownership**.
 
 ---
 
-## Write gameplay or rendering logic in Python.
-2. Bind it to editor-visible data and scene objects.
-3. Describe render passes through the RenderGraph API.
-4. The native backend handles scheduling, memory, and GPU execution
-- core editor authoring loop
-- asset identification and project-launch flow
-- physics integration and scene interaction
-
-### Still in progress
-tatus
+## Status
 
 ### Working
 
@@ -191,11 +180,11 @@ tatus
 - UI pipeline
 - Animation systems
 - Standalone build / export
-- Pller documentation, examples, stronger production path |
+- Fuller documentation, examples, and production path
 
-The roadmap is not meant to inflate ambition. It exists to clarify what blocks the next class of project.
+---
 
----oadmap
+## Roadmap
 
 | Version | Focus |
 |:--------|:------|
@@ -203,17 +192,13 @@ The roadmap is not meant to inflate ambition. It exists to clarify what blocks t
 | v0.3 | Animation system, model/content pipeline |
 | v0.4 | Standalone build, particles, terrain |
 | v1.0 | Documentation, examples, production readiness |
-dev/                  planning notes and internal design documents
-```
 
 ---
 
 ## Contributing
 
-If you want to contribute, the most useful approach is:
-
 1. Read the README and the docs site first.
-2. Inspect the roadmap to understand current leverage points.
+2. Check the roadmap to understand current priorities.
 3. Open an issue or discussion before pushing broad architectural changes.
 4. Submit focused pull requests with a clear engineering goal.
 
@@ -221,14 +206,12 @@ This repository benefits most from contributions that preserve the core idea of 
 
 ---
 
-## Acknowledgments
+## Contact
 
-1. Read the README and docs site.
-2. Check the roadmap for current priorities.
-3. Open an issue or discussion before large changes.
-4. Submit focused pull requests with a clear goal
 - Email: [chenlizheme@outlook.com](mailto:chenlizheme@outlook.com)
 - GitHub: [https://github.com/ChenlizheMe/InfEngine](https://github.com/ChenlizheMe/InfEngine)
+
+---
 
 ## License
 

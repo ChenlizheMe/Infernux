@@ -13,6 +13,7 @@ from contextlib import nullcontext as _nullcontext
 
 from typing import Optional
 from InfEngine.lib import InfGUIContext
+from InfEngine.engine.i18n import t
 from InfEngine.engine.project_context import get_project_root
 from InfEngine.ui.enums import TextResizeMode
 from InfEngine.ui.ui_texture_cache import get_shared_cache as _get_tex_cache
@@ -28,14 +29,14 @@ from .imgui_keys import (
 )
 
 
-@editor_panel("UI编辑器 UI Editor", type_id="ui_editor")
+@editor_panel("UI Editor", type_id="ui_editor", title_key="panel.ui_editor")
 class UIEditorPanel(EditorPanel):
     """Figma-style 2D UI editor panel."""
 
     WINDOW_TYPE_ID = "ui_editor"
-    WINDOW_DISPLAY_NAME = "UI编辑器 UI Editor"
+    WINDOW_DISPLAY_NAME = "UI Editor"
 
-    def __init__(self, title: str = "UI编辑器 UI Editor"):
+    def __init__(self, title: str = "UI Editor"):
         super().__init__(title, window_id="ui_editor")
 
         # ── Canvas navigation ──
@@ -395,13 +396,12 @@ class UIEditorPanel(EditorPanel):
         # Canvas is gone — clear any stale selection / interaction state
         self._clear_interaction_state()
         ctx.label("")
-        ctx.label("  场景中没有 Canvas")
-        ctx.label("  No UICanvas in scene")
+        ctx.label("  " + t("ui_editor.no_canvas"))
         ctx.label("")
-        ctx.label("  在 Hierarchy 中右键 → 创建 → UI → Canvas")
-        ctx.label("  或使用下方按钮快速创建")
+        ctx.label("  " + t("ui_editor.create_canvas_hint").split("\n")[0])
+        ctx.label("  " + t("ui_editor.create_canvas_hint").split("\n")[1])
         ctx.label("")
-        ctx.button("创建 Canvas  Create Canvas", self._create_canvas,
+        ctx.button(t("ui_editor.create_canvas"), self._create_canvas,
                    width=Theme.UI_EDITOR_CREATE_BTN_W, height=Theme.UI_EDITOR_CREATE_BTN_H)
 
     # ── Toolbar ──────────────────────────────────────────────────────
@@ -424,7 +424,7 @@ class UIEditorPanel(EditorPanel):
         else:
             ctx.button("T", lambda: self._create_text_element(canvas_go), width=_ICO_SZ + 8, height=_ICO_SZ + 8)
         if ctx.is_item_hovered():
-            ctx.set_tooltip("文本 Text")
+            ctx.set_tooltip(t("ui_editor.tooltip_text"))
 
         ctx.same_line(0, _GAP)
         tid_img = EditorIcons.get(native, Theme.ICON_IMG_UI_IMAGE)
@@ -434,7 +434,7 @@ class UIEditorPanel(EditorPanel):
         else:
             ctx.button("Img", lambda: self._create_image_element(canvas_go), width=_ICO_SZ + 8, height=_ICO_SZ + 8)
         if ctx.is_item_hovered():
-            ctx.set_tooltip("图像 Image")
+            ctx.set_tooltip(t("ui_editor.tooltip_image"))
 
         ctx.same_line(0, _GAP)
         tid_btn = EditorIcons.get(native, Theme.ICON_IMG_UI_BUTTON)
@@ -444,13 +444,13 @@ class UIEditorPanel(EditorPanel):
         else:
             ctx.button("Btn", lambda: self._create_button_element(canvas_go), width=_ICO_SZ + 8, height=_ICO_SZ + 8)
         if ctx.is_item_hovered():
-            ctx.set_tooltip("按钮 Button")
+            ctx.set_tooltip(t("ui_editor.tooltip_button"))
 
         ctx.same_line(0, _SEC // 2)
         zoom_pct = int(self._zoom * 100)
-        ctx.label(f"缩放: {zoom_pct}%")
+        ctx.label(t("ui_editor.zoom").format(pct=zoom_pct))
         ctx.same_line(0, _SEC // 2)
-        ctx.button("适应 Fit", lambda: self._fit_zoom(ctx, canvas), width=56)
+        ctx.button(t("ui_editor.fit"), lambda: self._fit_zoom(ctx, canvas), width=56)
 
         ctx.separator()
 

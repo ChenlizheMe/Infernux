@@ -43,6 +43,12 @@ class UndoCommand(ABC):
     #: ``False`` so that selecting an object does not mark the scene dirty.
     marks_dirty: bool = True
 
+    #: Whether this command is a property/data edit that should be suppressed
+    #: when the InspectorUndoTracker is active.  Structural commands (create,
+    #: delete, reparent, add/remove component) leave this as ``False`` so
+    #: they are always recorded.
+    _is_property_edit: bool = False
+
     def __init__(self, description: str = ""):
         self.description: str = description
         self.timestamp: float = time.time()
@@ -108,6 +114,7 @@ class SetPropertyCommand(UndoCommand):
     later in-place mutations do not corrupt the undo snapshot.
     """
 
+    _is_property_edit = True
     MERGE_WINDOW: float = 0.3  # seconds
 
     def __init__(self, target: Any, prop_name: str,
@@ -155,6 +162,7 @@ class GenericComponentCommand(UndoCommand):
     *serialize → edit → deserialize* path in the Inspector.
     """
 
+    _is_property_edit = True
     MERGE_WINDOW: float = 0.3
 
     def __init__(self, comp: Any, old_json: str, new_json: str,
@@ -196,6 +204,7 @@ class BuiltinPropertyCommand(UndoCommand):
     guarantees immediate physics world updates at runtime.
     """
 
+    _is_property_edit = True
     MERGE_WINDOW: float = 0.3
 
     def __init__(self, comp: Any, cpp_attr: str, old_value: Any,
@@ -236,12 +245,29 @@ class CreateGameObjectCommand(UndoCommand):
     """
     supports_redo = True
 
+    #: Callback ``fn(ids: list[int])`` to restore selection state.
+    #: Set once by bootstrap so that undo/redo can update the full
+    #: selection pipeline (SelectionManager, inspector, outline, hierarchy).
+    _selection_restore_fn: Optional[Callable[[List[int]], None]] = None
+
     def __init__(self, object_id: int, description: str = "Create GameObject"):
         super().__init__(description)
         self._object_id = object_id
         self._snapshot_json: Optional[str] = None
         self._parent_id: Optional[int] = None
         self._sibling_index: int = 0
+        # Selection state just after creation (usually [object_id]).
+        self._post_create_ids: List[int] = []
+        self._capture_selection()
+
+    def _capture_selection(self) -> None:
+        try:
+            from InfEngine.engine.ui.selection_manager import SelectionManager
+            sel = SelectionManager.instance()
+            if sel:
+                self._post_create_ids = sel.get_ids()
+        except Exception:
+            pass
 
     def execute(self) -> None:
         pass  # already created before record()
@@ -257,11 +283,19 @@ class CreateGameObjectCommand(UndoCommand):
                 self._sibling_index = (obj.transform.get_sibling_index()
                                        if getattr(obj, "transform", None) else 0)
                 scene.destroy_game_object(obj)
+        # After destroying, clear selection if it contained this object.
+        fn = type(self)._selection_restore_fn
+        if fn:
+            fn([])
 
     def redo(self) -> None:
         if self._snapshot_json:
             _recreate_game_object_from_json(
                 self._snapshot_json, self._parent_id, self._sibling_index)
+            # Re-select the recreated object.
+            fn = type(self)._selection_restore_fn
+            if fn and self._post_create_ids:
+                fn(self._post_create_ids)
 
 
 class DeleteGameObjectCommand(UndoCommand):
@@ -269,7 +303,13 @@ class DeleteGameObjectCommand(UndoCommand):
 
     The object is serialized in the constructor (before ``execute``
     destroys it) so that all component/child data is preserved for undo.
+    Pre-delete selection state is also captured so that undo can
+    re-select the object.
     """
+
+    #: Callback ``fn(ids: list[int])`` — set by bootstrap (shared with
+    #: :class:`CreateGameObjectCommand`).
+    _selection_restore_fn: Optional[Callable[[List[int]], None]] = None
 
     def __init__(self, object_id: int, description: str = "Delete GameObject"):
         super().__init__(description)
@@ -277,8 +317,10 @@ class DeleteGameObjectCommand(UndoCommand):
         self._snapshot_json: Optional[str] = None
         self._parent_id: Optional[int] = None
         self._sibling_index: int = 0
+        # Selection state *before* the deletion so undo can restore it.
+        self._pre_delete_selection_ids: List[int] = []
 
-        # Capture snapshot before destruction
+        # Capture snapshot + selection before destruction
         scene = _get_active_scene()
         if scene:
             obj = scene.find_by_id(object_id)
@@ -288,6 +330,16 @@ class DeleteGameObjectCommand(UndoCommand):
                 self._parent_id = parent.id if parent else None
                 self._sibling_index = (obj.transform.get_sibling_index()
                                        if getattr(obj, "transform", None) else 0)
+        self._capture_selection()
+
+    def _capture_selection(self) -> None:
+        try:
+            from InfEngine.engine.ui.selection_manager import SelectionManager
+            sel = SelectionManager.instance()
+            if sel:
+                self._pre_delete_selection_ids = sel.get_ids()
+        except Exception:
+            pass
 
     def execute(self) -> None:
         scene = _get_active_scene()
@@ -300,6 +352,10 @@ class DeleteGameObjectCommand(UndoCommand):
         if self._snapshot_json:
             _recreate_game_object_from_json(
                 self._snapshot_json, self._parent_id, self._sibling_index)
+            # Restore the selection that was active before delete.
+            fn = type(self)._selection_restore_fn
+            if fn and self._pre_delete_selection_ids:
+                fn(self._pre_delete_selection_ids)
 
     def redo(self) -> None:
         scene = _get_active_scene()
@@ -309,6 +365,10 @@ class DeleteGameObjectCommand(UndoCommand):
                 # Refresh snapshot before re-deleting
                 self._snapshot_json = obj.serialize()
                 scene.destroy_game_object(obj)
+        # Clear selection after re-delete.
+        fn = type(self)._selection_restore_fn
+        if fn:
+            fn([])
 
 
 class ReparentCommand(UndoCommand):
@@ -389,6 +449,7 @@ class MoveGameObjectCommand(UndoCommand):
 class MaterialJsonCommand(UndoCommand):
     """Undo/redo for material asset edits represented as serialized JSON."""
 
+    _is_property_edit = True
     MERGE_WINDOW: float = 0.3
     marks_dirty: bool = False
 
@@ -443,6 +504,8 @@ class MaterialJsonCommand(UndoCommand):
 class RenderStackSetPipelineCommand(UndoCommand):
     """Undo/redo changing the selected RenderStack pipeline."""
 
+    _is_property_edit = True
+
     def __init__(self, stack: Any, old_pipeline: str, new_pipeline: str,
                  description: str = "Set Render Pipeline"):
         super().__init__(description)
@@ -463,6 +526,7 @@ class RenderStackSetPipelineCommand(UndoCommand):
 class RenderStackFieldCommand(UndoCommand):
     """Undo/redo a RenderStack-owned field change and rebuild the graph."""
 
+    _is_property_edit = True
     MERGE_WINDOW: float = 0.3
 
     def __init__(self, stack: Any, target: Any, field_name: str,
@@ -502,6 +566,7 @@ class RenderStackFieldCommand(UndoCommand):
 class RenderStackTogglePassCommand(UndoCommand):
     """Undo/redo toggling an effect enabled state."""
 
+    _is_property_edit = True
     MERGE_WINDOW: float = 0.3
 
     def __init__(self, stack: Any, pass_name: str, old_enabled: bool,
@@ -535,6 +600,8 @@ class RenderStackTogglePassCommand(UndoCommand):
 class RenderStackMovePassCommand(UndoCommand):
     """Undo/redo effect ordering within one injection point."""
 
+    _is_property_edit = True
+
     def __init__(self, stack: Any, old_orders: dict[str, int],
                  new_orders: dict[str, int], description: str = "Reorder Effect"):
         super().__init__(description)
@@ -561,6 +628,8 @@ class RenderStackMovePassCommand(UndoCommand):
 
 class RenderStackAddPassCommand(UndoCommand):
     """Undo/redo adding an effect to RenderStack."""
+
+    _is_property_edit = True
 
     def __init__(self, stack: Any, effect_cls: type, description: str = "Add Effect"):
         super().__init__(description)
@@ -629,6 +698,8 @@ class RenderStackAddPassCommand(UndoCommand):
 
 class RenderStackRemovePassCommand(UndoCommand):
     """Undo/redo removing an effect from RenderStack."""
+
+    _is_property_edit = True
 
     def __init__(self, stack: Any, pass_name: str, description: str = "Remove Effect"):
         super().__init__(description)
@@ -831,68 +902,31 @@ class AddPyComponentCommand(UndoCommand):
 
 
 class SelectionCommand(UndoCommand):
-    """Record a selection change in the scene hierarchy.
+    """Record a selection change so it can be undone/redone.
 
-    Undo restores the previous selection; redo re-applies the new one.
-    Selection is **not** a scene modification — this command does not
-    mark the scene dirty or affect the save-point.
-
-    The *apply_fn* callback receives a single ``int`` (object ID, 0 for
-    deselect) and is responsible for updating hierarchy, inspector, and
-    selection outline.
+    *apply_fn* receives a list of object IDs and is responsible for
+    updating :class:`SelectionManager`, the Inspector, the hierarchy
+    panel highlight, and the outline.
     """
 
-    MERGE_WINDOW: float = 0.0  # never merge selection changes
-    marks_dirty: bool = False    # selection is NOT a scene modification
-
-    def __init__(self, old_id: int, new_id: int,
-                 apply_fn: Callable[[int], None],
-                 description: str = ""):
-        super().__init__(description or "Select")
-        self._old_id = old_id
-        self._new_id = new_id
-        self._apply_fn = apply_fn
-
-    def execute(self) -> None:
-        self._apply_fn(self._new_id)
-
-    def undo(self) -> None:
-        self._apply_fn(self._old_id)
-
-    def redo(self) -> None:
-        self._apply_fn(self._new_id)
-
-
-class FocusPanelCommand(UndoCommand):
-    """Record a panel focus change in the editor.
-
-    Undo restores focus to the previously-active panel; redo re-applies
-    the new panel focus.  Panel focus is **not** a scene modification.
-
-    The *apply_fn* callback receives a panel identifier string and is
-    responsible for programmatically focusing the corresponding panel
-    (e.g. via ``ctx.set_next_window_focus()``).
-    """
-
-    MERGE_WINDOW: float = 0.0
     marks_dirty: bool = False
 
-    def __init__(self, old_panel: str, new_panel: str,
-                 apply_fn: Callable[[str], None],
+    def __init__(self, old_ids: List[int], new_ids: List[int],
+                 apply_fn: Callable[[List[int]], None],
                  description: str = ""):
-        super().__init__(description or "Focus Panel")
-        self._old_panel = old_panel
-        self._new_panel = new_panel
+        super().__init__(description or "Change Selection")
+        self._old_ids = list(old_ids)
+        self._new_ids = list(new_ids)
         self._apply_fn = apply_fn
 
     def execute(self) -> None:
-        self._apply_fn(self._new_panel)
+        pass  # selection already applied before record()
 
     def undo(self) -> None:
-        self._apply_fn(self._old_panel)
+        self._apply_fn(self._old_ids)
 
     def redo(self) -> None:
-        self._apply_fn(self._new_panel)
+        self._apply_fn(self._new_ids)
 
 
 class CompoundCommand(UndoCommand):
@@ -1036,6 +1070,10 @@ def _recreate_game_object_from_json(json_str: str,
     data = _json_mod.loads(json_str)
     _restore_py_components_from_data(scene, data)
 
+    # Initialise C++ components (MeshRenderer registration, etc.) that
+    # were recreated by deserialize but not yet Awoken.
+    scene.awake_object(obj)
+
     return obj
 
 
@@ -1130,6 +1168,7 @@ class UndoManager:
         self._base_scene_dirty: bool = False
         self._is_executing: bool = False
         self._enabled: bool = True
+        self._suppress_property_recording: bool = False
         self._on_state_changed: Optional[Callable[[], None]] = None
         UndoManager._instance = self
 
@@ -1153,6 +1192,25 @@ class UndoManager:
             yield
         finally:
             self._is_executing = prev
+
+    @contextmanager
+    def suppress_property_recording(self):
+        """Temporarily suppress recording of property-edit commands.
+
+        Commands flagged with ``_is_property_edit = True`` still *execute*
+        (values are written) but are not pushed to the undo/redo stacks.
+        Structural commands (create/delete/reparent/add-remove component)
+        are unaffected and continue to record normally.
+
+        Used by :class:`InspectorUndoTracker` to prevent double-recording
+        when the tracker captures panel-level snapshots.
+        """
+        prev = self._suppress_property_recording
+        self._suppress_property_recording = True
+        try:
+            yield
+        finally:
+            self._suppress_property_recording = prev
 
     # ------------------------------------------------------------------
     # Properties
@@ -1219,6 +1277,11 @@ class UndoManager:
         cmd.execute()
         self._is_executing = False
 
+        # Skip recording for property-edit commands when suppressed by
+        # InspectorUndoTracker (the tracker captures panel-level snapshots).
+        if self._suppress_property_recording and cmd._is_property_edit:
+            return
+
         self._push(cmd)
 
     def record(self, cmd: UndoCommand) -> None:
@@ -1229,6 +1292,8 @@ class UndoManager:
         hierarchy panel).
         """
         if not self._enabled:
+            return
+        if self._suppress_property_recording and cmd._is_property_edit:
             return
         self._push(cmd)
 
@@ -1330,3 +1395,366 @@ class UndoManager:
     def _fire_state_changed(self) -> None:
         if self._on_state_changed:
             self._on_state_changed()
+
+
+# ---------------------------------------------------------------------------
+# Unified Inspector Undo — Snapshot-based panel-level tracking
+# ---------------------------------------------------------------------------
+
+class InspectorSnapshotCommand(UndoCommand):
+    """Snapshot-based undo command for Inspector panel edits.
+
+    Records the serialized state of an inspectable target before and after
+    an edit.  A single command replaces the many per-widget command types
+    (SetPropertyCommand, RenderStackFieldCommand, MaterialJsonCommand, …).
+
+    Supports automatic merging for continuous edits within
+    :attr:`MERGE_WINDOW` seconds (e.g. slider drags).
+    """
+
+    MERGE_WINDOW: float = 0.3
+
+    def __init__(self, target_key: str, old_snapshot: str,
+                 new_snapshot: str,
+                 restore_fn: Callable[[str], None],
+                 description: str = ""):
+        super().__init__(description or "Inspector Edit")
+        self._target_key = target_key
+        self._old_snapshot = old_snapshot
+        self._new_snapshot = new_snapshot
+        self._restore_fn = restore_fn
+
+    def execute(self) -> None:
+        self._restore_fn(self._new_snapshot)
+
+    def undo(self) -> None:
+        self._restore_fn(self._old_snapshot)
+
+    def redo(self) -> None:
+        self._restore_fn(self._new_snapshot)
+
+    def can_merge(self, other: UndoCommand) -> bool:
+        if not isinstance(other, InspectorSnapshotCommand):
+            return False
+        return (self._target_key == other._target_key
+                and (other.timestamp - self.timestamp) <= self.MERGE_WINDOW)
+
+    def merge(self, other: InspectorSnapshotCommand) -> None:  # type: ignore[override]
+        self._new_snapshot = other._new_snapshot
+        self.timestamp = other.timestamp
+
+
+class _TrackedEntry:
+    """Internal bookkeeping for a single tracked target within a frame."""
+    __slots__ = ('pre_snapshot', 'snapshot_fn', 'restore_fn', 'description')
+
+    def __init__(self, pre_snapshot: str,
+                 snapshot_fn: Callable[[], str],
+                 restore_fn: Callable[[str], None],
+                 description: str):
+        self.pre_snapshot = pre_snapshot
+        self.snapshot_fn = snapshot_fn
+        self.restore_fn = restore_fn
+        self.description = description
+
+
+class InspectorUndoTracker:
+    """Automatic undo tracking for Inspector and Hierarchy panels.
+
+    Replaces scattered per-widget undo recording with a unified
+    panel-level snapshot approach:
+
+    1. ``begin_frame()`` — clear previous entries.
+    2. ``track(key, snapshot_fn, restore_fn, desc)`` — register each
+       inspectable target (component, material, RenderStack, …).
+       A pre-edit snapshot is captured immediately.
+    3. Inspector widgets render and mutate state as usual (old undo calls
+       are suppressed via ``UndoManager.suppress_property_recording``).
+    4. ``end_frame()`` — re-capture each target's state, compare with
+       pre-snapshot, and record :class:`InspectorSnapshotCommand` for
+       any detected changes.
+
+    Benefits:
+    - **No forgotten undo**: every property visible in the Inspector is
+      automatically covered.
+    - **Uniform**: one command type handles Transform, components,
+      materials, and RenderStack edits.
+    - **Merge**: slider drags produce a single undo entry (0.3 s window).
+    """
+
+    def __init__(self):
+        self._entries: dict[str, _TrackedEntry] = {}
+
+    def begin_frame(self) -> None:
+        """Start tracking for a new render frame."""
+        self._entries.clear()
+
+    def track(self, key: str, snapshot_fn: Callable[[], str],
+              restore_fn: Callable[[str], None],
+              description: str = "") -> None:
+        """Register a target for change tracking.
+
+        Args:
+            key: Stable identity string for merge across frames.
+            snapshot_fn: Returns the target's serialized state.
+            restore_fn: Restores the target from a serialized state.
+            description: Human-readable label for the undo menu entry.
+        """
+        if key in self._entries:
+            return
+        try:
+            pre = snapshot_fn()
+        except Exception:
+            return
+        self._entries[key] = _TrackedEntry(
+            pre, snapshot_fn, restore_fn, description)
+
+    def end_frame(self) -> None:
+        """Compare pre/post snapshots and record undo for any changes."""
+        mgr = UndoManager.instance()
+        if not mgr or not mgr.enabled:
+            self._entries.clear()
+            return
+
+        for key, entry in self._entries.items():
+            try:
+                post = entry.snapshot_fn()
+            except Exception:
+                continue
+            if post != entry.pre_snapshot:
+                cmd = InspectorSnapshotCommand(
+                    key, entry.pre_snapshot, post,
+                    entry.restore_fn, entry.description,
+                )
+                mgr.record(cmd)
+
+        self._entries.clear()
+
+
+# ---------------------------------------------------------------------------
+# RenderStack snapshot / restore helpers
+# ---------------------------------------------------------------------------
+
+def _serialize_simple(val: Any) -> Any:
+    """Serialize a value for JSON snapshot (handles common field types)."""
+    import enum
+    if isinstance(val, enum.Enum):
+        return val.value
+    if isinstance(val, (int, float, str, bool, type(None))):
+        return val
+    if isinstance(val, (list, tuple)):
+        return [_serialize_simple(v) for v in val]
+    if isinstance(val, dict):
+        return {str(k): _serialize_simple(v) for k, v in val.items()}
+    if hasattr(val, 'x') and hasattr(val, 'y'):
+        if hasattr(val, 'w'):
+            return [val.x, val.y, val.z, val.w]
+        if hasattr(val, 'z'):
+            return [val.x, val.y, val.z]
+        return [val.x, val.y]
+    return str(val)
+
+
+def snapshot_renderstack(stack: Any) -> str:
+    """Capture the complete state of a RenderStack as a JSON string.
+
+    Captures pipeline selection, pipeline parameters, and all mounted
+    effects with their parameters, enabled state, and ordering.
+    """
+    from InfEngine.components.serialized_field import get_serialized_fields
+
+    data: dict = {
+        "pipeline_class_name": stack.pipeline_class_name or "",
+        "pipeline_params": {},
+        "pass_entries": [],
+    }
+
+    pipeline = stack.pipeline
+    if pipeline:
+        for name, meta in get_serialized_fields(pipeline.__class__).items():
+            val = getattr(pipeline, name, meta.default)
+            data["pipeline_params"][name] = _serialize_simple(val)
+
+    for entry in stack.pass_entries:
+        ed: dict = {
+            "class": type(entry.render_pass).__name__,
+            "name": entry.render_pass.name,
+            "enabled": entry.enabled,
+            "order": entry.order,
+        }
+        if hasattr(entry.render_pass, 'get_params_dict'):
+            ed["params"] = entry.render_pass.get_params_dict()
+        data["pass_entries"].append(ed)
+
+    return _json_mod.dumps(data, sort_keys=True)
+
+
+def restore_renderstack(stack: Any, json_str: str) -> None:
+    """Restore a RenderStack from a snapshot produced by :func:`snapshot_renderstack`."""
+    from InfEngine.components.serialized_field import get_serialized_fields
+
+    data = _json_mod.loads(json_str)
+
+    # --- Pipeline selection ---
+    new_pipeline_name = data.get("pipeline_class_name", "")
+    if (stack.pipeline_class_name or "") != new_pipeline_name:
+        stack.set_pipeline(new_pipeline_name)
+
+    # --- Pipeline parameters ---
+    pipeline = stack.pipeline
+    if pipeline and "pipeline_params" in data:
+        for name, val in data["pipeline_params"].items():
+            try:
+                setattr(pipeline, name, val)
+            except (AttributeError, TypeError):
+                pass
+
+    # --- Effect pass entries ---
+    current_names = [e.render_pass.name for e in list(stack.pass_entries)]
+    for name in current_names:
+        stack.remove_pass(name)
+
+    from InfEngine.renderstack.discovery import discover_passes
+    from InfEngine.renderstack.fullscreen_effect import FullScreenEffect
+
+    all_passes = discover_passes()
+    for ed in data.get("pass_entries", []):
+        cls_name = ed.get("class", "")
+        pass_name = ed.get("name", "")
+        cls = all_passes.get(pass_name)
+        if cls is None:
+            for pcls in all_passes.values():
+                if pcls.__name__ == cls_name:
+                    cls = pcls
+                    break
+        if cls is None:
+            continue
+        inst = cls()
+        if isinstance(inst, FullScreenEffect) and "params" in ed:
+            inst.set_params_dict(ed["params"])
+        inst.enabled = ed.get("enabled", True)
+        stack.add_pass(inst)
+        stack.set_pass_enabled(pass_name, ed.get("enabled", True))
+        stack.reorder_pass(pass_name, ed.get("order", 0))
+
+    stack.invalidate_graph()
+
+
+# ---------------------------------------------------------------------------
+# Hierarchy undo tracker
+# ---------------------------------------------------------------------------
+
+class HierarchyUndoTracker:
+    """Unified undo interface for Hierarchy panel operations.
+
+    Provides a single entry-point for all hierarchy mutations —
+    create, delete, reparent, and reorder — so the panel code does not
+    need to import individual command classes or call ``UndoManager``
+    directly.  Selection changes are intentionally **not** tracked
+    (consistent with Unity's behaviour).
+
+    Usage in HierarchyPanel::
+
+        self._undo = HierarchyUndoTracker()
+        # after creating a primitive:
+        self._undo.record_create(new_obj.id, "Create Cube")
+        # delete:
+        self._undo.record_delete(obj.id)
+        # reparent:
+        self._undo.record_reparent(obj_id, old_parent_id, new_parent_id)
+        # reorder (parent + sibling):
+        self._undo.record_move(obj_id, old_pid, new_pid, old_idx, new_idx)
+    """
+
+    @staticmethod
+    def _mgr() -> Optional['UndoManager']:
+        return UndoManager.instance()
+
+    # -- create --------------------------------------------------------
+    def record_create(self, object_id: int,
+                      description: str = "Create GameObject") -> None:
+        """Record that *object_id* was just created (already exists in scene)."""
+        mgr = self._mgr()
+        if mgr:
+            mgr.record(CreateGameObjectCommand(object_id, description))
+            return
+        # Fallback: just mark dirty
+        from InfEngine.engine.scene_manager import SceneFileManager
+        sfm = SceneFileManager.instance()
+        if sfm:
+            sfm.mark_dirty()
+
+    # -- delete --------------------------------------------------------
+    def record_delete(self, object_id: int,
+                      description: str = "Delete GameObject") -> None:
+        """Snapshot the object, then destroy it via the undo system."""
+        mgr = self._mgr()
+        if mgr:
+            mgr.execute(DeleteGameObjectCommand(object_id, description))
+            return
+        # Fallback when undo is unavailable
+        scene = _get_active_scene()
+        if scene:
+            obj = scene.find_by_id(object_id)
+            if obj:
+                scene.destroy_game_object(obj)
+                from InfEngine.engine.scene_manager import SceneFileManager
+                sfm = SceneFileManager.instance()
+                if sfm:
+                    sfm.mark_dirty()
+
+    # -- reparent ------------------------------------------------------
+    def record_reparent(self, object_id: int,
+                        old_parent_id: Optional[int],
+                        new_parent_id: Optional[int],
+                        description: str = "Reparent") -> None:
+        """Record a parent change."""
+        mgr = self._mgr()
+        if mgr:
+            mgr.execute(ReparentCommand(
+                object_id, old_parent_id, new_parent_id, description))
+            return
+        # Fallback
+        scene = _get_active_scene()
+        if scene:
+            obj = scene.find_by_id(object_id)
+            if obj:
+                parent = (scene.find_by_id(new_parent_id)
+                          if new_parent_id is not None else None)
+                _preserve_ui_world_position(obj, parent)
+                obj.set_parent(parent)
+                from InfEngine.engine.scene_manager import SceneFileManager
+                sfm = SceneFileManager.instance()
+                if sfm:
+                    sfm.mark_dirty()
+
+    # -- move (parent + sibling order) ---------------------------------
+    def record_move(self, object_id: int,
+                    old_parent_id: Optional[int],
+                    new_parent_id: Optional[int],
+                    old_sibling_index: int,
+                    new_sibling_index: int,
+                    description: str = "Move In Hierarchy") -> None:
+        """Record a combined parent + sibling-order change."""
+        mgr = self._mgr()
+        if mgr:
+            mgr.execute(MoveGameObjectCommand(
+                object_id, old_parent_id, new_parent_id,
+                old_sibling_index, new_sibling_index, description))
+            return
+        # Fallback
+        scene = _get_active_scene()
+        if scene:
+            obj = scene.find_by_id(object_id)
+            if obj:
+                parent = (scene.find_by_id(new_parent_id)
+                          if new_parent_id is not None else None)
+                _preserve_ui_world_position(obj, parent)
+                obj.set_parent(parent)
+                transform = getattr(obj, 'transform', None)
+                if transform is not None:
+                    transform.set_sibling_index(max(0, int(new_sibling_index)))
+                from InfEngine.engine.scene_manager import SceneFileManager
+                sfm = SceneFileManager.instance()
+                if sfm:
+                    sfm.mark_dirty()

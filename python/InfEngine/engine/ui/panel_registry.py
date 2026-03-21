@@ -37,6 +37,7 @@ class _PanelRegistration:
         "panel_class",
         "type_id",
         "display_name",
+        "title_key",
         "menu_path",
         "factory",
         "singleton",
@@ -50,10 +51,12 @@ class _PanelRegistration:
         menu_path: str,
         factory: Optional[Callable],
         singleton: bool,
+        title_key: Optional[str] = None,
     ):
         self.panel_class = panel_class
         self.type_id = type_id
         self.display_name = display_name
+        self.title_key = title_key
         self.menu_path = menu_path
         self.factory = factory
         self.singleton = singleton
@@ -95,6 +98,7 @@ class PanelRegistry:
                 display_name=reg.display_name,
                 factory=reg.factory,
                 singleton=reg.singleton,
+                title_key=reg.title_key,
             )
             count += 1
             Debug.log_internal(
@@ -122,6 +126,7 @@ def editor_panel(
     display_name: str,
     *,
     type_id: Optional[str] = None,
+    title_key: Optional[str] = None,
     menu_path: str = "Window",
     factory: Optional[Callable] = None,
     singleton: bool = True,
@@ -133,6 +138,9 @@ def editor_panel(
             (e.g. ``"My Debug Panel"``).
         type_id: Unique identifier.  Defaults to the class name in
             lower_case (e.g. ``MyDebugPanel`` → ``mydebugpanel``).
+        title_key: Optional i18n key for dynamic title resolution
+            via ``t(title_key)``.  When set, the panel title and
+            Window-menu label update automatically on locale change.
         menu_path: Menu path for grouping (default ``"Window"``).
             Future use — currently all panels appear under Window.
         factory: Optional callable that returns a new panel instance.
@@ -153,6 +161,7 @@ def editor_panel(
         # Stamp class-level metadata (so WindowManager can read them)
         cls.WINDOW_TYPE_ID = tid
         cls.WINDOW_DISPLAY_NAME = display_name
+        cls.WINDOW_TITLE_KEY = title_key
         cls._panel_menu_path = menu_path
         cls._panel_singleton = singleton
 
@@ -164,6 +173,7 @@ def editor_panel(
                 menu_path=menu_path,
                 factory=factory,
                 singleton=singleton,
+                title_key=title_key,
             )
         )
         return cls

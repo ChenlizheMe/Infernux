@@ -17,6 +17,7 @@ class ClosablePanel(InfGUIRenderable):
     # Class-level registration info
     WINDOW_TYPE_ID: Optional[str] = None
     WINDOW_DISPLAY_NAME: Optional[str] = None
+    WINDOW_TITLE_KEY: Optional[str] = None
 
     # ── Class-level focus tracking ──
     _active_panel_id: Optional[str] = None
@@ -25,6 +26,7 @@ class ClosablePanel(InfGUIRenderable):
     def __init__(self, title: str, window_id: Optional[str] = None):
         super().__init__()
         self._title = title
+        self._title_key: Optional[str] = getattr(self.__class__, 'WINDOW_TITLE_KEY', None)
         self._window_id = window_id or self.__class__.__name__
         self._is_open = True
         self._window_manager: Optional['WindowManager'] = None
@@ -77,7 +79,16 @@ class ClosablePanel(InfGUIRenderable):
             ctx.set_next_window_focus()
             ClosablePanel._pending_focus_panel_id = None
 
-        safe_title = str(self._title).replace('\x00', '�').encode('utf-8', errors='replace').decode('utf-8', errors='replace')
+        # Resolve title via i18n if a title_key is set
+        if self._title_key:
+            from InfEngine.engine.i18n import t
+            display = t(self._title_key)
+        else:
+            display = self._title
+        safe_title = str(display).replace('\x00', '�').encode('utf-8', errors='replace').decode('utf-8', errors='replace')
+        # Use ### to keep a stable ImGui window ID independent of the
+        # displayed title so docking layout survives locale changes.
+        safe_title = f"{safe_title}###{self._window_id}"
         visible, self._is_open = ctx.begin_window_closable(safe_title, self._is_open, flags)
         
         # If window was closed, notify window manager

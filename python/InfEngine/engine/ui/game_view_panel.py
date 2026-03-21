@@ -10,6 +10,7 @@ import configparser
 from operator import attrgetter
 from typing import Optional
 from InfEngine.lib import InfGUIContext
+from InfEngine.engine.i18n import t
 from InfEngine.input import Input, KeyCode
 from InfEngine.timing import Time
 from InfEngine.engine.play_mode import PlayModeManager
@@ -27,7 +28,7 @@ from .viewport_utils import capture_viewport_info
 _sort_by_sort_order = attrgetter('sort_order')
 
 
-@editor_panel("游戏 Game", type_id="game_view")
+@editor_panel("Game", type_id="game_view", title_key="panel.game")
 class GameViewPanel(EditorPanel):
     """
     Unity-style Game View panel that renders the scene's main Camera output.
@@ -38,7 +39,7 @@ class GameViewPanel(EditorPanel):
     """
     
     WINDOW_TYPE_ID = "game_view"
-    WINDOW_DISPLAY_NAME = "游戏 Game"
+    WINDOW_DISPLAY_NAME = "Game"
 
     _RESOLUTION_PRESETS = [
         ("1920\u00d71080", 1920, 1080),
@@ -50,7 +51,7 @@ class GameViewPanel(EditorPanel):
     ]
     _PRESET_NAMES = [p[0] for p in _RESOLUTION_PRESETS]
     
-    def __init__(self, title: str = "游戏 Game", engine=None, play_mode_manager: Optional[PlayModeManager] = None):
+    def __init__(self, title: str = "Game", engine=None, play_mode_manager: Optional[PlayModeManager] = None):
         super().__init__(title, window_id="game_view")
         self._engine = engine
         self._play_mode_manager = play_mode_manager
@@ -237,7 +238,7 @@ class GameViewPanel(EditorPanel):
 
     def on_render_content(self, ctx: InfGUIContext):
         if not self._engine:
-            ctx.label("Engine not initialized")
+            ctx.label(t("game_view.engine_not_init"))
             return
 
         # Clear per-frame rect cache once at the start of each game_view frame.
@@ -295,7 +296,7 @@ class GameViewPanel(EditorPanel):
         pushed_fit_style = self._fit_mode
         if pushed_fit_style:
             ctx.push_style_color(ImGuiCol.Button, *Theme.PLAY_ACTIVE)
-        ctx.button("Fit", self._fit_scale, width=32, height=0)
+        ctx.button(t("game_view.fit"), self._fit_scale, width=32, height=0)
         if pushed_fit_style:
             ctx.pop_style_color(1)
 
@@ -357,11 +358,11 @@ class GameViewPanel(EditorPanel):
 
         else:
             ctx.label("")
-            ctx.label("  No Camera")
-            ctx.label("  场景中没有 Camera 组件")
+            ctx.label("  " + t("game_view.no_camera"))
+            ctx.label("  " + t("game_view.no_camera_detail"))
             ctx.label("")
-            ctx.label("  请在场景中创建一个 GameObject")
-            ctx.label("  并添加 Camera 组件以启用 Game View")
+            ctx.label("  " + t("game_view.create_camera_hint_1"))
+            ctx.label("  " + t("game_view.create_camera_hint_2"))
 
         game_hovered = ctx.is_window_hovered()
         is_playing = self._is_playing()

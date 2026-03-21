@@ -16,7 +16,7 @@ eliminate that duplication.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import Tuple
 
 from InfEngine.lib import InfGUIContext
 

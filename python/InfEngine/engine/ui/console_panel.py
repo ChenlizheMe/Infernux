@@ -11,16 +11,17 @@ Features:
 """
 
 from InfEngine.lib import InfGUIContext
+from InfEngine.engine.i18n import t
 from .editor_panel import EditorPanel
 from .panel_registry import editor_panel
 from .theme import Theme, ImGuiCol, ImGuiStyleVar
 from .inspector_utils import render_inspector_checkbox
 
 
-@editor_panel("控制台 Console", type_id="console")
+@editor_panel("Console", type_id="console", title_key="panel.console")
 class ConsolePanel(EditorPanel):
     WINDOW_TYPE_ID = "console"
-    WINDOW_DISPLAY_NAME = "控制台 Console"
+    WINDOW_DISPLAY_NAME = "Console"
 
     # Aliases pointing to the central Theme palette
     _CLR_INFO    = Theme.LOG_INFO
@@ -36,7 +37,7 @@ class ConsolePanel(EditorPanel):
     # ImGuiInputTextFlags_ReadOnly
     _INPUT_TEXT_READONLY = 1 << 14
 
-    def __init__(self, title: str = "控制台 Console"):
+    def __init__(self, title: str = "Console"):
         super().__init__(title, window_id="console")
         self._logs: list = []
         self._max_logs = 2000
@@ -299,13 +300,13 @@ class ConsolePanel(EditorPanel):
     def _render_toolbar(self, ctx, log_cnt, warn_cnt, err_cnt):
         Theme.push_console_toolbar_vars(ctx)  # FramePadding + ItemSpacing + FrameBorderSize (3 vars)
 
-        ctx.button("Clear", self.clear)
+        ctx.button(t("console.clear"), self.clear)
         ctx.same_line()
-        self._collapse = render_inspector_checkbox(ctx, "Collapse", self._collapse)
+        self._collapse = render_inspector_checkbox(ctx, t("console.collapse"), self._collapse)
         ctx.same_line()
-        self._clear_on_play = render_inspector_checkbox(ctx, "Clear on Play", self._clear_on_play)
+        self._clear_on_play = render_inspector_checkbox(ctx, t("console.clear_on_play"), self._clear_on_play)
         ctx.same_line()
-        self._error_pause = render_inspector_checkbox(ctx, "Error Pause", self._error_pause)
+        self._error_pause = render_inspector_checkbox(ctx, t("console.error_pause"), self._error_pause)
 
         # Right-align Log / Warn / Error filter toggles
         filter_width = 240  # approximate total width of 3 filter checkboxes

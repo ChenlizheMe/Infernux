@@ -23,6 +23,7 @@ from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from InfEngine.lib import InfGUIContext
+from InfEngine.engine.i18n import t
 from InfEngine.core.asset_types import (
     TextureType,
     ShaderAssetInfo,
@@ -171,16 +172,16 @@ def _ensure_categories():
 
     # ── Texture ────────────────────────────────────────────────────────
     _categories["texture"] = AssetCategoryDef(
-        display_name="Texture",
+        display_name="asset.display_texture",
         access_mode=AssetAccessMode.READ_ONLY_RESOURCE,
         load_fn=_load_texture,
         editable_fields=[
-            FieldDef("texture_type", "Texture Type", WidgetType.COMBO,
-                     [("Default", TextureType.DEFAULT),
-                      ("NormalMap", TextureType.NORMAL_MAP),
-                      ("UI", TextureType.UI)]),
-            FieldDef("srgb", "sRGB", WidgetType.CHECKBOX),
-            FieldDef("max_size", "Max Size", WidgetType.COMBO,
+            FieldDef("texture_type", "asset.texture_type", WidgetType.COMBO,
+                     [("asset.tex_default", TextureType.DEFAULT),
+                      ("asset.tex_normalmap", TextureType.NORMAL_MAP),
+                      ("asset.tex_ui", TextureType.UI)]),
+            FieldDef("srgb", "asset.srgb", WidgetType.CHECKBOX),
+            FieldDef("max_size", "asset.max_size", WidgetType.COMBO,
                      [(str(s), s) for s in
                       (32, 64, 128, 256, 512, 1024, 2048, 4096, 8192)]),
         ],
@@ -189,25 +190,25 @@ def _ensure_categories():
 
     # ── Audio ──────────────────────────────────────────────────────────
     _categories["audio"] = AssetCategoryDef(
-        display_name="Audio",
+        display_name="asset.display_audio",
         access_mode=AssetAccessMode.READ_ONLY_RESOURCE,
         load_fn=_load_audio,
         editable_fields=[
-            FieldDef("force_mono", "Force Mono", WidgetType.CHECKBOX),
+            FieldDef("force_mono", "asset.force_mono", WidgetType.CHECKBOX),
         ],
         extra_meta_keys=["file_size", "extension"],
     )
 
     # ── Shader ─────────────────────────────────────────────────────────
     _categories["shader"] = AssetCategoryDef(
-        display_name="Shader",
+        display_name="asset.display_shader",
         access_mode=AssetAccessMode.READ_ONLY_RESOURCE,
         load_fn=_load_shader,
         custom_body_fn=_render_shader_body,
     )
 
     _categories["font"] = AssetCategoryDef(
-        display_name="Font",
+        display_name="asset.display_font",
         access_mode=AssetAccessMode.READ_ONLY_RESOURCE,
         load_fn=_load_font,
         custom_body_fn=_render_font_body,
@@ -216,16 +217,16 @@ def _ensure_categories():
 
     # ── Mesh ─────────────────────────────────────────────────────────────────
     _categories["mesh"] = AssetCategoryDef(
-        display_name="Mesh",
+        display_name="asset.display_mesh",
         access_mode=AssetAccessMode.READ_ONLY_RESOURCE,
         load_fn=_load_mesh,
         editable_fields=[
-            FieldDef("scale_factor", "Scale Factor", WidgetType.FLOAT,
+            FieldDef("scale_factor", "asset.scale_factor", WidgetType.FLOAT,
                      float_speed=0.001, float_range=(0.0001, 1000.0)),
-            FieldDef("generate_normals", "Generate Normals", WidgetType.CHECKBOX),
-            FieldDef("generate_tangents", "Generate Tangents", WidgetType.CHECKBOX),
-            FieldDef("flip_uvs", "Flip UVs", WidgetType.CHECKBOX),
-            FieldDef("optimize_mesh", "Optimize Mesh", WidgetType.CHECKBOX),
+            FieldDef("generate_normals", "asset.generate_normals", WidgetType.CHECKBOX),
+            FieldDef("generate_tangents", "asset.generate_tangents", WidgetType.CHECKBOX),
+            FieldDef("flip_uvs", "asset.flip_uvs", WidgetType.CHECKBOX),
+            FieldDef("optimize_mesh", "asset.optimize_mesh", WidgetType.CHECKBOX),
         ],
         custom_header_fn=_render_mesh_info,
         extra_meta_keys=["mesh_count", "vertex_count", "index_count", "material_slot_count"],
@@ -234,7 +235,7 @@ def _ensure_categories():
 
     # ── Material ───────────────────────────────────────────────────────
     _categories["material"] = AssetCategoryDef(
-        display_name="Material",
+        display_name="asset.display_material",
         access_mode=AssetAccessMode.READ_WRITE_RESOURCE,
         load_fn=_load_material,
         refresh_fn=_refresh_material,
@@ -244,7 +245,7 @@ def _ensure_categories():
 
     # ── Prefab ─────────────────────────────────────────────────────────
     _categories["prefab"] = AssetCategoryDef(
-        display_name="Prefab",
+        display_name="asset.display_prefab",
         access_mode=AssetAccessMode.READ_WRITE_RESOURCE,
         load_fn=_load_prefab,
         custom_body_fn=_render_prefab_body,
@@ -340,7 +341,7 @@ def _render_prefab_body(ctx: InfGUIContext, panel, state: _State):
 
     root = state.settings
     if not isinstance(root, dict):
-        ctx.label("Invalid prefab data")
+        ctx.label(t("asset.invalid_prefab"))
         return
 
     dirty = _render_prefab_object(ctx, root, "root", is_root=True)
@@ -352,7 +353,7 @@ def _render_prefab_body(ctx: InfGUIContext, panel, state: _State):
         ctx.separator()
         ctx.dummy(0, 4)
         ctx.push_style_color(ImGuiCol.Text, *Theme.PREFAB_TEXT)
-        ctx.label(f"Children ({len(children)})")
+        ctx.label(t("asset.prefab_children").format(n=len(children)))
         ctx.pop_style_color(1)
         ctx.dummy(0, 2)
         dirty |= _render_prefab_children(ctx, children, "root")
@@ -363,7 +364,7 @@ def _render_prefab_body(ctx: InfGUIContext, panel, state: _State):
     ctx.dummy(0, 4)
     total_nodes = _count_descendants(root) + 1
     total_comps = len(root.get("components", [])) + len(root.get("py_components", []))
-    render_info_text(ctx, f"Total Nodes: {total_nodes}  |  Root Components: {total_comps}")
+    render_info_text(ctx, t("asset.prefab_summary").format(nodes=total_nodes, comps=total_comps))
 
     # Save if dirty
     if dirty:
@@ -404,7 +405,7 @@ def _render_prefab_object(ctx: InfGUIContext, obj: dict, uid: str,
 
     # ── Name ──
     old_name = obj.get("name", "GameObject")
-    field_label(ctx, "Name")
+    field_label(ctx, t("asset.prefab_name"))
     new_name = ctx.text_input(f"##name_{uid}", old_name, 256)
     if new_name != old_name:
         obj["name"] = new_name
@@ -412,14 +413,14 @@ def _render_prefab_object(ctx: InfGUIContext, obj: dict, uid: str,
 
     # ── Active ──
     active = obj.get("active", True)
-    new_active = ctx.checkbox(f"Active##{uid}", active)
+    new_active = ctx.checkbox(f"{t('asset.prefab_active')}##{uid}", active)
     if new_active != active:
         obj["active"] = new_active
         dirty = True
 
     # ── Tag ──
     tag = obj.get("tag", "Untagged")
-    field_label(ctx, "Tag")
+    field_label(ctx, t("asset.prefab_tag"))
     new_tag = ctx.text_input(f"##tag_{uid}", tag, 128)
     if new_tag != tag:
         obj["tag"] = new_tag
@@ -427,7 +428,7 @@ def _render_prefab_object(ctx: InfGUIContext, obj: dict, uid: str,
 
     # ── Layer ──
     layer = obj.get("layer", 0)
-    field_label(ctx, "Layer")
+    field_label(ctx, t("asset.prefab_layer"))
     new_layer = ctx.drag_int(f"##layer_{uid}", layer, 0.1, 0, 31)
     if new_layer != layer:
         obj["layer"] = new_layer
@@ -441,7 +442,7 @@ def _render_prefab_object(ctx: InfGUIContext, obj: dict, uid: str,
     transform = obj.get("transform")
     if transform and isinstance(transform, dict):
         header_open, _ = render_component_header(
-            ctx, "Transform", show_enabled=False, default_open=is_root,
+            ctx, t("asset.prefab_transform"), show_enabled=False, default_open=is_root,
         )
         if header_open:
             dirty |= _render_prefab_transform(ctx, transform, uid)
@@ -472,7 +473,7 @@ def _render_prefab_object(ctx: InfGUIContext, obj: dict, uid: str,
         pyc_uid = f"{uid}_p{pi}"
         header_open, new_enabled = render_component_header(
             ctx, type_name, show_enabled=True, is_enabled=enabled,
-            suffix=" (Script)", default_open=is_root,
+            suffix=t("asset.prefab_script"), default_open=is_root,
         )
         if new_enabled != enabled:
             pyc["enabled"] = new_enabled
@@ -491,13 +492,13 @@ def _render_prefab_object(ctx: InfGUIContext, obj: dict, uid: str,
 def _render_prefab_transform(ctx: InfGUIContext, transform: dict, uid: str) -> bool:
     """Render position/rotation/scale vector3 controls from transform JSON."""
     dirty = False
-    lw = max_label_w(ctx, ["Position", "Rotation", "Scale"])
+    lw = max_label_w(ctx, [t("asset.prefab_position"), t("asset.prefab_rotation"), t("asset.prefab_scale")])
 
     # Position — array format: [x, y, z]
     pos = transform.get("position", [0.0, 0.0, 0.0])
     if isinstance(pos, list) and len(pos) == 3:
         px, py_, pz = float(pos[0]), float(pos[1]), float(pos[2])
-        npx, npy, npz = ctx.vector3(f"Position##{uid}", px, py_, pz, _PREFAB_DRAG_SPEED, lw)
+        npx, npy, npz = ctx.vector3(f"{t('asset.prefab_position')}##{uid}", px, py_, pz, _PREFAB_DRAG_SPEED, lw)
         if abs(npx - px) > 1e-6 or abs(npy - py_) > 1e-6 or abs(npz - pz) > 1e-6:
             transform["position"] = [npx, npy, npz]
             dirty = True
@@ -506,7 +507,7 @@ def _render_prefab_transform(ctx: InfGUIContext, transform: dict, uid: str) -> b
     rot = transform.get("rotation", [0.0, 0.0, 0.0])
     if isinstance(rot, list) and len(rot) == 3:
         rx, ry, rz = float(rot[0]), float(rot[1]), float(rot[2])
-        nrx, nry, nrz = ctx.vector3(f"Rotation##{uid}", rx, ry, rz, _PREFAB_DRAG_SPEED, lw)
+        nrx, nry, nrz = ctx.vector3(f"{t('asset.prefab_rotation')}##{uid}", rx, ry, rz, _PREFAB_DRAG_SPEED, lw)
         if abs(nrx - rx) > 1e-6 or abs(nry - ry) > 1e-6 or abs(nrz - rz) > 1e-6:
             transform["rotation"] = [nrx, nry, nrz]
             dirty = True
@@ -515,7 +516,7 @@ def _render_prefab_transform(ctx: InfGUIContext, transform: dict, uid: str) -> b
     scl = transform.get("scale", [1.0, 1.0, 1.0])
     if isinstance(scl, list) and len(scl) == 3:
         sx, sy, sz = float(scl[0]), float(scl[1]), float(scl[2])
-        nsx, nsy, nsz = ctx.vector3(f"Scale##{uid}", sx, sy, sz, _PREFAB_DRAG_SPEED_FINE, lw)
+        nsx, nsy, nsz = ctx.vector3(f"{t('asset.prefab_scale')}##{uid}", sx, sy, sz, _PREFAB_DRAG_SPEED_FINE, lw)
         if abs(nsx - sx) > 1e-6 or abs(nsy - sy) > 1e-6 or abs(nsz - sz) > 1e-6:
             transform["scale"] = [nsx, nsy, nsz]
             dirty = True
@@ -530,7 +531,7 @@ def _render_prefab_component_fields(ctx: InfGUIContext, comp: dict,
     keys = [k for k in comp.keys() if k not in skip_keys]
     if not keys:
         ctx.push_style_color(ImGuiCol.Text, *Theme.TEXT_DIM)
-        ctx.label("  (no editable fields)")
+        ctx.label("  " + t("asset.no_editable_fields"))
         ctx.pop_style_color(1)
         return False
 
@@ -712,11 +713,11 @@ def render_asset_inspector(ctx: InfGUIContext, panel,
     _ensure_categories()
     cat_def = _categories.get(category)
     if cat_def is None:
-        ctx.label(f"Unknown asset type: {category}")
+        ctx.label(t("asset.unknown_asset_type").format(cat=category))
         return
 
     if not _state.load(file_path, category, cat_def):
-        ctx.label(f"Failed to load {cat_def.display_name}")
+        ctx.label(t("asset.failed_load").format(name=t(cat_def.display_name)))
         ctx.label(file_path)
         return
 
@@ -778,7 +779,7 @@ def _render_header(ctx: InfGUIContext, cat_def: AssetCategoryDef,
                    state: _State):
     """Render the standard asset header: name, GUID, path, extra meta."""
     filename = os.path.basename(state.file_path)
-    ctx.label(f"{cat_def.display_name}: {filename}")
+    ctx.label(f"{t(cat_def.display_name)}: {filename}")
 
     # GUID — try .meta first, then serialized data (material stores it inside)
     guid = (state.meta or {}).get("guid", "")
@@ -788,12 +789,12 @@ def _render_header(ctx: InfGUIContext, cat_def: AssetCategoryDef,
             guid = cached.get("guid", "")
     if guid:
         ctx.push_style_color(ImGuiCol.Text, *Theme.META_TEXT)
-        ctx.label(f"GUID: {guid}")
+        ctx.label(t("asset.guid_label").format(guid=guid))
         ctx.pop_style_color(1)
 
     # Path
     ctx.push_style_color(ImGuiCol.Text, *Theme.META_TEXT)
-    ctx.label(f"Path: {state.file_path}")
+    ctx.label(t("asset.path_label").format(path=state.file_path))
     ctx.pop_style_color(1)
 
     # Extra metadata from .meta (e.g. file_size, extension for audio)
@@ -816,13 +817,13 @@ def _render_file_size(ctx: InfGUIContext, val):
     try:
         size = int(val)
         if size >= 1048576:
-            ctx.label(f"Size: {size / 1048576:.2f} MB")
+            ctx.label(t("asset.size_mb").format(size=f"{size / 1048576:.2f}"))
         elif size >= 1024:
-            ctx.label(f"Size: {size / 1024:.1f} KB")
+            ctx.label(t("asset.size_kb").format(size=f"{size / 1024:.1f}"))
         else:
-            ctx.label(f"Size: {size} bytes")
+            ctx.label(t("asset.size_bytes").format(size=size))
     except (ValueError, TypeError):
-        ctx.label(f"Size: {val}")
+        ctx.label(t("asset.size_bytes").format(size=val))
 
 
 def _render_import_fields(ctx: InfGUIContext, cat_def: AssetCategoryDef,
@@ -830,8 +831,8 @@ def _render_import_fields(ctx: InfGUIContext, cat_def: AssetCategoryDef,
     """Auto-render editable import-settings fields from descriptors."""
     from .inspector_utils import render_compact_section_header, render_inspector_checkbox
 
-    if render_compact_section_header(ctx, "Import Settings", level="secondary"):
-        labels = [f.label for f in cat_def.editable_fields]
+    if render_compact_section_header(ctx, t("asset.import_settings"), level="secondary"):
+        labels = [t(f.label) for f in cat_def.editable_fields]
         lw = max_label_w(ctx, labels)
 
         for fdef in cat_def.editable_fields:
@@ -845,15 +846,15 @@ def _render_import_fields(ctx: InfGUIContext, cat_def: AssetCategoryDef,
                             and state.settings.texture_type == TextureType.NORMAL_MAP)
                 if disabled:
                     ctx.begin_disabled(True)
-                new_val = render_inspector_checkbox(ctx, fdef.label, cur)
+                new_val = render_inspector_checkbox(ctx, t(fdef.label), cur)
                 if new_val != cur:
                     setattr(state.settings, fdef.key, new_val)
                 if disabled:
                     ctx.end_disabled()
 
             elif fdef.field_type == WidgetType.COMBO:
-                field_label(ctx, fdef.label, lw)
-                display_labels = [e[0] for e in fdef.combo_entries]
+                field_label(ctx, t(fdef.label), lw)
+                display_labels = [t(e[0]) if e[0].startswith("asset.") else e[0] for e in fdef.combo_entries]
                 values = [e[1] for e in fdef.combo_entries]
                 try:
                     idx = values.index(cur)
@@ -866,7 +867,7 @@ def _render_import_fields(ctx: InfGUIContext, cat_def: AssetCategoryDef,
                         state.settings._sync_derived_fields()
 
             elif fdef.field_type == WidgetType.FLOAT:
-                field_label(ctx, fdef.label, lw)
+                field_label(ctx, t(fdef.label), lw)
                 speed = fdef.float_speed
                 v_min = fdef.float_range[0] if fdef.float_range else 0.0
                 v_max = fdef.float_range[1] if fdef.float_range else 0.0
@@ -903,13 +904,13 @@ def _render_mesh_info(ctx: InfGUIContext, panel, state: _State):
 
     from .inspector_utils import render_compact_section_header
 
-    if render_compact_section_header(ctx, "Mesh Info", level="secondary"):
-        labels = ["File", "Meshes", "Vertices", "Indices", "Material Slots"]
+    if render_compact_section_header(ctx, t("asset.mesh_info"), level="secondary"):
+        labels = [t("asset.mesh_file"), t("asset.mesh_meshes"), t("asset.mesh_vertices"), t("asset.mesh_indices"), t("asset.mesh_material_slots")]
         lw = max_label_w(ctx, labels)
 
         filename = os.path.basename(state.file_path)
         ctx.push_style_color(ImGuiCol.Text, *Theme.META_TEXT)
-        field_label(ctx, "File", lw)
+        field_label(ctx, t("asset.mesh_file"), lw)
         ctx.label(filename)
         ctx.pop_style_color(1)
 
@@ -920,16 +921,16 @@ def _render_mesh_info(ctx: InfGUIContext, panel, state: _State):
         mat_names = meta.get("material_slots", "")
 
         ctx.push_style_color(ImGuiCol.Text, *Theme.META_TEXT)
-        field_label(ctx, "Meshes", lw)
+        field_label(ctx, t("asset.mesh_meshes"), lw)
         ctx.label(str(mesh_count))
-        field_label(ctx, "Vertices", lw)
+        field_label(ctx, t("asset.mesh_vertices"), lw)
         ctx.label(str(vertex_count))
-        field_label(ctx, "Indices", lw)
+        field_label(ctx, t("asset.mesh_indices"), lw)
         ctx.label(str(index_count))
-        field_label(ctx, "Material Slots", lw)
+        field_label(ctx, t("asset.mesh_material_slots"), lw)
         ctx.label(str(mat_slots))
         if mat_names:
-            field_label(ctx, "Materials", lw)
+            field_label(ctx, t("asset.mesh_materials"), lw)
             ctx.label(str(mat_names))
         ctx.pop_style_color(1)
 
@@ -988,17 +989,17 @@ def _render_shader_body(ctx: InfGUIContext, panel, state: _State):
     info = state.settings  # ShaderAssetInfo
 
     # Shader type (read-only)
-    lw = max_label_w(ctx, ["Type"])
-    field_label(ctx, "Type", lw)
-    ctx.label(info.shader_type.capitalize() if info.shader_type else "Unknown")
+    lw = max_label_w(ctx, [t("asset.shader_type")])
+    field_label(ctx, t("asset.shader_type"), lw)
+    ctx.label(info.shader_type.capitalize() if info.shader_type else t("asset.shader_unknown"))
     ctx.separator()
 
     # ── Path editing ───────────────────────────────────────────────────
     from .inspector_utils import render_compact_section_header
 
-    if render_compact_section_header(ctx, "Path", level="secondary"):
-        plw = max_label_w(ctx, ["Source Path"])
-        field_label(ctx, "Source Path", plw)
+    if render_compact_section_header(ctx, t("asset.shader_path"), level="secondary"):
+        plw = max_label_w(ctx, [t("asset.shader_source_path")])
+        field_label(ctx, t("asset.shader_source_path"), plw)
         new_path = ctx.text_input("##shader_src_path", info.source_path, 512)
 
         if new_path != info.source_path:
@@ -1006,30 +1007,30 @@ def _render_shader_body(ctx: InfGUIContext, panel, state: _State):
             valid = {".vert", ".frag", ".geom", ".comp", ".tesc", ".tese"}
             if ext not in valid:
                 ctx.push_style_color(ImGuiCol.Text, *Theme.ERROR_TEXT)
-                ctx.label(f"Invalid shader extension: {ext}")
+                ctx.label(t("asset.shader_invalid_ext").format(ext=ext))
                 ctx.pop_style_color(1)
             else:
                 if not os.path.isfile(new_path):
                     ctx.push_style_color(ImGuiCol.Text, *Theme.WARNING_TEXT)
-                    ctx.label("Warning: file does not exist")
+                    ctx.label(t("asset.file_not_exist_warning"))
                     ctx.pop_style_color(1)
-                ctx.button("Apply Path Change",
+                ctx.button(t("asset.apply_path_change"),
                            lambda np=new_path: _apply_shader_path(
                                state, np))
 
     ctx.separator()
 
     # ── Source preview ─────────────────────────────────────────────────
-    if render_compact_section_header(ctx, "Source Preview", default_open=False, level="secondary"):
+    if render_compact_section_header(ctx, t("asset.shader_source_preview"), default_open=False, level="secondary"):
         _render_shader_source(ctx, state.file_path)
 
 
 def _render_font_body(ctx: InfGUIContext, panel, state: _State):
     info = state.settings
-    lw = max_label_w(ctx, ["Format", "Source Path"])
-    field_label(ctx, "Format", lw)
-    ctx.label(info.font_type.capitalize() if info.font_type else "Unknown")
-    field_label(ctx, "Source Path", lw)
+    lw = max_label_w(ctx, [t("asset.font_format"), t("asset.font_source_path")])
+    field_label(ctx, t("asset.font_format"), lw)
+    ctx.label(info.font_type.capitalize() if info.font_type else t("asset.font_unknown"))
+    field_label(ctx, t("asset.font_source_path"), lw)
     ctx.label(info.source_path)
 
 
@@ -1047,19 +1048,19 @@ def _apply_shader_path(state: _State, new_path: str):
 
 def _render_shader_source(ctx: InfGUIContext, file_path: str):
     if not os.path.isfile(file_path):
-        ctx.label("(file not found)")
+        ctx.label(t("asset.file_not_found"))
         return
     try:
         with open(file_path, "r", encoding="utf-8", errors="replace") as f:
             lines = f.readlines()[:40]
         text = "".join(lines)
         if len(lines) == 40:
-            text += "\n... (truncated)"
+            text += "\n" + t("asset.shader_truncated")
         ctx.push_style_color(ImGuiCol.Text, *Theme.SUCCESS_TEXT)
         ctx.label(text)
         ctx.pop_style_color(1)
     except OSError:
-        ctx.label("(failed to read source)")
+        ctx.label(t("asset.failed_read_source"))
 
 
 # ═══════════════════════════════════════════════════════════════════════════

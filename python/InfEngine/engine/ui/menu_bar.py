@@ -1,8 +1,10 @@
-from InfEngine.lib import InfGUIRenderable, InfGUIContext, InfEngine
+from InfEngine.lib import InfGUIRenderable, InfGUIContext
 from typing import TYPE_CHECKING
 from .build_settings_panel import BuildSettingsPanel
+from .preferences_panel import PreferencesPanel
 from .tag_layer_settings import PhysicsLayerMatrixPanel
 from InfEngine.engine.project_context import get_project_root
+from InfEngine.engine.i18n import t
 from .theme import Theme, ImGuiCol, ImGuiStyleVar
 
 if TYPE_CHECKING:
@@ -30,6 +32,7 @@ class MenuBarPanel(InfGUIRenderable):
         self._dark_mode = True  # default to dark
         self._scene_file_manager = None
         self._build_settings = BuildSettingsPanel()
+        self._preferences = PreferencesPanel()
         self._physics_layer_matrix = PhysicsLayerMatrixPanel()
         self._physics_layer_matrix.set_project_path(get_project_root() or "")
 
@@ -72,20 +75,28 @@ class MenuBarPanel(InfGUIRenderable):
 
         if ctx.begin_main_menu_bar():
             # Project menu - build configuration (leftmost)
-            if ctx.begin_menu("项目 Project", True):
-                if ctx.menu_item("构建设置  Build Settings", "", self._build_settings.is_open, True):
+            if ctx.begin_menu(t("menu.project"), True):
+                if ctx.menu_item(t("menu.build_settings"), "", self._build_settings.is_open, True):
                     if self._build_settings.is_open:
                         self._build_settings.close()
                     else:
                         self._build_settings.open()
 
                 if self.__window_manager:
-                    if ctx.menu_item("物理层交互矩阵  Physics Layer Matrix", "", self._physics_layer_matrix.is_open, True):
+                    if ctx.menu_item(t("menu.physics_layer_matrix"), "", self._physics_layer_matrix.is_open, True):
                         self._toggle_physics_layer_matrix()
+
+                ctx.separator()
+                if ctx.menu_item(t("menu.preferences"), "", self._preferences.is_open, True):
+                    if self._preferences.is_open:
+                        self._preferences.close()
+                    else:
+                        self._preferences.open()
+
                 ctx.end_menu()
 
             # Window menu - show all registered window types
-            if ctx.begin_menu("Window", True):
+            if ctx.begin_menu(t("menu.window"), True):
                 if self.__window_manager:
                     registered_types = self.__window_manager.get_registered_types()
                     open_windows = self.__window_manager.get_open_windows()
@@ -107,12 +118,12 @@ class MenuBarPanel(InfGUIRenderable):
                                     # Open the window
                                     self.__window_manager.open_window(type_id)
                     else:
-                        ctx.menu_item("(No windows registered)", "", False, False)
+                        ctx.menu_item(t("menu.no_windows"), "", False, False)
                 else:
-                    ctx.menu_item("(Window manager not set)", "", False, False)
+                    ctx.menu_item(t("menu.no_wm"), "", False, False)
                 
                 ctx.separator()
-                if ctx.menu_item("Reset Layout", "", False, True):
+                if ctx.menu_item(t("menu.reset_layout"), "", False, True):
                     if self.__window_manager:
                         self.__window_manager.reset_layout()
                 
@@ -123,8 +134,9 @@ class MenuBarPanel(InfGUIRenderable):
         ctx.pop_style_color(4)
         ctx.pop_style_var(3)
 
-        # Render Build Settings floating window (not docked)
+        # Render floating windows (not docked)
         self._build_settings.render(ctx)
+        self._preferences.render(ctx)
         self._physics_layer_matrix.render(ctx)
 
         # Render save-confirmation modal (if pending)

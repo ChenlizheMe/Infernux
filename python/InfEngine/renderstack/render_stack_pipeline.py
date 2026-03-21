@@ -20,15 +20,8 @@ interacts with the standard ``RenderPipeline`` interface.
 
 from __future__ import annotations
 
-import sys
-import warnings
-from typing import Optional, TYPE_CHECKING
-
 from InfEngine.renderstack.render_pipeline import RenderPipeline
 from InfEngine.renderstack.resource_bus import ResourceBus
-
-if TYPE_CHECKING:
-    pass
 
 
 class RenderStackPipeline(RenderPipeline):

@@ -13,8 +13,8 @@ import os
 import pathlib
 from typing import Optional
 
-from InfEngine.lib import InfGUIRenderable, InfGUIContext, TextureLoader, TextureData, TagLayerManager
-from InfEngine.resources import engine_font_path, icon_path
+from InfEngine.lib import TagLayerManager
+from InfEngine.resources import engine_font_path
 from InfEngine.engine.engine import Engine, LogLevel
 from InfEngine.engine.resources_manager import ResourcesManager
 from InfEngine.engine.play_mode import PlayModeManager, PlayModeState
@@ -92,7 +92,8 @@ class EditorBootstrap:
         self.ui_editor: Optional[UIEditorPanel] = None
 
         # Selection state
-        self._prev_selection = [0]
+        self._prev_selection = [0]  # kept for scene-change cleanup
+        self._prev_selection_ids: list = []  # for undo recording
 
         # Progress tracking for launcher splash
         self._phase = 0
@@ -124,9 +125,6 @@ class EditorBootstrap:
 
         self._report_progress("Setting up UI editor\u2026")
         self._wire_ui_editor()
-
-        self._report_progress("Configuring panel tracking\u2026")
-        self._setup_panel_focus_tracking()
 
         self._report_progress("Preparing scene system\u2026")
         self._setup_scene_change_cleanup()
@@ -211,12 +209,11 @@ class EditorBootstrap:
             return False
 
         def did_change(instance, field_name, old_value, new_value):
-            pm = PlayModeManager.instance()
-            if pm and pm.state != PlayModeState.EDIT:
-                return
-            sfm = SceneFileManager.instance()
-            if sfm is not None:
-                sfm.mark_dirty()
+            # Scene dirty state is managed exclusively by UndoManager._sync_dirty().
+            # No direct mark_dirty() call needed here — every edited property
+            # either went through will_change (undo-recorded → _sync_dirty)
+            # or is a play-mode / undo-driven write that shouldn't dirty.
+            pass
 
         from InfEngine.components.serialized_field import set_field_change_hooks
         set_field_change_hooks(will_change=will_change, did_change=did_change)
@@ -241,7 +238,7 @@ class EditorBootstrap:
             "scene_view":         lambda: SceneViewPanel(engine=engine),
             "game_view":          lambda: GameViewPanel(engine=engine),
             "project":            lambda: ProjectPanel(root_path=project_path, engine=engine),
-            "toolbar":            lambda: ToolbarPanel(title="工具栏 Toolbar", engine=engine),
+            "toolbar":            lambda: ToolbarPanel(engine=engine),
             "tag_layer_settings": lambda: self._create_tag_layer_panel(),
         }
         for reg in PanelRegistry.get_registrations():
@@ -272,7 +269,7 @@ class EditorBootstrap:
         engine.register_gui("menu_bar", self.menu_bar)
 
         # Toolbar
-        self.toolbar = ToolbarPanel(title="工具栏 Toolbar", engine=engine)
+        self.toolbar = ToolbarPanel(engine=engine)
         self.toolbar.set_window_manager(wm)
         engine.register_gui("toolbar", self.toolbar)
         wm.register_existing_window("toolbar", self.toolbar, "toolbar")
@@ -356,23 +353,12 @@ class EditorBootstrap:
             lambda obj: self.scene_view.fly_to_object(obj)
         )
 
-    def _apply_selection(self, object_id: int):
-        self._prev_selection[0] = object_id
-        if object_id:
-            self.hierarchy.set_selected_object_by_id(object_id)
-        else:
-            self.hierarchy.clear_selection()
-
-    def _record_selection(self, new_id: int):
-        old_id = self._prev_selection[0]
-        if old_id == new_id:
-            return
-        self._prev_selection[0] = new_id
-        from InfEngine.engine.undo import UndoManager, SelectionCommand
-        mgr = UndoManager.instance()
-        if mgr and not mgr.is_executing:
-            mgr.record(SelectionCommand(
-                old_id, new_id, self._apply_selection, "Select"))
+        # Let structural undo commands restore selection via the same
+        # pipeline as SelectionCommand (updates inspector, outline, etc.).
+        from InfEngine.engine.undo import (
+            CreateGameObjectCommand, DeleteGameObjectCommand)
+        CreateGameObjectCommand._selection_restore_fn = self._apply_selection_undo
+        DeleteGameObjectCommand._selection_restore_fn = self._apply_selection_undo
 
     def _set_outline(self, object_id: int):
         native = self.engine.get_native_engine()
@@ -391,8 +377,12 @@ class EditorBootstrap:
     def _on_hierarchy_selected(self, obj):
         from InfEngine.engine.ui.selection_manager import SelectionManager
         sel = SelectionManager.instance()
+        new_ids = sel.get_ids()
         primary_id = sel.get_primary()
-        self._record_selection(primary_id)
+
+        # Record selection change for undo (skip if caused by undo/redo itself)
+        self._record_selection_change(new_ids)
+
         self.inspector_panel.set_selected_object(obj)
         if obj is not None:
             self.project_panel.clear_selection()
@@ -416,8 +406,12 @@ class EditorBootstrap:
         else:
             sel.clear()
 
+        new_ids = sel.get_ids()
         primary = sel.get_primary()
-        self._record_selection(primary)
+
+        # Record selection change for undo
+        self._record_selection_change(new_ids)
+
         self._set_outline(primary)
 
         if primary:
@@ -426,17 +420,101 @@ class EditorBootstrap:
             obj = scene.find_by_id(primary) if scene else None
             self.inspector_panel.set_selected_object(obj)
             self.project_panel.clear_selection()
+            # Expand hierarchy to reveal the picked object
+            if obj:
+                self.hierarchy.expand_to_object(obj)
             self.event_bus.emit(EditorEvent.SELECTION_CHANGED, obj)
         else:
             self.inspector_panel.set_selected_object(None)
             self.event_bus.emit(EditorEvent.SELECTION_CHANGED, None)
 
     def _on_box_select_done(self, primary_obj):
+        from InfEngine.engine.ui.selection_manager import SelectionManager
+        sel = SelectionManager.instance()
+        new_ids = sel.get_ids()
+        self._record_selection_change(new_ids)
+
         self.inspector_panel.set_selected_object(primary_obj)
         if primary_obj:
             self.project_panel.clear_selection()
+            self.hierarchy.expand_to_object(primary_obj)
         self._set_outline(primary_obj.id if primary_obj else 0)
         self.event_bus.emit(EditorEvent.SELECTION_CHANGED, primary_obj)
+
+    # ── Selection undo helpers ─────────────────────────────────────────
+
+    # Structural command types whose associated selection changes should
+    # not be recorded as separate undo entries.
+    _STRUCTURAL_CMD_TYPES = None  # lazily populated
+
+    @classmethod
+    def _get_structural_types(cls):
+        if cls._STRUCTURAL_CMD_TYPES is None:
+            from InfEngine.engine.undo import (
+                CreateGameObjectCommand, DeleteGameObjectCommand,
+                ReparentCommand, MoveGameObjectCommand,
+                AddPyComponentCommand, RemovePyComponentCommand,
+            )
+            cls._STRUCTURAL_CMD_TYPES = (
+                CreateGameObjectCommand, DeleteGameObjectCommand,
+                ReparentCommand, MoveGameObjectCommand,
+                AddPyComponentCommand, RemovePyComponentCommand,
+            )
+        return cls._STRUCTURAL_CMD_TYPES
+
+    def _record_selection_change(self, new_ids: list):
+        """Push a SelectionCommand if the selection actually changed.
+
+        Skipped when:
+        - The change is triggered by undo/redo (``is_executing``).
+        - A structural command (create/delete/…) was just pushed in the
+          same synchronous call chain, i.e. the stack top is a structural
+          command with a timestamp < 50 ms ago.  This avoids recording a
+          spurious SelectionCommand that is really a side-effect of the
+          structural operation.
+        """
+        import time
+        from InfEngine.engine.undo import UndoManager, SelectionCommand
+        mgr = UndoManager.instance()
+        if not mgr or mgr.is_executing:
+            self._prev_selection_ids = list(new_ids)
+            return
+        if new_ids == self._prev_selection_ids:
+            return
+
+        # Skip if the stack top is a structural command from this frame.
+        if mgr._undo_stack:
+            top = mgr._undo_stack[-1]
+            if (isinstance(top, self._get_structural_types())
+                    and (time.time() - top.timestamp) < 0.05):
+                self._prev_selection_ids = list(new_ids)
+                return
+
+        mgr.record(SelectionCommand(
+            self._prev_selection_ids, new_ids,
+            self._apply_selection_undo))
+        self._prev_selection_ids = list(new_ids)
+
+    def _apply_selection_undo(self, ids: list):
+        """Restore a selection state during undo/redo."""
+        from InfEngine.engine.ui.selection_manager import SelectionManager
+        sel = SelectionManager.instance()
+        sel.set_ids(ids)
+        self._prev_selection_ids = list(ids)
+
+        primary = sel.get_primary()
+        self._set_outline(primary)
+
+        if primary:
+            from InfEngine.lib import SceneManager
+            scene = SceneManager.instance().get_active_scene()
+            obj = scene.find_by_id(primary) if scene else None
+            self.inspector_panel.set_selected_object(obj)
+            # Expand hierarchy to reveal without re-triggering selection callback
+            if obj:
+                self.hierarchy.expand_to_object(obj)
+        else:
+            self.inspector_panel.set_selected_object(None)
 
     # ── Phase 8: Wire UI Editor ────────────────────────────────────────
 
@@ -472,24 +550,7 @@ class EditorBootstrap:
         scene_view._on_focus_gained = exit_ui_mode
         game_view._on_focus_gained = exit_ui_mode
 
-    # ── Phase 9: Panel focus tracking ──────────────────────────────────
-
-    @staticmethod
-    def _setup_panel_focus_tracking():
-        from InfEngine.engine.ui.closable_panel import ClosablePanel
-
-        def on_panel_focus_changed(old_panel_id: str, new_panel_id: str):
-            from InfEngine.engine.undo import UndoManager, FocusPanelCommand
-            mgr = UndoManager.instance()
-            if mgr and not mgr.is_executing:
-                mgr.record(FocusPanelCommand(
-                    old_panel_id, new_panel_id,
-                    ClosablePanel.focus_panel_by_id,
-                    "Focus Panel"))
-
-        ClosablePanel.set_on_panel_focus_changed(on_panel_focus_changed)
-
-    # ── Phase 10: Scene-change cleanup ─────────────────────────────────
+    # ── Phase 9: Scene-change cleanup ──────────────────────────────────
 
     def _setup_scene_change_cleanup(self):
         def on_scene_changed():

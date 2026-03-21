@@ -611,6 +611,11 @@ class Theme:
                               | ImGuiWindowFlags.NoInputs)
     WINDOW_FLAGS_FLOATING  = (ImGuiWindowFlags.NoCollapse
                               | ImGuiWindowFlags.NoSavedSettings)
+    WINDOW_FLAGS_DIALOG    = (ImGuiWindowFlags.NoCollapse
+                              | ImGuiWindowFlags.NoSavedSettings
+                              | ImGuiWindowFlags.NoDocking
+                              | ImGuiWindowFlags.NoResize
+                              | ImGuiWindowFlags.NoMove)
 
     # ══════════════════════════════════════════════════════════════════════
     #  ImGui 条件常量 / ImGui Condition Constants

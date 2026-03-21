@@ -12,11 +12,20 @@ class WindowInfo:
                  window_class: Type[InfGUIRenderable],
                  display_name: str,
                  factory: Optional[Callable[[], InfGUIRenderable]] = None,
-                 singleton: bool = True):
+                 singleton: bool = True,
+                 title_key: Optional[str] = None):
         self.window_class = window_class
-        self.display_name = display_name
+        self._display_name = display_name
+        self.title_key = title_key
         self.factory = factory or (lambda: window_class())
         self.singleton = singleton  # If True, only one instance allowed
+
+    @property
+    def display_name(self) -> str:
+        if self.title_key:
+            from InfEngine.engine.i18n import t
+            return t(self.title_key)
+        return self._display_name
 
 
 class WindowManager:
@@ -51,7 +60,8 @@ class WindowManager:
                              window_class: Type[InfGUIRenderable],
                              display_name: str,
                              factory: Optional[Callable[[], InfGUIRenderable]] = None,
-                             singleton: bool = True):
+                             singleton: bool = True,
+                             title_key: Optional[str] = None):
         """
         Register a window type that can be created from the Window menu.
         
@@ -61,12 +71,14 @@ class WindowManager:
             display_name: Display name shown in the Window menu (e.g., "层级 Hierarchy")
             factory: Optional factory function to create instances
             singleton: If True, only one instance of this window is allowed
+            title_key: Optional i18n key for dynamic title resolution
         """
         self._registered_types[type_id] = WindowInfo(
             window_class=window_class,
             display_name=display_name,
             factory=factory,
-            singleton=singleton
+            singleton=singleton,
+            title_key=title_key,
         )
     
     def open_window(self, type_id: str, instance_id: Optional[str] = None) -> Optional[InfGUIRenderable]:

@@ -30,10 +30,10 @@ Usage::
 
 from __future__ import annotations
 
-import math
 from typing import Any, Callable, Optional, Sequence, Tuple, Union
 
 from InfEngine.lib import InfGUIContext
+from InfEngine.engine.i18n import t
 from .theme import Theme, ImGuiCol, ImGuiStyleVar, ImGuiTreeNodeFlags
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -237,14 +237,14 @@ class IGUI:
         # Filter input
         key = f"_igui_filter_{field_id}"
         prev_filter = _picker_filters.get(key, "")
-        new_filter = ctx.input_text_with_hint("##filter", "Search...", prev_filter, 256)
+        new_filter = ctx.input_text_with_hint("##filter", t("igui.search_hint"), prev_filter, 256)
         _picker_filters[key] = new_filter
 
         ctx.separator()
 
         # "None" option at top
         if on_clear is not None:
-            if ctx.selectable("None", False):
+            if ctx.selectable(t("igui.none"), False):
                 on_clear()
                 ctx.close_current_popup()
 
@@ -254,10 +254,10 @@ class IGUI:
 
         if has_scene and has_assets:
             if ctx.begin_tab_bar("##picker_tabs"):
-                if ctx.begin_tab_item("Scene"):
+                if ctx.begin_tab_item(t("igui.tab_scene")):
                     IGUI._render_picker_items(ctx, scene_items, new_filter, on_pick)
                     ctx.end_tab_item()
-                if ctx.begin_tab_item("Assets"):
+                if ctx.begin_tab_item(t("igui.tab_assets")):
                     IGUI._render_picker_items(ctx, asset_items, new_filter, on_pick)
                     ctx.end_tab_item()
                 ctx.end_tab_bar()
@@ -473,7 +473,7 @@ class IGUI:
                 _popup_needs_focus.discard(filter_key)
 
             prev_filter = _picker_filters.get(filter_key, "")
-            filt = ctx.input_text_with_hint("##filter", "Search...", prev_filter, 256)
+            filt = ctx.input_text_with_hint("##filter", t("igui.search_hint"), prev_filter, 256)
             _picker_filters[filter_key] = filt
             ctx.separator()
 
