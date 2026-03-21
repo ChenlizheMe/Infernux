@@ -15,11 +15,12 @@ class NewProjectView(QDialog):
     SETTINGS_GROUP = "NewProjectDialog"
     LAST_PATH_KEY = "lastProjectPath"
 
-    def __init__(self, version_manager=None, parent=None):
+    def __init__(self, version_manager=None, runtime_manager=None, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Create New Project")
         self.setMinimumWidth(480)
         self._version_manager = version_manager
+        self._runtime_manager = runtime_manager
 
         self.settings = QSettings("InfernuxEngine", "InfernuxEngine")
 
@@ -68,9 +69,22 @@ class NewProjectView(QDialog):
         ver_label = QLabel("Engine Version:")
         self.version_combo = QComboBox()
         self.version_combo.setFixedHeight(32)
-        self._populate_versions()
+        self._no_version_hint = QLabel(
+            "No engine versions installed. Go to the Installs tab to download one first."
+        )
+        self._no_version_hint.setWordWrap(True)
+        self._no_version_hint.setVisible(False)
+        self._no_version_hint.setStyleSheet("color: #f5a623; font-size: 12px; padding-top: 2px;")
+        self._runtime_hint = QLabel(
+            "Python 3.12 is not installed yet. Go to the Installs tab to install it first."
+        )
+        self._runtime_hint.setWordWrap(True)
+        self._runtime_hint.setVisible(False)
+        self._runtime_hint.setStyleSheet("color: #f5a623; font-size: 12px; padding-top: 2px;")
         ver_layout.addWidget(ver_label)
         ver_layout.addWidget(self.version_combo)
+        ver_layout.addWidget(self._no_version_hint)
+        ver_layout.addWidget(self._runtime_hint)
         layout.addLayout(ver_layout)
 
         # Button row
@@ -84,13 +98,18 @@ class NewProjectView(QDialog):
         btn_create = QPushButton("Create")
         btn_create.setObjectName("createBtn")
         btn_create.clicked.connect(self.accept)
+        self._create_btn = btn_create  # saved so _populate_versions can disable it
 
         btn_layout.addWidget(btn_cancel)
         btn_layout.addWidget(btn_create)
         layout.addLayout(btn_layout)
 
+        # Populate versions AFTER the create button exists
+        self._populate_versions()
+
     def _populate_versions(self):
         """Fill the version combo box."""
+        installed: list[str] = []
         if self._version_manager is not None:
             installed = self._version_manager.installed_versions()
             if installed:
@@ -103,6 +122,16 @@ class NewProjectView(QDialog):
             # Dev mode: add a "dev (current env)" option at the top
             self.version_combo.insertItem(0, "dev (current environment)", "")
             self.version_combo.setCurrentIndex(0)
+        else:
+            missing_runtime = self._runtime_manager is not None and not self._runtime_manager.has_runtime()
+            missing_version = not installed
+            if missing_runtime or missing_version:
+                self._create_btn.setEnabled(False)
+            if missing_runtime:
+                self._runtime_hint.setVisible(True)
+            if missing_version:
+                # Packaged Hub: a real version is mandatory — block creation
+                self._no_version_hint.setVisible(True)
 
     def _on_choose_path(self):
         current_path = self.path_edit.text() or ""

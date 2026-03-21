@@ -2,16 +2,18 @@ import sys
 sys.dont_write_bytecode = True
 
 from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QWidget,
+    QApplication, QMainWindow, QWidget, QMessageBox,
     QHBoxLayout, QVBoxLayout, QSizePolicy, QStackedWidget,
 )
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QIcon, QFontDatabase
 
 from ui_project_list import ProjectListPane
 from database import ProjectDatabase
 from style import StyleManager
 from hub_resources import ICON_PATH, FONT_PATH
+from hub_utils import is_frozen
+from python_runtime import PythonRuntimeError, PythonRuntimeManager
 from version_manager import VersionManager
 
 from model.project_model import ProjectModel
@@ -48,6 +50,7 @@ class GameEngineLauncher(QMainWindow):
         # Database & version manager
         self.db = ProjectDatabase()
         self.version_manager = VersionManager()
+        self.runtime_manager = PythonRuntimeManager()
 
         # ── Root layout: sidebar | content ───────────────────────────
         central = QWidget(self)
@@ -72,8 +75,13 @@ class GameEngineLauncher(QMainWindow):
         projects_layout.setSpacing(16)
 
         self.project_list = ProjectListPane(self.db, parent=projects_page)
-        model = ProjectModel(self.db, self.version_manager)
-        viewmodel = ControlPaneViewModel(model, self.project_list, self.version_manager)
+        model = ProjectModel(self.db, self.version_manager, self.runtime_manager)
+        viewmodel = ControlPaneViewModel(
+            model,
+            self.project_list,
+            self.version_manager,
+            self.runtime_manager,
+        )
         self.controls = ControlPane(viewmodel, parent=projects_page)
 
         self.controls.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
@@ -90,7 +98,7 @@ class GameEngineLauncher(QMainWindow):
         installs_layout.setContentsMargins(28, 24, 28, 24)
         installs_layout.setSpacing(0)
 
-        self.installs_view = InstallsView(self.version_manager, parent=installs_page)
+        self.installs_view = InstallsView(self.version_manager, self.runtime_manager, parent=installs_page)
         installs_layout.addWidget(self.installs_view)
 
         self.pages.addWidget(installs_page)
@@ -109,8 +117,36 @@ class GameEngineLauncher(QMainWindow):
 
     def run(self):
         self.show()
+        if is_frozen():
+            QTimer.singleShot(0, self._bootstrap_python_runtime)
         if self._own_app:
             sys.exit(self.app.exec())
+
+    def _bootstrap_python_runtime(self):
+        if self.runtime_manager.has_runtime():
+            self.installs_view.refresh()
+            return
+
+        QMessageBox.information(
+            self,
+            "Python 3.12 Setup",
+            "InfEngine Hub needs Python 3.12 to create and launch projects.\n\n"
+            "The Hub will now use the bundled python-3.12.0-amd64.exe installer\n"
+            "and install Python 3.12 into the Hub's private _inner directory.",
+        )
+
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            self.runtime_manager.ensure_runtime()
+        except PythonRuntimeError as exc:
+            QMessageBox.warning(
+                self,
+                "Python 3.12 Not Ready",
+                str(exc),
+            )
+        finally:
+            QApplication.restoreOverrideCursor()
+            self.installs_view.refresh()
 
     def _on_close(self):
         self.db.close()

@@ -18,7 +18,7 @@
 </p>
 
 <p align="center">
-  <a href="README-zh.md">🇨🇳 中文文档</a> · <a href="#quick-start">Quick Start</a> · <a href="#architecture">Architecture</a> · <a href="docs/index.html">Website</a>
+  <a href="README-zh.md">🇨🇳 中文文档</a> · <a href="#quick-start">Quick Start</a> · <a href="#architecture">Architecture</a> · <a href="https://chenlizheme.github.io/InfEngine/">Website</a>
 </p>
 
 ---
@@ -188,6 +188,7 @@ This is the main architectural promise of the engine: **high-level iteration wit
 
 | Version | Focus |
 |:--------|:------|
+| v0.1 | **Current** — Scripting, rendering, physics, editor. Usable for basic games without animation |
 | v0.2 | Prefab workflows, UI completion, asset rename improvements |
 | v0.3 | Animation system, model/content pipeline |
 | v0.4 | Standalone build, particles, terrain |

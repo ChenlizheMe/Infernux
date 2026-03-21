@@ -48,6 +48,7 @@ class CustomProgressDialog(QDialog):
 class InitProjectWorker(QObject):
     """Worker that runs project initialization on a background thread."""
     finished = Signal()
+    error = Signal(str)
 
     def __init__(self, model, name, path, engine_version=""):
         super().__init__()
@@ -57,15 +58,20 @@ class InitProjectWorker(QObject):
         self.engine_version = engine_version
 
     def run(self):
-        self.model.init_project_folder(self.name, self.path, self.engine_version)
+        try:
+            self.model.init_project_folder(self.name, self.path, self.engine_version)
+        except Exception as exc:
+            self.error.emit(str(exc))
+            return
         self.finished.emit()
 
 
 class ControlPaneViewModel:
-    def __init__(self, model, project_list, version_manager=None):
+    def __init__(self, model, project_list, version_manager=None, runtime_manager=None):
         self.model = model
         self.project_list = project_list
         self.version_manager = version_manager
+        self.runtime_manager = runtime_manager
 
     def launch_project(self, parent):
         project_name = self.project_list.get_selected_project()
@@ -129,7 +135,16 @@ class ControlPaneViewModel:
     def create_project(self, parent):
         from view.new_project_view import NewProjectView
 
-        dialog = NewProjectView(self.version_manager, parent)
+        if is_frozen() and self.runtime_manager is not None and not self.runtime_manager.has_runtime():
+            QMessageBox.warning(
+                parent,
+                "Python 3.12 Required",
+                "Python 3.12 is not installed yet.\n"
+                "Open the Installs page or restart the Hub and let it finish runtime setup first.",
+            )
+            return
+
+        dialog = NewProjectView(self.version_manager, self.runtime_manager, parent)
         if dialog.exec() != QDialog.Accepted:
             return
 
@@ -148,15 +163,40 @@ class ControlPaneViewModel:
         progress_dialog = CustomProgressDialog(parent)
         progress_dialog.show()
 
+        self._init_error: str = ""
+
         self.thread = QThread()
         self.worker = InitProjectWorker(self.model, new_name, project_path, engine_version)
         self.worker.moveToThread(self.thread)
 
+        def _store_error(msg: str):
+            # Called from the worker thread — only store the message.
+            self._init_error = msg
+
+        def _cleanup():
+            # Guaranteed to run on the main thread (QTimer fires in main loop).
+            progress_dialog.accept()
+            if self._init_error:
+                self.model.delete_project(new_name)
+                QMessageBox.critical(
+                    parent, "Project Creation Failed", self._init_error,
+                )
+                self._init_error = ""
+            self.project_list.refresh()
+            self.worker.deleteLater()
+            self.thread.deleteLater()
+
+        # QTimer in the main thread — its start() slot is auto-QueuedConnection
+        # when invoked from worker thread, so _cleanup always runs on main thread.
+        self._cleanup_timer = QTimer()
+        self._cleanup_timer.setSingleShot(True)
+        self._cleanup_timer.setInterval(0)
+        self._cleanup_timer.timeout.connect(_cleanup)
+
         self.thread.started.connect(self.worker.run)
         self.worker.finished.connect(self.thread.quit)
-        self.worker.finished.connect(self.worker.deleteLater)
-        self.thread.finished.connect(progress_dialog.accept)
-        self.thread.finished.connect(self.thread.deleteLater)
-        self.thread.finished.connect(self.project_list.refresh)
+        self.worker.error.connect(_store_error)
+        self.worker.error.connect(self.thread.quit)
+        self.thread.finished.connect(self._cleanup_timer.start)
 
         self.thread.start()

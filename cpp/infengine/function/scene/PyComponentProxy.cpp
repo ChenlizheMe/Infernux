@@ -2,7 +2,7 @@
 #include "Collider.h"
 #include "GameObject.h"
 #include "physics/PhysicsContactListener.h"
-#include <iostream>
+#include <core/log/InfLog.h>
 #include <nlohmann/json.hpp>
 
 using json = nlohmann::json;
@@ -30,7 +30,7 @@ void BindPythonMirrorHelpers(const py::object &pyComponent, Component *nativeCom
         }
         pyComponent.attr("_cpp_component") = py::cast(nativeComponent, py::return_value_policy::reference);
     } catch (const py::error_already_set &e) {
-        std::cerr << "[PyComponentProxy] Failed to bind Python mirror: " << e.what() << std::endl;
+        INFLOG_ERROR("[PyComponentProxy] Failed to bind Python mirror: ", e.what());
     }
 }
 
@@ -54,7 +54,7 @@ void SyncPythonMirrorState(const py::object &pyComponent, const Component *nativ
         pyComponent.attr("_has_started") = py::bool_(nativeComponent->HasStarted());
         pyComponent.attr("_is_destroyed") = py::bool_(nativeComponent->IsDestroyed());
     } catch (const py::error_already_set &e) {
-        std::cerr << "[PyComponentProxy] Failed to sync Python mirror state: " << e.what() << std::endl;
+        INFLOG_ERROR("[PyComponentProxy] Failed to sync Python mirror state: ", e.what());
     }
 }
 
@@ -67,11 +67,9 @@ void SyncEnabledFromPython(const py::object &pyComponent, bool &enabled, const c
     try {
         enabled = pyComponent.attr("enabled").cast<bool>();
     } catch (const py::error_already_set &e) {
-        std::cerr << "[PyComponentProxy] Failed to get enabled state";
-        if (phase && phase[0] != '\0') {
-            std::cerr << " in " << phase;
-        }
-        std::cerr << ": " << e.what() << std::endl;
+        INFLOG_ERROR("[PyComponentProxy] Failed to get enabled state",
+                     (phase && phase[0] != '\0') ? std::string(" in ") + phase : std::string(),
+                     ": ", e.what());
     }
 
     pyComponent.attr("enabled") = py::bool_(enabled);
@@ -83,8 +81,7 @@ void CallPythonLifecycleNoArg(const py::object &pyComponent, const std::string &
     try {
         pyComponent.attr(entryPoint)();
     } catch (const py::error_already_set &e) {
-        std::cerr << "[PyComponentProxy] Error in " << typeName << "." << displayName << "(): " << e.what()
-                  << std::endl;
+        INFLOG_ERROR("[PyComponentProxy] Error in ", typeName, ".", displayName, "(): ", e.what());
     }
 }
 
@@ -94,8 +91,7 @@ void CallPythonLifecycleFloatArg(const py::object &pyComponent, const std::strin
     try {
         pyComponent.attr(entryPoint)(value);
     } catch (const py::error_already_set &e) {
-        std::cerr << "[PyComponentProxy] Error in " << typeName << "." << displayName << "(): " << e.what()
-                  << std::endl;
+        INFLOG_ERROR("[PyComponentProxy] Error in ", typeName, ".", displayName, "(): ", e.what());
     }
 }
 
@@ -105,8 +101,7 @@ void CallPythonLifecycleOneArg(const py::object &pyComponent, const std::string 
     try {
         pyComponent.attr(entryPoint)(std::move(arg));
     } catch (const py::error_already_set &e) {
-        std::cerr << "[PyComponentProxy] Error in " << typeName << "." << displayName << "(): " << e.what()
-                  << std::endl;
+        INFLOG_ERROR("[PyComponentProxy] Error in ", typeName, ".", displayName, "(): ", e.what());
     }
 }
 } // namespace
@@ -123,7 +118,8 @@ PyComponentProxy::PyComponentProxy(py::object pyComponent)
             if (py::hasattr(pyType, "_execute_in_edit_mode_")) {
                 try {
                     m_executeInEditMode = pyType.attr("_execute_in_edit_mode_").cast<bool>();
-                } catch (const py::error_already_set &) {
+                } catch (const py::error_already_set &e) {
+                    INFLOG_WARN("[PyComponentProxy] Failed to read _execute_in_edit_mode_ for '", m_typeName, "': ", e.what());
                     m_executeInEditMode = false;
                 }
             }
@@ -148,7 +144,7 @@ PyComponentProxy::PyComponentProxy(py::object pyComponent)
                 }
             }
         } catch (const py::error_already_set &e) {
-            std::cerr << "[PyComponentProxy] Failed to get type name: " << e.what() << std::endl;
+            INFLOG_ERROR("[PyComponentProxy] Failed to get type name: ", e.what());
         }
     }
 }
@@ -187,7 +183,8 @@ void PyComponentProxy::BindPythonMirror()
     BindPythonMirrorHelpers(m_pyComponent, static_cast<Component *>(this), m_gameObject);
     try {
         m_pyComponent.attr("_execute_in_edit_mode") = py::bool_(m_executeInEditMode);
-    } catch (const py::error_already_set &) {
+    } catch (const py::error_already_set &e) {
+        INFLOG_WARN("[PyComponentProxy] Failed to set _execute_in_edit_mode on '", m_typeName, "': ", e.what());
     }
 }
 
@@ -212,7 +209,7 @@ void PyComponentProxy::Awake()
         CallPythonLifecycleNoArg(m_pyComponent, m_typeName, "_call_awake", "awake");
         SyncPythonMirror();
     } catch (const py::error_already_set &e) {
-        std::cerr << "[PyComponentProxy] Error in " << m_typeName << ".awake setup: " << e.what() << std::endl;
+        INFLOG_ERROR("[PyComponentProxy] Error in ", m_typeName, ".awake setup: ", e.what());
     }
 }
 
@@ -368,8 +365,8 @@ std::vector<std::string> PyComponentProxy::GetRequiredComponentTypes() const
                 }
             }
         }
-    } catch (const py::error_already_set &) {
-        // Silently ignore — no requirements
+    } catch (const py::error_already_set &e) {
+        INFLOG_WARN("[PyComponentProxy] Failed to get required components for '", m_typeName, "': ", e.what());
     }
     return result;
 }
@@ -402,7 +399,7 @@ std::string PyComponentProxy::Serialize() const
                 }
             }
         } catch (const py::error_already_set &e) {
-            std::cerr << "[PyComponentProxy] Error serializing fields: " << e.what() << std::endl;
+            INFLOG_ERROR("[PyComponentProxy] Error serializing fields: ", e.what());
         }
     }
 
@@ -429,7 +426,7 @@ bool PyComponentProxy::Deserialize(const std::string &jsonStr)
 
         return true;
     } catch (const std::exception &e) {
-        std::cerr << "[PyComponentProxy] Error deserializing: " << e.what() << std::endl;
+        INFLOG_ERROR("[PyComponentProxy] Error deserializing: ", e.what());
         return false;
     }
 }
@@ -441,7 +438,7 @@ void PyComponentProxy::SetScriptGuid(const std::string &guid)
         try {
             m_pyComponent.attr("_script_guid") = py::str(guid);
         } catch (const py::error_already_set &e) {
-            std::cerr << "[PyComponentProxy] Failed to set script guid: " << e.what() << std::endl;
+            INFLOG_ERROR("[PyComponentProxy] Failed to set script guid: ", e.what());
         }
     }
 }

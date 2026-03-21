@@ -96,6 +96,52 @@ def _snapshot_value(value: Any) -> Any:
     return value
 
 
+def _resolve_live_ref(stored: Any, game_object_id: int,
+                      comp_type_name: Optional[str]) -> Any:
+    """Return the live component after a delete+undo-delete recreate cycle.
+
+    When ``DeleteGameObjectCommand.undo()`` recreates an object from JSON all
+    previously-cached pybind11 component wrappers point to freed C++ memory.
+    This helper re-fetches the live component of the same type from the
+    reconstructed game object using the stored ``game_object_id`` and
+    component type name (string).
+
+    Falls back to the stored (stale) reference when the scene or object
+    cannot be found, so callers get a meaningful error rather than a segfault.
+    """
+    if not game_object_id or not comp_type_name:
+        return stored
+    scene = _get_active_scene()
+    if not scene:
+        return stored
+    obj = scene.find_by_id(game_object_id)
+    if obj is None:
+        return stored
+    try:
+        # Transform is accessible directly via obj.transform
+        if comp_type_name == "Transform":
+            t = getattr(obj, "transform", None)
+            if t is not None:
+                return t
+        # C++ components: get_component() expects a string type name
+        live = obj.get_component(comp_type_name)
+        if live is not None:
+            return live
+    except Exception:
+        pass
+    return stored
+
+
+def _comp_type_name_of(target: Any) -> str:
+    """Return the component type name string suitable for ``get_component()``."""
+    # C++ pybind11 components expose type_name
+    tn = getattr(target, 'type_name', None)
+    if tn:
+        return str(tn)
+    # Fallback: Python class name (works for both InfComponent and pybind11)
+    return type(target).__name__
+
+
 # ---------------------------------------------------------------------------
 # Concrete commands
 # ---------------------------------------------------------------------------
@@ -126,6 +172,15 @@ class SetPropertyCommand(UndoCommand):
         self._old_value = _snapshot_value(old_value)
         self._new_value = _snapshot_value(new_value)
         self._target_id: int = self._stable_id(target)
+        # Cache owner game object ID + type name so undo/redo can re-fetch
+        # the live component after a delete+recreate cycle (stale C++ pointer).
+        _goid = getattr(target, 'game_object_id', None) or 0
+        if not _goid:
+            _go = getattr(target, 'game_object', None)
+            if _go is not None:
+                _goid = getattr(_go, 'id', 0) or 0
+        self._game_object_id: int = _goid
+        self._comp_type_name: str = _comp_type_name_of(target) if _goid else ""
 
     # -- stable identity for merge comparisons --
     @staticmethod
@@ -140,10 +195,12 @@ class SetPropertyCommand(UndoCommand):
         setattr(self._target, self._prop_name, self._new_value)
 
     def undo(self) -> None:
-        setattr(self._target, self._prop_name, self._old_value)
+        target = _resolve_live_ref(self._target, self._game_object_id, self._comp_type_name)
+        setattr(target, self._prop_name, self._old_value)
 
     def redo(self) -> None:
-        setattr(self._target, self._prop_name, self._new_value)
+        target = _resolve_live_ref(self._target, self._game_object_id, self._comp_type_name)
+        setattr(target, self._prop_name, self._new_value)
 
     def can_merge(self, other: UndoCommand) -> bool:
         if not isinstance(other, SetPropertyCommand):
@@ -172,15 +229,24 @@ class GenericComponentCommand(UndoCommand):
         self._old_json = old_json
         self._new_json = new_json
         self._comp_id: int = getattr(comp, "component_id", id(comp))
+        _goid = getattr(comp, 'game_object_id', None) or 0
+        if not _goid:
+            _go = getattr(comp, 'game_object', None)
+            if _go is not None:
+                _goid = getattr(_go, 'id', 0) or 0
+        self._game_object_id: int = _goid
+        self._comp_type_name: str = _comp_type_name_of(comp)
 
     def execute(self) -> None:
         self._comp.deserialize(self._new_json)
 
     def undo(self) -> None:
-        self._comp.deserialize(self._old_json)
+        comp = _resolve_live_ref(self._comp, self._game_object_id, self._comp_type_name)
+        comp.deserialize(self._old_json)
 
     def redo(self) -> None:
-        self._comp.deserialize(self._new_json)
+        comp = _resolve_live_ref(self._comp, self._game_object_id, self._comp_type_name)
+        comp.deserialize(self._new_json)
 
     def can_merge(self, other: UndoCommand) -> bool:
         if not isinstance(other, GenericComponentCommand):
@@ -215,15 +281,24 @@ class BuiltinPropertyCommand(UndoCommand):
         self._old_value = _snapshot_value(old_value)
         self._new_value = _snapshot_value(new_value)
         self._comp_id: int = getattr(comp, "component_id", id(comp))
+        _goid = getattr(comp, 'game_object_id', None) or 0
+        if not _goid:
+            _go = getattr(comp, 'game_object', None)
+            if _go is not None:
+                _goid = getattr(_go, 'id', 0) or 0
+        self._game_object_id: int = _goid
+        self._comp_type_name: str = _comp_type_name_of(comp)
 
     def execute(self) -> None:
         setattr(self._comp, self._cpp_attr, self._new_value)
 
     def undo(self) -> None:
-        setattr(self._comp, self._cpp_attr, self._old_value)
+        comp = _resolve_live_ref(self._comp, self._game_object_id, self._comp_type_name)
+        setattr(comp, self._cpp_attr, self._old_value)
 
     def redo(self) -> None:
-        setattr(self._comp, self._cpp_attr, self._new_value)
+        comp = _resolve_live_ref(self._comp, self._game_object_id, self._comp_type_name)
+        setattr(comp, self._cpp_attr, self._new_value)
 
     def can_merge(self, other: UndoCommand) -> bool:
         if not isinstance(other, BuiltinPropertyCommand):

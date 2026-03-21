@@ -6,7 +6,7 @@ import sys
 import tempfile
 import uuid
 
-from PySide6.QtWidgets import QWidget, QApplication, QLabel, QVBoxLayout, QGraphicsDropShadowEffect, QProgressBar
+from PySide6.QtWidgets import QWidget, QApplication, QLabel, QVBoxLayout, QGraphicsDropShadowEffect, QProgressBar, QMessageBox
 from PySide6.QtCore import Qt, QTimer, QSize, QPropertyAnimation, QEasingCurve
 from PySide6.QtGui import QPixmap, QFont, QPainter, QColor, QPen, QBrush
 
@@ -17,7 +17,6 @@ class EngineSplashScreen(QWidget):
     Displays the engine icon, name, and an animated loading indicator.
     Fades in on show, fades out when the detached engine process signals
     readiness via a small ready-file, then closes.
-    Safety timeout at 30 s.
     """
 
     _SPLASH_SIZE = 420
@@ -102,12 +101,6 @@ class EngineSplashScreen(QWidget):
         self._spin_timer.timeout.connect(self._tick_spinner)
         self._spin_timer.start(30)
 
-        # Safety timeout: close after 30 seconds even without signal
-        self._timeout = QTimer(self)
-        self._timeout.setSingleShot(True)
-        self._timeout.timeout.connect(self._fade_out_and_close)
-        self._timeout.start(30000)
-
         self._poll_timer = QTimer(self)
         self._poll_timer.timeout.connect(self._poll_launch_state)
 
@@ -161,7 +154,6 @@ class EngineSplashScreen(QWidget):
             return
         self._closing = True
         self._spin_timer.stop()
-        self._timeout.stop()
         self._poll_timer.stop()
 
         self._fade_out_anim = QPropertyAnimation(self, b"windowOpacity")
@@ -191,14 +183,14 @@ class EngineSplashScreen(QWidget):
 
         popen_kwargs: dict = {"cwd": project_path, "env": env}
 
+        # Always capture stderr so we can report the real error when
+        # the engine crashes.  In detached mode, suppress the console
+        # window; in dev mode, let stdout pass through for logging.
+        popen_kwargs["stdin"] = subprocess.DEVNULL
+        popen_kwargs["stderr"] = subprocess.PIPE
         if detached:
-            popen_kwargs["stdin"] = subprocess.DEVNULL
             popen_kwargs["stdout"] = subprocess.DEVNULL
-            popen_kwargs["stderr"] = subprocess.DEVNULL
             if sys.platform == "win32":
-                # CREATE_NO_WINDOW prevents python.exe (console subsystem)
-                # from spawning a visible console window.
-                # CREATE_NEW_PROCESS_GROUP keeps the child independent.
                 flags = 0
                 flags |= getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
                 flags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
@@ -248,8 +240,33 @@ class EngineSplashScreen(QWidget):
             return
 
         if self._process is not None and self._process.poll() is not None:
+            # Engine exited before signalling readiness — show the error.
+            stderr_text = ""
+            try:
+                raw = self._process.stderr.read()
+                if raw:
+                    stderr_text = raw.decode("utf-8", errors="replace").strip()
+            except Exception:
+                pass
+
             self._status.setText("Launch failed")
-            QTimer.singleShot(250, self._fade_out_and_close)
+            self._fade_out_and_close()
+
+            if stderr_text:
+                QMessageBox.critical(
+                    None,
+                    "Engine Launch Failed",
+                    f"The engine process exited with an error:\n\n"
+                    f"{stderr_text[:2000]}",
+                )
+            else:
+                QMessageBox.critical(
+                    None,
+                    "Engine Launch Failed",
+                    f"The engine process exited unexpectedly "
+                    f"(code {self._process.returncode}).\n\n"
+                    "Check the project's Logs/ folder for details.",
+                )
 
     def close(self):
         self._fade_out_and_close()

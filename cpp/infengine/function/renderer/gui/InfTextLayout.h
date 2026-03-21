@@ -43,8 +43,20 @@ struct TextLayoutResult
     std::vector<TextLine> lines;
 };
 
-inline std::unordered_map<std::string, ImFont *> g_fontCache;
-inline std::unordered_set<std::string> g_missingFonts;
+// Font cache and missing-font set.  Accessed only from the main/render thread
+// (ImGui is single-threaded by design).  Wrapped in accessors to avoid static
+// initialization order issues across translation units.
+inline std::unordered_map<std::string, ImFont *> &GetFontCache()
+{
+    static std::unordered_map<std::string, ImFont *> cache;
+    return cache;
+}
+
+inline std::unordered_set<std::string> &GetMissingFonts()
+{
+    static std::unordered_set<std::string> missing;
+    return missing;
+}
 
 inline float ResolveFontSize(float fontSize)
 {
@@ -80,14 +92,17 @@ inline ImFont *ResolveFont(const std::string &fontPath)
     if (normalizedPath.empty())
         return ImGui::GetFont();
 
-    if (auto it = g_fontCache.find(normalizedPath); it != g_fontCache.end() && it->second != nullptr)
+    auto &fontCache = GetFontCache();
+    auto &missingFonts = GetMissingFonts();
+
+    if (auto it = fontCache.find(normalizedPath); it != fontCache.end() && it->second != nullptr)
         return it->second;
-    if (g_missingFonts.find(normalizedPath) != g_missingFonts.end())
+    if (missingFonts.find(normalizedPath) != missingFonts.end())
         return ImGui::GetFont();
 
     std::error_code ec;
     if (!std::filesystem::exists(normalizedPath, ec) || ec) {
-        g_missingFonts.insert(normalizedPath);
+        missingFonts.insert(normalizedPath);
         return ImGui::GetFont();
     }
 
@@ -95,11 +110,11 @@ inline ImFont *ResolveFont(const std::string &fontPath)
     config.FontDataOwnedByAtlas = false;
     ImFont *font = ImGui::GetIO().Fonts->AddFontFromFileTTF(normalizedPath.c_str(), 18.0f, &config);
     if (font == nullptr) {
-        g_missingFonts.insert(normalizedPath);
+        missingFonts.insert(normalizedPath);
         return ImGui::GetFont();
     }
 
-    g_fontCache[normalizedPath] = font;
+    fontCache[normalizedPath] = font;
     return font;
 }
 

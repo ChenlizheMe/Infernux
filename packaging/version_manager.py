@@ -26,7 +26,7 @@ from typing import List, Optional
 
 # ── Configuration ────────────────────────────────────────────────────
 
-GITHUB_OWNER = "invernuxe"
+GITHUB_OWNER = "ChenlizheMe"
 GITHUB_REPO = "InfEngine"
 _API_BASE = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}"
 _VERSIONS_DIR = Path.home() / ".infengine" / "versions"
@@ -201,10 +201,17 @@ class VersionManager:
 
     @staticmethod
     def read_project_version(project_dir: str) -> Optional[str]:
-        """Read the engine version pinned in a project."""
+        """Read the engine version pinned in a project.
+
+        Ignores comment lines (starting with ``#``) so the file can carry
+        human-readable annotations without breaking version parsing.
+        """
         vf = os.path.join(project_dir, ".infengine-version")
         if os.path.isfile(vf):
-            return open(vf, encoding="utf-8").read().strip()
+            for line in open(vf, encoding="utf-8"):
+                line = line.strip()
+                if line and not line.startswith("#"):
+                    return line
         return None
 
     @staticmethod
@@ -212,6 +219,8 @@ class VersionManager:
         """Pin an engine version for a project."""
         vf = os.path.join(project_dir, ".infengine-version")
         with open(vf, "w", encoding="utf-8") as f:
+            f.write("# InfEngine project version pin — do not edit manually.\n")
+            f.write("# Format: <major>.<minor>.<patch>\n")
             f.write(version + "\n")
 
     # ── Internal ─────────────────────────────────────────────────────

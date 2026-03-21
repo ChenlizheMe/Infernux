@@ -8,6 +8,7 @@
 // Jolt types are no longer exposed in collider headers — no Jolt include needed here
 
 #include "ComponentBindingRegistry.h"
+#include "core/log/InfLog.h"
 #include "function/resources/AssetRegistry/AssetRegistry.h"
 #include "function/resources/InfMesh/InfMesh.h"
 #include "function/scene/BoxCollider.h"
@@ -902,6 +903,7 @@ void RegisterSceneBindings(py::module_ &m)
                     try {
                         cppTypeName = pyType.attr("_cpp_type_name").cast<std::string>();
                     } catch (...) {
+                        INFLOG_WARN("[Binding] Failed to read _cpp_type_name from component type");
                         cppTypeName.clear();
                     }
                 }
@@ -910,6 +912,7 @@ void RegisterSceneBindings(py::module_ &m)
                     try {
                         disallowMultiple = pyType.attr("_disallow_multiple_").cast<bool>();
                     } catch (...) {
+                        INFLOG_WARN("[Binding] Failed to read _disallow_multiple_ from component type");
                     }
                 }
 
@@ -960,6 +963,7 @@ void RegisterSceneBindings(py::module_ &m)
                             try {
                                 reqCppTypeName = reqType.attr("_cpp_type_name").cast<std::string>();
                             } catch (...) {
+                                INFLOG_WARN("[Binding] Failed to read _cpp_type_name from required component type");
                                 reqCppTypeName.clear();
                             }
 
@@ -1007,6 +1011,7 @@ void RegisterSceneBindings(py::module_ &m)
                                         py::cast(reqAdded, py::return_value_policy::reference),
                                         py::cast(obj, py::return_value_policy::reference));
                                 } catch (...) {
+                                    INFLOG_WARN("[Binding] Failed to bind required component to native proxy");
                                 }
                             }
                         }
@@ -1030,6 +1035,7 @@ void RegisterSceneBindings(py::module_ &m)
                                 py::cast(obj, py::return_value_policy::reference));
                         }
                     } catch (...) {
+                        INFLOG_WARN("[Binding] Failed to bind newly added component to native proxy");
                     }
                     // Return the original Python component
                     return pyComponentInstance;

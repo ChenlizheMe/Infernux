@@ -332,6 +332,7 @@ ShaderDescriptor InfShaderLoader::ParseShaderSource(const std::string &source, c
              try {
                  desc.renderQueue = std::stoi(v);
              } catch (...) {
+                 INFLOG_WARN("[ShaderLoader] Invalid @queue value: '", v, "'");
              }
          }},
         {"pass_tag", [&](const std::string &v) { desc.passTag = toLower(v); }},

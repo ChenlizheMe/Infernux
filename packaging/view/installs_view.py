@@ -272,13 +272,41 @@ class InstallEditorDialog(QDialog):
 class InstallsView(QWidget):
     """Page showing installed engine versions with install/locate actions."""
 
-    def __init__(self, version_manager: VersionManager, parent=None):
+    def __init__(self, version_manager: VersionManager, runtime_manager=None, parent=None):
         super().__init__(parent)
         self._vm = version_manager
+        self._runtime_manager = runtime_manager
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(16)
+
+        self._runtime_card = QFrame()
+        self._runtime_card.setObjectName("versionCard")
+        self._runtime_card.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        runtime_layout = QHBoxLayout(self._runtime_card)
+        runtime_layout.setContentsMargins(16, 12, 16, 12)
+        runtime_layout.setSpacing(14)
+
+        runtime_info = QVBoxLayout()
+        runtime_info.setSpacing(4)
+        runtime_info.setContentsMargins(0, 0, 0, 0)
+        self._runtime_status = QLabel()
+        self._runtime_status.setObjectName("cardName")
+        runtime_info.addWidget(self._runtime_status)
+        self._runtime_path = QLabel()
+        self._runtime_path.setObjectName("cardPath")
+        self._runtime_path.setWordWrap(True)
+        runtime_info.addWidget(self._runtime_path)
+        runtime_layout.addLayout(runtime_info, 1)
+
+        self._runtime_button = QPushButton("Install Python 3.12")
+        self._runtime_button.setObjectName("primaryBtn")
+        self._runtime_button.setFixedHeight(34)
+        self._runtime_button.clicked.connect(self._on_install_python)
+        runtime_layout.addWidget(self._runtime_button)
+
+        layout.addWidget(self._runtime_card)
 
         # ── Header ───────────────────────────────────────────────────
         header = QHBoxLayout()
@@ -327,6 +355,8 @@ class InstallsView(QWidget):
     # ── Public API ───────────────────────────────────────────────────
 
     def refresh(self):
+        self._refresh_runtime_status()
+
         # Clear existing cards
         while self._card_layout.count():
             item = self._card_layout.takeAt(0)
@@ -349,11 +379,48 @@ class InstallsView(QWidget):
 
         self._card_layout.addStretch()
 
+    def _refresh_runtime_status(self):
+        if self._runtime_manager is None:
+            self._runtime_card.hide()
+            return
+
+        self._runtime_card.show()
+        runtime_path = self._runtime_manager.get_runtime_path()
+        if runtime_path:
+            self._runtime_status.setText("Python 3.12 runtime is ready")
+            self._runtime_path.setText(runtime_path)
+            self._runtime_button.setText("Reinstall Python 3.12")
+        else:
+            self._runtime_status.setText("Python 3.12 runtime is missing")
+            self._runtime_path.setText(
+                "The Hub has a bundled python-3.12.0-amd64.exe installer and will install Python 3.12 into _inner/python312."
+            )
+            self._runtime_button.setText("Install Python 3.12")
+
     # ── Actions ──────────────────────────────────────────────────────
 
     def _on_install_editor(self):
         dlg = InstallEditorDialog(self._vm, parent=self)
         if dlg.exec() == QDialog.Accepted:
+            self.refresh()
+
+    def _on_install_python(self):
+        if self._runtime_manager is None:
+            return
+
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            python_exe = self._runtime_manager.ensure_runtime()
+        except Exception as exc:
+            QMessageBox.critical(self, "Python Installation Failed", str(exc))
+        else:
+            QMessageBox.information(
+                self,
+                "Python Installed",
+                f"Python 3.12 is ready at:\n{python_exe}",
+            )
+        finally:
+            QApplication.restoreOverrideCursor()
             self.refresh()
 
     def _on_locate(self):

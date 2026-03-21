@@ -114,6 +114,7 @@ void AudioClip::ApplyImportSettings()
         try {
             forceMono = meta.GetDataAs<bool>("force_mono");
         } catch (...) {
+            INFLOG_WARN("[AudioClip] Invalid 'force_mono' metadata in: ", metaPath);
         }
 
         if (forceMono && m_spec.channels > 1) {

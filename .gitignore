@@ -3,6 +3,7 @@
 # ============================================================================
 /build/
 /out/
+/packaging/_vendor/
 cmake-build-*/
 CMakeFiles/
 CMakeCache.txt

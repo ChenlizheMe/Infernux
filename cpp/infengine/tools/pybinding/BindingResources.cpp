@@ -502,9 +502,9 @@ void RegisterResourceBindings(py::module_ &m)
                         break;
                     case MaterialPropertyType::Mat4: {
                         // mat4 not registered as pybind11 type — return as list of 16 floats
-                        auto &mat = std::get<glm::mat4>(prop.value);
+                        auto &m4 = std::get<glm::mat4>(prop.value);
                         py::list ml;
-                        const float *data = &mat[0][0];
+                        const float *data = &m4[0][0];
                         for (int i = 0; i < 16; ++i)
                             ml.append(data[i]);
                         result[py::str(name)] = ml;

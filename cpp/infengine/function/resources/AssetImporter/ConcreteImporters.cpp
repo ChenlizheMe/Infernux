@@ -32,7 +32,11 @@ void MaterialImporter::ScanDependencies(const ImportContext &ctx)
         if (!file.is_open())
             return;
         file >> root;
+    } catch (const std::exception &e) {
+        INFLOG_WARN("MaterialImporter: failed to parse '", ctx.sourcePath, "': ", e.what());
+        return;
     } catch (...) {
+        INFLOG_WARN("MaterialImporter: unknown error parsing '", ctx.sourcePath, "'");
         return;
     }
 

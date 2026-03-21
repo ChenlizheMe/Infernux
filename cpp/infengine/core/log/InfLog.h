@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <iostream>
 #include <mutex>
 #include <sstream>
@@ -26,7 +27,7 @@ class InfLog
 
     template <typename... Args> void Log(LogLevel level, const char *file, int line, Args &&...args)
     {
-        if (logLevel > level)
+        if (logLevel.load(std::memory_order_relaxed) > level)
             return;
 
         std::ostringstream oss;
@@ -39,25 +40,24 @@ class InfLog
 
     void SetLogLevel(int level)
     {
-        logLevel = level;
+        logLevel.store(level, std::memory_order_relaxed);
     }
 
     int GetLogLevel() const
     {
-        return logLevel;
+        return logLevel.load(std::memory_order_relaxed);
     }
 
   private:
-    InfLog()
+    InfLog() : logLevel(LOG_INFO)
     {
-        logLevel = LOG_INFO;
     }
     InfLog(const InfLog &) = delete;
     InfLog &operator=(const InfLog &) = delete;
 
     std::mutex mutex_;
 
-    int logLevel;
+    std::atomic<int> logLevel;
 
     const char *LogLevelToString(LogLevel level)
     {

@@ -1,10 +1,7 @@
 #include "InfMaterialLoader.hpp"
 #include <core/log/InfLog.h>
 #include <filesystem>
-#include <nlohmann/json.hpp>
 #include <platform/filesystem/InfPath.h>
-
-using json = nlohmann::json;
 
 namespace infengine
 {
@@ -26,18 +23,10 @@ void InfMaterialLoader::CreateMeta(const char *content, size_t contentSize, cons
 
     metaData.Init(content, contentSize, filePath, ResourceType::Material);
 
-    // Try to extract material name from JSON content
-    try {
-        std::string jsonStr(content, contentSize);
-        json j = json::parse(jsonStr);
-        if (j.contains("name")) {
-            metaData.AddMetadata("material_name", j["name"].get<std::string>());
-        }
-    } catch (...) {
-        // Fallback to filename
-        std::filesystem::path path = ToFsPath(filePath);
-        metaData.AddMetadata("material_name", FromFsPath(path.stem()));
-    }
+    // Use filename stem as material name — authoritative name is set by
+    // MaterialLoader::Load() at runtime, so parsing JSON here is unnecessary.
+    std::filesystem::path path = ToFsPath(filePath);
+    metaData.AddMetadata("material_name", FromFsPath(path.stem()));
 
     INFLOG_DEBUG("Material metadata created for file: ", filePath);
 }
