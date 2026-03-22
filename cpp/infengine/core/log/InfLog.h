@@ -50,8 +50,7 @@ class InfLog
 
         // Plain message for file output (no ANSI color codes)
         std::ostringstream plain;
-        plain << '[' << LogLevelToString(level) << "] "
-              << '(' << file << ':' << line << ") ";
+        plain << '[' << LogLevelToString(level) << "] " << '(' << file << ':' << line << ") ";
         (plain << ... << args);
         plain << '\n';
 

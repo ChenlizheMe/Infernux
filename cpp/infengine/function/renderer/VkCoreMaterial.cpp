@@ -375,8 +375,8 @@ void InfVkCoreModular::InitializeMaterialSystem()
         VkFormat colorFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
         VkFormat depthFormat = m_deviceContext.FindDepthFormat();
         m_materialPipelineManager.Initialize(m_deviceContext.GetVmaAllocator(), GetDevice(), GetPhysicalDevice(),
-                                             colorFormat, depthFormat, m_msaaSampleCount, m_shaderCache.GetProgramCache(),
-                                             &m_deletionQueue);
+                                             colorFormat, depthFormat, m_msaaSampleCount,
+                                             m_shaderCache.GetProgramCache(), &m_deletionQueue);
         m_materialPipelineManagerInitialized = true;
 
         auto *whiteTex = m_textureCache.Find("white");
@@ -501,8 +501,8 @@ bool InfVkCoreModular::RefreshMaterialPipeline(std::shared_ptr<InfMaterial> mate
     const auto *renderMeta = m_shaderCache.GetRenderMeta(fragShaderName);
     if (renderMeta) {
         material->ApplyShaderRenderMeta(renderMeta->cullMode, renderMeta->depthWrite, renderMeta->depthTest,
-                                        renderMeta->blend, renderMeta->queue, renderMeta->passTag,
-                                        renderMeta->stencil, renderMeta->alphaClip);
+                                        renderMeta->blend, renderMeta->queue, renderMeta->passTag, renderMeta->stencil,
+                                        renderMeta->alphaClip);
     }
 
     const auto *vertCode = m_shaderCache.FindVertCode(vertShaderName);

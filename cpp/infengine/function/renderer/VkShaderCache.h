@@ -59,8 +59,7 @@ class VkShaderCache
     // ── Module Management ──────────────────────────────────────────────────
 
     /// Load a shader (vert/frag) from SPIR-V code, creating a VkShaderModule.
-    void LoadShader(const char *name, const std::vector<char> &spirvCode,
-                    const char *type, vk::VkPipelineManager &pm);
+    void LoadShader(const char *name, const std::vector<char> &spirvCode, const char *type, vk::VkPipelineManager &pm);
 
     /// Unload (destroy) a shader module and erase its cached code/meta.
     void UnloadShader(const char *name, VkDevice device);
@@ -73,10 +72,10 @@ class VkShaderCache
 
     // ── Render-State Annotations ───────────────────────────────────────────
 
-    void StoreRenderMeta(const std::string &shaderId, const std::string &cullMode,
-                         const std::string &depthWrite, const std::string &depthTest,
-                         const std::string &blend, int queue, const std::string &passTag = "",
-                         const std::string &stencil = "", const std::string &alphaClip = "");
+    void StoreRenderMeta(const std::string &shaderId, const std::string &cullMode, const std::string &depthWrite,
+                         const std::string &depthTest, const std::string &blend, int queue,
+                         const std::string &passTag = "", const std::string &stencil = "",
+                         const std::string &alphaClip = "");
 
     /// Get render-state annotations (nullptr if none stored).
     [[nodiscard]] const ShaderRenderMeta *GetRenderMeta(const std::string &shaderId) const;
@@ -91,8 +90,14 @@ class VkShaderCache
 
     // ── ShaderProgramCache Access ──────────────────────────────────────────
 
-    [[nodiscard]] ShaderProgramCache &GetProgramCache() { return m_programCache; }
-    [[nodiscard]] const ShaderProgramCache &GetProgramCache() const { return m_programCache; }
+    [[nodiscard]] ShaderProgramCache &GetProgramCache()
+    {
+        return m_programCache;
+    }
+    [[nodiscard]] const ShaderProgramCache &GetProgramCache() const
+    {
+        return m_programCache;
+    }
 
     // ── Lifecycle ──────────────────────────────────────────────────────────
 
@@ -109,9 +114,8 @@ class VkShaderCache
 
   private:
     /// Path-aware lookup: tries exact match, filename, then stem.
-    static const std::vector<char> *FindCodeInMap(
-        const std::unordered_map<std::string, std::vector<char>> &map,
-        const std::string &path);
+    static const std::vector<char> *FindCodeInMap(const std::unordered_map<std::string, std::vector<char>> &map,
+                                                  const std::string &path);
 
     std::unordered_map<std::string, VkShaderModule> m_vertModules;
     std::unordered_map<std::string, VkShaderModule> m_fragModules;

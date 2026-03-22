@@ -16,8 +16,8 @@ namespace infengine
 // Module Management
 // ============================================================================
 
-void VkShaderCache::LoadShader(const char *name, const std::vector<char> &spirvCode,
-                               const char *type, vk::VkPipelineManager &pm)
+void VkShaderCache::LoadShader(const char *name, const std::vector<char> &spirvCode, const char *type,
+                               vk::VkPipelineManager &pm)
 {
     std::vector<uint32_t> code(spirvCode.size() / sizeof(uint32_t));
     std::memcpy(code.data(), spirvCode.data(), spirvCode.size());
@@ -112,8 +112,8 @@ const ShaderRenderMeta *VkShaderCache::GetRenderMeta(const std::string &shaderId
 // SPIR-V Code Lookup
 // ============================================================================
 
-const std::vector<char> *VkShaderCache::FindCodeInMap(
-    const std::unordered_map<std::string, std::vector<char>> &map, const std::string &path)
+const std::vector<char> *VkShaderCache::FindCodeInMap(const std::unordered_map<std::string, std::vector<char>> &map,
+                                                      const std::string &path)
 {
     // Try exact match first
     auto it = map.find(path);

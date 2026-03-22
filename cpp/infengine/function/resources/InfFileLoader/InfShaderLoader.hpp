@@ -140,8 +140,7 @@ class InfShaderLoader
     static void AddShaderSearchPath(const std::string &dir);
 
     bool LoadMeta(const char *content, const std::string &filePath, InfResourceMeta &metaData);
-    void CreateMeta(const char *content, size_t contentSize, const std::string &filePath,
-                    InfResourceMeta &metaData);
+    void CreateMeta(const char *content, size_t contentSize, const std::string &filePath, InfResourceMeta &metaData);
 
     /// Compile shader source to SPIR-V and populate variant caches.
     /// Returns compiled data as shared_ptr<vector<char>> (forward SPIR-V), or nullptr on failure.

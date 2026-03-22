@@ -15,8 +15,7 @@ namespace infengine
 // Simple Loaders
 // ============================================================================
 
-void VkTextureCache::CreateTextureImage(const std::string &name, const std::string &path,
-                                         vk::VkResourceManager &rm)
+void VkTextureCache::CreateTextureImage(const std::string &name, const std::string &path, vk::VkResourceManager &rm)
 {
     auto texture = rm.LoadTexture(path);
     if (texture) {
@@ -36,9 +35,8 @@ void VkTextureCache::CreateDefaultWhiteTexture(const std::string &name, vk::VkRe
     }
 }
 
-void VkTextureCache::CreateSolidColorTexture(const std::string &name, uint8_t r, uint8_t g,
-                                              uint8_t b, uint8_t a, VkFormat format,
-                                              vk::VkResourceManager &rm)
+void VkTextureCache::CreateSolidColorTexture(const std::string &name, uint8_t r, uint8_t g, uint8_t b, uint8_t a,
+                                             VkFormat format, vk::VkResourceManager &rm)
 {
     auto texture = rm.CreateSolidColorTexture(1, 1, r, g, b, a, format);
     if (texture) {

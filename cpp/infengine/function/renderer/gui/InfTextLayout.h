@@ -58,8 +58,7 @@ inline void AssertMainThread()
 {
 #ifndef NDEBUG
     static const std::thread::id s_ownerThread = std::this_thread::get_id();
-    assert(std::this_thread::get_id() == s_ownerThread &&
-           "InfTextLayout font cache accessed from non-owner thread");
+    assert(std::this_thread::get_id() == s_ownerThread && "InfTextLayout font cache accessed from non-owner thread");
 #endif
 }
 } // namespace detail

@@ -226,7 +226,7 @@ class InfEngine
 
     // Selection tracking for outline updates
     uint64_t m_selectedObjectId = 0;
-    std::vector<uint64_t> m_cachedOutlineIds;  ///< Last set of IDs passed to SetSelectionOutlines
+    std::vector<uint64_t> m_cachedOutlineIds; ///< Last set of IDs passed to SetSelectionOutlines
 
     // ImGui ini file path — stored as std::filesystem::path so that
     // wide-char paths (e.g. Chinese usernames) work correctly on Windows.

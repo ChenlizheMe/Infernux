@@ -589,7 +589,6 @@ void RegisterResourceBindings(py::module_ &m)
         // Alpha clip
         .def_readwrite("alpha_clip_enabled", &RenderState::alphaClipEnabled, "Whether alpha clipping is enabled")
         .def_readwrite("alpha_clip_threshold", &RenderState::alphaClipThreshold, "Alpha clip threshold (0.0-1.0)");
-
 }
 
 } // namespace infengine

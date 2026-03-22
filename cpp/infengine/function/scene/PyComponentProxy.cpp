@@ -68,8 +68,7 @@ void SyncEnabledFromPython(const py::object &pyComponent, bool &enabled, const c
         enabled = pyComponent.attr("enabled").cast<bool>();
     } catch (const py::error_already_set &e) {
         INFLOG_ERROR("[PyComponentProxy] Failed to get enabled state",
-                     (phase && phase[0] != '\0') ? std::string(" in ") + phase : std::string(),
-                     ": ", e.what());
+                     (phase && phase[0] != '\0') ? std::string(" in ") + phase : std::string(), ": ", e.what());
     }
 
     pyComponent.attr("enabled") = py::bool_(enabled);
@@ -119,7 +118,8 @@ PyComponentProxy::PyComponentProxy(py::object pyComponent)
                 try {
                     m_executeInEditMode = pyType.attr("_execute_in_edit_mode_").cast<bool>();
                 } catch (const py::error_already_set &e) {
-                    INFLOG_WARN("[PyComponentProxy] Failed to read _execute_in_edit_mode_ for '", m_typeName, "': ", e.what());
+                    INFLOG_WARN("[PyComponentProxy] Failed to read _execute_in_edit_mode_ for '", m_typeName,
+                                "': ", e.what());
                     m_executeInEditMode = false;
                 }
             }

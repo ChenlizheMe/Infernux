@@ -192,7 +192,7 @@ bool ShaderLoader::LoadMeta(const char *content, const std::string &filePath, In
 }
 
 void ShaderLoader::CreateMeta(const char *content, size_t contentSize, const std::string &filePath,
-                               InfResourceMeta &metaData)
+                              InfResourceMeta &metaData)
 {
     InfShaderLoader compiler(true, false, false, false, false, false, false, false, false, false);
     compiler.CreateMeta(content, contentSize, filePath, metaData);

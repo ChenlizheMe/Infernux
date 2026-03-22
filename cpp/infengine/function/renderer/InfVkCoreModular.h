@@ -381,12 +381,24 @@ class InfVkCoreModular
     }
 
     /// @brief Get the shader cache (modules, SPIR-V code, annotations)
-    [[nodiscard]] VkShaderCache &GetShaderCache() { return m_shaderCache; }
-    [[nodiscard]] const VkShaderCache &GetShaderCache() const { return m_shaderCache; }
+    [[nodiscard]] VkShaderCache &GetShaderCache()
+    {
+        return m_shaderCache;
+    }
+    [[nodiscard]] const VkShaderCache &GetShaderCache() const
+    {
+        return m_shaderCache;
+    }
 
     /// @brief Get the texture cache
-    [[nodiscard]] VkTextureCache &GetTextureCache() { return m_textureCache; }
-    [[nodiscard]] const VkTextureCache &GetTextureCache() const { return m_textureCache; }
+    [[nodiscard]] VkTextureCache &GetTextureCache()
+    {
+        return m_textureCache;
+    }
+    [[nodiscard]] const VkTextureCache &GetTextureCache() const
+    {
+        return m_textureCache;
+    }
 
     // ========================================================================
     // Direct Vulkan Access (for compatibility)

@@ -39,15 +39,13 @@ class VkTextureCache
     // ── Simple Loaders ─────────────────────────────────────────────────────
 
     /// Load a texture from disk and store under @p name.
-    void CreateTextureImage(const std::string &name, const std::string &path,
-                            vk::VkResourceManager &rm);
+    void CreateTextureImage(const std::string &name, const std::string &path, vk::VkResourceManager &rm);
 
     /// Create a 1×1 white texture and store under @p name.
     void CreateDefaultWhiteTexture(const std::string &name, vk::VkResourceManager &rm);
 
     /// Create a 1×1 solid-color texture (arbitrary RGBA + format).
-    void CreateSolidColorTexture(const std::string &name, uint8_t r, uint8_t g,
-                                 uint8_t b, uint8_t a, VkFormat format,
+    void CreateSolidColorTexture(const std::string &name, uint8_t r, uint8_t g, uint8_t b, uint8_t a, VkFormat format,
                                  vk::VkResourceManager &rm);
 
     // ── Cache Operations ───────────────────────────────────────────────────

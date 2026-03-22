@@ -24,8 +24,7 @@ class InfAudioLoader
         return false;
     }
 
-    void CreateMeta(const char *content, size_t contentSize, const std::string &filePath,
-                    InfResourceMeta &metaData)
+    void CreateMeta(const char *content, size_t contentSize, const std::string &filePath, InfResourceMeta &metaData)
     {
         metaData.Init(content, contentSize, filePath, ResourceType::Audio);
 
