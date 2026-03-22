@@ -6,7 +6,7 @@ class in <b>InfEngine</b>
 
 ## Description
 
-A game object in the scene hierarchy with components.
+Game object in the scene hierarchy.
 
 <!-- USER CONTENT START --> description
 
@@ -22,16 +22,19 @@ GameObjects form a parent-child hierarchy. Setting a parent with `set_parent()` 
 
 | Name | Type | Description |
 |------|------|------|
-| name | `str` | The name of this GameObject. |
-| active | `bool` | Whether this GameObject is active. |
-| id | `int` | Unique object ID. *(read-only)* |
-| transform | `Transform` | Get the Transform component. *(read-only)* |
-| active_self | `bool` | Is this object itself active? Alias for active. *(read-only)* |
-| active_in_hierarchy | `bool` | Is this object active in the hierarchy? Unity: gameObject.activeInHierarchy *(read-only)* |
-| is_static | `bool` | Static flag. |
-| scene | `Optional[Scene]` | The Scene this GameObject belongs to. *(read-only)* |
-| tag | `str` | Tag string for this GameObject. |
-| layer | `int` | Layer index (0-31) for this GameObject. |
+| name | `str` |  *(read-only)* |
+| active | `bool` |  *(read-only)* |
+| tag | `str` |  *(read-only)* |
+| layer | `int` |  *(read-only)* |
+| is_static | `bool` |  *(read-only)* |
+| prefab_guid | `str` |  *(read-only)* |
+| prefab_root | `bool` |  *(read-only)* |
+| active_self | `bool` |  *(read-only)* |
+| active_in_hierarchy | `bool` |  *(read-only)* |
+| id | `int` |  *(read-only)* |
+| is_prefab_instance | `bool` |  *(read-only)* |
+| transform | `Transform` |  *(read-only)* |
+| scene | `Scene` |  *(read-only)* |
 
 <!-- USER CONTENT START --> properties
 
@@ -41,29 +44,48 @@ GameObjects form a parent-child hierarchy. Setting a parent with `set_parent()` 
 
 | Method | Description |
 |------|------|
-| `get_transform() → Transform` | Get the Transform component. |
-| `add_component(component_type: Union[str, type]) → Optional[Component]` | Add a C++ component by type or type name. |
-| `remove_component(component: Component) → bool` | Remove a component instance (cannot remove Transform). |
-| `get_components() → List[Component]` | Get all components (including Transform). |
-| `get_cpp_component(type_name: str) → Optional[Component]` | Get a C++ component by type name (e.g., 'Transform', 'MeshRenderer', 'Light'). |
-| `get_cpp_components(type_name: str) → List[Component]` | Get all C++ components of a given type name. |
-| `add_py_component(component_instance: Any) → Optional[Any]` | Add a Python InfComponent instance to this GameObject. |
-| `get_py_component(component_type: type) → Optional[Any]` | Get a Python component of the specified type. |
-| `get_py_components() → List[Any]` | Get all Python components attached to this GameObject. |
-| `remove_py_component(component: Any) → bool` | Remove a Python component instance. |
-| `get_parent() → Optional[GameObject]` | Get the parent GameObject. |
-| `set_parent(parent: Optional[GameObject], world_position_stays: bool = True) → None` | Set the parent GameObject (None for root). |
-| `get_children() → List[GameObject]` | Get list of child GameObjects. |
-| `get_child_count() → int` | Get the number of children. |
-| `is_active_in_hierarchy() → bool` | Check if this object and all parents are active. |
-| `get_child(index: int) → Optional[GameObject]` | Get child by index. |
-| `find_child(name: str) → Optional[GameObject]` | Find direct child by name (non-recursive). |
-| `find_descendant(name: str) → Optional[GameObject]` | Find descendant by name (recursive depth-first search). |
-| `compare_tag(tag: str) → bool` | Returns True if this GameObject's tag matches the given tag. |
-| `serialize() → str` | Serialize GameObject to JSON string. |
-| `deserialize(json_str: str) → None` | Deserialize GameObject from JSON string. |
+| `compare_tag(tag: str) → bool` |  |
+| `get_transform() → Transform` |  |
+| `add_component(component_type: Any) → Optional[Component]` |  |
+| `remove_component(component: Component) → bool` |  |
+| `can_remove_component(component: Component) → bool` |  |
+| `get_remove_component_blockers(component: Component) → List[str]` |  |
+| `get_components() → List[Component]` |  |
+| `get_component(type_name: str) → Optional[Component]` |  |
+| `get_cpp_component(type_name: str) → Optional[Component]` |  |
+| `get_cpp_components(type_name: str) → List[Component]` |  |
+| `add_py_component(component_instance: Any) → Any` |  |
+| `get_py_component(component_type: Any) → Any` |  |
+| `get_py_components() → List[Any]` |  |
+| `remove_py_component(component: Any) → bool` |  |
+| `get_parent() → Optional[GameObject]` |  |
+| `set_parent(parent: Optional[GameObject], world_position_stays: bool = True) → None` |  |
+| `get_children() → List[GameObject]` |  |
+| `get_child_count() → int` |  |
+| `get_child(index: int) → GameObject` |  |
+| `find_child(name: str) → Optional[GameObject]` |  |
+| `find_descendant(name: str) → Optional[GameObject]` |  |
+| `is_active_in_hierarchy() → bool` |  |
+| `get_component_in_children(component_type: Any, include_inactive: bool = False) → Any` |  |
+| `get_component_in_parent(component_type: Any, include_inactive: bool = False) → Any` |  |
+| `serialize() → str` |  |
+| `deserialize(json_str: str) → None` |  |
 
 <!-- USER CONTENT START --> public_methods
+
+<!-- USER CONTENT END -->
+
+## Static Methods
+
+| Method | Description |
+|------|------|
+| `static GameObject.find(name: str) → Optional[GameObject]` |  |
+| `static GameObject.find_with_tag(tag: str) → Optional[GameObject]` |  |
+| `static GameObject.find_game_objects_with_tag(tag: str) → List[GameObject]` |  |
+| `static GameObject.instantiate(original: GameObject, parent: Optional[GameObject] = None) → Optional[GameObject]` |  |
+| `static GameObject.destroy(game_object: GameObject) → None` |  |
+
+<!-- USER CONTENT START --> static_methods
 
 <!-- USER CONTENT END -->
 

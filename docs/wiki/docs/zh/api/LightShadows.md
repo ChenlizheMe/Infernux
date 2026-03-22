@@ -6,11 +6,9 @@
 
 ## 描述
 
-Shadow mode for lights.
+光源阴影模式枚举。
 
 <!-- USER CONTENT START --> description
-
-LightShadows 定义 [Light](Light.md) 组件的阴影投射模式：无、硬阴影和软阴影。
 
 <!-- USER CONTENT END -->
 

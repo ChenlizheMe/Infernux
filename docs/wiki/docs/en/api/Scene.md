@@ -6,7 +6,7 @@ class in <b>InfEngine</b>
 
 ## Description
 
-A scene containing GameObjects.
+A single scene containing GameObjects.
 
 <!-- USER CONTENT START --> description
 
@@ -22,7 +22,9 @@ Scenes are loaded and unloaded through the [SceneManager](SceneManager.md). The 
 
 | Name | Type | Description |
 |------|------|------|
-| name | `str` | The name of this scene. |
+| name | `str` |  *(read-only)* |
+| structure_version | `int` |  *(read-only)* |
+| main_camera | `Optional[Camera]` |  *(read-only)* |
 
 <!-- USER CONTENT START --> properties
 
@@ -32,24 +34,30 @@ Scenes are loaded and unloaded through the [SceneManager](SceneManager.md). The 
 
 | Method | Description |
 |------|------|
-| `create_game_object(name: str = 'GameObject') → GameObject` | Create a new empty GameObject in this scene. |
-| `create_primitive(type: PrimitiveType, name: str = '') → GameObject` | Create a primitive GameObject (Cube, Sphere, Capsule, Cylinder, Plane). |
-| `get_root_objects() → List[GameObject]` | Get all root-level GameObjects. |
-| `get_all_objects() → List[GameObject]` | Get all GameObjects in the scene. |
-| `find(name: str) → Optional[GameObject]` | Find a GameObject by name. |
-| `find_by_id(id: int) → Optional[GameObject]` | Find a GameObject by ID. |
-| `find_with_tag(tag: str) → Optional[GameObject]` | Find the first GameObject with a given tag. |
-| `find_game_objects_with_tag(tag: str) → List[GameObject]` | Find all GameObjects with a given tag. |
-| `find_game_objects_in_layer(layer: int) → List[GameObject]` | Find all GameObjects in a given layer. |
-| `destroy_game_object(game_object: GameObject) → None` | Destroy a GameObject (removed at end of frame). |
-| `process_pending_destroys() → None` | Process pending GameObject destroys. |
-| `is_playing() → bool` | Check if the scene is in play mode. |
-| `serialize() → str` | Serialize scene to JSON string. |
-| `deserialize(json_str: str) → None` | Deserialize scene from JSON string. |
-| `save_to_file(path: str) → None` | Save scene to a JSON file. |
-| `load_from_file(path: str) → None` | Load scene from a JSON file. |
-| `has_pending_py_components() → bool` | Check if there are pending Python components to restore. |
-| `take_pending_py_components() → List[PendingPyComponent]` | Get and clear pending Python components for restoration. |
+| `set_playing(playing: bool) → None` |  |
+| `create_game_object(name: str = 'GameObject') → GameObject` |  |
+| `create_primitive(type: PrimitiveType, name: str = '') → GameObject` |  |
+| `create_from_model(guid: str, name: str = '') → Optional[GameObject]` |  |
+| `get_root_objects() → List[GameObject]` |  |
+| `get_all_objects() → List[GameObject]` |  |
+| `find(name: str) → Optional[GameObject]` |  |
+| `find_by_id(id: int) → Optional[GameObject]` |  |
+| `find_object_by_id(id: int) → Optional[GameObject]` |  |
+| `find_with_tag(tag: str) → Optional[GameObject]` |  |
+| `find_game_objects_with_tag(tag: str) → List[GameObject]` |  |
+| `find_game_objects_in_layer(layer: int) → List[GameObject]` |  |
+| `destroy_game_object(game_object: GameObject) → None` |  |
+| `instantiate_game_object(source: GameObject, parent: Optional[GameObject] = None) → Optional[GameObject]` |  |
+| `instantiate_from_json(json_str: str, parent: Optional[GameObject] = None) → Optional[GameObject]` |  |
+| `process_pending_destroys() → None` |  |
+| `is_playing() → bool` |  |
+| `awake_object(game_object: GameObject) → None` |  |
+| `serialize() → str` |  |
+| `deserialize(json_str: str) → None` |  |
+| `save_to_file(path: str) → None` |  |
+| `load_from_file(path: str) → None` |  |
+| `has_pending_py_components() → bool` |  |
+| `take_pending_py_components() → List[PendingPyComponent]` |  |
 
 <!-- USER CONTENT START --> public_methods
 
@@ -59,7 +67,7 @@ Scenes are loaded and unloaded through the [SceneManager](SceneManager.md). The 
 
 | Method | Description |
 |------|------|
-| `start() → None` | Trigger Awake+Start on all components (idempotent — skipped if already started). |
+| `start() → None` |  |
 
 <!-- USER CONTENT START --> lifecycle_methods
 

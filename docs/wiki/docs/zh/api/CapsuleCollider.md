@@ -1,0 +1,53 @@
+# CapsuleCollider
+
+<div class="class-info">
+类位于 <b>InfEngine.components.builtin</b>
+</div>
+
+**继承自:** [Collider](Collider.md)
+
+## 描述
+
+胶囊碰撞体。角色控制器的好搭档。
+
+<!-- USER CONTENT START --> description
+
+<!-- USER CONTENT END -->
+
+## 属性
+
+| 名称 | 类型 | 描述 |
+|------|------|------|
+| radius | `float` | 胶囊半径。 |
+| height | `float` | 胶囊高度。 |
+| direction | `int` | The axis direction of the capsule (0=X, 1=Y, 2=Z). |
+
+<!-- USER CONTENT START --> properties
+
+<!-- USER CONTENT END -->
+
+## 生命周期方法
+
+| 方法 | 描述 |
+|------|------|
+| `on_draw_gizmos_selected() → None` | Draw the collider wireframe when selected in the editor. |
+
+<!-- USER CONTENT START --> lifecycle_methods
+
+<!-- USER CONTENT END -->
+
+## 示例
+
+```python
+# TODO: Add example for CapsuleCollider
+```
+
+<!-- USER CONTENT START --> example
+
+<!-- USER CONTENT END -->
+
+## 另请参阅
+
+<!-- USER CONTENT START --> see_also
+
+<!-- USER CONTENT END -->

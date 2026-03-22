@@ -1,0 +1,842 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Rendering & Post-Processing - InfEngine Scripting API</title>
+    <link rel="icon" type="image/svg+xml" href="/InfEngine/assets/favicon.svg">
+    <link rel="stylesheet" href="/InfEngine/css/style.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        /* ======================================================
+           InfEngine API Reference — Unity-Inspired Dark Theme
+           ====================================================== */
+
+        /* Layout */
+        .api-layout {
+            display: flex;
+            min-height: calc(100vh - var(--nav-height));
+            padding-top: var(--nav-height);
+        }
+
+        /* ---- Sidebar ---- */
+        .api-sidebar {
+            width: 280px;
+            background: #0b0b12;
+            border-right: 1px solid var(--border);
+            position: sticky;
+            top: var(--nav-height);
+            height: calc(100vh - var(--nav-height));
+            overflow-y: auto;
+            flex-shrink: 0;
+        }
+        .api-sidebar::-webkit-scrollbar { width: 5px; }
+        .api-sidebar::-webkit-scrollbar-track { background: transparent; }
+        .api-sidebar::-webkit-scrollbar-thumb { background: #2a2a3a; border-radius: 3px; }
+
+        .sidebar-hdr {
+            padding: 14px 18px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .sidebar-hdr h3 {
+            margin: 0;
+            font-size: 0.78rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            color: var(--text-muted);
+        }
+
+        /* Language toggle */
+        .lang-sw {
+            display: flex;
+            gap: 1px;
+            background: var(--border);
+            border-radius: 4px;
+            overflow: hidden;
+        }
+        .lang-sw a {
+            padding: 3px 10px;
+            font-size: 0.7rem;
+            font-weight: 600;
+            color: var(--text-muted);
+            background: var(--bg-elevated);
+            text-decoration: none;
+            transition: all 0.12s;
+        }
+        .lang-sw a.on {
+            background: var(--primary);
+            color: #fff;
+        }
+        .lang-sw a:hover:not(.on) {
+            color: var(--text-primary);
+            background: var(--bg-hover);
+        }
+
+        /* Namespace tree */
+        .ns-tree { padding: 6px 0 20px; }
+
+        .ns-group { margin-bottom: 1px; }
+
+        .ns-hd {
+            display: flex;
+            align-items: center;
+            padding: 7px 16px;
+            cursor: pointer;
+            user-select: none;
+            transition: background 0.1s;
+        }
+        .ns-hd:hover { background: rgba(255,255,255,0.025); }
+
+        .ns-arr {
+            width: 14px;
+            font-size: 0.5rem;
+            color: #555;
+            transition: transform 0.15s;
+            margin-right: 8px;
+            flex-shrink: 0;
+        }
+        .ns-hd.open .ns-arr { transform: rotate(90deg); }
+
+        .ns-nm {
+            font-size: 0.84rem;
+            font-weight: 500;
+            color: var(--text-secondary);
+        }
+        .ns-hd.hi .ns-nm { color: var(--primary); }
+
+        .ns-ch {
+            display: none;
+            padding: 2px 0 4px;
+        }
+        .ns-hd.open + .ns-ch { display: block; }
+
+        .ns-ch a {
+            display: block;
+            padding: 3px 16px 3px 38px;
+            font-size: 0.82rem;
+            color: var(--text-muted);
+            text-decoration: none;
+            transition: color 0.1s, background 0.1s;
+            border-left: 2px solid transparent;
+        }
+        .ns-ch a:hover {
+            color: var(--text-primary);
+            background: rgba(255,255,255,0.02);
+        }
+        .ns-ch a.cur {
+            color: var(--text-primary);
+            background: rgba(255,107,53,0.07);
+            border-left-color: var(--primary);
+            font-weight: 600;
+        }
+
+        /* ---- Content ---- */
+        .api-main {
+            flex: 1;
+            padding: 36px 56px 80px;
+            max-width: 880px;
+            min-width: 0;
+        }
+
+        /* H1 — class name */
+        .api-main h1 {
+            font-size: 1.85rem;
+            font-weight: 700;
+            margin: 0 0 4px;
+            padding: 0;
+            border: none;
+            color: var(--text-primary);
+        }
+
+        /* "class in Package" subtitle */
+        .api-main .class-info {
+            font-size: 0.88rem;
+            color: var(--text-muted);
+            margin-bottom: 22px;
+            padding-bottom: 18px;
+            border-bottom: 1px solid var(--border);
+        }
+        .api-main .class-info b { color: var(--text-secondary); }
+        .api-main .class-info a { color: var(--primary); }
+
+        /* H2 — section headers */
+        .api-main h2 {
+            font-size: 0.92rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.6px;
+            color: var(--text-muted);
+            margin: 30px 0 8px;
+            padding-bottom: 6px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .api-main h3 {
+            font-size: 0.9rem;
+            font-weight: 600;
+            color: var(--text-secondary);
+            margin: 18px 0 6px;
+        }
+
+        /* Paragraphs */
+        .api-main p {
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+            line-height: 1.75;
+            margin-bottom: 12px;
+        }
+
+        .api-main blockquote {
+            margin: 12px 0;
+            padding: 10px 16px;
+            background: rgba(255,107,53,0.04);
+            border-left: 3px solid var(--primary);
+            border-radius: 0 4px 4px 0;
+        }
+        .api-main blockquote p { margin: 0; font-size: 0.85rem; }
+
+        /* Tables — Unity style: hidden header, 2-col */
+        .api-main table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 4px 0 18px;
+        }
+        .api-main thead { display: none; }
+
+        .api-main tbody tr {
+            border-bottom: 1px solid rgba(255,255,255,0.04);
+        }
+        .api-main tbody tr:last-child { border-bottom: none; }
+
+        .api-main td {
+            padding: 7px 0;
+            font-size: 0.86rem;
+            vertical-align: top;
+        }
+        .api-main td:first-child {
+            width: 200px;
+            padding-right: 20px;
+            color: var(--primary);
+            font-size: 0.86rem;
+            font-weight: 500;
+        }
+        .api-main td:last-child { color: var(--text-secondary); }
+        .api-main td a { color: var(--primary); }
+        .api-main tbody tr:hover { background: rgba(255,255,255,0.012); }
+
+        /* Inline code — normal font, subtle highlight */
+        .api-main code {
+            font-family: inherit;
+            font-size: inherit;
+            background: rgba(255,255,255,0.06);
+            padding: 1px 5px;
+            border-radius: 3px;
+            color: var(--primary-light);
+        }
+
+        /* Code blocks */
+        .api-main pre {
+            background: #0d0d15;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 16px 20px;
+            overflow-x: auto;
+            margin: 10px 0 18px;
+        }
+        .api-main pre code {
+            font-family: var(--font-mono);
+            background: none;
+            padding: 0;
+            font-size: 0.83rem;
+            line-height: 1.65;
+            color: var(--text-secondary);
+        }
+
+        /* Lists */
+        .api-main ul, .api-main ol { padding-left: 18px; margin-bottom: 12px; }
+        .api-main li {
+            margin-bottom: 4px;
+            color: var(--text-secondary);
+            font-size: 0.88rem;
+            line-height: 1.6;
+        }
+
+        .api-main hr {
+            border: none;
+            border-top: 1px solid var(--border);
+            margin: 26px 0;
+        }
+
+        /* ---- Footer ---- */
+        .api-ft { margin-left: 280px; }
+        .api-ft .footer-bottom p { font-size: 0.8rem; }
+
+        /* ---- Responsive ---- */
+        @media (max-width: 1024px) {
+            .api-sidebar { width: 240px; }
+            .api-main { padding: 28px 32px 60px; }
+            .api-ft { margin-left: 240px; }
+        }
+        @media (max-width: 768px) {
+            .api-layout { flex-direction: column; }
+            .api-sidebar {
+                width: 100%; position: relative; top: 0;
+                height: auto; max-height: 50vh;
+                border-right: none; border-bottom: 1px solid var(--border);
+            }
+            .api-main { padding: 20px; max-width: 100%; }
+            .api-ft { margin-left: 0; }
+        }
+    </style>
+</head>
+<body>
+    <!-- Top Navigation -->
+    <nav class="navbar">
+        <div class="nav-container">
+            <a href="/InfEngine/" class="nav-logo">
+                <span class="logo-icon">🔥</span>
+                <span class="logo-text">Infernux</span>
+            </a>
+            <div class="nav-links">
+                <a href="/InfEngine/">Home</a>
+                <a href="/InfEngine/#features">Features</a>
+                <a href="/InfEngine/roadmap.html">Roadmap</a>
+                <a href="/InfEngine/wiki/site/en/api/index.html" class="active">API Reference</a>
+                <a href="https://github.com/ChenlizheMe/InfEngine" target="_blank">
+                    <i class="fab fa-github"></i> GitHub
+                </a>
+            </div>
+            <div class="nav-right">
+                <button class="mobile-menu-btn" onclick="toggleMobileMenu()">
+                    <i class="fas fa-bars"></i>
+                </button>
+            </div>
+        </div>
+    </nav>
+
+    <!-- API Reference Layout -->
+    <div class="api-layout">
+        <!-- Sidebar — namespace / package tree -->
+        <aside class="api-sidebar">
+            <div class="sidebar-hdr">
+                <h3>Scripting API</h3>
+                <div class="lang-sw">
+                    <a href="/InfEngine/wiki/site/en/api/index.html"
+                       class="on">EN</a>
+                    <a href="/InfEngine/wiki/site/zh/api/index.html"
+                       class="">中文</a>
+                </div>
+            </div>
+
+            <div class="ns-tree"><div class="ns-group">
+                        <div class="ns-hd">
+                            <span class="ns-arr">&#9654;</span>
+                            <span class="ns-nm">InfEngine</span>
+                        </div>
+                        <div class="ns-ch"><a href="/InfEngine/wiki/site/en/api/AudioClip.html" class="">AudioClip</a><a href="/InfEngine/wiki/site/en/api/AudioListener.html" class="">AudioListener</a><a href="/InfEngine/wiki/site/en/api/AudioSource.html" class="">AudioSource</a><a href="/InfEngine/wiki/site/en/api/BoxCollider.html" class="">BoxCollider</a><a href="/InfEngine/wiki/site/en/api/Camera.html" class="">Camera</a><a href="/InfEngine/wiki/site/en/api/CameraClearFlags.html" class="">CameraClearFlags</a><a href="/InfEngine/wiki/site/en/api/CameraProjection.html" class="">CameraProjection</a><a href="/InfEngine/wiki/site/en/api/CapsuleCollider.html" class="">CapsuleCollider</a><a href="/InfEngine/wiki/site/en/api/Collider.html" class="">Collider</a><a href="/InfEngine/wiki/site/en/api/CollisionDetectionMode.html" class="">CollisionDetectionMode</a><a href="/InfEngine/wiki/site/en/api/Component.html" class="">Component</a><a href="/InfEngine/wiki/site/en/api/ForceMode.html" class="">ForceMode</a><a href="/InfEngine/wiki/site/en/api/GameObject.html" class="">GameObject</a><a href="/InfEngine/wiki/site/en/api/Light.html" class="">Light</a><a href="/InfEngine/wiki/site/en/api/LightShadows.html" class="">LightShadows</a><a href="/InfEngine/wiki/site/en/api/LightType.html" class="">LightType</a><a href="/InfEngine/wiki/site/en/api/LogLevel.html" class="">LogLevel</a><a href="/InfEngine/wiki/site/en/api/MeshCollider.html" class="">MeshCollider</a><a href="/InfEngine/wiki/site/en/api/MeshRenderer.html" class="">MeshRenderer</a><a href="/InfEngine/wiki/site/en/api/Physics.html" class="">Physics</a><a href="/InfEngine/wiki/site/en/api/PrimitiveType.html" class="">PrimitiveType</a><a href="/InfEngine/wiki/site/en/api/Rigidbody.html" class="">Rigidbody</a><a href="/InfEngine/wiki/site/en/api/RigidbodyConstraints.html" class="">RigidbodyConstraints</a><a href="/InfEngine/wiki/site/en/api/Scene.html" class="">Scene</a><a href="/InfEngine/wiki/site/en/api/SceneManager.html" class="">SceneManager</a><a href="/InfEngine/wiki/site/en/api/Space.html" class="">Space</a><a href="/InfEngine/wiki/site/en/api/SphereCollider.html" class="">SphereCollider</a><a href="/InfEngine/wiki/site/en/api/Transform.html" class="">Transform</a></div>
+                    </div><div class="ns-group">
+                        <div class="ns-hd">
+                            <span class="ns-arr">&#9654;</span>
+                            <span class="ns-nm">InfEngine.components</span>
+                        </div>
+                        <div class="ns-ch"><a href="/InfEngine/wiki/site/en/api/InfComponent.html" class="">InfComponent</a><a href="/InfEngine/wiki/site/en/api/add_component_menu.html" class="">add_component_menu</a><a href="/InfEngine/wiki/site/en/api/disallow_multiple.html" class="">disallow_multiple</a><a href="/InfEngine/wiki/site/en/api/execute_in_edit_mode.html" class="">execute_in_edit_mode</a><a href="/InfEngine/wiki/site/en/api/require_component.html" class="">require_component</a><a href="/InfEngine/wiki/site/en/api/serialized_field.html" class="">serialized_field</a></div>
+                    </div><div class="ns-group">
+                        <div class="ns-hd">
+                            <span class="ns-arr">&#9654;</span>
+                            <span class="ns-nm">InfEngine.components.builtin</span>
+                        </div>
+                        <div class="ns-ch"><a href="/InfEngine/wiki/site/en/api/AudioListener.html" class="">AudioListener</a><a href="/InfEngine/wiki/site/en/api/AudioSource.html" class="">AudioSource</a><a href="/InfEngine/wiki/site/en/api/BoxCollider.html" class="">BoxCollider</a><a href="/InfEngine/wiki/site/en/api/Camera.html" class="">Camera</a><a href="/InfEngine/wiki/site/en/api/CapsuleCollider.html" class="">CapsuleCollider</a><a href="/InfEngine/wiki/site/en/api/Collider.html" class="">Collider</a><a href="/InfEngine/wiki/site/en/api/CollisionDetectionMode.html" class="">CollisionDetectionMode</a><a href="/InfEngine/wiki/site/en/api/Light.html" class="">Light</a><a href="/InfEngine/wiki/site/en/api/MeshCollider.html" class="">MeshCollider</a><a href="/InfEngine/wiki/site/en/api/MeshRenderer.html" class="">MeshRenderer</a><a href="/InfEngine/wiki/site/en/api/Rigidbody.html" class="">Rigidbody</a><a href="/InfEngine/wiki/site/en/api/RigidbodyConstraints.html" class="">RigidbodyConstraints</a><a href="/InfEngine/wiki/site/en/api/SphereCollider.html" class="">SphereCollider</a></div>
+                    </div><div class="ns-group">
+                        <div class="ns-hd">
+                            <span class="ns-arr">&#9654;</span>
+                            <span class="ns-nm">InfEngine.core</span>
+                        </div>
+                        <div class="ns-ch"><a href="/InfEngine/wiki/site/en/api/AudioClip.html" class="">AudioClip</a><a href="/InfEngine/wiki/site/en/api/Material.html" class="">Material</a><a href="/InfEngine/wiki/site/en/api/Shader.html" class="">Shader</a><a href="/InfEngine/wiki/site/en/api/Texture.html" class="">Texture</a></div>
+                    </div><div class="ns-group">
+                        <div class="ns-hd">
+                            <span class="ns-arr">&#9654;</span>
+                            <span class="ns-nm">InfEngine.coroutine</span>
+                        </div>
+                        <div class="ns-ch"><a href="/InfEngine/wiki/site/en/api/Coroutine.html" class="">Coroutine</a><a href="/InfEngine/wiki/site/en/api/WaitForEndOfFrame.html" class="">WaitForEndOfFrame</a><a href="/InfEngine/wiki/site/en/api/WaitForFixedUpdate.html" class="">WaitForFixedUpdate</a><a href="/InfEngine/wiki/site/en/api/WaitForSeconds.html" class="">WaitForSeconds</a><a href="/InfEngine/wiki/site/en/api/WaitForSecondsRealtime.html" class="">WaitForSecondsRealtime</a><a href="/InfEngine/wiki/site/en/api/WaitUntil.html" class="">WaitUntil</a><a href="/InfEngine/wiki/site/en/api/WaitWhile.html" class="">WaitWhile</a></div>
+                    </div><div class="ns-group">
+                        <div class="ns-hd">
+                            <span class="ns-arr">&#9654;</span>
+                            <span class="ns-nm">InfEngine.debug</span>
+                        </div>
+                        <div class="ns-ch"><a href="/InfEngine/wiki/site/en/api/Debug.html" class="">Debug</a></div>
+                    </div><div class="ns-group">
+                        <div class="ns-hd">
+                            <span class="ns-arr">&#9654;</span>
+                            <span class="ns-nm">InfEngine.gizmos</span>
+                        </div>
+                        <div class="ns-ch"><a href="/InfEngine/wiki/site/en/api/Gizmos.html" class="">Gizmos</a></div>
+                    </div><div class="ns-group">
+                        <div class="ns-hd">
+                            <span class="ns-arr">&#9654;</span>
+                            <span class="ns-nm">InfEngine.input</span>
+                        </div>
+                        <div class="ns-ch"><a href="/InfEngine/wiki/site/en/api/Input.html" class="">Input</a><a href="/InfEngine/wiki/site/en/api/KeyCode.html" class="">KeyCode</a></div>
+                    </div><div class="ns-group">
+                        <div class="ns-hd">
+                            <span class="ns-arr">&#9654;</span>
+                            <span class="ns-nm">InfEngine.math</span>
+                        </div>
+                        <div class="ns-ch"><a href="/InfEngine/wiki/site/en/api/quaternion.html" class="">quaternion</a><a href="/InfEngine/wiki/site/en/api/vector2.html" class="">vector2</a><a href="/InfEngine/wiki/site/en/api/vector3.html" class="">vector3</a><a href="/InfEngine/wiki/site/en/api/vector4.html" class="">vector4</a></div>
+                    </div><div class="ns-group">
+                        <div class="ns-hd">
+                            <span class="ns-arr">&#9654;</span>
+                            <span class="ns-nm">InfEngine.mathf</span>
+                        </div>
+                        <div class="ns-ch"><a href="/InfEngine/wiki/site/en/api/Mathf.html" class="">Mathf</a></div>
+                    </div><div class="ns-group">
+                        <div class="ns-hd">
+                            <span class="ns-arr">&#9654;</span>
+                            <span class="ns-nm">InfEngine.physics</span>
+                        </div>
+                        <div class="ns-ch"><a href="/InfEngine/wiki/site/en/api/Physics.html" class="">Physics</a></div>
+                    </div><div class="ns-group">
+                        <div class="ns-hd">
+                            <span class="ns-arr">&#9654;</span>
+                            <span class="ns-nm">InfEngine.rendergraph</span>
+                        </div>
+                        <div class="ns-ch"><a href="/InfEngine/wiki/site/en/api/Format.html" class="">Format</a><a href="/InfEngine/wiki/site/en/api/RenderGraph.html" class="">RenderGraph</a><a href="/InfEngine/wiki/site/en/api/RenderPassBuilder.html" class="">RenderPassBuilder</a><a href="/InfEngine/wiki/site/en/api/TextureHandle.html" class="">TextureHandle</a></div>
+                    </div><div class="ns-group">
+                        <div class="ns-hd">
+                            <span class="ns-arr">&#9654;</span>
+                            <span class="ns-nm">InfEngine.renderstack</span>
+                        </div>
+                        <div class="ns-ch"><a href="/InfEngine/wiki/site/en/api/BloomEffect.html" class="">BloomEffect</a><a href="/InfEngine/wiki/site/en/api/ChromaticAberrationEffect.html" class="">ChromaticAberrationEffect</a><a href="/InfEngine/wiki/site/en/api/ColorAdjustmentsEffect.html" class="">ColorAdjustmentsEffect</a><a href="/InfEngine/wiki/site/en/api/FilmGrainEffect.html" class="">FilmGrainEffect</a><a href="/InfEngine/wiki/site/en/api/FullScreenEffect.html" class="">FullScreenEffect</a><a href="/InfEngine/wiki/site/en/api/RenderPass.html" class="">RenderPass</a><a href="/InfEngine/wiki/site/en/api/RenderPipeline.html" class="">RenderPipeline</a><a href="/InfEngine/wiki/site/en/api/RenderStack.html" class="">RenderStack</a><a href="/InfEngine/wiki/site/en/api/SharpenEffect.html" class="">SharpenEffect</a><a href="/InfEngine/wiki/site/en/api/ToneMappingEffect.html" class="">ToneMappingEffect</a><a href="/InfEngine/wiki/site/en/api/VignetteEffect.html" class="">VignetteEffect</a><a href="/InfEngine/wiki/site/en/api/WhiteBalanceEffect.html" class="">WhiteBalanceEffect</a></div>
+                    </div><div class="ns-group">
+                        <div class="ns-hd">
+                            <span class="ns-arr">&#9654;</span>
+                            <span class="ns-nm">InfEngine.scene</span>
+                        </div>
+                        <div class="ns-ch"><a href="/InfEngine/wiki/site/en/api/SceneManager.html" class="">SceneManager</a></div>
+                    </div><div class="ns-group">
+                        <div class="ns-hd">
+                            <span class="ns-arr">&#9654;</span>
+                            <span class="ns-nm">InfEngine.timing</span>
+                        </div>
+                        <div class="ns-ch"><a href="/InfEngine/wiki/site/en/api/Time.html" class="">Time</a></div>
+                    </div><div class="ns-group">
+                        <div class="ns-hd">
+                            <span class="ns-arr">&#9654;</span>
+                            <span class="ns-nm">InfEngine.ui</span>
+                        </div>
+                        <div class="ns-ch"><a href="/InfEngine/wiki/site/en/api/InfUIComponent.html" class="">InfUIComponent</a><a href="/InfEngine/wiki/site/en/api/PointerEventData.html" class="">PointerEventData</a><a href="/InfEngine/wiki/site/en/api/UIButton.html" class="">UIButton</a><a href="/InfEngine/wiki/site/en/api/UICanvas.html" class="">UICanvas</a><a href="/InfEngine/wiki/site/en/api/UIImage.html" class="">UIImage</a><a href="/InfEngine/wiki/site/en/api/UISelectable.html" class="">UISelectable</a><a href="/InfEngine/wiki/site/en/api/UIText.html" class="">UIText</a></div>
+                    </div></div>
+        </aside>
+
+        <!-- Main content -->
+        <main class="api-main">
+            <h1 id="rendering-post-processing-make-it-pretty">Rendering &amp; Post-Processing — Make It Pretty<a class="headerlink" href="#rendering-post-processing-make-it-pretty" title="Permanent link">&para;</a></h1>
+<div class="class-info">
+Tutorial &nbsp;|&nbsp; <a href="../../zh/tutorials/rendering.html">中文</a>
+</div>
+
+<h2 id="overview">Overview<a class="headerlink" href="#overview" title="Permanent link">&para;</a></h2>
+<p>InfEngine ships with a <strong>Scriptable Render Pipeline</strong> system inspired by Unity URP/HDRP. You can choose a built-in pipeline, tweak its parameters, layer post-processing effects on top, or go full mad-scientist and write your own pipeline from scratch. All from Python. No shader recompilation required (well, for the pipeline part).</p>
+<p>The architecture has three layers:</p>
+<table>
+<thead>
+<tr>
+<th>Layer</th>
+<th>What it does</th>
+<th>You touch it when…</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>RenderPipeline</strong></td>
+<td>Defines the <em>topology</em> — which passes run, in what order</td>
+<td>You want a completely custom pipeline</td>
+</tr>
+<tr>
+<td><strong>RenderStack</strong></td>
+<td>Manages a pipeline + injectable passes. Lives on a GameObject</td>
+<td>You want to add/remove/reorder effects at runtime</td>
+</tr>
+<tr>
+<td><strong>FullScreenEffect</strong></td>
+<td>A multi-pass post-processing effect (Bloom, Vignette, etc.)</td>
+<td>You want pretty pictures</td>
+</tr>
+</tbody>
+</table>
+<h2 id="quick-start-post-processing-in-60-seconds">Quick Start: Post-Processing in 60 Seconds<a class="headerlink" href="#quick-start-post-processing-in-60-seconds" title="Permanent link">&para;</a></h2>
+<p>The fastest way to get post-processing running:</p>
+<div class="language-python highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">InfEngine</span><span class="w"> </span><span class="kn">import</span> <span class="o">*</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">InfEngine.renderstack</span><span class="w"> </span><span class="kn">import</span> <span class="o">*</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="k">class</span><span class="w"> </span><span class="nc">SetupPostProcessing</span><span class="p">(</span><span class="n">InfComponent</span><span class="p">):</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">start</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>        <span class="c1"># RenderStack is a component — add it to any GameObject</span>
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>        <span class="n">stack</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">game_object</span><span class="o">.</span><span class="n">add_component</span><span class="p">(</span><span class="n">RenderStack</span><span class="p">)</span>
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>        <span class="c1"># It uses DefaultForwardPipeline automatically</span>
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>        <span class="c1"># Add some effects</span>
+<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>        <span class="n">bloom</span> <span class="o">=</span> <span class="n">BloomEffect</span><span class="p">()</span>
+<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>        <span class="n">bloom</span><span class="o">.</span><span class="n">threshold</span> <span class="o">=</span> <span class="mf">1.0</span>
+<a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>        <span class="n">bloom</span><span class="o">.</span><span class="n">intensity</span> <span class="o">=</span> <span class="mf">0.8</span>
+<a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>        <span class="n">bloom</span><span class="o">.</span><span class="n">scatter</span> <span class="o">=</span> <span class="mf">0.7</span>
+<a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a>        <span class="n">stack</span><span class="o">.</span><span class="n">add_pass</span><span class="p">(</span><span class="n">bloom</span><span class="p">)</span>
+<a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a>
+<a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a>        <span class="n">vignette</span> <span class="o">=</span> <span class="n">VignetteEffect</span><span class="p">()</span>
+<a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a>        <span class="n">vignette</span><span class="o">.</span><span class="n">intensity</span> <span class="o">=</span> <span class="mf">0.4</span>
+<a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a>        <span class="n">stack</span><span class="o">.</span><span class="n">add_pass</span><span class="p">(</span><span class="n">vignette</span><span class="p">)</span>
+<a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a>
+<a id="__codelineno-0-21" name="__codelineno-0-21" href="#__codelineno-0-21"></a>        <span class="c1"># Tone mapping should be last (HDR → LDR)</span>
+<a id="__codelineno-0-22" name="__codelineno-0-22" href="#__codelineno-0-22"></a>        <span class="n">tonemapping</span> <span class="o">=</span> <span class="n">ToneMappingEffect</span><span class="p">()</span>
+<a id="__codelineno-0-23" name="__codelineno-0-23" href="#__codelineno-0-23"></a>        <span class="n">tonemapping</span><span class="o">.</span><span class="n">exposure</span> <span class="o">=</span> <span class="mf">1.2</span>
+<a id="__codelineno-0-24" name="__codelineno-0-24" href="#__codelineno-0-24"></a>        <span class="n">stack</span><span class="o">.</span><span class="n">add_pass</span><span class="p">(</span><span class="n">tonemapping</span><span class="p">)</span>
+</code></pre></div>
+<p>Boom. Your scene now has bloom, vignette, and tone mapping. That was easy.</p>
+<h2 id="built-in-pipelines">Built-In Pipelines<a class="headerlink" href="#built-in-pipelines" title="Permanent link">&para;</a></h2>
+<h3 id="default-forward">Default Forward<a class="headerlink" href="#default-forward" title="Permanent link">&para;</a></h3>
+<p>The workhorse. Renders opaque objects front-to-back, then skybox, then transparent objects back-to-front. Supports shadow maps and MSAA.</p>
+<div class="language-text highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>ShadowCasterPass → OpaquePass → [after_opaque]
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>→ SkyboxPass → [after_sky]
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>→ TransparentPass → [after_transparent]
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>→ [before_post_process] → ScreenUI → [after_post_process]
+</code></pre></div>
+<p>Parameters exposed in the inspector:</p>
+<table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>shadow_resolution</code></td>
+<td>4096</td>
+<td>Shadow map size (256–8192)</td>
+</tr>
+<tr>
+<td><code>msaa_samples</code></td>
+<td>X4</td>
+<td>Anti-aliasing: OFF, X2, X4, X8</td>
+</tr>
+<tr>
+<td><code>enable_screen_ui</code></td>
+<td>True</td>
+<td>Render screen-space UI</td>
+</tr>
+</tbody>
+</table>
+<h3 id="default-deferred">Default Deferred<a class="headerlink" href="#default-deferred" title="Permanent link">&para;</a></h3>
+<p>For scenes with many lights. Uses a GBuffer with 4 MRT slots (albedo, normals, material, emission) + depth, then resolves lighting in a fullscreen pass.</p>
+<div class="language-text highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>ShadowCasterPass → GBufferPass (MRT) → [after_gbuffer]
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>→ DeferredLightingPass → [after_opaque]
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>→ SkyboxPass → [after_sky]
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>→ TransparentPass (forward) → [after_transparent]
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>→ [before_post_process] → ScreenUI → [after_post_process]
+</code></pre></div>
+<blockquote>
+<p><strong>Note:</strong> The deferred pipeline requires a <code>deferred_lighting</code> shader. If it's not available, it outputs raw albedo.</p>
+</blockquote>
+<h3 id="switching-pipelines">Switching Pipelines<a class="headerlink" href="#switching-pipelines" title="Permanent link">&para;</a></h3>
+<div class="language-python highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="n">stack</span> <span class="o">=</span> <span class="n">game_object</span><span class="o">.</span><span class="n">get_py_component</span><span class="p">(</span><span class="n">RenderStack</span><span class="p">)</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="n">stack</span><span class="o">.</span><span class="n">set_pipeline</span><span class="p">(</span><span class="s2">&quot;Default Deferred&quot;</span><span class="p">)</span>
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="c1"># or</span>
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="n">stack</span><span class="o">.</span><span class="n">set_pipeline</span><span class="p">(</span><span class="s2">&quot;Default Forward&quot;</span><span class="p">)</span>
+</code></pre></div>
+<h2 id="post-processing-effects">Post-Processing Effects<a class="headerlink" href="#post-processing-effects" title="Permanent link">&para;</a></h2>
+<p>All built-in effects inherit from <code>FullScreenEffect</code>. They have <code>serialized_field</code> parameters that appear in the Inspector.</p>
+<h3 id="bloom">Bloom<a class="headerlink" href="#bloom" title="Permanent link">&para;</a></h3>
+<p>The classic "bright things glow" effect. Uses a progressive downsample/upsample chain.</p>
+<div class="language-python highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="n">bloom</span> <span class="o">=</span> <span class="n">BloomEffect</span><span class="p">()</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="n">bloom</span><span class="o">.</span><span class="n">threshold</span> <span class="o">=</span> <span class="mf">1.0</span>      <span class="c1"># Minimum brightness to bloom</span>
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="n">bloom</span><span class="o">.</span><span class="n">intensity</span> <span class="o">=</span> <span class="mf">0.8</span>      <span class="c1"># Final bloom strength</span>
+<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="n">bloom</span><span class="o">.</span><span class="n">scatter</span> <span class="o">=</span> <span class="mf">0.7</span>        <span class="c1"># How far the bloom spreads (0–1)</span>
+<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="n">bloom</span><span class="o">.</span><span class="n">clamp</span> <span class="o">=</span> <span class="mf">65472.0</span>      <span class="c1"># Max brightness (prevents fireflies)</span>
+<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="n">bloom</span><span class="o">.</span><span class="n">tint_r</span> <span class="o">=</span> <span class="mf">1.0</span>         <span class="c1"># Tint color (default: white)</span>
+<a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="n">bloom</span><span class="o">.</span><span class="n">tint_g</span> <span class="o">=</span> <span class="mf">1.0</span>
+<a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a><span class="n">bloom</span><span class="o">.</span><span class="n">tint_b</span> <span class="o">=</span> <span class="mf">1.0</span>
+<a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a><span class="n">bloom</span><span class="o">.</span><span class="n">max_iterations</span> <span class="o">=</span> <span class="mi">5</span>   <span class="c1"># Downsample steps (1–8)</span>
+<a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a><span class="n">stack</span><span class="o">.</span><span class="n">add_pass</span><span class="p">(</span><span class="n">bloom</span><span class="p">)</span>
+</code></pre></div>
+<p><strong>Injection point:</strong> <code>before_post_process</code> (order 100)</p>
+<h3 id="color-adjustments">Color Adjustments<a class="headerlink" href="#color-adjustments" title="Permanent link">&para;</a></h3>
+<p>Exposure, contrast, saturation, and hue shift. The "make everything look cinematic" knob.</p>
+<div class="language-python highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="n">ca</span> <span class="o">=</span> <span class="n">ColorAdjustmentsEffect</span><span class="p">()</span>
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="n">ca</span><span class="o">.</span><span class="n">post_exposure</span> <span class="o">=</span> <span class="mf">0.5</span>   <span class="c1"># EV offset (-5 to 5)</span>
+<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="n">ca</span><span class="o">.</span><span class="n">contrast</span> <span class="o">=</span> <span class="mf">10.0</span>       <span class="c1"># -100 to 100</span>
+<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="n">ca</span><span class="o">.</span><span class="n">saturation</span> <span class="o">=</span> <span class="o">-</span><span class="mf">20.0</span>    <span class="c1"># -100 to 100 (negative = desaturated)</span>
+<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="n">ca</span><span class="o">.</span><span class="n">hue_shift</span> <span class="o">=</span> <span class="mf">0.0</span>       <span class="c1"># -180 to 180 degrees</span>
+<a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a><span class="n">stack</span><span class="o">.</span><span class="n">add_pass</span><span class="p">(</span><span class="n">ca</span><span class="p">)</span>
+</code></pre></div>
+<p><strong>Injection point:</strong> <code>before_post_process</code> (order 200)</p>
+<h3 id="white-balance">White Balance<a class="headerlink" href="#white-balance" title="Permanent link">&para;</a></h3>
+<p>Temperature and tint. Makes your scene feel warm and cozy, or cold and dystopian.</p>
+<div class="language-python highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="n">wb</span> <span class="o">=</span> <span class="n">WhiteBalanceEffect</span><span class="p">()</span>
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="n">wb</span><span class="o">.</span><span class="n">temperature</span> <span class="o">=</span> <span class="mf">15.0</span>   <span class="c1"># Positive = warm, negative = cool (-100 to 100)</span>
+<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="n">wb</span><span class="o">.</span><span class="n">tint</span> <span class="o">=</span> <span class="mf">0.0</span>           <span class="c1"># Green/magenta shift (-100 to 100)</span>
+<a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="n">stack</span><span class="o">.</span><span class="n">add_pass</span><span class="p">(</span><span class="n">wb</span><span class="p">)</span>
+</code></pre></div>
+<p><strong>Injection point:</strong> <code>before_post_process</code> (order 150)</p>
+<h3 id="vignette">Vignette<a class="headerlink" href="#vignette" title="Permanent link">&para;</a></h3>
+<p>Darkens screen edges. Instant "cinematic" look.</p>
+<div class="language-python highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="n">vig</span> <span class="o">=</span> <span class="n">VignetteEffect</span><span class="p">()</span>
+<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="n">vig</span><span class="o">.</span><span class="n">intensity</span> <span class="o">=</span> <span class="mf">0.35</span>    <span class="c1"># 0 = off, 1 = full black edges</span>
+<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="n">vig</span><span class="o">.</span><span class="n">smoothness</span> <span class="o">=</span> <span class="mf">0.3</span>    <span class="c1"># Falloff softness</span>
+<a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="n">vig</span><span class="o">.</span><span class="n">roundness</span> <span class="o">=</span> <span class="mf">1.0</span>     <span class="c1"># 1 = circular, lower = more rectangular</span>
+<a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="n">vig</span><span class="o">.</span><span class="n">rounded</span> <span class="o">=</span> <span class="kc">False</span>     <span class="c1"># Force perfect circle regardless of aspect ratio</span>
+<a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a><span class="n">stack</span><span class="o">.</span><span class="n">add_pass</span><span class="p">(</span><span class="n">vig</span><span class="p">)</span>
+</code></pre></div>
+<p><strong>Injection point:</strong> <code>before_post_process</code> (order 500)</p>
+<h3 id="chromatic-aberration">Chromatic Aberration<a class="headerlink" href="#chromatic-aberration" title="Permanent link">&para;</a></h3>
+<p>RGB channel separation. Subtle = "cinematic lens"; Heavy = "the protagonist just got punched".</p>
+<div class="language-python highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="n">chroma</span> <span class="o">=</span> <span class="n">ChromaticAberrationEffect</span><span class="p">()</span>
+<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="n">chroma</span><span class="o">.</span><span class="n">intensity</span> <span class="o">=</span> <span class="mf">0.1</span>   <span class="c1"># 0 = off, 1 = strong separation</span>
+<a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="n">stack</span><span class="o">.</span><span class="n">add_pass</span><span class="p">(</span><span class="n">chroma</span><span class="p">)</span>
+</code></pre></div>
+<p><strong>Injection point:</strong> <code>before_post_process</code> (order 600)</p>
+<h3 id="film-grain">Film Grain<a class="headerlink" href="#film-grain" title="Permanent link">&para;</a></h3>
+<p>Cinematic noise. Makes your game look like a movie from the 90s. Or 2020s, because retro is in.</p>
+<div class="language-python highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="n">grain</span> <span class="o">=</span> <span class="n">FilmGrainEffect</span><span class="p">()</span>
+<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="n">grain</span><span class="o">.</span><span class="n">intensity</span> <span class="o">=</span> <span class="mf">0.2</span>    <span class="c1"># 0 = off, 1 = heavy noise</span>
+<a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="n">grain</span><span class="o">.</span><span class="n">response</span> <span class="o">=</span> <span class="mf">0.8</span>     <span class="c1"># 0 = uniform, 1 = highlights only</span>
+<a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a><span class="n">stack</span><span class="o">.</span><span class="n">add_pass</span><span class="p">(</span><span class="n">grain</span><span class="p">)</span>
+</code></pre></div>
+<p><strong>Injection point:</strong> <code>after_post_process</code> (order 800)</p>
+<h3 id="sharpen">Sharpen<a class="headerlink" href="#sharpen" title="Permanent link">&para;</a></h3>
+<p>Contrast Adaptive Sharpening (AMD FidelityFX CAS). Enhances detail without halos.</p>
+<div class="language-python highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="n">sharp</span> <span class="o">=</span> <span class="n">SharpenEffect</span><span class="p">()</span>
+<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="n">sharp</span><span class="o">.</span><span class="n">intensity</span> <span class="o">=</span> <span class="mf">0.5</span>    <span class="c1"># 0 = off, 1 = maximum</span>
+<a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="n">stack</span><span class="o">.</span><span class="n">add_pass</span><span class="p">(</span><span class="n">sharp</span><span class="p">)</span>
+</code></pre></div>
+<p><strong>Injection point:</strong> <code>after_post_process</code> (order 850)</p>
+<h3 id="tone-mapping">Tone Mapping<a class="headerlink" href="#tone-mapping" title="Permanent link">&para;</a></h3>
+<p>Converts HDR to displayable LDR. <strong>Should be the last effect in the HDR chain.</strong></p>
+<div class="language-python highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="n">tm</span> <span class="o">=</span> <span class="n">ToneMappingEffect</span><span class="p">()</span>
+<a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a><span class="n">tm</span><span class="o">.</span><span class="n">mode</span> <span class="o">=</span> <span class="n">ToneMappingMode</span><span class="o">.</span><span class="n">ACES</span>   <span class="c1"># ACES, Reinhard, or None_</span>
+<a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a><span class="n">tm</span><span class="o">.</span><span class="n">exposure</span> <span class="o">=</span> <span class="mf">1.0</span>                 <span class="c1"># Pre-tonemap exposure multiplier</span>
+<a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a><span class="n">tm</span><span class="o">.</span><span class="n">gamma</span> <span class="o">=</span> <span class="mf">2.2</span>                    <span class="c1"># Gamma correction (2.2 = sRGB)</span>
+<a id="__codelineno-11-5" name="__codelineno-11-5" href="#__codelineno-11-5"></a><span class="n">stack</span><span class="o">.</span><span class="n">add_pass</span><span class="p">(</span><span class="n">tm</span><span class="p">)</span>
+</code></pre></div>
+<p><strong>Injection point:</strong> <code>after_post_process</code> (order 900)</p>
+<h3 id="recommended-stack-order">Recommended Stack Order<a class="headerlink" href="#recommended-stack-order" title="Permanent link">&para;</a></h3>
+<p>Effects are sorted by their <code>default_order</code> within each injection point. Here's the typical order:</p>
+<div class="language-text highlight"><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a>before_post_process:
+<a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a>  100  Bloom           — extract bright pixels in HDR
+<a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a>  150  White Balance   — adjust color temperature
+<a id="__codelineno-12-4" name="__codelineno-12-4" href="#__codelineno-12-4"></a>  200  Color Adj.      — exposure/contrast/saturation
+<a id="__codelineno-12-5" name="__codelineno-12-5" href="#__codelineno-12-5"></a>  500  Vignette        — darken edges (still HDR)
+<a id="__codelineno-12-6" name="__codelineno-12-6" href="#__codelineno-12-6"></a>  600  Chrom. Aberr.   — lens distortion
+<a id="__codelineno-12-7" name="__codelineno-12-7" href="#__codelineno-12-7"></a>
+<a id="__codelineno-12-8" name="__codelineno-12-8" href="#__codelineno-12-8"></a>after_post_process:
+<a id="__codelineno-12-9" name="__codelineno-12-9" href="#__codelineno-12-9"></a>  800  Film Grain      — noise overlay (LDR)
+<a id="__codelineno-12-10" name="__codelineno-12-10" href="#__codelineno-12-10"></a>  850  Sharpen         — CAS sharpening
+<a id="__codelineno-12-11" name="__codelineno-12-11" href="#__codelineno-12-11"></a>  900  Tone Mapping    — HDR → LDR conversion
+</code></pre></div>
+<h2 id="the-rendergraph">The RenderGraph<a class="headerlink" href="#the-rendergraph" title="Permanent link">&para;</a></h2>
+<p>Under the hood, every pipeline builds a <code>RenderGraph</code> — a DAG of texture resources and render passes. You don't need to touch this for basic post-processing, but it's powerful for custom pipelines.</p>
+<h3 id="textures">Textures<a class="headerlink" href="#textures" title="Permanent link">&para;</a></h3>
+<div class="language-python highlight"><pre><span></span><code><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">InfEngine.rendergraph</span><span class="w"> </span><span class="kn">import</span> <span class="n">RenderGraph</span><span class="p">,</span> <span class="n">Format</span>
+<a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a>
+<a id="__codelineno-13-3" name="__codelineno-13-3" href="#__codelineno-13-3"></a><span class="n">graph</span> <span class="o">=</span> <span class="n">RenderGraph</span><span class="p">(</span><span class="s2">&quot;MyGraph&quot;</span><span class="p">)</span>
+<a id="__codelineno-13-4" name="__codelineno-13-4" href="#__codelineno-13-4"></a>
+<a id="__codelineno-13-5" name="__codelineno-13-5" href="#__codelineno-13-5"></a><span class="c1"># Camera-sized color target</span>
+<a id="__codelineno-13-6" name="__codelineno-13-6" href="#__codelineno-13-6"></a><span class="n">color</span> <span class="o">=</span> <span class="n">graph</span><span class="o">.</span><span class="n">create_texture</span><span class="p">(</span><span class="s2">&quot;color&quot;</span><span class="p">,</span> <span class="n">camera_target</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<a id="__codelineno-13-7" name="__codelineno-13-7" href="#__codelineno-13-7"></a>
+<a id="__codelineno-13-8" name="__codelineno-13-8" href="#__codelineno-13-8"></a><span class="c1"># Depth buffer</span>
+<a id="__codelineno-13-9" name="__codelineno-13-9" href="#__codelineno-13-9"></a><span class="n">depth</span> <span class="o">=</span> <span class="n">graph</span><span class="o">.</span><span class="n">create_texture</span><span class="p">(</span><span class="s2">&quot;depth&quot;</span><span class="p">,</span> <span class="nb">format</span><span class="o">=</span><span class="n">Format</span><span class="o">.</span><span class="n">D32_SFLOAT</span><span class="p">)</span>
+<a id="__codelineno-13-10" name="__codelineno-13-10" href="#__codelineno-13-10"></a>
+<a id="__codelineno-13-11" name="__codelineno-13-11" href="#__codelineno-13-11"></a><span class="c1"># Half-resolution texture (for downsampling)</span>
+<a id="__codelineno-13-12" name="__codelineno-13-12" href="#__codelineno-13-12"></a><span class="n">half_color</span> <span class="o">=</span> <span class="n">graph</span><span class="o">.</span><span class="n">create_texture</span><span class="p">(</span><span class="s2">&quot;half_color&quot;</span><span class="p">,</span>
+<a id="__codelineno-13-13" name="__codelineno-13-13" href="#__codelineno-13-13"></a>    <span class="nb">format</span><span class="o">=</span><span class="n">Format</span><span class="o">.</span><span class="n">RGBA16_SFLOAT</span><span class="p">,</span>
+<a id="__codelineno-13-14" name="__codelineno-13-14" href="#__codelineno-13-14"></a>    <span class="n">size_divisor</span><span class="o">=</span><span class="mi">2</span><span class="p">)</span>
+<a id="__codelineno-13-15" name="__codelineno-13-15" href="#__codelineno-13-15"></a>
+<a id="__codelineno-13-16" name="__codelineno-13-16" href="#__codelineno-13-16"></a><span class="c1"># Fixed-size texture (e.g., shadow map)</span>
+<a id="__codelineno-13-17" name="__codelineno-13-17" href="#__codelineno-13-17"></a><span class="n">shadow</span> <span class="o">=</span> <span class="n">graph</span><span class="o">.</span><span class="n">create_texture</span><span class="p">(</span><span class="s2">&quot;shadow_map&quot;</span><span class="p">,</span>
+<a id="__codelineno-13-18" name="__codelineno-13-18" href="#__codelineno-13-18"></a>    <span class="nb">format</span><span class="o">=</span><span class="n">Format</span><span class="o">.</span><span class="n">D32_SFLOAT</span><span class="p">,</span>
+<a id="__codelineno-13-19" name="__codelineno-13-19" href="#__codelineno-13-19"></a>    <span class="n">size</span><span class="o">=</span><span class="p">(</span><span class="mi">4096</span><span class="p">,</span> <span class="mi">4096</span><span class="p">))</span>
+</code></pre></div>
+<h3 id="passes">Passes<a class="headerlink" href="#passes" title="Permanent link">&para;</a></h3>
+<div class="language-python highlight"><pre><span></span><code><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a><span class="c1"># Context manager style (recommended)</span>
+<a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a><span class="k">with</span> <span class="n">graph</span><span class="o">.</span><span class="n">add_pass</span><span class="p">(</span><span class="s2">&quot;OpaquePass&quot;</span><span class="p">)</span> <span class="k">as</span> <span class="n">p</span><span class="p">:</span>
+<a id="__codelineno-14-3" name="__codelineno-14-3" href="#__codelineno-14-3"></a>    <span class="n">p</span><span class="o">.</span><span class="n">write_color</span><span class="p">(</span><span class="s2">&quot;color&quot;</span><span class="p">)</span>
+<a id="__codelineno-14-4" name="__codelineno-14-4" href="#__codelineno-14-4"></a>    <span class="n">p</span><span class="o">.</span><span class="n">write_depth</span><span class="p">(</span><span class="s2">&quot;depth&quot;</span><span class="p">)</span>
+<a id="__codelineno-14-5" name="__codelineno-14-5" href="#__codelineno-14-5"></a>    <span class="n">p</span><span class="o">.</span><span class="n">set_clear</span><span class="p">(</span><span class="n">color</span><span class="o">=</span><span class="p">(</span><span class="mf">0.1</span><span class="p">,</span> <span class="mf">0.1</span><span class="p">,</span> <span class="mf">0.1</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">),</span> <span class="n">depth</span><span class="o">=</span><span class="mf">1.0</span><span class="p">)</span>
+<a id="__codelineno-14-6" name="__codelineno-14-6" href="#__codelineno-14-6"></a>    <span class="n">p</span><span class="o">.</span><span class="n">set_texture</span><span class="p">(</span><span class="s2">&quot;shadowMap&quot;</span><span class="p">,</span> <span class="s2">&quot;shadow_map&quot;</span><span class="p">)</span>
+<a id="__codelineno-14-7" name="__codelineno-14-7" href="#__codelineno-14-7"></a>    <span class="n">p</span><span class="o">.</span><span class="n">draw_renderers</span><span class="p">(</span><span class="n">queue_range</span><span class="o">=</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">2500</span><span class="p">),</span> <span class="n">sort_mode</span><span class="o">=</span><span class="s2">&quot;front_to_back&quot;</span><span class="p">)</span>
+<a id="__codelineno-14-8" name="__codelineno-14-8" href="#__codelineno-14-8"></a>
+<a id="__codelineno-14-9" name="__codelineno-14-9" href="#__codelineno-14-9"></a><span class="c1"># Fullscreen quad pass (for post-processing)</span>
+<a id="__codelineno-14-10" name="__codelineno-14-10" href="#__codelineno-14-10"></a><span class="k">with</span> <span class="n">graph</span><span class="o">.</span><span class="n">add_pass</span><span class="p">(</span><span class="s2">&quot;MyEffect&quot;</span><span class="p">)</span> <span class="k">as</span> <span class="n">p</span><span class="p">:</span>
+<a id="__codelineno-14-11" name="__codelineno-14-11" href="#__codelineno-14-11"></a>    <span class="n">p</span><span class="o">.</span><span class="n">set_texture</span><span class="p">(</span><span class="s2">&quot;_SourceTex&quot;</span><span class="p">,</span> <span class="n">color</span><span class="p">)</span>
+<a id="__codelineno-14-12" name="__codelineno-14-12" href="#__codelineno-14-12"></a>    <span class="n">p</span><span class="o">.</span><span class="n">write_color</span><span class="p">(</span><span class="n">output</span><span class="p">)</span>
+<a id="__codelineno-14-13" name="__codelineno-14-13" href="#__codelineno-14-13"></a>    <span class="n">p</span><span class="o">.</span><span class="n">fullscreen_quad</span><span class="p">(</span><span class="s2">&quot;my_shader&quot;</span><span class="p">)</span>
+</code></pre></div>
+<h3 id="injection-points">Injection Points<a class="headerlink" href="#injection-points" title="Permanent link">&para;</a></h3>
+<p>Injection points are named slots where user passes can be inserted:</p>
+<div class="language-python highlight"><pre><span></span><code><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a><span class="n">graph</span><span class="o">.</span><span class="n">injection_point</span><span class="p">(</span><span class="s2">&quot;after_opaque&quot;</span><span class="p">,</span> <span class="n">resources</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;color&quot;</span><span class="p">,</span> <span class="s2">&quot;depth&quot;</span><span class="p">})</span>
+</code></pre></div>
+<p>The <code>resources</code> set tells the system which textures are available at that point.</p>
+<h2 id="writing-a-custom-pipeline">Writing a Custom Pipeline<a class="headerlink" href="#writing-a-custom-pipeline" title="Permanent link">&para;</a></h2>
+<p>Want full control? Subclass <code>RenderPipeline</code>:</p>
+<div class="language-python highlight"><pre><span></span><code><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">InfEngine.renderstack</span><span class="w"> </span><span class="kn">import</span> <span class="n">RenderPipeline</span>
+<a id="__codelineno-16-2" name="__codelineno-16-2" href="#__codelineno-16-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">InfEngine.rendergraph</span><span class="w"> </span><span class="kn">import</span> <span class="n">RenderGraph</span><span class="p">,</span> <span class="n">Format</span>
+<a id="__codelineno-16-3" name="__codelineno-16-3" href="#__codelineno-16-3"></a><span class="kn">from</span><span class="w"> </span><span class="nn">InfEngine.components</span><span class="w"> </span><span class="kn">import</span> <span class="n">serialized_field</span>
+<a id="__codelineno-16-4" name="__codelineno-16-4" href="#__codelineno-16-4"></a>
+<a id="__codelineno-16-5" name="__codelineno-16-5" href="#__codelineno-16-5"></a><span class="k">class</span><span class="w"> </span><span class="nc">MinimalPipeline</span><span class="p">(</span><span class="n">RenderPipeline</span><span class="p">):</span>
+<a id="__codelineno-16-6" name="__codelineno-16-6" href="#__codelineno-16-6"></a>    <span class="n">name</span> <span class="o">=</span> <span class="s2">&quot;Minimal Forward&quot;</span>
+<a id="__codelineno-16-7" name="__codelineno-16-7" href="#__codelineno-16-7"></a>
+<a id="__codelineno-16-8" name="__codelineno-16-8" href="#__codelineno-16-8"></a>    <span class="n">clear_color_r</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="n">serialized_field</span><span class="p">(</span><span class="n">default</span><span class="o">=</span><span class="mf">0.1</span><span class="p">,</span> <span class="nb">range</span><span class="o">=</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">1</span><span class="p">))</span>
+<a id="__codelineno-16-9" name="__codelineno-16-9" href="#__codelineno-16-9"></a>    <span class="n">clear_color_g</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="n">serialized_field</span><span class="p">(</span><span class="n">default</span><span class="o">=</span><span class="mf">0.1</span><span class="p">,</span> <span class="nb">range</span><span class="o">=</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">1</span><span class="p">))</span>
+<a id="__codelineno-16-10" name="__codelineno-16-10" href="#__codelineno-16-10"></a>    <span class="n">clear_color_b</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="n">serialized_field</span><span class="p">(</span><span class="n">default</span><span class="o">=</span><span class="mf">0.1</span><span class="p">,</span> <span class="nb">range</span><span class="o">=</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">1</span><span class="p">))</span>
+<a id="__codelineno-16-11" name="__codelineno-16-11" href="#__codelineno-16-11"></a>
+<a id="__codelineno-16-12" name="__codelineno-16-12" href="#__codelineno-16-12"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">define_topology</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">graph</span><span class="p">):</span>
+<a id="__codelineno-16-13" name="__codelineno-16-13" href="#__codelineno-16-13"></a>        <span class="n">graph</span><span class="o">.</span><span class="n">create_texture</span><span class="p">(</span><span class="s2">&quot;color&quot;</span><span class="p">,</span> <span class="n">camera_target</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<a id="__codelineno-16-14" name="__codelineno-16-14" href="#__codelineno-16-14"></a>        <span class="n">graph</span><span class="o">.</span><span class="n">create_texture</span><span class="p">(</span><span class="s2">&quot;depth&quot;</span><span class="p">,</span> <span class="nb">format</span><span class="o">=</span><span class="n">Format</span><span class="o">.</span><span class="n">D32_SFLOAT</span><span class="p">)</span>
+<a id="__codelineno-16-15" name="__codelineno-16-15" href="#__codelineno-16-15"></a>
+<a id="__codelineno-16-16" name="__codelineno-16-16" href="#__codelineno-16-16"></a>        <span class="n">cc</span> <span class="o">=</span> <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">clear_color_r</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">clear_color_g</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">clear_color_b</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">)</span>
+<a id="__codelineno-16-17" name="__codelineno-16-17" href="#__codelineno-16-17"></a>
+<a id="__codelineno-16-18" name="__codelineno-16-18" href="#__codelineno-16-18"></a>        <span class="k">with</span> <span class="n">graph</span><span class="o">.</span><span class="n">add_pass</span><span class="p">(</span><span class="s2">&quot;MainPass&quot;</span><span class="p">)</span> <span class="k">as</span> <span class="n">p</span><span class="p">:</span>
+<a id="__codelineno-16-19" name="__codelineno-16-19" href="#__codelineno-16-19"></a>            <span class="n">p</span><span class="o">.</span><span class="n">write_color</span><span class="p">(</span><span class="s2">&quot;color&quot;</span><span class="p">)</span>
+<a id="__codelineno-16-20" name="__codelineno-16-20" href="#__codelineno-16-20"></a>            <span class="n">p</span><span class="o">.</span><span class="n">write_depth</span><span class="p">(</span><span class="s2">&quot;depth&quot;</span><span class="p">)</span>
+<a id="__codelineno-16-21" name="__codelineno-16-21" href="#__codelineno-16-21"></a>            <span class="n">p</span><span class="o">.</span><span class="n">set_clear</span><span class="p">(</span><span class="n">color</span><span class="o">=</span><span class="n">cc</span><span class="p">,</span> <span class="n">depth</span><span class="o">=</span><span class="mf">1.0</span><span class="p">)</span>
+<a id="__codelineno-16-22" name="__codelineno-16-22" href="#__codelineno-16-22"></a>            <span class="n">p</span><span class="o">.</span><span class="n">draw_renderers</span><span class="p">(</span><span class="n">queue_range</span><span class="o">=</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">5000</span><span class="p">))</span>
+<a id="__codelineno-16-23" name="__codelineno-16-23" href="#__codelineno-16-23"></a>            <span class="n">p</span><span class="o">.</span><span class="n">draw_skybox</span><span class="p">()</span>
+<a id="__codelineno-16-24" name="__codelineno-16-24" href="#__codelineno-16-24"></a>
+<a id="__codelineno-16-25" name="__codelineno-16-25" href="#__codelineno-16-25"></a>        <span class="c1"># Add injection points so effects can hook in</span>
+<a id="__codelineno-16-26" name="__codelineno-16-26" href="#__codelineno-16-26"></a>        <span class="n">graph</span><span class="o">.</span><span class="n">injection_point</span><span class="p">(</span><span class="s2">&quot;before_post_process&quot;</span><span class="p">,</span> <span class="n">resources</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;color&quot;</span><span class="p">})</span>
+<a id="__codelineno-16-27" name="__codelineno-16-27" href="#__codelineno-16-27"></a>        <span class="n">graph</span><span class="o">.</span><span class="n">injection_point</span><span class="p">(</span><span class="s2">&quot;after_post_process&quot;</span><span class="p">,</span> <span class="n">resources</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;color&quot;</span><span class="p">})</span>
+<a id="__codelineno-16-28" name="__codelineno-16-28" href="#__codelineno-16-28"></a>
+<a id="__codelineno-16-29" name="__codelineno-16-29" href="#__codelineno-16-29"></a>        <span class="n">graph</span><span class="o">.</span><span class="n">set_output</span><span class="p">(</span><span class="s2">&quot;color&quot;</span><span class="p">)</span>
+</code></pre></div>
+<p>Then use it:</p>
+<div class="language-python highlight"><pre><span></span><code><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a><span class="n">stack</span> <span class="o">=</span> <span class="n">game_object</span><span class="o">.</span><span class="n">get_py_component</span><span class="p">(</span><span class="n">RenderStack</span><span class="p">)</span>
+<a id="__codelineno-17-2" name="__codelineno-17-2" href="#__codelineno-17-2"></a><span class="n">stack</span><span class="o">.</span><span class="n">set_pipeline</span><span class="p">(</span><span class="s2">&quot;Minimal Forward&quot;</span><span class="p">)</span>
+</code></pre></div>
+<h2 id="writing-a-custom-fullscreeneffect">Writing a Custom FullScreenEffect<a class="headerlink" href="#writing-a-custom-fullscreeneffect" title="Permanent link">&para;</a></h2>
+<p>Want to add your own post-processing? Subclass <code>FullScreenEffect</code>:</p>
+<div class="language-python highlight"><pre><span></span><code><a id="__codelineno-18-1" name="__codelineno-18-1" href="#__codelineno-18-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">InfEngine.renderstack</span><span class="w"> </span><span class="kn">import</span> <span class="n">FullScreenEffect</span>
+<a id="__codelineno-18-2" name="__codelineno-18-2" href="#__codelineno-18-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">InfEngine.rendergraph</span><span class="w"> </span><span class="kn">import</span> <span class="n">Format</span>
+<a id="__codelineno-18-3" name="__codelineno-18-3" href="#__codelineno-18-3"></a><span class="kn">from</span><span class="w"> </span><span class="nn">InfEngine.components</span><span class="w"> </span><span class="kn">import</span> <span class="n">serialized_field</span>
+<a id="__codelineno-18-4" name="__codelineno-18-4" href="#__codelineno-18-4"></a>
+<a id="__codelineno-18-5" name="__codelineno-18-5" href="#__codelineno-18-5"></a><span class="k">class</span><span class="w"> </span><span class="nc">InvertColorsEffect</span><span class="p">(</span><span class="n">FullScreenEffect</span><span class="p">):</span>
+<a id="__codelineno-18-6" name="__codelineno-18-6" href="#__codelineno-18-6"></a>    <span class="n">name</span> <span class="o">=</span> <span class="s2">&quot;Invert Colors&quot;</span>
+<a id="__codelineno-18-7" name="__codelineno-18-7" href="#__codelineno-18-7"></a>    <span class="n">injection_point</span> <span class="o">=</span> <span class="s2">&quot;before_post_process&quot;</span>
+<a id="__codelineno-18-8" name="__codelineno-18-8" href="#__codelineno-18-8"></a>    <span class="n">default_order</span> <span class="o">=</span> <span class="mi">250</span>
+<a id="__codelineno-18-9" name="__codelineno-18-9" href="#__codelineno-18-9"></a>    <span class="n">menu_path</span> <span class="o">=</span> <span class="s2">&quot;Post-processing/Invert Colors&quot;</span>
+<a id="__codelineno-18-10" name="__codelineno-18-10" href="#__codelineno-18-10"></a>
+<a id="__codelineno-18-11" name="__codelineno-18-11" href="#__codelineno-18-11"></a>    <span class="n">strength</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="n">serialized_field</span><span class="p">(</span><span class="n">default</span><span class="o">=</span><span class="mf">1.0</span><span class="p">,</span> <span class="nb">range</span><span class="o">=</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">1</span><span class="p">))</span>
+<a id="__codelineno-18-12" name="__codelineno-18-12" href="#__codelineno-18-12"></a>
+<a id="__codelineno-18-13" name="__codelineno-18-13" href="#__codelineno-18-13"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">get_shader_list</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+<a id="__codelineno-18-14" name="__codelineno-18-14" href="#__codelineno-18-14"></a>        <span class="k">return</span> <span class="p">[</span><span class="s2">&quot;fullscreen_triangle&quot;</span><span class="p">,</span> <span class="s2">&quot;invert_colors&quot;</span><span class="p">]</span>
+<a id="__codelineno-18-15" name="__codelineno-18-15" href="#__codelineno-18-15"></a>
+<a id="__codelineno-18-16" name="__codelineno-18-16" href="#__codelineno-18-16"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">setup_passes</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">graph</span><span class="p">,</span> <span class="n">bus</span><span class="p">):</span>
+<a id="__codelineno-18-17" name="__codelineno-18-17" href="#__codelineno-18-17"></a>        <span class="n">color_in</span> <span class="o">=</span> <span class="n">bus</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;color&quot;</span><span class="p">)</span>
+<a id="__codelineno-18-18" name="__codelineno-18-18" href="#__codelineno-18-18"></a>        <span class="k">if</span> <span class="n">color_in</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+<a id="__codelineno-18-19" name="__codelineno-18-19" href="#__codelineno-18-19"></a>            <span class="k">return</span>
+<a id="__codelineno-18-20" name="__codelineno-18-20" href="#__codelineno-18-20"></a>
+<a id="__codelineno-18-21" name="__codelineno-18-21" href="#__codelineno-18-21"></a>        <span class="n">color_out</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">get_or_create_texture</span><span class="p">(</span>
+<a id="__codelineno-18-22" name="__codelineno-18-22" href="#__codelineno-18-22"></a>            <span class="n">graph</span><span class="p">,</span> <span class="s2">&quot;_invert_out&quot;</span><span class="p">,</span> <span class="nb">format</span><span class="o">=</span><span class="n">Format</span><span class="o">.</span><span class="n">RGBA16_SFLOAT</span><span class="p">)</span>
+<a id="__codelineno-18-23" name="__codelineno-18-23" href="#__codelineno-18-23"></a>
+<a id="__codelineno-18-24" name="__codelineno-18-24" href="#__codelineno-18-24"></a>        <span class="k">with</span> <span class="n">graph</span><span class="o">.</span><span class="n">add_pass</span><span class="p">(</span><span class="s2">&quot;Invert_Apply&quot;</span><span class="p">)</span> <span class="k">as</span> <span class="n">p</span><span class="p">:</span>
+<a id="__codelineno-18-25" name="__codelineno-18-25" href="#__codelineno-18-25"></a>            <span class="n">p</span><span class="o">.</span><span class="n">set_texture</span><span class="p">(</span><span class="s2">&quot;_SourceTex&quot;</span><span class="p">,</span> <span class="n">color_in</span><span class="p">)</span>
+<a id="__codelineno-18-26" name="__codelineno-18-26" href="#__codelineno-18-26"></a>            <span class="n">p</span><span class="o">.</span><span class="n">write_color</span><span class="p">(</span><span class="n">color_out</span><span class="p">)</span>
+<a id="__codelineno-18-27" name="__codelineno-18-27" href="#__codelineno-18-27"></a>            <span class="n">p</span><span class="o">.</span><span class="n">set_param</span><span class="p">(</span><span class="s2">&quot;strength&quot;</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">strength</span><span class="p">)</span>
+<a id="__codelineno-18-28" name="__codelineno-18-28" href="#__codelineno-18-28"></a>            <span class="n">p</span><span class="o">.</span><span class="n">fullscreen_quad</span><span class="p">(</span><span class="s2">&quot;invert_colors&quot;</span><span class="p">)</span>
+<a id="__codelineno-18-29" name="__codelineno-18-29" href="#__codelineno-18-29"></a>
+<a id="__codelineno-18-30" name="__codelineno-18-30" href="#__codelineno-18-30"></a>        <span class="n">bus</span><span class="o">.</span><span class="n">set</span><span class="p">(</span><span class="s2">&quot;color&quot;</span><span class="p">,</span> <span class="n">color_out</span><span class="p">)</span>
+</code></pre></div>
+<p>Key rules for custom effects:
+1. Read from <code>bus.get("color")</code> (or whatever resource you need)
+2. Create a <strong>new</strong> output texture (don't write back to the input — read/write hazard!)
+3. Write your result back to <code>bus.set("color", output)</code>
+4. The <code>get_or_create_texture</code> helper avoids duplicate textures</p>
+<h2 id="runtime-effect-control">Runtime Effect Control<a class="headerlink" href="#runtime-effect-control" title="Permanent link">&para;</a></h2>
+<div class="language-python highlight"><pre><span></span><code><a id="__codelineno-19-1" name="__codelineno-19-1" href="#__codelineno-19-1"></a><span class="n">stack</span> <span class="o">=</span> <span class="n">game_object</span><span class="o">.</span><span class="n">get_py_component</span><span class="p">(</span><span class="n">RenderStack</span><span class="p">)</span>
+<a id="__codelineno-19-2" name="__codelineno-19-2" href="#__codelineno-19-2"></a>
+<a id="__codelineno-19-3" name="__codelineno-19-3" href="#__codelineno-19-3"></a><span class="c1"># Toggle an effect</span>
+<a id="__codelineno-19-4" name="__codelineno-19-4" href="#__codelineno-19-4"></a><span class="n">stack</span><span class="o">.</span><span class="n">set_pass_enabled</span><span class="p">(</span><span class="s2">&quot;Bloom&quot;</span><span class="p">,</span> <span class="kc">False</span><span class="p">)</span>
+<a id="__codelineno-19-5" name="__codelineno-19-5" href="#__codelineno-19-5"></a><span class="n">stack</span><span class="o">.</span><span class="n">set_pass_enabled</span><span class="p">(</span><span class="s2">&quot;Bloom&quot;</span><span class="p">,</span> <span class="kc">True</span><span class="p">)</span>
+<a id="__codelineno-19-6" name="__codelineno-19-6" href="#__codelineno-19-6"></a>
+<a id="__codelineno-19-7" name="__codelineno-19-7" href="#__codelineno-19-7"></a><span class="c1"># Remove an effect entirely</span>
+<a id="__codelineno-19-8" name="__codelineno-19-8" href="#__codelineno-19-8"></a><span class="n">stack</span><span class="o">.</span><span class="n">remove_pass</span><span class="p">(</span><span class="s2">&quot;Film Grain&quot;</span><span class="p">)</span>
+<a id="__codelineno-19-9" name="__codelineno-19-9" href="#__codelineno-19-9"></a>
+<a id="__codelineno-19-10" name="__codelineno-19-10" href="#__codelineno-19-10"></a><span class="c1"># Change effect order</span>
+<a id="__codelineno-19-11" name="__codelineno-19-11" href="#__codelineno-19-11"></a><span class="n">stack</span><span class="o">.</span><span class="n">reorder_pass</span><span class="p">(</span><span class="s2">&quot;Vignette&quot;</span><span class="p">,</span> <span class="mi">50</span><span class="p">)</span>  <span class="c1"># Lower = earlier</span>
+<a id="__codelineno-19-12" name="__codelineno-19-12" href="#__codelineno-19-12"></a>
+<a id="__codelineno-19-13" name="__codelineno-19-13" href="#__codelineno-19-13"></a><span class="c1"># Move a pass before another</span>
+<a id="__codelineno-19-14" name="__codelineno-19-14" href="#__codelineno-19-14"></a><span class="n">stack</span><span class="o">.</span><span class="n">move_pass_before</span><span class="p">(</span><span class="s2">&quot;Chromatic Aberration&quot;</span><span class="p">,</span> <span class="s2">&quot;Vignette&quot;</span><span class="p">)</span>
+<a id="__codelineno-19-15" name="__codelineno-19-15" href="#__codelineno-19-15"></a>
+<a id="__codelineno-19-16" name="__codelineno-19-16" href="#__codelineno-19-16"></a><span class="c1"># Force graph rebuild after changes</span>
+<a id="__codelineno-19-17" name="__codelineno-19-17" href="#__codelineno-19-17"></a><span class="n">stack</span><span class="o">.</span><span class="n">invalidate_graph</span><span class="p">()</span>
+</code></pre></div>
+<h2 id="the-resourcebus">The ResourceBus<a class="headerlink" href="#the-resourcebus" title="Permanent link">&para;</a></h2>
+<p>The <code>ResourceBus</code> is how render passes communicate. It's a string → TextureHandle dictionary:</p>
+<div class="language-python highlight"><pre><span></span><code><a id="__codelineno-20-1" name="__codelineno-20-1" href="#__codelineno-20-1"></a><span class="k">def</span><span class="w"> </span><span class="nf">setup_passes</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">graph</span><span class="p">,</span> <span class="n">bus</span><span class="p">):</span>
+<a id="__codelineno-20-2" name="__codelineno-20-2" href="#__codelineno-20-2"></a>    <span class="c1"># Read what the previous effect produced</span>
+<a id="__codelineno-20-3" name="__codelineno-20-3" href="#__codelineno-20-3"></a>    <span class="n">color</span> <span class="o">=</span> <span class="n">bus</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;color&quot;</span><span class="p">)</span>       <span class="c1"># TextureHandle or None</span>
+<a id="__codelineno-20-4" name="__codelineno-20-4" href="#__codelineno-20-4"></a>    <span class="n">depth</span> <span class="o">=</span> <span class="n">bus</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;depth&quot;</span><span class="p">)</span>       <span class="c1"># might be None if no depth pass wrote it</span>
+<a id="__codelineno-20-5" name="__codelineno-20-5" href="#__codelineno-20-5"></a>
+<a id="__codelineno-20-6" name="__codelineno-20-6" href="#__codelineno-20-6"></a>    <span class="c1"># ... do your thing ...</span>
+<a id="__codelineno-20-7" name="__codelineno-20-7" href="#__codelineno-20-7"></a>
+<a id="__codelineno-20-8" name="__codelineno-20-8" href="#__codelineno-20-8"></a>    <span class="c1"># Write back so the next effect gets your output</span>
+<a id="__codelineno-20-9" name="__codelineno-20-9" href="#__codelineno-20-9"></a>    <span class="n">bus</span><span class="o">.</span><span class="n">set</span><span class="p">(</span><span class="s2">&quot;color&quot;</span><span class="p">,</span> <span class="n">my_output</span><span class="p">)</span>
+</code></pre></div>
+<p>Available resources depend on the injection point. Typically:
+- <code>before_post_process</code>: <code>color</code>, <code>depth</code>
+- <code>after_post_process</code>: <code>color</code> (depth may not be available)
+- Custom injection points: whatever the pipeline declares</p>
+<h2 id="discovering-available-pipelines-passes">Discovering Available Pipelines &amp; Passes<a class="headerlink" href="#discovering-available-pipelines-passes" title="Permanent link">&para;</a></h2>
+<div class="language-python highlight"><pre><span></span><code><a id="__codelineno-21-1" name="__codelineno-21-1" href="#__codelineno-21-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">InfEngine.renderstack</span><span class="w"> </span><span class="kn">import</span> <span class="n">discover_pipelines</span><span class="p">,</span> <span class="n">discover_passes</span>
+<a id="__codelineno-21-2" name="__codelineno-21-2" href="#__codelineno-21-2"></a>
+<a id="__codelineno-21-3" name="__codelineno-21-3" href="#__codelineno-21-3"></a><span class="c1"># All registered pipeline classes</span>
+<a id="__codelineno-21-4" name="__codelineno-21-4" href="#__codelineno-21-4"></a><span class="n">pipelines</span> <span class="o">=</span> <span class="n">discover_pipelines</span><span class="p">()</span>
+<a id="__codelineno-21-5" name="__codelineno-21-5" href="#__codelineno-21-5"></a><span class="k">for</span> <span class="n">name</span><span class="p">,</span> <span class="bp">cls</span> <span class="ow">in</span> <span class="n">pipelines</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
+<a id="__codelineno-21-6" name="__codelineno-21-6" href="#__codelineno-21-6"></a>    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;  </span><span class="si">{</span><span class="n">name</span><span class="si">}</span><span class="s2">: </span><span class="si">{</span><span class="bp">cls</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+<a id="__codelineno-21-7" name="__codelineno-21-7" href="#__codelineno-21-7"></a>
+<a id="__codelineno-21-8" name="__codelineno-21-8" href="#__codelineno-21-8"></a><span class="c1"># All registered render pass classes</span>
+<a id="__codelineno-21-9" name="__codelineno-21-9" href="#__codelineno-21-9"></a><span class="n">passes</span> <span class="o">=</span> <span class="n">discover_passes</span><span class="p">()</span>
+<a id="__codelineno-21-10" name="__codelineno-21-10" href="#__codelineno-21-10"></a><span class="k">for</span> <span class="n">name</span><span class="p">,</span> <span class="bp">cls</span> <span class="ow">in</span> <span class="n">passes</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
+<a id="__codelineno-21-11" name="__codelineno-21-11" href="#__codelineno-21-11"></a>    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;  </span><span class="si">{</span><span class="n">name</span><span class="si">}</span><span class="s2">: </span><span class="si">{</span><span class="bp">cls</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+</code></pre></div>
+<h2 id="tips">Tips<a class="headerlink" href="#tips" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>Effect order matters.</strong> Bloom in HDR space looks different from bloom after tone mapping. The built-in <code>default_order</code> values give you sensible defaults.</li>
+<li><strong>Always call <code>invalidate_graph()</code></strong> after modifying the stack at runtime. The graph is cached for performance.</li>
+<li><strong>Tone mapping should be last</strong> in the post-process chain (or at least after all HDR effects). Otherwise bloom operates on already-compressed values and looks washed out.</li>
+<li><strong>Read/write hazard</strong>: Never <code>write_color</code> to the same texture you're reading from. Always create a new output texture.</li>
+<li><strong>Performance</strong>: Each effect adds at least one fullscreen pass. On low-end hardware, less is more.</li>
+</ul>
+<h2 id="see-also">See Also<a class="headerlink" href="#see-also" title="Permanent link">&para;</a></h2>
+<ul>
+<li><a href="../api/RenderGraph.html">RenderGraph API</a></li>
+<li><a href="../api/RenderStack.html">RenderStack API</a></li>
+<li><a href="../api/FullScreenEffect.html">FullScreenEffect API</a></li>
+<li><a href="../api/BloomEffect.html">BloomEffect API</a></li>
+<li><a href="../api/ToneMappingEffect.html">ToneMappingEffect API</a></li>
+<li><a href="../api/RenderPipeline.html">RenderPipeline API</a></li>
+</ul>
+        </main>
+    </div>
+
+    <!-- Footer -->
+    <footer class="footer api-ft">
+        <div class="container">
+            <div class="footer-bottom">
+                <p>&copy; 2024 Infernux Engine. MIT License.</p>
+            </div>
+        </div>
+    </footer>
+
+    <script src="/InfEngine/js/main.js"></script>
+    <script>
+    document.addEventListener('DOMContentLoaded', function() {
+        document.querySelectorAll('.ns-hd').forEach(function(h) {
+            h.addEventListener('click', function() { this.classList.toggle('open'); });
+        });
+    });
+    </script>
+</body>
+</html>

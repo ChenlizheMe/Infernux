@@ -6,11 +6,9 @@
 
 ## 描述
 
-Primitive mesh types that can be created in a scene.
+基本几何体类型枚举。
 
 <!-- USER CONTENT START --> description
-
-PrimitiveType 指定使用 `Scene.create_primitive()` 创建的内置网格类型。可用类型有 Cube、Sphere、Capsule、Cylinder 和 Plane。
 
 <!-- USER CONTENT END -->
 

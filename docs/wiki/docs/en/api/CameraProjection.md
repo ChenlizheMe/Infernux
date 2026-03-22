@@ -1,28 +1,25 @@
 # CameraProjection
 
 <div class="class-info">
-class in <b>InfEngine</b>
+enum in <b>InfEngine</b>
 </div>
 
 ## Description
 
-Camera projection mode enum.
+Camera projection mode.
 
 <!-- USER CONTENT START --> description
 
-CameraProjection defines the projection modes available for [Camera](Camera.md): Perspective (3D depth) and Orthographic (no depth).
-
 <!-- USER CONTENT END -->
 
-## Properties
+## Values
 
-| Name | Type | Description |
-|------|------|------|
-| Perspective | `CameraProjection` |  *(read-only)* |
-| Orthographic | `CameraProjection` |  *(read-only)* |
-| value | `int` |  *(read-only)* |
+| Name | Description |
+|------|------|
+| Perspective |  |
+| Orthographic |  |
 
-<!-- USER CONTENT START --> properties
+<!-- USER CONTENT START --> enum_values
 
 <!-- USER CONTENT END -->
 

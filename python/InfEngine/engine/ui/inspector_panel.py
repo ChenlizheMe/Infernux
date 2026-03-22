@@ -24,6 +24,7 @@ from .inspector_utils import (
     max_label_w, field_label, render_compact_section_header, render_info_text,
     render_inspector_checkbox,
     render_material_property, render_component_header,
+    DRAG_SPEED_DEFAULT, DRAG_SPEED_FINE,
 )
 from . import inspector_components as comp_ui
 from . import inspector_shader_utils as shader_utils
@@ -108,6 +109,10 @@ class InspectorPanel(EditorPanel):
         self._multi_cache_per_cpp: dict = {}
         self._multi_cache_per_py: dict = {}
         self._multi_cache_has_transform: bool = True
+
+        # Idle-skip state: tracks how many consecutive frames the
+        # inspector child was neither hovered nor had an active item.
+        self._inspector_idle_frames: int = 0
 
         # Register MeshRenderer into the component renderer registry so
         # dispatch is fully unified (uses bound method for panel-level state).
@@ -2129,7 +2134,7 @@ class InspectorPanel(EditorPanel):
         """Render Transform for multiple selected objects.
 
         Shows the primary object's values; edits apply as deltas to ALL
-        selected objects (Unity behaviour).
+        selected objects (Unity behaviour).  Uses dedicated C++ function.
         """
         from InfEngine.lib import Vector3
 
@@ -2144,10 +2149,19 @@ class InspectorPanel(EditorPanel):
         lw = self._max_label_w(ctx, ["Position", "Rotation", "Scale"])
         primary = transforms[0]
 
-        # Position
         pos = primary.local_position
         px, py_, pz = pos[0], pos[1], pos[2]
-        npx, npy, npz = ctx.vector3("Position", px, py_, pz, 0.1, lw)
+        rot = primary.local_euler_angles
+        rx, ry, rz = rot[0], rot[1], rot[2]
+        scl = primary.local_scale
+        sx, sy, sz = scl[0], scl[1], scl[2]
+
+        r = ctx.render_transform_fields(
+            px, py_, pz, rx, ry, rz, sx, sy, sz,
+            DRAG_SPEED_DEFAULT, DRAG_SPEED_DEFAULT, DRAG_SPEED_FINE, lw,
+        )
+
+        npx, npy, npz = r[0], r[1], r[2]
         dx, dy, dz = npx - px, npy - py_, npz - pz
         if abs(dx) > 1e-6 or abs(dy) > 1e-6 or abs(dz) > 1e-6:
             for t in transforms:
@@ -2156,10 +2170,7 @@ class InspectorPanel(EditorPanel):
                                  Vector3(old[0] + dx, old[1] + dy, old[2] + dz),
                                  "Set Position (Multi)")
 
-        # Rotation
-        rot = primary.local_euler_angles
-        rx, ry, rz = rot[0], rot[1], rot[2]
-        nrx, nry, nrz = ctx.vector3("Rotation", rx, ry, rz, 0.1, lw)
+        nrx, nry, nrz = r[3], r[4], r[5]
         drx, dry, drz = nrx - rx, nry - ry, nrz - rz
         if abs(drx) > 1e-6 or abs(dry) > 1e-6 or abs(drz) > 1e-6:
             for t in transforms:
@@ -2168,10 +2179,7 @@ class InspectorPanel(EditorPanel):
                                  Vector3(old[0] + drx, old[1] + dry, old[2] + drz),
                                  "Set Rotation (Multi)")
 
-        # Scale
-        scl = primary.local_scale
-        sx, sy, sz = scl[0], scl[1], scl[2]
-        nsx, nsy, nsz = ctx.vector3("Scale", sx, sy, sz, 0.01, lw)
+        nsx, nsy, nsz = r[6], r[7], r[8]
         dsx, dsy, dsz = nsx - sx, nsy - sy, nsz - sz
         if abs(dsx) > 1e-6 or abs(dsy) > 1e-6 or abs(dsz) > 1e-6:
             for t in transforms:
@@ -2512,8 +2520,12 @@ class InspectorPanel(EditorPanel):
         mgr = UndoManager.instance()
         self._undo_tracker.begin_frame()
 
+        child_hovered = False
         child_visible = ctx.begin_child("PropertiesModule", 0, height, True)
         if child_visible:
+            # Track hover inside child window for idle detection
+            child_hovered = ctx.is_window_hovered(0)
+
             ctx.push_style_var_vec2(ImGuiStyleVar.FramePadding, *Theme.INSPECTOR_FRAME_PAD)
             ctx.push_style_var_vec2(ImGuiStyleVar.ItemSpacing, *Theme.INSPECTOR_ITEM_SPC)
 
@@ -2554,7 +2566,14 @@ class InspectorPanel(EditorPanel):
         ctx.end_child()
 
         # End undo tracking frame — compare and record changes
-        self._undo_tracker.end_frame(ctx.is_any_item_active())
+        any_active = ctx.is_any_item_active()
+        self._undo_tracker.end_frame(any_active)
+
+        # Update idle-skip counter (available for future optimisation)
+        if child_hovered or any_active:
+            self._inspector_idle_frames = 0
+        else:
+            self._inspector_idle_frames += 1
 
         # Drag-drop target on the entire PropertiesModule child window.
         # Must be called AFTER end_child() — EndChild() submits the child as an item,

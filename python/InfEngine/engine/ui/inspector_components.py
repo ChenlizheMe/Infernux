@@ -206,28 +206,31 @@ def render_transform_component(ctx: InfGUIContext, trans):
     
     Displays LOCAL values in the inspector (matching Unity convention where
     the Inspector shows localPosition / localEulerAngles / localScale).
+    Uses a dedicated C++ function to render all 3 vector3 controls in one
+    bridge call — no tuple/descriptor overhead.
     """
     from InfEngine.lib import Vector3
     lw = max_label_w(ctx, ["Position", "Rotation", "Scale"])
 
-    # Position (local space — offset from parent)
     pos = trans.local_position
     px, py, pz = pos[0], pos[1], pos[2]
-    npx, npy, npz = ctx.vector3("Position", px, py, pz, DRAG_SPEED_DEFAULT, lw)
-    if any(not _float_close(a, b) for a, b in [(npx, px), (npy, py), (npz, pz)]):
-        _record_property(trans, "local_position", pos, Vector3(npx, npy, npz), "Set Position")
-
-    # Rotation (local euler angles)
     rot = trans.local_euler_angles
     rx, ry, rz = rot[0], rot[1], rot[2]
-    nrx, nry, nrz = ctx.vector3("Rotation", rx, ry, rz, DRAG_SPEED_DEFAULT, lw)
-    if any(not _float_close(a, b) for a, b in [(nrx, rx), (nry, ry), (nrz, rz)]):
-        _record_property(trans, "local_euler_angles", rot, Vector3(nrx, nry, nrz), "Set Rotation")
-
-    # Scale (local — Unity convention: scale is always local)
     scl = trans.local_scale
     sx, sy, sz = scl[0], scl[1], scl[2]
-    nsx, nsy, nsz = ctx.vector3("Scale", sx, sy, sz, DRAG_SPEED_FINE, lw)
+
+    r = ctx.render_transform_fields(
+        px, py, pz, rx, ry, rz, sx, sy, sz,
+        DRAG_SPEED_DEFAULT, DRAG_SPEED_DEFAULT, DRAG_SPEED_FINE, lw,
+    )
+    npx, npy, npz = r[0], r[1], r[2]
+    nrx, nry, nrz = r[3], r[4], r[5]
+    nsx, nsy, nsz = r[6], r[7], r[8]
+
+    if any(not _float_close(a, b) for a, b in [(npx, px), (npy, py), (npz, pz)]):
+        _record_property(trans, "local_position", pos, Vector3(npx, npy, npz), "Set Position")
+    if any(not _float_close(a, b) for a, b in [(nrx, rx), (nry, ry), (nrz, rz)]):
+        _record_property(trans, "local_euler_angles", rot, Vector3(nrx, nry, nrz), "Set Rotation")
     if any(not _float_close(a, b) for a, b in [(nsx, sx), (nsy, sy), (nsz, sz)]):
         _record_property(trans, "local_scale", scl, Vector3(nsx, nsy, nsz), "Set Scale")
 

@@ -1,0 +1,53 @@
+# CapsuleCollider
+
+<div class="class-info">
+class in <b>InfEngine.components.builtin</b>
+</div>
+
+**Inherits from:** [Collider](Collider.md)
+
+## Description
+
+A capsule-shaped collider primitive.
+
+<!-- USER CONTENT START --> description
+
+<!-- USER CONTENT END -->
+
+## Properties
+
+| Name | Type | Description |
+|------|------|------|
+| radius | `float` | The radius of the capsule collider. |
+| height | `float` | The height of the capsule collider. |
+| direction | `int` | The axis direction of the capsule (0=X, 1=Y, 2=Z). |
+
+<!-- USER CONTENT START --> properties
+
+<!-- USER CONTENT END -->
+
+## Lifecycle Methods
+
+| Method | Description |
+|------|------|
+| `on_draw_gizmos_selected() → None` | Draw the collider wireframe when selected in the editor. |
+
+<!-- USER CONTENT START --> lifecycle_methods
+
+<!-- USER CONTENT END -->
+
+## Example
+
+```python
+# TODO: Add example for CapsuleCollider
+```
+
+<!-- USER CONTENT START --> example
+
+<!-- USER CONTENT END -->
+
+## See Also
+
+<!-- USER CONTENT START --> see_also
+
+<!-- USER CONTENT END -->

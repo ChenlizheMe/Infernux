@@ -1,30 +1,27 @@
 # CameraClearFlags
 
 <div class="class-info">
-类位于 <b>InfEngine</b>
+枚举位于 <b>InfEngine</b>
 </div>
 
 ## 描述
 
-Camera clear flags enum (Unity URP-style).
+摄像机清除模式枚举。
 
 <!-- USER CONTENT START --> description
 
-CameraClearFlags 定义 [Camera](Camera.md) 在渲染前如何清除屏幕：纯色、天空盒、仅深度或不清除。
-
 <!-- USER CONTENT END -->
 
-## 属性
+## 枚举值
 
-| 名称 | 类型 | 描述 |
-|------|------|------|
-| Skybox | `CameraClearFlags` |  *(只读)* |
-| SolidColor | `CameraClearFlags` |  *(只读)* |
-| DepthOnly | `CameraClearFlags` |  *(只读)* |
-| DontClear | `CameraClearFlags` |  *(只读)* |
-| value | `int` |  *(只读)* |
+| 名称 | 描述 |
+|------|------|
+| Skybox |  |
+| SolidColor |  |
+| DepthOnly |  |
+| DontClear |  |
 
-<!-- USER CONTENT START --> properties
+<!-- USER CONTENT START --> enum_values
 
 <!-- USER CONTENT END -->
 

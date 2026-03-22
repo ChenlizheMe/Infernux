@@ -1,28 +1,25 @@
 # CameraProjection
 
 <div class="class-info">
-类位于 <b>InfEngine</b>
+枚举位于 <b>InfEngine</b>
 </div>
 
 ## 描述
 
-Camera projection mode enum.
+摄像机投影模式枚举。
 
 <!-- USER CONTENT START --> description
 
-CameraProjection 定义 [Camera](Camera.md) 可用的投影模式：透视（3D 深度）和正交（无深度）。
-
 <!-- USER CONTENT END -->
 
-## 属性
+## 枚举值
 
-| 名称 | 类型 | 描述 |
-|------|------|------|
-| Perspective | `CameraProjection` |  *(只读)* |
-| Orthographic | `CameraProjection` |  *(只读)* |
-| value | `int` |  *(只读)* |
+| 名称 | 描述 |
+|------|------|
+| Perspective |  |
+| Orthographic |  |
 
-<!-- USER CONTENT START --> properties
+<!-- USER CONTENT START --> enum_values
 
 <!-- USER CONTENT END -->
 

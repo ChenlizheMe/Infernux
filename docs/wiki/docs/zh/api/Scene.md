@@ -22,7 +22,9 @@ Scene 代表引擎中的一个运行时场景，包含 [GameObject](GameObject.m
 
 | 名称 | 类型 | 描述 |
 |------|------|------|
-| name | `str` | 场景名称。 |
+| name | `str` | 场景名称。 *(只读)* |
+| structure_version | `int` |  *(只读)* |
+| main_camera | `Optional[Camera]` |  *(只读)* |
 
 <!-- USER CONTENT START --> properties
 
@@ -32,24 +34,30 @@ Scene 代表引擎中的一个运行时场景，包含 [GameObject](GameObject.m
 
 | 方法 | 描述 |
 |------|------|
-| `create_game_object(name: str = 'GameObject') → GameObject` | Create a new empty GameObject in this scene. |
-| `create_primitive(type: PrimitiveType, name: str = '') → GameObject` | Create a primitive GameObject (Cube, Sphere, Capsule, Cylinder, Plane). |
-| `get_root_objects() → List[GameObject]` | Get all root-level GameObjects. |
-| `get_all_objects() → List[GameObject]` | Get all GameObjects in the scene. |
-| `find(name: str) → Optional[GameObject]` | Find a GameObject by name. |
-| `find_by_id(id: int) → Optional[GameObject]` | Find a GameObject by ID. |
-| `find_with_tag(tag: str) → Optional[GameObject]` | Find the first GameObject with a given tag. |
-| `find_game_objects_with_tag(tag: str) → List[GameObject]` | Find all GameObjects with a given tag. |
-| `find_game_objects_in_layer(layer: int) → List[GameObject]` | Find all GameObjects in a given layer. |
-| `destroy_game_object(game_object: GameObject) → None` | Destroy a GameObject (removed at end of frame). |
-| `process_pending_destroys() → None` | Process pending GameObject destroys. |
-| `is_playing() → bool` | Check if the scene is in play mode. |
-| `serialize() → str` | Serialize scene to JSON string. |
-| `deserialize(json_str: str) → None` | Deserialize scene from JSON string. |
-| `save_to_file(path: str) → None` | Save scene to a JSON file. |
-| `load_from_file(path: str) → None` | Load scene from a JSON file. |
-| `has_pending_py_components() → bool` | Check if there are pending Python components to restore. |
-| `take_pending_py_components() → List[PendingPyComponent]` | Get and clear pending Python components for restoration. |
+| `set_playing(playing: bool) → None` |  |
+| `create_game_object(name: str = 'GameObject') → GameObject` |  |
+| `create_primitive(type: PrimitiveType, name: str = '') → GameObject` |  |
+| `create_from_model(guid: str, name: str = '') → Optional[GameObject]` |  |
+| `get_root_objects() → List[GameObject]` |  |
+| `get_all_objects() → List[GameObject]` |  |
+| `find(name: str) → Optional[GameObject]` |  |
+| `find_by_id(id: int) → Optional[GameObject]` |  |
+| `find_object_by_id(id: int) → Optional[GameObject]` |  |
+| `find_with_tag(tag: str) → Optional[GameObject]` |  |
+| `find_game_objects_with_tag(tag: str) → List[GameObject]` |  |
+| `find_game_objects_in_layer(layer: int) → List[GameObject]` |  |
+| `destroy_game_object(game_object: GameObject) → None` |  |
+| `instantiate_game_object(source: GameObject, parent: Optional[GameObject] = None) → Optional[GameObject]` |  |
+| `instantiate_from_json(json_str: str, parent: Optional[GameObject] = None) → Optional[GameObject]` |  |
+| `process_pending_destroys() → None` |  |
+| `is_playing() → bool` |  |
+| `awake_object(game_object: GameObject) → None` |  |
+| `serialize() → str` |  |
+| `deserialize(json_str: str) → None` |  |
+| `save_to_file(path: str) → None` |  |
+| `load_from_file(path: str) → None` |  |
+| `has_pending_py_components() → bool` |  |
+| `take_pending_py_components() → List[PendingPyComponent]` |  |
 
 <!-- USER CONTENT START --> public_methods
 
@@ -59,7 +67,7 @@ Scene 代表引擎中的一个运行时场景，包含 [GameObject](GameObject.m
 
 | 方法 | 描述 |
 |------|------|
-| `start() → None` | Trigger Awake+Start on all components (idempotent — skipped if already started). |
+| `start() → None` |  |
 
 <!-- USER CONTENT START --> lifecycle_methods
 

@@ -1,0 +1,630 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>音频 - InfEngine Scripting API</title>
+    <link rel="icon" type="image/svg+xml" href="/InfEngine/assets/favicon.svg">
+    <link rel="stylesheet" href="/InfEngine/css/style.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        /* ======================================================
+           InfEngine API Reference — Unity-Inspired Dark Theme
+           ====================================================== */
+
+        /* Layout */
+        .api-layout {
+            display: flex;
+            min-height: calc(100vh - var(--nav-height));
+            padding-top: var(--nav-height);
+        }
+
+        /* ---- Sidebar ---- */
+        .api-sidebar {
+            width: 280px;
+            background: #0b0b12;
+            border-right: 1px solid var(--border);
+            position: sticky;
+            top: var(--nav-height);
+            height: calc(100vh - var(--nav-height));
+            overflow-y: auto;
+            flex-shrink: 0;
+        }
+        .api-sidebar::-webkit-scrollbar { width: 5px; }
+        .api-sidebar::-webkit-scrollbar-track { background: transparent; }
+        .api-sidebar::-webkit-scrollbar-thumb { background: #2a2a3a; border-radius: 3px; }
+
+        .sidebar-hdr {
+            padding: 14px 18px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .sidebar-hdr h3 {
+            margin: 0;
+            font-size: 0.78rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            color: var(--text-muted);
+        }
+
+        /* Language toggle */
+        .lang-sw {
+            display: flex;
+            gap: 1px;
+            background: var(--border);
+            border-radius: 4px;
+            overflow: hidden;
+        }
+        .lang-sw a {
+            padding: 3px 10px;
+            font-size: 0.7rem;
+            font-weight: 600;
+            color: var(--text-muted);
+            background: var(--bg-elevated);
+            text-decoration: none;
+            transition: all 0.12s;
+        }
+        .lang-sw a.on {
+            background: var(--primary);
+            color: #fff;
+        }
+        .lang-sw a:hover:not(.on) {
+            color: var(--text-primary);
+            background: var(--bg-hover);
+        }
+
+        /* Namespace tree */
+        .ns-tree { padding: 6px 0 20px; }
+
+        .ns-group { margin-bottom: 1px; }
+
+        .ns-hd {
+            display: flex;
+            align-items: center;
+            padding: 7px 16px;
+            cursor: pointer;
+            user-select: none;
+            transition: background 0.1s;
+        }
+        .ns-hd:hover { background: rgba(255,255,255,0.025); }
+
+        .ns-arr {
+            width: 14px;
+            font-size: 0.5rem;
+            color: #555;
+            transition: transform 0.15s;
+            margin-right: 8px;
+            flex-shrink: 0;
+        }
+        .ns-hd.open .ns-arr { transform: rotate(90deg); }
+
+        .ns-nm {
+            font-size: 0.84rem;
+            font-weight: 500;
+            color: var(--text-secondary);
+        }
+        .ns-hd.hi .ns-nm { color: var(--primary); }
+
+        .ns-ch {
+            display: none;
+            padding: 2px 0 4px;
+        }
+        .ns-hd.open + .ns-ch { display: block; }
+
+        .ns-ch a {
+            display: block;
+            padding: 3px 16px 3px 38px;
+            font-size: 0.82rem;
+            color: var(--text-muted);
+            text-decoration: none;
+            transition: color 0.1s, background 0.1s;
+            border-left: 2px solid transparent;
+        }
+        .ns-ch a:hover {
+            color: var(--text-primary);
+            background: rgba(255,255,255,0.02);
+        }
+        .ns-ch a.cur {
+            color: var(--text-primary);
+            background: rgba(255,107,53,0.07);
+            border-left-color: var(--primary);
+            font-weight: 600;
+        }
+
+        /* ---- Content ---- */
+        .api-main {
+            flex: 1;
+            padding: 36px 56px 80px;
+            max-width: 880px;
+            min-width: 0;
+        }
+
+        /* H1 — class name */
+        .api-main h1 {
+            font-size: 1.85rem;
+            font-weight: 700;
+            margin: 0 0 4px;
+            padding: 0;
+            border: none;
+            color: var(--text-primary);
+        }
+
+        /* "class in Package" subtitle */
+        .api-main .class-info {
+            font-size: 0.88rem;
+            color: var(--text-muted);
+            margin-bottom: 22px;
+            padding-bottom: 18px;
+            border-bottom: 1px solid var(--border);
+        }
+        .api-main .class-info b { color: var(--text-secondary); }
+        .api-main .class-info a { color: var(--primary); }
+
+        /* H2 — section headers */
+        .api-main h2 {
+            font-size: 0.92rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.6px;
+            color: var(--text-muted);
+            margin: 30px 0 8px;
+            padding-bottom: 6px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .api-main h3 {
+            font-size: 0.9rem;
+            font-weight: 600;
+            color: var(--text-secondary);
+            margin: 18px 0 6px;
+        }
+
+        /* Paragraphs */
+        .api-main p {
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+            line-height: 1.75;
+            margin-bottom: 12px;
+        }
+
+        .api-main blockquote {
+            margin: 12px 0;
+            padding: 10px 16px;
+            background: rgba(255,107,53,0.04);
+            border-left: 3px solid var(--primary);
+            border-radius: 0 4px 4px 0;
+        }
+        .api-main blockquote p { margin: 0; font-size: 0.85rem; }
+
+        /* Tables — Unity style: hidden header, 2-col */
+        .api-main table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 4px 0 18px;
+        }
+        .api-main thead { display: none; }
+
+        .api-main tbody tr {
+            border-bottom: 1px solid rgba(255,255,255,0.04);
+        }
+        .api-main tbody tr:last-child { border-bottom: none; }
+
+        .api-main td {
+            padding: 7px 0;
+            font-size: 0.86rem;
+            vertical-align: top;
+        }
+        .api-main td:first-child {
+            width: 200px;
+            padding-right: 20px;
+            color: var(--primary);
+            font-size: 0.86rem;
+            font-weight: 500;
+        }
+        .api-main td:last-child { color: var(--text-secondary); }
+        .api-main td a { color: var(--primary); }
+        .api-main tbody tr:hover { background: rgba(255,255,255,0.012); }
+
+        /* Inline code — normal font, subtle highlight */
+        .api-main code {
+            font-family: inherit;
+            font-size: inherit;
+            background: rgba(255,255,255,0.06);
+            padding: 1px 5px;
+            border-radius: 3px;
+            color: var(--primary-light);
+        }
+
+        /* Code blocks */
+        .api-main pre {
+            background: #0d0d15;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 16px 20px;
+            overflow-x: auto;
+            margin: 10px 0 18px;
+        }
+        .api-main pre code {
+            font-family: var(--font-mono);
+            background: none;
+            padding: 0;
+            font-size: 0.83rem;
+            line-height: 1.65;
+            color: var(--text-secondary);
+        }
+
+        /* Lists */
+        .api-main ul, .api-main ol { padding-left: 18px; margin-bottom: 12px; }
+        .api-main li {
+            margin-bottom: 4px;
+            color: var(--text-secondary);
+            font-size: 0.88rem;
+            line-height: 1.6;
+        }
+
+        .api-main hr {
+            border: none;
+            border-top: 1px solid var(--border);
+            margin: 26px 0;
+        }
+
+        /* ---- Footer ---- */
+        .api-ft { margin-left: 280px; }
+        .api-ft .footer-bottom p { font-size: 0.8rem; }
+
+        /* ---- Responsive ---- */
+        @media (max-width: 1024px) {
+            .api-sidebar { width: 240px; }
+            .api-main { padding: 28px 32px 60px; }
+            .api-ft { margin-left: 240px; }
+        }
+        @media (max-width: 768px) {
+            .api-layout { flex-direction: column; }
+            .api-sidebar {
+                width: 100%; position: relative; top: 0;
+                height: auto; max-height: 50vh;
+                border-right: none; border-bottom: 1px solid var(--border);
+            }
+            .api-main { padding: 20px; max-width: 100%; }
+            .api-ft { margin-left: 0; }
+        }
+    </style>
+</head>
+<body>
+    <!-- Top Navigation -->
+    <nav class="navbar">
+        <div class="nav-container">
+            <a href="/InfEngine/" class="nav-logo">
+                <span class="logo-icon">🔥</span>
+                <span class="logo-text">Infernux</span>
+            </a>
+            <div class="nav-links">
+                <a href="/InfEngine/">Home</a>
+                <a href="/InfEngine/#features">Features</a>
+                <a href="/InfEngine/roadmap.html">Roadmap</a>
+                <a href="/InfEngine/wiki/site/en/api/index.html" class="active">API Reference</a>
+                <a href="https://github.com/ChenlizheMe/InfEngine" target="_blank">
+                    <i class="fab fa-github"></i> GitHub
+                </a>
+            </div>
+            <div class="nav-right">
+                <button class="mobile-menu-btn" onclick="toggleMobileMenu()">
+                    <i class="fas fa-bars"></i>
+                </button>
+            </div>
+        </div>
+    </nav>
+
+    <!-- API Reference Layout -->
+    <div class="api-layout">
+        <!-- Sidebar — namespace / package tree -->
+        <aside class="api-sidebar">
+            <div class="sidebar-hdr">
+                <h3>脚本 API</h3>
+                <div class="lang-sw">
+                    <a href="/InfEngine/wiki/site/en/api/index.html"
+                       class="">EN</a>
+                    <a href="/InfEngine/wiki/site/zh/api/index.html"
+                       class="on">中文</a>
+                </div>
+            </div>
+
+            <div class="ns-tree"><div class="ns-group">
+                        <div class="ns-hd">
+                            <span class="ns-arr">&#9654;</span>
+                            <span class="ns-nm">InfEngine</span>
+                        </div>
+                        <div class="ns-ch"><a href="/InfEngine/wiki/site/zh/api/AudioClip.html" class="">AudioClip</a><a href="/InfEngine/wiki/site/zh/api/AudioListener.html" class="">AudioListener</a><a href="/InfEngine/wiki/site/zh/api/AudioSource.html" class="">AudioSource</a><a href="/InfEngine/wiki/site/zh/api/BoxCollider.html" class="">BoxCollider</a><a href="/InfEngine/wiki/site/zh/api/Camera.html" class="">Camera</a><a href="/InfEngine/wiki/site/zh/api/CameraClearFlags.html" class="">CameraClearFlags</a><a href="/InfEngine/wiki/site/zh/api/CameraProjection.html" class="">CameraProjection</a><a href="/InfEngine/wiki/site/zh/api/CapsuleCollider.html" class="">CapsuleCollider</a><a href="/InfEngine/wiki/site/zh/api/Collider.html" class="">Collider</a><a href="/InfEngine/wiki/site/zh/api/CollisionDetectionMode.html" class="">CollisionDetectionMode</a><a href="/InfEngine/wiki/site/zh/api/Component.html" class="">Component</a><a href="/InfEngine/wiki/site/zh/api/ForceMode.html" class="">ForceMode</a><a href="/InfEngine/wiki/site/zh/api/GameObject.html" class="">GameObject</a><a href="/InfEngine/wiki/site/zh/api/Light.html" class="">Light</a><a href="/InfEngine/wiki/site/zh/api/LightShadows.html" class="">LightShadows</a><a href="/InfEngine/wiki/site/zh/api/LightType.html" class="">LightType</a><a href="/InfEngine/wiki/site/zh/api/LogLevel.html" class="">LogLevel</a><a href="/InfEngine/wiki/site/zh/api/MeshCollider.html" class="">MeshCollider</a><a href="/InfEngine/wiki/site/zh/api/MeshRenderer.html" class="">MeshRenderer</a><a href="/InfEngine/wiki/site/zh/api/Physics.html" class="">Physics</a><a href="/InfEngine/wiki/site/zh/api/PrimitiveType.html" class="">PrimitiveType</a><a href="/InfEngine/wiki/site/zh/api/Rigidbody.html" class="">Rigidbody</a><a href="/InfEngine/wiki/site/zh/api/RigidbodyConstraints.html" class="">RigidbodyConstraints</a><a href="/InfEngine/wiki/site/zh/api/Scene.html" class="">Scene</a><a href="/InfEngine/wiki/site/zh/api/SceneManager.html" class="">SceneManager</a><a href="/InfEngine/wiki/site/zh/api/Space.html" class="">Space</a><a href="/InfEngine/wiki/site/zh/api/SphereCollider.html" class="">SphereCollider</a><a href="/InfEngine/wiki/site/zh/api/Transform.html" class="">Transform</a></div>
+                    </div><div class="ns-group">
+                        <div class="ns-hd">
+                            <span class="ns-arr">&#9654;</span>
+                            <span class="ns-nm">InfEngine.components</span>
+                        </div>
+                        <div class="ns-ch"><a href="/InfEngine/wiki/site/zh/api/InfComponent.html" class="">InfComponent</a><a href="/InfEngine/wiki/site/zh/api/add_component_menu.html" class="">add_component_menu</a><a href="/InfEngine/wiki/site/zh/api/disallow_multiple.html" class="">disallow_multiple</a><a href="/InfEngine/wiki/site/zh/api/execute_in_edit_mode.html" class="">execute_in_edit_mode</a><a href="/InfEngine/wiki/site/zh/api/require_component.html" class="">require_component</a><a href="/InfEngine/wiki/site/zh/api/serialized_field.html" class="">serialized_field</a></div>
+                    </div><div class="ns-group">
+                        <div class="ns-hd">
+                            <span class="ns-arr">&#9654;</span>
+                            <span class="ns-nm">InfEngine.components.builtin</span>
+                        </div>
+                        <div class="ns-ch"><a href="/InfEngine/wiki/site/zh/api/AudioListener.html" class="">AudioListener</a><a href="/InfEngine/wiki/site/zh/api/AudioSource.html" class="">AudioSource</a><a href="/InfEngine/wiki/site/zh/api/BoxCollider.html" class="">BoxCollider</a><a href="/InfEngine/wiki/site/zh/api/Camera.html" class="">Camera</a><a href="/InfEngine/wiki/site/zh/api/CapsuleCollider.html" class="">CapsuleCollider</a><a href="/InfEngine/wiki/site/zh/api/Collider.html" class="">Collider</a><a href="/InfEngine/wiki/site/zh/api/CollisionDetectionMode.html" class="">CollisionDetectionMode</a><a href="/InfEngine/wiki/site/zh/api/Light.html" class="">Light</a><a href="/InfEngine/wiki/site/zh/api/MeshCollider.html" class="">MeshCollider</a><a href="/InfEngine/wiki/site/zh/api/MeshRenderer.html" class="">MeshRenderer</a><a href="/InfEngine/wiki/site/zh/api/Rigidbody.html" class="">Rigidbody</a><a href="/InfEngine/wiki/site/zh/api/RigidbodyConstraints.html" class="">RigidbodyConstraints</a><a href="/InfEngine/wiki/site/zh/api/SphereCollider.html" class="">SphereCollider</a></div>
+                    </div><div class="ns-group">
+                        <div class="ns-hd">
+                            <span class="ns-arr">&#9654;</span>
+                            <span class="ns-nm">InfEngine.core</span>
+                        </div>
+                        <div class="ns-ch"><a href="/InfEngine/wiki/site/zh/api/AudioClip.html" class="">AudioClip</a><a href="/InfEngine/wiki/site/zh/api/Material.html" class="">Material</a><a href="/InfEngine/wiki/site/zh/api/Shader.html" class="">Shader</a><a href="/InfEngine/wiki/site/zh/api/Texture.html" class="">Texture</a></div>
+                    </div><div class="ns-group">
+                        <div class="ns-hd">
+                            <span class="ns-arr">&#9654;</span>
+                            <span class="ns-nm">InfEngine.coroutine</span>
+                        </div>
+                        <div class="ns-ch"><a href="/InfEngine/wiki/site/zh/api/Coroutine.html" class="">Coroutine</a><a href="/InfEngine/wiki/site/zh/api/WaitForEndOfFrame.html" class="">WaitForEndOfFrame</a><a href="/InfEngine/wiki/site/zh/api/WaitForFixedUpdate.html" class="">WaitForFixedUpdate</a><a href="/InfEngine/wiki/site/zh/api/WaitForSeconds.html" class="">WaitForSeconds</a><a href="/InfEngine/wiki/site/zh/api/WaitForSecondsRealtime.html" class="">WaitForSecondsRealtime</a><a href="/InfEngine/wiki/site/zh/api/WaitUntil.html" class="">WaitUntil</a><a href="/InfEngine/wiki/site/zh/api/WaitWhile.html" class="">WaitWhile</a></div>
+                    </div><div class="ns-group">
+                        <div class="ns-hd">
+                            <span class="ns-arr">&#9654;</span>
+                            <span class="ns-nm">InfEngine.debug</span>
+                        </div>
+                        <div class="ns-ch"><a href="/InfEngine/wiki/site/zh/api/Debug.html" class="">Debug</a></div>
+                    </div><div class="ns-group">
+                        <div class="ns-hd">
+                            <span class="ns-arr">&#9654;</span>
+                            <span class="ns-nm">InfEngine.gizmos</span>
+                        </div>
+                        <div class="ns-ch"><a href="/InfEngine/wiki/site/zh/api/Gizmos.html" class="">Gizmos</a></div>
+                    </div><div class="ns-group">
+                        <div class="ns-hd">
+                            <span class="ns-arr">&#9654;</span>
+                            <span class="ns-nm">InfEngine.input</span>
+                        </div>
+                        <div class="ns-ch"><a href="/InfEngine/wiki/site/zh/api/Input.html" class="">Input</a><a href="/InfEngine/wiki/site/zh/api/KeyCode.html" class="">KeyCode</a></div>
+                    </div><div class="ns-group">
+                        <div class="ns-hd">
+                            <span class="ns-arr">&#9654;</span>
+                            <span class="ns-nm">InfEngine.math</span>
+                        </div>
+                        <div class="ns-ch"><a href="/InfEngine/wiki/site/zh/api/quaternion.html" class="">quaternion</a><a href="/InfEngine/wiki/site/zh/api/vector2.html" class="">vector2</a><a href="/InfEngine/wiki/site/zh/api/vector3.html" class="">vector3</a><a href="/InfEngine/wiki/site/zh/api/vector4.html" class="">vector4</a></div>
+                    </div><div class="ns-group">
+                        <div class="ns-hd">
+                            <span class="ns-arr">&#9654;</span>
+                            <span class="ns-nm">InfEngine.mathf</span>
+                        </div>
+                        <div class="ns-ch"><a href="/InfEngine/wiki/site/zh/api/Mathf.html" class="">Mathf</a></div>
+                    </div><div class="ns-group">
+                        <div class="ns-hd">
+                            <span class="ns-arr">&#9654;</span>
+                            <span class="ns-nm">InfEngine.physics</span>
+                        </div>
+                        <div class="ns-ch"><a href="/InfEngine/wiki/site/zh/api/Physics.html" class="">Physics</a></div>
+                    </div><div class="ns-group">
+                        <div class="ns-hd">
+                            <span class="ns-arr">&#9654;</span>
+                            <span class="ns-nm">InfEngine.rendergraph</span>
+                        </div>
+                        <div class="ns-ch"><a href="/InfEngine/wiki/site/zh/api/Format.html" class="">Format</a><a href="/InfEngine/wiki/site/zh/api/RenderGraph.html" class="">RenderGraph</a><a href="/InfEngine/wiki/site/zh/api/RenderPassBuilder.html" class="">RenderPassBuilder</a><a href="/InfEngine/wiki/site/zh/api/TextureHandle.html" class="">TextureHandle</a></div>
+                    </div><div class="ns-group">
+                        <div class="ns-hd">
+                            <span class="ns-arr">&#9654;</span>
+                            <span class="ns-nm">InfEngine.renderstack</span>
+                        </div>
+                        <div class="ns-ch"><a href="/InfEngine/wiki/site/zh/api/BloomEffect.html" class="">BloomEffect</a><a href="/InfEngine/wiki/site/zh/api/ChromaticAberrationEffect.html" class="">ChromaticAberrationEffect</a><a href="/InfEngine/wiki/site/zh/api/ColorAdjustmentsEffect.html" class="">ColorAdjustmentsEffect</a><a href="/InfEngine/wiki/site/zh/api/FilmGrainEffect.html" class="">FilmGrainEffect</a><a href="/InfEngine/wiki/site/zh/api/FullScreenEffect.html" class="">FullScreenEffect</a><a href="/InfEngine/wiki/site/zh/api/RenderPass.html" class="">RenderPass</a><a href="/InfEngine/wiki/site/zh/api/RenderPipeline.html" class="">RenderPipeline</a><a href="/InfEngine/wiki/site/zh/api/RenderStack.html" class="">RenderStack</a><a href="/InfEngine/wiki/site/zh/api/SharpenEffect.html" class="">SharpenEffect</a><a href="/InfEngine/wiki/site/zh/api/ToneMappingEffect.html" class="">ToneMappingEffect</a><a href="/InfEngine/wiki/site/zh/api/VignetteEffect.html" class="">VignetteEffect</a><a href="/InfEngine/wiki/site/zh/api/WhiteBalanceEffect.html" class="">WhiteBalanceEffect</a></div>
+                    </div><div class="ns-group">
+                        <div class="ns-hd">
+                            <span class="ns-arr">&#9654;</span>
+                            <span class="ns-nm">InfEngine.scene</span>
+                        </div>
+                        <div class="ns-ch"><a href="/InfEngine/wiki/site/zh/api/SceneManager.html" class="">SceneManager</a></div>
+                    </div><div class="ns-group">
+                        <div class="ns-hd">
+                            <span class="ns-arr">&#9654;</span>
+                            <span class="ns-nm">InfEngine.timing</span>
+                        </div>
+                        <div class="ns-ch"><a href="/InfEngine/wiki/site/zh/api/Time.html" class="">Time</a></div>
+                    </div><div class="ns-group">
+                        <div class="ns-hd">
+                            <span class="ns-arr">&#9654;</span>
+                            <span class="ns-nm">InfEngine.ui</span>
+                        </div>
+                        <div class="ns-ch"><a href="/InfEngine/wiki/site/zh/api/InfUIComponent.html" class="">InfUIComponent</a><a href="/InfEngine/wiki/site/zh/api/PointerEventData.html" class="">PointerEventData</a><a href="/InfEngine/wiki/site/zh/api/UIButton.html" class="">UIButton</a><a href="/InfEngine/wiki/site/zh/api/UICanvas.html" class="">UICanvas</a><a href="/InfEngine/wiki/site/zh/api/UIImage.html" class="">UIImage</a><a href="/InfEngine/wiki/site/zh/api/UISelectable.html" class="">UISelectable</a><a href="/InfEngine/wiki/site/zh/api/UIText.html" class="">UIText</a></div>
+                    </div></div>
+        </aside>
+
+        <!-- Main content -->
+        <main class="api-main">
+            <h1 id="_1">音频系统 — 让你的游戏不再寂静<a class="headerlink" href="#_1" title="Permanent link">&para;</a></h1>
+<div class="class-info">
+教程 &nbsp;|&nbsp; <a href="../../en/tutorials/audio.html">English</a>
+</div>
+
+<h2 id="_2">概述<a class="headerlink" href="#_2" title="Permanent link">&para;</a></h2>
+<p>没有声音的游戏就是个带鼠标交互的屏保。InfEngine 的音频系统提供 <strong>3D 空间化音频</strong>、多轨播放、一次性音效，以及至关重要的音量滑块。底层走的是 C++ 音频引擎 —— 低延迟，不卡顿。</p>
+<h2 id="_3">核心概念<a class="headerlink" href="#_3" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>组件</th>
+<th>作用</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>AudioSource</code></td>
+<td>扬声器 — 在场景中的某个位置播放音频</td>
+</tr>
+<tr>
+<td><code>AudioListener</code></td>
+<td>耳朵 — 通常挂在主摄像机上，场景中只能有一个！</td>
+</tr>
+<tr>
+<td><code>AudioClip</code></td>
+<td>音频文件 — WAV, OGG, MP3</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p><strong>经验法则：</strong> 主摄像机上挂一个 <code>AudioListener</code>，场景中需要多少 <code>AudioSource</code> 就放多少。</p>
+</blockquote>
+<h2 id="_4">快速开始：播放一个声音<a class="headerlink" href="#_4" title="Permanent link">&para;</a></h2>
+<div class="language-python highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">InfEngine</span><span class="w"> </span><span class="kn">import</span> <span class="o">*</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="k">class</span><span class="w"> </span><span class="nc">PlaySound</span><span class="p">(</span><span class="n">InfComponent</span><span class="p">):</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">start</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>        <span class="n">source</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">game_object</span><span class="o">.</span><span class="n">get_component</span><span class="p">(</span><span class="n">AudioSource</span><span class="p">)</span>
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>        <span class="n">source</span><span class="o">.</span><span class="n">play</span><span class="p">()</span>
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>        <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">&quot;🔊 声音正在播放！&quot;</span><span class="p">)</span>
+</code></pre></div>
+<p>就这么简单。前提是你在 Inspector 里分配了音频剪辑。</p>
+<h2 id="_5">在编辑器中设置音频<a class="headerlink" href="#_5" title="Permanent link">&para;</a></h2>
+<ol>
+<li>选中一个 GameObject（或者创建一个空物体用于环境音）</li>
+<li><strong>Add Component → Audio → AudioSource</strong></li>
+<li>把音频文件拖到 Inspector 的 <strong>Clip</strong> 字段</li>
+<li>如果需要自动播放，勾选 <strong>Play On Awake</strong></li>
+<li>给主摄像机添加 <strong>AudioListener</strong>（编辑器通常已经帮你做了）</li>
+</ol>
+<h2 id="_6">通过脚本播放音频<a class="headerlink" href="#_6" title="Permanent link">&para;</a></h2>
+<h3 id="_7">基本播放<a class="headerlink" href="#_7" title="Permanent link">&para;</a></h3>
+<div class="language-python highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="k">class</span><span class="w"> </span><span class="nc">MusicPlayer</span><span class="p">(</span><span class="n">InfComponent</span><span class="p">):</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">start</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>        <span class="n">source</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">game_object</span><span class="o">.</span><span class="n">get_component</span><span class="p">(</span><span class="n">AudioSource</span><span class="p">)</span>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>        <span class="n">source</span><span class="o">.</span><span class="n">volume</span> <span class="o">=</span> <span class="mf">0.7</span>
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>        <span class="n">source</span><span class="o">.</span><span class="n">loop</span> <span class="o">=</span> <span class="kc">True</span>
+<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>        <span class="n">source</span><span class="o">.</span><span class="n">play</span><span class="p">()</span>
+<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a>
+<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">update</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+<a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a>        <span class="n">source</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">game_object</span><span class="o">.</span><span class="n">get_component</span><span class="p">(</span><span class="n">AudioSource</span><span class="p">)</span>
+<a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a>
+<a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a>        <span class="c1"># 暂停 / 继续</span>
+<a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a>        <span class="k">if</span> <span class="n">Input</span><span class="o">.</span><span class="n">get_key_down</span><span class="p">(</span><span class="n">KeyCode</span><span class="o">.</span><span class="n">P</span><span class="p">):</span>
+<a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a>            <span class="k">if</span> <span class="n">source</span><span class="o">.</span><span class="n">is_playing</span><span class="p">:</span>
+<a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a>                <span class="n">source</span><span class="o">.</span><span class="n">pause</span><span class="p">()</span>
+<a id="__codelineno-1-15" name="__codelineno-1-15" href="#__codelineno-1-15"></a>            <span class="k">else</span><span class="p">:</span>
+<a id="__codelineno-1-16" name="__codelineno-1-16" href="#__codelineno-1-16"></a>                <span class="n">source</span><span class="o">.</span><span class="n">unpause</span><span class="p">()</span>
+<a id="__codelineno-1-17" name="__codelineno-1-17" href="#__codelineno-1-17"></a>
+<a id="__codelineno-1-18" name="__codelineno-1-18" href="#__codelineno-1-18"></a>        <span class="c1"># 停止</span>
+<a id="__codelineno-1-19" name="__codelineno-1-19" href="#__codelineno-1-19"></a>        <span class="k">if</span> <span class="n">Input</span><span class="o">.</span><span class="n">get_key_down</span><span class="p">(</span><span class="n">KeyCode</span><span class="o">.</span><span class="n">S</span><span class="p">):</span>
+<a id="__codelineno-1-20" name="__codelineno-1-20" href="#__codelineno-1-20"></a>            <span class="n">source</span><span class="o">.</span><span class="n">stop</span><span class="p">()</span>
+</code></pre></div>
+<h3 id="_8">一次性音效<a class="headerlink" href="#_8" title="Permanent link">&para;</a></h3>
+<p>用 <code>play_one_shot()</code> 播放临时音效（枪声、脚步声、UI 点击声）。不会打断正在播放的音频。</p>
+<div class="language-python highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="k">class</span><span class="w"> </span><span class="nc">Weapon</span><span class="p">(</span><span class="n">InfComponent</span><span class="p">):</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>    <span class="n">fire_sound</span><span class="p">:</span> <span class="n">AudioClip</span> <span class="o">=</span> <span class="n">serialized_field</span><span class="p">()</span>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">update</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>        <span class="k">if</span> <span class="n">Input</span><span class="o">.</span><span class="n">get_mouse_button_down</span><span class="p">(</span><span class="mi">0</span><span class="p">):</span>
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>            <span class="n">source</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">game_object</span><span class="o">.</span><span class="n">get_component</span><span class="p">(</span><span class="n">AudioSource</span><span class="p">)</span>
+<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a>            <span class="n">source</span><span class="o">.</span><span class="n">play_one_shot</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">fire_sound</span><span class="p">)</span>
+<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a>            <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">&quot;砰砰！&quot;</span><span class="p">)</span>
+</code></pre></div>
+<h2 id="3d">3D 空间音频<a class="headerlink" href="#3d" title="Permanent link">&para;</a></h2>
+<p>用 <code>spatial_blend</code> 控制音频受听者距离和方向的影响程度：</p>
+<ul>
+<li><code>0.0</code> = 纯 2D（哪里都一样响 — 适合背景音乐/UI 音效）</li>
+<li><code>1.0</code> = 纯 3D（越远越小声 — 适合世界里的声音）</li>
+</ul>
+<div class="language-python highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="k">class</span><span class="w"> </span><span class="nc">SpatialAudio</span><span class="p">(</span><span class="n">InfComponent</span><span class="p">):</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">start</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>        <span class="n">source</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">game_object</span><span class="o">.</span><span class="n">get_component</span><span class="p">(</span><span class="n">AudioSource</span><span class="p">)</span>
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>        <span class="n">source</span><span class="o">.</span><span class="n">spatial_blend</span> <span class="o">=</span> <span class="mf">1.0</span>      <span class="c1"># 完全 3D</span>
+<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>        <span class="n">source</span><span class="o">.</span><span class="n">min_distance</span> <span class="o">=</span> <span class="mf">1.0</span>       <span class="c1"># 1 米内满音量</span>
+<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a>        <span class="n">source</span><span class="o">.</span><span class="n">max_distance</span> <span class="o">=</span> <span class="mf">50.0</span>      <span class="c1"># 50 米外静音</span>
+<a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a>        <span class="n">source</span><span class="o">.</span><span class="n">loop</span> <span class="o">=</span> <span class="kc">True</span>
+<a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a>        <span class="n">source</span><span class="o">.</span><span class="n">play</span><span class="p">()</span>
+</code></pre></div>
+<p>走近或远离音源，你会听到音量变化。不是魔法，是反平方定律。</p>
+<h2 id="_9">常用模式<a class="headerlink" href="#_9" title="Permanent link">&para;</a></h2>
+<h3 id="_10">脚步声系统<a class="headerlink" href="#_10" title="Permanent link">&para;</a></h3>
+<div class="language-python highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="k">class</span><span class="w"> </span><span class="nc">Footsteps</span><span class="p">(</span><span class="n">InfComponent</span><span class="p">):</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>    <span class="n">step_interval</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="n">serialized_field</span><span class="p">(</span><span class="n">default</span><span class="o">=</span><span class="mf">0.4</span><span class="p">)</span>
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>    <span class="n">step_sound</span><span class="p">:</span> <span class="n">AudioClip</span> <span class="o">=</span> <span class="n">serialized_field</span><span class="p">()</span>
+<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>    <span class="n">_timer</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mi">0</span>
+<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>
+<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">update</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+<a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a>        <span class="n">h</span> <span class="o">=</span> <span class="n">Input</span><span class="o">.</span><span class="n">get_axis</span><span class="p">(</span><span class="s2">&quot;Horizontal&quot;</span><span class="p">)</span>
+<a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a>        <span class="n">v</span> <span class="o">=</span> <span class="n">Input</span><span class="o">.</span><span class="n">get_axis</span><span class="p">(</span><span class="s2">&quot;Vertical&quot;</span><span class="p">)</span>
+<a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a>        <span class="k">if</span> <span class="nb">abs</span><span class="p">(</span><span class="n">h</span><span class="p">)</span> <span class="o">&gt;</span> <span class="mf">0.1</span> <span class="ow">or</span> <span class="nb">abs</span><span class="p">(</span><span class="n">v</span><span class="p">)</span> <span class="o">&gt;</span> <span class="mf">0.1</span><span class="p">:</span>
+<a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a>            <span class="bp">self</span><span class="o">.</span><span class="n">_timer</span> <span class="o">+=</span> <span class="n">Time</span><span class="o">.</span><span class="n">delta_time</span>
+<a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a>            <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_timer</span> <span class="o">&gt;=</span> <span class="bp">self</span><span class="o">.</span><span class="n">step_interval</span><span class="p">:</span>
+<a id="__codelineno-4-12" name="__codelineno-4-12" href="#__codelineno-4-12"></a>                <span class="bp">self</span><span class="o">.</span><span class="n">_timer</span> <span class="o">=</span> <span class="mi">0</span>
+<a id="__codelineno-4-13" name="__codelineno-4-13" href="#__codelineno-4-13"></a>                <span class="n">source</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">game_object</span><span class="o">.</span><span class="n">get_component</span><span class="p">(</span><span class="n">AudioSource</span><span class="p">)</span>
+<a id="__codelineno-4-14" name="__codelineno-4-14" href="#__codelineno-4-14"></a>                <span class="n">source</span><span class="o">.</span><span class="n">play_one_shot</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">step_sound</span><span class="p">)</span>
+</code></pre></div>
+<h3 id="_11">背景音乐管理器<a class="headerlink" href="#_11" title="Permanent link">&para;</a></h3>
+<div class="language-python highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="k">class</span><span class="w"> </span><span class="nc">BGMManager</span><span class="p">(</span><span class="n">InfComponent</span><span class="p">):</span>
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;跨场景存活，渐入渐出切换。&quot;&quot;&quot;</span>
+<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>    <span class="n">fade_speed</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="n">serialized_field</span><span class="p">(</span><span class="n">default</span><span class="o">=</span><span class="mf">1.0</span><span class="p">)</span>
+<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>    <span class="n">_target_volume</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">1.0</span>
+<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>
+<a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">start</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+<a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a>        <span class="n">source</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">game_object</span><span class="o">.</span><span class="n">get_component</span><span class="p">(</span><span class="n">AudioSource</span><span class="p">)</span>
+<a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a>        <span class="n">source</span><span class="o">.</span><span class="n">loop</span> <span class="o">=</span> <span class="kc">True</span>
+<a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a>        <span class="n">source</span><span class="o">.</span><span class="n">spatial_blend</span> <span class="o">=</span> <span class="mf">0.0</span>  <span class="c1"># 2D — 到处都能听到</span>
+<a id="__codelineno-5-10" name="__codelineno-5-10" href="#__codelineno-5-10"></a>        <span class="n">source</span><span class="o">.</span><span class="n">play</span><span class="p">()</span>
+<a id="__codelineno-5-11" name="__codelineno-5-11" href="#__codelineno-5-11"></a>
+<a id="__codelineno-5-12" name="__codelineno-5-12" href="#__codelineno-5-12"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">update</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+<a id="__codelineno-5-13" name="__codelineno-5-13" href="#__codelineno-5-13"></a>        <span class="n">source</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">game_object</span><span class="o">.</span><span class="n">get_component</span><span class="p">(</span><span class="n">AudioSource</span><span class="p">)</span>
+<a id="__codelineno-5-14" name="__codelineno-5-14" href="#__codelineno-5-14"></a>        <span class="n">source</span><span class="o">.</span><span class="n">volume</span> <span class="o">=</span> <span class="n">Mathf</span><span class="o">.</span><span class="n">move_towards</span><span class="p">(</span>
+<a id="__codelineno-5-15" name="__codelineno-5-15" href="#__codelineno-5-15"></a>            <span class="n">source</span><span class="o">.</span><span class="n">volume</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">_target_volume</span><span class="p">,</span>
+<a id="__codelineno-5-16" name="__codelineno-5-16" href="#__codelineno-5-16"></a>            <span class="bp">self</span><span class="o">.</span><span class="n">fade_speed</span> <span class="o">*</span> <span class="n">Time</span><span class="o">.</span><span class="n">delta_time</span>
+<a id="__codelineno-5-17" name="__codelineno-5-17" href="#__codelineno-5-17"></a>        <span class="p">)</span>
+<a id="__codelineno-5-18" name="__codelineno-5-18" href="#__codelineno-5-18"></a>
+<a id="__codelineno-5-19" name="__codelineno-5-19" href="#__codelineno-5-19"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">fade_out</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+<a id="__codelineno-5-20" name="__codelineno-5-20" href="#__codelineno-5-20"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">_target_volume</span> <span class="o">=</span> <span class="mf">0.0</span>
+<a id="__codelineno-5-21" name="__codelineno-5-21" href="#__codelineno-5-21"></a>
+<a id="__codelineno-5-22" name="__codelineno-5-22" href="#__codelineno-5-22"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">fade_in</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+<a id="__codelineno-5-23" name="__codelineno-5-23" href="#__codelineno-5-23"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">_target_volume</span> <span class="o">=</span> <span class="mf">1.0</span>
+</code></pre></div>
+<h2 id="_12">支持的格式<a class="headerlink" href="#_12" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>格式</th>
+<th>推荐用途</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>WAV</td>
+<td>短音效（无压缩，加载快）</td>
+</tr>
+<tr>
+<td>OGG</td>
+<td>音乐和较长片段（压缩，文件小）</td>
+</tr>
+<tr>
+<td>MP3</td>
+<td>也支持（但 OGG 通常更好）</td>
+</tr>
+</tbody>
+</table>
+<h2 id="_13">另请参阅<a class="headerlink" href="#_13" title="Permanent link">&para;</a></h2>
+<ul>
+<li><a href="../api/AudioSource.html">AudioSource API</a></li>
+<li><a href="../api/AudioListener.html">AudioListener API</a></li>
+<li><a href="../api/AudioClip.html">AudioClip API</a></li>
+<li><a href="physics.html">物理教程</a> — 碰撞时触发声音</li>
+</ul>
+        </main>
+    </div>
+
+    <!-- Footer -->
+    <footer class="footer api-ft">
+        <div class="container">
+            <div class="footer-bottom">
+                <p>&copy; 2024 Infernux Engine. MIT License.</p>
+            </div>
+        </div>
+    </footer>
+
+    <script src="/InfEngine/js/main.js"></script>
+    <script>
+    document.addEventListener('DOMContentLoaded', function() {
+        document.querySelectorAll('.ns-hd').forEach(function(h) {
+            h.addEventListener('click', function() { this.classList.toggle('open'); });
+        });
+    });
+    </script>
+</body>
+</html>

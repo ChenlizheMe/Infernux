@@ -6,11 +6,9 @@ enum in <b>InfEngine</b>
 
 ## Description
 
-Types of light sources.
+Light component type.
 
 <!-- USER CONTENT START --> description
-
-LightType defines the types of [Light](Light.md) sources: Directional, Point, and Spot.
 
 <!-- USER CONTENT END -->
 

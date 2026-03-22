@@ -6,7 +6,7 @@ class in <b>InfEngine</b>
 
 ## Description
 
-Base class for all components attached to a GameObject.
+Base class for all components attached to GameObjects.
 
 <!-- USER CONTENT START --> description
 
@@ -22,9 +22,12 @@ For custom gameplay logic written in Python, derive from [InfComponent](InfCompo
 
 | Name | Type | Description |
 |------|------|------|
-| type_name | `str` | Component type name (e.g. *(read-only)* |
-| component_id | `int` | Unique component ID. *(read-only)* |
-| enabled | `bool` | Whether this component is enabled. |
+| type_name | `str` |  *(read-only)* |
+| component_id | `int` |  *(read-only)* |
+| enabled | `bool` |  *(read-only)* |
+| execution_order | `int` |  |
+| game_object | `GameObject` |  *(read-only)* |
+| required_component_types | `List[str]` |  *(read-only)* |
 
 <!-- USER CONTENT START --> properties
 
@@ -34,8 +37,9 @@ For custom gameplay logic written in Python, derive from [InfComponent](InfCompo
 
 | Method | Description |
 |------|------|
-| `serialize() → str` | Serialize component to JSON string. |
-| `deserialize(json_str: str) → None` | Deserialize component from JSON string. |
+| `is_component_type(type_name: str) → bool` |  |
+| `serialize() → str` |  |
+| `deserialize(json_str: str) → None` |  |
 
 <!-- USER CONTENT START --> public_methods
 

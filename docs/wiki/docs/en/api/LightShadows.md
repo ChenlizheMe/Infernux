@@ -6,11 +6,9 @@ enum in <b>InfEngine</b>
 
 ## Description
 
-Shadow mode for lights.
+Shadow casting mode.
 
 <!-- USER CONTENT START --> description
-
-LightShadows defines shadow casting modes for [Light](Light.md) components: None, Hard, and Soft.
 
 <!-- USER CONTENT END -->
 

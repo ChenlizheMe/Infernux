@@ -6,11 +6,9 @@
 
 ## 描述
 
-Types of light sources.
+光源类型枚举。
 
 <!-- USER CONTENT START --> description
-
-LightType 定义 [Light](Light.md) 光源类型：方向光、点光源和聚光灯。
 
 <!-- USER CONTENT END -->
 

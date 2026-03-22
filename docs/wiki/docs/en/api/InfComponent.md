@@ -67,6 +67,7 @@ Expose fields to the editor Inspector by annotating them with `serialized_field(
 
 | Method | Description |
 |------|------|
+| `destroy() → None` | Remove this component from its owning GameObject (Unity-style). |
 | `on_collision_enter(collision: Any) → None` | Called when this collider starts touching another collider. |
 | `on_collision_stay(collision: Any) → None` | Called every fixed-update while two colliders remain in contact. |
 | `on_collision_exit(collision: Any) → None` | Called when two colliders stop touching. |

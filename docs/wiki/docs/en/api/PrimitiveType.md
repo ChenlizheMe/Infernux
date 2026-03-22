@@ -6,11 +6,9 @@ enum in <b>InfEngine</b>
 
 ## Description
 
-Primitive mesh types that can be created in a scene.
+Primitive mesh types for Scene.create_primitive().
 
 <!-- USER CONTENT START --> description
-
-PrimitiveType specifies the type of built-in mesh to create with `Scene.create_primitive()`. Available types are Cube, Sphere, Capsule, Cylinder, and Plane.
 
 <!-- USER CONTENT END -->
 

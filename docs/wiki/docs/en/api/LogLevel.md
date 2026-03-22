@@ -6,11 +6,9 @@ enum in <b>InfEngine</b>
 
 ## Description
 
-Engine log verbosity level.
+Engine log severity levels.
 
 <!-- USER CONTENT START --> description
-
-LogLevel defines the severity levels for [Debug](Debug.md) logging: Log, Warning, and Error.
 
 <!-- USER CONTENT END -->
 

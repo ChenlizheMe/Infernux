@@ -1,0 +1,673 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Building & Exporting - InfEngine Scripting API</title>
+    <link rel="icon" type="image/svg+xml" href="/InfEngine/assets/favicon.svg">
+    <link rel="stylesheet" href="/InfEngine/css/style.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        /* ======================================================
+           InfEngine API Reference — Unity-Inspired Dark Theme
+           ====================================================== */
+
+        /* Layout */
+        .api-layout {
+            display: flex;
+            min-height: calc(100vh - var(--nav-height));
+            padding-top: var(--nav-height);
+        }
+
+        /* ---- Sidebar ---- */
+        .api-sidebar {
+            width: 280px;
+            background: #0b0b12;
+            border-right: 1px solid var(--border);
+            position: sticky;
+            top: var(--nav-height);
+            height: calc(100vh - var(--nav-height));
+            overflow-y: auto;
+            flex-shrink: 0;
+        }
+        .api-sidebar::-webkit-scrollbar { width: 5px; }
+        .api-sidebar::-webkit-scrollbar-track { background: transparent; }
+        .api-sidebar::-webkit-scrollbar-thumb { background: #2a2a3a; border-radius: 3px; }
+
+        .sidebar-hdr {
+            padding: 14px 18px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .sidebar-hdr h3 {
+            margin: 0;
+            font-size: 0.78rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            color: var(--text-muted);
+        }
+
+        /* Language toggle */
+        .lang-sw {
+            display: flex;
+            gap: 1px;
+            background: var(--border);
+            border-radius: 4px;
+            overflow: hidden;
+        }
+        .lang-sw a {
+            padding: 3px 10px;
+            font-size: 0.7rem;
+            font-weight: 600;
+            color: var(--text-muted);
+            background: var(--bg-elevated);
+            text-decoration: none;
+            transition: all 0.12s;
+        }
+        .lang-sw a.on {
+            background: var(--primary);
+            color: #fff;
+        }
+        .lang-sw a:hover:not(.on) {
+            color: var(--text-primary);
+            background: var(--bg-hover);
+        }
+
+        /* Namespace tree */
+        .ns-tree { padding: 6px 0 20px; }
+
+        .ns-group { margin-bottom: 1px; }
+
+        .ns-hd {
+            display: flex;
+            align-items: center;
+            padding: 7px 16px;
+            cursor: pointer;
+            user-select: none;
+            transition: background 0.1s;
+        }
+        .ns-hd:hover { background: rgba(255,255,255,0.025); }
+
+        .ns-arr {
+            width: 14px;
+            font-size: 0.5rem;
+            color: #555;
+            transition: transform 0.15s;
+            margin-right: 8px;
+            flex-shrink: 0;
+        }
+        .ns-hd.open .ns-arr { transform: rotate(90deg); }
+
+        .ns-nm {
+            font-size: 0.84rem;
+            font-weight: 500;
+            color: var(--text-secondary);
+        }
+        .ns-hd.hi .ns-nm { color: var(--primary); }
+
+        .ns-ch {
+            display: none;
+            padding: 2px 0 4px;
+        }
+        .ns-hd.open + .ns-ch { display: block; }
+
+        .ns-ch a {
+            display: block;
+            padding: 3px 16px 3px 38px;
+            font-size: 0.82rem;
+            color: var(--text-muted);
+            text-decoration: none;
+            transition: color 0.1s, background 0.1s;
+            border-left: 2px solid transparent;
+        }
+        .ns-ch a:hover {
+            color: var(--text-primary);
+            background: rgba(255,255,255,0.02);
+        }
+        .ns-ch a.cur {
+            color: var(--text-primary);
+            background: rgba(255,107,53,0.07);
+            border-left-color: var(--primary);
+            font-weight: 600;
+        }
+
+        /* ---- Content ---- */
+        .api-main {
+            flex: 1;
+            padding: 36px 56px 80px;
+            max-width: 880px;
+            min-width: 0;
+        }
+
+        /* H1 — class name */
+        .api-main h1 {
+            font-size: 1.85rem;
+            font-weight: 700;
+            margin: 0 0 4px;
+            padding: 0;
+            border: none;
+            color: var(--text-primary);
+        }
+
+        /* "class in Package" subtitle */
+        .api-main .class-info {
+            font-size: 0.88rem;
+            color: var(--text-muted);
+            margin-bottom: 22px;
+            padding-bottom: 18px;
+            border-bottom: 1px solid var(--border);
+        }
+        .api-main .class-info b { color: var(--text-secondary); }
+        .api-main .class-info a { color: var(--primary); }
+
+        /* H2 — section headers */
+        .api-main h2 {
+            font-size: 0.92rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.6px;
+            color: var(--text-muted);
+            margin: 30px 0 8px;
+            padding-bottom: 6px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .api-main h3 {
+            font-size: 0.9rem;
+            font-weight: 600;
+            color: var(--text-secondary);
+            margin: 18px 0 6px;
+        }
+
+        /* Paragraphs */
+        .api-main p {
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+            line-height: 1.75;
+            margin-bottom: 12px;
+        }
+
+        .api-main blockquote {
+            margin: 12px 0;
+            padding: 10px 16px;
+            background: rgba(255,107,53,0.04);
+            border-left: 3px solid var(--primary);
+            border-radius: 0 4px 4px 0;
+        }
+        .api-main blockquote p { margin: 0; font-size: 0.85rem; }
+
+        /* Tables — Unity style: hidden header, 2-col */
+        .api-main table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 4px 0 18px;
+        }
+        .api-main thead { display: none; }
+
+        .api-main tbody tr {
+            border-bottom: 1px solid rgba(255,255,255,0.04);
+        }
+        .api-main tbody tr:last-child { border-bottom: none; }
+
+        .api-main td {
+            padding: 7px 0;
+            font-size: 0.86rem;
+            vertical-align: top;
+        }
+        .api-main td:first-child {
+            width: 200px;
+            padding-right: 20px;
+            color: var(--primary);
+            font-size: 0.86rem;
+            font-weight: 500;
+        }
+        .api-main td:last-child { color: var(--text-secondary); }
+        .api-main td a { color: var(--primary); }
+        .api-main tbody tr:hover { background: rgba(255,255,255,0.012); }
+
+        /* Inline code — normal font, subtle highlight */
+        .api-main code {
+            font-family: inherit;
+            font-size: inherit;
+            background: rgba(255,255,255,0.06);
+            padding: 1px 5px;
+            border-radius: 3px;
+            color: var(--primary-light);
+        }
+
+        /* Code blocks */
+        .api-main pre {
+            background: #0d0d15;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 16px 20px;
+            overflow-x: auto;
+            margin: 10px 0 18px;
+        }
+        .api-main pre code {
+            font-family: var(--font-mono);
+            background: none;
+            padding: 0;
+            font-size: 0.83rem;
+            line-height: 1.65;
+            color: var(--text-secondary);
+        }
+
+        /* Lists */
+        .api-main ul, .api-main ol { padding-left: 18px; margin-bottom: 12px; }
+        .api-main li {
+            margin-bottom: 4px;
+            color: var(--text-secondary);
+            font-size: 0.88rem;
+            line-height: 1.6;
+        }
+
+        .api-main hr {
+            border: none;
+            border-top: 1px solid var(--border);
+            margin: 26px 0;
+        }
+
+        /* ---- Footer ---- */
+        .api-ft { margin-left: 280px; }
+        .api-ft .footer-bottom p { font-size: 0.8rem; }
+
+        /* ---- Responsive ---- */
+        @media (max-width: 1024px) {
+            .api-sidebar { width: 240px; }
+            .api-main { padding: 28px 32px 60px; }
+            .api-ft { margin-left: 240px; }
+        }
+        @media (max-width: 768px) {
+            .api-layout { flex-direction: column; }
+            .api-sidebar {
+                width: 100%; position: relative; top: 0;
+                height: auto; max-height: 50vh;
+                border-right: none; border-bottom: 1px solid var(--border);
+            }
+            .api-main { padding: 20px; max-width: 100%; }
+            .api-ft { margin-left: 0; }
+        }
+    </style>
+</head>
+<body>
+    <!-- Top Navigation -->
+    <nav class="navbar">
+        <div class="nav-container">
+            <a href="/InfEngine/" class="nav-logo">
+                <span class="logo-icon">🔥</span>
+                <span class="logo-text">Infernux</span>
+            </a>
+            <div class="nav-links">
+                <a href="/InfEngine/">Home</a>
+                <a href="/InfEngine/#features">Features</a>
+                <a href="/InfEngine/roadmap.html">Roadmap</a>
+                <a href="/InfEngine/wiki/site/en/api/index.html" class="active">API Reference</a>
+                <a href="https://github.com/ChenlizheMe/InfEngine" target="_blank">
+                    <i class="fab fa-github"></i> GitHub
+                </a>
+            </div>
+            <div class="nav-right">
+                <button class="mobile-menu-btn" onclick="toggleMobileMenu()">
+                    <i class="fas fa-bars"></i>
+                </button>
+            </div>
+        </div>
+    </nav>
+
+    <!-- API Reference Layout -->
+    <div class="api-layout">
+        <!-- Sidebar — namespace / package tree -->
+        <aside class="api-sidebar">
+            <div class="sidebar-hdr">
+                <h3>Scripting API</h3>
+                <div class="lang-sw">
+                    <a href="/InfEngine/wiki/site/en/api/index.html"
+                       class="on">EN</a>
+                    <a href="/InfEngine/wiki/site/zh/api/index.html"
+                       class="">中文</a>
+                </div>
+            </div>
+
+            <div class="ns-tree"><div class="ns-group">
+                        <div class="ns-hd">
+                            <span class="ns-arr">&#9654;</span>
+                            <span class="ns-nm">InfEngine</span>
+                        </div>
+                        <div class="ns-ch"><a href="/InfEngine/wiki/site/en/api/AudioClip.html" class="">AudioClip</a><a href="/InfEngine/wiki/site/en/api/AudioListener.html" class="">AudioListener</a><a href="/InfEngine/wiki/site/en/api/AudioSource.html" class="">AudioSource</a><a href="/InfEngine/wiki/site/en/api/BoxCollider.html" class="">BoxCollider</a><a href="/InfEngine/wiki/site/en/api/Camera.html" class="">Camera</a><a href="/InfEngine/wiki/site/en/api/CameraClearFlags.html" class="">CameraClearFlags</a><a href="/InfEngine/wiki/site/en/api/CameraProjection.html" class="">CameraProjection</a><a href="/InfEngine/wiki/site/en/api/CapsuleCollider.html" class="">CapsuleCollider</a><a href="/InfEngine/wiki/site/en/api/Collider.html" class="">Collider</a><a href="/InfEngine/wiki/site/en/api/CollisionDetectionMode.html" class="">CollisionDetectionMode</a><a href="/InfEngine/wiki/site/en/api/Component.html" class="">Component</a><a href="/InfEngine/wiki/site/en/api/ForceMode.html" class="">ForceMode</a><a href="/InfEngine/wiki/site/en/api/GameObject.html" class="">GameObject</a><a href="/InfEngine/wiki/site/en/api/Light.html" class="">Light</a><a href="/InfEngine/wiki/site/en/api/LightShadows.html" class="">LightShadows</a><a href="/InfEngine/wiki/site/en/api/LightType.html" class="">LightType</a><a href="/InfEngine/wiki/site/en/api/LogLevel.html" class="">LogLevel</a><a href="/InfEngine/wiki/site/en/api/MeshCollider.html" class="">MeshCollider</a><a href="/InfEngine/wiki/site/en/api/MeshRenderer.html" class="">MeshRenderer</a><a href="/InfEngine/wiki/site/en/api/Physics.html" class="">Physics</a><a href="/InfEngine/wiki/site/en/api/PrimitiveType.html" class="">PrimitiveType</a><a href="/InfEngine/wiki/site/en/api/Rigidbody.html" class="">Rigidbody</a><a href="/InfEngine/wiki/site/en/api/RigidbodyConstraints.html" class="">RigidbodyConstraints</a><a href="/InfEngine/wiki/site/en/api/Scene.html" class="">Scene</a><a href="/InfEngine/wiki/site/en/api/SceneManager.html" class="">SceneManager</a><a href="/InfEngine/wiki/site/en/api/Space.html" class="">Space</a><a href="/InfEngine/wiki/site/en/api/SphereCollider.html" class="">SphereCollider</a><a href="/InfEngine/wiki/site/en/api/Transform.html" class="">Transform</a></div>
+                    </div><div class="ns-group">
+                        <div class="ns-hd">
+                            <span class="ns-arr">&#9654;</span>
+                            <span class="ns-nm">InfEngine.components</span>
+                        </div>
+                        <div class="ns-ch"><a href="/InfEngine/wiki/site/en/api/InfComponent.html" class="">InfComponent</a><a href="/InfEngine/wiki/site/en/api/add_component_menu.html" class="">add_component_menu</a><a href="/InfEngine/wiki/site/en/api/disallow_multiple.html" class="">disallow_multiple</a><a href="/InfEngine/wiki/site/en/api/execute_in_edit_mode.html" class="">execute_in_edit_mode</a><a href="/InfEngine/wiki/site/en/api/require_component.html" class="">require_component</a><a href="/InfEngine/wiki/site/en/api/serialized_field.html" class="">serialized_field</a></div>
+                    </div><div class="ns-group">
+                        <div class="ns-hd">
+                            <span class="ns-arr">&#9654;</span>
+                            <span class="ns-nm">InfEngine.components.builtin</span>
+                        </div>
+                        <div class="ns-ch"><a href="/InfEngine/wiki/site/en/api/AudioListener.html" class="">AudioListener</a><a href="/InfEngine/wiki/site/en/api/AudioSource.html" class="">AudioSource</a><a href="/InfEngine/wiki/site/en/api/BoxCollider.html" class="">BoxCollider</a><a href="/InfEngine/wiki/site/en/api/Camera.html" class="">Camera</a><a href="/InfEngine/wiki/site/en/api/CapsuleCollider.html" class="">CapsuleCollider</a><a href="/InfEngine/wiki/site/en/api/Collider.html" class="">Collider</a><a href="/InfEngine/wiki/site/en/api/CollisionDetectionMode.html" class="">CollisionDetectionMode</a><a href="/InfEngine/wiki/site/en/api/Light.html" class="">Light</a><a href="/InfEngine/wiki/site/en/api/MeshCollider.html" class="">MeshCollider</a><a href="/InfEngine/wiki/site/en/api/MeshRenderer.html" class="">MeshRenderer</a><a href="/InfEngine/wiki/site/en/api/Rigidbody.html" class="">Rigidbody</a><a href="/InfEngine/wiki/site/en/api/RigidbodyConstraints.html" class="">RigidbodyConstraints</a><a href="/InfEngine/wiki/site/en/api/SphereCollider.html" class="">SphereCollider</a></div>
+                    </div><div class="ns-group">
+                        <div class="ns-hd">
+                            <span class="ns-arr">&#9654;</span>
+                            <span class="ns-nm">InfEngine.core</span>
+                        </div>
+                        <div class="ns-ch"><a href="/InfEngine/wiki/site/en/api/AudioClip.html" class="">AudioClip</a><a href="/InfEngine/wiki/site/en/api/Material.html" class="">Material</a><a href="/InfEngine/wiki/site/en/api/Shader.html" class="">Shader</a><a href="/InfEngine/wiki/site/en/api/Texture.html" class="">Texture</a></div>
+                    </div><div class="ns-group">
+                        <div class="ns-hd">
+                            <span class="ns-arr">&#9654;</span>
+                            <span class="ns-nm">InfEngine.coroutine</span>
+                        </div>
+                        <div class="ns-ch"><a href="/InfEngine/wiki/site/en/api/Coroutine.html" class="">Coroutine</a><a href="/InfEngine/wiki/site/en/api/WaitForEndOfFrame.html" class="">WaitForEndOfFrame</a><a href="/InfEngine/wiki/site/en/api/WaitForFixedUpdate.html" class="">WaitForFixedUpdate</a><a href="/InfEngine/wiki/site/en/api/WaitForSeconds.html" class="">WaitForSeconds</a><a href="/InfEngine/wiki/site/en/api/WaitForSecondsRealtime.html" class="">WaitForSecondsRealtime</a><a href="/InfEngine/wiki/site/en/api/WaitUntil.html" class="">WaitUntil</a><a href="/InfEngine/wiki/site/en/api/WaitWhile.html" class="">WaitWhile</a></div>
+                    </div><div class="ns-group">
+                        <div class="ns-hd">
+                            <span class="ns-arr">&#9654;</span>
+                            <span class="ns-nm">InfEngine.debug</span>
+                        </div>
+                        <div class="ns-ch"><a href="/InfEngine/wiki/site/en/api/Debug.html" class="">Debug</a></div>
+                    </div><div class="ns-group">
+                        <div class="ns-hd">
+                            <span class="ns-arr">&#9654;</span>
+                            <span class="ns-nm">InfEngine.gizmos</span>
+                        </div>
+                        <div class="ns-ch"><a href="/InfEngine/wiki/site/en/api/Gizmos.html" class="">Gizmos</a></div>
+                    </div><div class="ns-group">
+                        <div class="ns-hd">
+                            <span class="ns-arr">&#9654;</span>
+                            <span class="ns-nm">InfEngine.input</span>
+                        </div>
+                        <div class="ns-ch"><a href="/InfEngine/wiki/site/en/api/Input.html" class="">Input</a><a href="/InfEngine/wiki/site/en/api/KeyCode.html" class="">KeyCode</a></div>
+                    </div><div class="ns-group">
+                        <div class="ns-hd">
+                            <span class="ns-arr">&#9654;</span>
+                            <span class="ns-nm">InfEngine.math</span>
+                        </div>
+                        <div class="ns-ch"><a href="/InfEngine/wiki/site/en/api/quaternion.html" class="">quaternion</a><a href="/InfEngine/wiki/site/en/api/vector2.html" class="">vector2</a><a href="/InfEngine/wiki/site/en/api/vector3.html" class="">vector3</a><a href="/InfEngine/wiki/site/en/api/vector4.html" class="">vector4</a></div>
+                    </div><div class="ns-group">
+                        <div class="ns-hd">
+                            <span class="ns-arr">&#9654;</span>
+                            <span class="ns-nm">InfEngine.mathf</span>
+                        </div>
+                        <div class="ns-ch"><a href="/InfEngine/wiki/site/en/api/Mathf.html" class="">Mathf</a></div>
+                    </div><div class="ns-group">
+                        <div class="ns-hd">
+                            <span class="ns-arr">&#9654;</span>
+                            <span class="ns-nm">InfEngine.physics</span>
+                        </div>
+                        <div class="ns-ch"><a href="/InfEngine/wiki/site/en/api/Physics.html" class="">Physics</a></div>
+                    </div><div class="ns-group">
+                        <div class="ns-hd">
+                            <span class="ns-arr">&#9654;</span>
+                            <span class="ns-nm">InfEngine.rendergraph</span>
+                        </div>
+                        <div class="ns-ch"><a href="/InfEngine/wiki/site/en/api/Format.html" class="">Format</a><a href="/InfEngine/wiki/site/en/api/RenderGraph.html" class="">RenderGraph</a><a href="/InfEngine/wiki/site/en/api/RenderPassBuilder.html" class="">RenderPassBuilder</a><a href="/InfEngine/wiki/site/en/api/TextureHandle.html" class="">TextureHandle</a></div>
+                    </div><div class="ns-group">
+                        <div class="ns-hd">
+                            <span class="ns-arr">&#9654;</span>
+                            <span class="ns-nm">InfEngine.renderstack</span>
+                        </div>
+                        <div class="ns-ch"><a href="/InfEngine/wiki/site/en/api/BloomEffect.html" class="">BloomEffect</a><a href="/InfEngine/wiki/site/en/api/ChromaticAberrationEffect.html" class="">ChromaticAberrationEffect</a><a href="/InfEngine/wiki/site/en/api/ColorAdjustmentsEffect.html" class="">ColorAdjustmentsEffect</a><a href="/InfEngine/wiki/site/en/api/FilmGrainEffect.html" class="">FilmGrainEffect</a><a href="/InfEngine/wiki/site/en/api/FullScreenEffect.html" class="">FullScreenEffect</a><a href="/InfEngine/wiki/site/en/api/RenderPass.html" class="">RenderPass</a><a href="/InfEngine/wiki/site/en/api/RenderPipeline.html" class="">RenderPipeline</a><a href="/InfEngine/wiki/site/en/api/RenderStack.html" class="">RenderStack</a><a href="/InfEngine/wiki/site/en/api/SharpenEffect.html" class="">SharpenEffect</a><a href="/InfEngine/wiki/site/en/api/ToneMappingEffect.html" class="">ToneMappingEffect</a><a href="/InfEngine/wiki/site/en/api/VignetteEffect.html" class="">VignetteEffect</a><a href="/InfEngine/wiki/site/en/api/WhiteBalanceEffect.html" class="">WhiteBalanceEffect</a></div>
+                    </div><div class="ns-group">
+                        <div class="ns-hd">
+                            <span class="ns-arr">&#9654;</span>
+                            <span class="ns-nm">InfEngine.scene</span>
+                        </div>
+                        <div class="ns-ch"><a href="/InfEngine/wiki/site/en/api/SceneManager.html" class="">SceneManager</a></div>
+                    </div><div class="ns-group">
+                        <div class="ns-hd">
+                            <span class="ns-arr">&#9654;</span>
+                            <span class="ns-nm">InfEngine.timing</span>
+                        </div>
+                        <div class="ns-ch"><a href="/InfEngine/wiki/site/en/api/Time.html" class="">Time</a></div>
+                    </div><div class="ns-group">
+                        <div class="ns-hd">
+                            <span class="ns-arr">&#9654;</span>
+                            <span class="ns-nm">InfEngine.ui</span>
+                        </div>
+                        <div class="ns-ch"><a href="/InfEngine/wiki/site/en/api/InfUIComponent.html" class="">InfUIComponent</a><a href="/InfEngine/wiki/site/en/api/PointerEventData.html" class="">PointerEventData</a><a href="/InfEngine/wiki/site/en/api/UIButton.html" class="">UIButton</a><a href="/InfEngine/wiki/site/en/api/UICanvas.html" class="">UICanvas</a><a href="/InfEngine/wiki/site/en/api/UIImage.html" class="">UIImage</a><a href="/InfEngine/wiki/site/en/api/UISelectable.html" class="">UISelectable</a><a href="/InfEngine/wiki/site/en/api/UIText.html" class="">UIText</a></div>
+                    </div></div>
+        </aside>
+
+        <!-- Main content -->
+        <main class="api-main">
+            <h1 id="building-exporting-your-game">Building &amp; Exporting Your Game<a class="headerlink" href="#building-exporting-your-game" title="Permanent link">&para;</a></h1>
+<div class="class-info">
+Tutorial &nbsp;|&nbsp; <a href="../../zh/tutorials/building.html">中文</a>
+</div>
+
+<h2 id="overview">Overview<a class="headerlink" href="#overview" title="Permanent link">&para;</a></h2>
+<p>You've built something awesome. Now you want to share it. InfEngine compiles your Python game into a <strong>standalone native EXE</strong> using <a href="https://nuitka.net/">Nuitka</a> — no Python installation required on the player's machine. The result is a self-contained folder with an executable, engine DLLs, and your game data. Double-click and play.</p>
+<p>The build pipeline looks like this:</p>
+<div class="language-text highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>Your Project
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    ↓
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>GameBuilder (Python)
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    ↓
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>NuitkaBuilder (Python → C → native EXE)
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    ↓
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>Inject engine DLLs (_InfEngine.pyd, SDL3.dll, etc.)
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    ↓
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>Copy game data (Assets/, scenes, materials)
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>    ↓
+<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>Compile user scripts (.py → .pyc)
+<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>    ↓
+<a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>Generate BuildManifest.json
+<a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>    ↓
+<a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a>✅ Standalone game folder
+</code></pre></div>
+<h2 id="prerequisites">Prerequisites<a class="headerlink" href="#prerequisites" title="Permanent link">&para;</a></h2>
+<p>Before building:</p>
+<ol>
+<li><strong>Nuitka</strong> — auto-installed if missing (<code>pip install nuitka ordered-set</code>)</li>
+<li><strong>A C compiler</strong> — MSVC (recommended, auto-detected) or MinGW64 (auto-downloaded by Nuitka)</li>
+<li><strong>At least one scene</strong> in your Build Settings</li>
+</ol>
+<blockquote>
+<p><strong>Why MSVC?</strong> MinGW-compiled executables are more likely to trigger antivirus false positives. MSVC also handles Unicode paths natively, which avoids crashes on non-ASCII usernames (looking at you, 中文用户名).</p>
+</blockquote>
+<h2 id="build-settings">Build Settings<a class="headerlink" href="#build-settings" title="Permanent link">&para;</a></h2>
+<p>Open Build Settings from the editor menu bar: <strong>File → Build Settings</strong>.</p>
+<h3 id="scene-list">Scene List<a class="headerlink" href="#scene-list" title="Permanent link">&para;</a></h3>
+<p>Add scenes to the build list. The <strong>first scene</strong> is the one that loads on startup. You can:</p>
+<ul>
+<li>Click <strong>"Add Open Scene"</strong> to add the currently open scene</li>
+<li>Drag scene files from the Project panel</li>
+<li>Reorder scenes by dragging</li>
+<li>Remove scenes with the X button</li>
+</ul>
+<h3 id="display-mode">Display Mode<a class="headerlink" href="#display-mode" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Mode</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Fullscreen Borderless</td>
+<td>Fills the screen, no title bar. Default.</td>
+</tr>
+<tr>
+<td>Windowed</td>
+<td>Runs in a window with configurable size.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="splash-screen">Splash Screen<a class="headerlink" href="#splash-screen" title="Permanent link">&para;</a></h3>
+<p>Add images and/or videos that play before the game starts:</p>
+<ul>
+<li><strong>Images</strong>: Set fade-in time, display duration, and fade-out time</li>
+<li><strong>Videos</strong>: Plays the video file directly</li>
+<li>Items play in order, top to bottom</li>
+</ul>
+<h3 id="output-directory">Output Directory<a class="headerlink" href="#output-directory" title="Permanent link">&para;</a></h3>
+<p>Choose where the built game files will be placed.</p>
+<h2 id="building-from-the-editor">Building from the Editor<a class="headerlink" href="#building-from-the-editor" title="Permanent link">&para;</a></h2>
+<ol>
+<li>Open <strong>File → Build Settings</strong></li>
+<li>Add your scenes</li>
+<li>Configure display mode and splash screen</li>
+<li>Click <strong>Build</strong> (or <strong>Build &amp; Run</strong> to test immediately)</li>
+</ol>
+<p>A progress bar shows the build status. The build runs in a background thread so the editor stays responsive.</p>
+<h3 id="what-happens-during-build">What Happens During Build<a class="headerlink" href="#what-happens-during-build" title="Permanent link">&para;</a></h3>
+<p>The <code>GameBuilder</code> orchestrates the full process:</p>
+<ol>
+<li><strong>Validates</strong> — checks that BuildSettings.json exists and all listed scenes are present</li>
+<li><strong>Generates boot script</strong> — creates a temporary entry point that:</li>
+<li>Sets <code>_INFENGINE_PLAYER_MODE=1</code> (skips editor UI)</li>
+<li>Loads the first scene from BuildSettings.json</li>
+<li>Has crash reporting (writes to <code>crash.log</code> and shows a message box)</li>
+<li><strong>Nuitka compilation</strong> — compiles the boot script + InfEngine into native code</li>
+<li><strong>Injects native libraries</strong> — copies <code>_InfEngine.pyd</code>, SDL3.dll, and other engine DLLs</li>
+<li><strong>Copies game data</strong> — Assets/, ProjectSettings/, materials/ → <code>Data/</code></li>
+<li><strong>Compiles user scripts</strong> — <code>.py</code> → <code>.pyc</code> for source protection</li>
+<li><strong>Processes splash items</strong> — copies images and packages video data</li>
+<li><strong>Embeds UTF-8 manifest</strong> — ensures Unicode paths work on Windows</li>
+<li><strong>Self-signs the executable</strong> — reduces antivirus false positives</li>
+<li><strong>Generates BuildManifest.json</strong> — display mode, window size, splash config</li>
+</ol>
+<h3 id="output-layout">Output Layout<a class="headerlink" href="#output-layout" title="Permanent link">&para;</a></h3>
+<div class="language-text highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>MyGame/
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>    MyGame.exe              ← Native executable
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>    python312.dll           ← CPython runtime
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>    SDL3.dll, imgui.dll … ← Engine native DLLs
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>    InfEngine/              ← Engine package
+<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>        lib/
+<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a>            _InfEngine.pyd  ← pybind11 extension
+<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a>            SDL3.dll …      ← DLLs (for os.add_dll_directory)
+<a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a>    Data/
+<a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a>        Assets/             ← Your scenes, scripts (.pyc), textures, models
+<a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a>        ProjectSettings/    ← Build &amp; tag-layer settings
+<a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a>        materials/          ← Material definitions
+<a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a>        Splash/             ← Splash images + video data
+<a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a>        BuildManifest.json  ← Runtime configuration
+</code></pre></div>
+<h2 id="building-from-script">Building from Script<a class="headerlink" href="#building-from-script" title="Permanent link">&para;</a></h2>
+<p>You can also trigger builds programmatically:</p>
+<div class="language-python highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">InfEngine.engine.game_builder</span><span class="w"> </span><span class="kn">import</span> <span class="n">GameBuilder</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="n">builder</span> <span class="o">=</span> <span class="n">GameBuilder</span><span class="p">(</span>
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>    <span class="n">project_path</span><span class="o">=</span><span class="s2">&quot;C:/MyProject&quot;</span><span class="p">,</span>
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>    <span class="n">output_dir</span><span class="o">=</span><span class="s2">&quot;C:/Builds/MyGame&quot;</span><span class="p">,</span>
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>    <span class="n">display_mode</span><span class="o">=</span><span class="s2">&quot;fullscreen_borderless&quot;</span><span class="p">,</span>  <span class="c1"># or &quot;windowed&quot;</span>
+<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a>    <span class="n">window_width</span><span class="o">=</span><span class="mi">1920</span><span class="p">,</span>
+<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a>    <span class="n">window_height</span><span class="o">=</span><span class="mi">1080</span><span class="p">,</span>
+<a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a>    <span class="n">splash_items</span><span class="o">=</span><span class="p">[</span>
+<a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a>        <span class="p">{</span><span class="s2">&quot;type&quot;</span><span class="p">:</span> <span class="s2">&quot;image&quot;</span><span class="p">,</span> <span class="s2">&quot;path&quot;</span><span class="p">:</span> <span class="s2">&quot;Assets/splash.png&quot;</span><span class="p">,</span>
+<a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a>         <span class="s2">&quot;fade_in&quot;</span><span class="p">:</span> <span class="mf">0.5</span><span class="p">,</span> <span class="s2">&quot;duration&quot;</span><span class="p">:</span> <span class="mf">2.0</span><span class="p">,</span> <span class="s2">&quot;fade_out&quot;</span><span class="p">:</span> <span class="mf">0.5</span><span class="p">},</span>
+<a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a>    <span class="p">],</span>
+<a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a><span class="p">)</span>
+<a id="__codelineno-2-14" name="__codelineno-2-14" href="#__codelineno-2-14"></a>
+<a id="__codelineno-2-15" name="__codelineno-2-15" href="#__codelineno-2-15"></a><span class="k">def</span><span class="w"> </span><span class="nf">on_progress</span><span class="p">(</span><span class="n">message</span><span class="p">,</span> <span class="n">percent</span><span class="p">):</span>
+<a id="__codelineno-2-16" name="__codelineno-2-16" href="#__codelineno-2-16"></a>    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;[</span><span class="si">{</span><span class="n">percent</span><span class="si">:</span><span class="s2">.0%</span><span class="si">}</span><span class="s2">] </span><span class="si">{</span><span class="n">message</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+<a id="__codelineno-2-17" name="__codelineno-2-17" href="#__codelineno-2-17"></a>
+<a id="__codelineno-2-18" name="__codelineno-2-18" href="#__codelineno-2-18"></a><span class="n">output</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">build</span><span class="p">(</span><span class="n">on_progress</span><span class="o">=</span><span class="n">on_progress</span><span class="p">)</span>
+<a id="__codelineno-2-19" name="__codelineno-2-19" href="#__codelineno-2-19"></a><span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Build complete: </span><span class="si">{</span><span class="n">output</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+</code></pre></div>
+<h2 id="third-party-dependencies">Third-Party Dependencies<a class="headerlink" href="#third-party-dependencies" title="Permanent link">&para;</a></h2>
+<p>The build system automatically detects third-party packages your game uses:</p>
+<ol>
+<li><strong>requirements.txt</strong> in your project root (highest priority)</li>
+<li><strong>AST scanning</strong> of all <code>.py</code> files in Assets/ (automatic fallback)</li>
+</ol>
+<p>Only packages that are actually installed in your environment are included. Standard library and engine packages are excluded automatically.</p>
+<div class="language-text highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a># Example project requirements.txt
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>torch&gt;=2.0
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>pillow
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>requests
+</code></pre></div>
+<h2 id="the-infengine-hub">The InfEngine Hub<a class="headerlink" href="#the-infengine-hub" title="Permanent link">&para;</a></h2>
+<p>The Hub is a standalone launcher (built with PySide6 + PyInstaller) for managing InfEngine projects without opening the editor.</p>
+<h3 id="features">Features<a class="headerlink" href="#features" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong>Project list</strong> — create, open, and manage projects</li>
+<li><strong>Engine version management</strong> — download engine wheels from GitHub Releases</li>
+<li><strong>Python runtime management</strong> — auto-installs Python 3.12 embeddable</li>
+<li><strong>Virtual environment templates</strong> — pre-built venvs for fast project creation</li>
+</ul>
+<h3 id="installing-the-hub">Installing the Hub<a class="headerlink" href="#installing-the-hub" title="Permanent link">&para;</a></h3>
+<p>The Hub ships as a one-click installer (<code>InfEngineHubInstaller.exe</code>) that:</p>
+<ol>
+<li>Extracts the Hub application to your chosen directory</li>
+<li>Downloads and installs Python 3.12 embeddable runtime</li>
+<li>Creates a reusable venv template with pip</li>
+<li>Registers in Windows Add/Remove Programs</li>
+<li>Creates a Start Menu shortcut</li>
+</ol>
+<h3 id="building-the-hub-for-developers">Building the Hub (for developers)<a class="headerlink" href="#building-the-hub-for-developers" title="Permanent link">&para;</a></h3>
+<div class="language-powershell highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="c"># Build the Hub application</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="nb">cd </span><span class="n">packaging</span>
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="n">pyinstaller</span> <span class="n">infengine_hub</span><span class="p">.</span><span class="n">spec</span> <span class="p">-</span><span class="n">-clean</span>
+<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>
+<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="c"># Build the installer (wraps Hub + Python runtime)</span>
+<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="n">pyinstaller</span> <span class="n">infengine_hub_installer</span><span class="p">.</span><span class="n">spec</span> <span class="p">-</span><span class="n">-clean</span>
+</code></pre></div>
+<p>Or via CMake:
+<div class="language-powershell highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="n">cmake</span> <span class="p">-</span><span class="n">-build</span> <span class="p">-</span><span class="n">-preset</span> <span class="n">release</span> <span class="p">-</span><span class="n">-target</span> <span class="n">infengine_hub</span>
+</code></pre></div></p>
+<h2 id="troubleshooting">Troubleshooting<a class="headerlink" href="#troubleshooting" title="Permanent link">&para;</a></h2>
+<h3 id="buildsettingsjson-not-found">"BuildSettings.json not found"<a class="headerlink" href="#buildsettingsjson-not-found" title="Permanent link">&para;</a></h3>
+<p>Open Build Settings in the editor and add at least one scene. The file is created automatically.</p>
+<h3 id="antivirus-flags-the-exe">Antivirus flags the EXE<a class="headerlink" href="#antivirus-flags-the-exe" title="Permanent link">&para;</a></h3>
+<p>This is common with Nuitka-compiled executables. The build system mitigates this by:
+- Preferring MSVC over MinGW (fewer false positives)
+- Self-signing the executable with a code-signing certificate
+- Embedding a proper application manifest</p>
+<p>For distribution, consider purchasing an EV code-signing certificate.</p>
+<h3 id="non-ascii-path-crashes">Non-ASCII path crashes<a class="headerlink" href="#non-ascii-path-crashes" title="Permanent link">&para;</a></h3>
+<p>The build system handles this by:
+- Using an ASCII-safe staging directory (<code>C:\_InfBuild\</code>) during compilation
+- Embedding a UTF-8 active-code-page manifest in the EXE
+- Redirecting TEMP/TMP to ASCII-safe locations</p>
+<h3 id="missing-dlls-at-runtime">Missing DLLs at runtime<a class="headerlink" href="#missing-dlls-at-runtime" title="Permanent link">&para;</a></h3>
+<p>If the game fails to start with missing DLL errors:
+1. Check that <code>InfEngine/lib/</code> in the build output contains <code>_InfEngine.pyd</code> and all <code>.dll</code> files
+2. Verify the engine DLLs are also in the root directory (fallback search path)</p>
+<h3 id="nuitka-compilation-is-slow">Nuitka compilation is slow<a class="headerlink" href="#nuitka-compilation-is-slow" title="Permanent link">&para;</a></h3>
+<ul>
+<li>First build downloads MinGW64 (~200MB) if MSVC isn't available</li>
+<li>Subsequent builds reuse cached C compilation results</li>
+<li>Use <code>--jobs</code> to control parallel compilation (defaults to CPU count - 1)</li>
+</ul>
+<h2 id="tips">Tips<a class="headerlink" href="#tips" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>Test your build early and often.</strong> Don't wait until release day to discover build issues.</li>
+<li><strong>Use "Build &amp; Run"</strong> during development to quickly test the standalone version.</li>
+<li><strong>Keep your Assets/ clean.</strong> Everything in Assets/ gets copied to the build. Remove unused files.</li>
+<li><strong>The player.log file</strong> in the game directory contains startup logs and crash information. Tell your players to send it during bug reports.</li>
+<li><strong>Source protection</strong>: User scripts are compiled to <code>.pyc</code> bytecode. It's not encryption, but it prevents casual reading of your source code.</li>
+</ul>
+<h2 id="see-also">See Also<a class="headerlink" href="#see-also" title="Permanent link">&para;</a></h2>
+<ul>
+<li><a href="physics.html">Physics Tutorial</a> — Rigidbody, colliders, raycasting</li>
+<li><a href="audio.html">Audio Tutorial</a> — Sound effects and music</li>
+<li><a href="rendering.html">Rendering Tutorial</a> — Post-processing and custom pipelines</li>
+<li><a href="coroutines.html">Coroutines Tutorial</a> — Async game logic</li>
+<li><a href="ui.html">UI Tutorial</a> — Canvas, buttons, health bars</li>
+</ul>
+        </main>
+    </div>
+
+    <!-- Footer -->
+    <footer class="footer api-ft">
+        <div class="container">
+            <div class="footer-bottom">
+                <p>&copy; 2024 Infernux Engine. MIT License.</p>
+            </div>
+        </div>
+    </footer>
+
+    <script src="/InfEngine/js/main.js"></script>
+    <script>
+    document.addEventListener('DOMContentLoaded', function() {
+        document.querySelectorAll('.ns-hd').forEach(function(h) {
+            h.addEventListener('click', function() { this.classList.toggle('open'); });
+        });
+    });
+    </script>
+</body>
+</html>

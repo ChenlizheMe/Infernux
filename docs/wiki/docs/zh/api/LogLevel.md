@@ -6,11 +6,9 @@
 
 ## 描述
 
-Engine log verbosity level.
+日志级别枚举。
 
 <!-- USER CONTENT START --> description
-
-LogLevel 定义 [Debug](Debug.md) 日志的严重级别：Log、Warning 和 Error。
 
 <!-- USER CONTENT END -->
 

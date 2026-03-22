@@ -8,11 +8,7 @@ class in <b>InfEngine</b>
 
 ## Description
 
-Transform component — position, rotation, scale.
-
-Follows Unity convention:
-  - position / euler_angles → world space
-  - local_position / local_euler_angles / local_scale → local (parent) space
+Transform component — position, rotation, scale, hierarchy.
 
 <!-- USER CONTENT START --> description
 
@@ -28,24 +24,24 @@ The parent-child relationship is established through `set_parent()` on the [Game
 
 | Name | Type | Description |
 |------|------|------|
-| position | `Vector3` | Position in world space (considering parent hierarchy). |
-| euler_angles | `Vector3` | Rotation as Euler angles (degrees) in world space. |
-| local_position | `Vector3` | Position in local (parent) space. |
-| local_euler_angles | `Vector3` | Rotation as Euler angles (degrees) in local space. |
-| local_scale | `Vector3` | Scale in local space. |
-| lossy_scale | `Vector3` | Approximate world-space scale (read-only, like Unity lossyScale). *(read-only)* |
-| forward | `Vector3` | Forward direction in world space (negative Z). *(read-only)* |
-| right | `Vector3` | Right direction in world space (positive X). *(read-only)* |
-| up | `Vector3` | Up direction in world space (positive Y). *(read-only)* |
-| local_forward | `Vector3` | Forward direction in local space (negative Z). *(read-only)* |
-| local_right | `Vector3` | Right direction in local space (positive X). *(read-only)* |
-| local_up | `Vector3` | Up direction in local space (positive Y). *(read-only)* |
-| rotation | `Tuple[float, float, float, float]` | World-space rotation as quaternion (x, y, z, w). |
-| local_rotation | `Tuple[float, float, float, float]` | Local-space rotation as quaternion (x, y, z, w). |
-| parent | `Optional[Transform]` | Parent Transform (None if root). |
-| root | `Transform` | Topmost Transform in the hierarchy. *(read-only)* |
-| child_count | `int` | Number of children. *(read-only)* |
-| has_changed | `bool` | Has the transform changed since last reset? Unity: transform.hasChanged |
+| position | `Vector3` |  *(read-only)* |
+| euler_angles | `Vector3` |  *(read-only)* |
+| rotation | `quatf` |  *(read-only)* |
+| local_position | `Vector3` |  *(read-only)* |
+| local_euler_angles | `Vector3` |  *(read-only)* |
+| local_scale | `Vector3` |  *(read-only)* |
+| local_rotation | `quatf` |  *(read-only)* |
+| lossy_scale | `Vector3` |  *(read-only)* |
+| forward | `Vector3` |  *(read-only)* |
+| right | `Vector3` |  *(read-only)* |
+| up | `Vector3` |  *(read-only)* |
+| local_forward | `Vector3` |  *(read-only)* |
+| local_right | `Vector3` |  *(read-only)* |
+| local_up | `Vector3` |  *(read-only)* |
+| parent | `Optional[Transform]` |  *(read-only)* |
+| root | `Transform` |  *(read-only)* |
+| child_count | `int` |  *(read-only)* |
+| has_changed | `bool` |  *(read-only)* |
 
 <!-- USER CONTENT START --> properties
 
@@ -55,28 +51,28 @@ The parent-child relationship is established through `set_parent()` on the [Game
 
 | Method | Description |
 |------|------|
-| `set_parent(parent: Optional[Transform], world_position_stays: bool = True) → None` | Set parent Transform. |
-| `get_child(index: int) → Optional[Transform]` | Get child Transform by index. |
-| `find(name: str) → Optional[Transform]` | Find child Transform by name (non-recursive). |
-| `detach_children() → None` | Unparent all children. |
-| `is_child_of(parent: Transform) → bool` | Is this transform a child of parent? Unity: transform.IsChildOf(parent) |
-| `get_sibling_index() → int` | Get sibling index. |
-| `set_sibling_index(index: int) → None` | Set sibling index. |
-| `set_as_first_sibling() → None` | Move to first sibling. |
-| `set_as_last_sibling() → None` | Move to last sibling. |
-| `transform_point(point: Vector3) → Vector3` | Transform point from local to world space. |
-| `inverse_transform_point(point: Vector3) → Vector3` | Transform point from world to local space. |
-| `transform_direction(direction: Vector3) → Vector3` | Transform direction from local to world (rotation only). |
-| `inverse_transform_direction(direction: Vector3) → Vector3` | Transform direction from world to local (rotation only). |
-| `transform_vector(vector: Vector3) → Vector3` | Transform vector from local to world (with scale). |
-| `inverse_transform_vector(vector: Vector3) → Vector3` | Transform vector from world to local (with scale). |
-| `local_to_world_matrix() → List[float]` | Get local-to-world transformation matrix (16 floats, column-major). |
-| `world_to_local_matrix() → List[float]` | Get world-to-local transformation matrix (16 floats, column-major). |
-| `look_at(target: Vector3) → None` | Rotate to face a world-space target position. |
-| `translate(delta: Vector3) → None` | Translate in world space. |
-| `translate_local(delta: Vector3) → None` | Translate in local space (relative to own axes). |
-| `rotate(euler: Vector3) → None` | Rotate by Euler angles (degrees) in local space. |
-| `rotate_around(point: Vector3, axis: Vector3, angle: float) → None` | Rotate around a world-space point. |
+| `set_parent(parent: Optional[Transform], world_position_stays: bool = True) → None` |  |
+| `get_child(index: int) → Transform` |  |
+| `find(name: str) → Optional[Transform]` |  |
+| `detach_children() → None` |  |
+| `is_child_of(parent: Transform) → bool` |  |
+| `get_sibling_index() → int` |  |
+| `set_sibling_index(index: int) → None` |  |
+| `set_as_first_sibling() → None` |  |
+| `set_as_last_sibling() → None` |  |
+| `look_at(target: Vector3) → None` |  |
+| `translate(delta: Vector3, space: int = ...) → None` |  |
+| `translate_local(delta: Vector3) → None` |  |
+| `rotate(euler: Vector3, space: int = ...) → None` |  |
+| `rotate_around(point: Vector3, axis: Vector3, angle: float) → None` |  |
+| `transform_point(point: Vector3) → Vector3` |  |
+| `inverse_transform_point(point: Vector3) → Vector3` |  |
+| `transform_direction(direction: Vector3) → Vector3` |  |
+| `inverse_transform_direction(direction: Vector3) → Vector3` |  |
+| `transform_vector(vector: Vector3) → Vector3` |  |
+| `inverse_transform_vector(vector: Vector3) → Vector3` |  |
+| `local_to_world_matrix() → List[float]` |  |
+| `world_to_local_matrix() → List[float]` |  |
 
 <!-- USER CONTENT START --> public_methods
 

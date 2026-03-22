@@ -455,6 +455,320 @@ ZH_SHORT: Dict[str, Dict[str, str]] = {
         "draw_frustum": "绘制视锥体。",
         "draw_icon": "在指定位置绘制图标。",
     },
+    "Rigidbody": {
+        "_class_": "刚体组件。让物体受物理引擎控制——牛顿看了都点头。",
+        "mass": "刚体质量（千克）。",
+        "drag": "线性阻力。",
+        "angular_drag": "角阻力。",
+        "use_gravity": "是否受重力影响。",
+        "is_kinematic": "是否为运动学模式（不受力影响，但能推动别人）。",
+        "constraints": "冻结哪些轴的位置或旋转。",
+        "collision_detection_mode": "碰撞检测模式。",
+        "interpolation": "插值模式。",
+        "velocity": "线速度。",
+        "angular_velocity": "角速度。",
+        "position": "刚体位置。",
+        "rotation": "刚体旋转。",
+        "add_force": "施加力。",
+        "add_torque": "施加扭矩。",
+        "add_force_at_position": "在指定位置施加力。",
+        "move_position": "移动刚体到目标位置。",
+        "move_rotation": "旋转刚体到目标朝向。",
+        "sleep": "强制刚体进入休眠。",
+        "wake_up": "唤醒刚体。",
+        "is_sleeping": "刚体是否正在休眠。",
+    },
+    "Collider": {
+        "_class_": "碰撞体基类。所有碰撞体的老祖宗。",
+        "is_trigger": "是否为触发器模式。",
+        "center": "碰撞体在本地空间的中心偏移。",
+        "enabled": "碰撞体是否启用。",
+    },
+    "BoxCollider": {
+        "_class_": "盒形碰撞体。适合箱子、墙壁等方方正正的东西。",
+        "size": "盒体的尺寸（本地空间）。",
+        "center": "盒体中心偏移。",
+    },
+    "SphereCollider": {
+        "_class_": "球形碰撞体。球是上帝最爱的形状。",
+        "radius": "碰撞球半径。",
+        "center": "球心偏移。",
+    },
+    "CapsuleCollider": {
+        "_class_": "胶囊碰撞体。角色控制器的好搭档。",
+        "radius": "胶囊半径。",
+        "height": "胶囊高度。",
+        "center": "胶囊中心偏移。",
+    },
+    "MeshCollider": {
+        "_class_": "网格碰撞体。用真实网格做碰撞——精确但费性能。",
+        "convex": "是否使用凸包近似。",
+    },
+    "Physics": {
+        "_class_": "物理系统的静态工具类。",
+        "raycast": "从原点沿方向发射射线检测碰撞。",
+        "raycast_all": "射线检测所有碰撞体。",
+        "overlap_sphere": "检测球形区域内的所有碰撞体。",
+        "gravity": "全局重力加速度。",
+    },
+    "AudioSource": {
+        "_class_": "音频源组件。在场景中播放声音的扬声器。",
+        "clip": "当前音频剪辑。",
+        "volume": "音量（0.0 到 1.0）。",
+        "pitch": "音调。",
+        "loop": "是否循环播放。",
+        "play_on_awake": "是否在 Awake 时自动播放。",
+        "spatial_blend": "空间混合（0=2D, 1=3D）。",
+        "min_distance": "3D 声音的最小距离。",
+        "max_distance": "3D 声音的最大距离。",
+        "is_playing": "当前是否正在播放。",
+        "time": "当前播放位置（秒）。",
+        "play": "播放音频。",
+        "pause": "暂停。",
+        "unpause": "继续播放。",
+        "stop": "停止。",
+        "play_one_shot": "播放一次性音效（不影响主 clip）。",
+    },
+    "AudioListener": {
+        "_class_": "音频监听器组件。场景中的耳朵——通常挂在主摄像机上。",
+        "enabled": "监听器是否启用。",
+    },
+    "AudioClip": {
+        "_class_": "音频剪辑资源。",
+        "name": "剪辑名称。",
+        "guid": "全局唯一标识符。",
+        "duration": "时长（秒）。",
+        "channels": "声道数。",
+        "sample_rate": "采样率。",
+        "load": "从文件加载音频剪辑。",
+        "find": "按名称查找音频剪辑。",
+    },
+    "UICanvas": {
+        "_class_": "UI 画布组件。所有 UI 元素的根容器——UI 的舞台。",
+        "render_mode": "渲染模式。",
+        "sort_order": "排序顺序。",
+        "reference_resolution": "参考分辨率。",
+    },
+    "UIText": {
+        "_class_": "UI 文本组件。在屏幕上显示文字。",
+        "text": "显示的文本内容。",
+        "font_size": "字体大小。",
+        "color": "文本颜色。",
+        "alignment_h": "水平对齐方式。",
+        "alignment_v": "垂直对齐方式。",
+    },
+    "UIImage": {
+        "_class_": "UI 图片组件。在屏幕上显示图片或色块。",
+        "color": "图片颜色/叠色。",
+        "texture_guid": "纹理的 GUID。",
+        "raycast_target": "是否响应射线检测。",
+    },
+    "UIButton": {
+        "_class_": "UI 按钮组件。用户点击的地方——程序员 Debug 的地方。",
+        "on_click": "点击事件。",
+        "interactable": "是否可交互。",
+    },
+    "UISelectable": {
+        "_class_": "可选择的 UI 元素基类。UIButton 的老爸。",
+        "interactable": "是否可交互。",
+        "transition": "过渡类型。",
+        "normal_color": "常态颜色。",
+        "highlighted_color": "高亮颜色。",
+        "pressed_color": "按下颜色。",
+        "disabled_color": "禁用颜色。",
+    },
+    "InfUIComponent": {
+        "_class_": "所有 UI 组件的 Python 基类。",
+    },
+    "PointerEventData": {
+        "_class_": "指针事件数据。包含点击位置和来源信息。",
+        "position": "当前指针屏幕坐标。",
+        "button": "触发事件的鼠标按钮。",
+        "click_count": "点击次数。",
+    },
+    "Time": {
+        "_class_": "时间管理器。掌管每一帧的时间节奏——引擎的心跳。",
+        "time": "自游戏启动以来的时间（秒）。",
+        "delta_time": "上一帧耗时（秒）。写游戏逻辑离不开它。",
+        "fixed_delta_time": "固定更新时间间隔（秒）。",
+        "unscaled_time": "不受 time_scale 影响的时间。",
+        "unscaled_delta_time": "不受 time_scale 影响的帧耗时。",
+        "time_scale": "时间缩放。设为 0 暂停，设为 2 双倍速。",
+        "frame_count": "自启动以来的帧数。",
+        "realtime_since_startup": "自启动以来的真实时间（秒）。",
+    },
+    "Mathf": {
+        "_class_": "数学工具类。常用数学函数大全。",
+        "PI": "π（3.14159...）——数学界的摇滚巨星。",
+        "Infinity": "正无穷。",
+        "Epsilon": "极小正数。",
+        "Deg2Rad": "度转弧度系数。",
+        "Rad2Deg": "弧度转度系数。",
+        "clamp": "将值限制在 min 和 max 之间。",
+        "clamp01": "将值限制在 0 和 1 之间。",
+        "lerp": "线性插值。",
+        "inverse_lerp": "反向线性插值。",
+        "move_towards": "向目标移动指定步长。",
+        "smooth_step": "平滑插值（Hermite 曲线）。",
+        "sign": "返回值的符号（-1 / 0 / 1）。",
+        "abs": "绝对值。",
+        "min": "返回较小值。",
+        "max": "返回较大值。",
+        "floor": "向下取整。",
+        "ceil": "向上取整。",
+        "round": "四舍五入。",
+        "sqrt": "平方根。",
+        "pow": "乘方。",
+        "sin": "正弦。",
+        "cos": "余弦。",
+        "tan": "正切。",
+        "asin": "反正弦。",
+        "acos": "反余弦。",
+        "atan": "反正切。",
+        "atan2": "双参数反正切。",
+    },
+    "Coroutine": {
+        "_class_": "协程句柄。代表一个正在运行的协程。",
+        "is_done": "协程是否已完成。",
+    },
+    "WaitForSeconds": {
+        "_class_": "等待指定秒数（受 Time.time_scale 影响）。",
+        "duration": "等待时长（秒）。",
+    },
+    "WaitForSecondsRealtime": {
+        "_class_": "等待指定真实秒数（不受 time_scale 影响）。暂停菜单的好朋友。",
+        "duration": "等待时长（秒）。",
+    },
+    "WaitForEndOfFrame": {
+        "_class_": "等待到当前帧渲染结束。截屏用得上。",
+    },
+    "WaitForFixedUpdate": {
+        "_class_": "等待到下一次 FixedUpdate。物理相关计算适合在这里等。",
+    },
+    "WaitUntil": {
+        "_class_": "等待直到条件为 True。",
+        "predicate": "判断条件的可调用对象。",
+    },
+    "WaitWhile": {
+        "_class_": "等待只要条件为 True 就继续等（条件变 False 时恢复）。",
+        "predicate": "判断条件的可调用对象。",
+    },
+    "RenderGraph": {
+        "_class_": "声明式渲染图。用 Pass 描述你想怎么画，引擎帮你调度。",
+        "add_pass": "添加一个渲染 Pass。",
+        "create_texture": "创建临时纹理。",
+        "import_texture": "导入外部纹理。",
+        "execute": "编译并执行渲染图。",
+    },
+    "RenderPassBuilder": {
+        "_class_": "渲染 Pass 构建器。链式 API 定义输入输出。",
+        "read": "声明此 Pass 读取某纹理。",
+        "write": "声明此 Pass 写入某纹理。",
+        "set_render_func": "设置此 Pass 的渲染回调。",
+    },
+    "TextureHandle": {
+        "_class_": "渲染图中的临时纹理句柄。",
+    },
+    "RenderStack": {
+        "_class_": "后处理效果栈。管理一系列后处理 Pass 的执行顺序。",
+    },
+    "RenderPass": {
+        "_class_": "自定义渲染 Pass 的基类。",
+        "setup": "在此配置 Pass 所需资源。",
+        "execute": "执行渲染逻辑。",
+    },
+    "RenderPipeline": {
+        "_class_": "可编程渲染管线基类。继承它来定制整个渲染流程。",
+        "render": "每帧调用，执行渲染。",
+    },
+    "FullScreenEffect": {
+        "_class_": "全屏后处理效果基类。自定义后处理从这里继承。",
+    },
+    "BloomEffect": {
+        "_class_": "泛光效果。让亮处溢出光晕——梦幻感拉满。",
+        "threshold": "亮度阈值。",
+        "intensity": "泛光强度。",
+        "scatter": "散射范围。",
+    },
+    "ToneMappingEffect": {
+        "_class_": "色调映射效果。把 HDR 颜色压到屏幕可显示范围。",
+        "mode": "映射模式（ACES / Reinhard / Neutral 等）。",
+    },
+    "VignetteEffect": {
+        "_class_": "暗角效果。画面四周渐暗——电影感利器。",
+        "intensity": "暗角强度。",
+        "smoothness": "过渡平滑度。",
+    },
+    "ColorAdjustmentsEffect": {
+        "_class_": "色彩调整效果。亮度、对比度、饱和度一把抓。",
+        "exposure": "曝光。",
+        "contrast": "对比度。",
+        "saturation": "饱和度。",
+    },
+    "ChromaticAberrationEffect": {
+        "_class_": "色差效果。模拟镜头边缘的 RGB 偏移。",
+        "intensity": "色差强度。",
+    },
+    "FilmGrainEffect": {
+        "_class_": "胶片噪点效果。复古胶片质感。",
+        "intensity": "噪点强度。",
+    },
+    "SharpenEffect": {
+        "_class_": "锐化效果。让画面更清晰。",
+        "intensity": "锐化强度。",
+    },
+    "WhiteBalanceEffect": {
+        "_class_": "白平衡效果。调节色温和色调。",
+        "temperature": "色温。",
+        "tint": "色调偏移。",
+    },
+    "quaternion": {
+        "_class_": "四元数，表示三维旋转。比欧拉角靠谱，不会万向锁。",
+        "x": "X 分量。",
+        "y": "Y 分量。",
+        "z": "Z 分量。",
+        "w": "W 分量。",
+        "identity": "单位四元数（无旋转）。",
+        "euler": "从欧拉角创建四元数。",
+        "angle_axis": "从轴角创建四元数。",
+        "look_rotation": "创建朝向目标方向的旋转。",
+        "slerp": "球面插值。",
+        "inverse": "求逆。",
+        "euler_angles": "转为欧拉角。",
+    },
+    "Format": {
+        "_class_": "纹理格式枚举。",
+    },
+    "Space": {
+        "_class_": "坐标空间枚举。World=世界空间，Self=本地空间。",
+    },
+    "ForceMode": {
+        "_class_": "力的施加模式枚举。",
+    },
+    "PrimitiveType": {
+        "_class_": "基本几何体类型枚举。",
+    },
+    "LightType": {
+        "_class_": "光源类型枚举。",
+    },
+    "LightShadows": {
+        "_class_": "光源阴影模式枚举。",
+    },
+    "CameraClearFlags": {
+        "_class_": "摄像机清除模式枚举。",
+    },
+    "CameraProjection": {
+        "_class_": "摄像机投影模式枚举。",
+    },
+    "LogLevel": {
+        "_class_": "日志级别枚举。",
+    },
+    "RigidbodyConstraints": {
+        "_class_": "刚体约束枚举。冻结指定轴的位置或旋转。",
+    },
+    "CollisionDetectionMode": {
+        "_class_": "碰撞检测模式枚举。",
+    },
 }
 
 def t(key: str, lang: str) -> str:
@@ -1160,6 +1474,29 @@ PUBLIC_API_CLASSES = {
     "Light",
     "MeshRenderer",
 
+    # ── Physics ──
+    "Rigidbody",
+    "Collider",
+    "BoxCollider",
+    "SphereCollider",
+    "CapsuleCollider",
+    "MeshCollider",
+    "Physics",
+
+    # ── Audio ──
+    "AudioSource",
+    "AudioListener",
+    "AudioClip",
+
+    # ── UI ──
+    "UICanvas",
+    "UIText",
+    "UIImage",
+    "UIButton",
+    "UISelectable",
+    "InfUIComponent",
+    "PointerEventData",
+
     # ── Resources ──
     "Material",
     "Shader",
@@ -1170,6 +1507,18 @@ PUBLIC_API_CLASSES = {
     "vector2",
     "vector3",
     "vector4",
+    "quaternion",
+    "Mathf",
+
+    # ── Time & Coroutines ──
+    "Time",
+    "Coroutine",
+    "WaitForSeconds",
+    "WaitForSecondsRealtime",
+    "WaitForEndOfFrame",
+    "WaitForFixedUpdate",
+    "WaitUntil",
+    "WaitWhile",
 
     # ── Input ──
     "Input",
@@ -1179,10 +1528,37 @@ PUBLIC_API_CLASSES = {
     "Debug",
     "Gizmos",
 
-    # ── Enums (kept inline with related class pages for brevity) ──
-    # CameraClearFlags, CameraProjection → referenced in Camera page
-    # LightType, LightShadows → referenced in Light page
-    # PrimitiveType, LogLevel, LayerMask → minor, no standalone page
+    # ── Render Pipeline ──
+    "RenderGraph",
+    "RenderPassBuilder",
+    "TextureHandle",
+    "RenderStack",
+    "RenderPass",
+    "RenderPipeline",
+    "FullScreenEffect",
+
+    # ── Post-Processing Effects ──
+    "BloomEffect",
+    "ToneMappingEffect",
+    "VignetteEffect",
+    "ColorAdjustmentsEffect",
+    "ChromaticAberrationEffect",
+    "FilmGrainEffect",
+    "SharpenEffect",
+    "WhiteBalanceEffect",
+
+    # ── Enums ──
+    "RigidbodyConstraints",
+    "CollisionDetectionMode",
+    "ForceMode",
+    "Space",
+    "PrimitiveType",
+    "LightType",
+    "LightShadows",
+    "CameraClearFlags",
+    "CameraProjection",
+    "LogLevel",
+    "Format",
 }
 
 PUBLIC_API_FUNCTIONS = {

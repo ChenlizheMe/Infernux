@@ -1,30 +1,27 @@
 # CameraClearFlags
 
 <div class="class-info">
-class in <b>InfEngine</b>
+enum in <b>InfEngine</b>
 </div>
 
 ## Description
 
-Camera clear flags enum (Unity URP-style).
+Camera clear behavior.
 
 <!-- USER CONTENT START --> description
 
-CameraClearFlags defines how a [Camera](Camera.md) clears the screen before rendering: SolidColor, Skybox, DepthOnly, or Nothing.
-
 <!-- USER CONTENT END -->
 
-## Properties
+## Values
 
-| Name | Type | Description |
-|------|------|------|
-| Skybox | `CameraClearFlags` |  *(read-only)* |
-| SolidColor | `CameraClearFlags` |  *(read-only)* |
-| DepthOnly | `CameraClearFlags` |  *(read-only)* |
-| DontClear | `CameraClearFlags` |  *(read-only)* |
-| value | `int` |  *(read-only)* |
+| Name | Description |
+|------|------|
+| Skybox |  |
+| SolidColor |  |
+| DepthOnly |  |
+| DontClear |  |
 
-<!-- USER CONTENT START --> properties
+<!-- USER CONTENT START --> enum_values
 
 <!-- USER CONTENT END -->
 
