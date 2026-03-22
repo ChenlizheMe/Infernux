@@ -35,16 +35,22 @@ class MeshCollider : public Collider
     void AutoFitToMesh() override;
 
     /// Convex hull positions (local space) cached after shape creation.
-    const std::vector<glm::vec3> &GetConvexHullPositions() const { return m_convexHullPositions; }
+    const std::vector<glm::vec3> &GetConvexHullPositions() const
+    {
+        return m_convexHullPositions;
+    }
     /// Convex hull edge pairs [a0,b0, a1,b1, …] cached after shape creation.
-    const std::vector<uint32_t> &GetConvexHullEdges() const { return m_convexHullEdges; }
+    const std::vector<uint32_t> &GetConvexHullEdges() const
+    {
+        return m_convexHullEdges;
+    }
 
   private:
     bool CollectMeshGeometry(std::vector<glm::vec3> &outVertices, std::vector<uint32_t> &outIndices) const;
 
     bool m_convex = false;
     mutable std::vector<glm::vec3> m_convexHullPositions;
-    mutable std::vector<uint32_t>  m_convexHullEdges;
+    mutable std::vector<uint32_t> m_convexHullEdges;
 };
 
 } // namespace infengine

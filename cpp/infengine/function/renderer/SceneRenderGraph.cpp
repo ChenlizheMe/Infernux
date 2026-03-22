@@ -500,26 +500,18 @@ void SceneRenderGraph::Execute(VkCommandBuffer commandBuffer)
 
     if (m_importedColorTarget.IsValid()) {
         if (m_sceneTarget->IsMsaaEnabled()) {
-            m_renderGraph->SetResourceInitialState(
-                m_importedColorTarget,
-                VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-                VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
+            m_renderGraph->SetResourceInitialState(m_importedColorTarget, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                                   VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                                                   VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
         } else {
-            m_renderGraph->SetResourceInitialState(
-                m_importedColorTarget,
-                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                VK_ACCESS_SHADER_READ_BIT,
-                VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+            m_renderGraph->SetResourceInitialState(m_importedColorTarget, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                                   VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
         }
     }
 
     if (m_importedResolveTarget.IsValid()) {
-        m_renderGraph->SetResourceInitialState(
-            m_importedResolveTarget,
-            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-            VK_ACCESS_SHADER_READ_BIT,
-            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+        m_renderGraph->SetResourceInitialState(m_importedResolveTarget, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                               VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
     }
 
     if (m_graphBuilt) {

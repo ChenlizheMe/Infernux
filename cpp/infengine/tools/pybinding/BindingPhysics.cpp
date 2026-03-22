@@ -160,20 +160,26 @@ void RegisterPhysicsBindings(py::module_ &m)
         .def(py::init<>())
         .def_property("convex", &MeshCollider::IsConvex, &MeshCollider::SetConvex,
                       "Use convex hull collision. Dynamic rigidbodies force convex mode.")
-        .def("get_convex_hull_positions", [](const MeshCollider &mc) -> py::list {
-            py::list result;
-            for (const auto &v : mc.GetConvexHullPositions()) {
-                result.append(py::make_tuple(v.x, v.y, v.z));
-            }
-            return result;
-        }, "Convex hull vertex positions in local space")
-        .def("get_convex_hull_edges", [](const MeshCollider &mc) -> py::list {
-            py::list result;
-            for (auto idx : mc.GetConvexHullEdges()) {
-                result.append(idx);
-            }
-            return result;
-        }, "Convex hull edge index pairs [a0,b0, a1,b1, ...]")
+        .def(
+            "get_convex_hull_positions",
+            [](const MeshCollider &mc) -> py::list {
+                py::list result;
+                for (const auto &v : mc.GetConvexHullPositions()) {
+                    result.append(py::make_tuple(v.x, v.y, v.z));
+                }
+                return result;
+            },
+            "Convex hull vertex positions in local space")
+        .def(
+            "get_convex_hull_edges",
+            [](const MeshCollider &mc) -> py::list {
+                py::list result;
+                for (auto idx : mc.GetConvexHullEdges()) {
+                    result.append(idx);
+                }
+                return result;
+            },
+            "Convex hull edge index pairs [a0,b0, a1,b1, ...]")
         .def("serialize", &MeshCollider::Serialize)
         .def("deserialize", &MeshCollider::Deserialize, "json_str"_a);
 
@@ -236,42 +242,48 @@ void RegisterPhysicsBindings(py::module_ &m)
                       "Constraints bitmask (RigidbodyConstraints)")
         .def_property("freeze_rotation", &Rigidbody::GetFreezeRotation, &Rigidbody::SetFreezeRotation,
                       "Shortcut to freeze all rotation axes")
-        .def_property("freeze_position_x",
-            [](Rigidbody *rb) { return (static_cast<int>(rb->GetConstraints()) & 2) != 0; },
+        .def_property(
+            "freeze_position_x", [](Rigidbody *rb) { return (static_cast<int>(rb->GetConstraints()) & 2) != 0; },
             [](Rigidbody *rb, bool v) {
                 int c = static_cast<int>(rb->GetConstraints());
                 rb->SetConstraints(v ? (c | 2) : (c & ~2));
-            }, "Freeze position X axis")
-        .def_property("freeze_position_y",
-            [](Rigidbody *rb) { return (static_cast<int>(rb->GetConstraints()) & 4) != 0; },
+            },
+            "Freeze position X axis")
+        .def_property(
+            "freeze_position_y", [](Rigidbody *rb) { return (static_cast<int>(rb->GetConstraints()) & 4) != 0; },
             [](Rigidbody *rb, bool v) {
                 int c = static_cast<int>(rb->GetConstraints());
                 rb->SetConstraints(v ? (c | 4) : (c & ~4));
-            }, "Freeze position Y axis")
-        .def_property("freeze_position_z",
-            [](Rigidbody *rb) { return (static_cast<int>(rb->GetConstraints()) & 8) != 0; },
+            },
+            "Freeze position Y axis")
+        .def_property(
+            "freeze_position_z", [](Rigidbody *rb) { return (static_cast<int>(rb->GetConstraints()) & 8) != 0; },
             [](Rigidbody *rb, bool v) {
                 int c = static_cast<int>(rb->GetConstraints());
                 rb->SetConstraints(v ? (c | 8) : (c & ~8));
-            }, "Freeze position Z axis")
-        .def_property("freeze_rotation_x",
-            [](Rigidbody *rb) { return (static_cast<int>(rb->GetConstraints()) & 16) != 0; },
+            },
+            "Freeze position Z axis")
+        .def_property(
+            "freeze_rotation_x", [](Rigidbody *rb) { return (static_cast<int>(rb->GetConstraints()) & 16) != 0; },
             [](Rigidbody *rb, bool v) {
                 int c = static_cast<int>(rb->GetConstraints());
                 rb->SetConstraints(v ? (c | 16) : (c & ~16));
-            }, "Freeze rotation X axis")
-        .def_property("freeze_rotation_y",
-            [](Rigidbody *rb) { return (static_cast<int>(rb->GetConstraints()) & 32) != 0; },
+            },
+            "Freeze rotation X axis")
+        .def_property(
+            "freeze_rotation_y", [](Rigidbody *rb) { return (static_cast<int>(rb->GetConstraints()) & 32) != 0; },
             [](Rigidbody *rb, bool v) {
                 int c = static_cast<int>(rb->GetConstraints());
                 rb->SetConstraints(v ? (c | 32) : (c & ~32));
-            }, "Freeze rotation Y axis")
-        .def_property("freeze_rotation_z",
-            [](Rigidbody *rb) { return (static_cast<int>(rb->GetConstraints()) & 64) != 0; },
+            },
+            "Freeze rotation Y axis")
+        .def_property(
+            "freeze_rotation_z", [](Rigidbody *rb) { return (static_cast<int>(rb->GetConstraints()) & 64) != 0; },
             [](Rigidbody *rb, bool v) {
                 int c = static_cast<int>(rb->GetConstraints());
                 rb->SetConstraints(v ? (c | 64) : (c & ~64));
-            }, "Freeze rotation Z axis")
+            },
+            "Freeze rotation Z axis")
         .def_property(
             "collision_detection_mode", &Rigidbody::GetCollisionDetectionMode, &Rigidbody::SetCollisionDetectionMode,
             "Collision detection mode. Dynamic Continuous uses sweep CCD, Kinematic Continuous defaults to speculative "

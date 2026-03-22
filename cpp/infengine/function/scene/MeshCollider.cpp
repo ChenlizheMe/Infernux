@@ -4,12 +4,12 @@
  */
 
 // Jolt/Jolt.h MUST be the very first include in this TU
+#include <Jolt/Geometry/ConvexHullBuilder.h>
 #include <Jolt/Jolt.h>
 #include <Jolt/Physics/Collision/Shape/BoxShape.h>
 #include <Jolt/Physics/Collision/Shape/ConvexHullShape.h>
 #include <Jolt/Physics/Collision/Shape/MeshShape.h>
 #include <Jolt/Physics/Collision/Shape/RotatedTranslatedShape.h>
-#include <Jolt/Geometry/ConvexHullBuilder.h>
 
 #include "MeshCollider.h"
 
@@ -43,7 +43,8 @@ static void CookMeshGeometry(std::vector<glm::vec3> &vertices, std::vector<uint3
     constexpr float kWeldCellSize = 1e-4f;
     const float invCell = 1.0f / kWeldCellSize;
 
-    struct IVec3Hash {
+    struct IVec3Hash
+    {
         size_t operator()(const glm::ivec3 &v) const
         {
             size_t h = std::hash<int>()(v.x);
@@ -59,10 +60,9 @@ static void CookMeshGeometry(std::vector<glm::vec3> &vertices, std::vector<uint3
     newVerts.reserve(vertices.size());
 
     for (size_t i = 0; i < vertices.size(); ++i) {
-        glm::ivec3 key(
-            static_cast<int>(std::round(vertices[i].x * invCell)),
-            static_cast<int>(std::round(vertices[i].y * invCell)),
-            static_cast<int>(std::round(vertices[i].z * invCell)));
+        glm::ivec3 key(static_cast<int>(std::round(vertices[i].x * invCell)),
+                       static_cast<int>(std::round(vertices[i].y * invCell)),
+                       static_cast<int>(std::round(vertices[i].z * invCell)));
         auto it = posMap.find(key);
         if (it != posMap.end()) {
             remap[i] = it->second;
@@ -201,10 +201,8 @@ void *MeshCollider::CreateJoltShapeRaw() const
         useConvex = true;
     }
 
-    INFLOG_INFO("MeshCollider: creating shape — verts=", vertices.size(),
-                ", tris=", indices.size() / 3,
-                ", convex=", (useConvex ? "true" : "false"),
-                " (requested=", (m_convex ? "true" : "false"), ")");
+    INFLOG_INFO("MeshCollider: creating shape — verts=", vertices.size(), ", tris=", indices.size() / 3,
+                ", convex=", (useConvex ? "true" : "false"), " (requested=", (m_convex ? "true" : "false"), ")");
 
     JPH::Shape *shape = nullptr;
     if (useConvex) {
@@ -293,8 +291,8 @@ void *MeshCollider::CreateJoltShapeRaw() const
         size_t origVerts = vertices.size();
         size_t origTris = indices.size() / 3;
         CookMeshGeometry(vertices, indices);
-        INFLOG_INFO("MeshCollider: mesh cooking — verts ", origVerts, "→", vertices.size(),
-                    ", tris ", origTris, "→", indices.size() / 3);
+        INFLOG_INFO("MeshCollider: mesh cooking — verts ", origVerts, "→", vertices.size(), ", tris ", origTris, "→",
+                    indices.size() / 3);
         if (indices.size() < 3) {
             shape = new JPH::BoxShape(JPH::Vec3(0.5f, 0.5f, 0.5f));
         } else {

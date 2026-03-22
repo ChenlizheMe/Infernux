@@ -686,9 +686,8 @@ void Rigidbody::ApplyInterpolatedTransform(float alpha)
     if (d.interpolation == static_cast<int>(RigidbodyInterpolation::Interpolate)) {
         float t = std::clamp(alpha, 0.0f, 1.0f);
         presentedPos = glm::mix(d.previousPhysicsPosition, d.currentPhysicsPosition, t);
-        presentedRot = glm::normalize(glm::slerp(
-            glm::normalize(d.previousPhysicsRotation),
-            glm::normalize(d.currentPhysicsRotation), t));
+        presentedRot = glm::normalize(
+            glm::slerp(glm::normalize(d.previousPhysicsRotation), glm::normalize(d.currentPhysicsRotation), t));
     }
 
     const bool rotFrozen = (d.constraints & static_cast<int>(RigidbodyConstraints::FreezeRotation)) ==
@@ -746,8 +745,7 @@ void Rigidbody::SyncExternalMovesToPhysics()
     if (!posDiff && !rotDiff)
         return; // Transform unchanged since last physics write — nothing to do
 
-    INFLOG_WARN("Rigidbody::SyncExternalMovesToPhysics TELEPORT — posDiff=",
-                posDiff, " rotDiff=", rotDiff,
+    INFLOG_WARN("Rigidbody::SyncExternalMovesToPhysics TELEPORT — posDiff=", posDiff, " rotDiff=", rotDiff,
                 " posDelta=", glm::length(currentPos - d.lastSyncedPosition),
                 " rotDelta=", (1.0f - std::abs(glm::dot(currentRot, d.lastSyncedRotation))));
 

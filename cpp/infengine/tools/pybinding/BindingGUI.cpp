@@ -32,24 +32,17 @@ namespace
 // Render 3 Vector3 controls (Position, Rotation, Scale) and return all 9
 // floats in a single flat tuple.  This avoids the per-call pybind11
 // dispatch overhead that a generic batch would incur.
-py::tuple RenderTransformFields(
-    InfGUIContext &ctx,
-    float px, float py, float pz,
-    float rx, float ry, float rz,
-    float sx, float sy, float sz,
-    float speedPos, float speedRot, float speedScl,
-    float labelWidth)
+py::tuple RenderTransformFields(InfGUIContext &ctx, float px, float py, float pz, float rx, float ry, float rz,
+                                float sx, float sy, float sz, float speedPos, float speedRot, float speedScl,
+                                float labelWidth)
 {
     float pos[3] = {px, py, pz};
     float rot[3] = {rx, ry, rz};
     float scl[3] = {sx, sy, sz};
     ctx.Vector3Control("Position", pos, speedPos, labelWidth);
     ctx.Vector3Control("Rotation", rot, speedRot, labelWidth);
-    ctx.Vector3Control("Scale",    scl, speedScl, labelWidth);
-    return py::make_tuple(
-        pos[0], pos[1], pos[2],
-        rot[0], rot[1], rot[2],
-        scl[0], scl[1], scl[2]);
+    ctx.Vector3Control("Scale", scl, speedScl, labelWidth);
+    return py::make_tuple(pos[0], pos[1], pos[2], rot[0], rot[1], rot[2], scl[0], scl[1], scl[2]);
 }
 
 } // anonymous namespace
@@ -514,21 +507,14 @@ void RegisterGUIBindings(py::module_ &m)
         // ── Dedicated Transform renderer (1 call for 3 vector3) ────
         .def(
             "render_transform_fields",
-            [](InfGUIContext &ctx,
-               float px, float py, float pz,
-               float rx, float ry, float rz,
-               float sx, float sy, float sz,
-               float speedPos, float speedRot, float speedScl,
-               float labelWidth) {
-                return RenderTransformFields(ctx, px, py, pz, rx, ry, rz, sx, sy, sz,
-                                             speedPos, speedRot, speedScl, labelWidth);
+            [](InfGUIContext &ctx, float px, float py, float pz, float rx, float ry, float rz, float sx, float sy,
+               float sz, float speedPos, float speedRot, float speedScl, float labelWidth) {
+                return RenderTransformFields(ctx, px, py, pz, rx, ry, rz, sx, sy, sz, speedPos, speedRot, speedScl,
+                                             labelWidth);
             },
-            py::arg("px"), py::arg("py"), py::arg("pz"),
-            py::arg("rx"), py::arg("ry"), py::arg("rz"),
-            py::arg("sx"), py::arg("sy"), py::arg("sz"),
-            py::arg("speed_pos"), py::arg("speed_rot"), py::arg("speed_scl"),
-            py::arg("label_width"),
-            "Render Position/Rotation/Scale vector3 controls in one call.");
+            py::arg("px"), py::arg("py"), py::arg("pz"), py::arg("rx"), py::arg("ry"), py::arg("rz"), py::arg("sx"),
+            py::arg("sy"), py::arg("sz"), py::arg("speed_pos"), py::arg("speed_rot"), py::arg("speed_scl"),
+            py::arg("label_width"), "Render Position/Rotation/Scale vector3 controls in one call.");
 
     py::class_<InfGUIRenderable, PyGUIRenderable, std::shared_ptr<InfGUIRenderable>>(m, "InfGUIRenderable",
                                                                                      py::dynamic_attr())
