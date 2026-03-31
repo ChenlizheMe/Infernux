@@ -119,7 +119,12 @@ endif()
 
 # GLM: Use Vulkan-compatible [0,1] depth range instead of OpenGL [-1,1]
 # GLM: Use left-handed coordinate system (Unity convention: X+=right, Y+=up, Z+=forward)
-target_compile_definitions(_Infernux PRIVATE GLM_FORCE_DEPTH_ZERO_TO_ONE GLM_FORCE_LEFT_HANDED)
+target_compile_definitions(_Infernux PRIVATE 
+   GLSLANG_IS_STATIC
+    GLSLANG_EXPORTING=0
+    SH_EXPORTING=0
+    GLM_FORCE_DEPTH_ZERO_TO_ONE
+    GLM_FORCE_LEFT_HANDED)
 
 # Enable frame profiling instrumentation only in RelWithDebInfo builds.
 # Terminal output (stderr) is OFF by default — enable with -DINFERNUX_FRAME_PROFILE_TERMINAL=1

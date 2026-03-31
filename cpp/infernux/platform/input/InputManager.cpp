@@ -163,10 +163,9 @@ void InputManager::BeginFrame()
     m_touchCount = 0;
     m_droppedFiles.clear();
 
-    // Scene-view drag capture must not survive focus loss. Gameplay cursor
-    // lock state is preserved so it can be restored automatically after the
-    // window regains focus.
-    m_editorMouseCaptured = false;
+    // Re-apply relative mouse mode for the current window/focus state without
+    // disturbing persistent capture flags. Editor capture is released on
+    // explicit end or focus loss, not once per frame.
     ApplyRelativeMouseMode();
 }
 
@@ -263,9 +262,11 @@ void InputManager::ProcessSDLEvent(const SDL_Event &event)
         break;
     }
 
-    // ---- Window focus lost → clear all held keys ----
+    // ---- Window focus lost → release editor drag capture and clear inputs ----
     case SDL_EVENT_WINDOW_FOCUS_LOST:
+        m_editorMouseCaptured = false;
         ResetAll();
+        ApplyRelativeMouseMode();
         break;
 
     default:
