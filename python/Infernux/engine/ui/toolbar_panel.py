@@ -184,7 +184,10 @@ class ToolbarPanel(EditorPanel):
         if self._play_mode_manager.is_playing:
             self._play_mode_manager.exit_play_mode()
         else:
-            self._play_mode_manager.enter_play_mode()
+            if self._play_mode_manager.enter_play_mode():
+                from .closable_panel import ClosablePanel
+
+                ClosablePanel.focus_panel_by_id("game_view")
 
     def _on_pause(self):
         if not self._play_mode_manager:

@@ -21,6 +21,7 @@ from Infernux.ui.ui_render_dispatch import dispatch as _ui_dispatch
 from Infernux.ui.ui_event_system import UIEventProcessor
 from Infernux.ui.ui_canvas_utils import collect_sorted_canvases
 from Infernux.ui.inx_ui_screen_component import clear_rect_cache
+from .game_input_policy import should_process_game_ui_events, should_route_game_input
 from .editor_panel import EditorPanel
 from .panel_registry import editor_panel
 from .theme import Theme, ImGuiCol
@@ -133,7 +134,10 @@ class GameViewPanel(EditorPanel):
             if self._play_mode_manager.is_playing:
                 self._play_mode_manager.exit_play_mode()
             else:
-                self._play_mode_manager.enter_play_mode()
+                if self._play_mode_manager.enter_play_mode():
+                    from .closable_panel import ClosablePanel
+
+                    ClosablePanel.focus_panel_by_id(self.window_id)
         else:
             self.__is_playing = not self.__is_playing
     
@@ -244,6 +248,8 @@ class GameViewPanel(EditorPanel):
             ctx.label(t("game_view.engine_not_init"))
             return
 
+        viewport_hovered = False
+
         # Ensure native Game rendering is enabled once the panel has rendered.
         # Do not disable it on transient dock/tab invisibility because scene
         # switches can temporarily interrupt panel visibility for a frame.
@@ -351,7 +357,8 @@ class GameViewPanel(EditorPanel):
         if _canvases:
             clear_rect_cache(_pc())
 
-        if ctx.begin_child("##GameViewportRegion", 0, 0, False):
+        child_visible = ctx.begin_child("##GameViewportRegion", 0, 0, False)
+        if child_visible:
             avail_width = ctx.get_content_region_avail_width()
             avail_height = ctx.get_content_region_avail_height()
 
@@ -373,6 +380,7 @@ class GameViewPanel(EditorPanel):
                 ctx.image(game_texture_id, float(draw_w), float(draw_h), 0.0, 0.0, 1.0, 1.0)
 
                 vp = capture_viewport_info(ctx)
+                viewport_hovered = vp.is_hovered
                 Input.set_game_viewport_origin(vp.image_min_x, vp.image_min_y)
 
                 self._render_screen_ui(ctx, vp.image_min_x, vp.image_min_y,
@@ -392,8 +400,8 @@ class GameViewPanel(EditorPanel):
                 ctx.label("  " + t("game_view.create_camera_hint_2"))
         ctx.end_child()
 
-        game_hovered = ctx.is_window_hovered()
         is_playing = self._is_playing()
+        panel_focused = ctx.is_window_focused(0)
 
         # Cursor lock is script-driven (Input.set_cursor_locked).
         # Editor provides ESC as a safety unlock.
@@ -404,15 +412,24 @@ class GameViewPanel(EditorPanel):
                 cursor_locked = False
 
         Input.set_game_focused(
-            (game_hovered and is_playing) or cursor_locked
+            should_route_game_input(
+                is_playing=is_playing,
+                panel_focused=panel_focused,
+                viewport_hovered=viewport_hovered,
+                cursor_locked=cursor_locked,
+            )
         )
 
         if not is_playing and cursor_locked:
             Input.set_cursor_locked(False)
 
-        if is_playing and game_hovered:
+        if should_process_game_ui_events(
+            is_playing=is_playing,
+            viewport_hovered=viewport_hovered,
+            cursor_locked=cursor_locked,
+        ):
             self._process_ui_events(target_w, target_h, canvases=_canvases)
-        elif not is_playing:
+        else:
             self._ui_event_processor.reset()
 
     # ------------------------------------------------------------------
