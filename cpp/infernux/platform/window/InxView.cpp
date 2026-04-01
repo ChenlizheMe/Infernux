@@ -46,7 +46,20 @@ void InxView::ProcessEvent()
 
     SDL_Event event{};
     while (SDL_PollEvent(&event)) {
-        ImGui_ImplSDL3_ProcessEvent(&event);
+        bool forwardToImGui = true;
+        if (InputManager::Instance().IsEditorMouseCaptureActive()) {
+            switch (event.type) {
+            case SDL_EVENT_MOUSE_MOTION:
+                forwardToImGui = false;
+                break;
+            default:
+                break;
+            }
+        }
+
+        if (forwardToImGui) {
+            ImGui_ImplSDL3_ProcessEvent(&event);
+        }
 
         // Feed every event into the input manager
         InputManager::Instance().ProcessSDLEvent(event);

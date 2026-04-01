@@ -7,6 +7,7 @@
 #include <array>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include <function/renderer/Frustum.h>
 #include <glm/glm.hpp>
