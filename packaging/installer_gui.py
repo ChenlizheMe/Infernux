@@ -74,7 +74,19 @@ def _remove_registry() -> None:
 
 
 def _create_start_menu_shortcut(install_dir: str) -> None:
-    """Create a Start Menu shortcut for Infernux Hub."""
+    """Create a Start Menu shortcut (Windows) or Applications symlink (macOS)."""
+    if sys.platform == "darwin":
+        # macOS: create a symlink in ~/Applications
+        try:
+            apps_dir = os.path.expanduser("~/Applications")
+            os.makedirs(apps_dir, exist_ok=True)
+            link_path = os.path.join(apps_dir, "Infernux Hub")
+            if os.path.lexists(link_path):
+                os.remove(link_path)
+            os.symlink(install_dir, link_path)
+        except Exception:
+            pass
+        return
     if sys.platform != "win32":
         return
     try:
@@ -114,7 +126,15 @@ def _create_start_menu_shortcut(install_dir: str) -> None:
 
 
 def _remove_start_menu_shortcut() -> None:
-    """Remove Start Menu shortcut for Infernux Hub."""
+    """Remove Start Menu shortcut (Windows) or Applications symlink (macOS)."""
+    if sys.platform == "darwin":
+        try:
+            link_path = os.path.expanduser("~/Applications/Infernux Hub")
+            if os.path.lexists(link_path):
+                os.remove(link_path)
+        except Exception:
+            pass
+        return
     if sys.platform != "win32":
         return
     try:

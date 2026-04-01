@@ -8,7 +8,7 @@
   "configurePresets": [
     {
       "name": "release",
-      "displayName": "Release Preset",
+      "displayName": "Release Preset (Windows / MSVC)",
       "generator": "Visual Studio 17 2022",
       "architecture": "x64",
       "binaryDir": "${sourceDir}/out/build",
@@ -19,8 +19,25 @@
     },
     {
       "name": "debug",
-      "displayName": "Debug Preset (RelWithDebInfo + Profiling)",
+      "displayName": "Debug Preset (Windows, RelWithDebInfo + Profiling)",
       "inherits": "release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo"
+      }
+    },
+    {
+      "name": "release-macos",
+      "displayName": "Release Preset (macOS / Ninja)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/out/build",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+    {
+      "name": "debug-macos",
+      "displayName": "Debug Preset (macOS, RelWithDebInfo + Profiling)",
+      "inherits": "release-macos",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "RelWithDebInfo"
       }
@@ -37,6 +54,14 @@
       "name": "debug",
       "configurePreset": "debug",
       "configuration": "RelWithDebInfo"
+    },
+    {
+      "name": "release-macos",
+      "configurePreset": "release-macos"
+    },
+    {
+      "name": "debug-macos",
+      "configurePreset": "debug-macos"
     },
     {
       "name": "format",

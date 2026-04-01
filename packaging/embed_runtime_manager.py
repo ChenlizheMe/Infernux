@@ -24,6 +24,8 @@ _REQUIRED_RUNTIME_MODULES = runtime_modules()
 
 
 def _runtime_lib_names() -> list[str]:
+    if sys.platform == "darwin":
+        return ["libpython3.12.dylib", "libpython3.dylib"]
     return ["python312.lib", "python3.lib"]
 
 
@@ -52,6 +54,12 @@ def _emit_status(callback: Optional[Callable[[str], None]], message: str) -> Non
 
 def _runtime_installer_info_for_machine() -> tuple[str, str]:
     machine = (platform.machine() or os.environ.get("PROCESSOR_ARCHITECTURE") or "").lower()
+    if sys.platform == "darwin":
+        # macOS universal2 installer from python.org
+        return (
+            "python-3.12.8-macos11.pkg",
+            "https://www.python.org/ftp/python/3.12.8/python-3.12.8-macos11.pkg",
+        )
     if machine in {"amd64", "x86_64"}:
         return (
             "python-3.12.8-amd64.exe",
@@ -206,14 +214,20 @@ def _is_python312(python_exe: str) -> bool:
 
 
 def _site_packages_root(runtime_root: str) -> str:
-    path = os.path.join(runtime_root, "Lib", "site-packages")
+    if sys.platform == "darwin":
+        path = os.path.join(runtime_root, "lib", "python3.12", "site-packages")
+    else:
+        path = os.path.join(runtime_root, "Lib", "site-packages")
     os.makedirs(path, exist_ok=True)
     return path
 
 
 def _has_build_support(root: str) -> bool:
     include_dir = os.path.join(root, "include")
-    libs_dir = os.path.join(root, "libs")
+    if sys.platform == "darwin":
+        libs_dir = os.path.join(root, "lib")
+    else:
+        libs_dir = os.path.join(root, "libs")
     if not os.path.isfile(os.path.join(include_dir, "Python.h")):
         return False
     return any(os.path.isfile(os.path.join(libs_dir, name)) for name in _runtime_lib_names())
@@ -514,11 +528,14 @@ class PythonRuntimeManager:
         overwrite: bool = False,
         on_status: Optional[Callable[[str], None]] = None,
     ) -> str:
-        if sys.platform != "win32":
-            raise PythonRuntimeError("Infernux Hub currently supports managed Python installation on Windows only.")
-
         if overwrite:
             shutil.rmtree(runtime_root, ignore_errors=True)
+
+        if sys.platform == "darwin":
+            return self._install_runtime_to_root_macos(runtime_root, on_status=on_status)
+
+        if sys.platform != "win32":
+            raise PythonRuntimeError("Infernux Hub currently supports managed Python installation on Windows and macOS only.")
 
         installer_path = self._ensure_runtime_installer(on_status=on_status)
         os.makedirs(os.path.dirname(runtime_root), exist_ok=True)
@@ -554,6 +571,51 @@ class PythonRuntimeManager:
                 "Python 3.12 installation completed, but a valid full python.exe was not found afterwards."
             )
         return python_exe
+
+    def _install_runtime_to_root_macos(
+        self,
+        runtime_root: str,
+        *,
+        on_status: Optional[Callable[[str], None]] = None,
+    ) -> str:
+        """Install Python 3.12 on macOS using the python.org .pkg installer."""
+        installer_path = self._ensure_runtime_installer(on_status=on_status)
+        os.makedirs(runtime_root, exist_ok=True)
+        _emit_status(on_status, "Installing managed Python 3.12 runtime (macOS)...")
+
+        # Install the .pkg to a custom location via installer(8)
+        completed = _run_command(
+            ["installer", "-pkg", installer_path, "-target", "CurrentUserHomeDirectory"],
+            timeout=3600,
+            raise_on_error=False,
+        )
+        if completed.returncode != 0:
+            raise PythonRuntimeError(
+                "Failed to install the managed Python 3.12 runtime on macOS.\n"
+                f"{(completed.stderr or completed.stdout or '').strip()}"
+            )
+
+        # The python.org .pkg installs into /Library/Frameworks/Python.framework
+        # or ~/Library/Frameworks/Python.framework for CurrentUserHomeDirectory.
+        # Locate the installed python3.12 binary.
+        framework_candidates = [
+            os.path.expanduser("~/Library/Frameworks/Python.framework/Versions/3.12/bin/python3.12"),
+            "/Library/Frameworks/Python.framework/Versions/3.12/bin/python3.12",
+            "/usr/local/bin/python3.12",
+        ]
+        for candidate in framework_candidates:
+            if os.path.isfile(candidate) and _is_python312(candidate):
+                # Symlink the framework python into our runtime root
+                dest_bin = os.path.join(runtime_root, "bin")
+                os.makedirs(dest_bin, exist_ok=True)
+                link_path = os.path.join(dest_bin, "python")
+                if not os.path.exists(link_path):
+                    os.symlink(candidate, link_path)
+                return candidate
+
+        raise PythonRuntimeError(
+            "Python 3.12 .pkg installation completed, but python3.12 was not found afterwards."
+        )
 
     def _get_pip_script_path(self, *, on_status: Optional[Callable[[str], None]] = None) -> str:
         target_path = os.path.join(self.installed_runtime_dir(), "get-pip.py")

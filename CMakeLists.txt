@@ -106,13 +106,25 @@ if(DEFINED ENV{VULKAN_SDK})
     target_include_directories(_Infernux PRIVATE ${VULKAN_SDK_PATH}/Include)
     
     # Link SPIRV-Cross libraries for shader reflection
-    # Always use release libs (debug variants not shipped with this SDK version)
-    target_link_libraries(_Infernux PRIVATE
-        ${VULKAN_SDK_PATH}/Lib/spirv-cross-core.lib
-        ${VULKAN_SDK_PATH}/Lib/spirv-cross-glsl.lib
-        ${VULKAN_SDK_PATH}/Lib/spirv-cross-cpp.lib
-        ${VULKAN_SDK_PATH}/Lib/spirv-cross-reflect.lib
-    )
+    if(WIN32)
+        target_link_libraries(_Infernux PRIVATE
+            ${VULKAN_SDK_PATH}/Lib/spirv-cross-core.lib
+            ${VULKAN_SDK_PATH}/Lib/spirv-cross-glsl.lib
+            ${VULKAN_SDK_PATH}/Lib/spirv-cross-cpp.lib
+            ${VULKAN_SDK_PATH}/Lib/spirv-cross-reflect.lib
+        )
+    else()
+        # macOS / Linux: libraries live under lib/ with .a extension
+        set(_spirv_cross_lib_dir "${VULKAN_SDK_PATH}/lib")
+        foreach(_sc_lib spirv-cross-core spirv-cross-glsl spirv-cross-cpp spirv-cross-reflect)
+            find_library(_found_${_sc_lib} NAMES ${_sc_lib} PATHS ${_spirv_cross_lib_dir} NO_DEFAULT_PATH)
+            if(_found_${_sc_lib})
+                target_link_libraries(_Infernux PRIVATE ${_found_${_sc_lib}})
+            else()
+                message(WARNING "SPIRV-Cross library ${_sc_lib} not found in ${_spirv_cross_lib_dir}")
+            endif()
+        endforeach()
+    endif()
 else()
     message(WARNING "VULKAN_SDK environment variable not set. SPIRV-Cross reflection will not be available.")
 endif()
@@ -176,18 +188,48 @@ configure_file(
 )
 
 add_custom_command(TARGET _Infernux POST_BUILD
-    # Copy the main .pyd file
+    # Copy the native module (.pyd on Windows, .so on macOS/Linux)
     COMMAND ${CMAKE_COMMAND} -E copy
         "$<TARGET_FILE:_Infernux>"
         "${PYTHON_TARGET_DIR}/$<TARGET_FILE_NAME:_Infernux>"
     
-    # Copy all DLL dependencies automatically
-    COMMAND ${CMAKE_COMMAND}
-        -DINFERNUX_BUILD_CFG=$<CONFIG>
-        -P "${CMAKE_BINARY_DIR}/copy_dependencies.cmake"
-    
-    COMMENT "Copy _Infernux.pyd and all dependent DLLs to python/Infernux/lib"
+    COMMENT "Copy _Infernux native module to python/Infernux/lib"
 )
+
+if(WIN32)
+    # Windows: copy all DLL dependencies automatically
+    add_custom_command(TARGET _Infernux POST_BUILD
+        COMMAND ${CMAKE_COMMAND}
+            -DINFERNUX_BUILD_CFG=$<CONFIG>
+            -P "${CMAKE_BINARY_DIR}/copy_dependencies.cmake"
+        COMMENT "Copy dependent DLLs to python/Infernux/lib"
+    )
+elseif(APPLE)
+    # macOS: copy shared libraries (.dylib) and fix RPATH
+    add_custom_command(TARGET _Infernux POST_BUILD
+        COMMAND ${CMAKE_COMMAND}
+            -DINFERNUX_BUILD_CFG=$<CONFIG>
+            -P "${CMAKE_BINARY_DIR}/copy_dependencies.cmake"
+        COMMENT "Copy dependent dylibs to python/Infernux/lib"
+    )
+    # Set RPATH so the module finds dylibs next to itself
+    set_target_properties(_Infernux PROPERTIES
+        BUILD_RPATH "@loader_path"
+        INSTALL_RPATH "@loader_path"
+    )
+else()
+    # Linux: copy shared libraries (.so) and set RPATH
+    add_custom_command(TARGET _Infernux POST_BUILD
+        COMMAND ${CMAKE_COMMAND}
+            -DINFERNUX_BUILD_CFG=$<CONFIG>
+            -P "${CMAKE_BINARY_DIR}/copy_dependencies.cmake"
+        COMMENT "Copy dependent shared libs to python/Infernux/lib"
+    )
+    set_target_properties(_Infernux PROPERTIES
+        BUILD_RPATH "$ORIGIN"
+        INSTALL_RPATH "$ORIGIN"
+    )
+endif()
 
 # ------------------------------------------------------------------------------
 # Infernux Hub — PyInstaller packaging

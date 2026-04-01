@@ -152,6 +152,8 @@ class GameEngineLauncher(QMainWindow):
 
 def _handle_uninstall() -> int:
     """Remove registry entries, Start Menu shortcut, and optionally the install directory."""
+    if sys.platform == "darwin":
+        return _handle_uninstall_macos()
     if sys.platform != "win32":
         return 1
     import winreg
@@ -193,6 +195,36 @@ def _handle_uninstall() -> int:
     if answer == QMessageBox.Yes and install_dir and os.path.isdir(install_dir):
         import shutil as _shutil
         _shutil.rmtree(install_dir, ignore_errors=True)
+
+    QMessageBox.information(None, "Uninstall Complete", "Infernux Hub has been uninstalled.")
+    return 0
+
+
+def _handle_uninstall_macos() -> int:
+    """Remove Infernux Hub from macOS."""
+    import shutil as _shutil
+
+    app = QApplication.instance() or QApplication(sys.argv)
+
+    # Typical macOS install / config locations
+    config_dir = os.path.expanduser("~/.config/Infernux")
+    app_link = os.path.expanduser("~/Applications/Infernux Hub")
+    runtime_dir = os.path.expanduser("~/.infernux")
+
+    dirs_to_remove = [d for d in (config_dir, app_link) if os.path.exists(d)]
+    if runtime_dir and os.path.isdir(runtime_dir):
+        dirs_to_remove.append(runtime_dir)
+
+    if dirs_to_remove:
+        answer = QMessageBox.question(
+            None,
+            "Uninstall Infernux Hub",
+            "Do you want to remove Infernux Hub configuration and cached data?\n\n"
+            + "\n".join(dirs_to_remove),
+        )
+        if answer == QMessageBox.Yes:
+            for d in dirs_to_remove:
+                _shutil.rmtree(d, ignore_errors=True)
 
     QMessageBox.information(None, "Uninstall Complete", "Infernux Hub has been uninstalled.")
     return 0

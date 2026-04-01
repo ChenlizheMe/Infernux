@@ -22,44 +22,71 @@ else()
     set(_CFG "${INFERNUX_BUILD_CFG}")
 endif()
 
-# List of known DLL directories to search
-set(DLL_SEARCH_DIRS
-    "${BUILD_DIR}/external/${_CFG}"
-    "${BUILD_DIR}/external/assimp/bin/${_CFG}"
-    "${BUILD_DIR}/external/glslang/glslang/${_CFG}"
-    "${BUILD_DIR}/external/glslang/SPIRV/${_CFG}"
-    "${BUILD_DIR}/external/SDL/${_CFG}"
-    "${BUILD_DIR}/external/JoltPhysics/${_CFG}"
-    "${BUILD_DIR}/${_CFG}"
-)
+# Determine shared library extension based on platform
+if(WIN32)
+    set(_SHARED_LIB_EXT "dll")
+elseif(APPLE)
+    set(_SHARED_LIB_EXT "dylib")
+else()
+    set(_SHARED_LIB_EXT "so")
+endif()
 
-# Search for all DLL files in the build directories
-foreach(search_dir ${DLL_SEARCH_DIRS})
+# List of known library directories to search
+# On Windows these use per-config subdirectories; on single-config
+# generators (Ninja) the libraries sit directly in the directory.
+if(WIN32)
+    set(LIB_SEARCH_DIRS
+        "${BUILD_DIR}/external/${_CFG}"
+        "${BUILD_DIR}/external/assimp/bin/${_CFG}"
+        "${BUILD_DIR}/external/glslang/glslang/${_CFG}"
+        "${BUILD_DIR}/external/glslang/SPIRV/${_CFG}"
+        "${BUILD_DIR}/external/SDL/${_CFG}"
+        "${BUILD_DIR}/external/JoltPhysics/${_CFG}"
+        "${BUILD_DIR}/${_CFG}"
+    )
+else()
+    set(LIB_SEARCH_DIRS
+        "${BUILD_DIR}/external"
+        "${BUILD_DIR}/external/assimp/bin"
+        "${BUILD_DIR}/external/glslang/glslang"
+        "${BUILD_DIR}/external/glslang/SPIRV"
+        "${BUILD_DIR}/external/SDL"
+        "${BUILD_DIR}/external/JoltPhysics"
+        "${BUILD_DIR}"
+    )
+endif()
+
+# Search for shared library files in the build directories
+foreach(search_dir ${LIB_SEARCH_DIRS})
     if(EXISTS "${search_dir}")
-        file(GLOB dll_files "${search_dir}/*.dll")
-        foreach(dll_file ${dll_files})
-            get_filename_component(dll_name ${dll_file} NAME)
-            copy_if_exists("${dll_file}" "${TARGET_DIR}")
+        file(GLOB lib_files "${search_dir}/*.${_SHARED_LIB_EXT}")
+        foreach(lib_file ${lib_files})
+            copy_if_exists("${lib_file}" "${TARGET_DIR}")
         endforeach()
     endif()
 endforeach()
 
-# Also search for any other DLL files that might be in subdirectories
-file(GLOB_RECURSE all_dlls "${BUILD_DIR}/*.dll")
-foreach(dll_file ${all_dlls})
-    # Skip if it's already in the target directory
-    get_filename_component(dll_dir ${dll_file} DIRECTORY)
-    get_filename_component(dll_name ${dll_file} NAME)
-    
-    # Only copy DLLs from the detected configuration directory
-    if(dll_dir MATCHES ".*/${_CFG}$" OR dll_dir MATCHES ".*/${_CFG}/.*")
-        copy_if_exists("${dll_file}" "${TARGET_DIR}")
+# Also search for any other shared libs that might be in subdirectories
+file(GLOB_RECURSE all_libs "${BUILD_DIR}/*.${_SHARED_LIB_EXT}")
+foreach(lib_file ${all_libs})
+    get_filename_component(lib_dir ${lib_file} DIRECTORY)
+    get_filename_component(lib_name ${lib_file} NAME)
+
+    if(WIN32)
+        # Only copy libs from the detected configuration directory
+        if(lib_dir MATCHES ".*/${_CFG}$" OR lib_dir MATCHES ".*/${_CFG}/.*")
+            copy_if_exists("${lib_file}" "${TARGET_DIR}")
+        endif()
+    else()
+        copy_if_exists("${lib_file}" "${TARGET_DIR}")
     endif()
 endforeach()
 
 # Copy the MSVC runtime DLLs discovered by CMake so wheel installs work on clean machines.
-foreach(runtime_dll ${MSVC_RUNTIME_DLLS})
-    copy_if_exists("${runtime_dll}" "${TARGET_DIR}")
-endforeach()
+if(WIN32)
+    foreach(runtime_dll ${MSVC_RUNTIME_DLLS})
+        copy_if_exists("${runtime_dll}" "${TARGET_DIR}")
+    endforeach()
+endif()
 
-message(STATUS "Finished copying DLL dependencies to ${TARGET_DIR}")
+message(STATUS "Finished copying shared library dependencies to ${TARGET_DIR}")

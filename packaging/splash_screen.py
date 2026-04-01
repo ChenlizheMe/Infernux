@@ -23,6 +23,17 @@ _WIN_CRASH_CODES = {
     -1073741685: "Illegal instruction (0xC000001D)",
 }
 
+# Unix signal-based crash codes (negative signal number)
+_UNIX_CRASH_CODES = {
+    -6: "SIGABRT — Aborted",
+    -11: "SIGSEGV — Segmentation fault",
+    -4: "SIGILL — Illegal instruction",
+    -8: "SIGFPE — Floating point exception",
+    -5: "SIGTRAP — Trace/breakpoint trap",
+    -9: "SIGKILL — Killed",
+    -10: "SIGBUS — Bus error",
+}
+
 
 @contextlib.contextmanager
 def _suppress_windows_error_dialogs():
@@ -56,6 +67,8 @@ def _format_exit_code(returncode: int) -> str:
     """Return a user-facing explanation for process exit codes."""
     if returncode in _WIN_CRASH_CODES:
         return f"{_WIN_CRASH_CODES[returncode]}\nRaw exit code: {returncode}"
+    if returncode in _UNIX_CRASH_CODES:
+        return f"{_UNIX_CRASH_CODES[returncode]}\nRaw exit code: {returncode}"
     return f"Raw exit code: {returncode}"
 
 

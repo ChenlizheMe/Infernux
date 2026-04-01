@@ -15,6 +15,8 @@
 #include <core/config/InxPlatform.h>
 #ifdef INX_PLATFORM_WINDOWS
 #define VK_USE_PLATFORM_WIN32_KHR
+#elif defined(INX_PLATFORM_MACOS)
+#define VK_USE_PLATFORM_METAL_EXT
 #endif
 
 #include <vulkan/vulkan.h>

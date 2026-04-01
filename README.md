@@ -76,6 +76,9 @@ This division keeps performance-sensitive systems native while leaving day-to-da
 
 ### Prerequisites
 
+<details>
+<summary><b>Windows</b></summary>
+
 | Dependency | Version |
 |:-----------|:--------|
 | Windows | 10 / 11 (64-bit) |
@@ -84,6 +87,35 @@ This division keeps performance-sensitive systems native while leaving day-to-da
 | CMake | 3.22+ |
 | Visual Studio | 2022 (MSVC v143) |
 | pybind11 | 2.11+ |
+
+</details>
+
+<details>
+<summary><b>macOS</b></summary>
+
+| Dependency | Version |
+|:-----------|:--------|
+| macOS | 12+ (Apple Silicon or Intel) |
+| Python | 3.12+ |
+| Vulkan SDK | 1.3+ (LunarG SDK with MoltenVK) |
+| CMake | 3.22+ |
+| Ninja | 1.10+ |
+| Xcode Command Line Tools | Latest |
+| pybind11 | 2.11+ |
+
+Install the Vulkan SDK from <https://vulkan.lunarg.com/sdk/home> (macOS tab). After installation, source the setup script:
+
+```bash
+source ~/VulkanSDK/<version>/setup-env.sh
+```
+
+Install Ninja and CMake via Homebrew if not already present:
+
+```bash
+brew install cmake ninja
+```
+
+</details>
 
 Use any Python 3.12 environment you prefer. The examples below use Conda because that is the most common workflow in this repository.
 
@@ -102,6 +134,9 @@ git submodule update --init --recursive
 
 ### Build the engine
 
+<details>
+<summary><b>Windows</b></summary>
+
 ```bash
 conda create -n infengine python=3.12 -y
 conda activate infengine
@@ -109,6 +144,21 @@ pip install -r requirements.txt
 cmake --preset release
 cmake --build --preset release
 ```
+
+</details>
+
+<details>
+<summary><b>macOS</b></summary>
+
+```bash
+conda create -n infengine python=3.12 -y
+conda activate infengine
+pip install -r requirements.txt
+cmake --preset release-macos
+cmake --build --preset release-macos
+```
+
+</details>
 
 This builds the native module, copies the required runtime dependencies, and installs the Python package into the active environment so `import Infernux` works directly from the workspace.
 

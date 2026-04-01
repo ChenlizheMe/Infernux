@@ -24,6 +24,11 @@ def _register_native_search_dir(path: str) -> None:
         path_entries = os.environ.get("PATH", "").split(";") if os.environ.get("PATH") else []
         if norm not in path_entries:
             os.environ["PATH"] = norm + (";" + os.environ["PATH"] if os.environ.get("PATH") else "")
+    elif sys.platform == "darwin":
+        dyld_path = os.environ.get("DYLD_LIBRARY_PATH", "")
+        parts = dyld_path.split(":") if dyld_path else []
+        if norm not in parts:
+            os.environ["DYLD_LIBRARY_PATH"] = norm + ((":" + dyld_path) if dyld_path else "")
     else:
         ld_path = os.environ.get("LD_LIBRARY_PATH", "")
         parts = ld_path.split(":") if ld_path else []
@@ -85,6 +90,12 @@ def _raise_native_import_error(exc):
     if hints:
         lines.append("Likely causes:")
         lines.extend(f"- {hint}" for hint in hints)
+    elif sys.platform == "darwin":
+        if not glob.glob(os.path.join(lib_dir, "_Infernux*.so")):
+            lines.append(f"Missing _Infernux*.so under {lib_dir}. Build the native module first.")
+        lines.append(
+            "Likely causes: missing Vulkan SDK (MoltenVK), or the native module was not built for this architecture."
+        )
     elif sys.platform == "win32":
         lines.append(
             "Likely causes: a missing Vulkan runtime or missing Microsoft Visual C++ runtime DLLs."

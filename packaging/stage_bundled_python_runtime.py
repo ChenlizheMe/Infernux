@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import platform
 import shutil
 import subprocess
 import sys
@@ -20,11 +21,16 @@ from runtime_requirements import RUNTIME_PROFILE_VERSION, runtime_modules, runti
 _RUNTIME_PACKAGES = runtime_packages()
 _RUNTIME_MODULES = runtime_modules()
 _RUNTIME_PROFILE_FILENAME = ".infernux-runtime-profile.json"
-_BOOTSTRAP_ROOT = os.path.join(os.environ.get("SystemDrive", "C:"), "_InxRuntime")
+if sys.platform == "win32":
+    _BOOTSTRAP_ROOT = os.path.join(os.environ.get("SystemDrive", "C:"), "_InxRuntime")
+else:
+    _BOOTSTRAP_ROOT = os.path.join(os.path.expanduser("~"), ".infernux", "_InxRuntime")
 
 
 def _runtime_lib_names() -> list[str]:
     version = f"{sys.version_info.major}{sys.version_info.minor}"
+    if sys.platform == "darwin":
+        return [f"libpython{version}.dylib", "libpython3.dylib"]
     return [f"python{version}.lib", "python3.lib"]
 
 
@@ -44,7 +50,12 @@ def _run(args: list[str], *, timeout: int = 20) -> subprocess.CompletedProcess:
 
 
 def _runtime_installer_info_for_machine() -> tuple[str, str]:
-    machine = (os.environ.get("PROCESSOR_ARCHITECTURE") or "").lower()
+    machine = (platform.machine() if sys.platform != "win32" else os.environ.get("PROCESSOR_ARCHITECTURE", "")).lower()
+    if sys.platform == "darwin":
+        return (
+            "python-3.12.8-macos11.pkg",
+            "https://www.python.org/ftp/python/3.12.8/python-3.12.8-macos11.pkg",
+        )
     if machine in {"amd64", "x86_64"}:
         return (
             "python-3.12.8-amd64.exe",
@@ -82,18 +93,31 @@ def _find_python_in_root(root: str) -> str | None:
     if not root or not os.path.isdir(root):
         return None
 
-    direct_candidates = [
-        os.path.join(root, "python.exe"),
-        os.path.join(root, "Python.exe"),
-        os.path.join(root, "Python312", "python.exe"),
-    ]
+    if sys.platform == "win32":
+        direct_candidates = [
+            os.path.join(root, "python.exe"),
+            os.path.join(root, "Python.exe"),
+            os.path.join(root, "Python312", "python.exe"),
+        ]
+    else:
+        direct_candidates = [
+            os.path.join(root, "bin", "python3.12"),
+            os.path.join(root, "bin", "python3"),
+            os.path.join(root, "bin", "python"),
+            os.path.join(root, "python3.12"),
+            os.path.join(root, "python3"),
+        ]
     for candidate in direct_candidates:
         if _is_python312(candidate):
             return candidate
 
+    exe_name = "python.exe" if sys.platform == "win32" else "python3"
     for current_root, _dirs, files in os.walk(root):
         for filename in files:
-            if filename.lower() != "python.exe":
+            if sys.platform == "win32":
+                if filename.lower() != "python.exe":
+                    continue
+            elif filename not in ("python3.12", "python3", "python"):
                 continue
             candidate = os.path.join(current_root, filename)
             if _is_python312(candidate):
@@ -117,7 +141,10 @@ def _is_embedded_root(root: str) -> bool:
 
 def _has_dev_support(root: str) -> bool:
     include_dir = os.path.join(root, "include")
-    libs_dir = os.path.join(root, "libs")
+    if sys.platform == "darwin":
+        libs_dir = os.path.join(root, "lib")
+    else:
+        libs_dir = os.path.join(root, "libs")
     if not os.path.isfile(os.path.join(include_dir, "Python.h")):
         return False
     return any(os.path.isfile(os.path.join(libs_dir, name)) for name in _runtime_lib_names())
@@ -265,9 +292,6 @@ def _installer_cache_path(cache_root: str) -> str:
 
 
 def _install_full_runtime(dest_root: str, *, installer_cache_root: str | None = None) -> None:
-    if sys.platform != "win32":
-        raise SystemExit("Bundled full Python staging is only supported on Windows.")
-
     parent = os.path.dirname(dest_root)
     os.makedirs(parent, exist_ok=True)
     cache_root = os.path.abspath(installer_cache_root) if installer_cache_root else parent
@@ -279,6 +303,34 @@ def _install_full_runtime(dest_root: str, *, installer_cache_root: str | None = 
         _download_file(installer_url, installer_path)
 
     shutil.rmtree(dest_root, ignore_errors=True)
+
+    if sys.platform == "darwin":
+        # macOS: use the python.org .pkg installer
+        completed = _run([
+            "installer", "-pkg", installer_path, "-target", "CurrentUserHomeDirectory",
+        ], timeout=3600)
+        if completed.returncode != 0:
+            raise SystemExit(
+                "Failed to install official Python 3.12 on macOS.\n"
+                f"{(completed.stderr or completed.stdout or '').strip()}"
+            )
+        # Link the framework python into dest_root
+        framework_candidates = [
+            os.path.expanduser("~/Library/Frameworks/Python.framework/Versions/3.12"),
+            "/Library/Frameworks/Python.framework/Versions/3.12",
+        ]
+        for fw_root in framework_candidates:
+            fw_python = os.path.join(fw_root, "bin", "python3.12")
+            if os.path.isfile(fw_python) and _is_python312(fw_python):
+                shutil.copytree(fw_root, dest_root, symlinks=True)
+                return
+        raise SystemExit(
+            "Python 3.12 .pkg installation completed, but the framework was not found afterwards."
+        )
+
+    if sys.platform != "win32":
+        raise SystemExit("Bundled full Python staging is only supported on Windows and macOS.")
+
     completed = _run([
         installer_path,
         "/quiet",
@@ -384,20 +436,35 @@ def _candidate_python_paths() -> list[str]:
         if found:
             candidates.append(found)
 
-    local_app_data = os.environ.get("LOCALAPPDATA")
-    program_files = os.environ.get("ProgramFiles")
+    if sys.platform == "win32":
+        local_app_data = os.environ.get("LOCALAPPDATA")
+        program_files = os.environ.get("ProgramFiles")
 
-    if local_app_data:
-        candidates.append(os.path.join(local_app_data, "InfernuxHub", "runtime", "python312", "python.exe"))
-        candidates.append(os.path.join(local_app_data, "Programs", "Python", "Python312", "python.exe"))
-    if program_files:
-        candidates.append(os.path.join(program_files, "Python312", "python.exe"))
+        if local_app_data:
+            candidates.append(os.path.join(local_app_data, "InfernuxHub", "runtime", "python312", "python.exe"))
+            candidates.append(os.path.join(local_app_data, "Programs", "Python", "Python312", "python.exe"))
+        if program_files:
+            candidates.append(os.path.join(program_files, "Python312", "python.exe"))
 
-    py_launcher = _run(["py", "-3.12", "-c", "import sys; print(sys.executable)"])
-    if py_launcher.returncode == 0:
-        value = (py_launcher.stdout or "").strip().splitlines()
-        if value:
-            candidates.append(value[-1].strip())
+        py_launcher = _run(["py", "-3.12", "-c", "import sys; print(sys.executable)"])
+        if py_launcher.returncode == 0:
+            value = (py_launcher.stdout or "").strip().splitlines()
+            if value:
+                candidates.append(value[-1].strip())
+    elif sys.platform == "darwin":
+        # macOS: Homebrew, python.org framework, and common paths
+        candidates.extend([
+            "/usr/local/bin/python3.12",
+            "/opt/homebrew/bin/python3.12",
+            os.path.expanduser("~/Library/Frameworks/Python.framework/Versions/3.12/bin/python3.12"),
+            "/Library/Frameworks/Python.framework/Versions/3.12/bin/python3.12",
+        ])
+    else:
+        # Linux
+        candidates.extend([
+            "/usr/bin/python3.12",
+            "/usr/local/bin/python3.12",
+        ])
 
     candidates.extend(_registry_candidates())
 

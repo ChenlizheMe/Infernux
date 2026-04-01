@@ -28,8 +28,13 @@ class InxExtLoad
     void LoadDLL(const std::string &dllName, const std::string &dllDir)
     {
 #if defined(__unix__) || defined(__unix) || defined(__APPLE__) || defined(__MACH__)
+#if defined(__APPLE__)
+        std::string fullPath = JoinPath({dllDir, "lib" + dllName + ".dylib"});
+        INXLOG_DEBUG("Loading shared lib on macOS: ", fullPath.c_str());
+#else
         std::string fullPath = JoinPath({dllDir, "lib" + dllName + ".so"});
-        INXLOG_DEBUG("Loading DLL in linux: ", fullPath.c_str());
+        INXLOG_DEBUG("Loading shared lib on Linux: ", fullPath.c_str());
+#endif
         void *hLib = dlopen(fullPath.c_str(), RTLD_NOW | RTLD_GLOBAL);
 #else
         std::string fullPath = JoinPath({dllDir, dllName + ".dll"});
