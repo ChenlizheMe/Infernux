@@ -48,7 +48,7 @@ std::shared_ptr<void> MaterialLoader::Load(const std::string &filePath, const st
     // Dependency graph edges (textures, shaders)
     RegisterDependencies(guid, *material, adb);
 
-    INXLOG_INFO("MaterialLoader: loaded '", material->GetName(), "' (GUID: ", guid, ")");
+    // INXLOG_INFO("MaterialLoader: loaded '", material->GetName(), "' (GUID: ", guid, ")");
     return material;
 }
 

@@ -400,10 +400,10 @@ void SceneLightCollector::ComputeShadowVP(Scene *scene, const glm::vec3 &cameraP
         static bool loggedShadowLight = false;
         if (!loggedShadowLight) {
             glm::vec3 fwd = obj->GetTransform()->GetWorldForward();
-            INXLOG_INFO("CSM: '", obj->GetName(), "' forward=(", fwd.x, ",", fwd.y, ",", fwd.z,
-                        ") cascades=", m_shadowCascadeCount, " splits=[", m_shadowCascadeSplits[0], ", ",
-                        m_shadowCascadeSplits[1], ", ", m_shadowCascadeSplits[2], ", ", m_shadowCascadeSplits[3], "]",
-                        " nearClip=", nearClip, " shadowDist=", shadowDist);
+            // INXLOG_INFO("CSM: '", obj->GetName(), "' forward=(", fwd.x, ",", fwd.y, ",", fwd.z,
+            //             ") cascades=", m_shadowCascadeCount, " splits=[", m_shadowCascadeSplits[0], ", ",
+            //             m_shadowCascadeSplits[1], ", ", m_shadowCascadeSplits[2], ", ", m_shadowCascadeSplits[3], "]",
+            //             " nearClip=", nearClip, " shadowDist=", shadowDist);
             loggedShadowLight = true;
         }
         return; // Only first shadow-casting directional light

@@ -1,6 +1,8 @@
 #include "gui/InxGUIContext.h"
 #include "gui/InxGUIRenderable.h"
 #include "gui/InxResourcePreviewer.h"
+#include <function/editor/ConsolePanel.h>
+#include <function/editor/EditorPanel.h>
 #include <pybind11/chrono.h>
 #include <pybind11/complex.h>
 #include <pybind11/functional.h>
@@ -542,6 +544,31 @@ void RegisterGUIBindings(py::module_ &m)
              "Get the current previewer type name")
         .def("set_preview_settings", &ResourcePreviewManager::SetPreviewSettings, py::arg("display_mode"),
              py::arg("max_size"), py::arg("srgb"), "Set preview settings (display mode, max size, sRGB)");
+
+    // EditorPanel — C++ base class for native panels
+    py::class_<EditorPanel, InxGUIRenderable, std::shared_ptr<EditorPanel>>(m, "EditorPanel", py::dynamic_attr())
+        .def("is_open", &EditorPanel::IsOpen, "Check if the panel is open")
+        .def("set_open", &EditorPanel::SetOpen, py::arg("open"), "Set whether the panel is open")
+        .def("get_window_id", &EditorPanel::GetWindowId, "Get the stable window ID");
+
+    // ConsolePanel — C++ native console that replaces the Python ConsolePanel
+    py::class_<ConsolePanel, EditorPanel, std::shared_ptr<ConsolePanel>>(m, "ConsolePanel")
+        .def(py::init<>())
+        .def("log_from_python", &ConsolePanel::LogFromPython, py::arg("level"), py::arg("message"),
+             py::arg("stack_trace") = "", py::arg("source_file") = "", py::arg("source_line") = 0,
+             "Log a message originating from Python Debug.log()")
+        .def("clear", &ConsolePanel::Clear, "Clear all log entries")
+        .def("get_info_count", &ConsolePanel::GetInfoCount, "Get count of info messages")
+        .def("get_warning_count", &ConsolePanel::GetWarningCount, "Get count of warning messages")
+        .def("get_error_count", &ConsolePanel::GetErrorCount, "Get count of error messages")
+        .def("select_latest_entry", &ConsolePanel::SelectLatestEntry, "Select last visible entry and focus window")
+        .def_readwrite("show_info", &ConsolePanel::showInfo)
+        .def_readwrite("show_warnings", &ConsolePanel::showWarnings)
+        .def_readwrite("show_errors", &ConsolePanel::showErrors)
+        .def_readwrite("collapse", &ConsolePanel::collapse)
+        .def_readwrite("clear_on_play", &ConsolePanel::clearOnPlay)
+        .def_readwrite("error_pause", &ConsolePanel::errorPause)
+        .def_readwrite("auto_scroll", &ConsolePanel::autoScroll);
 }
 
 } // namespace infernux

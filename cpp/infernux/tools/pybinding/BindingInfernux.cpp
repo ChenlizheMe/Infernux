@@ -776,7 +776,6 @@ PYBIND11_MODULE(_Infernux, m)
                 static int64_t s_lastIconUploadCount = -1;
                 if (s_lastIconUploadCount != iconCount) {
                     uint32_t firstKind = entries.empty() ? 0u : entries.front().iconKind;
-                    INXLOG_INFO("GizmoIcons: uploaded ", iconCount, " icon entry(ies); firstKind=", firstKind);
                     s_lastIconUploadCount = iconCount;
                 }
 
@@ -842,6 +841,10 @@ PYBIND11_MODULE(_Infernux, m)
     m.def(
         "inflog_warn", [](const std::string &msg) { INXLOG_WARN(msg); }, py::arg("msg"),
         "Write a WARN-level message to the engine log.");
+
+    m.def(
+        "inflog_internal", [](const std::string &msg) { INXLOG_INFO_INTERNAL(msg); }, py::arg("msg"),
+        "Write an internal INFO-level message to the engine log without surfacing it in the editor console.");
 
     // Register all binding modules
     RegisterGUIBindings(m);

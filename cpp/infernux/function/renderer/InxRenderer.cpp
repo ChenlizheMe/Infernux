@@ -1511,7 +1511,7 @@ void InxRenderer::ResizeGameRenderTarget(uint32_t width, uint32_t height)
 
     // Lazy-initialize game render target on first resize request
     if (!m_gameRenderTarget) {
-        INXLOG_INFO("Game render target: lazy-initializing (", width, "x", height, ")");
+        // INXLOG_INFO("Game render target: lazy-initializing (", width, "x", height, ")");
         m_gameRenderTarget = std::make_unique<SceneRenderTarget>(m_vkCore.get());
         // Match the current MSAA setting from the scene render target.
         // Without this, the game render target defaults to 4x MSAA even
@@ -1597,8 +1597,6 @@ void InxRenderer::SetMsaaSamples(int samples)
         return; // No change
     }
 
-    INXLOG_INFO("SetMsaaSamples: changing to ", samples, "x");
-
     // Must drain GPU before destroying Vulkan resources
     if (m_vkCore) {
         m_vkCore->GetDeviceContext().WaitIdle();
@@ -1656,8 +1654,6 @@ void InxRenderer::SetMsaaSamples(int samples)
     if (m_outlineRenderer) {
         m_outlineRenderer->Cleanup();
     }
-
-    INXLOG_INFO("SetMsaaSamples: complete (", samples, "x)");
 }
 
 int InxRenderer::GetMsaaSamples() const

@@ -540,8 +540,8 @@ bool InxScreenUIRenderer::Initialize(VkDevice device, VmaAllocator allocator, Vk
     m_overlayDrawList = IM_NEW(ImDrawList)(sharedData);
 
     m_initialized = true;
-    INXLOG_INFO("InxScreenUIRenderer initialized (format=", static_cast<int>(colorFormat),
-                ", MSAA=", static_cast<int>(msaaSamples), ")");
+    // INXLOG_INFO("InxScreenUIRenderer initialized (format=", static_cast<int>(colorFormat),
+    //             ", MSAA=", static_cast<int>(msaaSamples), ")");
     return true;
 }
 

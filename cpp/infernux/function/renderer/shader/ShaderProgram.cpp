@@ -508,14 +508,12 @@ uint32_t ShaderProgram::GetTextureBindingCount() const
 void ShaderProgramCache::Initialize(VkDevice device)
 {
     m_device = device;
-    INXLOG_INFO("ShaderProgramCache initialized");
 }
 
 void ShaderProgramCache::Shutdown()
 {
     Clear();
     m_device = VK_NULL_HANDLE;
-    INXLOG_INFO("ShaderProgramCache shutdown");
 }
 
 ShaderProgram *ShaderProgramCache::GetOrCreateProgram(const std::string &shaderId, const std::vector<char> &vertSpirv,

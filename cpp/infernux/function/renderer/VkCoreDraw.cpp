@@ -1150,7 +1150,7 @@ bool InxVkCoreModular::EnsureShadowPipeline(VkRenderPass /*compatibleRenderPass*
     }
 
     m_shadowPipelineReady = true;
-    INXLOG_INFO("Shadow pipeline infrastructure created successfully");
+    // INXLOG_INFO("Shadow pipeline infrastructure created successfully");
     return true;
 }
 

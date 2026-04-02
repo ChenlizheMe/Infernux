@@ -41,7 +41,6 @@ void MaterialPipelineManager::Initialize(VmaAllocator allocator, VkDevice device
         m_vkPipelineCache = VK_NULL_HANDLE;
     }
 
-    INXLOG_INFO("MaterialPipelineManager initialized with shader reflection support");
 }
 
 void MaterialPipelineManager::Shutdown(bool skipWaitIdle)
@@ -121,8 +120,6 @@ void MaterialPipelineManager::Shutdown(bool skipWaitIdle)
     m_defaultRenderData = nullptr;
     m_device = VK_NULL_HANDLE;
     m_physicalDevice = VK_NULL_HANDLE;
-
-    INXLOG_INFO("MaterialPipelineManager shutdown");
 }
 
 VkShaderModule MaterialPipelineManager::CreateShaderModule(const std::vector<char> &code)

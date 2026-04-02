@@ -257,8 +257,8 @@ bool VkSwapchainManager::Recreate(const VkDeviceContext &context, uint32_t width
         return false;
     }
 
-    INXLOG_INFO("Swapchain recreated: {", m_extent.width, "}, {", m_extent.height, "}, ", m_images.size(),
-                " images, format ", static_cast<int>(m_imageFormat));
+    // INXLOG_INFO("Swapchain recreated: {", m_extent.width, "}, {", m_extent.height, "}, ", m_images.size(),
+    //             " images, format ", static_cast<int>(m_imageFormat));
 
     return true;
 }

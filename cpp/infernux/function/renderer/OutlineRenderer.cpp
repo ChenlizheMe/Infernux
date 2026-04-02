@@ -186,7 +186,6 @@ bool OutlineRenderer::Initialize(InxVkCoreModular *core, SceneRenderTarget *scen
     CreateOutlineMaterialResources();
 
     m_resourcesReady = true;
-    INXLOG_INFO("OutlineRenderer: post-process outline resources initialized");
     return true;
 }
 
@@ -782,7 +781,6 @@ void OutlineRenderer::CreateOutlineMaterialResources()
         }
     }
 
-    INXLOG_INFO("OutlineRenderer: per-material outline resources created");
 }
 
 VkPipeline OutlineRenderer::GetOrCreateMtlOutlinePipeline(InxMaterial *material)

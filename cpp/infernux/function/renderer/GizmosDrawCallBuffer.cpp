@@ -278,9 +278,9 @@ DrawCallResult GizmosDrawCallBuffer::GetIconDrawCalls(std::shared_ptr<InxMateria
     static size_t s_lastIconEntryCount = static_cast<size_t>(-1);
     static size_t s_lastBuiltIconDrawCallCount = static_cast<size_t>(-1);
     if (s_lastIconEntryCount != m_iconEntries.size() || s_lastBuiltIconDrawCallCount != result.drawCalls.size()) {
-        INXLOG_INFO("GizmoIcons: built ", result.drawCalls.size(), " draw call(s) from ", m_iconEntries.size(),
-                    " icon entr", (m_iconEntries.size() == 1 ? "y" : "ies"), " cameraPos=", cameraPos.x, ",",
-                    cameraPos.y, ",", cameraPos.z);
+        // INXLOG_INFO("GizmoIcons: built ", result.drawCalls.size(), " draw call(s) from ", m_iconEntries.size(),
+        //             " icon entr", (m_iconEntries.size() == 1 ? "y" : "ies"), " cameraPos=", cameraPos.x, ",",
+        //             cameraPos.y, ",", cameraPos.z);
         for (size_t i = 0; i < m_iconEntries.size(); ++i) {
             const auto &icon = m_iconEntries[i];
             const char *kindName = "default";
@@ -289,10 +289,10 @@ DrawCallResult GizmosDrawCallBuffer::GetIconDrawCalls(std::shared_ptr<InxMateria
             } else if (icon.iconKind == ICON_KIND_LIGHT) {
                 kindName = "light";
             }
-            INXLOG_INFO("GizmoIcons: entry[", i, "] kind=", kindName, " objectId=", icon.objectId,
-                        " pos=", icon.position.x, ",", icon.position.y, ",", icon.position.z,
-                        " distance=", (i < iconDistances.size() ? iconDistances[i] : -1.0f),
-                        " material=", (i < iconMaterialNames.size() ? iconMaterialNames[i] : std::string("<missing>")));
+            // INXLOG_INFO("GizmoIcons: entry[", i, "] kind=", kindName, " objectId=", icon.objectId,
+            //             " pos=", icon.position.x, ",", icon.position.y, ",", icon.position.z,
+            //             " distance=", (i < iconDistances.size() ? iconDistances[i] : -1.0f),
+            //             " material=", (i < iconMaterialNames.size() ? iconMaterialNames[i] : std::string("<missing>")));
         }
         s_lastIconEntryCount = m_iconEntries.size();
         s_lastBuiltIconDrawCallCount = result.drawCalls.size();

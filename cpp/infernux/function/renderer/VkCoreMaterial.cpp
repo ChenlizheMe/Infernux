@@ -163,8 +163,6 @@ std::pair<VkImageView, VkSampler> InxVkCoreModular::ResolveTextureForMaterial(co
     VkImageView view = texture->GetView();
     VkSampler sampler = texture->GetSampler();
     m_textureCache.Insert(cacheKey, std::move(texture));
-    INXLOG_INFO("TextureResolver: loaded texture '", texturePath, "' (", isLinearTexture ? "UNORM" : "SRGB",
-                ", binding='", bindingName, "', key='", cacheKey, "')");
     return {view, sampler};
 }
 
@@ -498,8 +496,6 @@ void InxVkCoreModular::ReinitializeMaterialPipelines(VkSampleCountFlagBits newSa
         return;
     }
 
-    INXLOG_INFO("ReinitializeMaterialPipelines: changing MSAA sample count to ", static_cast<int>(newSampleCount));
-
     // Shutdown existing pipelines (caller must have called WaitIdle already)
     m_materialPipelineManager.Shutdown(/* skipWaitIdle */ true);
     m_materialPipelineManagerInitialized = false;
@@ -532,7 +528,6 @@ void InxVkCoreModular::ReinitializeMaterialPipelines(VkSampleCountFlagBits newSa
     // compatible with the material pipelines' MSAA sample count.
     m_gpuMaterialPreview.reset();
 
-    INXLOG_INFO("ReinitializeMaterialPipelines: complete — pipelines will be lazily rebuilt on next draw");
 }
 
 bool InxVkCoreModular::RefreshMaterialPipeline(std::shared_ptr<InxMaterial> material, const std::string &vertShaderName,

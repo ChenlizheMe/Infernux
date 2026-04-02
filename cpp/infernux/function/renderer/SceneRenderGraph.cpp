@@ -246,7 +246,6 @@ bool SceneRenderGraph::Initialize(InxVkCoreModular *vkCore, SceneRenderTarget *s
     // Initialize fullscreen effect renderer for FullscreenQuad passes
     m_fullscreenRenderer.Initialize(vkCore);
 
-    INXLOG_INFO("SceneRenderGraph initialized with full RenderGraph: ", m_width, "x", m_height);
     return true;
 }
 

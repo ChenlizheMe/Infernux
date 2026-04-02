@@ -256,8 +256,6 @@ void MaterialDescriptorManager::Initialize(VmaAllocator allocator, VkDevice devi
     if (CreateDescriptorPool(maxMaterials) == VK_NULL_HANDLE) {
         INXLOG_ERROR("Failed to create material descriptor pool");
     }
-
-    INXLOG_INFO("MaterialDescriptorManager initialized with capacity for ", maxMaterials, " materials");
 }
 
 void MaterialDescriptorManager::Shutdown()
@@ -275,8 +273,6 @@ void MaterialDescriptorManager::Shutdown()
 
     m_device = VK_NULL_HANDLE;
     m_physicalDevice = VK_NULL_HANDLE;
-
-    INXLOG_INFO("MaterialDescriptorManager shutdown");
 }
 
 VkDescriptorPool MaterialDescriptorManager::CreateDescriptorPool(uint32_t maxMaterials)

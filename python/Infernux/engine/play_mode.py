@@ -414,7 +414,7 @@ class PlayModeManager:
                     else:
                         sfm.clear_dirty()
             self._notify_state_change(old_state, PlayModeState.EDIT)
-            Debug.log_internal("[OK] Returned to Edit Mode (scene restored)")
+            # Debug.log_internal("[OK] Returned to Edit Mode (scene restored)")
 
         def on_done(ok):
             from Infernux.engine.ui.engine_status import EngineStatus

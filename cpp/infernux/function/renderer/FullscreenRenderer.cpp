@@ -160,8 +160,6 @@ void FullscreenRenderer::Initialize(InxVkCoreModular *vkCore)
     CreateLinearSampler();
     CreateNearestSampler();
     CreateDescriptorPools();
-
-    INXLOG_INFO("FullscreenRenderer initialized");
 }
 
 void FullscreenRenderer::Destroy()

@@ -103,6 +103,7 @@ class DebugConsole:
         self._entries: List[LogEntry] = []
         self._max_entries: int = 1000
         self._listeners: List[Callable[[LogEntry], None]] = []
+        self._native_console = None  # C++ ConsolePanel (set by bootstrap)
 
         # Counters for quick filtering
         self._log_count: int = 0
@@ -126,9 +127,49 @@ class DebugConsole:
         """Remove a log listener."""
         if callback in self._listeners:
             self._listeners.remove(callback)
+
+    def set_native_console(self, native_console):
+        """Attach the C++ ConsolePanel so Python Debug.log() messages are forwarded."""
+        self._native_console = native_console
+
+    @staticmethod
+    def _write_internal_entry(entry: LogEntry):
+        """Route internal editor diagnostics to engine.log only."""
+        try:
+            from Infernux.lib import inflog_internal
+
+            payload = entry.message
+            if entry.source_file:
+                payload = f"{payload} [py:{entry.source_file}:{entry.source_line}]"
+            inflog_internal(payload)
+        except Exception:
+            pass
+
+    _LOGTYPE_TO_LOGLEVEL = None  # lazy-initialized mapping
+
+    @staticmethod
+    def _get_level_map():
+        """Lazy-load LogType → LogLevel mapping (avoids import at module load)."""
+        if DebugConsole._LOGTYPE_TO_LOGLEVEL is None:
+            try:
+                from Infernux.lib import LogLevel
+                DebugConsole._LOGTYPE_TO_LOGLEVEL = {
+                    LogType.LOG: LogLevel.Info,
+                    LogType.WARNING: LogLevel.Warn,
+                    LogType.ERROR: LogLevel.Error,
+                    LogType.ASSERT: LogLevel.Error,
+                    LogType.EXCEPTION: LogLevel.Error,
+                }
+            except Exception:
+                DebugConsole._LOGTYPE_TO_LOGLEVEL = {}
+        return DebugConsole._LOGTYPE_TO_LOGLEVEL
     
     def log(self, entry: LogEntry):
         """Add a log entry."""
+        if entry.internal:
+            self._write_internal_entry(entry)
+            return
+
         # Trim old entries if needed
         if len(self._entries) >= self._max_entries:
             removed = self._entries.pop(0)
@@ -140,6 +181,18 @@ class DebugConsole:
         # Notify listeners
         for listener in self._listeners:
             listener(entry)
+        
+        # Forward to C++ ConsolePanel if attached
+        if self._native_console is not None:
+            level_map = self._get_level_map()
+            level = level_map.get(entry.log_type)
+            if level is not None:
+                self._native_console.log_from_python(
+                    level, entry.message,
+                    entry.stack_trace or "",
+                    entry.source_file or "",
+                    entry.source_line,
+                )
         
         # Also print to stdout/stderr for development
         self._print_entry(entry)

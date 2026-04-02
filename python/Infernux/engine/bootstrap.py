@@ -25,7 +25,6 @@ from Infernux.engine.ui import (
     ToolbarPanel,
     HierarchyPanel,
     InspectorPanel,
-    ConsolePanel,
     SceneViewPanel,
     GameViewPanel,
     ProjectPanel,
@@ -85,7 +84,7 @@ class EditorBootstrap:
         self.hierarchy: Optional[HierarchyPanel] = None
         self.inspector_panel: Optional[InspectorPanel] = None
         self.project_panel: Optional[ProjectPanel] = None
-        self.console: Optional[ConsolePanel] = None
+        self.console = None  # C++ ConsolePanel (native)
         self.status_bar = None
         self.scene_view: Optional[SceneViewPanel] = None
         self.game_view: Optional[GameViewPanel] = None
@@ -300,23 +299,37 @@ class EditorBootstrap:
         if ps:
             self.project_panel.load_state(ps)
 
-        # Console
-        self.console = ConsolePanel()
-        self.console.set_window_manager(wm)
-        if engine._play_mode_manager is not None:
-            self.console.set_play_mode_manager(engine._play_mode_manager)
+        # Console (C++ native panel — replaces Python ConsolePanel)
+        from Infernux.lib import ConsolePanel as NativeConsolePanel
+        from Infernux.debug import DebugConsole
+        self.console = NativeConsolePanel()
+        # Bridge Python Debug.log() → C++ ConsolePanel
+        DebugConsole.instance().set_native_console(self.console)
         engine.register_gui("console", self.console)
         wm.register_existing_window("console", self.console, "console")
 
         cs = _panel_state.get("console")
         if cs:
-            self.console.load_state(cs)
+            self.console.show_info = cs.get("show_info", True)
+            self.console.show_warnings = cs.get("show_warnings", True)
+            self.console.show_errors = cs.get("show_errors", True)
+            self.console.collapse = cs.get("collapse", False)
+            self.console.clear_on_play = cs.get("clear_on_play", True)
+            self.console.error_pause = cs.get("error_pause", False)
+            self.console.auto_scroll = cs.get("auto_scroll", True)
+
+        # Wire play-mode clear-on-play
+        if engine._play_mode_manager is not None:
+            _native_console = self.console
+            def _on_play_clear(event):
+                from Infernux.engine.play_mode import PlayModeState
+                if event.new_state == PlayModeState.PLAYING and _native_console.clear_on_play:
+                    _native_console.clear()
+            engine._play_mode_manager.add_state_change_listener(_on_play_clear)
 
         # Status bar
         self.status_bar = StatusBarPanel()
         self.status_bar.set_console_panel(self.console)
-        self.console.set_status_bar(self.status_bar)
-        self.console.set_object_navigation_callback(self._navigate_console_entry_to_object)
         engine.register_gui("status_bar", self.status_bar)
 
         # Scene view
@@ -672,7 +685,16 @@ class EditorBootstrap:
             return
         if self.toolbar is not None:
             _panel_state.put("toolbar", self.toolbar.save_state())
-        _panel_state.put("console", self.console.save_state())
+        if self.console is not None:
+            _panel_state.put("console", {
+                "show_info": self.console.show_info,
+                "show_warnings": self.console.show_warnings,
+                "show_errors": self.console.show_errors,
+                "collapse": self.console.collapse,
+                "clear_on_play": self.console.clear_on_play,
+                "error_pause": self.console.error_pause,
+                "auto_scroll": self.console.auto_scroll,
+            })
         _panel_state.put("project", self.project_panel.save_state())
         _panel_state.put("window_manager", self.window_manager.save_state())
         _panel_state.save()

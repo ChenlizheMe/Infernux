@@ -180,7 +180,6 @@ void ScriptableRenderContext::SubmitCulling(CullingResults culling)
             m_gizmoCtx.lightGizmoIconMaterial, m_gizmoCtx.cameraPos, cameraRight, cameraUp);
         static size_t s_lastSubmittedIconDrawCalls = static_cast<size_t>(-1);
         if (s_lastSubmittedIconDrawCalls != iconResult.drawCalls.size()) {
-            INXLOG_INFO("GizmoIcons: submitting ", iconResult.drawCalls.size(), " editor gizmo icon draw call(s)");
             s_lastSubmittedIconDrawCalls = iconResult.drawCalls.size();
         }
         for (auto &dc : iconResult.drawCalls) {

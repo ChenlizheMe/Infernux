@@ -1,13 +1,16 @@
 #pragma once
 
+#include <algorithm>
 #include <atomic>
 #include <deque>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iostream>
 #include <mutex>
 #include <sstream>
 #include <string>
+#include <vector>
 
 namespace infernux
 {
@@ -65,7 +68,41 @@ class InxLog
         deferredRetention_ = 0;
     }
 
+    /// Callback signature for log sinks.
+    using SinkCallback =
+        std::function<void(LogLevel level, const char *file, int line, const std::string &message, bool internalOnly)>;
+
+    /// Register a log sink that receives every log message at or above the
+    /// current log level.  Returns an opaque ID for later removal.
+    size_t AddSink(SinkCallback sink)
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        size_t id = nextSinkId_++;
+        sinks_.push_back({id, std::move(sink)});
+        return id;
+    }
+
+    /// Remove a previously registered sink by its ID.
+    void RemoveSink(size_t sinkId)
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        sinks_.erase(std::remove_if(sinks_.begin(), sinks_.end(),
+                                    [sinkId](const SinkEntry &e) { return e.id == sinkId; }),
+                     sinks_.end());
+    }
+
     template <typename... Args> void Log(LogLevel level, const char *file, int line, Args &&...args)
+    {
+        LogImpl(level, file, int(line), false, std::forward<Args>(args)...);
+    }
+
+    template <typename... Args> void LogInternal(LogLevel level, const char *file, int line, Args &&...args)
+    {
+        LogImpl(level, file, int(line), true, std::forward<Args>(args)...);
+    }
+
+  private:
+    template <typename... Args> void LogImpl(LogLevel level, const char *file, int line, bool internalOnly, Args &&...args)
     {
         if (logLevel.load(std::memory_order_relaxed) > level)
             return;
@@ -83,26 +120,46 @@ class InxLog
         (plain << ... << args);
         plain << '\n';
 
-        std::lock_guard<std::mutex> lock(mutex_);
-        if (deferredFileLogging_) {
-            deferredEntries_.push_back(plain.str());
-            while (deferredEntries_.size() > deferredRetention_)
-                deferredEntries_.pop_front();
+        std::string plainStr = plain.str();
+
+        // Copy sink list under lock, then invoke outside lock to avoid
+        // deadlocks if a sink calls back into the logger.
+        std::vector<SinkCallback> sinksCopy;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+
+            if (deferredFileLogging_) {
+                deferredEntries_.push_back(plainStr);
+                while (deferredEntries_.size() > deferredRetention_)
+                    deferredEntries_.pop_front();
+            }
+
+            if (logFile_.is_open()) {
+                logFile_.write(plainStr.data(), static_cast<std::streamsize>(plainStr.size()));
+                logFile_.flush();
+            } else if (!internalOnly) {
+                // Console output with ANSI colors
+                std::string msg = LogLevelToColor(level) + plainStr;
+                // Insert reset code before the trailing newline
+                msg.insert(msg.size() - 1, "\033[0m");
+                std::cout.write(msg.data(), static_cast<std::streamsize>(msg.size()));
+            }
+
+            sinksCopy.reserve(sinks_.size());
+            for (const auto &s : sinks_)
+                sinksCopy.push_back(s.callback);
         }
 
-        if (logFile_.is_open()) {
-            std::string msg = plain.str();
-            logFile_.write(msg.data(), static_cast<std::streamsize>(msg.size()));
-            logFile_.flush();
-        } else {
-            // Console output with ANSI colors
-            std::string msg = LogLevelToColor(level) + plain.str();
-            // Insert reset code before the trailing newline
-            msg.insert(msg.size() - 1, "\033[0m");
-            std::cout.write(msg.data(), static_cast<std::streamsize>(msg.size()));
-        }
+        // Strip trailing newline for sink consumers
+        std::string msgForSinks = plainStr;
+        if (!msgForSinks.empty() && msgForSinks.back() == '\n')
+            msgForSinks.pop_back();
+
+        for (const auto &sink : sinksCopy)
+            sink(level, file, line, msgForSinks, internalOnly);
     }
 
+  public:
     void SetLogLevel(int level)
     {
         logLevel.store(level, std::memory_order_relaxed);
@@ -114,7 +171,7 @@ class InxLog
     }
 
   private:
-    InxLog() : logLevel(LOG_INFO)
+    InxLog() : logLevel(LOG_INFO), nextSinkId_(0)
     {
     }
     ~InxLog()
@@ -173,6 +230,14 @@ class InxLog
 
     std::atomic<int> logLevel;
 
+    struct SinkEntry
+    {
+        size_t id;
+        SinkCallback callback;
+    };
+    std::vector<SinkEntry> sinks_;
+    size_t nextSinkId_ = 0;
+
     const char *LogLevelToString(LogLevel level)
     {
         switch (level) {
@@ -217,13 +282,29 @@ class InxLog
             InxLog::GetInstance().Log(static_cast<LogLevel>(level), __FILE__, __LINE__, __VA_ARGS__);                  \
     } while (false)
 
+#define INXLOG_FILE_ONLY(level, ...)                                                                                   \
+    do {                                                                                                               \
+        if ((level) >= InxLog::GetInstance().GetLogLevel())                                                            \
+            InxLog::GetInstance().LogInternal(static_cast<LogLevel>(level), __FILE__, __LINE__, __VA_ARGS__);          \
+    } while (false)
+
 #define INXLOG_DEBUG(...) INXLOG_INTERNAL(LOG_DEBUG, __VA_ARGS__)
 #define INXLOG_INFO(...) INXLOG_INTERNAL(LOG_INFO, __VA_ARGS__)
 #define INXLOG_WARN(...) INXLOG_INTERNAL(LOG_WARN, __VA_ARGS__)
 #define INXLOG_ERROR(...) INXLOG_INTERNAL(LOG_ERROR, __VA_ARGS__)
+#define INXLOG_DEBUG_INTERNAL(...) INXLOG_FILE_ONLY(LOG_DEBUG, __VA_ARGS__)
+#define INXLOG_INFO_INTERNAL(...) INXLOG_FILE_ONLY(LOG_INFO, __VA_ARGS__)
+#define INXLOG_WARN_INTERNAL(...) INXLOG_FILE_ONLY(LOG_WARN, __VA_ARGS__)
+#define INXLOG_ERROR_INTERNAL(...) INXLOG_FILE_ONLY(LOG_ERROR, __VA_ARGS__)
 #define INXLOG_FATAL(...)                                                                                              \
     do {                                                                                                               \
         INXLOG_INTERNAL(LOG_FATAL, __VA_ARGS__);                                                                       \
+        std::abort();                                                                                                  \
+    } while (false)
+
+#define INXLOG_FATAL_INTERNAL(...)                                                                                     \
+    do {                                                                                                               \
+        INXLOG_FILE_ONLY(LOG_FATAL, __VA_ARGS__);                                                                      \
         std::abort();                                                                                                  \
     } while (false)
 
