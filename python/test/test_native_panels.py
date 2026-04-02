@@ -1,6 +1,6 @@
-"""Tests for C++ native StatusBarPanel, ToolbarPanel, and MenuBarPanel.
+"""Tests for C++ native StatusBarPanel, ToolbarPanel, MenuBarPanel, and HierarchyPanel.
 
-These panels were migrated from Python originals as Phase 2 + Phase 3
+These panels were migrated from Python originals as Phase 2, 3, and 4
 of the native editor migration plan.
 """
 import pytest
@@ -9,6 +9,7 @@ from Infernux.lib import (
     ToolbarPanel,
     MenuBarPanel,
     ConsolePanel,
+    HierarchyPanel,
     PlayState,
     WindowTypeInfo,
 )
@@ -304,3 +305,205 @@ class TestWindowTypeInfo:
         assert wti.type_id == "hierarchy"
         assert wti.display_name == "Hierarchy"
         assert wti.singleton is False
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  HierarchyPanel (Phase 4)
+# ═══════════════════════════════════════════════════════════════════════
+
+class TestHierarchyPanel:
+
+    def test_creation(self):
+        hp = HierarchyPanel()
+        assert hp is not None
+
+    def test_is_editor_panel(self):
+        from Infernux.lib import EditorPanel
+        hp = HierarchyPanel()
+        assert isinstance(hp, EditorPanel)
+
+    def test_ui_mode_default_false(self):
+        hp = HierarchyPanel()
+        assert hp.get_ui_mode() is False
+
+    def test_ui_mode_property(self):
+        hp = HierarchyPanel()
+        hp.ui_mode = True
+        assert hp.ui_mode is True
+        hp.ui_mode = False
+        assert hp.ui_mode is False
+
+    def test_set_ui_mode(self):
+        hp = HierarchyPanel()
+        hp.set_ui_mode(True)
+        assert hp.get_ui_mode() is True
+        hp.set_ui_mode(False)
+        assert hp.get_ui_mode() is False
+
+    def test_clear_search_no_crash(self):
+        hp = HierarchyPanel()
+        hp.clear_search()
+
+    def test_selection_callbacks(self):
+        hp = HierarchyPanel()
+        selected = set()
+        primary = [0]
+
+        hp.is_selected = lambda oid: oid in selected
+        hp.select_id = lambda oid: (selected.clear(), selected.add(oid), primary.__setitem__(0, oid))
+        hp.clear_selection = lambda: (selected.clear(), primary.__setitem__(0, 0))
+        hp.get_primary = lambda: primary[0]
+        hp.get_selected_ids = lambda: list(selected)
+        hp.selection_count = lambda: len(selected)
+        hp.is_selection_empty = lambda: len(selected) == 0
+
+        assert hp.is_selection_empty()
+        hp.select_id(42)
+        assert hp.is_selected(42)
+        assert hp.get_primary() == 42
+        assert hp.selection_count() == 1
+        hp.clear_selection()
+        assert hp.is_selection_empty()
+
+    def test_on_selection_changed_callback(self):
+        hp = HierarchyPanel()
+        received = []
+        hp.on_selection_changed = lambda oid: received.append(oid)
+
+        # Wire minimal selection so ClearSelectionAndNotify works
+        hp.is_selection_empty = lambda: True
+        hp.clear_selection = lambda: None
+        hp.get_primary = lambda: 0
+        hp.clear_selection_and_notify()
+        assert received == [0]
+
+    def test_notification_callbacks(self):
+        hp = HierarchyPanel()
+        double_click = []
+        hp.on_double_click_focus = lambda oid: double_click.append(oid)
+        # Callback is stored; can't trigger from outside render loop
+        assert hp.on_double_click_focus is not None
+
+    def test_undo_callbacks(self):
+        hp = HierarchyPanel()
+        records = []
+        hp.undo_record_create = lambda oid, desc: records.append(("create", oid, desc))
+        hp.undo_record_delete = lambda oid, desc: records.append(("delete", oid, desc))
+        hp.undo_record_move = lambda oid, op, np, oi, ni: records.append(("move", oid, op, np, oi, ni))
+
+        hp.undo_record_create(1, "Create")
+        hp.undo_record_delete(2, "Delete")
+        hp.undo_record_move(3, 0, 1, 0, 2)
+        assert len(records) == 3
+        assert records[0] == ("create", 1, "Create")
+        assert records[1] == ("delete", 2, "Delete")
+        assert records[2] == ("move", 3, 0, 1, 0, 2)
+
+    def test_scene_info_callbacks(self):
+        hp = HierarchyPanel()
+        hp.get_scene_display_name = lambda: "TestScene"
+        hp.is_prefab_mode = lambda: False
+        hp.get_prefab_display_name = lambda: "Prefab: TestPrefab"
+
+        assert hp.get_scene_display_name() == "TestScene"
+        assert hp.is_prefab_mode() is False
+        assert hp.get_prefab_display_name() == "Prefab: TestPrefab"
+
+    def test_translate_callback(self):
+        hp = HierarchyPanel()
+        hp.translate = lambda key: f"[{key}]"
+        assert hp.translate("hierarchy.search_placeholder") == "[hierarchy.search_placeholder]"
+
+    def test_clipboard_callbacks(self):
+        hp = HierarchyPanel()
+        hp.copy_selected = lambda cut: True
+        hp.paste_clipboard = lambda: True
+        hp.has_clipboard_data = lambda: False
+
+        assert hp.copy_selected(False) is True
+        assert hp.paste_clipboard() is True
+        assert hp.has_clipboard_data() is False
+
+    def test_creation_callbacks(self):
+        hp = HierarchyPanel()
+        created = []
+        hp.create_primitive = lambda t, p: created.append(("prim", t, p))
+        hp.create_light = lambda t, p: created.append(("light", t, p))
+        hp.create_camera = lambda p: created.append(("cam", p))
+        hp.create_render_stack = lambda p: created.append(("rs", p))
+        hp.create_empty = lambda p: created.append(("empty", p))
+
+        hp.create_primitive(0, 0)
+        hp.create_light(1, 42)
+        hp.create_camera(0)
+        hp.create_render_stack(7)
+        hp.create_empty(0)
+
+        assert len(created) == 5
+        assert created[0] == ("prim", 0, 0)
+        assert created[1] == ("light", 1, 42)
+
+    def test_canvas_query_callbacks(self):
+        hp = HierarchyPanel()
+        hp.go_has_canvas = lambda oid: oid == 10
+        hp.go_has_ui_screen_component = lambda oid: False
+        hp.parent_has_canvas_ancestor = lambda oid: oid > 5
+        hp.has_canvas_descendant = lambda oid: oid == 1
+
+        assert hp.go_has_canvas(10) is True
+        assert hp.go_has_canvas(11) is False
+        assert hp.has_canvas_descendant(1) is True
+
+    def test_delete_callback(self):
+        hp = HierarchyPanel()
+        deleted = []
+        hp.delete_selected_objects = lambda: deleted.append(True)
+        hp.delete_selected_objects()
+        assert deleted == [True]
+
+    def test_external_drop_callbacks(self):
+        hp = HierarchyPanel()
+        drops = []
+        hp.instantiate_prefab = lambda ref, pid, is_guid: drops.append(("prefab", ref, pid, is_guid))
+        hp.create_model_object = lambda ref, pid, is_guid: drops.append(("model", ref, pid, is_guid))
+
+        hp.instantiate_prefab("abc-guid", 0, True)
+        hp.create_model_object("/path/to/model.fbx", 42, False)
+        assert len(drops) == 2
+
+    def test_prefab_action_callbacks(self):
+        hp = HierarchyPanel()
+        actions = []
+        hp.save_as_prefab = lambda oid: actions.append(("save", oid))
+        hp.prefab_select_asset = lambda oid: actions.append(("select", oid))
+        hp.prefab_open_asset = lambda oid: actions.append(("open", oid))
+        hp.prefab_apply_overrides = lambda oid: actions.append(("apply", oid))
+        hp.prefab_revert_overrides = lambda oid: actions.append(("revert", oid))
+        hp.prefab_unpack = lambda oid: actions.append(("unpack", oid))
+
+        hp.save_as_prefab(1)
+        hp.prefab_unpack(2)
+        assert ("save", 1) in actions
+        assert ("unpack", 2) in actions
+
+    def test_set_pending_expand_id(self):
+        hp = HierarchyPanel()
+        hp.set_pending_expand_id(42)
+        # No assertion needed — verifies API exists without crash
+
+    def test_expand_to_object_no_crash(self):
+        hp = HierarchyPanel()
+        hp.expand_to_object(0)  # 0 = no-op
+        hp.expand_to_object(99999)  # non-existent — no crash
+
+    def test_set_selected_object_by_id(self):
+        hp = HierarchyPanel()
+        selected = set()
+        hp.select_id = lambda oid: selected.add(oid)
+        hp.get_primary = lambda: max(selected) if selected else 0
+        hp.selection_count = lambda: len(selected)
+        hp.on_selection_changed = lambda oid: None
+        hp.get_selected_ids = lambda: list(selected)
+        hp.is_selection_empty = lambda: len(selected) == 0
+        hp.set_selected_object_by_id(42)
+        assert 42 in selected

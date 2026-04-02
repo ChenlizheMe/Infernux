@@ -1,0 +1,258 @@
+#pragma once
+
+#include <function/editor/EditorPanel.h>
+#include <function/editor/EditorTheme.h>
+
+#include <cstdint>
+#include <functional>
+#include <string>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
+
+namespace infernux
+{
+
+class GameObject;
+class Scene;
+
+/// C++ native Hierarchy panel — Unity-style scene tree with drag-drop,
+/// inline rename, virtual scrolling, search filtering, and UI mode.
+///
+/// Heavy-lift rendering happens entirely in C++.  Python-only managers
+/// (Undo, Prefab, Clipboard, UICanvas queries) are reached via
+/// std::function callbacks set from the bootstrap layer.
+class HierarchyPanel : public EditorPanel
+{
+  public:
+    HierarchyPanel();
+
+    // ── Public API (called from Python bootstrap / other panels) ─────
+
+    void SetUiMode(bool enabled);
+    [[nodiscard]] bool GetUiMode() const { return m_uiMode; }
+
+    void ClearSearch();
+    void ClearSelectionAndNotify();
+    void SetSelectedObjectById(uint64_t id, bool clearSearch = false);
+    void ExpandToObject(uint64_t objId);
+
+    /// Allow external panels (UIEditorPanel) to queue an auto-expand.
+    void SetPendingExpandId(uint64_t id) { m_pendingExpandId = id; }
+
+    // ── Selection callbacks (wrap Python SelectionManager) ───────────
+
+    std::function<bool(uint64_t)> isSelected;
+    std::function<void(uint64_t)> selectId;
+    std::function<void(uint64_t)> toggleId;
+    std::function<void(uint64_t)> rangeSelectId;
+    std::function<void()> clearSelection;
+    std::function<uint64_t()> getPrimary;
+    std::function<std::vector<uint64_t>()> getSelectedIds;
+    std::function<int()> selectionCount;
+    std::function<bool()> isSelectionEmpty;
+    std::function<void(const std::vector<uint64_t> &)> setOrderedIds;
+
+    // ── Notification callbacks ───────────────────────────────────────
+
+    /// Called when selection changes (receives primary object ID, 0 = none).
+    std::function<void(uint64_t)> onSelectionChanged;
+    /// Called on double-click (receives object ID to focus camera on).
+    std::function<void(uint64_t)> onDoubleClickFocus;
+    /// Extra callback for UI-editor sync.
+    std::function<void(uint64_t)> onSelectionChangedUiEditor;
+
+    // ── Undo callbacks ───────────────────────────────────────────────
+
+    std::function<void(uint64_t, const std::string &)> undoRecordCreate;
+    std::function<void(uint64_t, const std::string &)> undoRecordDelete;
+    /// (objId, oldParentId, newParentId, oldSibIdx, newSibIdx)
+    std::function<void(uint64_t, uint64_t, uint64_t, int, int)> undoRecordMove;
+
+    // ── Scene info callbacks ─────────────────────────────────────────
+
+    std::function<std::string()> getSceneDisplayName;
+    std::function<bool()> isPrefabMode;
+    std::function<std::string()> getPrefabDisplayName;
+
+    // ── Runtime hidden objects ───────────────────────────────────────
+
+    std::function<std::unordered_set<uint64_t>()> getRuntimeHiddenIds;
+
+    // ── Canvas / UI-mode queries (need Python py_components) ────────
+
+    std::function<bool(uint64_t)> goHasCanvas;
+    std::function<bool(uint64_t)> goHasUiScreenComponent;
+    std::function<bool(uint64_t)> parentHasCanvasAncestor;
+    std::function<bool(uint64_t)> hasCanvasDescendant;
+
+    // ── Context-menu action callbacks ────────────────────────────────
+
+    std::function<void(int, uint64_t)> createPrimitive;   // (typeIdx, parentId)
+    std::function<void(int, uint64_t)> createLight;        // (typeIdx, parentId)
+    std::function<void(uint64_t)> createCamera;
+    std::function<void(uint64_t)> createRenderStack;
+    std::function<void(uint64_t)> createEmpty;
+    std::function<void(uint64_t)> createUiCanvas;
+    std::function<void(uint64_t)> createUiText;
+    std::function<void(uint64_t)> createUiButton;
+    std::function<void(uint64_t)> saveAsPrefab;
+    std::function<void(uint64_t)> prefabSelectAsset;
+    std::function<void(uint64_t)> prefabOpenAsset;
+    std::function<void(uint64_t)> prefabApplyOverrides;
+    std::function<void(uint64_t)> prefabRevertOverrides;
+    std::function<void(uint64_t)> prefabUnpack;
+
+    // ── Clipboard callbacks ──────────────────────────────────────────
+
+    std::function<bool(bool)> copySelected;   // (cut) → success
+    std::function<bool()> pasteClipboard;
+    std::function<bool()> hasClipboardData;
+
+    // ── External drop callbacks (from Project panel) ─────────────────
+
+    std::function<void(const std::string &, uint64_t, bool)> instantiatePrefab;
+    std::function<void(const std::string &, uint64_t, bool)> createModelObject;
+
+    // ── Delete-selected callback ─────────────────────────────────────
+
+    std::function<void()> deleteSelectedObjects;
+
+    // ── Translation ──────────────────────────────────────────────────
+
+    std::function<std::string(const std::string &)> translate;
+
+    // ── Warning display ──────────────────────────────────────────────
+
+    std::function<void(const std::string &)> showWarning;
+
+    // ── Drag-drop payload type ───────────────────────────────────────
+
+    static constexpr const char *DRAG_DROP_TYPE = "HIERARCHY_GAMEOBJECT";
+
+  protected:
+    void OnRenderContent(InxGUIContext *ctx) override;
+    void PreRender(InxGUIContext *ctx) override;
+
+  private:
+    // ── Translation cache ────────────────────────────────────────────
+    const std::string &Tr(const std::string &key);
+    std::unordered_map<std::string, std::string> m_trCache;
+
+    // ── Cached selection state (synced once per frame) ───────────────
+    void SyncSelectionCache();
+    std::unordered_set<uint64_t> m_selIds;
+    uint64_t m_selPrimary = 0;
+    int m_selCount = 0;
+
+    // ── Runtime hidden IDs ───────────────────────────────────────────
+    std::unordered_set<uint64_t> m_hiddenIds;
+
+    // ── Root-object cache ────────────────────────────────────────────
+    std::string m_cachedSceneKey;
+    uint64_t m_cachedStructureVer = UINT64_MAX;
+    std::vector<GameObject *> m_cachedRoots;
+    float m_lastRootRefreshTime = 0.0f;
+    static constexpr float STALE_ROOT_INTERVAL = 0.12f;
+    static constexpr int STALE_ROOT_THRESHOLD = 128;
+
+    // ── Ordered IDs cache (for shift-range select) ───────────────────
+    std::vector<uint64_t> m_cachedOrderedIds;
+    bool m_orderedIdsDirty = true;
+
+    // ── Canvas root IDs ──────────────────────────────────────────────
+    std::unordered_set<uint64_t> m_canvasRootIds;
+    bool m_canvasRootsDirty = true;
+
+    // ── Search ───────────────────────────────────────────────────────
+    char m_searchBuf[256] = {};
+    std::string m_searchQuery;
+    std::string m_searchQueryNorm;
+    std::unordered_map<uint64_t, bool> m_searchVisCache;
+
+    // ── UI mode ──────────────────────────────────────────────────────
+    bool m_uiMode = false;
+
+    // ── Virtual scrolling ────────────────────────────────────────────
+    float m_cachedItemHeight = 18.0f;
+    bool m_itemHeightMeasured = false;
+
+    // ── Pending selection (deferred left-click) ──────────────────────
+    uint64_t m_pendingSelectId = 0;
+    bool m_pendingCtrl = false;
+    bool m_pendingShift = false;
+
+    // ── Pending auto-expand ──────────────────────────────────────────
+    uint64_t m_pendingExpandId = 0;
+    std::unordered_set<uint64_t> m_pendingExpandIds;
+
+    // ── Inline rename ────────────────────────────────────────────────
+    uint64_t m_renameId = 0;
+    char m_renameBuf[256] = {};
+    bool m_renameFocus = false;
+
+    // ── Right-click tracking ─────────────────────────────────────────
+    uint64_t m_rightClickedObjId = 0;
+
+    // ── Helpers ──────────────────────────────────────────────────────
+
+    // Hidden-object filtering
+    [[nodiscard]] bool IsHidden(uint64_t id) const;
+    std::vector<GameObject *> FilterHidden(const std::vector<std::unique_ptr<GameObject>> &objects) const;
+    void RefreshRootObjects(Scene *scene, bool allowStale);
+
+    // Search
+    void SetSearchQuery(const char *text);
+    [[nodiscard]] bool HasActiveSearch() const { return !m_searchQueryNorm.empty(); }
+    [[nodiscard]] bool MatchesSearch(GameObject *obj) const;
+    bool IsVisibleInSearch(GameObject *obj);
+    std::vector<GameObject *> FilterForSearch(const std::vector<GameObject *> &objects);
+
+    // Canvas helpers
+    [[nodiscard]] bool IsInCanvasTree(GameObject *obj) const;
+    void RefreshCanvasRootIds(const std::vector<GameObject *> &roots);
+
+    // Tree rendering
+    void RenderGameObjectTree(InxGUIContext *ctx, GameObject *obj);
+    void RenderRenameInput(InxGUIContext *ctx, GameObject *obj);
+    void RenderReorderSep(InxGUIContext *ctx, const char *sepId,
+                          std::function<void(uint64_t)> onDrop);
+    void RenderMultiDropTarget(InxGUIContext *ctx, uint64_t parentId);
+
+    // Selection
+    void NotifySelectionChanged();
+    [[nodiscard]] bool IsCtrl(InxGUIContext *ctx) const;
+    [[nodiscard]] bool IsShift(InxGUIContext *ctx) const;
+
+    // Drag-drop logic
+    std::vector<uint64_t> GetDragIds(uint64_t primaryId);
+    static std::vector<uint64_t> TopoSortIds(Scene *scene, const std::vector<uint64_t> &ids);
+    void ReparentObject(uint64_t draggedId, uint64_t newParentId);
+    void MoveObjectAdjacent(uint64_t draggedId, uint64_t targetId, bool after);
+    void ReparentToRoot(uint64_t draggedId);
+    void HandleExternalDrop(const std::string &dropType, uint64_t payload, uint64_t parentId = 0);
+    void HandleExternalDropStr(const std::string &dropType, const std::string &payload, uint64_t parentId = 0);
+    bool ValidateReparent(GameObject *obj, uint64_t newParentId, GameObject *newParent);
+    bool ValidateMoveAdjacent(GameObject *obj, uint64_t newParentId, GameObject *newParent);
+    static bool IsDescendantOf(GameObject *potentialChild, GameObject *potentialParent);
+
+    // Rename
+    void BeginRename(uint64_t objId);
+    void CommitRename();
+    void CancelRename();
+
+    // Ordered IDs
+    std::vector<uint64_t> CollectOrderedIds(const std::vector<GameObject *> &roots) const;
+
+    // Clipboard shortcuts
+    void HandleClipboardShortcuts(InxGUIContext *ctx);
+
+    // Context menus
+    void ShowCreatePrimitiveMenu(InxGUIContext *ctx, uint64_t parentId);
+    void ShowCreateLightMenu(InxGUIContext *ctx, uint64_t parentId);
+    void ShowCreateRenderingMenu(InxGUIContext *ctx, uint64_t parentId);
+    void ShowUiMenu(InxGUIContext *ctx, uint64_t parentId);
+    void ShowUiModeContextMenu(InxGUIContext *ctx, uint64_t parentId);
+};
+
+} // namespace infernux

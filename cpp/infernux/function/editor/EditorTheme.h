@@ -88,6 +88,17 @@ constexpr ImVec2 STATUS_BAR_ITEM_SPC{8.0f, 0.0f};
 constexpr ImVec2 STATUS_BAR_FRAME_PAD{0.0f, 0.0f};
 constexpr float STATUS_BAR_BASE_HEIGHT = 24.0f;
 
+// ── Hierarchy / Tree ─────────────────────────────────────────────────
+constexpr ImVec2 TREE_ITEM_SPC{0.0f, 0.0f};   // ItemSpacing (Unity: 0)
+constexpr ImVec2 TREE_FRAME_PAD{2.0f, 2.0f};  // FramePadding (Unity-compact)
+constexpr float TREE_INDENT = 14.0f;           // IndentSpacing per level
+constexpr ImVec4 PREFAB_TEXT{235.0f / 255.0f, 87.0f / 255.0f, 87.0f / 255.0f, 1.0f};
+constexpr ImVec4 TEXT_DISABLED{0.40f, 0.40f, 0.40f, 1.0f};
+constexpr ImVec4 DND_REORDER_LINE{1.0f, 1.0f, 1.0f, 0.90f};
+constexpr float DND_REORDER_LINE_THICKNESS = 2.0f;
+constexpr float DND_REORDER_SEPARATOR_H = 3.0f;
+constexpr const char *PREFAB_ICON = "\xe2\x97\x86"; // ◆ U+25C6
+
 // ── Icons (Unicode glyphs) ───────────────────────────────────────────
 constexpr const char *ICON_WARNING = "\xe2\x96\xb2"; // ▲ U+25B2
 constexpr const char *ICON_ERROR = "\xe2\x97\x8f";   // ● U+25CF

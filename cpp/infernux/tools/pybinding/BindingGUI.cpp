@@ -3,6 +3,7 @@
 #include "gui/InxResourcePreviewer.h"
 #include <function/editor/ConsolePanel.h>
 #include <function/editor/EditorPanel.h>
+#include <function/editor/HierarchyPanel.h>
 #include <function/editor/MenuBarPanel.h>
 #include <function/editor/StatusBarPanel.h>
 #include <function/editor/ToolbarPanel.h>
@@ -695,6 +696,78 @@ void RegisterGUIBindings(py::module_ &m)
         .def_readwrite("is_preferences_open", &MenuBarPanel::isPreferencesOpen)
         .def_readwrite("is_physics_layer_matrix_open", &MenuBarPanel::isPhysicsLayerMatrixOpen)
         .def_readwrite("translate", &MenuBarPanel::translate);
+
+    // ── HierarchyPanel ─────────────────────────────────────────────────
+    py::class_<HierarchyPanel, EditorPanel, std::shared_ptr<HierarchyPanel>>(m, "HierarchyPanel")
+        .def(py::init<>())
+        // Public API
+        .def("set_ui_mode", &HierarchyPanel::SetUiMode, py::arg("enabled"))
+        .def("get_ui_mode", &HierarchyPanel::GetUiMode)
+        .def_property("ui_mode", &HierarchyPanel::GetUiMode, &HierarchyPanel::SetUiMode)
+        .def("clear_search", &HierarchyPanel::ClearSearch)
+        .def("clear_selection_and_notify", &HierarchyPanel::ClearSelectionAndNotify)
+        .def("set_selected_object_by_id", &HierarchyPanel::SetSelectedObjectById,
+             py::arg("id"), py::arg("clear_search") = false)
+        .def("expand_to_object", &HierarchyPanel::ExpandToObject, py::arg("obj_id"))
+        .def("set_pending_expand_id", &HierarchyPanel::SetPendingExpandId, py::arg("obj_id"))
+        // Selection callbacks
+        .def_readwrite("is_selected", &HierarchyPanel::isSelected)
+        .def_readwrite("select_id", &HierarchyPanel::selectId)
+        .def_readwrite("toggle_id", &HierarchyPanel::toggleId)
+        .def_readwrite("range_select_id", &HierarchyPanel::rangeSelectId)
+        .def_readwrite("clear_selection", &HierarchyPanel::clearSelection)
+        .def_readwrite("get_primary", &HierarchyPanel::getPrimary)
+        .def_readwrite("get_selected_ids", &HierarchyPanel::getSelectedIds)
+        .def_readwrite("selection_count", &HierarchyPanel::selectionCount)
+        .def_readwrite("is_selection_empty", &HierarchyPanel::isSelectionEmpty)
+        .def_readwrite("set_ordered_ids", &HierarchyPanel::setOrderedIds)
+        // Notification callbacks
+        .def_readwrite("on_selection_changed", &HierarchyPanel::onSelectionChanged)
+        .def_readwrite("on_double_click_focus", &HierarchyPanel::onDoubleClickFocus)
+        .def_readwrite("on_selection_changed_ui_editor", &HierarchyPanel::onSelectionChangedUiEditor)
+        // Undo callbacks
+        .def_readwrite("undo_record_create", &HierarchyPanel::undoRecordCreate)
+        .def_readwrite("undo_record_delete", &HierarchyPanel::undoRecordDelete)
+        .def_readwrite("undo_record_move", &HierarchyPanel::undoRecordMove)
+        // Scene info callbacks
+        .def_readwrite("get_scene_display_name", &HierarchyPanel::getSceneDisplayName)
+        .def_readwrite("is_prefab_mode", &HierarchyPanel::isPrefabMode)
+        .def_readwrite("get_prefab_display_name", &HierarchyPanel::getPrefabDisplayName)
+        // Runtime hidden
+        .def_readwrite("get_runtime_hidden_ids", &HierarchyPanel::getRuntimeHiddenIds)
+        // Canvas / UI-mode queries
+        .def_readwrite("go_has_canvas", &HierarchyPanel::goHasCanvas)
+        .def_readwrite("go_has_ui_screen_component", &HierarchyPanel::goHasUiScreenComponent)
+        .def_readwrite("parent_has_canvas_ancestor", &HierarchyPanel::parentHasCanvasAncestor)
+        .def_readwrite("has_canvas_descendant", &HierarchyPanel::hasCanvasDescendant)
+        // Context-menu action callbacks
+        .def_readwrite("create_primitive", &HierarchyPanel::createPrimitive)
+        .def_readwrite("create_light", &HierarchyPanel::createLight)
+        .def_readwrite("create_camera", &HierarchyPanel::createCamera)
+        .def_readwrite("create_render_stack", &HierarchyPanel::createRenderStack)
+        .def_readwrite("create_empty", &HierarchyPanel::createEmpty)
+        .def_readwrite("create_ui_canvas", &HierarchyPanel::createUiCanvas)
+        .def_readwrite("create_ui_text", &HierarchyPanel::createUiText)
+        .def_readwrite("create_ui_button", &HierarchyPanel::createUiButton)
+        .def_readwrite("save_as_prefab", &HierarchyPanel::saveAsPrefab)
+        .def_readwrite("prefab_select_asset", &HierarchyPanel::prefabSelectAsset)
+        .def_readwrite("prefab_open_asset", &HierarchyPanel::prefabOpenAsset)
+        .def_readwrite("prefab_apply_overrides", &HierarchyPanel::prefabApplyOverrides)
+        .def_readwrite("prefab_revert_overrides", &HierarchyPanel::prefabRevertOverrides)
+        .def_readwrite("prefab_unpack", &HierarchyPanel::prefabUnpack)
+        // Clipboard callbacks
+        .def_readwrite("copy_selected", &HierarchyPanel::copySelected)
+        .def_readwrite("paste_clipboard", &HierarchyPanel::pasteClipboard)
+        .def_readwrite("has_clipboard_data", &HierarchyPanel::hasClipboardData)
+        // External drop callbacks
+        .def_readwrite("instantiate_prefab", &HierarchyPanel::instantiatePrefab)
+        .def_readwrite("create_model_object", &HierarchyPanel::createModelObject)
+        // Delete
+        .def_readwrite("delete_selected_objects", &HierarchyPanel::deleteSelectedObjects)
+        // Translation
+        .def_readwrite("translate", &HierarchyPanel::translate)
+        // Warning
+        .def_readwrite("show_warning", &HierarchyPanel::showWarning);
 }
 
 } // namespace infernux

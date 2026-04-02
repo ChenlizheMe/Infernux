@@ -1675,7 +1675,7 @@ class UIEditorPanel(EditorPanel):
                 self._on_selection_changed(go)
                 # Auto-expand hierarchy to reveal this object
                 if self._hierarchy_panel and go is not None:
-                    self._hierarchy_panel.expand_to_object(go)
+                    self._hierarchy_panel.expand_to_object(go.id)
             else:
                 self._on_selection_changed(None)
 
@@ -1691,7 +1691,7 @@ class UIEditorPanel(EditorPanel):
         if self._on_selection_changed:
             self._on_selection_changed(canvas_go)
         if self._hierarchy_panel is not None:
-            self._hierarchy_panel.expand_to_object(canvas_go)
+            self._hierarchy_panel.expand_to_object(canvas_go.id)
 
     def _delete_selected_element(self):
         """Delete the currently selected UI element's GameObject via undo system."""
@@ -1798,7 +1798,7 @@ class UIEditorPanel(EditorPanel):
                 invalidate_canvas_cache()
                 if self._hierarchy_panel:
                     self._hierarchy_panel.set_selected_object_by_id(go.id)
-                    self._hierarchy_panel._pending_expand_id = canvas_go.id
+                    self._hierarchy_panel.set_pending_expand_id(canvas_go.id)
         if go:
             self._record_ui_create(go.id, undo_label)
 
