@@ -32,6 +32,7 @@ from Infernux.engine.path_utils import safe_path as _safe_path
 SCENE_EXTENSION = ".scene"
 EDITOR_SETTINGS_FILE = "EditorSettings.json"
 DEFAULT_SCENE_NAME = "Untitled Scene"
+DEFAULT_SCENE_FILE_BASE = "UntitledScene"
 PREFAB_MODE_SCENE_NAME = "__PrefabMode__"
 PREFAB_RESTORE_SCENE_NAME = "__PrefabRestore__"
 
@@ -67,10 +68,30 @@ def _get_scene_root_objects(scene):
 # ---------------------------------------------------------------------------
 
 def _settings_path() -> Optional[str]:
-    root = get_project_root()
+    root = _effective_project_root()
     if not root:
         return None
     return os.path.join(root, "ProjectSettings", EDITOR_SETTINGS_FILE)
+
+
+def _effective_project_root() -> Optional[str]:
+    """Best-effort project-root resolution for editor/runtime edge cases."""
+    root = get_project_root()
+    if root and os.path.isdir(root):
+        return root
+
+    try:
+        from Infernux.engine.ui.editor_services import EditorServices
+        services = EditorServices.instance()
+        if services and services.project_path and os.path.isdir(services.project_path):
+            return os.path.abspath(services.project_path)
+    except Exception:
+        pass
+
+    cwd = os.getcwd()
+    if os.path.isdir(os.path.join(cwd, "Assets")):
+        return cwd
+    return None
 
 
 def _load_editor_settings() -> dict:
@@ -101,7 +122,12 @@ def _show_save_dialog(initial_dir: str, callback: Callable[[Optional[str]], None
                       default_filename: str = "Untitled Scene.scene"):
     """Show a native save-file dialog. *callback* receives the chosen path or None."""
     def _run():
-        result = _win32_save_dialog(initial_dir, default_filename)
+        result: Optional[str] = None
+        try:
+            if os.name == "nt":
+                result = _win32_save_dialog(initial_dir, default_filename)
+        except Exception as exc:
+            Debug.log_warning(f"Save dialog unavailable on this platform: {exc}")
         callback(result)
 
     t = threading.Thread(target=_run, daemon=True)
@@ -241,6 +267,20 @@ class SceneFileManager:
     def set_engine(self, engine):
         """Set the native Infernux reference (for close-request handling)."""
         self._engine = engine
+
+    def _native_engine_for_close(self):
+        """Return native engine for close confirmation, with service fallback."""
+        if self._engine is not None:
+            return self._engine
+        try:
+            from Infernux.engine.ui.editor_services import EditorServices
+            services = EditorServices.instance()
+            native = services.native_engine if services else None
+            if native is not None:
+                self._engine = native
+            return native
+        except Exception:
+            return None
 
     # ------------------------------------------------------------------
     # Properties
@@ -749,8 +789,9 @@ class SceneFileManager:
         # During play mode, close immediately — the save dialog's "Save"
         # button cannot save the pre-play state properly.
         if self._is_play_mode():
-            if self._engine:
-                self._engine.confirm_close()
+            native = self._native_engine_for_close()
+            if native:
+                native.confirm_close()
             return
 
         # In Prefab Mode: auto-save the prefab, schedule the deferred exit
@@ -766,8 +807,10 @@ class SceneFileManager:
             self.exit_prefab_mode()  # deferred
             if self._previous_scene_dirty:
                 self._request_save_confirmation('close')
-            elif self._engine:
-                self._engine.confirm_close()
+            else:
+                native = self._native_engine_for_close()
+                if native:
+                    native.confirm_close()
             return
 
         # Always persist camera state before closing
@@ -776,8 +819,10 @@ class SceneFileManager:
 
         if self._dirty:
             self._request_save_confirmation('close')
-        elif self._engine:
-            self._engine.confirm_close()
+        else:
+            native = self._native_engine_for_close()
+            if native:
+                native.confirm_close()
 
     def load_last_scene_or_default(self):
         """Called at startup — load the last opened scene, or create a default.
@@ -818,9 +863,20 @@ class SceneFileManager:
                     self._post_save_callback = None
                     cb()
                 elif not success:
+                    # Save failed — cancel pending close/open/new chain so user can retry.
+                    if self._post_save_callback is not None:
+                        if self._pending_action == 'close' and self._engine:
+                            self._engine.cancel_close()
+                        self._close_in_progress = False
+                        self._clear_pending_action()
                     self._post_save_callback = None
             else:
-                # User cancelled the dialog — clear chained action
+                # User cancelled the Save As dialog — cancel pending close/open/new chain.
+                if self._post_save_callback is not None:
+                    if self._pending_action == 'close' and self._engine:
+                        self._engine.cancel_close()
+                    self._close_in_progress = False
+                    self._clear_pending_action()
                 self._post_save_callback = None
 
     # ------------------------------------------------------------------
@@ -912,6 +968,11 @@ class SceneFileManager:
         elif action == 'close' and self._engine:
             self._engine.confirm_close()
             return True
+        elif action == 'close':
+            native = self._native_engine_for_close()
+            if native:
+                native.confirm_close()
+                return True
         return False
 
     def _clear_pending_action(self):
@@ -942,11 +1003,37 @@ class SceneFileManager:
 
             def _on_save():
                 if self._current_scene_path:
+                    action = self._pending_action
                     if self._do_save(self._current_scene_path):
-                        self._execute_pending_action()
+                        if not self._execute_pending_action():
+                            native = self._native_engine_for_close()
+                            if native and action == 'close':
+                                native.confirm_close()
+                    else:
+                        native = self._native_engine_for_close()
+                        if self._pending_action == 'close' and native:
+                            native.cancel_close()
+                        self._close_in_progress = False
+                        self._clear_pending_action()
                 else:
-                    self._post_save_callback = self._execute_pending_action
-                    self._show_save_as_dialog()
+                    # On close with an untitled scene, auto-save into Assets/
+                    # to avoid Save-As dialog platform differences.
+                    if self._pending_action == 'close':
+                        default_path = self._default_scene_save_path()
+                        if default_path and self._do_save(default_path):
+                            if not self._execute_pending_action():
+                                native = self._native_engine_for_close()
+                                if native:
+                                    native.confirm_close()
+                        else:
+                            native = self._native_engine_for_close()
+                            if native:
+                                native.cancel_close()
+                            self._close_in_progress = False
+                            self._clear_pending_action()
+                    else:
+                        self._post_save_callback = self._execute_pending_action
+                        self._show_save_as_dialog()
                 ctx.close_current_popup()
 
             def _on_dont_save():
@@ -959,8 +1046,9 @@ class SceneFileManager:
                 ctx.close_current_popup()
 
             def _on_cancel():
-                if self._pending_action == 'close' and self._engine:
-                    self._engine.cancel_close()
+                native = self._native_engine_for_close()
+                if self._pending_action == 'close' and native:
+                    native.cancel_close()
                 self._close_in_progress = False
                 self._clear_pending_action()
                 ctx.close_current_popup()
@@ -1248,9 +1336,31 @@ class SceneFileManager:
         mgr.sync_dirty_state()
 
 
+    def _default_scene_save_path(self) -> Optional[str]:
+        """Return a unique default scene path under Assets/ for untitled saves."""
+        root = _effective_project_root()
+        if not root:
+            return None
+
+        assets_dir = os.path.join(root, "Assets")
+        os.makedirs(assets_dir, exist_ok=True)
+
+        base_name = DEFAULT_SCENE_FILE_BASE
+        candidate = os.path.join(assets_dir, f"{base_name}{SCENE_EXTENSION}")
+        if not os.path.exists(candidate):
+            return candidate
+
+        index = 1
+        while True:
+            candidate = os.path.join(assets_dir, f"{base_name} {index}{SCENE_EXTENSION}")
+            if not os.path.exists(candidate):
+                return candidate
+            index += 1
+
+
     def _show_save_as_dialog(self):
         """Open a file dialog (on a background thread)."""
-        root = get_project_root()
+        root = _effective_project_root()
         if not root:
             Debug.log_warning("No project root set — cannot save scene.")
             return
@@ -1265,19 +1375,19 @@ class SceneFileManager:
                     self._pending_save_path = chosen_path
                 else:
                     Debug.log_warning("Scene must be saved under Assets/ directory.")
-                    self._pending_save_path = None
+                    self._pending_save_path = ""  # cancel sentinel
             else:
-                self._pending_save_path = None
+                self._pending_save_path = ""  # cancel sentinel
 
         if self._current_scene_path:
             default_filename = os.path.basename(self._current_scene_path)
         else:
-            default_filename = f"{DEFAULT_SCENE_NAME}{SCENE_EXTENSION}"
+            default_filename = f"{DEFAULT_SCENE_FILE_BASE}{SCENE_EXTENSION}"
         _show_save_dialog(assets_dir, _on_result, default_filename)
 
     def _is_under_assets(self, path: str) -> bool:
         """Check if *path* is within the project's Assets/ directory."""
-        root = get_project_root()
+        root = _effective_project_root()
         if not root:
             return False
         assets = os.path.normcase(os.path.abspath(os.path.join(root, "Assets")))
