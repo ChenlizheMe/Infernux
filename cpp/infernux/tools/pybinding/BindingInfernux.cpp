@@ -665,6 +665,36 @@ PYBIND11_MODULE(_Infernux, m)
                     r->RequestFullSpeedFrame();
             },
             "Force full-speed rendering for the next few frames")
+        .def(
+            "set_editor_fps_cap",
+            [](Infernux &self, float fps) {
+                auto *r = self.GetRenderer();
+                if (r)
+                    r->SetEditorFpsCap(fps);
+            },
+            py::arg("fps"), "Set editor-mode FPS cap (e.g. 60). 0 = uncapped. Only applies outside play mode.")
+        .def(
+            "get_editor_fps_cap",
+            [](Infernux &self) -> float {
+                auto *r = self.GetRenderer();
+                return r ? r->GetEditorFpsCap() : 0.0f;
+            },
+            "Get editor-mode FPS cap")
+        .def(
+            "set_play_mode_rendering",
+            [](Infernux &self, bool play) {
+                auto *r = self.GetRenderer();
+                if (r)
+                    r->SetPlayModeRendering(play);
+            },
+            py::arg("play"), "Enable/disable play-mode rendering (uncapped FPS, no idle)")
+        .def(
+            "is_play_mode_rendering",
+            [](Infernux &self) -> bool {
+                auto *r = self.GetRenderer();
+                return r && r->IsPlayModeRendering();
+            },
+            "Check if renderer is in play-mode (uncapped FPS)")
         // ========================================================================
         // Scene Picking API - for editor selection
         // ========================================================================

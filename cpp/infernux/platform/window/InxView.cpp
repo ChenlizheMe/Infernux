@@ -45,48 +45,72 @@ void InxView::ProcessEvent()
     InputManager::Instance().SetWindow(m_window);
     InputManager::Instance().BeginFrame();
 
-    // ---- Power-save: sleep until an event arrives (or timeout) ----
+    // ====================================================================
+    // Frame-rate limiter
+    //
+    // Three tiers:
+    //   play mode      → no sleep, full speed (bypass entirely)
+    //   editor active  → hard cap to editorFpsCap via SDL_Delay
+    //   editor idle    → sleep via SDL_WaitEventTimeout, wake on input
+    //
+    // We measure elapsed time since the last frame start and sleep only
+    // for the *remaining* budget.  Active mode uses SDL_Delay (hard cap);
+    // idle mode uses SDL_WaitEventTimeout with a real event struct so the
+    // thread wakes immediately on user input and no events are lost.
+    // ====================================================================
     m_idling.isIdling = false;
-    if (m_idling.enableIdling && m_idling.fpsIdle > 0.0f && m_activeFramesRemaining <= 0) {
-        auto beforeWait = std::chrono::steady_clock::now();
-        int waitMs = static_cast<int>(1000.0f / m_idling.fpsIdle);
-        if (waitMs < 1)
-            waitMs = 1;
 
-        // SDL_WaitEventTimeout blocks the thread, waking on any OS event
-        // or after waitMs — this is the core power-save mechanism.
-        SDL_WaitEventTimeout(nullptr, waitMs);
+    SDL_Event firstEvent{};
+    bool gotFirstEvent = false;
 
-        auto afterWait = std::chrono::steady_clock::now();
-        double waitSec = std::chrono::duration<double>(afterWait - beforeWait).count();
-        double expectedSec = 1.0 / static_cast<double>(m_idling.fpsIdle);
-        m_idling.isIdling = (waitSec > expectedSec * 0.9);
+    if (!m_isPlayMode) {
+        bool isIdle = m_idling.enableIdling && m_idling.fpsIdle > 0.0f && m_activeFramesRemaining <= 0;
+        float targetFps = isIdle ? m_idling.fpsIdle : m_idling.editorFpsCap;
+
+        if (targetFps > 0.0f) {
+            auto now = std::chrono::steady_clock::now();
+            double elapsed = std::chrono::duration<double>(now - m_lastFrameStart).count();
+            double budget = 1.0 / static_cast<double>(targetFps);
+            int sleepMs = static_cast<int>((budget - elapsed) * 1000.0);
+
+            if (sleepMs > 0) {
+                if (isIdle) {
+                    // Idle: block until an event arrives OR the timeout expires.
+                    // A real event struct is used so the event data is preserved.
+                    gotFirstEvent = SDL_WaitEventTimeout(&firstEvent, sleepMs);
+
+                    auto afterWait = std::chrono::steady_clock::now();
+                    double waitSec = std::chrono::duration<double>(afterWait - now).count();
+                    m_idling.isIdling = (waitSec > budget * 0.9);
+                } else {
+                    // Active editor: hard sleep for the remaining frame budget.
+                    SDL_Delay(sleepMs);
+                }
+            }
+        }
     }
 
+    // Always keep m_lastFrameStart current (even in play mode) so the
+    // first editor frame after exiting play mode doesn't see a huge elapsed.
+    m_lastFrameStart = std::chrono::steady_clock::now();
+
+    // ---- Poll & process all pending events ----
     bool hadInputEvent = false;
 
-    SDL_Event event{};
-    while (SDL_PollEvent(&event)) {
+    auto processOneEvent = [&](SDL_Event &e) {
         bool forwardToImGui = true;
         if (InputManager::Instance().IsEditorMouseCaptureActive()) {
-            switch (event.type) {
-            case SDL_EVENT_MOUSE_MOTION:
+            if (e.type == SDL_EVENT_MOUSE_MOTION)
                 forwardToImGui = false;
-                break;
-            default:
-                break;
-            }
         }
 
         if (forwardToImGui) {
-            ImGui_ImplSDL3_ProcessEvent(&event);
+            ImGui_ImplSDL3_ProcessEvent(&e);
         }
 
-        // Feed every event into the input manager
-        InputManager::Instance().ProcessSDLEvent(event);
+        InputManager::Instance().ProcessSDLEvent(e);
 
-        // Detect user interaction to reset idle cooldown
-        switch (event.type) {
+        switch (e.type) {
         case SDL_EVENT_MOUSE_MOTION:
         case SDL_EVENT_MOUSE_BUTTON_DOWN:
         case SDL_EVENT_MOUSE_BUTTON_UP:
@@ -102,24 +126,34 @@ void InxView::ProcessEvent()
             break;
         }
 
-        if (event.type == SDL_EVENT_QUIT) {
+        if (e.type == SDL_EVENT_QUIT) {
             m_closeRequested = true;
-            break;
         }
 
-        // Track window minimized / restored / occluded so the renderer
-        // can skip Vulkan draw calls when the window is not visible.
-        if (event.type == SDL_EVENT_WINDOW_MINIMIZED) {
+        if (e.type == SDL_EVENT_WINDOW_MINIMIZED) {
             m_isMinimized = true;
         }
-        if (event.type == SDL_EVENT_WINDOW_RESTORED || event.type == SDL_EVENT_WINDOW_EXPOSED ||
-            event.type == SDL_EVENT_WINDOW_FOCUS_GAINED) {
+        if (e.type == SDL_EVENT_WINDOW_RESTORED || e.type == SDL_EVENT_WINDOW_EXPOSED ||
+            e.type == SDL_EVENT_WINDOW_FOCUS_GAINED) {
             m_isMinimized = false;
-            hadInputEvent = true; // force full-speed on restore
+            hadInputEvent = true;
         }
-        if (event.type == SDL_EVENT_WINDOW_OCCLUDED) {
+        if (e.type == SDL_EVENT_WINDOW_OCCLUDED) {
             m_isMinimized = true;
         }
+    };
+
+    // Process the event captured by SDL_WaitEventTimeout (if any)
+    if (gotFirstEvent) {
+        processOneEvent(firstEvent);
+    }
+
+    // Drain remaining queued events
+    SDL_Event event{};
+    while (SDL_PollEvent(&event)) {
+        processOneEvent(event);
+        if (m_closeRequested)
+            break;
     }
 
     // Reset idle cooldown when user interacted

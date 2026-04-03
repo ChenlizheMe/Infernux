@@ -262,6 +262,20 @@ class InxRenderer
     /// @brief Check if the editor is currently in idle (reduced-FPS) state.
     bool IsEditorIdling() const;
 
+    /// @brief Set the editor-mode FPS cap (e.g. 60). 0 = uncapped.
+    /// Only applies outside play mode.
+    void SetEditorFpsCap(float fps);
+
+    /// @brief Get the editor-mode FPS cap.
+    float GetEditorFpsCap() const;
+
+    /// @brief Tell the renderer whether the engine is in play mode.
+    /// In play mode, the frame-rate cap and idle sleep are both disabled.
+    void SetPlayModeRendering(bool play);
+
+    /// @brief Check if the renderer is in play-mode (uncapped FPS).
+    bool IsPlayModeRendering() const;
+
     /// @brief Force full-speed rendering for the next few frames (e.g. after
     /// a programmatic scene change that doesn't generate SDL events).
     void RequestFullSpeedFrame();

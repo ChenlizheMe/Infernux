@@ -101,6 +101,9 @@ class PlayModeManager:
         # Asset database for GUID-based script lookup
         self._asset_database = None
         self._runtime_hidden_object_ids: set[int] = set()
+
+        # C++ engine handle for renderer-level play mode signalling
+        self._native_engine = None
     
     @classmethod
     def instance(cls) -> Optional['PlayModeManager']:
@@ -1008,6 +1011,15 @@ class PlayModeManager:
     
     def _notify_state_change(self, old_state: PlayModeState, new_state: PlayModeState):
         """Notify all listeners of state change."""
+        # Tell the C++ renderer whether we're in play mode so it can
+        # bypass the editor FPS cap and idle sleep.
+        is_playing = new_state != PlayModeState.EDIT
+        if self._native_engine is not None:
+            try:
+                self._native_engine.set_play_mode_rendering(is_playing)
+            except Exception:
+                pass
+
         event = PlayModeEvent(
             old_state=old_state,
             new_state=new_state,

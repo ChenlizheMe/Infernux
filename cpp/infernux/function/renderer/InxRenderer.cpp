@@ -403,12 +403,6 @@ void InxRenderer::DrawFrame()
 
     // Window events
     m_view->ProcessEvent();
-
-    // When the game camera is active (play mode / game preview) or the
-    // scene view is actively rendering, we need full frame rate — skip idle.
-    if (m_gameCameraEnabled) {
-        m_view->RequestFullSpeedFrame();
-    }
 #if INFERNUX_FRAME_PROFILE
     _fp.stamp(); // [1] after input/event processing
 #endif
@@ -1712,6 +1706,28 @@ float InxRenderer::GetEditorIdleFps() const
 bool InxRenderer::IsEditorIdling() const
 {
     return m_view ? m_view->GetIdling().isIdling : false;
+}
+
+void InxRenderer::SetEditorFpsCap(float fps)
+{
+    if (m_view)
+        m_view->GetIdling().editorFpsCap = fps;
+}
+
+float InxRenderer::GetEditorFpsCap() const
+{
+    return m_view ? m_view->GetIdling().editorFpsCap : 0.0f;
+}
+
+void InxRenderer::SetPlayModeRendering(bool play)
+{
+    if (m_view)
+        m_view->SetPlayMode(play);
+}
+
+bool InxRenderer::IsPlayModeRendering() const
+{
+    return m_view ? m_view->IsPlayMode() : false;
 }
 
 void InxRenderer::RequestFullSpeedFrame()

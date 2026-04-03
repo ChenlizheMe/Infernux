@@ -95,6 +95,7 @@ class Engine():
         # Initialize PlayModeManager (SceneManager will be set later via binding)
         self._play_mode_manager = PlayModeManager()
         self._play_mode_manager.set_asset_database(self.get_asset_database())
+        self._play_mode_manager._native_engine = self._engine
         Debug.log_internal("PlayModeManager initialized")
 
         # Auto-activate Python SRP rendering path
