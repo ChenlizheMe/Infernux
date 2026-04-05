@@ -90,7 +90,7 @@ class TestGameBuilderDependencyCollection:
         original_find_spec = importlib.util.find_spec
 
         def fake_find_spec(name):
-            if name in {"numba", "llvmlite"}:
+            if name in {"numba", "llvmlite", "numpy"}:
                 return object()
             return original_find_spec(name)
 
@@ -98,7 +98,7 @@ class TestGameBuilderDependencyCollection:
 
         deps = builder._collect_user_dependencies()
 
-        assert deps == ["llvmlite", "numba"]
+        assert deps == ["llvmlite", "numba", "numpy"]
 
     def test_collect_user_dependencies_detects_public_infernux_jit_api(self, tmp_path, monkeypatch):
         project_root = _make_project(tmp_path)
@@ -108,7 +108,7 @@ class TestGameBuilderDependencyCollection:
         original_find_spec = importlib.util.find_spec
 
         def fake_find_spec(name):
-            if name in {"numba", "llvmlite"}:
+            if name in {"numba", "llvmlite", "numpy"}:
                 return object()
             return original_find_spec(name)
 
@@ -116,4 +116,4 @@ class TestGameBuilderDependencyCollection:
 
         deps = builder._collect_user_dependencies()
 
-        assert deps == ["llvmlite", "numba"]
+        assert deps == ["llvmlite", "numba", "numpy"]
