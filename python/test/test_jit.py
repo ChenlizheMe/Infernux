@@ -63,20 +63,6 @@ class TestEnsureJitRuntime:
 
 
 class TestPrecompileJit:
-    def test_precompile_jit_uses_non_installing_check(self, monkeypatch):
-        called = {"auto_install": None, "precompile": False}
-
-        def _ensure(*, auto_install: bool = True) -> bool:
-            called["auto_install"] = auto_install
-            return False
-
-        def _precompile() -> None:
-            called["precompile"] = True
-
-        monkeypatch.setattr(jit, "ensure_jit_runtime", _ensure)
-        monkeypatch.setattr(jit, "precompile", _precompile)
-
-        jit.precompile_jit()
-
-        assert called["auto_install"] is False
-        assert called["precompile"] is True
+    def test_precompile_jit_is_noop(self):
+        # precompile_jit() is kept for backward compat; it does nothing.
+        jit.precompile_jit()  # should not raise

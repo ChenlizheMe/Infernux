@@ -55,7 +55,10 @@ def __getattr__(name: str):
     """
     if name == "jit":
         return importlib.import_module("Infernux.jit")
-    if name in {"njit", "precompile", "precompile_jit", "ensure_jit_runtime", "JIT_AVAILABLE"}:
+    if name in {
+        "njit", "warmup", "precompile_jit", "ensure_jit_runtime",
+        "JIT_AVAILABLE",
+    }:
         jit_module = importlib.import_module("Infernux.jit")
         return getattr(jit_module, name)
     raise AttributeError(f"module 'Infernux' has no attribute {name!r}")

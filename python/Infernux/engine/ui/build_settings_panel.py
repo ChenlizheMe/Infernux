@@ -381,6 +381,8 @@ class BuildSettingsPanel:
         self._window_width = data.get("window_width", 1280)
         self._window_height = data.get("window_height", 720)
         self._window_resizable = data.get("window_resizable", True)
+        self._debug_mode = data.get("debug_mode", False)
+        self._lto = data.get("lto", True)
         self._splash_items = list(data.get("splash_items", []))
 
     def _prune_missing_splash(self):
@@ -403,6 +405,8 @@ class BuildSettingsPanel:
             "window_width": self._window_width,
             "window_height": self._window_height,
             "window_resizable": self._window_resizable,
+            "debug_mode": self._debug_mode,
+            "lto": self._lto,
             "splash_items": self._splash_items,
         })
 
@@ -474,10 +478,20 @@ class BuildSettingsPanel:
         ctx.label(t("build.game_name"))
         root = get_project_root()
         placeholder = os.path.basename(root) if root else "MyGame"
-        ctx.set_next_item_width(400)
+        ctx.set_next_item_width(300)
         new_name = ctx.text_input("##game_name", self._game_name, 256)
         if new_name != self._game_name:
             self._game_name = new_name
+            self._save()
+        ctx.same_line(0, 20)
+        new_debug = ctx.checkbox(t("build.debug_mode") + "##debug_mode", self._debug_mode)
+        if new_debug != self._debug_mode:
+            self._debug_mode = new_debug
+            self._save()
+        ctx.same_line(0, 20)
+        new_lto = ctx.checkbox(t("build.lto") + "##lto", self._lto)
+        if new_lto != self._lto:
+            self._lto = new_lto
             self._save()
         if not self._game_name:
             ctx.same_line()
@@ -882,6 +896,8 @@ class BuildSettingsPanel:
             window_height=self._window_height,
             window_resizable=self._window_resizable,
             splash_items=self._splash_items,
+            debug_mode=self._debug_mode,
+            lto=self._lto,
         )
 
     def _cancel_build(self):

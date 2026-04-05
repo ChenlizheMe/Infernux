@@ -133,9 +133,30 @@ class Mathf:
                     smooth_time=0.3, delta_time=Time.delta_time,
                 )
         """
-        from Infernux._jit_kernels import jit_smooth_damp
-        return jit_smooth_damp(current, target, current_velocity,
-                               smooth_time, max_speed, delta_time)
+        if smooth_time < 0.0001:
+            smooth_time = 0.0001
+        omega = 2.0 / smooth_time
+        x = omega * delta_time
+        exp_factor = 1.0 / (1.0 + x + 0.48 * x * x + 0.235 * x * x * x)
+        change = current - target
+        original_to = target
+
+        max_change = max_speed * smooth_time
+        if change < -max_change:
+            change = -max_change
+        elif change > max_change:
+            change = max_change
+        target = current - change
+
+        temp = (current_velocity + omega * change) * delta_time
+        new_velocity = (current_velocity - omega * temp) * exp_factor
+        output = target + (change + temp) * exp_factor
+
+        if (original_to - current > 0.0) == (output > original_to):
+            output = original_to
+            new_velocity = (output - original_to) / delta_time if delta_time > 0.0 else 0.0
+
+        return output, new_velocity
 
     # ====================================================================
     # Angle helpers (degrees)

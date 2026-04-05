@@ -359,6 +359,9 @@ class InxUIScreenComponent(InxUIComponent):
             return (rx <= px <= rx + rw) and (ry <= py <= ry + rh)
 
         # Rotate point into element's local frame (negate angle)
-        from Infernux._jit_kernels import jit_contains_point_rotated
         sin_a, cos_a = self._rot_sincos()
-        return jit_contains_point_rotated(px, py, rx, ry, rw, rh, sin_a, cos_a)
+        dx = px - (rx + rw * 0.5)
+        dy = py - (ry + rh * 0.5)
+        lx = dx * cos_a + dy * sin_a + rw * 0.5
+        ly = -dx * sin_a + dy * cos_a + rh * 0.5
+        return (0.0 <= lx <= rw) and (0.0 <= ly <= rh)

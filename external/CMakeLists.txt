@@ -20,6 +20,10 @@ set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
 set(ASSIMP_BUILD_ASSIMP_TOOLS OFF CACHE BOOL "" FORCE)
 set(ASSIMP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(ASSIMP_NO_EXPORT ON CACHE BOOL "" FORCE)
+# IFC importer triggers a spurious MSVC /MP parallel compilation error
+# (C2065 "_Ty1" in <map> from IFCUtil.h) — disable it; IFC (building
+# CAD) is not needed for game asset pipelines.
+set(ASSIMP_BUILD_IFC_IMPORTER OFF CACHE BOOL "" FORCE)
 if(APPLE OR UNIX)
     # Use system zlib on macOS/Linux — assimp's bundled old zlib has
     # compilation issues with modern Apple Clang system headers.

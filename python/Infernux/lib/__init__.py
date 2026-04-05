@@ -103,7 +103,46 @@ def _raise_native_import_error(exc):
 
     raise ImportError("\n".join(lines)) from exc
 
+
+def _preload_bundled_crt_dlls() -> None:
+    """Pre-load MSVC CRT DLLs bundled alongside ``_Infernux.pyd``.
+
+    On machines without a system-wide Visual C++ Redistributable install,
+    ``os.add_dll_directory()`` alone is not always sufficient —
+    ``_Infernux.pyd`` (and the engine DLLs it depends on) may still fail
+    to resolve ``vcruntime140.dll`` / ``msvcp140.dll`` at load time.
+
+    Explicitly loading them via ``ctypes.WinDLL`` before the ``from
+    ._Infernux import *`` guarantees they are resident in the process
+    and the dynamic linker can satisfy the dependency.
+    """
+    if sys.platform != "win32":
+        return
+
+    # Order matters: vcruntime first, then msvcp / concrt (they depend
+    # on vcruntime).
+    _CRT_LOAD_ORDER = (
+        "vcruntime140.dll",
+        "vcruntime140_1.dll",
+        "msvcp140.dll",
+        "msvcp140_1.dll",
+        "msvcp140_2.dll",
+        "msvcp140_atomic_wait.dll",
+        "msvcp140_codecvt_ids.dll",
+        "concrt140.dll",
+    )
+
+    for name in _CRT_LOAD_ORDER:
+        full = os.path.join(lib_dir, name)
+        if os.path.isfile(full):
+            try:
+                ctypes.WinDLL(full)
+            except OSError:
+                pass  # Best-effort; the import below will give a clear error.
+
+
 _register_native_search_dir(lib_dir)
+_preload_bundled_crt_dlls()
 
 try:
     from ._Infernux import *

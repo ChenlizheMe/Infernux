@@ -203,6 +203,30 @@ def _install_requirements_files(python_exe: str, requirement_files: List[str]) -
 class NuitkaBuilder:
     """Wraps Nuitka compilation for Infernux standalone builds."""
 
+    # Packages that must be excluded from Nuitka compilation and
+    # injected as raw site-packages into the dist.  Numba requires
+    # Python bytecode at runtime for its LLVM JIT compiler — Nuitka's
+    # C compilation removes the bytecode, making @njit silently fail.
+    _JIT_NOFOLLOW_PACKAGES = frozenset({"numba", "llvmlite", "numpy"})
+
+    # Directories stripped from raw-copied JIT packages to slim down
+    # the build output.  These are never needed at runtime.
+    _JIT_STRIP_DIRS: dict[str, list[str]] = {
+        "numba": [
+            "tests", "cuda", "testing", "pycc", "scripts",
+            # CUDA is ~4 MB and only needed for GPU compute
+            # tests/testing are ~10 MB of test fixtures
+        ],
+        "numpy": [
+            "tests", "f2py", "testing", "doc",
+            "_pyinstaller", "distutils",
+            # f2py is 1.6 MB Fortran build tooling
+        ],
+        "llvmlite": [
+            "tests",
+        ],
+    }
+
     def __init__(
         self,
         entry_script: str,
@@ -215,7 +239,9 @@ class NuitkaBuilder:
         extra_include_packages: Optional[List[str]] = None,
         extra_include_data: Optional[List[str]] = None,
         extra_requirements_files: Optional[List[str]] = None,
+        raw_copy_packages: Optional[List[str]] = None,
         console_mode: str = "disable",
+        lto: bool = True,
     ):
         self.entry_script = os.path.abspath(entry_script)
         self.output_dir = os.path.abspath(output_dir)
@@ -224,6 +250,7 @@ class NuitkaBuilder:
         self.file_version = file_version
         self.icon_path = icon_path
         self.console_mode = console_mode
+        self.lto = lto
         self.extra_include_packages = list(extra_include_packages or [])
         self.extra_include_data = list(extra_include_data or [])
         self.extra_requirements_files = [
@@ -231,6 +258,7 @@ class NuitkaBuilder:
             for path in list(extra_requirements_files or [])
             if path
         ]
+        self.raw_copy_packages = list(raw_copy_packages or [])
 
         # Staging directory — unique per build to allow parallel builds
         tag = hashlib.md5(self.output_dir.encode()).hexdigest()[:8]
@@ -280,6 +308,10 @@ class NuitkaBuilder:
 
         _p("注入原生引擎库 Injecting native engine libraries...", 0.85)
         self._inject_native_libs(dist_dir)
+
+        if self.raw_copy_packages:
+            _p("注入 JIT 运行时包 Injecting JIT runtime packages...", 0.87)
+            self._inject_jit_packages(dist_dir)
 
         if sys.platform == "win32":
             _p("嵌入 UTF-8 清单 Embedding UTF-8 manifest...", 0.90)
@@ -340,7 +372,14 @@ class NuitkaBuilder:
         edge cases and keeps compiler output paths stable on Windows.
         """
         if os.path.isdir(self._staging_dir):
-            shutil.rmtree(self._staging_dir, ignore_errors=True)
+            if sys.platform == "win32":
+                subprocess.run(
+                    ["cmd", "/c", "rd", "/s", "/q", self._staging_dir],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+            else:
+                shutil.rmtree(self._staging_dir, ignore_errors=True)
         os.makedirs(self._staging_dir, exist_ok=True)
 
         # Copy entry script into staging (path itself may be non-ASCII)
@@ -383,7 +422,18 @@ class NuitkaBuilder:
             cmd.append("--msvc=latest")
 
         # Link-time optimization for smaller and faster binaries
-        cmd.append("--lto=yes")
+        if self.lto:
+            cmd.append("--lto=yes")
+
+        # Strip docstrings and assert statements for smaller output
+        cmd.append("--python-flag=-OO")
+
+        # Tell Nuitka to exclude large dev-only frameworks at the module
+        # level — catches transitive imports that --nofollow-import-to
+        # might miss.
+        cmd.append("--noinclude-pytest-mode=nofollow")
+        cmd.append("--noinclude-unittest-mode=nofollow")
+        cmd.append("--noinclude-setuptools-mode=nofollow")
 
         # Parallel C compilation
         cmd.append("--jobs=%d" % max(1, os.cpu_count() - 1))
@@ -419,8 +469,24 @@ class NuitkaBuilder:
         ):
             cmd.append(f"--nofollow-import-to={_editor_mod}")
 
+        # Exclude JIT packages from Nuitka compilation — they will be
+        # injected as raw site-packages afterwards so numba retains the
+        # Python bytecode it needs for LLVM JIT at runtime.
+        _nofollow_jit = self._JIT_NOFOLLOW_PACKAGES | set(self.raw_copy_packages)
+        for _jit_pkg in sorted(_nofollow_jit):
+            cmd.append(f"--nofollow-import-to={_jit_pkg}")
+
+        # Auto-discover stdlib modules that the raw-copied JIT packages
+        # import transitively.  Nuitka can't discover them because the
+        # packages are excluded via --nofollow-import-to, so we trace
+        # them in a subprocess and include them explicitly.
+        if self.raw_copy_packages:
+            for _stdlib_mod in self._discover_jit_stdlib_deps():
+                cmd.append(f"--include-module={_stdlib_mod}")
+
         for pkg in self.extra_include_packages:
-            cmd.append(f"--include-package={pkg}")
+            if pkg not in _nofollow_jit:
+                cmd.append(f"--include-package={pkg}")
 
         for pattern in self.extra_include_data:
             cmd.append(f"--include-package-data={pattern}")
@@ -443,6 +509,60 @@ class NuitkaBuilder:
 
         cmd.append(self._staged_entry)
         return cmd
+
+    # ------------------------------------------------------------------
+    # Auto-discover JIT package stdlib dependencies
+    # ------------------------------------------------------------------
+
+    def _discover_jit_stdlib_deps(self) -> List[str]:
+        """Import raw_copy_packages in the builder Python and return the
+        set of stdlib top-level modules they transitively load.
+
+        This replaces the manual list approach — numba/llvmlite/numpy
+        pull in dozens of stdlib modules (email, csv, html, http, …)
+        that Nuitka cannot discover because we exclude these packages
+        via --nofollow-import-to.
+        """
+        import time as _time
+        _t0 = _time.perf_counter()
+
+        pkgs_arg = ",".join(sorted(self.raw_copy_packages))
+        # The subprocess: record modules before vs after importing the
+        # packages, then report only stdlib top-level names.
+        trace_script = (
+            "import sys; "
+            "before = set(sys.modules); "
+            "pkgs = '$PKGS'.split(','); "
+            "[__import__(p) for p in pkgs]; "
+            "after = set(sys.modules); "
+            "new = {m.split('.')[0] for m in after - before}; "
+            "stdlib = sorted(new & sys.stdlib_module_names); "
+            "print(','.join(stdlib))"
+        ).replace("$PKGS", pkgs_arg)
+
+        try:
+            result = _run_python(
+                self._builder_python,
+                ["-c", trace_script],
+                timeout=120,
+            )
+            if result.returncode != 0 or not result.stdout.strip():
+                Debug.log_warning(
+                    f"JIT stdlib trace failed (exit {result.returncode}): "
+                    f"{(result.stderr or '').strip()[:200]}"
+                )
+                return []
+
+            mods = [m for m in result.stdout.strip().split(",") if m]
+            Debug.log_internal(
+                f"  JIT stdlib trace: {len(mods)} modules in "
+                f"{_time.perf_counter() - _t0:.2f}s  "
+                f"({', '.join(mods[:10])}{'…' if len(mods) > 10 else ''})"
+            )
+            return mods
+        except Exception as exc:
+            Debug.log_warning(f"JIT stdlib trace error: {exc}")
+            return []
 
     # ------------------------------------------------------------------
     # Nuitka execution
@@ -602,6 +722,148 @@ class NuitkaBuilder:
             f"  native lib injection total: {_time.perf_counter() - _inject_t0:.2f}s  "
             f"({len(native_files)} files)"
         )
+
+    # ------------------------------------------------------------------
+    # Inject raw JIT packages
+    # ------------------------------------------------------------------
+
+    def _inject_jit_packages(self, dist_dir: str):
+        """Copy raw site-packages into the Nuitka dist for JIT-dependent packages.
+
+        Numba requires Python bytecode at runtime for LLVM JIT compilation.
+        Nuitka's C compilation removes bytecode, so these packages must be
+        copied as-is from the builder environment's site-packages.
+        """
+        if not self.raw_copy_packages:
+            return
+
+        import time as _time
+        _t0 = _time.perf_counter()
+
+        # Discover site-packages directory of the builder Python.
+        # In conda environments getsitepackages() returns [env_root,
+        # env_root/Lib/site-packages] — we need the one that actually
+        # contains installed packages (the "Lib/site-packages" entry).
+        result = _run_python(
+            self._builder_python,
+            ["-c",
+             "import site, os, json; "
+             "print(json.dumps(site.getsitepackages()))"],
+        )
+        import json as _json
+        candidates = _json.loads(result.stdout.strip())
+        site_packages = ""
+        for cand in reversed(candidates):
+            if os.path.isdir(cand) and os.path.isdir(os.path.join(cand, "numba")):
+                site_packages = cand
+                break
+        if not site_packages:
+            # Fallback: pick the last entry (usually Lib/site-packages)
+            for cand in reversed(candidates):
+                if os.path.isdir(cand):
+                    site_packages = cand
+                    break
+        if not site_packages:
+            Debug.log_warning(
+                f"Builder site-packages not found in {candidates}"
+            )
+            return
+
+        Debug.log_internal(
+            f"  site-packages resolved: {site_packages}  "
+            f"({_time.perf_counter() - _t0:.2f}s)"
+        )
+
+        copied: list[str] = []
+        dist_root = Path(dist_dir)
+
+        for pkg in sorted(self.raw_copy_packages):
+            src = os.path.join(site_packages, pkg)
+            if not os.path.isdir(src):
+                Debug.log_warning(
+                    f"JIT package '{pkg}' not found in {site_packages} — skipping"
+                )
+                continue
+
+            _pkg_t0 = _time.perf_counter()
+            dst = dist_root / pkg
+            if dst.exists():
+                if sys.platform == "win32":
+                    subprocess.run(
+                        ["cmd", "/c", "rd", "/s", "/q", str(dst)],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+                else:
+                    shutil.rmtree(dst)
+
+            # Use robocopy on Windows for significantly faster bulk copy.
+            # /XD skips directories that are never needed at runtime,
+            # cutting the copy volume substantially (especially numpy).
+            # Package-specific strip dirs come from _JIT_STRIP_DIRS.
+            xd_dirs = ["__pycache__", "tests", "test"]
+            xd_dirs.extend(self._JIT_STRIP_DIRS.get(pkg, []))
+            if sys.platform == "win32":
+                rc = subprocess.call(
+                    ["robocopy", src, str(dst), "/E",
+                     "/XD", *xd_dirs,
+                     "/XF", "*.pyc", "*.pdb", "*.lib", "*.a",
+                     "/NFL", "/NDL", "/NJH", "/NJS", "/NP"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    creationflags=0x08000000,
+                )
+                if rc >= 8:
+                    Debug.log_warning(
+                        f"robocopy failed for '{pkg}' (exit {rc}), "
+                        f"falling back to shutil.copytree"
+                    )
+                    if dst.exists():
+                        shutil.rmtree(dst)
+                    shutil.copytree(src, dst)
+            else:
+                shutil.copytree(src, dst)
+                # Strip on non-Windows too
+                for strip_dir in xd_dirs:
+                    strip_path = dst / strip_dir
+                    if strip_path.is_dir():
+                        shutil.rmtree(strip_path)
+
+            elapsed = _time.perf_counter() - _pkg_t0
+            copied.append(f"{pkg} ({elapsed:.1f}s)")
+
+            # Copy companion .libs directory if it exists (e.g. numpy.libs
+            # contains OpenBLAS DLLs that numpy's C extensions need).
+            libs_name = f"{pkg}.libs"
+            libs_src = os.path.join(site_packages, libs_name)
+            if os.path.isdir(libs_src):
+                libs_dst = dist_root / libs_name
+                if libs_dst.exists():
+                    if sys.platform == "win32":
+                        subprocess.run(
+                            ["cmd", "/c", "rd", "/s", "/q", str(libs_dst)],
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                        )
+                    else:
+                        shutil.rmtree(libs_dst)
+                if sys.platform == "win32":
+                    subprocess.call(
+                        ["robocopy", libs_src, str(libs_dst), "/E",
+                         "/NFL", "/NDL", "/NJH", "/NJS", "/NP"],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        creationflags=0x08000000,
+                    )
+                else:
+                    shutil.copytree(libs_src, libs_dst)
+                copied.append(f"{libs_name}")
+
+        if copied:
+            Debug.log_internal(
+                f"  JIT package injection: {', '.join(copied)}  "
+                f"(total {_time.perf_counter() - _t0:.1f}s)"
+            )
 
     # ------------------------------------------------------------------
     # UTF-8 application manifest (Windows)

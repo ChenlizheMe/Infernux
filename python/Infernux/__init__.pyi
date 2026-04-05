@@ -40,7 +40,7 @@ from Infernux.mathf import Mathf as Mathf
 from Infernux.jit import JIT_AVAILABLE as JIT_AVAILABLE
 from Infernux.jit import ensure_jit_runtime as ensure_jit_runtime
 from Infernux.jit import njit as njit
-from Infernux.jit import precompile as precompile
+from Infernux.jit import warmup as warmup
 from Infernux.jit import precompile_jit as precompile_jit
 from Infernux.coroutine import (
     Coroutine as Coroutine,

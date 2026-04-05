@@ -1,4 +1,4 @@
-"""Tests for Infernux.mathf (Mathf utility class) and Infernux._jit_kernels."""
+"""Tests for Infernux.mathf (Mathf utility class) and Infernux.jit kernels."""
 
 from __future__ import annotations
 
@@ -7,11 +7,6 @@ import math
 import pytest
 
 from Infernux.mathf import Mathf
-from Infernux._jit_kernels import (
-    jit_smooth_damp,
-    jit_contains_point_rotated,
-    jit_wire_sphere_trig,
-)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -296,34 +291,4 @@ class TestPowerOfTwo:
         assert Mathf.closest_power_of_two(7) == 8
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# JIT Kernels
-# ═══════════════════════════════════════════════════════════════════════════
 
-class TestJitKernels:
-    def test_smooth_damp_kernel(self):
-        val, vel = jit_smooth_damp(0.0, 10.0, 0.0, 0.3, float("inf"), 0.016)
-        assert val > 0
-        assert vel > 0
-
-    def test_smooth_damp_zero_dt(self):
-        val, vel = jit_smooth_damp(5.0, 10.0, 1.0, 0.3, float("inf"), 0.0)
-        assert isinstance(val, float)
-
-    def test_contains_point_inside(self):
-        assert jit_contains_point_rotated(50, 50, 0, 0, 100, 100, 0.0, 1.0) is True
-
-    def test_contains_point_outside(self):
-        assert jit_contains_point_rotated(150, 150, 0, 0, 100, 100, 0.0, 1.0) is False
-
-    def test_contains_point_rotated(self):
-        sin45 = math.sin(math.pi / 4)
-        cos45 = math.cos(math.pi / 4)
-        assert jit_contains_point_rotated(50, 50, 0, 0, 100, 100, sin45, cos45) is True
-
-    def test_wire_sphere_trig(self):
-        cos_tab, sin_tab = jit_wire_sphere_trig(8)
-        assert len(cos_tab) == 8
-        assert len(sin_tab) == 8
-        assert cos_tab[0] == pytest.approx(1.0)
-        assert sin_tab[0] == pytest.approx(0.0)

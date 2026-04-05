@@ -196,9 +196,11 @@ class Gizmos:
         verts = []
         indices = []
 
-        # Pre-compute trig table (JIT-accelerated when Numba available)
-        from Infernux._jit_kernels import jit_wire_sphere_trig
-        cos_tab, sin_tab = jit_wire_sphere_trig(segments)
+        # Pre-compute trig table
+        import math as _math
+        _two_pi = 2.0 * _math.pi
+        cos_tab = [_math.cos(_two_pi * i / segments) for i in range(segments)]
+        sin_tab = [_math.sin(_two_pi * i / segments) for i in range(segments)]
 
         for axis in range(3):
             base = len(verts)

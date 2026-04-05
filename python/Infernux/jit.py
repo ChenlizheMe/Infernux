@@ -1,11 +1,27 @@
-"""Public JIT helpers for gameplay scripts.
+"""Infernux JIT — public API for JIT-accelerated computation.
 
-This is the supported import surface for Infernux JIT usage:
+Canonical import surface for user scripts::
 
-    from Infernux.jit import njit, precompile_jit
+    from Infernux.jit import njit, warmup, JIT_AVAILABLE
 
-The implementation delegates to ``Infernux._jit_kernels`` so the engine keeps
-one canonical JIT/fallback mechanism.
+Or via the top-level convenience re-export::
+
+    from Infernux import njit
+
+``njit`` wraps ``numba.njit`` with two extra niceties:
+
+* Falls back to a no-op decorator when Numba is not installed.
+* Attaches a ``.py`` attribute to every decorated function,
+  pointing to the original pure-Python source so callers can
+  explicitly bypass JIT::
+
+    @njit(cache=True, fastmath=True)
+    def compute(x): ...
+
+    compute(42)      # JIT (or fallback)
+    compute.py(42)   # always pure Python
+
+``warmup(fn, *args)`` pre-compiles a ``@njit`` function.
 """
 
 from __future__ import annotations
@@ -25,10 +41,10 @@ _JIT_CHECK_ENV = "_INFERNUX_JIT_RUNTIME_CHECKED"
 
 
 def _sync_exports() -> None:
-    global JIT_AVAILABLE, njit, precompile
+    global JIT_AVAILABLE, njit, warmup
     JIT_AVAILABLE = _jit_kernels.JIT_AVAILABLE
     njit = _jit_kernels.njit
-    precompile = _jit_kernels.precompile
+    warmup = _jit_kernels.warmup
 
 
 def _run_python(args: list[str], *, timeout: int) -> subprocess.CompletedProcess:
@@ -126,19 +142,18 @@ def ensure_jit_runtime(*, auto_install: bool = True) -> bool:
 
 
 def precompile_jit() -> None:
-    """Compile and cache built-in JIT kernels ahead of time.
+    """No-op kept for backward compatibility.
 
-    The generic project-requirements phase (``ensure_project_requirements``)
-    already handles numba installation, so we no longer call
-    ``ensure_jit_runtime`` here — just trigger the AOT warm-up.
+    Previously warmed up built-in JIT kernels; those are now pure Python.
+    User code should use ``warmup(fn, *args)`` for their own functions.
     """
-    precompile()
+    pass
 
 
 __all__ = [
     "JIT_AVAILABLE",
     "ensure_jit_runtime",
     "njit",
-    "precompile",
+    "warmup",
     "precompile_jit",
 ]
