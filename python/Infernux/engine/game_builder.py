@@ -1069,11 +1069,40 @@ finally:
         _queue_dir(os.path.join(final_dir, "Infernux", "resources", "icons"))
         _queue_dir(os.path.join(final_dir, "Infernux", "resources", "supports"))
 
+        # Build-time-only video packages — av (PyAV/ffmpeg) and imageio
+        # are used only for splash video encoding at build time.  The
+        # player reads pre-extracted .infsplash blobs via struct.
+        for _build_pkg in ("av", "av.libs", "imageio"):
+            _queue_dir(os.path.join(final_dir, _build_pkg))
+
+        # Remove any leaked ffmpeg DLLs from the dist root that Nuitka's
+        # DLL scanner may have copied from the av package.
+        _FFMPEG_PREFIXES = (
+            "avcodec", "avformat", "avutil", "avfilter", "avdevice",
+            "swresample", "swscale",
+        )
+        for fname in os.listdir(final_dir):
+            if fname.lower().endswith(".dll") and any(
+                fname.lower().startswith(p) for p in _FFMPEG_PREFIXES
+            ):
+                _queue_file(os.path.join(final_dir, fname))
+
         # Individual files not needed at runtime
         _queue_file(os.path.join(final_dir, "Infernux", "lib", "_Infernux.pyi"))
         _queue_file(os.path.join(final_dir, "Infernux", "lib", "InfernuxLauncher.exe"))
         _queue_file(os.path.join(final_dir, "Data", "ProjectSettings", "EditorSettings.json"))
         _queue_file(os.path.join(final_dir, "Data", "ProjectSettings", "GameView.ini"))
+
+        # Remove the platform-tagged .pyd duplicate — Nuitka standardises
+        # to the short name (_Infernux.pyd) and --include-package-data
+        # copies the original cp312-win_amd64.pyd as well.
+        lib_dir_dup = os.path.join(final_dir, "Infernux", "lib")
+        if os.path.isdir(lib_dir_dup):
+            for fname in os.listdir(lib_dir_dup):
+                if fname.endswith(".pyd") and ".cp" in fname:
+                    short = fname.split(".")[0] + ".pyd"
+                    if os.path.isfile(os.path.join(lib_dir_dup, short)):
+                        _queue_file(os.path.join(lib_dir_dup, fname))
 
         # Remove duplicate engine DLLs from Infernux/lib/ — they already
         # exist in the dist root (placed by Nuitka / _inject_native_libs)

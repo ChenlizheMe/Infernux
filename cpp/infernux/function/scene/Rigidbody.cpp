@@ -80,6 +80,13 @@ static Collider *GetPrimaryBodyCollider(GameObject *go)
     return nullptr;
 }
 
+/// Returns the first valid body ID for this game object, or 0xFFFFFFFF.
+static uint32_t GetPrimaryBodyId(GameObject *go)
+{
+    auto *col = GetPrimaryBodyCollider(go);
+    return (col && col->GetBodyId() != 0xFFFFFFFF) ? col->GetBodyId() : 0xFFFFFFFF;
+}
+
 static int MapCollisionDetectionModeToMotionQuality(int mode, bool isKinematic)
 {
     switch (mode) {
@@ -306,16 +313,8 @@ void Rigidbody::SetMaxLinearVelocity(float vel)
 
 glm::vec3 Rigidbody::GetVelocity() const
 {
-    auto *go = GetGameObject();
-    if (!go)
-        return glm::vec3(0.0f);
-
-    // Use the first collider's body
-    auto *col = GetPrimaryBodyCollider(go);
-    if (!col || col->GetBodyId() == 0xFFFFFFFF)
-        return glm::vec3(0.0f);
-
-    return PhysicsWorld::Instance().GetBodyLinearVelocity(col->GetBodyId());
+    uint32_t bid = GetPrimaryBodyId(GetGameObject());
+    return (bid != 0xFFFFFFFF) ? PhysicsWorld::Instance().GetBodyLinearVelocity(bid) : glm::vec3(0.0f);
 }
 
 void Rigidbody::SetVelocity(const glm::vec3 &vel)
@@ -332,15 +331,8 @@ void Rigidbody::SetVelocity(const glm::vec3 &vel)
 
 glm::vec3 Rigidbody::GetAngularVelocity() const
 {
-    auto *go = GetGameObject();
-    if (!go)
-        return glm::vec3(0.0f);
-
-    auto *col = GetPrimaryBodyCollider(go);
-    if (!col || col->GetBodyId() == 0xFFFFFFFF)
-        return glm::vec3(0.0f);
-
-    return PhysicsWorld::Instance().GetBodyAngularVelocity(col->GetBodyId());
+    uint32_t bid = GetPrimaryBodyId(GetGameObject());
+    return (bid != 0xFFFFFFFF) ? PhysicsWorld::Instance().GetBodyAngularVelocity(bid) : glm::vec3(0.0f);
 }
 
 void Rigidbody::SetAngularVelocity(const glm::vec3 &vel)
@@ -510,15 +502,8 @@ void Rigidbody::MoveRotation(const glm::quat &rotation)
 
 glm::vec3 Rigidbody::GetWorldCenterOfMass() const
 {
-    auto *go = GetGameObject();
-    if (!go)
-        return glm::vec3(0.0f);
-
-    auto *col = GetPrimaryBodyCollider(go);
-    if (!col || col->GetBodyId() == 0xFFFFFFFF)
-        return glm::vec3(0.0f);
-
-    return PhysicsWorld::Instance().GetBodyCenterOfMassPosition(col->GetBodyId());
+    uint32_t bid = GetPrimaryBodyId(GetGameObject());
+    return (bid != 0xFFFFFFFF) ? PhysicsWorld::Instance().GetBodyCenterOfMassPosition(bid) : glm::vec3(0.0f);
 }
 
 glm::vec3 Rigidbody::GetPosition() const
@@ -527,14 +512,14 @@ glm::vec3 Rigidbody::GetPosition() const
     if (!go)
         return glm::vec3(0.0f);
 
-    auto *col = GetPrimaryBodyCollider(go);
-    if (!col || col->GetBodyId() == 0xFFFFFFFF) {
+    uint32_t bid = GetPrimaryBodyId(go);
+    if (bid == 0xFFFFFFFF) {
         if (auto *tf = go->GetTransform())
             return tf->GetPosition();
         return glm::vec3(0.0f);
     }
 
-    return PhysicsWorld::Instance().GetBodyPosition(col->GetBodyId());
+    return PhysicsWorld::Instance().GetBodyPosition(bid);
 }
 
 glm::quat Rigidbody::GetRotation() const
@@ -543,14 +528,14 @@ glm::quat Rigidbody::GetRotation() const
     if (!go)
         return glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
 
-    auto *col = GetPrimaryBodyCollider(go);
-    if (!col || col->GetBodyId() == 0xFFFFFFFF) {
+    uint32_t bid = GetPrimaryBodyId(go);
+    if (bid == 0xFFFFFFFF) {
         if (auto *tf = go->GetTransform())
             return tf->GetWorldRotation();
         return glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
     }
 
-    return PhysicsWorld::Instance().GetBodyRotation(col->GetBodyId());
+    return PhysicsWorld::Instance().GetBodyRotation(bid);
 }
 
 // ============================================================================
@@ -559,15 +544,8 @@ glm::quat Rigidbody::GetRotation() const
 
 bool Rigidbody::IsSleeping() const
 {
-    auto *go = GetGameObject();
-    if (!go)
-        return true;
-
-    auto *col = GetPrimaryBodyCollider(go);
-    if (!col || col->GetBodyId() == 0xFFFFFFFF)
-        return true;
-
-    return PhysicsWorld::Instance().IsBodySleeping(col->GetBodyId());
+    uint32_t bid = GetPrimaryBodyId(GetGameObject());
+    return (bid != 0xFFFFFFFF) ? PhysicsWorld::Instance().IsBodySleeping(bid) : true;
 }
 
 void Rigidbody::WakeUp()
@@ -608,13 +586,11 @@ void Rigidbody::SyncPhysicsToTransform()
     if (!go)
         return;
 
-    // Use the first collider's body for position/rotation
-    auto *col = GetPrimaryBodyCollider(go);
-    if (!col || col->GetBodyId() == 0xFFFFFFFF)
+    uint32_t bid = GetPrimaryBodyId(go);
+    if (bid == 0xFFFFFFFF)
         return;
 
     auto &pw = PhysicsWorld::Instance();
-    uint32_t bid = col->GetBodyId();
 
     glm::vec3 bodyPos = pw.GetBodyPosition(bid);
     glm::quat bodyRot = glm::normalize(pw.GetBodyRotation(bid));

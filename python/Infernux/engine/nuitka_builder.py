@@ -467,6 +467,7 @@ class NuitkaBuilder:
             "cv2",
             "imageio",
             "psd_tools",
+            "av",  # PyAV/ffmpeg — build-time splash encoding only
         ):
             cmd.append(f"--nofollow-import-to={_editor_mod}")
 

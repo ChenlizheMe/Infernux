@@ -199,34 +199,13 @@ void OutlineRenderer::Cleanup()
         m_core->GetDeviceContext().WaitIdle();
     }
 
-    if (m_outlineMaskPipeline != VK_NULL_HANDLE) {
-        vkDestroyPipeline(device, m_outlineMaskPipeline, nullptr);
-        m_outlineMaskPipeline = VK_NULL_HANDLE;
-    }
-    if (m_outlineMaskPipelineLayout != VK_NULL_HANDLE) {
-        vkDestroyPipelineLayout(device, m_outlineMaskPipelineLayout, nullptr);
-        m_outlineMaskPipelineLayout = VK_NULL_HANDLE;
-    }
-    if (m_outlineCompositePipeline != VK_NULL_HANDLE) {
-        vkDestroyPipeline(device, m_outlineCompositePipeline, nullptr);
-        m_outlineCompositePipeline = VK_NULL_HANDLE;
-    }
-    if (m_outlineCompositePipelineLayout != VK_NULL_HANDLE) {
-        vkDestroyPipelineLayout(device, m_outlineCompositePipelineLayout, nullptr);
-        m_outlineCompositePipelineLayout = VK_NULL_HANDLE;
-    }
-    if (m_outlineMaskDescSetLayout != VK_NULL_HANDLE) {
-        vkDestroyDescriptorSetLayout(device, m_outlineMaskDescSetLayout, nullptr);
-        m_outlineMaskDescSetLayout = VK_NULL_HANDLE;
-    }
-    if (m_outlineCompositeDescSetLayout != VK_NULL_HANDLE) {
-        vkDestroyDescriptorSetLayout(device, m_outlineCompositeDescSetLayout, nullptr);
-        m_outlineCompositeDescSetLayout = VK_NULL_HANDLE;
-    }
-    if (m_outlineDescPool != VK_NULL_HANDLE) {
-        vkDestroyDescriptorPool(device, m_outlineDescPool, nullptr);
-        m_outlineDescPool = VK_NULL_HANDLE;
-    }
+    vkrender::SafeDestroy(device, m_outlineMaskPipeline);
+    vkrender::SafeDestroy(device, m_outlineMaskPipelineLayout);
+    vkrender::SafeDestroy(device, m_outlineCompositePipeline);
+    vkrender::SafeDestroy(device, m_outlineCompositePipelineLayout);
+    vkrender::SafeDestroy(device, m_outlineMaskDescSetLayout);
+    vkrender::SafeDestroy(device, m_outlineCompositeDescSetLayout);
+    vkrender::SafeDestroy(device, m_outlineDescPool);
 
     // Per-material outline resources
     for (auto &[key, pipeline] : m_perMtlOutlinePipelines) {
@@ -244,38 +223,14 @@ void OutlineRenderer::Cleanup()
     }
     m_outlineInstanceBufs.clear();
 
-    if (m_outlineMtlDescPool != VK_NULL_HANDLE) {
-        vkDestroyDescriptorPool(device, m_outlineMtlDescPool, nullptr);
-        m_outlineMtlDescPool = VK_NULL_HANDLE;
-    }
-    if (m_outlineMtlPipelineLayout != VK_NULL_HANDLE) {
-        vkDestroyPipelineLayout(device, m_outlineMtlPipelineLayout, nullptr);
-        m_outlineMtlPipelineLayout = VK_NULL_HANDLE;
-    }
-    if (m_outlineMtlSet0Layout != VK_NULL_HANDLE) {
-        vkDestroyDescriptorSetLayout(device, m_outlineMtlSet0Layout, nullptr);
-        m_outlineMtlSet0Layout = VK_NULL_HANDLE;
-    }
-    if (m_emptyDescSetLayout != VK_NULL_HANDLE) {
-        vkDestroyDescriptorSetLayout(device, m_emptyDescSetLayout, nullptr);
-        m_emptyDescSetLayout = VK_NULL_HANDLE;
-    }
-    if (m_outlineMaskFramebuffer != VK_NULL_HANDLE) {
-        vkDestroyFramebuffer(device, m_outlineMaskFramebuffer, nullptr);
-        m_outlineMaskFramebuffer = VK_NULL_HANDLE;
-    }
-    if (m_outlineCompositeFramebuffer != VK_NULL_HANDLE) {
-        vkDestroyFramebuffer(device, m_outlineCompositeFramebuffer, nullptr);
-        m_outlineCompositeFramebuffer = VK_NULL_HANDLE;
-    }
-    if (m_outlineMaskRenderPass != VK_NULL_HANDLE) {
-        vkDestroyRenderPass(device, m_outlineMaskRenderPass, nullptr);
-        m_outlineMaskRenderPass = VK_NULL_HANDLE;
-    }
-    if (m_outlineCompositeRenderPass != VK_NULL_HANDLE) {
-        vkDestroyRenderPass(device, m_outlineCompositeRenderPass, nullptr);
-        m_outlineCompositeRenderPass = VK_NULL_HANDLE;
-    }
+    vkrender::SafeDestroy(device, m_outlineMtlDescPool);
+    vkrender::SafeDestroy(device, m_outlineMtlPipelineLayout);
+    vkrender::SafeDestroy(device, m_outlineMtlSet0Layout);
+    vkrender::SafeDestroy(device, m_emptyDescSetLayout);
+    vkrender::SafeDestroy(device, m_outlineMaskFramebuffer);
+    vkrender::SafeDestroy(device, m_outlineCompositeFramebuffer);
+    vkrender::SafeDestroy(device, m_outlineMaskRenderPass);
+    vkrender::SafeDestroy(device, m_outlineCompositeRenderPass);
 
     m_outlineMaskDescSet = VK_NULL_HANDLE;
     m_outlineCompositeDescSet = VK_NULL_HANDLE;
