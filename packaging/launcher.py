@@ -197,6 +197,7 @@ def _handle_uninstall_win32():
             _shutil.rmtree(os.path.join(buf.value, "Infernux Hub"), ignore_errors=True)
     except Exception as _exc:
         logging.getLogger(__name__).debug("[Suppressed] %s: %s", type(_exc).__name__, _exc)
+
         pass
 
     # Ask user if they want to remove install files
