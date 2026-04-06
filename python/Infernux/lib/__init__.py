@@ -24,6 +24,24 @@ def _register_native_search_dir(path: str) -> None:
         path_entries = os.environ.get("PATH", "").split(";") if os.environ.get("PATH") else []
         if norm not in path_entries:
             os.environ["PATH"] = norm + (";" + os.environ["PATH"] if os.environ.get("PATH") else "")
+    elif sys.platform == "linux":
+        import ctypes
+        
+        deps = ["libSDL3.so", "libJolt.so", "libassimp.so", "libSPIRV.so"]
+        for dep in deps:
+            dep_path = os.path.join(norm, dep)
+            if os.path.exists(dep_path):
+                try:
+                    # 使用 RTLD_GLOBAL 标志，让后续加载的 .so 能找到这些符号
+                    ctypes.CDLL(dep_path, mode=ctypes.RTLD_GLOBAL)
+                except OSError as e:
+                    print(f"Warning: Failed to preload {dep}: {e}")
+
+        # 同时保留环境变量修改，以防子进程需要
+        ld_path = os.environ.get("LD_LIBRARY_PATH", "")
+        if norm not in ld_path.split(":"):
+            os.environ["LD_LIBRARY_PATH"] = f"{norm}:{ld_path}".strip(":")
+
     elif sys.platform == "darwin":
         dyld_path = os.environ.get("DYLD_LIBRARY_PATH", "")
         parts = dyld_path.split(":") if dyld_path else []
