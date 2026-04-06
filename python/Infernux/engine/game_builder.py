@@ -123,6 +123,7 @@ class GameBuilder:
         splash_items: Optional[List[Dict]] = None,
         debug_mode: bool = False,
         lto: bool = True,
+        enable_jit: bool = True,
     ):
         self.project_path = os.path.abspath(project_path)
         self.project_name = game_name.strip() if game_name.strip() else os.path.basename(self.project_path)
@@ -135,6 +136,7 @@ class GameBuilder:
         self.splash_items = list(splash_items) if splash_items else []
         self.debug_mode = debug_mode
         self.lto = lto
+        self.enable_jit = enable_jit
 
     # ------------------------------------------------------------------
     # Public API
@@ -532,7 +534,7 @@ finally:
         jit_set = NuitkaBuilder._JIT_NOFOLLOW_PACKAGES
         all_pkgs = user_packages or []
         compiled_pkgs = [p for p in all_pkgs if p not in jit_set]
-        jit_pkgs = [p for p in all_pkgs if p in jit_set]
+        jit_pkgs = [p for p in all_pkgs if p in jit_set] if self.enable_jit else []
 
         nk = NuitkaBuilder(
             entry_script=boot_script,

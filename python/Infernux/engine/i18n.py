@@ -212,6 +212,7 @@ _STRINGS: dict[str, dict[str, str]] = {
     "build.game_name_hint":             {"en": "(default: {name})",         "zh": "(默认: {name})"},
     "build.debug_mode":                 {"en": "Debug Mode",               "zh": "调试模式"},
     "build.lto":                        {"en": "LTO (slower build, better perf)", "zh": "LTO（编译更慢，性能更好）"},
+    "build.enable_jit":                 {"en": "JIT (Numba acceleration)",   "zh": "JIT（Numba 加速）"},
     "build.output_directory":           {"en": "Output Directory",          "zh": "输出目录"},
     "build.output_directory_hint":      {"en": "Use an empty folder, or reuse one containing {marker} from a previous Infernux build.", "zh": "请使用空文件夹，或复用包含旧 Infernux 构建标记文件 {marker} 的目录。"},
     "build.output_directory_error_title": {"en": "Invalid Build Output Directory", "zh": "无效的构建输出目录"},

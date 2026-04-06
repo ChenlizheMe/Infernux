@@ -259,22 +259,22 @@ class IGUI:
         if has_scene and has_assets:
             if ctx.begin_tab_bar("##picker_tabs"):
                 if ctx.begin_tab_item(t("igui.tab_scene")):
-                    if ctx.begin_child("##picker_list_scene", 0, _PICKER_MAX_H):
+                    if ctx.begin_child("##picker_list_scene", 0, _PICKER_MAX_H, False):
                         IGUI._render_picker_items(ctx, scene_items, new_filter, on_pick)
                     ctx.end_child()
                     ctx.end_tab_item()
                 if ctx.begin_tab_item(t("igui.tab_assets")):
-                    if ctx.begin_child("##picker_list_assets", 0, _PICKER_MAX_H):
+                    if ctx.begin_child("##picker_list_assets", 0, _PICKER_MAX_H, False):
                         IGUI._render_picker_items(ctx, asset_items, new_filter, on_pick)
                     ctx.end_child()
                     ctx.end_tab_item()
                 ctx.end_tab_bar()
         elif has_scene:
-            if ctx.begin_child("##picker_list", 0, _PICKER_MAX_H):
+            if ctx.begin_child("##picker_list", 0, _PICKER_MAX_H, False):
                 IGUI._render_picker_items(ctx, scene_items, new_filter, on_pick)
             ctx.end_child()
         elif has_assets:
-            if ctx.begin_child("##picker_list", 0, _PICKER_MAX_H):
+            if ctx.begin_child("##picker_list", 0, _PICKER_MAX_H, False):
                 IGUI._render_picker_items(ctx, asset_items, new_filter, on_pick)
             ctx.end_child()
 
