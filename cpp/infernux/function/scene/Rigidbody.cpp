@@ -118,8 +118,7 @@ INFERNUX_REGISTER_COMPONENT("Rigidbody", Rigidbody)
 // Shared helpers
 // ============================================================================
 
-template <typename Fn>
-void Rigidbody::ForEachBody(Fn &&fn)
+template <typename Fn> void Rigidbody::ForEachBody(Fn &&fn)
 {
     GameObject *go = nullptr;
     auto *pw = GetActivePhysicsWorld(go);

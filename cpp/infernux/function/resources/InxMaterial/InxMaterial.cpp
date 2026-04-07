@@ -104,8 +104,7 @@ bool ApplyDepthTestMeta(RenderState &renderState, const std::string &depthTest, 
     return changed;
 }
 
-bool ApplyBlendMeta(RenderState &renderState, const std::string &blend, bool canEditBlendEnable,
-                    bool canEditBlendMode)
+bool ApplyBlendMeta(RenderState &renderState, const std::string &blend, bool canEditBlendEnable, bool canEditBlendMode)
 {
     if (blend.empty() || !canEditBlendEnable) {
         return false;

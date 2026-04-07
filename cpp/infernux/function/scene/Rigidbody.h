@@ -315,8 +315,7 @@ class Rigidbody : public Component
     class PhysicsWorld *GetActivePhysicsWorld(GameObject *&outGo) const;
 
     /// Invoke @p fn(PhysicsWorld&, bodyId) for every unique Jolt body on this GO.
-    template <typename Fn>
-    void ForEachBody(Fn &&fn);
+    template <typename Fn> void ForEachBody(Fn &&fn);
 
     /// Teleport all sibling collider bodies to @p pos / @p rot, zero velocities,
     /// and update the physics-pose cache.  Used by SyncExternalMovesToPhysics.

@@ -188,8 +188,8 @@ void CopyPropertyToUBO(const MaterialProperty &prop, uint8_t *uboData, uint32_t 
 /// @param stride — bytes to advance after each copy (usually sizeof(T), except vec3 which uses 16).
 template <typename T>
 void PackPropertiesByType(const std::unordered_map<std::string, MaterialProperty> &properties,
-                          MaterialPropertyType type, uint8_t *uboData, size_t &offset, size_t uboSize,
-                          size_t alignment, size_t stride = 0)
+                          MaterialPropertyType type, uint8_t *uboData, size_t &offset, size_t uboSize, size_t alignment,
+                          size_t stride = 0)
 {
     if (stride == 0)
         stride = sizeof(T);

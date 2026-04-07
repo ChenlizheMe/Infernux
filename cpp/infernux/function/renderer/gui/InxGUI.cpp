@@ -96,10 +96,10 @@ void InxGUI::Init(SDL_Window *window)
         c[ImGuiCol_ScrollbarGrabActive] = L(0.439f, 0.439f, 0.439f, 1.00f);
 
         // --- Interactive accent ---
-        c[ImGuiCol_CheckMark] = L(AR, AG, AB, 1.00f);        // #EB5757
-        c[ImGuiCol_SliderGrab] = L(AR, AG, AB, 0.88f);       // #EB5757
-        c[ImGuiCol_SliderGrabActive] = L(AR, AG, AB, 1.00f); // #EB5757
-        c[ImGuiCol_NavHighlight] = ImVec4(0.0f, 0.0f, 0.0f, 0.0f);       // no outline on active fields
+        c[ImGuiCol_CheckMark] = L(AR, AG, AB, 1.00f);              // #EB5757
+        c[ImGuiCol_SliderGrab] = L(AR, AG, AB, 0.88f);             // #EB5757
+        c[ImGuiCol_SliderGrabActive] = L(AR, AG, AB, 1.00f);       // #EB5757
+        c[ImGuiCol_NavHighlight] = ImVec4(0.0f, 0.0f, 0.0f, 0.0f); // no outline on active fields
 
         // --- Buttons --- subtle dark surface with red accent on interaction
         c[ImGuiCol_Button] = L(0.165f, 0.165f, 0.165f, 1.00f); // #2A2A2A
@@ -124,13 +124,13 @@ void InxGUI::Init(SDL_Window *window)
         c[ImGuiCol_ResizeGripActive] = L(AR, AG, AB, 0.50f);
 
         // --- Tabs ---
-        c[ImGuiCol_Tab] = L(0.098f, 0.098f, 0.098f, 1.00f);                       // #191919
-        c[ImGuiCol_TabHovered] = L(0.165f, 0.165f, 0.165f, 1.00f);                // #2A2A2A
-        c[ImGuiCol_TabSelected] = L(0.125f, 0.125f, 0.125f, 1.00f);               // #202020
-        c[ImGuiCol_TabSelectedOverline] = L(AR, AG, AB, 1.00f);       // #EB5757 red overline
-        c[ImGuiCol_TabDimmed] = L(0.098f, 0.098f, 0.098f, 1.00f);                 // #191919
-        c[ImGuiCol_TabDimmedSelected] = L(0.125f, 0.125f, 0.125f, 1.00f);         // #202020
-        c[ImGuiCol_TabDimmedSelectedOverline] = L(AR, AG, AB, 0.60f); // dimmer red overline
+        c[ImGuiCol_Tab] = L(0.098f, 0.098f, 0.098f, 1.00f);               // #191919
+        c[ImGuiCol_TabHovered] = L(0.165f, 0.165f, 0.165f, 1.00f);        // #2A2A2A
+        c[ImGuiCol_TabSelected] = L(0.125f, 0.125f, 0.125f, 1.00f);       // #202020
+        c[ImGuiCol_TabSelectedOverline] = L(AR, AG, AB, 1.00f);           // #EB5757 red overline
+        c[ImGuiCol_TabDimmed] = L(0.098f, 0.098f, 0.098f, 1.00f);         // #191919
+        c[ImGuiCol_TabDimmedSelected] = L(0.125f, 0.125f, 0.125f, 1.00f); // #202020
+        c[ImGuiCol_TabDimmedSelectedOverline] = L(AR, AG, AB, 0.60f);     // dimmer red overline
 
         // --- Docking ---
         c[ImGuiCol_DockingPreview] = L(AR, AG, AB, 0.25f); // #EB5757

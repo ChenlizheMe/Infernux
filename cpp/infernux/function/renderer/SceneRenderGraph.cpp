@@ -769,9 +769,8 @@ void SceneRenderGraph::ResolveSceneMsaa(VkCommandBuffer commandBuffer)
 // BuildRenderGraph helpers
 // ---------------------------------------------------------------------------
 
-void SceneRenderGraph::RegisterTransientTextures(
-    uint32_t width, uint32_t height,
-    std::unordered_map<std::string, vk::ResourceHandle> &customRTHandles)
+void SceneRenderGraph::RegisterTransientTextures(uint32_t width, uint32_t height,
+                                                 std::unordered_map<std::string, vk::ResourceHandle> &customRTHandles)
 {
     // Non-backbuffer, non-depth color textures
     for (const auto &tex : m_pythonGraphDesc.textures) {
@@ -782,8 +781,8 @@ void SceneRenderGraph::RegisterTransientTextures(
                 texW = std::max(1u, width / tex.sizeDivisor);
                 texH = std::max(1u, height / tex.sizeDivisor);
             }
-            vk::ResourceHandle handle = m_renderGraph->RegisterTransientTexture(
-                tex.name, texW, texH, tex.format, VK_SAMPLE_COUNT_1_BIT, true);
+            vk::ResourceHandle handle =
+                m_renderGraph->RegisterTransientTexture(tex.name, texW, texH, tex.format, VK_SAMPLE_COUNT_1_BIT, true);
             customRTHandles[tex.name] = handle;
         }
     }
@@ -798,10 +797,8 @@ void SceneRenderGraph::RegisterTransientTextures(
     }
 }
 
-void SceneRenderGraph::AppendAutoPass(const std::string &name,
-                                      vk::ResourceHandle colorTarget,
-                                      vk::ResourceHandle depthTarget,
-                                      uint32_t width, uint32_t height)
+void SceneRenderGraph::AppendAutoPass(const std::string &name, vk::ResourceHandle colorTarget,
+                                      vk::ResourceHandle depthTarget, uint32_t width, uint32_t height)
 {
     auto callbackIt = m_pythonCallbacks.find(name);
     if (callbackIt == m_pythonCallbacks.end())
@@ -823,8 +820,7 @@ void SceneRenderGraph::AppendAutoPass(const std::string &name,
     });
 }
 
-void SceneRenderGraph::FinalizeGraphOutput(
-    const std::unordered_map<std::string, vk::ResourceHandle> &customRTHandles)
+void SceneRenderGraph::FinalizeGraphOutput(const std::unordered_map<std::string, vk::ResourceHandle> &customRTHandles)
 {
     bool outputSet = false;
     if (m_hasPythonGraph && !m_pythonGraphDesc.outputTexture.empty()) {

@@ -706,8 +706,7 @@ void OutlineRenderer::CreateOutlineMaterialResources()
     }
 }
 
-VkPipeline OutlineRenderer::CreateMaskPipeline(const VkPipelineShaderStageCreateInfo stages[2],
-                                               VkPipelineLayout layout)
+VkPipeline OutlineRenderer::CreateMaskPipeline(const VkPipelineShaderStageCreateInfo stages[2], VkPipelineLayout layout)
 {
     MeshVertexInputState vertexInput;
     VkPipelineInputAssemblyStateCreateInfo inputAssembly = MakeTriangleListInputAssembly();
@@ -826,7 +825,7 @@ VkDescriptorSet OutlineRenderer::GetOrCreateMtlOutlineDescSet(InxMaterial *mater
 // ============================================================================
 
 void OutlineRenderer::BeginRenderPassWithFullViewport(VkCommandBuffer cmdBuf, VkRenderPass rp, VkFramebuffer fb,
-                                                       const VkClearValue &clearVal)
+                                                      const VkClearValue &clearVal)
 {
     uint32_t w = m_sceneRenderTarget->GetWidth();
     uint32_t h = m_sceneRenderTarget->GetHeight();

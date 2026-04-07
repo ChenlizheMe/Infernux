@@ -170,14 +170,13 @@ class PrimitiveMeshes
     /// @param yOffset  vertical center offset (±cylinderHeight/2)
     /// @param vBase    UV v-coordinate start (0.0 for top, 0.75 for bottom)
     /// @param vScale   UV v-coordinate range (0.25 for both hemispheres)
-    static void GenerateHemisphereVertices(std::vector<Vertex> &vertices, int segments, int hemisphereRings, float radius,
-                                           float ySign, float yOffset, float vBase, float vScale)
+    static void GenerateHemisphereVertices(std::vector<Vertex> &vertices, int segments, int hemisphereRings,
+                                           float radius, float ySign, float yOffset, float vBase, float vScale)
     {
         const float PI = 3.14159265358979323846f;
         for (int ring = 0; ring <= hemisphereRings; ++ring) {
-            float phi = (ySign > 0)
-                            ? (PI / 2.0f) * ring / hemisphereRings
-                            : (PI / 2.0f) + (PI / 2.0f) * ring / hemisphereRings;
+            float phi =
+                (ySign > 0) ? (PI / 2.0f) * ring / hemisphereRings : (PI / 2.0f) + (PI / 2.0f) * ring / hemisphereRings;
             float y = std::cos(phi) * radius + yOffset;
             float ringRadius = std::sin(phi) * radius;
 

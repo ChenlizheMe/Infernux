@@ -406,8 +406,8 @@ MaterialRenderData *MaterialPipelineManager::GetOrCreateRenderDataWithReflection
     }
 
     // Update material with pipeline info
-    SyncMaterialForwardPass(material.get(), renderData->pipeline, renderData->pipelineLayout,
-                            renderData->descriptorSet, program);
+    SyncMaterialForwardPass(material.get(), renderData->pipeline, renderData->pipelineLayout, renderData->descriptorSet,
+                            program);
 
     MaterialRenderData *result = renderData.get();
     m_renderDataMap[name] = std::move(renderData);
