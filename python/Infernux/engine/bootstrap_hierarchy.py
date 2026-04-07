@@ -24,6 +24,35 @@ def wire_hierarchy_callbacks(bs: EditorBootstrap) -> None:
 
     sel = SelectionManager.instance()
 
+    def _safe_sequence(values):
+        if values is None:
+            return []
+        if isinstance(values, list):
+            return values
+        try:
+            return list(values)
+        except Exception as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+            return []
+
+    def _get_py_components_safe(obj):
+        if obj is None or not hasattr(obj, 'get_py_components'):
+            return []
+        try:
+            return _safe_sequence(obj.get_py_components())
+        except Exception as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+            return []
+
+    def _get_children_safe(obj):
+        if obj is None or not hasattr(obj, 'get_children'):
+            return []
+        try:
+            return _safe_sequence(obj.get_children())
+        except Exception as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+            return []
+
     # -- Selection integration --
     hp.is_selected = lambda oid: sel.is_selected(oid)
     hp.select_id = lambda oid: sel.select(oid)
@@ -92,7 +121,7 @@ def wire_hierarchy_callbacks(bs: EditorBootstrap) -> None:
         go = scene.find_by_id(oid)
         if not go:
             return False
-        for comp in go.get_py_components():
+        for comp in _get_py_components_safe(go):
             if isinstance(comp, UICanvas):
                 return True
         return False
@@ -106,7 +135,7 @@ def wire_hierarchy_callbacks(bs: EditorBootstrap) -> None:
         go = scene.find_by_id(oid)
         if not go:
             return False
-        for comp in go.get_py_components():
+        for comp in _get_py_components_safe(go):
             if isinstance(comp, InxUIScreenComponent):
                 return True
         return False
@@ -122,7 +151,7 @@ def wire_hierarchy_callbacks(bs: EditorBootstrap) -> None:
             return False
         cur = go
         while cur is not None:
-            for comp in cur.get_py_components():
+            for comp in _get_py_components_safe(cur):
                 if isinstance(comp, UICanvas):
                     return True
             cur = cur.get_parent()
@@ -140,10 +169,10 @@ def wire_hierarchy_callbacks(bs: EditorBootstrap) -> None:
         stack = [go]
         while stack:
             cur = stack.pop()
-            for comp in cur.get_py_components():
+            for comp in _get_py_components_safe(cur):
                 if isinstance(comp, UICanvas):
                     return True
-            stack.extend(cur.get_children())
+            stack.extend(_get_children_safe(cur))
         return False
 
     hp.go_has_canvas = _go_has_canvas
@@ -280,7 +309,7 @@ def wire_hierarchy_callbacks(bs: EditorBootstrap) -> None:
             return parent_id
         cur = obj
         while cur is not None:
-            for c in cur.get_py_components():
+            for c in _get_py_components_safe(cur):
                 if isinstance(c, UICanvas):
                     return cur.id
             cur = cur.get_parent()
@@ -398,7 +427,7 @@ def wire_hierarchy_callbacks(bs: EditorBootstrap) -> None:
             Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             pass
         try:
-            for child in obj.get_children():
+            for child in _get_children_safe(obj):
                 _unpack_recursive(child)
         except Exception as _exc:
             Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
@@ -548,7 +577,9 @@ def wire_hierarchy_callbacks(bs: EditorBootstrap) -> None:
     # -- External drop (from Project panel) --
     def _instantiate_prefab(ref, parent_id, is_guid):
         from Infernux.lib import SceneManager, AssetRegistry
-        from Infernux.engine.prefab_manager import instantiate_prefab
+        from Infernux.engine.prefab_manager import instantiate_prefab, read_prefab_source_canvas
+        from Infernux.ui import UICanvas as _UICanvasCls
+        from Infernux.ui.ui_canvas_utils import invalidate_canvas_cache
         scene = SceneManager.instance().get_active_scene()
         if not scene:
             return
@@ -557,6 +588,34 @@ def wire_hierarchy_callbacks(bs: EditorBootstrap) -> None:
         if registry:
             adb = registry.get_asset_database()
         parent = scene.find_by_id(parent_id) if parent_id else None
+
+        # For UI prefabs dropped at root level, find or create the source canvas.
+        if parent is None:
+            canvas_name = read_prefab_source_canvas(
+                file_path=ref if not is_guid else None,
+                guid=ref if is_guid else None,
+                asset_database=adb,
+            )
+            if canvas_name:
+                # Search existing root objects for a matching canvas
+                for root_obj in scene.get_root_objects():
+                    if root_obj.name != canvas_name:
+                        continue
+                    for comp in _get_py_components_safe(root_obj):
+                        if isinstance(comp, _UICanvasCls):
+                            parent = root_obj
+                            break
+                    if parent is not None:
+                        break
+                # No matching canvas found → create one
+                if parent is None:
+                    canvas_go = scene.create_game_object(canvas_name)
+                    if canvas_go:
+                        canvas_go.add_py_component(_UICanvasCls())
+                        invalidate_canvas_cache()
+                        undo.record_create(canvas_go.id, "Create Canvas")
+                        parent = canvas_go
+
         try:
             if is_guid:
                 new_obj = instantiate_prefab(guid=ref, scene=scene, parent=parent, asset_database=adb)

@@ -79,6 +79,7 @@ class BuildSplashMixin:
 
     def _extract_video_frames(self, video_path: str, output_path: str):
         """Extract video frames to .infsplash binary blob."""
+        from Infernux.engine.game_builder import _ensure_video_splash_packages
         _ensure_video_splash_packages()
         self._extract_with_imageio(video_path, output_path)
 

@@ -25,7 +25,6 @@
 #include <glm/gtc/matrix_transform.hpp>
 
 #include <algorithm>
-#include <array>
 #include <chrono>
 #include <cstring>
 #include <unordered_set>
@@ -149,11 +148,6 @@ void InxVkCoreModular::SetDrawCalls(const std::vector<DrawCall> *drawCalls)
     }
 }
 
-void InxVkCoreModular::SetShadowDrawCalls(const std::vector<DrawCall> *drawCalls)
-{
-    m_shadowDrawCallsPtr = drawCalls;
-}
-
 // ============================================================================
 // Multi-camera UBO update via command buffer
 // ============================================================================
@@ -227,7 +221,7 @@ void InxVkCoreModular::CmdUpdateShadowUBO(VkCommandBuffer cmdBuf)
 }
 
 // ============================================================================
-// Filtered draw — renders only draw calls within a queue range
+// Phase 2: Filtered Draw — renders only draw calls within a queue range
 // ============================================================================
 
 void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width, uint32_t height, int queueMin,
@@ -277,14 +271,10 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
     }
 
     // Resolve override material (if specified)
-    InxMaterial *overrideMatRaw = nullptr;
-    std::shared_ptr<InxMaterial> overrideMatOwner; // keeps alive during this scope
+    std::shared_ptr<InxMaterial> overrideMat = nullptr;
     if (!overrideMaterial.empty()) {
-        overrideMatOwner = AssetRegistry::Instance().GetBuiltinMaterial(overrideMaterial);
-        overrideMatRaw = overrideMatOwner.get();
+        overrideMat = AssetRegistry::Instance().GetBuiltinMaterial(overrideMaterial);
     }
-
-    InxMaterial *defaultMatRaw = defaultMaterial.get();
 
     // ---- Collect eligible draw calls (queue filter + frustum cull) ----
     m_eligibleScratch.clear();
@@ -293,7 +283,7 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
         if (!dc.frustumVisible)
             continue;
 
-        InxMaterial *material = overrideMatRaw ? overrideMatRaw : (dc.material ? dc.material : defaultMatRaw);
+        auto material = overrideMat ? overrideMat : (dc.material ? dc.material : defaultMaterial);
         if (!material)
             continue;
 
@@ -309,24 +299,18 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
                 continue;
         }
 
-        // Compute view-space depth for transparent sort only.
-        // Opaque front_to_back groups by material hash + vertex buffer
-        // (stable order), so depth sort is unnecessary and its O(N log N)
-        // cost every frame is avoided via the is_sorted() early-out.
-        float sortKey = 0.0f;
-        if (sortMode == "back_to_front") {
-            glm::vec4 viewPos = m_stagedUBO.view * glm::vec4(glm::vec3(dc.worldMatrix[3]), 1.0f);
-            sortKey = viewPos.z;
-        }
+        // Compute view-space depth for sorting.
+        glm::vec4 viewPos = m_stagedUBO.view * glm::vec4(glm::vec3(dc.worldMatrix[3]), 1.0f);
+        float sortKey = viewPos.z;
 
         // Material + mesh hash for grouping optimization
-        size_t matHash = std::hash<void *>{}(static_cast<void *>(material));
+        size_t matHash = std::hash<void *>{}(material.get());
         auto bufIt = m_perObjectBuffers.find(dc.objectId);
         VkBuffer vb = VK_NULL_HANDLE;
         if (bufIt != m_perObjectBuffers.end() && bufIt->second.vertexBuffer)
             vb = bufIt->second.vertexBuffer->GetBuffer();
 
-        m_eligibleScratch.push_back({&dc, sortKey, matHash, vb, material, bufIt});
+        m_eligibleScratch.push_back({&dc, sortKey, matHash, vb, std::move(material), bufIt});
     }
 
     // Diagnostic: log per-call eligible count with queue range
@@ -376,55 +360,33 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
     }
 
     // ---- Sort if requested (skip for 0-1 elements) ----
-    // Uniform-batch fast path: when every eligible entry shares the same
-    // material hash and vertex buffer, all entries will be emitted as a
-    // single instanced draw regardless of ordering.  Sorting would only
-    // permute elements within that single batch, so we skip it entirely.
-    bool uniformBatch = false;
     if (m_eligibleScratch.size() > 1) {
-        const size_t firstMatHash = m_eligibleScratch[0].materialHash;
-        const VkBuffer firstVB = m_eligibleScratch[0].vertexBuf;
-        uniformBatch = true;
-        for (size_t i = 1; i < m_eligibleScratch.size(); ++i) {
-            if (m_eligibleScratch[i].materialHash != firstMatHash || m_eligibleScratch[i].vertexBuf != firstVB) {
-                uniformBatch = false;
-                break;
-            }
-        }
-    }
-
-    // is_sorted() early-out: O(N) comparison-only scan avoids the O(N log N)
-    // std::sort when the eligible scratch is already in correct order from
-    // a previous frame (common in stable scenes with static camera).
-    if (m_eligibleScratch.size() > 1 && !uniformBatch) {
         // In left-handed view space: near objects have small positive Z, far
         // objects have larger positive Z.
         if (sortMode == "front_to_back") {
-            // Group by material + vertex buffer only (no depth).
-            // This order is stable across frames for static material assignments,
-            // so is_sorted() returns true and std::sort is skipped entirely.
-            auto cmp = [](const SortableDrawCall &a, const SortableDrawCall &b) {
-                if (a.materialHash != b.materialHash)
-                    return a.materialHash < b.materialHash;
-                return a.vertexBuf < b.vertexBuf;
-            };
-            if (!std::is_sorted(m_eligibleScratch.begin(), m_eligibleScratch.end(), cmp)) {
-                std::sort(m_eligibleScratch.begin(), m_eligibleScratch.end(), cmp);
-            }
+            // Front-to-back: group by material first (minimizes state changes),
+            // then sort by depth within each material group.
+            std::sort(m_eligibleScratch.begin(), m_eligibleScratch.end(),
+                      [](const SortableDrawCall &a, const SortableDrawCall &b) {
+                          if (a.materialHash != b.materialHash)
+                              return a.materialHash < b.materialHash;
+                          if (a.vertexBuf != b.vertexBuf)
+                              return a.vertexBuf < b.vertexBuf;
+                          return a.sortKey < b.sortKey;
+                      });
         } else if (sortMode == "back_to_front") {
-            auto cmp = [](const SortableDrawCall &a, const SortableDrawCall &b) { return a.sortKey > b.sortKey; };
-            if (!std::is_sorted(m_eligibleScratch.begin(), m_eligibleScratch.end(), cmp)) {
-                std::sort(m_eligibleScratch.begin(), m_eligibleScratch.end(), cmp);
-            }
+            // Far first → descending Z.
+            // Depth order is critical for correct alpha blending.
+            std::sort(m_eligibleScratch.begin(), m_eligibleScratch.end(),
+                      [](const SortableDrawCall &a, const SortableDrawCall &b) { return a.sortKey > b.sortKey; });
         } else {
-            auto cmp = [](const SortableDrawCall &a, const SortableDrawCall &b) {
-                if (a.materialHash != b.materialHash)
-                    return a.materialHash < b.materialHash;
-                return a.vertexBuf < b.vertexBuf;
-            };
-            if (!std::is_sorted(m_eligibleScratch.begin(), m_eligibleScratch.end(), cmp)) {
-                std::sort(m_eligibleScratch.begin(), m_eligibleScratch.end(), cmp);
-            }
+            // No explicit sort requested — group by material + mesh for max state reuse
+            std::sort(m_eligibleScratch.begin(), m_eligibleScratch.end(),
+                      [](const SortableDrawCall &a, const SortableDrawCall &b) {
+                          if (a.materialHash != b.materialHash)
+                              return a.materialHash < b.materialHash;
+                          return a.vertexBuf < b.vertexBuf;
+                      });
         }
     } // size() > 1
 
@@ -449,16 +411,13 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
         EnsureInstanceBufferCapacity(frameIndex, writeBase + totalEligible);
         auto &instFrame = m_instanceBuffers[frameIndex];
         if (instFrame.buffer) {
-            void *mapped = instFrame.mapped;
-            if (!mapped) {
-                mapped = instFrame.buffer->Map();
-                instFrame.mapped = mapped;
-            }
+            void *mapped = instFrame.buffer->Map();
             if (mapped) {
                 glm::mat4 *matrices = static_cast<glm::mat4 *>(mapped);
                 for (size_t i = 0; i < totalEligible; ++i) {
                     matrices[writeBase + i] = m_eligibleScratch[i].dc->worldMatrix;
                 }
+                instFrame.buffer->Unmap();
             }
         }
         m_instanceWriteOffset += static_cast<uint32_t>(totalEligible);
@@ -511,7 +470,8 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
         const DrawCall &dc = *entry.dc;
 
         // Material already resolved in filter loop — use directly
-        InxMaterial *matRaw = entry.material;
+        const auto &material = entry.material;
+        InxMaterial *matRaw = material.get();
 
         VkPipeline pipeline = matRaw->GetPassPipeline(ShaderCompileTarget::Forward);
         VkPipelineLayout pipelineLayout = matRaw->GetPassPipelineLayout(ShaderCompileTarget::Forward);
@@ -525,10 +485,8 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
         if (pipeline == VK_NULL_HANDLE) {
             const std::string &vertName = matRaw->GetVertShaderName();
             const std::string &fragName = matRaw->GetFragShaderName();
-            // Non-owning shared_ptr for legacy RefreshMaterialPipeline API (rare path)
-            auto matShared = std::shared_ptr<InxMaterial>(matRaw, [](InxMaterial *) {});
             if (!fragName.empty()) {
-                RefreshMaterialPipeline(matShared, vertName, fragName);
+                RefreshMaterialPipeline(material, vertName, fragName);
                 pipeline = matRaw->GetPassPipeline(ShaderCompileTarget::Forward);
                 pipelineLayout = matRaw->GetPassPipelineLayout(ShaderCompileTarget::Forward);
             }
@@ -571,13 +529,13 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
             continue;
         }
 
-        // Check GPU buffers for this entry — fresh lookup to avoid stale iterators
-        auto bufIt = m_perObjectBuffers.find(dc.objectId);
+        // Check GPU buffers for this entry
+        const auto &bufIt = entry.bufIt;
         if (bufIt == m_perObjectBuffers.end() || !bufIt->second.vertexBuffer || !bufIt->second.indexBuffer) {
             static int bufWarnCount = 0;
             if (bufWarnCount++ < 10) {
-                // INXLOG_WARN("[DrawSceneFiltered] no GPU buffers for objectId=", dc.objectId, " material='",
-                //             matRaw->GetName(), "' queue=", matRaw->GetRenderQueue());
+                INXLOG_WARN("[DrawSceneFiltered] no GPU buffers for objectId=", dc.objectId, " material='",
+                            matRaw->GetName(), "' queue=", matRaw->GetRenderQueue());
             }
             emitBatch();
             continue;
@@ -715,8 +673,8 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
 
     // Pre-build draw list (filter once, reuse for all cascades)
     m_shadowDrawScratch.clear();
-    m_shadowDrawScratch.reserve(shadowDrawCalls().size());
-    for (const DrawCall &dc : shadowDrawCalls()) {
+    m_shadowDrawScratch.reserve(drawCalls().size());
+    for (const DrawCall &dc : drawCalls()) {
         if (!dc.material)
             continue;
         int renderQueue = dc.material->GetRenderQueue();
@@ -729,8 +687,8 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
         VkPipeline pip = dc.material->GetPassPipeline(ShaderCompileTarget::Shadow);
         if (pip == VK_NULL_HANDLE) {
             // Lazy creation: shadow shared resources are ready, create per-material pipeline now
-            auto matShared = std::shared_ptr<InxMaterial>(dc.material, [](InxMaterial *) {});
-            CreateMaterialShadowPipeline(matShared, dc.material->GetVertShaderName(), dc.material->GetFragShaderName());
+            CreateMaterialShadowPipeline(dc.material, dc.material->GetVertShaderName(),
+                                         dc.material->GetFragShaderName());
             pip = dc.material->GetPassPipeline(ShaderCompileTarget::Shadow);
         }
         if (pip == VK_NULL_HANDLE)
@@ -747,6 +705,8 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
 #endif
 
     if (m_shadowDrawScratch.empty()) {
+        static int s_noShadowDrawsWarnCount = 0;
+
 #if INFERNUX_FRAME_PROFILE
         m_drawSubMs[12] += std::chrono::duration<double, std::milli>(Clock::now() - totalStart).count();
 #endif
@@ -852,17 +812,12 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
         EnsureInstanceBufferCapacity(frameIndex, writeBase + visibleCount);
 
         auto &instFrame = m_instanceBuffers[frameIndex];
-        void *mapped = instFrame.mapped;
-        if (!mapped) {
-            mapped = instFrame.buffer->Map();
-            instFrame.mapped = mapped;
-        }
-        if (!mapped)
-            continue;
+        void *mapped = instFrame.buffer->Map();
         glm::mat4 *matrices = static_cast<glm::mat4 *>(mapped);
         for (uint32_t vi = 0; vi < visibleCount; ++vi) {
             matrices[writeBase + vi] = m_shadowDrawScratch[m_shadowCascadeVisible[vi]].dc->worldMatrix;
         }
+        instFrame.buffer->Unmap();
         m_instanceWriteOffset += visibleCount;
 
 #if INFERNUX_FRAME_PROFILE
@@ -1033,55 +988,17 @@ bool InxVkCoreModular::EnsureShadowPipeline(VkRenderPass /*compatibleRenderPass*
         }
     }
 
-    // --- Create shadow material descriptor set layout (set 2) ---
-    //
-    // This set serves two purposes:
-    //   (a) Vertex-stage MaterialProperties UBO at binding 14 (all shadow materials)
-    //   (b) Fragment-stage texture samplers (bindings 0..N-1) and fragment
-    //       MaterialProperties UBO (binding N) for alpha-clip shadow materials.
-    //
-    // We declare up to kMaxShadowTextures sampler slots so the layout is
-    // compatible with any alpha-clip shader.  Non-alpha-clip materials simply
-    // leave those bindings unused.
-    static constexpr uint32_t kMaxShadowTextures = 8;
-
     if (m_shadowMaterialDescSetLayout == VK_NULL_HANDLE) {
-        std::vector<VkDescriptorSetLayoutBinding> bindings;
-
-        // Texture samplers for alpha-clip fragment (binding 0..kMaxShadowTextures-1)
-        for (uint32_t i = 0; i < kMaxShadowTextures; ++i) {
-            VkDescriptorSetLayoutBinding texBinding{};
-            texBinding.binding = i;
-            texBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            texBinding.descriptorCount = 1;
-            texBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-            bindings.push_back(texBinding);
-        }
-
-        // Fragment MaterialProperties UBO at binding = kMaxShadowTextures
-        {
-            VkDescriptorSetLayoutBinding fragMatBinding{};
-            fragMatBinding.binding = kMaxShadowTextures;
-            fragMatBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-            fragMatBinding.descriptorCount = 1;
-            fragMatBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-            bindings.push_back(fragMatBinding);
-        }
-
-        // Vertex MaterialProperties UBO at binding 14
-        {
-            VkDescriptorSetLayoutBinding vtxMatBinding{};
-            vtxMatBinding.binding = 14;
-            vtxMatBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-            vtxMatBinding.descriptorCount = 1;
-            vtxMatBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
-            bindings.push_back(vtxMatBinding);
-        }
+        VkDescriptorSetLayoutBinding materialBinding{};
+        materialBinding.binding = 14;
+        materialBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        materialBinding.descriptorCount = 1;
+        materialBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
 
         VkDescriptorSetLayoutCreateInfo layoutInfo{};
         layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        layoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
-        layoutInfo.pBindings = bindings.data();
+        layoutInfo.bindingCount = 1;
+        layoutInfo.pBindings = &materialBinding;
 
         if (vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &m_shadowMaterialDescSetLayout) != VK_SUCCESS) {
             INXLOG_ERROR("Failed to create shadow material descriptor set layout");
@@ -1109,18 +1026,16 @@ bool InxVkCoreModular::EnsureShadowPipeline(VkRenderPass /*compatibleRenderPass*
     }
 
     if (m_shadowMaterialDescPool == VK_NULL_HANDLE) {
-        std::array<VkDescriptorPoolSize, 2> poolSizes{};
-        poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        poolSizes[0].descriptorCount = 1024 * 2; // vertex UBO + fragment UBO per set
-        poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        poolSizes[1].descriptorCount = 1024 * kMaxShadowTextures;
+        VkDescriptorPoolSize poolSize{};
+        poolSize.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        poolSize.descriptorCount = 1024;
 
         VkDescriptorPoolCreateInfo poolInfo{};
         poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
         poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
         poolInfo.maxSets = 1024;
-        poolInfo.poolSizeCount = static_cast<uint32_t>(poolSizes.size());
-        poolInfo.pPoolSizes = poolSizes.data();
+        poolInfo.poolSizeCount = 1;
+        poolInfo.pPoolSizes = &poolSize;
 
         if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &m_shadowMaterialDescPool) != VK_SUCCESS) {
             INXLOG_ERROR("Failed to create shadow material descriptor pool");
@@ -1301,17 +1216,11 @@ void InxVkCoreModular::CleanupShadowPipeline()
         vkDestroyRenderPass(device, m_shadowCompatRenderPass, nullptr);
         m_shadowCompatRenderPass = VK_NULL_HANDLE;
     }
-    // Destroy cached shadow pipelines
-    for (auto &[key, pipeline] : m_shadowPipelineCache) {
-        if (pipeline != VK_NULL_HANDLE)
-            vkDestroyPipeline(device, pipeline, nullptr);
-    }
-    m_shadowPipelineCache.clear();
     m_shadowPipelineReady = false;
 }
 
 // ============================================================================
-// Per-object buffer management
+// Per-Object Buffer Management (Phase 2.3.4)
 // ============================================================================
 
 void InxVkCoreModular::EnsureObjectBuffers(uint64_t objectId, const std::vector<Vertex> &vertices,
@@ -1350,15 +1259,8 @@ void InxVkCoreModular::EnsureObjectBuffers(uint64_t objectId, const std::vector<
     }
 
     auto sharedIt = m_sharedMeshBuffers.find(sharedKey);
-    // NOTE: forceUpdate is intentionally NOT included in needsCreate.
-    // The content hash already guarantees correctness — if the hash matches
-    // an existing shared buffer, the GPU data is identical regardless of
-    // forceUpdate.  Including forceUpdate here caused a catastrophic bug:
-    // when the Scene view opened and ConsumeMeshBufferDirty() returned true
-    // for all objects, each object would create its own VkBuffer (replacing
-    // the shared entry), permanently destroying instancing (4 → 6000+ draws).
     const bool needsCreate =
-        (sharedIt == m_sharedMeshBuffers.end() || sharedIt->second.vertexCount != vertices.size() ||
+        (sharedIt == m_sharedMeshBuffers.end() || forceUpdate || sharedIt->second.vertexCount != vertices.size() ||
          sharedIt->second.indexCount != indices.size() || !sharedIt->second.vertexBuffer ||
          !sharedIt->second.indexBuffer);
 
@@ -1415,11 +1317,8 @@ void InxVkCoreModular::CleanupUnusedBuffers(const std::vector<DrawCall> &activeD
     for (const auto &dc : activeDrawCalls) {
         activeIds.insert(dc.objectId);
     }
-    CleanupUnusedBuffersByIds(activeIds);
-}
 
-void InxVkCoreModular::CleanupUnusedBuffersByIds(const std::unordered_set<uint64_t> &activeIds)
-{ // Remove buffers for objects no longer in the scene.
+    // Remove buffers for objects no longer in the scene.
     // Actual GPU resource destruction is deferred via FrameDeletionQueue
     // so that in-flight command buffers are never invalidated.
     for (auto it = m_perObjectBuffers.begin(); it != m_perObjectBuffers.end();) {
@@ -1448,46 +1347,6 @@ void InxVkCoreModular::CleanupUnusedBuffersByIds(const std::unordered_set<uint64
             ++it;
         }
     }
-}
-
-size_t InxVkCoreModular::CleanupUnusedBuffersByFrameStamp()
-{
-    // Remove objects that were not referenced by EnsureObjectBuffers on this frame.
-    bool anyRemoved = false;
-    for (auto it = m_perObjectBuffers.begin(); it != m_perObjectBuffers.end();) {
-        if (it->second.ensuredOnFrame != m_ensureFrameCounter) {
-            it = m_perObjectBuffers.erase(it);
-            anyRemoved = true;
-        } else {
-            ++it;
-        }
-    }
-
-    // Only rebuild the active-shared-keys set and prune shared buffers when
-    // at least one per-object entry was removed.  In a stable scene (no adds/removes)
-    // this skips building a 10k-element unordered_set every frame.
-    if (anyRemoved) {
-        std::unordered_set<SharedMeshKey, SharedMeshKeyHash> activeSharedKeysFromObjects;
-        activeSharedKeysFromObjects.reserve(m_perObjectBuffers.size());
-        for (const auto &kv : m_perObjectBuffers) {
-            activeSharedKeysFromObjects.insert(kv.second.sharedKey);
-        }
-
-        for (auto it = m_sharedMeshBuffers.begin(); it != m_sharedMeshBuffers.end();) {
-            if (activeSharedKeysFromObjects.find(it->first) == activeSharedKeysFromObjects.end()) {
-                auto buffers = std::make_shared<SharedMeshBuffers>(std::move(it->second));
-                m_deletionQueue.Push([buffers]() mutable {
-                    buffers->vertexBuffer.reset();
-                    buffers->indexBuffer.reset();
-                });
-                it = m_sharedMeshBuffers.erase(it);
-            } else {
-                ++it;
-            }
-        }
-    }
-
-    return m_perObjectBuffers.size();
 }
 
 // ============================================================================
