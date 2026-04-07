@@ -1,6 +1,7 @@
 """Utility helpers shared across the Hub codebase."""
 
 import json
+import logging
 import os
 import sys
 
@@ -68,12 +69,14 @@ def is_pid_running(pid: int) -> bool:
                 return exit_code.value == STILL_ACTIVE
             finally:
                 ctypes.windll.kernel32.CloseHandle(handle)
-        except Exception:
+        except Exception as _exc:
+            logging.getLogger(__name__).debug("[Suppressed] %s: %s", type(_exc).__name__, _exc)
             return False
 
     try:
         os.kill(pid, 0)
-    except OSError:
+    except OSError as _exc:
+        logging.getLogger(__name__).debug("[Suppressed] %s: %s", type(_exc).__name__, _exc)
         return False
     return True
 
@@ -90,7 +93,8 @@ def read_project_lock(project_path: str) -> dict | None:
     except (OSError, json.JSONDecodeError):
         try:
             os.remove(lock_path)
-        except OSError:
+        except OSError as _exc:
+            logging.getLogger(__name__).debug("[Suppressed] %s: %s", type(_exc).__name__, _exc)
             pass
         return None
 
@@ -98,7 +102,8 @@ def read_project_lock(project_path: str) -> dict | None:
     if not is_pid_running(pid):
         try:
             os.remove(lock_path)
-        except OSError:
+        except OSError as _exc:
+            logging.getLogger(__name__).debug("[Suppressed] %s: %s", type(_exc).__name__, _exc)
             pass
         return None
 
@@ -143,5 +148,6 @@ def remove_project_lock(project_path: str, token: str | None = None) -> None:
 
     try:
         os.remove(lock_path)
-    except OSError:
+    except OSError as _exc:
+        logging.getLogger(__name__).debug("[Suppressed] %s: %s", type(_exc).__name__, _exc)
         pass

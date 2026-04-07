@@ -87,9 +87,6 @@ std::shared_ptr<void> TextureLoader::Load(const std::string &filePath, const std
     // Missing .meta is not an error — defaults (sRGB=true, mipmaps=true) apply.
     texture->LoadImportSettings(filePath);
 
-    INXLOG_INFO("TextureLoader: loaded '", texture->GetName(), "' (GUID: ", guid,
-                ", linear=", texture->IsLinear() ? "true" : "false",
-                ", mipmaps=", texture->GenerateMipmaps() ? "true" : "false", ")");
     return texture;
 }
 

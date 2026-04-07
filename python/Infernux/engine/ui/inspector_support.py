@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 
 from .theme import Theme
+from Infernux.debug import Debug
 
 
 def _sample_rgba_bilinear(raw: bytes, src_w: int, src_h: int,
@@ -189,7 +190,8 @@ def ensure_material_file_path(material) -> str:
                 if resolved:
                     material.file_path = resolved
                     return resolved
-        except (ImportError, RuntimeError, AttributeError):
+        except (ImportError, RuntimeError, AttributeError) as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             pass
     from Infernux.engine.project_context import get_project_root
     project_root = get_project_root()

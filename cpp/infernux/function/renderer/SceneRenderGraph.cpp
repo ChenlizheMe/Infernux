@@ -765,6 +765,82 @@ void SceneRenderGraph::ResolveSceneMsaa(VkCommandBuffer commandBuffer)
     }
 }
 
+// ---------------------------------------------------------------------------
+// BuildRenderGraph helpers
+// ---------------------------------------------------------------------------
+
+void SceneRenderGraph::RegisterTransientTextures(uint32_t width, uint32_t height,
+                                                 std::unordered_map<std::string, vk::ResourceHandle> &customRTHandles)
+{
+    // Non-backbuffer, non-depth color textures
+    for (const auto &tex : m_pythonGraphDesc.textures) {
+        if (!tex.isBackbuffer && !tex.isDepth) {
+            uint32_t texW = (tex.width > 0) ? tex.width : width;
+            uint32_t texH = (tex.height > 0) ? tex.height : height;
+            if (tex.sizeDivisor > 1) {
+                texW = std::max(1u, width / tex.sizeDivisor);
+                texH = std::max(1u, height / tex.sizeDivisor);
+            }
+            vk::ResourceHandle handle =
+                m_renderGraph->RegisterTransientTexture(tex.name, texW, texH, tex.format, VK_SAMPLE_COUNT_1_BIT, true);
+            customRTHandles[tex.name] = handle;
+        }
+    }
+
+    // Custom-size depth textures (shadow maps)
+    for (const auto &tex : m_pythonGraphDesc.textures) {
+        if (tex.isDepth && tex.width > 0 && tex.height > 0) {
+            vk::ResourceHandle handle = m_renderGraph->RegisterTransientTexture(
+                tex.name, tex.width, tex.height, tex.format, VK_SAMPLE_COUNT_1_BIT, true);
+            customRTHandles[tex.name] = handle;
+        }
+    }
+}
+
+void SceneRenderGraph::AppendAutoPass(const std::string &name, vk::ResourceHandle colorTarget,
+                                      vk::ResourceHandle depthTarget, uint32_t width, uint32_t height)
+{
+    auto callbackIt = m_pythonCallbacks.find(name);
+    if (callbackIt == m_pythonCallbacks.end())
+        return;
+
+    auto callback = callbackIt->second;
+    m_renderGraph->AddPass(name, [=](vk::PassBuilder &builder) {
+        builder.WriteColor(colorTarget, 0);
+        if (depthTarget.IsValid()) {
+            builder.ReadDepth(depthTarget);
+        }
+        builder.SetRenderArea(width, height);
+
+        return [callback, width, height](vk::RenderContext &ctx) {
+            if (callback) {
+                callback(ctx, width, height);
+            }
+        };
+    });
+}
+
+void SceneRenderGraph::FinalizeGraphOutput(const std::unordered_map<std::string, vk::ResourceHandle> &customRTHandles)
+{
+    bool outputSet = false;
+    if (m_hasPythonGraph && !m_pythonGraphDesc.outputTexture.empty()) {
+        auto texIt = std::find_if(m_pythonGraphDesc.textures.begin(), m_pythonGraphDesc.textures.end(),
+                                  [&](const GraphTextureDesc &t) { return t.name == m_pythonGraphDesc.outputTexture; });
+        if (texIt != m_pythonGraphDesc.textures.end()) {
+            if (!texIt->isBackbuffer && !texIt->isDepth) {
+                auto rtIt = customRTHandles.find(m_pythonGraphDesc.outputTexture);
+                if (rtIt != customRTHandles.end()) {
+                    m_renderGraph->SetOutput(rtIt->second);
+                    outputSet = true;
+                }
+            }
+        }
+    }
+    if (!outputSet && m_importedColorTarget.IsValid()) {
+        m_renderGraph->SetOutput(m_importedColorTarget);
+    }
+}
+
 void SceneRenderGraph::BuildRenderGraph()
 {
     if (!m_renderGraph || !m_sceneTarget || !m_vkCore) {
@@ -825,35 +901,9 @@ void SceneRenderGraph::BuildRenderGraph()
         // passes can read them via builder.Read() for proper DAG edges.
         // =================================================================
 
-        // Pre-register transient textures for non-backbuffer, non-depth
-        // textures so their ResourceHandle is available before passes reference them.
-        for (const auto &tex : m_pythonGraphDesc.textures) {
-            if (!tex.isBackbuffer && !tex.isDepth) {
-                // Use custom size if specified, otherwise use scene target dimensions
-                uint32_t texW = (tex.width > 0) ? tex.width : width;
-                uint32_t texH = (tex.height > 0) ? tex.height : height;
-                // Apply sizeDivisor: divide scene dimensions when divisor > 1
-                if (tex.sizeDivisor > 1) {
-                    texW = std::max(1u, width / tex.sizeDivisor);
-                    texH = std::max(1u, height / tex.sizeDivisor);
-                }
-                vk::ResourceHandle handle = m_renderGraph->RegisterTransientTexture(tex.name, texW, texH, tex.format,
-                                                                                    VK_SAMPLE_COUNT_1_BIT, true);
-                customRTHandles[tex.name] = handle;
-            }
-        }
-
-        // Pre-register custom-size depth textures (shadow maps).
-        // These are depth textures with explicit dimensions — they need
-        // ResourceHandles registered upfront so later passes can reference
-        // them via inputBindings (e.g. shadow map bound as a sampled texture).
-        for (const auto &tex : m_pythonGraphDesc.textures) {
-            if (tex.isDepth && tex.width > 0 && tex.height > 0) {
-                vk::ResourceHandle handle = m_renderGraph->RegisterTransientTexture(
-                    tex.name, tex.width, tex.height, tex.format, VK_SAMPLE_COUNT_1_BIT, true);
-                customRTHandles[tex.name] = handle;
-            }
-        }
+        // Pre-register transient textures so their ResourceHandles are
+        // available before passes reference them.
+        RegisterTransientTextures(width, height, customRTHandles);
 
         // Track whether the multisampled backbuffer has been written since the
         // last explicit resolve. FullscreenQuad passes that sample the backbuffer
@@ -1449,115 +1499,16 @@ void SceneRenderGraph::BuildRenderGraph()
         }
 
         // ====================================================================
-        // Auto-append _ComponentGizmos pass: draws queue 30000-32000
-        // (Python-defined per-component gizmos) with depth testing against
-        // existing scene geometry. Runs before editor gizmos.
+        // Auto-append system passes: component gizmos, editor gizmos,
+        // and editor tools — all draw into the backbuffer with depth testing.
         // ====================================================================
-        {
-            auto compGizmoCallbackIt = m_pythonCallbacks.find("_ComponentGizmos");
-            if (compGizmoCallbackIt != m_pythonCallbacks.end()) {
-                auto compGizmoCallback = compGizmoCallbackIt->second;
-                vk::ResourceHandle compGizmoColorTarget = m_importedColorTarget;
-                vk::ResourceHandle compGizmoDepthTarget = sharedDepth;
-
-                m_renderGraph->AddPass("_ComponentGizmos", [=](vk::PassBuilder &builder) {
-                    builder.WriteColor(compGizmoColorTarget, 0);
-                    if (compGizmoDepthTarget.IsValid()) {
-                        builder.ReadDepth(compGizmoDepthTarget);
-                    }
-                    builder.SetRenderArea(width, height);
-
-                    return [compGizmoCallback, width, height](vk::RenderContext &ctx) {
-                        if (compGizmoCallback) {
-                            compGizmoCallback(ctx, width, height);
-                        }
-                    };
-                });
-            }
-        }
-
-        // ====================================================================
-        // Auto-append _EditorGizmos pass: draws queue 32001-32500 (grid +
-        // gizmos) into the MSAA backbuffer with depth testing against
-        // existing scene geometry. No clear — additive over previous passes.
-        // In game view no draw calls fall in this range, so the pass is a no-op.
-        // ====================================================================
-        {
-            auto gizmoCallbackIt = m_pythonCallbacks.find("_EditorGizmos");
-            if (gizmoCallbackIt != m_pythonCallbacks.end()) {
-                auto gizmoCallback = gizmoCallbackIt->second;
-                vk::ResourceHandle gizmoColorTarget = m_importedColorTarget;
-                vk::ResourceHandle gizmoDepthTarget = sharedDepth;
-
-                m_renderGraph->AddPass("_EditorGizmos", [=](vk::PassBuilder &builder) {
-                    builder.WriteColor(gizmoColorTarget, 0);
-                    if (gizmoDepthTarget.IsValid()) {
-                        builder.ReadDepth(gizmoDepthTarget);
-                    }
-                    builder.SetRenderArea(width, height);
-
-                    return [gizmoCallback, width, height](vk::RenderContext &ctx) {
-                        if (gizmoCallback) {
-                            gizmoCallback(ctx, width, height);
-                        }
-                    };
-                });
-            }
-        }
-
-        // ====================================================================
-        // Auto-append _EditorTools pass: draws queue 32501-32700
-        // (translate/rotate/scale handles) into the MSAA backbuffer.
-        // Depth is read-only (not used for testing, but required for
-        // VkRenderPass compatibility with pipelines compiled against
-        // m_internalRenderPass which always has a depth attachment).
-        // ====================================================================
-        {
-            auto toolsCallbackIt = m_pythonCallbacks.find("_EditorTools");
-            if (toolsCallbackIt != m_pythonCallbacks.end()) {
-                auto toolsCallback = toolsCallbackIt->second;
-                vk::ResourceHandle toolsColorTarget = m_importedColorTarget;
-                vk::ResourceHandle toolsDepthTarget = sharedDepth;
-
-                m_renderGraph->AddPass("_EditorTools", [=](vk::PassBuilder &builder) {
-                    builder.WriteColor(toolsColorTarget, 0);
-                    if (toolsDepthTarget.IsValid()) {
-                        builder.ReadDepth(toolsDepthTarget);
-                    }
-                    builder.SetRenderArea(width, height);
-
-                    return [toolsCallback, width, height](vk::RenderContext &ctx) {
-                        if (toolsCallback) {
-                            toolsCallback(ctx, width, height);
-                        }
-                    };
-                });
-            }
-        }
+        AppendAutoPass("_ComponentGizmos", m_importedColorTarget, sharedDepth, width, height);
+        AppendAutoPass("_EditorGizmos", m_importedColorTarget, sharedDepth, width, height);
+        AppendAutoPass("_EditorTools", m_importedColorTarget, sharedDepth, width, height);
     }
 
     // Set output for proper resource tracking and dead-pass culling.
-    // If the Python graph output references the resolved backbuffer, use
-    // m_importedResolveTarget so the culling algorithm traces through
-    // the MSAA resolve and keeps all scene passes alive.
-    bool outputSet = false;
-    if (m_hasPythonGraph && !m_pythonGraphDesc.outputTexture.empty()) {
-        auto texIt = std::find_if(m_pythonGraphDesc.textures.begin(), m_pythonGraphDesc.textures.end(),
-                                  [&](const GraphTextureDesc &t) { return t.name == m_pythonGraphDesc.outputTexture; });
-        if (texIt != m_pythonGraphDesc.textures.end()) {
-            if (!texIt->isBackbuffer && !texIt->isDepth) {
-                // Custom RT output — look up its handle
-                auto rtIt = customRTHandles.find(m_pythonGraphDesc.outputTexture);
-                if (rtIt != customRTHandles.end()) {
-                    m_renderGraph->SetOutput(rtIt->second);
-                    outputSet = true;
-                }
-            }
-        }
-    }
-    if (!outputSet && m_importedColorTarget.IsValid()) {
-        m_renderGraph->SetOutput(m_importedColorTarget);
-    }
+    FinalizeGraphOutput(customRTHandles);
 
     // Debug: Log the passes added to the render graph
     INXLOG_DEBUG("SceneRenderGraph::BuildRenderGraph - Built ", m_renderGraph->GetPassCount(), " passes from ",

@@ -17,6 +17,7 @@ from dataclasses import dataclass
 import copy
 import weakref
 import threading
+from Infernux.debug import Debug
 
 if TYPE_CHECKING:
     from .component import InxComponent
@@ -238,7 +239,8 @@ def _get_asset_db():
     try:
         from Infernux.core.asset_ref import _get_asset_database
         return _get_asset_database()
-    except ImportError:
+    except ImportError as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         return None
 
 
@@ -251,7 +253,8 @@ def _guid_from_path(path: str) -> str:
     try:
         guid = db.get_guid_from_path(path)
         return guid or ""
-    except Exception:
+    except Exception as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         return ""
 
 
@@ -501,7 +504,8 @@ def _infer_field_type(python_type: Optional[Type], default: Any) -> FieldType:
             from .serializable_object import SerializableObject as _SO
             if isinstance(python_type, type) and issubclass(python_type, _SO):
                 return FieldType.SERIALIZABLE_OBJECT
-        except ImportError:
+        except ImportError as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             pass
 
         # InxComponent subclass → COMPONENT (e.g. ``text: UIText``)
@@ -509,7 +513,8 @@ def _infer_field_type(python_type: Optional[Type], default: Any) -> FieldType:
             from .component import InxComponent as _IC
             if isinstance(python_type, type) and issubclass(python_type, _IC) and python_type is not _IC:
                 return FieldType.COMPONENT
-        except ImportError:
+        except ImportError as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             pass
 
     # Infer from default value
@@ -519,7 +524,8 @@ def _infer_field_type(python_type: Optional[Type], default: Any) -> FieldType:
             from .serializable_object import SerializableObject as _SO
             if isinstance(default, _SO):
                 return FieldType.SERIALIZABLE_OBJECT
-        except ImportError:
+        except ImportError as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             pass
 
         # ComponentRef instance
@@ -527,7 +533,8 @@ def _infer_field_type(python_type: Optional[Type], default: Any) -> FieldType:
             from .ref_wrappers import ComponentRef
             if isinstance(default, ComponentRef):
                 return FieldType.COMPONENT
-        except ImportError:
+        except ImportError as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             pass
 
         # Order matters: Enum before int (IntEnum is both), bool before int
@@ -617,7 +624,8 @@ def resolve_annotation(annotation) -> Optional['FieldMetadata']:
             resolved = get_type(simple_name)
             if resolved is not None:
                 return resolve_annotation(resolved)
-        except Exception:
+        except Exception as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             pass
         return None
 
@@ -664,7 +672,8 @@ def resolve_annotation(annotation) -> Optional['FieldMetadata']:
                 default=ComponentRef(component_type=type_name),
                 component_type=type_name,
             )
-    except ImportError:
+    except ImportError as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         pass
 
     # ── Known reference / asset types ──

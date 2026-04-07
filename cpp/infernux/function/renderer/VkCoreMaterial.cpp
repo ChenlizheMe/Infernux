@@ -12,6 +12,7 @@
 #include "InxError.h"
 #include "InxVkCoreModular.h"
 #include "gui/GPUMaterialPreview.h"
+#include "vk/VkPipelineHelpers.h"
 #include "vk/VkRenderUtils.h"
 
 #include <function/renderer/shader/ShaderProgram.h>
@@ -170,6 +171,42 @@ std::pair<VkImageView, VkSampler> InxVkCoreModular::ResolveTextureForMaterial(co
 // Material UBO Management
 // ============================================================================
 
+namespace
+{
+
+/// Copy a typed material property into the UBO at a reflection-determined offset.
+template <typename T>
+void CopyPropertyToUBO(const MaterialProperty &prop, uint8_t *uboData, uint32_t offset, size_t uboSize)
+{
+    if (offset + sizeof(T) <= uboSize) {
+        T value = std::get<T>(prop.value);
+        std::memcpy(uboData + offset, &value, sizeof(T));
+    }
+}
+
+/// Pack all properties of a given type sequentially with manual alignment (fallback path).
+/// @param stride — bytes to advance after each copy (usually sizeof(T), except vec3 which uses 16).
+template <typename T>
+void PackPropertiesByType(const std::unordered_map<std::string, MaterialProperty> &properties,
+                          MaterialPropertyType type, uint8_t *uboData, size_t &offset, size_t uboSize, size_t alignment,
+                          size_t stride = 0)
+{
+    if (stride == 0)
+        stride = sizeof(T);
+    for (const auto &[name, prop] : properties) {
+        if (prop.type != type)
+            continue;
+        offset = (offset + (alignment - 1)) & ~(alignment - 1);
+        if (offset + sizeof(T) <= uboSize) {
+            T value = std::get<T>(prop.value);
+            std::memcpy(uboData + offset, &value, sizeof(T));
+            offset += stride;
+        }
+    }
+}
+
+} // anonymous namespace
+
 void InxVkCoreModular::UpdateMaterialUBO(InxMaterial &material)
 {
     if (!material.IsPropertiesDirty()) {
@@ -209,102 +246,33 @@ void InxVkCoreModular::UpdateMaterialUBO(InxMaterial &material)
 
             switch (prop.type) {
             case MaterialPropertyType::Float4:
-            case MaterialPropertyType::Color: {
-                if (memberOffset + sizeof(glm::vec4) <= uboSize) {
-                    glm::vec4 value = std::get<glm::vec4>(prop.value);
-                    std::memcpy(uboData.data() + memberOffset, &value, sizeof(glm::vec4));
-                }
+            case MaterialPropertyType::Color:
+                CopyPropertyToUBO<glm::vec4>(prop, uboData.data(), memberOffset, uboSize);
                 break;
-            }
-            case MaterialPropertyType::Float3: {
-                if (memberOffset + sizeof(glm::vec3) <= uboSize) {
-                    glm::vec3 value = std::get<glm::vec3>(prop.value);
-                    std::memcpy(uboData.data() + memberOffset, &value, sizeof(glm::vec3));
-                }
+            case MaterialPropertyType::Float3:
+                CopyPropertyToUBO<glm::vec3>(prop, uboData.data(), memberOffset, uboSize);
                 break;
-            }
-            case MaterialPropertyType::Float2: {
-                if (memberOffset + sizeof(glm::vec2) <= uboSize) {
-                    glm::vec2 value = std::get<glm::vec2>(prop.value);
-                    std::memcpy(uboData.data() + memberOffset, &value, sizeof(glm::vec2));
-                }
+            case MaterialPropertyType::Float2:
+                CopyPropertyToUBO<glm::vec2>(prop, uboData.data(), memberOffset, uboSize);
                 break;
-            }
-            case MaterialPropertyType::Float: {
-                if (memberOffset + sizeof(float) <= uboSize) {
-                    float value = std::get<float>(prop.value);
-                    std::memcpy(uboData.data() + memberOffset, &value, sizeof(float));
-                }
+            case MaterialPropertyType::Float:
+                CopyPropertyToUBO<float>(prop, uboData.data(), memberOffset, uboSize);
                 break;
-            }
-            case MaterialPropertyType::Int: {
-                if (memberOffset + sizeof(int) <= uboSize) {
-                    int value = std::get<int>(prop.value);
-                    std::memcpy(uboData.data() + memberOffset, &value, sizeof(int));
-                }
+            case MaterialPropertyType::Int:
+                CopyPropertyToUBO<int>(prop, uboData.data(), memberOffset, uboSize);
                 break;
-            }
             default:
                 break;
             }
         }
     } else {
         size_t offset = 0;
-
-        for (const auto &[name, prop] : properties) {
-            if (prop.type == MaterialPropertyType::Float4) {
-                offset = (offset + 15) & ~15;
-                if (offset + sizeof(glm::vec4) <= uboSize) {
-                    glm::vec4 value = std::get<glm::vec4>(prop.value);
-                    std::memcpy(uboData.data() + offset, &value, sizeof(glm::vec4));
-                    offset += sizeof(glm::vec4);
-                }
-            }
-        }
-
-        for (const auto &[name, prop] : properties) {
-            if (prop.type == MaterialPropertyType::Float3) {
-                offset = (offset + 15) & ~15;
-                if (offset + sizeof(glm::vec3) <= uboSize) {
-                    glm::vec3 value = std::get<glm::vec3>(prop.value);
-                    std::memcpy(uboData.data() + offset, &value, sizeof(glm::vec3));
-                    offset += 16;
-                }
-            }
-        }
-
-        for (const auto &[name, prop] : properties) {
-            if (prop.type == MaterialPropertyType::Float2) {
-                offset = (offset + 7) & ~7;
-                if (offset + sizeof(glm::vec2) <= uboSize) {
-                    glm::vec2 value = std::get<glm::vec2>(prop.value);
-                    std::memcpy(uboData.data() + offset, &value, sizeof(glm::vec2));
-                    offset += sizeof(glm::vec2);
-                }
-            }
-        }
-
-        for (const auto &[name, prop] : properties) {
-            if (prop.type == MaterialPropertyType::Float) {
-                offset = (offset + 3) & ~3;
-                if (offset + sizeof(float) <= uboSize) {
-                    float value = std::get<float>(prop.value);
-                    std::memcpy(uboData.data() + offset, &value, sizeof(float));
-                    offset += sizeof(float);
-                }
-            }
-        }
-
-        for (const auto &[name, prop] : properties) {
-            if (prop.type == MaterialPropertyType::Int) {
-                offset = (offset + 3) & ~3;
-                if (offset + sizeof(int) <= uboSize) {
-                    int value = std::get<int>(prop.value);
-                    std::memcpy(uboData.data() + offset, &value, sizeof(int));
-                    offset += sizeof(int);
-                }
-            }
-        }
+        PackPropertiesByType<glm::vec4>(properties, MaterialPropertyType::Float4, uboData.data(), offset, uboSize, 16);
+        PackPropertiesByType<glm::vec3>(properties, MaterialPropertyType::Float3, uboData.data(), offset, uboSize, 16,
+                                        16);
+        PackPropertiesByType<glm::vec2>(properties, MaterialPropertyType::Float2, uboData.data(), offset, uboSize, 8);
+        PackPropertiesByType<float>(properties, MaterialPropertyType::Float, uboData.data(), offset, uboSize, 4);
+        PackPropertiesByType<int>(properties, MaterialPropertyType::Int, uboData.data(), offset, uboSize, 4);
     }
 
     if (material.HasUBO()) {
@@ -936,19 +904,7 @@ void InxVkCoreModular::CreateMaterialShadowPipeline(std::shared_ptr<InxMaterial>
     }
 
     // Shader stages
-    VkPipelineShaderStageCreateInfo vertStage{};
-    vertStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    vertStage.stage = VK_SHADER_STAGE_VERTEX_BIT;
-    vertStage.module = vertModule;
-    vertStage.pName = "main";
-
-    VkPipelineShaderStageCreateInfo fragStage{};
-    fragStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    fragStage.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-    fragStage.module = fragModule;
-    fragStage.pName = "main";
-
-    std::array<VkPipelineShaderStageCreateInfo, 2> shaderStages = {vertStage, fragStage};
+    auto shaderStages = vkrender::MakeVertFragStages(vertModule, fragModule);
 
     // Vertex input — same layout as the main scene rendering
     auto bindingDesc = Vertex::getBindingDescription();
@@ -961,14 +917,9 @@ void InxVkCoreModular::CreateMaterialShadowPipeline(std::shared_ptr<InxMaterial>
     vertexInput.vertexAttributeDescriptionCount = static_cast<uint32_t>(attrDescs.size());
     vertexInput.pVertexAttributeDescriptions = attrDescs.data();
 
-    VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
-    inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
-    inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    auto inputAssembly = vkrender::MakeTriangleListInputAssembly();
 
-    VkPipelineViewportStateCreateInfo viewportState{};
-    viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
-    viewportState.viewportCount = 1;
-    viewportState.scissorCount = 1;
+    vkrender::DynamicViewportScissorState dynVpScissor;
 
     // Rasterization: front-face culling + depth bias (matches EnsureShadowPipeline)
     VkPipelineRasterizationStateCreateInfo rasterizer{};
@@ -982,9 +933,7 @@ void InxVkCoreModular::CreateMaterialShadowPipeline(std::shared_ptr<InxMaterial>
     rasterizer.depthBiasSlopeFactor = 1.0f;
     rasterizer.depthBiasClamp = 0.01f;
 
-    VkPipelineMultisampleStateCreateInfo multisampling{};
-    multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
-    multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+    auto multisampling = vkrender::MakeMultisampleState();
 
     VkPipelineDepthStencilStateCreateInfo depthStencil{};
     depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
@@ -996,24 +945,18 @@ void InxVkCoreModular::CreateMaterialShadowPipeline(std::shared_ptr<InxMaterial>
     colorBlend.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
     colorBlend.attachmentCount = 0;
 
-    std::array<VkDynamicState, 2> dynamicStates = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
-    VkPipelineDynamicStateCreateInfo dynamicState{};
-    dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-    dynamicState.dynamicStateCount = static_cast<uint32_t>(dynamicStates.size());
-    dynamicState.pDynamicStates = dynamicStates.data();
-
     VkGraphicsPipelineCreateInfo pipelineInfo{};
     pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
     pipelineInfo.stageCount = static_cast<uint32_t>(shaderStages.size());
     pipelineInfo.pStages = shaderStages.data();
     pipelineInfo.pVertexInputState = &vertexInput;
     pipelineInfo.pInputAssemblyState = &inputAssembly;
-    pipelineInfo.pViewportState = &viewportState;
+    pipelineInfo.pViewportState = &dynVpScissor.viewportState;
     pipelineInfo.pRasterizationState = &rasterizer;
     pipelineInfo.pMultisampleState = &multisampling;
     pipelineInfo.pDepthStencilState = &depthStencil;
     pipelineInfo.pColorBlendState = &colorBlend;
-    pipelineInfo.pDynamicState = &dynamicState;
+    pipelineInfo.pDynamicState = &dynVpScissor.dynamicState;
     pipelineInfo.layout = m_shadowPipelineLayout;
     pipelineInfo.renderPass = m_shadowCompatRenderPass;
     pipelineInfo.subpass = 0;

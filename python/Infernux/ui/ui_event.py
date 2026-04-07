@@ -15,6 +15,7 @@ Usage::
 from __future__ import annotations
 
 from typing import Any, Callable, List
+from Infernux.debug import Debug
 
 
 class UIEvent:
@@ -39,7 +40,8 @@ class UIEvent:
         """Unregister *callback*."""
         try:
             self._listeners.remove(callback)
-        except ValueError:
+        except ValueError as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             pass
 
     def remove_all_listeners(self) -> None:
@@ -81,7 +83,8 @@ class UIEvent1:
     def remove_listener(self, callback: Callable[[Any], Any]) -> None:
         try:
             self._listeners.remove(callback)
-        except ValueError:
+        except ValueError as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             pass
 
     def remove_all_listeners(self) -> None:

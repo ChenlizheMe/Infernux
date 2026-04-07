@@ -22,6 +22,7 @@ from viewmodel.control_pane_viewmodel import ControlPaneViewModel
 from view.control_pane_view import ControlPane
 from view.sidebar_view import SidebarView
 from view.installs_view import InstallsView, PythonRuntimeInstallDialog
+import logging
 
 
 class GameEngineLauncher(QMainWindow):
@@ -164,13 +165,15 @@ def _handle_uninstall() -> int:
     try:
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, reg_key) as key:
             install_dir, _ = winreg.QueryValueEx(key, "InstallLocation")
-    except OSError:
+    except OSError as _exc:
+        logging.getLogger(__name__).debug("[Suppressed] %s: %s", type(_exc).__name__, _exc)
         pass
 
     # Remove registry entry
     try:
         winreg.DeleteKey(winreg.HKEY_CURRENT_USER, reg_key)
-    except OSError:
+    except OSError as _exc:
+        logging.getLogger(__name__).debug("[Suppressed] %s: %s", type(_exc).__name__, _exc)
         pass
 
     # Remove Start Menu shortcut
@@ -181,7 +184,8 @@ def _handle_uninstall() -> int:
         if buf.value:
             import shutil as _shutil
             _shutil.rmtree(os.path.join(buf.value, "Infernux Hub"), ignore_errors=True)
-    except Exception:
+    except Exception as _exc:
+        logging.getLogger(__name__).debug("[Suppressed] %s: %s", type(_exc).__name__, _exc)
         pass
 
     # Ask user if they want to remove install files

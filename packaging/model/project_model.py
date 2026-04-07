@@ -8,6 +8,7 @@ import glob
 
 from hub_utils import is_frozen, is_project_open
 from python_runtime import PythonRuntimeError, PythonRuntimeManager
+import logging
 
 # Suppress console windows for all child processes on Windows
 _NO_WINDOW: int = 0x08000000 if sys.platform == "win32" else 0
@@ -192,7 +193,8 @@ class ProjectModel:
                             with zf.open(name) as src, open(dest_path, "wb") as dst:
                                 shutil.copyfileobj(src, dst)
                             return
-            except zipfile.BadZipFile:
+            except zipfile.BadZipFile as _exc:
+                logging.getLogger(__name__).debug("[Suppressed] %s: %s", type(_exc).__name__, _exc)
                 pass
 
     @staticmethod

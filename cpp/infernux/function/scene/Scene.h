@@ -3,6 +3,7 @@
 #include "Camera.h"
 #include "GameObject.h"
 #include <memory>
+#include <nlohmann/json.hpp>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -287,12 +288,27 @@ class Scene
     void CollectAllObjects(GameObject *obj, std::vector<GameObject *> &result) const;
     void QueueStartObject(GameObject *obj);
     void StartObject(GameObject *obj);
+
+    /// @brief Shared recursive traversal for all update variants.
+    /// @param updateMethod Pointer-to-member on GameObject (e.g. &GameObject::Update).
+    void TraverseActiveObjects(GameObject *obj, float dt, void (GameObject::*updateMethod)(float));
+
     void UpdateObject(GameObject *obj, float deltaTime);
     void FixedUpdateObject(GameObject *obj, float fixedDeltaTime);
     void LateUpdateObject(GameObject *obj, float deltaTime);
     void EditorUpdateObject(GameObject *obj, float deltaTime);
     class Component *FindComponentByID(uint64_t componentId) const;
     bool IsPendingDestroy(const GameObject *obj) const;
+
+    /// @brief Shared recursive GameObject builder from JSON string.
+    /// @param preserveIds If true, restores original IDs (Deserialize); otherwise generates new ones (Instantiate).
+    std::unique_ptr<GameObject> BuildGameObjectFromJson(const std::string &jsonStr, bool preserveIds);
+
+    /// @brief Internal overload operating on an already-parsed JSON value.
+    std::unique_ptr<GameObject> BuildGameObjectFromJsonImpl(const nlohmann::json &objJson, bool preserveIds);
+
+    /// @brief Recursively register all objects in a subtree with Scene's lookup map.
+    void RegisterObjectSubtree(GameObject *root);
 
     std::string m_name = "Untitled Scene";
 

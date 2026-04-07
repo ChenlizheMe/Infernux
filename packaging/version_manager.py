@@ -22,6 +22,7 @@ import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional
+import logging
 
 
 # ── Configuration ────────────────────────────────────────────────────
@@ -242,7 +243,8 @@ class VersionManager:
                     self._cached_releases = data.get("releases", [])
                     self._cached_at = cached_at
                     return self._cached_releases
-            except (json.JSONDecodeError, KeyError):
+            except (json.JSONDecodeError, KeyError) as _exc:
+                logging.getLogger(__name__).debug("[Suppressed] %s: %s", type(_exc).__name__, _exc)
                 pass
 
         # Fetch from GitHub
@@ -266,7 +268,8 @@ class VersionManager:
                     self._cached_releases = data.get("releases", [])
                     self._cached_at = now
                     return self._cached_releases
-                except (json.JSONDecodeError, KeyError):
+                except (json.JSONDecodeError, KeyError) as _exc:
+                    logging.getLogger(__name__).debug("[Suppressed] %s: %s", type(_exc).__name__, _exc)
                     pass
             return []
 

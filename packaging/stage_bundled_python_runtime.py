@@ -17,6 +17,7 @@ except ImportError:
     winreg = None
 
 from runtime_requirements import RUNTIME_PROFILE_VERSION, runtime_modules, runtime_packages
+import logging
 
 _RUNTIME_PACKAGES = runtime_packages()
 _RUNTIME_MODULES = runtime_modules()
@@ -183,7 +184,8 @@ def _profile_matches(dest_root: str) -> bool:
     try:
         with open(profile_path, "r", encoding="utf-8") as f:
             profile = json.load(f)
-    except (OSError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError) as _exc:
+        logging.getLogger(__name__).debug("[Suppressed] %s: %s", type(_exc).__name__, _exc)
         return False
 
     return profile == _runtime_profile_payload()
@@ -416,7 +418,8 @@ def _registry_candidates() -> list[str]:
         try:
             with winreg.OpenKey(hive, subkey) as key:
                 install_path, _ = winreg.QueryValueEx(key, None)
-        except OSError:
+        except OSError as _exc:
+            logging.getLogger(__name__).debug("[Suppressed] %s: %s", type(_exc).__name__, _exc)
             continue
 
         if install_path:

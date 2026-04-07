@@ -131,7 +131,8 @@ def _get_component_ids(obj) -> set:
                 cid = c.component_id
                 if cid:
                     ids.add(cid)
-            except Exception:
+            except Exception as _exc:
+                Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
                 pass
     return ids
 
@@ -167,7 +168,8 @@ def _record_add_component_compound(obj, type_name: str, comp_ref,
                         and tn != "Transform"
                         and not _is_python_component_entry(c)):
                     auto_created.append((tn, c))
-            except Exception:
+            except Exception as _exc:
+                Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
                 pass
 
     if not auto_created:
@@ -309,7 +311,8 @@ def _build_builtin_cached_plan(ctx: InxGUIContext, comp, props, lw, skip_fields,
             try:
                 if not meta.visible_when(comp):
                     continue
-            except (RuntimeError, TypeError):
+            except (RuntimeError, TypeError) as _exc:
+                Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
                 pass
 
         current = _get_cached_component_value(
@@ -802,9 +805,36 @@ def _asset_guid_from_path(file_path: str) -> str:
     if adb:
         try:
             guid = adb.get_guid_from_path(file_path) or ""
-        except RuntimeError:
+        except RuntimeError as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             pass
     return guid
+
+
+def _resolve_guid_and_path(payload: str):
+    """Resolve a string payload to (guid, path_hint).
+
+    If *payload* is an existing file path, the GUID is looked up from the
+    asset database.  Otherwise *payload* is treated as a GUID and the path
+    is resolved in reverse.
+    """
+    import os
+    guid = ""
+    path_hint = ""
+    if os.path.isfile(payload):
+        path_hint = payload
+        guid = _asset_guid_from_path(payload)
+    else:
+        guid = payload
+        try:
+            from Infernux.core.assets import AssetManager
+            adb = getattr(AssetManager, '_asset_database', None)
+            if adb:
+                path_hint = adb.get_path_from_guid(guid) or ""
+        except Exception as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+            pass
+    return guid, path_hint
 
 
 def _create_reference_value_from_payload(element_type, payload, required_component: str = None):
@@ -814,21 +844,7 @@ def _create_reference_value_from_payload(element_type, payload, required_compone
         # String payload = prefab drag (GUID or file path)
         if isinstance(payload, str):
             from Infernux.components.ref_wrappers import PrefabRef
-            import os
-            guid = ""
-            path_hint = ""
-            if os.path.isfile(payload):
-                path_hint = payload
-                guid = _asset_guid_from_path(payload)
-            else:
-                guid = payload
-                try:
-                    from Infernux.core.assets import AssetManager
-                    adb = getattr(AssetManager, '_asset_database', None)
-                    if adb:
-                        path_hint = adb.get_path_from_guid(guid) or ""
-                except Exception:
-                    pass
+            guid, path_hint = _resolve_guid_and_path(payload)
             return PrefabRef(guid=guid, path_hint=path_hint)
 
         # Int payload = scene hierarchy drag
@@ -1040,8 +1056,86 @@ def _list_type_hint(element_type, metadata):
     return "Element"
 
 
-def _render_list_field(ctx: InxGUIContext, comp, field_name: str, metadata, current_value, lw: float):
+def _render_reference_list_item(ctx, field_name, index, item, items, metadata, element_type):
+    """Render a single reference-type list element (GameObject, Material, etc.).
+
+    Mutates *items* in-place on drop/pick/clear. Returns True if changed.
+    """
+    from Infernux.components.serialized_field import FieldType
+    from .igui import IGUI
+    changed = False
+    _req = metadata.component_type if element_type == FieldType.COMPONENT else metadata.required_component
+
+    def _replace_item(payload, _index=index, _req=_req):
+        nonlocal changed
+        value = _create_reference_value_from_payload(element_type, payload, _req)
+        if value is not None:
+            items[_index] = value
+            changed = True
+
+    _li_scene, _li_assets = _make_list_picker_providers(element_type, metadata)
+
+    def _li_on_pick(value, _index=index, _et=element_type, _req=_req):
+        nonlocal changed
+        ref = _create_list_pick_ref(_et, value, _req)
+        if ref is not None:
+            items[_index] = ref
+            changed = True
+
+    def _li_on_clear(_index=index, _et=element_type):
+        nonlocal changed
+        items[_index] = _make_list_default_element(metadata, _et)
+        changed = True
+
+    IGUI.object_field(
+        ctx,
+        f"list_{field_name}_{index}",
+        _get_reference_display_name(element_type, item),
+        _list_type_hint(element_type, metadata),
+        accept=_list_drag_drop_type(element_type),
+        on_drop=_replace_item,
+        picker_scene_items=_li_scene,
+        picker_asset_items=_li_assets,
+        on_pick=_li_on_pick,
+        on_clear=_li_on_clear,
+    )
+    return changed
+
+
+def _render_serializable_list_item(ctx, field_name, index, item, items, metadata):
+    """Render a single SERIALIZABLE_OBJECT list element with nested fields.
+
+    Mutates *items[index]* in-place on change. Returns True if changed.
+    """
     import copy as _copy
+    so_class = type(item) if item is not None else metadata.element_class
+    so_label = f"[{index}]" + (f" ({so_class.__name__})" if so_class else "")
+    if not render_compact_section_header(ctx, so_label, level="tertiary"):
+        return False
+    from Infernux.components.serialized_field import get_serialized_fields as _gsf
+    if not so_class or item is None:
+        return False
+    so_fields = _gsf(so_class)
+    so_lw = max_label_w(ctx, list(so_fields.keys())) if so_fields else 0.0
+    elem_changes = {}
+    for so_fn, so_meta in so_fields.items():
+        so_val = getattr(item, so_fn, so_meta.default)
+        new_val = render_serialized_field(
+            ctx, f"##{field_name}_{index}_{so_fn}", so_fn,
+            so_meta, so_val, so_lw,
+        )
+        if has_field_changed(so_meta.field_type, so_val, new_val):
+            elem_changes[so_fn] = new_val
+    if not elem_changes:
+        return False
+    edited = _copy.deepcopy(item)
+    for fn, fv in elem_changes.items():
+        setattr(edited, fn, fv)
+    items[index] = edited
+    return True
+
+
+def _render_list_field(ctx: InxGUIContext, comp, field_name: str, metadata, current_value, lw: float):
     from Infernux.components.serialized_field import FieldType
     from .igui import IGUI
 
@@ -1133,64 +1227,11 @@ def _render_list_field(ctx: InxGUIContext, comp, field_name: str, metadata, curr
             ctx.end_drag_drop_source()
 
         if element_type in reference_types:
-            _req = metadata.component_type if element_type == FieldType.COMPONENT else metadata.required_component
-            def _replace_item(payload, _index=index, _req=_req):
-                nonlocal changed
-                value = _create_reference_value_from_payload(element_type, payload, _req)
-                if value is not None:
-                    items[_index] = value
-                    changed = True
-
-            # Build picker providers for list items
-            _li_scene, _li_assets = _make_list_picker_providers(element_type, metadata)
-
-            def _li_on_pick(value, _index=index, _et=element_type, _req=_req):
-                nonlocal changed
-                ref = _create_list_pick_ref(_et, value, _req)
-                if ref is not None:
-                    items[_index] = ref
-                    changed = True
-
-            def _li_on_clear(_index=index, _et=element_type):
-                nonlocal changed
-                items[_index] = _make_list_default_element(metadata, _et)
+            if _render_reference_list_item(ctx, field_name, index, item, items, metadata, element_type):
                 changed = True
-
-            IGUI.object_field(
-                ctx,
-                f"list_{field_name}_{index}",
-                _get_reference_display_name(element_type, item),
-                _list_type_hint(element_type, metadata),
-                accept=_list_drag_drop_type(element_type),
-                on_drop=_replace_item,
-                picker_scene_items=_li_scene,
-                picker_asset_items=_li_assets,
-                on_pick=_li_on_pick,
-                on_clear=_li_on_clear,
-            )
         elif element_type == FieldType.SERIALIZABLE_OBJECT:
-            so_class = type(item) if item is not None else metadata.element_class
-            so_label = f"[{index}]" + (f" ({so_class.__name__})" if so_class else "")
-            if render_compact_section_header(ctx, so_label, level="tertiary"):
-                from Infernux.components.serialized_field import get_serialized_fields as _gsf
-                if so_class and item is not None:
-                    so_fields = _gsf(so_class)
-                    so_lw = max_label_w(ctx, list(so_fields.keys())) if so_fields else 0.0
-                    elem_changes = {}
-                    for so_fn, so_meta in so_fields.items():
-                        so_val = getattr(item, so_fn, so_meta.default)
-                        new_val = render_serialized_field(
-                            ctx, f"##{field_name}_{index}_{so_fn}", so_fn,
-                            so_meta, so_val, so_lw,
-                        )
-                        if has_field_changed(so_meta.field_type, so_val, new_val):
-                            elem_changes[so_fn] = new_val
-                    if elem_changes:
-                        edited = _copy.deepcopy(item)
-                        for fn, fv in elem_changes.items():
-                            setattr(edited, fn, fv)
-                        items[index] = edited
-                        changed = True
+            if _render_serializable_list_item(ctx, field_name, index, item, items, metadata):
+                changed = True
         else:
             new_item = render_serialized_field(
                 ctx, f"##{field_name}_{index}", "", element_meta, item, 0.0,
@@ -1309,6 +1350,14 @@ def render_cpp_component_generic(ctx: InxGUIContext, comp):
 
 # _render_info_text is now render_info_text from inspector_utils
 _render_info_text = render_info_text
+
+
+def _tooltip_and_info(ctx, metadata):
+    """Show tooltip on hover and info text below the field if available."""
+    if metadata.tooltip and ctx.is_item_hovered():
+        ctx.set_tooltip(metadata.tooltip)
+    if metadata.info_text:
+        _render_info_text(ctx, metadata.info_text)
 
 
 def _render_serializable_object_field(
@@ -1459,6 +1508,81 @@ def _render_asset_reference_field(ctx, comp, field_name, metadata, current_value
     )
 
 
+def _render_component_ref_inline(ctx, py_comp, field_name, metadata, lw):
+    """Render a FieldType.COMPONENT reference field (extracted from render_py_component)."""
+    from Infernux.components.ref_wrappers import ComponentRef
+    from Infernux.components.serialized_field import get_raw_field_value, FieldType
+    _comp_ref = get_raw_field_value(py_comp, field_name)
+    if not isinstance(_comp_ref, ComponentRef):
+        _comp_ref = ComponentRef()
+    _display = _comp_ref.display_name
+    _type_hint = metadata.component_type or "Component"
+    _ct = metadata.component_type
+
+    def _comp_scene(filt, _ct=_ct):
+        return _picker_scene_gameobjects(filt, required_component=_ct)
+
+    def _comp_on_pick(go, _fn=field_name, _comp=py_comp, _ct=_ct):
+        ref = _create_component_ref_from_go(go, _ct)
+        if ref is not None:
+            old = get_raw_field_value(_comp, _fn)
+            _record_property(_comp, _fn, old, ref, f"Set {_fn}")
+
+    def _comp_on_clear(_fn=field_name, _comp=py_comp):
+        old = get_raw_field_value(_comp, _fn)
+        _record_property(_comp, _fn, old, ComponentRef(), f"Clear {_fn}")
+
+    field_label(ctx, pretty_field_name(field_name), lw)
+    render_object_field(
+        ctx, f"comp_ref_{field_name}", _display, _type_hint,
+        accept_drag_type=["HIERARCHY_GAMEOBJECT", "PREFAB_GUID", "PREFAB_FILE"],
+        on_drop_callback=lambda payload, _fn=field_name, _comp=py_comp, _ct=metadata.component_type: _apply_reference_drop(FieldType.COMPONENT, _comp, _fn, payload, _ct),
+        picker_scene_items=_comp_scene,
+        on_pick=_comp_on_pick,
+        on_clear=_comp_on_clear,
+    )
+
+
+def _render_gameobject_ref_inline(ctx, py_comp, field_name, metadata, current_value, lw):
+    """Render a FieldType.GAME_OBJECT reference field (extracted from render_py_component)."""
+    from Infernux.components.ref_wrappers import PrefabRef, GameObjectRef
+    if isinstance(current_value, PrefabRef):
+        display = current_value.name
+        _type_hint_prefix = "Prefab"
+    else:
+        _display_obj = current_value
+        if hasattr(current_value, 'resolve'):
+            _display_obj = current_value.resolve()
+        display = _display_obj.name if _display_obj and hasattr(_display_obj, 'name') else "None"
+        _type_hint_prefix = "GameObject"
+    _type_hint = _type_hint_prefix
+    _req_comp = metadata.required_component
+    if _req_comp:
+        _type_hint = f"{_type_hint_prefix}:{_req_comp}"
+
+    def _go_scene(filt, _rc=_req_comp):
+        return _picker_scene_gameobjects(filt, required_component=_rc)
+
+    def _go_on_pick(go, _fn=field_name, _comp=py_comp):
+        ref = GameObjectRef(go)
+        old = getattr(_comp, _fn, None)
+        _record_property(_comp, _fn, old, ref, f"Set {_fn}")
+
+    def _go_on_clear(_fn=field_name, _comp=py_comp):
+        old = getattr(_comp, _fn, None)
+        _record_property(_comp, _fn, old, None, f"Clear {_fn}")
+
+    field_label(ctx, pretty_field_name(field_name), lw)
+    render_object_field(
+        ctx, f"go_ref_{field_name}", display, _type_hint,
+        accept_drag_type=["HIERARCHY_GAMEOBJECT", "PREFAB_GUID", "PREFAB_FILE"],
+        on_drop_callback=lambda payload, _fn=field_name, _comp=py_comp, _rc=_req_comp: _apply_gameobject_or_prefab_drop(_comp, _fn, payload, _rc),
+        picker_scene_items=_go_scene,
+        on_pick=_go_on_pick,
+        on_clear=_go_on_clear,
+    )
+
+
 def render_py_component(ctx: InxGUIContext, py_comp):
     """Render a Python InxComponent's serialized fields.
 
@@ -1551,7 +1675,8 @@ def render_py_component(ctx: InxGUIContext, py_comp):
             try:
                 if not metadata.visible_when(py_comp):
                     continue
-            except (RuntimeError, TypeError):
+            except (RuntimeError, TypeError) as _exc:
+                Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
                 pass  # On error, show the field
 
         # Get current value. For reference-like fields, use the raw stored ref
@@ -1577,8 +1702,7 @@ def render_py_component(ctx: InxGUIContext, py_comp):
             _flush()
             field_label(ctx, pretty_field_name(field_name), lw)
             ctx.label(f"{current_value}")
-            if metadata.tooltip and ctx.is_item_hovered():
-                ctx.set_tooltip(metadata.tooltip)
+            _tooltip_and_info(ctx, metadata)
             continue
 
         # ── Non-scalar types: flush batch, render individually ──
@@ -1587,112 +1711,31 @@ def render_py_component(ctx: InxGUIContext, py_comp):
             from Infernux.components.serialized_field import get_raw_field_value
             _raw_list = get_raw_field_value(py_comp, field_name)
             _render_list_field(ctx, py_comp, field_name, metadata, _raw_list, lw)
-            if metadata.tooltip and ctx.is_item_hovered():
-                ctx.set_tooltip(metadata.tooltip)
-            if metadata.info_text:
-                _render_info_text(ctx, metadata.info_text)
+            _tooltip_and_info(ctx, metadata)
             continue
 
         if metadata.field_type == FieldType.SERIALIZABLE_OBJECT:
             _flush()
             _render_serializable_object_field(ctx, py_comp, field_name, metadata, current_value, lw)
-            if metadata.tooltip and ctx.is_item_hovered():
-                ctx.set_tooltip(metadata.tooltip)
-            if metadata.info_text:
-                _render_info_text(ctx, metadata.info_text)
+            _tooltip_and_info(ctx, metadata)
             continue
 
         if metadata.field_type == FieldType.COMPONENT:
             _flush()
-            from Infernux.components.ref_wrappers import ComponentRef
-            from Infernux.components.serialized_field import get_raw_field_value
-            _comp_ref = get_raw_field_value(py_comp, field_name)
-            if not isinstance(_comp_ref, ComponentRef):
-                _comp_ref = ComponentRef()
-            _display = _comp_ref.display_name
-            _type_hint = metadata.component_type or "Component"
-            _ct = metadata.component_type
-
-            def _comp_scene(filt, _ct=_ct):
-                return _picker_scene_gameobjects(filt, required_component=_ct)
-
-            def _comp_on_pick(go, _fn=field_name, _comp=py_comp, _ct=_ct):
-                ref = _create_component_ref_from_go(go, _ct)
-                if ref is not None:
-                    old = get_raw_field_value(_comp, _fn)
-                    _record_property(_comp, _fn, old, ref, f"Set {_fn}")
-
-            def _comp_on_clear(_fn=field_name, _comp=py_comp):
-                old = get_raw_field_value(_comp, _fn)
-                _record_property(_comp, _fn, old, ComponentRef(), f"Clear {_fn}")
-
-            field_label(ctx, pretty_field_name(field_name), lw)
-            render_object_field(
-                ctx, f"comp_ref_{field_name}", _display, _type_hint,
-                accept_drag_type=["HIERARCHY_GAMEOBJECT", "PREFAB_GUID", "PREFAB_FILE"],
-                on_drop_callback=lambda payload, _fn=field_name, _comp=py_comp, _ct=metadata.component_type: _apply_reference_drop(FieldType.COMPONENT, _comp, _fn, payload, _ct),
-                picker_scene_items=_comp_scene,
-                on_pick=_comp_on_pick,
-                on_clear=_comp_on_clear,
-            )
-            if metadata.tooltip and ctx.is_item_hovered():
-                ctx.set_tooltip(metadata.tooltip)
-            if metadata.info_text:
-                _render_info_text(ctx, metadata.info_text)
+            _render_component_ref_inline(ctx, py_comp, field_name, metadata, lw)
+            _tooltip_and_info(ctx, metadata)
             continue
 
         if metadata.field_type == FieldType.GAME_OBJECT:
             _flush()
-            from Infernux.components.ref_wrappers import PrefabRef
-            if isinstance(current_value, PrefabRef):
-                display = current_value.name
-                _type_hint_prefix = "Prefab"
-            else:
-                _display_obj = current_value
-                if hasattr(current_value, 'resolve'):
-                    _display_obj = current_value.resolve()
-                display = _display_obj.name if _display_obj and hasattr(_display_obj, 'name') else "None"
-                _type_hint_prefix = "GameObject"
-            _type_hint = _type_hint_prefix
-            _req_comp = metadata.required_component
-            if _req_comp:
-                _type_hint = f"{_type_hint_prefix}:{_req_comp}"
-
-            def _go_scene(filt, _rc=_req_comp):
-                return _picker_scene_gameobjects(filt, required_component=_rc)
-
-            def _go_on_pick(go, _fn=field_name, _comp=py_comp):
-                from Infernux.components.ref_wrappers import GameObjectRef
-                ref = GameObjectRef(go)
-                old = getattr(_comp, _fn, None)
-                _record_property(_comp, _fn, old, ref, f"Set {_fn}")
-
-            def _go_on_clear(_fn=field_name, _comp=py_comp):
-                old = getattr(_comp, _fn, None)
-                _record_property(_comp, _fn, old, None, f"Clear {_fn}")
-
-            field_label(ctx, pretty_field_name(field_name), lw)
-            render_object_field(
-                ctx, f"go_ref_{field_name}", display, _type_hint,
-                accept_drag_type=["HIERARCHY_GAMEOBJECT", "PREFAB_GUID", "PREFAB_FILE"],
-                on_drop_callback=lambda payload, _fn=field_name, _comp=py_comp, _rc=_req_comp: _apply_gameobject_or_prefab_drop(_comp, _fn, payload, _rc),
-                picker_scene_items=_go_scene,
-                on_pick=_go_on_pick,
-                on_clear=_go_on_clear,
-            )
-            if metadata.tooltip and ctx.is_item_hovered():
-                ctx.set_tooltip(metadata.tooltip)
-            if metadata.info_text:
-                _render_info_text(ctx, metadata.info_text)
+            _render_gameobject_ref_inline(ctx, py_comp, field_name, metadata, current_value, lw)
+            _tooltip_and_info(ctx, metadata)
             continue
 
         if metadata.field_type in _get_asset_ref_config():
             _flush()
             _render_asset_reference_field(ctx, py_comp, field_name, metadata, current_value, metadata.field_type, lw)
-            if metadata.tooltip and ctx.is_item_hovered():
-                ctx.set_tooltip(metadata.tooltip)
-            if metadata.info_text:
-                _render_info_text(ctx, metadata.info_text)
+            _tooltip_and_info(ctx, metadata)
             continue
 
         # ── Scalar field → try batch ──
@@ -1734,11 +1777,10 @@ def render_py_component(ctx: InxGUIContext, py_comp):
                 refresh_values = True
 
             # Tooltip for non-batched scalar fallback
-            if metadata.tooltip and ctx.is_item_hovered():
-                ctx.set_tooltip(metadata.tooltip)
+            _tooltip_and_info(ctx, metadata)
 
-        # Show info text if available
-        if metadata.info_text:
+        # Show info text for batched fields (tooltip handled by C++ RenderPropertyBatch)
+        if desc is not None and metadata.info_text:
             _render_info_text(ctx, metadata.info_text)
 
     _flush()
@@ -1777,23 +1819,7 @@ def _apply_gameobject_or_prefab_drop(comp, field_name: str, payload, required_co
         # Prefab drop — store a PrefabRef (no scene instantiation)
         try:
             from Infernux.components.ref_wrappers import PrefabRef
-            import os
-            guid = ""
-            path_hint = ""
-            if os.path.isfile(payload):
-                path_hint = payload
-                guid = _asset_guid_from_path(payload)
-            else:
-                # payload is a GUID — resolve path from asset database
-                guid = payload
-                try:
-                    from Infernux.core.assets import AssetManager
-                    adb = getattr(AssetManager, '_asset_database', None)
-                    if adb:
-                        path_hint = adb.get_path_from_guid(guid) or ""
-                except Exception:
-                    pass
-
+            guid, path_hint = _resolve_guid_and_path(payload)
             ref = PrefabRef(guid=guid, path_hint=path_hint)
             old_val = getattr(comp, field_name, None)
             _record_property(comp, field_name, old_val, ref, f"Set {field_name}")
@@ -1855,14 +1881,23 @@ def _picker_scene_gameobjects(filter_text: str, required_component: str = None):
     return items
 
 
-def _picker_assets(filter_text: str, pattern: str):
-    """Return ``[(display_name, path), ...]`` for assets matching *pattern*."""
+def _picker_assets(filter_text: str, pattern: str, *, assets_only: bool = False):
+    """Return ``[(display_name, path), ...]`` for assets matching *pattern*.
+
+    When *assets_only* is True, only assets whose paths are under the
+    project ``Assets/`` folder are returned (engine/built-in resources
+    from ``Library/Resources`` are excluded).
+    """
     import os
     from Infernux.core.assets import AssetManager
     paths = AssetManager.find_assets(pattern)
     items = []
     filt = filter_text.lower()
     for p in paths:
+        if assets_only:
+            norm = p.replace("\\", "/")
+            if "/Assets/" not in norm and not norm.startswith("Assets/"):
+                continue
         name = os.path.basename(p)
         if filt and filt not in name.lower():
             continue
@@ -1881,7 +1916,7 @@ def _make_list_picker_providers(element_type, metadata):
     if element_type == FieldType.MATERIAL:
         return (None, lambda filt: _picker_assets(filt, "*.mat"))
     if element_type == FieldType.TEXTURE:
-        return (None, lambda filt: _picker_assets(filt, "*.png") + _picker_assets(filt, "*.jpg"))
+        return (None, lambda filt: _picker_assets(filt, "*.png", assets_only=True) + _picker_assets(filt, "*.jpg", assets_only=True))
     if element_type == FieldType.SHADER:
         return (None, lambda filt: _picker_assets(filt, "*.vert") + _picker_assets(filt, "*.frag"))
     if element_type == FieldType.ASSET:
@@ -2097,7 +2132,8 @@ def _render_mesh_renderer_materials(ctx: InxGUIContext, comp):
         mat = None
         try:
             mat = comp.get_effective_material(slot_idx)
-        except (RuntimeError, IndexError):
+        except (RuntimeError, IndexError) as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             pass
         mat_name = getattr(mat, 'name', 'None') if mat else 'None'
         display_name = mat_name + (" (Default)" if is_default else "")

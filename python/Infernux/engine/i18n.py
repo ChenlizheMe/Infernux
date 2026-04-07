@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+from Infernux.debug import Debug
 
 # ---------------------------------------------------------------------------
 # Locale state
@@ -212,6 +213,7 @@ _STRINGS: dict[str, dict[str, str]] = {
     "build.game_name_hint":             {"en": "(default: {name})",         "zh": "(默认: {name})"},
     "build.debug_mode":                 {"en": "Debug Mode",               "zh": "调试模式"},
     "build.lto":                        {"en": "LTO (slower build, better perf)", "zh": "LTO（编译更慢，性能更好）"},
+    "build.enable_jit":                 {"en": "JIT (Numba acceleration)",   "zh": "JIT（Numba 加速）"},
     "build.output_directory":           {"en": "Output Directory",          "zh": "输出目录"},
     "build.output_directory_hint":      {"en": "Use an empty folder, or reuse one containing {marker} from a previous Infernux build.", "zh": "请使用空文件夹，或复用包含旧 Infernux 构建标记文件 {marker} 的目录。"},
     "build.output_directory_error_title": {"en": "Invalid Build Output Directory", "zh": "无效的构建输出目录"},
@@ -566,7 +568,8 @@ def _prefs_path() -> str:
             ctypes.windll.shell32.SHGetFolderPathW(None, 5, None, 0, buf)
             if buf.value:
                 docs = pathlib.Path(buf.value)
-        except (OSError, ValueError):
+        except (OSError, ValueError) as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             pass
     else:
         docs = pathlib.Path.home() / "Documents"
@@ -587,7 +590,8 @@ def _load_preference() -> None:
         locale = data.get("language", "zh")
         if locale in ("en", "zh"):
             _current_locale = locale
-    except (json.JSONDecodeError, OSError):
+    except (json.JSONDecodeError, OSError) as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         pass
 
 
@@ -605,7 +609,8 @@ def _save_preference() -> None:
     try:
         with open(path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
-    except OSError:
+    except OSError as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         pass
 
 

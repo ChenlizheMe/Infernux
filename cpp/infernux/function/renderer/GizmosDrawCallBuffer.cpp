@@ -1,6 +1,7 @@
 #include "GizmosDrawCallBuffer.h"
 
 #include <algorithm>
+#include <core/config/MathConstants.h>
 #include <core/log/InxLog.h>
 #include <cstring>
 #include <function/resources/InxMaterial/InxMaterial.h>
@@ -181,12 +182,12 @@ DrawCallResult GizmosDrawCallBuffer::GetIconDrawCalls(std::shared_ptr<InxMateria
 
     glm::vec3 billboardRight = cameraRight;
     glm::vec3 billboardUp = cameraUp;
-    if (glm::dot(billboardRight, billboardRight) < 1e-6f) {
+    if (glm::dot(billboardRight, billboardRight) < kEpsilon) {
         billboardRight = glm::vec3(1.0f, 0.0f, 0.0f);
     } else {
         billboardRight = glm::normalize(billboardRight);
     }
-    if (glm::dot(billboardUp, billboardUp) < 1e-6f) {
+    if (glm::dot(billboardUp, billboardUp) < kEpsilon) {
         billboardUp = glm::vec3(0.0f, 1.0f, 0.0f);
     } else {
         billboardUp = glm::normalize(billboardUp);

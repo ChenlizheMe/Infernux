@@ -2,6 +2,7 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 from typing import List, Tuple
+import logging
 
 
 class ProjectDatabase:
@@ -34,7 +35,8 @@ class ProjectDatabase:
                     (name, datetime.now().isoformat(timespec="seconds"), path),
                 )
             return True
-        except Exception:
+        except Exception as _exc:
+            logging.getLogger(__name__).debug("[Suppressed] %s: %s", type(_exc).__name__, _exc)
             return False
 
     def _create_table(self) -> None:

@@ -403,5 +403,18 @@ class InxRenderer
     /// Used by Python to run heavy scene loads between frames, avoiding
     /// Windows "Not Responding" by running between SDL_PumpEvents() calls.
     std::function<void()> m_postDrawCallback;
+
+    // ---- DrawFrame sub-methods (extracted for readability) ----
+
+    /// @brief Check scene & game render graph MSAA requests; apply if changed.
+    /// @return true if MSAA change was triggered and DrawFrame should return early.
+    bool CheckAndApplyMsaaRequest();
+
+    /// @brief Build EngineGlobalsUBO and stage it for the current frame.
+    void StageEngineGlobalsUBO();
+
+    /// @brief Collect and merge draw calls from all active render graphs,
+    /// then pass them to VkCore for unused buffer cleanup.
+    void CleanupDrawCallBuffers();
 };
 } // namespace infernux

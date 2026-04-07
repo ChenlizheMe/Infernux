@@ -43,7 +43,8 @@ def _get_file_stamp(file_path: str):
     try:
         stat = os.stat(file_path)
         return (stat.st_mtime_ns, stat.st_size)
-    except OSError:
+    except OSError as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         return None
 
 
@@ -105,7 +106,8 @@ def _get_cached_prefab_template(file_path: str, resolved_guid: str, asset_databa
         try:
             template_scene.destroy_game_object(old_template)
             template_scene.process_pending_destroys()
-        except Exception:
+        except Exception as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             pass
 
     template = template_scene.instantiate_from_json(json.dumps(template_payload), None)
@@ -150,7 +152,23 @@ def _strip_prefab_runtime_fields(obj_data: dict):
         _strip_prefab_runtime_fields(child)
 
 
-def save_prefab(game_object, file_path: str, asset_database=None) -> bool:
+def read_prefab_source_canvas(file_path: str = None, guid: str = None,
+                              asset_database=None) -> str:
+    """Return the ``source_canvas_name`` stored in a prefab, or ``""``."""
+    if not file_path and guid and asset_database:
+        file_path = asset_database.get_path_from_guid(guid)
+    if not file_path or not os.path.isfile(file_path):
+        return ""
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data.get("source_canvas_name", "")
+    except Exception:
+        return ""
+
+
+def save_prefab(game_object, file_path: str, asset_database=None,
+               source_canvas_name: str = "") -> bool:
     """Serialize a GameObject hierarchy to a .prefab file.
 
     Returns True on success, False on failure.
@@ -177,6 +195,8 @@ def save_prefab(game_object, file_path: str, asset_database=None) -> bool:
         "prefab_version": PREFAB_VERSION,
         "root_object": go_data,
     }
+    if source_canvas_name:
+        prefab_data["source_canvas_name"] = source_canvas_name
 
     try:
         os.makedirs(os.path.dirname(file_path), exist_ok=True)

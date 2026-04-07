@@ -315,17 +315,20 @@ class ResourcesManager:
 
         try:
             observer.stop()
-        except Exception:
+        except Exception as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             pass
 
         try:
             observer.unschedule_all()
-        except Exception:
+        except Exception as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             pass
 
         try:
             observer.join(timeout=join_timeout)
-        except Exception:
+        except Exception as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             pass
 
         if getattr(observer, "is_alive", lambda: False)():
@@ -359,7 +362,8 @@ class ResourcesManager:
             # If watchdog fails to shut down for any reason, do not let its
             # worker thread keep the entire engine process alive forever.
             self._observer.daemon = True
-        except Exception:
+        except Exception as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             pass
 
         try:

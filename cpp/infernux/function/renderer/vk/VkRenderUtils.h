@@ -8,6 +8,153 @@ namespace infernux::vkrender
 inline constexpr VkPipelineStageFlags kShaderUniformReadStages =
     VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
 
+// ── Image / View / Sampler creation helpers ─────────────────────────────
+
+inline VkImageCreateInfo MakeImageCreateInfo2D(uint32_t width, uint32_t height, VkFormat format,
+                                               VkImageUsageFlags usage,
+                                               VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT)
+{
+    VkImageCreateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    info.imageType = VK_IMAGE_TYPE_2D;
+    info.extent = {width, height, 1};
+    info.mipLevels = 1;
+    info.arrayLayers = 1;
+    info.format = format;
+    info.tiling = VK_IMAGE_TILING_OPTIMAL;
+    info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    info.usage = usage;
+    info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    info.samples = samples;
+    return info;
+}
+
+inline VkImageViewCreateInfo MakeImageViewCreateInfo2D(VkImage image, VkFormat format, VkImageAspectFlags aspectMask)
+{
+    VkImageViewCreateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    info.image = image;
+    info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    info.format = format;
+    info.subresourceRange.aspectMask = aspectMask;
+    info.subresourceRange.baseMipLevel = 0;
+    info.subresourceRange.levelCount = 1;
+    info.subresourceRange.baseArrayLayer = 0;
+    info.subresourceRange.layerCount = 1;
+    return info;
+}
+
+inline VkSamplerCreateInfo MakeLinearClampSamplerInfo(VkBorderColor borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK)
+{
+    VkSamplerCreateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    info.magFilter = VK_FILTER_LINEAR;
+    info.minFilter = VK_FILTER_LINEAR;
+    info.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    info.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    info.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    info.anisotropyEnable = VK_FALSE;
+    info.maxAnisotropy = 1.0f;
+    info.borderColor = borderColor;
+    info.unnormalizedCoordinates = VK_FALSE;
+    info.compareEnable = VK_FALSE;
+    info.compareOp = VK_COMPARE_OP_ALWAYS;
+    info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+    info.mipLodBias = 0.0f;
+    info.minLod = 0.0f;
+    info.maxLod = 0.0f;
+    return info;
+}
+
+inline VkImageMemoryBarrier MakeImageBarrier(VkImage image, VkImageLayout oldLayout, VkImageLayout newLayout,
+                                             VkImageAspectFlags aspectMask, VkAccessFlags srcAccess,
+                                             VkAccessFlags dstAccess)
+{
+    VkImageMemoryBarrier b{};
+    b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    b.oldLayout = oldLayout;
+    b.newLayout = newLayout;
+    b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.image = image;
+    b.subresourceRange.aspectMask = aspectMask;
+    b.subresourceRange.baseMipLevel = 0;
+    b.subresourceRange.levelCount = 1;
+    b.subresourceRange.baseArrayLayer = 0;
+    b.subresourceRange.layerCount = 1;
+    b.srcAccessMask = srcAccess;
+    b.dstAccessMask = dstAccess;
+    return b;
+}
+
+// ── Safe-destroy helpers (VkDevice-owned handles) ───────────────────────
+
+inline void SafeDestroy(VkDevice device, VkSampler &h)
+{
+    if (h != VK_NULL_HANDLE) {
+        vkDestroySampler(device, h, nullptr);
+        h = VK_NULL_HANDLE;
+    }
+}
+
+inline void SafeDestroy(VkDevice device, VkImageView &h)
+{
+    if (h != VK_NULL_HANDLE) {
+        vkDestroyImageView(device, h, nullptr);
+        h = VK_NULL_HANDLE;
+    }
+}
+
+inline void SafeDestroy(VkDevice device, VkPipeline &h)
+{
+    if (h != VK_NULL_HANDLE) {
+        vkDestroyPipeline(device, h, nullptr);
+        h = VK_NULL_HANDLE;
+    }
+}
+
+inline void SafeDestroy(VkDevice device, VkPipelineLayout &h)
+{
+    if (h != VK_NULL_HANDLE) {
+        vkDestroyPipelineLayout(device, h, nullptr);
+        h = VK_NULL_HANDLE;
+    }
+}
+
+inline void SafeDestroy(VkDevice device, VkDescriptorSetLayout &h)
+{
+    if (h != VK_NULL_HANDLE) {
+        vkDestroyDescriptorSetLayout(device, h, nullptr);
+        h = VK_NULL_HANDLE;
+    }
+}
+
+inline void SafeDestroy(VkDevice device, VkDescriptorPool &h)
+{
+    if (h != VK_NULL_HANDLE) {
+        vkDestroyDescriptorPool(device, h, nullptr);
+        h = VK_NULL_HANDLE;
+    }
+}
+
+inline void SafeDestroy(VkDevice device, VkFramebuffer &h)
+{
+    if (h != VK_NULL_HANDLE) {
+        vkDestroyFramebuffer(device, h, nullptr);
+        h = VK_NULL_HANDLE;
+    }
+}
+
+inline void SafeDestroy(VkDevice device, VkRenderPass &h)
+{
+    if (h != VK_NULL_HANDLE) {
+        vkDestroyRenderPass(device, h, nullptr);
+        h = VK_NULL_HANDLE;
+    }
+}
+
+// ── Existing helpers ────────────────────────────────────────────────────
+
 inline VkSubpassDependency MakePipelineCompatibleSubpassDependency()
 {
     VkSubpassDependency dependency{};

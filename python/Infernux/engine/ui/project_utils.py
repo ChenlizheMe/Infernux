@@ -5,6 +5,7 @@ These have no dependency on ``ProjectPanel`` instance state.
 """
 
 import os
+from Infernux.debug import Debug
 
 # File extensions to hide
 HIDDEN_EXTENSIONS = {'.meta', '.pyc', '.pyo', '.tmp'}
@@ -80,7 +81,8 @@ def _find_vscode_executable() -> str | None:
         for key_path in registry_paths:
             try:
                 key = winreg.OpenKey(root, key_path)
-            except OSError:
+            except OSError as _exc:
+                Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
                 continue
             try:
                 exe_path, _ = winreg.QueryValueEx(key, '')
@@ -140,7 +142,8 @@ def open_in_vscode(file_path: str, line: int = 0, project_root: str = "") -> boo
                 creationflags=(0x08000000 if platform.system() == 'Windows' else 0),
             )
         return True
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError) as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         return False
 
 

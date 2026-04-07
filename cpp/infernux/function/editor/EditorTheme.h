@@ -13,10 +13,15 @@ namespace infernux
 namespace EditorTheme
 {
 
+// ── Accent / brand color (Infernux red #EB5757) ─────────────────────
+constexpr float ACCENT_R = 0.922f;
+constexpr float ACCENT_G = 0.341f;
+constexpr float ACCENT_B = 0.341f;
+
 // ── Console log level colors ─────────────────────────────────────────
 constexpr ImVec4 LOG_INFO{0.82f, 0.82f, 0.85f, 1.0f};
 constexpr ImVec4 LOG_WARNING{0.890f, 0.710f, 0.300f, 1.0f};
-constexpr ImVec4 LOG_ERROR{0.922f, 0.341f, 0.341f, 1.0f};
+constexpr ImVec4 LOG_ERROR{ACCENT_R, ACCENT_G, ACCENT_B, 1.0f};
 constexpr ImVec4 LOG_TRACE{0.50f, 0.50f, 0.50f, 1.0f};
 constexpr ImVec4 LOG_BADGE{0.55f, 0.55f, 0.55f, 1.0f};
 constexpr ImVec4 LOG_DIM{0.133f, 0.133f, 0.133f, 0.6f};
@@ -107,7 +112,7 @@ constexpr ImVec4 TEXT{0.82f, 0.82f, 0.85f, 1.0f};
 constexpr ImVec4 TEXT_DIM2{0.55f, 0.55f, 0.55f, 1.0f};
 constexpr ImVec4 WARNING_TEXT{0.90f, 0.60f, 0.20f, 1.0f};
 constexpr ImVec4 ERROR_TEXT{0.90f, 0.30f, 0.30f, 1.0f};
-constexpr ImVec4 PREFAB_TEXT2{0.922f, 0.341f, 0.341f, 1.0f};
+constexpr ImVec4 PREFAB_TEXT2{ACCENT_R, ACCENT_G, ACCENT_B, 1.0f};
 
 constexpr ImVec4 PREFAB_HEADER_BG{0.235f, 0.235f, 0.235f, 1.0f};
 constexpr float PREFAB_HEADER_H = 28.0f;
@@ -148,7 +153,7 @@ constexpr float INSPECTOR_CHECKBOX_SLOT_W = 22.0f;
 
 constexpr ImVec4 INSPECTOR_INLINE_BTN_IDLE{0.20f, 0.20f, 0.20f, 1.0f};
 constexpr ImVec4 INSPECTOR_INLINE_BTN_HOVER{0.28f, 0.24f, 0.24f, 1.0f};
-constexpr ImVec4 INSPECTOR_INLINE_BTN_ACTIVE{0.922f, 0.341f, 0.341f, 1.0f};
+constexpr ImVec4 INSPECTOR_INLINE_BTN_ACTIVE{ACCENT_R, ACCENT_G, ACCENT_B, 1.0f};
 constexpr float INSPECTOR_INLINE_BTN_GAP = 4.0f;
 
 constexpr float ADD_COMP_SEARCH_W = 240.0f;

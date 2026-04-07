@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from Infernux.components.builtin.collider import Collider
 from Infernux.components.builtin_component import CppProperty
+from Infernux.debug import Debug
 from Infernux.components.serialized_field import FieldType
 
 
@@ -40,7 +41,8 @@ class MeshCollider(Collider):
             if rb is not None:
                 try:
                     forced_convex = not rb.is_kinematic
-                except (RuntimeError, AttributeError):
+                except (RuntimeError, AttributeError) as _exc:
+                    Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
                     pass
 
         if forced_convex:

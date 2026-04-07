@@ -18,6 +18,7 @@ Usage
 from __future__ import annotations
 
 from typing import Callable, List, Optional, Sequence
+from Infernux.debug import Debug
 
 
 class SelectionManager:
@@ -48,14 +49,16 @@ class SelectionManager:
     def remove_listener(self, cb: Callable[[], None]) -> None:
         try:
             self._callbacks.remove(cb)
-        except ValueError:
+        except ValueError as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             pass
 
     def _notify(self) -> None:
         for cb in self._callbacks:
             try:
                 cb()
-            except Exception:
+            except Exception as _exc:
+                Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
                 pass
 
     # ── Ordered-ID hint (for shift-range) ─────────────────────────────

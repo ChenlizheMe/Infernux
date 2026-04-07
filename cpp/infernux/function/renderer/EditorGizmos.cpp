@@ -1,5 +1,6 @@
 #include "EditorGizmos.h"
 #include "InxLog.h"
+#include <core/config/MathConstants.h>
 #include <function/scene/Scene.h>
 
 namespace infernux
@@ -164,7 +165,7 @@ void EditorGizmos::CreateOutlineMesh()
     // Normalize all smooth normals
     for (auto &n : smoothNormals) {
         float len = glm::length(n);
-        if (len > 1e-6f) {
+        if (len > kEpsilon) {
             n /= len;
         } else {
             n = glm::vec3(0.0f, 1.0f, 0.0f); // Default up
@@ -178,7 +179,7 @@ void EditorGizmos::CreateOutlineMesh()
         // Normalize provided normals
         for (auto &n : finalNormals) {
             float len = glm::length(n);
-            if (len > 1e-6f) {
+            if (len > kEpsilon) {
                 n /= len;
             }
         }
@@ -228,11 +229,11 @@ glm::mat4 EditorGizmos::GetOutlineScaledWorldMatrix() const
 
     // Extract rotation (normalize basis vectors)
     glm::mat4 rotation = glm::mat4(1.0f);
-    if (scale.x > 1e-6f)
+    if (scale.x > kEpsilon)
         rotation[0] = m_selectionWorldMatrix[0] / scale.x;
-    if (scale.y > 1e-6f)
+    if (scale.y > kEpsilon)
         rotation[1] = m_selectionWorldMatrix[1] / scale.y;
-    if (scale.z > 1e-6f)
+    if (scale.z > kEpsilon)
         rotation[2] = m_selectionWorldMatrix[2] / scale.z;
     rotation[3] = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
 
@@ -248,7 +249,7 @@ glm::mat4 EditorGizmos::GetOutlineScaledWorldMatrix() const
 
     // Calculate average object size for relative scaling
     float avgScale = (scale.x + scale.y + scale.z) / 3.0f;
-    if (avgScale < 1e-6f)
+    if (avgScale < kEpsilon)
         avgScale = 1.0f;
 
     // Add distance-based offset to scale

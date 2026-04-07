@@ -10,6 +10,7 @@
 #include "MeshLoader.h"
 #include "InxMesh.h"
 
+#include <core/config/MathConstants.h>
 #include <core/log/InxLog.h>
 #include <function/resources/AssetDatabase/AssetDatabase.h>
 #include <function/resources/InxResource/InxResourceMeta.h>
@@ -188,7 +189,7 @@ static std::shared_ptr<InxMesh> ConvertScene(const aiScene *scene, const MeshImp
     uint32_t currentIndexOffset = 0;
 
     const float scale = settings.scaleFactor;
-    const bool applyScale = std::abs(scale - 1.0f) > 1e-6f;
+    const bool applyScale = std::abs(scale - 1.0f) > kEpsilon;
 
     for (const auto &cm : collectedMeshes) {
         const aiMesh *aiM = scene->mMeshes[cm.meshIndex];

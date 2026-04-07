@@ -9,6 +9,7 @@ import uuid
 _PLAYER_MODE = os.environ.get("_INFERNUX_PLAYER_MODE")
 
 from Infernux.lib import InxGUIRenderable, InxGUIContext, TextureLoader, TextureData
+from Infernux.debug import Debug
 from Infernux import resources as _resources
 from .engine import Engine, LogLevel
 from .play_mode import PlayModeManager, PlayModeState
@@ -56,7 +57,8 @@ def _signal_engine_loaded() -> None:
                 f.write("ENGINE_LOADED\n")
                 f.flush()
                 os.fsync(f.fileno())
-        except OSError:
+        except OSError as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             pass
     print("ENGINE_LOADED", flush=True)
 
@@ -85,12 +87,14 @@ def _is_pid_running(pid: int) -> bool:
                 return exit_code.value == STILL_ACTIVE
             finally:
                 ctypes.windll.kernel32.CloseHandle(handle)
-        except Exception:
+        except Exception as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             return False
 
     try:
         os.kill(pid, 0)
-    except OSError:
+    except OSError as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         return False
     return True
 
@@ -111,7 +115,8 @@ def _remove_project_lock(lock_path: str, token: str) -> None:
         return
     try:
         os.remove(lock_path)
-    except OSError:
+    except OSError as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         pass
 
 
@@ -223,7 +228,8 @@ def run_player(project_path: str, engine_log_level=LogLevel.Info):
             try:
                 with open(manifest_path, "r", encoding="utf-8", errors="replace") as _f:
                     manifest = json.load(_f)
-            except Exception:
+            except Exception as _exc:
+                Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
                 pass
 
         display_mode = manifest.get("display_mode", "fullscreen_borderless")

@@ -37,6 +37,7 @@ from Infernux.core.asset_types import (
 from .inspector_utils import max_label_w, field_label, render_apply_revert
 from .theme import Theme, ImGuiCol
 from .asset_execution_layer import AssetAccessMode, get_asset_execution_layer
+from Infernux.debug import Debug
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -301,7 +302,8 @@ def _load_material(path: str):
         # native C++ material so the UBO picks up the correct default values.
         try:
             native.deserialize(json.dumps(cached))
-        except (RuntimeError, ValueError):
+        except (RuntimeError, ValueError) as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             pass
     return mat, {
         "native_mat": native,
@@ -324,7 +326,8 @@ def _load_prefab(path: str):
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
-    except (OSError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError) as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         return None
 
     root_json = data.get("root_object")
@@ -468,7 +471,8 @@ def _refresh_material(state: _State):
             _sync_material_shader_metadata(merged)
             state.extra["cached_data"] = merged
             state.extra["cached_json"] = json.dumps(merged)
-        except (RuntimeError, ValueError, json.JSONDecodeError):
+        except (RuntimeError, ValueError, json.JSONDecodeError) as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             pass
 
 

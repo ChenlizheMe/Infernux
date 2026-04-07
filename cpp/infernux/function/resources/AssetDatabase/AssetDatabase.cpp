@@ -770,7 +770,6 @@ void AssetDatabase::DeleteResource(const std::string &path)
 
     if (!guidToRemove.empty()) {
         m_metas.erase(guidToRemove);
-        INXLOG_INFO("DeleteResource: removed from cache: ", path, " guid: ", guidToRemove);
     }
 
     std::string metaPath = InxResourceMeta::GetMetaFilePath(path);

@@ -55,6 +55,163 @@ std::shared_ptr<InxMaterial> CreateTexturedComponentGizmoIconMaterial(const std:
     return material;
 }
 
+VkCompareOp ParseDepthCompareOpString(const std::string &value, VkCompareOp fallback)
+{
+    if (value == "on" || value == "true" || value == "less")
+        return VK_COMPARE_OP_LESS;
+    if (value == "less_equal")
+        return VK_COMPARE_OP_LESS_OR_EQUAL;
+    if (value == "always")
+        return VK_COMPARE_OP_ALWAYS;
+    if (value == "never")
+        return VK_COMPARE_OP_NEVER;
+    if (value == "greater")
+        return VK_COMPARE_OP_GREATER;
+    if (value == "greater_equal")
+        return VK_COMPARE_OP_GREATER_OR_EQUAL;
+    return fallback;
+}
+
+bool ApplyDepthTestMeta(RenderState &renderState, const std::string &depthTest, bool canEditDepthTest,
+                        bool canEditDepthCompare)
+{
+    if (depthTest.empty() || !canEditDepthTest) {
+        return false;
+    }
+
+    bool changed = false;
+    if (depthTest == "off" || depthTest == "false") {
+        if (renderState.depthTestEnable) {
+            renderState.depthTestEnable = false;
+            changed = true;
+        }
+        return changed;
+    }
+
+    if (!renderState.depthTestEnable) {
+        renderState.depthTestEnable = true;
+        changed = true;
+    }
+    if (!canEditDepthCompare) {
+        return changed;
+    }
+
+    VkCompareOp newOp = ParseDepthCompareOpString(depthTest, renderState.depthCompareOp);
+    if (newOp != renderState.depthCompareOp) {
+        renderState.depthCompareOp = newOp;
+        changed = true;
+    }
+    return changed;
+}
+
+bool ApplyBlendMeta(RenderState &renderState, const std::string &blend, bool canEditBlendEnable, bool canEditBlendMode)
+{
+    if (blend.empty() || !canEditBlendEnable) {
+        return false;
+    }
+
+    if (blend == "off" || blend == "false") {
+        if (!renderState.blendEnable) {
+            return false;
+        }
+        renderState.blendEnable = false;
+        return true;
+    }
+
+    if (!canEditBlendMode) {
+        return false;
+    }
+
+    if (blend == "alpha") {
+        renderState.blendEnable = true;
+        renderState.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+        renderState.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        renderState.colorBlendOp = VK_BLEND_OP_ADD;
+        renderState.srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+        renderState.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+        renderState.alphaBlendOp = VK_BLEND_OP_ADD;
+        return true;
+    }
+    if (blend == "additive") {
+        renderState.blendEnable = true;
+        renderState.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+        renderState.dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
+        renderState.colorBlendOp = VK_BLEND_OP_ADD;
+        renderState.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+        renderState.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+        renderState.alphaBlendOp = VK_BLEND_OP_ADD;
+        return true;
+    }
+
+    return false;
+}
+
+VkStencilOp ParseStencilOpString(const std::string &value)
+{
+    if (value == "keep")
+        return VK_STENCIL_OP_KEEP;
+    if (value == "zero")
+        return VK_STENCIL_OP_ZERO;
+    if (value == "replace")
+        return VK_STENCIL_OP_REPLACE;
+    if (value == "incr" || value == "increment_clamp")
+        return VK_STENCIL_OP_INCREMENT_AND_CLAMP;
+    if (value == "decr" || value == "decrement_clamp")
+        return VK_STENCIL_OP_DECREMENT_AND_CLAMP;
+    if (value == "invert")
+        return VK_STENCIL_OP_INVERT;
+    if (value == "incr_wrap" || value == "increment_wrap")
+        return VK_STENCIL_OP_INCREMENT_AND_WRAP;
+    if (value == "decr_wrap" || value == "decrement_wrap")
+        return VK_STENCIL_OP_DECREMENT_AND_WRAP;
+    return VK_STENCIL_OP_KEEP;
+}
+
+std::vector<std::string> SplitTrimmed(const std::string &text, char separator)
+{
+    std::vector<std::string> parts;
+    std::istringstream stream(text);
+    std::string token;
+    while (std::getline(stream, token, separator)) {
+        size_t start = token.find_first_not_of(" \t");
+        size_t end = token.find_last_not_of(" \t");
+        if (start != std::string::npos && end != std::string::npos) {
+            parts.push_back(token.substr(start, end - start + 1));
+        }
+    }
+    return parts;
+}
+
+bool ApplyStencilMeta(RenderState &renderState, const std::string &stencil)
+{
+    if (stencil.empty()) {
+        return false;
+    }
+
+    std::vector<std::string> parts = SplitTrimmed(stencil, ',');
+    if (parts.size() < 2) {
+        return false;
+    }
+
+    VkStencilOpState opState{};
+    opState.compareOp = ParseDepthCompareOpString(parts[0], VK_COMPARE_OP_ALWAYS);
+    try {
+        opState.reference = static_cast<uint32_t>(std::stoi(parts[1]));
+    } catch (...) {
+        opState.reference = 0;
+    }
+    opState.passOp = (parts.size() > 2) ? ParseStencilOpString(parts[2]) : VK_STENCIL_OP_KEEP;
+    opState.failOp = (parts.size() > 3) ? ParseStencilOpString(parts[3]) : VK_STENCIL_OP_KEEP;
+    opState.depthFailOp = (parts.size() > 4) ? ParseStencilOpString(parts[4]) : VK_STENCIL_OP_KEEP;
+    opState.compareMask = 0xFF;
+    opState.writeMask = 0xFF;
+
+    renderState.stencilTestEnable = true;
+    renderState.stencilFront = opState;
+    renderState.stencilBack = opState;
+    return true;
+}
+
 } // namespace
 
 // ============================================================================
@@ -294,70 +451,12 @@ void InxMaterial::ApplyShaderRenderMeta(const std::string &cullMode, const std::
 
     // @depth_test: on / off / less / less_equal / always / never
     // Skip if user has overridden DepthTest or DepthCompareOp
-    if (!depthTest.empty() && !HasOverride(RenderStateOverride::DepthTest)) {
-        if (depthTest == "off" || depthTest == "false") {
-            if (m_renderState.depthTestEnable) {
-                m_renderState.depthTestEnable = false;
-                changed = true;
-            }
-        } else {
-            if (!m_renderState.depthTestEnable) {
-                m_renderState.depthTestEnable = true;
-                changed = true;
-            }
-            if (!HasOverride(RenderStateOverride::DepthCompareOp)) {
-                VkCompareOp newOp = m_renderState.depthCompareOp;
-                if (depthTest == "on" || depthTest == "true" || depthTest == "less")
-                    newOp = VK_COMPARE_OP_LESS;
-                else if (depthTest == "less_equal")
-                    newOp = VK_COMPARE_OP_LESS_OR_EQUAL;
-                else if (depthTest == "always")
-                    newOp = VK_COMPARE_OP_ALWAYS;
-                else if (depthTest == "never")
-                    newOp = VK_COMPARE_OP_NEVER;
-                else if (depthTest == "greater")
-                    newOp = VK_COMPARE_OP_GREATER;
-                else if (depthTest == "greater_equal")
-                    newOp = VK_COMPARE_OP_GREATER_OR_EQUAL;
-                if (newOp != m_renderState.depthCompareOp) {
-                    m_renderState.depthCompareOp = newOp;
-                    changed = true;
-                }
-            }
-        }
-    }
+    changed |= ApplyDepthTestMeta(m_renderState, depthTest, !HasOverride(RenderStateOverride::DepthTest),
+                                  !HasOverride(RenderStateOverride::DepthCompareOp));
 
     // @blend: off / alpha / additive — skip if user has overridden BlendEnable or BlendMode
-    if (!blend.empty() && !HasOverride(RenderStateOverride::BlendEnable)) {
-        if (blend == "off" || blend == "false") {
-            if (m_renderState.blendEnable) {
-                m_renderState.blendEnable = false;
-                changed = true;
-            }
-        } else if (!HasOverride(RenderStateOverride::BlendMode)) {
-            if (blend == "alpha") {
-                m_renderState.blendEnable = true;
-                m_renderState.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
-                m_renderState.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-                m_renderState.colorBlendOp = VK_BLEND_OP_ADD;
-                // Preserve destination alpha so the scene texture stays opaque
-                // when displayed in ImGui viewport (alpha=1.0 from opaque pass).
-                m_renderState.srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
-                m_renderState.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
-                m_renderState.alphaBlendOp = VK_BLEND_OP_ADD;
-                changed = true;
-            } else if (blend == "additive") {
-                m_renderState.blendEnable = true;
-                m_renderState.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
-                m_renderState.dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
-                m_renderState.colorBlendOp = VK_BLEND_OP_ADD;
-                m_renderState.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
-                m_renderState.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
-                m_renderState.alphaBlendOp = VK_BLEND_OP_ADD;
-                changed = true;
-            }
-        }
-    }
+    changed |= ApplyBlendMeta(m_renderState, blend, !HasOverride(RenderStateOverride::BlendEnable),
+                              !HasOverride(RenderStateOverride::BlendMode));
 
     // @queue: integer render queue — skip if overridden or builtin
     if (!m_builtin && !HasOverride(RenderStateOverride::RenderQueue) && queue >= 0 &&
@@ -373,78 +472,7 @@ void InxMaterial::ApplyShaderRenderMeta(const std::string &cullMode, const std::
     }
 
     // @stencil: compare_op, ref, pass_op, fail_op, depth_fail_op
-    if (!stencil.empty()) {
-        // Helper to parse VkStencilOp from string
-        auto parseStencilOp = [](const std::string &s) -> VkStencilOp {
-            if (s == "keep")
-                return VK_STENCIL_OP_KEEP;
-            if (s == "zero")
-                return VK_STENCIL_OP_ZERO;
-            if (s == "replace")
-                return VK_STENCIL_OP_REPLACE;
-            if (s == "incr" || s == "increment_clamp")
-                return VK_STENCIL_OP_INCREMENT_AND_CLAMP;
-            if (s == "decr" || s == "decrement_clamp")
-                return VK_STENCIL_OP_DECREMENT_AND_CLAMP;
-            if (s == "invert")
-                return VK_STENCIL_OP_INVERT;
-            if (s == "incr_wrap" || s == "increment_wrap")
-                return VK_STENCIL_OP_INCREMENT_AND_WRAP;
-            if (s == "decr_wrap" || s == "decrement_wrap")
-                return VK_STENCIL_OP_DECREMENT_AND_WRAP;
-            return VK_STENCIL_OP_KEEP;
-        };
-        auto parseCompareOp = [](const std::string &s) -> VkCompareOp {
-            if (s == "never")
-                return VK_COMPARE_OP_NEVER;
-            if (s == "less")
-                return VK_COMPARE_OP_LESS;
-            if (s == "equal")
-                return VK_COMPARE_OP_EQUAL;
-            if (s == "less_equal")
-                return VK_COMPARE_OP_LESS_OR_EQUAL;
-            if (s == "greater")
-                return VK_COMPARE_OP_GREATER;
-            if (s == "not_equal")
-                return VK_COMPARE_OP_NOT_EQUAL;
-            if (s == "greater_equal")
-                return VK_COMPARE_OP_GREATER_OR_EQUAL;
-            if (s == "always")
-                return VK_COMPARE_OP_ALWAYS;
-            return VK_COMPARE_OP_ALWAYS;
-        };
-
-        // Parse comma-separated fields: compare, ref, pass, fail, zfail
-        std::vector<std::string> parts;
-        std::istringstream ss(stencil);
-        std::string token;
-        while (std::getline(ss, token, ',')) {
-            size_t s = token.find_first_not_of(" \t");
-            size_t e = token.find_last_not_of(" \t");
-            if (s != std::string::npos && e != std::string::npos)
-                parts.push_back(token.substr(s, e - s + 1));
-        }
-
-        if (parts.size() >= 2) {
-            VkStencilOpState opState{};
-            opState.compareOp = parseCompareOp(parts[0]);
-            try {
-                opState.reference = static_cast<uint32_t>(std::stoi(parts[1]));
-            } catch (...) {
-                opState.reference = 0;
-            }
-            opState.passOp = (parts.size() > 2) ? parseStencilOp(parts[2]) : VK_STENCIL_OP_KEEP;
-            opState.failOp = (parts.size() > 3) ? parseStencilOp(parts[3]) : VK_STENCIL_OP_KEEP;
-            opState.depthFailOp = (parts.size() > 4) ? parseStencilOp(parts[4]) : VK_STENCIL_OP_KEEP;
-            opState.compareMask = 0xFF;
-            opState.writeMask = 0xFF;
-
-            m_renderState.stencilTestEnable = true;
-            m_renderState.stencilFront = opState;
-            m_renderState.stencilBack = opState;
-            changed = true;
-        }
-    }
+    changed |= ApplyStencilMeta(m_renderState, stencil);
 
     if (changed) {
         m_pipelineDirty = true;

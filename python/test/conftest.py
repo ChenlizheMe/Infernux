@@ -60,6 +60,12 @@ def scene(engine):
     # Ensure play mode is stopped (no-op if already stopped)
     if sm.is_playing():
         sm.stop()
+    # Unload the scene so Jolt physics bodies are destroyed before the next
+    # test creates a new scene.  Without this, stale bodies from previous
+    # tests remain in the PhysicsWorld and cause access violations when
+    # DispatchContactEvents / ForceAllBodiesToCurrentTransform dereference
+    # Collider pointers that belong to the old (inactive) scene.
+    sm.unload_scene(sc)
 
 
 # ── per-test C++ rigidbody via scene ─────────────────────────────────────

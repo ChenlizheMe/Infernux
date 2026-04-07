@@ -147,7 +147,7 @@ class InxView
     FramePacingSample m_lastPacingSample;
     /// Number of full-speed frames remaining after the last user interaction.
     /// When this reaches 0 and idling is enabled the loop will sleep more.
-    static constexpr int ACTIVE_COOLDOWN_FRAMES = 3;
+    static constexpr int ACTIVE_COOLDOWN_FRAMES = 10;
     int m_activeFramesRemaining = ACTIVE_COOLDOWN_FRAMES;
 
     /// Timestamp of the last frame start — used to compute the remaining

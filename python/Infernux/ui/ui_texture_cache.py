@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import os
 from typing import Optional
+from Infernux.debug import Debug
 
 
 class UITextureCache:
@@ -43,7 +44,8 @@ class UITextureCache:
                 if guid:
                     self._path_to_key[tex_path] = guid
                     return guid
-        except Exception:
+        except Exception as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             pass
         return tex_path  # fallback: use path
 

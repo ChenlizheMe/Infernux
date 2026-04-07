@@ -248,6 +248,10 @@ class IGUI:
                 on_clear()
                 ctx.close_current_popup()
 
+        # Constrain the item list height (min 80, max 300)
+        _PICKER_MIN_H = 80.0
+        _PICKER_MAX_H = 300.0
+
         # Tabs
         has_scene = scene_items is not None
         has_assets = asset_items is not None
@@ -255,16 +259,24 @@ class IGUI:
         if has_scene and has_assets:
             if ctx.begin_tab_bar("##picker_tabs"):
                 if ctx.begin_tab_item(t("igui.tab_scene")):
-                    IGUI._render_picker_items(ctx, scene_items, new_filter, on_pick)
+                    if ctx.begin_child("##picker_list_scene", 0, _PICKER_MAX_H, False):
+                        IGUI._render_picker_items(ctx, scene_items, new_filter, on_pick)
+                    ctx.end_child()
                     ctx.end_tab_item()
                 if ctx.begin_tab_item(t("igui.tab_assets")):
-                    IGUI._render_picker_items(ctx, asset_items, new_filter, on_pick)
+                    if ctx.begin_child("##picker_list_assets", 0, _PICKER_MAX_H, False):
+                        IGUI._render_picker_items(ctx, asset_items, new_filter, on_pick)
+                    ctx.end_child()
                     ctx.end_tab_item()
                 ctx.end_tab_bar()
         elif has_scene:
-            IGUI._render_picker_items(ctx, scene_items, new_filter, on_pick)
+            if ctx.begin_child("##picker_list", 0, _PICKER_MAX_H, False):
+                IGUI._render_picker_items(ctx, scene_items, new_filter, on_pick)
+            ctx.end_child()
         elif has_assets:
-            IGUI._render_picker_items(ctx, asset_items, new_filter, on_pick)
+            if ctx.begin_child("##picker_list", 0, _PICKER_MAX_H, False):
+                IGUI._render_picker_items(ctx, asset_items, new_filter, on_pick)
+            ctx.end_child()
 
         ctx.end_popup()
 

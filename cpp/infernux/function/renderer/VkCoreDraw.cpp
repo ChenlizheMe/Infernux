@@ -706,10 +706,6 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
 
     if (m_shadowDrawScratch.empty()) {
         static int s_noShadowDrawsWarnCount = 0;
-        if (s_noShadowDrawsWarnCount++ < 8) {
-            INXLOG_WARN("DrawShadowCasters: no drawable shadow casters were collected (drawCalls=", drawCalls().size(),
-                        ", queueRange=", queueMin, "-", queueMax, ", cascades=", cascadeCount, ")");
-        }
 
 #if INFERNUX_FRAME_PROFILE
         m_drawSubMs[12] += std::chrono::duration<double, std::milli>(Clock::now() - totalStart).count();

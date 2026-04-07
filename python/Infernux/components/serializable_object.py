@@ -25,6 +25,7 @@ from __future__ import annotations
 import copy
 import logging
 from typing import Any, Dict, Optional, Type, TYPE_CHECKING
+from Infernux.debug import Debug
 
 if TYPE_CHECKING:
     from .serialized_field import FieldMetadata
@@ -369,7 +370,8 @@ def _deserialize_so_value(value: Any, field_meta) -> Any:
         if enum_cls is not None and hasattr(enum_cls, "__getitem__"):
             try:
                 return enum_cls[value["name"]]
-            except KeyError:
+            except KeyError as _exc:
+                Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
                 pass
         return value
 

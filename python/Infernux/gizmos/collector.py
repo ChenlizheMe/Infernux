@@ -155,7 +155,8 @@ class GizmosCollector:
             from Infernux.components.builtin import Camera as _CameraBuiltin, Light as _LightBuiltin
             builtin_registry.setdefault("Camera", _CameraBuiltin)
             builtin_registry.setdefault("Light", _LightBuiltin)
-        except Exception:
+        except Exception as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             pass
 
         # Begin frame: clear Gizmos accumulation buffers
@@ -286,7 +287,8 @@ class GizmosCollector:
                     _log_gizmo_warning(f"Gizmo callback failed for '{type_name}': {exc}")
                     try:
                         wrapper._invalidate_native_binding()
-                    except RuntimeError:
+                    except RuntimeError as _exc:
+                        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
                         pass  # invalidation is best-effort
 
         # ---- Pack and upload line gizmo data ----

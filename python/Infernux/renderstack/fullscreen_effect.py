@@ -38,6 +38,7 @@ from typing import Any, ClassVar, Dict, List, Mapping, Set, TYPE_CHECKING
 from Infernux.renderstack._pipeline_common import COLOR_TEXTURE
 from Infernux.renderstack.render_pass import RenderPass
 from Infernux.renderstack._serialized_field_mixin import SerializedFieldCollectorMixin
+from Infernux.debug import Debug
 
 if TYPE_CHECKING:
     from Infernux.rendergraph.graph import RenderGraph
@@ -97,7 +98,8 @@ class FullScreenEffect(SerializedFieldCollectorMixin, RenderPass):
             if not hasattr(self, f"_sf_{field_name}"):
                 try:
                     setattr(self, field_name, meta.default)
-                except (AttributeError, TypeError):
+                except (AttributeError, TypeError) as _exc:
+                    Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
                     pass
 
     # ==================================================================
@@ -264,7 +266,8 @@ class FullScreenEffect(SerializedFieldCollectorMixin, RenderPass):
                             setattr(self, field_name, enum_cls[enum_name])
                             continue
                     setattr(self, field_name, value)
-                except (AttributeError, TypeError, ValueError):
+                except (AttributeError, TypeError, ValueError) as _exc:
+                    Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
                     continue
         finally:
             self._inf_deserializing = False

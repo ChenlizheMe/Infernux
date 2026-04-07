@@ -42,6 +42,13 @@ class ProjectPanel : public EditorPanel
 
     void InvalidateMaterialThumbnail(const std::string &filePath);
 
+    /// Invalidate the directory cache so listing refreshes next frame.
+    void InvalidateDirCache();
+
+    /// Accept files dropped from the OS (e.g. Windows Explorer).
+    /// Copies each file/directory into the current directory.
+    void ReceiveDroppedFiles(const std::vector<std::string> &paths);
+
     /// State persistence
     std::string GetCurrentPath() const
     {
@@ -160,7 +167,6 @@ class ProjectPanel : public EditorPanel
     DirSnapshot *GetDirSnapshot(const std::string &path);
     DirTreeMeta *GetDirTreeMeta(const std::string &path);
     std::vector<FileItem> *GetProjectItems(const std::string &path, DirSnapshot *snapshot = nullptr);
-    void InvalidateDirCache();
 
     std::unordered_map<std::string, DirSnapshot> m_dirCache;
     std::unordered_map<std::string, DirTreeMeta> m_dirTreeMetaCache;

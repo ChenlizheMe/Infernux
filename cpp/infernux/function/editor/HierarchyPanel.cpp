@@ -85,9 +85,10 @@ void HierarchyPanel::ClearSearch()
 
 void HierarchyPanel::ClearSelectionAndNotify()
 {
-    if (!isSelectionEmpty || isSelectionEmpty()) {
+    if (!isSelectionEmpty || !isSelectionEmpty()) {
         if (clearSelection)
             clearSelection();
+        SyncSelectionCache();
         NotifySelectionChanged();
     }
 }
@@ -1046,8 +1047,10 @@ void HierarchyPanel::RenderGameObjectTree(InxGUIContext *ctx, GameObject *obj)
     }
 
     // ── Drag source ─────────────────────────────────────────────
-    bool canDrag = (m_uiMode && inCanvas) || (!m_uiMode && !inCanvas);
-    if (canDrag && ctx->BeginDragDropSource(0)) {
+    // Always allow drag initiation regardless of UI mode so the object
+    // can be dragged to the project panel.  Cross-mode hierarchy drops
+    // are still blocked by ValidateReparent / ValidateMoveAdjacent.
+    if (ctx->BeginDragDropSource(0)) {
         ctx->SetDragDropPayload(DRAG_DROP_TYPE, objId);
         int n = m_selIds.count(objId) ? m_selCount : 1;
         if (n > 1)

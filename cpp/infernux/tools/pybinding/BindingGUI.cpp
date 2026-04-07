@@ -937,6 +937,8 @@ void RegisterGUIBindings(py::module_ &m)
         .def("clear_selection", &ProjectPanel::ClearSelection)
         .def("set_selected_file", &ProjectPanel::SetSelectedFile, py::arg("path"))
         .def("invalidate_material_thumbnail", &ProjectPanel::InvalidateMaterialThumbnail, py::arg("file_path"))
+        .def("invalidate_dir_cache", &ProjectPanel::InvalidateDirCache)
+        .def("receive_dropped_files", &ProjectPanel::ReceiveDroppedFiles, py::arg("paths"))
         .def("get_current_path", &ProjectPanel::GetCurrentPath)
         .def("set_current_path", &ProjectPanel::SetCurrentPath, py::arg("path"))
         // Notification callbacks

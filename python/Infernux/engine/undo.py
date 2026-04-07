@@ -30,6 +30,8 @@ from abc import ABC, abstractmethod
 from contextlib import contextmanager
 from typing import Any, Optional, List, Callable
 
+from Infernux.debug import Debug
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Base command
@@ -158,13 +160,15 @@ def _resolve_target(stored_ref: Any, game_object_id: int,
         live = obj.get_component(comp_type_name)
         if live is not None:
             return live
-    except Exception:
+    except Exception as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         pass
     try:
         for pc in obj.get_py_components():
             if type(pc).__name__ == comp_type_name:
                 return pc
-    except Exception:
+    except Exception as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         pass
     return None
 
@@ -179,13 +183,15 @@ def _find_live_native_component(obj, type_name: str):
             c = obj.get_component(type_name)
             if c is not None:
                 return c
-        except Exception:
+        except Exception as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             pass
     try:
         for c in obj.get_components():
             if getattr(c, 'type_name', None) == type_name:
                 return c
-    except Exception:
+    except Exception as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         pass
     return None
 
@@ -196,7 +202,8 @@ def _get_current_selection_ids() -> List[int]:
         sel = SelectionManager.instance()
         if sel:
             return sel.get_ids()
-    except Exception:
+    except Exception as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         pass
     return []
 
@@ -206,7 +213,8 @@ def _bump_inspector_structure():
     try:
         from Infernux.engine.ui.inspector_support import bump_component_structure_version
         bump_component_structure_version()
-    except ImportError:
+    except ImportError as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         pass
 
 
@@ -215,8 +223,20 @@ def _bump_inspector_values():
     try:
         from Infernux.engine.ui.inspector_support import bump_inspector_value_generation
         bump_inspector_value_generation()
-    except ImportError:
+    except ImportError as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         pass
+
+
+def _require_scene_object(object_id: int, label: str):
+    """Return (scene, obj) or raise RuntimeError with *label* context."""
+    scene = _get_active_scene()
+    if not scene:
+        raise RuntimeError(f"[Undo] {label}: no scene")
+    obj = scene.find_by_id(object_id)
+    if not obj:
+        raise RuntimeError(f"[Undo] {label}: object {object_id} not found")
+    return scene, obj
 
 
 def _notify_gizmos_scene_changed():
@@ -227,7 +247,8 @@ def _notify_gizmos_scene_changed():
 def _invalidate_builtin_wrapper(comp_ref):
     try:
         comp_id = comp_ref.component_id
-    except Exception:
+    except Exception as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         return
     from Infernux.components.builtin_component import BuiltinComponent
     wrapper = BuiltinComponent._wrapper_cache.get(comp_id)
@@ -238,7 +259,8 @@ def _invalidate_builtin_wrapper(comp_ref):
 def _invalidate_builtin_wrappers_for_tree(obj):
     try:
         from Infernux.components.builtin_component import BuiltinComponent
-    except ImportError:
+    except ImportError as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         return
     cache = BuiltinComponent._wrapper_cache
     pending = [obj]
@@ -253,11 +275,13 @@ def _invalidate_builtin_wrappers_for_tree(obj):
                     wrapper = cache.get(comp_id)
                     if wrapper is not None:
                         wrapper._invalidate_native_binding()
-        except Exception:
+        except Exception as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             pass
         try:
             pending.extend(current.get_children())
-        except Exception:
+        except Exception as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             pass
 
 
@@ -269,7 +293,8 @@ def _destroy_game_object_immediately(scene, obj):
     if hasattr(scene, "process_pending_destroys"):
         try:
             scene.process_pending_destroys()
-        except Exception:
+        except Exception as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             pass
     _bump_inspector_structure()
     _notify_gizmos_scene_changed()
@@ -526,7 +551,8 @@ class MaterialJsonCommand(UndoCommand):
                 try:
                     from Infernux.core.assets import AssetManager
                     AssetManager.on_material_saved(fp)
-                except Exception:
+                except Exception as _exc:
+                    Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
                     pass
         if self._refresh_callback:
             self._refresh_callback(self._material)
@@ -775,6 +801,82 @@ class MoveGameObjectCommand(UndoCommand):
 # Component add / remove — generic for both native (C++) and Python
 # ═══════════════════════════════════════════════════════════════════════════
 
+def _snapshot_and_remove_native(object_id: int, type_name: str,
+                                label: str) -> str:
+    """Find, snapshot-serialize, remove a native component. Return JSON."""
+    _scene, obj = _require_scene_object(object_id, label)
+    live = _find_live_native_component(obj, type_name)
+    if live is None:
+        raise RuntimeError(f"[Undo] {label}: component '{type_name}' not found")
+    json_snap = ""
+    if hasattr(live, "serialize"):
+        try:
+            json_snap = live.serialize()
+        except Exception as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+            pass
+    obj.remove_component(live)
+    _invalidate_builtin_wrapper(live)
+    _bump_inspector_structure()
+    _notify_gizmos_scene_changed()
+    return json_snap
+
+
+def _add_native_from_snapshot(object_id: int, type_name: str,
+                              json_snapshot: Optional[str],
+                              label: str) -> None:
+    """Add a native component and optionally deserialize from snapshot."""
+    _scene, obj = _require_scene_object(object_id, label)
+    result = obj.add_component(type_name)
+    if not result:
+        raise RuntimeError(f"[Undo] {label}: add '{type_name}' failed")
+    if json_snapshot and hasattr(result, "deserialize"):
+        try:
+            result.deserialize(json_snapshot)
+        except Exception as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+            pass
+    _bump_inspector_structure()
+    _notify_gizmos_scene_changed()
+
+
+def _snapshot_and_remove_py(object_id: int, type_name: str, script_guid: str,
+                            ordinal: int, py_comp_ref: Any,
+                            label: str):
+    """Find live py component, snapshot fields+enabled, remove it.
+
+    Returns ``(fields_json, enabled, live_ref)``.
+    """
+    _scene, obj = _require_scene_object(object_id, label)
+    live = _resolve_live_py(obj, type_name, script_guid, ordinal, py_comp_ref)
+    if live is None:
+        raise RuntimeError(f"[Undo] {label}: component not found")
+    fields_json = _snapshot_py_fields(live)
+    enabled = _snapshot_py_enabled(live)
+    obj.remove_py_component(live)
+    _bump_inspector_structure()
+    return fields_json, enabled, live
+
+
+def _add_py_from_snapshot(object_id: int, type_name: str, script_guid: str,
+                          fields_json, enabled, label: str):
+    """Instantiate py component from snapshot, add to object. Returns instance."""
+    _scene, obj = _require_scene_object(object_id, label)
+    instance = _instantiate_py_snapshot(
+        type_name, script_guid, fields_json, enabled, description=label)
+    if instance is None:
+        raise RuntimeError(f"[Undo] {label}: recreate failed")
+    obj.add_py_component(instance)
+    if hasattr(instance, '_call_on_after_deserialize'):
+        try:
+            instance._call_on_after_deserialize()
+        except Exception as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+            pass
+    _bump_inspector_structure()
+    return instance
+
+
 class AddNativeComponentCommand(UndoCommand):
     """Undo removes the C++ component; redo re-adds from JSON snapshot."""
 
@@ -789,42 +891,14 @@ class AddNativeComponentCommand(UndoCommand):
         pass  # already added before record()
 
     def undo(self) -> None:
-        scene = _get_active_scene()
-        if not scene:
-            raise RuntimeError(f"[Undo] AddNative('{self._type_name}').undo: no scene")
-        obj = scene.find_by_id(self._object_id)
-        if not obj:
-            raise RuntimeError(f"[Undo] AddNative('{self._type_name}').undo: object not found")
-        live = _find_live_native_component(obj, self._type_name)
-        if live is None:
-            raise RuntimeError(f"[Undo] AddNative('{self._type_name}').undo: component not found")
-        if hasattr(live, "serialize"):
-            try:
-                self._json_snapshot = live.serialize()
-            except Exception:
-                pass
-        obj.remove_component(live)
-        _invalidate_builtin_wrapper(live)
-        _bump_inspector_structure()
-        _notify_gizmos_scene_changed()
+        self._json_snapshot = _snapshot_and_remove_native(
+            self._object_id, self._type_name,
+            f"AddNative('{self._type_name}').undo")
 
     def redo(self) -> None:
-        scene = _get_active_scene()
-        if not scene:
-            raise RuntimeError(f"[Undo] AddNative('{self._type_name}').redo: no scene")
-        obj = scene.find_by_id(self._object_id)
-        if not obj:
-            raise RuntimeError(f"[Undo] AddNative('{self._type_name}').redo: object not found")
-        result = obj.add_component(self._type_name)
-        if not result:
-            raise RuntimeError(f"[Undo] AddNative('{self._type_name}').redo: add failed")
-        if self._json_snapshot and hasattr(result, "deserialize"):
-            try:
-                result.deserialize(self._json_snapshot)
-            except Exception:
-                pass
-        _bump_inspector_structure()
-        _notify_gizmos_scene_changed()
+        _add_native_from_snapshot(
+            self._object_id, self._type_name, self._json_snapshot,
+            f"AddNative('{self._type_name}').redo")
 
 
 class RemoveNativeComponentCommand(UndoCommand):
@@ -839,52 +913,25 @@ class RemoveNativeComponentCommand(UndoCommand):
         if comp_ref is not None and hasattr(comp_ref, "serialize"):
             try:
                 self._json_snapshot = comp_ref.serialize()
-            except Exception:
+            except Exception as _exc:
+                Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
                 pass
 
     def execute(self) -> None:
         self._do_remove()
 
     def undo(self) -> None:
-        scene = _get_active_scene()
-        if not scene:
-            raise RuntimeError(f"[Undo] RemoveNative('{self._type_name}').undo: no scene")
-        obj = scene.find_by_id(self._object_id)
-        if not obj:
-            raise RuntimeError(f"[Undo] RemoveNative('{self._type_name}').undo: object not found")
-        result = obj.add_component(self._type_name)
-        if not result:
-            raise RuntimeError(f"[Undo] RemoveNative('{self._type_name}').undo: add failed")
-        if self._json_snapshot and hasattr(result, "deserialize"):
-            try:
-                result.deserialize(self._json_snapshot)
-            except Exception:
-                pass
-        _bump_inspector_structure()
-        _notify_gizmos_scene_changed()
+        _add_native_from_snapshot(
+            self._object_id, self._type_name, self._json_snapshot,
+            f"RemoveNative('{self._type_name}').undo")
 
     def redo(self) -> None:
         self._do_remove()
 
     def _do_remove(self) -> None:
-        scene = _get_active_scene()
-        if not scene:
-            raise RuntimeError(f"[Undo] RemoveNative('{self._type_name}'): no scene")
-        obj = scene.find_by_id(self._object_id)
-        if not obj:
-            raise RuntimeError(f"[Undo] RemoveNative('{self._type_name}'): object not found")
-        live = _find_live_native_component(obj, self._type_name)
-        if live is None:
-            raise RuntimeError(f"[Undo] RemoveNative('{self._type_name}'): component not found")
-        if hasattr(live, "serialize"):
-            try:
-                self._json_snapshot = live.serialize()
-            except Exception:
-                pass
-        obj.remove_component(live)
-        _invalidate_builtin_wrapper(live)
-        _bump_inspector_structure()
-        _notify_gizmos_scene_changed()
+        self._json_snapshot = _snapshot_and_remove_native(
+            self._object_id, self._type_name,
+            f"RemoveNative('{self._type_name}')")
 
 
 # -- Python component helpers --
@@ -894,7 +941,8 @@ def _snapshot_py_fields(py_comp: Any) -> str:
         return ""
     try:
         return py_comp._serialize_fields()
-    except Exception:
+    except Exception as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         return ""
 
 
@@ -920,14 +968,16 @@ def _find_py_ordinal(object_id: int, py_comp: Any) -> int:
             try:
                 ct = _comp_type_name_of(current)
                 cg = getattr(current, '_script_guid', '') or ''
-            except Exception:
+            except Exception as _exc:
+                Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
                 continue
             if ct != target_type or cg != target_guid:
                 continue
             if current is py_comp:
                 return ordinal
             ordinal += 1
-    except Exception:
+    except Exception as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         pass
     return 0
 
@@ -943,7 +993,8 @@ def _resolve_live_py(obj, type_name: str, script_guid: str,
         for current in obj.get_py_components():
             if current is fallback:
                 return current
-    except Exception:
+    except Exception as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         pass
     return None
 
@@ -989,12 +1040,14 @@ def _instantiate_py_snapshot(type_name: str, script_guid: str,
 
     try:
         instance.enabled = enabled
-    except Exception:
+    except Exception as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         pass
     if script_guid:
         try:
             instance._script_guid = script_guid
-        except Exception:
+        except Exception as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             pass
     return instance
 
@@ -1017,44 +1070,17 @@ class AddPyComponentCommand(UndoCommand):
         pass  # already added before record()
 
     def undo(self) -> None:
-        scene = _get_active_scene()
-        if not scene:
-            raise RuntimeError(f"[Undo] AddPy('{self._type_name_str}').undo: no scene")
-        obj = scene.find_by_id(self._object_id)
-        if not obj:
-            raise RuntimeError(f"[Undo] AddPy('{self._type_name_str}').undo: object not found")
-        live = _resolve_live_py(
-            obj, self._type_name_str, self._script_guid,
-            self._ordinal, self._py_comp_ref)
-        if live is None:
-            raise RuntimeError(f"[Undo] AddPy('{self._type_name_str}').undo: component not found")
-        self._fields_json = _snapshot_py_fields(live)
-        self._enabled = _snapshot_py_enabled(live)
-        self._py_comp_ref = live
-        obj.remove_py_component(live)
-        _bump_inspector_structure()
+        fj, en, live = _snapshot_and_remove_py(
+            self._object_id, self._type_name_str, self._script_guid,
+            self._ordinal, self._py_comp_ref,
+            f"AddPy('{self._type_name_str}').undo")
+        self._fields_json, self._enabled, self._py_comp_ref = fj, en, live
 
     def redo(self) -> None:
-        scene = _get_active_scene()
-        if not scene:
-            raise RuntimeError(f"[Undo] AddPy('{self._type_name_str}').redo: no scene")
-        obj = scene.find_by_id(self._object_id)
-        if not obj:
-            raise RuntimeError(f"[Undo] AddPy('{self._type_name_str}').redo: object not found")
-        instance = _instantiate_py_snapshot(
-            self._type_name_str, self._script_guid,
+        self._py_comp_ref = _add_py_from_snapshot(
+            self._object_id, self._type_name_str, self._script_guid,
             self._fields_json, self._enabled,
-            description=f"AddPy('{self._type_name_str}').redo")
-        if instance is None:
-            raise RuntimeError(f"[Undo] AddPy('{self._type_name_str}').redo: recreate failed")
-        obj.add_py_component(instance)
-        if hasattr(instance, '_call_on_after_deserialize'):
-            try:
-                instance._call_on_after_deserialize()
-            except Exception:
-                pass
-        self._py_comp_ref = instance
-        _bump_inspector_structure()
+            f"AddPy('{self._type_name_str}').redo")
 
 
 class RemovePyComponentCommand(UndoCommand):
@@ -1075,47 +1101,20 @@ class RemovePyComponentCommand(UndoCommand):
         self._do_remove()
 
     def undo(self) -> None:
-        scene = _get_active_scene()
-        if not scene:
-            raise RuntimeError(f"[Undo] RemovePy('{self._type_name_str}').undo: no scene")
-        obj = scene.find_by_id(self._object_id)
-        if not obj:
-            raise RuntimeError(f"[Undo] RemovePy('{self._type_name_str}').undo: object not found")
-        instance = _instantiate_py_snapshot(
-            self._type_name_str, self._script_guid,
+        self._py_comp_ref = _add_py_from_snapshot(
+            self._object_id, self._type_name_str, self._script_guid,
             self._fields_json, self._enabled,
-            description=f"RemovePy('{self._type_name_str}').undo")
-        if instance is None:
-            raise RuntimeError(f"[Undo] RemovePy('{self._type_name_str}').undo: recreate failed")
-        obj.add_py_component(instance)
-        if hasattr(instance, '_call_on_after_deserialize'):
-            try:
-                instance._call_on_after_deserialize()
-            except Exception:
-                pass
-        self._py_comp_ref = instance
-        _bump_inspector_structure()
+            f"RemovePy('{self._type_name_str}').undo")
 
     def redo(self) -> None:
         self._do_remove()
 
     def _do_remove(self) -> None:
-        scene = _get_active_scene()
-        if not scene:
-            raise RuntimeError(f"[Undo] RemovePy('{self._type_name_str}'): no scene")
-        obj = scene.find_by_id(self._object_id)
-        if not obj:
-            raise RuntimeError(f"[Undo] RemovePy('{self._type_name_str}'): object not found")
-        live = _resolve_live_py(
-            obj, self._type_name_str, self._script_guid,
-            self._ordinal, self._py_comp_ref)
-        if live is None:
-            raise RuntimeError(f"[Undo] RemovePy('{self._type_name_str}'): component not found")
-        self._fields_json = _snapshot_py_fields(live)
-        self._enabled = _snapshot_py_enabled(live)
-        self._py_comp_ref = live
-        obj.remove_py_component(live)
-        _bump_inspector_structure()
+        fj, en, live = _snapshot_and_remove_py(
+            self._object_id, self._type_name_str, self._script_guid,
+            self._ordinal, self._py_comp_ref,
+            f"RemovePy('{self._type_name_str}')")
+        self._fields_json, self._enabled, self._py_comp_ref = fj, en, live
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1567,7 +1566,8 @@ class InspectorUndoTracker:
             return
         try:
             pre = snapshot_fn()
-        except Exception:
+        except Exception as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             return
         entry = _TrackedEntry(pre, snapshot_fn, restore_fn, description, marks_dirty)
         entry.seen_generation = self._frame_generation
@@ -1597,7 +1597,8 @@ class InspectorUndoTracker:
         for key, entry in self._entries.items():
             try:
                 post = entry.snapshot_fn()
-            except Exception:
+            except Exception as _exc:
+                Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
                 continue
             if post != entry.pre_snapshot:
                 cmd = InspectorSnapshotCommand(
@@ -1620,7 +1621,8 @@ def _get_live_game_object(game_object_id: int):
         return None
     try:
         return scene.find_by_id(game_object_id)
-    except Exception:
+    except Exception as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         return None
 
 
@@ -1632,7 +1634,8 @@ def _get_live_transform(game_object_id: int):
         t = obj.get_transform()
         if t is not None:
             return t
-    except Exception:
+    except Exception as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         pass
     return getattr(obj, 'transform', None)
 
@@ -1656,12 +1659,14 @@ def _get_nth_live_native_component(game_object_id: int, type_name: str,
                     continue
                 if isinstance(comp, InxComponent) or hasattr(comp, 'get_py_component'):
                     continue
-            except Exception:
+            except Exception as _exc:
+                Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
                 continue
             if match_index == ordinal:
                 return comp
             match_index += 1
-    except Exception:
+    except Exception as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         pass
     return None
 
@@ -1682,97 +1687,105 @@ def _get_nth_live_py_component(game_object_id: int, type_name: str,
                     continue
                 if getattr(comp, '_is_destroyed', False):
                     continue
-            except Exception:
+            except Exception as _exc:
+                Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
                 continue
             if match_index == ordinal:
                 return comp
             match_index += 1
-    except Exception:
+    except Exception as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         pass
     return None
 
 
-# -- Public snapshot/restore functions used by inspector_panel.py --
+# -- Table-driven snapshot/restore for inspector_panel tracker registration --
 
-def snapshot_live_game_object(game_object_id: int) -> str:
-    obj = _get_live_game_object(game_object_id)
-    if obj is None:
-        return ""
+def _snap_game_object(obj) -> str:
     return _json.dumps({"name": obj.name, "active": obj.active})
 
-
-def restore_live_game_object(game_object_id: int, snapshot: str) -> None:
-    obj = _get_live_game_object(game_object_id)
-    if obj is None:
-        return
+def _restore_game_object(obj, snapshot: str) -> None:
     data = _json.loads(snapshot)
     obj.name = data["name"]
     obj.active = data["active"]
 
+# Registry: kind -> (resolver, snap_fn(target)->str, restore_fn(target,str)->None)
+_SNAPSHOT_REGISTRY: dict[str, tuple] = {
+    "game_object":  (_get_live_game_object,           _snap_game_object,          _restore_game_object),
+    "transform":    (_get_live_transform,              lambda t: t.serialize(),    lambda t, s: t.deserialize(s)),
+    "native":       (_get_nth_live_native_component,   lambda c: c.serialize(),    lambda c, s: c.deserialize(s)),
+    "py":           (_get_nth_live_py_component,       lambda c: c._serialize_fields(), lambda c, s: c._deserialize_fields(s)),
+    "renderstack":  (_get_nth_live_py_component,       lambda c: snapshot_renderstack(c), lambda c, s: restore_renderstack(c, s)),
+}
+
+
+def _resolve_and_snap(kind: str, game_object_id: int, **kwargs) -> str:
+    resolver, snap_fn, _ = _SNAPSHOT_REGISTRY[kind]
+    target = resolver(game_object_id, **kwargs) if kwargs else resolver(game_object_id)
+    if target is None:
+        return ""
+    return snap_fn(target)
+
+
+def _resolve_and_restore(kind: str, game_object_id: int, snapshot: str, **kwargs) -> None:
+    _, _, restore_fn = _SNAPSHOT_REGISTRY[kind]
+    resolver = _SNAPSHOT_REGISTRY[kind][0]
+    target = resolver(game_object_id, **kwargs) if kwargs else resolver(game_object_id)
+    if target is None:
+        return
+    restore_fn(target, snapshot)
+
+
+# Public API — thin wrappers for each kind (preserves call signatures)
+
+def snapshot_live_game_object(game_object_id: int) -> str:
+    return _resolve_and_snap("game_object", game_object_id)
+
+def restore_live_game_object(game_object_id: int, snapshot: str) -> None:
+    _resolve_and_restore("game_object", game_object_id, snapshot)
 
 def snapshot_live_transform(game_object_id: int) -> str:
-    t = _get_live_transform(game_object_id)
-    if t is None:
-        return ""
-    return t.serialize()
-
+    return _resolve_and_snap("transform", game_object_id)
 
 def restore_live_transform(game_object_id: int, snapshot: str) -> None:
-    t = _get_live_transform(game_object_id)
-    if t is None:
-        return
-    t.deserialize(snapshot)
-
+    _resolve_and_restore("transform", game_object_id, snapshot)
 
 def snapshot_live_native_component(game_object_id: int, type_name: str,
                                    ordinal: int = 0) -> str:
-    comp = _get_nth_live_native_component(game_object_id, type_name, ordinal)
-    if comp is None:
-        return ""
-    return comp.serialize()
-
+    return _resolve_and_snap("native", game_object_id,
+                             type_name=type_name, ordinal=ordinal)
 
 def restore_live_native_component(game_object_id: int, type_name: str,
                                   ordinal: int, snapshot: str) -> None:
-    comp = _get_nth_live_native_component(game_object_id, type_name, ordinal)
-    if comp is None:
-        return
-    comp.deserialize(snapshot)
-
+    _resolve_and_restore("native", game_object_id, snapshot,
+                         type_name=type_name, ordinal=ordinal)
 
 def snapshot_live_py_component(game_object_id: int, type_name: str,
                                ordinal: int = 0, script_guid: str = "") -> str:
-    comp = _get_nth_live_py_component(game_object_id, type_name, ordinal, script_guid)
-    if comp is None:
-        return ""
-    return comp._serialize_fields()
-
+    return _resolve_and_snap("py", game_object_id,
+                             type_name=type_name, ordinal=ordinal,
+                             script_guid=script_guid)
 
 def restore_live_py_component(game_object_id: int, type_name: str,
                               ordinal: int, snapshot: str,
                               script_guid: str = "") -> None:
-    comp = _get_nth_live_py_component(game_object_id, type_name, ordinal, script_guid)
-    if comp is None:
-        return
-    comp._deserialize_fields(snapshot)
-
+    _resolve_and_restore("py", game_object_id, snapshot,
+                         type_name=type_name, ordinal=ordinal,
+                         script_guid=script_guid)
 
 def snapshot_live_renderstack_component(game_object_id: int, type_name: str,
                                         ordinal: int = 0,
                                         script_guid: str = "") -> str:
-    comp = _get_nth_live_py_component(game_object_id, type_name, ordinal, script_guid)
-    if comp is None:
-        return ""
-    return snapshot_renderstack(comp)
-
+    return _resolve_and_snap("renderstack", game_object_id,
+                             type_name=type_name, ordinal=ordinal,
+                             script_guid=script_guid)
 
 def restore_live_renderstack_component(game_object_id: int, type_name: str,
                                        ordinal: int, snapshot: str,
                                        script_guid: str = "") -> None:
-    comp = _get_nth_live_py_component(game_object_id, type_name, ordinal, script_guid)
-    if comp is None:
-        return
-    restore_renderstack(comp, snapshot)
+    _resolve_and_restore("renderstack", game_object_id, snapshot,
+                         type_name=type_name, ordinal=ordinal,
+                         script_guid=script_guid)
 
 
 # -- RenderStack snapshot/restore --
@@ -1838,7 +1851,8 @@ def restore_renderstack(stack: Any, json_str: str) -> None:
         for name, val in data["pipeline_params"].items():
             try:
                 setattr(pipeline, name, val)
-            except (AttributeError, TypeError):
+            except (AttributeError, TypeError) as _exc:
+                Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
                 pass
 
     current_names = [e.render_pass.name for e in list(stack.pass_entries)]

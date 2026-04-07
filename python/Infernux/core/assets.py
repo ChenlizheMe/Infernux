@@ -150,7 +150,8 @@ class AssetManager:
             if hasattr(asset, "_guid"):
                 try:
                     asset._guid = guid
-                except (AttributeError, TypeError):
+                except (AttributeError, TypeError) as _exc:
+                    Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
                     pass
             cls._put_cache(guid, asset)
         return asset
@@ -276,7 +277,8 @@ class AssetManager:
         try:
             guid = adb.import_asset(path)
             return bool(guid)
-        except (RuntimeError, OSError):
+        except (RuntimeError, OSError) as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             return False
 
     @classmethod
@@ -287,7 +289,8 @@ class AssetManager:
             return False
         try:
             return bool(adb.move_asset(old_path, new_path))
-        except (RuntimeError, OSError):
+        except (RuntimeError, OSError) as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             return False
 
     @classmethod
@@ -380,7 +383,8 @@ class AssetManager:
         try:
             from Infernux.lib import AssetRegistry
             return AssetRegistry.instance()
-        except (ImportError, RuntimeError, AttributeError):
+        except (ImportError, RuntimeError, AttributeError) as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             return None
 
     @classmethod
@@ -435,8 +439,9 @@ class AssetManager:
             cls._texture_cache[guid] = asset
         try:
             cls._cache[guid] = weakref.ref(asset)
-        except TypeError:
+        except TypeError as _exc:
             # Object doesn't support weakref — skip caching
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             pass
 
     @classmethod
@@ -523,7 +528,8 @@ class AssetManager:
             for ident in identifiers:
                 if ident:
                     cache.invalidate(ident)
-        except Exception:
+        except Exception as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             pass
 
         native = cls._native_engine()
@@ -535,7 +541,8 @@ class AssetManager:
                 continue
             try:
                 native.remove_imgui_texture(f"__ui_img__{ident}")
-            except Exception:
+            except Exception as _exc:
+                Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
                 pass
 
     @classmethod
@@ -552,7 +559,8 @@ class AssetManager:
                     invalidate = getattr(panel, "invalidate_material_thumbnail", None)
                     if callable(invalidate):
                         invalidate(path)
-        except Exception:
+        except Exception as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             pass
 
     @classmethod
@@ -604,7 +612,8 @@ class AssetManager:
                         continue
                     setattr(py_comp, "texture_path", "")
                     changed = True
-        except Exception:
+        except Exception as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             return False
 
         if changed:
@@ -614,7 +623,8 @@ class AssetManager:
                 sfm = SceneFileManager.instance()
                 if sfm is not None:
                     sfm.mark_dirty()
-            except Exception:
+            except Exception as _exc:
+                Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
                 pass
 
         return changed

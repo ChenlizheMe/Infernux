@@ -23,6 +23,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <core/config/MathConstants.h>
 #include <function/renderer/EditorTools.h>
 #include <function/renderer/GizmosDrawCallBuffer.h>
 #include <function/renderer/InxRenderer.h>
@@ -173,7 +174,7 @@ static uint64_t TestGizmoAxes(const glm::vec3 &rayOrigin, const glm::vec3 &rayDi
             float dDotN = glm::dot(rayDirection, normal);
 
             float tPlane;
-            if (std::abs(dDotN) > 1e-6f) {
+            if (std::abs(dDotN) > kEpsilon) {
                 tPlane = glm::dot(objPos - rayOrigin, normal) / dDotN;
             } else {
                 tPlane = glm::dot(objPos - rayOrigin, rayDirection);
@@ -262,7 +263,7 @@ static uint64_t TestGizmoAxes(const glm::vec3 &rayOrigin, const glm::vec3 &rayDi
         for (const PlaneCandidate &plane : planes) {
             glm::vec3 normal = glm::normalize(glm::cross(plane.axisU, plane.axisV));
             float denom = glm::dot(rayDirection, normal);
-            if (std::abs(denom) < 1e-6f) {
+            if (std::abs(denom) < kEpsilon) {
                 continue;
             }
 

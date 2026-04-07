@@ -383,6 +383,7 @@ class BuildSettingsPanel:
         self._window_resizable = data.get("window_resizable", True)
         self._debug_mode = data.get("debug_mode", False)
         self._lto = data.get("lto", True)
+        self._enable_jit = data.get("enable_jit", False)
         self._splash_items = list(data.get("splash_items", []))
 
     def _prune_missing_splash(self):
@@ -407,6 +408,7 @@ class BuildSettingsPanel:
             "window_resizable": self._window_resizable,
             "debug_mode": self._debug_mode,
             "lto": self._lto,
+            "enable_jit": self._enable_jit,
             "splash_items": self._splash_items,
         })
 
@@ -492,6 +494,11 @@ class BuildSettingsPanel:
         new_lto = ctx.checkbox(t("build.lto") + "##lto", self._lto)
         if new_lto != self._lto:
             self._lto = new_lto
+            self._save()
+        ctx.same_line(0, 20)
+        new_jit = ctx.checkbox(t("build.enable_jit") + "##enable_jit", self._enable_jit)
+        if new_jit != self._enable_jit:
+            self._enable_jit = new_jit
             self._save()
         if not self._game_name:
             ctx.same_line()
@@ -898,6 +905,7 @@ class BuildSettingsPanel:
             splash_items=self._splash_items,
             debug_mode=self._debug_mode,
             lto=self._lto,
+            enable_jit=self._enable_jit,
         )
 
     def _cancel_build(self):

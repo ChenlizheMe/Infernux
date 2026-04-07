@@ -151,7 +151,8 @@ def _load_prefab_root(prefab_path: str) -> Optional[dict]:
         with open(prefab_path, "r", encoding="utf-8") as f:
             data = json.load(f)
         return data.get("root_object")
-    except (OSError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError) as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         return None
 
 
@@ -159,7 +160,8 @@ def _serialize_obj(obj) -> Optional[dict]:
     """Serialize a live GameObject to a dict."""
     try:
         return json.loads(obj.serialize())
-    except Exception:
+    except Exception as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         return None
 
 

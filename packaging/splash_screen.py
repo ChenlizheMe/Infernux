@@ -1,6 +1,7 @@
 """Unity-style splash screen shown while the engine is loading."""
 
 import contextlib
+import logging
 import os
 import subprocess
 import sys
@@ -59,7 +60,8 @@ def _suppress_windows_error_dialogs():
     finally:
         try:
             ctypes.windll.kernel32.SetErrorMode(previous_mode)
-        except Exception:
+        except Exception as _exc:
+            logging.getLogger(__name__).debug("[Suppressed] %s: %s", type(_exc).__name__, _exc)
             pass
 
 
@@ -303,12 +305,14 @@ class EngineSplashScreen(QWidget):
                 if not chunk:
                     break
                 self._stderr_chunks.append(chunk)
-        except (ValueError, OSError):
+        except (ValueError, OSError) as _exc:
+            logging.getLogger(__name__).debug("[Suppressed] %s: %s", type(_exc).__name__, _exc)
             pass
         finally:
             try:
                 proc.stderr.close()
-            except Exception:
+            except Exception as _exc:
+                logging.getLogger(__name__).debug("[Suppressed] %s: %s", type(_exc).__name__, _exc)
                 pass
 
     def _poll_launch_state(self):
@@ -316,7 +320,8 @@ class EngineSplashScreen(QWidget):
             try:
                 with open(self._ready_file, "r", encoding="utf-8") as f:
                     content = f.read().strip()
-            except OSError:
+            except OSError as _exc:
+                logging.getLogger(__name__).debug("[Suppressed] %s: %s", type(_exc).__name__, _exc)
                 return
 
             # Race condition: writer may have truncated but not yet written.
@@ -337,7 +342,8 @@ class EngineSplashScreen(QWidget):
                     self._progress_bar.setValue(
                         int(int(current) * 100 / int(total))
                     )
-                except (ValueError, ZeroDivisionError):
+                except (ValueError, ZeroDivisionError) as _exc:
+                    logging.getLogger(__name__).debug("[Suppressed] %s: %s", type(_exc).__name__, _exc)
                     pass
             return
 
@@ -379,7 +385,8 @@ class EngineSplashScreen(QWidget):
         if self._ready_file:
             try:
                 os.remove(self._ready_file)
-            except OSError:
+            except OSError as _exc:
+                logging.getLogger(__name__).debug("[Suppressed] %s: %s", type(_exc).__name__, _exc)
                 pass
             self._ready_file = ""
         self.hide()

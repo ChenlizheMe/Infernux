@@ -85,7 +85,8 @@ def _effective_project_root() -> Optional[str]:
         services = EditorServices.instance()
         if services and services.project_path and os.path.isdir(services.project_path):
             return os.path.abspath(services.project_path)
-    except Exception:
+    except Exception as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         pass
 
     cwd = os.getcwd()
@@ -199,7 +200,12 @@ def _win32_save_dialog(initial_dir: str, default_filename: str = "Untitled Scene
 # SceneFileManager  — the main public API
 # ---------------------------------------------------------------------------
 
-class SceneFileManager:
+from ._scene_prefab import ScenePrefabMixin
+from ._scene_save import SceneSaveMixin
+from ._scene_confirmation import SceneConfirmationMixin
+
+
+class SceneFileManager(ScenePrefabMixin, SceneSaveMixin, SceneConfirmationMixin):
     """Manages the mapping between the active C++ Scene and its file on disk.
 
     Typical usage (wired in ``release_engine``):
@@ -279,7 +285,8 @@ class SceneFileManager:
             if native is not None:
                 self._engine = native
             return native
-        except Exception:
+        except Exception as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             return None
 
     # ------------------------------------------------------------------
@@ -324,409 +331,9 @@ class SceneFileManager:
             return True
         return False
 
-    def save_current_scene(self) -> bool:
-        """Save the current scene.  If no file is associated, show a Save-As dialog.
-
-        Returns True if the save happened synchronously, False if a dialog was
-        opened (the actual save happens asynchronously via the dialog callback).
-        """
-        if self._is_play_mode():
-            Debug.log_warning("Cannot save scene while in Play mode.")
-            return False
-
-        # In Prefab Mode, Ctrl+S is ignored — prefab auto-saves on exit.
-        if self.is_prefab_mode:
-            return False
-
-        if self._current_scene_path:
-            return self._do_save(self._current_scene_path)
-
-        # No file yet — show a Save As dialog
-        self._show_save_as_dialog()
-        return False
-
-    def _save_prefab(self) -> bool:
-        """Save the currently-edited prefab in Prefab Mode."""
-        if not self.prefab_mode_path:
-            Debug.log_warning("No prefab path in Prefab Mode.")
-            return False
-
-        from Infernux.lib import SceneManager
-        from Infernux.engine.prefab_manager import _strip_prefab_fields, _strip_prefab_runtime_fields
-
-        scene = SceneManager.instance().get_active_scene()
-        roots = _get_scene_root_objects(scene)
-        if not roots:
-            Debug.log_warning("No root objects in Prefab Mode scene.")
-            return False
-
-        prefab_root = roots[0]
-        try:
-            root_data = json.loads(prefab_root.serialize())
-        except Exception as exc:
-            Debug.log_error(f"Failed to serialize prefab root: {exc}")
-            return False
-
-        _strip_prefab_fields(root_data)
-        _strip_prefab_runtime_fields(root_data)
-
-        envelope = dict(self.prefab_envelope) if isinstance(self.prefab_envelope, dict) else {}
-        envelope["root_object"] = root_data
-
-        try:
-            with open(self.prefab_mode_path, 'w', encoding='utf-8') as f:
-                json.dump(envelope, f, indent=2, ensure_ascii=False)
-        except OSError as exc:
-            Debug.log_error(f"Failed to save prefab: {exc}")
-            return False
-
-        self._dirty = False
-        Debug.log_internal(f"Prefab saved: {self.prefab_mode_path}")
-        return True
-
-    def save_scene_as(self):
-        """Force a Save-As dialog regardless of whether a path exists."""
-        if self._is_play_mode():
-            Debug.log_warning("Cannot save scene while in Play mode.")
-            return
-        self._show_save_as_dialog()
-
-
-    def open_prefab_mode(self, prefab_path: str, preserve_undo_history: bool = False):
-        """Enter Prefab Mode, pushing the current scene to memory."""
-        if self.is_prefab_mode or not prefab_path or not os.path.isfile(prefab_path):
-            return False
-
-        if self._is_play_mode():
-            Debug.log_warning("Cannot enter Prefab Mode while in Play mode.")
-            return False
-
-        from Infernux.lib import SceneManager
-        from Infernux.engine.prefab_manager import _restore_pending_py_components, _strip_prefab_runtime_fields
-        from Infernux.engine.ui.selection_manager import SelectionManager
-
-        active_scene = SceneManager.instance().get_active_scene()
-        if active_scene is None:
-            Debug.log_warning("No active scene available for Prefab Mode.")
-            return False
-
-        try:
-            with open(prefab_path, "r", encoding="utf-8") as f:
-                prefab_data = json.load(f)
-        except (OSError, json.JSONDecodeError) as exc:
-            Debug.log_error(f"Failed to open prefab for Prefab Mode: {exc}")
-            return False
-
-        root_obj_data = prefab_data.get("root_object")
-        if root_obj_data is None:
-            Debug.log_error("Invalid prefab file: missing 'root_object'.")
-            return False
-
-        # Validate prefab version
-        from Infernux.engine.prefab_manager import PREFAB_VERSION
-        file_version = prefab_data.get("prefab_version", 0)
-        if file_version > PREFAB_VERSION:
-            Debug.log_error(
-                f"Prefab '{prefab_path}' uses version {file_version} but this "
-                f"engine only supports up to version {PREFAB_VERSION}."
-            )
-            return False
-
-        root_obj_data = json.loads(json.dumps(root_obj_data))
-        _strip_prefab_runtime_fields(root_obj_data)
-
-        self._previous_scene_json = active_scene.serialize()
-        self._previous_scene_path = self._current_scene_path
-        self._previous_scene_dirty = self._dirty
-        self.prefab_envelope = prefab_data
-
-        # Clear the RenderStack singleton before the swap — matches the
-        # pattern in _do_open_scene / _do_new_scene to avoid stale refs.
-        from Infernux.renderstack.render_stack import RenderStack
-        RenderStack._active_instance = None
-
-        self._prepare_native_scene_swap()
-
-        # Destroy ALL objects in the original scene so their physics bodies
-        # are removed from the global PhysicsWorld.  Without this, invisible
-        # colliders from the main scene interfere with the prefab scene.
-        active_scene.deserialize(_empty_scene_json(active_scene.name))
-
-        sm = SceneManager.instance()
-        new_scene = sm.get_scene(PREFAB_MODE_SCENE_NAME)
-        if new_scene is None:
-            new_scene = sm.create_scene(PREFAB_MODE_SCENE_NAME)
-        # Always deserialize empty JSON to clear old objects and component
-        # registries (MeshRenderer, physics, etc.) — prevents the previous
-        # scene's renderers from leaking into Prefab Mode.
-        new_scene.deserialize(_empty_scene_json(PREFAB_MODE_SCENE_NAME))
-        sm.set_active_scene(new_scene)
-
-        root_json = json.dumps(root_obj_data)
-        root_obj = new_scene.instantiate_from_json(root_json)
-        if root_obj is None:
-            Debug.log_error("Failed to instantiate prefab in Prefab Mode.")
-            return False
-
-        if new_scene.has_pending_py_components():
-            try:
-                _restore_pending_py_components(new_scene, self._asset_database)
-            except Exception as exc:
-                Debug.log_error(f"Failed to restore prefab Python components: {exc}")
-
-        roots = _get_scene_root_objects(new_scene)
-        if roots:
-            SelectionManager.instance().select(roots[0].id)
-
-        self.is_prefab_mode = True
-        self.prefab_mode_path = os.path.abspath(prefab_path)
-        self._current_scene_path = prefab_path
-        self._dirty = False
-        if not preserve_undo_history:
-            self._reset_undo_history(scene_is_dirty=False)
-
-        if self._on_scene_changed:
-            self._on_scene_changed()
-        return True
-
-    def open_prefab_mode_with_undo(self, prefab_path: str) -> bool:
-        from Infernux.engine.undo import UndoManager, PrefabModeCommand
-        mgr = UndoManager.instance()
-        if mgr and mgr.enabled and not mgr.is_executing:
-            mgr.execute(PrefabModeCommand(prefab_path, enter_mode=True))
-            return True
-        return bool(self.open_prefab_mode(prefab_path))
-
-    def exit_prefab_mode(self):
-        """Schedule exit from Prefab Mode on a later frame.
-
-        Uses ``DeferredTaskRunner`` instead of ``poll_deferred_load`` so the
-        exit cannot be consumed again later in the same GUI frame. This avoids
-        tearing down the prefab scene while its resources may still be in use
-        by the just-submitted frame.
-        """
-        if not self.is_prefab_mode:
-            return False
-        if self._deferred_exit_prefab:
-            return True
-
-        from Infernux.engine.deferred_task import DeferredTaskRunner
-
-        runner = DeferredTaskRunner.instance()
-        if runner.is_busy:
-            Debug.log_warning("Cannot exit Prefab Mode: a deferred task is already running")
-            return False
-
-        self._deferred_exit_prefab = True
-        runner.submit(
-            "Exit Prefab Mode",
-            [("Exiting Prefab Mode...", 0.6, self._run_deferred_exit_prefab_task)],
-        )
-        return True
-
-    def exit_prefab_mode_with_undo(self) -> bool:
-        if not self.is_prefab_mode:
-            return False
-        from Infernux.engine.undo import UndoManager, PrefabModeCommand
-        mgr = UndoManager.instance()
-        prefab_path = self.prefab_mode_path or ""
-        if mgr and mgr.enabled and not mgr.is_executing:
-            mgr.execute(PrefabModeCommand(prefab_path, enter_mode=False))
-            return True
-        return bool(self._do_exit_prefab_mode())
-
-    def _run_deferred_exit_prefab_task(self):
-        """DeferredTaskRunner step wrapper for prefab-mode exit."""
-        self._deferred_exit_prefab = False
-        return self._do_exit_prefab_mode()
-
-    def _do_exit_prefab_mode(self, preserve_undo_history: bool = False):
-        """Internal: perform the actual Prefab Mode exit (called by poll_deferred_load)."""
-        if not self.is_prefab_mode:
-            return False
-
-        from Infernux.lib import SceneManager
-        from Infernux.engine.prefab_manager import _restore_pending_py_components
-
-        # Always save the prefab on exit
-        if self.prefab_mode_path:
-            self._save_prefab()
-
-        # Always resolve the prefab GUID so instances can be refreshed,
-        # regardless of whether the save happened now or earlier via Ctrl+S.
-        saved_prefab_guid = None
-        if self.prefab_mode_path and self._asset_database:
-            try:
-                saved_prefab_guid = self._asset_database.get_guid_from_path(
-                    self.prefab_mode_path
-                ) or None
-            except Exception:
-                pass
-
-        # Clear the RenderStack singleton before the swap — matches the
-        # pattern in _do_open_scene / _do_new_scene to avoid stale refs.
-        from Infernux.renderstack.render_stack import RenderStack
-        RenderStack._active_instance = None
-
-        self._prepare_native_scene_swap()
-
-        sm = SceneManager.instance()
-
-        # Destroy all objects in the prefab scene FIRST so their physics
-        # bodies (Colliders, Rigidbodies) are removed from the global
-        # PhysicsWorld before we restore the main scene.
-        prefab_scene = sm.get_scene(PREFAB_MODE_SCENE_NAME)
-        if prefab_scene is not None:
-            prefab_scene.deserialize(_empty_scene_json(PREFAB_MODE_SCENE_NAME))
-
-        scene = sm.get_scene(PREFAB_RESTORE_SCENE_NAME)
-        if scene is None:
-            scene = sm.create_scene(PREFAB_RESTORE_SCENE_NAME)
-        # Always deserialize empty first so ClearComponentRegistries runs,
-        # preventing prefab scene renderers from leaking into the restored scene.
-        scene.deserialize(_empty_scene_json(PREFAB_RESTORE_SCENE_NAME))
-        sm.set_active_scene(scene)
-
-        if self._previous_scene_json:
-            scene.deserialize(self._previous_scene_json)
-            if scene.has_pending_py_components():
-                try:
-                    _restore_pending_py_components(scene, self._asset_database)
-                except Exception as exc:
-                    Debug.log_error(f"Failed to restore scene Python components: {exc}")
-
-        # Refresh instances of the edited prefab so changes propagate
-        if saved_prefab_guid:
-            self._refresh_prefab_instances(
-                scene, saved_prefab_guid, self.prefab_mode_path,
-                self._asset_database
-            )
-
-        self.is_prefab_mode = False
-        self.prefab_mode_path = None
-        self._current_scene_path = self._previous_scene_path
-        self._dirty = self._previous_scene_dirty
-        self.prefab_envelope = {}
-        self._previous_scene_json = ""
-        self._previous_scene_dirty = False
-        self._previous_scene_path = None
-        if not preserve_undo_history:
-            self._reset_undo_history(scene_is_dirty=self._dirty)
-
-        if self._on_scene_changed:
-            self._on_scene_changed()
-        return True
-
     # ------------------------------------------------------------------
     # Prefab instance refresh
     # ------------------------------------------------------------------
-
-    @staticmethod
-    def _refresh_prefab_instances(scene, prefab_guid: str, prefab_path: str,
-                                  asset_database=None):
-        """Re-instantiate all instances of a prefab to pick up updated data.
-
-        Iterates root objects, finds those whose *prefab_guid* matches,
-        then replaces them in-place (preserving only the root's local position).
-        """
-        from Infernux.engine.prefab_manager import instantiate_prefab
-
-        if not prefab_guid or not prefab_path:
-            return
-
-        roots = _get_scene_root_objects(scene)
-        if not roots:
-            return
-
-        def _collect_instances(objects):
-            found = []
-            for obj in objects:
-                guid = getattr(obj, 'prefab_guid', '')
-                is_root = getattr(obj, 'prefab_root', False)
-                if guid == prefab_guid and is_root:
-                    found.append(obj)
-                else:
-                    children = list(obj.get_children()) if hasattr(obj, 'get_children') else []
-                    found.extend(_collect_instances(children))
-            return found
-
-        instances = _collect_instances(roots)
-        if not instances:
-            return
-
-        Debug.log_internal(
-            f"Refreshing {len(instances)} prefab instance(s) for GUID={prefab_guid}"
-        )
-
-        for old_obj in instances:
-            try:
-                parent = old_obj.get_parent() if hasattr(old_obj, 'get_parent') else None
-                # Preserve the instance's full local transform (position,
-                # rotation, scale) — each instance keeps its own placement.
-                tf = old_obj.transform
-                local_pos = tf.local_position if tf else None
-                local_rot = tf.local_rotation if tf else None
-                local_scl = tf.local_scale if tf else None
-
-                new_obj = instantiate_prefab(
-                    file_path=prefab_path,
-                    scene=scene,
-                    parent=parent,
-                    asset_database=asset_database,
-                )
-                if new_obj:
-                    new_tf = new_obj.transform
-                    if new_tf:
-                        if local_pos is not None:
-                            new_tf.local_position = local_pos
-                        if local_rot is not None:
-                            new_tf.local_rotation = local_rot
-                        if local_scl is not None:
-                            new_tf.local_scale = local_scl
-
-                scene.destroy_game_object(old_obj)
-            except Exception as exc:
-                Debug.log_warning(f"Failed to refresh prefab instance: {exc}")
-
-    def sync_all_prefab_instances(self, scene=None):
-        """Sync every prefab instance in *scene* to its latest on-disk data.
-
-        Called after scene load and after exiting Prefab Mode so that all
-        prefab instances reflect the most recent prefab files.
-        """
-        if scene is None:
-            from Infernux.lib import SceneManager
-            scene = SceneManager.instance().get_active_scene()
-        if scene is None or not self._asset_database:
-            return
-
-        roots = _get_scene_root_objects(scene)
-        if not roots:
-            return
-
-        # Collect unique (prefab_guid → prefab_path) pairs
-        guid_to_path: dict[str, str] = {}
-
-        def _walk(objects):
-            for obj in objects:
-                guid = getattr(obj, 'prefab_guid', '')
-                is_root = getattr(obj, 'prefab_root', False)
-                if guid and is_root and guid not in guid_to_path:
-                    try:
-                        p = self._asset_database.get_path_from_guid(guid)
-                        if p and os.path.isfile(p):
-                            guid_to_path[guid] = p
-                    except Exception:
-                        pass
-                children = list(obj.get_children()) if hasattr(obj, 'get_children') else []
-                _walk(children)
-
-        _walk(roots)
-
-        for guid, path in guid_to_path.items():
-            self._refresh_prefab_instances(
-                scene, guid, path, self._asset_database
-            )
 
     def open_scene(self, path: str) -> bool:
         """Load a .scene file, replacing the current scene.
@@ -872,34 +479,6 @@ class SceneFileManager:
             return True
         return False
 
-    def poll_pending_save(self):
-        """Check if the file dialog has produced a result and perform the save."""
-        if self._pending_save_path is not None:
-            path = self._pending_save_path
-            self._pending_save_path = None  # consume
-            if path:
-                success = self._do_save(path)
-                if success and self._post_save_callback:
-                    cb = self._post_save_callback
-                    self._post_save_callback = None
-                    cb()
-                elif not success:
-                    # Save failed — cancel pending close/open/new chain so user can retry.
-                    if self._post_save_callback is not None:
-                        if self._pending_action == 'close' and self._engine:
-                            self._engine.cancel_close()
-                        self._close_in_progress = False
-                        self._clear_pending_action()
-                    self._post_save_callback = None
-            else:
-                # User cancelled the Save As dialog — cancel pending close/open/new chain.
-                if self._post_save_callback is not None:
-                    if self._pending_action == 'close' and self._engine:
-                        self._engine.cancel_close()
-                    self._close_in_progress = False
-                    self._clear_pending_action()
-                self._post_save_callback = None
-
     # ------------------------------------------------------------------
     # Deferred scene loading (called from menu_bar every frame)
     # ------------------------------------------------------------------
@@ -967,121 +546,6 @@ class SceneFileManager:
     # Save-confirmation popup (rendered from menu_bar every frame)
     # ------------------------------------------------------------------
 
-    def _request_save_confirmation(self, action: str, open_path: Optional[str] = None):
-        """Set up the confirmation popup state."""
-        self._pending_action = action
-        self._pending_open_path = open_path
-        self._show_confirm = True
-
-    def _execute_pending_action(self) -> bool:
-        """Run the action that was deferred by the confirmation dialog."""
-        action = self._pending_action
-        path = self._pending_open_path
-        self._pending_action = None
-        self._pending_open_path = None
-
-        if action == 'new':
-            self._begin_deferred_new()
-            return True
-        elif action == 'open' and path:
-            self._begin_deferred_open(path)
-            return True
-        elif action == 'close' and self._engine:
-            self._engine.confirm_close()
-            return True
-        elif action == 'close':
-            native = self._native_engine_for_close()
-            if native:
-                native.confirm_close()
-                return True
-        return False
-
-    def _clear_pending_action(self):
-        self._pending_action = None
-        self._pending_open_path = None
-
-    def render_confirmation_popup(self, ctx):
-        """Must be called every frame (by menu_bar).
-
-        Draws the modal "Save before …?" dialog when ``_show_confirm`` is set.
-        """
-        POPUP_ID = "Save Scene?##save_confirm"
-
-        if not self._show_confirm and self._pending_action is None:
-            return
-
-        if self._show_confirm:
-            ctx.open_popup(POPUP_ID)
-            self._show_confirm = False
-
-        # ImGuiWindowFlags_AlwaysAutoResize = 1 << 6 = 64
-        if ctx.begin_popup_modal(POPUP_ID, 64):
-            ctx.label("当前场景有未保存的修改。")
-            ctx.label("The current scene has unsaved changes.")
-            ctx.label("")
-            ctx.separator()
-            ctx.label("")
-
-            def _on_save():
-                if self._current_scene_path:
-                    action = self._pending_action
-                    if self._do_save(self._current_scene_path):
-                        if not self._execute_pending_action():
-                            native = self._native_engine_for_close()
-                            if native and action == 'close':
-                                native.confirm_close()
-                    else:
-                        native = self._native_engine_for_close()
-                        if self._pending_action == 'close' and native:
-                            native.cancel_close()
-                        self._close_in_progress = False
-                        self._clear_pending_action()
-                else:
-                    # On close with an untitled scene, auto-save into Assets/
-                    # to avoid Save-As dialog platform differences.
-                    if self._pending_action == 'close':
-                        default_path = self._default_scene_save_path()
-                        if default_path and self._do_save(default_path):
-                            if not self._execute_pending_action():
-                                native = self._native_engine_for_close()
-                                if native:
-                                    native.confirm_close()
-                        else:
-                            native = self._native_engine_for_close()
-                            if native:
-                                native.cancel_close()
-                            self._close_in_progress = False
-                            self._clear_pending_action()
-                    else:
-                        self._post_save_callback = self._execute_pending_action
-                        self._show_save_as_dialog()
-                ctx.close_current_popup()
-
-            def _on_dont_save():
-                action = self._pending_action
-                if action == 'close':
-                    self._dirty = False
-                    self._execute_pending_action()
-                else:
-                    self._execute_pending_action()
-                ctx.close_current_popup()
-
-            def _on_cancel():
-                native = self._native_engine_for_close()
-                if self._pending_action == 'close' and native:
-                    native.cancel_close()
-                self._close_in_progress = False
-                self._clear_pending_action()
-                ctx.close_current_popup()
-
-            ctx.button("  保存  Save  ", _on_save)
-            ctx.same_line()
-            ctx.button("  不保存  Don't Save  ", _on_dont_save)
-            ctx.same_line()
-            ctx.button("  取消  Cancel  ", _on_cancel)
-
-            ctx.end_popup()
-
     # ------------------------------------------------------------------
     # Internal — actual scene operations (no dirty check)
     # ------------------------------------------------------------------
@@ -1091,7 +555,8 @@ class SceneFileManager:
         if self._engine:
             try:
                 self._engine.pump_events()
-            except Exception:
+            except Exception as _exc:
+                Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
                 pass
 
     def _prepare_native_scene_swap(self):
@@ -1259,94 +724,6 @@ class SceneFileManager:
     # Internal
     # ------------------------------------------------------------------
 
-    def _do_save(self, path: str) -> bool:
-        """Actually write the scene to *path*."""
-        from Infernux.engine.ui.engine_status import EngineStatus
-        ok = self._do_save_inner(path)
-        if ok:
-            EngineStatus.flash("保存完成 Saved", 1.0, duration=1.5)
-        else:
-            EngineStatus.flash("保存失败 Save Failed", 0.0, duration=2.0)
-        return ok
-
-    def _do_save_inner(self, path: str) -> bool:
-        """Internal save implementation.
-
-        Serializes the scene on the main thread (fast, touches C++ scene graph),
-        then writes the JSON to disk on a background thread so the editor stays
-        responsive for large scenes.
-        """
-        if not self._is_under_assets(path):
-            Debug.log_warning("Cannot save scene outside of Assets/ directory.")
-            return False
-
-        # Ensure .scene extension
-        if not path.lower().endswith(SCENE_EXTENSION):
-            path += SCENE_EXTENSION
-
-        from Infernux.lib import SceneManager
-        sm = SceneManager.instance()
-        scene = sm.get_active_scene()
-        if not scene:
-            Debug.log_warning("No active scene to save.")
-            return False
-
-        # Step 1 (main thread): serialize scene graph → JSON string
-        try:
-            json_str = scene.serialize()
-        except Exception as exc:
-            Debug.log_error(f"Failed to serialize scene: {exc}")
-            return False
-
-        if not json_str:
-            Debug.log_error("Scene serialization returned empty data.")
-            return False
-
-        # Step 2 (background thread): write JSON to file
-        import threading
-
-        abs_path = os.path.abspath(path)
-        write_error: list = []  # mutable container for thread result
-
-        def _write():
-            try:
-                os.makedirs(os.path.dirname(abs_path), exist_ok=True)
-                with open(abs_path, "w", encoding="utf-8") as f:
-                    f.write(json_str)
-            except Exception as exc:
-                write_error.append(exc)
-
-        t = threading.Thread(target=_write, daemon=True)
-        t.start()
-        t.join(timeout=10.0)  # generous timeout for large files
-
-        if t.is_alive():
-            Debug.log_error(f"Scene file write timed out: {abs_path}")
-            return False
-
-        if write_error:
-            Debug.log_error(f"Failed to write scene file: {write_error[0]}")
-            return False
-
-        self._current_scene_path = abs_path
-        self._dirty = False
-
-        # Notify undo system of clean state
-        from Infernux.engine.undo import UndoManager
-        mgr = UndoManager.instance()
-        if mgr:
-            mgr.mark_save_point()
-
-        # Update scene name to match file
-        scene.name = os.path.splitext(os.path.basename(path))[0]
-
-        # Persist editor camera state for this scene
-        self._save_camera_state(self._current_scene_path)
-
-        self._remember_last_scene(self._current_scene_path)
-        Debug.log_internal(f"Scene saved: {path}")
-        return True
-
     def _reset_undo_history(self, scene_is_dirty: bool = False):
         """Reset undo/redo history to match the newly active scene state."""
         from Infernux.engine.undo import UndoManager
@@ -1356,69 +733,6 @@ class SceneFileManager:
         mgr.clear(scene_is_dirty=scene_is_dirty)
         mgr.sync_dirty_state()
 
-
-    def _default_scene_save_path(self) -> Optional[str]:
-        """Return a unique default scene path under Assets/ for untitled saves."""
-        root = _effective_project_root()
-        if not root:
-            return None
-
-        assets_dir = os.path.join(root, "Assets")
-        os.makedirs(assets_dir, exist_ok=True)
-
-        base_name = DEFAULT_SCENE_FILE_BASE
-        candidate = os.path.join(assets_dir, f"{base_name}{SCENE_EXTENSION}")
-        if not os.path.exists(candidate):
-            return candidate
-
-        index = 1
-        while True:
-            candidate = os.path.join(assets_dir, f"{base_name} {index}{SCENE_EXTENSION}")
-            if not os.path.exists(candidate):
-                return candidate
-            index += 1
-
-
-    def _show_save_as_dialog(self):
-        """Open a file dialog (on a background thread)."""
-        root = _effective_project_root()
-        if not root:
-            Debug.log_warning("No project root set — cannot save scene.")
-            return
-
-        assets_dir = os.path.join(root, "Assets")
-        os.makedirs(assets_dir, exist_ok=True)
-
-        def _on_result(chosen_path: Optional[str]):
-            if chosen_path:
-                # Validate under Assets/
-                if self._is_under_assets(chosen_path):
-                    self._pending_save_path = chosen_path
-                else:
-                    Debug.log_warning("Scene must be saved under Assets/ directory.")
-                    self._pending_save_path = ""  # cancel sentinel
-            else:
-                self._pending_save_path = ""  # cancel sentinel
-
-        if self._current_scene_path:
-            default_filename = os.path.basename(self._current_scene_path)
-        else:
-            default_filename = f"{DEFAULT_SCENE_FILE_BASE}{SCENE_EXTENSION}"
-        _show_save_dialog(assets_dir, _on_result, default_filename)
-
-    def _is_under_assets(self, path: str) -> bool:
-        """Check if *path* is within the project's Assets/ directory."""
-        root = _effective_project_root()
-        if not root:
-            return False
-        assets = os.path.normcase(os.path.abspath(os.path.join(root, "Assets")))
-        target = os.path.normcase(os.path.abspath(path))
-        return target.startswith(assets + os.sep) or target == assets
-
-    def _remember_last_scene(self, path: str):
-        settings = _load_editor_settings()
-        settings["lastOpenedScene"] = path
-        _save_editor_settings(settings)
 
     def _save_camera_state(self, scene_path: str):
         """Save current editor camera state for the given scene path."""

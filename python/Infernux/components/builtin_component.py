@@ -33,6 +33,7 @@ from typing import Any, Dict, Optional, Type, TYPE_CHECKING
 
 from .serialized_field import FieldMetadata, FieldType
 from .component import InxComponent
+from Infernux.debug import Debug
 
 if TYPE_CHECKING:
     from Infernux.lib import Component as CppComponent, GameObject

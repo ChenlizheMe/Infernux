@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import os
 from typing import Any, Optional
+from Infernux.debug import Debug
 
 _log = logging.getLogger("Infernux.ref")
 
@@ -22,14 +23,16 @@ def _get_asset_database():
         from Infernux.core.assets import AssetManager
         if AssetManager._asset_database is not None:
             return AssetManager._asset_database
-    except ImportError:
+    except ImportError as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         pass
     try:
         from Infernux.engine.play_mode import PlayModeManager
         pm = PlayModeManager.instance()
         if pm and pm._asset_database is not None:
             return pm._asset_database
-    except ImportError:
+    except ImportError as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         pass
     return None
 
@@ -202,7 +205,8 @@ class MaterialRef(AssetRefBase):
                     g = db.get_guid_from_path(file_path)
                     if g:
                         return g
-                except Exception:
+                except Exception as _exc:
+                    Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
                     pass
         return ""
 

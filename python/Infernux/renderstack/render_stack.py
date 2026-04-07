@@ -66,9 +66,12 @@ class PassEntry:
     # injection_point is read from render_pass.injection_point.
 
 
+from ._render_pass_mgmt import RenderPassManagementMixin
+from ._render_pipeline_reload import PipelineReloadMixin
+
 @disallow_multiple
 @add_component_menu("Rendering/RenderStack")
-class RenderStack(InxComponent):
+class RenderStack(RenderPassManagementMixin, PipelineReloadMixin, InxComponent):
     """Scene-level rendering configuration component.
 
     Manages the active RenderPipeline and all mounted RenderPass instances for
@@ -187,7 +190,8 @@ class RenderStack(InxComponent):
         try:
             from Infernux.lib import SceneManager as _NativeSceneManager
             scene = _NativeSceneManager.instance().get_active_scene()
-        except Exception:
+        except Exception as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             return
         if scene is None:
             return
@@ -318,7 +322,8 @@ class RenderStack(InxComponent):
                             f"Valid: {sorted(valid_points)}",
                             file=sys.stderr,
                         )
-            except (RuntimeError, AttributeError):
+            except (RuntimeError, AttributeError) as _exc:
+                Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
                 pass  # pipeline not available yet — skip validation
             self.invalidate_graph()
 
@@ -362,137 +367,9 @@ class RenderStack(InxComponent):
                 self._pipeline._render_stack = self
         return self._pipeline
 
-    @property
-    def injection_points(self) -> List[InjectionPoint]:
-        """Read-only injection points defined by the current pipeline.
-
-        Injection points come from ``define_topology()``. The first call runs a
-        dry-build probe to discover them.
-        """
-        if not hasattr(self, "_cached_ips") or self._cached_ips is None:
-            g = self._build_full_topology_probe()
-            self._cached_ips = g.injection_points
-        return self._cached_ips
-
-    @property
-    def pass_entries(self) -> List[PassEntry]:
-        """Mounted pass entries (read-only view for UI/integration code)."""
-        if self._pass_entries is None:
-            self._pass_entries = []
-        return self._pass_entries
-
     # ==================================================================
     # Pass management
     # ==================================================================
-
-    def add_pass(self, render_pass: "RenderPass") -> bool:
-        """Mount a RenderPass onto the RenderStack.
-
-        The pass is assigned automatically based on
-        ``render_pass.injection_point``.
-
-        Returns:
-            ``False`` if the injection point does not exist.
-        """
-        valid_points = {p.name for p in self.injection_points}
-        if render_pass.injection_point not in valid_points:
-            import logging
-            logging.getLogger("Infernux.RenderStack").warning(
-                "RenderPass '%s' has unknown injection_point '%s'. "
-                "Valid points: %s",
-                render_pass.name,
-                render_pass.injection_point,
-                ", ".join(sorted(valid_points)),
-            )
-            return False
-        for entry in self._pass_entries:
-            if (entry.render_pass.injection_point == render_pass.injection_point and
-                    entry.render_pass.name == render_pass.name):
-                return False
-        entry = PassEntry(
-            render_pass=render_pass,
-            enabled=render_pass.enabled,
-            order=render_pass.default_order,
-        )
-        self._pass_entries.append(entry)
-        self.invalidate_graph()
-        return True
-
-    def remove_pass(self, pass_name: str) -> bool:
-        """Remove a mounted RenderPass by name."""
-        for i, entry in enumerate(self._pass_entries):
-            if entry.render_pass.name == pass_name:
-                self._pass_entries.pop(i)
-                self.invalidate_graph()
-                return True
-        return False
-
-    def set_pass_enabled(self, pass_name: str, enabled: bool) -> None:
-        """Enable or disable a mounted pass."""
-        for entry in self._pass_entries:
-            if entry.render_pass.name == pass_name:
-                entry.enabled = enabled
-                entry.render_pass.enabled = enabled
-                self.invalidate_graph()
-                return
-
-    def reorder_pass(self, pass_name: str, new_order: int) -> None:
-        """Change a pass order within its injection point."""
-        for entry in self._pass_entries:
-            if entry.render_pass.name == pass_name:
-                entry.order = new_order
-                self.invalidate_graph()
-                return
-
-    def move_pass_before(self, dragged_name: str, target_name: str) -> None:
-        """Move ``dragged_name`` before ``target_name`` within one injection point.
-
-        This reassigns order values while preserving the relative order of the
-        other passes.
-        """
-        dragged_entry = None
-        target_entry = None
-        for e in self._pass_entries:
-            if e.render_pass.name == dragged_name:
-                dragged_entry = e
-            if e.render_pass.name == target_name:
-                target_entry = e
-        if dragged_entry is None or target_entry is None:
-            return
-        if dragged_entry.render_pass.injection_point != target_entry.render_pass.injection_point:
-            return
-
-        ip = dragged_entry.render_pass.injection_point
-        entries = self.get_passes_at(ip)
-
-        # Remove dragged, insert before target, reassign orders
-        ordered_names = [e.render_pass.name for e in entries if e.render_pass.name != dragged_name]
-        try:
-            idx = ordered_names.index(target_name)
-        except ValueError:
-            return
-        ordered_names.insert(idx, dragged_name)
-
-        # Reassign orders with stable spacing
-        name_to_entry = {e.render_pass.name: e for e in self._pass_entries}
-        for i, name in enumerate(ordered_names):
-            entry = name_to_entry.get(name)
-            if entry is not None:
-                entry.order = (i + 1) * 10
-
-        self.invalidate_graph()
-
-    def get_passes_at(self, injection_point: str) -> List[PassEntry]:
-        """Return all passes at an injection point, sorted by order."""
-        match_names = {injection_point}
-
-        entries = [
-            e
-            for e in self._pass_entries
-            if e.render_pass.injection_point in match_names
-        ]
-        entries.sort(key=lambda e: e.order)
-        return entries
 
     # ==================================================================
     # Graph construction
@@ -741,89 +618,6 @@ class RenderStack(InxComponent):
         self._register_pipeline_reload(cls)
         return pipeline
 
-    def _register_pipeline_reload(self, pipeline_cls) -> None:
-        """Subscribe to watchdog file-change events for the pipeline's source file."""
-        import sys as _sys
-        mod = _sys.modules.get(pipeline_cls.__module__)
-        if mod is None:
-            return
-        src = getattr(mod, '__file__', None)
-        if not src:
-            return
-        self._pipeline_module = mod
-        from Infernux.engine.resources_manager import ResourcesManager
-        rm = ResourcesManager.instance()
-        if rm is not None:
-            rm.register_script_reload_callback(src, self._on_pipeline_file_changed)
-
-    def _unregister_pipeline_reload(self) -> None:
-        """Unsubscribe from watchdog callbacks."""
-        from Infernux.engine.resources_manager import ResourcesManager
-        rm = ResourcesManager.instance()
-        if rm is not None:
-            rm.unregister_script_reload_callback(self._on_pipeline_file_changed)
-        self._pipeline_module = None
-
-    def _on_pipeline_file_changed(self, file_path: str) -> None:
-        """Watchdog callback — called on main thread when pipeline source is saved."""
-        import importlib
-        from Infernux.renderstack.discovery import invalidate_discovery_cache
-        mod = self._pipeline_module
-        if mod is None:
-            return
-        print(f"[RenderStack] Pipeline file changed, reloading...", file=sys.stderr)
-        self._save_current_pipeline_params()
-        invalidate_discovery_cache()
-        importlib.reload(mod)
-        self._pipeline = None   # re-instantiate on next .pipeline access
-        self.invalidate_graph() # clears _build_failed + _graph_desc
-        print(f"[RenderStack] Pipeline reloaded.", file=sys.stderr)
-
-    def _sync_pipeline_catalog(self) -> None:
-        """Refresh available pipeline catalog and enforce fallback policy."""
-        names = set(self.discover_pipelines().keys())
-        signature = tuple(sorted(names))
-        if signature == self._pipeline_catalog_signature:
-            return
-
-        self._pipeline_catalog_signature = signature
-
-        current = self.pipeline_class_name
-        if current and current not in names:
-            warnings.warn(
-                f"[RenderStack] Pipeline '{current}' was removed. Falling back to DefaultForwardPipeline.",
-                stacklevel=2,
-            )
-            self.set_pipeline("")
-            return
-
-        # Refresh pipeline type on catalog changes so newly edited classes can be re-instantiated.
-        if self._pipeline is not None:
-            self._save_current_pipeline_params()
-            self._pipeline = None
-            self._cached_ips = None
-            self.invalidate_graph()
-
-    def _register_pipeline_catalog_reload(self) -> None:
-        """Subscribe to watchdog-driven script catalog changes."""
-        from Infernux.engine.resources_manager import ResourcesManager
-        rm = ResourcesManager.instance()
-        if rm is not None:
-            rm.register_script_catalog_callback(self._on_script_catalog_changed)
-
-    def _unregister_pipeline_catalog_reload(self) -> None:
-        """Unsubscribe from watchdog-driven script catalog changes."""
-        from Infernux.engine.resources_manager import ResourcesManager
-        rm = ResourcesManager.instance()
-        if rm is not None:
-            rm.unregister_script_catalog_callback(self._on_script_catalog_changed)
-
-    def _on_script_catalog_changed(self, file_path: str, event_type: str) -> None:
-        """ResourcesManager callback for create/delete/move/modify of python scripts."""
-        from Infernux.renderstack.discovery import invalidate_discovery_cache
-        invalidate_discovery_cache()
-        self._sync_pipeline_catalog()
-
     def _pipeline_key(self, pipeline_name: str) -> str:
         return pipeline_name if pipeline_name else "__default__"
 
@@ -846,7 +640,8 @@ class RenderStack(InxComponent):
                 else:
                     params[field_name] = value
             self._pipeline_param_store[key] = params
-        except (ImportError, RuntimeError, AttributeError):
+        except (ImportError, RuntimeError, AttributeError) as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             return
 
     def _restore_pipeline_params(self, pipeline) -> None:
@@ -854,7 +649,8 @@ class RenderStack(InxComponent):
             self._pipeline_param_store = {}
         try:
             from Infernux.components.serialized_field import get_serialized_fields, FieldType
-        except ImportError:
+        except ImportError as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             return
 
         key = self._pipeline_key(self.pipeline_class_name)
@@ -877,7 +673,8 @@ class RenderStack(InxComponent):
                             setattr(pipeline, field_name, enum_cls[enum_name])
                             continue
                     setattr(pipeline, field_name, value)
-                except (AttributeError, TypeError, ValueError):
+                except (AttributeError, TypeError, ValueError) as _exc:
+                    Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
                     continue
         finally:
             pipeline._inf_deserializing = False

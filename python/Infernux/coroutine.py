@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import time as _time
 from typing import Any, Callable, Generator, Optional
+from Infernux.debug import Debug
 
 
 # ======================================================================
@@ -183,12 +184,14 @@ class CoroutineScheduler:
         if coroutine._generator is not None:
             try:
                 coroutine._generator.close()
-            except RuntimeError:
+            except RuntimeError as _exc:
+                Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
                 pass
             coroutine._generator = None
         try:
             self._coroutines.remove(coroutine)
-        except ValueError:
+        except ValueError as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             pass
 
     def stop_all(self) -> None:
@@ -198,7 +201,8 @@ class CoroutineScheduler:
             if co._generator is not None:
                 try:
                     co._generator.close()
-                except RuntimeError:
+                except RuntimeError as _exc:
+                    Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
                     pass
                 co._generator = None
         self._coroutines.clear()
@@ -274,7 +278,8 @@ class CoroutineScheduler:
         for co in to_remove:
             try:
                 self._coroutines.remove(co)
-            except ValueError:
+            except ValueError as _exc:
+                Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
                 pass
 
     def _advance(self, co: Coroutine) -> None:

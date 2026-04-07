@@ -27,6 +27,7 @@ from typing import Any, Optional, Tuple
 from Infernux.components.builtin_component import BuiltinComponent, CppProperty
 from Infernux.components.serialized_field import FieldType
 from Infernux.gizmos.gizmos import ICON_KIND_CAMERA
+from Infernux.debug import Debug
 
 
 def _vec4_to_list(v):
@@ -253,7 +254,8 @@ class Camera(BuiltinComponent):
             up = (u.x, u.y, u.z)
             r = transform.right
             right = (r.x, r.y, r.z)
-        except RuntimeError:
+        except RuntimeError as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             return
 
         fov = self.field_of_view

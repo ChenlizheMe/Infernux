@@ -90,7 +90,7 @@ class TestGameBuilderDependencyCollection:
         original_find_spec = importlib.util.find_spec
 
         def fake_find_spec(name):
-            if name in {"numba", "llvmlite"}:
+            if name in {"numba", "llvmlite", "numpy"}:
                 return object()
             return original_find_spec(name)
 
@@ -98,7 +98,57 @@ class TestGameBuilderDependencyCollection:
 
         deps = builder._collect_user_dependencies()
 
-        assert deps == ["llvmlite", "numba"]
+        assert deps == ["llvmlite", "numba", "numpy"]
+
+
+class TestGameBuilderAutoParallelExport:
+    def test_compile_user_scripts_emits_auto_parallel_sidecar_pyc(self, tmp_path):
+        output_dir = tmp_path / "build_output"
+        assets_dir = output_dir / "Data" / "Assets"
+        assets_dir.mkdir(parents=True)
+
+        script_path = assets_dir / "stress.py"
+        script_path.write_text(
+            "from Infernux.jit import njit\n"
+            "@njit(cache=True, auto_parallel=True)\n"
+            "def burn(n):\n"
+            "    acc = 0\n"
+            "    for i in range(n):\n"
+            "        acc += i\n"
+            "    return acc\n",
+            encoding="utf-8",
+        )
+
+        builder = _make_builder(tmp_path, output_dir)
+        builder._compile_user_scripts(str(output_dir))
+
+        assert not script_path.exists()
+        assert (assets_dir / "stress.pyc").is_file()
+        assert (assets_dir / "stress.autop.pyc").is_file()
+
+    def test_compile_user_scripts_skips_sidecar_for_non_auto_parallel_script(self, tmp_path):
+        output_dir = tmp_path / "build_output"
+        assets_dir = output_dir / "Data" / "Assets"
+        assets_dir.mkdir(parents=True)
+
+        script_path = assets_dir / "plain.py"
+        script_path.write_text(
+            "from Infernux.jit import njit\n"
+            "@njit(cache=True)\n"
+            "def burn(n):\n"
+            "    acc = 0\n"
+            "    for i in range(n):\n"
+            "        acc += i\n"
+            "    return acc\n",
+            encoding="utf-8",
+        )
+
+        builder = _make_builder(tmp_path, output_dir)
+        builder._compile_user_scripts(str(output_dir))
+
+        assert not script_path.exists()
+        assert (assets_dir / "plain.pyc").is_file()
+        assert not (assets_dir / "plain.autop.pyc").exists()
 
     def test_collect_user_dependencies_detects_public_infernux_jit_api(self, tmp_path, monkeypatch):
         project_root = _make_project(tmp_path)
@@ -108,7 +158,7 @@ class TestGameBuilderDependencyCollection:
         original_find_spec = importlib.util.find_spec
 
         def fake_find_spec(name):
-            if name in {"numba", "llvmlite"}:
+            if name in {"numba", "llvmlite", "numpy"}:
                 return object()
             return original_find_spec(name)
 
@@ -116,4 +166,4 @@ class TestGameBuilderDependencyCollection:
 
         deps = builder._collect_user_dependencies()
 
-        assert deps == ["llvmlite", "numba"]
+        assert deps == ["llvmlite", "numba", "numpy"]

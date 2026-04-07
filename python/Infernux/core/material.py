@@ -113,7 +113,8 @@ class Material:
             native = registry.load_material(file_path)
             if native is not None:
                 return Material(native)
-        except (RuntimeError, AttributeError, ImportError):
+        except (RuntimeError, AttributeError, ImportError) as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             pass
 
         # Fallback: standalone load (not registered in AssetRegistry)
@@ -141,7 +142,8 @@ class Material:
             native = registry.get_builtin_material(name)
             if native is not None:
                 return Material(native)
-        except (RuntimeError, AttributeError, ImportError):
+        except (RuntimeError, AttributeError, ImportError) as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             pass
         return None
 

@@ -333,32 +333,28 @@ void Scene::FixedUpdate(float fixedDeltaTime)
     }
 }
 
-void Scene::FixedUpdateObject(GameObject *obj, float fixedDeltaTime)
+void Scene::TraverseActiveObjects(GameObject *obj, float dt, void (GameObject::*updateMethod)(float))
 {
     if (!obj || !obj->IsActiveInHierarchy() || IsPendingDestroy(obj))
         return;
 
-    obj->FixedUpdate(fixedDeltaTime);
+    (obj->*updateMethod)(dt);
 
     const auto &children = obj->GetChildren();
     const size_t childCount = children.size();
     for (size_t i = 0; i < childCount && i < children.size(); ++i) {
-        FixedUpdateObject(children[i].get(), fixedDeltaTime);
+        TraverseActiveObjects(children[i].get(), dt, updateMethod);
     }
+}
+
+void Scene::FixedUpdateObject(GameObject *obj, float fixedDeltaTime)
+{
+    TraverseActiveObjects(obj, fixedDeltaTime, &GameObject::FixedUpdate);
 }
 
 void Scene::UpdateObject(GameObject *obj, float deltaTime)
 {
-    if (!obj || !obj->IsActiveInHierarchy() || IsPendingDestroy(obj))
-        return;
-
-    obj->Update(deltaTime);
-
-    const auto &children = obj->GetChildren();
-    const size_t childCount = children.size();
-    for (size_t i = 0; i < childCount && i < children.size(); ++i) {
-        UpdateObject(children[i].get(), deltaTime);
-    }
+    TraverseActiveObjects(obj, deltaTime, &GameObject::Update);
 }
 
 void Scene::LateUpdate(float deltaTime)
@@ -389,30 +385,113 @@ void Scene::EditorUpdate(float deltaTime)
 
 void Scene::LateUpdateObject(GameObject *obj, float deltaTime)
 {
-    if (!obj || !obj->IsActiveInHierarchy() || IsPendingDestroy(obj))
-        return;
-
-    obj->LateUpdate(deltaTime);
-
-    const auto &children = obj->GetChildren();
-    const size_t childCount = children.size();
-    for (size_t i = 0; i < childCount && i < children.size(); ++i) {
-        LateUpdateObject(children[i].get(), deltaTime);
-    }
+    TraverseActiveObjects(obj, deltaTime, &GameObject::LateUpdate);
 }
 
 void Scene::EditorUpdateObject(GameObject *obj, float deltaTime)
 {
-    if (!obj || !obj->IsActiveInHierarchy() || IsPendingDestroy(obj))
-        return;
+    TraverseActiveObjects(obj, deltaTime, &GameObject::EditorUpdate);
+}
 
-    obj->EditorUpdate(deltaTime);
+// ============================================================================
+// Shared JSON → GameObject builder (used by both Deserialize and InstantiateFromJson)
+// ============================================================================
 
-    const auto &children = obj->GetChildren();
-    const size_t childCount = children.size();
-    for (size_t i = 0; i < childCount && i < children.size(); ++i) {
-        EditorUpdateObject(children[i].get(), deltaTime);
+// Internal overload operating directly on a parsed json value.
+std::unique_ptr<GameObject> Scene::BuildGameObjectFromJsonImpl(const json &objJson, bool preserveIds)
+{
+    std::string name = objJson.value("name", std::string(preserveIds ? "GameObject" : "Prefab"));
+    auto obj = std::make_unique<GameObject>(name);
+    obj->m_scene = this;
+
+    // Restore original ID only when deserializing (not cloning)
+    if (preserveIds && objJson.contains("id")) {
+        obj->m_id = objJson["id"].get<uint64_t>();
+        GameObject::EnsureNextID(obj->m_id);
     }
+
+    if (objJson.contains("active"))
+        obj->m_active = objJson["active"].get<bool>();
+    if (objJson.contains("is_static"))
+        obj->m_isStatic = objJson["is_static"].get<bool>();
+    if (objJson.contains("tag"))
+        obj->m_tag = objJson["tag"].get<std::string>();
+    if (objJson.contains("layer")) {
+        int l = objJson["layer"].get<int>();
+        obj->m_layer = (l >= 0 && l < 32) ? l : 0;
+    }
+    if (objJson.contains("prefab_guid"))
+        obj->m_prefabGuid = objJson["prefab_guid"].get<std::string>();
+    obj->m_prefabRoot = objJson.value("prefab_root", false);
+
+    // Transform
+    if (objJson.contains("transform")) {
+        json tJson = objJson["transform"];
+        if (!preserveIds)
+            tJson.erase("component_id");
+        obj->m_transform.Deserialize(tJson.dump());
+    }
+
+    // C++ components (factory-based)
+    if (objJson.contains("components") && objJson["components"].is_array()) {
+        for (const auto &compJson : objJson["components"]) {
+            std::string typeName = compJson.value("type", std::string());
+            if (typeName.empty() || typeName == "Transform")
+                continue;
+            std::unique_ptr<Component> comp = ComponentFactory::Create(typeName);
+            if (!comp)
+                continue;
+            json cJson = compJson;
+            if (!preserveIds) {
+                cJson.erase("component_id");
+                cJson.erase("instance_guid");
+            }
+            comp->SetGameObject(obj.get());
+            comp->Deserialize(cJson.dump());
+            obj->m_components.push_back(std::move(comp));
+        }
+    }
+
+    // Python components — store as pending for Python-side reconstruction
+    if (objJson.contains("py_components") && objJson["py_components"].is_array()) {
+        uint64_t objId = obj->m_id ? obj->m_id : obj->GetID();
+        for (const auto &pyCompJson : objJson["py_components"]) {
+            PendingPyComponent pending;
+            pending.gameObjectId = objId;
+            pending.typeName = pyCompJson.value("py_type_name", std::string("PyComponent"));
+            pending.scriptGuid = pyCompJson.value("script_guid", std::string());
+            pending.enabled = pyCompJson.value("enabled", true);
+            if (pyCompJson.contains("py_fields"))
+                pending.fieldsJson = pyCompJson["py_fields"].dump();
+            m_pendingPyComponents.push_back(pending);
+        }
+    }
+
+    // Recurse children
+    if (objJson.contains("children") && objJson["children"].is_array()) {
+        for (const auto &childJson : objJson["children"]) {
+            auto child = BuildGameObjectFromJsonImpl(childJson, preserveIds);
+            if (child)
+                obj->AttachChild(std::move(child));
+        }
+    }
+
+    return obj;
+}
+
+std::unique_ptr<GameObject> Scene::BuildGameObjectFromJson(const std::string &jsonStr, bool preserveIds)
+{
+    json objJson = json::parse(jsonStr);
+    return BuildGameObjectFromJsonImpl(objJson, preserveIds);
+}
+
+void Scene::RegisterObjectSubtree(GameObject *root)
+{
+    if (!root)
+        return;
+    RegisterGameObject(root);
+    for (const auto &child : root->GetChildren())
+        RegisterObjectSubtree(child.get());
 }
 
 void Scene::ProcessPendingDestroys()
@@ -594,91 +673,12 @@ GameObject *Scene::InstantiateFromJson(const std::string &jsonStr, GameObject *p
         return nullptr;
     }
 
-    // Recursive builder — identical to InstantiateGameObject's buildClone
-    auto buildClone = [&](auto &&self, const json &objJson) -> std::unique_ptr<GameObject> {
-        std::string name = objJson.value("name", std::string("Prefab"));
-        auto obj = std::make_unique<GameObject>(name); // fresh ID
-        obj->m_scene = this;
-
-        if (objJson.contains("active"))
-            obj->m_active = objJson["active"].get<bool>();
-        if (objJson.contains("is_static"))
-            obj->m_isStatic = objJson["is_static"].get<bool>();
-        if (objJson.contains("tag"))
-            obj->m_tag = objJson["tag"].get<std::string>();
-        if (objJson.contains("layer")) {
-            int l = objJson["layer"].get<int>();
-            obj->m_layer = (l >= 0 && l < 32) ? l : 0;
-        }
-        // Prefab instance tracking — propagate to clone
-        if (objJson.contains("prefab_guid"))
-            obj->m_prefabGuid = objJson["prefab_guid"].get<std::string>();
-        obj->m_prefabRoot = objJson.value("prefab_root", false);
-
-        if (objJson.contains("transform")) {
-            json tJson = objJson["transform"];
-            tJson.erase("component_id");
-            obj->m_transform.Deserialize(tJson.dump());
-        }
-
-        if (objJson.contains("components") && objJson["components"].is_array()) {
-            for (const auto &compJson : objJson["components"]) {
-                std::string typeName = compJson.value("type", std::string());
-                if (typeName.empty() || typeName == "Transform")
-                    continue;
-                std::unique_ptr<Component> comp = ComponentFactory::Create(typeName);
-                if (!comp)
-                    continue;
-                json cJson = compJson;
-                cJson.erase("component_id");
-                cJson.erase("instance_guid");
-                comp->SetGameObject(obj.get());
-                comp->Deserialize(cJson.dump());
-                obj->m_components.push_back(std::move(comp));
-            }
-        }
-
-        if (objJson.contains("py_components") && objJson["py_components"].is_array()) {
-            uint64_t objId = obj->GetID();
-            for (const auto &pyCompJson : objJson["py_components"]) {
-                PendingPyComponent pending;
-                pending.gameObjectId = objId;
-                pending.typeName = pyCompJson.value("py_type_name", std::string("PyComponent"));
-                pending.scriptGuid = pyCompJson.value("script_guid", std::string());
-                pending.enabled = pyCompJson.value("enabled", true);
-                if (pyCompJson.contains("py_fields")) {
-                    pending.fieldsJson = pyCompJson["py_fields"].dump();
-                }
-                m_pendingPyComponents.push_back(pending);
-            }
-        }
-
-        if (objJson.contains("children") && objJson["children"].is_array()) {
-            for (const auto &childJson : objJson["children"]) {
-                auto child = self(self, childJson);
-                if (child) {
-                    obj->AttachChild(std::move(child));
-                }
-            }
-        }
-
-        return obj;
-    };
-
-    auto clone = buildClone(buildClone, j);
+    auto clone = BuildGameObjectFromJsonImpl(j, /*preserveIds=*/false);
     if (!clone)
         return nullptr;
 
     GameObject *ptr = clone.get();
-    auto registerAll = [&](auto &&self, GameObject *go) -> void {
-        if (!go)
-            return;
-        RegisterGameObject(go);
-        for (const auto &child : go->GetChildren()) {
-            self(self, child.get());
-        }
-    };
-    registerAll(registerAll, ptr);
+    RegisterObjectSubtree(ptr);
 
     if (parent) {
         parent->AttachChild(std::move(clone));
@@ -686,9 +686,6 @@ GameObject *Scene::InstantiateFromJson(const std::string &jsonStr, GameObject *p
         m_rootObjects.push_back(std::move(clone));
     }
 
-    // Awake active components immediately so subsystem registration matches
-    // Unity-style Instantiate semantics. Inactive clones defer Awake until
-    // they first become active in the hierarchy.
     AwakeObject(ptr);
     if (m_isPlaying && m_hasStarted) {
         QueueStartObject(ptr);
@@ -761,104 +758,12 @@ bool Scene::Deserialize(const std::string &jsonStr)
         m_pendingPyComponents.clear();
         m_hasStarted = false;
 
-        auto buildObject = [&](auto &&self, const json &objJson) -> std::unique_ptr<GameObject> {
-            std::string name = objJson.value("name", std::string("GameObject"));
-            auto obj = std::make_unique<GameObject>(name);
-            obj->m_scene = this;
-
-            if (objJson.contains("id")) {
-                obj->m_id = objJson["id"].get<uint64_t>();
-                GameObject::EnsureNextID(obj->m_id);
-            }
-
-            if (objJson.contains("active")) {
-                obj->m_active = objJson["active"].get<bool>();
-            }
-
-            if (objJson.contains("is_static")) {
-                obj->m_isStatic = objJson["is_static"].get<bool>();
-            }
-
-            if (objJson.contains("tag")) {
-                obj->m_tag = objJson["tag"].get<std::string>();
-            }
-
-            if (objJson.contains("layer")) {
-                int layer = objJson["layer"].get<int>();
-                obj->m_layer = (layer >= 0 && layer < 32) ? layer : 0;
-            }
-
-            // Prefab instance tracking
-            if (objJson.contains("prefab_guid"))
-                obj->m_prefabGuid = objJson["prefab_guid"].get<std::string>();
-            obj->m_prefabRoot = objJson.value("prefab_root", false);
-
-            if (objJson.contains("transform")) {
-                std::string transformJson = objJson["transform"].dump();
-                obj->m_transform.Deserialize(transformJson);
-            }
-
-            // Restore C++ components (factory-based)
-            if (objJson.contains("components") && objJson["components"].is_array()) {
-                for (const auto &compJson : objJson["components"]) {
-                    std::string typeName = compJson.value("type", std::string());
-                    if (typeName.empty() || typeName == "Transform")
-                        continue;
-
-                    std::unique_ptr<Component> comp = ComponentFactory::Create(typeName);
-                    if (!comp)
-                        continue;
-
-                    comp->SetGameObject(obj.get());
-                    comp->Deserialize(compJson.dump());
-                    obj->m_components.push_back(std::move(comp));
-                }
-            }
-
-            // Store py_components info for Python-side reconstruction
-            if (objJson.contains("py_components") && objJson["py_components"].is_array()) {
-                uint64_t objId = obj->m_id;
-                for (const auto &pyCompJson : objJson["py_components"]) {
-                    PendingPyComponent pending;
-                    pending.gameObjectId = objId;
-                    pending.typeName = pyCompJson.value("py_type_name", std::string("PyComponent"));
-                    pending.scriptGuid = pyCompJson.value("script_guid", std::string());
-                    pending.enabled = pyCompJson.value("enabled", true);
-                    if (pyCompJson.contains("py_fields")) {
-                        pending.fieldsJson = pyCompJson["py_fields"].dump();
-                    }
-                    m_pendingPyComponents.push_back(pending);
-                }
-            }
-
-            // Recurse children
-            if (objJson.contains("children") && objJson["children"].is_array()) {
-                for (const auto &childJson : objJson["children"]) {
-                    auto child = self(self, childJson);
-                    if (child) {
-                        obj->AttachChild(std::move(child));
-                    }
-                }
-            }
-
-            return obj;
-        };
-
-        auto registerObject = [&](auto &&self, GameObject *obj) -> void {
-            if (!obj)
-                return;
-            RegisterGameObject(obj);
-            for (const auto &child : obj->GetChildren()) {
-                self(self, child.get());
-            }
-        };
-
         if (j.contains("objects") && j["objects"].is_array()) {
             int objectCounter = 0;
             for (const auto &objJson : j["objects"]) {
-                auto obj = buildObject(buildObject, objJson);
+                auto obj = BuildGameObjectFromJsonImpl(objJson, /*preserveIds=*/true);
                 if (obj) {
-                    registerObject(registerObject, obj.get());
+                    RegisterObjectSubtree(obj.get());
                     m_rootObjects.push_back(std::move(obj));
                 }
                 // Pump the OS message queue periodically during heavy

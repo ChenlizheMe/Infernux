@@ -98,6 +98,49 @@ bool VkSwapchainManager::Create(const VkDeviceContext &context, uint32_t width, 
     m_device = context.GetDevice();
     m_presentQueue = context.GetPresentQueue();
 
+    if (!CreateSwapchainCore(context, width, height, VK_NULL_HANDLE))
+        return false;
+
+    // Create sync objects (only on initial creation)
+    if (!CreateSyncObjects()) {
+        return false;
+    }
+
+    INXLOG_INFO("Swapchain created: ", m_extent.width, "x", m_extent.height, ", ", m_images.size(), " images, format ",
+                static_cast<int>(m_imageFormat));
+
+    return true;
+}
+
+bool VkSwapchainManager::Recreate(const VkDeviceContext &context, uint32_t width, uint32_t height)
+{
+    // Wait for device to be idle
+    context.WaitIdle();
+
+    // Cleanup old swapchain (but keep sync objects)
+    CleanupSwapchain();
+
+    // Handle minimized window
+    SwapchainSupportDetails swapchainSupport = context.QuerySwapchainSupport();
+    if (swapchainSupport.capabilities.currentExtent.width == 0 ||
+        swapchainSupport.capabilities.currentExtent.height == 0) {
+        INXLOG_WARN("Swapchain recreation skipped: zero extent (minimized window?)");
+        return false;
+    }
+
+    if (!CreateSwapchainCore(context, width, height, VK_NULL_HANDLE))
+        return false;
+
+    if (!CreateRenderFinishedSemaphores()) {
+        return false;
+    }
+
+    return true;
+}
+
+bool VkSwapchainManager::CreateSwapchainCore(const VkDeviceContext &context, uint32_t width, uint32_t height,
+                                             VkSwapchainKHR oldSwapchain)
+{
     // Query swapchain support
     SwapchainSupportDetails swapchainSupport = context.QuerySwapchainSupport();
 
@@ -141,7 +184,7 @@ bool VkSwapchainManager::Create(const VkDeviceContext &context, uint32_t width, 
     createInfo.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
     createInfo.presentMode = presentMode;
     createInfo.clipped = VK_TRUE;
-    createInfo.oldSwapchain = VK_NULL_HANDLE;
+    createInfo.oldSwapchain = oldSwapchain;
 
     VkResult result = vkCreateSwapchainKHR(m_device, &createInfo, nullptr, &m_swapchain);
     if (result != VK_SUCCESS) {
@@ -163,102 +206,6 @@ bool VkSwapchainManager::Create(const VkDeviceContext &context, uint32_t width, 
     if (!CreateImageViews()) {
         return false;
     }
-
-    // Create sync objects
-    if (!CreateSyncObjects()) {
-        return false;
-    }
-
-    INXLOG_INFO("Swapchain created: ", m_extent.width, "x", m_extent.height, ", ", m_images.size(), " images, format ",
-                static_cast<int>(m_imageFormat));
-
-    return true;
-}
-
-bool VkSwapchainManager::Recreate(const VkDeviceContext &context, uint32_t width, uint32_t height)
-{
-    // Wait for device to be idle
-    context.WaitIdle();
-
-    // Cleanup old swapchain (but keep sync objects)
-    CleanupSwapchain();
-
-    // Query new swapchain support
-    SwapchainSupportDetails swapchainSupport = context.QuerySwapchainSupport();
-
-    // Handle minimized window
-    if (swapchainSupport.capabilities.currentExtent.width == 0 ||
-        swapchainSupport.capabilities.currentExtent.height == 0) {
-        INXLOG_WARN("Swapchain recreation skipped: zero extent (minimized window?)");
-        return false;
-    }
-
-    // Choose optimal settings
-    VkSurfaceFormatKHR surfaceFormat = ChooseSurfaceFormat(swapchainSupport.formats);
-    VkPresentModeKHR presentMode = ChoosePresentMode(swapchainSupport.presentModes);
-    VkExtent2D extent = ChooseExtent(swapchainSupport.capabilities, width, height);
-
-    // Choose image count
-    uint32_t imageCount = swapchainSupport.capabilities.minImageCount + 1;
-    if (swapchainSupport.capabilities.maxImageCount > 0 && imageCount > swapchainSupport.capabilities.maxImageCount) {
-        imageCount = swapchainSupport.capabilities.maxImageCount;
-    }
-
-    // Create new swapchain
-    VkSwapchainCreateInfoKHR createInfo{};
-    createInfo.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
-    createInfo.surface = context.GetSurface();
-    createInfo.minImageCount = imageCount;
-    createInfo.imageFormat = surfaceFormat.format;
-    createInfo.imageColorSpace = surfaceFormat.colorSpace;
-    createInfo.imageExtent = extent;
-    createInfo.imageArrayLayers = 1;
-    createInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-
-    const QueueFamilyIndices &indices = context.GetQueueIndices();
-    uint32_t queueFamilyIndices[] = {indices.graphicsFamily.value(), indices.presentFamily.value()};
-
-    if (indices.graphicsFamily != indices.presentFamily) {
-        createInfo.imageSharingMode = VK_SHARING_MODE_CONCURRENT;
-        createInfo.queueFamilyIndexCount = 2;
-        createInfo.pQueueFamilyIndices = queueFamilyIndices;
-    } else {
-        createInfo.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    }
-
-    createInfo.preTransform = swapchainSupport.capabilities.currentTransform;
-    createInfo.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
-    createInfo.presentMode = presentMode;
-    createInfo.clipped = VK_TRUE;
-    createInfo.oldSwapchain = VK_NULL_HANDLE; // Old swapchain already destroyed
-
-    VkResult result = vkCreateSwapchainKHR(m_device, &createInfo, nullptr, &m_swapchain);
-    if (result != VK_SUCCESS) {
-        INXLOG_ERROR("Failed to recreate swapchain: ", VkResultToString(result));
-        return false;
-    }
-
-    // Update format and extent
-    m_imageFormat = surfaceFormat.format;
-    m_extent = extent;
-
-    // Get new images
-    uint32_t actualImageCount = 0;
-    vkGetSwapchainImagesKHR(m_device, m_swapchain, &actualImageCount, nullptr);
-    m_images.resize(actualImageCount);
-    vkGetSwapchainImagesKHR(m_device, m_swapchain, &actualImageCount, m_images.data());
-
-    // Create new image views
-    if (!CreateImageViews()) {
-        return false;
-    }
-
-    if (!CreateRenderFinishedSemaphores()) {
-        return false;
-    }
-
-    // INXLOG_INFO("Swapchain recreated: {", m_extent.width, "}, {", m_extent.height, "}, ", m_images.size(),
-    //             " images, format ", static_cast<int>(m_imageFormat));
 
     return true;
 }

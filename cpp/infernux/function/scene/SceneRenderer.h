@@ -119,6 +119,10 @@ class SceneRenderer
     void PerformCulling();
     void SortRenderables();
 
+    /// @brief Shared draw-call emission logic used by both BuildDrawCalls() and BuildDrawCallsForCamera().
+    void EmitDrawCallsForRenderable(DrawCallResult &result, const RenderableObject &renderable, bool visible,
+                                    bool bufferDirty) const;
+
     std::vector<RenderableObject> m_renderables;
     size_t m_visibleCount = 0;
 

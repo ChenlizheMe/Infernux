@@ -272,6 +272,11 @@ class VkSwapchainManager
     /// @brief Cleanup swapchain (but not sync objects)
     void CleanupSwapchain();
 
+    /// @brief Shared implementation for Create/Recreate — populates m_swapchain,
+    /// m_images, m_imageViews from the given context and dimensions.
+    bool CreateSwapchainCore(const VkDeviceContext &context, uint32_t width, uint32_t height,
+                             VkSwapchainKHR oldSwapchain);
+
   private:
     // ========================================================================
     // Vulkan Objects

@@ -189,6 +189,129 @@ void SceneRenderer::SortRenderables()
     });
 }
 
+// ============================================================================
+// Shared draw-call emission (eliminates duplication between the two Build paths)
+// ============================================================================
+void SceneRenderer::EmitDrawCallsForRenderable(DrawCallResult &result, const RenderableObject &renderable, bool visible,
+                                               bool bufferDirty) const
+{
+    MeshRenderer *renderer = renderable.meshRenderer;
+    if (!renderer)
+        return;
+
+    if (renderer->HasMeshAsset()) {
+        auto meshPtr = renderer->GetMeshAssetRef().Get();
+        if (!meshPtr)
+            return;
+        const auto &objVertices = meshPtr->GetVertices();
+        const auto &objIndices = meshPtr->GetIndices();
+        if (objVertices.empty() || objIndices.empty())
+            return;
+
+        const glm::mat4 &worldMatrix = renderable.worldMatrix;
+
+        uint32_t subMeshCount = meshPtr->GetSubMeshCount();
+        int32_t submeshFilter = renderer->GetSubmeshIndex();
+        int32_t nodeGroup = renderer->GetNodeGroup();
+        if (subMeshCount == 0) {
+            // Fallback: single draw call for entire mesh
+            DrawCall dc;
+            dc.indexStart = 0;
+            dc.indexCount = static_cast<uint32_t>(objIndices.size());
+            dc.vertexStart = 0;
+            dc.worldMatrix = worldMatrix;
+            dc.material = renderer->GetEffectiveMaterial(0);
+            dc.objectId = renderable.objectId;
+            dc.frustumVisible = visible;
+            dc.worldBounds = renderable.worldBounds;
+            dc.meshVertices = &objVertices;
+            dc.meshIndices = &objIndices;
+            dc.forceBufferUpdate = bufferDirty;
+            result.drawCalls.push_back(dc);
+        } else if (submeshFilter >= 0 && static_cast<uint32_t>(submeshFilter) < subMeshCount) {
+            // Single submesh mode — render only the specified submesh
+            const auto &sub = meshPtr->GetSubMesh(static_cast<uint32_t>(submeshFilter));
+            glm::mat4 effectiveMatrix = worldMatrix;
+            const glm::vec3 &pivot = renderer->GetMeshPivotOffset();
+            if (pivot != glm::vec3(0.0f)) {
+                effectiveMatrix = worldMatrix * glm::translate(glm::mat4(1.0f), pivot);
+            }
+            DrawCall dc;
+            dc.indexStart = sub.indexStart;
+            dc.indexCount = sub.indexCount;
+            dc.vertexStart = 0;
+            dc.worldMatrix = effectiveMatrix;
+            dc.material = renderer->GetEffectiveMaterial(0);
+            dc.objectId = renderable.objectId;
+            dc.frustumVisible = visible;
+            dc.worldBounds = renderable.worldBounds;
+            dc.meshVertices = &objVertices;
+            dc.meshIndices = &objIndices;
+            dc.forceBufferUpdate = bufferDirty;
+            result.drawCalls.push_back(dc);
+        } else {
+            // One DrawCall per submesh with its own material slot
+            // Build local slot remap for nodeGroup so material indices are contiguous
+            constexpr uint32_t SLOT_REMAP_CAP = 32;
+            uint32_t slotRemap[SLOT_REMAP_CAP];
+            std::memset(slotRemap, 0xFF, sizeof(slotRemap));
+            uint32_t nextSlotIdx = 0;
+            if (nodeGroup >= 0) {
+                for (uint32_t si = 0; si < subMeshCount; ++si) {
+                    const auto &s = meshPtr->GetSubMesh(si);
+                    if (static_cast<int32_t>(s.nodeGroup) != nodeGroup)
+                        continue;
+                    if (s.materialSlot < SLOT_REMAP_CAP && slotRemap[s.materialSlot] == 0xFFFFFFFF)
+                        slotRemap[s.materialSlot] = nextSlotIdx++;
+                }
+            }
+            bool firstDirty = true;
+            for (uint32_t si = 0; si < subMeshCount; ++si) {
+                const auto &sub = meshPtr->GetSubMesh(si);
+                if (nodeGroup >= 0 && static_cast<int32_t>(sub.nodeGroup) != nodeGroup)
+                    continue;
+                DrawCall dc;
+                dc.indexStart = sub.indexStart;
+                dc.indexCount = sub.indexCount;
+                dc.vertexStart = 0;
+                dc.worldMatrix = worldMatrix;
+                uint32_t matSlot = sub.materialSlot;
+                if (nodeGroup >= 0 && matSlot < SLOT_REMAP_CAP && slotRemap[matSlot] != 0xFFFFFFFF)
+                    matSlot = slotRemap[matSlot];
+                dc.material = renderer->GetEffectiveMaterial(matSlot);
+                dc.objectId = renderable.objectId;
+                dc.frustumVisible = visible;
+                dc.worldBounds = renderable.worldBounds;
+                dc.meshVertices = &objVertices;
+                dc.meshIndices = &objIndices;
+                dc.forceBufferUpdate = firstDirty ? bufferDirty : false;
+                firstDirty = false;
+                result.drawCalls.push_back(dc);
+            }
+        }
+    } else if (renderer->HasInlineMesh()) {
+        const auto &objVertices = renderer->GetInlineVertices();
+        const auto &objIndices = renderer->GetInlineIndices();
+        if (objVertices.empty() || objIndices.empty())
+            return;
+
+        const glm::mat4 &worldMatrix = renderable.worldMatrix;
+        DrawCall dc;
+        dc.indexStart = 0;
+        dc.indexCount = static_cast<uint32_t>(objIndices.size());
+        dc.vertexStart = 0;
+        dc.worldMatrix = worldMatrix;
+        dc.material = renderer->GetEffectiveMaterial(0);
+        dc.objectId = renderable.objectId;
+        dc.frustumVisible = visible;
+        dc.worldBounds = renderable.worldBounds;
+        dc.meshVertices = &objVertices;
+        dc.meshIndices = &objIndices;
+        dc.forceBufferUpdate = bufferDirty;
+        result.drawCalls.push_back(dc);
+    }
+}
+
 DrawCallResult SceneRenderer::BuildDrawCalls() const
 {
     DrawCallResult result;
@@ -199,130 +322,8 @@ DrawCallResult SceneRenderer::BuildDrawCalls() const
         if (!renderer)
             continue;
 
-        // Get mesh data from MeshRenderer
-        if (renderer->HasMeshAsset()) {
-            // Asset-managed mesh — emit one DrawCall per submesh
-            auto meshPtr = renderer->GetMeshAssetRef().Get();
-            if (!meshPtr)
-                continue;
-            const auto &objVertices = meshPtr->GetVertices();
-            const auto &objIndices = meshPtr->GetIndices();
-            if (objVertices.empty() || objIndices.empty())
-                continue;
-
-            const glm::mat4 &worldMatrix = renderable.worldMatrix;
-            bool bufferDirty = renderer->ConsumeMeshBufferDirty();
-
-            uint32_t subMeshCount = meshPtr->GetSubMeshCount();
-            int32_t submeshFilter = renderer->GetSubmeshIndex();
-            int32_t nodeGroup = renderer->GetNodeGroup();
-            if (subMeshCount == 0) {
-                // Fallback: single draw call for entire mesh
-                DrawCall dc;
-                dc.indexStart = 0;
-                dc.indexCount = static_cast<uint32_t>(objIndices.size());
-                dc.vertexStart = 0;
-                dc.worldMatrix = worldMatrix;
-                dc.material = renderer->GetEffectiveMaterial(0);
-                dc.objectId = renderable.objectId;
-                dc.frustumVisible = renderable.visible;
-                dc.worldBounds = renderable.worldBounds;
-                dc.meshVertices = &objVertices;
-                dc.meshIndices = &objIndices;
-                dc.forceBufferUpdate = bufferDirty;
-                result.drawCalls.push_back(dc);
-            } else if (submeshFilter >= 0 && static_cast<uint32_t>(submeshFilter) < subMeshCount) {
-                // Single submesh mode — render only the specified submesh
-                const auto &sub = meshPtr->GetSubMesh(static_cast<uint32_t>(submeshFilter));
-                // Apply pivot offset to re-center submesh geometry around the transform
-                glm::mat4 effectiveMatrix = worldMatrix;
-                const glm::vec3 &pivot = renderer->GetMeshPivotOffset();
-                if (pivot != glm::vec3(0.0f)) {
-                    effectiveMatrix = worldMatrix * glm::translate(glm::mat4(1.0f), pivot);
-                }
-                DrawCall dc;
-                dc.indexStart = sub.indexStart;
-                dc.indexCount = sub.indexCount;
-                dc.vertexStart = 0;
-                dc.worldMatrix = effectiveMatrix;
-                dc.material = renderer->GetEffectiveMaterial(0);
-                dc.objectId = renderable.objectId;
-                dc.frustumVisible = renderable.visible;
-                dc.worldBounds = renderable.worldBounds;
-                dc.meshVertices = &objVertices;
-                dc.meshIndices = &objIndices;
-                dc.forceBufferUpdate = bufferDirty;
-                result.drawCalls.push_back(dc);
-            } else {
-                // One DrawCall per submesh with its own material slot
-                // (filtered by nodeGroup when set)
-                // Build local slot remap for nodeGroup so material indices are contiguous
-                // Flat array remap — avoids std::map heap allocation per renderable.
-                // materialSlot values are typically small (0–31).
-                constexpr uint32_t SLOT_REMAP_CAP = 32;
-                uint32_t slotRemap[SLOT_REMAP_CAP];
-                std::memset(slotRemap, 0xFF, sizeof(slotRemap));
-                uint32_t nextSlotIdx = 0;
-                if (nodeGroup >= 0) {
-                    for (uint32_t si = 0; si < subMeshCount; ++si) {
-                        const auto &s = meshPtr->GetSubMesh(si);
-                        if (static_cast<int32_t>(s.nodeGroup) != nodeGroup)
-                            continue;
-                        if (s.materialSlot < SLOT_REMAP_CAP && slotRemap[s.materialSlot] == 0xFFFFFFFF)
-                            slotRemap[s.materialSlot] = nextSlotIdx++;
-                    }
-                }
-                bool firstDirty = true;
-                for (uint32_t si = 0; si < subMeshCount; ++si) {
-                    const auto &sub = meshPtr->GetSubMesh(si);
-                    if (nodeGroup >= 0 && static_cast<int32_t>(sub.nodeGroup) != nodeGroup)
-                        continue;
-                    DrawCall dc;
-                    dc.indexStart = sub.indexStart;
-                    dc.indexCount = sub.indexCount;
-                    dc.vertexStart = 0; // Indices already reference correct vertices
-                    dc.worldMatrix = worldMatrix;
-                    uint32_t matSlot = sub.materialSlot;
-                    if (nodeGroup >= 0 && matSlot < SLOT_REMAP_CAP && slotRemap[matSlot] != 0xFFFFFFFF)
-                        matSlot = slotRemap[matSlot];
-                    dc.material = renderer->GetEffectiveMaterial(matSlot);
-                    dc.objectId = renderable.objectId;
-                    dc.frustumVisible = renderable.visible;
-                    dc.worldBounds = renderable.worldBounds;
-                    dc.meshVertices = &objVertices;
-                    dc.meshIndices = &objIndices;
-                    dc.forceBufferUpdate = firstDirty ? bufferDirty : false;
-                    firstDirty = false;
-                    result.drawCalls.push_back(dc);
-                }
-            }
-        } else if (renderer->HasInlineMesh()) {
-            const auto &objVertices = renderer->GetInlineVertices();
-            const auto &objIndices = renderer->GetInlineIndices();
-            if (objVertices.empty() || objIndices.empty())
-                continue;
-
-            // Vertices stay in model/local space — GPU applies per-object model matrix via push constants
-            const glm::mat4 &worldMatrix = renderable.worldMatrix;
-
-            // Build DrawCall with per-object mesh pointers (Phase 2.3.4)
-            // Include ALL objects (even frustum-culled ones) so shadow caster
-            // passes can still draw them into the shadow map.
-            DrawCall dc;
-            dc.indexStart = 0; // Always 0 for per-object VBO
-            dc.indexCount = static_cast<uint32_t>(objIndices.size());
-            dc.vertexStart = 0;
-            dc.worldMatrix = worldMatrix;
-            dc.material = renderer->GetEffectiveMaterial(0);
-            dc.objectId = renderable.objectId;
-            dc.frustumVisible = renderable.visible;
-            dc.worldBounds = renderable.worldBounds;
-            dc.meshVertices = &objVertices;
-            dc.meshIndices = &objIndices;
-            result.drawCalls.push_back(dc);
-        } else {
-            continue;
-        }
+        bool bufferDirty = renderer->ConsumeMeshBufferDirty();
+        EmitDrawCallsForRenderable(result, renderable, renderable.visible, bufferDirty);
     }
 
     return result;
@@ -345,7 +346,7 @@ DrawCallResult SceneRenderer::BuildDrawCallsForCamera(Camera *camera) const
         if (!renderer)
             continue;
 
-        // Layer mask filter (editor PrepareFrame uses 0xFFFFFFFF, game camera may differ)
+        // Layer mask filter
         GameObject *obj = renderer->GetGameObject();
         if (obj) {
             uint32_t layerBit = 1u << static_cast<uint32_t>(obj->GetLayer());
@@ -353,115 +354,11 @@ DrawCallResult SceneRenderer::BuildDrawCallsForCamera(Camera *camera) const
                 continue;
         }
 
-        // Frustum test using pre-computed world bounds from editor PrepareFrame
+        // Frustum test using pre-computed world bounds
         const bool visible = m_frustumCulling ? frustum.IntersectsAABB(renderable.worldBounds) : true;
 
-        // --- Same draw call build logic as BuildDrawCalls(), with 'visible' override ---
-        if (renderer->HasMeshAsset()) {
-            auto meshPtr = renderer->GetMeshAssetRef().Get();
-            if (!meshPtr)
-                continue;
-            const auto &objVertices = meshPtr->GetVertices();
-            const auto &objIndices = meshPtr->GetIndices();
-            if (objVertices.empty() || objIndices.empty())
-                continue;
-
-            const glm::mat4 &worldMatrix = renderable.worldMatrix;
-            // Don't consume dirty flag — scene view already did
-            const bool bufferDirty = false;
-
-            uint32_t subMeshCount = meshPtr->GetSubMeshCount();
-            int32_t submeshFilter = renderer->GetSubmeshIndex();
-            int32_t nodeGroup = renderer->GetNodeGroup();
-            if (subMeshCount == 0) {
-                DrawCall dc;
-                dc.indexStart = 0;
-                dc.indexCount = static_cast<uint32_t>(objIndices.size());
-                dc.vertexStart = 0;
-                dc.worldMatrix = worldMatrix;
-                dc.material = renderer->GetEffectiveMaterial(0);
-                dc.objectId = renderable.objectId;
-                dc.frustumVisible = visible;
-                dc.worldBounds = renderable.worldBounds;
-                dc.meshVertices = &objVertices;
-                dc.meshIndices = &objIndices;
-                dc.forceBufferUpdate = bufferDirty;
-                result.drawCalls.push_back(dc);
-            } else if (submeshFilter >= 0 && static_cast<uint32_t>(submeshFilter) < subMeshCount) {
-                const auto &sub = meshPtr->GetSubMesh(static_cast<uint32_t>(submeshFilter));
-                glm::mat4 effectiveMatrix = worldMatrix;
-                const glm::vec3 &pivot = renderer->GetMeshPivotOffset();
-                if (pivot != glm::vec3(0.0f)) {
-                    effectiveMatrix = worldMatrix * glm::translate(glm::mat4(1.0f), pivot);
-                }
-                DrawCall dc;
-                dc.indexStart = sub.indexStart;
-                dc.indexCount = sub.indexCount;
-                dc.vertexStart = 0;
-                dc.worldMatrix = effectiveMatrix;
-                dc.material = renderer->GetEffectiveMaterial(0);
-                dc.objectId = renderable.objectId;
-                dc.frustumVisible = visible;
-                dc.worldBounds = renderable.worldBounds;
-                dc.meshVertices = &objVertices;
-                dc.meshIndices = &objIndices;
-                dc.forceBufferUpdate = bufferDirty;
-                result.drawCalls.push_back(dc);
-            } else {
-                constexpr uint32_t SLOT_REMAP_CAP = 32;
-                uint32_t slotRemap[SLOT_REMAP_CAP];
-                std::memset(slotRemap, 0xFF, sizeof(slotRemap));
-                uint32_t nextSlotIdx = 0;
-                if (nodeGroup >= 0) {
-                    for (uint32_t si = 0; si < subMeshCount; ++si) {
-                        const auto &s = meshPtr->GetSubMesh(si);
-                        if (static_cast<int32_t>(s.nodeGroup) != nodeGroup)
-                            continue;
-                        if (s.materialSlot < SLOT_REMAP_CAP && slotRemap[s.materialSlot] == 0xFFFFFFFF)
-                            slotRemap[s.materialSlot] = nextSlotIdx++;
-                    }
-                }
-                for (uint32_t si = 0; si < subMeshCount; ++si) {
-                    const auto &sub = meshPtr->GetSubMesh(si);
-                    if (nodeGroup >= 0 && static_cast<int32_t>(sub.nodeGroup) != nodeGroup)
-                        continue;
-                    DrawCall dc;
-                    dc.indexStart = sub.indexStart;
-                    dc.indexCount = sub.indexCount;
-                    dc.vertexStart = 0;
-                    dc.worldMatrix = worldMatrix;
-                    uint32_t matSlot = sub.materialSlot;
-                    if (nodeGroup >= 0 && matSlot < SLOT_REMAP_CAP && slotRemap[matSlot] != 0xFFFFFFFF)
-                        matSlot = slotRemap[matSlot];
-                    dc.material = renderer->GetEffectiveMaterial(matSlot);
-                    dc.objectId = renderable.objectId;
-                    dc.frustumVisible = visible;
-                    dc.worldBounds = renderable.worldBounds;
-                    dc.meshVertices = &objVertices;
-                    dc.meshIndices = &objIndices;
-                    dc.forceBufferUpdate = false;
-                    result.drawCalls.push_back(dc);
-                }
-            }
-        } else if (renderer->HasInlineMesh()) {
-            const auto &objVertices = renderer->GetInlineVertices();
-            const auto &objIndices = renderer->GetInlineIndices();
-            if (objVertices.empty() || objIndices.empty())
-                continue;
-            const glm::mat4 &worldMatrix = renderable.worldMatrix;
-            DrawCall dc;
-            dc.indexStart = 0;
-            dc.indexCount = static_cast<uint32_t>(objIndices.size());
-            dc.vertexStart = 0;
-            dc.worldMatrix = worldMatrix;
-            dc.material = renderer->GetEffectiveMaterial(0);
-            dc.objectId = renderable.objectId;
-            dc.frustumVisible = visible;
-            dc.worldBounds = renderable.worldBounds;
-            dc.meshVertices = &objVertices;
-            dc.meshIndices = &objIndices;
-            result.drawCalls.push_back(dc);
-        }
+        // Don't consume dirty flag — scene view already did
+        EmitDrawCallsForRenderable(result, renderable, visible, false);
     }
 
     return result;

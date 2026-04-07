@@ -11,6 +11,7 @@ if _PACKAGING_DIR not in sys.path:
     sys.path.insert(0, _PACKAGING_DIR)
 
 from embed_runtime_manager import PythonRuntimeManager
+import logging
 
 
 def _show_message_box(title: str, message: str, icon: int = 0x40) -> None:
@@ -18,7 +19,8 @@ def _show_message_box(title: str, message: str, icon: int = 0x40) -> None:
         return
     try:
         ctypes.windll.user32.MessageBoxW(None, message, title, icon)
-    except Exception:
+    except Exception as _exc:
+        logging.getLogger(__name__).debug("[Suppressed] %s: %s", type(_exc).__name__, _exc)
         pass
 
 
@@ -57,6 +59,7 @@ if __name__ == "__main__":
         )
         try:
             sys.stderr.write(str(exc) + "\n")
-        except Exception:
+        except Exception as _exc:
+            logging.getLogger(__name__).debug("[Suppressed] %s: %s", type(_exc).__name__, _exc)
             pass
         raise SystemExit(1)

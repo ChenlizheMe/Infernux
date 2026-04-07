@@ -309,6 +309,18 @@ class Rigidbody : public Component
     /// Apply velocity limits to all sibling Collider bodies.
     void ApplyVelocityLimits();
 
+    /// Returns the active PhysicsWorld if this Rigidbody's GameObject is valid
+    /// and physics is initialised; otherwise nullptr.  @p outGo receives the
+    /// GameObject pointer (may be nullptr on failure).
+    class PhysicsWorld *GetActivePhysicsWorld(GameObject *&outGo) const;
+
+    /// Invoke @p fn(PhysicsWorld&, bodyId) for every unique Jolt body on this GO.
+    template <typename Fn> void ForEachBody(Fn &&fn);
+
+    /// Teleport all sibling collider bodies to @p pos / @p rot, zero velocities,
+    /// and update the physics-pose cache.  Used by SyncExternalMovesToPhysics.
+    void TeleportBodies(PhysicsWorld &pw, GameObject *go, const glm::vec3 &pos, const glm::quat &rot);
+
     /// Pool-backed data — read access
     [[nodiscard]] const RigidbodyECSData &Data() const
     {

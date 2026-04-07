@@ -440,6 +440,9 @@ class Transform : public Component
     [[nodiscard]] std::unique_ptr<Component> Clone() const override;
 
   private:
+    [[nodiscard]] Transform *GetParentTransformSafe() const;
+    [[nodiscard]] glm::vec3 GetWorldDirection(const glm::vec3 &localAxis) const;
+
     // ========================================================================
     // Unity-aligned YXZ intrinsic Euler convention
     //   R = Ry(yaw) * Rx(pitch) * Rz(roll)

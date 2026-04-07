@@ -143,6 +143,61 @@ class PrimitiveMeshes
     }
 
   private:
+    /// @brief Shared ring-based index generation for sphere, capsule, cylinder side, etc.
+    static void AppendRingIndices(std::vector<uint32_t> &indices, int segments, int rings, uint32_t baseVertex = 0)
+    {
+        int vertsPerRing = segments + 1;
+        for (int ring = 0; ring < rings; ++ring) {
+            for (int seg = 0; seg < segments; ++seg) {
+                uint32_t current = baseVertex + static_cast<uint32_t>(ring * vertsPerRing + seg);
+                uint32_t next = current + 1;
+                uint32_t below = static_cast<uint32_t>(current + vertsPerRing);
+                uint32_t belowNext = below + 1;
+
+                indices.push_back(current);
+                indices.push_back(next);
+                indices.push_back(below);
+
+                indices.push_back(next);
+                indices.push_back(belowNext);
+                indices.push_back(below);
+            }
+        }
+    }
+
+    /// @brief Shared hemisphere vertex generation for capsule top/bottom.
+    /// @param ySign +1 for top hemisphere, -1 for bottom hemisphere
+    /// @param yOffset  vertical center offset (±cylinderHeight/2)
+    /// @param vBase    UV v-coordinate start (0.0 for top, 0.75 for bottom)
+    /// @param vScale   UV v-coordinate range (0.25 for both hemispheres)
+    static void GenerateHemisphereVertices(std::vector<Vertex> &vertices, int segments, int hemisphereRings,
+                                           float radius, float ySign, float yOffset, float vBase, float vScale)
+    {
+        const float PI = 3.14159265358979323846f;
+        for (int ring = 0; ring <= hemisphereRings; ++ring) {
+            float phi =
+                (ySign > 0) ? (PI / 2.0f) * ring / hemisphereRings : (PI / 2.0f) + (PI / 2.0f) * ring / hemisphereRings;
+            float y = std::cos(phi) * radius + yOffset;
+            float ringRadius = std::sin(phi) * radius;
+
+            for (int seg = 0; seg <= segments; ++seg) {
+                float theta = 2.0f * PI * seg / segments;
+                float x = std::cos(theta) * ringRadius;
+                float z = std::sin(theta) * ringRadius;
+
+                glm::vec3 localPos(std::cos(theta) * std::sin(phi), std::cos(phi), std::sin(theta) * std::sin(phi));
+                glm::vec3 normal = glm::normalize(localPos);
+                glm::vec3 tangent = glm::normalize(glm::vec3(-std::sin(theta), 0.0f, std::cos(theta)));
+
+                float u = static_cast<float>(seg) / segments;
+                float v = vBase + vScale * ring / hemisphereRings;
+
+                vertices.push_back(
+                    Vertex::CreateFull({x, y, z}, normal, glm::vec4(tangent, 1.0f), {1.0f, 1.0f, 1.0f}, {u, v}));
+            }
+        }
+    }
+
     static std::vector<Vertex> CreateCubeVertices()
     {
         // 24 vertices - 4 per face for proper normals
@@ -268,25 +323,7 @@ class PrimitiveMeshes
     static std::vector<uint32_t> CreateSphereIndices(int segments, int rings)
     {
         std::vector<uint32_t> indices;
-        int vertsPerRing = segments + 1;
-
-        for (int ring = 0; ring < rings; ++ring) {
-            for (int seg = 0; seg < segments; ++seg) {
-                uint32_t current = static_cast<uint32_t>(ring * vertsPerRing + seg);
-                uint32_t next = current + 1;
-                uint32_t below = static_cast<uint32_t>(current + vertsPerRing);
-                uint32_t belowNext = below + 1;
-
-                // Two triangles per quad (CCW winding for outward-facing normals)
-                indices.push_back(current);
-                indices.push_back(next);
-                indices.push_back(below);
-
-                indices.push_back(next);
-                indices.push_back(belowNext);
-                indices.push_back(below);
-            }
-        }
+        AppendRingIndices(indices, segments, rings);
         return indices;
     }
 
@@ -302,29 +339,8 @@ class PrimitiveMeshes
             cylinderHeight = 0;
 
         // Top hemisphere
-        for (int ring = 0; ring <= hemisphereRings; ++ring) {
-            float phi = (PI / 2.0f) * ring / hemisphereRings;
-            float y = std::cos(phi) * radius + cylinderHeight / 2.0f;
-            float ringRadius = std::sin(phi) * radius;
-
-            for (int seg = 0; seg <= segments; ++seg) {
-                float theta = 2.0f * PI * seg / segments;
-                float x = std::cos(theta) * ringRadius;
-                float z = std::sin(theta) * ringRadius;
-
-                // Calculate normal for hemisphere
-                glm::vec3 localPos(std::cos(theta) * std::sin(phi), std::cos(phi), std::sin(theta) * std::sin(phi));
-                glm::vec3 normal = glm::normalize(localPos);
-                glm::vec3 tangent = glm::normalize(glm::vec3(-std::sin(theta), 0.0f, std::cos(theta)));
-
-                glm::vec3 color(1.0f, 1.0f, 1.0f);
-
-                float u = static_cast<float>(seg) / segments;
-                float v = 0.25f * ring / hemisphereRings;
-
-                vertices.push_back(Vertex::CreateFull({x, y, z}, normal, glm::vec4(tangent, 1.0f), color, {u, v}));
-            }
-        }
+        GenerateHemisphereVertices(vertices, segments, hemisphereRings, radius, +1.0f, cylinderHeight / 2.0f, 0.0f,
+                                   0.25f);
 
         // Cylinder body
         for (int ring = 0; ring <= 1; ++ring) {
@@ -346,54 +362,17 @@ class PrimitiveMeshes
         }
 
         // Bottom hemisphere
-        for (int ring = 0; ring <= hemisphereRings; ++ring) {
-            float phi = (PI / 2.0f) + (PI / 2.0f) * ring / hemisphereRings;
-            float y = std::cos(phi) * radius - cylinderHeight / 2.0f;
-            float ringRadius = std::sin(phi) * radius;
+        GenerateHemisphereVertices(vertices, segments, hemisphereRings, radius, -1.0f, -cylinderHeight / 2.0f, 0.75f,
+                                   0.25f);
 
-            for (int seg = 0; seg <= segments; ++seg) {
-                float theta = 2.0f * PI * seg / segments;
-                float x = std::cos(theta) * ringRadius;
-                float z = std::sin(theta) * ringRadius;
-
-                glm::vec3 localPos(std::cos(theta) * std::sin(phi), std::cos(phi), std::sin(theta) * std::sin(phi));
-                glm::vec3 normal = glm::normalize(localPos);
-                glm::vec3 tangent = glm::normalize(glm::vec3(-std::sin(theta), 0.0f, std::cos(theta)));
-
-                glm::vec3 color(1.0f, 1.0f, 1.0f);
-
-                float u = static_cast<float>(seg) / segments;
-                float v = 0.75f + 0.25f * ring / hemisphereRings;
-
-                vertices.push_back(Vertex::CreateFull({x, y, z}, normal, glm::vec4(tangent, 1.0f), color, {u, v}));
-            }
-        }
         return vertices;
     }
 
     static std::vector<uint32_t> CreateCapsuleIndices(int segments, int hemisphereRings)
     {
         std::vector<uint32_t> indices;
-        int vertsPerRing = segments + 1;
         int totalRings = hemisphereRings + 2 + hemisphereRings; // top + cylinder + bottom
-
-        for (int ring = 0; ring < totalRings; ++ring) {
-            for (int seg = 0; seg < segments; ++seg) {
-                uint32_t current = static_cast<uint32_t>(ring * vertsPerRing + seg);
-                uint32_t next = current + 1;
-                uint32_t below = static_cast<uint32_t>(current + vertsPerRing);
-                uint32_t belowNext = below + 1;
-
-                // CCW winding for outward-facing normals
-                indices.push_back(current);
-                indices.push_back(next);
-                indices.push_back(below);
-
-                indices.push_back(next);
-                indices.push_back(belowNext);
-                indices.push_back(below);
-            }
-        }
+        AppendRingIndices(indices, segments, totalRings);
         return indices;
     }
 

@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import py_compile
+
 import Infernux.jit as jit
+import Infernux._jit_kernels as jit_kernels
 
 
 class TestEnsureJitRuntime:
@@ -66,3 +69,168 @@ class TestPrecompileJit:
     def test_precompile_jit_is_noop(self):
         # precompile_jit() is kept for backward compat; it does nothing.
         jit.precompile_jit()  # should not raise
+
+
+class TestAutoParallelNjit:
+    @staticmethod
+    def _fake_numba_njit(*factory_args, **factory_kwargs):
+        def _compile(fn, *, mode: str):
+            state = {"calls": 0}
+
+            def _compiled(*args, **kwargs):
+                state["calls"] += 1
+                if mode == "parallel" and kwargs.pop("_force_parallel_fail", False):
+                    raise RuntimeError("parallel failed")
+                value = fn(*args, **kwargs)
+                if mode == "parallel" and state["calls"] > 1:
+                    value += 0
+                elif mode == "serial" and state["calls"] > 1:
+                    for _ in range(2000):
+                        value += 0
+                return value
+
+            _compiled.mode = mode
+            _compiled.state = state
+            return _compiled
+
+        if factory_args and callable(factory_args[0]) and len(factory_args) == 1 and not factory_kwargs:
+            return _compile(factory_args[0], mode="serial")
+
+        mode = "parallel" if factory_kwargs.get("parallel") else "serial"
+
+        def _decorator(fn):
+            return _compile(fn, mode=mode)
+
+        return _decorator
+
+    def test_auto_parallel_builds_dual_variants(self, monkeypatch):
+        monkeypatch.setattr(jit_kernels, "_HAS_NUMBA", True)
+        monkeypatch.setattr(jit_kernels, "_NUITKA_COMPILED", False)
+        monkeypatch.setattr(jit_kernels, "_real_njit", self._fake_numba_njit)
+
+        @jit_kernels.njit(cache=True, auto_parallel=True)
+        def burn(n: int) -> int:
+            total = 0
+            for i in range(n):
+                total += i
+            return total
+
+        assert burn.py(5) == 10
+        assert getattr(burn, "auto_parallel", False) is True
+        assert burn.serial.mode == "serial"
+        assert burn.parallel.mode == "parallel"
+        assert burn.selected_mode == "parallel"
+
+    def test_warmup_can_pin_serial_variant(self, monkeypatch):
+        monkeypatch.setattr(jit_kernels, "_HAS_NUMBA", True)
+        monkeypatch.setattr(jit_kernels, "_NUITKA_COMPILED", False)
+        monkeypatch.setattr(jit_kernels, "_real_njit", self._fake_numba_njit)
+        monkeypatch.setattr(
+            jit_kernels,
+            "_benchmark_callable",
+            lambda fn, *_args, **_kwargs: 1.0 if getattr(fn, "mode", "") == "serial" else 2.0,
+        )
+
+        @jit_kernels.njit(cache=True, auto_parallel=True)
+        def burn(n: int) -> int:
+            total = 0
+            for i in range(n):
+                total += i
+            return total
+
+        jit_kernels.warmup(burn, 100)
+        assert burn.selected_mode == "serial"
+        assert burn(5) == 10
+
+    def test_warmup_can_pin_parallel_after_compile_cost(self, monkeypatch):
+        monkeypatch.setattr(jit_kernels, "_HAS_NUMBA", True)
+        monkeypatch.setattr(jit_kernels, "_NUITKA_COMPILED", False)
+        monkeypatch.setattr(jit_kernels, "_real_njit", self._fake_numba_njit)
+        monkeypatch.setattr(
+            jit_kernels,
+            "_benchmark_callable",
+            lambda fn, *_args, **_kwargs: 2.0 if getattr(fn, "mode", "") == "serial" else 1.0,
+        )
+
+        @jit_kernels.njit(cache=True, auto_parallel=True)
+        def burn(n: int) -> int:
+            total = 0
+            for i in range(n):
+                total += i
+            return total
+
+        jit_kernels.warmup(burn, 100)
+        assert burn.selected_mode == "parallel"
+        assert burn(5) == 10
+
+    def test_parallel_failure_falls_back_to_serial(self, monkeypatch):
+        monkeypatch.setattr(jit_kernels, "_HAS_NUMBA", True)
+        monkeypatch.setattr(jit_kernels, "_NUITKA_COMPILED", False)
+        monkeypatch.setattr(jit_kernels, "_real_njit", self._fake_numba_njit)
+
+        @jit_kernels.njit(cache=True, auto_parallel=True)
+        def burn(n: int, _force_parallel_fail: bool = False) -> int:
+            total = 0
+            for i in range(n):
+                total += i
+            return total
+
+        assert burn(5, _force_parallel_fail=True) == 10
+        assert burn.selected_mode == "serial"
+
+    def test_try_build_auto_parallel_variant_rewrites_range_to_prange(self, monkeypatch):
+        used = {"prange": False}
+
+        def _fake_prange(*args):
+            used["prange"] = True
+            return range(*args)
+
+        monkeypatch.setattr(jit_kernels, "prange", _fake_prange)
+
+        def burn(n: int) -> int:
+            total = 0
+            for i in range(n):
+                total += i
+            return total
+
+        rewritten = jit_kernels._try_build_auto_parallel_variant(burn)
+        assert rewritten is not None
+        assert rewritten(5) == 10
+        assert used["prange"] is True
+
+    def test_try_build_auto_parallel_variant_can_load_prebuilt_sidecar(self, tmp_path, monkeypatch):
+        sidecar_py = tmp_path / "stress.autop.py"
+        sidecar_py.write_text(
+            "def burn(n):\n"
+            "    total = 0\n"
+            "    for i in prange(n):\n"
+            "        total += i\n"
+            "    return total\n",
+            encoding="utf-8",
+        )
+        sidecar_pyc = sidecar_py.with_suffix(sidecar_py.suffix + "c")
+        py_compile.compile(str(sidecar_py), cfile=str(sidecar_pyc), doraise=True)
+
+        used = {"prange": False}
+
+        def _fake_prange(*args):
+            used["prange"] = True
+            return range(*args)
+
+        monkeypatch.setattr(jit_kernels, "prange", _fake_prange)
+        monkeypatch.setattr(
+            jit_kernels,
+            "_auto_parallel_sidecar_candidates",
+            lambda _fn: [str(sidecar_pyc)],
+        )
+
+        def burn(n: int) -> int:
+            total = 0
+            for i in range(n):
+                total += i
+            return total
+
+        rewritten = jit_kernels._try_build_auto_parallel_variant(burn)
+        assert rewritten is not None
+        assert rewritten(5) == 10
+        assert used["prange"] is True

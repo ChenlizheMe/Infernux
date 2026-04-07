@@ -7,6 +7,7 @@
 #include "InxVkCoreModular.h"
 #include "shader/ShaderProgram.h"
 #include "vk/VkDeviceContext.h"
+#include "vk/VkPipelineHelpers.h"
 #include "vk/VkPipelineManager.h"
 #include "vk/VkSwapchainManager.h"
 #include <algorithm>
@@ -276,35 +277,16 @@ FullscreenPipelineEntry FullscreenRenderer::CreatePipeline(const FullscreenPipel
     // 4. Graphics pipeline (no vertex input, no depth, no cull)
     // ------------------------------------------------------------------
     // Shader stages
-    VkPipelineShaderStageCreateInfo shaderStages[2]{};
-    shaderStages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    shaderStages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
-    shaderStages[0].module = vertModule;
-    shaderStages[0].pName = "main";
-    shaderStages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    shaderStages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-    shaderStages[1].module = fragModule;
-    shaderStages[1].pName = "main";
+    auto shaderStages = vkrender::MakeVertFragStages(vertModule, fragModule);
 
     // Empty vertex input (procedural fullscreen triangle)
     VkPipelineVertexInputStateCreateInfo vertexInput{};
     vertexInput.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
 
-    VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
-    inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
-    inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    auto inputAssembly = vkrender::MakeTriangleListInputAssembly();
 
     // Dynamic viewport + scissor
-    VkPipelineViewportStateCreateInfo viewportState{};
-    viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
-    viewportState.viewportCount = 1;
-    viewportState.scissorCount = 1;
-
-    VkDynamicState dynamicStates[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
-    VkPipelineDynamicStateCreateInfo dynamicState{};
-    dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-    dynamicState.dynamicStateCount = 2;
-    dynamicState.pDynamicStates = dynamicStates;
+    vkrender::DynamicViewportScissorState dynState;
 
     // Rasterization: no cull, fill
     VkPipelineRasterizationStateCreateInfo rasterizer{};
@@ -315,9 +297,7 @@ FullscreenPipelineEntry FullscreenRenderer::CreatePipeline(const FullscreenPipel
     rasterizer.lineWidth = 1.0f;
 
     // Multisample
-    VkPipelineMultisampleStateCreateInfo multisampling{};
-    multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
-    multisampling.rasterizationSamples = key.samples;
+    auto multisampling = vkrender::MakeMultisampleState(key.samples);
 
     // No depth
     VkPipelineDepthStencilStateCreateInfo depthStencil{};
@@ -340,15 +320,15 @@ FullscreenPipelineEntry FullscreenRenderer::CreatePipeline(const FullscreenPipel
     VkGraphicsPipelineCreateInfo pipelineCI{};
     pipelineCI.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
     pipelineCI.stageCount = 2;
-    pipelineCI.pStages = shaderStages;
+    pipelineCI.pStages = shaderStages.data();
     pipelineCI.pVertexInputState = &vertexInput;
     pipelineCI.pInputAssemblyState = &inputAssembly;
-    pipelineCI.pViewportState = &viewportState;
+    pipelineCI.pViewportState = &dynState.viewportState;
     pipelineCI.pRasterizationState = &rasterizer;
     pipelineCI.pMultisampleState = &multisampling;
     pipelineCI.pDepthStencilState = &depthStencil;
     pipelineCI.pColorBlendState = &colorBlending;
-    pipelineCI.pDynamicState = &dynamicState;
+    pipelineCI.pDynamicState = &dynState.dynamicState;
     pipelineCI.layout = entry.layout;
     pipelineCI.renderPass = key.renderPass;
     pipelineCI.subpass = 0;

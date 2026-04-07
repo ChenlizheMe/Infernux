@@ -166,14 +166,16 @@ class Engine():
             from Infernux.engine.deferred_task import DeferredTaskRunner
             try:
                 DeferredTaskRunner.instance().tick()
-            except Exception:
+            except Exception as _exc:
+                Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
                 pass
             try:
                 from Infernux.engine.ui.window_manager import WindowManager
                 manager = WindowManager.instance()
                 if manager is not None:
                     manager.process_pending_actions()
-            except Exception:
+            except Exception as _exc:
+                Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
                 pass
         self._engine.set_pre_gui_callback(_pre_gui_tick)
 
@@ -195,11 +197,13 @@ class Engine():
             if sfm is not None:
                 try:
                     sfm.poll_pending_save()
-                except Exception:
+                except Exception as _exc:
+                    Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
                     pass
                 try:
                     sfm.poll_deferred_load()
-                except Exception:
+                except Exception as _exc:
+                    Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
                     pass
             # Periodic manual GC: gen0 every 120 frames (~1s at 120fps),
             # gen1 every 600 frames (~5s), full every 3000 frames (~25s).
@@ -282,7 +286,8 @@ class Engine():
         try:
             from Infernux.core.material import Material
             Material.flush_all_pending()
-        except Exception:
+        except Exception as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             pass
 
     def _clear_uploaded_gizmos(self):
@@ -382,7 +387,8 @@ class Engine():
             sm = _NativeSceneMgr.instance()
             if sm:
                 sm.stop()
-        except Exception:
+        except Exception as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             pass
 
         # 2. Destroy all live Python components (on_destroy + GC helpers)
@@ -392,10 +398,12 @@ class Engine():
                 for comp in list(comp_list):
                     try:
                         comp._call_on_destroy()
-                    except Exception:
+                    except Exception as _exc:
+                        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
                         pass
             InxComponent._clear_all_instances()
-        except Exception:
+        except Exception as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             pass
 
         # 3. Flip state to EDIT so nothing else treats us as playing

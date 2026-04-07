@@ -22,6 +22,7 @@
 #include <cmath>
 #include <core/log/InxLog.h>
 #include <cstring>
+#include <function/renderer/vk/VkPipelineHelpers.h>
 #include <function/renderer/vk/VkRenderUtils.h>
 #include <imgui_internal.h> // for ImGui::GetDrawListSharedData()
 #include <type_traits>
@@ -239,15 +240,7 @@ VkPushConstantRange MakeVertexPushConstantRange(uint32_t size)
     return pushConstantRange;
 }
 
-VkPipelineShaderStageCreateInfo MakeShaderStageInfo(VkShaderStageFlagBits stage, VkShaderModule shaderModule)
-{
-    VkPipelineShaderStageCreateInfo stageInfo{};
-    stageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    stageInfo.stage = stage;
-    stageInfo.module = shaderModule;
-    stageInfo.pName = kShaderEntryPoint;
-    return stageInfo;
-}
+using infernux::vkrender::MakeShaderStageInfo;
 
 VkPipelineVertexInputStateCreateInfo MakeVertexInputState(const VkVertexInputBindingDescription &bindingDesc,
                                                           const VkVertexInputAttributeDescription *attrDesc,

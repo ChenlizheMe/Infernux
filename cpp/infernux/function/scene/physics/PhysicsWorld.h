@@ -270,6 +270,14 @@ class PhysicsWorld
     PhysicsWorld(const PhysicsWorld &) = delete;
     PhysicsWorld &operator=(const PhysicsWorld &) = delete;
 
+    /// @brief Shared overlap implementation for OverlapSphere/OverlapBox.
+    std::vector<Collider *> OverlapShapeImpl(const JPH::Shape &shape, const glm::vec3 &center, uint32_t layerMask,
+                                             bool queryTriggers) const;
+
+    /// @brief Shared shape cast implementation for SphereCast/BoxCast.
+    bool ShapeCastImpl(const JPH::Shape &shape, const glm::vec3 &origin, const glm::vec3 &direction, float maxDistance,
+                       RaycastHit &outHit, uint32_t layerMask, bool queryTriggers) const;
+
     bool m_initialized = false;
 
     std::unique_ptr<JPH::TempAllocatorImpl> m_tempAllocator;

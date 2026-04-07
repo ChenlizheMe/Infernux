@@ -1,11 +1,134 @@
 #include "MaterialPipelineManager.h"
 #include "InxRenderStruct.h"
+#include "vk/VkPipelineHelpers.h"
 #include "vk/VkRenderUtils.h"
 #include <algorithm>
 #include <core/log/InxLog.h>
 
 namespace infernux
 {
+
+namespace
+{
+
+/// Clear all Forward-pass Vulkan handles on a material to prevent stale references.
+void ClearForwardPassHandles(InxMaterial *material)
+{
+    material->SetPassPipeline(ShaderCompileTarget::Forward, VK_NULL_HANDLE);
+    material->SetPassPipelineLayout(ShaderCompileTarget::Forward, VK_NULL_HANDLE);
+    material->SetPassDescriptorSet(ShaderCompileTarget::Forward, VK_NULL_HANDLE);
+    material->SetPassShaderProgram(ShaderCompileTarget::Forward, nullptr);
+}
+
+} // namespace
+
+// ============================================================================
+// Shared helpers
+// ============================================================================
+
+VkRenderPass MaterialPipelineManager::BuildCompatibleRenderPass(uint32_t colorAttachmentCount,
+                                                                const VkFormat *colorFormats)
+{
+    std::vector<VkAttachmentDescription> attachments;
+    std::vector<VkAttachmentReference> colorRefs;
+    VkAttachmentReference depthRef{};
+    const bool hasDepth = (m_depthFormat != VK_FORMAT_UNDEFINED);
+
+    for (uint32_t i = 0; i < colorAttachmentCount; ++i) {
+        VkAttachmentDescription colorAttachment{};
+        colorAttachment.format = colorFormats ? colorFormats[i] : m_colorFormat;
+        colorAttachment.samples = m_sampleCount;
+        colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        colorAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        colorAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        colorAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        colorAttachment.finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        attachments.push_back(colorAttachment);
+
+        VkAttachmentReference ref{};
+        ref.attachment = static_cast<uint32_t>(attachments.size() - 1);
+        ref.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        colorRefs.push_back(ref);
+    }
+
+    if (hasDepth) {
+        VkAttachmentDescription depthAttachment{};
+        depthAttachment.format = m_depthFormat;
+        depthAttachment.samples = m_sampleCount;
+        depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        depthAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        depthAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        depthAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        depthAttachment.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        attachments.push_back(depthAttachment);
+
+        depthRef.attachment = static_cast<uint32_t>(attachments.size() - 1);
+        depthRef.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    }
+
+    VkSubpassDescription subpass{};
+    subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+    subpass.colorAttachmentCount = static_cast<uint32_t>(colorRefs.size());
+    subpass.pColorAttachments = colorRefs.data();
+    subpass.pDepthStencilAttachment = hasDepth ? &depthRef : nullptr;
+    subpass.pResolveAttachments = nullptr;
+
+    const VkSubpassDependency dependency = vkrender::MakePipelineCompatibleSubpassDependency();
+
+    VkRenderPassCreateInfo rpInfo{};
+    rpInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+    rpInfo.attachmentCount = static_cast<uint32_t>(attachments.size());
+    rpInfo.pAttachments = attachments.data();
+    rpInfo.subpassCount = 1;
+    rpInfo.pSubpasses = &subpass;
+    rpInfo.dependencyCount = 1;
+    rpInfo.pDependencies = &dependency;
+
+    VkRenderPass rp = VK_NULL_HANDLE;
+    if (vkCreateRenderPass(m_device, &rpInfo, nullptr, &rp) != VK_SUCCESS) {
+        INXLOG_ERROR("MaterialPipelineManager: Failed to create render pass (", colorAttachmentCount,
+                     " color attachments)");
+    }
+    return rp;
+}
+
+void MaterialPipelineManager::SyncMaterialForwardPass(InxMaterial *material, VkPipeline pipeline,
+                                                      VkPipelineLayout layout, VkDescriptorSet descSet,
+                                                      ShaderProgram *program)
+{
+    material->SetPassPipeline(ShaderCompileTarget::Forward, pipeline);
+    material->SetPassPipelineLayout(ShaderCompileTarget::Forward, layout);
+    material->SetPassDescriptorSet(ShaderCompileTarget::Forward, descSet);
+    material->SetPassShaderProgram(ShaderCompileTarget::Forward, program);
+    material->ClearPipelineDirty();
+}
+
+bool MaterialPipelineManager::IsPipelineSharedByOthers(const std::string &excludeName, VkPipeline pipeline) const
+{
+    for (const auto &[name, data] : m_renderDataMap) {
+        if (name == excludeName || !data)
+            continue;
+        if (data->pipeline == pipeline)
+            return true;
+    }
+    return false;
+}
+
+void MaterialPipelineManager::DestroyNonForwardPipelines(InxMaterial *material)
+{
+    for (int i = 1; i < static_cast<int>(ShaderCompileTarget::Count); ++i) {
+        const auto pass = static_cast<ShaderCompileTarget>(i);
+        VkPipeline pp = material->GetPassPipeline(pass);
+        if (pp != VK_NULL_HANDLE) {
+            vkDestroyPipeline(m_device, pp, nullptr);
+            material->SetPassPipeline(pass, VK_NULL_HANDLE);
+        }
+        material->SetPassPipelineLayout(pass, VK_NULL_HANDLE);
+        material->SetPassShaderProgram(pass, nullptr);
+    }
+}
 
 MaterialPipelineManager::~MaterialPipelineManager()
 {
@@ -77,16 +200,7 @@ void MaterialPipelineManager::Shutdown(bool skipWaitIdle)
         if (!data || !data->material) {
             continue;
         }
-        // Destroy per-material non-Forward pipelines (Shadow, GBuffer, etc.).
-        // Forward pipelines are owned by m_pipelineCache and already destroyed
-        // above — skip index 0 (Forward) to avoid double-free.
-        for (int i = 1; i < static_cast<int>(ShaderCompileTarget::Count); ++i) {
-            VkPipeline pp = data->material->GetPassPipeline(static_cast<ShaderCompileTarget>(i));
-            if (pp != VK_NULL_HANDLE) {
-                vkDestroyPipeline(m_device, pp, nullptr);
-            }
-        }
-        // Clear all per-pass pipeline handles (Forward, GBuffer, Shadow)
+        DestroyNonForwardPipelines(data->material.get());
         data->material->ClearAllPassPipelines();
     }
 
@@ -192,21 +306,15 @@ MaterialRenderData *MaterialPipelineManager::GetOrCreateRenderDataWithReflection
     if (it != m_renderDataMap.end()) {
         size_t currentHash = material->GetPipelineHash();
         // Fold MRT attachment count into hash so forward vs. deferred pipelines differ
-        {
-            size_t h = std::hash<uint32_t>{}(m_activeColorAttachmentCount);
-            currentHash ^= h + 0x9e3779b9 + (currentHash << 6) + (currentHash >> 2);
-        }
+        currentHash = FoldMRTAttachmentHash(currentHash);
 
         if (it->second->isValid) {
             if (it->second->pipelineHash == currentHash) {
                 // Sync Vulkan handles to the (possibly new) material object.
                 // This is critical when the default material is replaced
                 // with a freshly-deserialized one that has null handles.
-                material->SetPassPipeline(ShaderCompileTarget::Forward, it->second->pipeline);
-                material->SetPassPipelineLayout(ShaderCompileTarget::Forward, it->second->pipelineLayout);
-                material->SetPassDescriptorSet(ShaderCompileTarget::Forward, it->second->descriptorSet);
-                material->SetPassShaderProgram(ShaderCompileTarget::Forward, it->second->shaderProgram);
-                material->ClearPipelineDirty();
+                SyncMaterialForwardPass(material.get(), it->second->pipeline, it->second->pipelineLayout,
+                                        it->second->descriptorSet, it->second->shaderProgram);
                 it->second->material = material; // update cached reference
                 return it->second.get();
             }
@@ -216,10 +324,7 @@ MaterialRenderData *MaterialPipelineManager::GetOrCreateRenderDataWithReflection
             // If recreation fails below, the draw code will see pipeline == VK_NULL_HANDLE
             // and correctly fall back to the error material instead of rendering with
             // the old (now-incorrect) pipeline/descriptor set.
-            material->SetPassPipeline(ShaderCompileTarget::Forward, VK_NULL_HANDLE);
-            material->SetPassPipelineLayout(ShaderCompileTarget::Forward, VK_NULL_HANDLE);
-            material->SetPassDescriptorSet(ShaderCompileTarget::Forward, VK_NULL_HANDLE);
-            material->SetPassShaderProgram(ShaderCompileTarget::Forward, nullptr);
+            ClearForwardPassHandles(material.get());
             it->second->isValid = false;
             // Update stored hash so we know when the user changes config again
             it->second->pipelineHash = currentHash;
@@ -256,10 +361,7 @@ MaterialRenderData *MaterialPipelineManager::GetOrCreateRenderDataWithReflection
     renderData->material = material;
     renderData->pipelineHash = material->GetPipelineHash();
     // Fold MRT attachment count into hash (must match the logic in the early-return path above)
-    {
-        size_t h = std::hash<uint32_t>{}(m_activeColorAttachmentCount);
-        renderData->pipelineHash ^= h + 0x9e3779b9 + (renderData->pipelineHash << 6) + (renderData->pipelineHash >> 2);
-    }
+    renderData->pipelineHash = FoldMRTAttachmentHash(renderData->pipelineHash);
     renderData->shaderProgram = program;
     renderData->vertModule = program->GetVertexModule();
     renderData->fragModule = program->GetFragmentModule();
@@ -296,16 +398,7 @@ MaterialRenderData *MaterialPipelineManager::GetOrCreateRenderDataWithReflection
         // silently overwrite (and leak) a different VkPipeline handle.
         auto cacheIt = m_pipelineCache.find(pipelineKey);
         if (cacheIt != m_pipelineCache.end() && cacheIt->second != renderData->pipeline) {
-            // Collision: the slot already holds a different pipeline.
-            // Check if any render data entry still references the old handle.
-            bool oldStillUsed = false;
-            for (const auto &[rdName, rdData] : m_renderDataMap) {
-                if (rdData && rdData->pipeline == cacheIt->second) {
-                    oldStillUsed = true;
-                    break;
-                }
-            }
-            if (!oldStillUsed) {
+            if (!IsPipelineSharedByOthers("", cacheIt->second)) {
                 vkDestroyPipeline(m_device, cacheIt->second, nullptr);
             }
         }
@@ -313,12 +406,8 @@ MaterialRenderData *MaterialPipelineManager::GetOrCreateRenderDataWithReflection
     }
 
     // Update material with pipeline info
-    material->SetPassPipeline(ShaderCompileTarget::Forward, renderData->pipeline);
-    material->SetPassPipelineLayout(ShaderCompileTarget::Forward, renderData->pipelineLayout);
-    material->SetPassDescriptorSet(ShaderCompileTarget::Forward, renderData->descriptorSet);
-    material->SetPassShaderProgram(ShaderCompileTarget::Forward,
-                                   program); // Set shader program for reflection-based UBO updates
-    material->ClearPipelineDirty();
+    SyncMaterialForwardPass(material.get(), renderData->pipeline, renderData->pipelineLayout, renderData->descriptorSet,
+                            program);
 
     MaterialRenderData *result = renderData.get();
     m_renderDataMap[name] = std::move(renderData);
@@ -350,26 +439,10 @@ VkPipeline MaterialPipelineManager::CreatePipelineWithProgram(ShaderProgram *pro
                  ", renderQueue=", renderState.renderQueue);
 
     // Shader stages
-    VkPipelineShaderStageCreateInfo vertShaderStageInfo{};
-    vertShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    vertShaderStageInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
-    vertShaderStageInfo.module = program->GetVertexModule();
-    vertShaderStageInfo.pName = "main";
-
-    VkPipelineShaderStageCreateInfo fragShaderStageInfo{};
-    fragShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    fragShaderStageInfo.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-    fragShaderStageInfo.module = program->GetFragmentModule();
-    fragShaderStageInfo.pName = "main";
-
-    VkPipelineShaderStageCreateInfo shaderStages[] = {vertShaderStageInfo, fragShaderStageInfo};
+    auto shaderStages = vkrender::MakeVertFragStages(program->GetVertexModule(), program->GetFragmentModule());
 
     // Dynamic state
-    std::vector<VkDynamicState> dynamicStates = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
-    VkPipelineDynamicStateCreateInfo dynamicState{};
-    dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-    dynamicState.dynamicStateCount = static_cast<uint32_t>(dynamicStates.size());
-    dynamicState.pDynamicStates = dynamicStates.data();
+    vkrender::DynamicViewportScissorState dynVpScissor;
 
     // Vertex input - using standard Vertex structure
     auto bindingDescription = Vertex::getBindingDescription();
@@ -388,11 +461,8 @@ VkPipeline MaterialPipelineManager::CreatePipelineWithProgram(ShaderProgram *pro
     inputAssembly.topology = renderState.topology;
     inputAssembly.primitiveRestartEnable = VK_FALSE;
 
-    // Viewport state
-    VkPipelineViewportStateCreateInfo viewportState{};
-    viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
-    viewportState.viewportCount = 1;
-    viewportState.scissorCount = 1;
+    // Multisampling
+    auto multisampling = vkrender::MakeMultisampleState(m_sampleCount);
 
     // Rasterizer
     VkPipelineRasterizationStateCreateInfo rasterizer{};
@@ -407,12 +477,6 @@ VkPipeline MaterialPipelineManager::CreatePipelineWithProgram(ShaderProgram *pro
     rasterizer.depthBiasConstantFactor = renderState.depthBiasConstantFactor;
     rasterizer.depthBiasSlopeFactor = renderState.depthBiasSlopeFactor;
     rasterizer.depthBiasClamp = renderState.depthBiasClamp;
-
-    // Multisampling
-    VkPipelineMultisampleStateCreateInfo multisampling{};
-    multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
-    multisampling.sampleShadingEnable = VK_FALSE;
-    multisampling.rasterizationSamples = m_sampleCount;
 
     // Color blending — create one blend attachment per color output for MRT.
     // Opaque forward passes also need alpha writes so intermediate scene
@@ -451,16 +515,16 @@ VkPipeline MaterialPipelineManager::CreatePipelineWithProgram(ShaderProgram *pro
     // Create pipeline with shader program's layout
     VkGraphicsPipelineCreateInfo pipelineInfo{};
     pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-    pipelineInfo.stageCount = 2;
-    pipelineInfo.pStages = shaderStages;
+    pipelineInfo.stageCount = static_cast<uint32_t>(shaderStages.size());
+    pipelineInfo.pStages = shaderStages.data();
     pipelineInfo.pVertexInputState = &vertexInputInfo;
     pipelineInfo.pInputAssemblyState = &inputAssembly;
-    pipelineInfo.pViewportState = &viewportState;
+    pipelineInfo.pViewportState = &dynVpScissor.viewportState;
     pipelineInfo.pRasterizationState = &rasterizer;
     pipelineInfo.pMultisampleState = &multisampling;
     pipelineInfo.pDepthStencilState = &depthStencil;
     pipelineInfo.pColorBlendState = &colorBlending;
-    pipelineInfo.pDynamicState = &dynamicState;
+    pipelineInfo.pDynamicState = &dynVpScissor.dynamicState;
     pipelineInfo.layout = program->GetPipelineLayout(); // Use program's layout!
     pipelineInfo.renderPass = GetActiveMRTRenderPass();
     pipelineInfo.subpass = 0;
@@ -515,6 +579,12 @@ void MaterialPipelineManager::ResetMRTConfig()
     m_activeColorFormats.clear();
 }
 
+size_t MaterialPipelineManager::FoldMRTAttachmentHash(size_t baseHash) const
+{
+    size_t h = std::hash<uint32_t>{}(m_activeColorAttachmentCount);
+    return baseHash ^ (h + 0x9e3779b9 + (baseHash << 6) + (baseHash >> 2));
+}
+
 VkRenderPass MaterialPipelineManager::GetActiveMRTRenderPass()
 {
     if (m_activeColorAttachmentCount <= 1) {
@@ -536,73 +606,14 @@ VkRenderPass MaterialPipelineManager::GetActiveMRTRenderPass()
         return it->second;
     }
 
-    // Create an MRT-compatible render pass
-    std::vector<VkAttachmentDescription> attachments;
-    std::vector<VkAttachmentReference> colorRefs;
-    VkAttachmentReference depthRef{};
-    bool hasDepth = (m_depthFormat != VK_FORMAT_UNDEFINED);
-
+    // Build format array, falling back to default color format for missing entries
+    std::vector<VkFormat> formats(m_activeColorAttachmentCount);
     for (uint32_t i = 0; i < m_activeColorAttachmentCount; ++i) {
-        VkFormat fmt = (i < m_activeColorFormats.size()) ? m_activeColorFormats[i] : m_colorFormat;
-
-        VkAttachmentDescription colorAttachment{};
-        colorAttachment.format = fmt;
-        colorAttachment.samples = m_sampleCount;
-        colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-        colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-        colorAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-        colorAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-        colorAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        colorAttachment.finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-        attachments.push_back(colorAttachment);
-
-        VkAttachmentReference ref{};
-        ref.attachment = static_cast<uint32_t>(attachments.size() - 1);
-        ref.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-        colorRefs.push_back(ref);
+        formats[i] = (i < m_activeColorFormats.size()) ? m_activeColorFormats[i] : m_colorFormat;
     }
 
-    if (hasDepth) {
-        VkAttachmentDescription depthAttachment{};
-        depthAttachment.format = m_depthFormat;
-        depthAttachment.samples = m_sampleCount;
-        depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-        depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-        depthAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-        depthAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-        depthAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        depthAttachment.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-        attachments.push_back(depthAttachment);
-
-        depthRef.attachment = static_cast<uint32_t>(attachments.size() - 1);
-        depthRef.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-    }
-
-    VkSubpassDescription subpass{};
-    subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-    subpass.colorAttachmentCount = static_cast<uint32_t>(colorRefs.size());
-    subpass.pColorAttachments = colorRefs.data();
-    subpass.pDepthStencilAttachment = hasDepth ? &depthRef : nullptr;
-    subpass.pResolveAttachments = nullptr;
-
-    // Subpass dependency must match VkPipelineManager::CreateRenderPass so that
-    // pipelines compiled against this render pass are compatible with the render
-    // graph's actual render passes.
-    const VkSubpassDependency dependency = vkrender::MakePipelineCompatibleSubpassDependency();
-
-    VkRenderPassCreateInfo rpInfo{};
-    rpInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-    rpInfo.attachmentCount = static_cast<uint32_t>(attachments.size());
-    rpInfo.pAttachments = attachments.data();
-    rpInfo.subpassCount = 1;
-    rpInfo.pSubpasses = &subpass;
-    rpInfo.dependencyCount = 1;
-    rpInfo.pDependencies = &dependency;
-
-    VkRenderPass rp = VK_NULL_HANDLE;
-    if (vkCreateRenderPass(m_device, &rpInfo, nullptr, &rp) != VK_SUCCESS) {
-        INXLOG_ERROR("MaterialPipelineManager: Failed to create MRT render pass (", m_activeColorAttachmentCount,
-                     " color attachments)");
+    VkRenderPass rp = BuildCompatibleRenderPass(m_activeColorAttachmentCount, formats.data());
+    if (rp == VK_NULL_HANDLE) {
         return m_internalRenderPass; // fallback
     }
 
@@ -614,74 +625,8 @@ VkRenderPass MaterialPipelineManager::GetActiveMRTRenderPass()
 
 void MaterialPipelineManager::CreateInternalRenderPass()
 {
-    // Create a minimal compatible render pass for pipeline creation
-    std::vector<VkAttachmentDescription> attachments;
-    std::vector<VkAttachmentReference> colorRefs;
-    VkAttachmentReference depthRef{};
-    bool hasDepth = (m_depthFormat != VK_FORMAT_UNDEFINED);
-
-    // Color attachment (MSAA)
-    VkAttachmentDescription colorAttachment{};
-    colorAttachment.format = m_colorFormat;
-    colorAttachment.samples = m_sampleCount;
-    colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    colorAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-    colorAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    colorAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    colorAttachment.finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    attachments.push_back(colorAttachment);
-
-    VkAttachmentReference colorRef{};
-    colorRef.attachment = 0;
-    colorRef.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    colorRefs.push_back(colorRef);
-
-    // Depth attachment (optional)
-    if (hasDepth) {
-        VkAttachmentDescription depthAttachment{};
-        depthAttachment.format = m_depthFormat;
-        depthAttachment.samples = m_sampleCount;
-        depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-        depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-        depthAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-        depthAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-        depthAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        depthAttachment.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-        attachments.push_back(depthAttachment);
-
-        depthRef.attachment = 1;
-        depthRef.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-    }
-
-    // No resolve attachment — MSAA resolve is done explicitly via vkCmdResolveImage
-    // after all draw calls complete, so that all objects benefit from MSAA.
-
-    VkSubpassDescription subpass{};
-    subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-    subpass.colorAttachmentCount = static_cast<uint32_t>(colorRefs.size());
-    subpass.pColorAttachments = colorRefs.data();
-    subpass.pDepthStencilAttachment = hasDepth ? &depthRef : nullptr;
-    subpass.pResolveAttachments = nullptr;
-
-    // Subpass dependency must match VkPipelineManager::CreateRenderPass so that
-    // pipelines compiled against this render pass are compatible with the render
-    // graph's actual render passes.
-    const VkSubpassDependency dependency = vkrender::MakePipelineCompatibleSubpassDependency();
-
-    VkRenderPassCreateInfo rpInfo{};
-    rpInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-    rpInfo.attachmentCount = static_cast<uint32_t>(attachments.size());
-    rpInfo.pAttachments = attachments.data();
-    rpInfo.subpassCount = 1;
-    rpInfo.pSubpasses = &subpass;
-    rpInfo.dependencyCount = 1;
-    rpInfo.pDependencies = &dependency;
-
-    if (vkCreateRenderPass(m_device, &rpInfo, nullptr, &m_internalRenderPass) != VK_SUCCESS) {
-        INXLOG_ERROR("MaterialPipelineManager: Failed to create internal render pass");
-        m_internalRenderPass = VK_NULL_HANDLE;
-    }
+    VkFormat fmt = m_colorFormat;
+    m_internalRenderPass = BuildCompatibleRenderPass(1, &fmt);
 }
 
 void MaterialPipelineManager::InvalidateMaterialsUsingShader(const std::string &shaderId)
@@ -756,44 +701,14 @@ void MaterialPipelineManager::RemoveRenderData(const std::string &materialName)
 
     auto &data = it->second;
     if (data) {
-        // Clear material's cached pipeline
         if (data->material) {
-            data->material->SetPassPipeline(ShaderCompileTarget::Forward, VK_NULL_HANDLE);
-            data->material->SetPassPipelineLayout(ShaderCompileTarget::Forward, VK_NULL_HANDLE);
-            data->material->SetPassDescriptorSet(ShaderCompileTarget::Forward, VK_NULL_HANDLE);
-
-            // Non-forward passes (shadow / gbuffer / etc.) are not stored in
-            // m_pipelineCache. If this render-data entry is removed due to a
-            // texture/material invalidation, they must be explicitly retired
-            // here or they become orphaned until device teardown.
-            for (int passIndex = 1; passIndex < static_cast<int>(ShaderCompileTarget::Count); ++passIndex) {
-                const auto pass = static_cast<ShaderCompileTarget>(passIndex);
-                VkPipeline extraPipeline = data->material->GetPassPipeline(pass);
-                if (extraPipeline != VK_NULL_HANDLE) {
-                    vkDestroyPipeline(m_device, extraPipeline, nullptr);
-                    data->material->SetPassPipeline(pass, VK_NULL_HANDLE);
-                }
-                data->material->SetPassPipelineLayout(pass, VK_NULL_HANDLE);
-                data->material->SetPassShaderProgram(pass, nullptr);
-            }
+            ClearForwardPassHandles(data->material.get());
+            DestroyNonForwardPipelines(data->material.get());
         }
 
         // Only destroy the pipeline if no other render data shares it.
-        // Pipelines are keyed by (shader + render state) hash, so different
-        // materials using the same shader legitimately share one VkPipeline.
         if (data->pipeline != VK_NULL_HANDLE) {
-            bool sharedByOther = false;
-            for (const auto &[otherName, otherData] : m_renderDataMap) {
-                if (otherName == materialName || !otherData)
-                    continue;
-                if (otherData->pipeline == data->pipeline) {
-                    sharedByOther = true;
-                    break;
-                }
-            }
-
-            if (!sharedByOther) {
-                // Remove from pipeline cache and destroy
+            if (!IsPipelineSharedByOthers(materialName, data->pipeline)) {
                 for (auto pipeIt = m_pipelineCache.begin(); pipeIt != m_pipelineCache.end();) {
                     if (pipeIt->second == data->pipeline) {
                         pipeIt = m_pipelineCache.erase(pipeIt);
@@ -803,9 +718,6 @@ void MaterialPipelineManager::RemoveRenderData(const std::string &materialName)
                 }
                 vkDestroyPipeline(m_device, data->pipeline, nullptr);
             }
-            // If shared, leave the pipeline alive in m_pipelineCache for the
-            // remaining users.  When *this* material is recreated it will
-            // find the same pipeline via the cache (same hash).
         }
     }
 

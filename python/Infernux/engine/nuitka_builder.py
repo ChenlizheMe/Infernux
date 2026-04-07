@@ -80,7 +80,8 @@ def _python_version(python_exe: str) -> str:
             ["-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"],
             timeout=20,
         )
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError) as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         return ""
     if completed.returncode != 0:
         return ""
@@ -91,7 +92,8 @@ def _is_embeddable_python_exe(python_exe: str) -> bool:
     try:
         root = os.path.dirname(os.path.abspath(python_exe))
         return any(name.lower().endswith("._pth") for name in os.listdir(root))
-    except OSError:
+    except OSError as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         return False
 
 
@@ -451,6 +453,10 @@ class NuitkaBuilder:
         # (Nuitka may not auto-detect it because it's a .pyd, not .py).
         cmd.append("--include-module=Infernux.lib._Infernux")
 
+        # csv is needed by importlib.metadata (Python's own import system)
+        # but Nuitka may not auto-detect it when JIT packages are excluded.
+        cmd.append("--include-module=csv")
+
         # Prevent Nuitka from following into editor-only modules that the
         # standalone player never uses.  The _INFERNUX_PLAYER_MODE guard
         # in __init__ already prevents runtime loading, but --nofollow
@@ -467,6 +473,7 @@ class NuitkaBuilder:
             "cv2",
             "imageio",
             "psd_tools",
+            "av",  # PyAV/ffmpeg — build-time splash encoding only
         ):
             cmd.append(f"--nofollow-import-to={_editor_mod}")
 
@@ -484,6 +491,13 @@ class NuitkaBuilder:
         if self.raw_copy_packages:
             for _stdlib_mod in self._discover_jit_stdlib_deps():
                 cmd.append(f"--include-module={_stdlib_mod}")
+
+        # Numba's parallel backend (prange / parallel=True) imports
+        # multiprocessing lazily at JIT compile time — NOT at
+        # ``import numba``.  The auto-discovery above therefore misses
+        # it.  Include it unconditionally when JIT packages are bundled.
+        if _nofollow_jit & self._JIT_NOFOLLOW_PACKAGES:
+            cmd.append("--include-module=multiprocessing")
 
         for pkg in self.extra_include_packages:
             if pkg not in _nofollow_jit:

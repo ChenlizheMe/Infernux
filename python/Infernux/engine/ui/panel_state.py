@@ -5,6 +5,7 @@ inside the project's layout directory (Documents/Infernux/{project}/).
 import json
 import os
 import threading
+from Infernux.debug import Debug
 
 _state_path: str = ""
 _state: dict = {}
@@ -47,5 +48,6 @@ def save() -> None:
         os.makedirs(os.path.dirname(_state_path), exist_ok=True)
         with open(_state_path, "w", encoding="utf-8") as f:
             json.dump(snapshot, f, indent=2, ensure_ascii=False)
-    except OSError:
+    except OSError as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         pass

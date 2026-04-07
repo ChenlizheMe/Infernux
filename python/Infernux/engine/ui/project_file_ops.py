@@ -123,7 +123,8 @@ def _normalize_path(path: str) -> str:
 def _is_path_within(path: str, parent_path: str) -> bool:
     try:
         return os.path.commonpath([_normalize_path(path), _normalize_path(parent_path)]) == _normalize_path(parent_path)
-    except ValueError:
+    except ValueError as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         return False
 
 
@@ -145,12 +146,14 @@ def _notify_asset_moved(old_path: str, new_path: str, asset_database=None):
     if asset_database:
         try:
             asset_database.on_asset_moved(old_path, new_path)
-        except Exception:
+        except Exception as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             pass
 
     try:
         AssetManager.on_asset_moved(old_path, new_path)
-    except Exception:
+    except Exception as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         pass
 
     asset_inspector.invalidate_asset(old_path)
@@ -173,7 +176,8 @@ def move_path(old_path: str, new_path: str, asset_database=None):
     move_pairs = list(_iter_asset_move_pairs(old_abs, new_abs))
     try:
         shutil.move(old_abs, new_abs)
-    except OSError:
+    except OSError as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         return None
 
     for old_file, new_file in move_pairs:
@@ -381,7 +385,9 @@ def create_material(current_path: str, material_name: str, asset_database=None):
     return True, ""
 
 
-def create_prefab_from_gameobject(game_object, current_path: str, asset_database=None):
+def create_prefab_from_gameobject(game_object, current_path: str,
+                                  asset_database=None,
+                                  source_canvas_name: str = ""):
     """Save a GameObject hierarchy as a ``.prefab`` file.
 
     Returns ``(True, file_path)`` or ``(False, error_msg)``.
@@ -394,7 +400,8 @@ def create_prefab_from_gameobject(game_object, current_path: str, asset_database
     prefab_name = get_unique_name(current_path, game_object.name, PREFAB_EXTENSION)
     file_path = os.path.join(current_path, prefab_name + PREFAB_EXTENSION)
 
-    if save_prefab(game_object, file_path, asset_database=asset_database):
+    if save_prefab(game_object, file_path, asset_database=asset_database,
+                   source_canvas_name=source_canvas_name):
         return True, file_path
     return False, "Failed to save prefab"
 
@@ -403,12 +410,53 @@ def create_prefab_from_gameobject(game_object, current_path: str, asset_database
 # Delete & Rename
 # ---------------------------------------------------------------------------
 
+def _detach_prefab_instances(prefab_path: str, asset_database=None):
+    """Clear prefab_guid/prefab_root on all scene objects linked to this prefab."""
+    guid = ""
+    if asset_database:
+        try:
+            guid = asset_database.get_guid_from_path(prefab_path)
+        except Exception:
+            pass
+    if not guid:
+        return
+
+    from Infernux.lib import SceneManager
+    scene = SceneManager.instance().get_active_scene()
+    if scene is None:
+        return
+
+    def _walk(objects):
+        for obj in objects:
+            try:
+                obj_guid = getattr(obj, 'prefab_guid', '')
+                if obj_guid == guid:
+                    obj.prefab_guid = ""
+                    obj.prefab_root = False
+                children = list(obj.get_children()) if hasattr(obj, 'get_children') else []
+                _walk(children)
+            except Exception:
+                pass
+
+    try:
+        roots = list(scene.get_root_objects())
+        _walk(roots)
+    except Exception as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+
+
 def delete_item(item_path: str, asset_database=None):
     """Delete a file or directory from the filesystem and notify AssetDatabase."""
     if not item_path or not os.path.exists(item_path):
         return
 
     is_dir = os.path.isdir(item_path)
+
+    # For .prefab files, detach all scene instances BEFORE deleting the asset.
+    # This turns prefab instances into regular scene objects instead of leaving
+    # them orphaned with a dangling prefab_guid.
+    if not is_dir and item_path.lower().endswith('.prefab'):
+        _detach_prefab_instances(item_path, asset_database)
 
     # Notify BEFORE removing the file — GUID is still resolvable at this point
     if not is_dir:
@@ -424,7 +472,8 @@ def delete_item(item_path: str, asset_database=None):
             shutil.rmtree(item_path)
         else:
             os.remove(item_path)
-    except OSError:
+    except OSError as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         return
 
     # Invalidate inspector cache so a recreated file won't reuse stale data
@@ -457,7 +506,8 @@ def do_rename(old_path: str, new_name: str, asset_database=None):
     if ext.lower() == '.mat' and os.path.isfile(old_path):
         try:
             update_material_name_in_file(old_path, os.path.splitext(safe_name)[0])
-        except OSError:
+        except OSError as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             return None
 
     return move_path(old_path, new_path, asset_database)

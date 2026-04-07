@@ -19,6 +19,8 @@ For the **editor** (no manifest), ``safe_path()`` tries two fall-backs:
 import os
 import sys
 
+from Infernux.debug import Debug
+
 
 def safe_path(path: str) -> str:
     """Return an ASCII-safe version of *path* for consumption by C++.
@@ -33,7 +35,8 @@ def safe_path(path: str) -> str:
     try:
         path.encode("ascii")
         return path
-    except UnicodeEncodeError:
+    except UnicodeEncodeError as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         pass
     try:
         import ctypes
@@ -44,6 +47,7 @@ def safe_path(path: str) -> str:
             # Only use if genuinely different (8.3 may be disabled)
             if short != path:
                 return short
-    except Exception:
+    except Exception as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         pass
     return path

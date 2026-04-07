@@ -18,6 +18,7 @@ import os
 import struct
 import time as _time
 from typing import Dict, List, Optional
+from Infernux.debug import Debug
 
 
 class SplashPlayer:
@@ -162,7 +163,8 @@ class SplashPlayer:
     def _load_video(self, native_engine, path: str):
         try:
             f = open(path, "rb")
-        except OSError:
+        except OSError as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             return
         magic = f.read(8)
         if magic != b"INFSPLSH":
@@ -211,7 +213,8 @@ class SplashPlayer:
         if self._tex_id:
             try:
                 native_engine.remove_imgui_texture(self._TEX_NAME)
-            except Exception:
+            except Exception as _exc:
+                Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
                 pass
             self._tex_id = 0
         if self._vfile:
