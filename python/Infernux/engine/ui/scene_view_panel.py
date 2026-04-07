@@ -15,6 +15,7 @@ from . import imgui_keys as _keys
 import Infernux.resources as _resources
 
 # Gizmo handle IDs — must match C++ EditorTools constants
+from Infernux.debug import Debug
 from Infernux.lib._Infernux import (
     GIZMO_X_AXIS_ID,
     GIZMO_Y_AXIS_ID,
@@ -113,8 +114,14 @@ def _axis_angle_to_quat(ax, ay, az, angle_deg):
     return (math.cos(half), ax * s, ay * s, az * s)
 
 
+from ._scene_view_gizmo import SceneViewGizmoMixin
+from ._scene_view_camera import SceneViewCameraMixin
+from ._scene_view_overlays import SceneViewOverlaysMixin
+from ._scene_view_picking import SceneViewPickingMixin
+from ._scene_view_math import SceneViewMathMixin
+
 @editor_panel("Scene", type_id="scene_view", title_key="panel.scene")
-class SceneViewPanel(EditorPanel):
+class SceneViewPanel(SceneViewGizmoMixin, SceneViewCameraMixin, SceneViewOverlaysMixin, SceneViewPickingMixin, SceneViewMathMixin, EditorPanel):
     """
     Unity-style Scene View panel with 3D viewport and camera controls.
     
@@ -179,9 +186,12 @@ class SceneViewPanel(EditorPanel):
         self._gizmo_drag_plane_start_uv = (0.0, 0.0)
         self._gizmo_drag_start_pos = (0.0, 0.0, 0.0)  # object pos at grab
         self._gizmo_drag_start_euler = (0.0, 0.0, 0.0)  # object euler at grab (rotate)
+        self._gizmo_drag_start_rotation = None  # object world rotation quat at grab
         self._gizmo_drag_start_scale = (1.0, 1.0, 1.0)  # object local_scale at grab (scale)
         self._gizmo_drag_start_screen = (0.0, 0.0) # screen pos at grab (rotate)
         self._gizmo_drag_obj_id = 0        # object being dragged
+        self._gizmo_drag_rigidbody = None  # Rigidbody temporarily driven by the gizmo
+        self._gizmo_drag_restore_dynamic = False
         self._gizmo_snap_active = False    # Ctrl held during current drag frame
         self._gizmo_tool_mode = TOOL_TRANSLATE  # current tool mode (Python tracking)
         self._coord_space = 0  # 0=Global, 1=Local
@@ -247,48 +257,6 @@ class SceneViewPanel(EditorPanel):
         """Set callback after box-select completes (receives primary obj or None)."""
         self._on_box_select = callback
 
-    def _begin_camera_capture(self, ctx: InxGUIContext):
-        if self._camera_capture_active:
-            return
-        self._camera_capture_restore_pos = (
-            ctx.get_global_mouse_pos_x(),
-            ctx.get_global_mouse_pos_y(),
-        )
-        InputManager.instance().set_editor_mouse_capture(True)
-        self._camera_capture_active = True
-
-    def _end_camera_capture(self, ctx: InxGUIContext | None = None, *, restore_cursor: bool = True):
-        mgr = InputManager.instance()
-        if self._camera_capture_active or mgr.is_editor_mouse_capture_active:
-            mgr.set_editor_mouse_capture(False)
-
-        restore_pos = self._camera_capture_restore_pos
-        self._camera_capture_active = False
-        self._camera_capture_restore_pos = None
-
-        if restore_cursor and ctx is not None and restore_pos is not None:
-            ctx.warp_mouse_global(restore_pos[0], restore_pos[1])
-
-    def _force_camera_input_release(self):
-        if self._engine:
-            self._engine.process_scene_view_input(
-                0.0,
-                False,
-                False,
-                0.0,
-                0.0,
-                0.0,
-                False,
-                False,
-                False,
-                False,
-                False,
-                False,
-                False,
-            )
-        self._was_right_down = False
-        self._was_middle_down = False
-    
     # ------------------------------------------------------------------
     # EditorPanel hooks
     # ------------------------------------------------------------------
@@ -316,9 +284,6 @@ class SceneViewPanel(EditorPanel):
             self._engine.set_scene_view_visible(False)
 
     def _pre_render(self, ctx):
-        if self._engine:
-            self._engine.set_scene_view_visible(True)
-
         import time
         current_time = time.time()
         self._delta_time = current_time - self._last_frame_time if self._last_frame_time > 0 else 0.016
@@ -339,6 +304,17 @@ class SceneViewPanel(EditorPanel):
             self._play_border_clr = Theme.BORDER_PAUSE if pm.state == PlayModeState.PAUSED else Theme.BORDER_PLAY
 
     def _on_visible_pre(self, ctx):
+        # Activate C++ scene rendering and request full-speed frames only
+        # when the Scene View panel is actually visible.  Previously these
+        # lived in _pre_render (which runs every frame for all panels) and
+        # caused a pointless True/False toggle when the tab was hidden,
+        # plus prevented idle-throttle even when only Game View was active.
+        if self._engine:
+            self._engine.set_scene_view_visible(True)
+            native = self._engine.get_native_engine()
+            if native:
+                native.request_full_speed_frame()
+
         # Track focus to auto-exit UI Mode
         focused = (ClosablePanel.get_active_panel_id() == self.window_id) or ctx.is_window_focused(0)
         if not focused and self._camera_capture_active:
@@ -649,344 +625,13 @@ class SceneViewPanel(EditorPanel):
         '-Z': (0.0, 0.0),
     }
 
-    def _draw_orientation_gizmo(self, ctx: InxGUIContext, vp: ViewportInfo):
-        """Draw orientation gizmo with clickable axis endpoints."""
-        cam = self._engine.editor_camera
-        if not cam:
-            return
-        yaw, pitch = cam.rotation
-        yaw_rad = math.radians(yaw)
-        pitch_rad = math.radians(pitch)
-
-        cos_y, sin_y = math.cos(yaw_rad), math.sin(yaw_rad)
-        cos_p, sin_p = math.cos(pitch_rad), math.sin(pitch_rad)
-
-        # Reconstruct the actual camera basis used by the Scene camera.
-        # C++ SetEulerAngles(pitch, yaw, 0) yields forward.y = -sin(pitch).
-        forward = (sin_y * cos_p, -sin_p, cos_y * cos_p)
-        right = (cos_y, 0.0, -sin_y)
-        up = (
-            forward[1] * right[2] - forward[2] * right[1],
-            forward[2] * right[0] - forward[0] * right[2],
-            forward[0] * right[1] - forward[1] * right[0],
-        )
-
-        r = Theme.SCENE_ORIENT_RADIUS
-        margin = Theme.SCENE_ORIENT_MARGIN
-        # Use screen-absolute coordinates from the viewport info
-        cx = vp.image_max_x - r - margin
-        cy = vp.image_min_y + r + margin
-
-        # Project world axis to 2D screen position
-        axis_len = Theme.SCENE_ORIENT_AXIS_LEN
-        axes = [
-            ('X', (1, 0, 0)),
-            ('Y', (0, 1, 0)),
-            ('Z', (0, 0, 1)),
-        ]
-
-        # Collect endpoints and promote the front-facing side per axis so the
-        # visible large labeled circles match Unity's scene gizmo behavior.
-        endpoints = []
-        axis_lines = []
-        for label, (ax, ay, az) in axes:
-            sx = ax * right[0] + ay * right[1] + az * right[2]
-            sy = ax * up[0] + ay * up[1] + az * up[2]
-            depth = ax * forward[0] + ay * forward[1] + az * forward[2]
-            pos = ('+' + label, label, sx, sy, depth)
-            neg = ('-' + label, label, -sx, -sy, -depth)
-            front, back = (pos, neg) if depth <= -depth else (neg, pos)
-            axis_lines.append(front)
-            endpoints.append((front[0], front[1], front[2], front[3], front[4], True))
-            endpoints.append((back[0], back[1], back[2], back[3], back[4], False))
-
-        # Sort by depth (farther first; front-facing endpoints have smaller depth).
-        endpoints.sort(key=lambda e: e[4], reverse=True)
-
-        # Draw axis lines first (below circles), using the front-facing endpoint.
-        for axis_key, label, sx, sy, depth in sorted(axis_lines, key=lambda e: e[4], reverse=True):
-            clr = self._GIZMO_AXIS_COLORS[label]
-            ex = cx + sx * axis_len
-            ey = cy - sy * axis_len
-            ctx.draw_line(cx, cy, ex, ey, *clr, 0.6, 2.0)
-
-        # Draw endpoints
-        mouse_x = ctx.get_mouse_pos_x()
-        mouse_y = ctx.get_mouse_pos_y()
-        clicked_axis = None
-
-        for axis_key, label, sx, sy, depth, front_facing in endpoints:
-            clr = self._GIZMO_AXIS_COLORS[label]
-            ex = cx + sx * axis_len
-            ey = cy - sy * axis_len
-            er = Theme.SCENE_ORIENT_END_RADIUS if front_facing else Theme.SCENE_ORIENT_NEG_RADIUS
-            a = 1.0 if front_facing else 0.5
-
-            # Draw filled circle
-            ctx.draw_filled_circle(ex, ey, er, clr[0], clr[1], clr[2], a, 16)
-
-            # Unity-style: label the endpoint that currently faces the camera.
-            if front_facing:
-                ctx.draw_text(ex - 3, ey - 5, label, 1.0, 1.0, 1.0, 1.0)
-
-            # Hit test
-            dx = mouse_x - ex
-            dy = mouse_y - ey
-            if dx * dx + dy * dy <= er * er * 1.5:
-                # Highlight on hover
-                ctx.draw_circle(ex, ey, er + 1, 1.0, 1.0, 1.0, 0.7, 1.5, 16)
-                if ctx.is_mouse_button_clicked(0):
-                    clicked_axis = axis_key
-
-        # Handle click — animate camera to axis view
-        if clicked_axis is not None:
-            target_yaw, target_pitch = self._GIZMO_AXIS_VIEWS[clicked_axis]
-            self._start_fly_to_orientation(target_yaw, target_pitch)
-
-    def _start_fly_to_orientation(self, target_yaw: float, target_pitch: float):
-        """Start a smooth camera animation to a specific orientation."""
-        cam = self._engine.editor_camera
-        if not cam:
-            return
-        cur_pos = cam.position
-        cur_dist = cam.focus_distance
-        cur_yaw, cur_pitch = cam.rotation
-
-        # Compute consistent focus from actual camera position to avoid
-        # stale m_focusPoint causing an initial teleport/flash.
-        yr = math.radians(cur_yaw)
-        pr = math.radians(cur_pitch)
-        cp = math.cos(pr)
-        fwd = (math.sin(yr) * cp, -math.sin(pr), math.cos(yr) * cp)
-        focus = (cur_pos.x + fwd[0] * cur_dist,
-                 cur_pos.y + fwd[1] * cur_dist,
-                 cur_pos.z + fwd[2] * cur_dist)
-
-        self._fly_to_start_focus = focus
-        self._fly_to_start_dist = cur_dist
-        self._fly_to_start_yaw = cur_yaw
-        self._fly_to_start_pitch = cur_pitch
-
-        self._fly_to_target_focus = focus  # keep same focus point
-        self._fly_to_target_dist = cur_dist    # keep same distance
-        self._fly_to_target_yaw = target_yaw
-        self._fly_to_target_pitch = target_pitch
-
-        self._fly_to_elapsed = 0.0
-        self._fly_to_duration = Theme.SCENE_ORIENT_FLY_DURATION
-        self._fly_to_active = True
-
-    def _finalize_box_select(self, ctx: InxGUIContext, vp: ViewportInfo):
-        """Complete a box-select drag: find objects inside the rectangle."""
-        sx, sy = self._box_select_start
-        ex, ey = self._box_select_end
-        min_x, max_x = min(sx, ex), max(sx, ex)
-        min_y, max_y = min(sy, ey), max(sy, ey)
-
-        # Too small? Treat as a deselect click
-        if abs(max_x - min_x) < 5 and abs(max_y - min_y) < 5:
-            if self._on_object_picked:
-                self._on_object_picked(0, False)
-            return
-
-        # Gather all scene objects and project them to screen space
-        from Infernux.lib import SceneManager
-        scene = SceneManager.instance().get_active_scene()
-        if not scene or not self._engine:
-            return
-
-        native = self._engine.get_native_engine()
-        if not native:
-            return
-
-        all_objects = scene.get_all_objects()
-        selected_ids = []
-        for obj in all_objects:
-            t = obj.get_transform()
-            if t is None:
-                continue
-            # Skip screen-space UI elements (canvas children with _hide_transform_)
-            try:
-                _skip = False
-                for _pc in obj.get_py_components():
-                    if getattr(type(_pc), '_hide_transform_', False):
-                        _skip = True
-                        break
-                if _skip:
-                    continue
-            except RuntimeError:
-                pass
-            pos = t.position
-            sp = native.editor_camera.world_to_screen_point(pos.x, pos.y, pos.z)
-            if min_x <= sp.x <= max_x and min_y <= sp.y <= max_y:
-                selected_ids.append(obj.id)
-
-        from .imgui_keys import KEY_LEFT_CTRL, KEY_RIGHT_CTRL
-        ctrl = ctx.is_key_down(KEY_LEFT_CTRL) or ctx.is_key_down(KEY_RIGHT_CTRL)
-
-        from .selection_manager import SelectionManager
-        sel = SelectionManager.instance()
-        if selected_ids:
-            sel.box_select(selected_ids, additive=ctrl)
-        elif not ctrl:
-            sel.clear()
-
-        # Update outline — combined for multi-select
-        all_ids = sel.get_ids()
-        if native:
-            if len(all_ids) > 1:
-                native.set_selection_outlines(all_ids)
-            elif all_ids:
-                native.set_selection_outline(all_ids[0])
-            else:
-                native.clear_selection_outline()
-
-        # Resolve primary object for inspector
-        primary_id = sel.get_primary()
-        primary_obj = scene.find_by_id(primary_id) if primary_id else None
-        if self._on_box_select:
-            self._on_box_select(primary_obj)
-
-    def _pick_scene_object(self, ctx: InxGUIContext, vp: ViewportInfo) -> int:
-        """Pick scene object under mouse cursor with repeated-click cycling."""
-        if not self._engine:
-            return 0
-
-        local_x, local_y = vp.mouse_local(ctx)
-
-        # Clamp within viewport
-        if local_x < 0 or local_y < 0 or local_x > vp.width or local_y > vp.height:
-            return 0
-
-        candidates = self._engine.pick_scene_object_ids(local_x, local_y, vp.width, vp.height)
-
-        # Filter invalid IDs and gizmo axis pseudo-IDs.
-        ids = []
-        for candidate in candidates:
-            object_id = int(candidate)
-            if object_id > 0 and object_id not in _GIZMO_IDS:
-                ids.append(object_id)
-
-        if not ids:
-            self._pick_cycle_candidates = []
-            self._pick_cycle_index = -1
-            return 0
-
-        same_viewport = self._pick_cycle_last_viewport == (int(vp.width), int(vp.height))
-        last_x, last_y = self._pick_cycle_last_mouse
-        same_spot = abs(local_x - last_x) <= 3.0 and abs(local_y - last_y) <= 3.0
-        same_candidates = ids == self._pick_cycle_candidates
-
-        if same_viewport and same_spot and same_candidates and self._pick_cycle_index >= 0:
-            index = (self._pick_cycle_index + 1) % len(ids)
-        else:
-            index = 0
-
-        self._pick_cycle_candidates = ids
-        self._pick_cycle_index = index
-        self._pick_cycle_last_mouse = (local_x, local_y)
-        self._pick_cycle_last_viewport = (int(vp.width), int(vp.height))
-
-        return ids[index]
-    
-    def _process_camera_input(self, ctx: InxGUIContext, delta_time: float):
-        """Process Unity-style scene camera input.
-
-        Right/middle drag uses SDL relative mouse mode so the cursor stays
-        locked during navigation and returns to its press position on release.
-        """
-        if not self._engine:
-            return
-        mgr = InputManager.instance()
-        
-        # Mouse button states
-        right_down = mgr.get_mouse_button(1)
-        middle_down = mgr.get_mouse_button(2)
-        
-        # Detect button just pressed
-        right_just_pressed = right_down and not self._was_right_down
-        middle_just_pressed = middle_down and not self._was_middle_down
-        
-        mouse_delta_x = 0.0
-        mouse_delta_y = 0.0
-        
-        if (right_down or middle_down) and not right_just_pressed and not middle_just_pressed:
-            if self._camera_capture_active:
-                mouse_delta_x = mgr.mouse_delta_x
-                mouse_delta_y = mgr.mouse_delta_y
-            else:
-                raw_dx = ctx.get_mouse_pos_x() - self._last_mouse_x
-                raw_dy = ctx.get_mouse_pos_y() - self._last_mouse_y
-                if abs(raw_dx) > 0.1:
-                    mouse_delta_x = raw_dx
-                if abs(raw_dy) > 0.1:
-                    mouse_delta_y = raw_dy
-
-        # Keep local tracking in sync for picking and non-captured deltas.
-        self._last_mouse_x = ctx.get_mouse_pos_x()
-        self._last_mouse_y = ctx.get_mouse_pos_y()
-        self._was_right_down = right_down
-        self._was_middle_down = middle_down
-        
-        # Scroll wheel: zoom
-        scroll_delta = ctx.get_mouse_wheel_delta()
-        
-        # Keyboard for fly mode (only when right mouse held)
-        key_w = right_down and ctx.is_key_down(self.KEY_W)
-        key_s = right_down and ctx.is_key_down(self.KEY_S)
-        key_a = right_down and ctx.is_key_down(self.KEY_A)
-        key_d = right_down and ctx.is_key_down(self.KEY_D)
-        key_q = right_down and ctx.is_key_down(self.KEY_Q)
-        key_e = right_down and ctx.is_key_down(self.KEY_E)
-        key_shift = ctx.is_key_down(self.KEY_LEFT_SHIFT) or ctx.is_key_down(self.KEY_RIGHT_SHIFT)
-        
-        # Send to engine
-        self._engine.process_scene_view_input(
-            delta_time,
-            right_down,
-            middle_down,
-            mouse_delta_x,
-            mouse_delta_y,
-            scroll_delta,
-            key_w, key_a, key_s, key_d,
-            key_q, key_e, key_shift
-        )
-    
     # ------------------------------------------------------------------
     # Tool mode management
     # ------------------------------------------------------------------
 
-    def _set_tool_mode(self, mode: int):
-        """Switch the active editor tool (syncs to C++ and resets drag)."""
-        if mode == self._gizmo_tool_mode:
-            return
-        self._gizmo_tool_mode = mode
-        self._is_gizmo_dragging = False
-        if self._engine:
-            self._engine.set_editor_tool_mode(mode)
-            self._engine.set_editor_tool_highlight(0)
-
     # ------------------------------------------------------------------
     # Gizmo interaction helpers (all in Python)
     # ------------------------------------------------------------------
-
-    @staticmethod
-    def _closest_param_on_axis(ray_o, ray_d, axis_o, axis_d):
-        """Closest-point-between-two-lines: parameter *s* along the axis line.
-
-        Given ray P = ray_o + t*ray_d  and  axis Q = axis_o + s*axis_d,
-        returns the s that minimises distance between the two lines.
-        """
-        w = (ray_o[0] - axis_o[0], ray_o[1] - axis_o[1], ray_o[2] - axis_o[2])
-        a = ray_d[0]*ray_d[0] + ray_d[1]*ray_d[1] + ray_d[2]*ray_d[2]
-        b = ray_d[0]*axis_d[0] + ray_d[1]*axis_d[1] + ray_d[2]*axis_d[2]
-        c = axis_d[0]*axis_d[0] + axis_d[1]*axis_d[1] + axis_d[2]*axis_d[2]
-        d = ray_d[0]*w[0] + ray_d[1]*w[1] + ray_d[2]*w[2]
-        e = axis_d[0]*w[0] + axis_d[1]*w[1] + axis_d[2]*w[2]
-        denom = a * c - b * b
-        if abs(denom) < 1e-10:
-            return -e / c if abs(c) > 1e-10 else 0.0
-        return (a * e - b * d) / denom
 
     @staticmethod
     def _snap_delta(delta: float, step: float) -> float:
@@ -996,476 +641,14 @@ class SceneViewPanel(EditorPanel):
         return round(delta / step) * step
 
     @staticmethod
-    def _dot3(a, b) -> float:
-        return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-
-    @staticmethod
-    def _cross3(a, b):
-        return (
-            a[1] * b[2] - a[2] * b[1],
-            a[2] * b[0] - a[0] * b[2],
-            a[0] * b[1] - a[1] * b[0],
-        )
-
-    @staticmethod
-    def _sub3(a, b):
-        return (a[0] - b[0], a[1] - b[1], a[2] - b[2])
-
-    @staticmethod
-    def _scale3(v, scalar: float):
-        return (v[0] * scalar, v[1] * scalar, v[2] * scalar)
-
-    @staticmethod
-    def _add3(a, b):
-        return (a[0] + b[0], a[1] + b[1], a[2] + b[2])
-
-    @staticmethod
     def _plane_factor(current: float, start: float) -> float:
         if abs(start) < 1e-6:
             return 1.0 + (current - start)
         return current / start
 
-    def _gizmo_basis_axes(self, obj=None):
-        if self._coord_space == 1 and obj is not None:
-            r = obj.transform.right
-            u = obj.transform.up
-            f = obj.transform.forward
-            return {
-                1: (r[0], r[1], r[2]),
-                2: (u[0], u[1], u[2]),
-                3: (f[0], f[1], f[2]),
-            }
-        return dict(_AXIS_DIRS)
-
-    def _plane_hit_coords(self, engine, local_mx, local_my, scene_w, scene_h, plane_origin, axis_u, axis_v):
-        ray = engine.screen_to_world_ray(local_mx, local_my, scene_w, scene_h)
-        ray_o = ray[:3]
-        ray_d = ray[3:]
-        normal = self._cross3(axis_u, axis_v)
-        denom = self._dot3(ray_d, normal)
-        if abs(denom) < 1e-8:
-            return None
-
-        t = self._dot3(self._sub3(plane_origin, ray_o), normal) / denom
-        if t < 0.0:
-            return None
-
-        hit = self._add3(ray_o, self._scale3(ray_d, t))
-        rel = self._sub3(hit, plane_origin)
-        return (self._dot3(rel, axis_u), self._dot3(rel, axis_v))
-
-    def _is_ctrl_down(self, ctx: InxGUIContext) -> bool:
-        return ctx.is_key_down(_keys.KEY_LEFT_CTRL) or ctx.is_key_down(_keys.KEY_RIGHT_CTRL)
-
-    def _update_gizmo_interaction(self, ctx, local_mx, local_my, scene_w, scene_h,
-                                   left_down, left_clicked, is_hovered):
-        """Python-side hover highlight + axis-constrained drag for all tool modes.
-
-        Returns True if the gizmo consumed the input this frame.
-        """
-        engine = self._engine
-        if not engine:
-            return False
-
-        mode = self._gizmo_tool_mode
-        if mode == TOOL_NONE:
-            return False
-
-        # -----------------------------------------------------------
-        # DRAG CONTINUATION (dispatches to mode-specific handler)
-        # -----------------------------------------------------------
-        if self._is_gizmo_dragging:
-            if not left_down:
-                # Release drag — record undo command for the completed operation
-                self._record_gizmo_undo(mode)
-                self._is_gizmo_dragging = False
-                self._gizmo_snap_active = False
-                engine.set_editor_tool_highlight(0)
-                return False
-
-            self._gizmo_snap_active = self._is_ctrl_down(ctx)
-
-            if mode == TOOL_TRANSLATE:
-                self._drag_translate(engine, local_mx, local_my, scene_w, scene_h)
-            elif mode == TOOL_ROTATE:
-                self._drag_rotate(engine, local_mx, local_my, scene_w, scene_h)
-            elif mode == TOOL_SCALE:
-                self._drag_scale(engine, local_mx, local_my, scene_w, scene_h)
-
-            return True  # consumed
-
-        # -----------------------------------------------------------
-        # HOVER DETECTION (using existing picking infrastructure)
-        # -----------------------------------------------------------
-        if not is_hovered:
-            engine.set_editor_tool_highlight(0)
-            self._hover_pick_cache_pos = (-1.0, -1.0)
-            return False
-
-        # Cache: skip the gizmo axis test when the mouse hasn't moved.
-        pos_key = (local_mx, local_my)
-        if pos_key == self._hover_pick_cache_pos:
-            picked = self._hover_pick_cache_result
-        else:
-            picked = engine.pick_gizmo_axis(local_mx, local_my, scene_w, scene_h)
-            self._hover_pick_cache_pos = pos_key
-            self._hover_pick_cache_result = picked
-
-        handle = _GIZMO_IDS.get(picked, 0)
-        engine.set_editor_tool_highlight(handle)
-
-        if handle == 0:
-            return False  # not hovering any gizmo handle
-
-        # -----------------------------------------------------------
-        # DRAG START (common for all modes)
-        # Only initiate drag on a fresh press — not when the button
-        # was already held and the cursor drifted over the gizmo.
-        # -----------------------------------------------------------
-        if left_clicked:
-            # Block gizmo edits on prefab children (they are locked in Inspector).
-            from Infernux.lib._Infernux import SceneManager as _SM
-            scene = _SM.instance().get_active_scene()
-            sel_id = engine.get_selected_object_id()
-            if scene and sel_id:
-                _obj = scene.find_by_id(sel_id)
-                if _obj is not None:
-                    _is_prefab_child = (
-                        bool(getattr(_obj, 'prefab_guid', None))
-                        and not bool(getattr(_obj, 'prefab_root', False))
-                    )
-                    if _is_prefab_child:
-                        return True  # consume input but refuse to start drag
-
-            self._is_gizmo_dragging = True
-            self._gizmo_drag_axis = handle
-            self._gizmo_snap_active = self._is_ctrl_down(ctx)
-            self._gizmo_drag_start_screen = (local_mx, local_my)
-            obj_pos = (0.0, 0.0, 0.0)
-            obj_euler = (0.0, 0.0, 0.0)
-            obj_scale = (1.0, 1.0, 1.0)
-            if scene and sel_id:
-                obj = scene.find_by_id(sel_id)
-                if obj:
-                    p = obj.transform.position
-                    obj_pos = (p[0], p[1], p[2])
-                    e = obj.transform.euler_angles
-                    obj_euler = (e[0], e[1], e[2])
-                    s = obj.transform.local_scale
-                    obj_scale = (s[0], s[1], s[2])
-
-                    basis_axes = self._gizmo_basis_axes(obj)
-                else:
-                    basis_axes = self._gizmo_basis_axes(None)
-            else:
-                basis_axes = self._gizmo_basis_axes(None)
-
-            if handle in _PLANE_AXIS_PAIRS:
-                plane_axes = _PLANE_AXIS_PAIRS[handle]
-                self._gizmo_drag_plane_axes = plane_axes
-                self._gizmo_drag_plane_u = basis_axes[plane_axes[0]]
-                self._gizmo_drag_plane_v = basis_axes[plane_axes[1]]
-                start_uv = self._plane_hit_coords(
-                    engine,
-                    local_mx,
-                    local_my,
-                    scene_w,
-                    scene_h,
-                    obj_pos,
-                    self._gizmo_drag_plane_u,
-                    self._gizmo_drag_plane_v,
-                )
-                self._gizmo_drag_plane_start_uv = start_uv if start_uv is not None else (0.0, 0.0)
-                self._gizmo_drag_axis_dir = self._gizmo_drag_plane_u
-            else:
-                self._gizmo_drag_plane_axes = (0, 0)
-                self._gizmo_drag_plane_start_uv = (0.0, 0.0)
-                self._gizmo_drag_axis_dir = basis_axes.get(handle, _AXIS_DIRS[1])
-            self._gizmo_drag_obj_id = sel_id
-            self._gizmo_drag_start_pos = obj_pos
-            self._gizmo_drag_start_euler = obj_euler
-            self._gizmo_drag_start_scale = obj_scale
-
-            # For translate/scale: record initial axis or plane parameter
-            if mode in (TOOL_TRANSLATE, TOOL_SCALE) and handle not in _PLANE_AXIS_PAIRS:
-                ray = engine.screen_to_world_ray(local_mx, local_my, scene_w, scene_h)
-                self._gizmo_drag_start_t = self._closest_param_on_axis(
-                    ray[:3], ray[3:], self._gizmo_drag_start_pos, self._gizmo_drag_axis_dir)
-
-            return True  # consumed
-
-        return True  # hovering a gizmo handle — consume to suppress picking
-
     # ------------------------------------------------------------------
     # Mode-specific drag handlers
     # ------------------------------------------------------------------
-
-    def _drag_translate(self, engine, local_mx, local_my, scene_w, scene_h):
-        """Axis-constrained translation: project mouse ray onto drag axis."""
-        if self._gizmo_drag_axis in _PLANE_AXIS_PAIRS:
-            uv = self._plane_hit_coords(
-                engine,
-                local_mx,
-                local_my,
-                scene_w,
-                scene_h,
-                self._gizmo_drag_start_pos,
-                self._gizmo_drag_plane_u,
-                self._gizmo_drag_plane_v,
-            )
-            if uv is None:
-                return
-
-            du = uv[0] - self._gizmo_drag_plane_start_uv[0]
-            dv = uv[1] - self._gizmo_drag_plane_start_uv[1]
-            if self._gizmo_snap_active:
-                du = self._snap_delta(du, TRANSLATE_SNAP_STEP)
-                dv = self._snap_delta(dv, TRANSLATE_SNAP_STEP)
-
-            delta_u = self._scale3(self._gizmo_drag_plane_u, du)
-            delta_v = self._scale3(self._gizmo_drag_plane_v, dv)
-            new_pos = self._add3(self._gizmo_drag_start_pos, self._add3(delta_u, delta_v))
-
-            from Infernux.lib._Infernux import SceneManager as _SM, Vector3
-            scene = _SM.instance().get_active_scene()
-            if scene:
-                obj = scene.find_by_id(self._gizmo_drag_obj_id)
-                if obj:
-                    obj.transform.position = Vector3(new_pos[0], new_pos[1], new_pos[2])
-            return
-
-        ray = engine.screen_to_world_ray(local_mx, local_my, scene_w, scene_h)
-        ad = self._gizmo_drag_axis_dir
-        sp = self._gizmo_drag_start_pos
-
-        cur_t = self._closest_param_on_axis(ray[:3], ray[3:], sp, ad)
-        delta = cur_t - self._gizmo_drag_start_t
-        if self._gizmo_snap_active:
-            delta = self._snap_delta(delta, TRANSLATE_SNAP_STEP)
-
-        new_pos = (sp[0] + ad[0] * delta,
-                   sp[1] + ad[1] * delta,
-                   sp[2] + ad[2] * delta)
-        from Infernux.lib._Infernux import SceneManager as _SM, Vector3
-        scene = _SM.instance().get_active_scene()
-        if scene:
-            obj = scene.find_by_id(self._gizmo_drag_obj_id)
-            if obj:
-                obj.transform.position = Vector3(new_pos[0], new_pos[1], new_pos[2])
-
-    def _drag_rotate(self, engine, local_mx, local_my, scene_w, scene_h):
-        """Rotation around the drag axis (world or local depending on coord space)."""
-        # Screen-space delta from drag start → rotation angle.
-        # 200 pixels of horizontal movement ≈ 180°, like Unity.
-        dx = local_mx - self._gizmo_drag_start_screen[0]
-
-        ad = self._gizmo_drag_axis_dir  # world-space axis (global or local)
-
-        # Camera-relative sign correction so the visible ring always follows
-        # the mouse drag direction.
-        #
-        # Derivation: the front-most point on the ring (nearest the camera)
-        # moves by  δθ · cross(A, P_front).  The horizontal screen component
-        # of that movement must have the same sign as the mouse dx.
-        # Working through the projection math:
-        #   sign = sign( dot(A, camera_up) )
-        # where camera_up = cross(camera_right, view_fwd) and
-        #       camera_right = normalize(cross(view_fwd, world_up)).
-        cam_pos = engine.editor_camera.position
-        op = self._gizmo_drag_start_pos
-        vf = (op[0] - cam_pos.x, op[1] - cam_pos.y, op[2] - cam_pos.z)
-        vf_len = math.sqrt(vf[0]**2 + vf[1]**2 + vf[2]**2)
-        if vf_len > 1e-9:
-            vf = (vf[0]/vf_len, vf[1]/vf_len, vf[2]/vf_len)
-            # camera_right = normalize(cross(view_fwd, world_up=(0,1,0)))
-            #              = normalize((-vf_z, 0, vf_x))
-            cr_x, cr_z = -vf[2], vf[0]
-            cr_len = math.sqrt(cr_x**2 + cr_z**2)
-            if cr_len > 1e-9:
-                cr = (cr_x/cr_len, 0.0, cr_z/cr_len)
-            else:
-                cr = (1.0, 0.0, 0.0)  # camera looking straight up/down
-            # camera_up = cross(camera_right, view_fwd)
-            cu = (cr[1]*vf[2] - cr[2]*vf[1],
-                  cr[2]*vf[0] - cr[0]*vf[2],
-                  cr[0]*vf[1] - cr[1]*vf[0])
-            sign_val = ad[0]*cu[0] + ad[1]*cu[1] + ad[2]*cu[2]
-            sign = 1.0 if sign_val >= 0 else -1.0
-        else:
-            sign = 1.0
-
-        angle_deg = -dx * (180.0 / 200.0) * sign
-        if self._gizmo_snap_active:
-            angle_deg = self._snap_delta(angle_deg, ROTATE_SNAP_DEGREES)
-
-        se = self._gizmo_drag_start_euler
-        q_start = _euler_deg_to_quat(se[0], se[1], se[2])
-        q_delta = _axis_angle_to_quat(ad[0], ad[1], ad[2], angle_deg)
-
-        # Always pre-multiply: the axis in q_delta is already expressed in
-        # world space for both Global mode (world unit axis) and Local mode
-        # (object's local axis mapped to world space).
-        q_new = _quat_mul(q_delta, q_start)
-        new_euler = _quat_to_euler_deg(q_new)
-
-        from Infernux.lib._Infernux import SceneManager as _SM, Vector3
-        scene = _SM.instance().get_active_scene()
-        if scene:
-            obj = scene.find_by_id(self._gizmo_drag_obj_id)
-            if obj:
-                obj.transform.euler_angles = Vector3(new_euler[0], new_euler[1], new_euler[2])
-
-    def _drag_scale(self, engine, local_mx, local_my, scene_w, scene_h):
-        """Scale along the drag axis. In Local mode, scale applies directly to
-        the corresponding local_scale component. In Global mode, the world-axis
-        scale factor is decomposed onto local axes."""
-        if self._gizmo_drag_axis in _PLANE_AXIS_PAIRS:
-            uv = self._plane_hit_coords(
-                engine,
-                local_mx,
-                local_my,
-                scene_w,
-                scene_h,
-                self._gizmo_drag_start_pos,
-                self._gizmo_drag_plane_u,
-                self._gizmo_drag_plane_v,
-            )
-            if uv is None:
-                return
-
-            factor_u = self._plane_factor(uv[0], self._gizmo_drag_plane_start_uv[0])
-            factor_v = self._plane_factor(uv[1], self._gizmo_drag_plane_start_uv[1])
-            if self._gizmo_snap_active:
-                factor_u = 1.0 + self._snap_delta(factor_u - 1.0, SCALE_SNAP_FACTOR)
-                factor_v = 1.0 + self._snap_delta(factor_v - 1.0, SCALE_SNAP_FACTOR)
-            factor_u = max(factor_u, 0.01)
-            factor_v = max(factor_v, 0.01)
-
-            from Infernux.lib._Infernux import SceneManager as _SM, Vector3
-            scene = _SM.instance().get_active_scene()
-            if not scene:
-                return
-            obj = scene.find_by_id(self._gizmo_drag_obj_id)
-            if not obj:
-                return
-
-            ss = self._gizmo_drag_start_scale
-            new_scale = list(ss)
-            axis_a, axis_b = self._gizmo_drag_plane_axes
-            if self._coord_space == 1:
-                new_scale[axis_a - 1] = max(ss[axis_a - 1] * factor_u, 0.001)
-                new_scale[axis_b - 1] = max(ss[axis_b - 1] * factor_v, 0.001)
-            else:
-                r = obj.transform.right
-                u = obj.transform.up
-                f = obj.transform.forward
-                local_axes = [
-                    (r[0], r[1], r[2]),
-                    (u[0], u[1], u[2]),
-                    (f[0], f[1], f[2]),
-                ]
-                for i in range(3):
-                    dot_u = self._dot3(self._gizmo_drag_plane_u, local_axes[i])
-                    dot_v = self._dot3(self._gizmo_drag_plane_v, local_axes[i])
-                    local_factor_u = 1.0 + (factor_u - 1.0) * dot_u * dot_u
-                    local_factor_v = 1.0 + (factor_v - 1.0) * dot_v * dot_v
-                    new_scale[i] = max(ss[i] * local_factor_u * local_factor_v, 0.001)
-
-            obj.transform.local_scale = Vector3(new_scale[0], new_scale[1], new_scale[2])
-            return
-
-        ray = engine.screen_to_world_ray(local_mx, local_my, scene_w, scene_h)
-        ad = self._gizmo_drag_axis_dir
-        sp = self._gizmo_drag_start_pos
-
-        cur_t = self._closest_param_on_axis(ray[:3], ray[3:], sp, ad)
-        start_t = self._gizmo_drag_start_t
-
-        # Scale factor: ratio of current projection to initial projection
-        if abs(start_t) < 1e-6:
-            factor = 1.0 + (cur_t - start_t)
-        else:
-            factor = cur_t / start_t
-        if self._gizmo_snap_active:
-            factor = 1.0 + self._snap_delta(factor - 1.0, SCALE_SNAP_FACTOR)
-        factor = max(factor, 0.01)
-
-        from Infernux.lib._Infernux import SceneManager as _SM, Vector3
-        scene = _SM.instance().get_active_scene()
-        if not scene:
-            return
-        obj = scene.find_by_id(self._gizmo_drag_obj_id)
-        if not obj:
-            return
-
-        ss = self._gizmo_drag_start_scale
-        new_scale = list(ss)
-
-        if self._coord_space == 1:
-            # Local mode: scale directly on the axis component (1=X, 2=Y, 3=Z)
-            axis_idx = self._gizmo_drag_axis - 1  # 0, 1, or 2
-            new_scale[axis_idx] = max(ss[axis_idx] * factor, 0.001)
-        else:
-            # Global mode: decompose world-axis scale onto local axes
-            r = obj.transform.right
-            u = obj.transform.up
-            f = obj.transform.forward
-            local_axes = [
-                (r[0], r[1], r[2]),
-                (u[0], u[1], u[2]),
-                (f[0], f[1], f[2]),
-            ]
-            for i in range(3):
-                dot_val = (ad[0] * local_axes[i][0] +
-                           ad[1] * local_axes[i][1] +
-                           ad[2] * local_axes[i][2])
-                local_factor = 1.0 + (factor - 1.0) * dot_val * dot_val
-                new_scale[i] = max(ss[i] * local_factor, 0.001)
-
-        obj.transform.local_scale = Vector3(new_scale[0], new_scale[1], new_scale[2])
-
-    def _record_gizmo_undo(self, mode: int):
-        """Record an undo command for the gizmo drag that just finished."""
-        from Infernux.lib._Infernux import SceneManager as _SM, Vector3
-        from Infernux.engine.undo import UndoManager, SetPropertyCommand
-
-        scene = _SM.instance().get_active_scene()
-        if not scene or not self._gizmo_drag_obj_id:
-            return
-        obj = scene.find_by_id(self._gizmo_drag_obj_id)
-        if not obj:
-            return
-
-        transform = obj.transform
-
-        if mode == TOOL_TRANSLATE:
-            old_val = Vector3(*self._gizmo_drag_start_pos)
-            new_val_raw = transform.position
-            new_val = Vector3(new_val_raw[0], new_val_raw[1], new_val_raw[2])
-            if self._vec3_approx_equal(old_val, new_val):
-                return
-            cmd = SetPropertyCommand(transform, "position",
-                                     old_val, new_val, "Translate")
-        elif mode == TOOL_ROTATE:
-            old_val = Vector3(*self._gizmo_drag_start_euler)
-            new_val_raw = transform.euler_angles
-            new_val = Vector3(new_val_raw[0], new_val_raw[1], new_val_raw[2])
-            if self._vec3_approx_equal(old_val, new_val):
-                return
-            cmd = SetPropertyCommand(transform, "euler_angles",
-                                     old_val, new_val, "Rotate")
-        elif mode == TOOL_SCALE:
-            old_val = Vector3(*self._gizmo_drag_start_scale)
-            new_val_raw = transform.local_scale
-            new_val = Vector3(new_val_raw[0], new_val_raw[1], new_val_raw[2])
-            if self._vec3_approx_equal(old_val, new_val):
-                return
-            cmd = SetPropertyCommand(transform, "local_scale",
-                                     old_val, new_val, "Scale")
-        else:
-            return
-
-        UndoManager.instance().record(cmd)
 
     @staticmethod
     def _vec3_approx_equal(a, b, eps=1e-5):
@@ -1474,134 +657,9 @@ class SceneViewPanel(EditorPanel):
                 abs(a[1] - b[1]) < eps and
                 abs(a[2] - b[2]) < eps)
 
-    def reset_camera(self):
-        """Reset camera to default position."""
-        cam = self._engine.editor_camera if self._engine else None
-        if cam:
-            cam.reset()
-    
-    def focus_on(self, x: float, y: float, z: float, distance: float = 10.0):
-        """Focus camera on a point."""
-        cam = self._engine.editor_camera if self._engine else None
-        if cam:
-            cam.focus_on(x, y, z, distance)
-
     # ------------------------------------------------------------------
     # Smooth camera fly-to (animated frame-selected)
     # ------------------------------------------------------------------
-
-    def fly_to_object(self, game_object):
-        """Start a smooth camera animation to focus on *game_object*.
-
-        Computes the bounding sphere of all MeshRenderers on the object
-        (and children) and derives the camera distance using Unity's
-        formula: distance = radius / sin(fov/2).
-
-        Alternates between a *far* (framing) and *close* (detail) distance
-        on repeated double-clicks of the same object, like Unity.
-        """
-        if not self._engine or game_object is None:
-            return
-
-        obj_id = game_object.id
-
-        # Toggle near/far on repeated double-click of the same object
-        if obj_id == self._fly_to_last_obj_id:
-            self._fly_to_close = not self._fly_to_close
-        else:
-            self._fly_to_close = False
-        self._fly_to_last_obj_id = obj_id
-
-        center, radius = self._compute_object_bounds(game_object)
-
-        # Target distance (Unity formula + small padding)
-        cam = self._engine.editor_camera
-        fov_deg = cam.fov
-        half_fov_rad = math.radians(fov_deg * 0.5)
-        sin_half = math.sin(half_fov_rad)
-        if sin_half < 1e-6:
-            sin_half = 1e-6
-        far_dist = max(radius / sin_half * 1.2, 0.5)
-        close_dist = far_dist * 0.4
-        target_dist = close_dist if self._fly_to_close else far_dist
-
-        # Current camera state — compute consistent focus from actual
-        # camera position to avoid stale m_focusPoint causing a flash.
-        cur_pos = cam.position
-        cur_dist = cam.focus_distance
-        cur_yaw, cur_pitch = cam.rotation
-
-        yr = math.radians(cur_yaw)
-        pr = math.radians(cur_pitch)
-        cp = math.cos(pr)
-        fwd = (math.sin(yr) * cp, -math.sin(pr), math.cos(yr) * cp)
-        actual_focus = (cur_pos.x + fwd[0] * cur_dist,
-                        cur_pos.y + fwd[1] * cur_dist,
-                        cur_pos.z + fwd[2] * cur_dist)
-
-        # Target yaw/pitch: keep current viewing direction
-        # Keep the current viewing direction for volumetric objects, but for
-        # flat one-sided meshes (e.g. old quads) prefer the visible face so
-        # framing does not fly to the culled side.
-        target_orientation = self._preferred_focus_angles(game_object)
-        if target_orientation is not None:
-            target_yaw, target_pitch = target_orientation
-        else:
-            target_yaw = cur_yaw
-            target_pitch = cur_pitch
-
-        # Store animation state
-        self._fly_to_start_focus = actual_focus
-        self._fly_to_start_dist = cur_dist
-        self._fly_to_start_yaw = cur_yaw
-        self._fly_to_start_pitch = cur_pitch
-
-        self._fly_to_target_focus = center
-        self._fly_to_target_dist = target_dist
-        self._fly_to_target_yaw = target_yaw
-        self._fly_to_target_pitch = target_pitch
-
-        self._fly_to_elapsed = 0.0
-        self._fly_to_duration = 0.5
-        self._fly_to_active = True
-
-    def _tick_fly_to(self, dt: float):
-        """Advance the fly-to animation by *dt* seconds."""
-        self._fly_to_elapsed += dt
-        t = min(self._fly_to_elapsed / self._fly_to_duration, 1.0)
-
-        # Cubic ease-out for smooth deceleration
-        t = 1.0 - (1.0 - t) ** 3
-
-        # Interpolate focus point
-        fx = self._fly_to_start_focus[0] + (self._fly_to_target_focus[0] - self._fly_to_start_focus[0]) * t
-        fy = self._fly_to_start_focus[1] + (self._fly_to_target_focus[1] - self._fly_to_start_focus[1]) * t
-        fz = self._fly_to_start_focus[2] + (self._fly_to_target_focus[2] - self._fly_to_start_focus[2]) * t
-
-        # Interpolate distance
-        dist = self._fly_to_start_dist + (self._fly_to_target_dist - self._fly_to_start_dist) * t
-
-        # Interpolate yaw/pitch (shortest-path for yaw)
-        yaw = self._lerp_angle(self._fly_to_start_yaw, self._fly_to_target_yaw, t)
-        pitch = self._fly_to_start_pitch + (self._fly_to_target_pitch - self._fly_to_start_pitch) * t
-
-        # Compute camera position from focus - forward * distance.
-        yaw_rad = math.radians(yaw)
-        pitch_rad = math.radians(pitch)
-        cos_pitch = math.cos(pitch_rad)
-        forward_x = math.sin(yaw_rad) * cos_pitch
-        forward_y = -math.sin(pitch_rad)
-        forward_z = math.cos(yaw_rad) * cos_pitch
-        px = fx - forward_x * dist
-        py = fy - forward_y * dist
-        pz = fz - forward_z * dist
-
-        self._engine.editor_camera.restore_state(
-            px, py, pz, fx, fy, fz, dist, yaw, pitch
-        )
-
-        if t >= 1.0:
-            self._fly_to_active = False
 
     @staticmethod
     def _lerp_angle(a: float, b: float, t: float) -> float:
@@ -1634,7 +692,8 @@ class SceneViewPanel(EditorPanel):
                             if bounds[i + 3] > bmax[i]:
                                 bmax[i] = bounds[i + 3]
                         found = True
-                except Exception:
+                except Exception as _exc:
+                    Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
                     pass
             for child in obj.get_children():
                 _collect(child)
@@ -1673,7 +732,8 @@ class SceneViewPanel(EditorPanel):
         try:
             positions = mr.get_positions()
             indices = mr.get_indices()
-        except Exception:
+        except Exception as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             return None
 
         if not positions or len(indices) < 3:
@@ -1734,7 +794,10 @@ class SceneViewPanel(EditorPanel):
         if cull_mode == 0:
             return None
 
-        front_face = int(getattr(render_state, 'front_face', 1))
+        try:
+            front_face = int(getattr(render_state, 'front_face', 1))
+        except (TypeError, ValueError):
+            front_face = 1
         front_sign = -1.0 if front_face == 1 else 1.0
         visible_sign = front_sign if cull_mode == 2 else -front_sign
         local_side = (
@@ -1747,7 +810,8 @@ class SceneViewPanel(EditorPanel):
             from Infernux.math import Vector3
             world_side_vec = obj.transform.transform_direction(Vector3(*local_side))
             world_side = cls._vector3_to_tuple(world_side_vec)
-        except Exception:
+        except Exception as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             return None
 
         return cls._normalize3(world_side)
@@ -1782,49 +846,4 @@ class SceneViewPanel(EditorPanel):
         # C++ convention: forward.y = -sin(pitch), so pitch = asin(-forward.y)
         pitch = math.degrees(math.asin(max(-1.0, min(1.0, -forward[1]))))
         return yaw, pitch
-
-    def _align_object_to_camera(self):
-        """Align the selected object's world transform to the editor camera."""
-        if not self._engine:
-            return
-
-        obj_id = self._engine.get_selected_object_id()
-        if not obj_id:
-            return
-
-        from Infernux.lib import SceneManager
-        scene = SceneManager.instance().get_active_scene()
-        if not scene:
-            return
-        obj = scene.find_by_id(obj_id)
-        if obj is None:
-            return
-
-        cam = self._engine.editor_camera
-        cam_pos = cam.position
-        cam_yaw, cam_pitch = cam.rotation
-
-        from Infernux.math import Vector3
-
-        transform = obj.transform
-        old_pos = (transform.position.x, transform.position.y, transform.position.z)
-        old_euler = (transform.euler_angles.x, transform.euler_angles.y, transform.euler_angles.z)
-
-        new_pos = Vector3(cam_pos.x, cam_pos.y, cam_pos.z)
-        new_euler = Vector3(cam_pitch, cam_yaw, 0.0)
-
-        transform.position = new_pos
-        transform.euler_angles = new_euler
-
-        # Record undo
-        from Infernux.engine.undo import UndoManager, SetPropertyCommand
-        mgr = UndoManager.instance()
-        if mgr:
-            mgr.record(SetPropertyCommand(
-                transform, "position",
-                Vector3(*old_pos), new_pos, "Align Position"))
-            mgr.record(SetPropertyCommand(
-                transform, "euler_angles",
-                Vector3(*old_euler), new_euler, "Align Rotation"))
-
 
