@@ -154,95 +154,6 @@ class UIEditorAlignmentMixin:
         self._active_alignment_guides = guides
         return vis_x, vis_y
 
-    def _snap_resize_x(self, elem, w_sign, new_w, new_h, fixed_idx,
-                        fixed_cx, fixed_cy, candidates_x, snap_tol):
-        """Snap horizontal resize edges. Returns *(new_w, guides)*."""
-        if w_sign == 0:
-            return new_w, []
-        off_x, off_y = elem._rotated_corner_offset(new_w, new_h, fixed_idx)
-        rect_x = fixed_cx - off_x
-        rect_left = rect_x
-        rect_right = rect_x + new_w
-        rect_cx = rect_x + new_w * 0.5
-        check_points = [rect_right, rect_cx] if w_sign > 0 else [rect_left, rect_cx]
-
-        best_dx = None
-        for edge_pos in check_points:
-            for _ck, cand_pos, _s0, _s1 in candidates_x:
-                delta = cand_pos - edge_pos
-                if abs(delta) <= snap_tol and (best_dx is None or abs(delta) < abs(best_dx)):
-                    best_dx = delta
-
-        if best_dx is None:
-            return new_w, []
-
-        new_w += best_dx * w_sign
-        new_w = max(new_w, Theme.UI_EDITOR_MIN_ELEM_SIZE)
-        off_xa, off_ya = elem._rotated_corner_offset(new_w, new_h, fixed_idx)
-        snapped_left = fixed_cx - off_xa
-        snapped_right = snapped_left + new_w
-        snapped_cx = snapped_left + new_w * 0.5
-        snapped_top = fixed_cy - off_ya
-        snapped_bot = snapped_top + new_h
-        snap_pts = [snapped_left, snapped_cx, snapped_right]
-        _eps = 0.5
-        guides = []
-        seen_x = set()
-        for sp in snap_pts:
-            for _ck, cand_pos, span0, span1 in candidates_x:
-                if abs(cand_pos - sp) < _eps and cand_pos not in seen_x:
-                    seen_x.add(cand_pos)
-                    top = min(snapped_top, span0)
-                    bottom = max(snapped_bot, span1)
-                    guides.append(("v", cand_pos, top, bottom))
-        return new_w, guides
-
-    def _snap_resize_y(self, elem, h_sign, new_w, new_h, fixed_idx,
-                        fixed_cx, fixed_cy, candidates_y, snap_tol):
-        """Snap vertical resize edges. Returns *(new_h, guides)*."""
-        if h_sign == 0:
-            return new_h, []
-        off_x2, off_y2 = elem._rotated_corner_offset(new_w, new_h, fixed_idx)
-        rect_x2 = fixed_cx - off_x2
-        rect_y2 = fixed_cy - off_y2
-        rect_top2 = rect_y2
-        rect_bottom2 = rect_y2 + new_h
-        rect_cy2 = rect_y2 + new_h * 0.5
-        rect_left2 = rect_x2
-        rect_right2 = rect_x2 + new_w
-        check_points = [rect_bottom2, rect_cy2] if h_sign > 0 else [rect_top2, rect_cy2]
-
-        best_dy = None
-        for edge_pos in check_points:
-            for _ck, cand_pos, _s0, _s1 in candidates_y:
-                delta = cand_pos - edge_pos
-                if abs(delta) <= snap_tol and (best_dy is None or abs(delta) < abs(best_dy)):
-                    best_dy = delta
-
-        if best_dy is None:
-            return new_h, []
-
-        new_h += best_dy * h_sign
-        new_h = max(new_h, Theme.UI_EDITOR_MIN_ELEM_SIZE)
-        off_x3, off_y3 = elem._rotated_corner_offset(new_w, new_h, fixed_idx)
-        snapped_left2 = fixed_cx - off_x3
-        snapped_right2 = snapped_left2 + new_w
-        snapped_top2 = fixed_cy - off_y3
-        snapped_bot2 = snapped_top2 + new_h
-        snapped_cy2 = snapped_top2 + new_h * 0.5
-        snap_pts = [snapped_top2, snapped_cy2, snapped_bot2]
-        _eps = 0.5
-        guides = []
-        seen_y = set()
-        for sp in snap_pts:
-            for _ck, cand_pos, span0, span1 in candidates_y:
-                if abs(cand_pos - sp) < _eps and cand_pos not in seen_y:
-                    seen_y.add(cand_pos)
-                    left = min(snapped_left2, span0)
-                    right = max(snapped_right2, span1)
-                    guides.append(("h", cand_pos, left, right))
-        return new_h, guides
-
     def _apply_resize_alignment_snapping(self, canvas, elem, new_w, new_h,
                                          w_sign, h_sign, fixed_idx, ref_w, ref_h):
         """Snap moving edges of a resize operation to alignment guides.
@@ -264,17 +175,99 @@ class UIEditorAlignmentMixin:
         )
         snap_tol = Theme.UI_EDITOR_ALIGN_SNAP_PX / max(self._zoom, 1e-6)
 
+        # Compute the rect that would result from the current resize
         fixed_cx, fixed_cy = self._resize_start_corners[fixed_idx]
+        off_x, off_y = elem._rotated_corner_offset(new_w, new_h, fixed_idx)
+        rect_x = fixed_cx - off_x
+        rect_y = fixed_cy - off_y
+        # For non-rotated: visual rect == content rect
+        rect_left = rect_x
+        rect_right = rect_x + new_w
+        rect_top = rect_y
+        rect_bottom = rect_y + new_h
+        rect_cx = rect_x + new_w * 0.5
+        rect_cy = rect_y + new_h * 0.5
 
         guides = []
 
-        new_w, x_guides = self._snap_resize_x(
-            elem, w_sign, new_w, new_h, fixed_idx, fixed_cx, fixed_cy, candidates_x, snap_tol)
-        guides.extend(x_guides)
+        # --- Horizontal (X) snapping: check moving left/right edges ---
+        if w_sign != 0:
+            if w_sign > 0:
+                check_points = [rect_right, rect_cx]
+            else:
+                check_points = [rect_left, rect_cx]
 
-        new_h, y_guides = self._snap_resize_y(
-            elem, h_sign, new_w, new_h, fixed_idx, fixed_cx, fixed_cy, candidates_y, snap_tol)
-        guides.extend(y_guides)
+            best_dx = None
+            for edge_pos in check_points:
+                for _ck, cand_pos, _s0, _s1 in candidates_x:
+                    delta = cand_pos - edge_pos
+                    if abs(delta) <= snap_tol and (best_dx is None or abs(delta) < abs(best_dx)):
+                        best_dx = delta
+
+            if best_dx is not None:
+                new_w += best_dx * w_sign
+                new_w = max(new_w, Theme.UI_EDITOR_MIN_ELEM_SIZE)
+                # Recompute rect and collect ALL matching guides
+                off_xa, off_ya = elem._rotated_corner_offset(new_w, new_h, fixed_idx)
+                snapped_left = fixed_cx - off_xa
+                snapped_right = snapped_left + new_w
+                snapped_cx = snapped_left + new_w * 0.5
+                snapped_top = fixed_cy - off_ya
+                snapped_bot = snapped_top + new_h
+                snap_pts = [snapped_left, snapped_cx, snapped_right]
+                _eps = 0.5
+                seen_x = set()
+                for sp in snap_pts:
+                    for _ck, cand_pos, span0, span1 in candidates_x:
+                        if abs(cand_pos - sp) < _eps and cand_pos not in seen_x:
+                            seen_x.add(cand_pos)
+                            top = min(snapped_top, span0)
+                            bottom = max(snapped_bot, span1)
+                            guides.append(("v", cand_pos, top, bottom))
+
+        # --- Vertical (Y) snapping: check moving top/bottom edges ---
+        if h_sign != 0:
+            off_x2, off_y2 = elem._rotated_corner_offset(new_w, new_h, fixed_idx)
+            rect_x2 = fixed_cx - off_x2
+            rect_y2 = fixed_cy - off_y2
+            rect_top2 = rect_y2
+            rect_bottom2 = rect_y2 + new_h
+            rect_cy2 = rect_y2 + new_h * 0.5
+            rect_left2 = rect_x2
+            rect_right2 = rect_x2 + new_w
+
+            if h_sign > 0:
+                check_points = [rect_bottom2, rect_cy2]
+            else:
+                check_points = [rect_top2, rect_cy2]
+
+            best_dy = None
+            for edge_pos in check_points:
+                for _ck, cand_pos, _s0, _s1 in candidates_y:
+                    delta = cand_pos - edge_pos
+                    if abs(delta) <= snap_tol and (best_dy is None or abs(delta) < abs(best_dy)):
+                        best_dy = delta
+
+            if best_dy is not None:
+                new_h += best_dy * h_sign
+                new_h = max(new_h, Theme.UI_EDITOR_MIN_ELEM_SIZE)
+                # Recompute rect and collect ALL matching guides
+                off_x3, off_y3 = elem._rotated_corner_offset(new_w, new_h, fixed_idx)
+                snapped_left2 = fixed_cx - off_x3
+                snapped_right2 = snapped_left2 + new_w
+                snapped_top2 = fixed_cy - off_y3
+                snapped_bot2 = snapped_top2 + new_h
+                snapped_cy2 = snapped_top2 + new_h * 0.5
+                snap_pts = [snapped_top2, snapped_cy2, snapped_bot2]
+                _eps = 0.5
+                seen_y = set()
+                for sp in snap_pts:
+                    for _ck, cand_pos, span0, span1 in candidates_y:
+                        if abs(cand_pos - sp) < _eps and cand_pos not in seen_y:
+                            seen_y.add(cand_pos)
+                            left = min(snapped_left2, span0)
+                            right = max(snapped_right2, span1)
+                            guides.append(("h", cand_pos, left, right))
 
         self._active_alignment_guides = guides
         return new_w, new_h

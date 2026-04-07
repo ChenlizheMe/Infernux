@@ -48,8 +48,8 @@ struct DynamicViewportScissorState
 };
 
 /// Multisampling state with a configurable sample count.
-inline VkPipelineMultisampleStateCreateInfo
-MakeMultisampleState(VkSampleCountFlagBits sampleCount = VK_SAMPLE_COUNT_1_BIT)
+inline VkPipelineMultisampleStateCreateInfo MakeMultisampleState(
+    VkSampleCountFlagBits sampleCount = VK_SAMPLE_COUNT_1_BIT)
 {
     VkPipelineMultisampleStateCreateInfo ms{};
     ms.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;

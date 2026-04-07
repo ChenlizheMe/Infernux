@@ -41,15 +41,15 @@ class Transform : public Component
     /// @brief Get position in local (parent) space
     [[nodiscard]] glm::vec3 GetLocalPosition() const
     {
-        return TransformECSStore::Instance().GetLocalPosition(m_ecsHandle);
+        return TransformECSStore::Instance().Get(m_ecsHandle).localPosition;
     }
 
     /// @brief Set position in local (parent) space
     void SetLocalPosition(const glm::vec3 &position)
     {
-        auto &store = TransformECSStore::Instance();
-        store.SetLocalPosition(m_ecsHandle, position);
-        store.SetDirty(m_ecsHandle, true);
+        auto &data = TransformECSStore::Instance().Get(m_ecsHandle);
+        data.localPosition = position;
+        data.dirty = true;
         InvalidateWorldMatrix(false);
     }
     void SetLocalPosition(float x, float y, float z)
@@ -92,17 +92,17 @@ class Transform : public Component
     /// @brief Get rotation as Euler angles (degrees) in local space
     [[nodiscard]] glm::vec3 GetLocalEulerAngles() const
     {
-        return ToPublicEulerAngles(TransformECSStore::Instance().GetLocalEulerAngles(m_ecsHandle));
+        return ToPublicEulerAngles(TransformECSStore::Instance().Get(m_ecsHandle).localEulerAngles);
     }
 
     /// @brief Set rotation from Euler angles (degrees) in local space
     void SetLocalEulerAngles(const glm::vec3 &euler)
     {
-        auto &store = TransformECSStore::Instance();
-        store.SetLocalEulerAngles(m_ecsHandle, euler);
-        store.SetLocalRotation(m_ecsHandle, EulerYXZToQuat(euler));
-        store.SetHasCachedWorldEulerAngles(m_ecsHandle, false);
-        store.SetDirty(m_ecsHandle, true);
+        auto &data = TransformECSStore::Instance().Get(m_ecsHandle);
+        data.localEulerAngles = euler;
+        data.localRotation = EulerYXZToQuat(euler);
+        data.hasCachedWorldEulerAngles = false;
+        data.dirty = true;
         InvalidateWorldMatrix(true);
     }
     void SetLocalEulerAngles(float x, float y, float z)
@@ -113,18 +113,17 @@ class Transform : public Component
     /// @brief Get rotation as quaternion in local space
     [[nodiscard]] glm::quat GetLocalRotation() const
     {
-        return TransformECSStore::Instance().GetLocalRotation(m_ecsHandle);
+        return TransformECSStore::Instance().Get(m_ecsHandle).localRotation;
     }
 
     /// @brief Set rotation from quaternion in local space
     void SetLocalRotation(const glm::quat &rotation)
     {
-        auto &store = TransformECSStore::Instance();
-        store.SetLocalRotation(m_ecsHandle, rotation);
-        store.SetLocalEulerAngles(m_ecsHandle,
-                                  ExtractEulerAnglesNear(rotation, store.GetLocalEulerAngles(m_ecsHandle)));
-        store.SetHasCachedWorldEulerAngles(m_ecsHandle, false);
-        store.SetDirty(m_ecsHandle, true);
+        auto &data = TransformECSStore::Instance().Get(m_ecsHandle);
+        data.localRotation = rotation;
+        data.localEulerAngles = ExtractEulerAnglesNear(rotation, data.localEulerAngles);
+        data.hasCachedWorldEulerAngles = false;
+        data.dirty = true;
         InvalidateWorldMatrix(true);
     }
 
@@ -172,13 +171,13 @@ class Transform : public Component
 
     [[nodiscard]] glm::vec3 GetLocalScale() const
     {
-        return TransformECSStore::Instance().GetLocalScale(m_ecsHandle);
+        return TransformECSStore::Instance().Get(m_ecsHandle).localScale;
     }
     void SetLocalScale(const glm::vec3 &scale)
     {
-        auto &store = TransformECSStore::Instance();
-        store.SetLocalScale(m_ecsHandle, scale);
-        store.SetDirty(m_ecsHandle, true);
+        auto &data = TransformECSStore::Instance().Get(m_ecsHandle);
+        data.localScale = scale;
+        data.dirty = true;
         InvalidateWorldMatrix(false);
     }
     void SetLocalScale(float x, float y, float z)
@@ -193,7 +192,7 @@ class Transform : public Component
     /// @brief Aliases — GetScale/SetScale map to local scale (Unity convention)
     [[nodiscard]] glm::vec3 GetScale() const
     {
-        return TransformECSStore::Instance().GetLocalScale(m_ecsHandle);
+        return TransformECSStore::Instance().Get(m_ecsHandle).localScale;
     }
     void SetScale(const glm::vec3 &s)
     {
@@ -328,26 +327,24 @@ class Transform : public Component
     /// @brief Rotate by Euler angles (degrees) in local space. Unity: transform.Rotate(euler)
     void Rotate(const glm::vec3 &euler)
     {
-        auto &store = TransformECSStore::Instance();
+        auto &data = TransformECSStore::Instance().Get(m_ecsHandle);
         glm::quat deltaRotation = EulerYXZToQuat(euler);
-        glm::quat newRot = store.GetLocalRotation(m_ecsHandle) * deltaRotation;
-        store.SetLocalRotation(m_ecsHandle, newRot);
-        store.SetLocalEulerAngles(m_ecsHandle, ExtractEulerAnglesNear(newRot, store.GetLocalEulerAngles(m_ecsHandle)));
-        store.SetHasCachedWorldEulerAngles(m_ecsHandle, false);
-        store.SetDirty(m_ecsHandle, true);
+        data.localRotation = data.localRotation * deltaRotation;
+        data.localEulerAngles = ExtractEulerAnglesNear(data.localRotation, data.localEulerAngles);
+        data.hasCachedWorldEulerAngles = false;
+        data.dirty = true;
         InvalidateWorldMatrix(true);
     }
 
     /// @brief Rotate around a local axis by angle (degrees). Unity: transform.Rotate(axis, angle)
     void Rotate(const glm::vec3 &axis, float angle)
     {
-        auto &store = TransformECSStore::Instance();
+        auto &data = TransformECSStore::Instance().Get(m_ecsHandle);
         glm::quat deltaRotation = glm::angleAxis(glm::radians(angle), glm::normalize(axis));
-        glm::quat newRot = store.GetLocalRotation(m_ecsHandle) * deltaRotation;
-        store.SetLocalRotation(m_ecsHandle, newRot);
-        store.SetLocalEulerAngles(m_ecsHandle, ExtractEulerAnglesNear(newRot, store.GetLocalEulerAngles(m_ecsHandle)));
-        store.SetHasCachedWorldEulerAngles(m_ecsHandle, false);
-        store.SetDirty(m_ecsHandle, true);
+        data.localRotation = data.localRotation * deltaRotation;
+        data.localEulerAngles = ExtractEulerAnglesNear(data.localRotation, data.localEulerAngles);
+        data.hasCachedWorldEulerAngles = false;
+        data.dirty = true;
         InvalidateWorldMatrix(true);
     }
 
@@ -389,18 +386,18 @@ class Transform : public Component
     /// @brief Get local transformation matrix (from local position/rotation/scale)
     [[nodiscard]] glm::mat4 GetLocalMatrix() const
     {
-        const auto &store = TransformECSStore::Instance();
-        glm::mat4 translation = glm::translate(glm::mat4(1.0f), store.GetLocalPosition(m_ecsHandle));
-        glm::mat4 rotation = glm::mat4_cast(store.GetLocalRotation(m_ecsHandle));
-        glm::mat4 scale = glm::scale(glm::mat4(1.0f), store.GetLocalScale(m_ecsHandle));
+        const auto &data = TransformECSStore::Instance().Get(m_ecsHandle);
+        glm::mat4 translation = glm::translate(glm::mat4(1.0f), data.localPosition);
+        glm::mat4 rotation = glm::mat4_cast(data.localRotation);
+        glm::mat4 scale = glm::scale(glm::mat4(1.0f), data.localScale);
         return translation * rotation * scale;
     }
 
     /// @brief Get world transformation matrix (considering parent hierarchy). Unity: transform.localToWorldMatrix
-    [[nodiscard]] const glm::mat4 &GetWorldMatrix() const;
+    [[nodiscard]] glm::mat4 GetWorldMatrix() const;
 
     /// @brief Alias for GetWorldMatrix(). Unity naming: localToWorldMatrix
-    [[nodiscard]] const glm::mat4 &GetLocalToWorldMatrix() const
+    [[nodiscard]] glm::mat4 GetLocalToWorldMatrix() const
     {
         return GetWorldMatrix();
     }
@@ -411,13 +408,13 @@ class Transform : public Component
     /// @brief Check if transform has been modified. Unity: transform.hasChanged
     [[nodiscard]] bool HasChanged() const
     {
-        return TransformECSStore::Instance().GetDirty(m_ecsHandle);
+        return TransformECSStore::Instance().Get(m_ecsHandle).dirty;
     }
 
     /// @brief Clear changed flag. Unity: transform.hasChanged = false
     void SetHasChanged(bool value)
     {
-        TransformECSStore::Instance().SetDirty(m_ecsHandle, value);
+        TransformECSStore::Instance().Get(m_ecsHandle).dirty = value;
     }
 
     [[nodiscard]] TransformECSStore::Handle GetECSHandle() const
@@ -443,8 +440,8 @@ class Transform : public Component
     [[nodiscard]] std::unique_ptr<Component> Clone() const override;
 
   private:
-    [[nodiscard]] Transform *GetParentTransformSafe() const;
-    [[nodiscard]] glm::vec3 GetWorldDirection(const glm::vec3 &localAxis) const;
+        [[nodiscard]] Transform *GetParentTransformSafe() const;
+        [[nodiscard]] glm::vec3 GetWorldDirection(const glm::vec3 &localAxis) const;
 
     // ========================================================================
     // Unity-aligned YXZ intrinsic Euler convention

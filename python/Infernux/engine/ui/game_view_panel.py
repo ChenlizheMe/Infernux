@@ -27,6 +27,7 @@ from .closable_panel import ClosablePanel
 from .panel_registry import editor_panel
 from .theme import Theme, ImGuiCol
 from .viewport_utils import capture_viewport_info
+from Infernux.debug import Debug
 
 _sort_by_sort_order = attrgetter('sort_order')
 
@@ -176,7 +177,8 @@ class GameViewPanel(EditorPanel):
         try:
             with open(path, "r", encoding="utf-8", errors="replace") as f:
                 cp.read_string(f.read())
-        except (OSError, configparser.Error):
+        except (OSError, configparser.Error) as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             return
         if "GameView" not in cp:
             return

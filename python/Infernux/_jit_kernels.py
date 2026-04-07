@@ -49,7 +49,8 @@ def _log_jit(msg: str) -> None:
     try:
         from Infernux.debug import Debug  # late import to avoid circular deps
         Debug.log_internal(msg)
-    except Exception:
+    except Exception as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         pass
 
 

@@ -240,9 +240,7 @@ VkPushConstantRange MakeVertexPushConstantRange(uint32_t size)
     return pushConstantRange;
 }
 
-using infernux::vkrender::MakeMultisampleState;
 using infernux::vkrender::MakeShaderStageInfo;
-using infernux::vkrender::MakeTriangleListInputAssembly;
 
 VkPipelineVertexInputStateCreateInfo MakeVertexInputState(const VkVertexInputBindingDescription &bindingDesc,
                                                           const VkVertexInputAttributeDescription *attrDesc,
@@ -255,6 +253,14 @@ VkPipelineVertexInputStateCreateInfo MakeVertexInputState(const VkVertexInputBin
     vertexInput.vertexAttributeDescriptionCount = attrCount;
     vertexInput.pVertexAttributeDescriptions = attrDesc;
     return vertexInput;
+}
+
+VkPipelineInputAssemblyStateCreateInfo MakeTriangleListInputAssembly()
+{
+    VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
+    inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    return inputAssembly;
 }
 
 VkPipelineViewportStateCreateInfo MakeDynamicViewportState()
@@ -275,6 +281,14 @@ VkPipelineRasterizationStateCreateInfo MakeRasterizationState()
     rasterization.frontFace = VK_FRONT_FACE_CLOCKWISE;
     rasterization.lineWidth = 1.0f;
     return rasterization;
+}
+
+VkPipelineMultisampleStateCreateInfo MakeMultisampleState(VkSampleCountFlagBits samples)
+{
+    VkPipelineMultisampleStateCreateInfo multisample{};
+    multisample.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+    multisample.rasterizationSamples = samples;
+    return multisample;
 }
 
 VkPipelineColorBlendAttachmentState MakeAlphaBlendAttachment()

@@ -4,9 +4,9 @@ from __future__ import annotations
 """
 EditorBootstrap — structured editor initialization.
 
-Breaks the monolithic ``release_engine()`` startup path into explicit
-startup steps. Each step is a separate method, closures become instance
-methods, and panel/manager references live on the bootstrap instance.
+Replaces the monolithic ``release_engine()`` god-function with organized
+lifecycle phases.  Each phase is a separate method, closures become
+instance methods, and all panel/manager references are instance attributes.
 """
 
 
@@ -149,7 +149,7 @@ class BootstrapPanelsMixin:
         self.frame_scheduler = FrameSchedulerPanel(engine=engine)
         engine.register_gui("frame_scheduler", self.frame_scheduler)
 
-        # Menu bar (native C++ panel)
+        # Menu bar (C++ native panel — replaces Python MenuBarPanel)
         from Infernux.lib import MenuBarPanel as NativeMenuBarPanel
         from Infernux.engine.i18n import t as _t
         self.menu_bar = NativeMenuBarPanel()
@@ -157,7 +157,7 @@ class BootstrapPanelsMixin:
         self._wire_menu_bar_callbacks(wm)
         engine.register_gui("menu_bar", self.menu_bar)
 
-        # Toolbar (native C++ panel)
+        # Toolbar (C++ native panel — replaces Python ToolbarPanel)
         from Infernux.lib import ToolbarPanel as NativeToolbarPanel, PlayState
         self.toolbar = NativeToolbarPanel()
         self.toolbar.translate = _t
@@ -171,21 +171,21 @@ class BootstrapPanelsMixin:
             if cam_settings:
                 self.toolbar.set_camera_settings(cam_settings)
 
-        # Hierarchy (native C++ panel)
+        # Hierarchy (C++ native panel — replaces Python HierarchyPanel)
         from Infernux.lib import HierarchyPanel as NativeHierarchyPanel
         self.hierarchy = NativeHierarchyPanel()
         self._wire_hierarchy_callbacks()
         engine.register_gui("hierarchy", self.hierarchy)
         wm.register_existing_window("hierarchy", self.hierarchy, "hierarchy")
 
-        # Inspector (native C++ panel)
+        # Inspector (C++ native panel — replaces Python InspectorPanel)
         from Infernux.lib import InspectorPanel as NativeInspectorPanel
         self.inspector_panel = NativeInspectorPanel()
         self._wire_inspector_callbacks()
         engine.register_gui("inspector", self.inspector_panel)
         wm.register_existing_window("inspector", self.inspector_panel, "inspector")
 
-        # Project (native C++ panel)
+        # Project (C++ native panel — replaces Python ProjectPanel)
         from Infernux.lib import ProjectPanel as NativeProjectPanel
         self.project_panel = NativeProjectPanel()
         self._wire_project_callbacks()
@@ -198,7 +198,7 @@ class BootstrapPanelsMixin:
             if path:
                 self.project_panel.set_current_path(path)
 
-        # Console (native C++ panel)
+        # Console (C++ native panel — replaces Python ConsolePanel)
         from Infernux.lib import ConsolePanel as NativeConsolePanel
         from Infernux.debug import DebugConsole
         self.console = NativeConsolePanel()
@@ -236,7 +236,7 @@ class BootstrapPanelsMixin:
                 source_file, project_root=_console_project_path)
         self.console.on_double_click_entry = _on_console_double_click
 
-        # Status bar (native C++ panel)
+        # Status bar (C++ native panel — replaces Python StatusBarPanel)
         from Infernux.lib import StatusBarPanel as NativeStatusBarPanel
         self.status_bar = NativeStatusBarPanel()
         self.status_bar.set_console_panel(self.console)

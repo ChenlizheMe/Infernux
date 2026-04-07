@@ -4,9 +4,9 @@ from __future__ import annotations
 """
 EditorBootstrap — structured editor initialization.
 
-Breaks the monolithic ``release_engine()`` startup path into explicit
-startup steps. Each step is a separate method, closures become instance
-methods, and panel/manager references live on the bootstrap instance.
+Replaces the monolithic ``release_engine()`` god-function with organized
+lifecycle phases.  Each phase is a separate method, closures become
+instance methods, and all panel/manager references are instance attributes.
 """
 
 

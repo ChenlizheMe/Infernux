@@ -13,7 +13,6 @@
 #include "gui/InxScreenUIRenderer.h"
 #include "vk/VkDeviceContext.h"
 #include "vk/VkPipelineManager.h"
-#include "vk/VkRenderUtils.h"
 #include <SDL3/SDL.h>
 #include <algorithm>
 #include <core/error/InxError.h>
@@ -274,7 +273,7 @@ VkDescriptorSet SceneRenderGraph::GetPerViewDescriptorSet() const
 }
 
 // ============================================================================
-// Resource management
+// Resource Management (Phase 0)
 // ============================================================================
 
 vk::ResourceHandle SceneRenderGraph::CreateTransientTexture(const std::string &name, uint32_t width, uint32_t height,
@@ -294,8 +293,12 @@ vk::ResourceHandle SceneRenderGraph::CreateTransientTexture(const std::string &n
     }
 
     // ========================================================================
-    // Allocate a real ResourceData entry in the underlying RenderGraph so
-    // the returned handle can be resolved by ResolveTextureView().
+    // Bug 5 fix: allocate a real ResourceData entry in the underlying
+    // RenderGraph so that the returned handle can be resolved by
+    // ResolveTextureView().  The previous code fabricated an id with a
+    // base-1000 offset that had no backing ResourceData — any call to
+    // ResolveTextureView() with such a handle would access out-of-bounds
+    // memory.
     // ========================================================================
     vk::ResourceHandle handle =
         m_renderGraph->RegisterTransientTexture(name, width, height, format, VK_SAMPLE_COUNT_1_BIT, isTransient);
@@ -310,7 +313,7 @@ vk::ResourceHandle SceneRenderGraph::CreateTransientTexture(const std::string &n
 }
 
 // ============================================================================
-// RenderGraph topology defined from Python
+// Phase 2: Python-Driven RenderGraph Topology
 // ============================================================================
 
 void SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
@@ -325,16 +328,12 @@ void SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
     }
 
     m_pythonCallbacks.clear();
-    m_hasShadowCasterPass = false;
 
     InxVkCoreModular *vkCore = m_vkCore;
 
     for (const auto &passDesc : desc.passes) {
         // Build the render callback directly from the pass action.
         const auto graphPassAction = passDesc.action;
-        if (graphPassAction == GraphPassActionType::DrawShadowCasters) {
-            m_hasShadowCasterPass = true;
-        }
         const int queueMin = passDesc.queueMin;
         const int queueMax = passDesc.queueMax;
         const std::string computeShaderName = passDesc.computeShaderName;
@@ -546,10 +545,20 @@ void SceneRenderGraph::Execute(VkCommandBuffer commandBuffer)
         // COLOR_ATTACHMENT_OPTIMAL, so transition them back here before any
         // descriptor-based sampling occurs later in the frame.
         if (!m_sceneTarget->IsMsaaEnabled() && m_importedColorTarget.IsValid()) {
-            VkImageMemoryBarrier barrier =
-                vkrender::MakeImageBarrier(m_sceneTarget->GetColorImage(), VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                                           VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT,
-                                           VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT);
+            VkImageMemoryBarrier barrier{};
+            barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+            barrier.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barrier.image = m_sceneTarget->GetColorImage();
+            barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            barrier.subresourceRange.baseMipLevel = 0;
+            barrier.subresourceRange.levelCount = 1;
+            barrier.subresourceRange.baseArrayLayer = 0;
+            barrier.subresourceRange.layerCount = 1;
+            barrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+            barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
 
             vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
                                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
@@ -686,16 +695,29 @@ void SceneRenderGraph::ResolveSceneMsaa(VkCommandBuffer commandBuffer)
     VkImage resolveImage = m_sceneTarget->GetColorImage();
 
     {
-        VkImageMemoryBarrier barriers[2] = {
-            // MSAA source
-            vkrender::MakeImageBarrier(msaaImage, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                                       VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT,
-                                       VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT),
-            // 1x resolve destination
-            vkrender::MakeImageBarrier(resolveImage, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT,
-                                       VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT),
-        };
+        VkImageMemoryBarrier barriers[2]{};
+
+        // MSAA source
+        barriers[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        barriers[0].oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        barriers[0].newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        barriers[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barriers[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barriers[0].image = msaaImage;
+        barriers[0].subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        barriers[0].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        barriers[0].dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+
+        // 1x resolve destination
+        barriers[1].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        barriers[1].oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        barriers[1].newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        barriers[1].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barriers[1].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barriers[1].image = resolveImage;
+        barriers[1].subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        barriers[1].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        barriers[1].dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
 
         vkCmdPipelineBarrier(commandBuffer,
                              VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
@@ -713,16 +735,29 @@ void SceneRenderGraph::ResolveSceneMsaa(VkCommandBuffer commandBuffer)
                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &resolveRegion);
 
     {
-        VkImageMemoryBarrier barriers[2] = {
-            // MSAA source: restore to COLOR_ATTACHMENT_OPTIMAL
-            vkrender::MakeImageBarrier(msaaImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                                       VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT,
-                                       VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT),
-            // 1x resolve destination: ready for outline / ImGui sampling
-            vkrender::MakeImageBarrier(resolveImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT,
-                                       VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT),
-        };
+        VkImageMemoryBarrier barriers[2]{};
+
+        // MSAA source: restore to COLOR_ATTACHMENT_OPTIMAL
+        barriers[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        barriers[0].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        barriers[0].newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        barriers[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barriers[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barriers[0].image = msaaImage;
+        barriers[0].subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        barriers[0].srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        barriers[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+
+        // 1x resolve destination: ready for outline / ImGui sampling
+        barriers[1].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        barriers[1].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        barriers[1].newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        barriers[1].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barriers[1].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barriers[1].image = resolveImage;
+        barriers[1].subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        barriers[1].srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        barriers[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
 
         vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
                              VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0,
@@ -734,8 +769,9 @@ void SceneRenderGraph::ResolveSceneMsaa(VkCommandBuffer commandBuffer)
 // BuildRenderGraph helpers
 // ---------------------------------------------------------------------------
 
-void SceneRenderGraph::RegisterTransientTextures(uint32_t width, uint32_t height,
-                                                 std::unordered_map<std::string, vk::ResourceHandle> &customRTHandles)
+void SceneRenderGraph::RegisterTransientTextures(
+    uint32_t width, uint32_t height,
+    std::unordered_map<std::string, vk::ResourceHandle> &customRTHandles)
 {
     // Non-backbuffer, non-depth color textures
     for (const auto &tex : m_pythonGraphDesc.textures) {
@@ -746,8 +782,8 @@ void SceneRenderGraph::RegisterTransientTextures(uint32_t width, uint32_t height
                 texW = std::max(1u, width / tex.sizeDivisor);
                 texH = std::max(1u, height / tex.sizeDivisor);
             }
-            vk::ResourceHandle handle =
-                m_renderGraph->RegisterTransientTexture(tex.name, texW, texH, tex.format, VK_SAMPLE_COUNT_1_BIT, true);
+            vk::ResourceHandle handle = m_renderGraph->RegisterTransientTexture(
+                tex.name, texW, texH, tex.format, VK_SAMPLE_COUNT_1_BIT, true);
             customRTHandles[tex.name] = handle;
         }
     }
@@ -762,8 +798,10 @@ void SceneRenderGraph::RegisterTransientTextures(uint32_t width, uint32_t height
     }
 }
 
-void SceneRenderGraph::AppendAutoPass(const std::string &name, vk::ResourceHandle colorTarget,
-                                      vk::ResourceHandle depthTarget, uint32_t width, uint32_t height)
+void SceneRenderGraph::AppendAutoPass(const std::string &name,
+                                      vk::ResourceHandle colorTarget,
+                                      vk::ResourceHandle depthTarget,
+                                      uint32_t width, uint32_t height)
 {
     auto callbackIt = m_pythonCallbacks.find(name);
     if (callbackIt == m_pythonCallbacks.end())
@@ -785,7 +823,8 @@ void SceneRenderGraph::AppendAutoPass(const std::string &name, vk::ResourceHandl
     });
 }
 
-void SceneRenderGraph::FinalizeGraphOutput(const std::unordered_map<std::string, vk::ResourceHandle> &customRTHandles)
+void SceneRenderGraph::FinalizeGraphOutput(
+    const std::unordered_map<std::string, vk::ResourceHandle> &customRTHandles)
 {
     bool outputSet = false;
     if (m_hasPythonGraph && !m_pythonGraphDesc.outputTexture.empty()) {
@@ -1005,9 +1044,9 @@ void SceneRenderGraph::BuildRenderGraph()
                     clearDepth = false;
                     break;
                 }
-                // Record the pass name for per-frame clear-value updates.
-                // Execute() uses this to update clear values without
-                // rebuilding the graph.
+                // Record the pass name for per-frame clear-value updates
+                // (Bug 3 / Bug 7 fix — Execute() uses this to call
+                // UpdatePassClearColor() without rebuilding the graph).
                 m_mainClearPassName = passDesc.name;
                 // Only override the first eligible pass
                 m_hasCameraClearOverride = false;

@@ -26,7 +26,6 @@ import copy
 import threading
 import weakref
 
-from Infernux.debug import Debug
 from Infernux.lib import GameObject
 
 

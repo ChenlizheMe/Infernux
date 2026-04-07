@@ -11,6 +11,7 @@
 #include "MaterialPipelineManager.h"
 #include "SceneRenderTarget.h"
 #include "shader/ShaderProgram.h"
+#include "vk/VkPipelineHelpers.h"
 #include "vk/VkRenderUtils.h"
 #include <function/resources/InxMaterial/InxMaterial.h>
 
@@ -32,15 +33,7 @@ namespace
 constexpr uint32_t kOutlineSceneUBOBinding = 0;
 constexpr uint32_t kOutlineVertexMaterialUBOBinding = 14;
 
-VkPipelineShaderStageCreateInfo MakeShaderStageInfo(VkShaderStageFlagBits stage, VkShaderModule module)
-{
-    VkPipelineShaderStageCreateInfo shaderStage{};
-    shaderStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    shaderStage.stage = stage;
-    shaderStage.module = module;
-    shaderStage.pName = "main";
-    return shaderStage;
-}
+using infernux::vkrender::MakeShaderStageInfo;
 
 struct MeshVertexInputState
 {

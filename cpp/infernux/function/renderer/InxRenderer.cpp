@@ -527,26 +527,8 @@ void InxRenderer::DrawFrame()
     // Update camera from scene system (uses PrepareFrame results)
     bridge.UpdateCameraData(m_cameraPos, m_cameraLookAt, m_cameraUp);
 
-    if (m_sceneRenderGraph) {
-        int requested = m_sceneRenderGraph->GetRequestedMsaaSamples();
-        if (requested > 0 && requested != GetMsaaSamples()) {
-            SetMsaaSamples(requested);
-            return;
-        }
-    }
-
-    // Also check Game render graph for MSAA mismatch.  When the Scene panel
-    // is hidden, only the Game graph receives ApplyPythonGraph() with the
-    // new pipeline's requested MSAA, so the Scene-only check above never
-    // triggers.  Without this, Game's EnsureGraphBuilt() returns early
-    // every frame on the MSAA guard, leaving the Game RT stuck forever.
-    if (m_gameRenderGraph) {
-        int requested = m_gameRenderGraph->GetRequestedMsaaSamples();
-        if (requested > 0 && requested != GetMsaaSamples()) {
-            SetMsaaSamples(requested);
-            return;
-        }
-    }
+    if (CheckAndApplyMsaaRequest())
+        return;
 
     // Render scene via Python SRP render pipeline
     const bool sceneViewActive = (m_sceneViewVisible && m_sceneRenderTarget && m_sceneRenderTarget->IsReady() &&
@@ -633,38 +615,13 @@ void InxRenderer::DrawFrame()
     // RenderPipeline::Render() applies the current Python graph. Re-check the
     // requested MSAA here so a newly selected pipeline can switch sample count
     // before any stale render graph executes this frame.
-    if (m_sceneRenderGraph) {
-        int requested = m_sceneRenderGraph->GetRequestedMsaaSamples();
-        if (requested > 0 && requested != GetMsaaSamples()) {
-            SetMsaaSamples(requested);
-            return;
-        }
-    }
-    if (m_gameRenderGraph) {
-        int requested = m_gameRenderGraph->GetRequestedMsaaSamples();
-        if (requested > 0 && requested != GetMsaaSamples()) {
-            SetMsaaSamples(requested);
-            return;
-        }
-    }
+    if (CheckAndApplyMsaaRequest())
+        return;
 #if INFERNUX_FRAME_PROFILE
     _fp.stamp(); // [6] after RenderPipeline::Render (Python SRP)
 #endif
 
-    {
-        std::vector<DrawCall> allDrawCalls;
-        if (m_sceneRenderGraph && m_sceneRenderGraph->HasCachedDrawCalls()) {
-            const auto &sceneDC = m_sceneRenderGraph->GetCachedDrawCalls();
-            allDrawCalls.insert(allDrawCalls.end(), sceneDC.begin(), sceneDC.end());
-        }
-        if (m_gameCameraEnabled && m_gameRenderGraph && m_gameRenderGraph->HasCachedDrawCalls()) {
-            const auto &gameDC = m_gameRenderGraph->GetCachedDrawCalls();
-            allDrawCalls.insert(allDrawCalls.end(), gameDC.begin(), gameDC.end());
-        }
-        if (!allDrawCalls.empty()) {
-            m_vkCore->CleanupUnusedBuffers(allDrawCalls);
-        }
-    }
+    CleanupDrawCallBuffers();
 #if INFERNUX_FRAME_PROFILE
     _fp.stamp(); // [7] after CleanupUnusedBuffers
 #endif
@@ -689,51 +646,7 @@ void InxRenderer::DrawFrame()
         m_gameRenderGraph->EnsureGraphBuilt();
     }
 
-    // ========================================================================
-    // Stage engine globals UBO (time, screen, camera params) for this frame
-    // ========================================================================
-    {
-        m_totalTime += m_deltaTime;
-        m_smoothDeltaTime += (m_deltaTime - m_smoothDeltaTime) * 0.1f;
-        ++m_frameCount;
-
-        EngineGlobalsUBO globals{};
-
-        // Time
-        float t = m_totalTime;
-        globals.time = glm::vec4(t, std::sin(t), std::cos(t), m_deltaTime);
-        globals.sinTime = glm::vec4(std::sin(t / 20.0f), std::sin(t / 4.0f), std::sin(t * 2.0f), std::sin(t * 3.0f));
-        globals.cosTime = glm::vec4(std::cos(t / 20.0f), std::cos(t / 4.0f), std::cos(t * 2.0f), std::cos(t * 3.0f));
-
-        // Screen params (from scene render target or window)
-        float w = 1.0f, h = 1.0f;
-        if (m_sceneRenderTarget && m_sceneRenderTarget->GetWidth() > 0) {
-            w = static_cast<float>(m_sceneRenderTarget->GetWidth());
-            h = static_cast<float>(m_sceneRenderTarget->GetHeight());
-        }
-        globals.screenParams = glm::vec4(w, h, 1.0f / w, 1.0f / h);
-
-        // Camera
-        globals.worldSpaceCameraPos = glm::vec4(m_cameraPos[0], m_cameraPos[1], m_cameraPos[2], 1.0f);
-
-        float nearClip = 0.01f, farClip = 5000.0f;
-        Camera *editorCam = SceneManager::Instance().GetEditorCameraController().GetCamera();
-        if (editorCam) {
-            nearClip = editorCam->GetNearClip();
-            farClip = editorCam->GetFarClip();
-        }
-        globals.projectionParams = glm::vec4(nearClip, farClip, 1.0f / farClip, nearClip / farClip);
-
-        // ZBuffer linearization helpers (reversed-Z compatible)
-        float fn = farClip / nearClip;
-        globals.zBufferParams = glm::vec4(1.0f - fn, fn, (1.0f - fn) / farClip, fn / farClip);
-
-        // Frame
-        float dt = m_deltaTime > kEpsilon ? m_deltaTime : kEpsilon;
-        globals.frameParams = glm::vec4(static_cast<float>(m_frameCount), m_smoothDeltaTime, 1.0f / dt, 0.0f);
-
-        m_vkCore->StageGlobals(globals);
-    }
+    StageEngineGlobalsUBO();
 #if INFERNUX_FRAME_PROFILE
     _fp.stamp(); // [9] after Outline+GraphBuild+UBO staging
 #endif
@@ -994,6 +907,85 @@ void InxRenderer::DrawFrame()
         }
     }
 #endif
+}
+
+// ============================================================================
+// DrawFrame sub-methods
+// ============================================================================
+
+bool InxRenderer::CheckAndApplyMsaaRequest()
+{
+    auto checkGraph = [this](SceneRenderGraph *graph) -> bool {
+        if (!graph)
+            return false;
+        int requested = graph->GetRequestedMsaaSamples();
+        if (requested > 0 && requested != GetMsaaSamples()) {
+            SetMsaaSamples(requested);
+            return true;
+        }
+        return false;
+    };
+    return checkGraph(m_sceneRenderGraph.get()) || checkGraph(m_gameRenderGraph.get());
+}
+
+void InxRenderer::StageEngineGlobalsUBO()
+{
+    m_totalTime += m_deltaTime;
+    m_smoothDeltaTime += (m_deltaTime - m_smoothDeltaTime) * 0.1f;
+    ++m_frameCount;
+
+    EngineGlobalsUBO globals{};
+
+    // Time
+    float t = m_totalTime;
+    globals.time = glm::vec4(t, std::sin(t), std::cos(t), m_deltaTime);
+    globals.sinTime = glm::vec4(std::sin(t / 20.0f), std::sin(t / 4.0f), std::sin(t * 2.0f), std::sin(t * 3.0f));
+    globals.cosTime = glm::vec4(std::cos(t / 20.0f), std::cos(t / 4.0f), std::cos(t * 2.0f), std::cos(t * 3.0f));
+
+    // Screen params (from scene render target or window)
+    float w = 1.0f, h = 1.0f;
+    if (m_sceneRenderTarget && m_sceneRenderTarget->GetWidth() > 0) {
+        w = static_cast<float>(m_sceneRenderTarget->GetWidth());
+        h = static_cast<float>(m_sceneRenderTarget->GetHeight());
+    }
+    globals.screenParams = glm::vec4(w, h, 1.0f / w, 1.0f / h);
+
+    // Camera
+    globals.worldSpaceCameraPos = glm::vec4(m_cameraPos[0], m_cameraPos[1], m_cameraPos[2], 1.0f);
+
+    float nearClip = 0.01f, farClip = 5000.0f;
+    Camera *editorCam = SceneManager::Instance().GetEditorCameraController().GetCamera();
+    if (editorCam) {
+        nearClip = editorCam->GetNearClip();
+        farClip = editorCam->GetFarClip();
+    }
+    globals.projectionParams = glm::vec4(nearClip, farClip, 1.0f / farClip, nearClip / farClip);
+
+    // ZBuffer linearization helpers (reversed-Z compatible)
+    float fn = farClip / nearClip;
+    globals.zBufferParams = glm::vec4(1.0f - fn, fn, (1.0f - fn) / farClip, fn / farClip);
+
+    // Frame
+    float dt = m_deltaTime > kEpsilon ? m_deltaTime : kEpsilon;
+    globals.frameParams = glm::vec4(static_cast<float>(m_frameCount), m_smoothDeltaTime, 1.0f / dt, 0.0f);
+
+    m_vkCore->StageGlobals(globals);
+}
+
+void InxRenderer::CleanupDrawCallBuffers()
+{
+    std::vector<DrawCall> allDrawCalls;
+    if (m_sceneRenderGraph && m_sceneRenderGraph->HasCachedDrawCalls()) {
+        const auto &sceneDC = m_sceneRenderGraph->GetCachedDrawCalls();
+        allDrawCalls.insert(allDrawCalls.end(), sceneDC.begin(), sceneDC.end());
+    }
+    if (m_gameCameraEnabled && m_gameRenderGraph && m_gameRenderGraph->HasCachedDrawCalls()) {
+        const auto &gameDC = m_gameRenderGraph->GetCachedDrawCalls();
+        allDrawCalls.insert(allDrawCalls.end(), gameDC.begin(), gameDC.end());
+    }
+    if (!allDrawCalls.empty()) {
+        m_vkCore->CleanupUnusedBuffers(allDrawCalls);
+    }
 }
 
 void InxRenderer::WaitForGpuIdle()

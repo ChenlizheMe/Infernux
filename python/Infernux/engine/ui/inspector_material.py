@@ -29,6 +29,8 @@ from .inspector_utils import (
 )
 from .theme import Theme, ImGuiCol, ImGuiStyleVar
 from . import inspector_shader_utils as shader_utils
+from Infernux.debug import Debug
+import logging
 
 
 def _record_profile_timing(bucket: str, start_time: float) -> None:
@@ -48,12 +50,14 @@ def _get_asset_database():
         adb = EditorServices.instance()._asset_database
         if adb:
             return adb
-    except Exception:
+    except Exception as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         pass
     try:
         from Infernux.lib import AssetRegistry
         return AssetRegistry.instance().get_asset_database()
-    except Exception:
+    except Exception as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         return None
 
 
@@ -90,7 +94,6 @@ def _render_texture2d_property(ctx, prop, prop_name, wid_prefix, plw):
         dropped = str(payload).replace("\\", "/")
         guid = _resolve_path_to_guid(dropped)
         if not guid:
-            import logging
             logging.getLogger(__name__).warning(
                 "Cannot resolve dropped texture path to GUID: %s", dropped)
             return
@@ -102,7 +105,6 @@ def _render_texture2d_property(ctx, prop, prop_name, wid_prefix, plw):
         picked = str(picked_path).replace("\\", "/")
         guid = _resolve_path_to_guid(picked)
         if not guid:
-            import logging
             logging.getLogger(__name__).warning(
                 "Cannot resolve picked texture path to GUID: %s", picked)
             return
@@ -536,7 +538,8 @@ def _apply_material_changes(panel, state, mat_data, native_mat,
                     refresh_callback=lambda _mat: _refresh_pipeline(panel),
                     edit_key=change_key,
                 ))
-    except (RuntimeError, ValueError):
+    except (RuntimeError, ValueError) as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         pass
 
 
@@ -826,7 +829,8 @@ def _refresh_pipeline(panel):
             eng_inst = Engine.instance()
             if eng_inst:
                 engine = eng_inst.get_native_engine()
-        except Exception:
+        except Exception as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             pass
     if engine and _native_mat and hasattr(engine, 'refresh_material_pipeline'):
         engine.refresh_material_pipeline(_native_mat)
