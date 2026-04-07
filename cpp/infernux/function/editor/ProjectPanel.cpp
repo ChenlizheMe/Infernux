@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cstring>
 #include <filesystem>
+#include <imgui_internal.h>
 
 #ifdef INX_PLATFORM_WINDOWS
 #include <ShlObj.h> // CF_HDROP, DragQueryFileW
@@ -293,7 +294,11 @@ void ProjectPanel::SetRootPath(const std::string &path)
 
 void ProjectPanel::SetRenderer(InxRenderer *renderer)
 {
+    if (m_renderer == renderer)
+        return;
     m_renderer = renderer;
+    m_typeIconCache.clear();
+    m_typeIconsLoaded = false;
 }
 void ProjectPanel::SetAssetDatabase(AssetDatabase *adb)
 {
@@ -301,7 +306,11 @@ void ProjectPanel::SetAssetDatabase(AssetDatabase *adb)
 }
 void ProjectPanel::SetIconsDirectory(const std::string &dir)
 {
+    if (m_iconsDir == dir && m_typeIconsLoaded)
+        return;
     m_iconsDir = dir;
+    m_typeIconCache.clear();
+    m_typeIconsLoaded = false;
 }
 
 void ProjectPanel::SetCurrentPath(const std::string &path)
@@ -854,13 +863,13 @@ void ProjectPanel::EnsureTypeIconsLoaded()
 uint64_t ProjectPanel::GetTypeIconId(const FileItem &item) const
 {
     const std::string *key = nullptr;
-    static const std::string dirKey = "__dir__";
     static const std::string fallbackKey = "file";
     auto &iconMap = GetIconMap();
 
-    if (item.type == FileItem::Dir)
-        key = &dirKey;
-    else if (item.type == FileItem::SubMesh) {
+    if (item.type == FileItem::Dir) {
+        auto sit = iconMap.find("__dir__");
+        key = sit != iconMap.end() ? &sit->second : &fallbackKey;
+    } else if (item.type == FileItem::SubMesh) {
         auto sit = iconMap.find(".fbx");
         key = sit != iconMap.end() ? &sit->second : &fallbackKey;
     } else if (item.type == FileItem::SubMaterial) {
@@ -1711,9 +1720,13 @@ void ProjectPanel::RenderFileGrid(InxGUIContext *ctx)
     HandleKeyboardShortcuts(ctx);
 
     // Virtual scrolling
+    float gridStartX = ctx->GetCursorPosX();
     float gridStartY = ctx->GetCursorPosY();
     int itemCount = static_cast<int>(items->size());
     auto range = GetVisibleGridRange(ctx, itemCount, cols, rowHeight, gridStartY);
+    const ImGuiPayload *dragPayload = ImGui::GetDragDropPayload();
+    bool hasDragPayload = (dragPayload != nullptr);
+    bool hasHierarchyDragPayload = hasDragPayload && dragPayload->IsDataType(DRAG_TYPE_HIERARCHY_GO);
 
     if (ctx->BeginTable("FileGrid", cols, 0, 0.0f)) {
         m_visibleItems = items;
@@ -1725,7 +1738,6 @@ void ProjectPanel::RenderFileGrid(InxGUIContext *ctx)
             ctx->TableNextRow();
         }
 
-        bool hasDragPayload = (ImGui::GetDragDropPayload() != nullptr);
         ImDrawList *drawList = ImGui::GetWindowDrawList();
         float cellW = static_cast<float>(CELL_WIDTH);
 
@@ -1735,7 +1747,7 @@ void ProjectPanel::RenderFileGrid(InxGUIContext *ctx)
             ImGui::PushID(i);
 
             bool isSelected = m_selectedSet.count(item.path) > 0;
-
+            // Record cell start position for full-cell drop overlay later
             // ── Resolve display texture (inline for speed) ──
             uint64_t displayTexId = 0;
             if (item.type == FileItem::SubMesh) {
@@ -1795,9 +1807,10 @@ void ProjectPanel::RenderFileGrid(InxGUIContext *ctx)
             // ── Drag-drop source (must always run to detect drag start) ──
             RenderDragDropSource(ctx, item);
 
-            // ── Folder drop target (only when a drag is active) ──
-            if (hasDragPayload && item.type == FileItem::Dir)
+            // ── Drop targets (only when a drag is active) ──
+            if (hasDragPayload && item.type == FileItem::Dir) {
                 RenderFolderDropTarget(ctx, item.path);
+            }
 
             // ── Label ──
             {
@@ -1817,26 +1830,26 @@ void ProjectPanel::RenderFileGrid(InxGUIContext *ctx)
         ctx->EndTable();
     }
 
-    // Bottom drop zone: accept hierarchy GameObjects for prefab creation
+    // Full-grid hierarchy drop target (covers entire FileGrid child window)
+    if (hasHierarchyDragPayload) {
+        ImGuiWindow *win = ImGui::GetCurrentWindow();
+        if (ImGui::BeginDragDropTargetCustom(win->InnerRect, win->ID)) {
+            uint64_t objId = 0;
+            if (ctx->AcceptDragDropPayload(DRAG_TYPE_HIERARCHY_GO, &objId)) {
+                if (createPrefabFromHierarchy)
+                    createPrefabFromHierarchy(objId, m_currentPath);
+            }
+            ImGui::EndDragDropTarget();
+        }
+    }
+
+    // Bottom empty area: click to deselect + accept hierarchy drops
     float remainH = ctx->GetContentRegionAvailHeight();
     if (remainH > 10.0f) {
         ctx->InvisibleButton("##drop_prefab_area", ctx->GetContentRegionAvailWidth(), remainH);
         if (ctx->IsItemClicked(0)) {
             ClearSelection();
             NotifyEmptyAreaClicked();
-        }
-        // Accept HIERARCHY_GAMEOBJECT drop (only when a drag is active)
-        if (ImGui::GetDragDropPayload() != nullptr) {
-            ImGui::PushStyleColor(ImGuiCol_DragDropTarget, ImVec4(0, 0, 0, 0));
-            if (ctx->BeginDragDropTarget()) {
-                uint64_t objId = 0;
-                if (ctx->AcceptDragDropPayload(DRAG_TYPE_HIERARCHY_GO, &objId)) {
-                    if (createPrefabFromHierarchy)
-                        createPrefabFromHierarchy(objId, m_currentPath);
-                }
-                ctx->EndDragDropTarget();
-            }
-            ImGui::PopStyleColor(1);
         }
     }
 }
@@ -2012,12 +2025,21 @@ void ProjectPanel::RenderFolderDropTarget(InxGUIContext *ctx, const std::string 
 {
     ImGui::PushStyleColor(ImGuiCol_DragDropTarget, ImVec4(0, 0, 0, 0));
     if (ctx->BeginDragDropTarget()) {
-        auto &acceptTypes = GetMoveAcceptTypes();
-        for (auto &dt : acceptTypes) {
-            std::string payload;
-            if (ctx->AcceptDragDropPayload(dt, &payload)) {
-                MoveProjectItemsToFolder(folderPath, dt, payload);
-                break;
+        bool handled = false;
+        uint64_t objId = 0;
+        if (ctx->AcceptDragDropPayload(DRAG_TYPE_HIERARCHY_GO, &objId)) {
+            if (createPrefabFromHierarchy)
+                createPrefabFromHierarchy(objId, folderPath);
+            handled = true;
+        }
+        if (!handled) {
+            auto &acceptTypes = GetMoveAcceptTypes();
+            for (auto &dt : acceptTypes) {
+                std::string payload;
+                if (ctx->AcceptDragDropPayload(dt, &payload)) {
+                    MoveProjectItemsToFolder(folderPath, dt, payload);
+                    break;
+                }
             }
         }
         ctx->EndDragDropTarget();

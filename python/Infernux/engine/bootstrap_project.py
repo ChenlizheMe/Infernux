@@ -118,15 +118,45 @@ def wire_project_callbacks(bs: EditorBootstrap) -> None:
         from Infernux.lib import SceneManager
         scene = SceneManager.instance().get_active_scene()
         if not scene:
+            Debug.log_warning("Failed to create prefab: no active scene")
             return
         game_object = scene.find_by_id(obj_id)
         if not game_object:
+            Debug.log_warning(f"Failed to create prefab: object {obj_id} not found")
             return
+        if not current_path:
+            Debug.log_warning("Failed to create prefab: no target folder")
+            return
+        # Detect canvas parent for UI prefabs
+        source_canvas_name = ""
+        cur = game_object.get_parent() if hasattr(game_object, 'get_parent') else None
+        while cur is not None:
+            try:
+                from Infernux.ui import UICanvas as _UCCls
+                for comp in (cur.get_py_components() or []):
+                    if isinstance(comp, _UCCls):
+                        source_canvas_name = cur.name
+                        break
+            except Exception:
+                pass
+            if source_canvas_name:
+                break
+            cur = cur.get_parent()
+
         ok, result = file_ops.create_prefab_from_gameobject(
-            game_object, current_path, adb)
+            game_object, current_path, adb,
+            source_canvas_name=source_canvas_name)
         if not ok:
             from Infernux.debug import Debug
             Debug.log_warning(f"Failed to create prefab: {result}")
+        else:
+            # Invalidate the project panel cache so the new file appears
+            # immediately, and request full-speed rendering so the panel
+            # refreshes without waiting for the idle-throttle cooldown.
+            pp.invalidate_dir_cache()
+            native = bs.engine.get_native_engine()
+            if native:
+                native.request_full_speed_frame()
 
     pp.create_prefab_from_hierarchy = _create_prefab_from_hierarchy
 

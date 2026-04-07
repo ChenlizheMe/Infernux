@@ -27,7 +27,7 @@ void RegisterTagLayerBindings(py::module_ &m)
         .def("add_tag", &TagLayerManager::AddTag, py::arg("tag"), "Add a custom tag. Returns its index.")
         .def("remove_tag", &TagLayerManager::RemoveTag, py::arg("tag"),
              "Remove a custom tag. Built-in tags cannot be removed.")
-        .def("get_all_tags", &TagLayerManager::GetAllTags, py::return_value_policy::reference,
+        .def("get_all_tags", &TagLayerManager::GetAllTags, py::return_value_policy::copy,
              "Get all tags (built-in + custom)")
         .def("is_builtin_tag", &TagLayerManager::IsBuiltinTag, py::arg("tag"), "Check if a tag is built-in")
 
@@ -37,8 +37,7 @@ void RegisterTagLayerBindings(py::module_ &m)
              "Get layer index by name (-1 if not found)")
         .def("set_layer_name", &TagLayerManager::SetLayerName, py::arg("layer"), py::arg("name"),
              "Set a layer name (built-in layers cannot be renamed)")
-        .def("get_all_layers", &TagLayerManager::GetAllLayers, py::return_value_policy::reference,
-             "Get all 32 layer names")
+        .def("get_all_layers", &TagLayerManager::GetAllLayers, py::return_value_policy::copy, "Get all 32 layer names")
         .def("is_builtin_layer", &TagLayerManager::IsBuiltinLayer, py::arg("layer"), "Check if a layer is built-in")
         .def("get_layer_collision_mask", &TagLayerManager::GetLayerCollisionMask, py::arg("layer"),
              "Get the 32-bit physics collision mask for a layer")

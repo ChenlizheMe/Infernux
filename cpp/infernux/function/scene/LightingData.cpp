@@ -410,9 +410,6 @@ void SceneLightCollector::ComputeShadowVP(Scene *scene, const glm::vec3 &cameraP
     }
 
     static int s_noShadowLightWarnCount = 0;
-    if (s_noShadowLightWarnCount++ < 8) {
-        INXLOG_WARN("CSM: no active directional light with shadows enabled was found in the scene");
-    }
 }
 
 void SceneLightCollector::BuildShaderLightingUBO()

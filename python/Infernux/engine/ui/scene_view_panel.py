@@ -283,6 +283,14 @@ class SceneViewPanel(SceneViewGizmoMixin, SceneViewCameraMixin, SceneViewOverlay
     def _pre_render(self, ctx):
         if self._engine:
             self._engine.set_scene_view_visible(True)
+            # The scene view needs full-speed rendering at all times in editor
+            # mode so the 3D viewport updates smoothly (camera orbit, gizmo
+            # manipulation, animation preview, etc.).  Without this the global
+            # idle-throttle drops the entire editor to ~10 FPS after a few
+            # frames of inactivity, making the scene view feel laggy.
+            native = self._engine.get_native_engine()
+            if native:
+                native.request_full_speed_frame()
 
         import time
         current_time = time.time()

@@ -10,6 +10,8 @@ from __future__ import annotations
 import time as _time
 from typing import TYPE_CHECKING
 
+from Infernux.debug import Debug
+
 if TYPE_CHECKING:
     from Infernux.engine.bootstrap import EditorBootstrap
 
@@ -325,6 +327,7 @@ def wire_inspector_callbacks(bs: EditorBootstrap) -> None:
     """Wire C++ InspectorPanel callbacks to Python managers."""
     ip = bs.inspector_panel
     engine = bs.engine
+    from Infernux.debug import Debug
     from Infernux.engine.i18n import t as _t
     from Infernux.engine.ui import inspector_support as _inspector_support
     _bump_inspector_values = _inspector_support.bump_inspector_value_generation
@@ -383,6 +386,35 @@ def wire_inspector_callbacks(bs: EditorBootstrap) -> None:
         structure_version = _inspector_support.get_component_structure_version()
         return scene, scene_version, structure_version
 
+    def _safe_sequence(values):
+        if values is None:
+            return []
+        if isinstance(values, list):
+            return values
+        try:
+            return list(values)
+        except Exception as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+            return []
+
+    def _get_components_safe(obj):
+        if obj is None:
+            return []
+        try:
+            return _safe_sequence(obj.get_components())
+        except Exception as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+            return []
+
+    def _get_py_components_safe(obj):
+        if obj is None:
+            return []
+        try:
+            return _safe_sequence(obj.get_py_components())
+        except Exception as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+            return []
+
     def _get_component_payload(obj_id):
         scene, scene_version, structure_version = _current_scene_and_versions()
         if (
@@ -418,7 +450,7 @@ def wire_inspector_callbacks(bs: EditorBootstrap) -> None:
         native_map = {}
         py_map = {}
 
-        for comp in (obj.get_components() or []):
+        for comp in _get_components_safe(obj):
             if _is_python_component_entry(comp):
                 continue
             comp_type_name = getattr(comp, 'type_name', type(comp).__name__)
@@ -436,7 +468,7 @@ def wire_inspector_callbacks(bs: EditorBootstrap) -> None:
             items.append(ci)
             native_map[comp_id] = comp
 
-        for py_comp in (obj.get_py_components() or []):
+        for py_comp in _get_py_components_safe(obj):
             comp_id = getattr(py_comp, 'component_id', id(py_comp))
             ci = InspectorComponentInfo()
             ci.type_name = getattr(py_comp, 'type_name', type(py_comp).__name__)
@@ -917,7 +949,7 @@ def wire_inspector_callbacks(bs: EditorBootstrap) -> None:
                 Debug.log_error(f"Unknown engine component: {type_name_or_path}")
                 return
             if getattr(comp_cls, '_disallow_multiple_', False):
-                for pc in (obj.get_py_components() or []):
+                for pc in _get_py_components_safe(obj):
                     if isinstance(pc, comp_cls):
                         Debug.log_warning(
                             f"Cannot add another '{comp_cls.__name__}' — "
@@ -1002,7 +1034,6 @@ def wire_inspector_callbacks(bs: EditorBootstrap) -> None:
         sfm = SceneFileManager.instance()
         if sfm and not sfm.is_prefab_mode:
             pinfo.is_readonly = True
-            pinfo.is_transform_readonly = True
         return pinfo
 
     ip.get_prefab_info = _get_prefab_info

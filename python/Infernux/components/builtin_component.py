@@ -332,8 +332,7 @@ class BuiltinComponent(InxComponent):
                 return getattr(cpp, name)
             except RuntimeError:
                 self._invalidate_native_binding()
-            except AttributeError as _exc:
-                Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+            except AttributeError:
                 pass
         raise AttributeError(f"{type(self).__name__!s} has no attribute {name!r}")
 
