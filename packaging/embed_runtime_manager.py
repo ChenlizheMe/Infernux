@@ -14,6 +14,7 @@ from typing import Callable, Optional
 
 from hub_utils import get_bundle_dir, get_hub_data_dir, is_frozen
 from runtime_requirements import runtime_modules, runtime_packages
+import logging
 
 
 _NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
@@ -225,7 +226,8 @@ def _embedded_runtime_has_site_enabled(root: str) -> bool:
         try:
             with open(pth_path, "r", encoding="utf-8") as f:
                 lines = {line.strip() for line in f if line.strip() and not line.strip().startswith("#")}
-        except OSError:
+        except OSError as _exc:
+            logging.getLogger(__name__).debug("[Suppressed] %s: %s", type(_exc).__name__, _exc)
             return False
         if not required_lines.issubset(lines):
             return False

@@ -24,6 +24,7 @@ from typing import Any
 
 from Infernux.lib import InxGUIContext
 from .theme import Theme, ImGuiCol, ImGuiStyleVar, ImGuiTreeNodeFlags
+from Infernux.debug import Debug
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -149,7 +150,8 @@ def get_enum_members(enum_cls):
         return []
     try:
         return list(enum_cls)
-    except TypeError:
+    except TypeError as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         pass
     members_dict = getattr(enum_cls, "__members__", None)
     if isinstance(members_dict, dict):
@@ -191,7 +193,8 @@ def find_enum_index(members, current_value) -> int:
             try:
                 if int(get_enum_member_value(member)) == current_int:
                     return idx
-            except (ValueError, TypeError):
+            except (ValueError, TypeError) as _exc:
+                Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
                 continue
     return 0
 

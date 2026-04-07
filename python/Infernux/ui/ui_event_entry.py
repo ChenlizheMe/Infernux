@@ -16,6 +16,7 @@ from typing import Any, get_args, get_origin, get_type_hints
 from Infernux.components import SerializableObject, serialized_field, GameObjectRef
 from Infernux.components.ref_wrappers import ComponentRef
 from Infernux.components.serialized_field import FieldType
+from Infernux.debug import Debug
 
 
 # Lifecycle / internal methods that should never appear in the method picker.
@@ -86,7 +87,8 @@ def _get_serializable_raw_field(obj, field_name: str, default=None):
         meta = getattr(cls, "_serialized_fields_", {}).get(field_name)
         if meta is not None:
             return meta.default
-    except Exception:
+    except Exception as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         pass
     return default
 
@@ -149,7 +151,8 @@ def _infer_argument_kind(annotation, default_value=inspect._empty) -> tuple[str,
                 return "component", getattr(annotation, "_cpp_type_name", "") or annotation.__name__
             if issubclass(annotation, InxComponent) and annotation is not InxComponent:
                 return "component", annotation.__name__
-    except Exception:
+    except Exception as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         pass
 
     if default_value is not inspect._empty:

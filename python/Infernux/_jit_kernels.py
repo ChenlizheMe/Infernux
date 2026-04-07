@@ -49,7 +49,8 @@ def _log_jit(msg: str) -> None:
     try:
         from Infernux.debug import Debug  # late import to avoid circular deps
         Debug.log_internal(msg)
-    except Exception:
+    except Exception as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         pass
 
 
@@ -164,7 +165,8 @@ def build_auto_parallel_sidecar_source(source: str) -> str | None:
     """Return module source containing rewritten auto-parallel functions only."""
     try:
         module_ast = ast.parse(textwrap.dedent(source))
-    except SyntaxError:
+    except SyntaxError as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         return None
 
     rewritten_body = []
@@ -204,7 +206,8 @@ def _auto_parallel_sidecar_candidates(fn):
     ]
     try:
         raw_paths.append(inspect.getfile(fn))
-    except (TypeError, OSError):
+    except (TypeError, OSError) as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         pass
     raw_paths.append(
         getattr(getattr(fn, "__code__", None), "co_filename", None)
@@ -292,7 +295,8 @@ def _try_build_auto_parallel_variant(fn):
 
     try:
         module_ast = ast.parse(textwrap.dedent(source))
-    except SyntaxError:
+    except SyntaxError as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         return None
 
     function_node = None
@@ -501,7 +505,8 @@ def warmup(fn, *args, **kwargs):
     if callable(custom_warmup):
         try:
             custom_warmup(*args, **kwargs)
-        except Exception:
+        except Exception as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             pass
         return
 
@@ -509,7 +514,8 @@ def warmup(fn, *args, **kwargs):
         return
     try:
         fn(*args, **kwargs)
-    except Exception:
+    except Exception as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         pass
 
 

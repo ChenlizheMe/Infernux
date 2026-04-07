@@ -30,6 +30,8 @@ from abc import ABC, abstractmethod
 from contextlib import contextmanager
 from typing import Any, Optional, List, Callable
 
+from Infernux.debug import Debug
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Base command
@@ -158,13 +160,15 @@ def _resolve_target(stored_ref: Any, game_object_id: int,
         live = obj.get_component(comp_type_name)
         if live is not None:
             return live
-    except Exception:
+    except Exception as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         pass
     try:
         for pc in obj.get_py_components():
             if type(pc).__name__ == comp_type_name:
                 return pc
-    except Exception:
+    except Exception as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         pass
     return None
 
@@ -179,13 +183,15 @@ def _find_live_native_component(obj, type_name: str):
             c = obj.get_component(type_name)
             if c is not None:
                 return c
-        except Exception:
+        except Exception as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             pass
     try:
         for c in obj.get_components():
             if getattr(c, 'type_name', None) == type_name:
                 return c
-    except Exception:
+    except Exception as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         pass
     return None
 
@@ -196,7 +202,8 @@ def _get_current_selection_ids() -> List[int]:
         sel = SelectionManager.instance()
         if sel:
             return sel.get_ids()
-    except Exception:
+    except Exception as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         pass
     return []
 
@@ -206,7 +213,8 @@ def _bump_inspector_structure():
     try:
         from Infernux.engine.ui.inspector_support import bump_component_structure_version
         bump_component_structure_version()
-    except ImportError:
+    except ImportError as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         pass
 
 
@@ -215,7 +223,8 @@ def _bump_inspector_values():
     try:
         from Infernux.engine.ui.inspector_support import bump_inspector_value_generation
         bump_inspector_value_generation()
-    except ImportError:
+    except ImportError as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         pass
 
 
@@ -238,7 +247,8 @@ def _notify_gizmos_scene_changed():
 def _invalidate_builtin_wrapper(comp_ref):
     try:
         comp_id = comp_ref.component_id
-    except Exception:
+    except Exception as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         return
     from Infernux.components.builtin_component import BuiltinComponent
     wrapper = BuiltinComponent._wrapper_cache.get(comp_id)
@@ -249,7 +259,8 @@ def _invalidate_builtin_wrapper(comp_ref):
 def _invalidate_builtin_wrappers_for_tree(obj):
     try:
         from Infernux.components.builtin_component import BuiltinComponent
-    except ImportError:
+    except ImportError as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         return
     cache = BuiltinComponent._wrapper_cache
     pending = [obj]
@@ -264,11 +275,13 @@ def _invalidate_builtin_wrappers_for_tree(obj):
                     wrapper = cache.get(comp_id)
                     if wrapper is not None:
                         wrapper._invalidate_native_binding()
-        except Exception:
+        except Exception as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             pass
         try:
             pending.extend(current.get_children())
-        except Exception:
+        except Exception as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             pass
 
 
@@ -280,7 +293,8 @@ def _destroy_game_object_immediately(scene, obj):
     if hasattr(scene, "process_pending_destroys"):
         try:
             scene.process_pending_destroys()
-        except Exception:
+        except Exception as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             pass
     _bump_inspector_structure()
     _notify_gizmos_scene_changed()
@@ -537,7 +551,8 @@ class MaterialJsonCommand(UndoCommand):
                 try:
                     from Infernux.core.assets import AssetManager
                     AssetManager.on_material_saved(fp)
-                except Exception:
+                except Exception as _exc:
+                    Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
                     pass
         if self._refresh_callback:
             self._refresh_callback(self._material)
@@ -797,7 +812,8 @@ def _snapshot_and_remove_native(object_id: int, type_name: str,
     if hasattr(live, "serialize"):
         try:
             json_snap = live.serialize()
-        except Exception:
+        except Exception as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             pass
     obj.remove_component(live)
     _invalidate_builtin_wrapper(live)
@@ -817,7 +833,8 @@ def _add_native_from_snapshot(object_id: int, type_name: str,
     if json_snapshot and hasattr(result, "deserialize"):
         try:
             result.deserialize(json_snapshot)
-        except Exception:
+        except Exception as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             pass
     _bump_inspector_structure()
     _notify_gizmos_scene_changed()
@@ -853,7 +870,8 @@ def _add_py_from_snapshot(object_id: int, type_name: str, script_guid: str,
     if hasattr(instance, '_call_on_after_deserialize'):
         try:
             instance._call_on_after_deserialize()
-        except Exception:
+        except Exception as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             pass
     _bump_inspector_structure()
     return instance
@@ -895,7 +913,8 @@ class RemoveNativeComponentCommand(UndoCommand):
         if comp_ref is not None and hasattr(comp_ref, "serialize"):
             try:
                 self._json_snapshot = comp_ref.serialize()
-            except Exception:
+            except Exception as _exc:
+                Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
                 pass
 
     def execute(self) -> None:
@@ -922,7 +941,8 @@ def _snapshot_py_fields(py_comp: Any) -> str:
         return ""
     try:
         return py_comp._serialize_fields()
-    except Exception:
+    except Exception as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         return ""
 
 
@@ -948,14 +968,16 @@ def _find_py_ordinal(object_id: int, py_comp: Any) -> int:
             try:
                 ct = _comp_type_name_of(current)
                 cg = getattr(current, '_script_guid', '') or ''
-            except Exception:
+            except Exception as _exc:
+                Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
                 continue
             if ct != target_type or cg != target_guid:
                 continue
             if current is py_comp:
                 return ordinal
             ordinal += 1
-    except Exception:
+    except Exception as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         pass
     return 0
 
@@ -971,7 +993,8 @@ def _resolve_live_py(obj, type_name: str, script_guid: str,
         for current in obj.get_py_components():
             if current is fallback:
                 return current
-    except Exception:
+    except Exception as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         pass
     return None
 
@@ -1017,12 +1040,14 @@ def _instantiate_py_snapshot(type_name: str, script_guid: str,
 
     try:
         instance.enabled = enabled
-    except Exception:
+    except Exception as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         pass
     if script_guid:
         try:
             instance._script_guid = script_guid
-        except Exception:
+        except Exception as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             pass
     return instance
 
@@ -1541,7 +1566,8 @@ class InspectorUndoTracker:
             return
         try:
             pre = snapshot_fn()
-        except Exception:
+        except Exception as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             return
         entry = _TrackedEntry(pre, snapshot_fn, restore_fn, description, marks_dirty)
         entry.seen_generation = self._frame_generation
@@ -1571,7 +1597,8 @@ class InspectorUndoTracker:
         for key, entry in self._entries.items():
             try:
                 post = entry.snapshot_fn()
-            except Exception:
+            except Exception as _exc:
+                Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
                 continue
             if post != entry.pre_snapshot:
                 cmd = InspectorSnapshotCommand(
@@ -1594,7 +1621,8 @@ def _get_live_game_object(game_object_id: int):
         return None
     try:
         return scene.find_by_id(game_object_id)
-    except Exception:
+    except Exception as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         return None
 
 
@@ -1606,7 +1634,8 @@ def _get_live_transform(game_object_id: int):
         t = obj.get_transform()
         if t is not None:
             return t
-    except Exception:
+    except Exception as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         pass
     return getattr(obj, 'transform', None)
 
@@ -1630,12 +1659,14 @@ def _get_nth_live_native_component(game_object_id: int, type_name: str,
                     continue
                 if isinstance(comp, InxComponent) or hasattr(comp, 'get_py_component'):
                     continue
-            except Exception:
+            except Exception as _exc:
+                Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
                 continue
             if match_index == ordinal:
                 return comp
             match_index += 1
-    except Exception:
+    except Exception as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         pass
     return None
 
@@ -1656,12 +1687,14 @@ def _get_nth_live_py_component(game_object_id: int, type_name: str,
                     continue
                 if getattr(comp, '_is_destroyed', False):
                     continue
-            except Exception:
+            except Exception as _exc:
+                Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
                 continue
             if match_index == ordinal:
                 return comp
             match_index += 1
-    except Exception:
+    except Exception as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         pass
     return None
 
@@ -1818,7 +1851,8 @@ def restore_renderstack(stack: Any, json_str: str) -> None:
         for name, val in data["pipeline_params"].items():
             try:
                 setattr(pipeline, name, val)
-            except (AttributeError, TypeError):
+            except (AttributeError, TypeError) as _exc:
+                Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
                 pass
 
     current_names = [e.render_pass.name for e in list(stack.pass_entries)]

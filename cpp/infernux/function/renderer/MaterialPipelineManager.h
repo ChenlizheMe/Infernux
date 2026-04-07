@@ -260,6 +260,28 @@ class MaterialPipelineManager
      * @brief Create internal compatible render pass from stored formats
      */
     void CreateInternalRenderPass();
+
+    /**
+     * @brief Build a Vulkan render pass with N color + optional depth attachment.
+     * Shared by CreateInternalRenderPass() and GetActiveMRTRenderPass().
+     */
+    VkRenderPass BuildCompatibleRenderPass(uint32_t colorAttachmentCount, const VkFormat *colorFormats);
+
+    /**
+     * @brief Write forward-pass Vulkan handles to a material and clear its dirty flag.
+     */
+    static void SyncMaterialForwardPass(InxMaterial *material, VkPipeline pipeline, VkPipelineLayout layout,
+                                        VkDescriptorSet descSet, ShaderProgram *program);
+
+    /**
+     * @brief Check whether any OTHER render data entry references the same VkPipeline.
+     */
+    bool IsPipelineSharedByOthers(const std::string &excludeName, VkPipeline pipeline) const;
+
+    /**
+     * @brief Destroy non-forward pass pipelines stored on a material and clear handles.
+     */
+    void DestroyNonForwardPipelines(InxMaterial *material);
 };
 
 } // namespace infernux

@@ -22,6 +22,7 @@ from typing import Any, Optional
 
 # Re-export MaterialRef from core so existing callers still work.
 from Infernux.core.asset_ref import MaterialRef  # noqa: F401
+from Infernux.debug import Debug
 
 _log = logging.getLogger("Infernux.ref")
 
@@ -32,7 +33,8 @@ def _get_prefab_asset_database():
         db = _get_asset_database()
         if db is not None:
             return db
-    except Exception:
+    except Exception as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         pass
 
     try:
@@ -40,7 +42,8 @@ def _get_prefab_asset_database():
         registry = AssetRegistry.instance()
         if registry is not None:
             return registry.get_asset_database()
-    except Exception:
+    except Exception as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         pass
 
     return None
@@ -96,7 +99,8 @@ class GameObjectRef:
                 obj = scene.find_by_id(self._persistent_id)
                 self._cached_obj = obj
                 return obj
-        except (ImportError, RuntimeError):
+        except (ImportError, RuntimeError) as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             pass  # pybind11 raises RuntimeError when C++ object is destroyed
         except Exception as exc:
             _log.warning("GameObjectRef._resolve failed: %s", exc)
@@ -219,7 +223,8 @@ class PrefabRef:
         try:
             stat = os.stat(file_path)
             return (stat.st_mtime_ns, stat.st_size)
-        except OSError:
+        except OSError as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             return None
 
     def _read_prefab_root_name(self, file_path: str) -> str:
@@ -366,7 +371,8 @@ def _iter_live_components_on_game_object(game_object) -> list[Any]:
             comp_go = getattr(comp, "game_object", None)
             if comp_go is None or int(comp_go.id) != go_id:
                 continue
-        except Exception:
+        except Exception as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             continue
         if comp not in result:
             result.append(comp)
@@ -393,7 +399,8 @@ def _resolve_component_on_game_object(game_object, component_type: str = ""):
                 cpp_comp = game_object.get_cpp_component(cpp_type)
                 if cpp_comp is not None:
                     return builtin_cls._get_or_create_wrapper(cpp_comp, game_object)
-        except Exception:
+        except Exception as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             pass
 
         try:
@@ -403,12 +410,14 @@ def _resolve_component_on_game_object(game_object, component_type: str = ""):
                 py_comp = game_object.get_py_component(component_cls)
                 if py_comp is not None:
                     return py_comp
-        except Exception:
+        except Exception as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             pass
 
         try:
             return game_object.get_cpp_component(component_type)
-        except Exception:
+        except Exception as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             return None
 
     if live_components:
@@ -422,7 +431,8 @@ def _resolve_component_on_game_object(game_object, component_type: str = ""):
             resolved = _resolve_component_on_game_object(game_object, type_name)
             if resolved is not None:
                 return resolved
-    except Exception:
+    except Exception as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         pass
 
     return None

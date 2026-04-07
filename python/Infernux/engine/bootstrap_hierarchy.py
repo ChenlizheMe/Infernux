@@ -75,7 +75,8 @@ def wire_hierarchy_callbacks(bs: EditorBootstrap) -> None:
             mgr = PlayModeManager.instance()
             if mgr is not None:
                 return mgr.get_runtime_hidden_object_ids()
-        except Exception:
+        except Exception as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             pass
         return set()
 
@@ -393,12 +394,14 @@ def wire_hierarchy_callbacks(bs: EditorBootstrap) -> None:
         try:
             obj.prefab_guid = ""
             obj.prefab_root = False
-        except Exception:
+        except Exception as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             pass
         try:
             for child in obj.get_children():
                 _unpack_recursive(child)
-        except Exception:
+        except Exception as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             pass
 
     def _resolve_prefab(guid):
@@ -411,7 +414,8 @@ def wire_hierarchy_callbacks(bs: EditorBootstrap) -> None:
                 adb = registry.get_asset_database()
                 if adb:
                     return adb.get_path_from_guid(guid)
-        except Exception:
+        except Exception as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             pass
         return None
 
@@ -503,7 +507,8 @@ def wire_hierarchy_callbacks(bs: EditorBootstrap) -> None:
                     parent = scene.find_by_id(src_pid)
             try:
                 obj_data = json.loads(entry["json"])
-            except Exception:
+            except Exception as _exc:
+                Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
                 continue
             _strip_prefab_runtime_fields(obj_data)
             new_obj = scene.instantiate_from_json(json.dumps(obj_data), parent)

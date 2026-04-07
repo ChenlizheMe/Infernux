@@ -17,6 +17,7 @@ from .inspector_components import _record_property, register_py_component_render
 from Infernux.engine.i18n import t
 from .inspector_utils import field_label, max_label_w, render_compact_section_header, render_compact_section_title, _render_color_bar, render_inspector_checkbox
 from .theme import Theme
+from Infernux.debug import Debug
 
 
 def _igui():
@@ -99,7 +100,8 @@ def _get_serializable_raw_field(obj, field_name: str, default=None):
         meta = getattr(cls, "_serialized_fields_", {}).get(field_name)
         if meta is not None:
             return meta.default
-    except Exception:
+    except Exception as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         pass
     return default
 

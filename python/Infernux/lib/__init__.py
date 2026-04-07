@@ -4,6 +4,16 @@ import os
 import sys
 from functools import wraps
 
+
+def _log_suppressed(exc: BaseException) -> None:
+    """Best-effort log for early-init code (Debug may not be available yet)."""
+    try:
+        from Infernux.debug import Debug
+        Debug.log(f"[Suppressed] {type(exc).__name__}: {exc}")
+    except Exception:
+        pass
+
+
 lib_dir = os.path.join(os.path.dirname(__file__))
 lib_dir = os.path.abspath(lib_dir)
 
@@ -194,7 +204,8 @@ def _preload_bundled_crt_dlls() -> None:
         if os.path.isfile(full):
             try:
                 ctypes.WinDLL(full)
-            except OSError:
+            except OSError as _exc:
+                _log_suppressed(_exc)
                 pass  # Best-effort; the import below will give a clear error.
 
 
@@ -398,7 +409,8 @@ def _resolve_game_object_instantiate_source(original):
             return "prefab", original
         if isinstance(original, GameObjectRef):
             return "game_object", original.resolve()
-    except Exception:
+    except Exception as _exc:
+        _log_suppressed(_exc)
         pass
 
     resolver = getattr(original, "resolve", None)
@@ -423,7 +435,8 @@ def _coerce_parent_game_object(parent):
         from Infernux.components.ref_wrappers import GameObjectRef
         if isinstance(parent, GameObjectRef):
             return parent.resolve()
-    except Exception:
+    except Exception as _exc:
+        _log_suppressed(_exc)
         pass
 
     game_object = getattr(parent, "game_object", None)
@@ -464,7 +477,8 @@ def _capture_local_transform(game_object):
     try:
         transform = game_object.transform
         return transform.local_position, transform.local_rotation, transform.local_scale
-    except Exception:
+    except Exception as _exc:
+        _log_suppressed(_exc)
         return None
 
 
@@ -477,7 +491,8 @@ def _restore_local_transform(game_object, local_transform):
         transform.local_position = local_position
         transform.local_rotation = local_rotation
         transform.local_scale = local_scale
-    except Exception:
+    except Exception as _exc:
+        _log_suppressed(_exc)
         return
 
 

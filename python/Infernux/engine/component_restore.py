@@ -195,7 +195,8 @@ def restore_pending_py_components(
             from Infernux.renderstack.discovery import discover_passes, discover_pipelines
             discover_passes()
             discover_pipelines()
-        except Exception:
+        except Exception as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             pass
 
     restored = 0
@@ -257,7 +258,8 @@ def restore_pending_py_components(
                     broken = _make_broken_component(pc, None)
                     broken._broken_error = f"Restore failed: {exc}"
                     go.add_py_component(broken)
-            except Exception:
+            except Exception as _exc:
+                Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
                 pass
 
     # Batch on_after_deserialize

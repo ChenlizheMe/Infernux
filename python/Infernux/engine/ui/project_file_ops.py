@@ -123,7 +123,8 @@ def _normalize_path(path: str) -> str:
 def _is_path_within(path: str, parent_path: str) -> bool:
     try:
         return os.path.commonpath([_normalize_path(path), _normalize_path(parent_path)]) == _normalize_path(parent_path)
-    except ValueError:
+    except ValueError as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         return False
 
 
@@ -145,12 +146,14 @@ def _notify_asset_moved(old_path: str, new_path: str, asset_database=None):
     if asset_database:
         try:
             asset_database.on_asset_moved(old_path, new_path)
-        except Exception:
+        except Exception as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             pass
 
     try:
         AssetManager.on_asset_moved(old_path, new_path)
-    except Exception:
+    except Exception as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         pass
 
     asset_inspector.invalidate_asset(old_path)
@@ -173,7 +176,8 @@ def move_path(old_path: str, new_path: str, asset_database=None):
     move_pairs = list(_iter_asset_move_pairs(old_abs, new_abs))
     try:
         shutil.move(old_abs, new_abs)
-    except OSError:
+    except OSError as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         return None
 
     for old_file, new_file in move_pairs:
@@ -424,7 +428,8 @@ def delete_item(item_path: str, asset_database=None):
             shutil.rmtree(item_path)
         else:
             os.remove(item_path)
-    except OSError:
+    except OSError as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         return
 
     # Invalidate inspector cache so a recreated file won't reuse stale data
@@ -457,7 +462,8 @@ def do_rename(old_path: str, new_name: str, asset_database=None):
     if ext.lower() == '.mat' and os.path.isfile(old_path):
         try:
             update_material_name_in_file(old_path, os.path.splitext(safe_name)[0])
-        except OSError:
+        except OSError as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             return None
 
     return move_path(old_path, new_path, asset_database)

@@ -30,10 +30,6 @@ bool InxTexture::LoadImportSettings(const std::string &filePath)
     if (meta.HasKey("max_size")) {
         m_maxSize = meta.GetDataAs<int>("max_size");
     }
-
-    INXLOG_INFO("InxTexture::LoadImportSettings: path='", filePath, "' srgb=", m_srgb ? "true" : "false", " type='",
-                m_textureType, "' mipmaps=", m_generateMipmaps ? "true" : "false", " maxSize=", m_maxSize);
-
     return true;
 }
 

@@ -43,7 +43,8 @@ def _get_file_stamp(file_path: str):
     try:
         stat = os.stat(file_path)
         return (stat.st_mtime_ns, stat.st_size)
-    except OSError:
+    except OSError as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         return None
 
 
@@ -105,7 +106,8 @@ def _get_cached_prefab_template(file_path: str, resolved_guid: str, asset_databa
         try:
             template_scene.destroy_game_object(old_template)
             template_scene.process_pending_destroys()
-        except Exception:
+        except Exception as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             pass
 
     template = template_scene.instantiate_from_json(json.dumps(template_payload), None)

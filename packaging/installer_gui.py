@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 )
 
 from installer.install_python_runtime import install_runtime_for_app
+import logging
 
 if sys.platform == "win32":
     import winreg
@@ -59,7 +60,8 @@ def _write_registry(install_dir: str) -> None:
             winreg.SetValueEx(key, "Publisher", 0, winreg.REG_SZ, "Infernux")
             winreg.SetValueEx(key, "NoModify", 0, winreg.REG_DWORD, 1)
             winreg.SetValueEx(key, "NoRepair", 0, winreg.REG_DWORD, 1)
-    except OSError:
+    except OSError as _exc:
+        logging.getLogger(__name__).debug("[Suppressed] %s: %s", type(_exc).__name__, _exc)
         pass
 
 
@@ -69,7 +71,8 @@ def _remove_registry() -> None:
         return
     try:
         winreg.DeleteKey(winreg.HKEY_CURRENT_USER, _UNINSTALL_REG_KEY)
-    except OSError:
+    except OSError as _exc:
+        logging.getLogger(__name__).debug("[Suppressed] %s: %s", type(_exc).__name__, _exc)
         pass
 
 
@@ -84,7 +87,8 @@ def _create_start_menu_shortcut(install_dir: str) -> None:
             if os.path.lexists(link_path):
                 os.remove(link_path)
             os.symlink(install_dir, link_path)
-        except Exception:
+        except Exception as _exc:
+            logging.getLogger(__name__).debug("[Suppressed] %s: %s", type(_exc).__name__, _exc)
             pass
         return
     if sys.platform != "win32":
@@ -121,7 +125,8 @@ def _create_start_menu_shortcut(install_dir: str) -> None:
             timeout=15,
             creationflags=0x08000000,
         )
-    except Exception:
+    except Exception as _exc:
+        logging.getLogger(__name__).debug("[Suppressed] %s: %s", type(_exc).__name__, _exc)
         pass
 
 
@@ -132,7 +137,8 @@ def _remove_start_menu_shortcut() -> None:
             link_path = os.path.expanduser("~/Applications/Infernux Hub")
             if os.path.lexists(link_path):
                 os.remove(link_path)
-        except Exception:
+        except Exception as _exc:
+            logging.getLogger(__name__).debug("[Suppressed] %s: %s", type(_exc).__name__, _exc)
             pass
         return
     if sys.platform != "win32":
@@ -147,7 +153,8 @@ def _remove_start_menu_shortcut() -> None:
             return
         shortcut_dir = os.path.join(programs_dir, "Infernux Hub")
         shutil.rmtree(shortcut_dir, ignore_errors=True)
-    except Exception:
+    except Exception as _exc:
+        logging.getLogger(__name__).debug("[Suppressed] %s: %s", type(_exc).__name__, _exc)
         pass
 
 

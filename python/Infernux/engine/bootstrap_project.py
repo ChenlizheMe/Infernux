@@ -203,7 +203,8 @@ def wire_project_callbacks(bs: EditorBootstrap) -> None:
                 load_component_from_file, ScriptLoadError)
             load_component_from_file(file_path)
             return True
-        except Exception:
+        except Exception as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             return False
 
     pp.validate_script_component = _validate_script_component
@@ -214,7 +215,8 @@ def wire_project_callbacks(bs: EditorBootstrap) -> None:
             from Infernux.engine.ui.asset_inspector import (
                 invalidate_asset)
             invalidate_asset(path)
-        except Exception:
+        except Exception as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             pass
 
     pp.invalidate_asset_inspector = _invalidate_asset_inspector
@@ -233,7 +235,8 @@ def wire_project_callbacks(bs: EditorBootstrap) -> None:
                 files = im.get_dropped_files()
                 if files and pp.get_current_path():
                     pp.receive_dropped_files(files)
-            except Exception:
+            except Exception as _exc:
+                Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
                 pass
 
     bs._external_drop_forwarder = _ExternalDropForwarder()

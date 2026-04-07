@@ -22,6 +22,7 @@ Note:
 from __future__ import annotations
 
 import time as _time_mod
+from Infernux.debug import Debug
 
 
 # ---------------------------------------------------------------------------
@@ -105,7 +106,8 @@ class _TimeMeta(type):
             pm = PlayModeManager.instance()
             if pm is not None:
                 pm._time_scale = cls._time_scale
-        except ImportError:
+        except ImportError as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             pass  # PlayModeManager not yet loaded during early init
         except Exception as exc:
             import sys

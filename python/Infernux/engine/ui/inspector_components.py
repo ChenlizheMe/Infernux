@@ -131,7 +131,8 @@ def _get_component_ids(obj) -> set:
                 cid = c.component_id
                 if cid:
                     ids.add(cid)
-            except Exception:
+            except Exception as _exc:
+                Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
                 pass
     return ids
 
@@ -167,7 +168,8 @@ def _record_add_component_compound(obj, type_name: str, comp_ref,
                         and tn != "Transform"
                         and not _is_python_component_entry(c)):
                     auto_created.append((tn, c))
-            except Exception:
+            except Exception as _exc:
+                Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
                 pass
 
     if not auto_created:
@@ -309,7 +311,8 @@ def _build_builtin_cached_plan(ctx: InxGUIContext, comp, props, lw, skip_fields,
             try:
                 if not meta.visible_when(comp):
                     continue
-            except (RuntimeError, TypeError):
+            except (RuntimeError, TypeError) as _exc:
+                Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
                 pass
 
         current = _get_cached_component_value(
@@ -802,7 +805,8 @@ def _asset_guid_from_path(file_path: str) -> str:
     if adb:
         try:
             guid = adb.get_guid_from_path(file_path) or ""
-        except RuntimeError:
+        except RuntimeError as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             pass
     return guid
 
@@ -827,7 +831,8 @@ def _resolve_guid_and_path(payload: str):
             adb = getattr(AssetManager, '_asset_database', None)
             if adb:
                 path_hint = adb.get_path_from_guid(guid) or ""
-        except Exception:
+        except Exception as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             pass
     return guid, path_hint
 
@@ -1670,7 +1675,8 @@ def render_py_component(ctx: InxGUIContext, py_comp):
             try:
                 if not metadata.visible_when(py_comp):
                     continue
-            except (RuntimeError, TypeError):
+            except (RuntimeError, TypeError) as _exc:
+                Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
                 pass  # On error, show the field
 
         # Get current value. For reference-like fields, use the raw stored ref
@@ -2126,7 +2132,8 @@ def _render_mesh_renderer_materials(ctx: InxGUIContext, comp):
         mat = None
         try:
             mat = comp.get_effective_material(slot_idx)
-        except (RuntimeError, IndexError):
+        except (RuntimeError, IndexError) as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             pass
         mat_name = getattr(mat, 'name', 'None') if mat else 'None'
         display_name = mat_name + (" (Default)" if is_default else "")

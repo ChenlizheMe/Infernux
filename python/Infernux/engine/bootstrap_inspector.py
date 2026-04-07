@@ -81,7 +81,8 @@ def _wire_material_sections(ip, _t, engine, _inspector_support,
             if wrapper_cls is not None and not isinstance(renderer, BuiltinComponent):
                 try:
                     renderer = wrapper_cls._get_or_create_wrapper(renderer, obj)
-                except Exception:
+                except Exception as _exc:
+                    Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
                     pass
             mat_count = getattr(renderer, 'material_count', 0) or 1
             try:
@@ -252,7 +253,8 @@ def _get_add_component_entries():
                     continue
                 try:
                     comp_class = load_component_from_file(full)
-                except (ScriptLoadError, Exception):
+                except (ScriptLoadError, Exception) as _exc:
+                    Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
                     continue
                 e = InspectorAddComponentEntry()
                 e.display_name = comp_class.__name__
@@ -708,7 +710,8 @@ def wire_inspector_callbacks(bs: EditorBootstrap) -> None:
             if result and json_data and hasattr(result, "deserialize"):
                 try:
                     result.deserialize(json_data)
-                except Exception:
+                except Exception as _exc:
+                    Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
                     pass
         else:
             from Infernux.engine.component_restore import create_component_instance
@@ -726,12 +729,14 @@ def wire_inspector_callbacks(bs: EditorBootstrap) -> None:
                     instance._deserialize_fields(json_data, _skip_on_after_deserialize=True)
                 except TypeError:
                     instance._deserialize_fields(json_data)
-                except Exception:
+                except Exception as _exc:
+                    Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
                     pass
             if guid:
                 try:
                     instance._script_guid = guid
-                except Exception:
+                except Exception as _exc:
+                    Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
                     pass
             obj.add_py_component(instance)
         _invalidate_component_cache()
@@ -744,14 +749,16 @@ def wire_inspector_callbacks(bs: EditorBootstrap) -> None:
         if is_native and hasattr(comp, "deserialize"):
             try:
                 comp.deserialize(json_data)
-            except Exception:
+            except Exception as _exc:
+                Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
                 pass
         elif hasattr(comp, "_deserialize_fields"):
             try:
                 comp._deserialize_fields(json_data, _skip_on_after_deserialize=True)
             except TypeError:
                 comp._deserialize_fields(json_data)
-            except Exception:
+            except Exception as _exc:
+                Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
                 pass
         _bump_inspector_values()
 
@@ -902,7 +909,8 @@ def wire_inspector_callbacks(bs: EditorBootstrap) -> None:
             try:
                 from Infernux.renderstack.render_stack import RenderStack as _RS
                 _engine_py_map["RenderStack"] = _RS
-            except ImportError:
+            except ImportError as _exc:
+                Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
                 pass
             comp_cls = _engine_py_map.get(type_name_or_path)
             if comp_cls is None:

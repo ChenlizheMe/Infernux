@@ -377,6 +377,25 @@ class SceneRenderGraph
     void BuildRenderGraph();
 
     /**
+     * @brief Pre-register all non-backbuffer transient textures so their
+     * ResourceHandles are available before passes reference them.
+     */
+    void RegisterTransientTextures(uint32_t width, uint32_t height,
+                                   std::unordered_map<std::string, vk::ResourceHandle> &customRTHandles);
+
+    /**
+     * @brief Append a system auto-pass (gizmos / editor tools) that draws
+     * into the backbuffer with read-only depth testing.
+     */
+    void AppendAutoPass(const std::string &name, vk::ResourceHandle colorTarget,
+                        vk::ResourceHandle depthTarget, uint32_t width, uint32_t height);
+
+    /**
+     * @brief Set the graph output handle for dead-pass culling.
+     */
+    void FinalizeGraphOutput(const std::unordered_map<std::string, vk::ResourceHandle> &customRTHandles);
+
+    /**
      * @brief Import scene target resources into RenderGraph
      */
     void ImportSceneTargetResources();

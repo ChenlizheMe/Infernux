@@ -194,9 +194,6 @@ void AssetDependencyGraph::NotifyEvent(const std::string &guid, ResourceType typ
         return;
     }
 
-    INXLOG_INFO("AssetDependencyGraph::NotifyEvent: guid=", guid, " event=", static_cast<int>(event), " notifying ",
-                dependents.size(), " dependents");
-
     for (const auto &depGuid : dependents) {
         for (const auto &cb : callbacks) {
             cb(depGuid, guid, event);

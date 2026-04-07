@@ -101,8 +101,11 @@ class BuildOutputDirectoryError(ValueError):
 
         super().__init__(message)
 
+from ._build_splash import BuildSplashMixin
+from ._build_dependencies import BuildDependencyMixin
 
-class GameBuilder:
+
+class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
     """Build a standalone native game distribution using Nuitka."""
 
     OUTPUT_MARKER_FILENAME = ".infernux-build-output"
@@ -164,7 +167,8 @@ class GameBuilder:
             try:
                 build_log.write(msg + "\n")
                 build_log.flush()
-            except OSError:
+            except OSError as _exc:
+                Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
                 pass
 
         def _p(msg: str, pct: float):
@@ -199,7 +203,8 @@ class GameBuilder:
         finally:
             try:
                 build_log.close()
-            except OSError:
+            except OSError as _exc:
+                Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
                 pass
 
     def _build_inner(self, _p, _blog, on_progress, cancel_event, build_start) -> str:
@@ -362,7 +367,8 @@ class GameBuilder:
             else:
                 try:
                     os.remove(path)
-                except FileNotFoundError:
+                except FileNotFoundError as _exc:
+                    Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
                     continue
 
             if os.path.exists(path):
@@ -558,12 +564,6 @@ finally:
 
         return nk.build(on_progress=_nk_progress, cancel_event=cancel_event)
 
-    def _project_requirement_files(self) -> List[str]:
-        req_path = os.path.join(self.project_path, "requirements.txt")
-        if os.path.isfile(req_path):
-            return [req_path]
-        return []
-
     # ------------------------------------------------------------------
     # Organize output: move dist contents to the final output directory
     # ------------------------------------------------------------------
@@ -702,138 +702,6 @@ finally:
         "distutils", "ensurepip",
     })
 
-    def _collect_internal_asset_module_names(self) -> set[str]:
-        """Return top-level module names that belong to the project's Assets tree."""
-        names: set[str] = {"Assets"}
-        assets_dir = os.path.join(self.project_path, "Assets")
-        if not os.path.isdir(assets_dir):
-            return names
-
-        for entry in os.scandir(assets_dir):
-            name = entry.name
-            if name.startswith(".") or name in {"__pycache__"}:
-                continue
-            if entry.is_dir():
-                names.add(name)
-                continue
-            stem, ext = os.path.splitext(name)
-            if ext in {".py", ".pyc"} and stem and not stem.startswith("_"):
-                names.add(stem)
-        return names
-
-    def _collect_user_dependencies(self) -> List[str]:
-        """Scan user scripts for third-party imports and return package names.
-
-        Detection sources (in order of priority):
-        1. ``requirements.txt`` in the project root — explicit user list.
-           Lines starting with ``#`` or empty lines are ignored.
-           Version specifiers are stripped (``torch>=2.0`` → ``torch``).
-        2. AST-based import scanning of all ``.py`` files under ``Assets/``.
-           Only top-level package names are collected (``import a.b`` → ``a``).
-
-        The results are de-duplicated, stdlib/engine names are filtered out,
-        and only packages actually installed in the current environment are
-        returned (to avoid Nuitka errors on typos or conditional imports).
-        """
-        import ast
-        import importlib.util
-        import re
-
-        found: set[str] = set()
-        uses_infernux_jit = False
-        _t0 = time.perf_counter()
-
-        # --- Source 1: project requirements.txt -------------------------
-        req_path = os.path.join(self.project_path, "requirements.txt")
-        if os.path.isfile(req_path):
-            Debug.log_internal(f"Found project requirements.txt: {req_path}")
-            with open(req_path, "r", encoding="utf-8", errors="replace") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line or line.startswith("#") or line.startswith("-"):
-                        continue
-                    # Strip version specifiers: "torch>=2.0" → "torch"
-                    pkg = re.split(r"[><=!;\[]", line, maxsplit=1)[0].strip()
-                    if pkg:
-                        found.add(pkg)
-        Debug.log_internal(
-            f"  requirements.txt parsed in {time.perf_counter() - _t0:.3f}s"
-        )
-
-        # --- Source 2: AST import scanning ------------------------------
-        _ast_t0 = time.perf_counter()
-        _ast_file_count = 0
-        assets_dir = os.path.join(self.project_path, "Assets")
-        if os.path.isdir(assets_dir):
-            for root, _, files in os.walk(assets_dir):
-                for fname in files:
-                    if not fname.endswith(".py"):
-                        continue
-                    fpath = os.path.join(root, fname)
-                    _ast_file_count += 1
-                    try:
-                        with open(fpath, "r", encoding="utf-8", errors="replace") as f:
-                            tree = ast.parse(f.read(), filename=fpath)
-                    except SyntaxError:
-                        continue
-                    for node in ast.walk(tree):
-                        if isinstance(node, ast.Import):
-                            for alias in node.names:
-                                found.add(alias.name.split(".")[0])
-                                if alias.name in {"Infernux.jit", "Infernux._jit_kernels"}:
-                                    uses_infernux_jit = True
-                        elif isinstance(node, ast.ImportFrom):
-                            if node.module and node.level == 0:
-                                found.add(node.module.split(".")[0])
-                                if node.module in {"Infernux.jit", "Infernux._jit_kernels"}:
-                                    uses_infernux_jit = True
-                                elif node.module == "Infernux":
-                                    imported_names = {alias.name for alias in node.names}
-                                    if imported_names & {
-                                        "jit", "njit", "warmup", "precompile_jit",
-                                        "JIT_AVAILABLE",
-                                    }:
-                                        uses_infernux_jit = True
-        Debug.log_internal(
-            f"  AST scanned {_ast_file_count} .py files in "
-            f"{time.perf_counter() - _ast_t0:.3f}s"
-        )
-
-        # --- Filter: remove stdlib / engine / excluded ------------------
-        found -= self._BUILTIN_MODULES
-        found -= self._collect_internal_asset_module_names()
-
-        # Public JIT API ultimately depends on numba + llvmlite + numpy.
-        # Make that explicit so standalone player builds include the runtime
-        # pieces even when user scripts import the supported ``Infernux.jit``
-        # surface instead of importing ``numba`` directly.  numpy must also
-        # be raw-copied because numba introspects numpy bytecode at JIT time.
-        if uses_infernux_jit or "numba" in found:
-            found.add("numba")
-            found.add("llvmlite")
-            found.add("numpy")
-
-        # Only keep packages that are actually importable in the current
-        # environment so Nuitka doesn't error on stale or optional imports.
-        _verify_t0 = time.perf_counter()
-        verified: list[str] = []
-        for pkg in sorted(found):
-            if importlib.util.find_spec(pkg) is not None:
-                verified.append(pkg)
-            else:
-                Debug.log_warning(
-                    f"User script dependency '{pkg}' not installed — skipping"
-                )
-        Debug.log_internal(
-            f"  import verification in {time.perf_counter() - _verify_t0:.3f}s"
-        )
-
-        if verified:
-            Debug.log_internal(
-                f"User dependencies to bundle: {', '.join(verified)}"
-            )
-        return verified
-
     # ------------------------------------------------------------------
     # Compile user scripts
     # ------------------------------------------------------------------
@@ -872,7 +740,8 @@ finally:
                                     py_path + "c", data_dir
                                 ).replace("\\", "/")
                                 guid_map[guid] = pyc_rel
-                        except (json.JSONDecodeError, OSError):
+                        except (json.JSONDecodeError, OSError) as _exc:
+                            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
                             pass
 
         # Second pass: compile and remove originals
@@ -913,7 +782,8 @@ finally:
                             doraise=True,
                         )
                         os.remove(py_path)
-                    except py_compile.PyCompileError:
+                    except py_compile.PyCompileError as _exc:
+                        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
                         pass
 
         Debug.log_internal(
@@ -930,71 +800,6 @@ finally:
     # ------------------------------------------------------------------
     # Splash items
     # ------------------------------------------------------------------
-
-    def _process_splash_items(self, final_dir: str):
-        """Copy/convert splash items into Data/Splash/."""
-        if not self.splash_items:
-            return
-
-        splash_dir = os.path.join(final_dir, "Data", "Splash")
-        os.makedirs(splash_dir, exist_ok=True)
-
-        for item in self.splash_items:
-            src_path = item.get("path", "")
-            if not os.path.isfile(src_path):
-                Debug.log_warning(f"Splash item not found: {src_path}")
-                continue
-
-            item_type = item.get("type", "image")
-            base_name = os.path.splitext(os.path.basename(src_path))[0]
-
-            if item_type == "video":
-                out_name = base_name + ".infsplash"
-                out_path = os.path.join(splash_dir, out_name)
-                self._extract_video_frames(src_path, out_path)
-                item["_built_path"] = f"Splash/{out_name}"
-            else:
-                ext = os.path.splitext(src_path)[1]
-                out_name = base_name + ext
-                shutil.copy2(src_path, os.path.join(splash_dir, out_name))
-                item["_built_path"] = f"Splash/{out_name}"
-
-    def _extract_video_frames(self, video_path: str, output_path: str):
-        """Extract video frames to .infsplash binary blob."""
-        _ensure_video_splash_packages()
-        self._extract_with_imageio(video_path, output_path)
-
-    def _extract_with_imageio(self, video_path: str, output_path: str):
-        """Extract video frames using imageio+av."""
-        import imageio.v3 as iio
-
-        frames_data: list[bytes] = []
-        width = height = 0
-        for frame in iio.imiter(video_path, plugin="pyav"):
-            height, width = frame.shape[:2]
-            jpeg_bytes = iio.imwrite(
-                "<bytes>", frame, extension=".jpg", quality=85
-            )
-            frames_data.append(jpeg_bytes)
-
-        meta = iio.immeta(video_path, plugin="pyav")
-        fps = meta.get("fps", 30.0) or 30.0
-        self._write_infsplash(output_path, frames_data, fps, width, height)
-
-    @staticmethod
-    def _write_infsplash(
-        path: str, frames: list, fps: float, width: int, height: int
-    ):
-        """Write .infsplash binary (magic + header + index + JPEG data)."""
-        with open(path, "wb") as f:
-            f.write(b"INFSPLSH")
-            f.write(struct.pack("<IfII", len(frames), fps, width, height))
-            offset = 0
-            for data in frames:
-                f.write(struct.pack("<II", offset, len(data)))
-                offset += len(data)
-            for data in frames:
-                f.write(data)
 
     # ------------------------------------------------------------------
     # Relativize scene paths
@@ -1157,11 +962,13 @@ finally:
         for f in files_to_remove:
             try:
                 removed_bytes += os.path.getsize(f)
-            except OSError:
+            except OSError as _exc:
+                Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
                 pass
             try:
                 os.remove(f)
-            except OSError:
+            except OSError as _exc:
+                Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
                 pass
 
         # 2. Count bytes in queued dirs, then batch-remove
@@ -1172,7 +979,8 @@ finally:
                 for fname in fs:
                     try:
                         removed_bytes += os.path.getsize(os.path.join(r, fname))
-                    except OSError:
+                    except OSError as _exc:
+                        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
                         pass
 
         if sys.platform == "win32" and dirs_to_remove:
@@ -1240,7 +1048,8 @@ finally:
                     for f in files:
                         try:
                             sz += os.path.getsize(os.path.join(root, f))
-                        except OSError:
+                        except OSError as _exc:
+                            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
                             pass
                 entries.append((item.name + "/", sz))
             elif item.is_file(follow_symlinks=False):

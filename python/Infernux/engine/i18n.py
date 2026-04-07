@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+from Infernux.debug import Debug
 
 # ---------------------------------------------------------------------------
 # Locale state
@@ -567,7 +568,8 @@ def _prefs_path() -> str:
             ctypes.windll.shell32.SHGetFolderPathW(None, 5, None, 0, buf)
             if buf.value:
                 docs = pathlib.Path(buf.value)
-        except (OSError, ValueError):
+        except (OSError, ValueError) as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             pass
     else:
         docs = pathlib.Path.home() / "Documents"
@@ -588,7 +590,8 @@ def _load_preference() -> None:
         locale = data.get("language", "zh")
         if locale in ("en", "zh"):
             _current_locale = locale
-    except (json.JSONDecodeError, OSError):
+    except (json.JSONDecodeError, OSError) as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         pass
 
 
@@ -606,7 +609,8 @@ def _save_preference() -> None:
     try:
         with open(path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
-    except OSError:
+    except OSError as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         pass
 
 

@@ -80,7 +80,8 @@ def _python_version(python_exe: str) -> str:
             ["-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"],
             timeout=20,
         )
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError) as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         return ""
     if completed.returncode != 0:
         return ""
@@ -91,7 +92,8 @@ def _is_embeddable_python_exe(python_exe: str) -> bool:
     try:
         root = os.path.dirname(os.path.abspath(python_exe))
         return any(name.lower().endswith("._pth") for name in os.listdir(root))
-    except OSError:
+    except OSError as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         return False
 
 

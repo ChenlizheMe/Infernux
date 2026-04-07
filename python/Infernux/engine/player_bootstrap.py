@@ -46,7 +46,8 @@ def _plog(msg):
     try:
         with open(path, "a", encoding="utf-8") as f:
             f.write(str(msg) + "\n")
-    except OSError:
+    except OSError as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         pass
 
 
@@ -92,7 +93,8 @@ class PlayerBootstrap:
             from Infernux.engine.project_requirements import ensure_project_requirements
 
             ensure_project_requirements(self.project_path, auto_install=False)
-        except ImportError:
+        except ImportError as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             pass
 
     @staticmethod
@@ -101,7 +103,8 @@ class PlayerBootstrap:
             from Infernux.jit import precompile_jit
 
             precompile_jit()
-        except ImportError:
+        except ImportError as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             pass
 
 
@@ -161,7 +164,8 @@ class PlayerBootstrap:
             try:
                 with open(bs_path, "r", encoding="utf-8", errors="replace") as _f:
                     data = _json.load(_f)
-            except Exception:
+            except Exception as _exc:
+                Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
                 pass
         scenes = data.get("scenes", [])
         if not scenes:

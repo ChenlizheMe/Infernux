@@ -84,9 +84,23 @@ def _load_scene_manager_module(monkeypatch):
     monkeypatch.setitem(sys.modules, "Infernux.engine.project_context", fake_project_context)
     monkeypatch.setitem(sys.modules, "Infernux.engine.path_utils", fake_path_utils)
 
+    # Fake mixin modules so relative imports in scene_manager.py succeed
+    for mod_name, cls_name in [
+        ("Infernux.engine._scene_prefab", "ScenePrefabMixin"),
+        ("Infernux.engine._scene_save", "SceneSaveMixin"),
+        ("Infernux.engine._scene_confirmation", "SceneConfirmationMixin"),
+    ]:
+        fake_mod = types.ModuleType(mod_name)
+        setattr(fake_mod, cls_name, type(cls_name, (), {}))
+        monkeypatch.setitem(sys.modules, mod_name, fake_mod)
+
     module_path = Path(__file__).resolve().parents[1] / "Infernux" / "engine" / "scene_manager.py"
-    spec = importlib.util.spec_from_file_location("_scene_manager_under_test", module_path)
+    spec = importlib.util.spec_from_file_location(
+        "Infernux.engine.scene_manager", module_path,
+    )
     module = importlib.util.module_from_spec(spec)
+    # Pre-register so relative imports can resolve the parent package
+    monkeypatch.setitem(sys.modules, "Infernux.engine.scene_manager", module)
     assert spec is not None and spec.loader is not None
     spec.loader.exec_module(module)
     return module
