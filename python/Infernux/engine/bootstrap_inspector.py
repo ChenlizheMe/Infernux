@@ -66,18 +66,10 @@ def _wire_material_sections(ip, _t, engine, _inspector_support,
 
         return _Adapter()
 
-    def _render_material_sections(ctx, obj_id):
+    def _collect_material_renderers(items, native_map, obj, wrapper_cls):
+        """Collect MeshRenderer tuples and their signature parts."""
         from Infernux.components.builtin_component import BuiltinComponent
-        from Infernux.engine.ui import inspector_material as mat_ui
-        from Infernux.engine.ui.inspector_utils import render_compact_section_header, render_info_text
-        from Infernux.engine.ui.theme import Theme, ImGuiCol, ImGuiStyleVar
 
-        scene, items, native_map, _py_map = _get_cached_component_maps(obj_id)
-        obj = scene.find_by_id(obj_id) if scene else None
-        if obj is None:
-            return
-
-        wrapper_cls = BuiltinComponent._builtin_registry.get("MeshRenderer")
         renderers = []
         signature_parts = []
         for item in items:
@@ -107,6 +99,44 @@ def _wire_material_sections(ip, _t, engine, _inspector_support,
                 material_guids,
                 slot_names,
             ))
+        return renderers, tuple(signature_parts)
+
+    def _rebuild_material_entries(renderers):
+        """Build the valid_entries list from collected renderers."""
+        valid_entries = []
+        for renderer, mat_count, material_guids, slot_names in renderers:
+            for slot_idx in range(mat_count):
+                try:
+                    mat = renderer.get_effective_material(slot_idx)
+                except Exception:
+                    mat = None
+                if mat is None:
+                    continue
+                if slot_idx < len(slot_names) and slot_names[slot_idx]:
+                    label = f"{slot_names[slot_idx]} (Slot {slot_idx})"
+                else:
+                    label = f"Element {slot_idx}"
+                is_default = slot_idx >= len(material_guids) or not material_guids[slot_idx]
+                valid_entries.append({
+                    "label": label,
+                    "material": mat,
+                    "is_default": is_default,
+                })
+        return valid_entries
+
+    def _render_material_sections(ctx, obj_id):
+        from Infernux.components.builtin_component import BuiltinComponent
+        from Infernux.engine.ui import inspector_material as mat_ui
+        from Infernux.engine.ui.inspector_utils import render_compact_section_header, render_info_text
+        from Infernux.engine.ui.theme import Theme, ImGuiCol, ImGuiStyleVar
+
+        scene, items, native_map, _py_map = _get_cached_component_maps(obj_id)
+        obj = scene.find_by_id(obj_id) if scene else None
+        if obj is None:
+            return
+
+        wrapper_cls = BuiltinComponent._builtin_registry.get("MeshRenderer")
+        renderers, signature = _collect_material_renderers(items, native_map, obj, wrapper_cls)
 
         if not renderers:
             return
@@ -123,7 +153,6 @@ def _wire_material_sections(ip, _t, engine, _inspector_support,
             return
 
         _scene, scene_version, structure_version = _current_scene_and_versions()
-        signature = tuple(signature_parts)
         if (
             _material_section_cache["object_id"] == obj_id
             and _material_section_cache["scene_version"] == scene_version
@@ -132,25 +161,7 @@ def _wire_material_sections(ip, _t, engine, _inspector_support,
         ):
             valid_entries = _material_section_cache["entries"]
         else:
-            valid_entries = []
-            for renderer, mat_count, material_guids, slot_names in renderers:
-                for slot_idx in range(mat_count):
-                    try:
-                        mat = renderer.get_effective_material(slot_idx)
-                    except Exception:
-                        mat = None
-                    if mat is None:
-                        continue
-                    if slot_idx < len(slot_names) and slot_names[slot_idx]:
-                        label = f"{slot_names[slot_idx]} (Slot {slot_idx})"
-                    else:
-                        label = f"Element {slot_idx}"
-                    is_default = slot_idx >= len(material_guids) or not material_guids[slot_idx]
-                    valid_entries.append({
-                        "label": label,
-                        "material": mat,
-                        "is_default": is_default,
-                    })
+            valid_entries = _rebuild_material_entries(renderers)
             _material_section_cache["object_id"] = obj_id
             _material_section_cache["scene_version"] = scene_version
             _material_section_cache["structure_version"] = structure_version

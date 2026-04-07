@@ -41,6 +41,97 @@ def _record_profile_timing(bucket: str, start_time: float) -> None:
 #  Material property renderer (JSON type system: ptype 0-7)
 # ═══════════════════════════════════════════════════════════════════════════
 
+def _get_asset_database():
+    """Get the asset database from EditorServices or AssetRegistry (fallback)."""
+    try:
+        from .editor_services import EditorServices
+        adb = EditorServices.instance()._asset_database
+        if adb:
+            return adb
+    except Exception:
+        pass
+    try:
+        from Infernux.lib import AssetRegistry
+        return AssetRegistry.instance().get_asset_database()
+    except Exception:
+        return None
+
+
+def _resolve_path_to_guid(path_str):
+    """Resolve a filesystem path to an asset GUID."""
+    adb = _get_asset_database()
+    return adb.get_guid_from_path(path_str) or "" if adb else ""
+
+
+def _resolve_texture_display(prop):
+    """Return display text for a texture property's GUID."""
+    import os
+    tex_guid = prop.get("guid", "")
+    if not isinstance(tex_guid, str) or not tex_guid:
+        return t("igui.none")
+    adb = _get_asset_database()
+    if adb:
+        tex_path = adb.get_path_from_guid(tex_guid)
+        if tex_path:
+            return os.path.basename(tex_path)
+    return tex_guid[:8] + "..."
+
+
+def _render_texture2d_property(ctx, prop, prop_name, wid_prefix, plw):
+    """Render a Texture2D material property (GUID-only v2). Returns True if changed."""
+    changed = False
+    display = _resolve_texture_display(prop)
+    field_label(ctx, prop_name, plw)
+
+    from .igui import IGUI
+
+    def _on_tex_drop(payload):
+        nonlocal changed
+        dropped = str(payload).replace("\\", "/")
+        guid = _resolve_path_to_guid(dropped)
+        if not guid:
+            import logging
+            logging.getLogger(__name__).warning(
+                "Cannot resolve dropped texture path to GUID: %s", dropped)
+            return
+        prop["guid"] = guid
+        changed = True
+
+    def _on_tex_pick(picked_path):
+        nonlocal changed
+        picked = str(picked_path).replace("\\", "/")
+        guid = _resolve_path_to_guid(picked)
+        if not guid:
+            import logging
+            logging.getLogger(__name__).warning(
+                "Cannot resolve picked texture path to GUID: %s", picked)
+            return
+        prop["guid"] = guid
+        changed = True
+
+    def _on_tex_clear():
+        nonlocal changed
+        prop["guid"] = ""
+        changed = True
+
+    def _tex_asset_items(filt):
+        from .inspector_components import _picker_assets
+        return _picker_assets(filt, "*.png") + _picker_assets(filt, "*.jpg")
+
+    IGUI.object_field(
+        ctx,
+        f"{wid_prefix}_{prop_name}_tex",
+        display, "Texture",
+        clickable=True,
+        accept="TEXTURE_FILE",
+        on_drop=_on_tex_drop,
+        picker_asset_items=_tex_asset_items,
+        on_pick=_on_tex_pick,
+        on_clear=_on_tex_clear,
+    )
+    return changed
+
+
 def render_material_property(
     ctx: InxGUIContext,
     prop_name: str,
@@ -51,7 +142,6 @@ def render_material_property(
     wid_prefix: str = "mp",
 ) -> bool:
     """Render one material property row.  Returns ``True`` if changed."""
-    import os
     changed = False
     wid = f"##{wid_prefix}_{prop_name}"
 
@@ -112,96 +202,8 @@ def render_material_property(
             prop["value"] = arr
             changed = True
 
-    elif ptype == 6:  # Texture2D — GUID-only (v2)
-        tex_guid = prop.get("guid", "")
-        if not isinstance(tex_guid, str):
-            tex_guid = ""
-        has_texture = bool(tex_guid)
-        display = t("igui.none")
-        if has_texture:
-            try:
-                from .editor_services import EditorServices
-                adb = EditorServices.instance()._asset_database
-                if adb:
-                    tex_path = adb.get_path_from_guid(tex_guid)
-                    if tex_path:
-                        display = os.path.basename(tex_path)
-                    else:
-                        display = tex_guid[:8] + "..."
-                else:
-                    display = tex_guid[:8] + "..."
-            except Exception:
-                display = tex_guid[:8] + "..."
-        field_label(ctx, prop_name, plw)
-
-        from .igui import IGUI
-
-        def _get_asset_database():
-            try:
-                from .editor_services import EditorServices
-                adb = EditorServices.instance()._asset_database
-                if adb:
-                    return adb
-            except Exception:
-                pass
-            try:
-                from Infernux.lib import AssetRegistry
-                return AssetRegistry.instance().get_asset_database()
-            except Exception:
-                return None
-
-        def _resolve_path_to_guid(path_str):
-            adb = _get_asset_database()
-            if adb:
-                return adb.get_guid_from_path(path_str) or ""
-            return ""
-
-        def _on_tex_drop(payload):
-            nonlocal changed
-            dropped = str(payload).replace("\\", "/")
-            guid = _resolve_path_to_guid(dropped)
-            if guid:
-                prop["guid"] = guid
-            else:
-                import logging
-                logging.getLogger(__name__).warning(
-                    "Cannot resolve dropped texture path to GUID: %s", dropped)
-                return
-            changed = True
-
-        def _on_tex_pick(picked_path):
-            nonlocal changed
-            picked = str(picked_path).replace("\\", "/")
-            guid = _resolve_path_to_guid(picked)
-            if guid:
-                prop["guid"] = guid
-            else:
-                import logging
-                logging.getLogger(__name__).warning(
-                    "Cannot resolve picked texture path to GUID: %s", picked)
-                return
-            changed = True
-
-        def _on_tex_clear():
-            nonlocal changed
-            prop["guid"] = ""
-            changed = True
-
-        def _tex_asset_items(filt):
-            from .inspector_components import _picker_assets
-            return _picker_assets(filt, "*.png") + _picker_assets(filt, "*.jpg")
-
-        IGUI.object_field(
-            ctx,
-            f"{wid_prefix}_{prop_name}_tex",
-            display, "Texture",
-            clickable=True,
-            accept="TEXTURE_FILE",
-            on_drop=_on_tex_drop,
-            picker_asset_items=_tex_asset_items,
-            on_pick=_on_tex_pick,
-            on_clear=_on_tex_clear,
-        )
+    elif ptype == 6:  # Texture2D
+        changed = _render_texture2d_property(ctx, prop, prop_name, wid_prefix, plw)
 
     elif ptype == 7:  # Color
         if value is not None and len(value) >= 4:
@@ -815,7 +817,17 @@ def _get_inline_material_extra(panel, native_mat) -> dict:
 
 def _refresh_pipeline(panel):
     """Ask the engine to rebuild the material pipeline."""
-    engine = panel._get_native_engine() if panel else None
+    engine = None
+    if panel and hasattr(panel, '_get_native_engine'):
+        engine = panel._get_native_engine()
+    if engine is None:
+        try:
+            from Infernux.engine.engine import Engine
+            eng_inst = Engine.instance()
+            if eng_inst:
+                engine = eng_inst.get_native_engine()
+        except Exception:
+            pass
     if engine and _native_mat and hasattr(engine, 'refresh_material_pipeline'):
         engine.refresh_material_pipeline(_native_mat)
 

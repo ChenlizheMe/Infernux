@@ -115,6 +115,42 @@ static int MapCollisionDetectionModeToMotionQuality(int mode, bool isKinematic)
 INFERNUX_REGISTER_COMPONENT("Rigidbody", Rigidbody)
 
 // ============================================================================
+// Shared helpers
+// ============================================================================
+
+template <typename Fn>
+void Rigidbody::ForEachBody(Fn &&fn)
+{
+    GameObject *go = nullptr;
+    auto *pw = GetActivePhysicsWorld(go);
+    if (!pw)
+        return;
+    for (uint32_t bodyId : CollectUniqueBodyIds(go))
+        fn(*pw, bodyId);
+}
+
+void Rigidbody::TeleportBodies(PhysicsWorld &pw, GameObject *go, const glm::vec3 &pos, const glm::quat &rot)
+{
+    auto colliders = go->GetComponents<Collider>();
+    for (auto *col : colliders) {
+        if (col && col->GetBodyId() != 0xFFFFFFFF)
+            col->SetLastSyncedTransform(pos, rot);
+    }
+    for (uint32_t bodyId : CollectUniqueBodyIds(go)) {
+        pw.SetBodyPosition(bodyId, pos, rot);
+        pw.ActivateBody(bodyId);
+        pw.SetBodyLinearVelocity(bodyId, glm::vec3(0.0f));
+        pw.SetBodyAngularVelocity(bodyId, glm::vec3(0.0f));
+    }
+    auto &d = DataMut();
+    d.previousPhysicsPosition = pos;
+    d.previousPhysicsRotation = rot;
+    d.currentPhysicsPosition = pos;
+    d.currentPhysicsRotation = rot;
+    d.hasPhysicsPose = true;
+}
+
+// ============================================================================
 // Constructor / Destructor
 // ============================================================================
 
@@ -208,15 +244,7 @@ void Rigidbody::SetMass(float mass)
 {
     auto &d = DataMut();
     d.mass = (mass < 0.001f) ? 0.001f : mass;
-
-    GameObject *go = nullptr;
-    auto *pw = GetActivePhysicsWorld(go);
-    if (!pw)
-        return;
-
-    for (uint32_t bodyId : CollectUniqueBodyIds(go)) {
-        pw->SetBodyMassProperties(bodyId, d.mass);
-    }
+    ForEachBody([&](PhysicsWorld &pw, uint32_t id) { pw.SetBodyMassProperties(id, d.mass); });
 }
 
 void Rigidbody::SetDrag(float drag)
@@ -237,16 +265,8 @@ void Rigidbody::SetUseGravity(bool use)
     if (d.useGravity == use)
         return;
     d.useGravity = use;
-
-    GameObject *go = nullptr;
-    auto *pw = GetActivePhysicsWorld(go);
-    if (!pw)
-        return;
-
     float factor = d.useGravity ? 1.0f : 0.0f;
-    for (uint32_t bodyId : CollectUniqueBodyIds(go)) {
-        pw->SetBodyGravityFactor(bodyId, factor);
-    }
+    ForEachBody([&](PhysicsWorld &pw, uint32_t id) { pw.SetBodyGravityFactor(id, factor); });
 }
 
 void Rigidbody::SetIsKinematic(bool kinematic)
@@ -719,23 +739,7 @@ void Rigidbody::SyncExternalMovesToPhysics()
             return;
 
         // Transform was modified after body creation — teleport now.
-        auto colliders = go->GetComponents<Collider>();
-        for (auto *col : colliders) {
-            if (col && col->GetBodyId() != 0xFFFFFFFF) {
-                col->SetLastSyncedTransform(currentPos, currentRot);
-            }
-        }
-        for (uint32_t bodyId : bodyIds) {
-            pw.SetBodyPosition(bodyId, currentPos, currentRot);
-            pw.ActivateBody(bodyId);
-            pw.SetBodyLinearVelocity(bodyId, glm::vec3(0.0f));
-            pw.SetBodyAngularVelocity(bodyId, glm::vec3(0.0f));
-        }
-        d.previousPhysicsPosition = currentPos;
-        d.previousPhysicsRotation = currentRot;
-        d.currentPhysicsPosition = currentPos;
-        d.currentPhysicsRotation = currentRot;
-        d.hasPhysicsPose = true;
+        TeleportBodies(pw, go, currentPos, currentRot);
         return;
     }
 
@@ -755,25 +759,7 @@ void Rigidbody::SyncExternalMovesToPhysics()
     if (!pw.IsInitialized())
         return;
 
-    auto colliders = go->GetComponents<Collider>();
-    for (auto *col : colliders) {
-        if (col && col->GetBodyId() != 0xFFFFFFFF) {
-            col->SetLastSyncedTransform(currentPos, currentRot);
-        }
-    }
-
-    for (uint32_t bodyId : CollectUniqueBodyIds(go)) {
-        pw.SetBodyPosition(bodyId, currentPos, currentRot);
-        pw.ActivateBody(bodyId);
-        pw.SetBodyLinearVelocity(bodyId, glm::vec3(0.0f));
-        pw.SetBodyAngularVelocity(bodyId, glm::vec3(0.0f));
-    }
-
-    d.previousPhysicsPosition = currentPos;
-    d.previousPhysicsRotation = currentRot;
-    d.currentPhysicsPosition = currentPos;
-    d.currentPhysicsRotation = currentRot;
-    d.hasPhysicsPose = true;
+    TeleportBodies(pw, go, currentPos, currentRot);
 
     // Update cache
     d.lastSyncedPosition = currentPos;
@@ -843,67 +829,33 @@ void Rigidbody::NotifyCollidersBodyTypeChanged()
 
 void Rigidbody::ApplyDragSettings()
 {
-    GameObject *go = nullptr;
-    auto *pw = GetActivePhysicsWorld(go);
-    if (!pw)
-        return;
-
     const auto &d = Data();
-    for (uint32_t bodyId : CollectUniqueBodyIds(go)) {
-        pw->SetBodyDamping(bodyId, d.drag, d.angularDrag);
-    }
+    ForEachBody([&](PhysicsWorld &pw, uint32_t id) { pw.SetBodyDamping(id, d.drag, d.angularDrag); });
 }
 
 void Rigidbody::ApplyConstraints()
 {
-    GameObject *go = nullptr;
-    auto *pw = GetActivePhysicsWorld(go);
-    if (!pw)
-        return;
-
     const auto &d = Data();
-
     // Convert Unity constraints bitmask to Jolt EAllowedDOFs.
     // Unity constraints bits start at bit 1 (FreezePositionX=2), Jolt at bit 0.
     int joltAllowed = 0x3F & ~(d.constraints >> 1);
-
-    for (uint32_t bodyId : CollectUniqueBodyIds(go)) {
-        pw->SetBodyAllowedDOFs(bodyId, joltAllowed, d.mass);
-    }
+    ForEachBody([&](PhysicsWorld &pw, uint32_t id) { pw.SetBodyAllowedDOFs(id, joltAllowed, d.mass); });
 }
 
 void Rigidbody::ApplyMotionQuality()
 {
-    GameObject *go = nullptr;
-    auto *pw = GetActivePhysicsWorld(go);
-    if (!pw)
-        return;
-
     const auto &d = Data();
-
-    // Unity mapping:
-    // - Discrete -> Jolt Discrete
-    // - Continuous / ContinuousDynamic -> Jolt LinearCast sweep CCD
-    // - ContinuousSpeculative -> Jolt Discrete + speculative contacts
     int joltQuality = MapCollisionDetectionModeToMotionQuality(d.collisionDetectionMode, d.isKinematic);
-
-    for (uint32_t bodyId : CollectUniqueBodyIds(go)) {
-        pw->SetBodyMotionQuality(bodyId, joltQuality);
-    }
+    ForEachBody([&](PhysicsWorld &pw, uint32_t id) { pw.SetBodyMotionQuality(id, joltQuality); });
 }
 
 void Rigidbody::ApplyVelocityLimits()
 {
-    GameObject *go = nullptr;
-    auto *pw = GetActivePhysicsWorld(go);
-    if (!pw)
-        return;
-
     const auto &d = Data();
-    for (uint32_t bodyId : CollectUniqueBodyIds(go)) {
-        pw->SetBodyMaxAngularVelocity(bodyId, d.maxAngularVelocity);
-        pw->SetBodyMaxLinearVelocity(bodyId, d.maxLinearVelocity);
-    }
+    ForEachBody([&](PhysicsWorld &pw, uint32_t id) {
+        pw.SetBodyMaxAngularVelocity(id, d.maxAngularVelocity);
+        pw.SetBodyMaxLinearVelocity(id, d.maxLinearVelocity);
+    });
 }
 
 // ============================================================================

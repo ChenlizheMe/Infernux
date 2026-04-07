@@ -829,30 +829,26 @@ VkDescriptorSet OutlineRenderer::GetOrCreateMtlOutlineDescSet(InxMaterial *mater
 }
 
 // ============================================================================
-// Internal: Mask Pass
+// Internal: Shared render-pass begin helper
 // ============================================================================
 
-void OutlineRenderer::RenderOutlineMask(VkCommandBuffer cmdBuf, const std::vector<DrawCall> &drawCalls)
+void OutlineRenderer::BeginRenderPassWithFullViewport(VkCommandBuffer cmdBuf, VkRenderPass rp, VkFramebuffer fb,
+                                                       const VkClearValue &clearVal)
 {
     uint32_t w = m_sceneRenderTarget->GetWidth();
     uint32_t h = m_sceneRenderTarget->GetHeight();
 
-    // Begin mask render pass (clears mask to black, no depth)
-    VkClearValue clearValue{};
-    clearValue.color = {{0.0f, 0.0f, 0.0f, 0.0f}};
-
     VkRenderPassBeginInfo rpBegin{};
     rpBegin.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-    rpBegin.renderPass = m_outlineMaskRenderPass;
-    rpBegin.framebuffer = m_outlineMaskFramebuffer;
+    rpBegin.renderPass = rp;
+    rpBegin.framebuffer = fb;
     rpBegin.renderArea.offset = {0, 0};
     rpBegin.renderArea.extent = {w, h};
     rpBegin.clearValueCount = 1;
-    rpBegin.pClearValues = &clearValue;
+    rpBegin.pClearValues = &clearVal;
 
     vkCmdBeginRenderPass(cmdBuf, &rpBegin, VK_SUBPASS_CONTENTS_INLINE);
 
-    // Set viewport and scissor
     VkViewport viewport{};
     viewport.x = 0.0f;
     viewport.y = 0.0f;
@@ -866,6 +862,20 @@ void OutlineRenderer::RenderOutlineMask(VkCommandBuffer cmdBuf, const std::vecto
     scissor.offset = {0, 0};
     scissor.extent = {w, h};
     vkCmdSetScissor(cmdBuf, 0, 1, &scissor);
+}
+
+// ============================================================================
+// Internal: Mask Pass
+// ============================================================================
+
+void OutlineRenderer::RenderOutlineMask(VkCommandBuffer cmdBuf, const std::vector<DrawCall> &drawCalls)
+{
+    uint32_t w = m_sceneRenderTarget->GetWidth();
+    uint32_t h = m_sceneRenderTarget->GetHeight();
+
+    VkClearValue clearValue{};
+    clearValue.color = {{0.0f, 0.0f, 0.0f, 0.0f}};
+    BeginRenderPassWithFullViewport(cmdBuf, m_outlineMaskRenderPass, m_outlineMaskFramebuffer, clearValue);
 
     // Render the selected object
     for (const auto &dc : drawCalls) {
@@ -955,35 +965,9 @@ void OutlineRenderer::RenderOutlineComposite(VkCommandBuffer cmdBuf)
     uint32_t w = m_sceneRenderTarget->GetWidth();
     uint32_t h = m_sceneRenderTarget->GetHeight();
 
-    // Begin composite render pass
     VkClearValue dummyClear{};
     dummyClear.color = {{0.0f, 0.0f, 0.0f, 1.0f}};
-
-    VkRenderPassBeginInfo rpBegin{};
-    rpBegin.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-    rpBegin.renderPass = m_outlineCompositeRenderPass;
-    rpBegin.framebuffer = m_outlineCompositeFramebuffer;
-    rpBegin.renderArea.offset = {0, 0};
-    rpBegin.renderArea.extent = {w, h};
-    rpBegin.clearValueCount = 1;
-    rpBegin.pClearValues = &dummyClear;
-
-    vkCmdBeginRenderPass(cmdBuf, &rpBegin, VK_SUBPASS_CONTENTS_INLINE);
-
-    // Set viewport and scissor
-    VkViewport viewport{};
-    viewport.x = 0.0f;
-    viewport.y = 0.0f;
-    viewport.width = static_cast<float>(w);
-    viewport.height = static_cast<float>(h);
-    viewport.minDepth = 0.0f;
-    viewport.maxDepth = 1.0f;
-    vkCmdSetViewport(cmdBuf, 0, 1, &viewport);
-
-    VkRect2D scissor{};
-    scissor.offset = {0, 0};
-    scissor.extent = {w, h};
-    vkCmdSetScissor(cmdBuf, 0, 1, &scissor);
+    BeginRenderPassWithFullViewport(cmdBuf, m_outlineCompositeRenderPass, m_outlineCompositeFramebuffer, dummyClear);
 
     // Bind composite pipeline
     vkCmdBindPipeline(cmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS, m_outlineCompositePipeline);
