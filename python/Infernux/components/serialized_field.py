@@ -154,7 +154,7 @@ class SerializedFieldDescriptor:
         """Get the raw stored value without auto-resolution."""
         if self._cds_class_id is not None:
             slot = getattr(instance, '_cds_slot', None)
-            if slot is not None and getattr(instance, '_cds_class_id', None) == self._cds_class_id:
+            if slot is not None:
                 from ._cds_bridge import cds_get
                 return cds_get(self._cds_class_id, self._cds_field_id, self._cds_type_code, slot)
         inst_id = id(instance)
@@ -177,7 +177,7 @@ class SerializedFieldDescriptor:
         # CDS fast path for numeric fields.
         if self._cds_class_id is not None:
             slot = getattr(instance, '_cds_slot', None)
-            if slot is not None and getattr(instance, '_cds_class_id', None) == self._cds_class_id:
+            if slot is not None:
                 from ._cds_bridge import cds_get
                 return cds_get(self._cds_class_id, self._cds_field_id, self._cds_type_code, slot)
         inst_id = id(instance)
@@ -203,7 +203,7 @@ class SerializedFieldDescriptor:
         # CDS fast path for numeric fields.
         if self._cds_class_id is not None:
             slot = getattr(instance, '_cds_slot', None)
-            if slot is not None and getattr(instance, '_cds_class_id', None) == self._cds_class_id:
+            if slot is not None:
                 # Undo hook (before write)
                 if not getattr(instance, '_inf_deserializing', False) and _on_field_will_change is not None:
                     from ._cds_bridge import cds_get
@@ -517,24 +517,6 @@ _DEFAULT_TYPE_NAME_TO_FIELD: dict = {
     'AudioClip': FieldType.ASSET,       'AudioClipRef': FieldType.ASSET,
 }
 
-_VEC_ANNOTATION_MAP: dict = {
-    'Vec2': FieldType.VEC2,    'Vector2': FieldType.VEC2,    'vector2': FieldType.VEC2,
-    'Vec3': FieldType.VEC3,    'Vector3': FieldType.VEC3,    'vector3': FieldType.VEC3,
-    'vec4f': FieldType.VEC4,   'Vec4': FieldType.VEC4,
-    'Vector4': FieldType.VEC4, 'vector4': FieldType.VEC4,
-}
-
-
-def _make_vec_default(ft: FieldType):
-    from Infernux.lib._Infernux import Vector2, Vector3, vec4f
-    if ft == FieldType.VEC2:
-        return Vector2(0, 0)
-    if ft == FieldType.VEC3:
-        return Vector3(0, 0, 0)
-    if ft == FieldType.VEC4:
-        return vec4f(0, 0, 0, 0)
-    return None
-
 
 def _infer_field_type(python_type: Optional[Type], default: Any) -> FieldType:
     """Infer FieldType from Python type annotation or default value."""
@@ -669,9 +651,6 @@ def resolve_annotation(annotation) -> Optional['FieldMetadata']:
             return None
 
         simple_name = text.split('.')[-1]
-        _vec_ft = _VEC_ANNOTATION_MAP.get(simple_name)
-        if _vec_ft is not None:
-            return FieldMetadata(name="", field_type=_vec_ft, default=_make_vec_default(_vec_ft))
         if simple_name in {
             'GameObject', 'Material', 'Texture', 'TextureRef',
             'Shader', 'ShaderRef', 'AudioClip', 'AudioClipRef', 'ComponentRef'
@@ -719,11 +698,6 @@ def resolve_annotation(annotation) -> Optional['FieldMetadata']:
         return FieldMetadata(name="", field_type=FieldType.BOOL, default=False)
     if annotation is str:
         return FieldMetadata(name="", field_type=FieldType.STRING, default="")
-
-    # ── Vector types ──
-    _vec_ft = _VEC_ANNOTATION_MAP.get(type_name)
-    if _vec_ft is not None:
-        return FieldMetadata(name="", field_type=_vec_ft, default=_make_vec_default(_vec_ft))
 
     # ── InxComponent subclass → ComponentRef ──
     try:

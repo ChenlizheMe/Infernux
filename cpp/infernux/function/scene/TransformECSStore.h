@@ -141,6 +141,34 @@ class TransformECSStore
     [[nodiscard]] size_t AliveCount() const { return m_aliveCount; }
     [[nodiscard]] bool IsAlive(uint32_t index) const { return index < m_alive.size() && m_alive[index]; }
 
+    // ── batch gather/scatter (for batch_read / batch_write Python API) ──
+
+    /// Gather local positions for a list of Transform pointers into a flat float array.
+    /// @param transforms  Array of N Transform* pointers (must all be non-null & alive).
+    /// @param out         Pre-allocated float buffer of size N*3.
+    /// @param count       Number of transforms.
+    void GatherLocalPositions(Transform *const *transforms, float *out, size_t count) const;
+    void ScatterLocalPositions(Transform *const *transforms, const float *in, size_t count);
+
+    void GatherLocalScales(Transform *const *transforms, float *out, size_t count) const;
+    void ScatterLocalScales(Transform *const *transforms, const float *in, size_t count);
+
+    void GatherLocalRotations(Transform *const *transforms, float *out, size_t count) const;
+    void ScatterLocalRotations(Transform *const *transforms, const float *in, size_t count);
+
+    void GatherLocalEulerAngles(Transform *const *transforms, float *out, size_t count) const;
+    void ScatterLocalEulerAngles(Transform *const *transforms, const float *in, size_t count);
+
+    /// Gather world positions — computes via GetWorldPosition() on each Transform.
+    void GatherWorldPositions(Transform *const *transforms, float *out, size_t count) const;
+    void ScatterWorldPositions(Transform *const *transforms, const float *in, size_t count);
+
+    void GatherWorldEulerAngles(Transform *const *transforms, float *out, size_t count) const;
+    void ScatterWorldEulerAngles(Transform *const *transforms, const float *in, size_t count);
+
+    void GatherWorldRotations(Transform *const *transforms, float *out, size_t count) const;
+    void ScatterWorldRotations(Transform *const *transforms, const float *in, size_t count);
+
   private:
     TransformECSStore() = default;
 

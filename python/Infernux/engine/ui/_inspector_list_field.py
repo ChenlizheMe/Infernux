@@ -244,80 +244,6 @@ def _render_serializable_list_item(ctx, field_name, index, item, items, metadata
     return True
 
 
-def _render_list_items_body(ctx, comp, field_name, metadata, items, element_type,
-                            reference_types, button_spacing, current_value):
-    """Render list item rows, reorder separators, and bottom drop zone. Returns True if changed."""
-    from .igui import IGUI
-    from .inspector_utils import render_serialized_field, has_field_changed
-    from Infernux.components.serialized_field import FieldType
-    from dataclasses import replace
-
-    changed = False
-    _list_drag_id = f"IGUI_LIST_{id(comp)}_{field_name}"
-    move_from = None
-    move_to = None
-
-    def _make_reorder_cb(target_index):
-        def _cb(payload):
-            nonlocal move_from, move_to
-            src = int(payload)
-            if src != target_index and src != target_index - 1:
-                move_from = src
-                move_to = target_index
-        return _cb
-
-    # ── List body background ──
-    body_state = IGUI.list_body_begin(ctx, f"list_body_{field_name}")
-
-    IGUI.reorder_separator(ctx, f"##sep_{field_name}_before_0", _list_drag_id, _make_reorder_cb(0))
-
-    remove_index = None
-    element_meta = replace(metadata, field_type=element_type, default=_make_list_default_element(metadata, element_type))
-
-    for index, item in enumerate(items):
-        ctx.push_id_str(f"{field_name}_{index}")
-        remove_clicked = IGUI.list_item_remove_button(ctx, f"{field_name}_{index}")
-        ctx.same_line(0, button_spacing)
-
-        if ctx.begin_drag_drop_source(0):
-            ctx.set_drag_drop_payload(_list_drag_id, index)
-            ctx.label(f"[{index}]")
-            ctx.end_drag_drop_source()
-
-        if element_type in reference_types:
-            if _render_reference_list_item(ctx, field_name, index, item, items, metadata, element_type):
-                changed = True
-        elif element_type == FieldType.SERIALIZABLE_OBJECT:
-            if _render_serializable_list_item(ctx, field_name, index, item, items, metadata):
-                changed = True
-        else:
-            new_item = render_serialized_field(
-                ctx, f"##{field_name}_{index}", "", element_meta, item, 0.0,
-            )
-            if has_field_changed(element_type, item, new_item):
-                items[index] = new_item
-                changed = True
-
-        if remove_clicked:
-            remove_index = index
-        ctx.pop_id()
-        IGUI.reorder_separator(ctx, f"##sep_{field_name}_after_{index}", _list_drag_id, _make_reorder_cb(index + 1))
-
-    IGUI.list_body_end(ctx, body_state)
-
-    if remove_index is not None:
-        items.pop(remove_index)
-        changed = True
-
-    if move_from is not None and move_to is not None:
-        elem = items.pop(move_from)
-        insert_at = move_to if move_to < move_from else move_to - 1
-        items.insert(insert_at, elem)
-        changed = True
-
-    return changed
-
-
 def _render_list_field(ctx: InxGUIContext, comp, field_name: str, metadata, current_value, lw: float):
     from Infernux.components.serialized_field import FieldType
     from .igui import IGUI
@@ -376,10 +302,91 @@ def _render_list_field(ctx: InxGUIContext, comp, field_name: str, metadata, curr
                 comp._call_on_validate()
         return
 
-    # ── Render items, reorder separators, bottom drop zone ──
-    if _render_list_items_body(ctx, comp, field_name, metadata, items, element_type,
-                               reference_types, button_spacing, current_value):
+    # ── Drag-reorder state ──
+    _list_drag_id = f"IGUI_LIST_{id(comp)}_{field_name}"
+    move_from = None
+    move_to = None
+
+    def _make_reorder_cb(target_index):
+        def _cb(payload):
+            nonlocal move_from, move_to
+            src = int(payload)
+            if src != target_index and src != target_index - 1:
+                move_from = src
+                move_to = target_index
+        return _cb
+
+    # Separator before first item
+    IGUI.reorder_separator(ctx, f"##sep_{field_name}_before_0", _list_drag_id, _make_reorder_cb(0))
+
+    remove_index = None
+    element_meta = replace(metadata, field_type=element_type, default=_make_list_default_element(metadata, element_type))
+
+    for index, item in enumerate(items):
+        ctx.push_id_str(f"{field_name}_{index}")
+
+        # [-] remove button per item
+        remove_clicked = IGUI.list_item_remove_button(ctx, f"{field_name}_{index}")
+        ctx.same_line(0, button_spacing)
+
+        # Drag source for reordering
+        if ctx.begin_drag_drop_source(0):
+            ctx.set_drag_drop_payload(_list_drag_id, index)
+            ctx.label(f"[{index}]")
+            ctx.end_drag_drop_source()
+
+        if element_type in reference_types:
+            if _render_reference_list_item(ctx, field_name, index, item, items, metadata, element_type):
+                changed = True
+        elif element_type == FieldType.SERIALIZABLE_OBJECT:
+            if _render_serializable_list_item(ctx, field_name, index, item, items, metadata):
+                changed = True
+        else:
+            new_item = render_serialized_field(
+                ctx, f"##{field_name}_{index}", "", element_meta, item, 0.0,
+            )
+            if has_field_changed(element_type, item, new_item):
+                items[index] = new_item
+                changed = True
+
+        if remove_clicked:
+            remove_index = index
+
+        ctx.pop_id()
+
+        # Separator after each item (reorder drop zone)
+        IGUI.reorder_separator(ctx, f"##sep_{field_name}_after_{index}", _list_drag_id, _make_reorder_cb(index + 1))
+
+    if remove_index is not None:
+        items.pop(remove_index)
         changed = True
+
+    # Apply reorder
+    if move_from is not None and move_to is not None:
+        elem = items.pop(move_from)
+        insert_at = move_to if move_to < move_from else move_to - 1
+        items.insert(insert_at, elem)
+        changed = True
+
+    # Bottom drop zone for reference types
+    if element_type in reference_types:
+        _req = metadata.component_type if element_type == FieldType.COMPONENT else metadata.required_component
+        def _append_item(payload):
+            nonlocal changed
+            value = _create_reference_value_from_payload(element_type, payload, _req)
+            if value is not None:
+                items.append(value)
+                changed = True
+
+        IGUI.object_field(
+            ctx,
+            f"list_add_{field_name}",
+            "",
+            _list_type_hint(element_type, metadata),
+            clickable=False,
+            accept=_list_drag_drop_type(element_type),
+            on_drop=_append_item,
+        )
 
     if changed and not metadata.readonly:
         _record_property(comp, field_name, current_value, items, f"Set {field_name}")

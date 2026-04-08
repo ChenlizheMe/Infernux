@@ -19,18 +19,12 @@ ComponentDataStore &ComponentDataStore::Instance()
 size_t ComponentDataStore::ElementSize(DataType type)
 {
     switch (type) {
-    case DataType::Float64:
-        return sizeof(double);
-    case DataType::Int64:
-        return sizeof(int64_t);
-    case DataType::Bool:
-        return sizeof(uint8_t);
-    case DataType::Vec2:
-        return sizeof(float) * 2;
-    case DataType::Vec3:
-        return sizeof(float) * 3;
-    case DataType::Vec4:
-        return sizeof(float) * 4;
+    case DataType::Float64: return sizeof(double);
+    case DataType::Int64:   return sizeof(int64_t);
+    case DataType::Bool:    return sizeof(uint8_t);
+    case DataType::Vec2:    return sizeof(float) * 2;
+    case DataType::Vec3:    return sizeof(float) * 3;
+    case DataType::Vec4:    return sizeof(float) * 4;
     }
     return 0;
 }
@@ -47,8 +41,7 @@ void ComponentDataStore::FieldStorage::ResetSlot(size_t slot)
 
 void ComponentDataStore::ClassStorage::GrowTo(size_t newCapacity)
 {
-    if (newCapacity <= capacity)
-        return;
+    if (newCapacity <= capacity) return;
     for (auto &f : fields) {
         f.Grow(newCapacity);
     }
@@ -62,8 +55,7 @@ void ComponentDataStore::ClassStorage::GrowTo(size_t newCapacity)
 uint32_t ComponentDataStore::RegisterClass(const std::string &className)
 {
     auto it = m_classNameToId.find(className);
-    if (it != m_classNameToId.end())
-        return it->second;
+    if (it != m_classNameToId.end()) return it->second;
 
     uint32_t id = static_cast<uint32_t>(m_classes.size());
     m_classes.emplace_back();
@@ -75,8 +67,7 @@ uint32_t ComponentDataStore::RegisterField(uint32_t classId, const std::string &
 {
     auto &cls = m_classes.at(classId);
     auto it = cls.fieldNameToId.find(fieldName);
-    if (it != cls.fieldNameToId.end())
-        return it->second;
+    if (it != cls.fieldNameToId.end()) return it->second;
 
     uint32_t fid = static_cast<uint32_t>(cls.fields.size());
     FieldStorage fs;
@@ -91,19 +82,16 @@ uint32_t ComponentDataStore::RegisterField(uint32_t classId, const std::string &
 uint32_t ComponentDataStore::GetClassId(const std::string &className) const
 {
     auto it = m_classNameToId.find(className);
-    if (it == m_classNameToId.end())
-        return UINT32_MAX;
+    if (it == m_classNameToId.end()) return UINT32_MAX;
     return it->second;
 }
 
 uint32_t ComponentDataStore::GetFieldId(uint32_t classId, const std::string &fieldName) const
 {
-    if (classId >= m_classes.size())
-        return UINT32_MAX;
+    if (classId >= m_classes.size()) return UINT32_MAX;
     const auto &cls = m_classes[classId];
     auto it = cls.fieldNameToId.find(fieldName);
-    if (it == cls.fieldNameToId.end())
-        return UINT32_MAX;
+    if (it == cls.fieldNameToId.end()) return UINT32_MAX;
     return it->second;
 }
 
@@ -134,8 +122,7 @@ uint32_t ComponentDataStore::AllocateSlot(uint32_t classId)
 void ComponentDataStore::ReleaseSlot(uint32_t classId, uint32_t slot)
 {
     auto &cls = m_classes.at(classId);
-    if (slot >= cls.capacity || !cls.alive[slot])
-        return;
+    if (slot >= cls.capacity || !cls.alive[slot]) return;
     cls.alive[slot] = 0;
     cls.nextFree[slot] = cls.freeHead;
     cls.freeHead = slot;
@@ -179,96 +166,91 @@ void ComponentDataStore::SetBool(uint32_t classId, uint32_t fieldId, uint32_t sl
 void ComponentDataStore::GetVec2(uint32_t classId, uint32_t fieldId, uint32_t slot, float out[2]) const
 {
     const float *p = m_classes[classId].fields[fieldId].FloatsAt(slot);
-    out[0] = p[0];
-    out[1] = p[1];
+    out[0] = p[0]; out[1] = p[1];
 }
 
 void ComponentDataStore::SetVec2(uint32_t classId, uint32_t fieldId, uint32_t slot, const float in[2])
 {
     float *p = m_classes[classId].fields[fieldId].FloatsAt(slot);
-    p[0] = in[0];
-    p[1] = in[1];
+    p[0] = in[0]; p[1] = in[1];
 }
 
 void ComponentDataStore::GetVec3(uint32_t classId, uint32_t fieldId, uint32_t slot, float out[3]) const
 {
     const float *p = m_classes[classId].fields[fieldId].FloatsAt(slot);
-    out[0] = p[0];
-    out[1] = p[1];
-    out[2] = p[2];
+    out[0] = p[0]; out[1] = p[1]; out[2] = p[2];
 }
 
 void ComponentDataStore::SetVec3(uint32_t classId, uint32_t fieldId, uint32_t slot, const float in[3])
 {
     float *p = m_classes[classId].fields[fieldId].FloatsAt(slot);
-    p[0] = in[0];
-    p[1] = in[1];
-    p[2] = in[2];
+    p[0] = in[0]; p[1] = in[1]; p[2] = in[2];
 }
 
 void ComponentDataStore::GetVec4(uint32_t classId, uint32_t fieldId, uint32_t slot, float out[4]) const
 {
     const float *p = m_classes[classId].fields[fieldId].FloatsAt(slot);
-    out[0] = p[0];
-    out[1] = p[1];
-    out[2] = p[2];
-    out[3] = p[3];
+    out[0] = p[0]; out[1] = p[1]; out[2] = p[2]; out[3] = p[3];
 }
 
 void ComponentDataStore::SetVec4(uint32_t classId, uint32_t fieldId, uint32_t slot, const float in[4])
 {
     float *p = m_classes[classId].fields[fieldId].FloatsAt(slot);
-    p[0] = in[0];
-    p[1] = in[1];
-    p[2] = in[2];
-    p[3] = in[3];
+    p[0] = in[0]; p[1] = in[1]; p[2] = in[2]; p[3] = in[3];
 }
 
 // ── batch gather/scatter ─────────────────────────────────────────────────
 
-void ComponentDataStore::GatherFloat(uint32_t cid, uint32_t fid, const uint32_t *slots, size_t count, double *out) const
+void ComponentDataStore::GatherFloat(uint32_t cid, uint32_t fid,
+                                     const uint32_t *slots, size_t count, double *out) const
 {
     const auto &f = m_classes[cid].fields[fid];
     for (size_t i = 0; i < count; ++i)
         out[i] = f.At<double>(slots[i]);
 }
 
-void ComponentDataStore::ScatterFloat(uint32_t cid, uint32_t fid, const uint32_t *slots, size_t count, const double *in)
+void ComponentDataStore::ScatterFloat(uint32_t cid, uint32_t fid,
+                                      const uint32_t *slots, size_t count, const double *in)
 {
     auto &f = m_classes[cid].fields[fid];
     for (size_t i = 0; i < count; ++i)
         f.At<double>(slots[i]) = in[i];
 }
 
-void ComponentDataStore::GatherInt(uint32_t cid, uint32_t fid, const uint32_t *slots, size_t count, int64_t *out) const
+void ComponentDataStore::GatherInt(uint32_t cid, uint32_t fid,
+                                   const uint32_t *slots, size_t count, int64_t *out) const
 {
     const auto &f = m_classes[cid].fields[fid];
     for (size_t i = 0; i < count; ++i)
         out[i] = f.At<int64_t>(slots[i]);
 }
 
-void ComponentDataStore::ScatterInt(uint32_t cid, uint32_t fid, const uint32_t *slots, size_t count, const int64_t *in)
+void ComponentDataStore::ScatterInt(uint32_t cid, uint32_t fid,
+                                    const uint32_t *slots, size_t count, const int64_t *in)
 {
     auto &f = m_classes[cid].fields[fid];
     for (size_t i = 0; i < count; ++i)
         f.At<int64_t>(slots[i]) = in[i];
 }
 
-void ComponentDataStore::GatherBool(uint32_t cid, uint32_t fid, const uint32_t *slots, size_t count, uint8_t *out) const
+void ComponentDataStore::GatherBool(uint32_t cid, uint32_t fid,
+                                    const uint32_t *slots, size_t count, uint8_t *out) const
 {
     const auto &f = m_classes[cid].fields[fid];
     for (size_t i = 0; i < count; ++i)
         out[i] = f.At<uint8_t>(slots[i]);
 }
 
-void ComponentDataStore::ScatterBool(uint32_t cid, uint32_t fid, const uint32_t *slots, size_t count, const uint8_t *in)
+void ComponentDataStore::ScatterBool(uint32_t cid, uint32_t fid,
+                                     const uint32_t *slots, size_t count, const uint8_t *in)
 {
     auto &f = m_classes[cid].fields[fid];
     for (size_t i = 0; i < count; ++i)
         f.At<uint8_t>(slots[i]) = in[i];
 }
 
-void ComponentDataStore::GatherVec2(uint32_t cid, uint32_t fid, const uint32_t *slots, size_t count, float *out) const
+void ComponentDataStore::GatherVec2(uint32_t cid, uint32_t fid,
+                                    const uint32_t *slots, size_t count, float *out) const
 {
     const auto &f = m_classes[cid].fields[fid];
     for (size_t i = 0; i < count; ++i) {
@@ -278,7 +260,8 @@ void ComponentDataStore::GatherVec2(uint32_t cid, uint32_t fid, const uint32_t *
     }
 }
 
-void ComponentDataStore::ScatterVec2(uint32_t cid, uint32_t fid, const uint32_t *slots, size_t count, const float *in)
+void ComponentDataStore::ScatterVec2(uint32_t cid, uint32_t fid,
+                                     const uint32_t *slots, size_t count, const float *in)
 {
     auto &f = m_classes[cid].fields[fid];
     for (size_t i = 0; i < count; ++i) {
@@ -288,7 +271,8 @@ void ComponentDataStore::ScatterVec2(uint32_t cid, uint32_t fid, const uint32_t 
     }
 }
 
-void ComponentDataStore::GatherVec3(uint32_t cid, uint32_t fid, const uint32_t *slots, size_t count, float *out) const
+void ComponentDataStore::GatherVec3(uint32_t cid, uint32_t fid,
+                                    const uint32_t *slots, size_t count, float *out) const
 {
     const auto &f = m_classes[cid].fields[fid];
     for (size_t i = 0; i < count; ++i) {
@@ -299,7 +283,8 @@ void ComponentDataStore::GatherVec3(uint32_t cid, uint32_t fid, const uint32_t *
     }
 }
 
-void ComponentDataStore::ScatterVec3(uint32_t cid, uint32_t fid, const uint32_t *slots, size_t count, const float *in)
+void ComponentDataStore::ScatterVec3(uint32_t cid, uint32_t fid,
+                                     const uint32_t *slots, size_t count, const float *in)
 {
     auto &f = m_classes[cid].fields[fid];
     for (size_t i = 0; i < count; ++i) {
@@ -310,7 +295,8 @@ void ComponentDataStore::ScatterVec3(uint32_t cid, uint32_t fid, const uint32_t 
     }
 }
 
-void ComponentDataStore::GatherVec4(uint32_t cid, uint32_t fid, const uint32_t *slots, size_t count, float *out) const
+void ComponentDataStore::GatherVec4(uint32_t cid, uint32_t fid,
+                                    const uint32_t *slots, size_t count, float *out) const
 {
     const auto &f = m_classes[cid].fields[fid];
     for (size_t i = 0; i < count; ++i) {
@@ -322,7 +308,8 @@ void ComponentDataStore::GatherVec4(uint32_t cid, uint32_t fid, const uint32_t *
     }
 }
 
-void ComponentDataStore::ScatterVec4(uint32_t cid, uint32_t fid, const uint32_t *slots, size_t count, const float *in)
+void ComponentDataStore::ScatterVec4(uint32_t cid, uint32_t fid,
+                                     const uint32_t *slots, size_t count, const float *in)
 {
     auto &f = m_classes[cid].fields[fid];
     for (size_t i = 0; i < count; ++i) {

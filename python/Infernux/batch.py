@@ -33,20 +33,10 @@ from __future__ import annotations
 
 from typing import Any, Sequence, TYPE_CHECKING
 
+import numpy as np
+
 if TYPE_CHECKING:
-    import numpy as np
     from numpy.typing import NDArray
-
-# Lazy numpy import — numpy may not be available in non-JIT packaged builds.
-_np = None
-
-
-def _get_np():
-    global _np
-    if _np is None:
-        import numpy
-        _np = numpy
-    return _np
 
 # Lazy import to avoid circular deps at module level.
 _lib = None
@@ -113,7 +103,6 @@ def _try_cds_gather(targets: Sequence, prop_name: str):
     field_id, type_code = entry
 
     # Collect slot indices.
-    np = _get_np()
     slots = np.array([t._cds_slot for t in targets], dtype=np.uint32)
     lib = _get_lib()
     return np.asarray(lib._cds_batch_gather(class_id, field_id, type_code, slots))
@@ -132,7 +121,6 @@ def _try_cds_scatter(targets: Sequence, data: np.ndarray, prop_name: str) -> boo
         return False
     field_id, type_code = entry
 
-    np = _get_np()
     slots = np.array([t._cds_slot for t in targets], dtype=np.uint32)
     lib = _get_lib()
     lib._cds_batch_scatter(class_id, field_id, type_code, slots, data)
@@ -141,10 +129,9 @@ def _try_cds_scatter(targets: Sequence, data: np.ndarray, prop_name: str) -> boo
 
 # ── FieldType → numpy dtype/shape mapping ───────────────────────────────
 
-def _field_shape_dtype(field_type) -> tuple[tuple[int, ...], "np.dtype"]:
+def _field_shape_dtype(field_type) -> tuple[tuple[int, ...], np.dtype]:
     """Return (per-element shape, dtype) for a FieldType enum."""
     from Infernux.components.serialized_field import FieldType
-    np = _get_np()
     _map = {
         FieldType.INT:   ((), np.dtype('int64')),
         FieldType.FLOAT: ((), np.dtype('float64')),
@@ -177,7 +164,6 @@ def _component_gather(targets: Sequence, prop_name: str) -> np.ndarray:
         )
 
     elem_shape, dtype = _field_shape_dtype(meta.field_type)
-    np = _get_np()
     n = len(targets)
     full_shape = (n, *elem_shape) if elem_shape else (n,)
     out = np.empty(full_shape, dtype=dtype)
@@ -236,9 +222,8 @@ def batch_read(targets: Sequence, prop: Any) -> NDArray:
 
     Parameters
     ----------
-    targets : list[Transform] | list[InxComponent] | TransformBatchHandle
-        Homogeneous list of engine objects, or a pre-built
-        ``TransformBatchHandle`` for zero-overhead repeated reads.
+    targets : list[Transform] | list[InxComponent]
+        Homogeneous list of engine objects.
     prop : str | descriptor
         Property name (``'position'``, ``'velocity'``) or a class-level
         descriptor (``MyComponent.velocity``).
@@ -254,19 +239,10 @@ def batch_read(targets: Sequence, prop: Any) -> NDArray:
     """
     prop_name = _resolve_property_name(prop)
 
-    # Handle-based fast path (cached Transform pointers).
-    lib = _get_lib()
-    if isinstance(targets, lib.TransformBatchHandle):
-        if prop_name in _TRANSFORM_ALL_PROPS:
-            return lib._transform_batch_read(targets, prop_name)
-        raise ValueError(
-            f"Unknown Transform property '{prop_name}'. "
-            f"Supported: {sorted(_TRANSFORM_ALL_PROPS)}"
-        )
-
     if _is_transform_list(targets):
         if prop_name in _TRANSFORM_ALL_PROPS:
-            return lib._transform_batch_read(targets, prop_name)
+            lib = _get_lib()
+            return lib._transform_batch_read(list(targets), prop_name)
         raise ValueError(
             f"Unknown Transform property '{prop_name}'. "
             f"Supported: {sorted(_TRANSFORM_ALL_PROPS)}"
@@ -286,9 +262,8 @@ def batch_write(targets: Sequence, data: NDArray, prop: Any) -> None:
 
     Parameters
     ----------
-    targets : list[Transform] | list[InxComponent] | TransformBatchHandle
-        Same list used for the preceding ``batch_read``, or a
-        ``TransformBatchHandle``.
+    targets : list[Transform] | list[InxComponent]
+        Same list used for the preceding ``batch_read``.
     data : numpy.ndarray
         Array with ``data.shape[0] >= len(targets)``.
     prop : str | descriptor
@@ -296,20 +271,12 @@ def batch_write(targets: Sequence, data: NDArray, prop: Any) -> None:
     """
     prop_name = _resolve_property_name(prop)
 
-    # Handle-based fast path.
-    lib = _get_lib()
-    if isinstance(targets, lib.TransformBatchHandle):
-        if prop_name in _TRANSFORM_ALL_PROPS:
-            lib._transform_batch_write(targets, data, prop_name)
-            return
-        raise ValueError(
-            f"Unknown Transform property '{prop_name}'. "
-            f"Supported: {sorted(_TRANSFORM_ALL_PROPS)}"
-        )
-
     if _is_transform_list(targets):
         if prop_name in _TRANSFORM_ALL_PROPS:
-            lib._transform_batch_write(targets, data, prop_name)
+            lib = _get_lib()
+            lib._transform_batch_write(list(targets),
+                                       np.ascontiguousarray(data, dtype=np.float32),
+                                       prop_name)
             return
         raise ValueError(
             f"Unknown Transform property '{prop_name}'. "
@@ -322,12 +289,3 @@ def batch_write(targets: Sequence, data: NDArray, prop: Any) -> None:
 
     # Fallback: Python setattr loop.
     _component_scatter(targets, data, prop_name)
-
-
-def create_batch_handle(targets: list) -> "TransformBatchHandle":
-    """Create a ``TransformBatchHandle`` that caches the C++ Transform
-    pointers for *targets*.  Re-use the handle across ``batch_read`` /
-    ``batch_write`` calls to avoid repeated pybind11 extraction overhead.
-    """
-    lib = _get_lib()
-    return lib.TransformBatchHandle(targets)

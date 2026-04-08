@@ -138,14 +138,6 @@ def allocate_slot(cls) -> Optional[int]:
     return lib._cds_alloc(info[0])
 
 
-def get_class_id(cls) -> Optional[int]:
-    """Return the CDS class_id for *cls*, or None if not registered."""
-    info = _class_registry.get(cls.__qualname__)
-    if info is None:
-        return None
-    return info[0]
-
-
 def release_slot(cls, slot: int) -> None:
     """Release a CDS slot."""
     info = _class_registry.get(cls.__qualname__)

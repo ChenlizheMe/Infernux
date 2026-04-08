@@ -252,9 +252,8 @@ class InxComponent(ComponentNativeMixin, ComponentLifecycleMixin, ComponentPhysi
         self._coroutine_scheduler = None
 
         # Allocate a slot in the C++ ComponentDataStore for numeric fields.
-        from ._cds_bridge import allocate_slot as _cds_alloc, get_class_id as _cds_class_id
+        from ._cds_bridge import allocate_slot as _cds_alloc
         self._cds_slot: Optional[int] = _cds_alloc(self.__class__)
-        self._cds_class_id: Optional[int] = _cds_class_id(self.__class__)
         
         # Initialize serialized fields with defaults (from class-level declarations)
         self._init_serialized_fields()
@@ -273,9 +272,7 @@ class InxComponent(ComponentNativeMixin, ComponentLifecycleMixin, ComponentPhysi
 
             if isinstance(descriptor, SerializedFieldDescriptor):
                 # CDS-backed fields: write default to C++ store.
-                if (descriptor._cds_class_id is not None
-                        and self._cds_slot is not None
-                        and descriptor._cds_class_id == self._cds_class_id):
+                if descriptor._cds_class_id is not None and self._cds_slot is not None:
                     from ._cds_bridge import cds_set
                     cds_set(descriptor._cds_class_id, descriptor._cds_field_id,
                             descriptor._cds_type_code, self._cds_slot, default_value)

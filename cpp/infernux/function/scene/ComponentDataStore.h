@@ -64,23 +64,35 @@ class ComponentDataStore
 
     // ── batch gather/scatter ──
 
-    void GatherFloat(uint32_t classId, uint32_t fieldId, const uint32_t *slots, size_t count, double *out) const;
-    void ScatterFloat(uint32_t classId, uint32_t fieldId, const uint32_t *slots, size_t count, const double *in);
+    void GatherFloat(uint32_t classId, uint32_t fieldId,
+                     const uint32_t *slots, size_t count, double *out) const;
+    void ScatterFloat(uint32_t classId, uint32_t fieldId,
+                      const uint32_t *slots, size_t count, const double *in);
 
-    void GatherInt(uint32_t classId, uint32_t fieldId, const uint32_t *slots, size_t count, int64_t *out) const;
-    void ScatterInt(uint32_t classId, uint32_t fieldId, const uint32_t *slots, size_t count, const int64_t *in);
+    void GatherInt(uint32_t classId, uint32_t fieldId,
+                   const uint32_t *slots, size_t count, int64_t *out) const;
+    void ScatterInt(uint32_t classId, uint32_t fieldId,
+                    const uint32_t *slots, size_t count, const int64_t *in);
 
-    void GatherBool(uint32_t classId, uint32_t fieldId, const uint32_t *slots, size_t count, uint8_t *out) const;
-    void ScatterBool(uint32_t classId, uint32_t fieldId, const uint32_t *slots, size_t count, const uint8_t *in);
+    void GatherBool(uint32_t classId, uint32_t fieldId,
+                    const uint32_t *slots, size_t count, uint8_t *out) const;
+    void ScatterBool(uint32_t classId, uint32_t fieldId,
+                     const uint32_t *slots, size_t count, const uint8_t *in);
 
-    void GatherVec3(uint32_t classId, uint32_t fieldId, const uint32_t *slots, size_t count, float *out) const;
-    void ScatterVec3(uint32_t classId, uint32_t fieldId, const uint32_t *slots, size_t count, const float *in);
+    void GatherVec3(uint32_t classId, uint32_t fieldId,
+                    const uint32_t *slots, size_t count, float *out) const;
+    void ScatterVec3(uint32_t classId, uint32_t fieldId,
+                     const uint32_t *slots, size_t count, const float *in);
 
-    void GatherVec2(uint32_t classId, uint32_t fieldId, const uint32_t *slots, size_t count, float *out) const;
-    void ScatterVec2(uint32_t classId, uint32_t fieldId, const uint32_t *slots, size_t count, const float *in);
+    void GatherVec2(uint32_t classId, uint32_t fieldId,
+                    const uint32_t *slots, size_t count, float *out) const;
+    void ScatterVec2(uint32_t classId, uint32_t fieldId,
+                     const uint32_t *slots, size_t count, const float *in);
 
-    void GatherVec4(uint32_t classId, uint32_t fieldId, const uint32_t *slots, size_t count, float *out) const;
-    void ScatterVec4(uint32_t classId, uint32_t fieldId, const uint32_t *slots, size_t count, const float *in);
+    void GatherVec4(uint32_t classId, uint32_t fieldId,
+                    const uint32_t *slots, size_t count, float *out) const;
+    void ScatterVec4(uint32_t classId, uint32_t fieldId,
+                     const uint32_t *slots, size_t count, const float *in);
 
     /// Reset everything (e.g. scene unload).
     void Clear();
@@ -99,18 +111,17 @@ class ComponentDataStore
         void Grow(size_t newCapacity);
         void ResetSlot(size_t slot);
 
-        template <typename T> T &At(size_t slot)
+        template <typename T>
+        T &At(size_t slot)
         {
             return *reinterpret_cast<T *>(data.data() + slot * elementSize);
         }
-        template <typename T> const T &At(size_t slot) const
+        template <typename T>
+        const T &At(size_t slot) const
         {
             return *reinterpret_cast<const T *>(data.data() + slot * elementSize);
         }
-        float *FloatsAt(size_t slot)
-        {
-            return reinterpret_cast<float *>(data.data() + slot * elementSize);
-        }
+        float *FloatsAt(size_t slot) { return reinterpret_cast<float *>(data.data() + slot * elementSize); }
         const float *FloatsAt(size_t slot) const
         {
             return reinterpret_cast<const float *>(data.data() + slot * elementSize);
