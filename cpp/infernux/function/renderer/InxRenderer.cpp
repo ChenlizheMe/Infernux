@@ -212,7 +212,7 @@ void InxRenderer::PreparePipeline()
             // descriptor binding) never changes mid-recording.
             {
                 size_t totalDC = 0;
-                if (m_sceneRenderGraph && m_sceneRenderGraph->HasCachedDrawCalls())
+                if (sceneViewActive && m_sceneRenderGraph && m_sceneRenderGraph->HasCachedDrawCalls())
                     totalDC += m_sceneRenderGraph->GetCachedDrawCalls().size();
                 if (m_gameCameraEnabled && m_gameRenderGraph && m_gameRenderGraph->HasCachedDrawCalls())
                     totalDC += m_gameRenderGraph->GetCachedDrawCalls().size();
@@ -296,23 +296,28 @@ void InxRenderer::PreparePipeline()
                     // correct editor data, and (b) the buffer ends the frame with
                     // the same data the next frame will write, eliminating visual
                     // artefacts from cross-frame GPU pipeline overlap.
-                    m_vkCore->CmdRestoreEditorShadowData(cmdBuf);
+                    // Only needed when the scene view is actually active and has
+                    // valid cached state; otherwise no editor passes will run and
+                    // the UBO will be overwritten at the start of the next frame.
+                    if (sceneViewActive) {
+                        m_vkCore->CmdRestoreEditorShadowData(cmdBuf);
 
-                    if (m_sceneRenderGraph && m_sceneRenderGraph->HasCachedCameraVP()) {
-                        m_vkCore->CmdUpdateUniformBuffer(cmdBuf, m_sceneRenderGraph->GetCachedView(),
-                                                         m_sceneRenderGraph->GetCachedProj());
-                        const glm::mat4 &editorView = m_sceneRenderGraph->GetCachedView();
-                        glm::mat4 invEditorView = glm::inverse(editorView);
-                        glm::vec3 editorCamPos(invEditorView[3]);
-                        m_vkCore->CmdUpdateLightingCameraPos(cmdBuf, editorCamPos);
-                    }
+                        if (m_sceneRenderGraph && m_sceneRenderGraph->HasCachedCameraVP()) {
+                            m_vkCore->CmdUpdateUniformBuffer(cmdBuf, m_sceneRenderGraph->GetCachedView(),
+                                                             m_sceneRenderGraph->GetCachedProj());
+                            const glm::mat4 &editorView = m_sceneRenderGraph->GetCachedView();
+                            glm::mat4 invEditorView = glm::inverse(editorView);
+                            glm::vec3 editorCamPos(invEditorView[3]);
+                            m_vkCore->CmdUpdateLightingCameraPos(cmdBuf, editorCamPos);
+                        }
 
-                    if (m_sceneRenderGraph && m_sceneRenderGraph->HasCachedDrawCalls()) {
-                        m_vkCore->SetDrawCalls(&m_sceneRenderGraph->GetCachedDrawCalls());
-                    }
+                        if (m_sceneRenderGraph && m_sceneRenderGraph->HasCachedDrawCalls()) {
+                            m_vkCore->SetDrawCalls(&m_sceneRenderGraph->GetCachedDrawCalls());
+                        }
 
-                    if (m_sceneRenderGraph) {
-                        m_vkCore->SetActiveShadowDescriptorSet(m_sceneRenderGraph->GetPerViewDescriptorSet());
+                        if (m_sceneRenderGraph) {
+                            m_vkCore->SetActiveShadowDescriptorSet(m_sceneRenderGraph->GetPerViewDescriptorSet());
+                        }
                     }
 #if INFERNUX_FRAME_PROFILE
                     auto exTg3 = ExClock::now();
@@ -398,6 +403,7 @@ void InxRenderer::DrawFrame()
     static SceneManager::FrameProfile _sceneAccum;
     static std::unordered_map<std::string, double> _guiAccum;
     static std::unordered_map<std::string, double> _inspSubAccum;
+    static std::unordered_map<std::string, double> _hierSubAccum;
     struct FramePacingAccum
     {
         double targetFps = 0.0;
@@ -722,6 +728,11 @@ void InxRenderer::DrawFrame()
             for (const auto &kv : sub)
                 _inspSubAccum[kv.first] += kv.second;
         }
+        {
+            auto sub = m_gui->ConsumePanelSubTimings("hierarchy");
+            for (const auto &kv : sub)
+                _hierSubAccum[kv.first] += kv.second;
+        }
 
         ++_fpCounter;
         if (_fpCounter % 120 == 0) {
@@ -884,6 +895,14 @@ void InxRenderer::DrawFrame()
                         oss << "ms";
                 }
             }
+            if (!_hierSubAccum.empty()) {
+                std::vector<std::pair<std::string, double>> hierItems(_hierSubAccum.begin(), _hierSubAccum.end());
+                std::sort(hierItems.begin(), hierItems.end(),
+                          [](const auto &lhs, const auto &rhs) { return lhs.first < rhs.first; });
+                oss << "\n    Hierarchy:";
+                for (const auto &kv : hierItems)
+                    oss << ' ' << kv.first << '=' << (kv.second / kWindow) << "ms";
+            }
             INXLOG_WARN(oss.str());
 #if INFERNUX_FRAME_PROFILE_TERMINAL
             std::cerr << oss.str() << std::endl;
@@ -898,6 +917,7 @@ void InxRenderer::DrawFrame()
             _sceneAccum = {};
             _guiAccum.clear();
             _inspSubAccum.clear();
+            _hierSubAccum.clear();
             _pacingAccum = {};
             if (m_vkCore) {
                 m_vkCore->ResetDrawSubTimings();

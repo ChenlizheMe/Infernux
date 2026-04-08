@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy as _copy
 import time as _time
 from abc import ABC, abstractmethod
 from typing import Any, Callable, List, Optional
@@ -94,6 +95,41 @@ class LambdaCommand(UndoCommand):
         self._redo_fn()
 
 
+_SNAPSHOT_UNHANDLED = object()
+
+
+def _snapshot_math_value(val: Any) -> Any:
+    cls = type(val)
+    module_name = getattr(cls, "__module__", "")
+    type_name = getattr(cls, "__name__", "")
+
+    if not module_name.startswith(("Infernux.lib", "Infernux.math")):
+        return _SNAPSHOT_UNHANDLED
+
+    if type_name == "Vector2":
+        return cls(val.x, val.y)
+    if type_name == "Vector3":
+        return cls(val.x, val.y, val.z)
+    if type_name == "vec4f":
+        return cls(val.x, val.y, val.z, val.w)
+    if type_name == "quatf":
+        return cls(val.w, val.x, val.y, val.z)
+
+    return _SNAPSHOT_UNHANDLED
+
+
+def _snapshot_custom_copy(val: Any) -> Any:
+    cls = type(val)
+
+    if getattr(cls, "__deepcopy__", None) is None and getattr(cls, "__copy__", None) is None:
+        return _SNAPSHOT_UNHANDLED
+
+    try:
+        return _copy.deepcopy(val)
+    except Exception:
+        return _SNAPSHOT_UNHANDLED
+
+
 def _snapshot_value(val: Any) -> Any:
     """Return a simple deep-ish copy suitable for undo storage."""
     if val is None or isinstance(val, (int, float, str, bool)):
@@ -102,6 +138,13 @@ def _snapshot_value(val: Any) -> Any:
         return type(val)(_snapshot_value(v) for v in val)
     if isinstance(val, dict):
         return {k: _snapshot_value(v) for k, v in val.items()}
-    if hasattr(val, 'x') and hasattr(val, 'y'):
-        return type(val)(val.x, val.y, val.z) if hasattr(val, 'z') else type(val)(val.x, val.y)
+
+    math_snapshot = _snapshot_math_value(val)
+    if math_snapshot is not _SNAPSHOT_UNHANDLED:
+        return math_snapshot
+
+    copied_value = _snapshot_custom_copy(val)
+    if copied_value is not _SNAPSHOT_UNHANDLED:
+        return copied_value
+
     return val

@@ -42,11 +42,16 @@ static py::array_t<float> BatchReadVec3(const py::list &targets, GatherVec3Fn ga
 }
 
 /// batch_write for vec3 properties from numpy (N, 3) float32
-static void BatchWriteVec3(const py::list &targets, py::array_t<float, py::array::c_style> data, ScatterVec3Fn scatterFn)
+static void BatchWriteVec3(const py::list &targets, py::array data, ScatterVec3Fn scatterFn)
 {
+    // Accept any numeric dtype and convert to contiguous float32 on demand.
+    auto fdata = py::array_t<float, py::array::c_style>::ensure(data);
+    if (!fdata) {
+        throw py::type_error("data must be convertible to float32 array");
+    }
     auto transforms = ExtractTransforms(targets);
     const size_t n = transforms.size();
-    auto buf = data.unchecked<2>();
+    auto buf = fdata.unchecked<2>();
     if (static_cast<size_t>(buf.shape(0)) < n) {
         throw py::value_error("data array has fewer rows than targets");
     }
@@ -65,11 +70,15 @@ static py::array_t<float> BatchReadQuat(const py::list &targets, GatherQuatFn ga
 }
 
 /// batch_write for quaternion properties from numpy (N, 4) float32
-static void BatchWriteQuat(const py::list &targets, py::array_t<float, py::array::c_style> data, ScatterQuatFn scatterFn)
+static void BatchWriteQuat(const py::list &targets, py::array data, ScatterQuatFn scatterFn)
 {
+    auto fdata = py::array_t<float, py::array::c_style>::ensure(data);
+    if (!fdata) {
+        throw py::type_error("data must be convertible to float32 array");
+    }
     auto transforms = ExtractTransforms(targets);
     const size_t n = transforms.size();
-    auto buf = data.unchecked<2>();
+    auto buf = fdata.unchecked<2>();
     if (static_cast<size_t>(buf.shape(0)) < n) {
         throw py::value_error("data array has fewer rows than targets");
     }
@@ -120,7 +129,7 @@ static py::object TransformBatchRead(const py::list &targets, const std::string 
     throw py::value_error("Unknown Transform property: '" + prop + "'");
 }
 
-static void TransformBatchWrite(const py::list &targets, py::array_t<float, py::array::c_style> data, const std::string &prop)
+static void TransformBatchWrite(const py::list &targets, py::array data, const std::string &prop)
 {
     {
         auto it = kTransformVec3Ops.find(prop);

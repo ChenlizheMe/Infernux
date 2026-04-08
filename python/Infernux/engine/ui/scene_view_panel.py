@@ -281,17 +281,6 @@ class SceneViewPanel(SceneViewGizmoMixin, SceneViewCameraMixin, SceneViewOverlay
             self._engine.set_scene_view_visible(False)
 
     def _pre_render(self, ctx):
-        if self._engine:
-            self._engine.set_scene_view_visible(True)
-            # The scene view needs full-speed rendering at all times in editor
-            # mode so the 3D viewport updates smoothly (camera orbit, gizmo
-            # manipulation, animation preview, etc.).  Without this the global
-            # idle-throttle drops the entire editor to ~10 FPS after a few
-            # frames of inactivity, making the scene view feel laggy.
-            native = self._engine.get_native_engine()
-            if native:
-                native.request_full_speed_frame()
-
         import time
         current_time = time.time()
         self._delta_time = current_time - self._last_frame_time if self._last_frame_time > 0 else 0.016
@@ -312,6 +301,17 @@ class SceneViewPanel(SceneViewGizmoMixin, SceneViewCameraMixin, SceneViewOverlay
             self._play_border_clr = Theme.BORDER_PAUSE if pm.state == PlayModeState.PAUSED else Theme.BORDER_PLAY
 
     def _on_visible_pre(self, ctx):
+        # Activate C++ scene rendering and request full-speed frames only
+        # when the Scene View panel is actually visible.  Previously these
+        # lived in _pre_render (which runs every frame for all panels) and
+        # caused a pointless True/False toggle when the tab was hidden,
+        # plus prevented idle-throttle even when only Game View was active.
+        if self._engine:
+            self._engine.set_scene_view_visible(True)
+            native = self._engine.get_native_engine()
+            if native:
+                native.request_full_speed_frame()
+
         # Track focus to auto-exit UI Mode
         focused = (ClosablePanel.get_active_panel_id() == self.window_id) or ctx.is_window_focused(0)
         if not focused and self._camera_capture_active:

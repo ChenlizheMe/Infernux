@@ -33,10 +33,20 @@ from __future__ import annotations
 
 from typing import Any, Sequence, TYPE_CHECKING
 
-import numpy as np
-
 if TYPE_CHECKING:
+    import numpy as np
     from numpy.typing import NDArray
+
+# Lazy numpy import — numpy may not be available in non-JIT packaged builds.
+_np = None
+
+
+def _get_np():
+    global _np
+    if _np is None:
+        import numpy
+        _np = numpy
+    return _np
 
 # Lazy import to avoid circular deps at module level.
 _lib = None
@@ -103,6 +113,7 @@ def _try_cds_gather(targets: Sequence, prop_name: str):
     field_id, type_code = entry
 
     # Collect slot indices.
+    np = _get_np()
     slots = np.array([t._cds_slot for t in targets], dtype=np.uint32)
     lib = _get_lib()
     return np.asarray(lib._cds_batch_gather(class_id, field_id, type_code, slots))
@@ -121,6 +132,7 @@ def _try_cds_scatter(targets: Sequence, data: np.ndarray, prop_name: str) -> boo
         return False
     field_id, type_code = entry
 
+    np = _get_np()
     slots = np.array([t._cds_slot for t in targets], dtype=np.uint32)
     lib = _get_lib()
     lib._cds_batch_scatter(class_id, field_id, type_code, slots, data)
@@ -129,9 +141,10 @@ def _try_cds_scatter(targets: Sequence, data: np.ndarray, prop_name: str) -> boo
 
 # ── FieldType → numpy dtype/shape mapping ───────────────────────────────
 
-def _field_shape_dtype(field_type) -> tuple[tuple[int, ...], np.dtype]:
+def _field_shape_dtype(field_type) -> tuple[tuple[int, ...], "np.dtype"]:
     """Return (per-element shape, dtype) for a FieldType enum."""
     from Infernux.components.serialized_field import FieldType
+    np = _get_np()
     _map = {
         FieldType.INT:   ((), np.dtype('int64')),
         FieldType.FLOAT: ((), np.dtype('float64')),
@@ -164,6 +177,7 @@ def _component_gather(targets: Sequence, prop_name: str) -> np.ndarray:
         )
 
     elem_shape, dtype = _field_shape_dtype(meta.field_type)
+    np = _get_np()
     n = len(targets)
     full_shape = (n, *elem_shape) if elem_shape else (n,)
     out = np.empty(full_shape, dtype=dtype)
@@ -242,7 +256,7 @@ def batch_read(targets: Sequence, prop: Any) -> NDArray:
     if _is_transform_list(targets):
         if prop_name in _TRANSFORM_ALL_PROPS:
             lib = _get_lib()
-            return lib._transform_batch_read(list(targets), prop_name)
+            return lib._transform_batch_read(targets, prop_name)
         raise ValueError(
             f"Unknown Transform property '{prop_name}'. "
             f"Supported: {sorted(_TRANSFORM_ALL_PROPS)}"
@@ -274,9 +288,7 @@ def batch_write(targets: Sequence, data: NDArray, prop: Any) -> None:
     if _is_transform_list(targets):
         if prop_name in _TRANSFORM_ALL_PROPS:
             lib = _get_lib()
-            lib._transform_batch_write(list(targets),
-                                       np.ascontiguousarray(data, dtype=np.float32),
-                                       prop_name)
+            lib._transform_batch_write(targets, data, prop_name)
             return
         raise ValueError(
             f"Unknown Transform property '{prop_name}'. "

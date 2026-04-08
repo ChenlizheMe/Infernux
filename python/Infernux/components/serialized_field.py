@@ -154,7 +154,7 @@ class SerializedFieldDescriptor:
         """Get the raw stored value without auto-resolution."""
         if self._cds_class_id is not None:
             slot = getattr(instance, '_cds_slot', None)
-            if slot is not None:
+            if slot is not None and getattr(instance, '_cds_class_id', None) == self._cds_class_id:
                 from ._cds_bridge import cds_get
                 return cds_get(self._cds_class_id, self._cds_field_id, self._cds_type_code, slot)
         inst_id = id(instance)
@@ -177,7 +177,7 @@ class SerializedFieldDescriptor:
         # CDS fast path for numeric fields.
         if self._cds_class_id is not None:
             slot = getattr(instance, '_cds_slot', None)
-            if slot is not None:
+            if slot is not None and getattr(instance, '_cds_class_id', None) == self._cds_class_id:
                 from ._cds_bridge import cds_get
                 return cds_get(self._cds_class_id, self._cds_field_id, self._cds_type_code, slot)
         inst_id = id(instance)
@@ -203,7 +203,7 @@ class SerializedFieldDescriptor:
         # CDS fast path for numeric fields.
         if self._cds_class_id is not None:
             slot = getattr(instance, '_cds_slot', None)
-            if slot is not None:
+            if slot is not None and getattr(instance, '_cds_class_id', None) == self._cds_class_id:
                 # Undo hook (before write)
                 if not getattr(instance, '_inf_deserializing', False) and _on_field_will_change is not None:
                     from ._cds_bridge import cds_get

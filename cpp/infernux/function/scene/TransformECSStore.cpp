@@ -227,9 +227,12 @@ void TransformECSStore::ScatterLocalPositions(Transform *const *transforms, cons
         m_dirty[idx] = 1;
         m_worldMatrixDirty[idx] = 1;
     }
-    // Invalidate subtrees for hierarchy consistency.
+    // Invalidate subtrees only for objects that actually have children.
     for (size_t i = 0; i < count; ++i) {
-        InvalidateSubtree(transforms[i], false);
+        GameObject *go = transforms[i]->GetGameObject();
+        if (go && go->GetChildCount() > 0) {
+            InvalidateSubtree(transforms[i], false);
+        }
     }
 }
 
@@ -254,7 +257,10 @@ void TransformECSStore::ScatterLocalScales(Transform *const *transforms, const f
         m_worldMatrixDirty[idx] = 1;
     }
     for (size_t i = 0; i < count; ++i) {
-        InvalidateSubtree(transforms[i], false);
+        GameObject *go = transforms[i]->GetGameObject();
+        if (go && go->GetChildCount() > 0) {
+            InvalidateSubtree(transforms[i], false);
+        }
     }
 }
 
@@ -283,7 +289,10 @@ void TransformECSStore::ScatterLocalRotations(Transform *const *transforms, cons
         m_worldMatrixDirty[idx] = 1;
     }
     for (size_t i = 0; i < count; ++i) {
-        InvalidateSubtree(transforms[i], true);
+        GameObject *go = transforms[i]->GetGameObject();
+        if (go && go->GetChildCount() > 0) {
+            InvalidateSubtree(transforms[i], true);
+        }
     }
 }
 
@@ -313,7 +322,10 @@ void TransformECSStore::ScatterLocalEulerAngles(Transform *const *transforms, co
         m_worldMatrixDirty[idx] = 1;
     }
     for (size_t i = 0; i < count; ++i) {
-        InvalidateSubtree(transforms[i], true);
+        GameObject *go = transforms[i]->GetGameObject();
+        if (go && go->GetChildCount() > 0) {
+            InvalidateSubtree(transforms[i], true);
+        }
     }
 }
 
@@ -329,8 +341,29 @@ void TransformECSStore::GatherWorldPositions(Transform *const *transforms, float
 
 void TransformECSStore::ScatterWorldPositions(Transform *const *transforms, const float *in, size_t count)
 {
+    // Fast path: batch-set local positions and dirty flags, then
+    // batch-invalidate subtrees.  SetWorldPosition per-element is
+    // expensive due to GetParentTransformSafe + inverse matrix per call.
     for (size_t i = 0; i < count; ++i) {
-        transforms[i]->SetWorldPosition(glm::vec3(in[i * 3], in[i * 3 + 1], in[i * 3 + 2]));
+        Transform *t = transforms[i];
+        Transform *parent = t->GetParent();
+        glm::vec3 wp(in[i * 3], in[i * 3 + 1], in[i * 3 + 2]);
+        uint32_t idx = t->GetECSHandle().index;
+        if (!parent) {
+            m_localPositions[idx] = wp;
+        } else {
+            glm::mat4 invParent = glm::inverse(parent->GetWorldMatrix());
+            m_localPositions[idx] = glm::vec3(invParent * glm::vec4(wp, 1.0f));
+        }
+        m_dirty[idx] = 1;
+        m_worldMatrixDirty[idx] = 1;
+    }
+    // Batch invalidate children (skip leaf nodes quickly).
+    for (size_t i = 0; i < count; ++i) {
+        GameObject *go = transforms[i]->GetGameObject();
+        if (go && go->GetChildCount() > 0) {
+            InvalidateSubtree(transforms[i], false);
+        }
     }
 }
 

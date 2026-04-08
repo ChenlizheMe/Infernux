@@ -22,21 +22,44 @@ import sys
 from Infernux.debug import Debug
 
 
-def safe_path(path: str) -> str:
-    """Return an ASCII-safe version of *path* for consumption by C++.
+def _process_codepage_is_utf8() -> bool:
+    """Return True when the process ANSI code page is UTF-8 (65001).
 
-    On non-Windows, or when the path is already ASCII-clean, returns *path*
-    unchanged.  On Windows, uses ``GetShortPathNameW`` to obtain the 8.3
-    short-name form.  Falls back to the original path if conversion fails.
+    This is the case for standalone builds that embed a UTF-8 manifest
+    (``<activeCodePage>UTF-8</activeCodePage>``).  When the ACP is
+    UTF-8, narrow-string Windows APIs accept UTF-8 directly, so *no*
+    path conversion is needed — Chinese / Japanese characters work as-is.
+    """
+    if sys.platform != "win32":
+        return False
+    try:
+        import ctypes
+        return ctypes.windll.kernel32.GetACP() == 65001
+    except Exception:
+        return False
+
+
+_UTF8_ACP: bool = _process_codepage_is_utf8()
+
+
+def safe_path(path: str) -> str:
+    """Return a version of *path* safe for the C++ engine's narrow-string APIs.
+
+    * If the process code page is UTF-8 (standalone builds with manifest),
+      returns *path* unchanged — no conversion needed.
+    * Otherwise, on Windows, tries the 8.3 short-path fallback.
+    * Falls back to the original path if all else fails.
     """
     if sys.platform != "win32" or not path:
+        return path
+    # Standalone build with UTF-8 manifest → pass through unchanged
+    if _UTF8_ACP:
         return path
     # Fast path: skip if already ASCII-safe
     try:
         path.encode("ascii")
         return path
-    except UnicodeEncodeError as _exc:
-        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+    except UnicodeEncodeError:
         pass
     try:
         import ctypes

@@ -144,11 +144,19 @@ class UIEditorCreationMixin:
             go = scene.create_game_object(go_name)
             if go:
                 go.set_parent(canvas_go)
-                comp = component_cls()
+                try:
+                    comp = component_cls()
+                except Exception as _exc:
+                    Debug.log_error(f"[UIEditor] Failed to create {component_cls.__name__}: {_exc}")
+                    return
                 if default_size is not None:
                     comp.width = float(default_size[0])
                     comp.height = float(default_size[1])
-                go.add_py_component(comp)
+                try:
+                    go.add_py_component(comp)
+                except Exception as _exc:
+                    Debug.log_error(f"[UIEditor] add_py_component failed for {go_name}: {_exc}")
+                    return
                 if default_pos is not None:
                     # Find parent canvas component to set centered alignment
                     canvas_comp = None
