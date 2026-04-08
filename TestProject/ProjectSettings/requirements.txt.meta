@@ -1,0 +1,57 @@
+{
+    "meta_version": 2,
+    "metadata": {
+        "character_count": {
+            "type": "size_t",
+            "value": 220
+        },
+        "content_hash": {
+            "type": "string",
+            "value": "b3f57dbea99cf065"
+        },
+        "encoding": {
+            "type": "string",
+            "value": "utf-8"
+        },
+        "file_extension": {
+            "type": "string",
+            "value": ".txt"
+        },
+        "file_path": {
+            "type": "string",
+            "value": "E:/project/InfEngine/TestProject/ProjectSettings/requirements.txt"
+        },
+        "file_size": {
+            "type": "size_t",
+            "value": 224
+        },
+        "file_type": {
+            "type": "string",
+            "value": "text"
+        },
+        "guid": {
+            "type": "string",
+            "value": "75a64a76620ff7da80f9294eeac4d8a2"
+        },
+        "importer_version": {
+            "type": "int",
+            "value": 1
+        },
+        "is_readable": {
+            "type": "bool",
+            "value": true
+        },
+        "last_modified": {
+            "type": "string",
+            "value": "1775346275"
+        },
+        "line_count": {
+            "type": "size_t",
+            "value": 5
+        },
+        "resource_type": {
+            "type": "enum infernux::ResourceType",
+            "value": "DefaultText"
+        }
+    }
+}

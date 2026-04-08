@@ -17,119 +17,30 @@ class _Ctx:
     """Thin namespace shared across hierarchy wiring helpers."""
 
 
-def _get_hierarchy_scene():
-    from Infernux.lib import SceneManager as _SM
-    return _SM.instance().get_active_scene()
-
-
 # ═══════ Canvas / UI-mode queries ══════════════════════════════
 
 def _wire_canvas_queries(ctx):
     """Wire canvas and UI-component detection callbacks."""
     hp = ctx.hp
 
-    query_cache = {
-        "scene_ref": None,
-        "scene_structure_version": -1,
-        "canvas_list_token": 0,
-        "canvas_object_ids": set(),
-        "canvas_tree_ids": set(),
-        "canvas_ancestor_ids": set(),
-        "canvas_root_ids": set(),
-    }
-
-    def _clear_query_cache():
-        query_cache["scene_ref"] = None
-        query_cache["scene_structure_version"] = -1
-        query_cache["canvas_list_token"] = 0
-        query_cache["canvas_object_ids"] = set()
-        query_cache["canvas_tree_ids"] = set()
-        query_cache["canvas_ancestor_ids"] = set()
-        query_cache["canvas_root_ids"] = set()
-
-    def _ensure_query_cache(scene):
-        if scene is None:
-            _clear_query_cache()
-            return query_cache
-
-        from Infernux.ui.ui_canvas_utils import collect_canvases_with_go
-
-        canvases_with_go = collect_canvases_with_go(scene)
-        canvas_list_token = id(canvases_with_go)
-        scene_structure_version = int(getattr(scene, "structure_version", -1))
-
-        if (
-            query_cache["scene_ref"] is scene
-            and query_cache["scene_structure_version"] == scene_structure_version
-            and query_cache["canvas_list_token"] == canvas_list_token
-        ):
-            return query_cache
-
-        canvas_object_ids = set()
-        canvas_tree_ids = set()
-        canvas_ancestor_ids = set()
-        canvas_root_ids = set()
-
-        for canvas_go, _canvas in canvases_with_go:
-            if canvas_go is None:
-                continue
-
-            canvas_go_id = int(getattr(canvas_go, "id", 0) or 0)
-            if canvas_go_id:
-                canvas_object_ids.add(canvas_go_id)
-
-            cur = canvas_go
-            top_root_id = 0
-            while cur is not None:
-                cur_id = int(getattr(cur, "id", 0) or 0)
-                if cur_id:
-                    canvas_ancestor_ids.add(cur_id)
-                    top_root_id = cur_id
-                try:
-                    cur = cur.get_parent()
-                except Exception as _exc:
-                    Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-                    cur = None
-
-            if top_root_id:
-                canvas_root_ids.add(top_root_id)
-
-            pending = [canvas_go]
-            while pending:
-                current = pending.pop()
-                current_id = int(getattr(current, "id", 0) or 0)
-                if current_id in canvas_tree_ids:
-                    continue
-                if current_id:
-                    canvas_tree_ids.add(current_id)
-                pending.extend(_get_children_safe(current))
-
-        query_cache["scene_ref"] = scene
-        query_cache["scene_structure_version"] = scene_structure_version
-        query_cache["canvas_list_token"] = canvas_list_token
-        query_cache["canvas_object_ids"] = canvas_object_ids
-        query_cache["canvas_tree_ids"] = canvas_tree_ids
-        query_cache["canvas_ancestor_ids"] = canvas_ancestor_ids
-        query_cache["canvas_root_ids"] = canvas_root_ids
-        return query_cache
-
-    def _get_canvas_root_ids():
-        scene = _get_hierarchy_scene()
-        if not scene:
-            return []
-        cache = _ensure_query_cache(scene)
-        return list(cache["canvas_root_ids"])
-
     def _go_has_canvas(oid):
-        scene = _get_hierarchy_scene()
+        from Infernux.lib import SceneManager as _SM
+        from Infernux.ui import UICanvas
+        scene = _SM.instance().get_active_scene()
         if not scene:
             return False
-        cache = _ensure_query_cache(scene)
-        return int(oid) in cache["canvas_object_ids"]
+        go = scene.find_by_id(oid)
+        if not go:
+            return False
+        for comp in _get_py_components_safe(go):
+            if isinstance(comp, UICanvas):
+                return True
+        return False
 
     def _go_has_ui_screen_component(oid):
+        from Infernux.lib import SceneManager as _SM
         from Infernux.ui.inx_ui_screen_component import InxUIScreenComponent
-        scene = _get_hierarchy_scene()
+        scene = _SM.instance().get_active_scene()
         if not scene:
             return False
         go = scene.find_by_id(oid)
@@ -141,24 +52,44 @@ def _wire_canvas_queries(ctx):
         return False
 
     def _parent_has_canvas_ancestor(oid):
-        scene = _get_hierarchy_scene()
+        from Infernux.lib import SceneManager as _SM
+        from Infernux.ui import UICanvas
+        scene = _SM.instance().get_active_scene()
         if not scene:
             return False
-        cache = _ensure_query_cache(scene)
-        return int(oid) in cache["canvas_tree_ids"]
+        go = scene.find_by_id(oid)
+        if not go:
+            return False
+        cur = go
+        while cur is not None:
+            for comp in _get_py_components_safe(cur):
+                if isinstance(comp, UICanvas):
+                    return True
+            cur = cur.get_parent()
+        return False
 
     def _has_canvas_descendant(oid):
-        scene = _get_hierarchy_scene()
+        from Infernux.lib import SceneManager as _SM
+        from Infernux.ui import UICanvas
+        scene = _SM.instance().get_active_scene()
         if not scene:
             return False
-        cache = _ensure_query_cache(scene)
-        return int(oid) in cache["canvas_ancestor_ids"]
+        go = scene.find_by_id(oid)
+        if not go:
+            return False
+        stack = [go]
+        while stack:
+            cur = stack.pop()
+            for comp in _get_py_components_safe(cur):
+                if isinstance(comp, UICanvas):
+                    return True
+            stack.extend(_get_children_safe(cur))
+        return False
 
     hp.go_has_canvas = _go_has_canvas
     hp.go_has_ui_screen_component = _go_has_ui_screen_component
     hp.parent_has_canvas_ancestor = _parent_has_canvas_ancestor
     hp.has_canvas_descendant = _has_canvas_descendant
-    hp.get_canvas_root_ids = _get_canvas_root_ids
 
 
 # ═══════ External drop & delete ════════════════════════════════

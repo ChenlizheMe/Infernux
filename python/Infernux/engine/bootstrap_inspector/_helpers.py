@@ -67,15 +67,12 @@ def _get_add_component_entries():
     from Infernux.lib import InspectorAddComponentEntry, get_registered_component_types
 
     entries = []
-    from Infernux.components.builtin_component import BuiltinComponent
     for type_name in sorted(get_registered_component_types()):
         if type_name == "Transform":
             continue
         e = InspectorAddComponentEntry()
         e.display_name = type_name
-        # Use BuiltinComponent wrapper category if available
-        wrapper_cls = BuiltinComponent._builtin_registry.get(type_name)
-        e.category = getattr(wrapper_cls, '_component_category_', "Built-in") if wrapper_cls else "Built-in"
+        e.category = "Built-in"
         e.is_native = True
         entries.append(e)
 
@@ -87,21 +84,6 @@ def _get_add_component_entries():
         e.is_native = False
         e.script_path = ""
         entries.append(e)
-
-    # Engine-side Python-only components (e.g. SpriteRenderer)
-    from Infernux.components.registry import get_all_types
-    seen = {e.display_name for e in entries}
-    for name, cls in get_all_types().items():
-        if name in seen:
-            continue
-        menu_path = getattr(cls, '_component_menu_path_', None)
-        if menu_path:
-            e = InspectorAddComponentEntry()
-            e.display_name = name
-            e.category = getattr(cls, '_component_category_', 'Scripts')
-            e.is_native = False
-            e.script_path = ""
-            entries.append(e)
 
     import os
     from Infernux.engine.project_context import get_project_root

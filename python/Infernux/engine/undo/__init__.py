@@ -18,7 +18,6 @@ from Infernux.engine.undo._base import (
 from Infernux.engine.undo._helpers import (
     _bump_inspector_structure,
     _bump_inspector_values,
-    _destroy_game_object_immediately,
     _get_active_scene,
     _resolve_target,
     _resolve_live_ref,

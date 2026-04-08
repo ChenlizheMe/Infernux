@@ -49,8 +49,7 @@ def _log_jit(msg: str) -> None:
     try:
         from Infernux.debug import Debug  # late import to avoid circular deps
         Debug.log_internal(msg)
-    except Exception as _exc:
-        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+    except Exception:
         pass
 
 
@@ -59,33 +58,12 @@ def _log_jit(msg: str) -> None:
 # exist, so ``cache=True`` would raise RuntimeError.
 _NUITKA_COMPILED = "__compiled__" in globals()
 
-# ── Compilation cache ─────────────────────────────────────────────────
-# Prevents re-compiling the same @njit function when a user script module
-# is re-imported (e.g. scene loading calls load_all_components_from_file
-# multiple times for the same file).  Keyed by (co_filename, func_name, code_hash).
-_compiled_cache: dict = {}
-
 try:
     from numba import prange as _numba_prange  # type: ignore[import-untyped]
 except Exception:
     _numba_prange = range
 
 prange = _numba_prange
-
-
-def _njit_cache_key(fn, kwargs_tag: str = "") -> tuple:
-    """Build a hashable cache key for a @njit function.
-
-    Uses (co_filename, func_name, bytecode_hash, kwargs_tag) so that
-    re-importing the same module reuses the previous compilation as long
-    as the function source hasn't changed.
-    """
-    code = getattr(fn, "__code__", None)
-    if code is None:
-        return None
-    import hashlib
-    code_hash = hashlib.sha256(code.co_code).hexdigest()[:16]
-    return (code.co_filename, fn.__name__, code_hash, kwargs_tag)
 
 
 def _compile_njit(fn, kwargs):
@@ -105,21 +83,6 @@ def _compile_njit(fn, kwargs):
     else:
         compiled = _real_njit(fn)
     compiled.py = fn
-    return compiled
-
-
-def _compile_njit_cached(fn, kwargs):
-    """Like _compile_njit but reuses a previous result if the bytecode matches."""
-    kwargs_tag = ",".join(f"{k}={v}" for k, v in sorted(kwargs.items()))
-    cache_key = _njit_cache_key(fn, kwargs_tag)
-    if cache_key and cache_key in _compiled_cache:
-        _log_jit(f"[JIT] {fn.__name__}: reusing cached compilation")
-        cached = _compiled_cache[cache_key]
-        cached.py = fn
-        return cached
-    compiled = _compile_njit(fn, kwargs)
-    if cache_key:
-        _compiled_cache[cache_key] = compiled
     return compiled
 
 
@@ -189,10 +152,6 @@ def _body_has_parallel_indexed_store(body, loop_var: str) -> bool:
             idx = target.slice
             if isinstance(idx, ast.Name) and idx.id == loop_var:
                 return True
-            if isinstance(idx, ast.Tuple):
-                for elt in idx.elts:
-                    if isinstance(elt, ast.Name) and elt.id == loop_var:
-                        return True
     return False
 
 
@@ -300,19 +259,15 @@ def _auto_parallel_sidecar_candidates(fn):
         if not path:
             continue
         norm = os.path.normcase(os.path.normpath(path))
-        # Strip .pyc/.py so the same base path doesn't yield duplicate sidecars
+        if norm in seen:
+            continue
+        seen.add(norm)
         if norm.endswith(".pyc"):
-            base_norm = norm[:-4]
+            yield path[:-4] + ".autop.pyc"
+            yield path[:-4] + ".autop.py"
         elif norm.endswith(".py"):
-            base_norm = norm[:-3]
-        else:
-            continue
-        if base_norm in seen:
-            continue
-        seen.add(base_norm)
-        base_path = path[:-4] if norm.endswith(".pyc") else path[:-3]
-        yield base_path + ".autop.pyc"
-        yield base_path + ".autop.py"
+            yield path[:-3] + ".autop.pyc"
+            yield path[:-3] + ".autop.py"
 
 
 def _load_prebuilt_auto_parallel_variant(fn):
@@ -543,12 +498,6 @@ def njit(*args, **kwargs):
         parallel_kwargs["parallel"] = True
 
         def _compile_auto_parallel(fn):
-            cache_key = _njit_cache_key(fn, "auto_parallel")
-            if cache_key and cache_key in _compiled_cache:
-                _log_jit(f"[JIT] {fn.__name__}: reusing cached auto_parallel compilation")
-                cached = _compiled_cache[cache_key]
-                cached.py = fn
-                return cached
             _log_jit(f"[JIT] compiling auto_parallel: {fn.__name__}")
             serial_compiled = _compile_njit(fn, serial_kwargs)
             parallel_source_fn = _try_build_auto_parallel_variant(fn)
@@ -562,10 +511,7 @@ def njit(*args, **kwargs):
             parallel_target = parallel_source_fn or fn
             parallel_compiled = _compile_njit(parallel_target, parallel_kwargs)
             _log_jit(f"[JIT] {fn.__name__}: auto_parallel compilation done")
-            result = _build_auto_parallel_dispatcher(fn, serial_compiled, parallel_compiled)
-            if cache_key:
-                _compiled_cache[cache_key] = result
-            return result
+            return _build_auto_parallel_dispatcher(fn, serial_compiled, parallel_compiled)
 
         if args and callable(args[0]):
             return _compile_auto_parallel(args[0])
@@ -574,11 +520,11 @@ def njit(*args, **kwargs):
 
     # @njit  (bare decorator, no parentheses)
     if args and callable(args[0]):
-        return _compile_njit_cached(args[0], {})
+        return _compile_njit(args[0], {})
 
     # @njit(cache=True, ...)  (decorator factory)
     def _decorator(fn):
-        return _compile_njit_cached(fn, kwargs)
+        return _compile_njit(fn, kwargs)
     return _decorator
 
 

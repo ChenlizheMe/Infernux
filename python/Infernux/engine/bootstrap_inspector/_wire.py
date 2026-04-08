@@ -105,46 +105,40 @@ def _wire_component_list(ctx):
             return scene, [], {}, {}
 
         items, native_map, py_map = [], {}, {}
-
-        # Single pass over get_components() preserves the actual insertion
-        # order (C++ m_components vector) so the Inspector shows components
-        # in chronological add-order.
         for comp in _get_components_safe(obj):
+            if _is_py_entry(comp):
+                continue
             tn = getattr(comp, 'type_name', type(comp).__name__)
             if tn == "Transform":
                 continue
+            cid = getattr(comp, 'component_id', id(comp))
+            ci = InspectorComponentInfo()
+            ci.type_name = tn
+            ci.component_id = cid
+            ci.enabled = bool(getattr(comp, 'enabled', True))
+            ci.is_native = True
+            ci.is_script = False
+            ci.is_broken = False
+            ci.icon_id = ctx.get_component_icon_id(tn, False)
+            items.append(ci)
+            native_map[cid] = comp
 
-            if _is_py_entry(comp):
-                # CastToPython already resolved PyComponentProxy to the
-                # actual Python instance, so *comp* IS the Python component.
-                py_comp = comp
-                cid = getattr(py_comp, 'component_id', id(py_comp))
-                ci = InspectorComponentInfo()
-                ci.type_name = getattr(py_comp, 'type_name', type(py_comp).__name__)
-                ci.component_id = cid
-                ci.enabled = bool(getattr(py_comp, 'enabled', True))
-                ci.is_native = False
-                ci.is_script = True
-                ci.is_broken = bool(getattr(py_comp, '_is_broken', False))
-                ci.broken_error = (
-                    getattr(py_comp, '_broken_error', '') or ''
-                    if ci.is_broken else ''
-                )
-                ci.icon_id = ctx.get_component_icon_id(ci.type_name, True)
-                items.append(ci)
-                py_map[cid] = py_comp
-            else:
-                cid = getattr(comp, 'component_id', id(comp))
-                ci = InspectorComponentInfo()
-                ci.type_name = tn
-                ci.component_id = cid
-                ci.enabled = bool(getattr(comp, 'enabled', True))
-                ci.is_native = True
-                ci.is_script = False
-                ci.is_broken = False
-                ci.icon_id = ctx.get_component_icon_id(tn, False)
-                items.append(ci)
-                native_map[cid] = comp
+        for py_comp in _get_py_components_safe(obj):
+            cid = getattr(py_comp, 'component_id', id(py_comp))
+            ci = InspectorComponentInfo()
+            ci.type_name = getattr(py_comp, 'type_name', type(py_comp).__name__)
+            ci.component_id = cid
+            ci.enabled = bool(getattr(py_comp, 'enabled', True))
+            ci.is_native = False
+            ci.is_script = True
+            ci.is_broken = bool(getattr(py_comp, '_is_broken', False))
+            ci.broken_error = (
+                getattr(py_comp, '_broken_error', '') or ''
+                if ci.is_broken else ''
+            )
+            ci.icon_id = ctx.get_component_icon_id(ci.type_name, True)
+            items.append(ci)
+            py_map[cid] = py_comp
 
         _component_cache.update(
             object_id=obj_id, scene_version=scene_ver,
@@ -640,22 +634,6 @@ def _wire_add_remove_and_drop(ctx):
             _record_add_component_compound, _get_component_ids
         )
         if is_native:
-            # Block adding MeshRenderer when SpriteRenderer manages it.
-            if type_name_or_path == "MeshRenderer":
-                for c in _get_components_safe(obj):
-                    if getattr(c, 'type_name', '') == 'SpriteRenderer':
-                        Debug.log_warning(
-                            "Cannot add MeshRenderer — "
-                            "SpriteRenderer already manages the renderer.")
-                        return
-            # Block adding SpriteRenderer when MeshRenderer exists.
-            if type_name_or_path == "SpriteRenderer":
-                for c in _get_components_safe(obj):
-                    if getattr(c, 'type_name', '') == 'MeshRenderer':
-                        Debug.log_warning(
-                            "Cannot add SpriteRenderer — "
-                            "a MeshRenderer already exists. Remove it first.")
-                        return
             before_ids = _get_component_ids(obj)
             result = obj.add_component(type_name_or_path)
             if result is not None:
@@ -674,10 +652,6 @@ def _wire_add_remove_and_drop(ctx):
             except ImportError as _exc:
                 Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             comp_cls = _engine_py_map.get(type_name_or_path)
-            if comp_cls is None:
-                # Try engine Python-only components via registry
-                from Infernux.components.registry import get_type
-                comp_cls = get_type(type_name_or_path)
             if comp_cls is None:
                 Debug.log_error(f"Unknown engine component: {type_name_or_path}")
                 return

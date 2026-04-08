@@ -1,0 +1,57 @@
+{
+    "meta_version": 2,
+    "metadata": {
+        "character_count": {
+            "type": "size_t",
+            "value": 164
+        },
+        "content_hash": {
+            "type": "string",
+            "value": "4c5f8c77d41baf13"
+        },
+        "encoding": {
+            "type": "string",
+            "value": "ascii"
+        },
+        "file_extension": {
+            "type": "string",
+            "value": ".ini"
+        },
+        "file_path": {
+            "type": "string",
+            "value": "E:/project/InfEngine/TestProject/ProjectSettings/GameView.ini"
+        },
+        "file_size": {
+            "type": "size_t",
+            "value": 176
+        },
+        "file_type": {
+            "type": "string",
+            "value": "text"
+        },
+        "guid": {
+            "type": "string",
+            "value": "3fe1f64f5a80c3c7e492b20b958ac9ca"
+        },
+        "importer_version": {
+            "type": "int",
+            "value": 1
+        },
+        "is_readable": {
+            "type": "bool",
+            "value": true
+        },
+        "last_modified": {
+            "type": "string",
+            "value": "1775626904"
+        },
+        "line_count": {
+            "type": "size_t",
+            "value": 13
+        },
+        "resource_type": {
+            "type": "enum infernux::ResourceType",
+            "value": "DefaultText"
+        }
+    }
+}

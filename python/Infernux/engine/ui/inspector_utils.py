@@ -148,14 +148,13 @@ def get_enum_members(enum_cls):
     """Return member list for a Python Enum **or** pybind11 enum-like type."""
     if enum_cls is None:
         return []
-    try:
-        return list(enum_cls)
-    except TypeError as _exc:
-        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-        pass
     members_dict = getattr(enum_cls, "__members__", None)
     if isinstance(members_dict, dict):
         return list(members_dict.values())
+    try:
+        return list(enum_cls)
+    except TypeError:
+        pass
     return []
 
 

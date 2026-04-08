@@ -4,24 +4,21 @@ from __future__ import annotations
 from Infernux.debug import Debug
 
 
-def _collect_material_renderers(items, native_map, obj):
-    """Collect renderer tuples (MeshRenderer / SpriteRenderer) and their signature parts."""
+def _collect_material_renderers(items, native_map, obj, wrapper_cls):
+    """Collect MeshRenderer tuples and their signature parts."""
     from Infernux.components.builtin_component import BuiltinComponent
-
-    _RENDERER_TYPES = {"MeshRenderer", "SpriteRenderer"}
 
     renderers = []
     signature_parts = []
     for item in items:
-        if not item.is_native or item.type_name not in _RENDERER_TYPES:
+        if not item.is_native or item.type_name != "MeshRenderer":
             continue
         renderer = native_map.get(item.component_id)
         if renderer is None:
             continue
-        wclass = BuiltinComponent._builtin_registry.get(item.type_name)
-        if wclass is not None and not isinstance(renderer, BuiltinComponent):
+        if wrapper_cls is not None and not isinstance(renderer, BuiltinComponent):
             try:
-                renderer = wclass._get_or_create_wrapper(renderer, obj)
+                renderer = wrapper_cls._get_or_create_wrapper(renderer, obj)
             except Exception as _exc:
                 Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         mat_count = getattr(renderer, 'material_count', 0) or 1
@@ -100,8 +97,9 @@ def wire_material_sections(ip, _t, engine, _inspector_support,
         if obj is None:
             return
 
+        wrapper_cls = BuiltinComponent._builtin_registry.get("MeshRenderer")
         renderers, signature = _collect_material_renderers(
-            items, native_map, obj)
+            items, native_map, obj, wrapper_cls)
 
         if not renderers:
             return
