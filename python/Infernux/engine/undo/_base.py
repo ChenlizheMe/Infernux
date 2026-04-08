@@ -1,0 +1,107 @@
+"""Base command classes for the undo system."""
+
+from __future__ import annotations
+
+import time as _time
+from abc import ABC, abstractmethod
+from typing import Any, Callable, List, Optional
+
+
+class UndoCommand(ABC):
+    """Base class for all undoable editor commands."""
+
+    supports_redo: bool = True
+    marks_dirty: bool = True
+    _is_property_edit: bool = False
+
+    def __init__(self, description: str = ""):
+        self.description: str = description
+        self.timestamp: float = _time.time()
+
+    @abstractmethod
+    def execute(self) -> None: ...
+
+    @abstractmethod
+    def undo(self) -> None: ...
+
+    def redo(self) -> None:
+        self.execute()
+
+    def can_merge(self, other: UndoCommand) -> bool:
+        return False
+
+    def merge(self, other: UndoCommand) -> None:
+        pass
+
+
+class CompoundCommand(UndoCommand):
+    """Groups multiple sub-commands into one undo step."""
+
+    supports_redo = True
+
+    def __init__(self, commands: List[UndoCommand], description: str = ""):
+        super().__init__(description or "Compound")
+        self._commands = list(commands)
+        self.marks_dirty = any(c.marks_dirty for c in self._commands)
+
+    def execute(self) -> None:
+        for cmd in self._commands:
+            cmd.execute()
+
+    def undo(self) -> None:
+        for cmd in reversed(self._commands):
+            cmd.undo()
+
+    def redo(self) -> None:
+        for cmd in self._commands:
+            cmd.redo()
+
+
+class LambdaCommand(UndoCommand):
+    """One-shot undoable action built from callables.
+
+    Ideal for recording ad-hoc operations without defining a full command
+    class.  Critical for future ShaderGraph undo support::
+
+        from Infernux.engine.undo import UndoManager, LambdaCommand
+
+        mgr = UndoManager.instance()
+        old_state = capture_current_state()
+        apply_new_state(new_state)
+        mgr.record(LambdaCommand(
+            "Connect Nodes",
+            undo_fn=lambda: apply_new_state(old_state),
+            redo_fn=lambda: apply_new_state(new_state),
+        ))
+    """
+
+    def __init__(self, description: str,
+                 undo_fn: Callable[[], None],
+                 redo_fn: Callable[[], None],
+                 marks_dirty: bool = True):
+        super().__init__(description)
+        self._undo_fn = undo_fn
+        self._redo_fn = redo_fn
+        self.marks_dirty = marks_dirty
+
+    def execute(self) -> None:
+        self._redo_fn()
+
+    def undo(self) -> None:
+        self._undo_fn()
+
+    def redo(self) -> None:
+        self._redo_fn()
+
+
+def _snapshot_value(val: Any) -> Any:
+    """Return a simple deep-ish copy suitable for undo storage."""
+    if val is None or isinstance(val, (int, float, str, bool)):
+        return val
+    if isinstance(val, (list, tuple)):
+        return type(val)(_snapshot_value(v) for v in val)
+    if isinstance(val, dict):
+        return {k: _snapshot_value(v) for k, v in val.items()}
+    if hasattr(val, 'x') and hasattr(val, 'y'):
+        return type(val)(val.x, val.y, val.z) if hasattr(val, 'z') else type(val)(val.x, val.y)
+    return val

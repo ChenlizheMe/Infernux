@@ -118,7 +118,7 @@ def _render_texture2d_property(ctx, prop, prop_name, wid_prefix, plw):
 
     def _tex_asset_items(filt):
         from .inspector_components import _picker_assets
-        return _picker_assets(filt, "*.png") + _picker_assets(filt, "*.jpg")
+        return _picker_assets(filt, "*.png", assets_only=True) + _picker_assets(filt, "*.jpg", assets_only=True)
 
     IGUI.object_field(
         ctx,
@@ -825,10 +825,10 @@ def _refresh_pipeline(panel):
         engine = panel._get_native_engine()
     if engine is None:
         try:
-            from Infernux.engine.engine import Engine
-            eng_inst = Engine.instance()
-            if eng_inst:
-                engine = eng_inst.get_native_engine()
+            from Infernux.engine.ui.editor_services import EditorServices
+            svc = EditorServices.instance()
+            if svc:
+                engine = svc.native_engine
         except Exception as _exc:
             Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             pass

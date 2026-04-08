@@ -1,0 +1,15 @@
+#version 450
+
+@shader_id: gizmo_icon
+@shading_model: unlit
+@hidden
+@property: baseColor, Color, [1.0, 1.0, 1.0, 1.0]
+@property: texSampler, Texture2D, white
+
+void surface(out SurfaceData s) {
+    s = InitSurfaceData();
+
+    vec4 texColor = texture(texSampler, v_TexCoord);
+    s.albedo = texColor.rgb * material.baseColor.rgb;
+    s.alpha = texColor.a * material.baseColor.a;
+}

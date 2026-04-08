@@ -49,8 +49,7 @@ def _log_jit(msg: str) -> None:
     try:
         from Infernux.debug import Debug  # late import to avoid circular deps
         Debug.log_internal(msg)
-    except Exception as _exc:
-        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+    except Exception:
         pass
 
 
@@ -116,16 +115,53 @@ def _decorator_requests_auto_parallel(node) -> bool:
     return False
 
 
-def _body_has_simple_add_reduction(body) -> bool:
-    for node in ast.walk(ast.Module(body=body, type_ignores=[])):
-        if isinstance(node, ast.AugAssign) and isinstance(node.target, ast.Name) and isinstance(node.op, ast.Add):
+def _walk_loop_body(body):
+    """Yield AST nodes from *body* without descending into nested function defs."""
+    worklist = list(body)
+    while worklist:
+        node = worklist.pop()
+        yield node
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            worklist.extend(ast.iter_child_nodes(node))
+
+
+def _body_has_supported_reduction(body) -> bool:
+    """True when *body* contains ``acc op= expr`` with a Numba-supported operator.
+
+    Supported: ``+=``, ``-=``, ``*=``, ``/=``  (but NOT ``//=``).
+    """
+    for node in _walk_loop_body(body):
+        if (isinstance(node, ast.AugAssign)
+                and isinstance(node.target, ast.Name)
+                and isinstance(node.op, (ast.Add, ast.Sub, ast.Mult, ast.Div))):
             return True
     return False
 
 
+def _body_has_parallel_indexed_store(body, loop_var: str) -> bool:
+    """True when *body* writes to ``arr[loop_var]`` — embarrassingly parallel."""
+    for node in _walk_loop_body(body):
+        targets = []
+        if isinstance(node, ast.Assign):
+            targets = node.targets
+        elif isinstance(node, ast.AugAssign):
+            targets = [node.target]
+        for target in targets:
+            if not isinstance(target, ast.Subscript):
+                continue
+            idx = target.slice
+            if isinstance(idx, ast.Name) and idx.id == loop_var:
+                return True
+    return False
+
+
 def _body_has_unsupported_control(body) -> bool:
-    for node in ast.walk(ast.Module(body=body, type_ignores=[])):
-        if isinstance(node, (ast.Return, ast.Break, ast.Continue, ast.Yield, ast.YieldFrom, ast.Await, ast.Try)):
+    """True when *body* contains control flow unsupported in Numba prange.
+
+    ``continue`` is intentionally allowed — Numba handles it correctly.
+    """
+    for node in _walk_loop_body(body):
+        if isinstance(node, (ast.Return, ast.Break, ast.Yield, ast.YieldFrom, ast.Await, ast.Try)):
             return True
     return False
 
@@ -140,7 +176,13 @@ class _AutoParallelRangeTransformer(ast.NodeTransformer):
             return node
         if _body_has_unsupported_control(node.body):
             return node
-        if not _body_has_simple_add_reduction(node.body):
+
+        loop_var = node.target.id if isinstance(node.target, ast.Name) else None
+        has_reduction = _body_has_supported_reduction(node.body)
+        has_indexed_store = loop_var and _body_has_parallel_indexed_store(
+            node.body, loop_var
+        )
+        if not has_reduction and not has_indexed_store:
             return node
 
         node.iter.func.id = "prange"

@@ -234,3 +234,91 @@ class TestAutoParallelNjit:
         assert rewritten is not None
         assert rewritten(5) == 10
         assert used["prange"] is True
+
+    def test_try_build_auto_parallel_variant_rewrites_mult_reduction(self, monkeypatch):
+        used = {"prange": False}
+
+        def _fake_prange(*args):
+            used["prange"] = True
+            return range(*args)
+
+        monkeypatch.setattr(jit_kernels, "prange", _fake_prange)
+
+        def product(n: int) -> int:
+            acc = 1
+            for i in range(1, n + 1):
+                acc *= i
+            return acc
+
+        rewritten = jit_kernels._try_build_auto_parallel_variant(product)
+        assert rewritten is not None
+        assert rewritten(5) == 120
+        assert used["prange"] is True
+
+    def test_try_build_auto_parallel_variant_rewrites_indexed_array_store(self, monkeypatch):
+        used = {"prange": False}
+
+        def _fake_prange(*args):
+            used["prange"] = True
+            return range(*args)
+
+        monkeypatch.setattr(jit_kernels, "prange", _fake_prange)
+
+        def fill(arr):
+            for i in range(len(arr)):
+                arr[i] = i * 2
+
+        rewritten = jit_kernels._try_build_auto_parallel_variant(fill)
+        assert rewritten is not None
+        data = [0] * 5
+        rewritten(data)
+        assert data == [0, 2, 4, 6, 8]
+        assert used["prange"] is True
+
+    def test_try_build_auto_parallel_variant_allows_continue(self, monkeypatch):
+        used = {"prange": False}
+
+        def _fake_prange(*args):
+            used["prange"] = True
+            return range(*args)
+
+        monkeypatch.setattr(jit_kernels, "prange", _fake_prange)
+
+        def evens(n: int) -> int:
+            total = 0
+            for i in range(n):
+                if i % 2 != 0:
+                    continue
+                total += i
+            return total
+
+        rewritten = jit_kernels._try_build_auto_parallel_variant(evens)
+        assert rewritten is not None
+        assert rewritten(6) == 6  # 0 + 2 + 4
+        assert used["prange"] is True
+
+    def test_build_sidecar_source_handles_mult_reduction(self):
+        source = (
+            "from Infernux.jit import njit\n"
+            "@njit(auto_parallel=True)\n"
+            "def product(n):\n"
+            "    acc = 1\n"
+            "    for i in range(1, n + 1):\n"
+            "        acc *= i\n"
+            "    return acc\n"
+        )
+        sidecar = jit_kernels.build_auto_parallel_sidecar_source(source)
+        assert sidecar is not None
+        assert "prange" in sidecar
+
+    def test_build_sidecar_source_handles_indexed_store(self):
+        source = (
+            "from Infernux.jit import njit\n"
+            "@njit(auto_parallel=True)\n"
+            "def fill(arr):\n"
+            "    for i in range(len(arr)):\n"
+            "        arr[i] = i * 2\n"
+        )
+        sidecar = jit_kernels.build_auto_parallel_sidecar_source(source)
+        assert sidecar is not None
+        assert "prange" in sidecar

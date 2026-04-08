@@ -1,0 +1,117 @@
+"""Undo/Redo system for Infernux editor.
+
+All public symbols are re-exported here so that existing code using
+``from Infernux.engine.undo import ...`` continues to work unchanged.
+"""
+
+from __future__ import annotations
+
+# -- Base --
+from Infernux.engine.undo._base import (
+    UndoCommand,
+    CompoundCommand,
+    LambdaCommand,
+    _snapshot_value,
+)
+
+# -- Helpers (private, but some are imported externally) --
+from Infernux.engine.undo._helpers import (
+    _bump_inspector_structure,
+    _bump_inspector_values,
+    _get_active_scene,
+    _resolve_target,
+    _resolve_live_ref,
+)
+
+# -- Property commands --
+from Infernux.engine.undo._property_commands import (
+    SetPropertyCommand,
+    BuiltinPropertyCommand,
+    GenericComponentCommand,
+    MaterialJsonCommand,
+    SetMaterialSlotCommand,
+)
+
+# -- Structural commands --
+from Infernux.engine.undo._structural_commands import (
+    CreateGameObjectCommand,
+    DeleteGameObjectCommand,
+    ReparentCommand,
+    MoveGameObjectCommand,
+    SelectionCommand,
+    EditorSelectionCommand,
+    PrefabModeCommand,
+)
+
+# -- Component commands --
+from Infernux.engine.undo._component_commands import (
+    AddNativeComponentCommand,
+    RemoveNativeComponentCommand,
+    AddPyComponentCommand,
+    RemovePyComponentCommand,
+)
+
+# -- Manager --
+from Infernux.engine.undo._manager import UndoManager
+
+# -- Trackers --
+from Infernux.engine.undo._trackers import (
+    InspectorSnapshotCommand,
+    InspectorUndoTracker,
+    HierarchyUndoTracker,
+)
+
+# -- Snapshots --
+from Infernux.engine.undo._snapshots import (
+    _SNAPSHOT_REGISTRY,
+    _resolve_and_snap,
+    _resolve_and_restore,
+    snapshot_live_game_object,
+    restore_live_game_object,
+    snapshot_live_transform,
+    restore_live_transform,
+    snapshot_live_native_component,
+    restore_live_native_component,
+    snapshot_live_py_component,
+    restore_live_py_component,
+    snapshot_live_renderstack_component,
+    restore_live_renderstack_component,
+    _get_live_game_object,
+    _get_live_transform,
+    _get_nth_live_native_component,
+    _get_nth_live_py_component,
+)
+
+# -- RenderStack --
+from Infernux.engine.undo._renderstack import (
+    snapshot_renderstack,
+    restore_renderstack,
+    RenderStackFieldCommand,
+    RenderStackSetPipelineCommand,
+    RenderStackAddPassCommand,
+    RenderStackMovePassCommand,
+    RenderStackTogglePassCommand,
+    RenderStackRemovePassCommand,
+)
+
+# -- Recreate --
+from Infernux.engine.undo._recreate import (
+    _recreate_game_object_from_json,
+)
+
+__all__ = [
+    "UndoCommand", "CompoundCommand", "LambdaCommand",
+    "SetPropertyCommand", "BuiltinPropertyCommand",
+    "GenericComponentCommand", "MaterialJsonCommand", "SetMaterialSlotCommand",
+    "CreateGameObjectCommand", "DeleteGameObjectCommand",
+    "ReparentCommand", "MoveGameObjectCommand",
+    "SelectionCommand", "EditorSelectionCommand", "PrefabModeCommand",
+    "AddNativeComponentCommand", "RemoveNativeComponentCommand",
+    "AddPyComponentCommand", "RemovePyComponentCommand",
+    "UndoManager",
+    "InspectorSnapshotCommand", "InspectorUndoTracker", "HierarchyUndoTracker",
+    "snapshot_renderstack", "restore_renderstack",
+    "RenderStackFieldCommand", "RenderStackSetPipelineCommand",
+    "RenderStackAddPassCommand", "RenderStackMovePassCommand",
+    "RenderStackTogglePassCommand", "RenderStackRemovePassCommand",
+]

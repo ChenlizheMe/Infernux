@@ -1,0 +1,273 @@
+"""Structural undo commands — object lifecycle and selection."""
+
+from __future__ import annotations
+
+from typing import Any, Callable, List, Optional
+
+from Infernux.engine.undo._base import UndoCommand
+from Infernux.engine.undo._helpers import (
+    _get_active_scene, _get_current_selection_ids,
+    _destroy_game_object_immediately,
+    _bump_inspector_structure, _notify_gizmos_scene_changed,
+    _preserve_ui_world_position, _invalidate_canvas_caches,
+)
+
+
+class CreateGameObjectCommand(UndoCommand):
+    """Undo destroys the object; redo recreates from JSON snapshot."""
+
+    _selection_restore_fn: Optional[Callable[[List[int]], None]] = None
+
+    def __init__(self, object_id: int, description: str = "Create GameObject"):
+        super().__init__(description)
+        self._object_id = object_id
+        self._snapshot_json: Optional[str] = None
+        self._parent_id: Optional[int] = None
+        self._sibling_index: int = 0
+        self._post_create_ids: List[int] = _get_current_selection_ids()
+
+    def execute(self) -> None:
+        pass
+
+    def undo(self) -> None:
+        scene = _get_active_scene()
+        if scene:
+            obj = scene.find_by_id(self._object_id)
+            if obj:
+                self._snapshot_json = obj.serialize()
+                parent = obj.get_parent()
+                self._parent_id = parent.id if parent else None
+                t = getattr(obj, "transform", None)
+                self._sibling_index = t.get_sibling_index() if t else 0
+                _destroy_game_object_immediately(scene, obj)
+        fn = type(self)._selection_restore_fn
+        if fn:
+            fn([])
+
+    def redo(self) -> None:
+        if self._snapshot_json:
+            from Infernux.engine.undo._recreate import _recreate_game_object_from_json
+            _recreate_game_object_from_json(
+                self._snapshot_json, self._parent_id, self._sibling_index)
+            _bump_inspector_structure()
+            _notify_gizmos_scene_changed()
+            fn = type(self)._selection_restore_fn
+            if fn and self._post_create_ids:
+                fn(self._post_create_ids)
+
+
+class DeleteGameObjectCommand(UndoCommand):
+    """Undo recreates from JSON snapshot; redo re-destroys."""
+
+    _selection_restore_fn: Optional[Callable[[List[int]], None]] = None
+
+    def __init__(self, object_id: int, description: str = "Delete GameObject"):
+        super().__init__(description)
+        self._object_id = object_id
+        self._snapshot_json: Optional[str] = None
+        self._parent_id: Optional[int] = None
+        self._sibling_index: int = 0
+        self._pre_delete_selection_ids: List[int] = []
+
+        scene = _get_active_scene()
+        if scene:
+            obj = scene.find_by_id(object_id)
+            if obj:
+                self._snapshot_json = obj.serialize()
+                parent = obj.get_parent()
+                self._parent_id = parent.id if parent else None
+                t = getattr(obj, "transform", None)
+                self._sibling_index = t.get_sibling_index() if t else 0
+        self._pre_delete_selection_ids = _get_current_selection_ids()
+
+    def execute(self) -> None:
+        scene = _get_active_scene()
+        if scene:
+            obj = scene.find_by_id(self._object_id)
+            if obj:
+                _destroy_game_object_immediately(scene, obj)
+
+    def undo(self) -> None:
+        if self._snapshot_json:
+            from Infernux.engine.undo._recreate import _recreate_game_object_from_json
+            _recreate_game_object_from_json(
+                self._snapshot_json, self._parent_id, self._sibling_index)
+            _bump_inspector_structure()
+            _notify_gizmos_scene_changed()
+            fn = type(self)._selection_restore_fn
+            if fn and self._pre_delete_selection_ids:
+                fn(self._pre_delete_selection_ids)
+
+    def redo(self) -> None:
+        scene = _get_active_scene()
+        if scene:
+            obj = scene.find_by_id(self._object_id)
+            if obj:
+                self._snapshot_json = obj.serialize()
+                _destroy_game_object_immediately(scene, obj)
+        fn = type(self)._selection_restore_fn
+        if fn:
+            fn([])
+
+
+class ReparentCommand(UndoCommand):
+    """Undo/redo changing the parent of a GameObject."""
+
+    def __init__(self, object_id: int,
+                 old_parent_id: Optional[int],
+                 new_parent_id: Optional[int],
+                 description: str = "Reparent"):
+        super().__init__(description)
+        self._object_id = object_id
+        self._old_parent_id = old_parent_id
+        self._new_parent_id = new_parent_id
+
+    def execute(self) -> None:
+        self._apply(self._new_parent_id)
+
+    def undo(self) -> None:
+        self._apply(self._old_parent_id)
+
+    def redo(self) -> None:
+        self._apply(self._new_parent_id)
+
+    def _apply(self, parent_id: Optional[int]) -> None:
+        scene = _get_active_scene()
+        if not scene:
+            return
+        obj = scene.find_by_id(self._object_id)
+        if not obj:
+            return
+        new_parent = scene.find_by_id(parent_id) if parent_id is not None else None
+        old_parent = obj.get_parent()
+        _preserve_ui_world_position(obj, new_parent)
+        obj.set_parent(new_parent)
+        _invalidate_canvas_caches(old_parent)
+        _invalidate_canvas_caches(new_parent)
+
+
+class MoveGameObjectCommand(UndoCommand):
+    """Undo/redo moves that change both parent and sibling order."""
+
+    def __init__(self, object_id: int,
+                 old_parent_id: Optional[int], new_parent_id: Optional[int],
+                 old_sibling_index: int, new_sibling_index: int,
+                 description: str = "Move In Hierarchy"):
+        super().__init__(description)
+        self._object_id = object_id
+        self._old_parent_id = old_parent_id
+        self._new_parent_id = new_parent_id
+        self._old_sibling_index = int(old_sibling_index)
+        self._new_sibling_index = int(new_sibling_index)
+
+    def execute(self) -> None:
+        self._apply(self._new_parent_id, self._new_sibling_index)
+
+    def undo(self) -> None:
+        self._apply(self._old_parent_id, self._old_sibling_index)
+
+    def redo(self) -> None:
+        self._apply(self._new_parent_id, self._new_sibling_index)
+
+    def _apply(self, parent_id: Optional[int], sibling_index: int) -> None:
+        scene = _get_active_scene()
+        if not scene:
+            return
+        obj = scene.find_by_id(self._object_id)
+        if not obj:
+            return
+        parent = scene.find_by_id(parent_id) if parent_id is not None else None
+        current_parent = obj.get_parent()
+        if current_parent is not parent:
+            _preserve_ui_world_position(obj, parent)
+            obj.set_parent(parent)
+            _invalidate_canvas_caches(current_parent)
+            _invalidate_canvas_caches(parent)
+        transform = getattr(obj, "transform", None)
+        if transform is not None:
+            transform.set_sibling_index(max(0, int(sibling_index)))
+
+
+class SelectionCommand(UndoCommand):
+    """Record a selection change.  Does not mark the scene dirty."""
+
+    marks_dirty: bool = False
+
+    def __init__(self, old_ids: List[int], new_ids: List[int],
+                 apply_fn: Callable[[List[int]], None],
+                 description: str = ""):
+        super().__init__(description or "Change Selection")
+        self._old_ids = list(old_ids)
+        self._new_ids = list(new_ids)
+        self._apply_fn = apply_fn
+
+    def execute(self) -> None:
+        pass
+
+    def undo(self) -> None:
+        self._apply_fn(self._old_ids)
+
+    def redo(self) -> None:
+        self._apply_fn(self._new_ids)
+
+
+class EditorSelectionCommand(UndoCommand):
+    """Record editor selection state across hierarchy and project panels."""
+
+    marks_dirty: bool = False
+
+    def __init__(self,
+                 old_object_ids: List[int], old_file_path: str,
+                 new_object_ids: List[int], new_file_path: str,
+                 apply_fn: Callable[[List[int], str], None],
+                 description: str = ""):
+        super().__init__(description or "Change Selection")
+        self._old_object_ids = list(old_object_ids)
+        self._old_file_path = old_file_path or ""
+        self._new_object_ids = list(new_object_ids)
+        self._new_file_path = new_file_path or ""
+        self._apply_fn = apply_fn
+
+    def execute(self) -> None:
+        pass
+
+    def undo(self) -> None:
+        self._apply_fn(self._old_object_ids, self._old_file_path)
+
+    def redo(self) -> None:
+        self._apply_fn(self._new_object_ids, self._new_file_path)
+
+
+class PrefabModeCommand(UndoCommand):
+    """Undoable enter/exit transition for Prefab Mode."""
+
+    marks_dirty: bool = False
+
+    def __init__(self, prefab_path: str, enter_mode: bool):
+        action = "Enter Prefab Mode" if enter_mode else "Exit Prefab Mode"
+        super().__init__(action)
+        self._prefab_path = prefab_path or ""
+        self._enter_mode = bool(enter_mode)
+
+    def execute(self) -> None:
+        from Infernux.engine.scene_manager import SceneFileManager
+        sfm = SceneFileManager.instance()
+        if not sfm:
+            return
+        if self._enter_mode:
+            sfm.open_prefab_mode(self._prefab_path, preserve_undo_history=True)
+        else:
+            sfm._do_exit_prefab_mode(preserve_undo_history=True)
+
+    def undo(self) -> None:
+        from Infernux.engine.scene_manager import SceneFileManager
+        sfm = SceneFileManager.instance()
+        if not sfm:
+            return
+        if self._enter_mode:
+            sfm._do_exit_prefab_mode(preserve_undo_history=True)
+        else:
+            sfm.open_prefab_mode(self._prefab_path, preserve_undo_history=True)
+
+    def redo(self) -> None:
+        self.execute()

@@ -51,6 +51,32 @@ class UndoCommand(ABC):
     def merge(self, other: UndoCommand) -> None: ...
 
 
+class LambdaCommand(UndoCommand):
+    """One-shot undoable operation defined by callable undo/redo functions.
+
+    Useful for recording arbitrary operations (e.g. ShaderGraph edits)
+    without defining a full ``UndoCommand`` subclass::
+
+        cmd = LambdaCommand(
+            undo_fn=lambda: restore_state(snapshot),
+            redo_fn=lambda: apply_change(new_data),
+            description="Edit shader node",
+        )
+        UndoManager.instance().execute(cmd)
+    """
+
+    def __init__(
+        self,
+        undo_fn: Callable[[], None],
+        redo_fn: Callable[[], None],
+        description: str = "",
+    ) -> None: ...
+
+    def execute(self) -> None: ...
+    def undo(self) -> None: ...
+    def redo(self) -> None: ...
+
+
 # ── Property commands ─────────────────────────────────────────────────
 
 class SetPropertyCommand(UndoCommand):

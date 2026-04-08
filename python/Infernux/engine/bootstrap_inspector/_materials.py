@@ -1,0 +1,168 @@
+"""Material-section rendering callback wiring."""
+from __future__ import annotations
+
+from Infernux.debug import Debug
+
+
+def _collect_material_renderers(items, native_map, obj, wrapper_cls):
+    """Collect MeshRenderer tuples and their signature parts."""
+    from Infernux.components.builtin_component import BuiltinComponent
+
+    renderers = []
+    signature_parts = []
+    for item in items:
+        if not item.is_native or item.type_name != "MeshRenderer":
+            continue
+        renderer = native_map.get(item.component_id)
+        if renderer is None:
+            continue
+        if wrapper_cls is not None and not isinstance(renderer, BuiltinComponent):
+            try:
+                renderer = wrapper_cls._get_or_create_wrapper(renderer, obj)
+            except Exception as _exc:
+                Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+        mat_count = getattr(renderer, 'material_count', 0) or 1
+        try:
+            material_guids = tuple(renderer.get_material_guids() or [])
+        except Exception:
+            material_guids = ()
+        try:
+            slot_names = tuple(renderer.get_material_slot_names() or [])
+        except Exception:
+            slot_names = ()
+        renderers.append((renderer, mat_count, material_guids, slot_names))
+        signature_parts.append((
+            getattr(renderer, 'component_id', id(renderer)),
+            mat_count, material_guids, slot_names,
+        ))
+    return renderers, tuple(signature_parts)
+
+
+def _rebuild_material_entries(renderers):
+    """Build the valid_entries list from collected renderers."""
+    valid_entries = []
+    for renderer, mat_count, material_guids, slot_names in renderers:
+        for slot_idx in range(mat_count):
+            try:
+                mat = renderer.get_effective_material(slot_idx)
+            except Exception:
+                mat = None
+            if mat is None:
+                continue
+            if slot_idx < len(slot_names) and slot_names[slot_idx]:
+                label = f"{slot_names[slot_idx]} (Slot {slot_idx})"
+            else:
+                label = f"Element {slot_idx}"
+            is_default = slot_idx >= len(material_guids) or not material_guids[slot_idx]
+            valid_entries.append({
+                "label": label,
+                "material": mat,
+                "is_default": is_default,
+            })
+    return valid_entries
+
+
+def wire_material_sections(ip, _t, engine, _inspector_support,
+                           get_cached_maps, current_scene_versions,
+                           mat_cache):
+    """Wire material-section rendering callback onto *ip*."""
+    _inline_material_state = {"cache": {}, "exec_layer": None}
+
+    def _make_inline_material_panel_adapter():
+        class _Adapter:
+            def __init__(self):
+                self._inline_material_cache = _inline_material_state["cache"]
+                self._inline_material_exec_layer = _inline_material_state["exec_layer"]
+
+            def _get_native_engine(self):
+                return engine.get_native_engine()
+
+            def _ensure_material_file_path(self, material):
+                return _inspector_support.ensure_material_file_path(material)
+
+            def _sync_back(self):
+                _inline_material_state["cache"] = self._inline_material_cache
+                _inline_material_state["exec_layer"] = self._inline_material_exec_layer
+
+        return _Adapter()
+
+    def _render_material_sections(ctx, obj_id):
+        from Infernux.components.builtin_component import BuiltinComponent
+        from Infernux.engine.ui import inspector_material as mat_ui
+        from Infernux.engine.ui.inspector_utils import render_compact_section_header, render_info_text
+        from Infernux.engine.ui.theme import Theme, ImGuiCol, ImGuiStyleVar
+
+        scene, items, native_map, _py_map = get_cached_maps(obj_id)
+        obj = scene.find_by_id(obj_id) if scene else None
+        if obj is None:
+            return
+
+        wrapper_cls = BuiltinComponent._builtin_registry.get("MeshRenderer")
+        renderers, signature = _collect_material_renderers(
+            items, native_map, obj, wrapper_cls)
+
+        if not renderers:
+            return
+
+        ctx.dummy(0, Theme.INSPECTOR_SECTION_GAP * 1.5)
+        ctx.separator()
+        ctx.push_style_color(ImGuiCol.Text, *Theme.TEXT)
+        ctx.label(_t("inspector.material_overrides"))
+        ctx.pop_style_color(1)
+        ctx.separator()
+        if not render_compact_section_header(
+            ctx, "Materials##obj_mat_sections", level="primary", default_open=True
+        ):
+            return
+
+        _scene, scene_version, structure_version = current_scene_versions()
+        if (
+            mat_cache["object_id"] == obj_id
+            and mat_cache["scene_version"] == scene_version
+            and mat_cache["structure_version"] == structure_version
+            and mat_cache["signature"] == signature
+        ):
+            valid_entries = mat_cache["entries"]
+        else:
+            valid_entries = _rebuild_material_entries(renderers)
+            mat_cache["object_id"] = obj_id
+            mat_cache["scene_version"] = scene_version
+            mat_cache["structure_version"] = structure_version
+            mat_cache["signature"] = signature
+            mat_cache["entries"] = valid_entries
+
+        owner_name = getattr(obj, 'name', '') or ''
+        multiple_renderers = len(renderers) > 1
+
+        if not valid_entries:
+            return
+
+        ctx.push_style_var_vec2(ImGuiStyleVar.FramePadding, *Theme.INSPECTOR_FRAME_PAD)
+        ctx.push_style_var_vec2(ImGuiStyleVar.ItemSpacing, *Theme.INSPECTOR_ITEM_SPC)
+        for index, entry in enumerate(valid_entries):
+            title = entry["label"]
+            if multiple_renderers and owner_name:
+                title = f"{owner_name} / {title}"
+            if not render_compact_section_header(
+                ctx, f"{title}##mat_entry_{index}", level="secondary", default_open=True
+            ):
+                continue
+
+            if entry["is_default"]:
+                render_info_text(ctx, "Using the renderer's effective default material")
+
+            adapter = _make_inline_material_panel_adapter()
+            ctx.push_id(index)
+            try:
+                mat_ui.render_inline_material_body(
+                    ctx, adapter, entry["material"],
+                    cache_key=f"obj_mat_{obj_id}_{index}")
+            finally:
+                ctx.pop_id()
+                adapter._sync_back()
+
+            if index != len(valid_entries) - 1:
+                ctx.separator()
+        ctx.pop_style_var(2)
+
+    ip.render_material_sections = _render_material_sections

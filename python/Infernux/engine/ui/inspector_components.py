@@ -1491,10 +1491,13 @@ def _render_asset_reference_field(ctx, comp, field_name, metadata, current_value
         old = getattr(_comp, _fn, None)
         _record_property(_comp, _fn, old, None, f"Clear {_fn}")
 
+    from Infernux.components.serialized_field import FieldType as _FT
+    _assets_only = (field_type == _FT.TEXTURE)
+
     def _picker(filt):
         result = []
         for g in globs:
-            result += _picker_assets(filt, g)
+            result += _picker_assets(filt, g, assets_only=_assets_only)
         return result
 
     field_label(ctx, pretty_field_name(field_name), lw)

@@ -1,0 +1,249 @@
+"""Scene-graph helpers shared by undo commands."""
+
+from __future__ import annotations
+
+from typing import Any, List, Optional
+
+from Infernux.debug import Debug
+
+
+def _get_active_scene():
+    from Infernux.lib import SceneManager
+    return SceneManager.instance().get_active_scene()
+
+
+def _game_object_id_of(target: Any) -> int:
+    goid = getattr(target, 'game_object_id', None) or 0
+    if not goid:
+        go = getattr(target, 'game_object', None)
+        if go is not None:
+            goid = getattr(go, 'id', 0) or 0
+    if not goid:
+        goid = getattr(target, 'id', 0) or 0
+    return goid
+
+
+def _comp_type_name_of(target: Any) -> str:
+    tn = getattr(target, 'type_name', None)
+    if tn:
+        return str(tn)
+    if (getattr(target, 'id', 0)
+            and not getattr(target, 'component_id', 0)
+            and getattr(target, 'game_object', None) is None):
+        return "GameObject"
+    return type(target).__name__
+
+
+def _stable_target_id(target: Any) -> int:
+    for attr in ("component_id", "id"):
+        val = getattr(target, attr, None)
+        if val is not None and val != 0:
+            return int(val)
+    return id(target)
+
+
+def _resolve_target(stored_ref: Any, game_object_id: int,
+                    comp_type_name: str) -> Any:
+    if not game_object_id or not comp_type_name:
+        return stored_ref
+    scene = _get_active_scene()
+    if not scene:
+        return None
+    obj = scene.find_by_id(game_object_id)
+    if obj is None:
+        return None
+    if comp_type_name == "GameObject":
+        return obj
+    if comp_type_name == "Transform":
+        return getattr(obj, "transform", None)
+    try:
+        live = obj.get_component(comp_type_name)
+        if live is not None:
+            return live
+    except Exception as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+    try:
+        for pc in obj.get_py_components():
+            if type(pc).__name__ == comp_type_name:
+                return pc
+    except Exception as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+    return None
+
+
+_resolve_live_ref = _resolve_target
+
+
+def _find_live_native_component(obj, type_name: str):
+    if hasattr(obj, 'get_component'):
+        try:
+            c = obj.get_component(type_name)
+            if c is not None:
+                return c
+        except Exception as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+    try:
+        for c in obj.get_components():
+            if getattr(c, 'type_name', None) == type_name:
+                return c
+    except Exception as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+    return None
+
+
+def _get_current_selection_ids() -> List[int]:
+    try:
+        from Infernux.engine.ui.selection_manager import SelectionManager
+        sel = SelectionManager.instance()
+        if sel:
+            return sel.get_ids()
+    except Exception as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+    return []
+
+
+def _bump_inspector_structure():
+    try:
+        from Infernux.engine.ui.inspector_support import bump_component_structure_version
+        bump_component_structure_version()
+    except ImportError as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+
+
+def _bump_inspector_values():
+    try:
+        from Infernux.engine.ui.inspector_support import bump_inspector_value_generation
+        bump_inspector_value_generation()
+    except ImportError as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+
+
+def _require_scene_object(object_id: int, label: str):
+    scene = _get_active_scene()
+    if not scene:
+        raise RuntimeError(f"[Undo] {label}: no scene")
+    obj = scene.find_by_id(object_id)
+    if not obj:
+        raise RuntimeError(f"[Undo] {label}: object {object_id} not found")
+    return scene, obj
+
+
+def _notify_gizmos_scene_changed():
+    from Infernux.gizmos.collector import notify_scene_changed
+    notify_scene_changed()
+
+
+def _invalidate_builtin_wrapper(comp_ref):
+    try:
+        comp_id = comp_ref.component_id
+    except Exception as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+        return
+    from Infernux.components.builtin_component import BuiltinComponent
+    wrapper = BuiltinComponent._wrapper_cache.get(comp_id)
+    if wrapper is not None:
+        wrapper._invalidate_native_binding()
+
+
+def _invalidate_builtin_wrappers_for_tree(obj):
+    try:
+        from Infernux.components.builtin_component import BuiltinComponent
+    except ImportError as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+        return
+    cache = BuiltinComponent._wrapper_cache
+    pending = [obj]
+    while pending:
+        current = pending.pop()
+        if current is None:
+            continue
+        try:
+            for comp in current.get_components():
+                comp_id = getattr(comp, "component_id", 0) or 0
+                if comp_id:
+                    wrapper = cache.get(comp_id)
+                    if wrapper is not None:
+                        wrapper._invalidate_native_binding()
+        except Exception as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+        try:
+            pending.extend(current.get_children())
+        except Exception as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+
+
+def _destroy_game_object_immediately(scene, obj):
+    if scene is None or obj is None:
+        return
+    _invalidate_builtin_wrappers_for_tree(obj)
+    scene.destroy_game_object(obj)
+    if hasattr(scene, "process_pending_destroys"):
+        try:
+            scene.process_pending_destroys()
+        except Exception as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+    _bump_inspector_structure()
+    _notify_gizmos_scene_changed()
+
+
+def _invalidate_canvas_caches(go):
+    if go is None:
+        return
+    from Infernux.ui import UICanvas
+    cur = go
+    while cur is not None:
+        for comp in cur.get_py_components():
+            if isinstance(comp, UICanvas):
+                comp.invalidate_element_cache()
+                return
+        cur = cur.get_parent()
+
+
+def _preserve_ui_world_position(obj, new_parent):
+    from Infernux.ui.inx_ui_screen_component import InxUIScreenComponent, clear_rect_cache
+    from Infernux.ui import UICanvas
+
+    ui_comp = None
+    for comp in obj.get_py_components():
+        if isinstance(comp, InxUIScreenComponent):
+            ui_comp = comp
+            break
+    if ui_comp is None:
+        return
+
+    def _find_canvas(go):
+        while go is not None:
+            for c in go.get_py_components():
+                if isinstance(c, UICanvas):
+                    return c
+            go = go.get_parent()
+        return None
+
+    old_canvas = _find_canvas(obj.get_parent() or obj)
+    if old_canvas is None:
+        return
+    old_cw = float(old_canvas.reference_width)
+    old_ch = float(old_canvas.reference_height)
+    old_abs_x, old_abs_y, _w, _h = ui_comp.get_rect(old_cw, old_ch)
+
+    new_canvas = _find_canvas(new_parent) if new_parent is not None else None
+    ncw = float(new_canvas.reference_width) if new_canvas is not None else old_cw
+    nch = float(new_canvas.reference_height) if new_canvas is not None else old_ch
+
+    if new_parent is not None:
+        new_parent_ui = None
+        for c in new_parent.get_py_components():
+            if isinstance(c, InxUIScreenComponent):
+                new_parent_ui = c
+                break
+        if new_parent_ui is not None:
+            npx, npy, npw, nph = new_parent_ui.get_rect(ncw, nch)
+        else:
+            npx, npy, npw, nph = 0.0, 0.0, ncw, nch
+    else:
+        npx, npy, npw, nph = 0.0, 0.0, ncw, nch
+
+    anchor_x, anchor_y = ui_comp._anchor_origin(npw, nph)
+    ui_comp.x = old_abs_x - npx - anchor_x
+    ui_comp.y = old_abs_y - npy - anchor_y
+    clear_rect_cache(-1)

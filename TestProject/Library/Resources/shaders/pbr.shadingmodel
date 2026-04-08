@@ -1,0 +1,92 @@
+// ============================================================================
+// pbr.shadingmodel — Standard PBR (Cook-Torrance) Shading Model
+//
+// [Architectural Note: Pipeline Agnosticism & GBuffer Fallback]
+// This shading model intentionally only defines `@target: forward` for lighting.
+// How does it work in a Deferred Pipeline? 
+// Because of the 'SurfaceData' abstraction layer, the engine knows how to extract
+// core material properties (albedo, normal, metallic, etc.). When compiling for
+// ShaderCompileTarget::GBuffer, if no `@target: gbuffer` block is found here, 
+// the engine automatically injects the built-in `default_gbuffer_evaluate.glsl` 
+// fallback template.
+// 
+// This decoupling means TAs only author PBR lighting math once (for forward),
+// and the material logic (surface.frag) automatically survives switching between 
+// Forward and Deferred pipelines without changing a single line of shader code.
+//
+// Referenced by surface shaders via @shading_model: pbr
+// ============================================================================
+
+@shader_id: pbr
+@import: lighting
+@import: pbr
+
+// ============================================================================
+// @target: forward — Full PBR lighting evaluation + forward color output
+// ============================================================================
+@target: forward
+void evaluate(in SurfaceData s, out vec4 color) {
+    vec3 albedo = clamp(s.albedo, 0.0, 1.0);
+    float metallic = clamp(s.metallic, 0.0, 1.0);
+    float perceptualRoughness = clamp(1.0 - s.smoothness, 0.045, 1.0);
+    float roughness = perceptualRoughness * perceptualRoughness;
+    float ao = clamp(s.occlusion, 0.0, 1.0);
+    vec3 N = normalize(s.normalWS);
+
+    roughness = GeometricSpecularAA(N, roughness);
+    perceptualRoughness = max(perceptualRoughness, sqrt(roughness));
+    vec3 V = normalize(lighting.cameraPos.xyz - v_WorldPos);
+
+    vec3  F0    = mix(vec3(0.04), albedo, metallic);
+    float f90   = ComputeF90(F0);
+    float NdotV = max(dot(N, V), 0.0);
+
+    vec2  envBrdf      = EnvBRDFApprox(perceptualRoughness, NdotV);
+    float reflectivity = envBrdf.x + envBrdf.y;
+    vec3  energyCompensation = 1.0 + F0 * (1.0 / max(reflectivity, 0.001) - 1.0);
+
+    Light mainLight = GetMainLight();
+    vec3 Lo = calculateAllLighting(v_WorldPos, N, V,
+                                   albedo, metallic,
+                                   roughness, perceptualRoughness,
+                                   F0, f90, energyCompensation,
+                                   mainLight.shadow);
+
+    vec3 diffuseProbeDirectional = sampleAmbientProbe(N);
+    vec3 diffuseProbeAverage = sampleAmbientProbeAverage();
+    float diffuseProbeBlend = perceptualRoughness * perceptualRoughness * (1.0 - metallic);
+    vec3 diffuseIrradiance = mix(diffuseProbeDirectional,
+                                 diffuseProbeAverage,
+                                 diffuseProbeBlend);
+    vec3 reflDir = getSpecularAmbientDirection(N, V, perceptualRoughness);
+    // Without a pre-filtered cubemap mip chain we must manually blend the
+    // directional probe sample toward the uniform average as roughness grows.
+    // Use perceptualRoughness² so only very smooth surfaces keep directionality;
+    // metallic surfaces always keep directional specular (they have no diffuse
+    // to compensate).  At smoothness=0 (pR=1) this reaches 1.0 → pure average.
+    float probeBlend = perceptualRoughness * perceptualRoughness * (1.0 - metallic);
+    vec3 specularIrradiance = mix(sampleAmbientProbe(reflDir),
+                                  sampleAmbientProbeAverage(),
+                                  probeBlend);
+
+    vec3 kS_env = F_SchlickRoughness(F0, f90, NdotV, perceptualRoughness);
+    vec3 kD_env = (1.0 - kS_env) * (1.0 - metallic);
+
+    vec3 diffuseEnv = kD_env * albedo * diffuseIrradiance * ao;
+
+    float specOcclusion = ComputeSpecularOcclusion(NdotV, ao, perceptualRoughness);
+    // Attenuate indirect specular by smoothness so that fully rough dielectrics
+    // (smoothness=0) produce near-zero specular environment contribution,
+    // matching Unity's behavior where rough surfaces show no skybox reflection.
+    float smoothnessWeight = s.smoothness * s.smoothness;
+    float indirectSpecAtten = mix(smoothnessWeight, 1.0, metallic);
+    vec3 specEnv = specularIrradiance
+                 * (F0 * envBrdf.x + envBrdf.y)
+                 * energyCompensation
+                 * specOcclusion
+                 * indirectSpecAtten
+                 * s.specularHighlights;
+
+    vec3 ambient = diffuseEnv + specEnv;
+    color = vec4(ambient + Lo + s.emission, s.alpha);
+}

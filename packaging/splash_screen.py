@@ -255,15 +255,15 @@ class EngineSplashScreen(QWidget):
 
         popen_kwargs: dict = {"cwd": project_path, "env": env}
 
-        # Engine has its own Console panel — never inherit stdout/stderr
-        # to the launcher terminal.  stderr is piped so we can display
-        # crash messages; a background thread drains it continuously to
-        # prevent the OS pipe-buffer from filling up and deadlocking the
-        # engine process.
-        popen_kwargs["stdin"] = subprocess.DEVNULL
-        popen_kwargs["stdout"] = subprocess.DEVNULL
-        popen_kwargs["stderr"] = subprocess.PIPE
         if detached:
+            # Engine has its own Console panel — never inherit stdout/stderr
+            # to the launcher terminal.  stderr is piped so we can display
+            # crash messages; a background thread drains it continuously to
+            # prevent the OS pipe-buffer from filling up and deadlocking the
+            # engine process.
+            popen_kwargs["stdin"] = subprocess.DEVNULL
+            popen_kwargs["stdout"] = subprocess.DEVNULL
+            popen_kwargs["stderr"] = subprocess.PIPE
             if sys.platform == "win32":
                 flags = 0
                 flags |= getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
@@ -271,6 +271,15 @@ class EngineSplashScreen(QWidget):
                 popen_kwargs["creationflags"] = flags
             else:
                 popen_kwargs["start_new_session"] = True
+        else:
+            # Dev mode — spawn a visible console so developers can read
+            # stdout/stderr directly.  stderr is still piped for the
+            # crash-message dialog.
+            popen_kwargs["stdin"] = subprocess.DEVNULL
+            popen_kwargs["stdout"] = None          # inherit → visible console
+            popen_kwargs["stderr"] = subprocess.PIPE
+            if sys.platform == "win32":
+                popen_kwargs["creationflags"] = subprocess.CREATE_NEW_CONSOLE
 
         try:
             with _suppress_windows_error_dialogs():
