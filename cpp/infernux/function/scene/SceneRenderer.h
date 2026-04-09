@@ -37,6 +37,7 @@ struct RenderableObject
   {
     std::vector<DrawCall> visibleDrawCalls;
     std::vector<DrawCall> shadowDrawCalls;
+    const std::vector<DrawCall> *shadowDrawCallsRef = nullptr; ///< Zero-copy ref (valid when cullingMask == all)
   };
 
 /**
@@ -184,6 +185,10 @@ class SceneRenderer
     // Draw call cache: reused when renderables are cached.
     DrawCallResult m_cachedDrawCalls;
     bool           m_drawCallsCacheValid = false;
+
+    // True after a frustum-culled frame marks some draw calls as invisible.
+    // Cleared by a one-time sweep when switching back to non-frustum mode.
+    bool m_frustumVisibilityDirty = false;
 
   #if INFERNUX_FRAME_PROFILE
     ProfileSnapshot m_profileSnapshot;

@@ -253,6 +253,14 @@ void SceneRenderer::UpdateCachedRenderableTransforms(bool useActiveCameraCulling
     const bool useFrustum = useActiveCameraCulling && m_frustumCulling && m_activeCamera;
     if (useFrustum) {
         frustum.ExtractFromMatrix(m_activeCamera->GetViewProjectionMatrix());
+        m_frustumVisibilityDirty = true;
+    } else if (m_frustumVisibilityDirty && m_drawCallsCacheValid) {
+        // Transition from frustum-culled → non-frustum: sweep all draw calls
+        // to mark visible, since some may have been marked invisible last frame.
+        for (auto &dc : m_cachedDrawCalls.drawCalls) {
+            dc.frustumVisible = true;
+        }
+        m_frustumVisibilityDirty = false;
     }
 
     m_visibleCount = 0;
@@ -276,14 +284,17 @@ void SceneRenderer::UpdateCachedRenderableTransforms(bool useActiveCameraCulling
             renderable.worldBounds = AABB(bmin, bmax);
         }
 
-        renderable.visible = !useFrustum || frustum.IntersectsAABB(renderable.worldBounds);
+        if (useFrustum) {
+            renderable.visible = frustum.IntersectsAABB(renderable.worldBounds);
+        } else {
+            renderable.visible = true;
+        }
 
         if (m_drawCallsCacheValid && renderable.drawCallCount > 0) {
-            const size_t drawCallEnd = std::min(renderable.drawCallStart + renderable.drawCallCount,
-                                                m_cachedDrawCalls.drawCalls.size());
-
             if (transformChanged) {
                 // Full patch: transform changed — update matrix, bounds, visibility.
+                const size_t drawCallEnd = std::min(renderable.drawCallStart + renderable.drawCallCount,
+                                                    m_cachedDrawCalls.drawCalls.size());
                 const glm::vec3 &pivot = mr->GetMeshPivotOffset();
                 glm::mat4 drawWorldMatrix = worldMatrix;
                 if (mr->GetSubmeshIndex() >= 0 && pivot != glm::vec3(0.0f)) {
@@ -300,12 +311,15 @@ void SceneRenderer::UpdateCachedRenderableTransforms(bool useActiveCameraCulling
                     dc.forceBufferUpdate = firstDirty ? bufferDirty : false;
                     firstDirty = false;
                 }
-            } else {
+            } else if (useFrustum) {
                 // Light patch: only update frustumVisible (camera may have moved).
+                const size_t drawCallEnd = std::min(renderable.drawCallStart + renderable.drawCallCount,
+                                                    m_cachedDrawCalls.drawCalls.size());
                 for (size_t drawCallIndex = renderable.drawCallStart; drawCallIndex < drawCallEnd; ++drawCallIndex) {
                     m_cachedDrawCalls.drawCalls[drawCallIndex].frustumVisible = renderable.visible;
                 }
             }
+            // else: !transformChanged && !useFrustum → draw calls already correct, skip.
         }
 
         if (renderable.visible) {
@@ -541,10 +555,15 @@ CameraDrawCallResult SceneRenderer::BuildDrawCallsForCamera(Camera *camera, bool
         frustum.ExtractFromMatrix(camera->GetViewProjectionMatrix());
     }
 
-    result.visibleDrawCalls.reserve(cachedResult.drawCalls.size());
-    if (includeShadowDrawCalls) {
-        result.shadowDrawCalls.reserve(cachedResult.drawCalls.size());
+    // When culling mask allows all layers, shadow draw calls can reference
+    // the scene's cached draw calls directly (zero-copy).  DrawShadowCasters
+    // does its own per-cascade frustum culling and never reads frustumVisible.
+    const bool allLayersVisible = (cullingMask == 0xFFFFFFFF);
+    if (allLayersVisible && includeShadowDrawCalls) {
+        result.shadowDrawCallsRef = &cachedResult.drawCalls;
     }
+
+    result.visibleDrawCalls.reserve(m_visibleCount > 0 ? m_visibleCount : cachedResult.drawCalls.size());
 
     m_visibleCount = 0;
     for (auto &renderable : m_renderables) {
@@ -552,11 +571,11 @@ CameraDrawCallResult SceneRenderer::BuildDrawCallsForCamera(Camera *camera, bool
         if (!renderer)
             continue;
 
-        // Layer mask filter
-        GameObject *obj = renderer->GetGameObject();
-        if (!obj)
-            continue;
-        if (obj) {
+        if (!allLayersVisible) {
+            // Layer mask filter (only when not all-layers)
+            GameObject *obj = renderer->GetGameObject();
+            if (!obj)
+                continue;
             uint32_t layerBit = 1u << static_cast<uint32_t>(obj->GetLayer());
             if ((cullingMask & layerBit) == 0)
                 continue;
@@ -564,24 +583,38 @@ CameraDrawCallResult SceneRenderer::BuildDrawCallsForCamera(Camera *camera, bool
 
         const bool visible = m_frustumCulling ? frustum.IntersectsAABB(renderable.worldBounds) : true;
         renderable.visible = visible;
-        const size_t drawCallStart = renderable.drawCallStart;
-        const size_t drawCallEnd = std::min(drawCallStart + renderable.drawCallCount, cachedResult.drawCalls.size());
-        if (drawCallStart >= drawCallEnd) {
+
+        if (!visible) {
+            // Shadow uses reference (or full copy below for non-all-layers).
+            // Forward list only needs visible objects — skip early.
+            if (allLayersVisible)
+                continue;
+
+            // Non-all-layers: still need to push shadow draw calls for invisible-but-layer-included objects.
+            if (includeShadowDrawCalls) {
+                const size_t drawCallStart = renderable.drawCallStart;
+                const size_t drawCallEnd = std::min(drawCallStart + renderable.drawCallCount, cachedResult.drawCalls.size());
+                for (size_t drawCallIndex = drawCallStart; drawCallIndex < drawCallEnd; ++drawCallIndex) {
+                    DrawCall dc = cachedResult.drawCalls[drawCallIndex];
+                    dc.frustumVisible = false;
+                    result.shadowDrawCalls.push_back(dc);
+                }
+            }
             continue;
         }
 
-        if (visible) {
-            ++m_visibleCount;
-        }
+        ++m_visibleCount;
+        const size_t drawCallStart = renderable.drawCallStart;
+        const size_t drawCallEnd = std::min(drawCallStart + renderable.drawCallCount, cachedResult.drawCalls.size());
+        if (drawCallStart >= drawCallEnd)
+            continue;
 
         for (size_t drawCallIndex = drawCallStart; drawCallIndex < drawCallEnd; ++drawCallIndex) {
             DrawCall dc = cachedResult.drawCalls[drawCallIndex];
-            dc.frustumVisible = visible;
-            if (includeShadowDrawCalls) {
+            dc.frustumVisible = true;
+            result.visibleDrawCalls.push_back(dc);
+            if (includeShadowDrawCalls && !allLayersVisible) {
                 result.shadowDrawCalls.push_back(dc);
-            }
-            if (visible) {
-                result.visibleDrawCalls.push_back(dc);
             }
         }
     }

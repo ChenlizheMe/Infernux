@@ -126,7 +126,12 @@ CullingResults ScriptableRenderContext::Cull(Camera *camera)
     if (camera && camera != editorCam) {
         results.drawCalls = std::move(ownedResult.visibleDrawCalls); // game camera: move visible forward list
         if (needsShadowDrawCalls) {
-            results.shadowDrawCalls = std::move(ownedResult.shadowDrawCalls);
+            if (ownedResult.shadowDrawCallsRef) {
+                // All-layers game camera: zero-copy reference to cached draw calls.
+                results.shadowDrawCallsRef = ownedResult.shadowDrawCallsRef;
+            } else {
+                results.shadowDrawCalls = std::move(ownedResult.shadowDrawCalls);
+            }
         }
     } else {
         // Editor camera: store a non-owning pointer instead of copying
@@ -322,7 +327,13 @@ void ScriptableRenderContext::SubmitCulling(CullingResults culling)
     t0 = Clock::now();
 #endif
     if (shadowSource) {
+        // Consecutive-objectId dedup: draw calls for multi-submesh objects
+        // share the same objectId and are adjacent in the array.  Skip
+        // redundant hash-map lookups inside EnsureObjectBuffers.
+        uint64_t lastEnsuredId = 0;
         for (const DrawCall &dc : *shadowSource) {
+            if (dc.objectId == lastEnsuredId) continue;
+            lastEnsuredId = dc.objectId;
             if (dc.meshVertices && dc.meshIndices) {
                 m_vkCore->EnsureObjectBuffers(dc.objectId, *dc.meshVertices, *dc.meshIndices, dc.forceBufferUpdate);
             }
@@ -330,6 +341,8 @@ void ScriptableRenderContext::SubmitCulling(CullingResults culling)
 
         for (size_t drawCallIndex = baseOrderedDrawCallCount; drawCallIndex < m_orderedDrawCalls.size(); ++drawCallIndex) {
             const DrawCall &dc = m_orderedDrawCalls[drawCallIndex];
+            if (dc.objectId == lastEnsuredId) continue;
+            lastEnsuredId = dc.objectId;
             if (dc.meshVertices && dc.meshIndices) {
                 m_vkCore->EnsureObjectBuffers(dc.objectId, *dc.meshVertices, *dc.meshIndices, dc.forceBufferUpdate);
             }
