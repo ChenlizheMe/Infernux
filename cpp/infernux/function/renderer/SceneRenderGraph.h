@@ -288,6 +288,20 @@ class SceneRenderGraph
         m_hasCachedDrawCalls = true;
     }
 
+    /// @brief Cache shadow-caster candidates for this graph.
+    void SetCachedShadowDrawCalls(std::vector<DrawCall> &&drawCalls)
+    {
+        m_cachedShadowDrawCalls = std::move(drawCalls);
+        m_hasCachedShadowDrawCalls = true;
+    }
+
+    /// @brief Clear cached shadow-caster candidates.
+    void ClearCachedShadowDrawCalls()
+    {
+        m_cachedShadowDrawCalls.clear();
+        m_hasCachedShadowDrawCalls = false;
+    }
+
     /// @brief Get cached draw calls
     [[nodiscard]] const std::vector<DrawCall> &GetCachedDrawCalls() const
     {
@@ -298,6 +312,24 @@ class SceneRenderGraph
     [[nodiscard]] bool HasCachedDrawCalls() const
     {
         return m_hasCachedDrawCalls;
+    }
+
+    /// @brief Get cached shadow draw calls.
+    [[nodiscard]] const std::vector<DrawCall> &GetCachedShadowDrawCalls() const
+    {
+        return m_cachedShadowDrawCalls;
+    }
+
+    /// @brief Check if this graph has cached shadow draw calls.
+    [[nodiscard]] bool HasCachedShadowDrawCalls() const
+    {
+        return m_hasCachedShadowDrawCalls;
+    }
+
+    /// @brief True when the current Python graph contains a shadow-caster pass.
+    [[nodiscard]] bool HasShadowCasterPass() const
+    {
+        return m_hasShadowCasterPass;
     }
 
     // ========================================================================
@@ -329,6 +361,8 @@ class SceneRenderGraph
     {
         m_cachedDrawCalls.clear();
         m_hasCachedDrawCalls = false;
+        m_cachedShadowDrawCalls.clear();
+        m_hasCachedShadowDrawCalls = false;
         m_cachedView = glm::mat4(1.0f);
         m_cachedProj = glm::mat4(1.0f);
         m_hasCachedCameraVP = false;
@@ -344,6 +378,7 @@ class SceneRenderGraph
         // pipeline calls ApplyPythonGraph().  This avoids the MSAA
         // mismatch guard firing on an outdated descriptor.
         m_hasPythonGraph = false;
+        m_hasShadowCasterPass = false;
         m_pythonGraphDesc = {};
     }
 
@@ -455,6 +490,9 @@ class SceneRenderGraph
     // Per-graph draw call cache for multi-camera rendering
     std::vector<DrawCall> m_cachedDrawCalls;
     bool m_hasCachedDrawCalls = false;
+    std::vector<DrawCall> m_cachedShadowDrawCalls;
+    bool m_hasCachedShadowDrawCalls = false;
+    bool m_hasShadowCasterPass = false;
 
     // Per-graph camera VP cache — set by SubmitCulling so the executor
     // uses the exact same matrices that were active during SetupCameraProperties.

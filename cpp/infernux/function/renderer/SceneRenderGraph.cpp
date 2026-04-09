@@ -328,12 +328,16 @@ void SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
     }
 
     m_pythonCallbacks.clear();
+    m_hasShadowCasterPass = false;
 
     InxVkCoreModular *vkCore = m_vkCore;
 
     for (const auto &passDesc : desc.passes) {
         // Build the render callback directly from the pass action.
         const auto graphPassAction = passDesc.action;
+        if (graphPassAction == GraphPassActionType::DrawShadowCasters) {
+            m_hasShadowCasterPass = true;
+        }
         const int queueMin = passDesc.queueMin;
         const int queueMax = passDesc.queueMax;
         const std::string computeShaderName = passDesc.computeShaderName;

@@ -267,6 +267,9 @@ class InxVkCoreModular
     /// @brief Set draw calls for multi-material rendering (stores pointer, no copy)
     void SetDrawCalls(const std::vector<DrawCall> *drawCalls);
 
+    /// @brief Set shadow-caster draw calls (stores pointer, no copy)
+    void SetShadowDrawCalls(const std::vector<DrawCall> *drawCalls);
+
     /// @brief Stage per-frame engine globals (called by InxRenderer each frame).
     void StageGlobals(const EngineGlobalsUBO &globals);
 
@@ -324,6 +327,10 @@ class InxVkCoreModular
     /// @brief Same as CleanupUnusedBuffers but accepts pre-built objectId set
     /// to avoid copying DrawCall vectors (saves shared_ptr atomic refcount ops).
     void CleanupUnusedBuffersByIds(const std::unordered_set<uint64_t> &activeIds);
+
+    /// @brief Remove per-object buffers that were not ensured on the current frame.
+    /// Returns the number of surviving object buffer entries after cleanup.
+    [[nodiscard]] size_t CleanupUnusedBuffersByFrameStamp();
 
     // ========================================================================
     // Command Buffer Utilities
@@ -936,10 +943,15 @@ class InxVkCoreModular
 
     // Unity-style draw calls for multi-material rendering (pointer to external storage, no copy)
     const std::vector<DrawCall> *m_drawCallsPtr = nullptr;
+    const std::vector<DrawCall> *m_shadowDrawCallsPtr = nullptr;
     static inline const std::vector<DrawCall> s_emptyDrawCalls{};
     const std::vector<DrawCall> &drawCalls() const
     {
         return m_drawCallsPtr ? *m_drawCallsPtr : s_emptyDrawCalls;
+    }
+    const std::vector<DrawCall> &shadowDrawCalls() const
+    {
+        return m_shadowDrawCallsPtr ? *m_shadowDrawCallsPtr : drawCalls();
     }
 
     // Pre-allocated scratch buffers for DrawSceneFiltered / DrawShadowCasters

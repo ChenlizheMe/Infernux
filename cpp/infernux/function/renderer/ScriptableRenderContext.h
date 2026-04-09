@@ -40,7 +40,9 @@ struct RenderTargetHandle;
 struct CullingResults
 {
     std::vector<DrawCall> drawCalls; ///< All visible draw calls (unfiltered)
+    std::vector<DrawCall> shadowDrawCalls; ///< Layer-filtered shadow candidates for game camera path
     const std::vector<DrawCall> *sceneDrawCallsRef = nullptr; ///< Non-owning ref (editor camera fast path)
+    const std::vector<DrawCall> *shadowDrawCallsRef = nullptr; ///< Non-owning ref to shadow candidates
     uint32_t lightCount = 0;         ///< Number of visible lights (populated by Cull)
 
     [[nodiscard]] size_t visibleObjectCount() const

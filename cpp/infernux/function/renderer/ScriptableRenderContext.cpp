@@ -103,13 +103,15 @@ CullingResults ScriptableRenderContext::Cull(Camera *camera)
     // (each DrawCall contains a shared_ptr<InxMaterial> whose atomic refcount
     // would be bumped N times on copy).
     const std::vector<DrawCall> *drawCallsPtr = nullptr;
-    DrawCallResult ownedResult; // Only used for game camera path
+    const bool needsShadowDrawCalls =
+        (m_vkCore->GetLightCollector().GetShadowCascadeCount() > 0);
+    CameraDrawCallResult ownedResult; // Only used for game camera path
 
     if (camera && camera != editorCam) {
         // Non-editor camera (e.g. Game View camera): reuse editor camera's
         // already-collected renderables, re-cull with this camera's frustum.
-        ownedResult = bridge.CullAndBuildForCamera(camera);
-        drawCallsPtr = &ownedResult.drawCalls;
+        ownedResult = bridge.CullAndBuildForCamera(camera, needsShadowDrawCalls);
+        drawCallsPtr = &ownedResult.visibleDrawCalls;
     } else {
         // Editor camera: reuse the already-prepared frame data from
         // SceneRenderBridge::PrepareFrame() (called earlier in DrawFrame).
@@ -122,11 +124,17 @@ CullingResults ScriptableRenderContext::Cull(Camera *camera)
 
     CullingResults results;
     if (camera && camera != editorCam) {
-        results.drawCalls = std::move(ownedResult.drawCalls); // game camera: move
+        results.drawCalls = std::move(ownedResult.visibleDrawCalls); // game camera: move visible forward list
+        if (needsShadowDrawCalls) {
+            results.shadowDrawCalls = std::move(ownedResult.shadowDrawCalls);
+        }
     } else {
         // Editor camera: store a non-owning pointer instead of copying
         // 14,400+ DrawCalls with shared_ptr atomic refcount bumps.
         results.sceneDrawCallsRef = drawCallsPtr;
+        if (needsShadowDrawCalls) {
+            results.shadowDrawCallsRef = drawCallsPtr;
+        }
     }
     // Populate visible light count from the scene light collector.
     // CollectLights() runs earlier in the frame (InxRenderer::UpdateSceneLighting),
@@ -192,6 +200,7 @@ void ScriptableRenderContext::SubmitCulling(CullingResults culling)
     } else {
         m_orderedDrawCalls = std::move(culling.drawCalls);
     }
+    const size_t baseOrderedDrawCallCount = m_orderedDrawCalls.size();
     m_orderedDrawCalls.reserve(m_orderedDrawCalls.size() + 16);
 #if INFERNUX_FRAME_PROFILE
     g_srcProfileSnapshot.submitBaseMs += std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
@@ -303,19 +312,55 @@ void ScriptableRenderContext::SubmitCulling(CullingResults culling)
 #endif
     }
 
-    // Build final result
-    DrawCallResult result;
-    result.drawCalls = std::move(m_orderedDrawCalls);
+    const std::vector<DrawCall> *shadowSource = culling.shadowDrawCallsRef;
+    if (!shadowSource && !culling.shadowDrawCalls.empty()) {
+        shadowSource = &culling.shadowDrawCalls;
+    }
 
     // Ensure per-object GPU buffers
 #if INFERNUX_FRAME_PROFILE
     t0 = Clock::now();
 #endif
-    for (const DrawCall &dc : result.drawCalls) {
-        if (dc.meshVertices && dc.meshIndices) {
-            m_vkCore->EnsureObjectBuffers(dc.objectId, *dc.meshVertices, *dc.meshIndices, dc.forceBufferUpdate);
+    if (shadowSource) {
+        for (const DrawCall &dc : *shadowSource) {
+            if (dc.meshVertices && dc.meshIndices) {
+                m_vkCore->EnsureObjectBuffers(dc.objectId, *dc.meshVertices, *dc.meshIndices, dc.forceBufferUpdate);
+            }
+        }
+
+        for (size_t drawCallIndex = baseOrderedDrawCallCount; drawCallIndex < m_orderedDrawCalls.size(); ++drawCallIndex) {
+            const DrawCall &dc = m_orderedDrawCalls[drawCallIndex];
+            if (dc.meshVertices && dc.meshIndices) {
+                m_vkCore->EnsureObjectBuffers(dc.objectId, *dc.meshVertices, *dc.meshIndices, dc.forceBufferUpdate);
+            }
         }
     }
+
+    // Build the forward-render list.  Game camera culling already produced a
+    // compact visible-only list; editor camera still needs a visibility filter
+    // over the cached scene draw-call set.
+    std::vector<DrawCall> forwardDrawCalls;
+    if (culling.sceneDrawCallsRef) {
+        forwardDrawCalls.reserve(m_orderedDrawCalls.size());
+        for (const DrawCall &dc : m_orderedDrawCalls) {
+            if (dc.frustumVisible) {
+                forwardDrawCalls.push_back(dc);
+            }
+        }
+    } else {
+        forwardDrawCalls = std::move(m_orderedDrawCalls);
+    }
+
+    if (!shadowSource) {
+        for (const DrawCall &dc : forwardDrawCalls) {
+            if (dc.meshVertices && dc.meshIndices) {
+                m_vkCore->EnsureObjectBuffers(dc.objectId, *dc.meshVertices, *dc.meshIndices, dc.forceBufferUpdate);
+            }
+        }
+    }
+
+    DrawCallResult result;
+    result.drawCalls = std::move(forwardDrawCalls);
 #if INFERNUX_FRAME_PROFILE
     g_srcProfileSnapshot.ensureBuffersMs += std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
 #endif
@@ -329,6 +374,16 @@ void ScriptableRenderContext::SubmitCulling(CullingResults culling)
         t0 = Clock::now();
 #endif
         m_graph->SetCachedDrawCalls(std::move(result.drawCalls));
+        if (shadowSource) {
+            if (culling.shadowDrawCallsRef) {
+                std::vector<DrawCall> shadowCopy(*culling.shadowDrawCallsRef);
+                m_graph->SetCachedShadowDrawCalls(std::move(shadowCopy));
+            } else {
+                m_graph->SetCachedShadowDrawCalls(std::move(culling.shadowDrawCalls));
+            }
+        } else {
+            m_graph->ClearCachedShadowDrawCalls();
+        }
         if (m_activeCamera) {
             m_graph->SetCachedCameraVP(m_cachedView, m_cachedProj);
         }

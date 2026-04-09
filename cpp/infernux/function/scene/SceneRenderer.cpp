@@ -504,21 +504,30 @@ const DrawCallResult &SceneRenderer::BuildDrawCalls()
     return m_cachedDrawCalls;
 }
 
-DrawCallResult SceneRenderer::BuildDrawCallsForCamera(Camera *camera)
+CameraDrawCallResult SceneRenderer::BuildDrawCallsForCamera(Camera *camera, bool includeShadowDrawCalls)
 {
 #if INFERNUX_FRAME_PROFILE
     using Clock = std::chrono::high_resolution_clock;
     const auto buildStart = Clock::now();
 #endif
-    DrawCallResult result;
+    CameraDrawCallResult result;
     if (!camera || m_renderables.empty())
+        return result;
+
+    const DrawCallResult &cachedResult = BuildDrawCalls();
+    if (cachedResult.drawCalls.empty())
         return result;
 
     const uint32_t cullingMask = camera->GetCullingMask();
     Frustum frustum;
-    frustum.ExtractFromMatrix(camera->GetViewProjectionMatrix());
+    if (m_frustumCulling) {
+        frustum.ExtractFromMatrix(camera->GetViewProjectionMatrix());
+    }
 
-    result.drawCalls.reserve(m_cachedDrawCalls.drawCalls.empty() ? m_renderables.size() : m_cachedDrawCalls.drawCalls.size());
+    result.visibleDrawCalls.reserve(cachedResult.drawCalls.size());
+    if (includeShadowDrawCalls) {
+        result.shadowDrawCalls.reserve(cachedResult.drawCalls.size());
+    }
 
     m_visibleCount = 0;
     for (auto &renderable : m_renderables) {
@@ -536,28 +545,34 @@ DrawCallResult SceneRenderer::BuildDrawCallsForCamera(Camera *camera)
                 continue;
         }
 
-        const glm::mat4 &worldMatrix = obj->GetTransform()->GetWorldMatrix();
-        renderable.worldMatrix = worldMatrix;
-
-        glm::vec3 boundsMin, boundsMax;
-        renderer->ComputeWorldBounds(worldMatrix, boundsMin, boundsMax);
-        renderable.worldBounds = AABB(boundsMin, boundsMax);
-
         const bool visible = m_frustumCulling ? frustum.IntersectsAABB(renderable.worldBounds) : true;
         renderable.visible = visible;
+        const size_t drawCallStart = renderable.drawCallStart;
+        const size_t drawCallEnd = std::min(drawCallStart + renderable.drawCallCount, cachedResult.drawCalls.size());
+        if (drawCallStart >= drawCallEnd) {
+            continue;
+        }
+
         if (visible) {
             ++m_visibleCount;
         }
 
-        // Don't consume dirty flag — scene view already did
-        EmitDrawCallsForRenderable(result, renderable, visible, false);
+        for (size_t drawCallIndex = drawCallStart; drawCallIndex < drawCallEnd; ++drawCallIndex) {
+            DrawCall dc = cachedResult.drawCalls[drawCallIndex];
+            dc.frustumVisible = visible;
+            if (includeShadowDrawCalls) {
+                result.shadowDrawCalls.push_back(dc);
+            }
+            if (visible) {
+                result.visibleDrawCalls.push_back(dc);
+            }
+        }
     }
 
-    
 #if INFERNUX_FRAME_PROFILE
     m_profileSnapshot.buildCameraMs += std::chrono::duration<double, std::milli>(Clock::now() - buildStart).count();
     m_profileSnapshot.buildCameraCalls += 1.0;
-    m_profileSnapshot.drawCalls += static_cast<double>(result.drawCalls.size());
+    m_profileSnapshot.drawCalls += static_cast<double>(result.visibleDrawCalls.size());
 #endif
     return result;
 }
@@ -629,11 +644,11 @@ DrawCallResult SceneRenderBridge::PrepareAndBuildForCamera(Camera *camera)
     return tempRenderer.BuildDrawCalls();
 }
 
-DrawCallResult SceneRenderBridge::CullAndBuildForCamera(Camera *camera)
+CameraDrawCallResult SceneRenderBridge::CullAndBuildForCamera(Camera *camera, bool includeShadowDrawCalls)
 {
     // Reuse editor camera's already-collected renderables.
     // Only re-cull with the given camera's frustum + layer mask.
-    return m_sceneRenderer.BuildDrawCallsForCamera(camera);
+    return m_sceneRenderer.BuildDrawCallsForCamera(camera, includeShadowDrawCalls);
 }
 
 const DrawCallResult &SceneRenderBridge::BuildDrawCalls()

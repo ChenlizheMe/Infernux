@@ -33,6 +33,12 @@ struct RenderableObject
     bool visible;
 };
 
+  struct CameraDrawCallResult
+  {
+    std::vector<DrawCall> visibleDrawCalls;
+    std::vector<DrawCall> shadowDrawCalls;
+  };
+
 /**
  * @brief SceneRenderer - bridges Scene system with Vulkan rendering.
  *
@@ -97,9 +103,9 @@ class SceneRenderer
     [[nodiscard]] const DrawCallResult &BuildDrawCalls();
 
     /// @brief Build draw calls by re-culling existing renderables against a different camera.
-    /// Reuses renderables collected by PrepareFrame() to avoid re-collecting world matrices,
-    /// bounds, and materials. Only re-applies frustum culling with the given camera.
-    [[nodiscard]] DrawCallResult BuildDrawCallsForCamera(Camera *camera);
+    /// Reuses cached draw-call spans and world bounds from PrepareFrame().
+    /// Returns a forward-visible set, plus an optional layer-filtered shadow candidate set.
+    [[nodiscard]] CameraDrawCallResult BuildDrawCallsForCamera(Camera *camera, bool includeShadowDrawCalls);
 
     // ========================================================================
     // Settings
@@ -221,7 +227,7 @@ class SceneRenderBridge
     /// @brief Build draw calls for a camera reusing the editor camera's renderables.
     /// Avoids re-collecting world matrices, bounds, and materials (from PrepareFrame).
     /// Only re-applies frustum culling and layer filtering for the given camera.
-    [[nodiscard]] DrawCallResult CullAndBuildForCamera(Camera *camera);
+    [[nodiscard]] CameraDrawCallResult CullAndBuildForCamera(Camera *camera, bool includeShadowDrawCalls);
 
     /// @brief Build draw calls from the current frame's visible renderables.
     /// Delegates to SceneRenderer::BuildDrawCalls().

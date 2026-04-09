@@ -216,8 +216,12 @@ void InxRenderer::PreparePipeline()
                 size_t totalDC = 0;
                 if (sceneViewActive && m_sceneRenderGraph && m_sceneRenderGraph->HasCachedDrawCalls())
                     totalDC += m_sceneRenderGraph->GetCachedDrawCalls().size();
+                if (sceneViewActive && m_sceneRenderGraph && m_sceneRenderGraph->HasCachedShadowDrawCalls())
+                    totalDC += m_sceneRenderGraph->GetCachedShadowDrawCalls().size();
                 if (m_gameCameraEnabled && m_gameRenderGraph && m_gameRenderGraph->HasCachedDrawCalls())
                     totalDC += m_gameRenderGraph->GetCachedDrawCalls().size();
+                if (m_gameCameraEnabled && m_gameRenderGraph && m_gameRenderGraph->HasCachedShadowDrawCalls())
+                    totalDC += m_gameRenderGraph->GetCachedShadowDrawCalls().size();
                 m_vkCore->PreallocateInstances(totalDC);
             }
 
@@ -230,6 +234,13 @@ void InxRenderer::PreparePipeline()
                 // Swap in scene-specific draw calls (includes gizmos)
                 if (m_sceneRenderGraph->HasCachedDrawCalls()) {
                     m_vkCore->SetDrawCalls(&m_sceneRenderGraph->GetCachedDrawCalls());
+                } else {
+                    m_vkCore->SetDrawCalls(nullptr);
+                }
+                if (m_sceneRenderGraph->HasCachedShadowDrawCalls()) {
+                    m_vkCore->SetShadowDrawCalls(&m_sceneRenderGraph->GetCachedShadowDrawCalls());
+                } else {
+                    m_vkCore->SetShadowDrawCalls(nullptr);
                 }
                 // Set per-graph shadow descriptor (set 1) for multi-camera isolation
                 m_vkCore->SetActiveShadowDescriptorSet(m_sceneRenderGraph->GetPerViewDescriptorSet());
@@ -257,6 +268,11 @@ void InxRenderer::PreparePipeline()
                         m_vkCore->SetDrawCalls(&m_gameRenderGraph->GetCachedDrawCalls());
                     } else {
                         m_vkCore->SetDrawCalls(nullptr);
+                    }
+                    if (m_gameRenderGraph->HasCachedShadowDrawCalls()) {
+                        m_vkCore->SetShadowDrawCalls(&m_gameRenderGraph->GetCachedShadowDrawCalls());
+                    } else {
+                        m_vkCore->SetShadowDrawCalls(nullptr);
                     }
 
                     glm::mat4 gameView = m_gameRenderGraph->HasCachedCameraVP() ? m_gameRenderGraph->GetCachedView()
@@ -315,6 +331,14 @@ void InxRenderer::PreparePipeline()
 
                         if (m_sceneRenderGraph && m_sceneRenderGraph->HasCachedDrawCalls()) {
                             m_vkCore->SetDrawCalls(&m_sceneRenderGraph->GetCachedDrawCalls());
+                        } else {
+                            m_vkCore->SetDrawCalls(nullptr);
+                        }
+
+                        if (m_sceneRenderGraph && m_sceneRenderGraph->HasCachedShadowDrawCalls()) {
+                            m_vkCore->SetShadowDrawCalls(&m_sceneRenderGraph->GetCachedShadowDrawCalls());
+                        } else {
+                            m_vkCore->SetShadowDrawCalls(nullptr);
                         }
 
                         if (m_sceneRenderGraph) {
@@ -1080,37 +1104,16 @@ void InxRenderer::CleanupDrawCallBuffers()
     using Clock = std::chrono::high_resolution_clock;
     auto t0 = Clock::now();
 #endif
-    // Collect active objectIds without copying DrawCall vectors (avoids
-    // 14,400+ shared_ptr<InxMaterial> atomic refcount bumps per frame).
-    size_t reserveCount = 0;
-    if (m_sceneViewVisible && m_sceneRenderGraph && m_sceneRenderGraph->HasCachedDrawCalls()) {
-        reserveCount += m_sceneRenderGraph->GetCachedDrawCalls().size();
-    }
-    if (m_gameCameraEnabled && m_gameRenderGraph && m_gameRenderGraph->HasCachedDrawCalls()) {
-        reserveCount += m_gameRenderGraph->GetCachedDrawCalls().size();
-    }
-
-    std::unordered_set<uint64_t> activeIds;
-    activeIds.reserve(reserveCount);
-    if (m_sceneViewVisible && m_sceneRenderGraph && m_sceneRenderGraph->HasCachedDrawCalls()) {
-        for (const auto &dc : m_sceneRenderGraph->GetCachedDrawCalls()) {
-            activeIds.insert(dc.objectId);
-        }
-    }
-    if (m_gameCameraEnabled && m_gameRenderGraph && m_gameRenderGraph->HasCachedDrawCalls()) {
-        for (const auto &dc : m_gameRenderGraph->GetCachedDrawCalls()) {
-            activeIds.insert(dc.objectId);
-        }
-    }
-
 #if INFERNUX_FRAME_PROFILE
     m_frameDetailTiming.cleanupCollectIdsMs = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
-    m_frameDetailTiming.cleanupActiveIds = static_cast<double>(activeIds.size());
     t0 = Clock::now();
 #endif
 
-    if (!activeIds.empty()) {
-        m_vkCore->CleanupUnusedBuffersByIds(activeIds);
+    if (m_vkCore) {
+        const size_t activeObjectCount = m_vkCore->CleanupUnusedBuffersByFrameStamp();
+#if INFERNUX_FRAME_PROFILE
+        m_frameDetailTiming.cleanupActiveIds = static_cast<double>(activeObjectCount);
+#endif
     }
 
 #if INFERNUX_FRAME_PROFILE

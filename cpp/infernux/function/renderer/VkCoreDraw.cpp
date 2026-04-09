@@ -148,6 +148,11 @@ void InxVkCoreModular::SetDrawCalls(const std::vector<DrawCall> *drawCalls)
     }
 }
 
+void InxVkCoreModular::SetShadowDrawCalls(const std::vector<DrawCall> *drawCalls)
+{
+    m_shadowDrawCallsPtr = drawCalls;
+}
+
 // ============================================================================
 // Multi-camera UBO update via command buffer
 // ============================================================================
@@ -681,8 +686,8 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
 
     // Pre-build draw list (filter once, reuse for all cascades)
     m_shadowDrawScratch.clear();
-    m_shadowDrawScratch.reserve(drawCalls().size());
-    for (const DrawCall &dc : drawCalls()) {
+    m_shadowDrawScratch.reserve(shadowDrawCalls().size());
+    for (const DrawCall &dc : shadowDrawCalls()) {
         if (!dc.material)
             continue;
         int renderQueue = dc.material->GetRenderQueue();
@@ -1371,6 +1376,39 @@ void InxVkCoreModular::CleanupUnusedBuffersByIds(const std::unordered_set<uint64
             ++it;
         }
     }
+}
+
+size_t InxVkCoreModular::CleanupUnusedBuffersByFrameStamp()
+{
+    // Remove objects that were not referenced by EnsureObjectBuffers on this frame.
+    for (auto it = m_perObjectBuffers.begin(); it != m_perObjectBuffers.end();) {
+        if (it->second.ensuredOnFrame != m_ensureFrameCounter) {
+            it = m_perObjectBuffers.erase(it);
+        } else {
+            ++it;
+        }
+    }
+
+    std::unordered_set<SharedMeshKey, SharedMeshKeyHash> activeSharedKeysFromObjects;
+    activeSharedKeysFromObjects.reserve(m_perObjectBuffers.size());
+    for (const auto &kv : m_perObjectBuffers) {
+        activeSharedKeysFromObjects.insert(kv.second.sharedKey);
+    }
+
+    for (auto it = m_sharedMeshBuffers.begin(); it != m_sharedMeshBuffers.end();) {
+        if (activeSharedKeysFromObjects.find(it->first) == activeSharedKeysFromObjects.end()) {
+            auto buffers = std::make_shared<SharedMeshBuffers>(std::move(it->second));
+            m_deletionQueue.Push([buffers]() mutable {
+                buffers->vertexBuffer.reset();
+                buffers->indexBuffer.reset();
+            });
+            it = m_sharedMeshBuffers.erase(it);
+        } else {
+            ++it;
+        }
+    }
+
+    return m_perObjectBuffers.size();
 }
 
 // ============================================================================
