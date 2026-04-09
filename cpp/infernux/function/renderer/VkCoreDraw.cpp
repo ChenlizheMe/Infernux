@@ -139,6 +139,11 @@ void InxVkCoreModular::DrawFrame(const float *viewPos, const float *viewLookAt, 
 
 void InxVkCoreModular::SetDrawCalls(const std::vector<DrawCall> *drawCalls)
 {
+    if (drawCalls != m_lastDrawCallsPtr) {
+        m_lastDrawCallsPtr = drawCalls;
+        ++m_drawCallGeneration;
+        m_shadowScratchValid = false; // forward DCs may be shadow source fallback
+    }
     m_drawCallsPtr = drawCalls;
 
     // Refresh cached builtin materials (avoids string-hash lookup per DrawSceneFiltered call)
@@ -150,6 +155,10 @@ void InxVkCoreModular::SetDrawCalls(const std::vector<DrawCall> *drawCalls)
 
 void InxVkCoreModular::SetShadowDrawCalls(const std::vector<DrawCall> *drawCalls)
 {
+    if (drawCalls != m_lastShadowDrawCallsPtr) {
+        m_lastShadowDrawCallsPtr = drawCalls;
+        m_shadowScratchValid = false;
+    }
     m_shadowDrawCallsPtr = drawCalls;
 }
 
@@ -369,33 +378,43 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
     }
 
     // ---- Sort if requested (skip for 0-1 elements) ----
+    // Optimisation: check std::is_sorted() first. When the scene is stable
+    // (same draw call generation, camera hasn't moved much), the eligible
+    // scratch is already in correct order from a previous frame's sort.
+    // is_sorted() is O(N) with no writes vs. O(N log N) for std::sort.
     if (m_eligibleScratch.size() > 1) {
         // In left-handed view space: near objects have small positive Z, far
         // objects have larger positive Z.
         if (sortMode == "front_to_back") {
+            auto cmp = [](const SortableDrawCall &a, const SortableDrawCall &b) {
+                if (a.materialHash != b.materialHash)
+                    return a.materialHash < b.materialHash;
+                if (a.vertexBuf != b.vertexBuf)
+                    return a.vertexBuf < b.vertexBuf;
+                return a.sortKey < b.sortKey;
+            };
             // Front-to-back: group by material first (minimizes state changes),
             // then sort by depth within each material group.
-            std::sort(m_eligibleScratch.begin(), m_eligibleScratch.end(),
-                      [](const SortableDrawCall &a, const SortableDrawCall &b) {
-                          if (a.materialHash != b.materialHash)
-                              return a.materialHash < b.materialHash;
-                          if (a.vertexBuf != b.vertexBuf)
-                              return a.vertexBuf < b.vertexBuf;
-                          return a.sortKey < b.sortKey;
-                      });
+            if (!std::is_sorted(m_eligibleScratch.begin(), m_eligibleScratch.end(), cmp)) {
+                std::sort(m_eligibleScratch.begin(), m_eligibleScratch.end(), cmp);
+            }
         } else if (sortMode == "back_to_front") {
+            auto cmp = [](const SortableDrawCall &a, const SortableDrawCall &b) { return a.sortKey > b.sortKey; };
             // Far first → descending Z.
             // Depth order is critical for correct alpha blending.
-            std::sort(m_eligibleScratch.begin(), m_eligibleScratch.end(),
-                      [](const SortableDrawCall &a, const SortableDrawCall &b) { return a.sortKey > b.sortKey; });
+            if (!std::is_sorted(m_eligibleScratch.begin(), m_eligibleScratch.end(), cmp)) {
+                std::sort(m_eligibleScratch.begin(), m_eligibleScratch.end(), cmp);
+            }
         } else {
+            auto cmp = [](const SortableDrawCall &a, const SortableDrawCall &b) {
+                if (a.materialHash != b.materialHash)
+                    return a.materialHash < b.materialHash;
+                return a.vertexBuf < b.vertexBuf;
+            };
             // No explicit sort requested — group by material + mesh for max state reuse
-            std::sort(m_eligibleScratch.begin(), m_eligibleScratch.end(),
-                      [](const SortableDrawCall &a, const SortableDrawCall &b) {
-                          if (a.materialHash != b.materialHash)
-                              return a.materialHash < b.materialHash;
-                          return a.vertexBuf < b.vertexBuf;
-                      });
+            if (!std::is_sorted(m_eligibleScratch.begin(), m_eligibleScratch.end(), cmp)) {
+                std::sort(m_eligibleScratch.begin(), m_eligibleScratch.end(), cmp);
+            }
         }
     } // size() > 1
 
@@ -684,31 +703,66 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
     uint32_t tileW = width / 2;
     uint32_t tileH = height / 2;
 
-    // Pre-build draw list (filter once, reuse for all cascades)
-    m_shadowDrawScratch.clear();
-    m_shadowDrawScratch.reserve(shadowDrawCalls().size());
-    for (const DrawCall &dc : shadowDrawCalls()) {
-        if (!dc.material)
-            continue;
-        int renderQueue = dc.material->GetRenderQueue();
-        if (renderQueue < queueMin || renderQueue > queueMax)
-            continue;
-        auto bufIt = m_perObjectBuffers.find(dc.objectId);
-        if (bufIt == m_perObjectBuffers.end() || !bufIt->second.vertexBuffer || !bufIt->second.indexBuffer)
-            continue;
+    // Pre-build draw list (filter once, reuse for all cascades).
+    // Cache: if the shadow DC source pointer and size are unchanged, the
+    // filter result (material queues, buffer presence, pipeline ptrs) is
+    // identical.  Skip both the O(N) filter and O(N log N) sort.
+    const std::vector<DrawCall> &shadowDCs = shadowDrawCalls();
+    const bool shadowScratchHit =
+        m_shadowScratchValid &&
+        m_shadowScratchSourcePtr == &shadowDCs &&
+        m_shadowScratchSourceSize == shadowDCs.size();
 
-        VkPipeline pip = dc.material->GetPassPipeline(ShaderCompileTarget::Shadow);
-        if (pip == VK_NULL_HANDLE) {
-            // Lazy creation: shadow shared resources are ready, create per-material pipeline now
-            auto matShared = std::shared_ptr<InxMaterial>(dc.material, [](InxMaterial *) {});
-            CreateMaterialShadowPipeline(matShared, dc.material->GetVertShaderName(),
-                                         dc.material->GetFragShaderName());
-            pip = dc.material->GetPassPipeline(ShaderCompileTarget::Shadow);
+    if (!shadowScratchHit) {
+        m_shadowDrawScratch.clear();
+        m_shadowDrawScratch.reserve(shadowDCs.size());
+        for (const DrawCall &dc : shadowDCs) {
+            if (!dc.material)
+                continue;
+            int renderQueue = dc.material->GetRenderQueue();
+            if (renderQueue < queueMin || renderQueue > queueMax)
+                continue;
+            auto bufIt = m_perObjectBuffers.find(dc.objectId);
+            if (bufIt == m_perObjectBuffers.end() || !bufIt->second.vertexBuffer || !bufIt->second.indexBuffer)
+                continue;
+
+            VkPipeline pip = dc.material->GetPassPipeline(ShaderCompileTarget::Shadow);
+            if (pip == VK_NULL_HANDLE) {
+                // Lazy creation: shadow shared resources are ready, create per-material pipeline now
+                auto matShared = std::shared_ptr<InxMaterial>(dc.material, [](InxMaterial *) {});
+                CreateMaterialShadowPipeline(matShared, dc.material->GetVertShaderName(),
+                                             dc.material->GetFragShaderName());
+                pip = dc.material->GetPassPipeline(ShaderCompileTarget::Shadow);
+            }
+            if (pip == VK_NULL_HANDLE)
+                continue; // no per-material shadow pipeline available, skip
+            m_shadowDrawScratch.push_back(
+                {&dc, bufIt, pip, dc.material->GetPassDescriptorSet(ShaderCompileTarget::Shadow), dc.worldBounds});
         }
-        if (pip == VK_NULL_HANDLE)
-            continue; // no per-material shadow pipeline available, skip
-        m_shadowDrawScratch.push_back(
-            {&dc, bufIt, pip, dc.material->GetPassDescriptorSet(ShaderCompileTarget::Shadow), dc.worldBounds});
+
+        // Sort shadow draw scratch by (pipeline, VB, submesh) for instanced batching
+        if (m_shadowDrawScratch.size() > 1) {
+            std::sort(m_shadowDrawScratch.begin(), m_shadowDrawScratch.end(), [](const ShadowDraw &a, const ShadowDraw &b) {
+                if (a.shadowPipeline != b.shadowPipeline)
+                    return a.shadowPipeline < b.shadowPipeline;
+                VkBuffer va = a.bufIt->second.vertexBuffer->GetBuffer();
+                VkBuffer vb_b = b.bufIt->second.vertexBuffer->GetBuffer();
+                if (va != vb_b)
+                    return va < vb_b;
+                if (a.dc->indexStart != b.dc->indexStart)
+                    return a.dc->indexStart < b.dc->indexStart;
+                return a.dc->indexCount < b.dc->indexCount;
+            });
+        }
+
+        m_shadowScratchSourcePtr = &shadowDCs;
+        m_shadowScratchSourceSize = shadowDCs.size();
+        m_shadowScratchValid = true;
+    } else {
+        // Cache hit: refresh worldBounds from source DCs (transforms may have changed).
+        for (auto &sd : m_shadowDrawScratch) {
+            sd.worldBounds = sd.dc->worldBounds;
+        }
     }
 
 #if INFERNUX_FRAME_PROFILE
@@ -726,19 +780,6 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
 #endif
         return;
     }
-
-    // Sort shadow draw scratch by (pipeline, VB, submesh) for instanced batching
-    std::sort(m_shadowDrawScratch.begin(), m_shadowDrawScratch.end(), [](const ShadowDraw &a, const ShadowDraw &b) {
-        if (a.shadowPipeline != b.shadowPipeline)
-            return a.shadowPipeline < b.shadowPipeline;
-        VkBuffer va = a.bufIt->second.vertexBuffer->GetBuffer();
-        VkBuffer vb_b = b.bufIt->second.vertexBuffer->GetBuffer();
-        if (va != vb_b)
-            return va < vb_b;
-        if (a.dc->indexStart != b.dc->indexStart)
-            return a.dc->indexStart < b.dc->indexStart;
-        return a.dc->indexCount < b.dc->indexCount;
-    });
 
 #if INFERNUX_FRAME_PROFILE
     stageNow = Clock::now();
