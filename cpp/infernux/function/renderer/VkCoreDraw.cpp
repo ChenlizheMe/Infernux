@@ -271,10 +271,14 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
     }
 
     // Resolve override material (if specified)
-    std::shared_ptr<InxMaterial> overrideMat = nullptr;
+    InxMaterial *overrideMatRaw = nullptr;
+    std::shared_ptr<InxMaterial> overrideMatOwner; // keeps alive during this scope
     if (!overrideMaterial.empty()) {
-        overrideMat = AssetRegistry::Instance().GetBuiltinMaterial(overrideMaterial);
+        overrideMatOwner = AssetRegistry::Instance().GetBuiltinMaterial(overrideMaterial);
+        overrideMatRaw = overrideMatOwner.get();
     }
+
+    InxMaterial *defaultMatRaw = defaultMaterial.get();
 
     // ---- Collect eligible draw calls (queue filter + frustum cull) ----
     m_eligibleScratch.clear();
@@ -283,7 +287,7 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
         if (!dc.frustumVisible)
             continue;
 
-        auto material = overrideMat ? overrideMat : (dc.material ? dc.material : defaultMaterial);
+        InxMaterial *material = overrideMatRaw ? overrideMatRaw : (dc.material ? dc.material : defaultMatRaw);
         if (!material)
             continue;
 
@@ -304,13 +308,13 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
         float sortKey = viewPos.z;
 
         // Material + mesh hash for grouping optimization
-        size_t matHash = std::hash<void *>{}(material.get());
+        size_t matHash = std::hash<void *>{}(static_cast<void *>(material));
         auto bufIt = m_perObjectBuffers.find(dc.objectId);
         VkBuffer vb = VK_NULL_HANDLE;
         if (bufIt != m_perObjectBuffers.end() && bufIt->second.vertexBuffer)
             vb = bufIt->second.vertexBuffer->GetBuffer();
 
-        m_eligibleScratch.push_back({&dc, sortKey, matHash, vb, std::move(material), bufIt});
+        m_eligibleScratch.push_back({&dc, sortKey, matHash, vb, material, bufIt});
     }
 
     // Diagnostic: log per-call eligible count with queue range
@@ -470,8 +474,7 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
         const DrawCall &dc = *entry.dc;
 
         // Material already resolved in filter loop — use directly
-        const auto &material = entry.material;
-        InxMaterial *matRaw = material.get();
+        InxMaterial *matRaw = entry.material;
 
         VkPipeline pipeline = matRaw->GetPassPipeline(ShaderCompileTarget::Forward);
         VkPipelineLayout pipelineLayout = matRaw->GetPassPipelineLayout(ShaderCompileTarget::Forward);
@@ -485,8 +488,10 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
         if (pipeline == VK_NULL_HANDLE) {
             const std::string &vertName = matRaw->GetVertShaderName();
             const std::string &fragName = matRaw->GetFragShaderName();
+            // Non-owning shared_ptr for legacy RefreshMaterialPipeline API (rare path)
+            auto matShared = std::shared_ptr<InxMaterial>(matRaw, [](InxMaterial *) {});
             if (!fragName.empty()) {
-                RefreshMaterialPipeline(material, vertName, fragName);
+                RefreshMaterialPipeline(matShared, vertName, fragName);
                 pipeline = matRaw->GetPassPipeline(ShaderCompileTarget::Forward);
                 pipelineLayout = matRaw->GetPassPipelineLayout(ShaderCompileTarget::Forward);
             }
@@ -687,7 +692,8 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
         VkPipeline pip = dc.material->GetPassPipeline(ShaderCompileTarget::Shadow);
         if (pip == VK_NULL_HANDLE) {
             // Lazy creation: shadow shared resources are ready, create per-material pipeline now
-            CreateMaterialShadowPipeline(dc.material, dc.material->GetVertShaderName(),
+            auto matShared = std::shared_ptr<InxMaterial>(dc.material, [](InxMaterial *) {});
+            CreateMaterialShadowPipeline(matShared, dc.material->GetVertShaderName(),
                                          dc.material->GetFragShaderName());
             pip = dc.material->GetPassPipeline(ShaderCompileTarget::Shadow);
         }

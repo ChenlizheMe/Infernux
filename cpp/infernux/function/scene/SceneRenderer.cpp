@@ -149,6 +149,7 @@ void SceneRenderer::CollectRenderables(uint32_t cullingMask)
         renderable.worldMatrix = obj->GetTransform()->GetWorldMatrix();
         renderable.mesh = renderer->GetMesh();
         renderable.renderMaterial = renderer->GetEffectiveMaterial(); // Get actual InxMaterial
+        renderable.renderMaterialRaw = renderable.renderMaterial.get();
         renderable.meshRenderer = renderer;                           // Store direct pointer
 
         // Get world-space bounding box for frustum culling — reuse the world matrix
@@ -213,15 +214,15 @@ void SceneRenderer::SortRenderables()
 
     std::sort(m_renderables.begin(), m_renderables.end(), [](const RenderableObject &a, const RenderableObject &b) {
         // Get render queues (default 2000 for opaque)
-        int32_t queueA = a.renderMaterial ? a.renderMaterial->GetRenderQueue() : 2000;
-        int32_t queueB = b.renderMaterial ? b.renderMaterial->GetRenderQueue() : 2000;
+        int32_t queueA = a.renderMaterialRaw ? a.renderMaterialRaw->GetRenderQueue() : 2000;
+        int32_t queueB = b.renderMaterialRaw ? b.renderMaterialRaw->GetRenderQueue() : 2000;
 
         if (queueA != queueB) {
             return queueA < queueB; // Lower queue first
         }
 
         // Same queue: sort by material pointer to minimize state changes
-        return a.renderMaterial.get() < b.renderMaterial.get();
+        return a.renderMaterialRaw < b.renderMaterialRaw;
     });
 }
 
@@ -256,7 +257,7 @@ void SceneRenderer::EmitDrawCallsForRenderable(DrawCallResult &result, const Ren
             dc.indexCount = static_cast<uint32_t>(objIndices.size());
             dc.vertexStart = 0;
             dc.worldMatrix = worldMatrix;
-            dc.material = renderer->GetEffectiveMaterial(0);
+            dc.material = renderer->GetEffectiveMaterial(0).get();
             dc.objectId = renderable.objectId;
             dc.frustumVisible = visible;
             dc.worldBounds = renderable.worldBounds;
@@ -277,7 +278,7 @@ void SceneRenderer::EmitDrawCallsForRenderable(DrawCallResult &result, const Ren
             dc.indexCount = sub.indexCount;
             dc.vertexStart = 0;
             dc.worldMatrix = effectiveMatrix;
-            dc.material = renderer->GetEffectiveMaterial(0);
+            dc.material = renderer->GetEffectiveMaterial(0).get();
             dc.objectId = renderable.objectId;
             dc.frustumVisible = visible;
             dc.worldBounds = renderable.worldBounds;
@@ -314,7 +315,7 @@ void SceneRenderer::EmitDrawCallsForRenderable(DrawCallResult &result, const Ren
                 uint32_t matSlot = sub.materialSlot;
                 if (nodeGroup >= 0 && matSlot < SLOT_REMAP_CAP && slotRemap[matSlot] != 0xFFFFFFFF)
                     matSlot = slotRemap[matSlot];
-                dc.material = renderer->GetEffectiveMaterial(matSlot);
+                dc.material = renderer->GetEffectiveMaterial(matSlot).get();
                 dc.objectId = renderable.objectId;
                 dc.frustumVisible = visible;
                 dc.worldBounds = renderable.worldBounds;
@@ -337,7 +338,7 @@ void SceneRenderer::EmitDrawCallsForRenderable(DrawCallResult &result, const Ren
         dc.indexCount = static_cast<uint32_t>(objIndices.size());
         dc.vertexStart = 0;
         dc.worldMatrix = worldMatrix;
-        dc.material = renderer->GetEffectiveMaterial(0);
+        dc.material = renderer->GetEffectiveMaterial(0).get();
         dc.objectId = renderable.objectId;
         dc.frustumVisible = visible;
         dc.worldBounds = renderable.worldBounds;

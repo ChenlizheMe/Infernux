@@ -2,6 +2,7 @@
 #include "GameObject.h"
 #include "Scene.h"
 #include "Transform.h"
+#include <cstring>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
 
@@ -171,6 +172,7 @@ void TransformECSStore::InvalidateSubtree(Transform *root, bool clearWorldEulerE
     }
     if (clearWorldEulerExact) {
         self.m_worldEulerExact[idx] = 0;
+        self.m_anyRotationDirtied = true;
     }
 
     GameObject *go = root->GetGameObject();
@@ -336,6 +338,7 @@ void TransformECSStore::ScatterLocalRotations(Transform *const *transforms, cons
         m_worldMatrixDirty[idx] = 1;
     }
     m_anyWorldMatrixDirty = true;
+    m_anyRotationDirtied = true;
     for (size_t i = 0; i < count; ++i) {
         GameObject *go = transforms[i]->GetGameObject();
         if (go && go->GetChildCount() > 0) {
@@ -370,6 +373,7 @@ void TransformECSStore::ScatterLocalEulerAngles(Transform *const *transforms, co
         m_worldMatrixDirty[idx] = 1;
     }
     m_anyWorldMatrixDirty = true;
+    m_anyRotationDirtied = true;
     for (size_t i = 0; i < count; ++i) {
         GameObject *go = transforms[i]->GetGameObject();
         if (go && go->GetChildCount() > 0) {
@@ -473,15 +477,28 @@ void TransformECSStore::BeginFrameCache(Scene *scene)
     }
 
     // Extract world position (column 3) and rotation from cached world matrices.
-    for (size_t i = 0; i < cap; ++i) {
-        if (!m_alive[i]) {
-            continue;
+    if (m_anyRotationDirtied) {
+        // Full extraction: position + rotation (expensive quat_cast).
+        for (size_t i = 0; i < cap; ++i) {
+            if (!m_alive[i]) {
+                continue;
+            }
+            const glm::mat4 &wm = m_cachedWorldMatrices[i];
+            m_fcWorldPositions[i] = glm::vec3(wm[3]);
+            m_fcWorldRotations[i] = glm::quat_cast(glm::mat3(wm));
         }
-        const glm::mat4 &wm = m_cachedWorldMatrices[i];
-        m_fcWorldPositions[i] = glm::vec3(wm[3]);
-        m_fcWorldRotations[i] = glm::quat_cast(glm::mat3(wm));
-        m_fcDirty[i] = 0;
+        m_anyRotationDirtied = false;
+    } else {
+        // Fast path: only extract positions (cheap vec3 copy).
+        // Rotations haven't changed since last snapshot.
+        for (size_t i = 0; i < cap; ++i) {
+            if (!m_alive[i]) {
+                continue;
+            }
+            m_fcWorldPositions[i] = glm::vec3(m_cachedWorldMatrices[i][3]);
+        }
     }
+    std::memset(m_fcDirty.data(), 0, cap);
 
     m_frameCacheActive = true;
     m_fcScene = scene;
@@ -567,6 +584,7 @@ void TransformECSStore::SetCachedWorldRotation(uint32_t slotIndex, const glm::qu
 {
     m_fcWorldRotations[slotIndex] = q;
     m_fcDirty[slotIndex] |= 0x02;
+    m_anyRotationDirtied = true;
 }
 
 void TransformECSStore::SetCachedLocalPosition(uint32_t slotIndex, const glm::vec3 &v)
@@ -593,6 +611,7 @@ void TransformECSStore::SetCachedLocalRotation(uint32_t slotIndex, const glm::qu
     m_fcDirty[slotIndex] |= 0x10;
     m_worldMatrixDirty[slotIndex] = 1;
     m_anyWorldMatrixDirty = true;
+    m_anyRotationDirtied = true;
 }
 
 void TransformECSStore::SetCachedLocalEulerAngles(uint32_t slotIndex, const glm::vec3 &v)
@@ -604,6 +623,7 @@ void TransformECSStore::SetCachedLocalEulerAngles(uint32_t slotIndex, const glm:
     m_fcDirty[slotIndex] |= 0x20;
     m_worldMatrixDirty[slotIndex] = 1;
     m_anyWorldMatrixDirty = true;
+    m_anyRotationDirtied = true;
 }
 
 } // namespace infernux

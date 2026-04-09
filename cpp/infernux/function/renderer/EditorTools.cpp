@@ -521,7 +521,7 @@ DrawCallResult EditorTools::GetDrawCalls(std::shared_ptr<InxMaterial> material, 
         dc.indexStart = 0;
         dc.indexCount = static_cast<uint32_t>(m_arrowXInds.size());
         dc.worldMatrix = baseTransform * xRotation;
-        dc.material = material;
+        dc.material = material.get();
         dc.objectId = X_AXIS_ID;
         dc.meshVertices = &m_arrowXVerts;
         dc.meshIndices = &m_arrowXInds;
@@ -535,7 +535,7 @@ DrawCallResult EditorTools::GetDrawCalls(std::shared_ptr<InxMaterial> material, 
         dc.indexStart = 0;
         dc.indexCount = static_cast<uint32_t>(m_arrowYInds.size());
         dc.worldMatrix = baseTransform * yRotation;
-        dc.material = material;
+        dc.material = material.get();
         dc.objectId = Y_AXIS_ID;
         dc.meshVertices = &m_arrowYVerts;
         dc.meshIndices = &m_arrowYInds;
@@ -549,7 +549,7 @@ DrawCallResult EditorTools::GetDrawCalls(std::shared_ptr<InxMaterial> material, 
         dc.indexStart = 0;
         dc.indexCount = static_cast<uint32_t>(m_arrowZInds.size());
         dc.worldMatrix = baseTransform * zRotation;
-        dc.material = material;
+        dc.material = material.get();
         dc.objectId = Z_AXIS_ID;
         dc.meshVertices = &m_arrowZVerts;
         dc.meshIndices = &m_arrowZInds;
@@ -562,7 +562,7 @@ DrawCallResult EditorTools::GetDrawCalls(std::shared_ptr<InxMaterial> material, 
         xyDc.indexStart = 0;
         xyDc.indexCount = static_cast<uint32_t>(m_planeXYInds.size());
         xyDc.worldMatrix = baseTransform;
-        xyDc.material = material;
+        xyDc.material = material.get();
         xyDc.objectId = XY_PLANE_ID;
         xyDc.meshVertices = &m_planeXYVerts;
         xyDc.meshIndices = &m_planeXYInds;
@@ -573,7 +573,7 @@ DrawCallResult EditorTools::GetDrawCalls(std::shared_ptr<InxMaterial> material, 
         xzDc.indexStart = 0;
         xzDc.indexCount = static_cast<uint32_t>(m_planeXZInds.size());
         xzDc.worldMatrix = baseTransform;
-        xzDc.material = material;
+        xzDc.material = material.get();
         xzDc.objectId = XZ_PLANE_ID;
         xzDc.meshVertices = &m_planeXZVerts;
         xzDc.meshIndices = &m_planeXZInds;
@@ -584,7 +584,7 @@ DrawCallResult EditorTools::GetDrawCalls(std::shared_ptr<InxMaterial> material, 
         yzDc.indexStart = 0;
         yzDc.indexCount = static_cast<uint32_t>(m_planeYZInds.size());
         yzDc.worldMatrix = baseTransform;
-        yzDc.material = material;
+        yzDc.material = material.get();
         yzDc.objectId = YZ_PLANE_ID;
         yzDc.meshVertices = &m_planeYZVerts;
         yzDc.meshIndices = &m_planeYZInds;

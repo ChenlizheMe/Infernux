@@ -102,7 +102,9 @@ CullingResults ScriptableRenderContext::Cull(Camera *camera)
     if (camera && camera != editorCam) {
         results.drawCalls = std::move(ownedResult.drawCalls); // game camera: move
     } else {
-        results.drawCalls = *drawCallsPtr; // editor camera: copy (cached data must survive)
+        // Editor camera: store a non-owning pointer instead of copying
+        // 14,400+ DrawCalls with shared_ptr atomic refcount bumps.
+        results.sceneDrawCallsRef = drawCallsPtr;
     }
     // Populate visible light count from the scene light collector.
     // CollectLights() runs earlier in the frame (InxRenderer::UpdateSceneLighting),
@@ -132,8 +134,14 @@ void ScriptableRenderContext::SubmitCulling(CullingResults culling)
         return;
     }
 
-    // Move draw calls directly — avoids 1000+ shared_ptr atomic refcount ops.
-    m_orderedDrawCalls = std::move(culling.drawCalls);
+    // Move or reference draw calls — avoids 1000+ shared_ptr atomic refcount ops.
+    if (culling.sceneDrawCallsRef) {
+        // Editor camera fast path: reference scene draw calls directly,
+        // then move them into the ordered list (one move, zero shared_ptr copies).
+        m_orderedDrawCalls = *culling.sceneDrawCallsRef;
+    } else {
+        m_orderedDrawCalls = std::move(culling.drawCalls);
+    }
     m_orderedDrawCalls.reserve(m_orderedDrawCalls.size() + 16);
 
     // Append skybox draw call only when ClearFlags == Skybox (or no camera set)
@@ -151,7 +159,7 @@ void ScriptableRenderContext::SubmitCulling(CullingResults culling)
             dc.indexStart = 0;
             dc.indexCount = static_cast<uint32_t>(PrimitiveMeshes::GetSkyboxCubeIndices().size());
             dc.worldMatrix = glm::mat4(1.0f);
-            dc.material = skyboxMat;
+            dc.material = skyboxMat.get();
             dc.objectId = SKYBOX_OBJECT_ID;
             dc.meshVertices = &PrimitiveMeshes::GetSkyboxCubeVertices();
             dc.meshIndices = &PrimitiveMeshes::GetSkyboxCubeIndices();

@@ -57,7 +57,7 @@ DrawCallResult EditorGizmos::GetDrawCalls(std::shared_ptr<InxMaterial> gizmoMate
                 dc.indexStart = 0;
                 dc.indexCount = static_cast<uint32_t>(gridInds.size());
                 dc.worldMatrix = glm::mat4(1.0f); // Identity - gizmos are already in world space
-                dc.material = gridMaterial ? gridMaterial : gizmoMaterial;
+                dc.material = gridMaterial ? gridMaterial.get() : gizmoMaterial.get();
                 dc.objectId = 0; // Gizmo objectId = 0
                 dc.meshVertices = &gridVerts;
                 dc.meshIndices = &gridInds;

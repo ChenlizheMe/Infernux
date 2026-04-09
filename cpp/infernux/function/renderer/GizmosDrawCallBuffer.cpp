@@ -135,7 +135,7 @@ DrawCallResult GizmosDrawCallBuffer::GetDrawCalls(std::shared_ptr<InxMaterial> g
         dc.indexStart = 0; // Each slice starts at 0
         dc.indexCount = static_cast<uint32_t>(m_slicedIndices[i].size());
         dc.worldMatrix = world;
-        dc.material = gizmoMaterial;
+        dc.material = gizmoMaterial.get();
         dc.objectId = OBJECT_ID_PREFIX | static_cast<uint64_t>(i);
         dc.meshVertices = &m_slicedVertices[i];
         dc.meshIndices = &m_slicedIndices[i];
@@ -267,7 +267,7 @@ DrawCallResult GizmosDrawCallBuffer::GetIconDrawCalls(std::shared_ptr<InxMateria
         dc.indexStart = 0;
         dc.indexCount = 6;
         dc.worldMatrix = glm::mat4(1.0f); // identity — vertices are in world space
-        dc.material = iconMaterial;
+        dc.material = iconMaterial.get();
         dc.objectId = ICON_ID_PREFIX | icon.objectId; // prefixed to avoid buffer collision
         dc.meshVertices = &m_iconSlicedVertices[i];
         dc.meshIndices = &m_iconSlicedIndices[i];

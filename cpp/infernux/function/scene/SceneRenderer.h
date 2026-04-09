@@ -23,7 +23,8 @@ struct RenderableObject
     uint64_t objectId;
     glm::mat4 worldMatrix;
     MeshRef mesh;
-    std::shared_ptr<InxMaterial> renderMaterial; // Actual material for rendering
+    std::shared_ptr<InxMaterial> renderMaterial; // Actual material for rendering (kept alive by MeshRenderer)
+    InxMaterial *renderMaterialRaw = nullptr;     // Raw pointer for fast sort/access
     MeshRenderer *meshRenderer = nullptr;        // Direct pointer to avoid re-lookup
     AABB worldBounds;                            // World-space bounding box for culling
     bool visible;

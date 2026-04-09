@@ -949,7 +949,7 @@ class InxVkCoreModular
         float sortKey;
         size_t materialHash;
         VkBuffer vertexBuf;
-        std::shared_ptr<InxMaterial> material; // resolved once in filter loop
+        InxMaterial *material; // raw pointer — resolved once in filter loop (owned by DrawCall/AssetRegistry)
         std::unordered_map<uint64_t, PerObjectBuffers>::const_iterator bufIt;
     };
     std::vector<SortableDrawCall> m_eligibleScratch;

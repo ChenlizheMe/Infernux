@@ -39,10 +39,12 @@ struct RenderTargetHandle;
 struct CullingResults
 {
     std::vector<DrawCall> drawCalls; ///< All visible draw calls (unfiltered)
+    const std::vector<DrawCall> *sceneDrawCallsRef = nullptr; ///< Non-owning ref (editor camera fast path)
     uint32_t lightCount = 0;         ///< Number of visible lights (populated by Cull)
 
     [[nodiscard]] size_t visibleObjectCount() const
     {
+        if (sceneDrawCallsRef) return sceneDrawCallsRef->size();
         return drawCalls.size();
     }
     [[nodiscard]] size_t visibleLightCount() const
