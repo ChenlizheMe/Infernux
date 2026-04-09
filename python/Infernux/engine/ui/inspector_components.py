@@ -655,27 +655,11 @@ def render_cpp_component_generic(ctx: InxGUIContext, comp):
 _ASSET_REF_CONFIG = None  # lazy-initialized (needs FieldType import)
 
 
-def render_py_component(ctx: InxGUIContext, py_comp):
-    """Render a Python InxComponent's serialized fields.
-
-    Dispatch priority:
-    1. ``on_inspector_gui(ctx)`` override on the component class itself
-    2. Custom renderer registered via ``register_py_component_renderer``
-    3. Generic auto-generated serialized-field inspector
-
-    Uses C++ batch property renderer for scalar fields to minimize pybind11
-    overhead.  Non-scalar fields are rendered individually.
-
-    Supports:
-    - ``group``: fields with the same group name are wrapped in a
-      ``collapsing_header`` section.
-    - ``info_text``: dimmed description line rendered after the field.
-    """
-    # 1. Check for on_inspector_gui override on the component class
+def _try_custom_py_renderer(ctx, py_comp):
+    """Try custom on_inspector_gui override or registered renderer. Returns True if handled."""
     on_gui = getattr(type(py_comp), 'on_inspector_gui', None)
     if on_gui is not None:
         from Infernux.components.component import InxComponent
-        # Only use if the method is actually overridden (not the base stub)
         if on_gui is not InxComponent.on_inspector_gui:
             _record_profile_count("bodyPyCustom_count")
             _py_custom_t0 = _time.perf_counter()
@@ -683,9 +667,7 @@ def render_py_component(ctx: InxGUIContext, py_comp):
                 py_comp.on_inspector_gui(ctx)
             finally:
                 _record_profile_timing("bodyPyCustom", _py_custom_t0)
-            return
-
-    # 2. Check for registered custom renderer
+            return True
     renderer = _PY_COMPONENT_RENDERERS.get(py_comp.type_name)
     if renderer:
         _record_profile_count("bodyPyCustom_count")
@@ -694,9 +676,63 @@ def render_py_component(ctx: InxGUIContext, py_comp):
             renderer(ctx, py_comp)
         finally:
             _record_profile_timing("bodyPyCustom", _py_custom_t0)
+        return True
+    return False
+
+
+def _get_py_field_value(py_comp, field_name, metadata, cache_entry, refresh_values, _REF_TYPES):
+    """Get the current value for a Python component field."""
+    try:
+        if metadata.field_type in _REF_TYPES:
+            from Infernux.components.serialized_field import get_raw_field_value
+            return get_raw_field_value(py_comp, field_name)
+        return _get_cached_component_value(
+            cache_entry, refresh_values, field_name,
+            lambda _fn=field_name, _default=metadata.default: getattr(py_comp, _fn, _default),
+        )
+    except RuntimeError:
+        return metadata.default
+
+
+def _render_py_nonscalar_field(ctx, py_comp, field_name, metadata, current_value, lw, flush_fn):
+    """Render a non-scalar field (list, serializable object, component ref, etc.). Returns True if handled."""
+    from Infernux.components.serialized_field import FieldType
+    ft = metadata.field_type
+    if ft == FieldType.LIST:
+        flush_fn()
+        from Infernux.components.serialized_field import get_raw_field_value
+        _raw_list = get_raw_field_value(py_comp, field_name)
+        _render_list_field(ctx, py_comp, field_name, metadata, _raw_list, lw)
+        _tooltip_and_info(ctx, metadata)
+        return True
+    if ft == FieldType.SERIALIZABLE_OBJECT:
+        flush_fn()
+        _render_serializable_object_field(ctx, py_comp, field_name, metadata, current_value, lw)
+        _tooltip_and_info(ctx, metadata)
+        return True
+    if ft == FieldType.COMPONENT:
+        flush_fn()
+        _render_component_ref_inline(ctx, py_comp, field_name, metadata, lw)
+        _tooltip_and_info(ctx, metadata)
+        return True
+    if ft == FieldType.GAME_OBJECT:
+        flush_fn()
+        _render_gameobject_ref_inline(ctx, py_comp, field_name, metadata, current_value, lw)
+        _tooltip_and_info(ctx, metadata)
+        return True
+    if ft in _get_asset_ref_config():
+        flush_fn()
+        _render_asset_reference_field(ctx, py_comp, field_name, metadata, current_value, metadata.field_type, lw)
+        _tooltip_and_info(ctx, metadata)
+        return True
+    return False
+
+
+def render_py_component(ctx: InxGUIContext, py_comp):
+    """Render a Python InxComponent's serialized fields."""
+    if _try_custom_py_renderer(ctx, py_comp):
         return
 
-    # 3. Generic serialized-field renderer
     from Infernux.components.serialized_field import get_serialized_fields, FieldType
 
     fields = get_serialized_fields(py_comp.__class__)
@@ -705,9 +741,8 @@ def render_py_component(ctx: InxGUIContext, py_comp):
     _record_profile_count("bodyPyGenericTotal_count")
     _py_generic_t0 = _time.perf_counter()
 
-    # ── Batch rendering state ──
-    batch_descs = []   # list of descriptor dicts for C++
-    batch_info = []    # parallel: (field_name, metadata, current_value, enum_members)
+    batch_descs = []
+    batch_info = []
 
     def _flush():
         nonlocal batch_descs, batch_info, refresh_values
@@ -724,12 +759,14 @@ def render_py_component(ctx: InxGUIContext, py_comp):
         batch_descs = []
         batch_info = []
 
-    # Track which collapsible group is currently open so we can close it
     _current_group: str = ""
     _group_visible: bool = True
+    _REF_TYPES = (
+        FieldType.GAME_OBJECT, FieldType.MATERIAL, FieldType.TEXTURE,
+        FieldType.SHADER, FieldType.ASSET, FieldType.COMPONENT,
+    )
 
     for field_name, metadata in fields.items():
-        # ── Collapsible group management ──
         field_group = metadata.group or ""
         if field_group != _current_group:
             _flush()
@@ -738,38 +775,19 @@ def render_py_component(ctx: InxGUIContext, py_comp):
                 _group_visible = render_compact_section_header(ctx, field_group, level="secondary")
             else:
                 _group_visible = True
-
         if not _group_visible:
             continue
 
-        # Conditional visibility (visible_when callback)
         if metadata.visible_when is not None:
             try:
                 if not metadata.visible_when(py_comp):
                     continue
             except (RuntimeError, TypeError) as _exc:
                 Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-                pass  # On error, show the field
+                pass
 
-        # Get current value. For reference-like fields, use the raw stored ref
-        # so the Inspector keeps access to path_hint / missing-ref state.
-        _REF_TYPES = (
-            FieldType.GAME_OBJECT, FieldType.MATERIAL, FieldType.TEXTURE,
-            FieldType.SHADER, FieldType.ASSET, FieldType.COMPONENT,
-        )
-        try:
-            if metadata.field_type in _REF_TYPES:
-                from Infernux.components.serialized_field import get_raw_field_value
-                current_value = get_raw_field_value(py_comp, field_name)
-            else:
-                current_value = _get_cached_component_value(
-                    cache_entry, refresh_values, field_name,
-                    lambda _fn=field_name, _default=metadata.default: getattr(py_comp, _fn, _default),
-                )
-        except RuntimeError:
-            current_value = metadata.default
+        current_value = _get_py_field_value(py_comp, field_name, metadata, cache_entry, refresh_values, _REF_TYPES)
 
-        # Readonly scalar fields: render as label, skip interactive widgets
         if metadata.readonly and metadata.field_type in (FieldType.INT, FieldType.FLOAT, FieldType.STRING, FieldType.BOOL):
             _flush()
             field_label(ctx, pretty_field_name(field_name), lw)
@@ -777,37 +795,7 @@ def render_py_component(ctx: InxGUIContext, py_comp):
             _tooltip_and_info(ctx, metadata)
             continue
 
-        # ── Non-scalar types: flush batch, render individually ──
-        if metadata.field_type == FieldType.LIST:
-            _flush()
-            from Infernux.components.serialized_field import get_raw_field_value
-            _raw_list = get_raw_field_value(py_comp, field_name)
-            _render_list_field(ctx, py_comp, field_name, metadata, _raw_list, lw)
-            _tooltip_and_info(ctx, metadata)
-            continue
-
-        if metadata.field_type == FieldType.SERIALIZABLE_OBJECT:
-            _flush()
-            _render_serializable_object_field(ctx, py_comp, field_name, metadata, current_value, lw)
-            _tooltip_and_info(ctx, metadata)
-            continue
-
-        if metadata.field_type == FieldType.COMPONENT:
-            _flush()
-            _render_component_ref_inline(ctx, py_comp, field_name, metadata, lw)
-            _tooltip_and_info(ctx, metadata)
-            continue
-
-        if metadata.field_type == FieldType.GAME_OBJECT:
-            _flush()
-            _render_gameobject_ref_inline(ctx, py_comp, field_name, metadata, current_value, lw)
-            _tooltip_and_info(ctx, metadata)
-            continue
-
-        if metadata.field_type in _get_asset_ref_config():
-            _flush()
-            _render_asset_reference_field(ctx, py_comp, field_name, metadata, current_value, metadata.field_type, lw)
-            _tooltip_and_info(ctx, metadata)
+        if _render_py_nonscalar_field(ctx, py_comp, field_name, metadata, current_value, lw, _flush):
             continue
 
         # ── Scalar field → try batch ──
@@ -829,9 +817,7 @@ def render_py_component(ctx: InxGUIContext, py_comp):
                     enum_members = _get_enum_members(enum_cls)
             batch_descs.append(desc)
             batch_info.append((field_name, metadata, current_value, enum_members))
-            # Tooltip for batched fields is handled by C++ RenderPropertyBatch.
         else:
-            # Non-batchable scalar fallback
             _flush()
             if hdr:
                 ctx.separator()
@@ -847,11 +833,8 @@ def render_py_component(ctx: InxGUIContext, py_comp):
                     py_comp._call_on_validate()
                 _invalidate_component_value_cache(cache_entry)
                 refresh_values = True
-
-            # Tooltip for non-batched scalar fallback
             _tooltip_and_info(ctx, metadata)
 
-        # Show info text for batched fields (tooltip handled by C++ RenderPropertyBatch)
         if desc is not None and metadata.info_text:
             _render_info_text(ctx, metadata.info_text)
 

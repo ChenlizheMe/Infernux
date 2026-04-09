@@ -820,7 +820,9 @@ void HierarchyPanel::RenderReorderSep(InxGUIContext *ctx, const char *sepId, std
     if (ImGui::GetDragDropPayload() == nullptr)
         return;
 
+    float savedY = ctx->GetCursorPosY();
     float availW = ctx->GetContentRegionAvailWidth();
+    ctx->SetNextItemAllowOverlap();
     ctx->InvisibleButton(sepId, availW, EditorTheme::DND_REORDER_SEPARATOR_H);
     ctx->PushStyleColor(ImGuiCol_DragDropTarget, 0.0f, 0.0f, 0.0f, 0.0f);
     if (ctx->BeginDragDropTarget()) {
@@ -841,6 +843,7 @@ void HierarchyPanel::RenderReorderSep(InxGUIContext *ctx, const char *sepId, std
         ctx->EndDragDropTarget();
     }
     ctx->PopStyleColor(1);
+    ctx->SetCursorPosY(savedY);
 }
 
 // ════════════════════════════════════════════════════════════════════

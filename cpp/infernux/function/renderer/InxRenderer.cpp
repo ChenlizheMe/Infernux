@@ -28,6 +28,7 @@
 #include <function/scene/MeshRenderer.h>
 #include <function/scene/PrimitiveMeshes.h>
 #include <function/scene/SceneManager.h>
+#include <function/scene/TransformECSStore.h>
 #include <function/scene/SceneRenderer.h>
 #include <iomanip>
 #include <iostream>
@@ -463,6 +464,7 @@ void InxRenderer::DrawFrame()
 
     // Update scene system
     auto _sceneUpdateStart = std::chrono::high_resolution_clock::now();
+    TransformECSStore::Instance().BeginFrameCache(SceneManager::Instance().GetActiveScene());
     SceneManager::Instance().Update(m_deltaTime);
 
     // LateUpdate runs immediately after Update — before rendering — so that
@@ -470,6 +472,7 @@ void InxRenderer::DrawFrame()
     // results are picked up by the same frame's render pass.  This matches
     // Unity's execution order: FixedUpdate → Update → LateUpdate → Render.
     SceneManager::Instance().LateUpdate(m_deltaTime);
+    TransformECSStore::Instance().EndFrameCache();
     auto _sceneUpdateEnd = std::chrono::high_resolution_clock::now();
     m_sceneUpdateMs = std::chrono::duration<double, std::milli>(_sceneUpdateEnd - _sceneUpdateStart).count();
 #if INFERNUX_FRAME_PROFILE
@@ -995,7 +998,10 @@ void InxRenderer::StageEngineGlobalsUBO()
 void InxRenderer::CleanupDrawCallBuffers()
 {
     std::vector<DrawCall> allDrawCalls;
-    if (m_sceneRenderGraph && m_sceneRenderGraph->HasCachedDrawCalls()) {
+    // Only include scene draw calls when the scene view is actively rendering.
+    // Stale cached draw calls from a hidden scene view must NOT prevent buffer
+    // cleanup — they keep zombie per-object buffers alive indefinitely.
+    if (m_sceneViewVisible && m_sceneRenderGraph && m_sceneRenderGraph->HasCachedDrawCalls()) {
         const auto &sceneDC = m_sceneRenderGraph->GetCachedDrawCalls();
         allDrawCalls.insert(allDrawCalls.end(), sceneDC.begin(), sceneDC.end());
     }
@@ -1652,6 +1658,20 @@ void InxRenderer::ResizeGameRenderTarget(uint32_t width, uint32_t height)
         if (m_gameRenderGraph) {
             m_gameRenderGraph->OnResize(width, height);
         }
+    }
+}
+
+void InxRenderer::SetSceneViewVisible(bool visible)
+{
+    if (m_sceneViewVisible == visible)
+        return;
+    m_sceneViewVisible = visible;
+
+    // When hiding the scene view, clear stale cached draw calls so they
+    // don't poison CleanupDrawCallBuffers (keeping zombie buffers alive)
+    // and don't interfere with the game view's rendering state.
+    if (!visible && m_sceneRenderGraph) {
+        m_sceneRenderGraph->ClearCachedFrameState();
     }
 }
 

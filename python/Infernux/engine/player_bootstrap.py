@@ -128,10 +128,6 @@ class PlayerBootstrap:
         # renderer would execute both scene and game render graphs every frame.
         self.engine.set_scene_view_visible(False)
 
-        # Skip DockSpace / DockBuilder overhead — the player only registers a
-        # single full-screen renderable, so the editor docking system is waste.
-        self.engine.set_gui_player_mode(True)
-
         self.engine.set_gui_font(_resources.engine_font_path, 15)
 
 

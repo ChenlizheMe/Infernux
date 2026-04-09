@@ -35,6 +35,12 @@ GameObject *Scene::CreateGameObject(const std::string &name)
     return ptr;
 }
 
+void Scene::ReserveCapacity(size_t count)
+{
+    m_rootObjects.reserve(m_rootObjects.size() + count);
+    m_objectsById.reserve(m_objectsById.size() + count);
+}
+
 void Scene::AddGameObject(std::unique_ptr<GameObject> gameObject)
 {
     if (!gameObject)

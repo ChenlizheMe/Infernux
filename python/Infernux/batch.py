@@ -236,8 +236,9 @@ def batch_read(targets: Sequence, prop: Any) -> NDArray:
 
     Parameters
     ----------
-    targets : list[Transform] | list[InxComponent]
-        Homogeneous list of engine objects.
+    targets : list[Transform] | list[InxComponent] | TransformBatchHandle
+        Homogeneous list of engine objects, or a pre-built
+        ``TransformBatchHandle`` for zero-overhead repeated reads.
     prop : str | descriptor
         Property name (``'position'``, ``'velocity'``) or a class-level
         descriptor (``MyComponent.velocity``).
@@ -253,9 +254,18 @@ def batch_read(targets: Sequence, prop: Any) -> NDArray:
     """
     prop_name = _resolve_property_name(prop)
 
+    # Handle-based fast path (cached Transform pointers).
+    lib = _get_lib()
+    if isinstance(targets, lib.TransformBatchHandle):
+        if prop_name in _TRANSFORM_ALL_PROPS:
+            return lib._transform_batch_read_h(targets, prop_name)
+        raise ValueError(
+            f"Unknown Transform property '{prop_name}'. "
+            f"Supported: {sorted(_TRANSFORM_ALL_PROPS)}"
+        )
+
     if _is_transform_list(targets):
         if prop_name in _TRANSFORM_ALL_PROPS:
-            lib = _get_lib()
             return lib._transform_batch_read(targets, prop_name)
         raise ValueError(
             f"Unknown Transform property '{prop_name}'. "
@@ -276,8 +286,9 @@ def batch_write(targets: Sequence, data: NDArray, prop: Any) -> None:
 
     Parameters
     ----------
-    targets : list[Transform] | list[InxComponent]
-        Same list used for the preceding ``batch_read``.
+    targets : list[Transform] | list[InxComponent] | TransformBatchHandle
+        Same list used for the preceding ``batch_read``, or a
+        ``TransformBatchHandle``.
     data : numpy.ndarray
         Array with ``data.shape[0] >= len(targets)``.
     prop : str | descriptor
@@ -285,9 +296,19 @@ def batch_write(targets: Sequence, data: NDArray, prop: Any) -> None:
     """
     prop_name = _resolve_property_name(prop)
 
+    # Handle-based fast path.
+    lib = _get_lib()
+    if isinstance(targets, lib.TransformBatchHandle):
+        if prop_name in _TRANSFORM_ALL_PROPS:
+            lib._transform_batch_write_h(targets, data, prop_name)
+            return
+        raise ValueError(
+            f"Unknown Transform property '{prop_name}'. "
+            f"Supported: {sorted(_TRANSFORM_ALL_PROPS)}"
+        )
+
     if _is_transform_list(targets):
         if prop_name in _TRANSFORM_ALL_PROPS:
-            lib = _get_lib()
             lib._transform_batch_write(targets, data, prop_name)
             return
         raise ValueError(
@@ -301,3 +322,12 @@ def batch_write(targets: Sequence, data: NDArray, prop: Any) -> None:
 
     # Fallback: Python setattr loop.
     _component_scatter(targets, data, prop_name)
+
+
+def create_batch_handle(targets: list) -> "TransformBatchHandle":
+    """Create a ``TransformBatchHandle`` that caches the C++ Transform
+    pointers for *targets*.  Re-use the handle across ``batch_read`` /
+    ``batch_write`` calls to avoid repeated pybind11 extraction overhead.
+    """
+    lib = _get_lib()
+    return lib.TransformBatchHandle(targets)

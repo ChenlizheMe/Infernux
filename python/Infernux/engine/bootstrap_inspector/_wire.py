@@ -105,40 +105,46 @@ def _wire_component_list(ctx):
             return scene, [], {}, {}
 
         items, native_map, py_map = [], {}, {}
+
+        # Single pass over get_components() preserves the actual insertion
+        # order (C++ m_components vector) so the Inspector shows components
+        # in chronological add-order.
         for comp in _get_components_safe(obj):
-            if _is_py_entry(comp):
-                continue
             tn = getattr(comp, 'type_name', type(comp).__name__)
             if tn == "Transform":
                 continue
-            cid = getattr(comp, 'component_id', id(comp))
-            ci = InspectorComponentInfo()
-            ci.type_name = tn
-            ci.component_id = cid
-            ci.enabled = bool(getattr(comp, 'enabled', True))
-            ci.is_native = True
-            ci.is_script = False
-            ci.is_broken = False
-            ci.icon_id = ctx.get_component_icon_id(tn, False)
-            items.append(ci)
-            native_map[cid] = comp
 
-        for py_comp in _get_py_components_safe(obj):
-            cid = getattr(py_comp, 'component_id', id(py_comp))
-            ci = InspectorComponentInfo()
-            ci.type_name = getattr(py_comp, 'type_name', type(py_comp).__name__)
-            ci.component_id = cid
-            ci.enabled = bool(getattr(py_comp, 'enabled', True))
-            ci.is_native = False
-            ci.is_script = True
-            ci.is_broken = bool(getattr(py_comp, '_is_broken', False))
-            ci.broken_error = (
-                getattr(py_comp, '_broken_error', '') or ''
-                if ci.is_broken else ''
-            )
-            ci.icon_id = ctx.get_component_icon_id(ci.type_name, True)
-            items.append(ci)
-            py_map[cid] = py_comp
+            if _is_py_entry(comp):
+                # CastToPython already resolved PyComponentProxy to the
+                # actual Python instance, so *comp* IS the Python component.
+                py_comp = comp
+                cid = getattr(py_comp, 'component_id', id(py_comp))
+                ci = InspectorComponentInfo()
+                ci.type_name = getattr(py_comp, 'type_name', type(py_comp).__name__)
+                ci.component_id = cid
+                ci.enabled = bool(getattr(py_comp, 'enabled', True))
+                ci.is_native = False
+                ci.is_script = True
+                ci.is_broken = bool(getattr(py_comp, '_is_broken', False))
+                ci.broken_error = (
+                    getattr(py_comp, '_broken_error', '') or ''
+                    if ci.is_broken else ''
+                )
+                ci.icon_id = ctx.get_component_icon_id(ci.type_name, True)
+                items.append(ci)
+                py_map[cid] = py_comp
+            else:
+                cid = getattr(comp, 'component_id', id(comp))
+                ci = InspectorComponentInfo()
+                ci.type_name = tn
+                ci.component_id = cid
+                ci.enabled = bool(getattr(comp, 'enabled', True))
+                ci.is_native = True
+                ci.is_script = False
+                ci.is_broken = False
+                ci.icon_id = ctx.get_component_icon_id(tn, False)
+                items.append(ci)
+                native_map[cid] = comp
 
         _component_cache.update(
             object_id=obj_id, scene_version=scene_ver,

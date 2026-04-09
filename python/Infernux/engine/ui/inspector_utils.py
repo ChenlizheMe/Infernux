@@ -210,6 +210,99 @@ def _label_or_fullwidth(ctx, display_name, lw, has_visible_label):
         ctx.set_next_item_width(-1)
 
 
+def _render_numeric_sf(ctx, wid, display_name, metadata, current_value, lw, has_visible_label, is_float):
+    """Render a FLOAT or INT inspector field."""
+    _label_or_fullwidth(ctx, display_name, lw, has_visible_label)
+    if is_float:
+        speed = getattr(metadata, "drag_speed", None) or DRAG_SPEED_DEFAULT
+        slider = getattr(metadata, "slider", False)
+        if metadata.range:
+            if slider:
+                return ctx.float_slider(wid, float(current_value), metadata.range[0], metadata.range[1])
+            return ctx.drag_float(wid, float(current_value), speed, metadata.range[0], metadata.range[1])
+        return ctx.drag_float(wid, float(current_value), speed, -1e6, 1e6)
+    else:
+        speed = getattr(metadata, "drag_speed", None) or DRAG_SPEED_INT
+        slider = getattr(metadata, "slider", False)
+        if metadata.range:
+            if slider:
+                return int(ctx.int_slider(wid, int(current_value), metadata.range[0], metadata.range[1]))
+            return int(ctx.drag_int(wid, int(current_value), speed, metadata.range[0], metadata.range[1]))
+        return int(ctx.drag_int(wid, int(current_value), speed, -1000000, 1000000))
+
+
+def _render_vec_sf(ctx, wid, current_value, lw, has_visible_label, vector_label, ft):
+    """Render a VEC2, VEC3, or VEC4 inspector field."""
+    from Infernux.components.serialized_field import FieldType
+    vec_lw = lw if has_visible_label else 1.0
+    if ft == FieldType.VEC2:
+        x, y = (float(current_value.x), float(current_value.y)) if current_value is not None else (0.0, 0.0)
+        nx, ny = ctx.vector2(vector_label, x, y, DRAG_SPEED_DEFAULT, vec_lw)
+        if any(not float_close(a, b) for a, b in [(nx, x), (ny, y)]):
+            from Infernux.lib import Vector2
+            return Vector2(nx, ny)
+    elif ft == FieldType.VEC3:
+        if current_value is not None:
+            x, y, z = float(current_value.x), float(current_value.y), float(current_value.z)
+        else:
+            x, y, z = 0.0, 0.0, 0.0
+        nx, ny, nz = ctx.vector3(vector_label, x, y, z, DRAG_SPEED_DEFAULT, vec_lw)
+        if any(not float_close(a, b) for a, b in [(nx, x), (ny, y), (nz, z)]):
+            from Infernux.lib import Vector3
+            return Vector3(nx, ny, nz)
+    elif ft == FieldType.VEC4:
+        if current_value is not None:
+            x, y, z, w = float(current_value.x), float(current_value.y), float(current_value.z), float(current_value.w)
+        else:
+            x, y, z, w = 0.0, 0.0, 0.0, 0.0
+        nx, ny, nz, nw = ctx.vector4(vector_label, x, y, z, w, DRAG_SPEED_DEFAULT, vec_lw)
+        if any(not float_close(a, b) for a, b in [(nx, x), (ny, y), (nz, z), (nw, w)]):
+            from Infernux.lib import vec4f
+            return vec4f(nx, ny, nz, nw)
+    return current_value
+
+
+def _render_enum_sf(ctx, wid, display_name, metadata, current_value, lw, has_visible_label):
+    """Render an ENUM inspector field."""
+    enum_cls = metadata.enum_type
+    if isinstance(enum_cls, str):
+        import Infernux.lib as _lib
+        enum_cls = getattr(_lib, enum_cls, None)
+    if enum_cls is not None:
+        members = get_enum_members(enum_cls)
+        if not members:
+            ctx.label(f"{display_name}: {current_value}")
+            return current_value
+        if (hasattr(metadata, "enum_labels")
+                and metadata.enum_labels
+                and len(metadata.enum_labels) == len(members)):
+            member_names = metadata.enum_labels
+        else:
+            member_names = [get_enum_member_name(m) for m in members]
+        current_idx = find_enum_index(members, current_value)
+        _label_or_fullwidth(ctx, display_name, lw, has_visible_label)
+        new_idx = ctx.combo(wid, current_idx, member_names, -1)
+        if new_idx != current_idx:
+            return members[new_idx]
+    else:
+        ctx.label(f"{display_name}: {current_value}")
+    return current_value
+
+
+def _render_color_sf(ctx, wid, display_name, metadata, current_value, lw, has_visible_label):
+    """Render a COLOR inspector field."""
+    if current_value is not None:
+        r, g, b, a = current_value[0], current_value[1], current_value[2], current_value[3]
+    else:
+        r, g, b, a = 1.0, 1.0, 1.0, 1.0
+    _label_or_fullwidth(ctx, display_name, lw, has_visible_label)
+    allow_hdr = getattr(metadata, 'hdr', False)
+    nr, ng, nb, na = _render_color_bar(ctx, wid, r, g, b, a, allow_hdr=allow_hdr)
+    if (nr, ng, nb, na) != (r, g, b, a):
+        return [nr, ng, nb, na]
+    return current_value
+
+
 def render_serialized_field(
     ctx: InxGUIContext,
     wid: str,
@@ -223,175 +316,34 @@ def render_serialized_field(
     Handles **scalar / value types** only:
     ``FLOAT``, ``INT``, ``BOOL``, ``STRING``, ``VEC2``, ``VEC3``, ``VEC4``,
     ``ENUM``, ``COLOR``.
-
-    Reference types (``GAME_OBJECT``, ``MATERIAL``, ``TEXTURE``,
-    ``SHADER``, ``ASSET``) are **not** handled — they require
-    context-specific callbacks and should be rendered by the caller.
-
-    Returns
-    -------
-    The (possibly changed) value.  Callers should compare the return
-    value with *current_value* using :func:`has_field_changed` and
-    apply changes + undo as appropriate.
     """
     from Infernux.components.serialized_field import FieldType
 
     ft = metadata.field_type
-    new_value = current_value
     has_visible_label = bool(display_name and str(display_name).strip())
     vector_label = display_name if has_visible_label else " "
 
-    # ── FLOAT ──────────────────────────────────────────────────────────
     if ft == FieldType.FLOAT:
-        _label_or_fullwidth(ctx, display_name, lw, has_visible_label)
-        speed = getattr(metadata, "drag_speed", None) or DRAG_SPEED_DEFAULT
-        slider = getattr(metadata, "slider", False)
-        if metadata.range:
-            if slider:
-                new_value = ctx.float_slider(
-                    wid, float(current_value),
-                    metadata.range[0], metadata.range[1],
-                )
-            else:
-                new_value = ctx.drag_float(
-                    wid, float(current_value), speed,
-                    metadata.range[0], metadata.range[1],
-                )
-        else:
-            new_value = ctx.drag_float(
-                wid, float(current_value), speed, -1e6, 1e6,
-            )
-
-    # ── INT ────────────────────────────────────────────────────────────
-    elif ft == FieldType.INT:
-        _label_or_fullwidth(ctx, display_name, lw, has_visible_label)
-        speed = getattr(metadata, "drag_speed", None) or DRAG_SPEED_INT
-        slider = getattr(metadata, "slider", False)
-        if metadata.range:
-            if slider:
-                new_value = int(ctx.int_slider(
-                    wid, int(current_value),
-                    metadata.range[0], metadata.range[1],
-                ))
-            else:
-                new_value = int(ctx.drag_int(
-                    wid, int(current_value), speed,
-                    metadata.range[0], metadata.range[1],
-                ))
-        else:
-            new_value = int(ctx.drag_int(
-                wid, int(current_value), speed, -1000000, 1000000,
-            ))
-
-    # ── BOOL ───────────────────────────────────────────────────────────
-    elif ft == FieldType.BOOL:
-        new_value = render_inspector_checkbox(ctx, display_name if has_visible_label else wid, bool(current_value))
-
-    # ── STRING ─────────────────────────────────────────────────────────
-    elif ft == FieldType.STRING:
+        return _render_numeric_sf(ctx, wid, display_name, metadata, current_value, lw, has_visible_label, True)
+    if ft == FieldType.INT:
+        return _render_numeric_sf(ctx, wid, display_name, metadata, current_value, lw, has_visible_label, False)
+    if ft == FieldType.BOOL:
+        return render_inspector_checkbox(ctx, display_name if has_visible_label else wid, bool(current_value))
+    if ft == FieldType.STRING:
         _label_or_fullwidth(ctx, display_name, lw, has_visible_label)
         multiline = getattr(metadata, "multiline", False)
         if multiline:
-            new_value = ctx.input_text_multiline(
-                wid,
-                str(current_value) if current_value else "",
-                buffer_size=4096, width=-1, height=80,
-            )
-        else:
-            new_value = ctx.text_input(
-                wid, str(current_value) if current_value else "", 256,
-            )
+            return ctx.input_text_multiline(wid, str(current_value) if current_value else "", buffer_size=4096, width=-1, height=80)
+        return ctx.text_input(wid, str(current_value) if current_value else "", 256)
+    if ft in (FieldType.VEC2, FieldType.VEC3, FieldType.VEC4):
+        return _render_vec_sf(ctx, wid, current_value, lw, has_visible_label, vector_label, ft)
+    if ft == FieldType.ENUM:
+        return _render_enum_sf(ctx, wid, display_name, metadata, current_value, lw, has_visible_label)
+    if ft == FieldType.COLOR:
+        return _render_color_sf(ctx, wid, display_name, metadata, current_value, lw, has_visible_label)
 
-    # ── VEC2 ───────────────────────────────────────────────────────────
-    elif ft == FieldType.VEC2:
-        if current_value is not None:
-            x, y = float(current_value.x), float(current_value.y)
-        else:
-            x, y = 0.0, 0.0
-        vec_lw = lw if has_visible_label else 1.0
-        nx, ny = ctx.vector2(vector_label, x, y, DRAG_SPEED_DEFAULT, vec_lw)
-        if any(not float_close(a, b) for a, b in [(nx, x), (ny, y)]):
-            from Infernux.lib import Vector2
-            new_value = Vector2(nx, ny)
-
-    # ── VEC3 ───────────────────────────────────────────────────────────
-    elif ft == FieldType.VEC3:
-        if current_value is not None:
-            x, y, z = (
-                float(current_value.x),
-                float(current_value.y),
-                float(current_value.z),
-            )
-        else:
-            x, y, z = 0.0, 0.0, 0.0
-        vec_lw = lw if has_visible_label else 1.0
-        nx, ny, nz = ctx.vector3(vector_label, x, y, z, DRAG_SPEED_DEFAULT, vec_lw)
-        if any(not float_close(a, b) for a, b in [(nx, x), (ny, y), (nz, z)]):
-            from Infernux.lib import Vector3
-            new_value = Vector3(nx, ny, nz)
-
-    # ── VEC4 ───────────────────────────────────────────────────────────
-    elif ft == FieldType.VEC4:
-        if current_value is not None:
-            x = float(current_value.x)
-            y = float(current_value.y)
-            z = float(current_value.z)
-            w = float(current_value.w)
-        else:
-            x, y, z, w = 0.0, 0.0, 0.0, 0.0
-        vec_lw = lw if has_visible_label else 1.0
-        nx, ny, nz, nw = ctx.vector4(
-            vector_label, x, y, z, w, DRAG_SPEED_DEFAULT, vec_lw,
-        )
-        if any(not float_close(a, b) for a, b in [(nx, x), (ny, y), (nz, z), (nw, w)]):
-            from Infernux.lib import vec4f
-            new_value = vec4f(nx, ny, nz, nw)
-
-    # ── ENUM ───────────────────────────────────────────────────────────
-    elif ft == FieldType.ENUM:
-        enum_cls = metadata.enum_type
-        if isinstance(enum_cls, str):
-            import Infernux.lib as _lib
-            enum_cls = getattr(_lib, enum_cls, None)
-        if enum_cls is not None:
-            members = get_enum_members(enum_cls)
-            if not members:
-                ctx.label(f"{display_name}: {current_value}")
-                return new_value
-            if (hasattr(metadata, "enum_labels")
-                    and metadata.enum_labels
-                    and len(metadata.enum_labels) == len(members)):
-                member_names = metadata.enum_labels
-            else:
-                member_names = [get_enum_member_name(m) for m in members]
-            current_idx = find_enum_index(members, current_value)
-            _label_or_fullwidth(ctx, display_name, lw, has_visible_label)
-            new_idx = ctx.combo(wid, current_idx, member_names, -1)
-            if new_idx != current_idx:
-                new_value = members[new_idx]
-        else:
-            ctx.label(f"{display_name}: {current_value}")
-
-    # ── COLOR ──────────────────────────────────────────────────────────
-    elif ft == FieldType.COLOR:
-        if current_value is not None:
-            r, g, b, a = (
-                current_value[0], current_value[1],
-                current_value[2], current_value[3],
-            )
-        else:
-            r, g, b, a = 1.0, 1.0, 1.0, 1.0
-        _label_or_fullwidth(ctx, display_name, lw, has_visible_label)
-        allow_hdr = getattr(metadata, 'hdr', False)
-        nr, ng, nb, na = _render_color_bar(ctx, wid, r, g, b, a, allow_hdr=allow_hdr)
-        if (nr, ng, nb, na) != (r, g, b, a):
-            new_value = [nr, ng, nb, na]
-
-    # ── Fallback ───────────────────────────────────────────────────────
-    else:
-        ctx.label(f"{display_name}: {current_value}")
-
-    return new_value
+    ctx.label(f"{display_name}: {current_value}")
+    return current_value
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -440,59 +392,13 @@ _color_popup_live: dict = {}
 _color_popup_guard: set = set()
 
 
-def _render_color_bar(
-    ctx: InxGUIContext,
-    wid: str,
-    r: float, g: float, b: float, a: float,
-    *,
-    allow_hdr: bool = False,
-) -> tuple:
-    """Render a Unity-style colour bar and return ``(nr, ng, nb, na)``.
-
-    The bar is a horizontal rectangle:
-    * Top 3/4 — solid RGB colour (full opacity).
-    * Bottom 1/4 — grey-scale representing alpha.
-
-    Clicking the bar opens a colour-edit popup directly.
-
-    When *allow_hdr* is True the popup also shows an HDR checkbox and
-    intensity slider.  The returned RGBA values are multiplied by the
-    HDR intensity when HDR is enabled.
-    """
-    avail_w = ctx.get_content_region_avail_width()
-    clicked = ctx.invisible_button(f"{wid}_bar", avail_w, _COLOR_BAR_H)
-
-    min_x = ctx.get_item_rect_min_x()
-    min_y = ctx.get_item_rect_min_y()
-    max_x = ctx.get_item_rect_max_x()
-    max_y = ctx.get_item_rect_max_y()
-
-    split_y = min_y + (max_y - min_y) * 0.75
-
-    # Top 3/4: RGB at full opacity
-    ctx.draw_filled_rect(min_x, min_y, max_x, split_y, r, g, b, 1.0)
-    # Bottom 1/4: alpha as grey
-    ctx.draw_filled_rect(min_x, split_y, max_x, max_y, a, a, a, 1.0)
-    # Thin border
-    ctx.draw_rect(min_x, min_y, max_x, max_y, *Theme.COLOR_SWATCH_BORDER, 1.0)
-
-    popup_id = f"{wid}_cpop"
-    if clicked:
-        # Compute base (pre-HDR) colour for live state
-        hdr = _hdr_state.get(wid)
-        if hdr and hdr["enabled"] and hdr["intensity"] not in (0.0, 0):
-            inv = 1.0 / hdr["intensity"]
-            _color_popup_live[wid] = [r * inv, g * inv, b * inv, a]
-        else:
-            _color_popup_live[wid] = [r, g, b, a]
-        _color_popup_guard.add(wid)
-        ctx.open_popup(popup_id)
-
+def _render_color_popup(ctx, wid, popup_id, r, g, b, a, allow_hdr, first_frame_set):
+    """Render the colour-edit popup contents. Return *(nr, ng, nb, na)*."""
     nr, ng, nb, na = r, g, b, a
     if ctx.begin_popup(popup_id):
-        first_frame = wid in _color_popup_guard
+        first_frame = wid in first_frame_set
         if first_frame:
-            _color_popup_guard.discard(wid)
+            first_frame_set.discard(wid)
 
         state = _hdr_state.setdefault(wid, {"enabled": False, "intensity": 1.0})
         live = _color_popup_live.setdefault(wid, [r, g, b, a])
@@ -548,7 +454,61 @@ def _render_color_bar(
         ctx.end_popup()
     else:
         _color_popup_live.pop(wid, None)
-        _color_popup_guard.discard(wid)
+        first_frame_set.discard(wid)
+
+    return nr, ng, nb, na
+
+
+def _render_color_bar(
+    ctx: InxGUIContext,
+    wid: str,
+    r: float, g: float, b: float, a: float,
+    *,
+    allow_hdr: bool = False,
+) -> tuple:
+    """Render a Unity-style colour bar and return ``(nr, ng, nb, na)``.
+
+    The bar is a horizontal rectangle:
+    * Top 3/4 — solid RGB colour (full opacity).
+    * Bottom 1/4 — grey-scale representing alpha.
+
+    Clicking the bar opens a colour-edit popup directly.
+
+    When *allow_hdr* is True the popup also shows an HDR checkbox and
+    intensity slider.  The returned RGBA values are multiplied by the
+    HDR intensity when HDR is enabled.
+    """
+    avail_w = ctx.get_content_region_avail_width()
+    clicked = ctx.invisible_button(f"{wid}_bar", avail_w, _COLOR_BAR_H)
+
+    min_x = ctx.get_item_rect_min_x()
+    min_y = ctx.get_item_rect_min_y()
+    max_x = ctx.get_item_rect_max_x()
+    max_y = ctx.get_item_rect_max_y()
+
+    split_y = min_y + (max_y - min_y) * 0.75
+
+    # Top 3/4: RGB at full opacity
+    ctx.draw_filled_rect(min_x, min_y, max_x, split_y, r, g, b, 1.0)
+    # Bottom 1/4: alpha as grey
+    ctx.draw_filled_rect(min_x, split_y, max_x, max_y, a, a, a, 1.0)
+    # Thin border
+    ctx.draw_rect(min_x, min_y, max_x, max_y, *Theme.COLOR_SWATCH_BORDER, 1.0)
+
+    popup_id = f"{wid}_cpop"
+    if clicked:
+        # Compute base (pre-HDR) colour for live state
+        hdr = _hdr_state.get(wid)
+        if hdr and hdr["enabled"] and hdr["intensity"] not in (0.0, 0):
+            inv = 1.0 / hdr["intensity"]
+            _color_popup_live[wid] = [r * inv, g * inv, b * inv, a]
+        else:
+            _color_popup_live[wid] = [r, g, b, a]
+        _color_popup_guard.add(wid)
+        ctx.open_popup(popup_id)
+
+    nr, ng, nb, na = _render_color_popup(ctx, wid, popup_id, r, g, b, a,
+                                          allow_hdr, _color_popup_guard)
 
     return nr, ng, nb, na
 

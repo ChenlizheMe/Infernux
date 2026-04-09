@@ -43,6 +43,11 @@ glm::vec3 Transform::GetWorldDirection(const glm::vec3 &localAxis) const
 
 glm::vec3 Transform::GetWorldPosition() const
 {
+    auto &store = TransformECSStore::Instance();
+    if (store.IsFrameCacheActive()) {
+        return store.GetCachedWorldPosition(m_ecsHandle.index);
+    }
+
     Transform *parentTransform = GetParentTransformSafe();
     if (!parentTransform) {
         return GetLocalPosition();
@@ -55,6 +60,11 @@ glm::vec3 Transform::GetWorldPosition() const
 void Transform::SetWorldPosition(const glm::vec3 &worldPos)
 {
     auto &store = TransformECSStore::Instance();
+    if (store.IsFrameCacheActive()) {
+        store.SetCachedWorldPosition(m_ecsHandle.index, worldPos);
+        return;
+    }
+
     Transform *parentTransform = GetParentTransformSafe();
     if (!parentTransform) {
         store.SetLocalPosition(m_ecsHandle, worldPos);
@@ -107,6 +117,11 @@ void Transform::InvalidateWorldMatrix(bool clearWorldEulerExact) const
 
 glm::quat Transform::GetWorldRotation() const
 {
+    auto &store = TransformECSStore::Instance();
+    if (store.IsFrameCacheActive()) {
+        return store.GetCachedWorldRotation(m_ecsHandle.index);
+    }
+
     Transform *parentTransform = GetParentTransformSafe();
     if (!parentTransform) {
         return GetLocalRotation();
@@ -117,6 +132,12 @@ glm::quat Transform::GetWorldRotation() const
 
 void Transform::SetWorldRotation(const glm::quat &worldRot)
 {
+    auto &store = TransformECSStore::Instance();
+    if (store.IsFrameCacheActive()) {
+        store.SetCachedWorldRotation(m_ecsHandle.index, glm::normalize(worldRot));
+        return;
+    }
+
     glm::quat safeRot = glm::normalize(worldRot);
     glm::quat newLocalRot;
     Transform *parentTransform = GetParentTransformSafe();
@@ -125,8 +146,6 @@ void Transform::SetWorldRotation(const glm::quat &worldRot)
     } else {
         newLocalRot = glm::inverse(parentTransform->GetWorldRotation()) * safeRot;
     }
-
-    auto &store = TransformECSStore::Instance();
 
     // Skip only when the quaternion is *exactly* the same (bit-equal).
     if (store.GetLocalRotation(m_ecsHandle) == newLocalRot) {
@@ -172,6 +191,11 @@ void Transform::SetWorldEulerAngles(const glm::vec3 &euler)
     glm::quat worldRot = EulerYXZToQuat(euler);
 
     auto &store = TransformECSStore::Instance();
+    if (store.IsFrameCacheActive()) {
+        store.SetCachedWorldRotation(m_ecsHandle.index, worldRot);
+        return;
+    }
+
     Transform *parentTransform = GetParentTransformSafe();
 
     // Compute local rotation from world rotation (inlined, not via SetWorldRotation,

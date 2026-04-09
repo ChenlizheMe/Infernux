@@ -133,9 +133,9 @@ void SceneRenderer::CollectRenderables(uint32_t cullingMask)
         renderable.renderMaterial = renderer->GetEffectiveMaterial(); // Get actual InxMaterial
         renderable.meshRenderer = renderer;                           // Store direct pointer
 
-        // Get world-space bounding box for frustum culling
+        // Get world-space bounding box for frustum culling — reuse the world matrix
         glm::vec3 boundsMin, boundsMax;
-        renderer->GetWorldBounds(boundsMin, boundsMax);
+        renderer->ComputeWorldBounds(renderable.worldMatrix, boundsMin, boundsMax);
         renderable.worldBounds = AABB(boundsMin, boundsMax);
         renderable.visible = true; // Will be set by culling
 

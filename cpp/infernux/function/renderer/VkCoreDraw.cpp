@@ -1259,8 +1259,15 @@ void InxVkCoreModular::EnsureObjectBuffers(uint64_t objectId, const std::vector<
     }
 
     auto sharedIt = m_sharedMeshBuffers.find(sharedKey);
+    // NOTE: forceUpdate is intentionally NOT included in needsCreate.
+    // The content hash already guarantees correctness — if the hash matches
+    // an existing shared buffer, the GPU data is identical regardless of
+    // forceUpdate.  Including forceUpdate here caused a catastrophic bug:
+    // when the Scene view opened and ConsumeMeshBufferDirty() returned true
+    // for all objects, each object would create its own VkBuffer (replacing
+    // the shared entry), permanently destroying instancing (4 → 6000+ draws).
     const bool needsCreate =
-        (sharedIt == m_sharedMeshBuffers.end() || forceUpdate || sharedIt->second.vertexCount != vertices.size() ||
+        (sharedIt == m_sharedMeshBuffers.end() || sharedIt->second.vertexCount != vertices.size() ||
          sharedIt->second.indexCount != indices.size() || !sharedIt->second.vertexBuffer ||
          !sharedIt->second.indexBuffer);
 

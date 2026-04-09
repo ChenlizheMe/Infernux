@@ -853,12 +853,70 @@ class UIEditorPanel(UIEditorCanvasOps, UIEditorGeometryMixin, UIEditorAlignmentM
             if dx != 0 or dy != 0:
                 self._nudge_selected(dx, dy, foc_ref_w, foc_ref_h)
 
-        self._handle_canvas_click(
-            ctx, inp, all_canvases,
-            hovered_canvas_id, hovered_elem, hovered_all,
-            foc_origin_x, foc_origin_y,
-            area_min_x, area_min_y,
-        )
+    def _begin_element_interaction(self, inp, all_canvases, hovered_canvas_id,
+                                    hovered_elem, foc_origin_x, foc_origin_y,
+                                    area_min_x, area_min_y):
+        """Start resize / rotate / drag on the selected element, or select a new one."""
+        foc_origin_x, foc_origin_y = self._get_focused_canvas_origin(
+            area_min_x, area_min_y, all_canvases)
+        _, focused_canvas = self._get_focused_canvas(all_canvases)
+        if focused_canvas is not None:
+            foc_ref_w = float(focused_canvas.reference_width)
+            foc_ref_h = float(focused_canvas.reference_height)
+        else:
+            foc_ref_w = foc_ref_h = 1.0
+
+        clicked_kind, clicked_handle = self._hit_test_handle(inp.mouse_x, inp.mouse_y)
+        if clicked_kind in ("corner", "edge") and self._selected_element_comp is not None:
+            self._resizing = True
+            self._resize_handle_idx = clicked_handle
+            self._resize_start_mx = inp.mouse_x
+            self._resize_start_my = inp.mouse_y
+            sel = self._selected_element_comp
+            self._prepare_resize_element(sel)
+            self._resize_start_rect = sel.get_rect(foc_ref_w, foc_ref_h)
+            self._resize_start_rotation = float(getattr(sel, 'rotation', 0.0))
+            self._resize_start_corners = sel.get_rotated_corners(foc_ref_w, foc_ref_h)
+            self._undo_pre_resize = (float(sel.x), float(sel.y),
+                                     float(sel.width), float(sel.height))
+        elif clicked_kind == "rotate" and self._selected_element_comp is not None:
+            self._rotating = True
+            self._dragging = False
+            self._resizing = False
+            self._resize_handle_idx = -1
+            sel = self._selected_element_comp
+            center_x, center_y = self._selection_geometry['center']
+            self._rotate_center_sx = center_x
+            self._rotate_center_sy = center_y
+            self._rotate_start_angle = math.degrees(
+                math.atan2(inp.mouse_y - center_y, inp.mouse_x - center_x))
+            self._rotate_start_rotation = float(getattr(sel, 'rotation', 0.0))
+            self._undo_pre_rotate = float(getattr(sel, 'rotation', 0.0))
+        elif clicked_kind == "inside" and self._selected_element_comp is not None:
+            sel = self._selected_element_comp
+            self._dragging = True
+            self._drag_start_x = inp.mouse_x
+            self._drag_start_y = inp.mouse_y
+            drag_x, drag_y, _, _ = sel.get_visual_rect(foc_ref_w, foc_ref_h)
+            self._drag_elem_start_x = drag_x
+            self._drag_elem_start_y = drag_y
+            self._undo_pre_drag = (float(sel.x), float(sel.y))
+        elif hovered_elem is not None:
+            self._select_element(hovered_elem)
+            self._dragging = True
+            self._drag_start_x = inp.mouse_x
+            self._drag_start_y = inp.mouse_y
+            drag_x, drag_y, _, _ = hovered_elem.get_visual_rect(foc_ref_w, foc_ref_h)
+            self._drag_elem_start_x = drag_x
+            self._drag_elem_start_y = drag_y
+            self._undo_pre_drag = (float(hovered_elem.x), float(hovered_elem.y))
+        elif hovered_canvas_id:
+            for cgo, _cv in all_canvases:
+                if cgo.id == hovered_canvas_id:
+                    self._select_canvas(cgo)
+                    break
+        else:
+            self._select_element(None)
 
     def _handle_canvas_click(
         self, ctx, inp, all_canvases,
@@ -919,66 +977,9 @@ class UIEditorPanel(UIEditorCanvasOps, UIEditorGeometryMixin, UIEditorAlignmentM
             if clicked_canvas_header is not None:
                 self._select_canvas(clicked_canvas_header)
             elif not self._dragging_canvas:
-                foc_origin_x, foc_origin_y = self._get_focused_canvas_origin(
-                    area_min_x, area_min_y, all_canvases)
-                _, focused_canvas = self._get_focused_canvas(all_canvases)
-                if focused_canvas is not None:
-                    foc_ref_w = float(focused_canvas.reference_width)
-                    foc_ref_h = float(focused_canvas.reference_height)
-                else:
-                    foc_ref_w = foc_ref_h = 1.0
-
-                clicked_kind, clicked_handle = self._hit_test_handle(inp.mouse_x, inp.mouse_y)
-                if clicked_kind in ("corner", "edge") and self._selected_element_comp is not None:
-                    self._resizing = True
-                    self._resize_handle_idx = clicked_handle
-                    self._resize_start_mx = inp.mouse_x
-                    self._resize_start_my = inp.mouse_y
-                    sel = self._selected_element_comp
-                    self._prepare_resize_element(sel)
-                    self._resize_start_rect = sel.get_rect(foc_ref_w, foc_ref_h)
-                    self._resize_start_rotation = float(getattr(sel, 'rotation', 0.0))
-                    self._resize_start_corners = sel.get_rotated_corners(foc_ref_w, foc_ref_h)
-                    self._undo_pre_resize = (float(sel.x), float(sel.y),
-                                             float(sel.width), float(sel.height))
-                elif clicked_kind == "rotate" and self._selected_element_comp is not None:
-                    self._rotating = True
-                    self._dragging = False
-                    self._resizing = False
-                    self._resize_handle_idx = -1
-                    sel = self._selected_element_comp
-                    center_x, center_y = self._selection_geometry['center']
-                    self._rotate_center_sx = center_x
-                    self._rotate_center_sy = center_y
-                    self._rotate_start_angle = math.degrees(
-                        math.atan2(inp.mouse_y - center_y, inp.mouse_x - center_x))
-                    self._rotate_start_rotation = float(getattr(sel, 'rotation', 0.0))
-                    self._undo_pre_rotate = float(getattr(sel, 'rotation', 0.0))
-                elif clicked_kind == "inside" and self._selected_element_comp is not None:
-                    sel = self._selected_element_comp
-                    self._dragging = True
-                    self._drag_start_x = inp.mouse_x
-                    self._drag_start_y = inp.mouse_y
-                    drag_x, drag_y, _, _ = sel.get_visual_rect(foc_ref_w, foc_ref_h)
-                    self._drag_elem_start_x = drag_x
-                    self._drag_elem_start_y = drag_y
-                    self._undo_pre_drag = (float(sel.x), float(sel.y))
-                elif hovered_elem is not None:
-                    self._select_element(hovered_elem)
-                    self._dragging = True
-                    self._drag_start_x = inp.mouse_x
-                    self._drag_start_y = inp.mouse_y
-                    drag_x, drag_y, _, _ = hovered_elem.get_visual_rect(foc_ref_w, foc_ref_h)
-                    self._drag_elem_start_x = drag_x
-                    self._drag_elem_start_y = drag_y
-                    self._undo_pre_drag = (float(hovered_elem.x), float(hovered_elem.y))
-                elif hovered_canvas_id:
-                    for cgo, _cv in all_canvases:
-                        if cgo.id == hovered_canvas_id:
-                            self._select_canvas(cgo)
-                            break
-                else:
-                    self._select_element(None)
+                self._begin_element_interaction(
+                    inp, all_canvases, hovered_canvas_id, hovered_elem,
+                    foc_origin_x, foc_origin_y, area_min_x, area_min_y)
 
     # ------------------------------------------------------------------
     # Snap helpers

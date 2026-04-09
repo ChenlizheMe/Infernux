@@ -71,6 +71,9 @@ class TransformECSStore
 
     void RebindOwner(Handle handle, Transform *owner);
 
+    /// Pre-allocate capacity for all SoA arrays to avoid incremental growth.
+    void Reserve(size_t capacity);
+
     void InvalidateSubtree(Transform *root, bool clearWorldEulerExact = false) const;
 
     void SyncSceneWorldMatrices(Scene *scene);
@@ -115,7 +118,7 @@ class TransformECSStore
 
     // — world matrix dirty —
     [[nodiscard]] bool GetWorldMatrixDirty(Handle h) const { return m_worldMatrixDirty[h.index]; }
-    void SetWorldMatrixDirty(Handle h, bool v) { m_worldMatrixDirty[h.index] = v; }
+    void SetWorldMatrixDirty(Handle h, bool v) { m_worldMatrixDirty[h.index] = v; if (v) m_anyWorldMatrixDirty = true; }
 
     // — owner pointer —
     [[nodiscard]] Transform *GetOwner(Handle h) const { return m_owners[h.index]; }
@@ -169,6 +172,44 @@ class TransformECSStore
     void GatherWorldRotations(Transform *const *transforms, float *out, size_t count) const;
     void ScatterWorldRotations(Transform *const *transforms, const float *in, size_t count);
 
+    // ── Frame Cache (per-frame snapshot for O(1) property access) ────
+    //
+    // BeginFrameCache(): called once per frame before gameplay ticks.
+    //   Snapshots all alive transforms' world position/rotation from
+    //   the already-synced world matrices.  During the cache phase,
+    //   Transform::GetWorldPosition() can read from cache[slot] (O(1))
+    //   instead of walking the parent chain (O(depth)).
+    //
+    // EndFrameCache(): called after LateUpdate.
+    //   Flushes dirty cache entries back to live SoA and invalidates
+    //   affected subtrees.
+    //
+    // The cache also covers local properties for write-tracking consistency.
+
+    void BeginFrameCache(Scene *scene);
+    void EndFrameCache();
+
+    [[nodiscard]] bool IsFrameCacheActive() const { return m_frameCacheActive; }
+
+    // Cached world-space read (O(1) array index).  Caller must check
+    // IsFrameCacheActive() before calling.
+    [[nodiscard]] glm::vec3 GetCachedWorldPosition(uint32_t slotIndex) const { return m_fcWorldPositions[slotIndex]; }
+    [[nodiscard]] glm::quat GetCachedWorldRotation(uint32_t slotIndex) const { return m_fcWorldRotations[slotIndex]; }
+
+    // Cached world-space write — marks slot dirty, defers flush to EndFrameCache.
+    void SetCachedWorldPosition(uint32_t slotIndex, const glm::vec3 &v);
+    void SetCachedWorldRotation(uint32_t slotIndex, const glm::quat &q);
+
+    // Cached local-space read (alias of live SoA, already O(1), but
+    // included for API symmetry).  Local getters don't need a separate
+    // cache array since SoA local data is already O(1).
+
+    // Cached local-space write — marks slot dirty.
+    void SetCachedLocalPosition(uint32_t slotIndex, const glm::vec3 &v);
+    void SetCachedLocalScale(uint32_t slotIndex, const glm::vec3 &v);
+    void SetCachedLocalRotation(uint32_t slotIndex, const glm::quat &q);
+    void SetCachedLocalEulerAngles(uint32_t slotIndex, const glm::vec3 &v);
+
   private:
     TransformECSStore() = default;
 
@@ -187,12 +228,25 @@ class TransformECSStore
     std::vector<uint8_t>   m_worldMatrixDirty;
     std::vector<Transform*> m_owners;
 
+    // ── Global dirty flag for fast SyncSceneWorldMatrices skip ───────
+    bool m_anyWorldMatrixDirty = false;
+
     // ── slot metadata (free-list + generation) ───────────────────────
     std::vector<uint32_t>  m_generations;
     std::vector<uint8_t>   m_alive;
     std::vector<uint32_t>  m_nextFree;
     uint32_t m_freeListHead = UINT32_MAX;
     size_t   m_aliveCount = 0;
+
+    // ── Frame Cache arrays (same length as Capacity()) ───────────────
+    std::vector<glm::vec3> m_fcWorldPositions;
+    std::vector<glm::quat> m_fcWorldRotations;
+    // Dirty flags: bit 0 = world position dirty, bit 1 = world rotation dirty,
+    // bit 2 = local position dirty, bit 3 = local scale dirty,
+    // bit 4 = local rotation dirty, bit 5 = local euler dirty.
+    std::vector<uint8_t>   m_fcDirty;
+    bool                   m_frameCacheActive = false;
+    Scene *                m_fcScene = nullptr;  // scene pointer for EndFrameCache sync
 };
 
 } // namespace infernux
