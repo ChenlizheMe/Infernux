@@ -370,11 +370,9 @@ class Theme:
 
     # -- Component Header
     INSPECTOR_HEADER_PRIMARY_FRAME_PAD = (4.0, 2.0)  # Primary header frame padding
-    INSPECTOR_HEADER_SECONDARY_FRAME_PAD = (4.0, 2.0)  # Secondary header frame padding
-    INSPECTOR_HEADER_LIST_FRAME_PAD  = (4.0, 2.0)  # List header frame padding
+    INSPECTOR_HEADER_SECONDARY_FRAME_PAD = (4.0, 1.0)  # Secondary header frame padding (compact)
     INSPECTOR_HEADER_PRIMARY_FONT_SCALE= 1.0  # Primary header font scale
-    INSPECTOR_HEADER_SECONDARY_FONT_SCALE= 1.0  # Secondary header font scale
-    INSPECTOR_HEADER_LIST_FONT_SCALE = 1.0  # List header font scale
+    INSPECTOR_HEADER_SECONDARY_FONT_SCALE= 0.92  # Secondary header font scale (smaller)
     INSPECTOR_HEADER_ITEM_SPC   = (4.0, 2.0)  # Header item spacing
     INSPECTOR_HEADER_BORDER_SIZE = 0.0  # Header border size
     INSPECTOR_ACTION_ALIGN_X    = 0.0  # Action button alignment
@@ -392,12 +390,9 @@ class Theme:
     INSPECTOR_HEADER_PRIMARY    : RGBA = (0.235, 0.235, 0.235, 1.0)  # Primary (Unity gray)
     INSPECTOR_HEADER_PRIMARY_HOVERED : RGBA = (0.28,  0.24,  0.24,  1.0)  # Primary hovered (red tint)
     INSPECTOR_HEADER_PRIMARY_ACTIVE  : RGBA = (0.32,  0.25,  0.25,  1.0)  # Primary active
-    INSPECTOR_HEADER_SECONDARY  : RGBA = (0.18,  0.18,  0.18,  1.0)  # Secondary (same scale, darker tone)
-    INSPECTOR_HEADER_SECONDARY_HOVERED : RGBA = (0.22,  0.20,  0.20,  1.0)
-    INSPECTOR_HEADER_SECONDARY_ACTIVE  : RGBA = (0.26,  0.22,  0.22,  1.0)
-    INSPECTOR_HEADER_LIST       : RGBA = (0.16,  0.16,  0.16,  1.0)  # List header (distinct from component header)
-    INSPECTOR_HEADER_LIST_HOVERED : RGBA = (0.20,  0.18,  0.18,  1.0)
-    INSPECTOR_HEADER_LIST_ACTIVE  : RGBA = (0.24,  0.20,  0.20,  1.0)
+    INSPECTOR_HEADER_SECONDARY  : RGBA = (0.17,  0.17,  0.17,  0.65)  # Secondary (subtle, semi-transparent)
+    INSPECTOR_HEADER_SECONDARY_HOVERED : RGBA = (0.22,  0.20,  0.20,  0.80)
+    INSPECTOR_HEADER_SECONDARY_ACTIVE  : RGBA = (0.26,  0.22,  0.22,  0.90)
 
     # -- Inspector Inline Buttons
     INSPECTOR_INLINE_BTN_IDLE  : RGBA = (0.20,  0.20,  0.20,  1.0)  # Idle
@@ -406,14 +401,6 @@ class Theme:
     INSPECTOR_INLINE_BTN_ON    : RGBA = (0.80,  0.30,  0.30,  1.0)  # Active (dimmer red)
     INSPECTOR_INLINE_BTN_GAP   : float = 4.0  # Button gap
     INSPECTOR_INLINE_BTN_H     : float = 0.0  # Button height (0=auto)
-
-    # -- List Body (Unity-style boxed area)
-    INSPECTOR_LIST_BODY_BG      : RGBA = (0.10,  0.10,  0.10,  0.82)  # Distinct dark bg behind list items
-    INSPECTOR_LIST_BODY_BORDER  : RGBA = (0.22,  0.22,  0.22,  1.0)  # Border separating list body from component bg
-    INSPECTOR_LIST_BODY_ROUNDING: float = 0.0   # Bottom corner rounding
-    INSPECTOR_LIST_BODY_PAD_X   : float = 4.0   # Horizontal padding inside list body
-    INSPECTOR_LIST_BODY_PAD_Y   : float = 2.0   # Vertical padding inside list body
-    INSPECTOR_SMALL_ICON_BTN_FRAME_PAD: tuple = (4.0, 2.0)  # Match standard inspector control height
 
     # -- Color Swatch Border
     COLOR_SWATCH_BORDER       : RGBA = (0.4, 0.4, 0.4, 1.0)
