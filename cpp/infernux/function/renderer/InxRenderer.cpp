@@ -402,6 +402,7 @@ void InxRenderer::DrawFrame()
     static double _deltaAccumMs = 0.0;
     static double _srpSceneViewMs = 0;
     static double _srpGameViewMs = 0;
+    static InxRenderer::FrameDetailTiming _detailAccum;
     static SceneManager::FrameProfile _sceneAccum;
     static std::unordered_map<std::string, double> _guiAccum;
     static std::unordered_map<std::string, double> _inspSubAccum;
@@ -424,6 +425,10 @@ void InxRenderer::DrawFrame()
     };
     static FramePacingAccum _pacingAccum;
     _fp.stamp(); // [0] frame start
+#endif
+
+#if INFERNUX_FRAME_PROFILE
+    m_frameDetailTiming = {};
 #endif
 
     // Invalidate per-frame game camera cache
@@ -465,15 +470,37 @@ void InxRenderer::DrawFrame()
 
     // Update scene system
     auto _sceneUpdateStart = std::chrono::high_resolution_clock::now();
+    auto _scenePhaseT0 = std::chrono::high_resolution_clock::now();
     TransformECSStore::Instance().BeginFrameCache(SceneManager::Instance().GetActiveScene());
+#if INFERNUX_FRAME_PROFILE
+    m_frameDetailTiming.frameCacheBeginMs =
+        std::chrono::duration<double, std::milli>(std::chrono::high_resolution_clock::now() - _scenePhaseT0).count();
+#endif
+
+    _scenePhaseT0 = std::chrono::high_resolution_clock::now();
     SceneManager::Instance().Update(m_deltaTime);
+#if INFERNUX_FRAME_PROFILE
+    m_frameDetailTiming.sceneUpdateCallMs =
+        std::chrono::duration<double, std::milli>(std::chrono::high_resolution_clock::now() - _scenePhaseT0).count();
+#endif
 
     // LateUpdate runs immediately after Update — before rendering — so that
     // camera-follow scripts see interpolated physics transforms and their
     // results are picked up by the same frame's render pass.  This matches
     // Unity's execution order: FixedUpdate → Update → LateUpdate → Render.
+    _scenePhaseT0 = std::chrono::high_resolution_clock::now();
     SceneManager::Instance().LateUpdate(m_deltaTime);
+#if INFERNUX_FRAME_PROFILE
+    m_frameDetailTiming.lateUpdateCallMs =
+        std::chrono::duration<double, std::milli>(std::chrono::high_resolution_clock::now() - _scenePhaseT0).count();
+#endif
+
+    _scenePhaseT0 = std::chrono::high_resolution_clock::now();
     TransformECSStore::Instance().EndFrameCache();
+#if INFERNUX_FRAME_PROFILE
+    m_frameDetailTiming.frameCacheEndMs =
+        std::chrono::duration<double, std::milli>(std::chrono::high_resolution_clock::now() - _scenePhaseT0).count();
+#endif
     auto _sceneUpdateEnd = std::chrono::high_resolution_clock::now();
     m_sceneUpdateMs = std::chrono::duration<double, std::milli>(_sceneUpdateEnd - _sceneUpdateStart).count();
 #if INFERNUX_FRAME_PROFILE
@@ -701,6 +728,18 @@ void InxRenderer::DrawFrame()
         _fpAccum[10] += _fp.ms(9, 10);  // DrawFrame (submit+present)
         _fpAccum[11] += _fp.ms(10, 11); // End
 
+        _detailAccum.frameCacheBeginMs += m_frameDetailTiming.frameCacheBeginMs;
+        _detailAccum.sceneUpdateCallMs += m_frameDetailTiming.sceneUpdateCallMs;
+        _detailAccum.lateUpdateCallMs += m_frameDetailTiming.lateUpdateCallMs;
+        _detailAccum.frameCacheEndMs += m_frameDetailTiming.frameCacheEndMs;
+        _detailAccum.cleanupCollectIdsMs += m_frameDetailTiming.cleanupCollectIdsMs;
+        _detailAccum.cleanupReleaseMs += m_frameDetailTiming.cleanupReleaseMs;
+        _detailAccum.cleanupActiveIds += m_frameDetailTiming.cleanupActiveIds;
+        _detailAccum.lightingCollectMs += m_frameDetailTiming.lightingCollectMs;
+        _detailAccum.lightingShadowEditorMs += m_frameDetailTiming.lightingShadowEditorMs;
+        _detailAccum.lightingShadowGameMs += m_frameDetailTiming.lightingShadowGameMs;
+        _detailAccum.lightingUploadMs += m_frameDetailTiming.lightingUploadMs;
+
         const auto &sceneProfile = SceneManager::Instance().GetLastFrameProfile();
         _sceneAccum.editorCameraMs += sceneProfile.editorCameraMs;
         _sceneAccum.editorUpdateMs += sceneProfile.editorUpdateMs;
@@ -739,11 +778,11 @@ void InxRenderer::DrawFrame()
         }
 
         ++_fpCounter;
-        if (_fpCounter % 120 == 0) {
-            constexpr double kWindow = 120.0;
+        if (_fpCounter % INFERNUX_FRAME_PROFILE_WINDOW == 0) {
+            constexpr double kWindow = static_cast<double>(INFERNUX_FRAME_PROFILE_WINDOW);
             std::ostringstream oss;
             oss << std::fixed << std::setprecision(2);
-            oss << "[Profile] avg120 frame=" << (_fpAccum[0] / kWindow) << "ms"
+            oss << "[Profile] avg" << INFERNUX_FRAME_PROFILE_WINDOW << " frame=" << (_fpAccum[0] / kWindow) << "ms"
                 << " | Delta=" << (_deltaAccumMs / kWindow) << "ms"
                 << " | Input=" << (_fpAccum[1] / kWindow) << "ms"
                 << " | Scene+Late=" << (_fpAccum[2] / kWindow) << "ms"
@@ -755,8 +794,44 @@ void InxRenderer::DrawFrame()
                 << " | Cleanup=" << (_fpAccum[7] / kWindow) << "ms"
                 << " | Lighting=" << (_fpAccum[8] / kWindow) << "ms"
                 << " | Graph+UBO=" << (_fpAccum[9] / kWindow) << "ms"
-                << " | Present=" << (_fpAccum[10] / kWindow) << "ms"
+                << " | DrawFrame=" << (_fpAccum[10] / kWindow) << "ms"
                 << " | End=" << (_fpAccum[11] / kWindow) << "ms";
+
+            {
+                const auto &bridgeProfile = SceneRenderBridge::Instance().GetSceneRenderer().GetProfileSnapshot();
+                const auto srcProfile = ScriptableRenderContext::GetProfileSnapshot();
+
+                oss << "\n  FrameCache: begin=" << (_detailAccum.frameCacheBeginMs / kWindow)
+                    << "ms updateCall=" << (_detailAccum.sceneUpdateCallMs / kWindow)
+                    << "ms lateCall=" << (_detailAccum.lateUpdateCallMs / kWindow)
+                    << "ms end=" << (_detailAccum.frameCacheEndMs / kWindow) << "ms"
+                    << "\n  PrepareDetail: total="
+                    << (bridgeProfile.prepareCalls ? bridgeProfile.prepareMs / bridgeProfile.prepareCalls : 0.0)
+                    << "ms collect=" << (bridgeProfile.prepareCalls ? bridgeProfile.collectMs / bridgeProfile.prepareCalls : 0.0)
+                    << "ms update=" << (bridgeProfile.prepareCalls ? bridgeProfile.updateMs / bridgeProfile.prepareCalls : 0.0)
+                    << "ms cull=" << (bridgeProfile.prepareCalls ? bridgeProfile.cullMs / bridgeProfile.prepareCalls : 0.0)
+                    << "ms sort=" << (bridgeProfile.prepareCalls ? bridgeProfile.sortMs / bridgeProfile.prepareCalls : 0.0)
+                    << "ms fastCalls=" << bridgeProfile.prepareFastCalls << " slowCalls=" << bridgeProfile.prepareSlowCalls
+                    << " renderables/frame=" << (bridgeProfile.prepareCalls ? bridgeProfile.renderables / bridgeProfile.prepareCalls : 0.0)
+                    << " visible/frame=" << (bridgeProfile.prepareCalls ? bridgeProfile.visible / bridgeProfile.prepareCalls : 0.0)
+                    << "\n  SRC: cull=" << (srcProfile.cullCalls ? srcProfile.cullMs / srcProfile.cullCalls : 0.0)
+                    << "ms editorCull=" << (srcProfile.cullEditorCalls ? srcProfile.cullEditorMs / srcProfile.cullEditorCalls : 0.0)
+                    << "ms gameCull=" << (srcProfile.cullGameCalls ? srcProfile.cullGameMs / srcProfile.cullGameCalls : 0.0)
+                    << "ms applyGraph=" << (srcProfile.submitCalls ? srcProfile.applyGraphMs / srcProfile.submitCalls : 0.0)
+                    << "ms submit=" << (srcProfile.submitCalls ? srcProfile.submitMs / srcProfile.submitCalls : 0.0)
+                    << "ms base=" << (srcProfile.submitCalls ? srcProfile.submitBaseMs / srcProfile.submitCalls : 0.0)
+                    << "ms editorAppend=" << (srcProfile.submitCalls ? srcProfile.submitEditorAppendMs / srcProfile.submitCalls : 0.0)
+                    << "ms ensure=" << (srcProfile.submitCalls ? srcProfile.ensureBuffersMs / srcProfile.submitCalls : 0.0)
+                    << "ms cache=" << (srcProfile.submitCalls ? srcProfile.cacheGraphMs / srcProfile.submitCalls : 0.0)
+                    << "ms finalDraws/submit=" << (srcProfile.submitCalls ? srcProfile.finalDrawCalls / srcProfile.submitCalls : 0.0)
+                    << "\n  CleanupDetail: collectIds=" << (_detailAccum.cleanupCollectIdsMs / kWindow)
+                    << "ms release=" << (_detailAccum.cleanupReleaseMs / kWindow)
+                    << "ms activeIds/frame=" << (_detailAccum.cleanupActiveIds / kWindow)
+                    << "\n  LightingDetail: collect=" << (_detailAccum.lightingCollectMs / kWindow)
+                    << "ms shadowEditor=" << (_detailAccum.lightingShadowEditorMs / kWindow)
+                    << "ms shadowGame=" << (_detailAccum.lightingShadowGameMs / kWindow)
+                    << "ms upload=" << (_detailAccum.lightingUploadMs / kWindow) << "ms";
+            }
 
             // DrawFrame sub-timing breakdown
             if (m_vkCore) {
@@ -923,10 +998,13 @@ void InxRenderer::DrawFrame()
             _inspSubAccum.clear();
             _hierSubAccum.clear();
             _pacingAccum = {};
+            _detailAccum = {};
             if (m_vkCore) {
                 m_vkCore->ResetDrawSubTimings();
             }
             infernux::vk::RenderGraph::ResetExecuteProfileSnapshot();
+            SceneRenderBridge::Instance().GetSceneRenderer().ResetProfileSnapshot();
+            ScriptableRenderContext::ResetProfileSnapshot();
             m_executorTiming = {};
         }
     }
@@ -998,9 +1076,22 @@ void InxRenderer::StageEngineGlobalsUBO()
 
 void InxRenderer::CleanupDrawCallBuffers()
 {
+#if INFERNUX_FRAME_PROFILE
+    using Clock = std::chrono::high_resolution_clock;
+    auto t0 = Clock::now();
+#endif
     // Collect active objectIds without copying DrawCall vectors (avoids
     // 14,400+ shared_ptr<InxMaterial> atomic refcount bumps per frame).
+    size_t reserveCount = 0;
+    if (m_sceneViewVisible && m_sceneRenderGraph && m_sceneRenderGraph->HasCachedDrawCalls()) {
+        reserveCount += m_sceneRenderGraph->GetCachedDrawCalls().size();
+    }
+    if (m_gameCameraEnabled && m_gameRenderGraph && m_gameRenderGraph->HasCachedDrawCalls()) {
+        reserveCount += m_gameRenderGraph->GetCachedDrawCalls().size();
+    }
+
     std::unordered_set<uint64_t> activeIds;
+    activeIds.reserve(reserveCount);
     if (m_sceneViewVisible && m_sceneRenderGraph && m_sceneRenderGraph->HasCachedDrawCalls()) {
         for (const auto &dc : m_sceneRenderGraph->GetCachedDrawCalls()) {
             activeIds.insert(dc.objectId);
@@ -1011,9 +1102,20 @@ void InxRenderer::CleanupDrawCallBuffers()
             activeIds.insert(dc.objectId);
         }
     }
+
+#if INFERNUX_FRAME_PROFILE
+    m_frameDetailTiming.cleanupCollectIdsMs = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+    m_frameDetailTiming.cleanupActiveIds = static_cast<double>(activeIds.size());
+    t0 = Clock::now();
+#endif
+
     if (!activeIds.empty()) {
         m_vkCore->CleanupUnusedBuffersByIds(activeIds);
     }
+
+#if INFERNUX_FRAME_PROFILE
+    m_frameDetailTiming.cleanupReleaseMs = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+#endif
 }
 
 void InxRenderer::WaitForGpuIdle()
@@ -1305,25 +1407,49 @@ void InxRenderer::UpdateSceneLighting()
 
     // Collect lights from scene into the light collector
     SceneLightCollector &collector = m_vkCore->GetLightCollector();
+#if INFERNUX_FRAME_PROFILE
+    using Clock = std::chrono::high_resolution_clock;
+    auto t0 = Clock::now();
+#endif
     collector.CollectLights(activeScene, cameraPos);
+#if INFERNUX_FRAME_PROFILE
+    m_frameDetailTiming.lightingCollectMs = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+#endif
 
     // Compute shadow VP from the first shadow-casting directional light.
     // Must happen BEFORE UpdateLightingUBO which uploads lightVP to GPU.
     // Use the editor camera for the scene view's shadow cascades.
     Camera *editorCam = SceneRenderBridge::Instance().GetEditorCamera();
+#if INFERNUX_FRAME_PROFILE
+    t0 = Clock::now();
+#endif
     collector.ComputeShadowVP(activeScene, cameraPos, 4096.0f, editorCam);
+#if INFERNUX_FRAME_PROFILE
+    m_frameDetailTiming.lightingShadowEditorMs =
+        std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+#endif
 
     // Compute separate shadow VP for the game camera (if active).
     // This data is patched into the lighting UBO inline before the game
     // render graph executes, preventing shadow contamination from the
     // editor camera's frustum shape.
     m_hasGameShadowData = false;
+#if INFERNUX_FRAME_PROFILE
+    m_frameDetailTiming.lightingShadowGameMs = 0.0;
+#endif
     if (m_gameCameraEnabled) {
         Camera *gameCam = FindGameCameraCached();
         if (gameCam) {
             SceneLightCollector gameCollector;
             gameCollector.CollectLights(activeScene, cameraPos);
+#if INFERNUX_FRAME_PROFILE
+            t0 = Clock::now();
+#endif
             gameCollector.ComputeShadowVP(activeScene, cameraPos, 4096.0f, gameCam);
+#if INFERNUX_FRAME_PROFILE
+            m_frameDetailTiming.lightingShadowGameMs =
+                std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+#endif
             if (gameCollector.IsShadowEnabled()) {
                 m_hasGameShadowData = true;
                 m_gameShadowCascadeCount = gameCollector.GetShadowCascadeCount();
@@ -1338,7 +1464,13 @@ void InxRenderer::UpdateSceneLighting()
     }
 
     // Build shader-compatible UBO and upload to GPU
+#if INFERNUX_FRAME_PROFILE
+    t0 = Clock::now();
+#endif
     m_vkCore->UpdateLightingUBO(cameraPos);
+#if INFERNUX_FRAME_PROFILE
+    m_frameDetailTiming.lightingUploadMs = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+#endif
 }
 
 uint64_t InxRenderer::GetSceneTextureId() const

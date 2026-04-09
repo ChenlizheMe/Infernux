@@ -1053,6 +1053,7 @@ class InxVkCoreModular
     {
         std::unique_ptr<vk::VkBufferHandle> buffer;
         VkDeviceSize capacity = 0; ///< Number of mat4 instances, not bytes
+        void *mapped = nullptr;    ///< Persistently mapped CPU pointer for host-visible SSBO
     };
     std::vector<InstanceBufferFrame> m_instanceBuffers; ///< One per frame-in-flight
     static constexpr size_t INSTANCE_BUFFER_INITIAL_CAPACITY = 256;

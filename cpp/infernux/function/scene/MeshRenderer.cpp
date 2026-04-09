@@ -500,7 +500,7 @@ void MeshRenderer::GetWorldBounds(glm::vec3 &outMin, glm::vec3 &outMax) const
     }
 
     const Transform *transform = m_gameObject->GetTransform();
-    glm::mat4 worldMatrix = transform->GetWorldMatrix();
+    const glm::mat4 &worldMatrix = transform->GetWorldMatrix();
     ComputeWorldBounds(worldMatrix, outMin, outMax);
 }
 

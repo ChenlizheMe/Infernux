@@ -241,7 +241,7 @@ void InxVkCoreModular::EnsureInstanceBufferCapacity(uint32_t frameIndex, size_t 
 
     // Preserve existing data written earlier in this frame
     if (oldMapped && newMapped && m_instanceWriteOffset > 0) {
-        std::memcpy(newMapped, oldMapped, m_instanceWriteOffset * sizeof(glm::mat4));
+            std::memcpy(newMapped, oldMapped, m_instanceWriteOffset * sizeof(glm::mat4));
     }
 
     frame.buffer = std::move(newBuffer);
