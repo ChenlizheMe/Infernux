@@ -1324,8 +1324,11 @@ void InxVkCoreModular::CleanupUnusedBuffers(const std::vector<DrawCall> &activeD
     for (const auto &dc : activeDrawCalls) {
         activeIds.insert(dc.objectId);
     }
+    CleanupUnusedBuffersByIds(activeIds);
+}
 
-    // Remove buffers for objects no longer in the scene.
+void InxVkCoreModular::CleanupUnusedBuffersByIds(const std::unordered_set<uint64_t> &activeIds)
+{    // Remove buffers for objects no longer in the scene.
     // Actual GPU resource destruction is deferred via FrameDeletionQueue
     // so that in-flight command buffers are never invalidated.
     for (auto it = m_perObjectBuffers.begin(); it != m_perObjectBuffers.end();) {

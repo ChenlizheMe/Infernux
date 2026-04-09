@@ -231,7 +231,7 @@ class InxVkCoreModular
      * @brief Draw scene objects filtered by render queue range
      *
      * Renders draw calls whose material render queue falls within
-     * [queueMin, queueMax]. Used by RenderGraph passes defined from Python
+     * [queueMin, queueMax]. Used by Python-driven RenderGraph passes
      * to split rendering into multiple passes.
      *
      * @param cmdBuf Vulkan command buffer
@@ -266,9 +266,6 @@ class InxVkCoreModular
 
     /// @brief Set draw calls for multi-material rendering (stores pointer, no copy)
     void SetDrawCalls(const std::vector<DrawCall> *drawCalls);
-
-    /// @brief Set shadow-caster draw calls (stores pointer, no copy)
-    void SetShadowDrawCalls(const std::vector<DrawCall> *drawCalls);
 
     /// @brief Stage per-frame engine globals (called by InxRenderer each frame).
     void StageGlobals(const EngineGlobalsUBO &globals);
@@ -320,23 +317,6 @@ class InxVkCoreModular
         ++m_ensureFrameCounter;
     }
 
-    /// @brief Bulk-stamp all per-object buffer entries with the current frame
-    /// counter without hash-map lookups.  Use when no `forceBufferUpdate` is
-    /// set and no new objects appeared, skipping the full EnsureObjectBuffers
-    /// loop (~0.3 ms saved at 10 k objects).
-    void BulkStampEnsuredFrame()
-    {
-        for (auto &[id, entry] : m_perObjectBuffers) {
-            entry.ensuredOnFrame = m_ensureFrameCounter;
-        }
-    }
-
-    /// @brief Return the count of per-object buffer entries.
-    size_t GetPerObjectBufferCount() const
-    {
-        return m_perObjectBuffers.size();
-    }
-
     /// @brief Remove per-object buffers for objects that are no longer active.
     /// Call once per frame after SetDrawCalls with the current active draw calls.
     void CleanupUnusedBuffers(const std::vector<DrawCall> &activeDrawCalls);
@@ -344,10 +324,6 @@ class InxVkCoreModular
     /// @brief Same as CleanupUnusedBuffers but accepts pre-built objectId set
     /// to avoid copying DrawCall vectors (saves shared_ptr atomic refcount ops).
     void CleanupUnusedBuffersByIds(const std::unordered_set<uint64_t> &activeIds);
-
-    /// @brief Remove per-object buffers that were not ensured on the current frame.
-    /// Returns the number of surviving object buffer entries after cleanup.
-    [[nodiscard]] size_t CleanupUnusedBuffersByFrameStamp();
 
     // ========================================================================
     // Command Buffer Utilities
@@ -877,7 +853,7 @@ class InxVkCoreModular
                                                                 const std::string &bindingName);
 
     // ========================================================================
-    // Per-object GPU buffers
+    // Per-Object GPU Buffers (Phase 2.3.4)
     // ========================================================================
 
     struct SharedMeshKey
@@ -960,15 +936,10 @@ class InxVkCoreModular
 
     // Unity-style draw calls for multi-material rendering (pointer to external storage, no copy)
     const std::vector<DrawCall> *m_drawCallsPtr = nullptr;
-    const std::vector<DrawCall> *m_shadowDrawCallsPtr = nullptr;
     static inline const std::vector<DrawCall> s_emptyDrawCalls{};
     const std::vector<DrawCall> &drawCalls() const
     {
         return m_drawCallsPtr ? *m_drawCallsPtr : s_emptyDrawCalls;
-    }
-    const std::vector<DrawCall> &shadowDrawCalls() const
-    {
-        return m_shadowDrawCallsPtr ? *m_shadowDrawCallsPtr : drawCalls();
     }
 
     // Pre-allocated scratch buffers for DrawSceneFiltered / DrawShadowCasters
@@ -978,7 +949,7 @@ class InxVkCoreModular
         float sortKey;
         size_t materialHash;
         VkBuffer vertexBuf;
-        InxMaterial *material; // raw pointer — resolved once in filter loop (owned by DrawCall/AssetRegistry)
+        std::shared_ptr<InxMaterial> material; // resolved once in filter loop
         std::unordered_map<uint64_t, PerObjectBuffers>::const_iterator bufIt;
     };
     std::vector<SortableDrawCall> m_eligibleScratch;
@@ -1016,10 +987,6 @@ class InxVkCoreModular
     VkSampler m_shadowDepthSampler = VK_NULL_HANDLE;
     VkRenderPass m_shadowCompatRenderPass = VK_NULL_HANDLE; ///< For pipeline compatibility
     bool m_shadowPipelineReady = false;
-
-    /// Cache of shadow pipelines keyed by shader ID (vert|frag).
-    /// Materials sharing the same shader share the same shadow VkPipeline.
-    std::unordered_map<std::string, VkPipeline> m_shadowPipelineCache;
 
     /// @brief Lazily create/recreate shadow pipeline resources.
     bool EnsureShadowPipeline(VkRenderPass compatibleRenderPass);
@@ -1086,7 +1053,6 @@ class InxVkCoreModular
     {
         std::unique_ptr<vk::VkBufferHandle> buffer;
         VkDeviceSize capacity = 0; ///< Number of mat4 instances, not bytes
-        void *mapped = nullptr;    ///< Persistently mapped CPU pointer for host-visible SSBO
     };
     std::vector<InstanceBufferFrame> m_instanceBuffers; ///< One per frame-in-flight
     static constexpr size_t INSTANCE_BUFFER_INITIAL_CAPACITY = 256;

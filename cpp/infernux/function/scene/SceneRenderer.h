@@ -90,7 +90,7 @@ class SceneRenderer
     /// @brief Build draw calls from visible renderables.
     /// Converts the culled/sorted RenderableObject list into DrawCall + combined vertex/index data.
     /// @note Vertices remain in model/local space; per-object world transform is applied on GPU via push constants.
-    [[nodiscard]] DrawCallResult BuildDrawCalls();
+    [[nodiscard]] const DrawCallResult &BuildDrawCalls();
 
     /// @brief Build draw calls by re-culling existing renderables against a different camera.
     /// Reuses renderables collected by PrepareFrame() to avoid re-collecting world matrices,
@@ -186,7 +186,7 @@ class SceneRenderBridge
 
     /// @brief Build draw calls from the current frame's visible renderables.
     /// Delegates to SceneRenderer::BuildDrawCalls().
-    [[nodiscard]] DrawCallResult BuildDrawCalls();
+    [[nodiscard]] const DrawCallResult &BuildDrawCalls();
 
     /// @brief Get the editor camera.
     [[nodiscard]] Camera *GetEditorCamera() const;

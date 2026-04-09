@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <cstring>
 #include <glm/gtc/matrix_transform.hpp>
-#include <unordered_map>
 
 namespace infernux
 {
@@ -349,24 +348,19 @@ void SceneRenderer::EmitDrawCallsForRenderable(DrawCallResult &result, const Ren
     }
 }
 
-DrawCallResult SceneRenderer::BuildDrawCalls()
+const DrawCallResult &SceneRenderer::BuildDrawCalls()
 {
     if (m_drawCallsCacheValid) {
-        // Fast path: patch world matrices + bounds + visibility on cached draw calls.
-        // Build objectId→renderable_index lookup O(N), then iterate draw calls O(D).
-        std::unordered_map<uint64_t, size_t> idMap;
-        idMap.reserve(m_renderables.size());
-        for (size_t i = 0; i < m_renderables.size(); ++i) {
-            idMap[m_renderables[i].objectId] = i;
-        }
-        for (auto &dc : m_cachedDrawCalls.drawCalls) {
-            auto it = idMap.find(dc.objectId);
-            if (it != idMap.end()) {
-                const auto &r = m_renderables[it->second];
-                dc.worldMatrix = r.worldMatrix;
-                dc.worldBounds = r.worldBounds;
-                dc.frustumVisible = r.visible;
-            }
+        // Fast path: renderables and draw calls are 1:1 (same order from
+        // the slow-path build).  Patch transforms in-place with direct
+        // index — no hash map, zero heap allocation.
+        const size_t n = std::min(m_cachedDrawCalls.drawCalls.size(), m_renderables.size());
+        for (size_t i = 0; i < n; ++i) {
+            auto &dc = m_cachedDrawCalls.drawCalls[i];
+            const auto &r = m_renderables[i];
+            dc.worldMatrix = r.worldMatrix;
+            dc.worldBounds = r.worldBounds;
+            dc.frustumVisible = r.visible;
         }
         return m_cachedDrawCalls;
     }
@@ -384,9 +378,9 @@ DrawCallResult SceneRenderer::BuildDrawCalls()
         EmitDrawCallsForRenderable(result, renderable, renderable.visible, bufferDirty);
     }
 
-    m_cachedDrawCalls = result;
+    m_cachedDrawCalls = std::move(result);
     m_drawCallsCacheValid = true;
-    return result;
+    return m_cachedDrawCalls;
 }
 
 DrawCallResult SceneRenderer::BuildDrawCallsForCamera(Camera *camera)
@@ -498,7 +492,7 @@ DrawCallResult SceneRenderBridge::CullAndBuildForCamera(Camera *camera)
     return m_sceneRenderer.BuildDrawCallsForCamera(camera);
 }
 
-DrawCallResult SceneRenderBridge::BuildDrawCalls()
+const DrawCallResult &SceneRenderBridge::BuildDrawCalls()
 {
     return m_sceneRenderer.BuildDrawCalls();
 }
