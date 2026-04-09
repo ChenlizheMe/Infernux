@@ -336,20 +336,12 @@ void ScriptableRenderContext::SubmitCulling(CullingResults culling)
         }
     }
 
-    // Build the forward-render list.  Game camera culling already produced a
-    // compact visible-only list; editor camera still needs a visibility filter
-    // over the cached scene draw-call set.
-    std::vector<DrawCall> forwardDrawCalls;
-    if (culling.sceneDrawCallsRef) {
-        forwardDrawCalls.reserve(m_orderedDrawCalls.size());
-        for (const DrawCall &dc : m_orderedDrawCalls) {
-            if (dc.frustumVisible) {
-                forwardDrawCalls.push_back(dc);
-            }
-        }
-    } else {
-        forwardDrawCalls = std::move(m_orderedDrawCalls);
-    }
+    // Build the forward-render list.
+    // Game camera path already has a compact visible-only list (move it).
+    // Editor camera path: skip visibility pre-filter — DrawSceneFiltered
+    // already checks frustumVisible per draw call, so pre-filtering is
+    // redundant memcpy of ~2.7k DrawCalls.
+    std::vector<DrawCall> forwardDrawCalls = std::move(m_orderedDrawCalls);
 
     if (!shadowSource) {
         for (const DrawCall &dc : forwardDrawCalls) {
@@ -376,8 +368,9 @@ void ScriptableRenderContext::SubmitCulling(CullingResults culling)
         m_graph->SetCachedDrawCalls(std::move(result.drawCalls));
         if (shadowSource) {
             if (culling.shadowDrawCallsRef) {
-                std::vector<DrawCall> shadowCopy(*culling.shadowDrawCallsRef);
-                m_graph->SetCachedShadowDrawCalls(std::move(shadowCopy));
+                // Editor camera: shadow source is the scene's cached draw calls.
+                // Use a zero-copy reference instead of copying 10k+ DrawCalls.
+                m_graph->SetCachedShadowDrawCallsRef(culling.shadowDrawCallsRef);
             } else {
                 m_graph->SetCachedShadowDrawCalls(std::move(culling.shadowDrawCalls));
             }

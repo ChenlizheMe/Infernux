@@ -292,13 +292,23 @@ class SceneRenderGraph
     void SetCachedShadowDrawCalls(std::vector<DrawCall> &&drawCalls)
     {
         m_cachedShadowDrawCalls = std::move(drawCalls);
+        m_cachedShadowDrawCallsRef = nullptr;
         m_hasCachedShadowDrawCalls = true;
+    }
+
+    /// @brief Reference external shadow-caster candidates (zero-copy).
+    /// The referenced vector must outlive the graph's usage (e.g. SceneRenderer cache).
+    void SetCachedShadowDrawCallsRef(const std::vector<DrawCall> *ref)
+    {
+        m_cachedShadowDrawCallsRef = ref;
+        m_hasCachedShadowDrawCalls = (ref != nullptr && !ref->empty());
     }
 
     /// @brief Clear cached shadow-caster candidates.
     void ClearCachedShadowDrawCalls()
     {
         m_cachedShadowDrawCalls.clear();
+        m_cachedShadowDrawCallsRef = nullptr;
         m_hasCachedShadowDrawCalls = false;
     }
 
@@ -314,9 +324,11 @@ class SceneRenderGraph
         return m_hasCachedDrawCalls;
     }
 
-    /// @brief Get cached shadow draw calls.
+    /// @brief Get cached shadow draw calls (prefers external ref if set).
     [[nodiscard]] const std::vector<DrawCall> &GetCachedShadowDrawCalls() const
     {
+        if (m_cachedShadowDrawCallsRef)
+            return *m_cachedShadowDrawCallsRef;
         return m_cachedShadowDrawCalls;
     }
 
@@ -362,6 +374,7 @@ class SceneRenderGraph
         m_cachedDrawCalls.clear();
         m_hasCachedDrawCalls = false;
         m_cachedShadowDrawCalls.clear();
+        m_cachedShadowDrawCallsRef = nullptr;
         m_hasCachedShadowDrawCalls = false;
         m_cachedView = glm::mat4(1.0f);
         m_cachedProj = glm::mat4(1.0f);
@@ -491,6 +504,7 @@ class SceneRenderGraph
     std::vector<DrawCall> m_cachedDrawCalls;
     bool m_hasCachedDrawCalls = false;
     std::vector<DrawCall> m_cachedShadowDrawCalls;
+    const std::vector<DrawCall> *m_cachedShadowDrawCallsRef = nullptr;
     bool m_hasCachedShadowDrawCalls = false;
     bool m_hasShadowCasterPass = false;
 
