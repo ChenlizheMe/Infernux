@@ -506,29 +506,25 @@ void MeshRenderer::GetWorldBounds(glm::vec3 &outMin, glm::vec3 &outMax) const
 
 void MeshRenderer::ComputeWorldBounds(const glm::mat4 &worldMatrix, glm::vec3 &outMin, glm::vec3 &outMax) const
 {
+    // Arvo's AABB transform method: O(9) multiply-adds instead of
+    // 8 × mat4×vec4 (O(32) multiplies).  For each output axis, we
+    // compute the transformed center ± transformed half-extent.
+    const glm::vec3 center = (m_localBoundsMin + m_localBoundsMax) * 0.5f;
+    const glm::vec3 extent = (m_localBoundsMax - m_localBoundsMin) * 0.5f;
 
-    // Transform all 8 corners of the local AABB
-    glm::vec3 corners[8] = {
-        glm::vec3(m_localBoundsMin.x, m_localBoundsMin.y, m_localBoundsMin.z),
-        glm::vec3(m_localBoundsMax.x, m_localBoundsMin.y, m_localBoundsMin.z),
-        glm::vec3(m_localBoundsMin.x, m_localBoundsMax.y, m_localBoundsMin.z),
-        glm::vec3(m_localBoundsMax.x, m_localBoundsMax.y, m_localBoundsMin.z),
-        glm::vec3(m_localBoundsMin.x, m_localBoundsMin.y, m_localBoundsMax.z),
-        glm::vec3(m_localBoundsMax.x, m_localBoundsMin.y, m_localBoundsMax.z),
-        glm::vec3(m_localBoundsMin.x, m_localBoundsMax.y, m_localBoundsMax.z),
-        glm::vec3(m_localBoundsMax.x, m_localBoundsMax.y, m_localBoundsMax.z),
-    };
-
-    outMin = glm::vec3(std::numeric_limits<float>::max());
-    outMax = glm::vec3(std::numeric_limits<float>::lowest());
-
-    for (const auto &corner : corners) {
-        glm::vec4 worldCorner = worldMatrix * glm::vec4(corner, 1.0f);
-        glm::vec3 wc = glm::vec3(worldCorner);
-
-        outMin = glm::min(outMin, wc);
-        outMax = glm::max(outMax, wc);
+    glm::vec3 newCenter, newExtent;
+    for (int i = 0; i < 3; ++i) {
+        newCenter[i] = worldMatrix[3][i]; // translation
+        newExtent[i] = 0.0f;
+        for (int j = 0; j < 3; ++j) {
+            float e = worldMatrix[j][i]; // column-major: M[col][row]
+            newCenter[i] += e * center[j];
+            newExtent[i] += std::abs(e) * extent[j];
+        }
     }
+
+    outMin = newCenter - newExtent;
+    outMax = newCenter + newExtent;
 }
 
 std::string MeshRenderer::Serialize() const

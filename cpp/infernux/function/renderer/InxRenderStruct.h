@@ -129,22 +129,22 @@ struct UniformBufferObject
  * Represents a single draw call with its own material, transform,
  * and per-object mesh buffer references.
  *
- * Each DrawCall carries non-owning pointers to the
+ * Phase 2.3.4: Each DrawCall now carries non-owning pointers to the
  * object's vertex/index data. The renderer creates persistent per-object
  * GPU buffers, eliminating the per-frame combined-buffer copy.
  */
 struct DrawCall
 {
-    uint32_t indexStart = 0;         // Offset into index buffer
-    uint32_t indexCount = 0;         // Number of indices to draw
-    int32_t vertexStart = 0;         // Base vertex offset (for submesh rendering)
-    glm::mat4 worldMatrix{1.0f};     // Object's world transform matrix
-    InxMaterial *material = nullptr; // Non-owning pointer (lifetime managed by MeshRenderer/AssetRegistry)
-    uint64_t objectId = 0;           // GameObject ID for buffer lookup
-    bool frustumVisible = true;      // Whether object passed main-camera frustum culling
-    AABB worldBounds;                // World-space bounding box for shadow cascade culling
+    uint32_t indexStart = 0;               // Offset into index buffer
+    uint32_t indexCount = 0;               // Number of indices to draw
+    int32_t vertexStart = 0;               // Base vertex offset (for submesh rendering)
+    glm::mat4 worldMatrix{1.0f};           // Object's world transform matrix
+    InxMaterial *material = nullptr;       // Non-owning pointer (lifetime managed by MeshRenderer/AssetRegistry)
+    uint64_t objectId = 0;                 // GameObject ID for buffer lookup
+    bool frustumVisible = true;            // Whether object passed main-camera frustum culling
+    AABB worldBounds;                      // World-space bounding box for shadow cascade culling
 
-    // Per-object mesh data pointers
+    // Per-object mesh data pointers (Phase 2.3.4)
     // Non-owning references to MeshRenderer's persistent vertex/index data.
     // Used by the renderer to create/update per-object GPU buffers.
     const std::vector<Vertex> *meshVertices = nullptr;

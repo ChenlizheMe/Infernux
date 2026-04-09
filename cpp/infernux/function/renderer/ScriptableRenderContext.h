@@ -1,7 +1,6 @@
 #pragma once
 
 #include "InxRenderStruct.h"
-#include "ProfileConfig.h"
 #include "RenderGraphDescription.h"
 #include <function/scene/Camera.h>
 #include <function/scene/PrimitiveMeshes.h>
@@ -39,16 +38,13 @@ struct RenderTargetHandle;
  */
 struct CullingResults
 {
-    std::vector<DrawCall> drawCalls;                          ///< All visible draw calls (unfiltered)
-    std::vector<DrawCall> shadowDrawCalls;                    ///< Layer-filtered shadow candidates for game camera path
+    std::vector<DrawCall> drawCalls; ///< All visible draw calls (unfiltered)
     const std::vector<DrawCall> *sceneDrawCallsRef = nullptr; ///< Non-owning ref (editor camera fast path)
-    const std::vector<DrawCall> *shadowDrawCallsRef = nullptr; ///< Non-owning ref to shadow candidates
-    uint32_t lightCount = 0;                                   ///< Number of visible lights (populated by Cull)
+    uint32_t lightCount = 0;         ///< Number of visible lights (populated by Cull)
 
     [[nodiscard]] size_t visibleObjectCount() const
     {
-        if (sceneDrawCallsRef)
-            return sceneDrawCallsRef->size();
+        if (sceneDrawCallsRef) return sceneDrawCallsRef->size();
         return drawCalls.size();
     }
     [[nodiscard]] size_t visibleLightCount() const
@@ -71,7 +67,7 @@ struct EditorGizmosContext
 {
     EditorGizmos *gizmos = nullptr;
     EditorTools *editorTools = nullptr;
-    GizmosDrawCallBuffer *componentGizmos = nullptr; ///< Component gizmos supplied by the scripting layer
+    GizmosDrawCallBuffer *componentGizmos = nullptr; ///< Python-driven component gizmos
     std::shared_ptr<InxMaterial> gizmoMaterial;
     std::shared_ptr<InxMaterial> gridMaterial;
     std::shared_ptr<InxMaterial> editorToolsMaterial;
@@ -103,30 +99,6 @@ struct EditorGizmosContext
 class ScriptableRenderContext
 {
   public:
-#if INFERNUX_FRAME_PROFILE
-    struct ProfileSnapshot
-    {
-        double cullMs = 0.0;
-        double cullEditorMs = 0.0;
-        double cullGameMs = 0.0;
-        double applyGraphMs = 0.0;
-        double submitMs = 0.0;
-        double submitBaseMs = 0.0;
-        double submitEditorAppendMs = 0.0;
-        double ensureBuffersMs = 0.0;
-        double cacheGraphMs = 0.0;
-        double cullCalls = 0.0;
-        double cullEditorCalls = 0.0;
-        double cullGameCalls = 0.0;
-        double submitCalls = 0.0;
-        double baseDrawCalls = 0.0;
-        double finalDrawCalls = 0.0;
-    };
-
-    [[nodiscard]] static ProfileSnapshot GetProfileSnapshot();
-    static void ResetProfileSnapshot();
-#endif
-
     ScriptableRenderContext(InxVkCoreModular *vkCore, SceneRenderGraph *graph,
                             const EditorGizmosContext &gizmoCtx = {});
 
@@ -156,7 +128,7 @@ class ScriptableRenderContext
     void RenderWithGraph(Camera *camera, const RenderGraphDescription &desc);
 
     // ====================================================================
-    // CommandBuffer integration
+    // Phase 2: CommandBuffer Integration
     // ====================================================================
 
     /// @brief Execute a deferred CommandBuffer.
@@ -164,14 +136,14 @@ class ScriptableRenderContext
     void ExecuteCommandBuffer(CommandBuffer &cmd);
 
     // ====================================================================
-    // Render target operations
+    // Phase 2: Render Target Operations
     // ====================================================================
 
     /// @brief Get a handle representing the final camera render target.
     RenderTargetHandle GetCameraTarget(Camera *camera) const;
 
     // ====================================================================
-    // Global shader parameters (immediate mode)
+    // Phase 2: Global Shader Parameters (immediate mode)
     // ====================================================================
 
     void SetGlobalTexture(const std::string &name, RenderTargetHandle handle);
@@ -191,7 +163,7 @@ class ScriptableRenderContext
     }
 
     // ====================================================================
-    // TransientResourcePool access
+    // Phase 2: TransientResourcePool injection
     // ====================================================================
 
     /// @brief Set the transient resource pool (called by InxRenderer during setup).
@@ -207,7 +179,7 @@ class ScriptableRenderContext
     }
 
     // ====================================================================
-    // Global parameter accessors for CommandBuffer execution
+    // Phase 2: Global parameter accessors (for CommandBuffer execution)
     // ====================================================================
 
     [[nodiscard]] const std::unordered_map<std::string, float> &GetGlobalFloats() const
@@ -239,16 +211,16 @@ class ScriptableRenderContext
     CullingResults m_cachedCullingResults; ///< Cached for repeated Cull() calls
     bool m_submitted = false;
 
-    // Deferred CommandBuffer execution state
+    // Phase 2: CommandBuffer deferred execution
     TransientResourcePool *m_transientPool = nullptr;
     std::vector<CommandBuffer *> m_pendingCommandBuffers;
 
-    // Global shader parameter state
+    // Phase 2: Global shader parameter state
     std::unordered_map<std::string, float> m_globalFloats;
     std::unordered_map<std::string, std::array<float, 4>> m_globalVectors;
     std::unordered_map<std::string, uint32_t> m_globalTextures; // name → RT handle
 
-    // Handle → pool slot mapping for transient RT resolution
+    // Phase 2: Handle → pool slot mapping for transient RT resolution
     std::unordered_map<uint32_t, uint32_t> m_handleToSlotMap; // RenderTargetHandle.id → pool slot
 
     /// @brief Process all pending CommandBuffers' commands (RT management, globals).

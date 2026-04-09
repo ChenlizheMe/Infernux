@@ -230,6 +230,9 @@ class TransformECSStore
 
     // ── Global dirty flag for fast SyncSceneWorldMatrices skip ───────
     bool m_anyWorldMatrixDirty = false;
+    // Set when any rotation-affecting setter is called; cleared by BeginFrameCache.
+    // When false, BeginFrameCache skips the expensive quat_cast extraction.
+    bool m_anyRotationDirtied = true;
 
     // ── slot metadata (free-list + generation) ───────────────────────
     std::vector<uint32_t>  m_generations;

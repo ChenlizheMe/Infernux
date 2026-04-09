@@ -903,8 +903,8 @@ void OutlineRenderer::RenderOutlineMask(VkCommandBuffer cmdBuf, const std::vecto
         if (dc.material) {
             ShaderProgram *fwdProgram = dc.material->GetPassShaderProgram(ShaderCompileTarget::Forward);
             if (fwdProgram && fwdProgram->HasVertexMaterialUBO()) {
-                VkPipeline mtlPipeline = GetOrCreateMtlOutlinePipeline(dc.material.get());
-                VkDescriptorSet mtlDescSet = GetOrCreateMtlOutlineDescSet(dc.material.get());
+                VkPipeline mtlPipeline = GetOrCreateMtlOutlinePipeline(dc.material);
+                VkDescriptorSet mtlDescSet = GetOrCreateMtlOutlineDescSet(dc.material);
 
                 if (mtlPipeline != VK_NULL_HANDLE && mtlDescSet != VK_NULL_HANDLE) {
                     // Write the object's world transform to the per-frame instance buffer
