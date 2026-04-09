@@ -117,6 +117,7 @@ static void GetPrimitiveMeshData(PrimitiveType type,
 
 /**
  * @brief Helper function to create a primitive GameObject.
+ * Auto-reserves capacity when rapid creation is detected.
  */
 static GameObject *CreatePrimitiveObject(Scene *scene, PrimitiveType type, const std::string &name = "")
 {
@@ -126,6 +127,18 @@ static GameObject *CreatePrimitiveObject(Scene *scene, PrimitiveType type, const
     GetPrimitiveMeshData(type, vertices, indices, defaultName);
 
     const std::string objectName = name.empty() ? defaultName : name;
+
+    // Auto-reserve: when the ECS store is near capacity, pre-allocate a
+    // large chunk so subsequent creates don't trigger per-call reallocation.
+    auto &ecs = TransformECSStore::Instance();
+    const size_t cap = ecs.Capacity();
+    const size_t alive = ecs.AliveCount();
+    if (alive + 1 >= cap) {
+        // Growing: reserve 2× current or at least 1024 extra slots.
+        const size_t newCap = std::max(cap * 2, cap + 1024);
+        ecs.Reserve(newCap);
+        scene->ReserveCapacity(newCap);
+    }
 
     GameObject *obj = scene->CreateGameObject(objectName);
     if (obj) {
