@@ -1445,7 +1445,9 @@ void InxRenderer::UpdateSceneLighting()
         Camera *gameCam = FindGameCameraCached();
         if (gameCam) {
             SceneLightCollector gameCollector;
-            gameCollector.CollectLights(activeScene, cameraPos);
+            // Skip CollectLights — it produces identical results to the
+            // editor collector (same scene, same lights).  Only the
+            // shadow VP matrices differ per camera.
 #if INFERNUX_FRAME_PROFILE
             t0 = Clock::now();
 #endif

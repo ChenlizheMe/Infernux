@@ -1381,30 +1381,37 @@ void InxVkCoreModular::CleanupUnusedBuffersByIds(const std::unordered_set<uint64
 size_t InxVkCoreModular::CleanupUnusedBuffersByFrameStamp()
 {
     // Remove objects that were not referenced by EnsureObjectBuffers on this frame.
+    bool anyRemoved = false;
     for (auto it = m_perObjectBuffers.begin(); it != m_perObjectBuffers.end();) {
         if (it->second.ensuredOnFrame != m_ensureFrameCounter) {
             it = m_perObjectBuffers.erase(it);
+            anyRemoved = true;
         } else {
             ++it;
         }
     }
 
-    std::unordered_set<SharedMeshKey, SharedMeshKeyHash> activeSharedKeysFromObjects;
-    activeSharedKeysFromObjects.reserve(m_perObjectBuffers.size());
-    for (const auto &kv : m_perObjectBuffers) {
-        activeSharedKeysFromObjects.insert(kv.second.sharedKey);
-    }
+    // Only rebuild the active-shared-keys set and prune shared buffers when
+    // at least one per-object entry was removed.  In a stable scene (no adds/removes)
+    // this skips building a 10k-element unordered_set every frame.
+    if (anyRemoved) {
+        std::unordered_set<SharedMeshKey, SharedMeshKeyHash> activeSharedKeysFromObjects;
+        activeSharedKeysFromObjects.reserve(m_perObjectBuffers.size());
+        for (const auto &kv : m_perObjectBuffers) {
+            activeSharedKeysFromObjects.insert(kv.second.sharedKey);
+        }
 
-    for (auto it = m_sharedMeshBuffers.begin(); it != m_sharedMeshBuffers.end();) {
-        if (activeSharedKeysFromObjects.find(it->first) == activeSharedKeysFromObjects.end()) {
-            auto buffers = std::make_shared<SharedMeshBuffers>(std::move(it->second));
-            m_deletionQueue.Push([buffers]() mutable {
-                buffers->vertexBuffer.reset();
-                buffers->indexBuffer.reset();
-            });
-            it = m_sharedMeshBuffers.erase(it);
-        } else {
-            ++it;
+        for (auto it = m_sharedMeshBuffers.begin(); it != m_sharedMeshBuffers.end();) {
+            if (activeSharedKeysFromObjects.find(it->first) == activeSharedKeysFromObjects.end()) {
+                auto buffers = std::make_shared<SharedMeshBuffers>(std::move(it->second));
+                m_deletionQueue.Push([buffers]() mutable {
+                    buffers->vertexBuffer.reset();
+                    buffers->indexBuffer.reset();
+                });
+                it = m_sharedMeshBuffers.erase(it);
+            } else {
+                ++it;
+            }
         }
     }
 

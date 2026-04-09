@@ -247,6 +247,8 @@ void SceneRenderer::UpdateCachedRenderableTransforms(bool useActiveCameraCulling
 {
     // Fast path: renderer set unchanged. Refresh transforms, bounds, culling,
     // and cached draw calls in one O(N) pass.
+    // Optimization: skip bounds recomputation and heavy draw-call patching
+    // for objects whose world transform has not changed since last frame.
     Frustum frustum;
     const bool useFrustum = useActiveCameraCulling && m_frustumCulling && m_activeCamera;
     if (useFrustum) {
@@ -262,32 +264,47 @@ void SceneRenderer::UpdateCachedRenderableTransforms(bool useActiveCameraCulling
         if (!obj) continue;
 
         const glm::mat4 &worldMatrix = obj->GetTransform()->GetWorldMatrix();
-        renderable.worldMatrix = worldMatrix;
 
-        glm::vec3 bmin, bmax;
-        mr->ComputeWorldBounds(worldMatrix, bmin, bmax);
-        renderable.worldBounds = AABB(bmin, bmax);
+        // Detect transform change: skip bounds + draw-call patch for static objects.
+        const bool transformChanged = std::memcmp(&worldMatrix, &renderable.worldMatrix, sizeof(glm::mat4)) != 0;
+
+        if (transformChanged) {
+            renderable.worldMatrix = worldMatrix;
+
+            glm::vec3 bmin, bmax;
+            mr->ComputeWorldBounds(worldMatrix, bmin, bmax);
+            renderable.worldBounds = AABB(bmin, bmax);
+        }
 
         renderable.visible = !useFrustum || frustum.IntersectsAABB(renderable.worldBounds);
 
         if (m_drawCallsCacheValid && renderable.drawCallCount > 0) {
-            const glm::vec3 &pivot = mr->GetMeshPivotOffset();
-            glm::mat4 drawWorldMatrix = worldMatrix;
-            if (mr->GetSubmeshIndex() >= 0 && pivot != glm::vec3(0.0f)) {
-                drawWorldMatrix = worldMatrix * glm::translate(glm::mat4(1.0f), pivot);
-            }
-
-            const bool bufferDirty = mr->ConsumeMeshBufferDirty();
             const size_t drawCallEnd = std::min(renderable.drawCallStart + renderable.drawCallCount,
                                                 m_cachedDrawCalls.drawCalls.size());
-            bool firstDirty = true;
-            for (size_t drawCallIndex = renderable.drawCallStart; drawCallIndex < drawCallEnd; ++drawCallIndex) {
-                DrawCall &dc = m_cachedDrawCalls.drawCalls[drawCallIndex];
-                dc.worldMatrix = drawWorldMatrix;
-                dc.worldBounds = renderable.worldBounds;
-                dc.frustumVisible = renderable.visible;
-                dc.forceBufferUpdate = firstDirty ? bufferDirty : false;
-                firstDirty = false;
+
+            if (transformChanged) {
+                // Full patch: transform changed — update matrix, bounds, visibility.
+                const glm::vec3 &pivot = mr->GetMeshPivotOffset();
+                glm::mat4 drawWorldMatrix = worldMatrix;
+                if (mr->GetSubmeshIndex() >= 0 && pivot != glm::vec3(0.0f)) {
+                    drawWorldMatrix = worldMatrix * glm::translate(glm::mat4(1.0f), pivot);
+                }
+
+                const bool bufferDirty = mr->ConsumeMeshBufferDirty();
+                bool firstDirty = true;
+                for (size_t drawCallIndex = renderable.drawCallStart; drawCallIndex < drawCallEnd; ++drawCallIndex) {
+                    DrawCall &dc = m_cachedDrawCalls.drawCalls[drawCallIndex];
+                    dc.worldMatrix = drawWorldMatrix;
+                    dc.worldBounds = renderable.worldBounds;
+                    dc.frustumVisible = renderable.visible;
+                    dc.forceBufferUpdate = firstDirty ? bufferDirty : false;
+                    firstDirty = false;
+                }
+            } else {
+                // Light patch: only update frustumVisible (camera may have moved).
+                for (size_t drawCallIndex = renderable.drawCallStart; drawCallIndex < drawCallEnd; ++drawCallIndex) {
+                    m_cachedDrawCalls.drawCalls[drawCallIndex].frustumVisible = renderable.visible;
+                }
             }
         }
 
