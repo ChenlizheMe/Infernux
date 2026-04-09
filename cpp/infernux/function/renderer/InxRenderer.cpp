@@ -569,11 +569,14 @@ void InxRenderer::DrawFrame()
     _fp.stamp(); // [4] after GUI::BuildFrame (ImGui → Python panels)
 #endif
 
+    const bool sceneViewActive = (m_sceneViewVisible && m_sceneRenderTarget && m_sceneRenderTarget->IsReady() &&
+                                  m_sceneRenderTarget->GetWidth() > 1 && m_sceneRenderTarget->GetHeight() > 1);
+
     // Prepare scene rendering data (collect + cull + sort) AFTER GUI processing
     // so we always operate on the current scene state.
     SceneRenderBridge &bridge = SceneRenderBridge::Instance();
     auto _prepareStart = std::chrono::high_resolution_clock::now();
-    bridge.PrepareFrame();
+    bridge.PrepareFrame(sceneViewActive);
     auto _prepareEnd = std::chrono::high_resolution_clock::now();
     m_prepareFrameMs = std::chrono::duration<double, std::milli>(_prepareEnd - _prepareStart).count();
 #if INFERNUX_FRAME_PROFILE
@@ -592,8 +595,6 @@ void InxRenderer::DrawFrame()
         return;
 
     // Render scene via Python SRP render pipeline
-    const bool sceneViewActive = (m_sceneViewVisible && m_sceneRenderTarget && m_sceneRenderTarget->IsReady() &&
-                                  m_sceneRenderTarget->GetWidth() > 1 && m_sceneRenderTarget->GetHeight() > 1);
 
     if (m_renderPipeline) {
         EditorGizmosContext gizmoCtx;

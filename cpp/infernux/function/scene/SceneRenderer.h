@@ -59,8 +59,8 @@ class SceneRenderer
     // ========================================================================
 
     /// @brief Prepare render data for the current frame using editor camera.
-    /// Call this before DrawFrame()
-    void PrepareFrame();
+    /// When useActiveCameraCulling is false, only updates transforms/bounds/cache state.
+    void PrepareFrame(bool useActiveCameraCulling = true);
 
     /// @brief Prepare render data for a specific camera (independent culling).
     /// Used by Game View to cull against the game camera's frustum.
@@ -160,8 +160,8 @@ class SceneRenderer
     void PerformCulling();
     void SortRenderables();
 
-    /// @brief Fast-path: update world matrices, bounds, culling, and cached draw calls in one pass.
-    void UpdateCachedRenderableTransforms();
+    /// @brief Fast-path: update world matrices, bounds, optional culling, and cached draw calls in one pass.
+    void UpdateCachedRenderableTransforms(bool useActiveCameraCulling);
 
     /// @brief Shared draw-call emission logic used by both BuildDrawCalls() and BuildDrawCallsForCamera().
     void EmitDrawCallsForRenderable(DrawCallResult &result, const RenderableObject &renderable, bool visible,
@@ -217,7 +217,7 @@ class SceneRenderBridge
     void OnWindowResize(uint32_t width, uint32_t height);
 
     /// @brief Prepare editor camera rendering (call once per frame before draw calls)
-    void PrepareFrame();
+    void PrepareFrame(bool useActiveCameraCulling = true);
 
     /// @brief Prepare rendering for a specific camera (independent culling).
     /// @param camera The camera to cull and collect renderables for.

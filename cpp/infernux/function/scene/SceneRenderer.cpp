@@ -12,7 +12,7 @@ namespace infernux
 // SceneRenderer Implementation
 // ============================================================================
 
-void SceneRenderer::PrepareFrame()
+void SceneRenderer::PrepareFrame(bool useActiveCameraCulling)
 {
 #if INFERNUX_FRAME_PROFILE
     using Clock = std::chrono::high_resolution_clock;
@@ -28,7 +28,7 @@ void SceneRenderer::PrepareFrame()
 #if INFERNUX_FRAME_PROFILE
     const auto t0 = Clock::now();
 #endif
-        UpdateCachedRenderableTransforms();
+        UpdateCachedRenderableTransforms(useActiveCameraCulling);
 #if INFERNUX_FRAME_PROFILE
     m_profileSnapshot.updateMs += std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
     m_profileSnapshot.prepareFastCalls += 1.0;
@@ -47,7 +47,7 @@ void SceneRenderer::PrepareFrame()
 #endif
     }
 
-    if (!fastPath && m_frustumCulling) {
+    if (!fastPath && useActiveCameraCulling && m_frustumCulling) {
 #if INFERNUX_FRAME_PROFILE
     const auto t0 = Clock::now();
 #endif
@@ -97,7 +97,7 @@ void SceneRenderer::PrepareFrame(Camera *camera)
     #if INFERNUX_FRAME_PROFILE
         const auto t0 = Clock::now();
     #endif
-        UpdateCachedRenderableTransforms();
+        UpdateCachedRenderableTransforms(true);
     #if INFERNUX_FRAME_PROFILE
         m_profileSnapshot.updateMs += std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
         m_profileSnapshot.prepareFastCalls += 1.0;
@@ -243,12 +243,12 @@ void SceneRenderer::CollectRenderables(uint32_t cullingMask)
     m_visibleCount = m_renderables.size();
 }
 
-void SceneRenderer::UpdateCachedRenderableTransforms()
+void SceneRenderer::UpdateCachedRenderableTransforms(bool useActiveCameraCulling)
 {
     // Fast path: renderer set unchanged. Refresh transforms, bounds, culling,
     // and cached draw calls in one O(N) pass.
     Frustum frustum;
-    const bool useFrustum = m_frustumCulling && m_activeCamera;
+    const bool useFrustum = useActiveCameraCulling && m_frustumCulling && m_activeCamera;
     if (useFrustum) {
         frustum.ExtractFromMatrix(m_activeCamera->GetViewProjectionMatrix());
     }
@@ -629,9 +629,9 @@ void SceneRenderBridge::OnWindowResize(uint32_t width, uint32_t height)
     }
 }
 
-void SceneRenderBridge::PrepareFrame()
+void SceneRenderBridge::PrepareFrame(bool useActiveCameraCulling)
 {
-    m_sceneRenderer.PrepareFrame();
+    m_sceneRenderer.PrepareFrame(useActiveCameraCulling);
 }
 
 DrawCallResult SceneRenderBridge::PrepareAndBuildForCamera(Camera *camera)
