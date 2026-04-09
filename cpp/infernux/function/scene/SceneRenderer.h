@@ -3,6 +3,7 @@
 #include "../scene/SceneSystem.h"
 #include <function/renderer/Frustum.h>
 #include <function/renderer/InxRenderStruct.h>
+#include <function/renderer/ProfileConfig.h>
 #include <function/resources/InxMaterial/InxMaterial.h>
 #include <functional>
 #include <memory>
@@ -24,9 +25,11 @@ struct RenderableObject
     glm::mat4 worldMatrix;
     MeshRef mesh;
     std::shared_ptr<InxMaterial> renderMaterial; // Actual material for rendering (kept alive by MeshRenderer)
-    InxMaterial *renderMaterialRaw = nullptr;     // Raw pointer for fast sort/access
-    MeshRenderer *meshRenderer = nullptr;        // Direct pointer to avoid re-lookup
-    AABB worldBounds;                            // World-space bounding box for culling
+  InxMaterial *renderMaterialRaw = nullptr;    // Raw pointer for fast sort/access
+  MeshRenderer *meshRenderer = nullptr;        // Direct pointer to avoid re-lookup
+  AABB worldBounds;                            // World-space bounding box for culling
+  size_t drawCallStart = 0;                    // Cached span in m_cachedDrawCalls
+  size_t drawCallCount = 0;                    // Number of draw calls emitted for this renderable
     bool visible;
 };
 
@@ -115,12 +118,43 @@ class SceneRenderer
     /// @brief Set aspect ratio (from window)
     void SetAspectRatio(float aspect);
 
+  #if INFERNUX_FRAME_PROFILE
+    struct ProfileSnapshot
+    {
+      double prepareMs = 0.0;
+      double collectMs = 0.0;
+      double updateMs = 0.0;
+      double cullMs = 0.0;
+      double sortMs = 0.0;
+      double buildMs = 0.0;
+      double buildCameraMs = 0.0;
+      double prepareCalls = 0.0;
+      double prepareFastCalls = 0.0;
+      double prepareSlowCalls = 0.0;
+      double buildCalls = 0.0;
+      double buildCameraCalls = 0.0;
+      double renderables = 0.0;
+      double visible = 0.0;
+      double drawCalls = 0.0;
+    };
+
+    [[nodiscard]] const ProfileSnapshot &GetProfileSnapshot() const
+    {
+      return m_profileSnapshot;
+    }
+
+    void ResetProfileSnapshot()
+    {
+      m_profileSnapshot = {};
+    }
+  #endif
+
   private:
     void CollectRenderables(uint32_t cullingMask = 0xFFFFFFFF);
     void PerformCulling();
     void SortRenderables();
 
-    /// @brief Fast-path: update only world matrices and bounds in cached renderables.
+    /// @brief Fast-path: update world matrices, bounds, culling, and cached draw calls in one pass.
     void UpdateCachedRenderableTransforms();
 
     /// @brief Shared draw-call emission logic used by both BuildDrawCalls() and BuildDrawCallsForCamera().
@@ -144,6 +178,10 @@ class SceneRenderer
     // Draw call cache: reused when renderables are cached.
     DrawCallResult m_cachedDrawCalls;
     bool           m_drawCallsCacheValid = false;
+
+  #if INFERNUX_FRAME_PROFILE
+    ProfileSnapshot m_profileSnapshot;
+  #endif
 };
 
 /**

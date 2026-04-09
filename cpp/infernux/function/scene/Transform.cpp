@@ -90,14 +90,11 @@ const glm::mat4 &Transform::GetWorldMatrix() const
     glm::mat4 localMatrix = GetLocalMatrix();
 
     Transform *parentTransform = GetParentTransformSafe();
-    glm::mat4 worldMatrix;
     if (!parentTransform) {
-        worldMatrix = localMatrix;
+        store.SetCachedWorldMatrix(m_ecsHandle, localMatrix);
     } else {
-        worldMatrix = parentTransform->GetWorldMatrix() * localMatrix;
+        store.SetCachedWorldMatrix(m_ecsHandle, parentTransform->GetWorldMatrix() * localMatrix);
     }
-
-    store.SetCachedWorldMatrix(m_ecsHandle, worldMatrix);
     store.SetWorldMatrixDirty(m_ecsHandle, false);
     return store.GetCachedWorldMatrix(m_ecsHandle);
 }

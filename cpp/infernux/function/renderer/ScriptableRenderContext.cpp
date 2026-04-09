@@ -13,10 +13,28 @@
 #include <core/log/InxLog.h>
 
 #include <algorithm>
+#include <chrono>
 #include <stdexcept>
 
 namespace infernux
 {
+
+#if INFERNUX_FRAME_PROFILE
+namespace
+{
+ScriptableRenderContext::ProfileSnapshot g_srcProfileSnapshot;
+}
+
+ScriptableRenderContext::ProfileSnapshot ScriptableRenderContext::GetProfileSnapshot()
+{
+    return g_srcProfileSnapshot;
+}
+
+void ScriptableRenderContext::ResetProfileSnapshot()
+{
+    g_srcProfileSnapshot = {};
+}
+#endif
 
 // ============================================================================
 // Construction
@@ -64,6 +82,10 @@ void ScriptableRenderContext::SetupCameraProperties(Camera *camera)
 
 CullingResults ScriptableRenderContext::Cull(Camera *camera)
 {
+#if INFERNUX_FRAME_PROFILE
+    using Clock = std::chrono::high_resolution_clock;
+    const auto cullStart = Clock::now();
+#endif
     if (m_hasCullData) {
         // Multiple Cull() calls in one frame: return cached results with a
         // warning rather than crashing.  Multi-camera rendering within a
@@ -111,6 +133,19 @@ CullingResults ScriptableRenderContext::Cull(Camera *camera)
     // so the count is already available.
     results.lightCount = m_vkCore->GetLightCollector().GetTotalLightCount();
     m_cachedCullingResults = results;
+#if INFERNUX_FRAME_PROFILE
+    const double elapsedMs = std::chrono::duration<double, std::milli>(Clock::now() - cullStart).count();
+    g_srcProfileSnapshot.cullMs += elapsedMs;
+    if (camera && camera != editorCam) {
+        g_srcProfileSnapshot.cullGameMs += elapsedMs;
+        g_srcProfileSnapshot.cullGameCalls += 1.0;
+    } else {
+        g_srcProfileSnapshot.cullEditorMs += elapsedMs;
+        g_srcProfileSnapshot.cullEditorCalls += 1.0;
+    }
+    g_srcProfileSnapshot.cullCalls += 1.0;
+    g_srcProfileSnapshot.baseDrawCalls += static_cast<double>(results.visibleObjectCount());
+#endif
     return results;
 }
 
@@ -120,21 +155,36 @@ CullingResults ScriptableRenderContext::Cull(Camera *camera)
 
 void ScriptableRenderContext::ApplyGraph(const RenderGraphDescription &desc)
 {
+#if INFERNUX_FRAME_PROFILE
+    using Clock = std::chrono::high_resolution_clock;
+    const auto t0 = Clock::now();
+#endif
     if (m_graph) {
         m_graph->ApplyPythonGraph(desc);
     } else {
         INXLOG_WARN("ScriptableRenderContext::ApplyGraph: No SceneRenderGraph available");
     }
+#if INFERNUX_FRAME_PROFILE
+    g_srcProfileSnapshot.applyGraphMs += std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+#endif
 }
 
 void ScriptableRenderContext::SubmitCulling(CullingResults culling)
 {
+#if INFERNUX_FRAME_PROFILE
+    using Clock = std::chrono::high_resolution_clock;
+    const auto submitStart = Clock::now();
+    const size_t baseDrawCount = culling.sceneDrawCallsRef ? culling.sceneDrawCallsRef->size() : culling.drawCalls.size();
+#endif
     if (m_submitted) {
         INXLOG_WARN("ScriptableRenderContext::SubmitCulling() called after already submitted");
         return;
     }
 
     // Move or reference draw calls — avoids 1000+ shared_ptr atomic refcount ops.
+#if INFERNUX_FRAME_PROFILE
+    auto t0 = Clock::now();
+#endif
     if (culling.sceneDrawCallsRef) {
         // Editor camera fast path: reference scene draw calls directly,
         // then move them into the ordered list (one move, zero shared_ptr copies).
@@ -143,6 +193,9 @@ void ScriptableRenderContext::SubmitCulling(CullingResults culling)
         m_orderedDrawCalls = std::move(culling.drawCalls);
     }
     m_orderedDrawCalls.reserve(m_orderedDrawCalls.size() + 16);
+#if INFERNUX_FRAME_PROFILE
+    g_srcProfileSnapshot.submitBaseMs += std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+#endif
 
     // Append skybox draw call only when ClearFlags == Skybox (or no camera set)
     bool drawSkybox = true;
@@ -152,6 +205,9 @@ void ScriptableRenderContext::SubmitCulling(CullingResults culling)
     }
 
     if (drawSkybox) {
+#if INFERNUX_FRAME_PROFILE
+        t0 = Clock::now();
+#endif
         auto skyboxMat = AssetRegistry::Instance().GetBuiltinMaterial("SkyboxProcedural");
         if (skyboxMat) {
             static constexpr uint64_t SKYBOX_OBJECT_ID = 0xFFFFFFFFFFFFFF00ULL;
@@ -165,28 +221,49 @@ void ScriptableRenderContext::SubmitCulling(CullingResults culling)
             dc.meshIndices = &PrimitiveMeshes::GetSkyboxCubeIndices();
             m_orderedDrawCalls.push_back(dc);
         }
+#if INFERNUX_FRAME_PROFILE
+        g_srcProfileSnapshot.submitEditorAppendMs +=
+            std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+#endif
     }
 
     // Auto-append editor gizmos
     if (m_gizmoCtx.gizmos) {
+#if INFERNUX_FRAME_PROFILE
+        t0 = Clock::now();
+#endif
         DrawCallResult gizmoResult =
             m_gizmoCtx.gizmos->GetDrawCalls(m_gizmoCtx.gizmoMaterial, m_gizmoCtx.gridMaterial,
                                             m_gizmoCtx.selectedObjectId, m_gizmoCtx.activeScene, m_gizmoCtx.cameraPos);
         for (auto &dc : gizmoResult.drawCalls) {
             m_orderedDrawCalls.push_back(dc);
         }
+#if INFERNUX_FRAME_PROFILE
+        g_srcProfileSnapshot.submitEditorAppendMs +=
+            std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+#endif
     }
 
     // Auto-append component gizmos (Python-driven, depth-tested)
     if (m_gizmoCtx.componentGizmos && m_gizmoCtx.componentGizmos->HasData()) {
+#if INFERNUX_FRAME_PROFILE
+        t0 = Clock::now();
+#endif
         DrawCallResult compGizmoResult = m_gizmoCtx.componentGizmos->GetDrawCalls(m_gizmoCtx.componentGizmosMaterial);
         for (auto &dc : compGizmoResult.drawCalls) {
             m_orderedDrawCalls.push_back(dc);
         }
+#if INFERNUX_FRAME_PROFILE
+        g_srcProfileSnapshot.submitEditorAppendMs +=
+            std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+#endif
     }
 
     // Auto-append component gizmo icons (Python-driven, billboard diamonds)
     if (m_gizmoCtx.componentGizmos && m_gizmoCtx.componentGizmos->HasIconData()) {
+#if INFERNUX_FRAME_PROFILE
+        t0 = Clock::now();
+#endif
         glm::vec3 cameraRight(1.0f, 0.0f, 0.0f);
         glm::vec3 cameraUp(0.0f, 1.0f, 0.0f);
         if (m_activeCamera && m_activeCamera->GetGameObject() && m_activeCamera->GetGameObject()->GetTransform()) {
@@ -204,15 +281,26 @@ void ScriptableRenderContext::SubmitCulling(CullingResults culling)
         for (auto &dc : iconResult.drawCalls) {
             m_orderedDrawCalls.push_back(dc);
         }
+#if INFERNUX_FRAME_PROFILE
+        g_srcProfileSnapshot.submitEditorAppendMs +=
+            std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+#endif
     }
 
     // Auto-append editor tools (translate/rotate/scale handles)
     if (m_gizmoCtx.editorTools) {
+#if INFERNUX_FRAME_PROFILE
+        t0 = Clock::now();
+#endif
         DrawCallResult toolsResult = m_gizmoCtx.editorTools->GetDrawCalls(
             m_gizmoCtx.editorToolsMaterial, m_gizmoCtx.selectedObjectId, m_gizmoCtx.activeScene, m_gizmoCtx.cameraPos);
         for (auto &dc : toolsResult.drawCalls) {
             m_orderedDrawCalls.push_back(dc);
         }
+#if INFERNUX_FRAME_PROFILE
+        g_srcProfileSnapshot.submitEditorAppendMs +=
+            std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+#endif
     }
 
     // Build final result
@@ -220,23 +308,35 @@ void ScriptableRenderContext::SubmitCulling(CullingResults culling)
     result.drawCalls = std::move(m_orderedDrawCalls);
 
     // Ensure per-object GPU buffers
+#if INFERNUX_FRAME_PROFILE
+    t0 = Clock::now();
+#endif
     for (const DrawCall &dc : result.drawCalls) {
         if (dc.meshVertices && dc.meshIndices) {
             m_vkCore->EnsureObjectBuffers(dc.objectId, *dc.meshVertices, *dc.meshIndices, dc.forceBufferUpdate);
         }
     }
+#if INFERNUX_FRAME_PROFILE
+    g_srcProfileSnapshot.ensureBuffersMs += std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+#endif
 
     // Cache draw calls AND camera VP on the associated render graph.
     // Each SceneRenderGraph stores its own draw-call set and VP matrices
     // so the executor lambda can swap them before each graph execution,
     // ensuring full isolation between Scene View and Game View rendering.
     if (m_graph) {
+#if INFERNUX_FRAME_PROFILE
+        t0 = Clock::now();
+#endif
         m_graph->SetCachedDrawCalls(std::move(result.drawCalls));
         if (m_activeCamera) {
             m_graph->SetCachedCameraVP(m_cachedView, m_cachedProj);
         }
         // Point VkCore at the graph's cached copy (survives this scope).
         m_vkCore->SetDrawCalls(&m_graph->GetCachedDrawCalls());
+#if INFERNUX_FRAME_PROFILE
+        g_srcProfileSnapshot.cacheGraphMs += std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+#endif
     }
 
     // NOTE: CleanupUnusedBuffers is called by InxRenderer::DrawFrame() after
@@ -249,6 +349,12 @@ void ScriptableRenderContext::SubmitCulling(CullingResults culling)
     }
 
     m_submitted = true;
+#if INFERNUX_FRAME_PROFILE
+    g_srcProfileSnapshot.submitMs += std::chrono::duration<double, std::milli>(Clock::now() - submitStart).count();
+    g_srcProfileSnapshot.submitCalls += 1.0;
+    g_srcProfileSnapshot.finalDrawCalls += static_cast<double>(m_graph ? m_graph->GetCachedDrawCalls().size()
+                                                                       : baseDrawCount);
+#endif
 }
 
 void ScriptableRenderContext::RenderWithGraph(Camera *camera, const RenderGraphDescription &desc)

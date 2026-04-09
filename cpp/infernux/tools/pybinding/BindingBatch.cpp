@@ -488,12 +488,12 @@ void RegisterBatchBindings(py::module_ &m)
         .def("__len__", &TransformBatchHandle::size);
 
     m.def(
-        "_transform_batch_read_h", &HandleBatchRead,
+        "_transform_batch_read", &HandleBatchRead,
         py::arg("handle"), py::arg("property"),
         "Like _transform_batch_read but uses a cached TransformBatchHandle.");
 
     m.def(
-        "_transform_batch_write_h", &HandleBatchWrite,
+        "_transform_batch_write", &HandleBatchWrite,
         py::arg("handle"), py::arg("data"), py::arg("property"),
         "Like _transform_batch_write but uses a cached TransformBatchHandle.");
 

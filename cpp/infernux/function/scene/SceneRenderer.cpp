@@ -1,6 +1,7 @@
 #include "SceneRenderer.h"
 #include "SceneManager.h"
 #include <algorithm>
+#include <chrono>
 #include <cstring>
 #include <glm/gtc/matrix_transform.hpp>
 
@@ -13,30 +14,66 @@ namespace infernux
 
 void SceneRenderer::PrepareFrame()
 {
+#if INFERNUX_FRAME_PROFILE
+    using Clock = std::chrono::high_resolution_clock;
+    const auto prepareStart = Clock::now();
+#endif
     SceneManager &sm = SceneManager::Instance();
     m_activeCamera = sm.GetEditorCameraController().GetCamera();
 
     const uint64_t currentVersion = sm.GetMeshRendererVersion();
-    if (currentVersion == m_cachedMeshRendererVersion && !m_renderables.empty()) {
-        // Fast path: transforms, bounds and culling are deferred to
-        // BuildDrawCalls() where they execute in a single O(N) pass,
-        // eliminating two intermediate O(N) loops and one 64-byte mat4
-        // copy per object through the RenderableObject intermediate.
+    const bool fastPath = (currentVersion == m_cachedMeshRendererVersion && !m_renderables.empty());
+    if (fastPath) {
+        // Fast path: renderer set unchanged — fuse transform/bounds/culling/draw-call patch.
+#if INFERNUX_FRAME_PROFILE
+    const auto t0 = Clock::now();
+#endif
+        UpdateCachedRenderableTransforms();
+#if INFERNUX_FRAME_PROFILE
+    m_profileSnapshot.updateMs += std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+    m_profileSnapshot.prepareFastCalls += 1.0;
+#endif
     } else {
         // Slow path: full rebuild.
+#if INFERNUX_FRAME_PROFILE
+    const auto t0 = Clock::now();
+#endif
         CollectRenderables(0xFFFFFFFF);
         m_cachedMeshRendererVersion = currentVersion;
         m_drawCallsCacheValid = false;
+#if INFERNUX_FRAME_PROFILE
+    m_profileSnapshot.collectMs += std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+    m_profileSnapshot.prepareSlowCalls += 1.0;
+#endif
+    }
 
-        if (m_frustumCulling) {
-            PerformCulling();
-        }
+    if (!fastPath && m_frustumCulling) {
+#if INFERNUX_FRAME_PROFILE
+    const auto t0 = Clock::now();
+#endif
+        PerformCulling();
+#if INFERNUX_FRAME_PROFILE
+    m_profileSnapshot.cullMs += std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+#endif
     }
 
     // Skip sort when cache is valid (material sort keys are stable).
     if (!m_drawCallsCacheValid) {
+#if INFERNUX_FRAME_PROFILE
+    const auto t0 = Clock::now();
+#endif
         SortRenderables();
+#if INFERNUX_FRAME_PROFILE
+    m_profileSnapshot.sortMs += std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+#endif
     }
+
+#if INFERNUX_FRAME_PROFILE
+    m_profileSnapshot.prepareMs += std::chrono::duration<double, std::milli>(Clock::now() - prepareStart).count();
+    m_profileSnapshot.prepareCalls += 1.0;
+    m_profileSnapshot.renderables += static_cast<double>(m_renderables.size());
+    m_profileSnapshot.visible += static_cast<double>(m_visibleCount);
+#endif
 }
 
 void SceneRenderer::PrepareFrame(Camera *camera)
@@ -47,25 +84,63 @@ void SceneRenderer::PrepareFrame(Camera *camera)
         return;
     }
 
+#if INFERNUX_FRAME_PROFILE
+    using Clock = std::chrono::high_resolution_clock;
+    const auto prepareStart = Clock::now();
+#endif
     m_activeCamera = camera;
 
     SceneManager &sm = SceneManager::Instance();
     const uint64_t currentVersion = sm.GetMeshRendererVersion();
-    if (currentVersion == m_cachedMeshRendererVersion && !m_renderables.empty()) {
-        // Fast path: deferred to BuildDrawCalls() single pass.
+    const bool fastPath = (currentVersion == m_cachedMeshRendererVersion && !m_renderables.empty());
+    if (fastPath) {
+    #if INFERNUX_FRAME_PROFILE
+        const auto t0 = Clock::now();
+    #endif
+        UpdateCachedRenderableTransforms();
+    #if INFERNUX_FRAME_PROFILE
+        m_profileSnapshot.updateMs += std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+        m_profileSnapshot.prepareFastCalls += 1.0;
+    #endif
     } else {
+    #if INFERNUX_FRAME_PROFILE
+        const auto t0 = Clock::now();
+    #endif
         CollectRenderables(camera->GetCullingMask());
         m_cachedMeshRendererVersion = currentVersion;
         m_drawCallsCacheValid = false;
+    #if INFERNUX_FRAME_PROFILE
+        m_profileSnapshot.collectMs += std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+        m_profileSnapshot.prepareSlowCalls += 1.0;
+    #endif
+    }
 
-        if (m_frustumCulling) {
-            PerformCulling();
-        }
+    if (!fastPath && m_frustumCulling) {
+    #if INFERNUX_FRAME_PROFILE
+        const auto t0 = Clock::now();
+    #endif
+        PerformCulling();
+    #if INFERNUX_FRAME_PROFILE
+        m_profileSnapshot.cullMs += std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+    #endif
     }
 
     if (!m_drawCallsCacheValid) {
+    #if INFERNUX_FRAME_PROFILE
+        const auto t0 = Clock::now();
+    #endif
         SortRenderables();
+    #if INFERNUX_FRAME_PROFILE
+        m_profileSnapshot.sortMs += std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+    #endif
     }
+
+    #if INFERNUX_FRAME_PROFILE
+        m_profileSnapshot.prepareMs += std::chrono::duration<double, std::milli>(Clock::now() - prepareStart).count();
+        m_profileSnapshot.prepareCalls += 1.0;
+        m_profileSnapshot.renderables += static_cast<double>(m_renderables.size());
+        m_profileSnapshot.visible += static_cast<double>(m_visibleCount);
+    #endif
 }
 
 glm::mat4 SceneRenderer::GetViewMatrix() const
@@ -153,6 +228,8 @@ void SceneRenderer::CollectRenderables(uint32_t cullingMask)
         renderable.renderMaterial = renderer->GetEffectiveMaterial(); // Get actual InxMaterial
         renderable.renderMaterialRaw = renderable.renderMaterial.get();
         renderable.meshRenderer = renderer;                           // Store direct pointer
+        renderable.drawCallStart = 0;
+        renderable.drawCallCount = 0;
 
         // Get world-space bounding box for frustum culling — reuse the world matrix
         glm::vec3 boundsMin, boundsMax;
@@ -168,20 +245,56 @@ void SceneRenderer::CollectRenderables(uint32_t cullingMask)
 
 void SceneRenderer::UpdateCachedRenderableTransforms()
 {
-    // Fast path: renderer set unchanged. Only update world matrices and bounds.
+    // Fast path: renderer set unchanged. Refresh transforms, bounds, culling,
+    // and cached draw calls in one O(N) pass.
+    Frustum frustum;
+    const bool useFrustum = m_frustumCulling && m_activeCamera;
+    if (useFrustum) {
+        frustum.ExtractFromMatrix(m_activeCamera->GetViewProjectionMatrix());
+    }
+
+    m_visibleCount = 0;
+
     for (auto &renderable : m_renderables) {
         MeshRenderer *mr = renderable.meshRenderer;
         if (!mr) continue;
         GameObject *obj = mr->GetGameObject();
         if (!obj) continue;
 
-        renderable.worldMatrix = obj->GetTransform()->GetWorldMatrix();
+        const glm::mat4 &worldMatrix = obj->GetTransform()->GetWorldMatrix();
+        renderable.worldMatrix = worldMatrix;
 
         glm::vec3 bmin, bmax;
-        mr->ComputeWorldBounds(renderable.worldMatrix, bmin, bmax);
+        mr->ComputeWorldBounds(worldMatrix, bmin, bmax);
         renderable.worldBounds = AABB(bmin, bmax);
+
+        renderable.visible = !useFrustum || frustum.IntersectsAABB(renderable.worldBounds);
+
+        if (m_drawCallsCacheValid && renderable.drawCallCount > 0) {
+            const glm::vec3 &pivot = mr->GetMeshPivotOffset();
+            glm::mat4 drawWorldMatrix = worldMatrix;
+            if (mr->GetSubmeshIndex() >= 0 && pivot != glm::vec3(0.0f)) {
+                drawWorldMatrix = worldMatrix * glm::translate(glm::mat4(1.0f), pivot);
+            }
+
+            const bool bufferDirty = mr->ConsumeMeshBufferDirty();
+            const size_t drawCallEnd = std::min(renderable.drawCallStart + renderable.drawCallCount,
+                                                m_cachedDrawCalls.drawCalls.size());
+            bool firstDirty = true;
+            for (size_t drawCallIndex = renderable.drawCallStart; drawCallIndex < drawCallEnd; ++drawCallIndex) {
+                DrawCall &dc = m_cachedDrawCalls.drawCalls[drawCallIndex];
+                dc.worldMatrix = drawWorldMatrix;
+                dc.worldBounds = renderable.worldBounds;
+                dc.frustumVisible = renderable.visible;
+                dc.forceBufferUpdate = firstDirty ? bufferDirty : false;
+                firstDirty = false;
+            }
+        }
+
+        if (renderable.visible) {
+            ++m_visibleCount;
+        }
     }
-    m_visibleCount = m_renderables.size();
 }
 
 void SceneRenderer::PerformCulling()
@@ -353,68 +466,50 @@ void SceneRenderer::EmitDrawCallsForRenderable(DrawCallResult &result, const Ren
 
 const DrawCallResult &SceneRenderer::BuildDrawCalls()
 {
+#if INFERNUX_FRAME_PROFILE
+    using Clock = std::chrono::high_resolution_clock;
+    const auto buildStart = Clock::now();
+#endif
     if (m_drawCallsCacheValid) {
-        // Merged fast path: update world matrices, compute bounds, and
-        // perform frustum culling in a single O(N) pass.  Reads the
-        // world matrix by const ref from the ECS cache (patched by
-        // EndFrameCache) and copies it once into the DrawCall — eliminating
-        // the intermediate RenderableObject copy and two extra O(N) loops.
-        Frustum frustum;
-        const bool doCulling = m_frustumCulling && m_activeCamera;
-        if (doCulling) {
-            frustum.ExtractFromMatrix(m_activeCamera->GetViewProjectionMatrix());
-        }
-
-        const size_t n = std::min(m_cachedDrawCalls.drawCalls.size(), m_renderables.size());
-        m_visibleCount = 0;
-        for (size_t i = 0; i < n; ++i) {
-            auto &dc = m_cachedDrawCalls.drawCalls[i];
-            auto &r = m_renderables[i];
-            MeshRenderer *mr = r.meshRenderer;
-            if (!mr) continue;
-            GameObject *obj = mr->GetGameObject();
-            if (!obj) continue;
-
-            // Single 64-byte copy: ECS cache → DrawCall (no renderable intermediate).
-            const glm::mat4 &wm = obj->GetTransform()->GetWorldMatrix();
-            dc.worldMatrix = wm;
-
-            // Arvo AABB transform
-            glm::vec3 bmin, bmax;
-            mr->ComputeWorldBounds(wm, bmin, bmax);
-            AABB bounds(bmin, bmax);
-            dc.worldBounds = bounds;
-            r.worldBounds = bounds; // keep for game camera re-cull
-
-            // Frustum test
-            bool vis = !doCulling || frustum.IntersectsAABB(bounds);
-            dc.frustumVisible = vis;
-            r.visible = vis;
-            if (vis) ++m_visibleCount;
-        }
+#if INFERNUX_FRAME_PROFILE
+        m_profileSnapshot.buildMs += std::chrono::duration<double, std::milli>(Clock::now() - buildStart).count();
+        m_profileSnapshot.buildCalls += 1.0;
+        m_profileSnapshot.drawCalls += static_cast<double>(m_cachedDrawCalls.drawCalls.size());
+#endif
         return m_cachedDrawCalls;
     }
 
     // Slow path: full rebuild.
     DrawCallResult result;
-    result.drawCalls.reserve(m_renderables.size());
+    result.drawCalls.reserve(m_cachedDrawCalls.drawCalls.empty() ? m_renderables.size() : m_cachedDrawCalls.drawCalls.size());
 
-    for (const auto &renderable : m_renderables) {
+    for (auto &renderable : m_renderables) {
         MeshRenderer *renderer = renderable.meshRenderer;
         if (!renderer)
             continue;
 
         bool bufferDirty = renderer->ConsumeMeshBufferDirty();
+        renderable.drawCallStart = result.drawCalls.size();
         EmitDrawCallsForRenderable(result, renderable, renderable.visible, bufferDirty);
+        renderable.drawCallCount = result.drawCalls.size() - renderable.drawCallStart;
     }
 
     m_cachedDrawCalls = std::move(result);
     m_drawCallsCacheValid = true;
+#if INFERNUX_FRAME_PROFILE
+    m_profileSnapshot.buildMs += std::chrono::duration<double, std::milli>(Clock::now() - buildStart).count();
+    m_profileSnapshot.buildCalls += 1.0;
+    m_profileSnapshot.drawCalls += static_cast<double>(m_cachedDrawCalls.drawCalls.size());
+#endif
     return m_cachedDrawCalls;
 }
 
 DrawCallResult SceneRenderer::BuildDrawCallsForCamera(Camera *camera)
 {
+#if INFERNUX_FRAME_PROFILE
+    using Clock = std::chrono::high_resolution_clock;
+    const auto buildStart = Clock::now();
+#endif
     DrawCallResult result;
     if (!camera || m_renderables.empty())
         return result;
@@ -423,28 +518,47 @@ DrawCallResult SceneRenderer::BuildDrawCallsForCamera(Camera *camera)
     Frustum frustum;
     frustum.ExtractFromMatrix(camera->GetViewProjectionMatrix());
 
-    result.drawCalls.reserve(m_renderables.size());
+    result.drawCalls.reserve(m_cachedDrawCalls.drawCalls.empty() ? m_renderables.size() : m_cachedDrawCalls.drawCalls.size());
 
-    for (const auto &renderable : m_renderables) {
+    m_visibleCount = 0;
+    for (auto &renderable : m_renderables) {
         MeshRenderer *renderer = renderable.meshRenderer;
         if (!renderer)
             continue;
 
         // Layer mask filter
         GameObject *obj = renderer->GetGameObject();
+        if (!obj)
+            continue;
         if (obj) {
             uint32_t layerBit = 1u << static_cast<uint32_t>(obj->GetLayer());
             if ((cullingMask & layerBit) == 0)
                 continue;
         }
 
-        // Frustum test using pre-computed world bounds
+        const glm::mat4 &worldMatrix = obj->GetTransform()->GetWorldMatrix();
+        renderable.worldMatrix = worldMatrix;
+
+        glm::vec3 boundsMin, boundsMax;
+        renderer->ComputeWorldBounds(worldMatrix, boundsMin, boundsMax);
+        renderable.worldBounds = AABB(boundsMin, boundsMax);
+
         const bool visible = m_frustumCulling ? frustum.IntersectsAABB(renderable.worldBounds) : true;
+        renderable.visible = visible;
+        if (visible) {
+            ++m_visibleCount;
+        }
 
         // Don't consume dirty flag — scene view already did
         EmitDrawCallsForRenderable(result, renderable, visible, false);
     }
 
+    
+#if INFERNUX_FRAME_PROFILE
+    m_profileSnapshot.buildCameraMs += std::chrono::duration<double, std::milli>(Clock::now() - buildStart).count();
+    m_profileSnapshot.buildCameraCalls += 1.0;
+    m_profileSnapshot.drawCalls += static_cast<double>(result.drawCalls.size());
+#endif
     return result;
 }
 

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "InxRenderStruct.h"
+#include "ProfileConfig.h"
 #include "RenderGraphDescription.h"
 #include <function/scene/Camera.h>
 #include <function/scene/PrimitiveMeshes.h>
@@ -99,6 +100,30 @@ struct EditorGizmosContext
 class ScriptableRenderContext
 {
   public:
+#if INFERNUX_FRAME_PROFILE
+        struct ProfileSnapshot
+        {
+                double cullMs = 0.0;
+                double cullEditorMs = 0.0;
+                double cullGameMs = 0.0;
+                double applyGraphMs = 0.0;
+                double submitMs = 0.0;
+                double submitBaseMs = 0.0;
+                double submitEditorAppendMs = 0.0;
+                double ensureBuffersMs = 0.0;
+                double cacheGraphMs = 0.0;
+                double cullCalls = 0.0;
+                double cullEditorCalls = 0.0;
+                double cullGameCalls = 0.0;
+                double submitCalls = 0.0;
+                double baseDrawCalls = 0.0;
+                double finalDrawCalls = 0.0;
+        };
+
+        [[nodiscard]] static ProfileSnapshot GetProfileSnapshot();
+        static void ResetProfileSnapshot();
+#endif
+
     ScriptableRenderContext(InxVkCoreModular *vkCore, SceneRenderGraph *graph,
                             const EditorGizmosContext &gizmoCtx = {});
 

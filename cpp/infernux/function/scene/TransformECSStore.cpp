@@ -511,10 +511,9 @@ void TransformECSStore::EndFrameCache()
     }
 
     m_frameCacheActive = false;
+    bool requiresFullSync = false;
 
     const size_t cap = m_fcDirty.size();
-    bool anyNeedsFullSync = false;
-
     for (size_t i = 0; i < cap; ++i) {
         const uint8_t d = m_fcDirty[i];
         if (d == 0 || !m_alive[i]) {
@@ -526,26 +525,12 @@ void TransformECSStore::EndFrameCache()
             continue;
         }
 
-        // ── Fast path: position-only change on a root object with no children.
-        // Patch column 3 of the cached world matrix directly, avoiding the
-        // expensive SyncSceneWorldMatrices tree walk + full TRS rebuild.
-        // For T*R*S, changing only T affects only column 3 of the result.
-        if (d == 0x01) {
-            Transform *parent = owner->GetParent();
-            GameObject *go = owner->GetGameObject();
-            if (!parent && go && go->GetChildCount() == 0) {
-                m_localPositions[i] = m_fcWorldPositions[i];
-                m_cachedWorldMatrices[i][3] = glm::vec4(m_fcWorldPositions[i], 1.0f);
-                // worldMatrixDirty stays 0 — cached matrix is already correct.
-                m_dirty[i] = 1;
-                continue;
-            }
-        }
+        Transform *parent = owner->GetParent();
+        GameObject *go = owner->GetGameObject();
+        const bool hasChildren = (go && go->GetChildCount() > 0);
 
-        // ── General path: rotation / scale / parent / children involved.
         // World position dirty → compute local position from inverse parent.
         if (d & 0x01) {
-            Transform *parent = owner->GetParent();
             if (!parent) {
                 m_localPositions[i] = m_fcWorldPositions[i];
             } else {
@@ -554,12 +539,10 @@ void TransformECSStore::EndFrameCache()
             }
             m_dirty[i] = 1;
             m_worldMatrixDirty[i] = 1;
-            anyNeedsFullSync = true;
         }
 
         // World rotation dirty → compute local rotation from inverse parent.
         if (d & 0x02) {
-            Transform *parent = owner->GetParent();
             if (!parent) {
                 m_localRotations[i] = m_fcWorldRotations[i];
             } else {
@@ -569,7 +552,6 @@ void TransformECSStore::EndFrameCache()
             m_hasCachedWorldEulerAngles[i] = 0;
             m_dirty[i] = 1;
             m_worldMatrixDirty[i] = 1;
-            anyNeedsFullSync = true;
         }
 
         // Local property dirty bits (2-5) already wrote to live SoA in SetCachedLocal*.
@@ -577,22 +559,27 @@ void TransformECSStore::EndFrameCache()
         if (d & 0x3C) { // bits 2-5
             m_dirty[i] = 1;
             m_worldMatrixDirty[i] = 1;
-            anyNeedsFullSync = true;
         }
 
+        const bool positionOnlyDirty = ((d & ~static_cast<uint8_t>(0x05)) == 0);
+        if (positionOnlyDirty && !parent && !hasChildren) {
+            m_cachedWorldMatrices[i][3] = glm::vec4(m_localPositions[i], 1.0f);
+            m_worldMatrixDirty[i] = 0;
+            continue;
+        }
+
+        requiresFullSync = true;
+
         // Invalidate subtrees for any dirty slot.
-        GameObject *go = owner->GetGameObject();
-        if (go && go->GetChildCount() > 0) {
+        if (hasChildren) {
             InvalidateSubtree(owner, (d & 0x02) != 0);
-            anyNeedsFullSync = true;
         }
     }
 
-    // Pre-sync world matrices only when rotation/scale/hierarchy changes
-    // require a full TRS rebuild.  The position-only fast path above already
-    // patched column 3 directly, so no sync is needed in that common case.
-    if (m_fcScene && anyNeedsFullSync) {
-        m_anyWorldMatrixDirty = true;
+    // Pre-sync world matrices now so CollectRenderables hits clean
+    // caches (avoids 14,400 lazy recomputes with poor cache locality).
+    if (m_fcScene && requiresFullSync) {
+        m_anyWorldMatrixDirty = true;   // dirty from the loop above
         SyncSceneWorldMatrices(m_fcScene);
     }
     m_fcScene = nullptr;

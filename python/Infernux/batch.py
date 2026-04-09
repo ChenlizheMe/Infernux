@@ -258,7 +258,7 @@ def batch_read(targets: Sequence, prop: Any) -> NDArray:
     lib = _get_lib()
     if isinstance(targets, lib.TransformBatchHandle):
         if prop_name in _TRANSFORM_ALL_PROPS:
-            return lib._transform_batch_read_h(targets, prop_name)
+            return lib._transform_batch_read(targets, prop_name)
         raise ValueError(
             f"Unknown Transform property '{prop_name}'. "
             f"Supported: {sorted(_TRANSFORM_ALL_PROPS)}"
@@ -300,7 +300,7 @@ def batch_write(targets: Sequence, data: NDArray, prop: Any) -> None:
     lib = _get_lib()
     if isinstance(targets, lib.TransformBatchHandle):
         if prop_name in _TRANSFORM_ALL_PROPS:
-            lib._transform_batch_write_h(targets, data, prop_name)
+            lib._transform_batch_write(targets, data, prop_name)
             return
         raise ValueError(
             f"Unknown Transform property '{prop_name}'. "

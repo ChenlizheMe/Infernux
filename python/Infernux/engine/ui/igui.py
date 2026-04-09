@@ -54,13 +54,18 @@ _LIST_REORDER_TYPE = "IGUI_LIST_REORDER"
 # Button sizes
 _INLINE_BTN_W: float = 24.0
 _PICKER_DOT_W: float = 20.0
-_LIST_ICON_BTN_SIZE: float = 20.0  # square icon buttons for list [+][-]
+_MINI_ICON_BTN_SIDE: float = _PICKER_DOT_W
+_MINI_ICON_DRAW_SIZE: float = 10.0
 
 # Picker popup filter state (keyed by field_id)
 _picker_filters: dict = {}
 
 # Track which popups need auto-focus on the search input
 _popup_needs_focus: set = set()
+
+# Cache list body heights from previous frame so the fill can be drawn behind
+# the next frame's content while the border uses exact bounds every frame.
+_list_body_heights: dict[str, float] = {}
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -134,6 +139,40 @@ class IGUI:
         ctx.pop_style_color(1)
         return accepted
 
+    @staticmethod
+    def _mini_icon_button(
+        ctx: InxGUIContext,
+        button_id: str,
+        icon_name: str,
+        fallback_label: str,
+    ) -> bool:
+        """Render a shared square mini icon button used by picker and list +/-."""
+        btn_side = _MINI_ICON_BTN_SIDE
+        color_count = Theme.push_inline_button_style(ctx)
+        ctx.push_style_var_vec2(ImGuiStyleVar.FramePadding, *Theme.INSPECTOR_SMALL_ICON_BTN_FRAME_PAD)
+        clicked = ctx.button(button_id, None, width=btn_side, height=Theme.INSPECTOR_INLINE_BTN_H)
+        min_x = ctx.get_item_rect_min_x()
+        min_y = ctx.get_item_rect_min_y()
+        max_x = ctx.get_item_rect_max_x()
+        max_y = ctx.get_item_rect_max_y()
+        draw_size = min(
+            _MINI_ICON_DRAW_SIZE,
+            max(0.0, (max_x - min_x) - 6.0),
+            max(0.0, (max_y - min_y) - 4.0),
+        )
+        draw_x = min_x + max(0.0, ((max_x - min_x) - draw_size) * 0.5)
+        draw_y = min_y + max(0.0, ((max_y - min_y) - draw_size) * 0.5)
+        tex_id = EditorIcons.get_cached(icon_name)
+        if tex_id and draw_size > 0.0:
+            ctx.draw_image_rect(tex_id, draw_x, draw_y, draw_x + draw_size, draw_y + draw_size)
+        else:
+            ctx.draw_text_aligned(min_x, min_y, max_x, max_y, fallback_label,
+                                  1.0, 1.0, 1.0, 1.0,
+                                  0.5, 0.5)
+        ctx.pop_style_var(1)
+        ctx.pop_style_color(color_count)
+        return clicked
+
     # ------------------------------------------------------------------
     #  Object field (reference slot: material, texture, shader, etc.)
     # ------------------------------------------------------------------
@@ -174,35 +213,26 @@ class IGUI:
             full_text = full_text[:32] + "..."
 
         avail_width = ctx.get_content_region_avail_width()
-        btn_w = _PICKER_DOT_W if has_picker else 0.0
+        btn_w = _MINI_ICON_BTN_SIDE if has_picker else 0.0
         field_w = max(avail_width - btn_w, 10.0)
+
+        ctx.begin_group()
 
         if clickable:
             ctx.set_next_item_allow_overlap()
-            if ctx.selectable(full_text, selected, 0, field_w, 0):
+            if ctx.selectable(full_text, selected, 0, field_w, 0.0):
                 clicked = True
         else:
-            ctx.selectable(f"[{full_text}]", False, 0, field_w, 0)
-
-        if accept and on_drop:
-            if isinstance(accept, str):
-                IGUI.drop_target(ctx, accept, on_drop)
-            else:
-                IGUI.multi_drop_target(ctx, list(accept),
-                                       lambda _dt, payload: on_drop(payload))
+            ctx.selectable(f"[{full_text}]", False, 0, field_w, 0.0)
 
         # ── Picker dot button ──
         if has_picker:
             ctx.same_line(0, 0)
             ctx.set_cursor_pos_x(ctx.get_cursor_pos_x() + (avail_width - btn_w - field_w))
-            color_count = Theme.push_inline_button_style(ctx)
-            if ctx.button(f"{Theme.ICON_PICKER}##picker", None,
-                          width=_PICKER_DOT_W,
-                          height=Theme.INSPECTOR_INLINE_BTN_H):
+            if IGUI._mini_icon_button(ctx, "##picker", Theme.ICON_IMG_PICKER, Theme.ICON_PICKER):
                 ctx.open_popup("##obj_picker")
                 _popup_needs_focus.add(field_id)
                 _picker_filters.pop(f"_igui_filter_{field_id}", None)
-            ctx.pop_style_color(color_count)
 
             # ── Picker popup ──
             IGUI._render_object_picker_popup(
@@ -210,6 +240,19 @@ class IGUI:
                 picker_scene_items, picker_asset_items,
                 on_pick, on_clear,
             )
+
+        ctx.end_group()
+
+        # Outline the whole object field so reference/picker slots read like
+        # other inspector inputs.
+        IGUI._draw_item_outline(ctx, *Theme.BORDER, 1.0)
+
+        if accept and on_drop:
+            if isinstance(accept, str):
+                IGUI.drop_target(ctx, accept, on_drop)
+            else:
+                IGUI.multi_drop_target(ctx, list(accept),
+                                       lambda _dt, payload: on_drop(payload))
 
         ctx.pop_id()
         return clicked
@@ -342,7 +385,7 @@ class IGUI:
         on_remove: Optional[Callable[[], None]] = None,
         accept_drop: Optional[str] = None,
         on_header_drop: Optional[Callable[[Any], None]] = None,
-        level: str = "secondary",
+        level: str = "list",
     ) -> bool:
         """Render a collapsing list header: ``▶ label [N]  ... [−][+]``
 
@@ -368,12 +411,11 @@ class IGUI:
             IGUI.drop_target(ctx, accept_drop, on_header_drop)
 
         # [−][+] buttons right-aligned on the same row
-        sz = _LIST_ICON_BTN_SIZE
         btns_w = 0.0
         if on_add:
-            btns_w += sz
+            btns_w += _MINI_ICON_BTN_SIDE
         if on_remove and count > 0:
-            btns_w += sz
+            btns_w += _MINI_ICON_BTN_SIDE
 
         if btns_w > 0:
             ctx.same_line(0, 0)
@@ -381,29 +423,15 @@ class IGUI:
             if avail_w >= btns_w:
                 ctx.set_cursor_pos_x(ctx.get_cursor_pos_x() + avail_w - btns_w)
 
-            color_count = Theme.push_inline_button_style(ctx)
-
             if on_remove and count > 0:
-                tid_minus = EditorIcons.get_cached(Theme.ICON_IMG_MINUS)
-                if tid_minus:
-                    if ctx.image_button(f"##{label}_remove", tid_minus, sz, sz):
-                        on_remove()
-                elif ctx.button(f"{Theme.ICON_MINUS}##{label}_remove", None,
-                                width=sz, height=sz):
+                if IGUI._mini_icon_button(ctx, f"##{label}_remove", Theme.ICON_IMG_MINUS, Theme.ICON_MINUS):
                     on_remove()
 
             if on_add:
                 if on_remove and count > 0:
                     ctx.same_line(0, 0)
-                tid_plus = EditorIcons.get_cached(Theme.ICON_IMG_PLUS)
-                if tid_plus:
-                    if ctx.image_button(f"##{label}_add", tid_plus, sz, sz):
-                        on_add()
-                elif ctx.button(f"{Theme.ICON_PLUS}##{label}_add", None,
-                                width=sz, height=sz):
+                if IGUI._mini_icon_button(ctx, f"##{label}_add", Theme.ICON_IMG_PLUS, Theme.ICON_PLUS):
                     on_add()
-
-            ctx.pop_style_color(color_count)
 
         return header_open
 
@@ -421,7 +449,7 @@ class IGUI:
         on_remove_last: Optional[Callable[[], None]] = None,
         accept_drop: Optional[str] = None,
         on_header_drop: Optional[Callable[[Any], None]] = None,
-        level: str = "secondary",
+        level: str = "list",
     ) -> bool:
         """Render the list header and return True if the body is expanded.
 
@@ -438,6 +466,45 @@ class IGUI:
         )
 
     @staticmethod
+    def list_body_begin(ctx: InxGUIContext, list_id: str) -> tuple:
+        """Begin the list items body using a cached fill plus exact per-frame border."""
+        pad_x = Theme.INSPECTOR_LIST_BODY_PAD_X
+        pad_y = Theme.INSPECTOR_LIST_BODY_PAD_Y
+        start_x = ctx.get_window_pos_x() + ctx.get_cursor_pos_x() - pad_x
+        start_y = ctx.get_window_pos_y() + ctx.get_cursor_pos_y()
+        avail_w = ctx.get_content_region_avail_width() + pad_x * 2.0
+        cached_h = _list_body_heights.get(list_id, 0.0)
+        if cached_h > 0:
+            ctx.draw_filled_rect(
+                start_x, start_y,
+                start_x + avail_w, start_y + cached_h,
+                *Theme.INSPECTOR_LIST_BODY_BG,
+                Theme.INSPECTOR_LIST_BODY_ROUNDING,
+            )
+        ctx.begin_group()
+        ctx.dummy(0.0, pad_y)
+        return (list_id, pad_x, avail_w)
+
+    @staticmethod
+    def list_body_end(ctx: InxGUIContext, state: tuple) -> None:
+        """End the list items body, update cached fill height, and draw border."""
+        list_id, pad_x, _avail_w = state
+        pad_y = Theme.INSPECTOR_LIST_BODY_PAD_Y
+        ctx.dummy(0.0, pad_y)
+        ctx.end_group()
+        min_x = ctx.get_item_rect_min_x() - pad_x
+        min_y = ctx.get_item_rect_min_y()
+        max_x = ctx.get_item_rect_max_x() + pad_x
+        max_y = ctx.get_item_rect_max_y()
+        _list_body_heights[list_id] = max_y - min_y
+        ctx.draw_rect(
+            min_x, min_y, max_x, max_y,
+            *Theme.INSPECTOR_LIST_BODY_BORDER,
+            1.0,
+            Theme.INSPECTOR_LIST_BODY_ROUNDING,
+        )
+
+    @staticmethod
     def list_item_remove_button(
         ctx: InxGUIContext,
         item_id: str,
@@ -447,18 +514,7 @@ class IGUI:
         Returns True if clicked.  Caller should ``same_line`` after this
         before rendering the item widget.
         """
-        sz = _LIST_ICON_BTN_SIZE
-        color_count = Theme.push_inline_button_style(ctx)
-        tid_minus = EditorIcons.get_cached(Theme.ICON_IMG_MINUS)
-        if tid_minus:
-            clicked = ctx.image_button(f"##{item_id}_rm", tid_minus, sz, sz)
-        else:
-            clicked = ctx.button(
-                f"{Theme.ICON_MINUS}##{item_id}_rm", None,
-                width=sz, height=sz,
-            )
-        ctx.pop_style_color(color_count)
-        return clicked
+        return IGUI._mini_icon_button(ctx, f"##{item_id}_rm", Theme.ICON_IMG_MINUS, Theme.ICON_MINUS)
 
     # ------------------------------------------------------------------
     #  Searchable combo (popup with search box + filtered items)

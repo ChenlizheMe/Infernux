@@ -380,6 +380,22 @@ class InxRenderer
         double gameRestoreMs = 0;
     };
     ExecutorSubTiming m_executorTiming{};
+
+    struct FrameDetailTiming
+    {
+        double frameCacheBeginMs = 0.0;
+        double sceneUpdateCallMs = 0.0;
+        double lateUpdateCallMs = 0.0;
+        double frameCacheEndMs = 0.0;
+        double cleanupCollectIdsMs = 0.0;
+        double cleanupReleaseMs = 0.0;
+        double cleanupActiveIds = 0.0;
+        double lightingCollectMs = 0.0;
+        double lightingShadowEditorMs = 0.0;
+        double lightingShadowGameMs = 0.0;
+        double lightingUploadMs = 0.0;
+    };
+    FrameDetailTiming m_frameDetailTiming{};
 #endif
 
     /// @brief Find effective game camera via Scene::FindGameCamera().

@@ -415,13 +415,16 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
         EnsureInstanceBufferCapacity(frameIndex, writeBase + totalEligible);
         auto &instFrame = m_instanceBuffers[frameIndex];
         if (instFrame.buffer) {
-            void *mapped = instFrame.buffer->Map();
+            void *mapped = instFrame.mapped;
+            if (!mapped) {
+                mapped = instFrame.buffer->Map();
+                instFrame.mapped = mapped;
+            }
             if (mapped) {
                 glm::mat4 *matrices = static_cast<glm::mat4 *>(mapped);
                 for (size_t i = 0; i < totalEligible; ++i) {
                     matrices[writeBase + i] = m_eligibleScratch[i].dc->worldMatrix;
                 }
-                instFrame.buffer->Unmap();
             }
         }
         m_instanceWriteOffset += static_cast<uint32_t>(totalEligible);
@@ -818,12 +821,17 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
         EnsureInstanceBufferCapacity(frameIndex, writeBase + visibleCount);
 
         auto &instFrame = m_instanceBuffers[frameIndex];
-        void *mapped = instFrame.buffer->Map();
+        void *mapped = instFrame.mapped;
+        if (!mapped) {
+            mapped = instFrame.buffer->Map();
+            instFrame.mapped = mapped;
+        }
+        if (!mapped)
+            continue;
         glm::mat4 *matrices = static_cast<glm::mat4 *>(mapped);
         for (uint32_t vi = 0; vi < visibleCount; ++vi) {
             matrices[writeBase + vi] = m_shadowDrawScratch[m_shadowCascadeVisible[vi]].dc->worldMatrix;
         }
-        instFrame.buffer->Unmap();
         m_instanceWriteOffset += visibleCount;
 
 #if INFERNUX_FRAME_PROFILE

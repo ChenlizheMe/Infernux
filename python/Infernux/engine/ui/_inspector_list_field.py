@@ -249,6 +249,7 @@ def _render_list_items_body(ctx, comp, field_name, metadata, items, element_type
     """Render list item rows, reorder separators, and bottom drop zone. Returns True if changed."""
     from .igui import IGUI
     from .inspector_utils import render_serialized_field, has_field_changed
+    from Infernux.components.serialized_field import FieldType
     from dataclasses import replace
 
     changed = False
@@ -264,6 +265,9 @@ def _render_list_items_body(ctx, comp, field_name, metadata, items, element_type
                 move_from = src
                 move_to = target_index
         return _cb
+
+    # ── List body background ──
+    body_state = IGUI.list_body_begin(ctx, f"list_body_{field_name}")
 
     IGUI.reorder_separator(ctx, f"##sep_{field_name}_before_0", _list_drag_id, _make_reorder_cb(0))
 
@@ -299,6 +303,8 @@ def _render_list_items_body(ctx, comp, field_name, metadata, items, element_type
         ctx.pop_id()
         IGUI.reorder_separator(ctx, f"##sep_{field_name}_after_{index}", _list_drag_id, _make_reorder_cb(index + 1))
 
+    IGUI.list_body_end(ctx, body_state)
+
     if remove_index is not None:
         items.pop(remove_index)
         changed = True
@@ -308,27 +314,6 @@ def _render_list_items_body(ctx, comp, field_name, metadata, items, element_type
         insert_at = move_to if move_to < move_from else move_to - 1
         items.insert(insert_at, elem)
         changed = True
-
-    if element_type in reference_types:
-        from Infernux.components.serialized_field import FieldType as _FT
-        _req = metadata.component_type if element_type == _FT.COMPONENT else metadata.required_component
-
-        def _append_item(payload):
-            nonlocal changed
-            value = _create_reference_value_from_payload(element_type, payload, _req)
-            if value is not None:
-                items.append(value)
-                changed = True
-
-        IGUI.object_field(
-            ctx,
-            f"list_add_{field_name}",
-            "",
-            _list_type_hint(element_type, metadata),
-            clickable=False,
-            accept=_list_drag_drop_type(element_type),
-            on_drop=_append_item,
-        )
 
     return changed
 

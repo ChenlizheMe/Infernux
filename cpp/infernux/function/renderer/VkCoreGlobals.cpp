@@ -140,6 +140,8 @@ bool InxVkCoreModular::CreateGlobalsDescriptorResources()
             continue;
         }
 
+        m_instanceBuffers[i].mapped = m_instanceBuffers[i].buffer->Map();
+
         VkWriteDescriptorSet writes[2]{};
 
         // Binding 0: Globals UBO
@@ -210,10 +212,16 @@ void InxVkCoreModular::EnsureInstanceBufferCapacity(uint32_t frameIndex, size_t 
         return;
 
     auto &frame = m_instanceBuffers[frameIndex];
-    if (frame.capacity >= instanceCount && frame.buffer)
+    if (frame.capacity >= instanceCount && frame.buffer) {
+        if (!frame.mapped) {
+            frame.mapped = frame.buffer->Map();
+        }
         return;
+    }
 
     std::unique_ptr<vk::VkBufferHandle> oldBuffer = std::move(frame.buffer);
+    void *oldMapped = frame.mapped;
+    frame.mapped = nullptr;
 
     // Grow to next power-of-two that fits
     size_t newCapacity = frame.capacity > 0 ? frame.capacity : INSTANCE_BUFFER_INITIAL_CAPACITY;
@@ -225,22 +233,20 @@ void InxVkCoreModular::EnsureInstanceBufferCapacity(uint32_t frameIndex, size_t 
     if (!newBuffer) {
         INXLOG_ERROR("Failed to grow instance buffer to ", newCapacity, " instances (", newBytes, " bytes)");
         frame.buffer = std::move(oldBuffer);
+        frame.mapped = oldMapped;
         return;
     }
 
+    void *newMapped = newBuffer->Map();
+
     // Preserve existing data written earlier in this frame
-    if (oldBuffer && m_instanceWriteOffset > 0) {
-        void *oldMapped = oldBuffer->Map();
-        void *newMapped = newBuffer->Map();
-        if (oldMapped && newMapped) {
+    if (oldMapped && newMapped && m_instanceWriteOffset > 0) {
             std::memcpy(newMapped, oldMapped, m_instanceWriteOffset * sizeof(glm::mat4));
-            newBuffer->Unmap();
-        }
-        oldBuffer->Unmap();
     }
 
     frame.buffer = std::move(newBuffer);
     frame.capacity = newCapacity;
+    frame.mapped = newMapped;
 
     // NOTE: Do NOT call UpdateInstanceBufferDescriptor() here.
     // This function can be called mid-recording, and updating a descriptor set
@@ -297,13 +303,16 @@ bool InxVkCoreModular::WriteInstanceMatrix(uint32_t frameIndex, uint32_t instanc
     if (previousBuffer != frame.buffer->GetBuffer())
         UpdateInstanceBufferDescriptor(frameIndex);
 
-    void *mapped = frame.buffer->Map();
+    void *mapped = frame.mapped;
+    if (!mapped) {
+        mapped = frame.buffer->Map();
+        frame.mapped = mapped;
+    }
     if (!mapped)
         return false;
 
     auto *matrices = static_cast<glm::mat4 *>(mapped);
     matrices[instanceIndex] = matrix;
-    frame.buffer->Unmap();
     return true;
 }
 
