@@ -282,7 +282,7 @@ class SceneRenderGraph
     // ========================================================================
 
     /// @brief Cache draw calls for this render graph (called by SubmitCulling)
-    void SetCachedDrawCalls(std::vector<DrawCall> drawCalls)
+    void SetCachedDrawCalls(std::vector<DrawCall> &&drawCalls)
     {
         m_cachedDrawCalls = std::move(drawCalls);
         m_hasCachedDrawCalls = true;

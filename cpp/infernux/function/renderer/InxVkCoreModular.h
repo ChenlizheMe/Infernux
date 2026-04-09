@@ -50,6 +50,7 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 struct SDL_Window;
@@ -319,6 +320,10 @@ class InxVkCoreModular
     /// @brief Remove per-object buffers for objects that are no longer active.
     /// Call once per frame after SetDrawCalls with the current active draw calls.
     void CleanupUnusedBuffers(const std::vector<DrawCall> &activeDrawCalls);
+
+    /// @brief Same as CleanupUnusedBuffers but accepts pre-built objectId set
+    /// to avoid copying DrawCall vectors (saves shared_ptr atomic refcount ops).
+    void CleanupUnusedBuffersByIds(const std::unordered_set<uint64_t> &activeIds);
 
     // ========================================================================
     // Command Buffer Utilities

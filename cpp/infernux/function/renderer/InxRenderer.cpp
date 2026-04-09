@@ -33,6 +33,7 @@
 #include <iomanip>
 #include <iostream>
 #include <platform/window/InxView.h>
+#include <unordered_set>
 #include <sstream>
 
 namespace infernux
@@ -997,20 +998,21 @@ void InxRenderer::StageEngineGlobalsUBO()
 
 void InxRenderer::CleanupDrawCallBuffers()
 {
-    std::vector<DrawCall> allDrawCalls;
-    // Only include scene draw calls when the scene view is actively rendering.
-    // Stale cached draw calls from a hidden scene view must NOT prevent buffer
-    // cleanup — they keep zombie per-object buffers alive indefinitely.
+    // Collect active objectIds without copying DrawCall vectors (avoids
+    // 14,400+ shared_ptr<InxMaterial> atomic refcount bumps per frame).
+    std::unordered_set<uint64_t> activeIds;
     if (m_sceneViewVisible && m_sceneRenderGraph && m_sceneRenderGraph->HasCachedDrawCalls()) {
-        const auto &sceneDC = m_sceneRenderGraph->GetCachedDrawCalls();
-        allDrawCalls.insert(allDrawCalls.end(), sceneDC.begin(), sceneDC.end());
+        for (const auto &dc : m_sceneRenderGraph->GetCachedDrawCalls()) {
+            activeIds.insert(dc.objectId);
+        }
     }
     if (m_gameCameraEnabled && m_gameRenderGraph && m_gameRenderGraph->HasCachedDrawCalls()) {
-        const auto &gameDC = m_gameRenderGraph->GetCachedDrawCalls();
-        allDrawCalls.insert(allDrawCalls.end(), gameDC.begin(), gameDC.end());
+        for (const auto &dc : m_gameRenderGraph->GetCachedDrawCalls()) {
+            activeIds.insert(dc.objectId);
+        }
     }
-    if (!allDrawCalls.empty()) {
-        m_vkCore->CleanupUnusedBuffers(allDrawCalls);
+    if (!activeIds.empty()) {
+        m_vkCore->CleanupUnusedBuffersByIds(activeIds);
     }
 }
 

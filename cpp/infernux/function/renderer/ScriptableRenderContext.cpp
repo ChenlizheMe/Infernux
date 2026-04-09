@@ -77,22 +77,33 @@ CullingResults ScriptableRenderContext::Cull(Camera *camera)
     SceneRenderBridge &bridge = SceneRenderBridge::Instance();
     Camera *editorCam = bridge.GetEditorCamera();
 
-    DrawCallResult fullResult;
+    // Pointer to draw calls — avoids copying the entire vector of DrawCalls
+    // (each DrawCall contains a shared_ptr<InxMaterial> whose atomic refcount
+    // would be bumped N times on copy).
+    const std::vector<DrawCall> *drawCallsPtr = nullptr;
+    DrawCallResult ownedResult; // Only used for game camera path
+
     if (camera && camera != editorCam) {
         // Non-editor camera (e.g. Game View camera): reuse editor camera's
         // already-collected renderables, re-cull with this camera's frustum.
-        // Avoids expensive CollectRenderables (GetWorldMatrix, GetWorldBounds, etc.)
-        fullResult = bridge.CullAndBuildForCamera(camera);
+        ownedResult = bridge.CullAndBuildForCamera(camera);
+        drawCallsPtr = &ownedResult.drawCalls;
     } else {
         // Editor camera: reuse the already-prepared frame data from
         // SceneRenderBridge::PrepareFrame() (called earlier in DrawFrame).
-        fullResult = bridge.BuildDrawCalls();
+        // BuildDrawCalls returns const ref — zero copy.
+        const DrawCallResult &cached = bridge.BuildDrawCalls();
+        drawCallsPtr = &cached.drawCalls;
     }
 
     m_hasCullData = true;
 
     CullingResults results;
-    results.drawCalls = std::move(fullResult.drawCalls);
+    if (camera && camera != editorCam) {
+        results.drawCalls = std::move(ownedResult.drawCalls); // game camera: move
+    } else {
+        results.drawCalls = *drawCallsPtr; // editor camera: copy (cached data must survive)
+    }
     // Populate visible light count from the scene light collector.
     // CollectLights() runs earlier in the frame (InxRenderer::UpdateSceneLighting),
     // so the count is already available.
@@ -212,14 +223,13 @@ void ScriptableRenderContext::SubmitCulling(CullingResults culling)
     // so the executor lambda can swap them before each graph execution,
     // ensuring full isolation between Scene View and Game View rendering.
     if (m_graph) {
-        m_graph->SetCachedDrawCalls(result.drawCalls);
+        m_graph->SetCachedDrawCalls(std::move(result.drawCalls));
         if (m_activeCamera) {
             m_graph->SetCachedCameraVP(m_cachedView, m_cachedProj);
         }
+        // Point VkCore at the graph's cached copy (survives this scope).
+        m_vkCore->SetDrawCalls(&m_graph->GetCachedDrawCalls());
     }
-
-    // Upload draw calls to VkCore (InxRenderer restores per-graph before execution)
-    m_vkCore->SetDrawCalls(&result.drawCalls);
 
     // NOTE: CleanupUnusedBuffers is called by InxRenderer::DrawFrame() after
     // all pipeline renders, using the union of all graphs' draw calls.
