@@ -18,17 +18,19 @@ void SceneRenderer::PrepareFrame()
 
     const uint64_t currentVersion = sm.GetMeshRendererVersion();
     if (currentVersion == m_cachedMeshRendererVersion && !m_renderables.empty()) {
-        // Fast path: renderer set unchanged — only update transforms.
-        UpdateCachedRenderableTransforms();
+        // Fast path: transforms, bounds and culling are deferred to
+        // BuildDrawCalls() where they execute in a single O(N) pass,
+        // eliminating two intermediate O(N) loops and one 64-byte mat4
+        // copy per object through the RenderableObject intermediate.
     } else {
         // Slow path: full rebuild.
         CollectRenderables(0xFFFFFFFF);
         m_cachedMeshRendererVersion = currentVersion;
         m_drawCallsCacheValid = false;
-    }
 
-    if (m_frustumCulling) {
-        PerformCulling();
+        if (m_frustumCulling) {
+            PerformCulling();
+        }
     }
 
     // Skip sort when cache is valid (material sort keys are stable).
@@ -50,15 +52,15 @@ void SceneRenderer::PrepareFrame(Camera *camera)
     SceneManager &sm = SceneManager::Instance();
     const uint64_t currentVersion = sm.GetMeshRendererVersion();
     if (currentVersion == m_cachedMeshRendererVersion && !m_renderables.empty()) {
-        UpdateCachedRenderableTransforms();
+        // Fast path: deferred to BuildDrawCalls() single pass.
     } else {
         CollectRenderables(camera->GetCullingMask());
         m_cachedMeshRendererVersion = currentVersion;
         m_drawCallsCacheValid = false;
-    }
 
-    if (m_frustumCulling) {
-        PerformCulling();
+        if (m_frustumCulling) {
+            PerformCulling();
+        }
     }
 
     if (!m_drawCallsCacheValid) {
@@ -352,16 +354,43 @@ void SceneRenderer::EmitDrawCallsForRenderable(DrawCallResult &result, const Ren
 const DrawCallResult &SceneRenderer::BuildDrawCalls()
 {
     if (m_drawCallsCacheValid) {
-        // Fast path: renderables and draw calls are 1:1 (same order from
-        // the slow-path build).  Patch transforms in-place with direct
-        // index — no hash map, zero heap allocation.
+        // Merged fast path: update world matrices, compute bounds, and
+        // perform frustum culling in a single O(N) pass.  Reads the
+        // world matrix by const ref from the ECS cache (patched by
+        // EndFrameCache) and copies it once into the DrawCall — eliminating
+        // the intermediate RenderableObject copy and two extra O(N) loops.
+        Frustum frustum;
+        const bool doCulling = m_frustumCulling && m_activeCamera;
+        if (doCulling) {
+            frustum.ExtractFromMatrix(m_activeCamera->GetViewProjectionMatrix());
+        }
+
         const size_t n = std::min(m_cachedDrawCalls.drawCalls.size(), m_renderables.size());
+        m_visibleCount = 0;
         for (size_t i = 0; i < n; ++i) {
             auto &dc = m_cachedDrawCalls.drawCalls[i];
-            const auto &r = m_renderables[i];
-            dc.worldMatrix = r.worldMatrix;
-            dc.worldBounds = r.worldBounds;
-            dc.frustumVisible = r.visible;
+            auto &r = m_renderables[i];
+            MeshRenderer *mr = r.meshRenderer;
+            if (!mr) continue;
+            GameObject *obj = mr->GetGameObject();
+            if (!obj) continue;
+
+            // Single 64-byte copy: ECS cache → DrawCall (no renderable intermediate).
+            const glm::mat4 &wm = obj->GetTransform()->GetWorldMatrix();
+            dc.worldMatrix = wm;
+
+            // Arvo AABB transform
+            glm::vec3 bmin, bmax;
+            mr->ComputeWorldBounds(wm, bmin, bmax);
+            AABB bounds(bmin, bmax);
+            dc.worldBounds = bounds;
+            r.worldBounds = bounds; // keep for game camera re-cull
+
+            // Frustum test
+            bool vis = !doCulling || frustum.IntersectsAABB(bounds);
+            dc.frustumVisible = vis;
+            r.visible = vis;
+            if (vis) ++m_visibleCount;
         }
         return m_cachedDrawCalls;
     }

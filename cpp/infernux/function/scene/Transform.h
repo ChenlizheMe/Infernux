@@ -396,10 +396,10 @@ class Transform : public Component
     }
 
     /// @brief Get world transformation matrix (considering parent hierarchy). Unity: transform.localToWorldMatrix
-    [[nodiscard]] glm::mat4 GetWorldMatrix() const;
+    [[nodiscard]] const glm::mat4 &GetWorldMatrix() const;
 
     /// @brief Alias for GetWorldMatrix(). Unity naming: localToWorldMatrix
-    [[nodiscard]] glm::mat4 GetLocalToWorldMatrix() const
+    [[nodiscard]] const glm::mat4 &GetLocalToWorldMatrix() const
     {
         return GetWorldMatrix();
     }

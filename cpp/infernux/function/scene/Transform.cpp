@@ -80,7 +80,7 @@ void Transform::SetWorldPosition(const glm::vec3 &worldPos)
 // World Matrix
 // ============================================================================
 
-glm::mat4 Transform::GetWorldMatrix() const
+const glm::mat4 &Transform::GetWorldMatrix() const
 {
     auto &store = TransformECSStore::Instance();
     if (!store.GetWorldMatrixDirty(m_ecsHandle)) {
@@ -99,7 +99,7 @@ glm::mat4 Transform::GetWorldMatrix() const
 
     store.SetCachedWorldMatrix(m_ecsHandle, worldMatrix);
     store.SetWorldMatrixDirty(m_ecsHandle, false);
-    return worldMatrix;
+    return store.GetCachedWorldMatrix(m_ecsHandle);
 }
 
 // ============================================================================
