@@ -422,6 +422,7 @@ void SceneManager::ClearComponentRegistries()
     m_activeMeshRenderers.clear();
     m_activeMeshRendererSet.clear();
     m_activeLights.clear();
+    ++m_meshRendererVersion;
 }
 
 // ========================================================================
@@ -434,6 +435,7 @@ void SceneManager::RegisterMeshRenderer(MeshRenderer *renderer)
         return;
     if (m_activeMeshRendererSet.insert(renderer).second) {
         m_activeMeshRenderers.push_back(renderer);
+        ++m_meshRendererVersion;
     }
 }
 
@@ -441,6 +443,7 @@ void SceneManager::UnregisterMeshRenderer(MeshRenderer *renderer)
 {
     if (!m_activeMeshRendererSet.erase(renderer))
         return;
+    ++m_meshRendererVersion;
     // Swap-and-pop for O(1) removal from vector
     for (size_t i = 0; i < m_activeMeshRenderers.size(); ++i) {
         if (m_activeMeshRenderers[i] == renderer) {

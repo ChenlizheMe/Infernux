@@ -217,6 +217,9 @@ class SceneManager
         return m_activeMeshRenderers;
     }
 
+    /// Monotonic counter bumped when a MeshRenderer is registered/unregistered.
+    [[nodiscard]] uint64_t GetMeshRendererVersion() const { return m_meshRendererVersion; }
+
     /// Mark all MeshRenderers referencing a given mesh GUID as buffer-dirty.
     void MarkMeshRenderersDirtyForAsset(const std::string &meshGuid);
 
@@ -282,6 +285,7 @@ class SceneManager
     // Avoids per-frame GetAllObjects() + dynamic_cast in CollectRenderables.
     std::vector<MeshRenderer *> m_activeMeshRenderers;
     std::unordered_set<MeshRenderer *> m_activeMeshRendererSet; // O(1) duplicate check
+    uint64_t m_meshRendererVersion = 0;
 
     // Light component registry — populated by Light OnEnable/OnDisable.
     // Avoids per-frame GetAllObjects() + GetComponent<Light>() in CollectLights/ComputeShadowVP.

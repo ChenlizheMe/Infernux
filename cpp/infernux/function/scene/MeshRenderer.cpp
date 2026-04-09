@@ -188,7 +188,18 @@ void MeshRenderer::SetSharedPrimitiveMesh(const std::vector<Vertex> &vertices,
     m_inlineMeshName = primitiveName;
     m_meshAsset.Clear();
     m_meshBufferDirty = true;
-    ComputeLocalBoundsFromInlineVertices();
+
+    // Cache bounds per primitive type (keyed by static vertex data address).
+    // Avoids iterating all vertices for every identical primitive.
+    static std::unordered_map<const void *, std::pair<glm::vec3, glm::vec3>> s_boundsCache;
+    auto it = s_boundsCache.find(&vertices);
+    if (it != s_boundsCache.end()) {
+        m_localBoundsMin = it->second.first;
+        m_localBoundsMax = it->second.second;
+    } else {
+        ComputeLocalBoundsFromInlineVertices();
+        s_boundsCache[&vertices] = {m_localBoundsMin, m_localBoundsMax};
+    }
 }
 
 void MeshRenderer::SetMeshAsset(const std::string &guid, std::shared_ptr<InxMesh> mesh)

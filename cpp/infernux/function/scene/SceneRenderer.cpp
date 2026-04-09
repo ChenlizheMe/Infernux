@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstring>
 #include <glm/gtc/matrix_transform.hpp>
+#include <unordered_map>
 
 namespace infernux
 {
@@ -13,19 +14,28 @@ namespace infernux
 
 void SceneRenderer::PrepareFrame()
 {
-    // Always use editor camera for scene rendering (Scene View).
-    // Game View handles its own camera independently via PrepareFrame(Camera*).
     SceneManager &sm = SceneManager::Instance();
     m_activeCamera = sm.GetEditorCameraController().GetCamera();
 
-    // Collect and cull renderables (editor camera sees all layers)
-    CollectRenderables(0xFFFFFFFF);
+    const uint64_t currentVersion = sm.GetMeshRendererVersion();
+    if (currentVersion == m_cachedMeshRendererVersion && !m_renderables.empty()) {
+        // Fast path: renderer set unchanged — only update transforms.
+        UpdateCachedRenderableTransforms();
+    } else {
+        // Slow path: full rebuild.
+        CollectRenderables(0xFFFFFFFF);
+        m_cachedMeshRendererVersion = currentVersion;
+        m_drawCallsCacheValid = false;
+    }
 
     if (m_frustumCulling) {
         PerformCulling();
     }
 
-    SortRenderables();
+    // Skip sort when cache is valid (material sort keys are stable).
+    if (!m_drawCallsCacheValid) {
+        SortRenderables();
+    }
 }
 
 void SceneRenderer::PrepareFrame(Camera *camera)
@@ -38,14 +48,23 @@ void SceneRenderer::PrepareFrame(Camera *camera)
 
     m_activeCamera = camera;
 
-    // Collect renderables filtered by camera's culling mask
-    CollectRenderables(camera->GetCullingMask());
+    SceneManager &sm = SceneManager::Instance();
+    const uint64_t currentVersion = sm.GetMeshRendererVersion();
+    if (currentVersion == m_cachedMeshRendererVersion && !m_renderables.empty()) {
+        UpdateCachedRenderableTransforms();
+    } else {
+        CollectRenderables(camera->GetCullingMask());
+        m_cachedMeshRendererVersion = currentVersion;
+        m_drawCallsCacheValid = false;
+    }
 
     if (m_frustumCulling) {
         PerformCulling();
     }
 
-    SortRenderables();
+    if (!m_drawCallsCacheValid) {
+        SortRenderables();
+    }
 }
 
 glm::mat4 SceneRenderer::GetViewMatrix() const
@@ -142,6 +161,24 @@ void SceneRenderer::CollectRenderables(uint32_t cullingMask)
         m_renderables.push_back(std::move(renderable));
     }
 
+    m_visibleCount = m_renderables.size();
+}
+
+void SceneRenderer::UpdateCachedRenderableTransforms()
+{
+    // Fast path: renderer set unchanged. Only update world matrices and bounds.
+    for (auto &renderable : m_renderables) {
+        MeshRenderer *mr = renderable.meshRenderer;
+        if (!mr) continue;
+        GameObject *obj = mr->GetGameObject();
+        if (!obj) continue;
+
+        renderable.worldMatrix = obj->GetTransform()->GetWorldMatrix();
+
+        glm::vec3 bmin, bmax;
+        mr->ComputeWorldBounds(renderable.worldMatrix, bmin, bmax);
+        renderable.worldBounds = AABB(bmin, bmax);
+    }
     m_visibleCount = m_renderables.size();
 }
 
@@ -312,8 +349,29 @@ void SceneRenderer::EmitDrawCallsForRenderable(DrawCallResult &result, const Ren
     }
 }
 
-DrawCallResult SceneRenderer::BuildDrawCalls() const
+DrawCallResult SceneRenderer::BuildDrawCalls()
 {
+    if (m_drawCallsCacheValid) {
+        // Fast path: patch world matrices + bounds + visibility on cached draw calls.
+        // Build objectId→renderable_index lookup O(N), then iterate draw calls O(D).
+        std::unordered_map<uint64_t, size_t> idMap;
+        idMap.reserve(m_renderables.size());
+        for (size_t i = 0; i < m_renderables.size(); ++i) {
+            idMap[m_renderables[i].objectId] = i;
+        }
+        for (auto &dc : m_cachedDrawCalls.drawCalls) {
+            auto it = idMap.find(dc.objectId);
+            if (it != idMap.end()) {
+                const auto &r = m_renderables[it->second];
+                dc.worldMatrix = r.worldMatrix;
+                dc.worldBounds = r.worldBounds;
+                dc.frustumVisible = r.visible;
+            }
+        }
+        return m_cachedDrawCalls;
+    }
+
+    // Slow path: full rebuild.
     DrawCallResult result;
     result.drawCalls.reserve(m_renderables.size());
 
@@ -326,10 +384,12 @@ DrawCallResult SceneRenderer::BuildDrawCalls() const
         EmitDrawCallsForRenderable(result, renderable, renderable.visible, bufferDirty);
     }
 
+    m_cachedDrawCalls = result;
+    m_drawCallsCacheValid = true;
     return result;
 }
 
-DrawCallResult SceneRenderer::BuildDrawCallsForCamera(Camera *camera) const
+DrawCallResult SceneRenderer::BuildDrawCallsForCamera(Camera *camera)
 {
     DrawCallResult result;
     if (!camera || m_renderables.empty())
@@ -431,14 +491,14 @@ DrawCallResult SceneRenderBridge::PrepareAndBuildForCamera(Camera *camera)
     return tempRenderer.BuildDrawCalls();
 }
 
-DrawCallResult SceneRenderBridge::CullAndBuildForCamera(Camera *camera) const
+DrawCallResult SceneRenderBridge::CullAndBuildForCamera(Camera *camera)
 {
     // Reuse editor camera's already-collected renderables.
     // Only re-cull with the given camera's frustum + layer mask.
     return m_sceneRenderer.BuildDrawCallsForCamera(camera);
 }
 
-DrawCallResult SceneRenderBridge::BuildDrawCalls() const
+DrawCallResult SceneRenderBridge::BuildDrawCalls()
 {
     return m_sceneRenderer.BuildDrawCalls();
 }

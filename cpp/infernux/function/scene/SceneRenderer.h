@@ -90,12 +90,12 @@ class SceneRenderer
     /// @brief Build draw calls from visible renderables.
     /// Converts the culled/sorted RenderableObject list into DrawCall + combined vertex/index data.
     /// @note Vertices remain in model/local space; per-object world transform is applied on GPU via push constants.
-    [[nodiscard]] DrawCallResult BuildDrawCalls() const;
+    [[nodiscard]] DrawCallResult BuildDrawCalls();
 
     /// @brief Build draw calls by re-culling existing renderables against a different camera.
     /// Reuses renderables collected by PrepareFrame() to avoid re-collecting world matrices,
     /// bounds, and materials. Only re-applies frustum culling with the given camera.
-    [[nodiscard]] DrawCallResult BuildDrawCallsForCamera(Camera *camera) const;
+    [[nodiscard]] DrawCallResult BuildDrawCallsForCamera(Camera *camera);
 
     // ========================================================================
     // Settings
@@ -119,6 +119,9 @@ class SceneRenderer
     void PerformCulling();
     void SortRenderables();
 
+    /// @brief Fast-path: update only world matrices and bounds in cached renderables.
+    void UpdateCachedRenderableTransforms();
+
     /// @brief Shared draw-call emission logic used by both BuildDrawCalls() and BuildDrawCallsForCamera().
     void EmitDrawCallsForRenderable(DrawCallResult &result, const RenderableObject &renderable, bool visible,
                                     bool bufferDirty) const;
@@ -130,6 +133,16 @@ class SceneRenderer
 
     // Cached camera state for the frame
     Camera *m_activeCamera = nullptr;
+
+    // ── Renderable cache ─────────────────────────────────────────────
+    // When the renderer set hasn't changed (same MeshRenderers, same
+    // enable/disable state), we skip full CollectRenderables/Sort and
+    // only update world matrices + bounds in-place.
+    uint64_t m_cachedMeshRendererVersion = 0;
+
+    // Draw call cache: reused when renderables are cached.
+    DrawCallResult m_cachedDrawCalls;
+    bool           m_drawCallsCacheValid = false;
 };
 
 /**
@@ -169,11 +182,11 @@ class SceneRenderBridge
     /// @brief Build draw calls for a camera reusing the editor camera's renderables.
     /// Avoids re-collecting world matrices, bounds, and materials (from PrepareFrame).
     /// Only re-applies frustum culling and layer filtering for the given camera.
-    [[nodiscard]] DrawCallResult CullAndBuildForCamera(Camera *camera) const;
+    [[nodiscard]] DrawCallResult CullAndBuildForCamera(Camera *camera);
 
     /// @brief Build draw calls from the current frame's visible renderables.
     /// Delegates to SceneRenderer::BuildDrawCalls().
-    [[nodiscard]] DrawCallResult BuildDrawCalls() const;
+    [[nodiscard]] DrawCallResult BuildDrawCalls();
 
     /// @brief Get the editor camera.
     [[nodiscard]] Camera *GetEditorCamera() const;
