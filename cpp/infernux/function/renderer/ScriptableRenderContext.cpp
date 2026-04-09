@@ -327,25 +327,58 @@ void ScriptableRenderContext::SubmitCulling(CullingResults culling)
     t0 = Clock::now();
 #endif
     if (shadowSource) {
-        // Consecutive-objectId dedup: draw calls for multi-submesh objects
-        // share the same objectId and are adjacent in the array.  Skip
-        // redundant hash-map lookups inside EnsureObjectBuffers.
-        uint64_t lastEnsuredId = 0;
-        for (const DrawCall &dc : *shadowSource) {
-            if (dc.objectId == lastEnsuredId) continue;
-            lastEnsuredId = dc.objectId;
-            if (dc.meshVertices && dc.meshIndices) {
-                m_vkCore->EnsureObjectBuffers(dc.objectId, *dc.meshVertices, *dc.meshIndices, dc.forceBufferUpdate);
-            }
-        }
+        // Optimisation: when all objects were ensured in a previous frame with
+        // the same draw-call generation (no objects added/removed), scanning
+        // only for forceBufferUpdate is ~10× cheaper than performing 10 k
+        // hashmap lookups inside EnsureObjectBuffers.
+        const bool canSkipFullEnsure = m_vkCore->AreAllObjectsEnsuredStable();
 
-        for (size_t drawCallIndex = baseOrderedDrawCallCount; drawCallIndex < m_orderedDrawCalls.size(); ++drawCallIndex) {
-            const DrawCall &dc = m_orderedDrawCalls[drawCallIndex];
-            if (dc.objectId == lastEnsuredId) continue;
-            lastEnsuredId = dc.objectId;
-            if (dc.meshVertices && dc.meshIndices) {
-                m_vkCore->EnsureObjectBuffers(dc.objectId, *dc.meshVertices, *dc.meshIndices, dc.forceBufferUpdate);
+        if (canSkipFullEnsure) {
+            // Quick scan: only call EnsureObjectBuffers for DCs with dirty buffers.
+            bool anyDirty = false;
+            uint64_t lastDirtyId = 0;
+            for (const DrawCall &dc : *shadowSource) {
+                if (!dc.forceBufferUpdate)
+                    continue;
+                if (dc.objectId == lastDirtyId)
+                    continue;
+                lastDirtyId = dc.objectId;
+                anyDirty = true;
+                if (dc.meshVertices && dc.meshIndices) {
+                    m_vkCore->EnsureObjectBuffers(dc.objectId, *dc.meshVertices, *dc.meshIndices, dc.forceBufferUpdate);
+                }
             }
+            // Also ensure gizmo draw calls (rare, usually 0-16)
+            for (size_t drawCallIndex = baseOrderedDrawCallCount; drawCallIndex < m_orderedDrawCalls.size(); ++drawCallIndex) {
+                const DrawCall &dc = m_orderedDrawCalls[drawCallIndex];
+                if (dc.meshVertices && dc.meshIndices) {
+                    m_vkCore->EnsureObjectBuffers(dc.objectId, *dc.meshVertices, *dc.meshIndices, dc.forceBufferUpdate);
+                }
+            }
+        } else {
+            // Full ensure: first frame or draw-call set changed.
+            // Consecutive-objectId dedup: draw calls for multi-submesh objects
+            // share the same objectId and are adjacent in the array.  Skip
+            // redundant hash-map lookups inside EnsureObjectBuffers.
+            uint64_t lastEnsuredId = 0;
+            for (const DrawCall &dc : *shadowSource) {
+                if (dc.objectId == lastEnsuredId) continue;
+                lastEnsuredId = dc.objectId;
+                if (dc.meshVertices && dc.meshIndices) {
+                    m_vkCore->EnsureObjectBuffers(dc.objectId, *dc.meshVertices, *dc.meshIndices, dc.forceBufferUpdate);
+                }
+            }
+
+            for (size_t drawCallIndex = baseOrderedDrawCallCount; drawCallIndex < m_orderedDrawCalls.size(); ++drawCallIndex) {
+                const DrawCall &dc = m_orderedDrawCalls[drawCallIndex];
+                if (dc.objectId == lastEnsuredId) continue;
+                lastEnsuredId = dc.objectId;
+                if (dc.meshVertices && dc.meshIndices) {
+                    m_vkCore->EnsureObjectBuffers(dc.objectId, *dc.meshVertices, *dc.meshIndices, dc.forceBufferUpdate);
+                }
+            }
+            // After a full pass with no dirty buffers, mark stable.
+            m_vkCore->SetEnsureStableGeneration();
         }
     }
 

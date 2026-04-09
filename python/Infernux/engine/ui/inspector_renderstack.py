@@ -151,31 +151,42 @@ def _get_renderstack_inspector_state(stack: "RenderStack") -> dict:
     state = getattr(stack, "_inspector_renderstack_cache", None)
 
     state_t0 = _time.perf_counter()
+
+    # ── Fast pre-check: topology_probe is cached by _build_full_topology_probe().
+    # If the id() matches, no pipeline/pass/topology work has changed.
+    # Only then do we check the (much cheaper) mounted_signature. ──
+    topology_probe = stack._build_full_topology_probe()
+    topology_token = id(topology_probe)
+
+    if (
+        isinstance(state, dict)
+        and state.get("topology_token") == topology_token
+    ):
+        # Topology cache is still alive (not invalidated).  Check if pass
+        # mount state changed (add/remove/reorder/toggle are the only
+        # mutations between invalidations).
+        mounted_signature = tuple(
+            (entry.render_pass.injection_point, entry.render_pass.name, entry.order, bool(entry.enabled))
+            for entry in stack.pass_entries
+        )
+        if state.get("mounted_signature") == mounted_signature:
+            _record_profile_count("renderstackStateHit_count")
+            return state
+    else:
+        mounted_signature = tuple(
+            (entry.render_pass.injection_point, entry.render_pass.name, entry.order, bool(entry.enabled))
+            for entry in stack.pass_entries
+        )
+
+    _record_profile_count("renderstackStateMiss_count")
+
+    # Full rebuild — discovery dicts and signature tuples only on miss.
     pipelines = stack.discover_pipelines()
     pipeline_signature = tuple(sorted(pipelines.keys()))
 
     from Infernux.renderstack.discovery import discover_passes
     passes = discover_passes()
     pass_signature = tuple(sorted(passes.keys()))
-
-    topology_probe = stack._build_full_topology_probe()
-    topology_token = id(topology_probe)
-    mounted_signature = tuple(
-        (entry.render_pass.injection_point, entry.render_pass.name, entry.order, bool(entry.enabled))
-        for entry in stack.pass_entries
-    )
-
-    if (
-        isinstance(state, dict)
-        and state.get("pipeline_signature") == pipeline_signature
-        and state.get("pass_signature") == pass_signature
-        and state.get("topology_token") == topology_token
-        and state.get("mounted_signature") == mounted_signature
-    ):
-        _record_profile_count("renderstackStateHit_count")
-        return state
-
-    _record_profile_count("renderstackStateMiss_count")
 
     pass_candidates_by_ip: dict[str, dict[str, type]] = {}
     for name, cls in passes.items():

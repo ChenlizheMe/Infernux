@@ -320,6 +320,18 @@ class InxVkCoreModular
         ++m_ensureFrameCounter;
     }
 
+    /// @brief Check if all objects have been ensured in the current draw call generation.
+    [[nodiscard]] bool AreAllObjectsEnsuredStable() const
+    {
+        return m_ensureStableGeneration > 0 && m_ensureStableGeneration == m_drawCallGeneration;
+    }
+
+    /// @brief Mark that all objects have been ensured for the current generation.
+    void SetEnsureStableGeneration()
+    {
+        m_ensureStableGeneration = m_drawCallGeneration;
+    }
+
     /// @brief Remove per-object buffers for objects that are no longer active.
     /// Call once per frame after SetDrawCalls with the current active draw calls.
     void CleanupUnusedBuffers(const std::vector<DrawCall> &activeDrawCalls);
@@ -933,6 +945,10 @@ class InxVkCoreModular
     /// Objects with identical mesh storage share the same GPU buffers.
     std::unordered_map<uint64_t, PerObjectBuffers> m_perObjectBuffers;
     uint32_t m_ensureFrameCounter = 0; // incremented once per frame
+    // When > 0 and equals m_drawCallGeneration, all existing objects have
+    // been ensured at least once this generation.  We can then skip the
+    // expensive per-DC hashmap lookups in favor of a quick forceBufferUpdate scan.
+    uint32_t m_ensureStableGeneration = 0;
 
     /// @brief Shared mesh GPU buffer cache keyed by vertex/index storage pointers.
     std::unordered_map<SharedMeshKey, SharedMeshBuffers, SharedMeshKeyHash> m_sharedMeshBuffers;
@@ -980,6 +996,16 @@ class InxVkCoreModular
     };
     std::vector<ShadowDraw> m_shadowDrawScratch;
     std::vector<uint32_t> m_shadowCascadeVisible; ///< Per-cascade visible indices into m_shadowDrawScratch
+
+    // Shadow filter+sort cache: skip re-filtering 10k DCs when shadow draw set unchanged.
+    const std::vector<DrawCall> *m_shadowScratchSourcePtr = nullptr;
+    size_t m_shadowScratchSourceSize = 0;
+    bool m_shadowScratchValid = false;
+
+    // Draw call generation: bumped when SetDrawCalls/SetShadowDrawCalls receive a new pointer.
+    uint32_t m_drawCallGeneration = 0;
+    const std::vector<DrawCall> *m_lastDrawCallsPtr = nullptr;
+    const std::vector<DrawCall> *m_lastShadowDrawCallsPtr = nullptr;
 
     // Pre/Post scene render callbacks
     PostSceneRenderCallback m_postSceneRenderCallback;
