@@ -229,7 +229,10 @@ class SceneManager
     }
 
     /// Monotonic counter bumped when a MeshRenderer is registered/unregistered.
-    [[nodiscard]] uint64_t GetMeshRendererVersion() const { return m_meshRendererVersion; }
+    [[nodiscard]] uint64_t GetMeshRendererVersion() const
+    {
+        return m_meshRendererVersion;
+    }
 
     /// Mark all MeshRenderers referencing a given mesh GUID as buffer-dirty.
     void MarkMeshRenderersDirtyForAsset(const std::string &meshGuid);

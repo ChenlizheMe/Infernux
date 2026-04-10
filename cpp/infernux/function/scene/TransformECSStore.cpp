@@ -147,7 +147,8 @@ void TransformECSStore::SetSnapshot(Handle h, const TransformECSData &d)
     m_dirty[i] = d.dirty ? 1 : 0;
     m_cachedWorldMatrices[i] = d.cachedWorldMatrix;
     m_worldMatrixDirty[i] = d.worldMatrixDirty ? 1 : 0;
-    if (d.worldMatrixDirty) m_anyWorldMatrixDirty = true;
+    if (d.worldMatrixDirty)
+        m_anyWorldMatrixDirty = true;
     m_owners[i] = d.owner;
 }
 
@@ -580,7 +581,7 @@ void TransformECSStore::EndFrameCache()
     // Pre-sync world matrices now so CollectRenderables hits clean
     // caches (avoids 14,400 lazy recomputes with poor cache locality).
     if (m_fcScene && requiresFullSync) {
-        m_anyWorldMatrixDirty = true;   // dirty from the loop above
+        m_anyWorldMatrixDirty = true; // dirty from the loop above
         SyncSceneWorldMatrices(m_fcScene);
     }
     m_fcScene = nullptr;

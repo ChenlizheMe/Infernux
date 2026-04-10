@@ -82,8 +82,7 @@ class MeshRenderer : public Component
 
     /// @brief Set mesh from shared static primitive data (zero-copy).
     /// The referenced vectors must outlive this MeshRenderer.
-    void SetSharedPrimitiveMesh(const std::vector<Vertex> &vertices,
-                                const std::vector<uint32_t> &indices,
+    void SetSharedPrimitiveMesh(const std::vector<Vertex> &vertices, const std::vector<uint32_t> &indices,
                                 const std::string &primitiveName);
 
     /// @brief Get/set the display name for inline (primitive) meshes.

@@ -26,45 +26,45 @@ void SceneRenderer::PrepareFrame(bool useActiveCameraCulling)
     if (fastPath) {
         // Fast path: renderer set unchanged — fuse transform/bounds/culling/draw-call patch.
 #if INFERNUX_FRAME_PROFILE
-    const auto t0 = Clock::now();
+        const auto t0 = Clock::now();
 #endif
         UpdateCachedRenderableTransforms(useActiveCameraCulling);
 #if INFERNUX_FRAME_PROFILE
-    m_profileSnapshot.updateMs += std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
-    m_profileSnapshot.prepareFastCalls += 1.0;
+        m_profileSnapshot.updateMs += std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+        m_profileSnapshot.prepareFastCalls += 1.0;
 #endif
     } else {
         // Slow path: full rebuild.
 #if INFERNUX_FRAME_PROFILE
-    const auto t0 = Clock::now();
+        const auto t0 = Clock::now();
 #endif
         CollectRenderables(0xFFFFFFFF);
         m_cachedMeshRendererVersion = currentVersion;
         m_drawCallsCacheValid = false;
 #if INFERNUX_FRAME_PROFILE
-    m_profileSnapshot.collectMs += std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
-    m_profileSnapshot.prepareSlowCalls += 1.0;
+        m_profileSnapshot.collectMs += std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+        m_profileSnapshot.prepareSlowCalls += 1.0;
 #endif
     }
 
     if (!fastPath && useActiveCameraCulling && m_frustumCulling) {
 #if INFERNUX_FRAME_PROFILE
-    const auto t0 = Clock::now();
+        const auto t0 = Clock::now();
 #endif
         PerformCulling();
 #if INFERNUX_FRAME_PROFILE
-    m_profileSnapshot.cullMs += std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+        m_profileSnapshot.cullMs += std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
 #endif
     }
 
     // Skip sort when cache is valid (material sort keys are stable).
     if (!m_drawCallsCacheValid) {
 #if INFERNUX_FRAME_PROFILE
-    const auto t0 = Clock::now();
+        const auto t0 = Clock::now();
 #endif
         SortRenderables();
 #if INFERNUX_FRAME_PROFILE
-    m_profileSnapshot.sortMs += std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+        m_profileSnapshot.sortMs += std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
 #endif
     }
 
@@ -94,53 +94,53 @@ void SceneRenderer::PrepareFrame(Camera *camera)
     const uint64_t currentVersion = sm.GetMeshRendererVersion();
     const bool fastPath = (currentVersion == m_cachedMeshRendererVersion && !m_renderables.empty());
     if (fastPath) {
-    #if INFERNUX_FRAME_PROFILE
+#if INFERNUX_FRAME_PROFILE
         const auto t0 = Clock::now();
-    #endif
+#endif
         UpdateCachedRenderableTransforms(true);
-    #if INFERNUX_FRAME_PROFILE
+#if INFERNUX_FRAME_PROFILE
         m_profileSnapshot.updateMs += std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
         m_profileSnapshot.prepareFastCalls += 1.0;
-    #endif
+#endif
     } else {
-    #if INFERNUX_FRAME_PROFILE
+#if INFERNUX_FRAME_PROFILE
         const auto t0 = Clock::now();
-    #endif
+#endif
         CollectRenderables(camera->GetCullingMask());
         m_cachedMeshRendererVersion = currentVersion;
         m_drawCallsCacheValid = false;
-    #if INFERNUX_FRAME_PROFILE
+#if INFERNUX_FRAME_PROFILE
         m_profileSnapshot.collectMs += std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
         m_profileSnapshot.prepareSlowCalls += 1.0;
-    #endif
+#endif
     }
 
     if (!fastPath && m_frustumCulling) {
-    #if INFERNUX_FRAME_PROFILE
+#if INFERNUX_FRAME_PROFILE
         const auto t0 = Clock::now();
-    #endif
+#endif
         PerformCulling();
-    #if INFERNUX_FRAME_PROFILE
+#if INFERNUX_FRAME_PROFILE
         m_profileSnapshot.cullMs += std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
-    #endif
+#endif
     }
 
     if (!m_drawCallsCacheValid) {
-    #if INFERNUX_FRAME_PROFILE
+#if INFERNUX_FRAME_PROFILE
         const auto t0 = Clock::now();
-    #endif
+#endif
         SortRenderables();
-    #if INFERNUX_FRAME_PROFILE
+#if INFERNUX_FRAME_PROFILE
         m_profileSnapshot.sortMs += std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
-    #endif
+#endif
     }
 
-    #if INFERNUX_FRAME_PROFILE
-        m_profileSnapshot.prepareMs += std::chrono::duration<double, std::milli>(Clock::now() - prepareStart).count();
-        m_profileSnapshot.prepareCalls += 1.0;
-        m_profileSnapshot.renderables += static_cast<double>(m_renderables.size());
-        m_profileSnapshot.visible += static_cast<double>(m_visibleCount);
-    #endif
+#if INFERNUX_FRAME_PROFILE
+    m_profileSnapshot.prepareMs += std::chrono::duration<double, std::milli>(Clock::now() - prepareStart).count();
+    m_profileSnapshot.prepareCalls += 1.0;
+    m_profileSnapshot.renderables += static_cast<double>(m_renderables.size());
+    m_profileSnapshot.visible += static_cast<double>(m_visibleCount);
+#endif
 }
 
 glm::mat4 SceneRenderer::GetViewMatrix() const
@@ -227,7 +227,7 @@ void SceneRenderer::CollectRenderables(uint32_t cullingMask)
         renderable.mesh = renderer->GetMesh();
         renderable.renderMaterial = renderer->GetEffectiveMaterial(); // Get actual InxMaterial
         renderable.renderMaterialRaw = renderable.renderMaterial.get();
-        renderable.meshRenderer = renderer;                           // Store direct pointer
+        renderable.meshRenderer = renderer; // Store direct pointer
         renderable.drawCallStart = 0;
         renderable.drawCallCount = 0;
 
@@ -267,9 +267,11 @@ void SceneRenderer::UpdateCachedRenderableTransforms(bool useActiveCameraCulling
 
     for (auto &renderable : m_renderables) {
         MeshRenderer *mr = renderable.meshRenderer;
-        if (!mr) continue;
+        if (!mr)
+            continue;
         GameObject *obj = mr->GetGameObject();
-        if (!obj) continue;
+        if (!obj)
+            continue;
 
         const glm::mat4 &worldMatrix = obj->GetTransform()->GetWorldMatrix();
 
@@ -293,8 +295,8 @@ void SceneRenderer::UpdateCachedRenderableTransforms(bool useActiveCameraCulling
         if (m_drawCallsCacheValid && renderable.drawCallCount > 0) {
             if (transformChanged) {
                 // Full patch: transform changed — update matrix, bounds, visibility.
-                const size_t drawCallEnd = std::min(renderable.drawCallStart + renderable.drawCallCount,
-                                                    m_cachedDrawCalls.drawCalls.size());
+                const size_t drawCallEnd =
+                    std::min(renderable.drawCallStart + renderable.drawCallCount, m_cachedDrawCalls.drawCalls.size());
                 const glm::vec3 &pivot = mr->GetMeshPivotOffset();
                 glm::mat4 drawWorldMatrix = worldMatrix;
                 if (mr->GetSubmeshIndex() >= 0 && pivot != glm::vec3(0.0f)) {
@@ -313,8 +315,8 @@ void SceneRenderer::UpdateCachedRenderableTransforms(bool useActiveCameraCulling
                 }
             } else if (useFrustum) {
                 // Light patch: only update frustumVisible (camera may have moved).
-                const size_t drawCallEnd = std::min(renderable.drawCallStart + renderable.drawCallCount,
-                                                    m_cachedDrawCalls.drawCalls.size());
+                const size_t drawCallEnd =
+                    std::min(renderable.drawCallStart + renderable.drawCallCount, m_cachedDrawCalls.drawCalls.size());
                 for (size_t drawCallIndex = renderable.drawCallStart; drawCallIndex < drawCallEnd; ++drawCallIndex) {
                     m_cachedDrawCalls.drawCalls[drawCallIndex].frustumVisible = renderable.visible;
                 }
@@ -512,7 +514,8 @@ const DrawCallResult &SceneRenderer::BuildDrawCalls()
 
     // Slow path: full rebuild.
     DrawCallResult result;
-    result.drawCalls.reserve(m_cachedDrawCalls.drawCalls.empty() ? m_renderables.size() : m_cachedDrawCalls.drawCalls.size());
+    result.drawCalls.reserve(m_cachedDrawCalls.drawCalls.empty() ? m_renderables.size()
+                                                                 : m_cachedDrawCalls.drawCalls.size());
 
     for (auto &renderable : m_renderables) {
         MeshRenderer *renderer = renderable.meshRenderer;
@@ -593,7 +596,8 @@ CameraDrawCallResult SceneRenderer::BuildDrawCallsForCamera(Camera *camera, bool
             // Non-all-layers: still need to push shadow draw calls for invisible-but-layer-included objects.
             if (includeShadowDrawCalls) {
                 const size_t drawCallStart = renderable.drawCallStart;
-                const size_t drawCallEnd = std::min(drawCallStart + renderable.drawCallCount, cachedResult.drawCalls.size());
+                const size_t drawCallEnd =
+                    std::min(drawCallStart + renderable.drawCallCount, cachedResult.drawCalls.size());
                 for (size_t drawCallIndex = drawCallStart; drawCallIndex < drawCallEnd; ++drawCallIndex) {
                     DrawCall dc = cachedResult.drawCalls[drawCallIndex];
                     dc.frustumVisible = false;

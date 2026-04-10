@@ -601,7 +601,8 @@ void PhysicsWorld::AddBodiesBatch(const std::vector<std::pair<uint32_t, bool>> &
     dynamicIds.reserve(bodies.size() / 4); // most spawned bodies are static
 
     for (auto &[id, isStatic] : bodies) {
-        if (id == 0xFFFFFFFF) continue;
+        if (id == 0xFFFFFFFF)
+            continue;
         if (isStatic)
             staticIds.push_back(JPH::BodyID(id));
         else
@@ -612,10 +613,12 @@ void PhysicsWorld::AddBodiesBatch(const std::vector<std::pair<uint32_t, bool>> &
 
     if (!staticIds.empty()) {
         JPH::BodyInterface::AddState state = bi.AddBodiesPrepare(staticIds.data(), static_cast<int>(staticIds.size()));
-        bi.AddBodiesFinalize(staticIds.data(), static_cast<int>(staticIds.size()), state, JPH::EActivation::DontActivate);
+        bi.AddBodiesFinalize(staticIds.data(), static_cast<int>(staticIds.size()), state,
+                             JPH::EActivation::DontActivate);
     }
     if (!dynamicIds.empty()) {
-        JPH::BodyInterface::AddState state = bi.AddBodiesPrepare(dynamicIds.data(), static_cast<int>(dynamicIds.size()));
+        JPH::BodyInterface::AddState state =
+            bi.AddBodiesPrepare(dynamicIds.data(), static_cast<int>(dynamicIds.size()));
         bi.AddBodiesFinalize(dynamicIds.data(), static_cast<int>(dynamicIds.size()), state, JPH::EActivation::Activate);
     }
 }

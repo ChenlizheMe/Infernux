@@ -31,10 +31,18 @@ struct TransformBatchHandle
 {
     std::vector<Transform *> transforms;
 
-    explicit TransformBatchHandle(const py::list &pyList) : transforms(ExtractTransforms(pyList)) {}
+    explicit TransformBatchHandle(const py::list &pyList) : transforms(ExtractTransforms(pyList))
+    {
+    }
 
-    [[nodiscard]] size_t size() const { return transforms.size(); }
-    Transform *const *data() const { return transforms.data(); }
+    [[nodiscard]] size_t size() const
+    {
+        return transforms.size();
+    }
+    Transform *const *data() const
+    {
+        return transforms.data();
+    }
 };
 
 // ── Transform batch read/write ───────────────────────────────────────────
@@ -121,27 +129,29 @@ static void BatchWriteQuat(const py::list &targets, py::array data, ScatterQuatF
 
 // ── Dispatch table: property name → gather/scatter function ──────────────
 
-struct Vec3BatchOps {
+struct Vec3BatchOps
+{
     GatherVec3Fn gather;
     ScatterVec3Fn scatter;
 };
 
-struct QuatBatchOps {
+struct QuatBatchOps
+{
     GatherQuatFn gather;
     ScatterQuatFn scatter;
 };
 
 static const std::unordered_map<std::string, Vec3BatchOps> kTransformVec3Ops = {
-    {"local_position",     {&TransformECSStore::GatherLocalPositions,    &TransformECSStore::ScatterLocalPositions}},
-    {"local_scale",        {&TransformECSStore::GatherLocalScales,       &TransformECSStore::ScatterLocalScales}},
-    {"local_euler_angles", {&TransformECSStore::GatherLocalEulerAngles,  &TransformECSStore::ScatterLocalEulerAngles}},
-    {"position",           {&TransformECSStore::GatherWorldPositions,    &TransformECSStore::ScatterWorldPositions}},
-    {"euler_angles",       {&TransformECSStore::GatherWorldEulerAngles,  &TransformECSStore::ScatterWorldEulerAngles}},
+    {"local_position", {&TransformECSStore::GatherLocalPositions, &TransformECSStore::ScatterLocalPositions}},
+    {"local_scale", {&TransformECSStore::GatherLocalScales, &TransformECSStore::ScatterLocalScales}},
+    {"local_euler_angles", {&TransformECSStore::GatherLocalEulerAngles, &TransformECSStore::ScatterLocalEulerAngles}},
+    {"position", {&TransformECSStore::GatherWorldPositions, &TransformECSStore::ScatterWorldPositions}},
+    {"euler_angles", {&TransformECSStore::GatherWorldEulerAngles, &TransformECSStore::ScatterWorldEulerAngles}},
 };
 
 static const std::unordered_map<std::string, QuatBatchOps> kTransformQuatOps = {
     {"local_rotation", {&TransformECSStore::GatherLocalRotations, &TransformECSStore::ScatterLocalRotations}},
-    {"rotation",       {&TransformECSStore::GatherWorldRotations, &TransformECSStore::ScatterWorldRotations}},
+    {"rotation", {&TransformECSStore::GatherWorldRotations, &TransformECSStore::ScatterWorldRotations}},
 };
 
 // ── Python-facing free functions ─────────────────────────────────────────
@@ -265,8 +275,8 @@ static uint32_t CDS_RegisterClass(const std::string &name)
 
 static uint32_t CDS_RegisterField(uint32_t classId, const std::string &name, int typeCode)
 {
-    return ComponentDataStore::Instance().RegisterField(
-        classId, name, static_cast<ComponentDataStore::DataType>(typeCode));
+    return ComponentDataStore::Instance().RegisterField(classId, name,
+                                                        static_cast<ComponentDataStore::DataType>(typeCode));
 }
 
 static uint32_t CDS_AllocSlot(uint32_t classId)
@@ -420,8 +430,7 @@ static py::array CDS_BatchGather(uint32_t classId, uint32_t fieldId, int typeCod
 }
 
 static void CDS_BatchScatter(uint32_t classId, uint32_t fieldId, int typeCode,
-                             py::array_t<uint32_t, py::array::c_style> slots,
-                             py::array data)
+                             py::array_t<uint32_t, py::array::c_style> slots, py::array data)
 {
     auto &store = ComponentDataStore::Instance();
     auto type = static_cast<ComponentDataStore::DataType>(typeCode);
@@ -469,48 +478,38 @@ namespace infernux
 
 void RegisterBatchBindings(py::module_ &m)
 {
-    m.def(
-        "_transform_batch_read", &TransformBatchRead,
-        py::arg("targets"), py::arg("property"),
-        "Read a Transform property from all targets into a numpy array.\n"
-        "Supported properties: 'position', 'local_position', 'local_scale',\n"
-        "'euler_angles', 'local_euler_angles', 'rotation', 'local_rotation'.");
+    m.def("_transform_batch_read", &TransformBatchRead, py::arg("targets"), py::arg("property"),
+          "Read a Transform property from all targets into a numpy array.\n"
+          "Supported properties: 'position', 'local_position', 'local_scale',\n"
+          "'euler_angles', 'local_euler_angles', 'rotation', 'local_rotation'.");
 
-    m.def(
-        "_transform_batch_write", &TransformBatchWrite,
-        py::arg("targets"), py::arg("data"), py::arg("property"),
-        "Write a numpy array back to a Transform property on all targets.\n"
-        "data.shape[0] must be >= len(targets).");
+    m.def("_transform_batch_write", &TransformBatchWrite, py::arg("targets"), py::arg("data"), py::arg("property"),
+          "Write a numpy array back to a Transform property on all targets.\n"
+          "data.shape[0] must be >= len(targets).");
 
     // ── TransformBatchHandle (cached Transform* pointers) ──
     py::class_<TransformBatchHandle>(m, "TransformBatchHandle")
         .def(py::init<const py::list &>(), py::arg("targets"))
         .def("__len__", &TransformBatchHandle::size);
 
-    m.def(
-        "_transform_batch_read", &HandleBatchRead,
-        py::arg("handle"), py::arg("property"),
-        "Like _transform_batch_read but uses a cached TransformBatchHandle.");
+    m.def("_transform_batch_read", &HandleBatchRead, py::arg("handle"), py::arg("property"),
+          "Like _transform_batch_read but uses a cached TransformBatchHandle.");
 
-    m.def(
-        "_transform_batch_write", &HandleBatchWrite,
-        py::arg("handle"), py::arg("data"), py::arg("property"),
-        "Like _transform_batch_write but uses a cached TransformBatchHandle.");
+    m.def("_transform_batch_write", &HandleBatchWrite, py::arg("handle"), py::arg("data"), py::arg("property"),
+          "Like _transform_batch_write but uses a cached TransformBatchHandle.");
 
     // ── ComponentDataStore ──
     m.def("_cds_register_class", &CDS_RegisterClass, py::arg("name"));
-    m.def("_cds_register_field", &CDS_RegisterField,
-          py::arg("class_id"), py::arg("name"), py::arg("type_code"));
+    m.def("_cds_register_field", &CDS_RegisterField, py::arg("class_id"), py::arg("name"), py::arg("type_code"));
     m.def("_cds_alloc", &CDS_AllocSlot, py::arg("class_id"));
     m.def("_cds_free", &CDS_FreeSlot, py::arg("class_id"), py::arg("slot"));
-    m.def("_cds_get", &CDS_Get,
-          py::arg("class_id"), py::arg("field_id"), py::arg("slot"), py::arg("type_code"));
-    m.def("_cds_set", &CDS_Set,
-          py::arg("class_id"), py::arg("field_id"), py::arg("slot"), py::arg("type_code"), py::arg("value"));
-    m.def("_cds_batch_gather", &CDS_BatchGather,
-          py::arg("class_id"), py::arg("field_id"), py::arg("type_code"), py::arg("slots"));
-    m.def("_cds_batch_scatter", &CDS_BatchScatter,
-          py::arg("class_id"), py::arg("field_id"), py::arg("type_code"), py::arg("slots"), py::arg("data"));
+    m.def("_cds_get", &CDS_Get, py::arg("class_id"), py::arg("field_id"), py::arg("slot"), py::arg("type_code"));
+    m.def("_cds_set", &CDS_Set, py::arg("class_id"), py::arg("field_id"), py::arg("slot"), py::arg("type_code"),
+          py::arg("value"));
+    m.def("_cds_batch_gather", &CDS_BatchGather, py::arg("class_id"), py::arg("field_id"), py::arg("type_code"),
+          py::arg("slots"));
+    m.def("_cds_batch_scatter", &CDS_BatchScatter, py::arg("class_id"), py::arg("field_id"), py::arg("type_code"),
+          py::arg("slots"), py::arg("data"));
     m.def("_cds_clear", []() { ComponentDataStore::Instance().Clear(); });
 }
 

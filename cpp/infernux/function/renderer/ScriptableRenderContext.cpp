@@ -103,8 +103,7 @@ CullingResults ScriptableRenderContext::Cull(Camera *camera)
     // (each DrawCall contains a shared_ptr<InxMaterial> whose atomic refcount
     // would be bumped N times on copy).
     const std::vector<DrawCall> *drawCallsPtr = nullptr;
-    const bool needsShadowDrawCalls =
-        (m_vkCore->GetLightCollector().GetShadowCascadeCount() > 0);
+    const bool needsShadowDrawCalls = (m_vkCore->GetLightCollector().GetShadowCascadeCount() > 0);
     CameraDrawCallResult ownedResult; // Only used for game camera path
 
     if (camera && camera != editorCam) {
@@ -187,7 +186,8 @@ void ScriptableRenderContext::SubmitCulling(CullingResults culling)
 #if INFERNUX_FRAME_PROFILE
     using Clock = std::chrono::high_resolution_clock;
     const auto submitStart = Clock::now();
-    const size_t baseDrawCount = culling.sceneDrawCallsRef ? culling.sceneDrawCallsRef->size() : culling.drawCalls.size();
+    const size_t baseDrawCount =
+        culling.sceneDrawCallsRef ? culling.sceneDrawCallsRef->size() : culling.drawCalls.size();
 #endif
     if (m_submitted) {
         INXLOG_WARN("ScriptableRenderContext::SubmitCulling() called after already submitted");
@@ -332,16 +332,19 @@ void ScriptableRenderContext::SubmitCulling(CullingResults culling)
         // redundant hash-map lookups inside EnsureObjectBuffers.
         uint64_t lastEnsuredId = 0;
         for (const DrawCall &dc : *shadowSource) {
-            if (dc.objectId == lastEnsuredId) continue;
+            if (dc.objectId == lastEnsuredId)
+                continue;
             lastEnsuredId = dc.objectId;
             if (dc.meshVertices && dc.meshIndices) {
                 m_vkCore->EnsureObjectBuffers(dc.objectId, *dc.meshVertices, *dc.meshIndices, dc.forceBufferUpdate);
             }
         }
 
-        for (size_t drawCallIndex = baseOrderedDrawCallCount; drawCallIndex < m_orderedDrawCalls.size(); ++drawCallIndex) {
+        for (size_t drawCallIndex = baseOrderedDrawCallCount; drawCallIndex < m_orderedDrawCalls.size();
+             ++drawCallIndex) {
             const DrawCall &dc = m_orderedDrawCalls[drawCallIndex];
-            if (dc.objectId == lastEnsuredId) continue;
+            if (dc.objectId == lastEnsuredId)
+                continue;
             lastEnsuredId = dc.objectId;
             if (dc.meshVertices && dc.meshIndices) {
                 m_vkCore->EnsureObjectBuffers(dc.objectId, *dc.meshVertices, *dc.meshIndices, dc.forceBufferUpdate);
@@ -413,8 +416,8 @@ void ScriptableRenderContext::SubmitCulling(CullingResults culling)
 #if INFERNUX_FRAME_PROFILE
     g_srcProfileSnapshot.submitMs += std::chrono::duration<double, std::milli>(Clock::now() - submitStart).count();
     g_srcProfileSnapshot.submitCalls += 1.0;
-    g_srcProfileSnapshot.finalDrawCalls += static_cast<double>(m_graph ? m_graph->GetCachedDrawCalls().size()
-                                                                       : baseDrawCount);
+    g_srcProfileSnapshot.finalDrawCalls +=
+        static_cast<double>(m_graph ? m_graph->GetCachedDrawCalls().size() : baseDrawCount);
 #endif
 }
 

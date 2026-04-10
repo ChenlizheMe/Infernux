@@ -173,9 +173,8 @@ void MeshRenderer::SetMesh(std::vector<Vertex> vertices, std::vector<uint32_t> i
     ComputeLocalBoundsFromInlineVertices();
 }
 
-void MeshRenderer::SetSharedPrimitiveMesh(const std::vector<Vertex> &vertices,
-                                           const std::vector<uint32_t> &indices,
-                                           const std::string &primitiveName)
+void MeshRenderer::SetSharedPrimitiveMesh(const std::vector<Vertex> &vertices, const std::vector<uint32_t> &indices,
+                                          const std::string &primitiveName)
 {
     if (m_meshAsset.HasGuid())
         AssetDependencyGraph::Instance().RemoveDependency(GetInstanceGuid(), m_meshAsset.GetGuid());
@@ -538,8 +537,9 @@ std::string MeshRenderer::Serialize() const
     // Mesh reference
     j["meshId"] = m_mesh.meshId;
 
-    const bool builtinPrimitive = m_useInlineMesh && !m_inlineMeshName.empty() &&
-                                  MatchesBuiltinPrimitiveMesh(m_inlineMeshName, GetInlineVertices(), GetInlineIndices());
+    const bool builtinPrimitive =
+        m_useInlineMesh && !m_inlineMeshName.empty() &&
+        MatchesBuiltinPrimitiveMesh(m_inlineMeshName, GetInlineVertices(), GetInlineIndices());
     const std::string matchedInlineMeshGuid =
         (!HasMeshAsset() && m_useInlineMesh && !builtinPrimitive)
             ? FindMatchingMeshAssetGuid(GetInlineVertices(), GetInlineIndices(), m_inlineMeshName)

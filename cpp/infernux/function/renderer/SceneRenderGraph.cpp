@@ -550,10 +550,10 @@ void SceneRenderGraph::Execute(VkCommandBuffer commandBuffer)
         // COLOR_ATTACHMENT_OPTIMAL, so transition them back here before any
         // descriptor-based sampling occurs later in the frame.
         if (!m_sceneTarget->IsMsaaEnabled() && m_importedColorTarget.IsValid()) {
-            VkImageMemoryBarrier barrier = vkrender::MakeImageBarrier(
-                m_sceneTarget->GetColorImage(), VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT,
-                VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT);
+            VkImageMemoryBarrier barrier =
+                vkrender::MakeImageBarrier(m_sceneTarget->GetColorImage(), VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                           VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT,
+                                           VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT);
 
             vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
                                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);

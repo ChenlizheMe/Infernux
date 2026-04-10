@@ -240,9 +240,9 @@ VkPushConstantRange MakeVertexPushConstantRange(uint32_t size)
     return pushConstantRange;
 }
 
+using infernux::vkrender::MakeMultisampleState;
 using infernux::vkrender::MakeShaderStageInfo;
 using infernux::vkrender::MakeTriangleListInputAssembly;
-using infernux::vkrender::MakeMultisampleState;
 
 VkPipelineVertexInputStateCreateInfo MakeVertexInputState(const VkVertexInputBindingDescription &bindingDesc,
                                                           const VkVertexInputAttributeDescription *attrDesc,

@@ -29,8 +29,7 @@ void Component::EnsureNextComponentID(uint64_t id)
     }
 }
 
-Component::Component()
-    : m_componentId(GenerateComponentID()), m_wasEnabled(false)
+Component::Component() : m_componentId(GenerateComponentID()), m_wasEnabled(false)
 {
     GetInstanceRegistry()[m_componentId] = this;
 }

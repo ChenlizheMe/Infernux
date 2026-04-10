@@ -82,10 +82,8 @@ enum class PrimitiveType
 /**
  * @brief Resolve static primitive mesh data (zero-copy reference).
  */
-static void GetPrimitiveMeshData(PrimitiveType type,
-                                 const std::vector<Vertex> *&outVertices,
-                                 const std::vector<uint32_t> *&outIndices,
-                                 const char *&outDefaultName)
+static void GetPrimitiveMeshData(PrimitiveType type, const std::vector<Vertex> *&outVertices,
+                                 const std::vector<uint32_t> *&outIndices, const char *&outDefaultName)
 {
     switch (type) {
     case PrimitiveType::Cube:
@@ -173,8 +171,7 @@ static py::list CreatePrimitiveObjectsBatch(Scene *scene, PrimitiveType type, si
 
     // Pre-allocate capacity to avoid incremental vector growth.
     scene->ReserveCapacity(count);
-    TransformECSStore::Instance().Reserve(
-        TransformECSStore::Instance().Capacity() + count);
+    TransformECSStore::Instance().Reserve(TransformECSStore::Instance().Capacity() + count);
     Component::ReserveRegistry(count * 3);
     SceneManager::Instance().ReserveRendererCapacity(count);
     PhysicsECSStore::Instance().ReserveForBulkCreation(count);
@@ -880,11 +877,9 @@ void RegisterSceneBindings(py::module_ &m)
                 if (!py::isinstance<py::str>(componentType) && py::isinstance<py::type>(componentType)) {
                     try {
                         py::object instance = componentType();
-                        return py::cast(obj, py::return_value_policy::reference)
-                            .attr("add_py_component")(instance);
+                        return py::cast(obj, py::return_value_policy::reference).attr("add_py_component")(instance);
                     } catch (py::error_already_set &e) {
-                        INXLOG_WARN("[Binding] Failed to instantiate Python component '{}': {}",
-                                    typeName, e.what());
+                        INXLOG_WARN("[Binding] Failed to instantiate Python component '{}': {}", typeName, e.what());
                         return py::none();
                     }
                 }

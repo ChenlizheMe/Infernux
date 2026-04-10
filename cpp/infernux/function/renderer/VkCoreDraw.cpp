@@ -705,8 +705,7 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
         if (pip == VK_NULL_HANDLE) {
             // Lazy creation: shadow shared resources are ready, create per-material pipeline now
             auto matShared = std::shared_ptr<InxMaterial>(dc.material, [](InxMaterial *) {});
-            CreateMaterialShadowPipeline(matShared, dc.material->GetVertShaderName(),
-                                         dc.material->GetFragShaderName());
+            CreateMaterialShadowPipeline(matShared, dc.material->GetVertShaderName(), dc.material->GetFragShaderName());
             pip = dc.material->GetPassPipeline(ShaderCompileTarget::Shadow);
         }
         if (pip == VK_NULL_HANDLE)
@@ -1349,7 +1348,7 @@ void InxVkCoreModular::CleanupUnusedBuffers(const std::vector<DrawCall> &activeD
 }
 
 void InxVkCoreModular::CleanupUnusedBuffersByIds(const std::unordered_set<uint64_t> &activeIds)
-{    // Remove buffers for objects no longer in the scene.
+{ // Remove buffers for objects no longer in the scene.
     // Actual GPU resource destruction is deferred via FrameDeletionQueue
     // so that in-flight command buffers are never invalidated.
     for (auto it = m_perObjectBuffers.begin(); it != m_perObjectBuffers.end();) {

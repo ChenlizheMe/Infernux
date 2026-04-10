@@ -150,11 +150,10 @@ void Transform::SetWorldRotation(const glm::quat &worldRot)
     }
 
     store.SetLocalRotation(m_ecsHandle, newLocalRot);
-    store.SetLocalEulerAngles(m_ecsHandle,
-        ExtractEulerAnglesNear(newLocalRot, store.GetLocalEulerAngles(m_ecsHandle)));
+    store.SetLocalEulerAngles(m_ecsHandle, ExtractEulerAnglesNear(newLocalRot, store.GetLocalEulerAngles(m_ecsHandle)));
     if (store.GetHasCachedWorldEulerAngles(m_ecsHandle)) {
         store.SetCachedWorldEulerAngles(m_ecsHandle,
-            ExtractEulerAnglesNear(worldRot, store.GetCachedWorldEulerAngles(m_ecsHandle)));
+                                        ExtractEulerAnglesNear(worldRot, store.GetCachedWorldEulerAngles(m_ecsHandle)));
     } else {
         store.SetCachedWorldEulerAngles(m_ecsHandle, ExtractEulerAngles(worldRot));
         store.SetHasCachedWorldEulerAngles(m_ecsHandle, true);
@@ -174,8 +173,8 @@ glm::vec3 Transform::GetWorldEulerAngles() const
 
     glm::quat worldRotation = GetWorldRotation();
     if (store.GetHasCachedWorldEulerAngles(m_ecsHandle)) {
-        store.SetCachedWorldEulerAngles(m_ecsHandle,
-            ExtractEulerAnglesNear(worldRotation, store.GetCachedWorldEulerAngles(m_ecsHandle)));
+        store.SetCachedWorldEulerAngles(
+            m_ecsHandle, ExtractEulerAnglesNear(worldRotation, store.GetCachedWorldEulerAngles(m_ecsHandle)));
     } else {
         store.SetCachedWorldEulerAngles(m_ecsHandle, ExtractEulerAngles(worldRotation));
         store.SetHasCachedWorldEulerAngles(m_ecsHandle, true);
@@ -204,7 +203,7 @@ void Transform::SetWorldEulerAngles(const glm::vec3 &euler)
         glm::quat localRot = glm::inverse(parentTransform->GetWorldRotation()) * worldRot;
         store.SetLocalRotation(m_ecsHandle, localRot);
         store.SetLocalEulerAngles(m_ecsHandle,
-            ExtractEulerAnglesNear(localRot, store.GetLocalEulerAngles(m_ecsHandle)));
+                                  ExtractEulerAnglesNear(localRot, store.GetLocalEulerAngles(m_ecsHandle)));
     }
 
     store.SetDirty(m_ecsHandle, true);

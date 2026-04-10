@@ -33,9 +33,9 @@ namespace
 constexpr uint32_t kOutlineSceneUBOBinding = 0;
 constexpr uint32_t kOutlineVertexMaterialUBOBinding = 14;
 
+using infernux::vkrender::MakeMultisampleState;
 using infernux::vkrender::MakeShaderStageInfo;
 using infernux::vkrender::MakeTriangleListInputAssembly;
-using infernux::vkrender::MakeMultisampleState;
 using DynamicViewportState = infernux::vkrender::DynamicViewportScissorState;
 
 struct MeshVertexInputState

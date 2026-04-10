@@ -118,7 +118,10 @@ class PhysicsECSStore
     std::vector<ColliderHandle> ConsumeDirtyColliders();
 
     /// True if any collider has been marked dirty since last consume.
-    [[nodiscard]] bool HasDirtyColliders() const { return !m_dirtyColliderSet.empty(); }
+    [[nodiscard]] bool HasDirtyColliders() const
+    {
+        return !m_dirtyColliderSet.empty();
+    }
 
     /// Mark all alive colliders dirty (used for force-sync scenarios).
     void MarkAllCollidersDirty();
@@ -135,7 +138,10 @@ class PhysicsECSStore
     std::vector<ColliderHandle> ConsumePendingBodyCreations();
 
     /// True if any colliders are waiting for body creation.
-    [[nodiscard]] bool HasPendingBodyCreations() const { return !m_pendingBodyCreationSet.empty(); }
+    [[nodiscard]] bool HasPendingBodyCreations() const
+    {
+        return !m_pendingBodyCreationSet.empty();
+    }
 
     // ---- Pending broadphase queue (deferred body activation) ----
 
@@ -146,7 +152,10 @@ class PhysicsECSStore
     std::vector<std::pair<uint32_t, bool>> ConsumePendingBroadphaseAdds();
 
     /// True if any bodies are waiting to be added to the broadphase.
-    [[nodiscard]] bool HasPendingBroadphaseAdds() const { return !m_pendingBroadphaseAdds.empty(); }
+    [[nodiscard]] bool HasPendingBroadphaseAdds() const
+    {
+        return !m_pendingBroadphaseAdds.empty();
+    }
 
     /// Pre-allocate internal pools and queues for @p count new colliders.
     void ReserveForBulkCreation(size_t count)

@@ -6,8 +6,8 @@
 #include <function/scene/Transform.h>
 
 #include <algorithm>
-#include <chrono>
 #include <cctype>
+#include <chrono>
 #include <cstring>
 
 // ImGui key constants (must match imgui.h ImGuiKey enum)
@@ -1097,9 +1097,8 @@ void HierarchyPanel::RenderFlatItem(InxGUIContext *ctx, const FlatItem &item, fl
     }
 
     // Tree node flags — always use NoTreePushOnOpen so no TreePop needed
-    int nodeFlags =
-        ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_FramePadding |
-        ImGuiTreeNodeFlags_NoTreePushOnOpen;
+    int nodeFlags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_SpanAvailWidth |
+                    ImGuiTreeNodeFlags_FramePadding | ImGuiTreeNodeFlags_NoTreePushOnOpen;
 
     if (m_selIds.count(objId))
         nodeFlags |= ImGuiTreeNodeFlags_Selected;
@@ -1668,8 +1667,9 @@ void HierarchyPanel::OnRenderContent(InxGUIContext *ctx)
                 if (hasDrag && i > 0 && m_flatItems[i].depth > m_flatItems[i - 1].depth) {
                     uint64_t childId = m_flatItems[i].obj->GetID();
                     std::string sepId = "##sep_fc_" + std::to_string(m_flatItems[i - 1].obj->GetID());
-                    RenderReorderSep(ctx, sepId.c_str(),
-                                     [this, childId](uint64_t payload) { MoveObjectAdjacent(payload, childId, false); });
+                    RenderReorderSep(ctx, sepId.c_str(), [this, childId](uint64_t payload) {
+                        MoveObjectAdjacent(payload, childId, false);
+                    });
                 }
 
                 RenderFlatItem(ctx, m_flatItems[i], baseIndentX, indentStep);

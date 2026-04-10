@@ -135,14 +135,14 @@ struct UniformBufferObject
  */
 struct DrawCall
 {
-    uint32_t indexStart = 0;               // Offset into index buffer
-    uint32_t indexCount = 0;               // Number of indices to draw
-    int32_t vertexStart = 0;               // Base vertex offset (for submesh rendering)
-    glm::mat4 worldMatrix{1.0f};           // Object's world transform matrix
-    InxMaterial *material = nullptr;       // Non-owning pointer (lifetime managed by MeshRenderer/AssetRegistry)
-    uint64_t objectId = 0;                 // GameObject ID for buffer lookup
-    bool frustumVisible = true;            // Whether object passed main-camera frustum culling
-    AABB worldBounds;                      // World-space bounding box for shadow cascade culling
+    uint32_t indexStart = 0;         // Offset into index buffer
+    uint32_t indexCount = 0;         // Number of indices to draw
+    int32_t vertexStart = 0;         // Base vertex offset (for submesh rendering)
+    glm::mat4 worldMatrix{1.0f};     // Object's world transform matrix
+    InxMaterial *material = nullptr; // Non-owning pointer (lifetime managed by MeshRenderer/AssetRegistry)
+    uint64_t objectId = 0;           // GameObject ID for buffer lookup
+    bool frustumVisible = true;      // Whether object passed main-camera frustum culling
+    AABB worldBounds;                // World-space bounding box for shadow cascade culling
 
     // Per-object mesh data pointers (Phase 2.3.4)
     // Non-owning references to MeshRenderer's persistent vertex/index data.

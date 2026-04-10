@@ -28,13 +28,13 @@
 #include <function/scene/MeshRenderer.h>
 #include <function/scene/PrimitiveMeshes.h>
 #include <function/scene/SceneManager.h>
-#include <function/scene/TransformECSStore.h>
 #include <function/scene/SceneRenderer.h>
+#include <function/scene/TransformECSStore.h>
 #include <iomanip>
 #include <iostream>
 #include <platform/window/InxView.h>
-#include <unordered_set>
 #include <sstream>
+#include <unordered_set>
 
 namespace infernux
 {
@@ -832,23 +832,35 @@ void InxRenderer::DrawFrame()
                     << "ms end=" << (_detailAccum.frameCacheEndMs / kWindow) << "ms"
                     << "\n  PrepareDetail: total="
                     << (bridgeProfile.prepareCalls ? bridgeProfile.prepareMs / bridgeProfile.prepareCalls : 0.0)
-                    << "ms collect=" << (bridgeProfile.prepareCalls ? bridgeProfile.collectMs / bridgeProfile.prepareCalls : 0.0)
-                    << "ms update=" << (bridgeProfile.prepareCalls ? bridgeProfile.updateMs / bridgeProfile.prepareCalls : 0.0)
-                    << "ms cull=" << (bridgeProfile.prepareCalls ? bridgeProfile.cullMs / bridgeProfile.prepareCalls : 0.0)
-                    << "ms sort=" << (bridgeProfile.prepareCalls ? bridgeProfile.sortMs / bridgeProfile.prepareCalls : 0.0)
-                    << "ms fastCalls=" << bridgeProfile.prepareFastCalls << " slowCalls=" << bridgeProfile.prepareSlowCalls
-                    << " renderables/frame=" << (bridgeProfile.prepareCalls ? bridgeProfile.renderables / bridgeProfile.prepareCalls : 0.0)
-                    << " visible/frame=" << (bridgeProfile.prepareCalls ? bridgeProfile.visible / bridgeProfile.prepareCalls : 0.0)
+                    << "ms collect="
+                    << (bridgeProfile.prepareCalls ? bridgeProfile.collectMs / bridgeProfile.prepareCalls : 0.0)
+                    << "ms update="
+                    << (bridgeProfile.prepareCalls ? bridgeProfile.updateMs / bridgeProfile.prepareCalls : 0.0)
+                    << "ms cull="
+                    << (bridgeProfile.prepareCalls ? bridgeProfile.cullMs / bridgeProfile.prepareCalls : 0.0)
+                    << "ms sort="
+                    << (bridgeProfile.prepareCalls ? bridgeProfile.sortMs / bridgeProfile.prepareCalls : 0.0)
+                    << "ms fastCalls=" << bridgeProfile.prepareFastCalls
+                    << " slowCalls=" << bridgeProfile.prepareSlowCalls << " renderables/frame="
+                    << (bridgeProfile.prepareCalls ? bridgeProfile.renderables / bridgeProfile.prepareCalls : 0.0)
+                    << " visible/frame="
+                    << (bridgeProfile.prepareCalls ? bridgeProfile.visible / bridgeProfile.prepareCalls : 0.0)
                     << "\n  SRC: cull=" << (srcProfile.cullCalls ? srcProfile.cullMs / srcProfile.cullCalls : 0.0)
-                    << "ms editorCull=" << (srcProfile.cullEditorCalls ? srcProfile.cullEditorMs / srcProfile.cullEditorCalls : 0.0)
-                    << "ms gameCull=" << (srcProfile.cullGameCalls ? srcProfile.cullGameMs / srcProfile.cullGameCalls : 0.0)
-                    << "ms applyGraph=" << (srcProfile.submitCalls ? srcProfile.applyGraphMs / srcProfile.submitCalls : 0.0)
+                    << "ms editorCull="
+                    << (srcProfile.cullEditorCalls ? srcProfile.cullEditorMs / srcProfile.cullEditorCalls : 0.0)
+                    << "ms gameCull="
+                    << (srcProfile.cullGameCalls ? srcProfile.cullGameMs / srcProfile.cullGameCalls : 0.0)
+                    << "ms applyGraph="
+                    << (srcProfile.submitCalls ? srcProfile.applyGraphMs / srcProfile.submitCalls : 0.0)
                     << "ms submit=" << (srcProfile.submitCalls ? srcProfile.submitMs / srcProfile.submitCalls : 0.0)
                     << "ms base=" << (srcProfile.submitCalls ? srcProfile.submitBaseMs / srcProfile.submitCalls : 0.0)
-                    << "ms editorAppend=" << (srcProfile.submitCalls ? srcProfile.submitEditorAppendMs / srcProfile.submitCalls : 0.0)
-                    << "ms ensure=" << (srcProfile.submitCalls ? srcProfile.ensureBuffersMs / srcProfile.submitCalls : 0.0)
+                    << "ms editorAppend="
+                    << (srcProfile.submitCalls ? srcProfile.submitEditorAppendMs / srcProfile.submitCalls : 0.0)
+                    << "ms ensure="
+                    << (srcProfile.submitCalls ? srcProfile.ensureBuffersMs / srcProfile.submitCalls : 0.0)
                     << "ms cache=" << (srcProfile.submitCalls ? srcProfile.cacheGraphMs / srcProfile.submitCalls : 0.0)
-                    << "ms finalDraws/submit=" << (srcProfile.submitCalls ? srcProfile.finalDrawCalls / srcProfile.submitCalls : 0.0)
+                    << "ms finalDraws/submit="
+                    << (srcProfile.submitCalls ? srcProfile.finalDrawCalls / srcProfile.submitCalls : 0.0)
                     << "\n  CleanupDetail: collectIds=" << (_detailAccum.cleanupCollectIdsMs / kWindow)
                     << "ms release=" << (_detailAccum.cleanupReleaseMs / kWindow)
                     << "ms activeIds/frame=" << (_detailAccum.cleanupActiveIds / kWindow)
@@ -1429,8 +1441,7 @@ void InxRenderer::UpdateSceneLighting()
 #endif
     collector.ComputeShadowVP(activeScene, cameraPos, 4096.0f, editorCam);
 #if INFERNUX_FRAME_PROFILE
-    m_frameDetailTiming.lightingShadowEditorMs =
-        std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+    m_frameDetailTiming.lightingShadowEditorMs = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
 #endif
 
     // Compute separate shadow VP for the game camera (if active).

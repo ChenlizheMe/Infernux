@@ -207,7 +207,7 @@ class HierarchyPanel : public EditorPanel
     std::vector<FlatItem> m_flatItems;
     std::unordered_set<uint64_t> m_expandedNodes;
     std::unordered_set<uint64_t> m_forceExpandIds; // one-shot SetNextItemOpen
-    bool m_flatListDirty = true; // rebuild flat list when true
+    bool m_flatListDirty = true;                   // rebuild flat list when true
 
     void BuildFlatVisibleList(const std::vector<GameObject *> &roots);
     void RebuildFlatListIfNeeded(const std::vector<GameObject *> &roots);

@@ -121,7 +121,8 @@ class Transform : public Component
     {
         auto &store = TransformECSStore::Instance();
         store.SetLocalRotation(m_ecsHandle, rotation);
-        store.SetLocalEulerAngles(m_ecsHandle, ExtractEulerAnglesNear(rotation, store.GetLocalEulerAngles(m_ecsHandle)));
+        store.SetLocalEulerAngles(m_ecsHandle,
+                                  ExtractEulerAnglesNear(rotation, store.GetLocalEulerAngles(m_ecsHandle)));
         store.SetHasCachedWorldEulerAngles(m_ecsHandle, false);
         store.SetDirty(m_ecsHandle, true);
         InvalidateWorldMatrix(true);
