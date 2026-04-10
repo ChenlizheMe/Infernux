@@ -327,6 +327,7 @@ class Scene
 
     // Components pending first Start() (stored by stable component ID)
     std::vector<uint64_t> m_pendingStartComponentIds;
+    std::unordered_set<uint64_t> m_pendingStartComponentIdSet; // O(1) dedup
 
     // Python components pending recreation after deserialize
     std::vector<PendingPyComponent> m_pendingPyComponents;
