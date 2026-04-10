@@ -108,18 +108,6 @@ class PhysicsECSStore
         return m_colliderPool.GetAliveHandles();
     }
 
-    /// Zero-allocation iteration over all alive colliders.
-    /// @p func receives (ColliderECSData &data).
-    template <typename Func> void ForEachAliveCollider(Func &&func)
-    {
-        m_colliderPool.ForEachAlive(std::forward<Func>(func));
-    }
-
-    template <typename Func> void ForEachAliveCollider(Func &&func) const
-    {
-        m_colliderPool.ForEachAlive(std::forward<Func>(func));
-    }
-
     // ---- Dirty collider tracking (Unity-style deferred sync) ----
 
     /// Mark a collider as needing transform→physics sync before the next physics step.
@@ -130,10 +118,7 @@ class PhysicsECSStore
     std::vector<ColliderHandle> ConsumeDirtyColliders();
 
     /// True if any collider has been marked dirty since last consume.
-    [[nodiscard]] bool HasDirtyColliders() const
-    {
-        return !m_dirtyColliderSet.empty();
-    }
+    [[nodiscard]] bool HasDirtyColliders() const { return !m_dirtyColliderSet.empty(); }
 
     /// Mark all alive colliders dirty (used for force-sync scenarios).
     void MarkAllCollidersDirty();
@@ -150,10 +135,7 @@ class PhysicsECSStore
     std::vector<ColliderHandle> ConsumePendingBodyCreations();
 
     /// True if any colliders are waiting for body creation.
-    [[nodiscard]] bool HasPendingBodyCreations() const
-    {
-        return !m_pendingBodyCreationSet.empty();
-    }
+    [[nodiscard]] bool HasPendingBodyCreations() const { return !m_pendingBodyCreationSet.empty(); }
 
     // ---- Pending broadphase queue (deferred body activation) ----
 
@@ -164,25 +146,7 @@ class PhysicsECSStore
     std::vector<std::pair<uint32_t, bool>> ConsumePendingBroadphaseAdds();
 
     /// True if any bodies are waiting to be added to the broadphase.
-    [[nodiscard]] bool HasPendingBroadphaseAdds() const
-    {
-        return !m_pendingBroadphaseAdds.empty();
-    }
-
-    /// Pre-allocate internal pools and queues for @p count new colliders.
-    void ReserveForBulkCreation(size_t count)
-    {
-        m_colliderPool.Reserve(m_colliderPool.Capacity() + count);
-        m_pendingBodyCreationList.reserve(m_pendingBodyCreationList.size() + count);
-        m_pendingBodyCreationSet.reserve(m_pendingBodyCreationSet.size() + count);
-        m_pendingBroadphaseAdds.reserve(m_pendingBroadphaseAdds.size() + count);
-        m_pendingBroadphaseSet.reserve(m_pendingBroadphaseSet.size() + count);
-    }
-
-    /// Clear all pending queues (body creation + broadphase adds + dirty tracking).
-    /// Must be called before scene rebuild so stale handle.index entries in the
-    /// dedup sets don't block newly allocated colliders that reuse pool slots.
-    void ClearPendingQueues();
+    [[nodiscard]] bool HasPendingBroadphaseAdds() const { return !m_pendingBroadphaseAdds.empty(); }
 
     // ---- Rigidbody pool ----
     RigidbodyHandle AllocateRigidbody(Rigidbody *owner);
@@ -193,17 +157,6 @@ class PhysicsECSStore
     [[nodiscard]] std::vector<RigidbodyHandle> GetAliveRigidbodyHandles() const
     {
         return m_rigidbodyPool.GetAliveHandles();
-    }
-
-    /// Zero-allocation iteration over all alive rigidbodies.
-    template <typename Func> void ForEachAliveRigidbody(Func &&func)
-    {
-        m_rigidbodyPool.ForEachAlive(std::forward<Func>(func));
-    }
-
-    template <typename Func> void ForEachAliveRigidbody(Func &&func) const
-    {
-        m_rigidbodyPool.ForEachAlive(std::forward<Func>(func));
     }
 
   private:

@@ -182,14 +182,4 @@ std::vector<std::pair<uint32_t, bool>> PhysicsECSStore::ConsumePendingBroadphase
     return result;
 }
 
-void PhysicsECSStore::ClearPendingQueues()
-{
-    m_pendingBodyCreationList.clear();
-    m_pendingBodyCreationSet.clear();
-    m_pendingBroadphaseAdds.clear();
-    m_pendingBroadphaseSet.clear();
-    m_dirtyColliderList.clear();
-    m_dirtyColliderSet.clear();
-}
-
 } // namespace infernux

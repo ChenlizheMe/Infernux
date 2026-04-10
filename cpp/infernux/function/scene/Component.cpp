@@ -5,7 +5,9 @@
 #include "Transform.h"
 #include <InxLog.h>
 #include <atomic>
+#include <cstdio>
 #include <nlohmann/json.hpp>
+#include <random>
 
 using json = nlohmann::json;
 
@@ -29,31 +31,33 @@ void Component::EnsureNextComponentID(uint64_t id)
     }
 }
 
-Component::Component() : m_componentId(GenerateComponentID()), m_wasEnabled(false)
+Component::Component()
+    : m_componentId(GenerateComponentID()), m_instanceGuid(GenerateInstanceGuid()), m_wasEnabled(false)
 {
-    GetInstanceRegistry()[m_componentId] = this;
+    GetInstanceRegistry()[m_instanceGuid] = this;
 }
 
 Component::~Component()
 {
-    GetInstanceRegistry().erase(m_componentId);
+    GetInstanceRegistry().erase(m_instanceGuid);
 }
 
 Component::Component(Component &&other) noexcept
     : m_gameObject(other.m_gameObject), m_enabled(other.m_enabled), m_wasEnabled(other.m_wasEnabled),
       m_hasAwake(other.m_hasAwake), m_hasStarted(other.m_hasStarted), m_hasDestroyed(other.m_hasDestroyed),
       m_isBeingDestroyed(other.m_isBeingDestroyed), m_executionOrder(other.m_executionOrder),
-      m_componentId(other.m_componentId)
+      m_componentId(other.m_componentId), m_instanceGuid(std::move(other.m_instanceGuid))
 {
     // Update registry to point to this new address
-    GetInstanceRegistry()[m_componentId] = this;
-    other.m_componentId = 0;
+    if (!m_instanceGuid.empty())
+        GetInstanceRegistry()[m_instanceGuid] = this;
+    other.m_instanceGuid.clear();
 }
 
 Component &Component::operator=(Component &&other) noexcept
 {
     if (this != &other) {
-        GetInstanceRegistry().erase(m_componentId);
+        GetInstanceRegistry().erase(m_instanceGuid);
         m_gameObject = other.m_gameObject;
         m_enabled = other.m_enabled;
         m_wasEnabled = other.m_wasEnabled;
@@ -63,8 +67,10 @@ Component &Component::operator=(Component &&other) noexcept
         m_isBeingDestroyed = other.m_isBeingDestroyed;
         m_executionOrder = other.m_executionOrder;
         m_componentId = other.m_componentId;
-        GetInstanceRegistry()[m_componentId] = this;
-        other.m_componentId = 0;
+        m_instanceGuid = std::move(other.m_instanceGuid);
+        if (!m_instanceGuid.empty())
+            GetInstanceRegistry()[m_instanceGuid] = this;
+        other.m_instanceGuid.clear();
     }
     return *this;
 }
@@ -161,6 +167,11 @@ void Component::SetEnabled(bool enabled)
         return;
     }
 
+    const bool lifecycleAllowed = scene->IsPlaying() || WantsEditModeLifecycle();
+    if (!lifecycleAllowed) {
+        return;
+    }
+
     const bool effectiveActive = m_enabled && m_gameObject->IsActiveInHierarchy();
     if (effectiveActive) {
         CallOnEnable();
@@ -174,28 +185,43 @@ void Component::SetEnabled(bool enabled)
 
 void Component::SetComponentID(uint64_t id)
 {
-    // Re-key the registry
-    GetInstanceRegistry().erase(m_componentId);
     m_componentId = id;
     EnsureNextComponentID(id);
-    GetInstanceRegistry()[m_componentId] = this;
 }
 
-void Component::ReserveRegistry(size_t n)
+void Component::SetInstanceGuid(const std::string &guid)
 {
-    GetInstanceRegistry().reserve(n);
+    if (guid == m_instanceGuid)
+        return;
+    // Move registry entry to new key
+    GetInstanceRegistry().erase(m_instanceGuid);
+    m_instanceGuid = guid;
+    GetInstanceRegistry()[m_instanceGuid] = this;
 }
 
-Component *Component::FindByComponentId(uint64_t id)
+Component *Component::FindByInstanceGuid(const std::string &guid)
 {
     auto &reg = GetInstanceRegistry();
-    auto it = reg.find(id);
+    auto it = reg.find(guid);
     return it != reg.end() ? it->second : nullptr;
 }
 
-std::unordered_map<uint64_t, Component *> &Component::GetInstanceRegistry()
+std::string Component::GenerateInstanceGuid()
 {
-    static std::unordered_map<uint64_t, Component *> s_registry;
+    static thread_local std::mt19937_64 gen(std::random_device{}());
+    std::uniform_int_distribution<uint64_t> dist;
+    uint64_t hi = dist(gen);
+    uint64_t lo = dist(gen);
+    char buf[40]; // "inst_" (5) + 16 + 16 + '\0' = 38
+    std::snprintf(buf, sizeof(buf), "inst_%016llx%016llx",
+                  static_cast<unsigned long long>(hi),
+                  static_cast<unsigned long long>(lo));
+    return std::string(buf, 37);
+}
+
+std::unordered_map<std::string, Component *> &Component::GetInstanceRegistry()
+{
+    static std::unordered_map<std::string, Component *> s_registry;
     return s_registry;
 }
 
@@ -215,7 +241,7 @@ std::string Component::Serialize() const
     j["enabled"] = m_enabled;
     j["execution_order"] = m_executionOrder;
     j["component_id"] = m_componentId;
-    j["instance_guid"] = m_componentId;
+    j["instance_guid"] = m_instanceGuid;
     return j.dump(2);
 }
 
@@ -242,9 +268,12 @@ bool Component::Deserialize(const std::string &jsonStr)
             m_executionOrder = j["execution_order"].get<int>();
         }
         if (j.contains("component_id")) {
-            SetComponentID(j["component_id"].get<uint64_t>());
+            m_componentId = j["component_id"].get<uint64_t>();
+            EnsureNextComponentID(m_componentId);
         }
-        // instance_guid is now derived from component_id; ignore legacy string values
+        if (j.contains("instance_guid")) {
+            SetInstanceGuid(j["instance_guid"].get<std::string>());
+        }
         return true;
     } catch (const std::exception &e) {
         return false;

@@ -153,8 +153,8 @@ def _get_renderstack_inspector_state(stack: "RenderStack") -> dict:
     state_t0 = _time.perf_counter()
 
     # ── Fast pre-check: topology_probe is cached by _build_full_topology_probe().
-    # If the id() matches, no pipeline/pass/topology work has changed.
-    # Only then do we check the (much cheaper) mounted_signature. ──
+    # If the id() matches, no pipeline/pass/topology change has occurred.
+    # Only then check the (much cheaper) mounted_signature. ──
     topology_probe = stack._build_full_topology_probe()
     topology_token = id(topology_probe)
 
@@ -162,9 +162,8 @@ def _get_renderstack_inspector_state(stack: "RenderStack") -> dict:
         isinstance(state, dict)
         and state.get("topology_token") == topology_token
     ):
-        # Topology cache is still alive (not invalidated).  Check if pass
-        # mount state changed (add/remove/reorder/toggle are the only
-        # mutations between invalidations).
+        # Topology cache alive (not invalidated).  Only check mounted state
+        # (add/remove/reorder/toggle — the only mutations between invalidations).
         mounted_signature = tuple(
             (entry.render_pass.injection_point, entry.render_pass.name, entry.order, bool(entry.enabled))
             for entry in stack.pass_entries

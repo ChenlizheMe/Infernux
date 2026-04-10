@@ -5,8 +5,11 @@
 #include "GameObject.h"
 #include "MeshRenderer.h"
 #include "Rigidbody.h"
+#include "Transform.h"
+#include "TransformECSStore.h"
 #include "physics/PhysicsECSStore.h"
 #include "physics/PhysicsWorld.h"
+#include <InxLog.h>
 #include <algorithm>
 #include <function/audio/AudioEngine.h>
 
@@ -157,7 +160,10 @@ void SceneManager::Update(float deltaTime)
             SyncExternalRigidbodyMoves();
             m_lastFrameProfile.syncExternalMovesMs += ProfileMsSince(t0);
 
-            // Sync collider transforms before physics step
+            // Flush deferred broadphase additions (Unity-style batch add)
+            FlushPendingBroadphase();
+
+            // Sync collider transforms before physics step (serial-skip when nothing moved)
             t0 = ProfileClock::now();
             SyncCollidersToPhysics();
             m_lastFrameProfile.syncCollidersMs += ProfileMsSince(t0);
@@ -241,16 +247,28 @@ void SceneManager::Play()
 
     if (m_activeScene) {
         m_activeScene->SetPlaying(true);
+
+        auto tStart = ProfileClock::now();
         m_activeScene->Start();
+        double startMs = ProfileMsSince(tStart);
 
         // Force-sync ALL body positions to current Transform.
-        // Editor-mode bodies (created by EnsureSceneBodiesRegistered for picking)
-        // may have stale positions if the user moved objects before pressing Play.
         ForceAllBodiesToCurrentTransform();
 
-        // Ensure broad-phase tree is rebuilt after all Awake() calls
-        // registered collider bodies, so raycasts work from the first frame.
+        // Flush any deferred broadphase additions from Awake/OnEnable, then
+        // rebuild broad-phase tree so raycasts work from the first frame.
+        auto tFlush = ProfileClock::now();
+        FlushPendingBroadphase();
         PhysicsWorld::Instance().OptimizeBroadPhase();
+        double flushMs = ProfileMsSince(tFlush);
+
+        if (startMs + flushMs > 500.0) {
+            INXLOG_INFO("[Perf] Play(): Start=", static_cast<int>(startMs), "ms, Flush=", static_cast<int>(flushMs),
+                        "ms");
+        }
+
+        // Reset physics sync serial so the first fixed step does a full sync.
+        m_lastPhysicsSyncTransformSerial = 0;
     }
 }
 
@@ -282,6 +300,7 @@ void SceneManager::Step(float deltaTime)
 
     // Detect external moves before stepping physics
     SyncExternalRigidbodyMoves();
+    FlushPendingBroadphase();
     SyncCollidersToPhysics();
     m_activeScene->FixedUpdate(m_fixedTimeStep);
     PhysicsWorld::Instance().Step(m_fixedTimeStep);
@@ -325,6 +344,20 @@ void SceneManager::DontDestroyOnLoad(GameObject *gameObject)
 
 void SceneManager::SyncCollidersToPhysics()
 {
+    // ── Unity-style deferred transform sync ──
+    // Skip the entire collider walk when no transform has been invalidated
+    // since the last sync.  This is the single biggest win for static scenes
+    // (thousands of colliders, none of which moved).
+    auto &tStore = TransformECSStore::Instance();
+    uint64_t currentSerial = tStore.GetGlobalTransformSerial();
+    if (currentSerial == m_lastPhysicsSyncTransformSerial) {
+        return; // nothing moved — zero work
+    }
+    m_lastPhysicsSyncTransformSerial = currentSerial;
+
+    // Something moved — walk all colliders.  Each collider's
+    // SyncTransformToPhysics() has its own lastSyncedPos/Rot early-out
+    // so only colliders that actually moved pay for a Jolt call.
     auto handles = PhysicsECSStore::Instance().GetAliveColliderHandles();
     for (auto handle : handles) {
         auto &data = PhysicsECSStore::Instance().GetCollider(handle);
@@ -336,6 +369,74 @@ void SceneManager::SyncCollidersToPhysics()
             continue;
         col->SyncTransformToPhysics();
     }
+}
+
+void SceneManager::FlushPendingBroadphase()
+{
+    auto &store = PhysicsECSStore::Instance();
+    auto &pw = PhysicsWorld::Instance();
+    if (!pw.IsInitialized())
+        return;
+
+    // ── Phase 1: Create deferred Jolt bodies ──
+    auto pendingBodies = store.ConsumePendingBodyCreations();
+    if (pendingBodies.empty() && !store.HasPendingBroadphaseAdds())
+        return;
+
+    auto t0 = ProfileClock::now();
+    const size_t bodyCount = pendingBodies.size();
+
+    for (auto handle : pendingBodies) {
+        if (!store.IsValid(handle))
+            continue;
+        auto &data = store.GetCollider(handle);
+        auto *col = data.owner;
+        if (!col || !col->IsEnabled() || data.bodyId != 0xFFFFFFFF)
+            continue;
+
+        // Actually create the Jolt body (deferred from Awake)
+        col->RegisterBody();
+
+        // Queue broadphase add (consumed in Phase 2 below)
+        if (data.bodyId != 0xFFFFFFFF) {
+            col->AddToBroadphase();
+        }
+    }
+
+    double phase1Ms = ProfileMsSince(t0);
+
+    // ── Phase 2: Batch add to broadphase ──
+    auto t1 = ProfileClock::now();
+    auto pending = store.ConsumePendingBroadphaseAdds();
+    if (pending.empty())
+        return;
+
+    // Use Jolt batch API (AddBodiesPrepare/Finalize) for large batches,
+    // which is significantly faster than individual AddBody calls.
+    pw.AddBodiesBatch(pending);
+
+    double phase2Ms = ProfileMsSince(t1);
+
+    // Rebuild broad-phase tree once after batch-adding all new bodies.
+    auto t2 = ProfileClock::now();
+    pw.OptimizeBroadPhase();
+    double optimizeMs = ProfileMsSince(t2);
+
+    // if (bodyCount >= 100) {
+    //     INXLOG_INFO("[Perf] FlushPendingBroadphase: ", bodyCount, " bodies — "
+    //                 "CreateBody: ", static_cast<int>(phase1Ms), "ms, "
+    //                 "AddBatch: ", static_cast<int>(phase2Ms), "ms, "
+    //                 "Optimize: ", static_cast<int>(optimizeMs), "ms");
+    // }
+}
+
+void SceneManager::SyncTransforms()
+{
+    // Flush any pending broadphase additions first
+    FlushPendingBroadphase();
+    // Force a full collider sync regardless of serial
+    m_lastPhysicsSyncTransformSerial = 0; // invalidate cache
+    SyncCollidersToPhysics();
 }
 
 void SceneManager::ForceAllBodiesToCurrentTransform()

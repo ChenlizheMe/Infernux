@@ -120,6 +120,14 @@ class TransformECSStore
     [[nodiscard]] bool GetWorldMatrixDirty(Handle h) const { return m_worldMatrixDirty[h.index]; }
     void SetWorldMatrixDirty(Handle h, bool v) { m_worldMatrixDirty[h.index] = v; if (v) m_anyWorldMatrixDirty = true; }
 
+    /// True if any transform has been dirtied since the last SyncSceneWorldMatrices.
+    [[nodiscard]] bool IsAnyWorldMatrixDirty() const { return m_anyWorldMatrixDirty; }
+
+    /// Monotonically increasing counter bumped whenever any transform is invalidated.
+    /// Physics can compare against a cached serial to skip sync when nothing moved.
+    [[nodiscard]] uint64_t GetGlobalTransformSerial() const { return m_globalTransformSerial; }
+    void BumpGlobalTransformSerial() { ++m_globalTransformSerial; }
+
     // — owner pointer —
     [[nodiscard]] Transform *GetOwner(Handle h) const { return m_owners[h.index]; }
     void SetOwner(Handle h, Transform *t) { m_owners[h.index] = t; }
@@ -233,6 +241,9 @@ class TransformECSStore
     // Set when any rotation-affecting setter is called; cleared by BeginFrameCache.
     // When false, BeginFrameCache skips the expensive quat_cast extraction.
     bool m_anyRotationDirtied = true;
+
+    // ── Global transform change serial (for physics dirty skip) ──────
+    uint64_t m_globalTransformSerial = 0;
 
     // ── slot metadata (free-list + generation) ───────────────────────
     std::vector<uint32_t>  m_generations;

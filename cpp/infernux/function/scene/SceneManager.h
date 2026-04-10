@@ -104,6 +104,14 @@ class SceneManager
     /// @brief Process pending destroys at end of frame
     void EndFrame();
 
+    /// @brief Manually flush Transform changes to the physics engine.
+    /// Unity equivalent: Physics.SyncTransforms().
+    /// Useful when script code modifies transforms in Update and needs
+    /// immediate physics queries (raycast, overlap) against the new positions.
+    /// Normally called automatically before each physics step; calling it
+    /// explicitly is only needed for same-frame queries after transform edits.
+    void SyncTransforms();
+
     [[nodiscard]] const FrameProfile &GetLastFrameProfile() const
     {
         return m_lastFrameProfile;
@@ -240,7 +248,12 @@ class SceneManager
     ~SceneManager() = default;
 
     /// Walk all colliders in the active scene and sync transforms to Jolt.
+    /// Uses a global transform serial to skip entirely when no transforms changed.
     void SyncCollidersToPhysics();
+
+    /// Flush pending broadphase additions (batched from Collider::AddToBroadphase).
+    /// Also rebuilds the BVH tree when new bodies were added.
+    void FlushPendingBroadphase();
 
     /// Force-sync ALL collider body positions to their current Transform,
     /// including dynamic bodies (which SyncCollidersToPhysics normally skips).
@@ -290,6 +303,11 @@ class SceneManager
     // Light component registry — populated by Light OnEnable/OnDisable.
     // Avoids per-frame GetAllObjects() + GetComponent<Light>() in CollectLights/ComputeShadowVP.
     std::vector<Light *> m_activeLights;
+
+    // ── Physics sync state (Unity-style deferred transform sync) ─────
+    /// Cached TransformECSStore global serial at last SyncCollidersToPhysics.
+    /// When the store serial hasn't changed, the entire sync is skipped.
+    uint64_t m_lastPhysicsSyncTransformSerial = 0;
 
     FrameProfile m_lastFrameProfile;
 };

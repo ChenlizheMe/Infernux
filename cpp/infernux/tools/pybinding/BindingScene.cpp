@@ -859,13 +859,28 @@ void RegisterSceneBindings(py::module_ &m)
                 if (typeName.empty()) {
                     return py::none();
                 }
+                // Try native C++ component first.
                 Component *comp = obj->AddComponentByTypeName(typeName);
-                if (!comp) {
-                    return py::none();
+                if (comp) {
+                    return ComponentBindingRegistry::Instance().CastToPython(comp);
                 }
-                return ComponentBindingRegistry::Instance().CastToPython(comp);
+                // If native creation failed and the argument is a class (not a
+                // string), treat it as a Python InxComponent subclass:
+                // instantiate and delegate to add_py_component.
+                if (!py::isinstance<py::str>(componentType) && py::isinstance<py::type>(componentType)) {
+                    try {
+                        py::object instance = componentType();
+                        return py::cast(obj, py::return_value_policy::reference)
+                            .attr("add_py_component")(instance);
+                    } catch (py::error_already_set &e) {
+                        INXLOG_WARN("[Binding] Failed to instantiate Python component '{}': {}",
+                                    typeName, e.what());
+                        return py::none();
+                    }
+                }
+                return py::none();
             },
-            py::arg("component_type"), "Add a C++ component by type or type name")
+            py::arg("component_type"), "Add a component by type, type name, or InxComponent subclass")
         .def(
             "remove_component", [](GameObject *obj, Component *component) { return obj->RemoveComponent(component); },
             py::arg("component"), "Remove a component instance (cannot remove Transform or required components)")

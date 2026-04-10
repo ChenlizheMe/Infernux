@@ -169,6 +169,7 @@ void TransformECSStore::InvalidateSubtree(Transform *root, bool clearWorldEulerE
     if (!self.m_worldMatrixDirty[idx]) {
         self.m_worldMatrixDirty[idx] = 1;
         self.m_anyWorldMatrixDirty = true;
+        ++self.m_globalTransformSerial;
     }
     if (clearWorldEulerExact) {
         self.m_worldEulerExact[idx] = 0;

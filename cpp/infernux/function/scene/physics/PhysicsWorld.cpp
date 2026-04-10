@@ -589,6 +589,37 @@ void PhysicsWorld::AddBodyToBroadphase(uint32_t bodyId, bool isStatic)
     bodyInterface.AddBody(JPH::BodyID(bodyId), isStatic ? JPH::EActivation::DontActivate : JPH::EActivation::Activate);
 }
 
+void PhysicsWorld::AddBodiesBatch(const std::vector<std::pair<uint32_t, bool>> &bodies)
+{
+    if (!m_initialized || bodies.empty())
+        return;
+
+    // Separate static and dynamic bodies since they need different activation modes.
+    std::vector<JPH::BodyID> staticIds;
+    std::vector<JPH::BodyID> dynamicIds;
+    staticIds.reserve(bodies.size());
+    dynamicIds.reserve(bodies.size() / 4); // most spawned bodies are static
+
+    for (auto &[id, isStatic] : bodies) {
+        if (id == 0xFFFFFFFF) continue;
+        if (isStatic)
+            staticIds.push_back(JPH::BodyID(id));
+        else
+            dynamicIds.push_back(JPH::BodyID(id));
+    }
+
+    JPH::BodyInterface &bi = m_physicsSystem->GetBodyInterface();
+
+    if (!staticIds.empty()) {
+        JPH::BodyInterface::AddState state = bi.AddBodiesPrepare(staticIds.data(), static_cast<int>(staticIds.size()));
+        bi.AddBodiesFinalize(staticIds.data(), static_cast<int>(staticIds.size()), state, JPH::EActivation::DontActivate);
+    }
+    if (!dynamicIds.empty()) {
+        JPH::BodyInterface::AddState state = bi.AddBodiesPrepare(dynamicIds.data(), static_cast<int>(dynamicIds.size()));
+        bi.AddBodiesFinalize(dynamicIds.data(), static_cast<int>(dynamicIds.size()), state, JPH::EActivation::Activate);
+    }
+}
+
 void PhysicsWorld::RemoveBodyFromBroadphase(uint32_t bodyId)
 {
     if (!m_initialized || bodyId == 0xFFFFFFFF)
@@ -1283,26 +1314,51 @@ void PhysicsWorld::EnsureSceneBodiesRegistered(Scene *scene)
         return;
 
     bool anyRegistered = false;
+    auto &store = PhysicsECSStore::Instance();
 
-    auto handles = PhysicsECSStore::Instance().GetAliveColliderHandles();
+    // Flush deferred body creation queue first (from Collider::Awake).
+    auto pendingBodies = store.ConsumePendingBodyCreations();
+    for (auto handle : pendingBodies) {
+        if (!store.IsValid(handle))
+            continue;
+        auto &data = store.GetCollider(handle);
+        auto *col = data.owner;
+        if (!col || !col->IsEnabled() || data.bodyId != 0xFFFFFFFF)
+            continue;
+        col->RegisterBody();
+        if (data.bodyId != 0xFFFFFFFF) {
+            col->AddToBroadphase();
+            anyRegistered = true;
+        }
+    }
+
+    // Walk all alive colliders — register any that still lack a body
+    // (shouldn't normally happen after the pending queue flush, but
+    // guards against edge cases).
+    auto handles = store.GetAliveColliderHandles();
     for (auto handle : handles) {
-        auto &data = PhysicsECSStore::Instance().GetCollider(handle);
+        auto &data = store.GetCollider(handle);
         auto *col = data.owner;
         if (!col || !col->IsEnabled())
             continue;
 
-        // If body not yet registered, register and add to broadphase
         if (col->GetBodyId() == 0xFFFFFFFF) {
             col->RegisterBody();
             col->AddToBroadphase();
             anyRegistered = true;
         }
 
-        // Sync transform
         col->SyncTransformToPhysics();
     }
 
-    // Rebuild broad-phase tree so raycasts can find newly added static bodies
+    // Flush deferred broadphase additions, then rebuild the BVH tree
+    // so raycasts can find newly added static bodies.
+    auto pending = store.ConsumePendingBroadphaseAdds();
+    for (auto &[bodyId, isStatic] : pending) {
+        AddBodyToBroadphase(bodyId, isStatic);
+        anyRegistered = true;
+    }
+
     if (anyRegistered) {
         m_physicsSystem->OptimizeBroadPhase();
     }
