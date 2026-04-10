@@ -276,6 +276,10 @@ class SceneManager
     /// their Jolt bodies before the physics step.
     void SyncExternalRigidbodyMoves();
 
+    /// Detach persistent (DontDestroyOnLoad) root objects from a scene
+    /// into m_persistentObjects, keeping them alive across scene switches.
+    void ExtractPersistentObjects(Scene *scene);
+
     std::vector<std::unique_ptr<Scene>> m_scenes;
     Scene *m_activeScene = nullptr;
 

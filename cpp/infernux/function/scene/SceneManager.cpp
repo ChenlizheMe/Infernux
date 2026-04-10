@@ -3,6 +3,7 @@
 #include "Collider.h"
 #include "EditorCameraController.h"
 #include "GameObject.h"
+#include "Light.h"
 #include "MeshRenderer.h"
 #include "Rigidbody.h"
 #include "Transform.h"
@@ -62,6 +63,29 @@ Scene *SceneManager::CreateScene(const std::string &name)
 void SceneManager::SetActiveScene(Scene *scene)
 {
     m_activeScene = scene;
+
+    // ── Migrate DontDestroyOnLoad objects to the new scene ──
+    if (scene && !m_persistentObjects.empty()) {
+        for (auto &obj : m_persistentObjects) {
+            if (!obj)
+                continue;
+            GameObject *raw = obj.get();
+            scene->AttachRootObject(std::move(obj)); // sets scene ptr on tree
+
+            // Re-register MeshRenderers and Lights that were cleared
+            // when the old scene was unloaded (ClearComponentRegistries).
+            for (auto *mr : raw->GetComponentsInChildren<MeshRenderer>()) {
+                if (mr && mr->IsEnabled())
+                    RegisterMeshRenderer(mr);
+            }
+            for (auto *lt : raw->GetComponentsInChildren<Light>()) {
+                if (lt && lt->IsEnabled())
+                    RegisterLight(lt);
+            }
+        }
+        m_persistentObjects.clear();
+    }
+
     // Note: We do NOT auto-assign the editor camera as mainCamera.
     // mainCamera == nullptr means "no game camera assigned" — the Game View
     // will show a placeholder. Scene View always uses the editor camera
@@ -72,6 +96,9 @@ void SceneManager::UnloadScene(Scene *scene)
 {
     if (!scene)
         return;
+
+    // ── Extract persistent (DontDestroyOnLoad) root objects before unload ──
+    ExtractPersistentObjects(scene);
 
     if (m_onSceneUnloaded) {
         m_onSceneUnloaded(scene);
@@ -98,6 +125,11 @@ void SceneManager::UnloadScene(Scene *scene)
 
 void SceneManager::UnloadAllScenes()
 {
+    // ── Extract persistent objects from all scenes before unload ──
+    for (auto &scene : m_scenes) {
+        ExtractPersistentObjects(scene.get());
+    }
+
     ClearComponentRegistries();
 
     for (auto &scene : m_scenes) {
@@ -278,6 +310,9 @@ void SceneManager::Stop()
     m_isPaused = false;
     m_fixedTimeAccumulator = 0.0f;
 
+    // Discard any persistent objects — play session is over.
+    m_persistentObjects.clear();
+
     if (m_activeScene) {
         m_activeScene->SetPlaying(false);
     }
@@ -318,9 +353,8 @@ void SceneManager::DontDestroyOnLoad(GameObject *gameObject)
     if (!gameObject)
         return;
 
-    // Must be a root object (no parent) for DontDestroyOnLoad
+    // Walk up to root if called on a child
     if (gameObject->GetParent() != nullptr) {
-        // Walk up to root
         GameObject *root = gameObject;
         while (root->GetParent()) {
             root = root->GetParent();
@@ -328,18 +362,31 @@ void SceneManager::DontDestroyOnLoad(GameObject *gameObject)
         gameObject = root;
     }
 
-    // Detach from current scene
-    Scene *scene = gameObject->GetScene();
+    // Just mark as persistent — the object stays in its scene normally.
+    // When a scene is unloaded, persistent roots are migrated to the new scene.
+    gameObject->SetPersistent(true);
+}
+
+void SceneManager::ExtractPersistentObjects(Scene *scene)
+{
     if (!scene)
         return;
 
-    auto owned = scene->DetachRootObject(gameObject);
-    if (!owned)
-        return;
+    // Collect persistent roots — iterate by index since DetachRootObject
+    // modifies the vector.
+    std::vector<GameObject *> toExtract;
+    for (const auto &root : scene->GetRootObjects()) {
+        if (root && root->IsPersistent())
+            toExtract.push_back(root.get());
+    }
 
-    // Move to persistent list
-    owned->SetScene(nullptr); // No longer belongs to any scene
-    m_persistentObjects.push_back(std::move(owned));
+    for (GameObject *go : toExtract) {
+        auto owned = scene->DetachRootObject(go);
+        if (owned) {
+            owned->SetScene(nullptr);
+            m_persistentObjects.push_back(std::move(owned));
+        }
+    }
 }
 
 void SceneManager::SyncCollidersToPhysics()

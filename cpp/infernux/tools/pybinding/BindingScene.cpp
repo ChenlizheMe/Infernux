@@ -842,6 +842,8 @@ void RegisterSceneBindings(py::module_ &m)
         .def_property("layer", &GameObject::GetLayer, &GameObject::SetLayer, "Layer index (0-31) for this GameObject")
         .def_property("is_static", &GameObject::IsStatic, &GameObject::SetStatic,
                       "Static flag for this GameObject (Unity: gameObject.isStatic)")
+        .def_property_readonly("is_persistent", &GameObject::IsPersistent,
+                               "True if this object is marked DontDestroyOnLoad")
         .def_property("prefab_guid", &GameObject::GetPrefabGuid, &GameObject::SetPrefabGuid,
                       "GUID of the source .prefab asset (empty = not a prefab instance)")
         .def_property("prefab_root", &GameObject::IsPrefabRoot, &GameObject::SetPrefabRoot,
