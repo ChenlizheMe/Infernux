@@ -148,6 +148,16 @@ class PhysicsECSStore
     /// True if any bodies are waiting to be added to the broadphase.
     [[nodiscard]] bool HasPendingBroadphaseAdds() const { return !m_pendingBroadphaseAdds.empty(); }
 
+    /// Pre-allocate internal pools and queues for @p count new colliders.
+    void ReserveForBulkCreation(size_t count)
+    {
+        m_colliderPool.Reserve(m_colliderPool.Capacity() + count);
+        m_pendingBodyCreationList.reserve(m_pendingBodyCreationList.size() + count);
+        m_pendingBodyCreationSet.reserve(m_pendingBodyCreationSet.size() + count);
+        m_pendingBroadphaseAdds.reserve(m_pendingBroadphaseAdds.size() + count);
+        m_pendingBroadphaseSet.reserve(m_pendingBroadphaseSet.size() + count);
+    }
+
     // ---- Rigidbody pool ----
     RigidbodyHandle AllocateRigidbody(Rigidbody *owner);
     void ReleaseRigidbody(RigidbodyHandle handle);

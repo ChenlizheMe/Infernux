@@ -39,6 +39,8 @@ void Scene::ReserveCapacity(size_t count)
 {
     m_rootObjects.reserve(m_rootObjects.size() + count);
     m_objectsById.reserve(m_objectsById.size() + count);
+    // Each GO gets ~2-3 components that queue for Start()
+    m_pendingStartComponentIds.reserve(m_pendingStartComponentIds.size() + count * 3);
 }
 
 void Scene::AddGameObject(std::unique_ptr<GameObject> gameObject)

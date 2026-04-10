@@ -213,6 +213,9 @@ class SceneManager
     /// Clear MeshRenderer registry (called on scene unload / deserialize).
     void ClearComponentRegistries();
 
+    /// Pre-allocate MeshRenderer registry storage for bulk creation.
+    void ReserveRendererCapacity(size_t count);
+
     /// Register a MeshRenderer so rendering can iterate it directly.
     void RegisterMeshRenderer(MeshRenderer *renderer);
 

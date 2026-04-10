@@ -26,6 +26,7 @@
 #include "function/scene/SceneManager.h"
 #include "function/scene/SphereCollider.h"
 #include "function/scene/Transform.h"
+#include "function/scene/physics/PhysicsECSStore.h"
 #include <functional>
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
@@ -138,6 +139,12 @@ static GameObject *CreatePrimitiveObject(Scene *scene, PrimitiveType type, const
         const size_t newCap = std::max(cap * 2, cap + 1024);
         ecs.Reserve(newCap);
         scene->ReserveCapacity(newCap);
+        // Reserve component registry (~3 components per GO)
+        Component::ReserveRegistry(newCap * 3);
+        // Reserve renderer containers (1 MeshRenderer per primitive)
+        SceneManager::Instance().ReserveRendererCapacity(newCap);
+        // Reserve physics pools (1 collider per GO when physics is used)
+        PhysicsECSStore::Instance().ReserveForBulkCreation(newCap);
     }
 
     GameObject *obj = scene->CreateGameObject(objectName);
@@ -168,6 +175,9 @@ static py::list CreatePrimitiveObjectsBatch(Scene *scene, PrimitiveType type, si
     scene->ReserveCapacity(count);
     TransformECSStore::Instance().Reserve(
         TransformECSStore::Instance().Capacity() + count);
+    Component::ReserveRegistry(count * 3);
+    SceneManager::Instance().ReserveRendererCapacity(count);
+    PhysicsECSStore::Instance().ReserveForBulkCreation(count);
 
     py::list result(count);
     for (size_t i = 0; i < count; ++i) {

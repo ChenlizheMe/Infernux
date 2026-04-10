@@ -530,6 +530,12 @@ void SceneManager::ClearComponentRegistries()
 // MeshRenderer component registry
 // ========================================================================
 
+void SceneManager::ReserveRendererCapacity(size_t count)
+{
+    m_activeMeshRenderers.reserve(m_activeMeshRenderers.size() + count);
+    m_activeMeshRendererSet.reserve(m_activeMeshRendererSet.size() + count);
+}
+
 void SceneManager::RegisterMeshRenderer(MeshRenderer *renderer)
 {
     if (!renderer)
