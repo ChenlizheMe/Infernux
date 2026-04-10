@@ -341,97 +341,102 @@ void InxGUI::BuildFrame()
         io.MouseWheelH = 0.0f;
     }
 
-    // Create a full-screen DockSpace (reserve bottom strip for the Python status bar)
-    const float kStatusBarHeight = 24.0f * m_dpiScale; // must match _HEIGHT in status_bar.py
-    ImGuiViewport *viewport = ImGui::GetMainViewport();
-    ImGui::SetNextWindowPos(viewport->WorkPos);
-    ImGui::SetNextWindowSize(ImVec2(viewport->WorkSize.x, viewport->WorkSize.y - kStatusBarHeight));
-    ImGui::SetNextWindowViewport(viewport->ID);
+    // In player mode, skip DockSpace/DockBuilder entirely — they are only
+    // needed for the editor's multi-panel layout.  The player registers a
+    // single full-screen renderable (PlayerGUI), so docking is wasted work.
+    if (!m_playerMode) {
+        // Create a full-screen DockSpace (reserve bottom strip for the Python status bar)
+        const float kStatusBarHeight = 24.0f * m_dpiScale; // must match _HEIGHT in status_bar.py
+        ImGuiViewport *viewport = ImGui::GetMainViewport();
+        ImGui::SetNextWindowPos(viewport->WorkPos);
+        ImGui::SetNextWindowSize(ImVec2(viewport->WorkSize.x, viewport->WorkSize.y - kStatusBarHeight));
+        ImGui::SetNextWindowViewport(viewport->ID);
 
-    ImGuiWindowFlags dockSpaceFlags = ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoTitleBar |
-                                      ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize |
-                                      ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus |
-                                      ImGuiWindowFlags_NoNavFocus | ImGuiWindowFlags_NoBackground;
+        ImGuiWindowFlags dockSpaceFlags = ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoTitleBar |
+                                          ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize |
+                                          ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus |
+                                          ImGuiWindowFlags_NoNavFocus | ImGuiWindowFlags_NoBackground;
 
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
 
-    ImGui::Begin("DockSpaceWindow", nullptr, dockSpaceFlags);
-    ImGui::PopStyleVar(3);
+        ImGui::Begin("DockSpaceWindow", nullptr, dockSpaceFlags);
+        ImGui::PopStyleVar(3);
 
-    // Check whether a saved layout already exists BEFORE DockSpace()
-    // creates the node.  If the node doesn't exist yet (first launch or
-    // imgui.ini was deleted by the Python layout-version mechanism), we
-    // need to build the default Unity-style layout.
-    ImGuiID dockspaceId = ImGui::GetID("MainDockSpace");
-    bool needsDefaultLayout = (ImGui::DockBuilderGetNode(dockspaceId) == nullptr);
+        // Check whether a saved layout already exists BEFORE DockSpace()
+        // creates the node.  If the node doesn't exist yet (first launch or
+        // imgui.ini was deleted by the Python layout-version mechanism), we
+        // need to build the default Unity-style layout.
+        ImGuiID dockspaceId = ImGui::GetID("MainDockSpace");
+        bool needsDefaultLayout = (ImGui::DockBuilderGetNode(dockspaceId) == nullptr);
 
-    ImGui::DockSpace(dockspaceId, ImVec2(0.0f, 0.0f), ImGuiDockNodeFlags_None);
+        ImGui::DockSpace(dockspaceId, ImVec2(0.0f, 0.0f), ImGuiDockNodeFlags_None);
 
-    // Setup default Unity-style layout only when no saved layout exists.
-    // This preserves user customizations across restarts while still
-    // providing the correct initial tab arrangement on first launch
-    // (or after a layout-version bump that deletes imgui.ini).
-    if (needsDefaultLayout) {
+        // Setup default Unity-style layout only when no saved layout exists.
+        // This preserves user customizations across restarts while still
+        // providing the correct initial tab arrangement on first launch
+        // (or after a layout-version bump that deletes imgui.ini).
+        if (needsDefaultLayout) {
 
-        ImGui::DockBuilderRemoveNode(dockspaceId);
-        ImGui::DockBuilderAddNode(dockspaceId, ImGuiDockNodeFlags_DockSpace);
-        ImGui::DockBuilderSetNodeSize(dockspaceId,
-                                      ImVec2(viewport->WorkSize.x, viewport->WorkSize.y - kStatusBarHeight));
+            ImGui::DockBuilderRemoveNode(dockspaceId);
+            ImGui::DockBuilderAddNode(dockspaceId, ImGuiDockNodeFlags_DockSpace);
+            ImGui::DockBuilderSetNodeSize(dockspaceId,
+                                          ImVec2(viewport->WorkSize.x, viewport->WorkSize.y - kStatusBarHeight));
 
-        // Split: Main area | Right panel (Inspector)
-        ImGuiID dockMain;
-        ImGuiID dockRight;
-        ImGui::DockBuilderSplitNode(dockspaceId, ImGuiDir_Right, 0.25f, &dockRight, &dockMain);
+            // Split: Main area | Right panel (Inspector)
+            ImGuiID dockMain;
+            ImGuiID dockRight;
+            ImGui::DockBuilderSplitNode(dockspaceId, ImGuiDir_Right, 0.25f, &dockRight, &dockMain);
 
-        // Split main: Top area (Hierarchy+Scene) | Bottom (Console/Project)
-        ImGuiID dockTop;
-        ImGuiID dockBottom;
-        ImGui::DockBuilderSplitNode(dockMain, ImGuiDir_Down, 0.30f, &dockBottom, &dockTop);
+            // Split main: Top area (Hierarchy+Scene) | Bottom (Console/Project)
+            ImGuiID dockTop;
+            ImGuiID dockBottom;
+            ImGui::DockBuilderSplitNode(dockMain, ImGuiDir_Down, 0.30f, &dockBottom, &dockTop);
 
-        // Split top: Left (Hierarchy) | Center-top (Toolbar+Scene)
-        ImGuiID dockLeft;
-        ImGuiID dockCenterTop;
-        ImGui::DockBuilderSplitNode(dockTop, ImGuiDir_Left, 0.20f, &dockLeft, &dockCenterTop);
+            // Split top: Left (Hierarchy) | Center-top (Toolbar+Scene)
+            ImGuiID dockLeft;
+            ImGuiID dockCenterTop;
+            ImGui::DockBuilderSplitNode(dockTop, ImGuiDir_Left, 0.20f, &dockLeft, &dockCenterTop);
 
-        // Split center-top: Toolbar (thin strip) | Scene/Game
-        ImGuiID dockToolbar;
-        ImGuiID dockScene;
-        ImGui::DockBuilderSplitNode(dockCenterTop, ImGuiDir_Up, 0.04f, &dockToolbar, &dockScene);
+            // Split center-top: Toolbar (thin strip) | Scene/Game
+            ImGuiID dockToolbar;
+            ImGuiID dockScene;
+            ImGui::DockBuilderSplitNode(dockCenterTop, ImGuiDir_Up, 0.04f, &dockToolbar, &dockScene);
 
-        // Set a fixed size for the toolbar node so it doesn't stretch
-        ImGui::DockBuilderSetNodeSize(dockToolbar, ImVec2(viewport->WorkSize.x, 36));
+            // Set a fixed size for the toolbar node so it doesn't stretch
+            ImGui::DockBuilderSetNodeSize(dockToolbar, ImVec2(viewport->WorkSize.x, 36));
 
-        // Hide tab bar on toolbar node — it should be locked in place
-        ImGuiDockNode *toolbarNode = ImGui::DockBuilderGetNode(dockToolbar);
-        if (toolbarNode) {
-            toolbarNode->SetLocalFlags(toolbarNode->LocalFlags | ImGuiDockNodeFlags_NoTabBar |
-                                       ImGuiDockNodeFlags_NoDockingSplit | ImGuiDockNodeFlags_NoResize |
-                                       ImGuiDockNodeFlags_NoUndocking);
+            // Hide tab bar on toolbar node — it should be locked in place
+            ImGuiDockNode *toolbarNode = ImGui::DockBuilderGetNode(dockToolbar);
+            if (toolbarNode) {
+                toolbarNode->SetLocalFlags(toolbarNode->LocalFlags | ImGuiDockNodeFlags_NoTabBar |
+                                           ImGuiDockNodeFlags_NoDockingSplit | ImGuiDockNodeFlags_NoResize |
+                                           ImGuiDockNodeFlags_NoUndocking);
+            }
+
+            // Dock windows to their positions.
+            // Window IDs use the ### separator so the docking layout is
+            // independent of the displayed (localised) title.  The text
+            // before ### is ignored for ID purposes; only the part after
+            // ### must match what the Python panel passes to ImGui::Begin.
+            ImGui::DockBuilderDockWindow("###hierarchy", dockLeft);
+            ImGui::DockBuilderDockWindow("###inspector", dockRight);
+            ImGui::DockBuilderDockWindow("###toolbar", dockToolbar);
+            ImGui::DockBuilderDockWindow("###scene_view", dockScene);
+            ImGui::DockBuilderDockWindow("###game_view", dockScene);
+            ImGui::DockBuilderDockWindow("###ui_editor", dockScene);
+            ImGui::DockBuilderDockWindow("###console", dockBottom);
+            ImGui::DockBuilderDockWindow("###project", dockBottom);
+
+            ImGui::DockBuilderFinish(dockspaceId);
+
+            // Ensure Scene tab is the active/selected tab after initial layout
+            ImGui::SetWindowFocus("###scene_view");
         }
 
-        // Dock windows to their positions.
-        // Window IDs use the ### separator so the docking layout is
-        // independent of the displayed (localised) title.  The text
-        // before ### is ignored for ID purposes; only the part after
-        // ### must match what the Python panel passes to ImGui::Begin.
-        ImGui::DockBuilderDockWindow("###hierarchy", dockLeft);
-        ImGui::DockBuilderDockWindow("###inspector", dockRight);
-        ImGui::DockBuilderDockWindow("###toolbar", dockToolbar);
-        ImGui::DockBuilderDockWindow("###scene_view", dockScene);
-        ImGui::DockBuilderDockWindow("###game_view", dockScene);
-        ImGui::DockBuilderDockWindow("###ui_editor", dockScene);
-        ImGui::DockBuilderDockWindow("###console", dockBottom);
-        ImGui::DockBuilderDockWindow("###project", dockBottom);
-
-        ImGui::DockBuilderFinish(dockspaceId);
-
-        // Ensure Scene tab is the active/selected tab after initial layout
-        ImGui::SetWindowFocus("###scene_view");
-    }
-
-    ImGui::End();
+        ImGui::End();
+    } // !m_playerMode
 
     using hrc = std::chrono::high_resolution_clock;
     m_lastPanelTimesMs.clear();

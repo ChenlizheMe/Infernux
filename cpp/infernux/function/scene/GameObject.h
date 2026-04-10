@@ -441,6 +441,7 @@ class GameObject
     bool m_active = true;
     bool m_isStatic = false;
     bool m_persistent = false;
+    bool m_hasPyProxy = false; // true when a PyComponentProxy is attached
     std::string m_tag = "Untagged";
     int m_layer = 0; // Default layer
 

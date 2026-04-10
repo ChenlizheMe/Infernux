@@ -369,10 +369,28 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
     }
 
     // ---- Sort if requested (skip for 0-1 elements) ----
+    // Uniform-batch fast path: when every eligible entry shares the same
+    // material hash and vertex buffer, all entries will be emitted as a
+    // single instanced draw regardless of ordering.  Sorting would only
+    // permute elements within that single batch, so we skip it entirely.
+    bool uniformBatch = false;
+    if (m_eligibleScratch.size() > 1) {
+        const size_t firstMatHash = m_eligibleScratch[0].materialHash;
+        const VkBuffer firstVB = m_eligibleScratch[0].vertexBuf;
+        uniformBatch = true;
+        for (size_t i = 1; i < m_eligibleScratch.size(); ++i) {
+            if (m_eligibleScratch[i].materialHash != firstMatHash ||
+                m_eligibleScratch[i].vertexBuf != firstVB) {
+                uniformBatch = false;
+                break;
+            }
+        }
+    }
+
     // is_sorted() early-out: O(N) comparison-only scan avoids the O(N log N)
     // std::sort when the eligible scratch is already in correct order from
     // a previous frame (common in stable scenes with static camera).
-    if (m_eligibleScratch.size() > 1) {
+    if (m_eligibleScratch.size() > 1 && !uniformBatch) {
         // In left-handed view space: near objects have small positive Z, far
         // objects have larger positive Z.
         if (sortMode == "front_to_back") {

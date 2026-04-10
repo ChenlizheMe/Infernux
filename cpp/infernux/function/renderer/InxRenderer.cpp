@@ -1292,6 +1292,13 @@ void InxRenderer::UnregisterGUIRenderable(const char *name)
     }
 }
 
+void InxRenderer::SetGUIPlayerMode(bool enabled)
+{
+    if (m_gui) {
+        m_gui->SetPlayerMode(enabled);
+    }
+}
+
 void InxRenderer::QueueDockTabSelection(const char *windowId)
 {
     if (m_gui) {

@@ -6,7 +6,6 @@
 #include "PyComponentProxy.h"
 #include "Rigidbody.h"
 #include "Scene.h"
-#include "function/audio/AudioSource.h"
 #include "physics/PhysicsWorld.h"
 #include <InxLog.h>
 #include <algorithm>
@@ -20,16 +19,6 @@ using json = nlohmann::json;
 
 namespace infernux
 {
-
-void InvalidateGameObjectLifecycleCaches(GameObject *gameObject)
-{
-    if (!gameObject) {
-        return;
-    }
-
-    gameObject->InvalidateComponentExecutionCache();
-    gameObject->RefreshLifecycleDispatchFlags();
-}
 
 // Static ID generator
 static std::atomic<uint64_t> s_nextID{1};
@@ -102,13 +91,13 @@ GameObject::~GameObject()
         m_scene->UnregisterGameObject(m_id);
     }
 
-    // Run lifecycle callbacks while all components are still alive.
+    // Phase 1: Run lifecycle callbacks while ALL components are still alive.
     // This lets OnDisable/OnDestroy safely call GetComponents<>() on siblings.
     for (auto &comp : m_components) {
         comp->CallOnDestroy();
     }
 
-    // Move components out of the vector before destructors run.
+    // Phase 2: Move components out of the vector BEFORE destructors run.
     // During vector::clear(), C++ destructors fire while the vector is
     // partially destroyed — calling GetComponents<>() from a destructor
     // would dynamic_cast on dangling pointers (undefined behaviour).
@@ -143,9 +132,11 @@ void GameObject::HandleActiveStateChanged(bool wasActiveInHierarchy, bool isActi
     }
 
     if (isActiveInHierarchy) {
-        const auto &components = GetComponentsInExecutionOrderCached();
+        std::vector<Component *> components = GetComponentsInExecutionOrder();
         for (Component *comp : components) {
             if (!comp)
+                continue;
+            if (!playing && !comp->WantsEditModeLifecycle())
                 continue;
             if (!comp->HasAwake()) {
                 comp->CallAwake();
@@ -158,11 +149,13 @@ void GameObject::HandleActiveStateChanged(bool wasActiveInHierarchy, bool isActi
             }
         }
     } else {
-        const auto &components = GetComponentsInExecutionOrderCached();
+        std::vector<Component *> components = GetComponentsInExecutionOrder();
         for (Component *comp : components) {
             if (!comp)
                 continue;
             comp->OnGameObjectDeactivated();
+            if (!playing && !comp->WantsEditModeLifecycle())
+                continue;
             if (comp->IsEnabled() && comp->HasAwake()) {
                 comp->CallOnDisable();
             }
@@ -181,65 +174,23 @@ void GameObject::HandleActiveStateChanged(bool wasActiveInHierarchy, bool isActi
 
 std::vector<Component *> GameObject::GetComponentsInExecutionOrder() const
 {
-    return GetComponentsInExecutionOrderCached();
-}
-
-const std::vector<Component *> &GameObject::GetComponentsInExecutionOrderCached() const
-{
-    if (!m_executionOrderCacheDirty) {
-        return m_executionOrderCache;
-    }
-
-    m_executionOrderCache.clear();
-    m_executionOrderCache.reserve(m_components.size());
+    std::vector<Component *> result;
+    result.reserve(m_components.size());
 
     for (const auto &comp : m_components) {
         if (comp) {
-            m_executionOrderCache.push_back(comp.get());
+            result.push_back(comp.get());
         }
     }
 
-    std::stable_sort(m_executionOrderCache.begin(), m_executionOrderCache.end(),
-                     [](const Component *a, const Component *b) {
-                         if (a->GetExecutionOrder() != b->GetExecutionOrder()) {
-                             return a->GetExecutionOrder() < b->GetExecutionOrder();
-                         }
-                         return a->GetComponentID() < b->GetComponentID();
-                     });
-
-    m_executionOrderCacheDirty = false;
-    return m_executionOrderCache;
-}
-
-void GameObject::InvalidateComponentExecutionCache()
-{
-    m_executionOrderCacheDirty = true;
-}
-
-void GameObject::RefreshLifecycleDispatchFlags()
-{
-    m_hasPyProxy = false;
-    m_hasUpdateReceivers = false;
-    m_hasFixedUpdateReceivers = false;
-    m_hasLateUpdateReceivers = false;
-
-    for (const auto &component : m_components) {
-        if (!component) {
-            continue;
+    std::stable_sort(result.begin(), result.end(), [](const Component *a, const Component *b) {
+        if (a->GetExecutionOrder() != b->GetExecutionOrder()) {
+            return a->GetExecutionOrder() < b->GetExecutionOrder();
         }
+        return a->GetComponentID() < b->GetComponentID();
+    });
 
-        if (dynamic_cast<PyComponentProxy *>(component.get())) {
-            m_hasPyProxy = true;
-            m_hasUpdateReceivers = true;
-            m_hasFixedUpdateReceivers = true;
-            m_hasLateUpdateReceivers = true;
-            continue;
-        }
-
-        if (dynamic_cast<AudioSource *>(component.get())) {
-            m_hasUpdateReceivers = true;
-        }
-    }
+    return result;
 }
 
 void GameObject::SetActive(bool active)
@@ -372,8 +323,11 @@ void GameObject::PostAddComponent(Component *component)
     }
 
     m_scene->BumpStructureVersion();
-    InvalidateComponentExecutionCache();
-    RefreshLifecycleDispatchFlags();
+
+    // Track whether this object has a PyComponentProxy for LateUpdate fast-path.
+    if (dynamic_cast<PyComponentProxy *>(component)) {
+        m_hasPyProxy = true;
+    }
 
     // Auto-add a BoxCollider when Rigidbody is added to an object without
     // any Collider.  Physics engines require at least one shape for a body.
@@ -384,6 +338,11 @@ void GameObject::PostAddComponent(Component *component)
     // Unity: Reset is editor-only and fires when a component is first added.
     if (!m_scene->IsPlaying()) {
         component->CallReset();
+    }
+
+    const bool lifecycleAllowed = m_scene->IsPlaying() || component->WantsEditModeLifecycle();
+    if (!lifecycleAllowed) {
+        return;
     }
 
     // Unity: components added to inactive objects do not Awake until the
@@ -428,13 +387,23 @@ bool GameObject::RemoveComponent(Component *component)
 
     for (auto it = m_components.begin(); it != m_components.end(); ++it) {
         if (it->get() == component) {
+            // Clear PyProxy flag if removing the last PyComponentProxy.
+            if (dynamic_cast<PyComponentProxy *>(component)) {
+                bool otherProxy = false;
+                for (const auto &c : m_components) {
+                    if (c.get() != component && dynamic_cast<PyComponentProxy *>(c.get())) {
+                        otherProxy = true;
+                        break;
+                    }
+                }
+                if (!otherProxy)
+                    m_hasPyProxy = false;
+            }
             (*it)->CallOnDestroy();
             m_components.erase(it);
             if (m_scene) {
                 m_scene->BumpStructureVersion();
             }
-            InvalidateComponentExecutionCache();
-            RefreshLifecycleDispatchFlags();
             return true;
         }
     }
@@ -566,10 +535,11 @@ GameObject *GameObject::FindDescendant(const std::string &name) const
 
 void GameObject::Update(float deltaTime)
 {
-    if (!m_active || !m_hasUpdateReceivers)
+    if (!m_active)
         return;
 
-    const auto &components = GetComponentsInExecutionOrderCached();
+    // Update all components
+    std::vector<Component *> components = GetComponentsInExecutionOrder();
     for (Component *comp : components) {
         if (!comp)
             continue;
@@ -583,10 +553,10 @@ void GameObject::Update(float deltaTime)
 
 void GameObject::FixedUpdate(float fixedDeltaTime)
 {
-    if (!m_active || !m_hasFixedUpdateReceivers)
+    if (!m_active)
         return;
 
-    const auto &components = GetComponentsInExecutionOrderCached();
+    std::vector<Component *> components = GetComponentsInExecutionOrder();
     for (Component *comp : components) {
         if (!comp)
             continue;
@@ -600,10 +570,17 @@ void GameObject::FixedUpdate(float fixedDeltaTime)
 
 void GameObject::LateUpdate(float deltaTime)
 {
-    if (!m_active || !m_hasLateUpdateReceivers)
+    if (!m_active)
         return;
 
-    const auto &components = GetComponentsInExecutionOrderCached();
+    // Fast path: only PyComponentProxy overrides LateUpdate / TickWhileDisabledLateUpdate.
+    // Skip the expensive GetComponentsInExecutionOrder() allocation + sort
+    // for objects that have no Python proxy.
+    if (!m_hasPyProxy)
+        return;
+
+    // LateUpdate all components
+    std::vector<Component *> components = GetComponentsInExecutionOrder();
     for (Component *comp : components) {
         if (!comp)
             continue;
@@ -620,7 +597,7 @@ void GameObject::EditorUpdate(float deltaTime)
     if (!m_active)
         return;
 
-    const auto &components = GetComponentsInExecutionOrderCached();
+    std::vector<Component *> components = GetComponentsInExecutionOrder();
     for (Component *comp : components) {
         if (!comp || !comp->IsEnabled())
             continue;
