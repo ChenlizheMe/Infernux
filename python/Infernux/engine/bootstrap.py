@@ -2470,10 +2470,10 @@ class EditorBootstrap:
                     if path:
                         sfm.open_prefab_mode_with_undo(path)
             elif action == "apply":
-                from Infernux.engine.prefab import apply_prefab_overrides
+                from Infernux.engine.prefab_overrides import apply_prefab_overrides
                 apply_prefab_overrides(obj)
             elif action == "revert":
-                from Infernux.engine.prefab import revert_prefab_overrides
+                from Infernux.engine.prefab_overrides import revert_prefab_overrides
                 revert_prefab_overrides(obj)
 
         ip.prefab_action = _prefab_action
