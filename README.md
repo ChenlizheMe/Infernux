@@ -31,7 +31,7 @@
 </p>
 
 <p align="center">
-  <em>Infernux is left in Play mode with no interaction while 10,000 cubes continue rendering and their lighting changes across the full scene.</em>
+  <em>Infernux is left in Play mode with no interaction while 10,000 cubes continue rendering.</em>
 </p>
 
 ---
