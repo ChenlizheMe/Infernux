@@ -379,8 +379,7 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
         const VkBuffer firstVB = m_eligibleScratch[0].vertexBuf;
         uniformBatch = true;
         for (size_t i = 1; i < m_eligibleScratch.size(); ++i) {
-            if (m_eligibleScratch[i].materialHash != firstMatHash ||
-                m_eligibleScratch[i].vertexBuf != firstVB) {
+            if (m_eligibleScratch[i].materialHash != firstMatHash || m_eligibleScratch[i].vertexBuf != firstVB) {
                 uniformBatch = false;
                 break;
             }

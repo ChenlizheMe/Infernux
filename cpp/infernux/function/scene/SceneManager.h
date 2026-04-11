@@ -222,6 +222,10 @@ class SceneManager
     /// Unregister a MeshRenderer (e.g. OnDisable / destruction).
     void UnregisterMeshRenderer(MeshRenderer *renderer);
 
+    /// Bump the renderable cache version after a registered MeshRenderer
+    /// changes mesh/material state without leaving the registry.
+    void NotifyMeshRendererChanged(MeshRenderer *renderer);
+
     /// Read-only access to the active mesh renderers registry.
     [[nodiscard]] const std::vector<MeshRenderer *> &GetActiveMeshRenderers() const
     {

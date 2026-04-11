@@ -34,7 +34,10 @@ class InxGUI
     void RecordCommand(VkCommandBuffer cmdBuf);
     void Shutdown();
 
-    void SetPlayerMode(bool enabled) { m_playerMode = enabled; }
+    void SetPlayerMode(bool enabled)
+    {
+        m_playerMode = enabled;
+    }
 
     [[nodiscard]] const std::unordered_map<std::string, double> &GetLastPanelTimesMs() const
     {

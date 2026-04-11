@@ -608,6 +608,14 @@ void SceneManager::UnregisterMeshRenderer(MeshRenderer *renderer)
     }
 }
 
+void SceneManager::NotifyMeshRendererChanged(MeshRenderer *renderer)
+{
+    if (!renderer)
+        return;
+    if (m_activeMeshRendererSet.find(renderer) != m_activeMeshRendererSet.end())
+        ++m_meshRendererVersion;
+}
+
 void SceneManager::MarkMeshRenderersDirtyForAsset(const std::string &meshGuid)
 {
     if (meshGuid.empty())

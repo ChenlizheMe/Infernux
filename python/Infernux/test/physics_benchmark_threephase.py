@@ -1,16 +1,18 @@
 """
-Timed physics stress benchmark for Experiment 4.
+physics_benchmark_threephase.py
+───────────────────────────────
+Three-phase physics stress benchmark for Experiment 4.
 
 Rigid-body cubes are spawned at y=50 m and released under gravity.
-Sampling windows are delimited by **elapsed wall-clock time** (not frame
-count) so that boundaries align with actual physics events regardless of FPS:
+Phases are delimited by **elapsed wall-clock time** (not frame count)
+so that boundaries align with actual physics events regardless of FPS:
 
-    Warm-up    0 s –  1 s   (not recorded — let spawning settle)
-    Free-fall  1 s –  4 s   Cubes in the air, sparse contacts
-    Settling   4 s –  9 s   Dense contacts after landing (~3 s)
-    Resting    9 s – 14 s   Sleep-eligible bodies
+  Warm-up    0 s –  1 s   (not recorded — let spawning settle)
+  Phase 1    1 s –  4 s   Free-fall — cubes in the air, sparse contacts
+  Phase 2    4 s –  9 s   Settling  — dense contacts after landing (~3 s)
+  Phase 3    9 s – 14 s   Resting   — sleep-eligible bodies
 
-After 14 s the mean FPS for each interval is printed and saved to CSV.
+After 14 s the per-phase mean FPS is printed and saved to CSV.
 
 Usage
 ─────
@@ -18,7 +20,7 @@ Usage
   Attach to a GameObject, set ``cube_count``, press Play.
 
 **Option B — multi-run from editor console:**
-    >>> comp = find("BenchHost").get_component(PhysicsBenchmarkTimeline)
+  >>> comp = find("BenchHost").get_component(PhysicsBenchmarkThreePhase)
   >>> comp.run_sweep([100, 200, 500, 1000, 2000, 3000, 4000, 5000])
   Each count finishes → auto-destroys → spawns next count.
 
@@ -43,11 +45,11 @@ import os
 import random
 
 
-# ── Time boundaries (seconds from spawn) ───────────────────────
-WARMUP_END    =  1.0   # seconds — ignore the first second (spawn hiccup)
-FREEFALL_END  =  4.0   # free-fall ends   (cubes land ≈ 3.2 s)
-SETTLING_END  =  9.0   # settling ends    (user reports stable ≈ 8 s)
-RESTING_END   = 14.0   # resting recording ends
+# ── Phase time boundaries (seconds from spawn) ─────────────────
+WARMUP_END   =  1.0   # seconds — ignore the first second (spawn hiccup)
+PHASE1_END   =  4.0   # free-fall ends   (cubes land ≈ 3.2 s)
+PHASE2_END   =  9.0   # settling ends    (user reports stable ≈ 8 s)
+PHASE3_END   = 14.0   # resting recording ends
 
 # ── Physics material constants ──────────────────────────────────
 FRICTION    = 0.5
@@ -59,7 +61,7 @@ SPAWN_RANGE     = 25.0      # cubes in [-25, 25] XZ
 GROUND_HALFSIZE = 50.0
 
 
-class PhysicsBenchmarkTimeline(InxComponent):
+class PhysicsBenchmarkThreePhase(InxComponent):
     """Attach to any GameObject.  Set *cube_count* in the Inspector."""
 
     cube_count: int = 1000
@@ -111,15 +113,15 @@ class PhysicsBenchmarkTimeline(InxComponent):
         # ── record instantaneous FPS ──
         fps = (1.0 / dt) if dt > 1e-6 else 0.0
 
-        if t < FREEFALL_END:
-            self._samples["freefall"].append(fps)
-        elif t < SETTLING_END:
-            self._samples["settling"].append(fps)
-        elif t < RESTING_END:
-            self._samples["resting"].append(fps)
+        if t < PHASE1_END:
+            self._phase_fps["freefall"].append(fps)
+        elif t < PHASE2_END:
+            self._phase_fps["settling"].append(fps)
+        elif t < PHASE3_END:
+            self._phase_fps["resting"].append(fps)
 
-        # ── all intervals done ──
-        if t >= RESTING_END:
+        # ── all phases done ──
+        if t >= PHASE3_END:
             self._report()
             self._running = False
             self._done    = True
@@ -161,7 +163,7 @@ class PhysicsBenchmarkTimeline(InxComponent):
         self._running = True
         self._done    = False
 
-        self._samples = {
+        self._phase_fps = {
             "freefall": [],
             "settling": [],
             "resting":  [],
@@ -169,10 +171,10 @@ class PhysicsBenchmarkTimeline(InxComponent):
 
         debug.log(
             f"[PhysBench] Spawned {num} cubes.  "
-            f"Intervals: warm-up < {WARMUP_END}s, "
-            f"free-fall < {FREEFALL_END}s, "
-            f"settling < {SETTLING_END}s, "
-            f"resting < {RESTING_END}s"
+            f"Phases: warm-up < {WARMUP_END}s, "
+            f"free-fall < {PHASE1_END}s, "
+            f"settling < {PHASE2_END}s, "
+            f"resting < {PHASE3_END}s"
         )
 
     def _spawn_cubes(self, num: int):
@@ -212,19 +214,19 @@ class PhysicsBenchmarkTimeline(InxComponent):
         return sum(values) / len(values) if values else 0.0
 
     def _report(self):
-        mean_ff = self._mean(self._samples["freefall"])
-        mean_st = self._mean(self._samples["settling"])
-        mean_rt = self._mean(self._samples["resting"])
+        mean_ff = self._mean(self._phase_fps["freefall"])
+        mean_st = self._mean(self._phase_fps["settling"])
+        mean_rt = self._mean(self._phase_fps["resting"])
 
-        n_ff = len(self._samples["freefall"])
-        n_st = len(self._samples["settling"])
-        n_rt = len(self._samples["resting"])
+        n_ff = len(self._phase_fps["freefall"])
+        n_st = len(self._phase_fps["settling"])
+        n_rt = len(self._phase_fps["resting"])
 
         header = (
             f"\n{'=' * 56}\n"
             f"  Physics Benchmark — {self.cube_count} bodies\n"
             f"{'=' * 56}\n"
-            f"  {'Interval':<14} {'Frames':>8} {'Mean FPS':>10}\n"
+            f"  {'Phase':<14} {'Frames':>8} {'Mean FPS':>10}\n"
             f"  {'-' * 40}\n"
             f"  {'Free-fall':<14} {n_ff:>8} {mean_ff:>10.1f}\n"
             f"  {'Settling':<14} {n_st:>8} {mean_st:>10.1f}\n"
@@ -264,6 +266,3 @@ class PhysicsBenchmarkTimeline(InxComponent):
             debug.log(f"[PhysBench] Results appended to {csv_path}")
         except OSError as e:
             debug.log_error(f"[PhysBench] Could not write CSV: {e}")
-
-
-PhysicsBenchmarkThreePhase = PhysicsBenchmarkTimeline

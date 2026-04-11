@@ -129,6 +129,12 @@ void RestoreBuiltinPrimitiveMesh(const std::string &name, std::vector<Vertex> &v
     indices.assign(builtinIndices->begin(), builtinIndices->end());
 }
 
+void NotifyRenderableStateChanged(MeshRenderer *renderer)
+{
+    if (renderer)
+        SceneManager::Instance().NotifyMeshRendererChanged(renderer);
+}
+
 } // namespace
 
 INFERNUX_REGISTER_COMPONENT("MeshRenderer", MeshRenderer)
@@ -171,6 +177,7 @@ void MeshRenderer::SetMesh(std::vector<Vertex> vertices, std::vector<uint32_t> i
     m_meshAsset.Clear();
     m_meshBufferDirty = true;
     ComputeLocalBoundsFromInlineVertices();
+    NotifyRenderableStateChanged(this);
 }
 
 void MeshRenderer::SetSharedPrimitiveMesh(const std::vector<Vertex> &vertices, const std::vector<uint32_t> &indices,
@@ -199,6 +206,8 @@ void MeshRenderer::SetSharedPrimitiveMesh(const std::vector<Vertex> &vertices, c
         ComputeLocalBoundsFromInlineVertices();
         s_boundsCache[&vertices] = {m_localBoundsMin, m_localBoundsMax};
     }
+
+    NotifyRenderableStateChanged(this);
 }
 
 void MeshRenderer::SetMeshAsset(const std::string &guid, std::shared_ptr<InxMesh> mesh)
@@ -227,6 +236,7 @@ void MeshRenderer::SetMeshAsset(const std::string &guid, std::shared_ptr<InxMesh
     }
 
     SyncMaterialSlotsToMesh();
+    NotifyRenderableStateChanged(this);
 }
 
 void MeshRenderer::SetMeshAssetGuid(const std::string &guid)
@@ -245,6 +255,8 @@ void MeshRenderer::SetMeshAssetGuid(const std::string &guid)
 
     if (!guid.empty())
         graph.AddDependency(GetInstanceGuid(), guid);
+
+    NotifyRenderableStateChanged(this);
 }
 
 void MeshRenderer::ClearMeshAsset()
@@ -261,6 +273,7 @@ void MeshRenderer::ClearMeshAsset()
     m_sharedIndices = nullptr;
     m_localBoundsMin = glm::vec3(-0.5f);
     m_localBoundsMax = glm::vec3(0.5f);
+    NotifyRenderableStateChanged(this);
 }
 
 void MeshRenderer::OnMeshAssetEvent(AssetEvent event)
@@ -284,6 +297,7 @@ void MeshRenderer::OnMeshAssetEvent(AssetEvent event)
         SetLocalBounds(mesh->GetBoundsMin(), mesh->GetBoundsMax());
     SyncMaterialSlotsToMesh();
     MarkMeshBufferDirty();
+    NotifyRenderableStateChanged(this);
 }
 
 bool MeshRenderer::ConsumeMeshBufferDirty()
@@ -313,6 +327,8 @@ void MeshRenderer::SetMaterial(uint32_t slot, std::shared_ptr<InxMaterial> mater
     auto newMat = ref.Get();
     if (newMat && !newMat->GetGuid().empty())
         graph.AddDependency(GetInstanceGuid(), newMat->GetGuid());
+
+    NotifyRenderableStateChanged(this);
 }
 
 void MeshRenderer::SetMaterial(uint32_t slot, const std::string &guid)
@@ -332,6 +348,8 @@ void MeshRenderer::SetMaterial(uint32_t slot, const std::string &guid)
     auto newMat = ref.Get();
     if (newMat && !newMat->GetGuid().empty())
         graph.AddDependency(GetInstanceGuid(), newMat->GetGuid());
+
+    NotifyRenderableStateChanged(this);
 }
 
 void MeshRenderer::SetMaterials(const std::vector<std::string> &guids)
@@ -353,6 +371,8 @@ void MeshRenderer::SetMaterials(const std::vector<std::string> &guids)
         if (newMat && !newMat->GetGuid().empty())
             graph.AddDependency(GetInstanceGuid(), newMat->GetGuid());
     }
+
+    NotifyRenderableStateChanged(this);
 }
 
 void MeshRenderer::SetMaterialSlotCount(uint32_t count)
@@ -368,6 +388,7 @@ void MeshRenderer::SetMaterialSlotCount(uint32_t count)
             graph.RemoveDependency(GetInstanceGuid(), mat->GetGuid());
     }
     m_materials.resize(count);
+    NotifyRenderableStateChanged(this);
 }
 
 std::shared_ptr<InxMaterial> MeshRenderer::GetMaterial(uint32_t slot) const
@@ -471,6 +492,7 @@ void MeshRenderer::SetNodeGroup(int32_t group)
             SyncMaterialSlotsToMesh();
         }
     }
+    NotifyRenderableStateChanged(this);
 }
 
 void MeshRenderer::UpdateBoundsForNodeGroup(const std::shared_ptr<InxMesh> &mesh)

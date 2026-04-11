@@ -38,11 +38,6 @@ void InxShaderLoader::InvalidateDirectoryCache(const std::string &dir)
     }
 }
 
-void InxShaderLoader::InvalidateTemplateCache()
-{
-    s_templateCache.clear();
-}
-
 void InxShaderLoader::AddShaderSearchPath(const std::string &dir)
 {
     const std::string normalizedDir = FromFsPath(ToFsPath(dir));
@@ -123,8 +118,8 @@ void InxShaderLoader::CreateMeta(const char *content, size_t contentSize, const 
     auto desc = ParseShaderSource(std::string(content, contentSize), filePath);
 
     // ----------------------------------------------------------------
-    // Apply Surface Options defaults.
-    // @surface_type determines default render state when the user has not
+    // Phase 4: Apply Surface Options defaults
+    // @surface_type determines default render state when user hasn't
     // explicitly overridden individual settings.
     // ----------------------------------------------------------------
     if (desc.surfaceOptions.surfaceType == "transparent") {
@@ -608,16 +603,13 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
     // ================================================================
     // Inject engine globals UBO — always available except shadow
     // For shadow vertex with vertex(), inject at set 1 (shadow globals set)
-    // For shadow fragment with alpha clip, inject at set 1 (libraries need _Globals)
     // ================================================================
     bool shadowVertexNeedsGlobals =
         (target == ShaderCompileTarget::Shadow && desc.isVertexShader && desc.hasVertexFunc);
-    bool shadowFragmentNeedsGlobals =
-        (target == ShaderCompileTarget::Shadow && desc.isFragmentShader && shadowNeedsAlphaClip);
     if (target != ShaderCompileTarget::Shadow) {
         result << "\n// Auto-generated engine globals UBO (set 2)\n";
         result << LoadTemplate("globals_ubo.glsl") << "\n";
-    } else if (shadowVertexNeedsGlobals || shadowFragmentNeedsGlobals) {
+    } else if (shadowVertexNeedsGlobals) {
         // Shadow pipeline has globals descriptor set at set 1 (not set 2)
         result << "\n// Auto-generated engine globals UBO (set 1 — shadow pipeline)\n";
         result << LoadTemplate("shadow_globals_ubo.glsl") << "\n";
@@ -670,24 +662,12 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
     // Texture sampler declarations  (skip for shadow unless alpha clip)
     // ================================================================
     int texBaseBinding = needsLightingUBO ? 2 : 1;
-    // Shadow alpha-clip fragment: pack textures + material UBO into set 2
-    // (the per-material shadow descriptor set), starting from binding 0.
-    const bool shadowAlphaFragment =
-        (target == ShaderCompileTarget::Shadow && shadowNeedsAlphaClip && desc.isFragmentShader);
-    int shadowTexBaseBinding = 0; // textures start at binding 0 in set 2
     if (target != ShaderCompileTarget::Shadow || shadowNeedsAlphaClip) {
         if (!desc.textureProperties.empty() && desc.isFragmentShader) {
             result << "\n// Auto-generated texture samplers from @property annotations\n";
             for (size_t i = 0; i < desc.textureProperties.size(); ++i) {
-                int binding = shadowAlphaFragment ? (shadowTexBaseBinding + static_cast<int>(i))
-                                                  : (texBaseBinding + static_cast<int>(i));
-                if (shadowAlphaFragment) {
-                    result << "layout(set = 2, binding = " << binding << ") uniform sampler2D "
-                           << desc.textureProperties[i].name << ";\n";
-                } else {
-                    result << "layout(binding = " << binding << ") uniform sampler2D " << desc.textureProperties[i].name
-                           << ";\n";
-                }
+                result << "layout(binding = " << (texBaseBinding + static_cast<int>(i)) << ") uniform sampler2D "
+                       << desc.textureProperties[i].name << ";\n";
             }
             result << "\n";
         }
@@ -710,17 +690,11 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
             int materialBinding;
             if (desc.isVertexShader) {
                 materialBinding = 14; // Reserved for vertex-stage material properties
-            } else if (shadowAlphaFragment) {
-                // Shadow alpha-clip fragment: place MaterialProperties at a fixed binding
-                // that matches the descriptor set layout (kMaxShadowTextures = 8).
-                // Bindings 0..7 are reserved for COMBINED_IMAGE_SAMPLER in the layout,
-                // so the fragment UBO MUST go at binding 8 to avoid a type mismatch.
-                materialBinding = 8;
             } else {
                 materialBinding = texBaseBinding + static_cast<int>(desc.textureProperties.size());
             }
             result << "\n// Auto-generated MaterialProperties UBO from @property annotations\n";
-            if (target == ShaderCompileTarget::Shadow && (desc.isVertexShader || shadowAlphaFragment)) {
+            if (target == ShaderCompileTarget::Shadow && desc.isVertexShader) {
                 result << "layout(std140, set = 2, binding = " << materialBinding << ") uniform MaterialProperties {\n";
             } else {
                 result << "layout(std140, binding = " << materialBinding << ") uniform MaterialProperties {\n";
@@ -754,24 +728,7 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
     // OR vertex shader with vertex() function (shadow deformation)
     // ================================================================
     if (target != ShaderCompileTarget::Shadow || shadowNeedsAlphaClip || shadowVertexNeedsMaterial) {
-        // For shadow alpha-clip fragments, skip import blocks that reference
-        // UBOs not available in the shadow pipeline (LightingUBO, shadowMap).
-        // The lighting.glsl import depends on the LightingUBO declaration
-        // which is (correctly) not injected for shadow — strip its block.
-        bool skipBlock = false;
         for (const auto &codeLine : codeLines) {
-            if (shadowAlphaFragment) {
-                if (codeLine.find("// --- begin @import: lighting ---") != std::string::npos) {
-                    skipBlock = true;
-                    continue;
-                }
-                if (skipBlock && codeLine.find("// --- end @import: lighting ---") != std::string::npos) {
-                    skipBlock = false;
-                    continue;
-                }
-                if (skipBlock)
-                    continue;
-            }
             result << codeLine << "\n";
         }
     } else if (target == ShaderCompileTarget::Shadow && desc.isVertexShader && desc.hasVertexFunc &&
@@ -788,64 +745,15 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
     if (hasSurfaceFunc && !hasMainFunc && desc.isFragmentShader && (desc.hasExplicitType || !userHasLayoutDecls)) {
         if (target == ShaderCompileTarget::Shadow) {
             if (shadowNeedsAlphaClip) {
-                // Shadow pass with alpha clip: minimal fragment that only
-                // fetches the first (albedo/diffuse) texture for alpha.
-                // Running the full surface() would sample ALL textures
-                // (normal, roughness, emission, …) which is pure waste
-                // for a depth-only pass.  We duplicate only the alpha-
-                // relevant logic: UV remap from displayScale/uvRect, then
-                // a single texture() fetch.
-                //
-                // For shaders that rely on complex surface() logic for
-                // alpha (procedural cutout, multi-texture blending) this
-                // fast path may be inaccurate; authors can override by
-                // providing an explicit main() in the shader source.
-                if (!desc.textureProperties.empty()) {
-                    const std::string &alphaTex = desc.textureProperties[0].name;
-                    result << "\nvoid main() {\n";
-                    // Check for displayScale/uvRect properties — sprite shaders
-                    // use them to remap UVs for aspect-fit sub-rects.
-                    bool hasDisplayScale = false, hasUvRect = false;
-                    for (const auto &p : desc.properties) {
-                        if (p.name == "displayScale")
-                            hasDisplayScale = true;
-                        if (p.name == "uvRect")
-                            hasUvRect = true;
-                    }
-                    if (hasDisplayScale) {
-                        result << "    vec2 dScale = material.displayScale.xy;\n";
-                        result << "    vec2 tc = (v_TexCoord - 0.5) / max(dScale, vec2(1e-6)) + 0.5;\n";
-                        result << "    if (tc.x < 0.0 || tc.x > 1.0 || tc.y < 0.0 || tc.y > 1.0) discard;\n";
-                    } else {
-                        result << "    vec2 tc = v_TexCoord;\n";
-                    }
-                    if (hasUvRect) {
-                        result << "    vec2 uv = material.uvRect.xy + tc * material.uvRect.zw;\n";
-                    } else {
-                        result << "    vec2 uv = tc;\n";
-                    }
-                    result << "    float alpha = texture(" << alphaTex << ", uv).a";
-                    // Multiply by baseColor.a if the material has a baseColor property
-                    for (const auto &p : desc.properties) {
-                        if (p.name == "baseColor") {
-                            result << " * material.baseColor.a";
-                            break;
-                        }
-                    }
-                    result << ";\n";
-                    result << "    if (material._AlphaClipThreshold > 0.0 && alpha < material._AlphaClipThreshold) "
-                              "discard;\n";
-                    result << "}\n";
-                } else {
-                    // No textures — fallback to full surface() path
-                    result << "\nvoid main() {\n";
-                    result << "    SurfaceData s = InitSurfaceData();\n";
-                    result << "    s.normalWS = normalize(v_Normal);\n";
-                    result << "    surface(s);\n";
-                    result << "    if (material._AlphaClipThreshold > 0.0 && s.alpha < material._AlphaClipThreshold) "
-                              "discard;\n";
-                    result << "}\n";
-                }
+                // Shadow pass with alpha clip: sample textures, run surface(), discard
+                // Uses uniform-based threshold from MaterialProperties UBO
+                result << "\nvoid main() {\n";
+                result << "    SurfaceData s = InitSurfaceData();\n";
+                result << "    s.normalWS = normalize(v_Normal);\n";
+                result << "    surface(s);\n";
+                result << "    if (material._AlphaClipThreshold > 0.0 && s.alpha < material._AlphaClipThreshold) "
+                          "discard;\n";
+                result << "}\n";
             } else {
                 // Shadow pass: depth-only, minimal fragment shader
                 result << "\nvoid main() {\n";
