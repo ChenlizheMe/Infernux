@@ -120,6 +120,14 @@ void MaterialPipelineManager::DestroyNonForwardPipelines(InxMaterial *material)
 {
     for (int i = 1; i < static_cast<int>(ShaderCompileTarget::Count); ++i) {
         const auto pass = static_cast<ShaderCompileTarget>(i);
+        // Shadow pipelines are owned by the shadow pipeline cache in
+        // InxVkCoreModular — only clear the material's reference here.
+        if (pass == ShaderCompileTarget::Shadow) {
+            material->SetPassPipeline(pass, VK_NULL_HANDLE);
+            material->SetPassPipelineLayout(pass, VK_NULL_HANDLE);
+            material->SetPassShaderProgram(pass, nullptr);
+            continue;
+        }
         VkPipeline pp = material->GetPassPipeline(pass);
         if (pp != VK_NULL_HANDLE) {
             vkDestroyPipeline(m_device, pp, nullptr);

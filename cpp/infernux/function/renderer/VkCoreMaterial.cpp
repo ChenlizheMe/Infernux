@@ -28,6 +28,7 @@
 #include <cctype>
 #include <filesystem>
 #include <glm/glm.hpp>
+#include <unordered_set>
 
 #include <cstring>
 
@@ -531,13 +532,9 @@ bool InxVkCoreModular::RefreshMaterialPipeline(std::shared_ptr<InxMaterial> mate
             std::string shadowFragName = fragShaderName + "/shadow";
             bool hasShadowFrag = (GetShaderModule(shadowFragName, "fragment") != VK_NULL_HANDLE);
             if (hasShadowFrag) {
-                VkPipeline oldShadow = material->GetPassPipeline(ShaderCompileTarget::Shadow);
-                if (oldShadow != VK_NULL_HANDLE) {
-                    VkDevice dev = GetDevice();
-                    m_deletionQueue.Push([dev, oldShadow]() { vkDestroyPipeline(dev, oldShadow, nullptr); });
-                    material->SetPassPipeline(ShaderCompileTarget::Shadow, VK_NULL_HANDLE);
-                }
-
+                // Shadow pipelines are owned by m_shadowPipelineCache — do NOT
+                // push the old handle to the deletion queue (it is shared).
+                material->SetPassPipeline(ShaderCompileTarget::Shadow, VK_NULL_HANDLE);
                 CreateMaterialShadowPipeline(material, vertShaderName, fragShaderName);
             }
         }
@@ -886,10 +883,10 @@ void InxVkCoreModular::CreateMaterialShadowPipeline(std::shared_ptr<InxMaterial>
     // generated shadow variant exists for this material.
     VkShaderModule fragModule = GetShaderModule(shadowFragName, "fragment");
     if (fragModule == VK_NULL_HANDLE) {
-        static int s_missingShadowFragWarnCount = 0;
-        if (s_missingShadowFragWarnCount++ < 16) {
+        static std::unordered_set<std::string> s_warnedShadowFragShaders;
+        if (s_warnedShadowFragShaders.insert(shadowFragName).second) {
             INXLOG_WARN("CreateMaterialShadowPipeline: missing shadow fragment module '", shadowFragName,
-                        "' for material '", material->GetName(), "'");
+                        "' — materials using this shader will use default shadow pass");
         }
         return;
     }
@@ -900,6 +897,14 @@ void InxVkCoreModular::CreateMaterialShadowPipeline(std::shared_ptr<InxMaterial>
             INXLOG_WARN("CreateMaterialShadowPipeline: shader modules unavailable for material '", material->GetName(),
                         "' (vert='", shadowVertName, "' fallback='", vertShaderName, "', frag='", shadowFragName, "')");
         }
+        return;
+    }
+
+    // ---- Shadow pipeline cache: share VkPipeline across materials with same shader ----
+    std::string shadowShaderKey = shadowVertName + "|" + shadowFragName;
+    auto cacheIt = m_shadowPipelineCache.find(shadowShaderKey);
+    if (cacheIt != m_shadowPipelineCache.end()) {
+        material->SetPassPipeline(ShaderCompileTarget::Shadow, cacheIt->second);
         return;
     }
 
@@ -968,6 +973,7 @@ void InxVkCoreModular::CreateMaterialShadowPipeline(std::shared_ptr<InxMaterial>
         return;
     }
 
+    m_shadowPipelineCache[shadowShaderKey] = shadowPipeline;
     material->SetPassPipeline(ShaderCompileTarget::Shadow, shadowPipeline);
     INXLOG_DEBUG("Created per-material shadow pipeline for '", material->GetName(), "'");
 }

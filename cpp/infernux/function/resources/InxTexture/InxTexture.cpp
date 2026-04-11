@@ -33,4 +33,26 @@ bool InxTexture::LoadImportSettings(const std::string &filePath)
     return true;
 }
 
+// =============================================================================
+// Clone — Unity-style Object.Instantiate for textures
+// =============================================================================
+
+std::shared_ptr<InxTexture> InxTexture::Clone() const
+{
+    auto clone = std::make_shared<InxTexture>();
+
+    // Copy metadata — the clone references the same image file on disk.
+    clone->m_name = m_name + " (Instance)";
+    clone->m_filePath = m_filePath; // Same source file
+    // clone->m_guid intentionally left empty — runtime-only instance
+
+    // Copy import settings
+    clone->m_textureType = m_textureType;
+    clone->m_srgb = m_srgb;
+    clone->m_generateMipmaps = m_generateMipmaps;
+    clone->m_maxSize = m_maxSize;
+
+    return clone;
+}
+
 } // namespace infernux

@@ -320,6 +320,23 @@ class InxVkCoreModular
         ++m_ensureFrameCounter;
     }
 
+    /// @brief Bulk-stamp all per-object buffer entries with the current frame
+    /// counter without hash-map lookups.  Use when no `forceBufferUpdate` is
+    /// set and no new objects appeared, skipping the full EnsureObjectBuffers
+    /// loop (~0.3 ms saved at 10 k objects).
+    void BulkStampEnsuredFrame()
+    {
+        for (auto &[id, entry] : m_perObjectBuffers) {
+            entry.ensuredOnFrame = m_ensureFrameCounter;
+        }
+    }
+
+    /// @brief Return the count of per-object buffer entries.
+    size_t GetPerObjectBufferCount() const
+    {
+        return m_perObjectBuffers.size();
+    }
+
     /// @brief Remove per-object buffers for objects that are no longer active.
     /// Call once per frame after SetDrawCalls with the current active draw calls.
     void CleanupUnusedBuffers(const std::vector<DrawCall> &activeDrawCalls);
@@ -999,6 +1016,10 @@ class InxVkCoreModular
     VkSampler m_shadowDepthSampler = VK_NULL_HANDLE;
     VkRenderPass m_shadowCompatRenderPass = VK_NULL_HANDLE; ///< For pipeline compatibility
     bool m_shadowPipelineReady = false;
+
+    /// Cache of shadow pipelines keyed by shader ID (vert|frag).
+    /// Materials sharing the same shader share the same shadow VkPipeline.
+    std::unordered_map<std::string, VkPipeline> m_shadowPipelineCache;
 
     /// @brief Lazily create/recreate shadow pipeline resources.
     bool EnsureShadowPipeline(VkRenderPass compatibleRenderPass);

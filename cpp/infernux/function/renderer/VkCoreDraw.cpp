@@ -308,9 +308,15 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
                 continue;
         }
 
-        // Compute view-space depth for sorting.
-        glm::vec4 viewPos = m_stagedUBO.view * glm::vec4(glm::vec3(dc.worldMatrix[3]), 1.0f);
-        float sortKey = viewPos.z;
+        // Compute view-space depth for transparent sort only.
+        // Opaque front_to_back groups by material hash + vertex buffer
+        // (stable order), so depth sort is unnecessary and its O(N log N)
+        // cost every frame is avoided via the is_sorted() early-out.
+        float sortKey = 0.0f;
+        if (sortMode == "back_to_front") {
+            glm::vec4 viewPos = m_stagedUBO.view * glm::vec4(glm::vec3(dc.worldMatrix[3]), 1.0f);
+            sortKey = viewPos.z;
+        }
 
         // Material + mesh hash for grouping optimization
         size_t matHash = std::hash<void *>{}(static_cast<void *>(material));
@@ -393,12 +399,13 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
         // In left-handed view space: near objects have small positive Z, far
         // objects have larger positive Z.
         if (sortMode == "front_to_back") {
+            // Group by material + vertex buffer only (no depth).
+            // This order is stable across frames for static material assignments,
+            // so is_sorted() returns true and std::sort is skipped entirely.
             auto cmp = [](const SortableDrawCall &a, const SortableDrawCall &b) {
                 if (a.materialHash != b.materialHash)
                     return a.materialHash < b.materialHash;
-                if (a.vertexBuf != b.vertexBuf)
-                    return a.vertexBuf < b.vertexBuf;
-                return a.sortKey < b.sortKey;
+                return a.vertexBuf < b.vertexBuf;
             };
             if (!std::is_sorted(m_eligibleScratch.begin(), m_eligibleScratch.end(), cmp)) {
                 std::sort(m_eligibleScratch.begin(), m_eligibleScratch.end(), cmp);
@@ -1253,6 +1260,12 @@ void InxVkCoreModular::CleanupShadowPipeline()
         vkDestroyRenderPass(device, m_shadowCompatRenderPass, nullptr);
         m_shadowCompatRenderPass = VK_NULL_HANDLE;
     }
+    // Destroy cached shadow pipelines
+    for (auto &[key, pipeline] : m_shadowPipelineCache) {
+        if (pipeline != VK_NULL_HANDLE)
+            vkDestroyPipeline(device, pipeline, nullptr);
+    }
+    m_shadowPipelineCache.clear();
     m_shadowPipelineReady = false;
 }
 

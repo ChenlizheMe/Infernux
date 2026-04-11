@@ -33,6 +33,7 @@ from Infernux.coroutine import (
     WaitWhile,
 )
 from Infernux.batch import batch_read, batch_write, create_batch_handle
+from Infernux.instantiate import Instantiate, Destroy
 
 
 def __getattr__(name: str):
@@ -157,4 +158,7 @@ __all__ = [
     # Batch processing
     "batch_read",
     "batch_write",
+    # Object lifecycle
+    "Instantiate",
+    "Destroy",
 ]

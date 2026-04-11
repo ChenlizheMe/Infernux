@@ -1,5 +1,6 @@
 #include "InxMaterial.h"
 #include <algorithm>
+#include <atomic>
 #include <core/log/InxLog.h>
 #include <cstring>
 #include <filesystem>
@@ -1058,6 +1059,47 @@ std::shared_ptr<InxMaterial> InxMaterial::CreateErrorMaterial()
     material->SetBuiltin(true);
 
     return material;
+}
+
+// ============================================================================
+// Clone — Unity-style Object.Instantiate for materials
+// ============================================================================
+
+std::shared_ptr<InxMaterial> InxMaterial::Clone() const
+{
+    static std::atomic<uint64_t> s_cloneCounter{0};
+    auto clone = std::make_shared<InxMaterial>();
+
+    // Deep copy identity (clear GUID & file path — runtime-only instance)
+    // Each clone gets a unique name so GetMaterialKey() returns a unique key,
+    // ensuring separate descriptor sets / UBOs in the renderer.
+    clone->m_name = m_name + " (Instance_" + std::to_string(s_cloneCounter.fetch_add(1)) + ")";
+    // clone->m_guid intentionally left empty — no asset identity
+    // clone->m_filePath intentionally left empty — not saved to disk
+    clone->m_builtin = false; // Clones are never builtin
+
+    // Deep copy shader identity
+    clone->m_vertShaderName = m_vertShaderName;
+    clone->m_fragShaderName = m_fragShaderName;
+    clone->m_passTag = m_passTag;
+
+    // Deep copy render state & overrides
+    clone->m_renderState = m_renderState;
+    clone->m_renderStateOverrides = m_renderStateOverrides;
+
+    // Deep copy all properties (floats, vecs, colors, texture GUIDs, etc.)
+    // Texture references are GUIDs (strings) — shared by value, same as Unity.
+    clone->m_properties = m_properties;
+
+    // GPU-transient state is NOT copied — lazily recreated by the renderer.
+    // m_passPipelines[] are already default-initialized (VK_NULL_HANDLE).
+    // m_uboBuffer etc. are already default-initialized (VK_NULL_HANDLE).
+    clone->m_pipelineDirty = true;
+    clone->m_propertiesDirty = true;
+    clone->m_version = 0;
+    clone->m_isDeleted = false;
+
+    return clone;
 }
 
 } // namespace infernux
