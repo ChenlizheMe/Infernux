@@ -118,8 +118,8 @@ void InxShaderLoader::CreateMeta(const char *content, size_t contentSize, const 
     auto desc = ParseShaderSource(std::string(content, contentSize), filePath);
 
     // ----------------------------------------------------------------
-    // Phase 4: Apply Surface Options defaults
-    // @surface_type determines default render state when user hasn't
+    // Apply Surface Options defaults.
+    // @surface_type determines default render state when the user has not
     // explicitly overridden individual settings.
     // ----------------------------------------------------------------
     if (desc.surfaceOptions.surfaceType == "transparent") {

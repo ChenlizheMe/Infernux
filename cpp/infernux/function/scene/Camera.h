@@ -148,7 +148,7 @@ class Camera : public Component
     }
 
     // ========================================================================
-    // Clear flags & background color (Phase 1)
+    // Clear flags & background color
     // ========================================================================
 
     [[nodiscard]] CameraClearFlags GetClearFlags() const
@@ -170,7 +170,7 @@ class Camera : public Component
     }
 
     // ========================================================================
-    // Screen dimensions (Phase 0 — needed for ScreenToWorld / WorldToScreen)
+    // Screen dimensions used by ScreenToWorld / WorldToScreen
     // ========================================================================
 
     [[nodiscard]] uint32_t GetPixelWidth() const
@@ -244,11 +244,11 @@ class Camera : public Component
     // Layer culling mask (all layers by default)
     uint32_t m_cullingMask = 0xFFFFFFFF;
 
-    // Clear flags (Phase 1)
+    // Clear flags
     CameraClearFlags m_clearFlags = CameraClearFlags::Skybox;
     glm::vec4 m_backgroundColor{0.1f, 0.1f, 0.1f, 1.0f};
 
-    // Screen dimensions (Phase 0 — updated by InxRenderer)
+    // Screen dimensions updated by InxRenderer
     uint32_t m_screenWidth = 1920;
     uint32_t m_screenHeight = 1080;
 

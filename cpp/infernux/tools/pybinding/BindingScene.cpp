@@ -517,7 +517,7 @@ void RegisterSceneBindings(py::module_ &m)
         .def("serialize", &MeshRenderer::Serialize, "Serialize MeshRenderer to JSON string")
 
         // ====================================================================
-        // Phase 1: Mesh data access (for AI/CV and Python-side mesh inspection)
+        // Mesh data access for scripting and inspection tools
         // ====================================================================
         .def_property_readonly(
             "vertex_count",
@@ -694,7 +694,7 @@ void RegisterSceneBindings(py::module_ &m)
         .def_property("shadow_strength", &Light::GetShadowStrength, &Light::SetShadowStrength, "Shadow strength (0-1)")
         .def_property("shadow_bias", &Light::GetShadowBias, &Light::SetShadowBias, "Shadow depth bias")
 
-        // Shadow mapping matrices (Phase 4.4.3)
+        // Shadow mapping matrices
         .def("get_light_view_matrix", &Light::GetLightViewMatrix, "Get the light's view matrix for shadow mapping")
         .def("get_light_projection_matrix", &Light::GetLightProjectionMatrix, py::arg("shadow_extent") = 20.0f,
              py::arg("near_plane") = 0.1f, py::arg("far_plane") = 100.0f,
@@ -720,7 +720,7 @@ void RegisterSceneBindings(py::module_ &m)
         .export_values();
 
     // ========================================================================
-    // CameraClearFlags enum (Phase 1)
+    // CameraClearFlags enum
     // ========================================================================
     py::enum_<CameraClearFlags>(m, "CameraClearFlags")
         .value("Skybox", CameraClearFlags::Skybox)
@@ -751,17 +751,17 @@ void RegisterSceneBindings(py::module_ &m)
                       "Rendering depth (lower depth renders first, like Unity Camera.depth)")
         .def_property("culling_mask", &Camera::GetCullingMask, &Camera::SetCullingMask,
                       "Layer culling bitmask (which layers this camera renders)")
-        // Phase 1: Clear flags & background color
+        // Clear flags & background color
         .def_property("clear_flags", &Camera::GetClearFlags, &Camera::SetClearFlags,
                       "Camera clear flags (Skybox, SolidColor, DepthOnly, DontClear)")
         .def_property(
             "background_color", [](const Camera &c) -> glm::vec4 { return c.GetBackgroundColor(); },
             [](Camera &c, const glm::vec4 &v) { c.SetBackgroundColor(v); },
             "Background color as vec4f (r, g, b, a) — used when clear_flags == SolidColor")
-        // Phase 0: Screen dimensions (read-only, set by renderer)
+        // Screen dimensions (read-only, set by renderer)
         .def_property_readonly("pixel_width", &Camera::GetPixelWidth, "Render target width in pixels")
         .def_property_readonly("pixel_height", &Camera::GetPixelHeight, "Render target height in pixels")
-        // Phase 0: Coordinate conversion
+        // Coordinate conversion
         .def(
             "screen_to_world_point",
             [](const Camera &c, float x, float y, float depth) { return c.ScreenToWorldPoint(glm::vec2(x, y), depth); },

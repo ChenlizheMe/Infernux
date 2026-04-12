@@ -1,5 +1,5 @@
 """
-Pythonic Shader Management (Phase 1)
+Shader management helpers.
 
 Provides a clean API for shader loading, hot-reload, and cache management.
 Wraps the C++ ShaderCache and pipeline reload functionality.

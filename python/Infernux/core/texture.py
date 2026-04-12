@@ -1,5 +1,5 @@
 """
-Pythonic Texture Wrapper (Phase 1)
+Texture wrapper.
 
 Wraps the C++ TextureData and TextureLoader with context manager support
 and a clean API for texture loading, creation, and pixel access.
@@ -38,7 +38,7 @@ class Texture:
     Provides:
     - Context manager for scoped lifecycle
     - Factory methods for loading and procedural generation
-    - Easy pixel data access for AI/CV integration
+    - Easy pixel data access for external tooling
     """
 
     def __init__(self, native: "TextureData"):
@@ -155,7 +155,7 @@ class Texture:
         return (self.width, self.height)
 
     # ==========================================================================
-    # Pixel Data Access (for AI/CV integration)
+    # Pixel data access for external tooling
     # ==========================================================================
 
     def pixels_as_bytes(self) -> bytes:

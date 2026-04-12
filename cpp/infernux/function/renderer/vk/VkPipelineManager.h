@@ -80,7 +80,7 @@ struct RenderPassConfig
     bool hasDepth = true;
     bool clearColor = true;
     bool clearDepth = true;
-    bool storeDepth = false;    ///< Phase 1: If true, depth storeOp = STORE (needed when subsequent passes read depth)
+    bool storeDepth = false;    ///< If true, depth storeOp = STORE (needed when subsequent passes read depth)
     bool readOnlyDepth = false; ///< True when depth is a read-only input (depthInput, not depthOutput). Uses
                                 ///< DEPTH_STENCIL_READ_ONLY_OPTIMAL layout for initial/final/subpass ref.
     VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;

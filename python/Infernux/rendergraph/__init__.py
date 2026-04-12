@@ -1,15 +1,9 @@
 """
-Infernux RenderGraph Module
+Infernux RenderGraph module.
 
-Provides the Python-driven RenderGraph topology definition API.
-Python has "definition authority" — it defines the pass topology,
-resource connections, and per-pass render actions.
-C++ has "compilation authority" — it performs DAG compilation,
-barrier insertion, and transient resource allocation.
-
-Architecture:
-    Python defines WHAT passes exist and HOW they connect (topology).
-    C++ handles WHERE resources live and WHEN barriers are inserted.
+Provides the Python API used to define render-graph topology.
+Python describes pass layout, resource connections, and per-pass actions.
+C++ compiles the graph, inserts barriers, and manages transient resources.
 
 Usage::
 
@@ -38,7 +32,7 @@ Usage::
 
     graph.set_output("color")
 
-    # Apply to engine's scene render graph
+    # Apply to the engine's scene render graph
     scene_graph = engine.get_scene_render_graph()
     scene_graph.apply_python_graph(graph.build())
 """

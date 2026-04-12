@@ -46,7 +46,7 @@ DrawCallResult EditorGizmos::GetDrawCalls(std::shared_ptr<InxMaterial> gizmoMate
         }
     }
 
-    // Grid draw call — use persistent cached grid data (Phase 2.3.4)
+    // Grid draw call — use persistent cached grid data
     {
         if (m_showGrid) {
             const auto &gridVerts = GetGridVertices();

@@ -2,8 +2,8 @@
  * @file OutlineRenderer.h
  * @brief Post-process selection outline renderer (Blender/Unity style)
  *
- * Extracted from InxVkCoreModular as part of the Phase 1 refactoring
- * (editor logic separation). This class owns all Vulkan resources
+ * Extracted from InxVkCoreModular during editor/renderer separation.
+ * This class owns all Vulkan resources
  * related to the screen-space selection outline:
  *   - Mask render pass / framebuffer / pipeline  (renders selected object as white silhouette)
  *   - Composite render pass / framebuffer / pipeline (edge detection + alpha blend on scene color)

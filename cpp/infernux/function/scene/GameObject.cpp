@@ -102,13 +102,13 @@ GameObject::~GameObject()
         m_scene->UnregisterGameObject(m_id);
     }
 
-    // Phase 1: Run lifecycle callbacks while ALL components are still alive.
+    // Run lifecycle callbacks while all components are still alive.
     // This lets OnDisable/OnDestroy safely call GetComponents<>() on siblings.
     for (auto &comp : m_components) {
         comp->CallOnDestroy();
     }
 
-    // Phase 2: Move components out of the vector BEFORE destructors run.
+    // Move components out of the vector before destructors run.
     // During vector::clear(), C++ destructors fire while the vector is
     // partially destroyed — calling GetComponents<>() from a destructor
     // would dynamic_cast on dangling pointers (undefined behaviour).

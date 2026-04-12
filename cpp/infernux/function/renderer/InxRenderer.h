@@ -130,7 +130,7 @@ class InxRenderer
     /// @brief Access editor tools (translate/rotate/scale gizmo)
     EditorTools *GetEditorTools();
 
-    /// @brief Access the component gizmos draw call buffer (Python-driven)
+    /// @brief Access the component gizmos draw call buffer used by the scripting layer
     GizmosDrawCallBuffer *GetGizmosDrawCallBuffer();
 
     /// @brief Set the selected object ID for outline tracking
@@ -171,7 +171,7 @@ class InxRenderer
     /// @return Pointer to SceneRenderGraph, or nullptr if not initialized
     SceneRenderGraph *GetSceneRenderGraph();
 
-    /// @brief Set a custom render pipeline (Python-driven rendering via SRC).
+    /// @brief Set a custom render pipeline provided through ScriptableRenderContext.
     /// Pass nullptr to revert to the default C++ rendering path.
     void SetRenderPipeline(std::shared_ptr<RenderPipelineCallback> pipeline);
 
@@ -363,7 +363,7 @@ class InxRenderer
     uint32_t m_gameShadowCascadeCount = 0;
     float m_gameShadowMapResolution = 0.0f;
 
-    // SRP: Python-driven render pipeline (nullptr = default C++ path)
+    // Scriptable render pipeline (nullptr = default C++ path)
     std::shared_ptr<RenderPipelineCallback> m_renderPipeline;
 
     // Selection tracking for auto-update of outline transforms

@@ -478,7 +478,7 @@ class AssetManager:
     def _reload_gpu_texture(cls, path: str) -> None:
         """Invalidate the C++ GPU texture cache so materials re-resolve it.
 
-        Phase 3+ uses GUID-based cache keys, so we resolve path → GUID first.
+        The runtime uses GUID-based cache keys, so we resolve path → GUID first.
         Falls back to path-based invalidation for textures not yet in AssetDatabase.
         """
         guid = cls._get_guid_from_path(path)

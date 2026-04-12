@@ -1,8 +1,4 @@
-"""Tests for C++ native StatusBarPanel, ToolbarPanel, MenuBarPanel, and HierarchyPanel.
-
-These panels were migrated from Python originals as Phase 2, 3, and 4
-of the native editor migration plan.
-"""
+"""Tests for native StatusBarPanel, ToolbarPanel, MenuBarPanel, and HierarchyPanel."""
 import pytest
 from Infernux.lib import (
     StatusBarPanel,
@@ -308,7 +304,7 @@ class TestWindowTypeInfo:
 
 
 # ═══════════════════════════════════════════════════════════════════════
-#  HierarchyPanel (Phase 4)
+#  HierarchyPanel
 # ═══════════════════════════════════════════════════════════════════════
 
 class TestHierarchyPanel:

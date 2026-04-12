@@ -495,7 +495,7 @@ void RenderGraph::Initialize(VkDeviceContext *context, VkPipelineManager *pipeli
 
 void RenderGraph::Reset()
 {
-    // Phase 1: Only free per-frame resources, NOT cached VkRenderPass/Framebuffer
+    // Only free per-frame resources, not cached VkRenderPass/VkFramebuffer objects
     // FreeResources() destroys per-frame framebuffers and transient images.
     // RenderPass cache and framebuffer cache persist across frames.
     FreeResources();
@@ -787,7 +787,7 @@ bool RenderGraph::Compile()
     // Step 2: Compute resource lifetimes
     ComputeResourceLifetimes();
 
-    // Step 3: Topological sort (Phase 1 â€” Kahn's algorithm)
+    // Step 3: Topological sort via Kahn's algorithm
     TopologicalSort();
 
     // Debug: Log execution order after topological sort

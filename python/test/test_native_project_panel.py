@@ -1,8 +1,4 @@
-"""Tests for C++ native ProjectPanel.
-
-Phase 5 of native editor migration: ProjectPanel migrated from Python
-to C++ to eliminate ~350-500 GIL crossings/frame (1.3ms bottleneck).
-"""
+"""Tests for native ProjectPanel."""
 import os
 import tempfile
 import pytest

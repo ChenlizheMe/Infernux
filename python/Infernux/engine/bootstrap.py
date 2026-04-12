@@ -1,9 +1,9 @@
 """
 EditorBootstrap — structured editor initialization.
 
-Replaces the monolithic ``release_engine()`` god-function with organized
-lifecycle phases.  Each phase is a separate method, closures become
-instance methods, and all panel/manager references are instance attributes.
+Breaks the monolithic ``release_engine()`` startup path into explicit
+startup steps. Each step is a separate method, closures become instance
+methods, and panel/manager references live on the bootstrap instance.
 """
 
 from __future__ import annotations
@@ -39,17 +39,17 @@ from Infernux.engine.ui import panel_state as _panel_state
 _log = logging.getLogger("Infernux.bootstrap")
 
 _LAYOUT_VERSION = 5
-_TOTAL_PHASES = 13
+_TOTAL_STEPS = 13
 
 
-def _signal_progress(phase: int, total: int, message: str) -> None:
+def _signal_progress(current_step: int, total: int, message: str) -> None:
     """Write bootstrap progress to the launcher splash via the ready-file."""
     ready_file = os.environ.get("_INFERNUX_READY_FILE", "").strip()
     if not ready_file:
         return
     try:
         with open(ready_file, "w", encoding="utf-8") as f:
-            f.write(f"LOADING:{phase}/{total}:{message}\n")
+            f.write(f"LOADING:{current_step}/{total}:{message}\n")
             f.flush()
             os.fsync(f.fileno())
     except OSError as _exc:
@@ -95,12 +95,12 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
         self._prev_selected_file: str = ""
 
         # Progress tracking for launcher splash
-        self._phase = 0
+        self._progress_step = 0
 
     # ── Public entry point ─────────────────────────────────────────────
 
     def run(self):
-        """Execute all bootstrap phases and start the main loop."""
+        """Execute all bootstrap steps and start the main loop."""
         self._report_progress("Checking project requirements\u2026")
         self._ensure_project_requirements()
 
@@ -138,9 +138,9 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
         self._load_initial_scene()
 
     def _report_progress(self, message: str):
-        """Notify the launcher splash of the current bootstrap phase."""
-        self._phase += 1
-        _signal_progress(self._phase, _TOTAL_PHASES, message)
+        """Notify the launcher splash of the current bootstrap step."""
+        self._progress_step += 1
+        _signal_progress(self._progress_step, _TOTAL_STEPS, message)
 
 
     def _ensure_project_requirements(self):

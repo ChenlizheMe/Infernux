@@ -1,8 +1,8 @@
 """
-Pythonic Material Wrapper (Phase 1)
+Material wrapper.
 
 Wraps the C++ InxMaterial with context manager support, property caching,
-and a clean API suitable for AI-assisted development.
+and a clean scripting API.
 
 Usage::
 
@@ -51,7 +51,7 @@ class Material:
     Provides:
     - Context manager for scoped lifecycle
     - Clean property setters/getters
-    - Factory methods matching Unity's Material API
+    - Factory methods for common material workflows
     - Serialization to/from dict
     """
 

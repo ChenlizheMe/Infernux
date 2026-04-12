@@ -1,9 +1,7 @@
-"""Tests for C++ native InspectorPanel.
+"""Tests for native InspectorPanel.
 
-Phase 6 of native editor migration: InspectorPanel migrated from Python
-to C++ to eliminate ~200+ GIL crossings/frame in the inspector rendering
-pipeline.  C++ handles window management, object header, Transform
-rendering, component headers, tag/layer, splitter, and Add Component.
+The panel handles window management, object header, transform rendering,
+component headers, tag/layer controls, the splitter, and Add Component.
 Component body rendering and undo are delegated back to Python via
 std::function callbacks.
 """

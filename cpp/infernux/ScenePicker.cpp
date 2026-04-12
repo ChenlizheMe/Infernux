@@ -346,7 +346,7 @@ uint64_t Infernux::PickSceneObjectId(float screenX, float screenY, float viewpor
         camera->ScreenPointToRay(glm::vec2(screenX, screenY), viewportWidth, viewportHeight);
 
     // =========================================================================
-    // Phase 0: Physics raycast (collider hits)
+    // Physics raycast against collider hits
     // =========================================================================
     float closestDistance = std::numeric_limits<float>::max();
     uint64_t pickedId = 0;
@@ -364,7 +364,7 @@ uint64_t Infernux::PickSceneObjectId(float screenX, float screenY, float viewpor
     }
 
     // =========================================================================
-    // Phase 1: Visible renderer hits (Scene View should pick visible objects)
+    // Visible renderer hits (Scene View should pick visible objects)
     // =========================================================================
     std::vector<std::pair<float, uint64_t>> rendererHits;
     CollectMeshRendererHits(rayOrigin, rayDirection, rendererHits);
@@ -376,13 +376,13 @@ uint64_t Infernux::PickSceneObjectId(float screenX, float screenY, float viewpor
     }
 
     // =========================================================================
-    // Phase 3: Gizmo proximity test (absolute priority — gizmos are always on top)
+    // Gizmo proximity test (absolute priority — gizmos are always on top)
     // =========================================================================
     if (m_renderer) {
         EditorTools *tools = m_renderer->GetEditorTools();
-        bool phase3Active = tools && tools->GetToolMode() != EditorTools::ToolMode::None && m_selectedObjectId != 0;
+        bool gizmoTestActive = tools && tools->GetToolMode() != EditorTools::ToolMode::None && m_selectedObjectId != 0;
 
-        if (phase3Active) {
+        if (gizmoTestActive) {
             GameObject *selObj = scene->FindByID(m_selectedObjectId);
             if (selObj && selObj->IsActiveInHierarchy() && selObj->GetTransform()) {
                 uint64_t gizmoId =
@@ -395,7 +395,7 @@ uint64_t Infernux::PickSceneObjectId(float screenX, float screenY, float viewpor
     }
 
     // =========================================================================
-    // Phase 4: Component icon picking (lights, cameras, etc.)
+    // Component icon picking (lights, cameras, etc.)
     // =========================================================================
     if (m_renderer) {
         std::vector<std::pair<float, uint64_t>> iconHits;

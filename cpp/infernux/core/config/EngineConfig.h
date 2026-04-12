@@ -69,7 +69,7 @@ struct EngineConfig
     int32_t shadowCasterQueueMin = 0;
     int32_t shadowCasterQueueMax = 2999;
 
-    /// Component gizmos queue range (Python-driven, depth-tested).
+    /// Component gizmos queue range (script-side, depth-tested).
     int32_t componentGizmoQueueMin = 10000;
     int32_t componentGizmoQueueMax = 20000;
 
