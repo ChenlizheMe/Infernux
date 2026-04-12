@@ -577,7 +577,7 @@ void InxVkCoreModular::UpdateLightingUBO(const glm::vec3 &cameraPosition)
 
 void InxVkCoreModular::StageLightingUBO(const glm::vec3 &cameraPosition)
 {
-    // Phase 2.1: Sync ambient color from skybox material properties
+    // Sync ambient color from skybox material properties
     auto skyMat = AssetRegistry::Instance().GetBuiltinMaterial("SkyboxProcedural");
     if (skyMat) {
         const auto *skyTopProp = skyMat->GetProperty("skyTopColor");

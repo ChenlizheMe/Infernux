@@ -226,7 +226,7 @@ void InxVkCoreModular::CmdUpdateShadowUBO(VkCommandBuffer cmdBuf)
 }
 
 // ============================================================================
-// Phase 2: Filtered Draw — renders only draw calls within a queue range
+// Filtered draw — renders only draw calls within a queue range
 // ============================================================================
 
 void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width, uint32_t height, int queueMin,
@@ -1270,7 +1270,7 @@ void InxVkCoreModular::CleanupShadowPipeline()
 }
 
 // ============================================================================
-// Per-Object Buffer Management (Phase 2.3.4)
+// Per-object buffer management
 // ============================================================================
 
 void InxVkCoreModular::EnsureObjectBuffers(uint64_t objectId, const std::vector<Vertex> &vertices,

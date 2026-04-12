@@ -1364,7 +1364,7 @@ void InxRenderer::InitializeDefaultScene()
     // Initialize editor tools (translate/rotate/scale handles)
     m_editorTools = std::make_unique<EditorTools>();
 
-    // Initialize component gizmos buffer (Python-driven)
+    // Initialize component gizmos buffer used by the scripting layer
     m_componentGizmos = std::make_unique<GizmosDrawCallBuffer>();
 
     // Pass gizmos reference to VkCore for rendering

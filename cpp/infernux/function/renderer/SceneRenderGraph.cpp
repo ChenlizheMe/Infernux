@@ -274,7 +274,7 @@ VkDescriptorSet SceneRenderGraph::GetPerViewDescriptorSet() const
 }
 
 // ============================================================================
-// Resource Management (Phase 0)
+// Resource management
 // ============================================================================
 
 vk::ResourceHandle SceneRenderGraph::CreateTransientTexture(const std::string &name, uint32_t width, uint32_t height,
@@ -294,12 +294,8 @@ vk::ResourceHandle SceneRenderGraph::CreateTransientTexture(const std::string &n
     }
 
     // ========================================================================
-    // Bug 5 fix: allocate a real ResourceData entry in the underlying
-    // RenderGraph so that the returned handle can be resolved by
-    // ResolveTextureView().  The previous code fabricated an id with a
-    // base-1000 offset that had no backing ResourceData — any call to
-    // ResolveTextureView() with such a handle would access out-of-bounds
-    // memory.
+    // Allocate a real ResourceData entry in the underlying RenderGraph so
+    // the returned handle can be resolved by ResolveTextureView().
     // ========================================================================
     vk::ResourceHandle handle =
         m_renderGraph->RegisterTransientTexture(name, width, height, format, VK_SAMPLE_COUNT_1_BIT, isTransient);
@@ -314,7 +310,7 @@ vk::ResourceHandle SceneRenderGraph::CreateTransientTexture(const std::string &n
 }
 
 // ============================================================================
-// Phase 2: Python-Driven RenderGraph Topology
+// RenderGraph topology defined from Python
 // ============================================================================
 
 void SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
@@ -1009,9 +1005,9 @@ void SceneRenderGraph::BuildRenderGraph()
                     clearDepth = false;
                     break;
                 }
-                // Record the pass name for per-frame clear-value updates
-                // (Bug 3 / Bug 7 fix — Execute() uses this to call
-                // UpdatePassClearColor() without rebuilding the graph).
+                // Record the pass name for per-frame clear-value updates.
+                // Execute() uses this to update clear values without
+                // rebuilding the graph.
                 m_mainClearPassName = passDesc.name;
                 // Only override the first eligible pass
                 m_hasCameraClearOverride = false;

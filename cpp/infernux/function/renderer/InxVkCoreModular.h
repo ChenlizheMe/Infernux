@@ -231,7 +231,7 @@ class InxVkCoreModular
      * @brief Draw scene objects filtered by render queue range
      *
      * Renders draw calls whose material render queue falls within
-     * [queueMin, queueMax]. Used by Python-driven RenderGraph passes
+     * [queueMin, queueMax]. Used by RenderGraph passes defined from Python
      * to split rendering into multiple passes.
      *
      * @param cmdBuf Vulkan command buffer
@@ -877,7 +877,7 @@ class InxVkCoreModular
                                                                 const std::string &bindingName);
 
     // ========================================================================
-    // Per-Object GPU Buffers (Phase 2.3.4)
+    // Per-object GPU buffers
     // ========================================================================
 
     struct SharedMeshKey

@@ -77,7 +77,7 @@ struct ScenePassConfig
     std::vector<std::string> inputPasses;
 
     // ========================================================================
-    // Phase 0: Resource and Subpass Support (NEW)
+    // Resource and subpass support
     // ========================================================================
 
     // Resource declarations (if empty, uses default scene target)
@@ -130,11 +130,11 @@ class SceneRenderGraph
     void Destroy();
 
     // ========================================================================
-    // Phase 2: Python-Driven RenderGraph Topology
+    // RenderGraph topology defined from Python
     // ========================================================================
 
     /**
-     * @brief Apply a Python-defined render graph topology
+     * @brief Apply a render graph topology defined from Python
      *
      * Receives a RenderGraphDescription from Python and translates it into
      * SceneRenderGraph passes with appropriate callbacks. C++ retains
@@ -156,7 +156,7 @@ class SceneRenderGraph
     }
 
     /**
-     * @brief Check if a Python graph topology has been applied
+     * @brief Check if a custom graph topology has been applied
      */
     [[nodiscard]] bool HasPythonGraph() const
     {
@@ -164,7 +164,7 @@ class SceneRenderGraph
     }
 
     /**
-     * @brief Get the MSAA sample count requested by the current Python graph (0 = no preference).
+     * @brief Get the MSAA sample count requested by the current graph (0 = no preference).
      */
     [[nodiscard]] int GetRequestedMsaaSamples() const
     {
@@ -172,7 +172,7 @@ class SceneRenderGraph
     }
 
     // ========================================================================
-    // Resource Management (Phase 0 - NEW)
+    // Resource management
     // ========================================================================
 
     /**
@@ -464,7 +464,7 @@ class SceneRenderGraph
     // Python graph description (stored for BuildRenderGraph)
     RenderGraphDescription m_pythonGraphDesc;
 
-    // Python-driven render callbacks: pass name → ScenePassRenderCallback.
+    // Render callbacks keyed by pass name.
     // Populated by ApplyPythonGraph(). BuildRenderGraph() reads this map directly,
     // bypassing the intermediate ScenePassConfig conversion.
     std::unordered_map<std::string, ScenePassRenderCallback> m_pythonCallbacks;

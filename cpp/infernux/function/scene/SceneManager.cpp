@@ -425,7 +425,7 @@ void SceneManager::FlushPendingBroadphase()
     if (!pw.IsInitialized())
         return;
 
-    // ── Phase 1: Create deferred Jolt bodies ──
+    // ── Create deferred Jolt bodies ──
     auto pendingBodies = store.ConsumePendingBodyCreations();
     if (pendingBodies.empty() && !store.HasPendingBroadphaseAdds())
         return;
@@ -444,15 +444,15 @@ void SceneManager::FlushPendingBroadphase()
         // Actually create the Jolt body (deferred from Awake)
         col->RegisterBody();
 
-        // Queue broadphase add (consumed in Phase 2 below)
+        // Queue broadphase add for the batch step below
         if (data.bodyId != 0xFFFFFFFF) {
             col->AddToBroadphase();
         }
     }
 
-    double phase1Ms = ProfileMsSince(t0);
+    double createBodiesMs = ProfileMsSince(t0);
 
-    // ── Phase 2: Batch add to broadphase ──
+    // ── Batch add to broadphase ──
     auto t1 = ProfileClock::now();
     auto pending = store.ConsumePendingBroadphaseAdds();
     if (pending.empty())
@@ -462,7 +462,7 @@ void SceneManager::FlushPendingBroadphase()
     // which is significantly faster than individual AddBody calls.
     pw.AddBodiesBatch(pending);
 
-    double phase2Ms = ProfileMsSince(t1);
+    double addBodiesMs = ProfileMsSince(t1);
 
     // Rebuild broad-phase tree once after batch-adding all new bodies.
     auto t2 = ProfileClock::now();
@@ -471,8 +471,8 @@ void SceneManager::FlushPendingBroadphase()
 
     // if (bodyCount >= 100) {
     //     INXLOG_INFO("[Perf] FlushPendingBroadphase: ", bodyCount, " bodies — "
-    //                 "CreateBody: ", static_cast<int>(phase1Ms), "ms, "
-    //                 "AddBatch: ", static_cast<int>(phase2Ms), "ms, "
+    //                 "CreateBody: ", static_cast<int>(createBodiesMs), "ms, "
+    //                 "AddBatch: ", static_cast<int>(addBodiesMs), "ms, "
     //                 "Optimize: ", static_cast<int>(optimizeMs), "ms");
     // }
 }
