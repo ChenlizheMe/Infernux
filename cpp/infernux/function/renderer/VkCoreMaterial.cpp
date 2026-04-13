@@ -170,9 +170,9 @@ std::pair<VkImageView, VkSampler> InxVkCoreModular::ResolveTextureForMaterial(co
         vkAddressMode = VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT;
 
     // Cache key uses GUID so that a renamed file still shares its cache entry
-    std::string cacheKey =
-        textureGuid + (isLinearTexture ? "::unorm" : "::srgb") + (normalMapMode ? "::normalmap" : "::raw") +
-        "::" + filterMode + "::" + wrapMode + "::aniso" + std::to_string(anisoLevel);
+    std::string cacheKey = textureGuid + (isLinearTexture ? "::unorm" : "::srgb") +
+                           (normalMapMode ? "::normalmap" : "::raw") + "::" + filterMode + "::" + wrapMode + "::aniso" +
+                           std::to_string(anisoLevel);
 
     // Check texture cache (thread-safe)
     {
@@ -183,8 +183,8 @@ std::pair<VkImageView, VkSampler> InxVkCoreModular::ResolveTextureForMaterial(co
     }
 
     // Load texture from disk → GPU with correct format, mipmaps, and size limit
-    auto texture = m_resourceManager.LoadTexture(texturePath, generateMipmaps, format, maxSize, normalMapMode,
-                                                 vkFilter, vkAddressMode, anisoLevel);
+    auto texture = m_resourceManager.LoadTexture(texturePath, generateMipmaps, format, maxSize, normalMapMode, vkFilter,
+                                                 vkAddressMode, anisoLevel);
     if (!texture) {
         INXLOG_WARN("TextureResolver: failed to load '", texturePath, "'");
         return {VK_NULL_HANDLE, VK_NULL_HANDLE};

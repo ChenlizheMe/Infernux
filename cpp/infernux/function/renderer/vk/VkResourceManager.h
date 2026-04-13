@@ -200,12 +200,10 @@ class VkResourceManager
      *        and only lets higher-level code select linear sampling / normal-map handling.
      * @return Unique pointer to texture handle
      */
-    [[nodiscard]] std::unique_ptr<VkTexture> LoadTexture(const std::string &filePath, bool generateMipmaps = true,
-                                                         VkFormat format = VK_FORMAT_R8G8B8A8_SRGB, int maxSize = 0,
-                                                         bool normalMapMode = false,
-                                                         VkFilter filter = VK_FILTER_LINEAR,
-                                                         VkSamplerAddressMode addressMode = VK_SAMPLER_ADDRESS_MODE_REPEAT,
-                                                         int aniso = -1);
+    [[nodiscard]] std::unique_ptr<VkTexture>
+    LoadTexture(const std::string &filePath, bool generateMipmaps = true, VkFormat format = VK_FORMAT_R8G8B8A8_SRGB,
+                int maxSize = 0, bool normalMapMode = false, VkFilter filter = VK_FILTER_LINEAR,
+                VkSamplerAddressMode addressMode = VK_SAMPLER_ADDRESS_MODE_REPEAT, int aniso = -1);
 
     /**
      * @brief Create a texture from raw pixel data
@@ -216,13 +214,11 @@ class VkResourceManager
      * @param format Format
      * @return Unique pointer to texture handle
      */
-    [[nodiscard]] std::unique_ptr<VkTexture> CreateTextureFromPixels(const unsigned char *pixels, uint32_t width,
-                                                                     uint32_t height,
-                                                                     VkFormat format = VK_FORMAT_R8G8B8A8_SRGB,
-                                                                     bool generateMipmaps = false,
-                                                                     VkFilter filter = VK_FILTER_LINEAR,
-                                                                     VkSamplerAddressMode addressMode = VK_SAMPLER_ADDRESS_MODE_REPEAT,
-                                                                     int aniso = -1);
+    [[nodiscard]] std::unique_ptr<VkTexture>
+    CreateTextureFromPixels(const unsigned char *pixels, uint32_t width, uint32_t height,
+                            VkFormat format = VK_FORMAT_R8G8B8A8_SRGB, bool generateMipmaps = false,
+                            VkFilter filter = VK_FILTER_LINEAR,
+                            VkSamplerAddressMode addressMode = VK_SAMPLER_ADDRESS_MODE_REPEAT, int aniso = -1);
 
     /**
      * @brief Create a solid color texture
