@@ -27,7 +27,9 @@ from Infernux.lib import InxGUIContext
 from Infernux.engine.i18n import t
 from Infernux.core.asset_types import (
     FilterMode,
+    SpriteFrame,
     TextureType,
+    TextureImportSettings,
     WrapMode,
     ShaderAssetInfo,
     FontAssetInfo,
@@ -199,6 +201,7 @@ def _ensure_categories():
                       (32, 64, 128, 256, 512, 1024, 2048, 4096, 8192)]),
         ],
         custom_header_fn=_render_texture_preview,
+        custom_body_fn=_render_sprite_body,
     )
 
     # ── Audio ──────────────────────────────────────────────────────────
@@ -596,6 +599,7 @@ def render_asset_inspector(ctx: InxGUIContext, panel,
 def invalidate():
     """Reset all inspector state (called on selection change)."""
     _state.reset()
+    _sprite_state.reset()
 
 
 def invalidate_asset(path: str):
@@ -703,7 +707,8 @@ def _render_import_fields(ctx: InxGUIContext, cat_def: AssetCategoryDef,
                 new_idx = ctx.combo(wid, idx, display_labels)
                 if new_idx != idx:
                     setattr(state.settings, fdef.key, values[new_idx])
-                    if hasattr(state.settings, '_sync_derived_fields'):
+                    # Only sync derived fields when texture_type itself changes
+                    if fdef.key == "texture_type" and hasattr(state.settings, '_sync_derived_fields'):
                         state.settings._sync_derived_fields()
 
             elif fdef.field_type == WidgetType.FLOAT:
@@ -775,6 +780,350 @@ def _render_mesh_info(ctx: InxGUIContext, panel, state: _State):
         ctx.pop_style_color(1)
 
     ctx.separator()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Sprite slice editor (SPRITE-mode custom body)
+# ═══════════════════════════════════════════════════════════════════════════
+
+class _SpriteEditorState:
+    """Persistent state for the sprite slice editor (one at a time)."""
+
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        self.file_path: str = ""
+        self.tex_w: int = 0
+        self.tex_h: int = 0
+        self.texture_id: int = 0
+        self.selected_frame: int = -1
+        self.slice_rows: int = 1
+        self.slice_cols: int = 1
+        self.drag_edge: str = ""  # "", "left", "right", "top", "bottom"
+        self.drag_frame_idx: int = -1
+
+
+_sprite_state = _SpriteEditorState()
+
+
+def _ensure_sprite_texture(state: _State) -> bool:
+    """Load the texture dimensions + ImGui texture ID for the sprite editor."""
+    from Infernux.debug import Debug
+
+    ss = _sprite_state
+    # Track sRGB + filter_mode so we re-upload when either changes
+    cur_srgb = getattr(state.settings, 'srgb', False)
+    cur_filter = getattr(state.settings, 'filter_mode', None)
+    if (ss.file_path == state.file_path and ss.tex_w > 0
+            and getattr(ss, '_srgb', None) == cur_srgb
+            and getattr(ss, '_filter', None) == cur_filter):
+        return True
+    ss.reset()
+    ss.file_path = state.file_path
+    ss._srgb = cur_srgb
+    ss._filter = cur_filter
+
+    # Load texture data once
+    try:
+        from Infernux.lib import TextureLoader
+        td = TextureLoader.load_from_file(state.file_path)
+        if not td or td.width <= 0 or not td.is_valid():
+            Debug.log_warning(f"[SpriteEditor] TextureLoader failed for: {state.file_path}")
+            return False
+        ss.tex_w = td.width
+        ss.tex_h = td.height
+    except Exception as exc:
+        Debug.log_warning(f"[SpriteEditor] TextureLoader exception: {exc}")
+        return False
+
+    # Upload for ImGui preview
+    try:
+        from Infernux.engine.ui.editor_services import EditorServices
+        svc = EditorServices.instance()
+        native = svc.native_engine if svc else None
+        if not native:
+            Debug.log_warning("[SpriteEditor] No native engine via EditorServices")
+            return ss.tex_w > 0
+
+        filter_tag = cur_filter.name if cur_filter else "default"
+        srgb_tag = "srgb" if cur_srgb else "linear"
+        cache_name = (f"__sprite_preview__{srgb_tag}_{filter_tag}__"
+                      f"{os.path.normpath(state.file_path)}")
+        if native.has_imgui_texture(cache_name):
+            ss.texture_id = native.get_imgui_texture_id(cache_name)
+        else:
+            pixels = td.get_pixels_list()
+            w, h = td.width, td.height
+
+            if cur_srgb:
+                import array
+                _LUT = [int(((i / 255.0) ** (1.0 / 2.2)) * 255.0 + 0.5)
+                        for i in range(256)]
+                pixels = list(array.array('B', (
+                    _LUT[pixels[j]] if (j % 4) != 3 else pixels[j]
+                    for j in range(len(pixels))
+                )))
+
+            # Simulate POINT filtering: nearest-neighbor 2x upscale so the
+            # GPU's linear sampler can't blur adjacent pixels together.
+            if cur_filter == FilterMode.POINT and w <= 1024 and h <= 1024:
+                up_w, up_h = w * 2, h * 2
+                upscaled = [0] * (up_w * up_h * 4)
+                for sy in range(up_h):
+                    src_y = sy // 2
+                    for sx in range(up_w):
+                        src_x = sx // 2
+                        si = (src_y * w + src_x) * 4
+                        di = (sy * up_w + sx) * 4
+                        upscaled[di] = pixels[si]
+                        upscaled[di + 1] = pixels[si + 1]
+                        upscaled[di + 2] = pixels[si + 2]
+                        upscaled[di + 3] = pixels[si + 3]
+                pixels = upscaled
+                w, h = up_w, up_h
+
+            ss.texture_id = native.upload_texture_for_imgui(
+                cache_name, pixels, w, h)
+        if not ss.texture_id:
+            Debug.log_warning(f"[SpriteEditor] upload_texture_for_imgui returned 0 for {cache_name}")
+    except Exception as exc:
+        Debug.log_warning(f"[SpriteEditor] Upload exception: {exc}")
+        ss.texture_id = 0
+    return ss.tex_w > 0
+
+
+def _render_sprite_body(ctx: InxGUIContext, panel, state: _State):
+    """Render the full SPRITE-mode inspector: import fields + slice editor."""
+    from .inspector_utils import render_compact_section_header
+
+    settings: TextureImportSettings = state.settings
+
+    # ── Standard import fields (same as generic texture) ────────────────
+    cat_def = _categories.get("texture")
+    if cat_def and cat_def.editable_fields:
+        _render_import_fields(ctx, cat_def, state)
+
+    # ── Sprite slice editor ─────────────────────────────────────────────
+    if not isinstance(settings, TextureImportSettings):
+        return
+    if settings.texture_type != TextureType.SPRITE:
+        return
+
+    ctx.separator()
+    if not render_compact_section_header(ctx, t("sprite.slice_editor")):
+        return
+
+    if not _ensure_sprite_texture(state):
+        ctx.push_style_color(ImGuiCol.Text, *Theme.WARNING_TEXT)
+        ctx.label(t("sprite.cannot_load"))
+        ctx.pop_style_color(1)
+        return
+
+    ss = _sprite_state
+    labels = [t("sprite.image_size"), t("sprite.rows"), t("sprite.cols")]
+    lw = max_label_w(ctx, labels)
+
+    # Image dimensions (read-only)
+    field_label(ctx, t("sprite.image_size"), lw)
+    ctx.label(f"{ss.tex_w} x {ss.tex_h}")
+
+    # Auto-slice controls
+    field_label(ctx, t("sprite.rows"), lw)
+    ctx.set_next_item_width(120)
+    ss.slice_rows = max(1, ctx.input_int("##sprite_rows", ss.slice_rows, 1, 4))
+
+    field_label(ctx, t("sprite.cols"), lw)
+    ctx.set_next_item_width(120)
+    ss.slice_cols = max(1, ctx.input_int("##sprite_cols", ss.slice_cols, 1, 4))
+
+    ctx.button(t("sprite.auto_slice"), lambda: (_auto_slice(settings, ss),
+                                                   _auto_save_sprite(state)))
+    ctx.dummy(0, 4)
+
+    # ── Visual preview with divider lines ────────────────────────────────
+    _render_sprite_preview(ctx, settings, ss, state)
+
+
+def _auto_slice(settings: TextureImportSettings, ss: _SpriteEditorState):
+    """Generate uniform sprite_frames from rows × cols grid."""
+    rows, cols = ss.slice_rows, ss.slice_cols
+    if rows < 1 or cols < 1 or ss.tex_w < 1 or ss.tex_h < 1:
+        return
+    fw = ss.tex_w // cols
+    fh = ss.tex_h // rows
+    frames = []
+    idx = 0
+    for r in range(rows):
+        for c in range(cols):
+            frames.append(SpriteFrame(
+                name=f"frame_{idx}",
+                x=c * fw, y=r * fh,
+                w=fw, h=fh,
+            ))
+            idx += 1
+    settings.sprite_frames = frames
+    ss.selected_frame = -1
+
+
+def _auto_save_sprite(state: _State):
+    """Persist sprite_frames to .meta immediately."""
+    if state.exec_layer and state.settings:
+        state.exec_layer.apply_import_settings(state.settings)
+        if hasattr(state.settings, 'copy'):
+            state.disk_settings = state.settings.copy()
+
+
+def _collect_dividers(settings: TextureImportSettings,
+                      tex_w: int, tex_h: int):
+    """Extract unique vertical (X) and horizontal (Y) divider positions
+    from sprite_frames, excluding image edges (0 and max)."""
+    v_set: set[int] = set()
+    h_set: set[int] = set()
+    for f in settings.sprite_frames:
+        v_set.add(f.x)
+        v_set.add(f.x + f.w)
+        h_set.add(f.y)
+        h_set.add(f.y + f.h)
+    # Remove image boundary values — they are implicit
+    v_set.discard(0)
+    v_set.discard(tex_w)
+    h_set.discard(0)
+    h_set.discard(tex_h)
+    return sorted(v_set), sorted(h_set)
+
+
+def _rebuild_frames_from_dividers(settings: TextureImportSettings,
+                                  v_divs: list[int], h_divs: list[int],
+                                  tex_w: int, tex_h: int):
+    """Regenerate sprite_frames from the current divider positions."""
+    xs = [0] + v_divs + [tex_w]
+    ys = [0] + h_divs + [tex_h]
+    frames = []
+    idx = 0
+    for ri in range(len(ys) - 1):
+        for ci in range(len(xs) - 1):
+            frames.append(SpriteFrame(
+                name=f"frame_{idx}",
+                x=xs[ci], y=ys[ri],
+                w=xs[ci + 1] - xs[ci],
+                h=ys[ri + 1] - ys[ri],
+            ))
+            idx += 1
+    settings.sprite_frames = frames
+
+
+def _render_sprite_preview(ctx: InxGUIContext, settings: TextureImportSettings,
+                           ss: _SpriteEditorState, state: _State):
+    """Draw the texture image with white divider lines overlaid."""
+    avail_w = ctx.get_content_region_avail_width() - 8
+    if avail_w < 32:
+        return
+
+    # Fit image into available width, maintain aspect ratio
+    scale = min(avail_w / ss.tex_w, 600.0 / ss.tex_h) if ss.tex_h > 0 else 1.0
+    draw_w = ss.tex_w * scale
+    draw_h = ss.tex_h * scale
+
+    # Render the texture image
+    if ss.texture_id:
+        ctx.image(ss.texture_id, draw_w, draw_h)
+    else:
+        cx = ctx.get_cursor_pos_x()
+        cy = ctx.get_cursor_pos_y()
+        wx = ctx.get_window_pos_x()
+        wy = ctx.get_window_pos_y()
+        sy = ctx.get_scroll_y()
+        fb_x = wx + cx
+        fb_y = wy + cy - sy
+        ctx.invisible_button("##sprite_preview_fb", draw_w, draw_h)
+        ctx.draw_filled_rect(fb_x, fb_y, fb_x + draw_w, fb_y + draw_h,
+                             0.15, 0.15, 0.15, 1.0)
+
+    # Screen coords of the image widget
+    img_x = ctx.get_item_rect_min_x()
+    img_y = ctx.get_item_rect_min_y()
+    img_hovered = ctx.is_item_hovered()
+
+    # Outer border
+    ctx.draw_rect(img_x, img_y, img_x + draw_w, img_y + draw_h,
+                  1.0, 1.0, 1.0, 0.6, 1.0)
+
+    # Collect divider lines from sprite_frames
+    v_divs, h_divs = _collect_dividers(settings, ss.tex_w, ss.tex_h)
+
+    # Draw divider lines: thin shadow + white line
+    for vx in v_divs:
+        sx = img_x + vx * scale
+        ctx.draw_line(sx, img_y, sx, img_y + draw_h,
+                      0.0, 0.0, 0.0, 0.4, 3.0)
+        ctx.draw_line(sx, img_y, sx, img_y + draw_h,
+                      1.0, 1.0, 1.0, 0.9, 1.0)
+
+    for hy in h_divs:
+        sy_line = img_y + hy * scale
+        ctx.draw_line(img_x, sy_line, img_x + draw_w, sy_line,
+                      0.0, 0.0, 0.0, 0.4, 3.0)
+        ctx.draw_line(img_x, sy_line, img_x + draw_w, sy_line,
+                      1.0, 1.0, 1.0, 0.9, 1.0)
+
+    # ── Interaction: click near a line to start dragging it ─────────────
+    _GRAB_THRESHOLD = 5.0  # pixels
+
+    if img_hovered:
+        mx = ctx.get_mouse_pos_x() - img_x
+        my = ctx.get_mouse_pos_y() - img_y
+
+        if ctx.is_mouse_button_clicked(0):
+            ss.drag_edge = ""
+            ss.drag_frame_idx = -1
+            # Check vertical dividers
+            for i, vx in enumerate(v_divs):
+                if abs(mx - vx * scale) < _GRAB_THRESHOLD:
+                    ss.drag_edge = "v"
+                    ss.drag_frame_idx = i  # index into v_divs
+                    break
+            else:
+                # Check horizontal dividers
+                for i, hy in enumerate(h_divs):
+                    if abs(my - hy * scale) < _GRAB_THRESHOLD:
+                        ss.drag_edge = "h"
+                        ss.drag_frame_idx = i  # index into h_divs
+                        break
+
+        # Drag a divider line
+        if ctx.is_mouse_dragging(0) and ss.drag_edge and ss.drag_frame_idx >= 0:
+            if ss.drag_edge == "v" and ss.drag_frame_idx < len(v_divs):
+                new_px = max(1, min(ss.tex_w - 1, round(mx / scale)))
+                v_divs[ss.drag_frame_idx] = new_px
+                v_divs.sort()
+                _rebuild_frames_from_dividers(settings, v_divs, h_divs,
+                                              ss.tex_w, ss.tex_h)
+                try:
+                    ss.drag_frame_idx = v_divs.index(new_px)
+                except ValueError:
+                    ss.drag_frame_idx = -1
+            elif ss.drag_edge == "h" and ss.drag_frame_idx < len(h_divs):
+                new_py = max(1, min(ss.tex_h - 1, round(my / scale)))
+                h_divs[ss.drag_frame_idx] = new_py
+                h_divs.sort()
+                _rebuild_frames_from_dividers(settings, v_divs=v_divs,
+                                              h_divs=h_divs,
+                                              tex_w=ss.tex_w, tex_h=ss.tex_h)
+                try:
+                    ss.drag_frame_idx = h_divs.index(new_py)
+                except ValueError:
+                    ss.drag_frame_idx = -1
+
+    if not ctx.is_mouse_button_down(0):
+        # Save on drag release
+        if ss.drag_edge:
+            _auto_save_sprite(state)
+        ss.drag_edge = ""
+        ss.drag_frame_idx = -1
+
+
+# _render_frame_table removed — divider lines replace per-frame editing
 
 
 # ═══════════════════════════════════════════════════════════════════════════

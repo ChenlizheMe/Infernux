@@ -143,13 +143,6 @@ class TextureImportSettings:
         tt_map = {"default": TextureType.DEFAULT, "normal_map": TextureType.NORMAL_MAP, "ui": TextureType.UI, "sprite": TextureType.SPRITE}
         tt = tt_map.get(tt_str, TextureType.DEFAULT)
         raw_frames = d.get("sprite_frames", [])
-        # raw_frames may be a JSON string if C++ round-tripped the .meta
-        if isinstance(raw_frames, str):
-            try:
-                import json as _json
-                raw_frames = _json.loads(raw_frames)
-            except Exception:
-                raw_frames = []
         frames = [SpriteFrame.from_dict(f) for f in raw_frames] if raw_frames else []
         return cls(
             texture_type=tt,
@@ -345,10 +338,6 @@ def _python_type_to_meta_tag(value) -> str:
         return "int"
     if isinstance(value, float):
         return "float"
-    if isinstance(value, list):
-        return "json_array"
-    if isinstance(value, dict):
-        return "json_object"
     return "string"
 
 
