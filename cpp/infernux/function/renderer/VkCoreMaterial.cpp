@@ -110,6 +110,9 @@ std::pair<VkImageView, VkSampler> InxVkCoreModular::ResolveTextureForMaterial(co
     bool generateMipmaps = true;
     bool normalMapMode = false;
     int maxSize = 0; // 0 = no clamping
+    std::string filterMode = "bilinear";
+    std::string wrapMode = "repeat";
+    int anisoLevel = -1;
 
     auto infTex = registry.LoadAsset<InxTexture>(textureGuid, ResourceType::Texture);
     if (infTex) {
@@ -120,6 +123,9 @@ std::pair<VkImageView, VkSampler> InxVkCoreModular::ResolveTextureForMaterial(co
         generateMipmaps = infTex->GenerateMipmaps();
         normalMapMode = infTex->IsNormalMapMode();
         maxSize = infTex->GetMaxSize();
+        filterMode = infTex->GetFilterMode();
+        wrapMode = infTex->GetWrapMode();
+        anisoLevel = infTex->GetAnisoLevel();
     } else {
         // Fallback: read .meta directly (texture not in AssetDatabase, e.g. engine-internal)
         // Use explicit metadata values as the single source of truth.
@@ -138,14 +144,35 @@ std::pair<VkImageView, VkSampler> InxVkCoreModular::ResolveTextureForMaterial(co
             if (meta.HasKey("max_size")) {
                 maxSize = meta.GetDataAs<int>("max_size");
             }
+            if (meta.HasKey("filter_mode")) {
+                filterMode = meta.GetDataAs<std::string>("filter_mode");
+            }
+            if (meta.HasKey("wrap_mode")) {
+                wrapMode = meta.GetDataAs<std::string>("wrap_mode");
+            }
+            if (meta.HasKey("aniso_level")) {
+                anisoLevel = meta.GetDataAs<int>("aniso_level");
+            }
         }
     }
 
     VkFormat format = isLinearTexture ? VK_FORMAT_R8G8B8A8_UNORM : VK_FORMAT_R8G8B8A8_SRGB;
 
+    // Map string settings to Vulkan enums
+    VkFilter vkFilter = VK_FILTER_LINEAR;
+    if (filterMode == "point")
+        vkFilter = VK_FILTER_NEAREST;
+
+    VkSamplerAddressMode vkAddressMode = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    if (wrapMode == "clamp")
+        vkAddressMode = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    else if (wrapMode == "mirror")
+        vkAddressMode = VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT;
+
     // Cache key uses GUID so that a renamed file still shares its cache entry
     std::string cacheKey =
-        textureGuid + (isLinearTexture ? "::unorm" : "::srgb") + (normalMapMode ? "::normalmap" : "::raw");
+        textureGuid + (isLinearTexture ? "::unorm" : "::srgb") + (normalMapMode ? "::normalmap" : "::raw") +
+        "::" + filterMode + "::" + wrapMode + "::aniso" + std::to_string(anisoLevel);
 
     // Check texture cache (thread-safe)
     {
@@ -156,7 +183,8 @@ std::pair<VkImageView, VkSampler> InxVkCoreModular::ResolveTextureForMaterial(co
     }
 
     // Load texture from disk → GPU with correct format, mipmaps, and size limit
-    auto texture = m_resourceManager.LoadTexture(texturePath, generateMipmaps, format, maxSize, normalMapMode);
+    auto texture = m_resourceManager.LoadTexture(texturePath, generateMipmaps, format, maxSize, normalMapMode,
+                                                 vkFilter, vkAddressMode, anisoLevel);
     if (!texture) {
         INXLOG_WARN("TextureResolver: failed to load '", texturePath, "'");
         return {VK_NULL_HANDLE, VK_NULL_HANDLE};

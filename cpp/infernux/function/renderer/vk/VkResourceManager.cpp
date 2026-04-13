@@ -366,8 +366,7 @@ std::unique_ptr<VkTexture> VkResourceManager::LoadTexture(const std::string &fil
     }
 
     const unsigned char *srcPixels = resizedBuf.empty() ? basePixels : resizedBuf.data();
-    auto texture =
-        CreateTextureFromPixels(srcPixels, finalW, finalH, format, generateMipmaps, filter, addressMode, aniso);
+    auto texture = CreateTextureFromPixels(srcPixels, finalW, finalH, format, generateMipmaps, filter, addressMode, aniso);
 
     stbi_image_free(pixels);
 
