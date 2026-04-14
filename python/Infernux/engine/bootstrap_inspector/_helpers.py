@@ -85,6 +85,21 @@ def _get_add_component_entries():
         e.script_path = ""
         entries.append(e)
 
+    # Engine-side Python-only components (e.g. SpriteRenderer)
+    from Infernux.components.registry import get_all_types
+    seen = {e.display_name for e in entries}
+    for name, cls in get_all_types().items():
+        if name in seen:
+            continue
+        menu_path = getattr(cls, '_component_menu_path_', None)
+        if menu_path:
+            e = InspectorAddComponentEntry()
+            e.display_name = name
+            e.category = getattr(cls, '_component_category_', 'Scripts')
+            e.is_native = False
+            e.script_path = ""
+            entries.append(e)
+
     import os
     from Infernux.engine.project_context import get_project_root
     from Infernux.components.script_loader import load_component_from_file, ScriptLoadError

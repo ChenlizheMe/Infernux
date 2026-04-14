@@ -575,8 +575,8 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
         if (bufIt == m_perObjectBuffers.end() || !bufIt->second.vertexBuffer || !bufIt->second.indexBuffer) {
             static int bufWarnCount = 0;
             if (bufWarnCount++ < 10) {
-                INXLOG_WARN("[DrawSceneFiltered] no GPU buffers for objectId=", dc.objectId, " material='",
-                            matRaw->GetName(), "' queue=", matRaw->GetRenderQueue());
+                // INXLOG_WARN("[DrawSceneFiltered] no GPU buffers for objectId=", dc.objectId, " material='",
+                //             matRaw->GetName(), "' queue=", matRaw->GetRenderQueue());
             }
             emitBatch();
             continue;

@@ -937,8 +937,7 @@ def _render_sprite_body(ctx: InxGUIContext, panel, state: _State):
     ctx.set_next_item_width(120)
     ss.slice_cols = max(1, ctx.input_int("##sprite_cols", ss.slice_cols, 1, 4))
 
-    ctx.button(t("sprite.auto_slice"), lambda: (_auto_slice(settings, ss),
-                                                   _auto_save_sprite(state)))
+    ctx.button(t("sprite.auto_slice"), lambda: _auto_slice(settings, ss))
     ctx.dummy(0, 4)
 
     # ── Visual preview with divider lines ────────────────────────────────
@@ -1116,9 +1115,6 @@ def _render_sprite_preview(ctx: InxGUIContext, settings: TextureImportSettings,
                     ss.drag_frame_idx = -1
 
     if not ctx.is_mouse_button_down(0):
-        # Save on drag release
-        if ss.drag_edge:
-            _auto_save_sprite(state)
         ss.drag_edge = ""
         ss.drag_frame_idx = -1
 

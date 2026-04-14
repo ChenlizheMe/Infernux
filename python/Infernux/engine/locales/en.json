@@ -71,6 +71,7 @@
   "hierarchy.primitive_capsule": "Capsule",
   "hierarchy.primitive_cylinder": "Cylinder",
   "hierarchy.primitive_plane": "Plane",
+  "hierarchy.primitive_quad": "Quad",
   "hierarchy.light_directional": "Directional Light",
   "hierarchy.light_point": "Point Light",
   "hierarchy.light_spot": "Spot Light",

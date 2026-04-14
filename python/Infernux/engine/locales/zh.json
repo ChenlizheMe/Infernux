@@ -71,6 +71,7 @@
   "hierarchy.primitive_capsule": "胶囊体",
   "hierarchy.primitive_cylinder": "圆柱体",
   "hierarchy.primitive_plane": "平面",
+  "hierarchy.primitive_quad": "四边形",
   "hierarchy.light_directional": "平行光",
   "hierarchy.light_point": "点光源",
   "hierarchy.light_spot": "聚光灯",

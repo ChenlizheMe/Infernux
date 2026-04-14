@@ -76,7 +76,8 @@ enum class PrimitiveType
     Sphere,
     Capsule,
     Cylinder,
-    Plane
+    Plane,
+    Quad
 };
 
 /**
@@ -110,6 +111,11 @@ static void GetPrimitiveMeshData(PrimitiveType type, const std::vector<Vertex> *
         outVertices = &PrimitiveMeshes::GetPlaneVertices();
         outIndices = &PrimitiveMeshes::GetPlaneIndices();
         outDefaultName = "Plane";
+        break;
+    case PrimitiveType::Quad:
+        outVertices = &PrimitiveMeshes::GetQuadVertices();
+        outIndices = &PrimitiveMeshes::GetQuadIndices();
+        outDefaultName = "Quad";
         break;
     }
 }
@@ -254,6 +260,7 @@ void RegisterSceneBindings(py::module_ &m)
         .value("Capsule", PrimitiveType::Capsule)
         .value("Cylinder", PrimitiveType::Cylinder)
         .value("Plane", PrimitiveType::Plane)
+        .value("Quad", PrimitiveType::Quad)
         .export_values();
 
     // ========================================================================
@@ -515,6 +522,16 @@ void RegisterSceneBindings(py::module_ &m)
             "set_material_slot_count", [](MeshRenderer &mr, uint32_t count) { mr.SetMaterialSlotCount(count); },
             py::arg("count"), "Set the number of material slots")
         .def("serialize", &MeshRenderer::Serialize, "Serialize MeshRenderer to JSON string")
+        .def(
+            "set_primitive_mesh",
+            [](MeshRenderer &mr, PrimitiveType type) {
+                const std::vector<Vertex> *vertices = nullptr;
+                const std::vector<uint32_t> *indices = nullptr;
+                const char *defaultName = "Primitive";
+                GetPrimitiveMeshData(type, vertices, indices, defaultName);
+                mr.SetSharedPrimitiveMesh(*vertices, *indices, defaultName);
+            },
+            py::arg("type"), "Set the mesh to a built-in primitive (Cube, Sphere, Quad, etc.)")
 
         // ====================================================================
         // Mesh data access for scripting and inspection tools

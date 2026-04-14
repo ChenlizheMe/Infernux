@@ -980,6 +980,7 @@ void HierarchyPanel::ShowCreatePrimitiveMenu(InxGUIContext *ctx, uint64_t parent
     static const PrimEntry entries[] = {
         {"hierarchy.primitive_cube", 0},     {"hierarchy.primitive_sphere", 1}, {"hierarchy.primitive_capsule", 2},
         {"hierarchy.primitive_cylinder", 3}, {"hierarchy.primitive_plane", 4},
+        {"hierarchy.primitive_quad", 5},
     };
     for (auto &e : entries) {
         if (ctx->Selectable(Tr(e.key), false, 0, 0, 0)) {

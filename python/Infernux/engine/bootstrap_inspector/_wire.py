@@ -659,6 +659,10 @@ def _wire_add_remove_and_drop(ctx):
                 Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             comp_cls = _engine_py_map.get(type_name_or_path)
             if comp_cls is None:
+                # Try engine Python-only components via registry
+                from Infernux.components.registry import get_type
+                comp_cls = get_type(type_name_or_path)
+            if comp_cls is None:
                 Debug.log_error(f"Unknown engine component: {type_name_or_path}")
                 return
             if getattr(comp_cls, '_disallow_multiple_', False):

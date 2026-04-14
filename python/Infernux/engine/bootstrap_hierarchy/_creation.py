@@ -30,7 +30,7 @@ def wire_creation_callbacks(ctx):
         if not scene:
             return
         types = [PrimitiveType.Cube, PrimitiveType.Sphere, PrimitiveType.Capsule,
-                 PrimitiveType.Cylinder, PrimitiveType.Plane]
+                 PrimitiveType.Cylinder, PrimitiveType.Plane, PrimitiveType.Quad]
         if type_idx < 0 or type_idx >= len(types):
             return
         new_obj = scene.create_primitive(types[type_idx])
