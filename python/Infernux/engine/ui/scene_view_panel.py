@@ -186,9 +186,12 @@ class SceneViewPanel(SceneViewGizmoMixin, SceneViewCameraMixin, SceneViewOverlay
         self._gizmo_drag_plane_start_uv = (0.0, 0.0)
         self._gizmo_drag_start_pos = (0.0, 0.0, 0.0)  # object pos at grab
         self._gizmo_drag_start_euler = (0.0, 0.0, 0.0)  # object euler at grab (rotate)
+        self._gizmo_drag_start_rotation = None  # object world rotation quat at grab
         self._gizmo_drag_start_scale = (1.0, 1.0, 1.0)  # object local_scale at grab (scale)
         self._gizmo_drag_start_screen = (0.0, 0.0) # screen pos at grab (rotate)
         self._gizmo_drag_obj_id = 0        # object being dragged
+        self._gizmo_drag_rigidbody = None  # Rigidbody temporarily driven by the gizmo
+        self._gizmo_drag_restore_dynamic = False
         self._gizmo_snap_active = False    # Ctrl held during current drag frame
         self._gizmo_tool_mode = TOOL_TRANSLATE  # current tool mode (Python tracking)
         self._coord_space = 0  # 0=Global, 1=Local

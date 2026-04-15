@@ -856,6 +856,7 @@ std::string Infernux::ReloadShader(const std::string &shaderPath)
     // Invalidate shader-id map cache for this directory so shading models
     // and imports added/modified since the last compile are discovered.
     InxShaderLoader::InvalidateDirectoryCache(FromFsPath(ToFsPath(shaderPath).parent_path()));
+    InxShaderLoader::InvalidateTemplateCache();
 
     if (guid.empty()) {
         guid = adb->RegisterResource(shaderPath, ResourceType::Shader);

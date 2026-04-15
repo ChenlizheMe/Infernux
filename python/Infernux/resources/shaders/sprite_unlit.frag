@@ -3,8 +3,10 @@
 @shader_id: sprite_unlit
 @shading_model: unlit
 @queue: 2000
+@cull: none
 @property: baseColor, Color, [1.0, 1.0, 1.0, 1.0]
 @property: texSampler, Texture2D, white
+@alpha_clip: on
 @property: uvRect, Float4, [0.0, 0.0, 1.0, 1.0]
 @property: displayScale, Float4, [1.0, 1.0, 0.0, 0.0]
 
