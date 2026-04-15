@@ -6,8 +6,6 @@
 
 ## 描述
 
-力的施加模式枚举。
-
 <!-- USER CONTENT START --> description
 
 <!-- USER CONTENT END -->

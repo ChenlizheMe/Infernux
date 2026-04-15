@@ -6,8 +6,6 @@ enum in <b>Infernux</b>
 
 ## Description
 
-Force application mode for Rigidbody.
-
 <!-- USER CONTENT START --> description
 
 <!-- USER CONTENT END -->

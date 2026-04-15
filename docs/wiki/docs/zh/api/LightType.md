@@ -6,8 +6,6 @@
 
 ## 描述
 
-光源类型枚举。
-
 <!-- USER CONTENT START --> description
 
 <!-- USER CONTENT END -->

@@ -6,8 +6,6 @@
 
 ## 描述
 
-坐标空间枚举。World=世界空间，Self=本地空间。
-
 <!-- USER CONTENT START --> description
 
 <!-- USER CONTENT END -->

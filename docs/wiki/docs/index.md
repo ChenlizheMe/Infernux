@@ -7,23 +7,21 @@ Welcome to the Infernux documentation wiki.
 - [Project README](https://github.com/ChenlizheMe/Infernux#readme)
 - [Chinese README](https://github.com/ChenlizheMe/Infernux/blob/main/README-zh.md)
 - [Website](https://chenlizheme.github.io/Infernux/)
+- [Technical Report](https://arxiv.org/pdf/2604.10263)
 - [API Reference](en/api/index.md)
 
 
-## Tutorials
+## Architecture and Research
 
-New to Infernux? Start here:
+Project context and the current performance story live here:
 
-| Tutorial | Description |
-|----------|-------------|
-| [Physics](en/tutorials/physics.md) | Colliders, Rigidbody, triggers, raycasting, character controller |
-| [Audio](en/tutorials/audio.md) | AudioSource, 3D spatial sound, music, footsteps |
-| [UI](en/tutorials/ui.md) | Canvas, Text, Image, Button, health bars, screen fade |
-| [Coroutines & Time](en/tutorials/coroutines.md) | WaitForSeconds, time control, async patterns |
-| [Rendering](en/tutorials/rendering.md) | Render pipeline, post-processing, custom effects |
-| [Building](en/tutorials/building.md) | Standalone game export with Nuitka, Hub launcher |
+| Page | Description |
+|------|-------------|
+| [Why Infernux Exists](en/architecture/about.md) | Project motivation, origin story, and long-term direction |
+| [JIT-Accelerated Scripting](en/architecture/jit.md) | Batch bridge, Numba integration, auto-parallelization, and benchmark takeaways |
+| [Technical Report](https://arxiv.org/pdf/2604.10263) | Full report: *Infernux: A Python-Native Game Engine with JIT-Accelerated Scripting* |
 
-中文教程：[物理](zh/tutorials/physics.md) · [音频](zh/tutorials/audio.md) · [UI](zh/tutorials/ui.md) · [协程](zh/tutorials/coroutines.md) · [渲染](zh/tutorials/rendering.md) · [构建](zh/tutorials/building.md)
+中文内容：[为什么会有 Infernux](zh/architecture/about.md) · [JIT 加速脚本](zh/architecture/jit.md) · [技术报告](https://arxiv.org/pdf/2604.10263)
 
 ## Getting Started
 

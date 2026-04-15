@@ -389,6 +389,12 @@
                     </div><div class="ns-group">
                         <div class="ns-hd">
                             <span class="ns-arr">&#9654;</span>
+                            <span class="ns-nm">Infernux.jit</span>
+                        </div>
+                        <div class="ns-ch"><a href="/Infernux/wiki/site/zh/api/njit.html" class="">njit</a><a href="/Infernux/wiki/site/zh/api/warmup.html" class="">warmup</a></div>
+                    </div><div class="ns-group">
+                        <div class="ns-hd">
+                            <span class="ns-arr">&#9654;</span>
                             <span class="ns-nm">Infernux.math</span>
                         </div>
                         <div class="ns-ch"><a href="/Infernux/wiki/site/zh/api/quaternion.html" class="">quaternion</a><a href="/Infernux/wiki/site/zh/api/vector2.html" class="">vector2</a><a href="/Infernux/wiki/site/zh/api/vector3.html" class="">vector3</a><a href="/Infernux/wiki/site/zh/api/vector4.html" class="">vector4</a></div>
@@ -450,7 +456,28 @@
 <p>description</p>
 <!-- USER CONTENT END -->
 
-<h2 id="_2">静态方法<a class="headerlink" href="#_2" title="Permanent link">&para;</a></h2>
+<h2 id="_2">属性<a class="headerlink" href="#_2" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>名称</th>
+<th>类型</th>
+<th>描述</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>active_scene</td>
+<td><code>Optional[object]</code></td>
+<td><em>(只读)</em></td>
+</tr>
+</tbody>
+</table>
+<!-- USER CONTENT START -->
+<p>properties</p>
+<!-- USER CONTENT END -->
+
+<h2 id="_3">静态方法<a class="headerlink" href="#_3" title="Permanent link">&para;</a></h2>
 <table>
 <thead>
 <tr>
@@ -503,20 +530,24 @@
 <td><code>static SceneManager.get_all_scene_names() → List[str]</code></td>
 <td>Get a list of all scene names in the build.</td>
 </tr>
+<tr>
+<td><code>static SceneManager.dont_destroy_on_load(game_object: object) → None</code></td>
+<td>Mark a game object so it survives scene loads.</td>
+</tr>
 </tbody>
 </table>
 <!-- USER CONTENT START -->
 <p>static_methods</p>
 <!-- USER CONTENT END -->
 
-<h2 id="_3">示例<a class="headerlink" href="#_3" title="Permanent link">&para;</a></h2>
+<h2 id="_4">示例<a class="headerlink" href="#_4" title="Permanent link">&para;</a></h2>
 <!-- USER CONTENT START -->
 <p>example
 <div class="language-python highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="c1"># TODO: Add example for SceneManager</span>
 </code></pre></div></p>
 <!-- USER CONTENT END -->
 
-<h2 id="_4">另请参阅<a class="headerlink" href="#_4" title="Permanent link">&para;</a></h2>
+<h2 id="_5">另请参阅<a class="headerlink" href="#_5" title="Permanent link">&para;</a></h2>
 <!-- USER CONTENT START -->
 <p>see_also</p>
 <!-- USER CONTENT END -->

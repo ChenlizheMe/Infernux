@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="zh">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Physics in Infernux - Infernux Scripting API</title>
+    <title>JIT 加速脚本 - Infernux Scripting API</title>
     <link rel="icon" type="image/png" href="/Infernux/assets/logo.png">
     <link rel="stylesheet" href="/Infernux/css/style.css?v=2">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
@@ -302,12 +302,12 @@
                 <span class="logo-text">Infernux</span>
             </a>
             <div class="nav-links">
-                <a href="/Infernux/index.html">Home</a>
-                <a href="/Infernux/index.html#system">Features</a>
-                <a href="/Infernux/index.html#capabilities">Showcase</a>
-                <a href="/Infernux/index.html#difference">Comparison</a>
-                <a href="/Infernux/roadmap.html">Roadmap</a>
-                <a href="/Infernux/wiki.html" class="active">Docs</a>
+                <a href="/Infernux/index.html">首页</a>
+                <a href="/Infernux/index.html#system">特性</a>
+                <a href="/Infernux/index.html#capabilities">能力</a>
+                <a href="/Infernux/index.html#difference">架构</a>
+                <a href="/Infernux/roadmap.html">路线图</a>
+                <a href="/Infernux/wiki.html" class="active">文档</a>
                 <a href="https://github.com/ChenlizheMe/Infernux" target="_blank">
                     <i class="fab fa-github"></i> GitHub
                 </a>
@@ -328,29 +328,63 @@
     <main class="page-shell" style="padding-top: calc(var(--nav-height) + 60px); min-height: 80vh; padding-bottom: 80px;">
         <div class="container" style="max-width: 860px; margin: 0 auto;">
             <div class="api-main" style="padding: 0; max-width: none;">
-                <h1 id="physics-in-infernux">Physics in Infernux<a class="headerlink" href="#physics-in-infernux" title="Permanent link">&para;</a></h1>
-<p>Infernux uses Jolt Physics underneath the Python API. The usual workflow is to attach collider components, add a <a href="../api/Rigidbody.html">Rigidbody</a> when motion should be simulated, and use <a href="../api/Physics.html">Physics</a> for queries such as raycasts.</p>
-<h2 id="core-building-blocks">Core building blocks<a class="headerlink" href="#core-building-blocks" title="Permanent link">&para;</a></h2>
+                <h1 id="jit">JIT 加速脚本<a class="headerlink" href="#jit" title="Permanent link">&para;</a></h1>
+<p>这一页把技术报告 <a href="https://arxiv.org/pdf/2604.10263"><em>Infernux: A Python-Native Game Engine with JIT-Accelerated Scripting</em></a> 里最关键的 JIT 部分整理成一个更适合项目文档阅读的版本。</p>
+<h2 id="jit_1">为什么需要 JIT 路径<a class="headerlink" href="#jit_1" title="Permanent link">&para;</a></h2>
+<p>Python 适合做玩法、工具和热重载工作流，但如果每帧都对大量对象做逐个属性访问，Python 和 C++ 之间的边界开销会迅速压垮吞吐。Infernux 的做法不是放弃 Python，而是把最热的内层循环挪到更接近原生代码的执行路径上。</p>
+<p>报告里把这件事拆成两个协同机制：</p>
 <ul>
-<li><a href="../api/Rigidbody.html">Rigidbody</a>: controls simulated motion, forces, and constraints.</li>
-<li><a href="../api/BoxCollider.html">BoxCollider</a>, <a href="../api/SphereCollider.html">SphereCollider</a>, <a href="../api/CapsuleCollider.html">CapsuleCollider</a>, <a href="../api/MeshCollider.html">MeshCollider</a>: define collision shapes.</li>
-<li><a href="../api/CollisionDetectionMode.html">CollisionDetectionMode</a>: choose the collision strategy.</li>
-<li><a href="../api/Physics.html">Physics</a>: world queries and helper utilities.</li>
+<li>一个 batch bridge，用一次边界穿越把引擎状态搬进连续的 NumPy 数组。</li>
+<li>一个基于 Numba 的可选 JIT 路径，把标注过的 Python 更新函数编译成 LLVM 机器码。</li>
 </ul>
-<h2 id="typical-setup">Typical setup<a class="headerlink" href="#typical-setup" title="Permanent link">&para;</a></h2>
-<ol>
-<li>Create a <code>GameObject</code> for the simulated object.</li>
-<li>Add a collider that matches the shape you need.</li>
-<li>Add a <code>Rigidbody</code> if the object should respond to simulation.</li>
-<li>Configure mass, constraints, and collision layers.</li>
-<li>Use physics queries or callbacks to drive gameplay.</li>
-</ol>
-<h2 id="related-api">Related API<a class="headerlink" href="#related-api" title="Permanent link">&para;</a></h2>
+<p>重点不是把 Python 换成别的脚本语言，而是继续让 Python 负责 authoring，同时尽可能削掉高频更新里的解释器成本。</p>
+<h2 id="batch-jit">先 batch，再 JIT<a class="headerlink" href="#batch-jit" title="Permanent link">&para;</a></h2>
+<p>报告里强调，JIT 不是孤立存在的，它依赖 batch 数据桥的配合。典型每帧更新流程大致如下：</p>
+<div class="language-python highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="n">positions</span> <span class="o">=</span> <span class="n">batch_read</span><span class="p">(</span><span class="n">targets</span><span class="p">,</span> <span class="s2">&quot;position&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="n">jit_wave_kernel</span><span class="p">(</span><span class="n">positions</span><span class="p">,</span> <span class="n">time_value</span><span class="p">,</span> <span class="n">count</span><span class="p">)</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="n">batch_write</span><span class="p">(</span><span class="n">targets</span><span class="p">,</span> <span class="n">positions</span><span class="p">,</span> <span class="s2">&quot;position&quot;</span><span class="p">)</span>
+</code></pre></div>
+<p>这样做的意义是把 Python 与 C++ 之间的调用次数固定在每帧常数级，而不是随着对象数量线性增长。JIT 内核则只面对紧密排列的数组，这也是 Numba 最擅长的输入形态。</p>
+<h2 id="infernux-numba">Infernux 在 Numba 之上补了什么<a class="headerlink" href="#infernux-numba" title="Permanent link">&para;</a></h2>
+<p>项目里的 JIT 装饰器并不只是简单调用一次 <code>numba.njit</code>。报告总结的增强点主要有三条：</p>
 <ul>
-<li><a href="../api/Rigidbody.html">Rigidbody</a></li>
-<li><a href="../api/RigidbodyConstraints.html">RigidbodyConstraints</a></li>
-<li><a href="../api/Collider.html">Collider</a></li>
-<li><a href="../api/Physics.html">Physics</a></li>
+<li>当机器上没有安装 Numba 时，自动退回纯 Python 路径，同时发出运行时警告，让性能退化是可见的。</li>
+<li>使用基于字节码的编译缓存，使缓存能跨模块重载和编辑器热重载继续生效。</li>
+<li>对 Nuitka 打包提供部分兼容。Numba 本身仍然依赖运行时的 CPython，所以这不是完全意义上的 AOT 替代，更像是分发层面的兼容处理。</li>
+</ul>
+<p>换句话说，JIT 被整合进了引擎自己的重载、缓存和打包模型，而不是单纯做成一个独立优化开关。</p>
+<h2 id="_1">自动并行化<a class="headerlink" href="#_1" title="Permanent link">&para;</a></h2>
+<p>JIT 部分里最有 Infernux 自身特色的是 auto-parallel 模式。开启之后，AST 重写器会扫描形如 <code>for i in range(n)</code> 的计数循环，并在循环体满足一组保守条件时把它提升成 <code>prange</code>，交给 Numba 做线程级并行。</p>
+<p>它不会尝试并行化所有循环，以下几类都会被拒绝：</p>
+<ul>
+<li><code>for x in arr</code> 这类迭代器循环。</li>
+<li><code>while</code> 循环。</li>
+<li>包含 <code>break</code>、<code>yield</code>、异常处理、提前返回等不受支持控制流的循环体。</li>
+<li>写入模式看起来不是“按索引写入彼此不重叠数组位置”的循环。</li>
+</ul>
+<p>报告也明确说明，这里的别名分析只是语法层面的检查，不是完整编译器意义上的 alias analysis。但对 Infernux 主要场景来说，这已经够用：最常见的内核就是按实体 ID 索引批量写 position、rotation、scale 等 SoA 列。</p>
+<h2 id="_2">预热与热重载<a class="headerlink" href="#_2" title="Permanent link">&para;</a></h2>
+<p>报告指出，串行版和并行版一起编译会带来冷启动开销，在测试机器上通常每个被装饰函数大约是 50 到 200 ms。Infernux 通过两种方式把这个成本移出交互主路径：</p>
+<ul>
+<li>提供 warm-up helper，在场景加载时就预编译已注册的 JIT 内核。</li>
+<li>在热重载场景里，只重编译发生改动的函数，未改动函数继续复用已有机器码缓存。</li>
+</ul>
+<p>这其实比单纯“跑得快”更重要，因为编辑器工作流要求的不只是峰值吞吐，还要求脚本热改时延迟可控。</p>
+<h2 id="_3">报告里的核心结果<a class="headerlink" href="#_3" title="Permanent link">&para;</a></h2>
+<p>JIT 部分最干净的实验是纯计算测试，也就是不涉及渲染、也不把结果写回 Transform，只比较脚本吞吐本身。在这个实验里：</p>
+<ul>
+<li>auto-parallel JIT 路径在 10k 到 1M 元素范围内都维持了很高的帧率。</li>
+<li>在 1M 元素规模下，报告中的 runtime 结果达到 848 FPS。</li>
+<li>同一配置下，它相对 Unity IL2CPP 参考实现达到 6.9 倍吞吐，相对非 JIT 的 NumPy 路径达到 10.5 倍。</li>
+</ul>
+<p>真正有意义的不是某个单点数字，而是这说明：当边界调用被 batch 化、热循环被编译后，Python 仍然可以支撑实时 authoring 场景，而不必退回到“编辑器一套语言、运行时另一套语言”的双轨结构。</p>
+<h2 id="_4">当前边界与下一步<a class="headerlink" href="#_4" title="Permanent link">&para;</a></h2>
+<p>报告最后也很坦白：剩下最大的瓶颈已经不是 JIT 内部的算术吞吐，而是 Python 与 C++ 的通信边界本身。每一次 batch dispatch 仍然要走 pybind11、拿 GIL、做类型转换、再返回。</p>
+<p>所以 JIT 之后的下一步路线图不是继续卷编译器，而是改造边界层，例如 lock-free command ring。JIT 已经把“算得慢”的问题压下去了，接下来限制上限的是“过边界还不够便宜”。</p>
+<h2 id="_5">完整技术报告<a class="headerlink" href="#_5" title="Permanent link">&para;</a></h2>
+<p>完整的系统背景、实验设置和性能表格请直接阅读原报告：</p>
+<ul>
+<li><a href="https://arxiv.org/pdf/2604.10263">Infernux: A Python-Native Game Engine with JIT-Accelerated Scripting（arXiv:2604.10263）</a></li>
 </ul>
             </div>
         </div>

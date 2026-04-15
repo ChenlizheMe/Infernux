@@ -17,95 +17,21 @@
       }
     },
     {
-      "title": "Audio in Infernux",
-      "summary": "Audio playback is component-based. Use AudioSource to emit sound, AudioListener to define the listening point, and AudioClip assets as the source data.",
-      "content": "\n# Audio in Infernux\n\nAudio playback is component-based. Use [AudioSource](../api/AudioSource.md) to emit sound, [AudioListener](../api/AudioListener.md) to define the listening point, and [AudioClip](../api/AudioClip.md) assets as the source data.\n\n## Typical workflow\n\n1. Import or reference an audio asset.\n2. Add an `AudioSource` to the object that should emit sound.\n3. Ensure the active camera or player rig has an `AudioListener`.\n4. Configure looping, volume, and 3D playback behavior.\n5. Trigger playback from gameplay code.\n\n## Related API\n\n- [AudioSource](../api/AudioSource.md)\n- [AudioListener](../api/AudioListener.md)\n- [AudioClip](../api/AudioClip.md)",
-      "groupKey": "tutorials",
-      "groupTitle": "Tutorials",
-      "url": "wiki/site/en/tutorials/audio.html",
-      "source": "en/tutorials/audio.md",
+      "title": "JIT-Accelerated Scripting",
+      "summary": "This page condenses the JIT section of the technical report, Infernux: A Python-Native Game Engine with JIT-Accelerated Scripting, into a shorter project-facing note.",
+      "content": "\n# JIT-Accelerated Scripting\n\nThis page condenses the JIT section of the technical report, [*Infernux: A Python-Native Game Engine with JIT-Accelerated Scripting*](https://arxiv.org/pdf/2604.10263), into a shorter project-facing note.\n\n## Why the JIT path exists\n\nPure Python is expressive, reloadable, and fits the engine's editor-first workflow, but per-object property access across the Python and C++ boundary is too expensive for large per-frame workloads. Infernux addresses that bottleneck with two mechanisms that are designed to work together:\n\n- A batch data bridge that moves engine state through contiguous NumPy arrays in one boundary crossing.\n- An optional JIT path built on Numba that compiles annotated Python update functions to LLVM machine code.\n\nThe practical goal is not to replace Python with a different gameplay language. It is to keep Python as the authoring language while moving the tight inner loop closer to native throughput.\n\n## Batch first, then JIT\n\nThe report treats JIT as part of a larger performance bridge rather than a standalone compiler trick. Typical frame logic follows this shape:\n\n```python\npositions = batch_read(targets, \"position\")\njit_wave_kernel(positions, time_value, count)\nbatch_write(targets, positions, \"position\")\n```\n\nThat pattern keeps the number of Python-to-C++ crossings constant per frame instead of scaling with object count. The JIT kernel then works on dense arrays, which is exactly the case where Numba performs well.\n\n## What Infernux adds on top of Numba\n\nThe engine's JIT decorator is intentionally more opinionated than calling `numba.njit` directly.\n\n- It degrades gracefully to pure Python when Numba is not installed, while emitting a runtime warning so the slowdown is visible.\n- It uses a bytecode-keyed cache that survives module reloads and editor hot reload cycles.\n- It preserves partial compatibility with Nuitka-based packaging. Numba still requires CPython at runtime, so this is a distribution convenience rather than a full AOT replacement.\n\nIn other words, the JIT path is integrated into the engine's reload and packaging model instead of being treated as an isolated optimization utility.\n\n## Auto-parallelization\n\nThe paper's most engine-specific JIT feature is the auto-parallel mode. When enabled, an AST rewriter inspects counted loops of the form `for i in range(n)` and promotes them to `prange` when the loop body satisfies a conservative set of rules.\n\nThe rewriter does **not** try to parallelize every loop. It rejects:\n\n- Iterator-style loops such as `for x in arr`.\n- `while` loops.\n- Bodies containing unsupported control flow such as `break`, `yield`, exception handling, or early return.\n- Writes that do not look like disjoint indexed array stores.\n\nThe aliasing check is intentionally syntactic rather than fully semantic. In practice, that is acceptable for the dominant engine use case: updating positions, rotations, scales, or other SoA columns indexed by entity ID.\n\n## Warm-up and hot reload\n\nCompiling both a serial and a parallel variant introduces cold-start cost. The report places typical compile latency at roughly 50-200 ms per decorated function on the benchmark machine. Infernux hides that cost in two ways:\n\n- A warm-up helper can precompile registered kernels during scene load.\n- During hot reload, only the modified function is recompiled; unchanged kernels keep their cached machine code.\n\nThis is an important design choice for editor workflows. The goal is not just high throughput after compilation, but also predictable iteration while scripts are being changed live.\n\n## What the report shows\n\nThe cleanest JIT result in the report is the pure-compute benchmark, where no rendering and no Transform write-back are involved. In that workload:\n\n- The auto-parallel JIT path sustains high frame rates as element count scales from 10k to 1M.\n- At 1M elements, the runtime result in the paper reaches 848 FPS.\n- That is reported as 6.9x faster than the Unity IL2CPP reference and 10.5x faster than the non-JIT NumPy path for the same workload.\n\nThe larger point is not a single headline number. It is that Python remains viable for real-time authoring when engine state is batched and the heavy loop is compiled.\n\n## Limits and next step\n\nThe report is explicit that the remaining bottleneck is no longer arithmetic throughput inside the compiled kernel. It is the communication boundary itself. Each batch dispatch still crosses pybind11, acquires the GIL, performs type conversion, and returns.\n\nThat is why the roadmap after JIT focuses on a lock-free command ring for the Python-to-native path. The JIT path already reduces compute cost sharply; the next ceiling is the boundary crossing around it.\n\n## Read the full report\n\nFor the complete evaluation, benchmark tables, and system context, read the full report:\n\n- [Infernux: A Python-Native Game Engine with JIT-Accelerated Scripting (arXiv:2604.10263)](https://arxiv.org/pdf/2604.10263)",
+      "groupKey": "architecture",
+      "groupTitle": "Architecture",
+      "url": "wiki/site/en/architecture/jit.html",
+      "source": "en/architecture/jit.md",
       "meta": {
-        "category": "Tutorials",
+        "category": "Architecture",
         "tags": [
-          "audio"
-        ]
-      }
-    },
-    {
-      "title": "Building and Packaging Projects",
-      "summary": "There are two separate concerns in this repository: building the engine for development, and packaging the Hub for distribution.",
-      "content": "\n# Building and Packaging Projects\n\nThere are two separate concerns in this repository: building the engine for development, and packaging the Hub for distribution.\n\n## Development build\n\n```bash\nconda activate infengine\npip install -r requirements.txt\ncmake --preset release\ncmake --build --preset release\n```\n\n## Packaging\n\n- `cmake --build --preset packaging` builds the standalone Hub bundle.\n- `cmake --build --preset packaging-installer` builds the graphical Windows installer.\n\n## Documentation build\n\n```bash\nconda activate infengine\npython docs/wiki/generate_api_docs.py\npython -m mkdocs build --clean -f docs/wiki/mkdocs.yml\n```",
-      "groupKey": "tutorials",
-      "groupTitle": "Tutorials",
-      "url": "wiki/site/en/tutorials/building.html",
-      "source": "en/tutorials/building.md",
-      "meta": {
-        "category": "Tutorials",
-        "tags": [
-          "build",
-          "packaging"
-        ]
-      }
-    },
-    {
-      "title": "Coroutines and Time",
-      "summary": "Coroutines let you express delayed or multi-frame behavior without turning everything into state-machine boilerplate. Timing utilities live alongside the coroutine system so fra...",
-      "content": "\n# Coroutines and Time\n\nCoroutines let you express delayed or multi-frame behavior without turning everything into state-machine boilerplate. Timing utilities live alongside the coroutine system so frame-based logic stays readable.\n\n## Common tools\n\n- [Coroutine](../api/Coroutine.md)\n- [WaitForSeconds](../api/WaitForSeconds.md)\n- [WaitForSecondsRealtime](../api/WaitForSecondsRealtime.md)\n- [WaitUntil](../api/WaitUntil.md)\n- [WaitWhile](../api/WaitWhile.md)\n- [Time](../api/Time.md)\n\n## Typical uses\n\n- Delayed VFX or SFX playback.\n- Cooldowns, invulnerability windows, and staged interactions.\n- Multi-frame polling of gameplay conditions.",
-      "groupKey": "tutorials",
-      "groupTitle": "Tutorials",
-      "url": "wiki/site/en/tutorials/coroutines.html",
-      "source": "en/tutorials/coroutines.md",
-      "meta": {
-        "category": "Tutorials",
-        "tags": [
-          "coroutines",
-          "timing"
-        ]
-      }
-    },
-    {
-      "title": "Physics in Infernux",
-      "summary": "Infernux uses Jolt Physics underneath the Python API. The usual workflow is to attach collider components, add a Rigidbody when motion should be simulated, and use Physics for q...",
-      "content": "\n# Physics in Infernux\n\nInfernux uses Jolt Physics underneath the Python API. The usual workflow is to attach collider components, add a [Rigidbody](../api/Rigidbody.md) when motion should be simulated, and use [Physics](../api/Physics.md) for queries such as raycasts.\n\n## Core building blocks\n\n- [Rigidbody](../api/Rigidbody.md): controls simulated motion, forces, and constraints.\n- [BoxCollider](../api/BoxCollider.md), [SphereCollider](../api/SphereCollider.md), [CapsuleCollider](../api/CapsuleCollider.md), [MeshCollider](../api/MeshCollider.md): define collision shapes.\n- [CollisionDetectionMode](../api/CollisionDetectionMode.md): choose the collision strategy.\n- [Physics](../api/Physics.md): world queries and helper utilities.\n\n## Typical setup\n\n1. Create a `GameObject` for the simulated object.\n2. Add a collider that matches the shape you need.\n3. Add a `Rigidbody` if the object should respond to simulation.\n4. Configure mass, constraints, and collision layers.\n5. Use physics queries or callbacks to drive gameplay.\n\n## Related API\n\n- [Rigidbody](../api/Rigidbody.md)\n- [RigidbodyConstraints](../api/RigidbodyConstraints.md)\n- [Collider](../api/Collider.md)\n- [Physics](../api/Physics.md)",
-      "groupKey": "tutorials",
-      "groupTitle": "Tutorials",
-      "url": "wiki/site/en/tutorials/physics.html",
-      "source": "en/tutorials/physics.md",
-      "meta": {
-        "category": "Tutorials",
-        "tags": [
-          "physics"
-        ]
-      }
-    },
-    {
-      "title": "Rendering with RenderGraph and RenderStack",
-      "summary": "Infernux exposes render authoring through Python-facing pipeline APIs. The idea is not just to configure materials, but to describe passes, resources, and effects in a way that...",
-      "content": "\n# Rendering with RenderGraph and RenderStack\n\nInfernux exposes render authoring through Python-facing pipeline APIs. The idea is not just to configure materials, but to describe passes, resources, and effects in a way that remains readable.\n\n## Key types\n\n- [RenderGraph](../api/RenderGraph.md)\n- [RenderPassBuilder](../api/RenderPassBuilder.md)\n- [RenderPipeline](../api/RenderPipeline.md)\n- [RenderStack](../api/RenderStack.md)\n- Post-processing effects such as [BloomEffect](../api/BloomEffect.md) and [ToneMappingEffect](../api/ToneMappingEffect.md)\n\n## Typical pipeline work\n\n1. Define the render passes you need.\n2. Describe resource usage and dependencies.\n3. Inject post-processing or custom effects.\n4. Iterate from Python while the native backend manages execution details.",
-      "groupKey": "tutorials",
-      "groupTitle": "Tutorials",
-      "url": "wiki/site/en/tutorials/rendering.html",
-      "source": "en/tutorials/rendering.md",
-      "meta": {
-        "category": "Tutorials",
-        "tags": [
-          "rendering"
-        ]
-      }
-    },
-    {
-      "title": "Building UI in Infernux",
-      "summary": "The current UI layer provides the fundamentals needed for in-game interfaces: UICanvas, UIText, UIImage, UIButton, and UISelectable.",
-      "content": "\n# Building UI in Infernux\n\nThe current UI layer provides the fundamentals needed for in-game interfaces: [UICanvas](../api/UICanvas.md), [UIText](../api/UIText.md), [UIImage](../api/UIImage.md), [UIButton](../api/UIButton.md), and [UISelectable](../api/UISelectable.md).\n\n## Basic composition\n\n1. Create a canvas root.\n2. Add text and image elements for the visual layout.\n3. Add buttons for interaction.\n4. Handle events through button callbacks or pointer event data.\n5. Drive UI state from gameplay or controller components.\n\n## Related API\n\n- [UICanvas](../api/UICanvas.md)\n- [UIText](../api/UIText.md)\n- [UIImage](../api/UIImage.md)\n- [UIButton](../api/UIButton.md)\n- [PointerEventData](../api/PointerEventData.md)",
-      "groupKey": "tutorials",
-      "groupTitle": "Tutorials",
-      "url": "wiki/site/en/tutorials/ui.html",
-      "source": "en/tutorials/ui.md",
-      "meta": {
-        "category": "Tutorials",
-        "tags": [
-          "ui"
-        ]
+          "jit",
+          "performance",
+          "python"
+        ],
+        "date": "2026-04-16"
       }
     }
   ],
@@ -127,95 +53,21 @@
       }
     },
     {
-      "title": "Infernux 音频入门",
-      "summary": "音频播放采用组件式工作流。使用 AudioSource 发声，使用 AudioListener 定义听音位置，声音资源则由 AudioClip 提供。",
-      "content": "\n# Infernux 音频入门\n\n音频播放采用组件式工作流。使用 [AudioSource](../api/AudioSource.md) 发声，使用 [AudioListener](../api/AudioListener.md) 定义听音位置，声音资源则由 [AudioClip](../api/AudioClip.md) 提供。\n\n## 常见流程\n\n1. 导入或引用音频资源。\n2. 给需要发声的对象添加 `AudioSource`。\n3. 确保相机或玩家对象上存在 `AudioListener`。\n4. 配置循环、音量和 3D 播放属性。\n5. 在玩法脚本中触发播放。\n\n## 相关 API\n\n- [AudioSource](../api/AudioSource.md)\n- [AudioListener](../api/AudioListener.md)\n- [AudioClip](../api/AudioClip.md)",
-      "groupKey": "tutorials",
-      "groupTitle": "教程",
-      "url": "wiki/site/zh/tutorials/audio.html",
-      "source": "zh/tutorials/audio.md",
+      "title": "JIT 加速脚本",
+      "summary": "这一页把技术报告 Infernux: A Python-Native Game Engine with JIT-Accelerated Scripting 里最关键的 JIT 部分整理成一个更适合项目文档阅读的版本。",
+      "content": "\n# JIT 加速脚本\n\n这一页把技术报告 [*Infernux: A Python-Native Game Engine with JIT-Accelerated Scripting*](https://arxiv.org/pdf/2604.10263) 里最关键的 JIT 部分整理成一个更适合项目文档阅读的版本。\n\n## 为什么需要 JIT 路径\n\nPython 适合做玩法、工具和热重载工作流，但如果每帧都对大量对象做逐个属性访问，Python 和 C++ 之间的边界开销会迅速压垮吞吐。Infernux 的做法不是放弃 Python，而是把最热的内层循环挪到更接近原生代码的执行路径上。\n\n报告里把这件事拆成两个协同机制：\n\n- 一个 batch bridge，用一次边界穿越把引擎状态搬进连续的 NumPy 数组。\n- 一个基于 Numba 的可选 JIT 路径，把标注过的 Python 更新函数编译成 LLVM 机器码。\n\n重点不是把 Python 换成别的脚本语言，而是继续让 Python 负责 authoring，同时尽可能削掉高频更新里的解释器成本。\n\n## 先 batch，再 JIT\n\n报告里强调，JIT 不是孤立存在的，它依赖 batch 数据桥的配合。典型每帧更新流程大致如下：\n\n```python\npositions = batch_read(targets, \"position\")\njit_wave_kernel(positions, time_value, count)\nbatch_write(targets, positions, \"position\")\n```\n\n这样做的意义是把 Python 与 C++ 之间的调用次数固定在每帧常数级，而不是随着对象数量线性增长。JIT 内核则只面对紧密排列的数组，这也是 Numba 最擅长的输入形态。\n\n## Infernux 在 Numba 之上补了什么\n\n项目里的 JIT 装饰器并不只是简单调用一次 `numba.njit`。报告总结的增强点主要有三条：\n\n- 当机器上没有安装 Numba 时，自动退回纯 Python 路径，同时发出运行时警告，让性能退化是可见的。\n- 使用基于字节码的编译缓存，使缓存能跨模块重载和编辑器热重载继续生效。\n- 对 Nuitka 打包提供部分兼容。Numba 本身仍然依赖运行时的 CPython，所以这不是完全意义上的 AOT 替代，更像是分发层面的兼容处理。\n\n换句话说，JIT 被整合进了引擎自己的重载、缓存和打包模型，而不是单纯做成一个独立优化开关。\n\n## 自动并行化\n\nJIT 部分里最有 Infernux 自身特色的是 auto-parallel 模式。开启之后，AST 重写器会扫描形如 `for i in range(n)` 的计数循环，并在循环体满足一组保守条件时把它提升成 `prange`，交给 Numba 做线程级并行。\n\n它不会尝试并行化所有循环，以下几类都会被拒绝：\n\n- `for x in arr` 这类迭代器循环。\n- `while` 循环。\n- 包含 `break`、`yield`、异常处理、提前返回等不受支持控制流的循环体。\n- 写入模式看起来不是“按索引写入彼此不重叠数组位置”的循环。\n\n报告也明确说明，这里的别名分析只是语法层面的检查，不是完整编译器意义上的 alias analysis。但对 Infernux 主要场景来说，这已经够用：最常见的内核就是按实体 ID 索引批量写 position、rotation、scale 等 SoA 列。\n\n## 预热与热重载\n\n报告指出，串行版和并行版一起编译会带来冷启动开销，在测试机器上通常每个被装饰函数大约是 50 到 200 ms。Infernux 通过两种方式把这个成本移出交互主路径：\n\n- 提供 warm-up helper，在场景加载时就预编译已注册的 JIT 内核。\n- 在热重载场景里，只重编译发生改动的函数，未改动函数继续复用已有机器码缓存。\n\n这其实比单纯“跑得快”更重要，因为编辑器工作流要求的不只是峰值吞吐，还要求脚本热改时延迟可控。\n\n## 报告里的核心结果\n\nJIT 部分最干净的实验是纯计算测试，也就是不涉及渲染、也不把结果写回 Transform，只比较脚本吞吐本身。在这个实验里：\n\n- auto-parallel JIT 路径在 10k 到 1M 元素范围内都维持了很高的帧率。\n- 在 1M 元素规模下，报告中的 runtime 结果达到 848 FPS。\n- 同一配置下，它相对 Unity IL2CPP 参考实现达到 6.9 倍吞吐，相对非 JIT 的 NumPy 路径达到 10.5 倍。\n\n真正有意义的不是某个单点数字，而是这说明：当边界调用被 batch 化、热循环被编译后，Python 仍然可以支撑实时 authoring 场景，而不必退回到“编辑器一套语言、运行时另一套语言”的双轨结构。\n\n## 当前边界与下一步\n\n报告最后也很坦白：剩下最大的瓶颈已经不是 JIT 内部的算术吞吐，而是 Python 与 C++ 的通信边界本身。每一次 batch dispatch 仍然要走 pybind11、拿 GIL、做类型转换、再返回。\n\n所以 JIT 之后的下一步路线图不是继续卷编译器，而是改造边界层，例如 lock-free command ring。JIT 已经把“算得慢”的问题压下去了，接下来限制上限的是“过边界还不够便宜”。\n\n## 完整技术报告\n\n完整的系统背景、实验设置和性能表格请直接阅读原报告：\n\n- [Infernux: A Python-Native Game Engine with JIT-Accelerated Scripting（arXiv:2604.10263）](https://arxiv.org/pdf/2604.10263)",
+      "groupKey": "architecture",
+      "groupTitle": "架构",
+      "url": "wiki/site/zh/architecture/jit.html",
+      "source": "zh/architecture/jit.md",
       "meta": {
-        "category": "教程",
+        "category": "架构",
         "tags": [
-          "audio"
-        ]
-      }
-    },
-    {
-      "title": "构建与打包",
-      "summary": "这个仓库里有两条不同的流程：一种是开发态构建引擎，一种是为 Hub 做分发打包。",
-      "content": "\n# 构建与打包\n\n这个仓库里有两条不同的流程：一种是开发态构建引擎，一种是为 Hub 做分发打包。\n\n## 开发态构建\n\n```bash\nconda activate infengine\npip install -r requirements.txt\ncmake --preset release\ncmake --build --preset release\n```\n\n## Hub 打包\n\n- `cmake --build --preset packaging` 生成独立目录版 Hub。\n- `cmake --build --preset packaging-installer` 生成图形化 Windows 安装器。\n\n## 文档构建\n\n```bash\nconda activate infengine\npython docs/wiki/generate_api_docs.py\npython -m mkdocs build --clean -f docs/wiki/mkdocs.yml\n```",
-      "groupKey": "tutorials",
-      "groupTitle": "教程",
-      "url": "wiki/site/zh/tutorials/building.html",
-      "source": "zh/tutorials/building.md",
-      "meta": {
-        "category": "教程",
-        "tags": [
-          "build",
-          "packaging"
-        ]
-      }
-    },
-    {
-      "title": "协程与时间系统",
-      "summary": "协程可以把跨多帧的延迟逻辑写得更直接，而不必把所有流程都手写成状态机。时间工具与协程体系配套，使帧间逻辑保持可读。",
-      "content": "\n# 协程与时间系统\n\n协程可以把跨多帧的延迟逻辑写得更直接，而不必把所有流程都手写成状态机。时间工具与协程体系配套，使帧间逻辑保持可读。\n\n## 常用类型\n\n- [Coroutine](../api/Coroutine.md)\n- [WaitForSeconds](../api/WaitForSeconds.md)\n- [WaitForSecondsRealtime](../api/WaitForSecondsRealtime.md)\n- [WaitUntil](../api/WaitUntil.md)\n- [WaitWhile](../api/WaitWhile.md)\n- [Time](../api/Time.md)\n\n## 常见用法\n\n- 延迟播放特效或音效。\n- 冷却、无敌帧等时序逻辑。\n- 跨多帧轮询游戏条件。",
-      "groupKey": "tutorials",
-      "groupTitle": "教程",
-      "url": "wiki/site/zh/tutorials/coroutines.html",
-      "source": "zh/tutorials/coroutines.md",
-      "meta": {
-        "category": "教程",
-        "tags": [
-          "coroutines",
-          "timing"
-        ]
-      }
-    },
-    {
-      "title": "Infernux 物理入门",
-      "summary": "Infernux 的物理层底层基于 Jolt Physics。常见工作流是给对象挂上碰撞体，需要受模拟控制时再添加 Rigidbody，查询则通过 Physics 完成。",
-      "content": "\n# Infernux 物理入门\n\nInfernux 的物理层底层基于 Jolt Physics。常见工作流是给对象挂上碰撞体，需要受模拟控制时再添加 [Rigidbody](../api/Rigidbody.md)，查询则通过 [Physics](../api/Physics.md) 完成。\n\n## 核心构件\n\n- [Rigidbody](../api/Rigidbody.md)：控制受模拟影响的运动、受力和约束。\n- [BoxCollider](../api/BoxCollider.md)、[SphereCollider](../api/SphereCollider.md)、[CapsuleCollider](../api/CapsuleCollider.md)、[MeshCollider](../api/MeshCollider.md)：定义碰撞形状。\n- [CollisionDetectionMode](../api/CollisionDetectionMode.md)：碰撞检测策略。\n- [Physics](../api/Physics.md)：物理查询与辅助接口。\n\n## 相关 API\n\n- [Rigidbody](../api/Rigidbody.md)\n- [RigidbodyConstraints](../api/RigidbodyConstraints.md)\n- [Collider](../api/Collider.md)\n- [Physics](../api/Physics.md)",
-      "groupKey": "tutorials",
-      "groupTitle": "教程",
-      "url": "wiki/site/zh/tutorials/physics.html",
-      "source": "zh/tutorials/physics.md",
-      "meta": {
-        "category": "教程",
-        "tags": [
-          "physics"
-        ]
-      }
-    },
-    {
-      "title": "渲染、RenderGraph 与 RenderStack",
-      "summary": "Infernux 将渲染编排能力暴露给 Python 层。重点不只是配置材质，而是能够描述 Pass、资源和效果，让渲染流程保持可读和可扩展。",
-      "content": "\n# 渲染、RenderGraph 与 RenderStack\n\nInfernux 将渲染编排能力暴露给 Python 层。重点不只是配置材质，而是能够描述 Pass、资源和效果，让渲染流程保持可读和可扩展。\n\n## 关键类型\n\n- [RenderGraph](../api/RenderGraph.md)\n- [RenderPassBuilder](../api/RenderPassBuilder.md)\n- [RenderPipeline](../api/RenderPipeline.md)\n- [RenderStack](../api/RenderStack.md)\n- 后处理效果，例如 [BloomEffect](../api/BloomEffect.md) 和 [ToneMappingEffect](../api/ToneMappingEffect.md)\n\n## 常见工作流\n\n1. 定义需要的渲染 Pass。\n2. 描述资源读写和依赖关系。\n3. 插入后处理或自定义效果。\n4. 在 Python 侧迭代，由原生后端负责执行细节。",
-      "groupKey": "tutorials",
-      "groupTitle": "教程",
-      "url": "wiki/site/zh/tutorials/rendering.html",
-      "source": "zh/tutorials/rendering.md",
-      "meta": {
-        "category": "教程",
-        "tags": [
-          "rendering"
-        ]
-      }
-    },
-    {
-      "title": "Infernux UI 入门",
-      "summary": "当前 UI 系统已经提供基础界面能力：UICanvas、UIText、UIImage、UIButton 和 UISelectable。",
-      "content": "\n# Infernux UI 入门\n\n当前 UI 系统已经提供基础界面能力：[UICanvas](../api/UICanvas.md)、[UIText](../api/UIText.md)、[UIImage](../api/UIImage.md)、[UIButton](../api/UIButton.md) 和 [UISelectable](../api/UISelectable.md)。\n\n## 基本搭建步骤\n\n1. 创建 Canvas 根节点。\n2. 添加文本和图片元素。\n3. 用按钮承载交互。\n4. 通过按钮回调或指针事件数据处理输入。\n5. 让玩法脚本驱动 UI 状态。\n\n## 相关 API\n\n- [UICanvas](../api/UICanvas.md)\n- [UIText](../api/UIText.md)\n- [UIImage](../api/UIImage.md)\n- [UIButton](../api/UIButton.md)\n- [PointerEventData](../api/PointerEventData.md)",
-      "groupKey": "tutorials",
-      "groupTitle": "教程",
-      "url": "wiki/site/zh/tutorials/ui.html",
-      "source": "zh/tutorials/ui.md",
-      "meta": {
-        "category": "教程",
-        "tags": [
-          "ui"
-        ]
+          "jit",
+          "性能",
+          "python"
+        ],
+        "date": "2026-04-16"
       }
     }
   ]

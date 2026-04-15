@@ -12,6 +12,16 @@
 
 <!-- USER CONTENT END -->
 
+## 属性
+
+| 名称 | 类型 | 描述 |
+|------|------|------|
+| active_scene | `Optional[object]` |  *(只读)* |
+
+<!-- USER CONTENT START --> properties
+
+<!-- USER CONTENT END -->
+
 ## 静态方法
 
 | 方法 | 描述 |
@@ -27,6 +37,7 @@
 | `static SceneManager.get_scene_path(build_index: int) → Optional[str]` | Get a scene file path by build index. |
 | `static SceneManager.get_build_index(name: str) → int` | Get the build index of a scene by name. |
 | `static SceneManager.get_all_scene_names() → List[str]` | Get a list of all scene names in the build. |
+| `static SceneManager.dont_destroy_on_load(game_object: object) → None` | Mark a game object so it survives scene loads. |
 
 <!-- USER CONTENT START --> static_methods
 

@@ -31,6 +31,7 @@
 | `set_playing(playing: bool) → None` |  |
 | `create_game_object(name: str = 'GameObject') → GameObject` |  |
 | `create_primitive(type: PrimitiveType, name: str = '') → GameObject` |  |
+| `create_primitives_batch(type: PrimitiveType, count: int, name_prefix: str = '') → List[GameObject]` |  |
 | `create_from_model(guid: str, name: str = '') → Optional[GameObject]` |  |
 | `get_root_objects() → List[GameObject]` |  |
 | `get_all_objects() → List[GameObject]` |  |

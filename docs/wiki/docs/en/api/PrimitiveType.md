@@ -6,8 +6,6 @@ enum in <b>Infernux</b>
 
 ## Description
 
-Primitive mesh types for Scene.create_primitive().
-
 <!-- USER CONTENT START --> description
 
 <!-- USER CONTENT END -->
@@ -21,6 +19,7 @@ Primitive mesh types for Scene.create_primitive().
 | Capsule |  |
 | Cylinder |  |
 | Plane |  |
+| Quad |  |
 
 <!-- USER CONTENT START --> enum_values
 
