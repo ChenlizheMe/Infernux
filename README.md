@@ -21,6 +21,7 @@
   <a href="README-zh.md">中文文档</a> ·
   <a href="https://chenlizheme.github.io/Infernux/">Website</a> ·
   <a href="https://chenlizheme.github.io/Infernux/wiki.html">Docs</a> ·
+  <a href="https://arxiv.org/pdf/2604.10263">Technical Report</a> ·
   <a href="#quick-start">Quick Start</a>
 </p>
 
@@ -161,6 +162,7 @@ python -m pytest test/ -v
 
 - Website: <https://chenlizheme.github.io/Infernux/>
 - Documentation hub: <https://chenlizheme.github.io/Infernux/wiki.html>
+- Technical report: [Infernux: A Python-Native Game Engine with JIT-Accelerated Scripting (arXiv:2604.10263)](https://arxiv.org/pdf/2604.10263)
 - API reference: generated from the Python package and published under `docs/wiki/site/`
 
 To regenerate the API markdown and static site locally:
