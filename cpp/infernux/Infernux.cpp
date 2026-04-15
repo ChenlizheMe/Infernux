@@ -204,7 +204,15 @@ void Infernux::InitRenderer(int width, int height, const std::string &projectPat
 
     m_renderer->Init(width, height, m_metadata);
 
-    // Redirect log output to Logs/engine.log.
+    // Wire SceneManager to renderer so Play()/Stop() directly bypass idle
+    // sleep without relying on the Python callback chain timing.
+    {
+        auto *renderer = m_renderer.get();
+        SceneManager::Instance().SetPlayStateChangedCallback([renderer](bool playing) {
+            if (renderer)
+                renderer->SetPlayModeRendering(playing);
+        });
+    }
     // Debug / RelWithDebInfo: truncate on startup and write through.
     // Release: retain only the last 100 lines and dump them on exit.
 #if INFERNUX_FILE_LOGGING

@@ -560,7 +560,10 @@ class SceneViewPanel(SceneViewGizmoMixin, SceneViewCameraMixin, SceneViewOverlay
         if cull_mode == 0:
             return None
 
-        front_face = int(getattr(render_state, 'front_face', 1))
+        try:
+            front_face = int(getattr(render_state, 'front_face', 1))
+        except (TypeError, ValueError):
+            front_face = 1
         front_sign = -1.0 if front_face == 1 else 1.0
         visible_sign = front_sign if cull_mode == 2 else -front_sign
         local_side = (

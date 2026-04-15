@@ -277,6 +277,10 @@ void SceneManager::Play()
     m_isPlaying = true;
     m_isPaused = false;
 
+    // Notify renderer to exit idle mode immediately.
+    if (m_onPlayStateChanged)
+        m_onPlayStateChanged(true);
+
     if (m_activeScene) {
         m_activeScene->SetPlaying(true);
 
@@ -294,6 +298,11 @@ void SceneManager::Play()
         PhysicsWorld::Instance().OptimizeBroadPhase();
         double flushMs = ProfileMsSince(tFlush);
 
+        // Activate all dynamic rigidbodies AFTER bodies have been created and
+        // added to the broadphase.  Without this, gravity and other forces
+        // don't take effect until something externally wakes the body.
+        ActivateAllDynamicBodies();
+
         if (startMs + flushMs > 500.0) {
             INXLOG_INFO("[Perf] Play(): Start=", static_cast<int>(startMs), "ms, Flush=", static_cast<int>(flushMs),
                         "ms");
@@ -309,6 +318,10 @@ void SceneManager::Stop()
     m_isPlaying = false;
     m_isPaused = false;
     m_fixedTimeAccumulator = 0.0f;
+
+    // Notify renderer that play stopped.
+    if (m_onPlayStateChanged)
+        m_onPlayStateChanged(false);
 
     // Discard any persistent objects — play session is over.
     m_persistentObjects.clear();
@@ -513,6 +526,26 @@ void SceneManager::ForceAllBodiesToCurrentTransform()
     }
 }
 
+void SceneManager::ActivateAllDynamicBodies()
+{
+    auto &pw = PhysicsWorld::Instance();
+    if (!pw.IsInitialized())
+        return;
+
+    auto handles = PhysicsECSStore::Instance().GetAliveRigidbodyHandles();
+    for (auto handle : handles) {
+        auto &data = PhysicsECSStore::Instance().GetRigidbody(handle);
+        auto *rb = data.owner;
+        if (!rb || !rb->IsEnabled() || rb->IsKinematic())
+            continue;
+        auto *go = rb->GetGameObject();
+        if (!go || go->GetScene() != m_activeScene)
+            continue;
+        // Activate every dynamic (non-kinematic) rigidbody
+        rb->WakeUp();
+    }
+}
+
 void SceneManager::SyncRigidbodiesToTransform()
 {
     auto handles = PhysicsECSStore::Instance().GetAliveRigidbodyHandles();
@@ -571,6 +604,13 @@ void SceneManager::ClearComponentRegistries()
     m_activeMeshRendererSet.clear();
     m_activeLights.clear();
     ++m_meshRendererVersion;
+
+    // Flush stale physics pending queues.  During scene rebuild, edit-mode
+    // Collider::Awake() queues body creations whose handle.index entries linger
+    // in the dedup set.  If pool slots are reused on the next deserialize, the
+    // new QueueBodyCreation() silently fails the set insert, preventing body
+    // creation entirely.
+    PhysicsECSStore::Instance().ClearPendingQueues();
 }
 
 // ========================================================================

@@ -979,8 +979,7 @@ void HierarchyPanel::ShowCreatePrimitiveMenu(InxGUIContext *ctx, uint64_t parent
     };
     static const PrimEntry entries[] = {
         {"hierarchy.primitive_cube", 0},     {"hierarchy.primitive_sphere", 1}, {"hierarchy.primitive_capsule", 2},
-        {"hierarchy.primitive_cylinder", 3}, {"hierarchy.primitive_plane", 4},
-        {"hierarchy.primitive_quad", 5},
+        {"hierarchy.primitive_cylinder", 3}, {"hierarchy.primitive_plane", 4},  {"hierarchy.primitive_quad", 5},
     };
     for (auto &e : entries) {
         if (ctx->Selectable(Tr(e.key), false, 0, 0, 0)) {
@@ -1012,35 +1011,49 @@ void HierarchyPanel::ShowCreateLightMenu(InxGUIContext *ctx, uint64_t parentId)
 
 void HierarchyPanel::ShowCreateRenderingMenu(InxGUIContext *ctx, uint64_t parentId)
 {
-    if (ctx->Selectable(Tr("hierarchy.camera"), false, 0, 0, 0)) {
-        if (createCamera)
-            createCamera(parentId);
-    }
-    if (ctx->Selectable(Tr("hierarchy.render_stack"), false, 0, 0, 0)) {
-        if (createRenderStack)
-            createRenderStack(parentId);
+    for (auto &entry : createEntries) {
+        if (entry.category == "Rendering") {
+            if (ctx->Selectable(Tr(entry.localeKey), false, 0, 0, 0)) {
+                if (entry.callback)
+                    entry.callback(parentId);
+            }
+        }
     }
 }
 
 void HierarchyPanel::ShowUiMenu(InxGUIContext *ctx, uint64_t parentId)
 {
-    if (ctx->Selectable(Tr("hierarchy.ui_canvas"), false, 0, 0, 0)) {
-        if (createUiCanvas)
-            createUiCanvas(parentId);
+    for (auto &entry : createEntries) {
+        if (entry.category == "UI") {
+            if (ctx->Selectable(Tr(entry.localeKey), false, 0, 0, 0)) {
+                if (entry.callback)
+                    entry.callback(parentId);
+            }
+        }
     }
 }
 
 void HierarchyPanel::ShowUiModeContextMenu(InxGUIContext *ctx, uint64_t parentId)
 {
-    ShowUiMenu(ctx, parentId);
-    if (ctx->Selectable(Tr("hierarchy.ui_text"), false, 0, 0, 0)) {
-        if (createUiText)
-            createUiText(parentId);
+    for (auto &entry : createEntries) {
+        if (entry.category == "UI") {
+            if (ctx->Selectable(Tr(entry.localeKey), false, 0, 0, 0)) {
+                if (entry.callback)
+                    entry.callback(parentId);
+            }
+        }
     }
-    if (ctx->Selectable(Tr("hierarchy.ui_button"), false, 0, 0, 0)) {
-        if (createUiButton)
-            createUiButton(parentId);
-    }
+}
+
+void HierarchyPanel::AddCreateEntry(const std::string &category, const std::string &localeKey,
+                                    std::function<void(uint64_t)> callback)
+{
+    createEntries.push_back({category, localeKey, std::move(callback)});
+}
+
+void HierarchyPanel::ClearCreateEntries()
+{
+    createEntries.clear();
 }
 
 // ════════════════════════════════════════════════════════════════════

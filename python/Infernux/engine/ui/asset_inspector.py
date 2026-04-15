@@ -819,7 +819,13 @@ def _ensure_sprite_texture(state: _State) -> bool:
             and getattr(ss, '_srgb', None) == cur_srgb
             and getattr(ss, '_filter', None) == cur_filter):
         return True
+    # Preserve slice grid when only sRGB/filter changed for the same file
+    same_file = (ss.file_path == state.file_path)
+    saved_rows = ss.slice_rows if same_file else 1
+    saved_cols = ss.slice_cols if same_file else 1
     ss.reset()
+    ss.slice_rows = saved_rows
+    ss.slice_cols = saved_cols
     ss.file_path = state.file_path
     ss._srgb = cur_srgb
     ss._filter = cur_filter
@@ -921,6 +927,21 @@ def _render_sprite_body(ctx: InxGUIContext, panel, state: _State):
         return
 
     ss = _sprite_state
+
+    # Derive rows/cols from existing sprite_frames when the UI state is at
+    # the default 1×1 (e.g. first load of a previously-sliced texture).
+    if ss.slice_rows == 1 and ss.slice_cols == 1 and settings.sprite_frames:
+        frames = settings.sprite_frames
+        if len(frames) > 1 and ss.tex_w > 0 and ss.tex_h > 0:
+            fw = frames[0].w
+            fh = frames[0].h
+            if fw > 0 and fh > 0:
+                cols = max(1, round(ss.tex_w / fw))
+                rows = max(1, round(ss.tex_h / fh))
+                if rows * cols == len(frames):
+                    ss.slice_rows = rows
+                    ss.slice_cols = cols
+
     labels = [t("sprite.image_size"), t("sprite.rows"), t("sprite.cols")]
     lw = max_label_w(ctx, labels)
 

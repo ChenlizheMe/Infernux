@@ -77,6 +77,7 @@
   "hierarchy.light_spot": "聚光灯",
   "hierarchy.camera": "相机",
   "hierarchy.render_stack": "RenderStack",
+  "hierarchy.sprite_renderer": "精灵渲染器",
   "hierarchy.ui_canvas": "Canvas",
   "hierarchy.ui_text": "T 文本",
   "hierarchy.ui_button": "按钮",

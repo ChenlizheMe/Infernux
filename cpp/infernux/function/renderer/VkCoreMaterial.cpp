@@ -928,8 +928,9 @@ void InxVkCoreModular::CreateMaterialShadowPipeline(std::shared_ptr<InxMaterial>
         return;
     }
 
-    // ---- Shadow pipeline cache: share VkPipeline across materials with same shader ----
-    std::string shadowShaderKey = shadowVertName + "|" + shadowFragName;
+    // ---- Shadow pipeline cache: share VkPipeline across materials with same shader + cull mode ----
+    VkCullModeFlags matCullMode = material->GetRenderState().cullMode;
+    std::string shadowShaderKey = shadowVertName + "|" + shadowFragName + "|cull" + std::to_string(matCullMode);
     auto cacheIt = m_shadowPipelineCache.find(shadowShaderKey);
     if (cacheIt != m_shadowPipelineCache.end()) {
         material->SetPassPipeline(ShaderCompileTarget::Shadow, cacheIt->second);
@@ -954,12 +955,15 @@ void InxVkCoreModular::CreateMaterialShadowPipeline(std::shared_ptr<InxMaterial>
 
     vkrender::DynamicViewportScissorState dynVpScissor;
 
-    // Rasterization: front-face culling + depth bias (matches EnsureShadowPipeline)
+    // Rasterization: use material cull mode + depth bias
     VkPipelineRasterizationStateCreateInfo rasterizer{};
     rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
     rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
     rasterizer.lineWidth = 1.0f;
-    rasterizer.cullMode = VK_CULL_MODE_FRONT_BIT;
+    // Respect the material's cull mode so double-sided surfaces (cull=None)
+    // cast shadows from both faces.  Default front-face culling reduces
+    // shadow acne for single-sided geometry.
+    rasterizer.cullMode = (matCullMode == VK_CULL_MODE_NONE) ? VK_CULL_MODE_NONE : VK_CULL_MODE_FRONT_BIT;
     rasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE;
     rasterizer.depthBiasEnable = VK_TRUE;
     rasterizer.depthBiasConstantFactor = 1.5f;

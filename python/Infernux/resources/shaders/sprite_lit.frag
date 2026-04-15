@@ -3,7 +3,6 @@
 @shader_id: sprite_lit
 @shading_model: pbr
 @queue: 2000
-@cull: none
 @property: baseColor, Color, [1.0, 1.0, 1.0, 1.0]
 @property: metallic, Float, 0.0
 @property: smoothness, Float, 0.5
@@ -13,7 +12,6 @@
 @property: specularHighlights, Float, 1.0
 @property: texSampler, Texture2D, white
 @property: normalMap, Texture2D, normal
-@alpha_clip: on
 @property: uvRect, Float4, [0.0, 0.0, 1.0, 1.0]
 @property: displayScale, Float4, [1.0, 1.0, 0.0, 0.0]
 

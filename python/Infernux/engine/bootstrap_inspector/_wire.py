@@ -640,6 +640,22 @@ def _wire_add_remove_and_drop(ctx):
             _record_add_component_compound, _get_component_ids
         )
         if is_native:
+            # Block adding MeshRenderer when SpriteRenderer manages it.
+            if type_name_or_path == "MeshRenderer":
+                for c in _get_components_safe(obj):
+                    if getattr(c, 'type_name', '') == 'SpriteRenderer':
+                        Debug.log_warning(
+                            "Cannot add MeshRenderer — "
+                            "SpriteRenderer already manages the renderer.")
+                        return
+            # Block adding SpriteRenderer when MeshRenderer exists.
+            if type_name_or_path == "SpriteRenderer":
+                for c in _get_components_safe(obj):
+                    if getattr(c, 'type_name', '') == 'MeshRenderer':
+                        Debug.log_warning(
+                            "Cannot add SpriteRenderer — "
+                            "a MeshRenderer already exists. Remove it first.")
+                        return
             before_ids = _get_component_ids(obj)
             result = obj.add_component(type_name_or_path)
             if result is not None:

@@ -167,6 +167,11 @@ class PhysicsECSStore
         m_pendingBroadphaseSet.reserve(m_pendingBroadphaseSet.size() + count);
     }
 
+    /// Clear all pending queues (body creation + broadphase adds + dirty tracking).
+    /// Must be called before scene rebuild so stale handle.index entries in the
+    /// dedup sets don't block newly allocated colliders that reuse pool slots.
+    void ClearPendingQueues();
+
     // ---- Rigidbody pool ----
     RigidbodyHandle AllocateRigidbody(Rigidbody *owner);
     void ReleaseRigidbody(RigidbodyHandle handle);

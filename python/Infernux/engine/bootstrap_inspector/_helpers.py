@@ -67,12 +67,15 @@ def _get_add_component_entries():
     from Infernux.lib import InspectorAddComponentEntry, get_registered_component_types
 
     entries = []
+    from Infernux.components.builtin_component import BuiltinComponent
     for type_name in sorted(get_registered_component_types()):
         if type_name == "Transform":
             continue
         e = InspectorAddComponentEntry()
         e.display_name = type_name
-        e.category = "Built-in"
+        # Use BuiltinComponent wrapper category if available
+        wrapper_cls = BuiltinComponent._builtin_registry.get(type_name)
+        e.category = getattr(wrapper_cls, '_component_category_', "Built-in") if wrapper_cls else "Built-in"
         e.is_native = True
         entries.append(e)
 
