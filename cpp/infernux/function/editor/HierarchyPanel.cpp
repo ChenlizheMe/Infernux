@@ -121,12 +121,10 @@ void HierarchyPanel::ClearSearch()
 
 void HierarchyPanel::ClearSelectionAndNotify()
 {
-    if (!isSelectionEmpty || !isSelectionEmpty()) {
-        if (clearSelection)
-            clearSelection();
-        SyncSelectionCache();
-        NotifySelectionChanged();
-    }
+    if (clearSelection)
+        clearSelection();
+    SyncSelectionCache();
+    NotifySelectionChanged();
 }
 
 void HierarchyPanel::SetSelectedObjectById(uint64_t id, bool clearSearchFirst)
