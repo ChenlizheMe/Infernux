@@ -1,0 +1,26 @@
+{
+  "name": "DefaultUnlit",
+  "shaders": {
+    "vertex": "standard",
+    "fragment": "unlit"
+  },
+  "renderState": {
+    "cullMode": 1,
+    "frontFace": 1,
+    "polygonMode": 0,
+    "depthTestEnable": true,
+    "depthWriteEnable": true,
+    "depthCompareOp": 1,
+    "blendEnable": false,
+    "srcColorBlendFactor": 6,
+    "dstColorBlendFactor": 7,
+    "colorBlendOp": 0,
+    "renderQueue": 2000
+  },
+  "properties": {
+    "baseColor": {
+      "type": 3,
+      "value": [1.0, 1.0, 1.0, 1.0]
+    }
+  }
+}
