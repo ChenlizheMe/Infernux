@@ -856,7 +856,7 @@ void InxVkCoreModular::CreateMaterialShadowPipeline(std::shared_ptr<InxMaterial>
 
     if (needsShadowMaterialDesc) {
         if (hasVertexMaterialUBO && (!forwardMaterialDesc || !forwardMaterialDesc->vertexMaterialUBO ||
-            !forwardMaterialDesc->vertexMaterialUBO->IsValid())) {
+                                     !forwardMaterialDesc->vertexMaterialUBO->IsValid())) {
             INXLOG_WARN("CreateMaterialShadowPipeline: missing forward vertex material UBO for material '",
                         material->GetName(), "'");
             return;
@@ -889,9 +889,8 @@ void InxVkCoreModular::CreateMaterialShadowPipeline(std::shared_ptr<InxMaterial>
         std::vector<VkDescriptorImageInfo> imageInfos;
 
         // Max textures + up to 2 UBOs; pre-size to avoid realloc
-        const size_t maxTexCount = (hasAlphaClip && forwardMaterialDesc)
-                                       ? forwardMaterialDesc->textureBindings.size()
-                                       : 0;
+        const size_t maxTexCount =
+            (hasAlphaClip && forwardMaterialDesc) ? forwardMaterialDesc->textureBindings.size() : 0;
         bufferInfos.reserve(2);
         imageInfos.reserve(maxTexCount);
 

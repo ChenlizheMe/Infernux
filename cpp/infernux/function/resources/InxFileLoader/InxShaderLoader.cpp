@@ -672,7 +672,8 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
     int texBaseBinding = needsLightingUBO ? 2 : 1;
     // Shadow alpha-clip fragment: pack textures + material UBO into set 2
     // (the per-material shadow descriptor set), starting from binding 0.
-    const bool shadowAlphaFragment = (target == ShaderCompileTarget::Shadow && shadowNeedsAlphaClip && desc.isFragmentShader);
+    const bool shadowAlphaFragment =
+        (target == ShaderCompileTarget::Shadow && shadowNeedsAlphaClip && desc.isFragmentShader);
     int shadowTexBaseBinding = 0; // textures start at binding 0 in set 2
     if (target != ShaderCompileTarget::Shadow || shadowNeedsAlphaClip) {
         if (!desc.textureProperties.empty() && desc.isFragmentShader) {
@@ -684,8 +685,8 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
                     result << "layout(set = 2, binding = " << binding << ") uniform sampler2D "
                            << desc.textureProperties[i].name << ";\n";
                 } else {
-                    result << "layout(binding = " << binding << ") uniform sampler2D "
-                           << desc.textureProperties[i].name << ";\n";
+                    result << "layout(binding = " << binding << ") uniform sampler2D " << desc.textureProperties[i].name
+                           << ";\n";
                 }
             }
             result << "\n";
@@ -806,8 +807,10 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
                     // use them to remap UVs for aspect-fit sub-rects.
                     bool hasDisplayScale = false, hasUvRect = false;
                     for (const auto &p : desc.properties) {
-                        if (p.name == "displayScale") hasDisplayScale = true;
-                        if (p.name == "uvRect") hasUvRect = true;
+                        if (p.name == "displayScale")
+                            hasDisplayScale = true;
+                        if (p.name == "uvRect")
+                            hasUvRect = true;
                     }
                     if (hasDisplayScale) {
                         result << "    vec2 dScale = material.displayScale.xy;\n";

@@ -272,13 +272,13 @@ void PhysicsWorld::Initialize()
     //  - LinearCast threshold: 50 % (default 75 %). Triggers CCD earlier,
     //    critical for thin bodies whose inner radius is very small.
     JPH::PhysicsSettings settings = m_physicsSystem->GetPhysicsSettings();
-    settings.mPenetrationSlop              = 0.002f;  // 2 mm  (default 20 mm)
-    settings.mSpeculativeContactDistance   = 0.01f;   // 10 mm (default 20 mm)
-    settings.mNumPositionSteps             = 3;       // (default 2)
-    settings.mLinearCastMaxPenetration     = 0.1f;    // (default 0.25)
-    settings.mBaumgarte                    = 0.15f;   // softer penetration correction (default 0.2)
-    settings.mMaxPenetrationDistance       = 0.05f;   // limit per-step correction for thin bodies (default 0.2)
-    settings.mLinearCastThreshold          = 0.5f;    // trigger CCD earlier for thin bodies (default 0.75)
+    settings.mPenetrationSlop = 0.002f;           // 2 mm  (default 20 mm)
+    settings.mSpeculativeContactDistance = 0.01f; // 10 mm (default 20 mm)
+    settings.mNumPositionSteps = 3;               // (default 2)
+    settings.mLinearCastMaxPenetration = 0.1f;    // (default 0.25)
+    settings.mBaumgarte = 0.15f;                  // softer penetration correction (default 0.2)
+    settings.mMaxPenetrationDistance = 0.05f;     // limit per-step correction for thin bodies (default 0.2)
+    settings.mLinearCastThreshold = 0.5f;         // trigger CCD earlier for thin bodies (default 0.75)
     m_physicsSystem->SetPhysicsSettings(settings);
 
     // Gravity
@@ -891,10 +891,8 @@ void PhysicsWorld::SetBodyAllowedDOFs(uint32_t bodyId, int allowedDOFs, float ma
             float maxI = std::max({diag.GetX(), diag.GetY(), diag.GetZ()});
             if (maxI > 1e-10f) {
                 float minI = maxI * 0.1f;
-                massProps.mInertia.SetDiagonal3(JPH::Vec3(
-                    std::max(diag.GetX(), minI),
-                    std::max(diag.GetY(), minI),
-                    std::max(diag.GetZ(), minI)));
+                massProps.mInertia.SetDiagonal3(
+                    JPH::Vec3(std::max(diag.GetX(), minI), std::max(diag.GetY(), minI), std::max(diag.GetZ(), minI)));
             }
 
             body.GetMotionProperties()->SetMassProperties(static_cast<JPH::EAllowedDOFs>(allowedDOFs), massProps);

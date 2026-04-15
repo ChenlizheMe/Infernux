@@ -1111,7 +1111,7 @@ bool InxVkCoreModular::EnsureShadowPipeline(VkRenderPass /*compatibleRenderPass*
     if (m_shadowMaterialDescPool == VK_NULL_HANDLE) {
         std::array<VkDescriptorPoolSize, 2> poolSizes{};
         poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        poolSizes[0].descriptorCount = 1024 * 2;  // vertex UBO + fragment UBO per set
+        poolSizes[0].descriptorCount = 1024 * 2; // vertex UBO + fragment UBO per set
         poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         poolSizes[1].descriptorCount = 1024 * kMaxShadowTextures;
 
