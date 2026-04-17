@@ -26,6 +26,7 @@ import json
 import os
 import pathlib
 from Infernux.debug import Debug
+from Infernux.engine.preferences_store import PreferencesStore
 
 # ---------------------------------------------------------------------------
 # Locale state
@@ -40,6 +41,8 @@ _current_locale: str = "zh"
 _LOCALES_DIR = os.path.join(os.path.dirname(__file__), "locales")
 
 _tables: dict[str, dict[str, str]] = {}
+
+_store = PreferencesStore()
 
 
 def _load_locale_table(locale: str) -> dict[str, str]:
@@ -107,64 +110,16 @@ def set_locale(locale: str) -> None:
 # Persistence — Documents/Infernux/preferences.json
 # ---------------------------------------------------------------------------
 
-_PREFS_FILE = "preferences.json"
-
-
-def _prefs_path() -> str:
-    """Return the path to the global preferences file."""
-    if os.name == "nt":
-        docs = pathlib.Path.home() / "Documents"
-        try:
-            import ctypes.wintypes
-            buf = ctypes.create_unicode_buffer(ctypes.wintypes.MAX_PATH)
-            ctypes.windll.shell32.SHGetFolderPathW(None, 5, None, 0, buf)
-            if buf.value:
-                docs = pathlib.Path(buf.value)
-        except (OSError, ValueError) as _exc:
-            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-            pass
-    else:
-        docs = pathlib.Path.home() / "Documents"
-    prefs_dir = docs / "Infernux"
-    os.makedirs(prefs_dir, exist_ok=True)
-    return str(prefs_dir / _PREFS_FILE)
-
-
 def _load_preference() -> None:
     """Load the locale from the preferences file."""
     global _current_locale
-    path = _prefs_path()
-    if not os.path.isfile(path):
-        return
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        locale = data.get("language", "zh")
-        if locale in _tables:
-            _current_locale = locale
-    except (json.JSONDecodeError, OSError) as _exc:
-        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-        pass
-
+    locale = _store.get("language", "zh")
+    if locale in _tables:
+        _current_locale = locale
 
 def _save_preference() -> None:
     """Save the current locale to the preferences file."""
-    path = _prefs_path()
-    data: dict = {}
-    if os.path.isfile(path):
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-        except (json.JSONDecodeError, OSError):
-            data = {}
-    data["language"] = _current_locale
-    try:
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
-    except OSError as _exc:
-        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-        pass
-
+    _store.set("language", _current_locale)
 
 # ---------------------------------------------------------------------------
 # Module init — load locale files, then restore persisted preference

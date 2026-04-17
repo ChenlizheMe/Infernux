@@ -32,6 +32,12 @@ def open_in_vscode(
     """Open *file_path* in VS Code. Returns ``True`` on success."""
     ...
 
+def open_in_pycharm(
+    file_path: str, line: int = 0, project_root: str = "",
+) -> bool:
+    """Open *file_path* in Pycharm. Returns ``True`` on success."""
+    ...
+
 def open_file_with_system(
     file_path: str, project_root: str = "",
 ) -> None:

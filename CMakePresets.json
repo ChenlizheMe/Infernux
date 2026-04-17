@@ -12,9 +12,10 @@
       "generator": "Visual Studio 17 2022",
       "architecture": "x64",
       "binaryDir": "${sourceDir}/out/build",
-
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Release"
+        "CMAKE_BUILD_TYPE": "Release",
+        "Python3_EXECUTABLE": "C:/Users/r2133/miniconda3/envs/infernux-dev/python.exe",
+        "pybind11_DIR": "C:/Users/r2133/miniconda3/envs/infernux-dev/Lib/site-packages/pybind11/share/cmake/pybind11"
       }
     },
     {
@@ -22,7 +23,9 @@
       "displayName": "Debug Preset (Windows, RelWithDebInfo + Profiling)",
       "inherits": "release",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "RelWithDebInfo"
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "Python3_EXECUTABLE": "C:/Users/r2133/miniconda3/envs/infernux-dev/python.exe",
+        "pybind11_DIR": "C:/Users/r2133/miniconda3/envs/infernux-dev/Lib/site-packages/pybind11/share/cmake/pybind11"
       }
     },
     {
