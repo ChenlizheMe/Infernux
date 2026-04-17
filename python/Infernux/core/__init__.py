@@ -33,7 +33,7 @@ from .shader import Shader
 from .audio_clip import AudioClip
 from .assets import AssetManager
 from .asset_types import (
-    TextureImportSettings, TextureType, WrapMode, FilterMode,
+    TextureImportSettings, TextureType, WrapMode, FilterMode, SpriteFrame,
     ShaderAssetInfo, FontAssetInfo, asset_category_from_extension,
     AudioImportSettings, AudioCompressionFormat,
     MeshImportSettings,

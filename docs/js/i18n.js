@@ -167,8 +167,8 @@ const translations = {
         "roadmap.priorities.card1.body": "Skeletal animation and state machines are the next major expansion needed to support real game content beyond static scenes.",
         "roadmap.priorities.card2.title": "Advanced UI controls",
         "roadmap.priorities.card2.body": "The base UI system (Canvas, Text, Image, Button) is done. Advanced controls like ScrollView, Slider, and layout groups are next.",
-        "roadmap.priorities.card3.title": "Documentation & tutorials",
-        "roadmap.priorities.card3.body": "The API reference is auto-generated. Tutorials, getting-started guides, and example projects are needed to lower the onboarding barrier.",
+        "roadmap.priorities.card3.title": "Documentation & onboarding",
+        "roadmap.priorities.card3.body": "The API reference is auto-generated. Getting-started guides, architecture notes, and example projects are needed to lower the onboarding barrier.",
 
         "wiki.hero.kicker": "Documentation hub",
         "wiki.hero.title": "API reference, written guides, and onboarding material in one place.",
@@ -372,8 +372,8 @@ const translations = {
         "roadmap.priorities.card1.body": "骨骼动画和状态机是让引擎从静态场景走向真实游戏内容的下一个重大扩展。",
         "roadmap.priorities.card2.title": "高级 UI 控件",
         "roadmap.priorities.card2.body": "基础 UI 系统（Canvas、Text、Image、Button）已完成。下一步是 ScrollView、Slider、布局组件等高级控件。",
-        "roadmap.priorities.card3.title": "文档与教程",
-        "roadmap.priorities.card3.body": "API 参考已自动生成。还需要教程、入门指南和示例项目来降低上手门槛。",
+        "roadmap.priorities.card3.title": "文档与上手资料",
+        "roadmap.priorities.card3.body": "API 参考已自动生成。还需要入门指南、架构说明和示例项目来降低上手门槛。",
 
 
         "wiki.hero.kicker": "文档中枢",

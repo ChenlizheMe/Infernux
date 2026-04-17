@@ -56,6 +56,7 @@ class PrimitiveType(IntEnum):
     Capsule: int
     Cylinder: int
     Plane: int
+    Quad: int
 
 
 class Space(IntEnum):
@@ -730,6 +731,7 @@ class MeshRenderer(Component):
     @property
     def mesh_name(self) -> str: ...
     def get_mesh_asset(self) -> Optional[InxMesh]: ...
+    def set_primitive_mesh(self, type: PrimitiveType) -> None: ...
 
     @property
     def vertex_count(self) -> int: ...
@@ -748,6 +750,16 @@ class MeshRenderer(Component):
     def get_world_bounds(self) -> Tuple[float, float, float, float, float, float]: ...
     def serialize(self) -> str: ...
     def deserialize(self, json_str: str) -> None: ...
+
+
+class SpriteRenderer(MeshRenderer):
+    """Sprite rendering component — renders a single frame on a Quad mesh."""
+
+    sprite_guid: str
+    frame_index: int
+    sprite_color: Tuple[float, float, float, float]
+    flip_x: bool
+    flip_y: bool
 
 
 class Light(Component):

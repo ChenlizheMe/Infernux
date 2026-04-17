@@ -110,6 +110,9 @@ std::pair<VkImageView, VkSampler> InxVkCoreModular::ResolveTextureForMaterial(co
     bool generateMipmaps = true;
     bool normalMapMode = false;
     int maxSize = 0; // 0 = no clamping
+    std::string filterMode = "bilinear";
+    std::string wrapMode = "repeat";
+    int anisoLevel = -1;
 
     auto infTex = registry.LoadAsset<InxTexture>(textureGuid, ResourceType::Texture);
     if (infTex) {
@@ -120,6 +123,9 @@ std::pair<VkImageView, VkSampler> InxVkCoreModular::ResolveTextureForMaterial(co
         generateMipmaps = infTex->GenerateMipmaps();
         normalMapMode = infTex->IsNormalMapMode();
         maxSize = infTex->GetMaxSize();
+        filterMode = infTex->GetFilterMode();
+        wrapMode = infTex->GetWrapMode();
+        anisoLevel = infTex->GetAnisoLevel();
     } else {
         // Fallback: read .meta directly (texture not in AssetDatabase, e.g. engine-internal)
         // Use explicit metadata values as the single source of truth.
@@ -138,14 +144,35 @@ std::pair<VkImageView, VkSampler> InxVkCoreModular::ResolveTextureForMaterial(co
             if (meta.HasKey("max_size")) {
                 maxSize = meta.GetDataAs<int>("max_size");
             }
+            if (meta.HasKey("filter_mode")) {
+                filterMode = meta.GetDataAs<std::string>("filter_mode");
+            }
+            if (meta.HasKey("wrap_mode")) {
+                wrapMode = meta.GetDataAs<std::string>("wrap_mode");
+            }
+            if (meta.HasKey("aniso_level")) {
+                anisoLevel = meta.GetDataAs<int>("aniso_level");
+            }
         }
     }
 
     VkFormat format = isLinearTexture ? VK_FORMAT_R8G8B8A8_UNORM : VK_FORMAT_R8G8B8A8_SRGB;
 
+    // Map string settings to Vulkan enums
+    VkFilter vkFilter = VK_FILTER_LINEAR;
+    if (filterMode == "point")
+        vkFilter = VK_FILTER_NEAREST;
+
+    VkSamplerAddressMode vkAddressMode = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    if (wrapMode == "clamp")
+        vkAddressMode = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    else if (wrapMode == "mirror")
+        vkAddressMode = VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT;
+
     // Cache key uses GUID so that a renamed file still shares its cache entry
-    std::string cacheKey =
-        textureGuid + (isLinearTexture ? "::unorm" : "::srgb") + (normalMapMode ? "::normalmap" : "::raw");
+    std::string cacheKey = textureGuid + (isLinearTexture ? "::unorm" : "::srgb") +
+                           (normalMapMode ? "::normalmap" : "::raw") + "::" + filterMode + "::" + wrapMode + "::aniso" +
+                           std::to_string(anisoLevel);
 
     // Check texture cache (thread-safe)
     {
@@ -156,7 +183,8 @@ std::pair<VkImageView, VkSampler> InxVkCoreModular::ResolveTextureForMaterial(co
     }
 
     // Load texture from disk → GPU with correct format, mipmaps, and size limit
-    auto texture = m_resourceManager.LoadTexture(texturePath, generateMipmaps, format, maxSize, normalMapMode);
+    auto texture = m_resourceManager.LoadTexture(texturePath, generateMipmaps, format, maxSize, normalMapMode, vkFilter,
+                                                 vkAddressMode, anisoLevel);
     if (!texture) {
         INXLOG_WARN("TextureResolver: failed to load '", texturePath, "'");
         return {VK_NULL_HANDLE, VK_NULL_HANDLE};
@@ -809,7 +837,9 @@ void InxVkCoreModular::CreateMaterialShadowPipeline(std::shared_ptr<InxMaterial>
     MaterialRenderData *forwardRenderData = m_materialPipelineManager.GetRenderData(materialKey);
     MaterialDescriptorSet *forwardMaterialDesc = forwardRenderData ? forwardRenderData->materialDescSet : nullptr;
     ShaderProgram *forwardProgram = forwardRenderData ? forwardRenderData->shaderProgram : nullptr;
-    bool needsShadowMaterialDesc = forwardProgram && forwardProgram->HasVertexMaterialUBO();
+    bool hasVertexMaterialUBO = forwardProgram && forwardProgram->HasVertexMaterialUBO();
+    bool hasAlphaClip = material->GetRenderState().alphaClipEnabled;
+    bool needsShadowMaterialDesc = hasVertexMaterialUBO || hasAlphaClip;
 
     auto retireOldShadowDescriptorSet = [&](VkDescriptorSet descriptorSet) {
         if (descriptorSet == VK_NULL_HANDLE || m_shadowMaterialDescPool == VK_NULL_HANDLE) {
@@ -825,8 +855,8 @@ void InxVkCoreModular::CreateMaterialShadowPipeline(std::shared_ptr<InxMaterial>
     };
 
     if (needsShadowMaterialDesc) {
-        if (!forwardMaterialDesc || !forwardMaterialDesc->vertexMaterialUBO ||
-            !forwardMaterialDesc->vertexMaterialUBO->IsValid()) {
+        if (hasVertexMaterialUBO && (!forwardMaterialDesc || !forwardMaterialDesc->vertexMaterialUBO ||
+                                     !forwardMaterialDesc->vertexMaterialUBO->IsValid())) {
             INXLOG_WARN("CreateMaterialShadowPipeline: missing forward vertex material UBO for material '",
                         material->GetName(), "'");
             return;
@@ -851,19 +881,108 @@ void InxVkCoreModular::CreateMaterialShadowPipeline(std::shared_ptr<InxMaterial>
             return;
         }
 
-        VkDescriptorBufferInfo bufferInfo{};
-        bufferInfo.buffer = forwardMaterialDesc->vertexMaterialUBO->GetBuffer();
-        bufferInfo.offset = 0;
-        bufferInfo.range = forwardMaterialDesc->vertexMaterialUBO->GetSize();
+        std::vector<VkWriteDescriptorSet> writes;
+        // Keep descriptor infos alive until vkUpdateDescriptorSets.
+        // We allocate max capacity upfront to prevent reallocation (which
+        // would invalidate pointers stored in VkWriteDescriptorSet).
+        std::vector<VkDescriptorBufferInfo> bufferInfos;
+        std::vector<VkDescriptorImageInfo> imageInfos;
 
-        VkWriteDescriptorSet write{};
-        write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        write.dstSet = shadowMaterialDescSet;
-        write.dstBinding = 14;
-        write.descriptorCount = 1;
-        write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        write.pBufferInfo = &bufferInfo;
-        vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
+        // Max textures + up to 2 UBOs; pre-size to avoid realloc
+        const size_t maxTexCount =
+            (hasAlphaClip && forwardMaterialDesc) ? forwardMaterialDesc->textureBindings.size() : 0;
+        bufferInfos.reserve(2);
+        imageInfos.reserve(maxTexCount);
+
+        // Collect sorted texture bindings for alpha-clip (needed for both
+        // texture writes and to determine fragment MaterialProperties binding)
+        std::vector<std::pair<uint32_t, MaterialDescriptorSet::TextureBinding>> sortedTexBindings;
+        uint32_t shadowTexCount = 0;
+        if (hasAlphaClip && forwardMaterialDesc) {
+            sortedTexBindings.assign(forwardMaterialDesc->textureBindings.begin(),
+                                     forwardMaterialDesc->textureBindings.end());
+            std::sort(sortedTexBindings.begin(), sortedTexBindings.end(),
+                      [](const auto &a, const auto &b) { return a.first < b.first; });
+        }
+
+        // --- Phase 1: collect all buffer/image infos (no pointer-taking yet) ---
+
+        // (a) Vertex MaterialProperties UBO at binding 14
+        size_t vtxUboInfoIdx = SIZE_MAX;
+        if (hasVertexMaterialUBO && forwardMaterialDesc && forwardMaterialDesc->vertexMaterialUBO &&
+            forwardMaterialDesc->vertexMaterialUBO->IsValid()) {
+            vtxUboInfoIdx = bufferInfos.size();
+            VkDescriptorBufferInfo bi{};
+            bi.buffer = forwardMaterialDesc->vertexMaterialUBO->GetBuffer();
+            bi.offset = 0;
+            bi.range = forwardMaterialDesc->vertexMaterialUBO->GetSize();
+            bufferInfos.push_back(bi);
+        }
+
+        // (b) Alpha-clip textures (bindings 0..N-1)
+        std::vector<uint32_t> texShadowBindings;
+        for (const auto &[fwdBinding, texBinding] : sortedTexBindings) {
+            if (texBinding.imageView == VK_NULL_HANDLE || texBinding.sampler == VK_NULL_HANDLE)
+                continue;
+            VkDescriptorImageInfo ii{};
+            ii.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            ii.imageView = texBinding.imageView;
+            ii.sampler = texBinding.sampler;
+            texShadowBindings.push_back(shadowTexCount);
+            imageInfos.push_back(ii);
+            ++shadowTexCount;
+        }
+
+        // (c) Fragment MaterialProperties UBO at binding = shadowTexCount
+        size_t fragUboInfoIdx = SIZE_MAX;
+        if (hasAlphaClip && forwardMaterialDesc && forwardMaterialDesc->materialUBO &&
+            forwardMaterialDesc->materialUBO->IsValid()) {
+            fragUboInfoIdx = bufferInfos.size();
+            VkDescriptorBufferInfo bi{};
+            bi.buffer = forwardMaterialDesc->materialUBO->GetBuffer();
+            bi.offset = 0;
+            bi.range = forwardMaterialDesc->materialUBO->GetSize();
+            bufferInfos.push_back(bi);
+        }
+
+        // --- Phase 2: build VkWriteDescriptorSet with stable pointers ---
+
+        if (vtxUboInfoIdx != SIZE_MAX) {
+            VkWriteDescriptorSet w{};
+            w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            w.dstSet = shadowMaterialDescSet;
+            w.dstBinding = 14;
+            w.descriptorCount = 1;
+            w.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            w.pBufferInfo = &bufferInfos[vtxUboInfoIdx];
+            writes.push_back(w);
+        }
+
+        for (size_t ti = 0; ti < texShadowBindings.size(); ++ti) {
+            VkWriteDescriptorSet w{};
+            w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            w.dstSet = shadowMaterialDescSet;
+            w.dstBinding = texShadowBindings[ti];
+            w.descriptorCount = 1;
+            w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            w.pImageInfo = &imageInfos[ti];
+            writes.push_back(w);
+        }
+
+        if (fragUboInfoIdx != SIZE_MAX) {
+            VkWriteDescriptorSet w{};
+            w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            w.dstSet = shadowMaterialDescSet;
+            w.dstBinding = 8; // Must match kMaxShadowTextures in EnsureShadowPipeline layout
+            w.descriptorCount = 1;
+            w.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            w.pBufferInfo = &bufferInfos[fragUboInfoIdx];
+            writes.push_back(w);
+        }
+
+        if (!writes.empty()) {
+            vkUpdateDescriptorSets(device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+        }
 
         material->SetPassDescriptorSet(ShaderCompileTarget::Shadow, shadowMaterialDescSet);
     } else {
@@ -900,8 +1019,9 @@ void InxVkCoreModular::CreateMaterialShadowPipeline(std::shared_ptr<InxMaterial>
         return;
     }
 
-    // ---- Shadow pipeline cache: share VkPipeline across materials with same shader ----
-    std::string shadowShaderKey = shadowVertName + "|" + shadowFragName;
+    // ---- Shadow pipeline cache: share VkPipeline across materials with same shader + cull mode ----
+    VkCullModeFlags matCullMode = material->GetRenderState().cullMode;
+    std::string shadowShaderKey = shadowVertName + "|" + shadowFragName + "|cull" + std::to_string(matCullMode);
     auto cacheIt = m_shadowPipelineCache.find(shadowShaderKey);
     if (cacheIt != m_shadowPipelineCache.end()) {
         material->SetPassPipeline(ShaderCompileTarget::Shadow, cacheIt->second);
@@ -926,12 +1046,15 @@ void InxVkCoreModular::CreateMaterialShadowPipeline(std::shared_ptr<InxMaterial>
 
     vkrender::DynamicViewportScissorState dynVpScissor;
 
-    // Rasterization: front-face culling + depth bias (matches EnsureShadowPipeline)
+    // Rasterization: use material cull mode + depth bias
     VkPipelineRasterizationStateCreateInfo rasterizer{};
     rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
     rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
     rasterizer.lineWidth = 1.0f;
-    rasterizer.cullMode = VK_CULL_MODE_FRONT_BIT;
+    // Respect the material's cull mode so double-sided surfaces (cull=None)
+    // cast shadows from both faces.  Default front-face culling reduces
+    // shadow acne for single-sided geometry.
+    rasterizer.cullMode = (matCullMode == VK_CULL_MODE_NONE) ? VK_CULL_MODE_NONE : VK_CULL_MODE_FRONT_BIT;
     rasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE;
     rasterizer.depthBiasEnable = VK_TRUE;
     rasterizer.depthBiasConstantFactor = 1.5f;
@@ -967,7 +1090,8 @@ void InxVkCoreModular::CreateMaterialShadowPipeline(std::shared_ptr<InxMaterial>
     pipelineInfo.subpass = 0;
 
     VkPipeline shadowPipeline = VK_NULL_HANDLE;
-    if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &shadowPipeline) != VK_SUCCESS) {
+    VkPipelineCache pipelineCache = m_materialPipelineManager.GetVkPipelineCache();
+    if (vkCreateGraphicsPipelines(device, pipelineCache, 1, &pipelineInfo, nullptr, &shadowPipeline) != VK_SUCCESS) {
         INXLOG_WARN("Failed to create per-material shadow pipeline for '", material->GetName(), "' (vert='",
                     shadowVertName, "', frag='", shadowFragName, "')");
         return;

@@ -6,8 +6,6 @@ enum in <b>Infernux</b>
 
 ## Description
 
-Camera clear behavior.
-
 <!-- USER CONTENT START --> description
 
 <!-- USER CONTENT END -->

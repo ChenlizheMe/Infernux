@@ -161,11 +161,6 @@ void Component::SetEnabled(bool enabled)
         return;
     }
 
-    const bool lifecycleAllowed = scene->IsPlaying() || WantsEditModeLifecycle();
-    if (!lifecycleAllowed) {
-        return;
-    }
-
     const bool effectiveActive = m_enabled && m_gameObject->IsActiveInHierarchy();
     if (effectiveActive) {
         CallOnEnable();

@@ -146,4 +146,4 @@ _script_guid_map.json
 # ============================================================================
 # Compiled Python bytecode in project assets
 # ============================================================================
-Assets/Scripts/**/*.pyc
+Assets/Scripts/**/*.pycbuild_log.txt

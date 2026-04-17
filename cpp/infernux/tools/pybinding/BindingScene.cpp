@@ -25,6 +25,7 @@
 #include "function/scene/Scene.h"
 #include "function/scene/SceneManager.h"
 #include "function/scene/SphereCollider.h"
+#include "function/scene/SpriteRenderer.h"
 #include "function/scene/Transform.h"
 #include "function/scene/physics/PhysicsECSStore.h"
 #include <functional>
@@ -76,7 +77,8 @@ enum class PrimitiveType
     Sphere,
     Capsule,
     Cylinder,
-    Plane
+    Plane,
+    Quad
 };
 
 /**
@@ -110,6 +112,11 @@ static void GetPrimitiveMeshData(PrimitiveType type, const std::vector<Vertex> *
         outVertices = &PrimitiveMeshes::GetPlaneVertices();
         outIndices = &PrimitiveMeshes::GetPlaneIndices();
         outDefaultName = "Plane";
+        break;
+    case PrimitiveType::Quad:
+        outVertices = &PrimitiveMeshes::GetQuadVertices();
+        outIndices = &PrimitiveMeshes::GetQuadIndices();
+        outDefaultName = "Quad";
         break;
     }
 }
@@ -254,6 +261,7 @@ void RegisterSceneBindings(py::module_ &m)
         .value("Capsule", PrimitiveType::Capsule)
         .value("Cylinder", PrimitiveType::Cylinder)
         .value("Plane", PrimitiveType::Plane)
+        .value("Quad", PrimitiveType::Quad)
         .export_values();
 
     // ========================================================================
@@ -515,6 +523,16 @@ void RegisterSceneBindings(py::module_ &m)
             "set_material_slot_count", [](MeshRenderer &mr, uint32_t count) { mr.SetMaterialSlotCount(count); },
             py::arg("count"), "Set the number of material slots")
         .def("serialize", &MeshRenderer::Serialize, "Serialize MeshRenderer to JSON string")
+        .def(
+            "set_primitive_mesh",
+            [](MeshRenderer &mr, PrimitiveType type) {
+                const std::vector<Vertex> *vertices = nullptr;
+                const std::vector<uint32_t> *indices = nullptr;
+                const char *defaultName = "Primitive";
+                GetPrimitiveMeshData(type, vertices, indices, defaultName);
+                mr.SetSharedPrimitiveMesh(*vertices, *indices, defaultName);
+            },
+            py::arg("type"), "Set the mesh to a built-in primitive (Cube, Sphere, Quad, etc.)")
 
         // ====================================================================
         // Mesh data access for scripting and inspection tools
@@ -650,6 +668,28 @@ void RegisterSceneBindings(py::module_ &m)
                 return py::make_tuple(outMin.x, outMin.y, outMin.z, outMax.x, outMax.y, outMax.z);
             },
             "Get world-space AABB as (min_x, min_y, min_z, max_x, max_y, max_z)");
+
+    // ========================================================================
+    // SpriteRenderer — inherits MeshRenderer for rendering, adds sprite props
+    // ========================================================================
+    py::class_<SpriteRenderer, MeshRenderer>(m, "SpriteRenderer")
+        .def(py::init<>())
+        .def_property("sprite_guid", &SpriteRenderer::GetSpriteGuid, &SpriteRenderer::SetSpriteGuid,
+                      "Asset GUID of the sprite texture")
+        .def_property("frame_index", &SpriteRenderer::GetFrameIndex, &SpriteRenderer::SetFrameIndex,
+                      "Index of the sprite frame to display")
+        .def_property(
+            "sprite_color",
+            [](const SpriteRenderer &sr) -> py::tuple {
+                const auto &c = sr.GetColor();
+                return py::make_tuple(c.r, c.g, c.b, c.a);
+            },
+            [](SpriteRenderer &sr, const py::tuple &t) {
+                sr.SetColor(glm::vec4(t[0].cast<float>(), t[1].cast<float>(), t[2].cast<float>(), t[3].cast<float>()));
+            },
+            "Sprite tint color (r, g, b, a)")
+        .def_property("flip_x", &SpriteRenderer::GetFlipX, &SpriteRenderer::SetFlipX, "Flip sprite horizontally")
+        .def_property("flip_y", &SpriteRenderer::GetFlipY, &SpriteRenderer::SetFlipY, "Flip sprite vertically");
 
     // ========================================================================
     // LightType enum (matches Unity)

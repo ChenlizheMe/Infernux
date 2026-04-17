@@ -277,6 +277,10 @@ void SceneManager::Play()
     m_isPlaying = true;
     m_isPaused = false;
 
+    // Notify renderer to exit idle mode immediately.
+    if (m_onPlayStateChanged)
+        m_onPlayStateChanged(true);
+
     if (m_activeScene) {
         m_activeScene->SetPlaying(true);
 
@@ -294,6 +298,11 @@ void SceneManager::Play()
         PhysicsWorld::Instance().OptimizeBroadPhase();
         double flushMs = ProfileMsSince(tFlush);
 
+        // Activate all dynamic rigidbodies AFTER bodies have been created and
+        // added to the broadphase.  Without this, gravity and other forces
+        // don't take effect until something externally wakes the body.
+        ActivateAllDynamicBodies();
+
         if (startMs + flushMs > 500.0) {
             INXLOG_INFO("[Perf] Play(): Start=", static_cast<int>(startMs), "ms, Flush=", static_cast<int>(flushMs),
                         "ms");
@@ -309,6 +318,10 @@ void SceneManager::Stop()
     m_isPlaying = false;
     m_isPaused = false;
     m_fixedTimeAccumulator = 0.0f;
+
+    // Notify renderer that play stopped.
+    if (m_onPlayStateChanged)
+        m_onPlayStateChanged(false);
 
     // Discard any persistent objects — play session is over.
     m_persistentObjects.clear();
@@ -402,20 +415,18 @@ void SceneManager::SyncCollidersToPhysics()
     }
     m_lastPhysicsSyncTransformSerial = currentSerial;
 
-    // Something moved — walk all colliders.  Each collider's
-    // SyncTransformToPhysics() has its own lastSyncedPos/Rot early-out
-    // so only colliders that actually moved pay for a Jolt call.
-    auto handles = PhysicsECSStore::Instance().GetAliveColliderHandles();
-    for (auto handle : handles) {
-        auto &data = PhysicsECSStore::Instance().GetCollider(handle);
+    // Something moved — walk all colliders via zero-allocation ForEach.
+    // Each collider's SyncTransformToPhysics() has its own lastSyncedPos/Rot
+    // early-out so only colliders that actually moved pay for a Jolt call.
+    PhysicsECSStore::Instance().ForEachAliveCollider([this](ColliderECSData &data) {
         auto *col = data.owner;
         if (!col || !col->IsEnabled())
-            continue;
+            return;
         auto *go = col->GetGameObject();
         if (!go || go->GetScene() != m_activeScene)
-            continue;
+            return;
         col->SyncTransformToPhysics();
-    }
+    });
 }
 
 void SceneManager::FlushPendingBroadphase()
@@ -492,40 +503,53 @@ void SceneManager::ForceAllBodiesToCurrentTransform()
     if (!pw.IsInitialized())
         return;
 
-    auto handles = PhysicsECSStore::Instance().GetAliveColliderHandles();
-    for (auto handle : handles) {
-        auto &data = PhysicsECSStore::Instance().GetCollider(handle);
+    PhysicsECSStore::Instance().ForEachAliveCollider([&pw](ColliderECSData &data) {
         auto *col = data.owner;
         if (!col || col->GetBodyId() == 0xFFFFFFFF)
-            continue;
+            return;
 
         auto *go = col->GetGameObject();
         if (!go)
-            continue;
+            return;
 
         Transform *tf = go->GetTransform();
         if (!tf)
-            continue;
+            return;
 
         glm::quat rot = tf->GetWorldRotation();
         glm::vec3 pos = tf->GetPosition();
         pw.SetBodyPosition(col->GetBodyId(), pos, rot);
-    }
+    });
+}
+
+void SceneManager::ActivateAllDynamicBodies()
+{
+    auto &pw = PhysicsWorld::Instance();
+    if (!pw.IsInitialized())
+        return;
+
+    PhysicsECSStore::Instance().ForEachAliveRigidbody([this](RigidbodyECSData &data) {
+        auto *rb = data.owner;
+        if (!rb || !rb->IsEnabled() || rb->IsKinematic())
+            return;
+        auto *go = rb->GetGameObject();
+        if (!go || go->GetScene() != m_activeScene)
+            return;
+        rb->WakeUp();
+    });
 }
 
 void SceneManager::SyncRigidbodiesToTransform()
 {
-    auto handles = PhysicsECSStore::Instance().GetAliveRigidbodyHandles();
-    for (auto handle : handles) {
-        auto &data = PhysicsECSStore::Instance().GetRigidbody(handle);
+    PhysicsECSStore::Instance().ForEachAliveRigidbody([this](RigidbodyECSData &data) {
         auto *rb = data.owner;
         if (!rb || !rb->IsEnabled())
-            continue;
+            return;
         auto *go = rb->GetGameObject();
         if (!go || go->GetScene() != m_activeScene)
-            continue;
+            return;
         rb->SyncPhysicsToTransform();
-    }
+    });
 }
 
 void SceneManager::ApplyInterpolatedRigidbodies(float alpha)
@@ -533,32 +557,28 @@ void SceneManager::ApplyInterpolatedRigidbodies(float alpha)
     if (!m_activeScene)
         return;
 
-    auto handles = PhysicsECSStore::Instance().GetAliveRigidbodyHandles();
-    for (auto handle : handles) {
-        auto &data = PhysicsECSStore::Instance().GetRigidbody(handle);
+    PhysicsECSStore::Instance().ForEachAliveRigidbody([this, alpha](RigidbodyECSData &data) {
         auto *rb = data.owner;
         if (!rb || !rb->IsEnabled())
-            continue;
+            return;
         auto *go = rb->GetGameObject();
         if (!go || go->GetScene() != m_activeScene)
-            continue;
+            return;
         rb->ApplyInterpolatedTransform(alpha);
-    }
+    });
 }
 
 void SceneManager::SyncExternalRigidbodyMoves()
 {
-    auto handles = PhysicsECSStore::Instance().GetAliveRigidbodyHandles();
-    for (auto handle : handles) {
-        auto &data = PhysicsECSStore::Instance().GetRigidbody(handle);
+    PhysicsECSStore::Instance().ForEachAliveRigidbody([this](RigidbodyECSData &data) {
         auto *rb = data.owner;
         if (!rb || !rb->IsEnabled())
-            continue;
+            return;
         auto *go = rb->GetGameObject();
         if (!go || go->GetScene() != m_activeScene)
-            continue;
+            return;
         rb->SyncExternalMovesToPhysics();
-    }
+    });
 }
 
 // ============================================================================
@@ -571,6 +591,13 @@ void SceneManager::ClearComponentRegistries()
     m_activeMeshRendererSet.clear();
     m_activeLights.clear();
     ++m_meshRendererVersion;
+
+    // Flush stale physics pending queues.  During scene rebuild, edit-mode
+    // Collider::Awake() queues body creations whose handle.index entries linger
+    // in the dedup set.  If pool slots are reused on the next deserialize, the
+    // new QueueBodyCreation() silently fails the set insert, preventing body
+    // creation entirely.
+    PhysicsECSStore::Instance().ClearPendingQueues();
 }
 
 // ========================================================================

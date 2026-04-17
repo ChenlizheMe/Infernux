@@ -170,7 +170,7 @@ class MeshRenderer : public Component
     [[nodiscard]] std::shared_ptr<InxMaterial> GetMaterial(uint32_t slot = 0) const;
 
     /// @brief Get the effective material for a slot (returns default if none).
-    [[nodiscard]] std::shared_ptr<InxMaterial> GetEffectiveMaterial(uint32_t slot = 0) const;
+    [[nodiscard]] virtual std::shared_ptr<InxMaterial> GetEffectiveMaterial(uint32_t slot = 0) const;
 
     /// @brief Get the GUID of the material at a specific slot.
     [[nodiscard]] std::string GetMaterialGuid(uint32_t slot = 0) const;

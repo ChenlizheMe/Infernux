@@ -632,6 +632,14 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin, SceneConfirmationMixin)
         except Exception as exc:
             Debug.log_error(f"Error restoring Python components: {exc}")
 
+        # Force-init SpriteRenderer wrappers so their materials (texture,
+        # color, uvRect) are created before the first render frame.
+        try:
+            from Infernux.components.builtin.sprite_renderer import SpriteRenderer
+            SpriteRenderer.init_all_in_scene(scene)
+        except Exception as exc:
+            Debug.log_internal(f"SpriteRenderer init: {exc}")
+
         self._pump_events_safe()
 
         self._restore_camera_state(self._current_scene_path)

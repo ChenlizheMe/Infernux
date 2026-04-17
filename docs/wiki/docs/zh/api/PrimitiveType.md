@@ -6,8 +6,6 @@
 
 ## 描述
 
-基本几何体类型枚举。
-
 <!-- USER CONTENT START --> description
 
 <!-- USER CONTENT END -->
@@ -21,6 +19,7 @@
 | Capsule |  |
 | Cylinder |  |
 | Plane |  |
+| Quad |  |
 
 <!-- USER CONTENT START --> enum_values
 

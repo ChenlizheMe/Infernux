@@ -259,6 +259,28 @@ void PhysicsWorld::Initialize()
     m_physicsSystem->Init(cfg.physicsMaxBodies, 0, cfg.physicsMaxBodyPairs, cfg.physicsMaxContactConstraints,
                           m_layers->bpInterface, m_layers->objVsBpFilter, m_layers->objPairFilter);
 
+    // Tune physics settings for thin-body stability and precision.
+    //  - Penetration slop: 2 mm (default 20 mm). Min BoxShape thickness is
+    //    2 × kMinHalfExtent = 0.02 m; 2 mm slop keeps sinking at 10 %.
+    //  - Speculative contact: 10 mm (default 20 mm).  Tighter for thin shells.
+    //  - Position solver: 3 iterations (default 2). Better stacking stability.
+    //  - LinearCast max penetration: 10 % of inner radius (default 25 %).
+    //  - Baumgarte: 0.15 (default 0.2). Softer correction prevents violent
+    //    pop-out when thin bodies briefly penetrate a surface.
+    //  - Max penetration distance: 50 mm (default 200 mm). Limits per-step
+    //    correction so thin-body overlaps resolve gradually.
+    //  - LinearCast threshold: 50 % (default 75 %). Triggers CCD earlier,
+    //    critical for thin bodies whose inner radius is very small.
+    JPH::PhysicsSettings settings = m_physicsSystem->GetPhysicsSettings();
+    settings.mPenetrationSlop = 0.002f;           // 2 mm  (default 20 mm)
+    settings.mSpeculativeContactDistance = 0.01f; // 10 mm (default 20 mm)
+    settings.mNumPositionSteps = 3;               // (default 2)
+    settings.mLinearCastMaxPenetration = 0.1f;    // (default 0.25)
+    settings.mBaumgarte = 0.15f;                  // softer penetration correction (default 0.2)
+    settings.mMaxPenetrationDistance = 0.05f;     // limit per-step correction for thin bodies (default 0.2)
+    settings.mLinearCastThreshold = 0.5f;         // trigger CCD earlier for thin bodies (default 0.75)
+    m_physicsSystem->SetPhysicsSettings(settings);
+
     // Gravity
     m_physicsSystem->SetGravity(JPH::Vec3(cfg.physicsGravity.x, cfg.physicsGravity.y, cfg.physicsGravity.z));
 
@@ -756,7 +778,7 @@ glm::vec3 PhysicsWorld::GetBodyLinearVelocity(uint32_t bodyId) const
     if (!m_initialized || bodyId == 0xFFFFFFFF)
         return glm::vec3(0.0f);
 
-    JPH::BodyInterface &bi = m_physicsSystem->GetBodyInterface();
+    const JPH::BodyInterface &bi = m_physicsSystem->GetBodyInterfaceNoLock();
     JPH::Vec3 v = bi.GetLinearVelocity(JPH::BodyID(bodyId));
     return glm::vec3(v.GetX(), v.GetY(), v.GetZ());
 }
@@ -775,7 +797,7 @@ glm::vec3 PhysicsWorld::GetBodyAngularVelocity(uint32_t bodyId) const
     if (!m_initialized || bodyId == 0xFFFFFFFF)
         return glm::vec3(0.0f);
 
-    JPH::BodyInterface &bi = m_physicsSystem->GetBodyInterface();
+    const JPH::BodyInterface &bi = m_physicsSystem->GetBodyInterfaceNoLock();
     JPH::Vec3 v = bi.GetAngularVelocity(JPH::BodyID(bodyId));
     return glm::vec3(v.GetX(), v.GetY(), v.GetZ());
 }
@@ -859,6 +881,20 @@ void PhysicsWorld::SetBodyAllowedDOFs(uint32_t bodyId, int allowedDOFs, float ma
         if (body.IsDynamic()) {
             JPH::MassProperties massProps = body.GetShape()->GetMassProperties();
             massProps.ScaleToMass(mass > 0.001f ? mass : 0.001f);
+
+            // Thin-body inertia stabilization: ensure no principal axis has
+            // less than 10 % of the maximum moment of inertia.  This prevents
+            // extreme angular accelerations for flat / thin shapes (e.g.
+            // sprites, panels) where one dimension is much smaller than the
+            // others.
+            JPH::Vec3 diag = massProps.mInertia.GetDiagonal3();
+            float maxI = std::max({diag.GetX(), diag.GetY(), diag.GetZ()});
+            if (maxI > 1e-10f) {
+                float minI = maxI * 0.1f;
+                massProps.mInertia.SetDiagonal3(
+                    JPH::Vec3(std::max(diag.GetX(), minI), std::max(diag.GetY(), minI), std::max(diag.GetZ(), minI)));
+            }
+
             body.GetMotionProperties()->SetMassProperties(static_cast<JPH::EAllowedDOFs>(allowedDOFs), massProps);
         }
     }
@@ -921,7 +957,7 @@ bool PhysicsWorld::IsBodySleeping(uint32_t bodyId) const
     if (!m_initialized || bodyId == 0xFFFFFFFF)
         return true;
 
-    JPH::BodyInterface &bi = m_physicsSystem->GetBodyInterface();
+    const JPH::BodyInterface &bi = m_physicsSystem->GetBodyInterfaceNoLock();
     return !bi.IsActive(JPH::BodyID(bodyId));
 }
 
@@ -993,7 +1029,8 @@ glm::vec3 PhysicsWorld::GetBodyPosition(uint32_t bodyId) const
     if (!m_initialized || bodyId == 0xFFFFFFFF)
         return glm::vec3(0.0f);
 
-    JPH::BodyInterface &bi = m_physicsSystem->GetBodyInterface();
+    // NoLock: safe because this is called from main thread AFTER Step().
+    const JPH::BodyInterface &bi = m_physicsSystem->GetBodyInterfaceNoLock();
     JPH::RVec3 p = bi.GetPosition(JPH::BodyID(bodyId));
     return glm::vec3(static_cast<float>(p.GetX()), static_cast<float>(p.GetY()), static_cast<float>(p.GetZ()));
 }
@@ -1003,7 +1040,7 @@ glm::quat PhysicsWorld::GetBodyRotation(uint32_t bodyId) const
     if (!m_initialized || bodyId == 0xFFFFFFFF)
         return glm::quat(1, 0, 0, 0);
 
-    JPH::BodyInterface &bi = m_physicsSystem->GetBodyInterface();
+    const JPH::BodyInterface &bi = m_physicsSystem->GetBodyInterfaceNoLock();
     JPH::Quat q = bi.GetRotation(JPH::BodyID(bodyId));
     return glm::normalize(glm::quat(q.GetW(), q.GetX(), q.GetY(), q.GetZ()));
 }
@@ -1013,7 +1050,7 @@ glm::vec3 PhysicsWorld::GetBodyCenterOfMassPosition(uint32_t bodyId) const
     if (!m_initialized || bodyId == 0xFFFFFFFF)
         return glm::vec3(0.0f);
 
-    JPH::BodyInterface &bi = m_physicsSystem->GetBodyInterface();
+    const JPH::BodyInterface &bi = m_physicsSystem->GetBodyInterfaceNoLock();
     JPH::RVec3 p = bi.GetCenterOfMassPosition(JPH::BodyID(bodyId));
     return glm::vec3(static_cast<float>(p.GetX()), static_cast<float>(p.GetY()), static_cast<float>(p.GetZ()));
 }

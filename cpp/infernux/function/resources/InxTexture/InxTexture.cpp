@@ -30,6 +30,15 @@ bool InxTexture::LoadImportSettings(const std::string &filePath)
     if (meta.HasKey("max_size")) {
         m_maxSize = meta.GetDataAs<int>("max_size");
     }
+    if (meta.HasKey("filter_mode")) {
+        m_filterMode = meta.GetDataAs<std::string>("filter_mode");
+    }
+    if (meta.HasKey("wrap_mode")) {
+        m_wrapMode = meta.GetDataAs<std::string>("wrap_mode");
+    }
+    if (meta.HasKey("aniso_level")) {
+        m_anisoLevel = meta.GetDataAs<int>("aniso_level");
+    }
     return true;
 }
 
@@ -51,6 +60,9 @@ std::shared_ptr<InxTexture> InxTexture::Clone() const
     clone->m_srgb = m_srgb;
     clone->m_generateMipmaps = m_generateMipmaps;
     clone->m_maxSize = m_maxSize;
+    clone->m_filterMode = m_filterMode;
+    clone->m_wrapMode = m_wrapMode;
+    clone->m_anisoLevel = m_anisoLevel;
 
     return clone;
 }

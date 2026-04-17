@@ -146,6 +146,7 @@ class ResourceChangeHandler(FileSystemEventHandler):
                         self._asset_database.on_asset_modified(owner_path)
                     from Infernux.core.assets import AssetManager
                     AssetManager.on_asset_modified(owner_path)
+                    self._emit_asset_changed(owner_path, "modified")
                 return
 
             if self._should_ignore(src):
@@ -159,6 +160,7 @@ class ResourceChangeHandler(FileSystemEventHandler):
                 self._asset_database.on_asset_modified(event.src_path)
             else:
                 self._engine.modify_resources(event.src_path)
+            self._emit_asset_changed(src, "modified")
             # Check Python scripts on modification
             if event.src_path.endswith('.py'):
                 self._queue_script_reload(event.src_path)
@@ -196,7 +198,17 @@ class ResourceChangeHandler(FileSystemEventHandler):
             # Avoid duplicates
             if file_path not in self._pending_reload_queue:
                 self._pending_reload_queue.append(file_path)
-    
+
+    @staticmethod
+    def _emit_asset_changed(file_path: str, event_type: str):
+        """Emit EditorEvent.ASSET_CHANGED so components can react to asset changes."""
+        try:
+            from Infernux.engine.ui.event_bus import EditorEventBus, EditorEvent
+            bus = EditorEventBus.instance()
+            bus.emit(EditorEvent.ASSET_CHANGED, file_path, event_type)
+        except Exception:
+            pass
+
     def _queue_shader_reload(self, file_path: str):
         """Queue a shader for hot-reload (will be processed in main thread)."""
         with self._queue_lock:

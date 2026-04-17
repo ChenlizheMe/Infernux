@@ -25,6 +25,7 @@
 #include <glm/gtc/matrix_transform.hpp>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstring>
 #include <unordered_set>
@@ -570,13 +571,13 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
             continue;
         }
 
-        // Check GPU buffers for this entry
-        const auto &bufIt = entry.bufIt;
+        // Check GPU buffers for this entry — fresh lookup to avoid stale iterators
+        auto bufIt = m_perObjectBuffers.find(dc.objectId);
         if (bufIt == m_perObjectBuffers.end() || !bufIt->second.vertexBuffer || !bufIt->second.indexBuffer) {
             static int bufWarnCount = 0;
             if (bufWarnCount++ < 10) {
-                INXLOG_WARN("[DrawSceneFiltered] no GPU buffers for objectId=", dc.objectId, " material='",
-                            matRaw->GetName(), "' queue=", matRaw->GetRenderQueue());
+                // INXLOG_WARN("[DrawSceneFiltered] no GPU buffers for objectId=", dc.objectId, " material='",
+                //             matRaw->GetName(), "' queue=", matRaw->GetRenderQueue());
             }
             emitBatch();
             continue;
@@ -1032,17 +1033,55 @@ bool InxVkCoreModular::EnsureShadowPipeline(VkRenderPass /*compatibleRenderPass*
         }
     }
 
+    // --- Create shadow material descriptor set layout (set 2) ---
+    //
+    // This set serves two purposes:
+    //   (a) Vertex-stage MaterialProperties UBO at binding 14 (all shadow materials)
+    //   (b) Fragment-stage texture samplers (bindings 0..N-1) and fragment
+    //       MaterialProperties UBO (binding N) for alpha-clip shadow materials.
+    //
+    // We declare up to kMaxShadowTextures sampler slots so the layout is
+    // compatible with any alpha-clip shader.  Non-alpha-clip materials simply
+    // leave those bindings unused.
+    static constexpr uint32_t kMaxShadowTextures = 8;
+
     if (m_shadowMaterialDescSetLayout == VK_NULL_HANDLE) {
-        VkDescriptorSetLayoutBinding materialBinding{};
-        materialBinding.binding = 14;
-        materialBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        materialBinding.descriptorCount = 1;
-        materialBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+        std::vector<VkDescriptorSetLayoutBinding> bindings;
+
+        // Texture samplers for alpha-clip fragment (binding 0..kMaxShadowTextures-1)
+        for (uint32_t i = 0; i < kMaxShadowTextures; ++i) {
+            VkDescriptorSetLayoutBinding texBinding{};
+            texBinding.binding = i;
+            texBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            texBinding.descriptorCount = 1;
+            texBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+            bindings.push_back(texBinding);
+        }
+
+        // Fragment MaterialProperties UBO at binding = kMaxShadowTextures
+        {
+            VkDescriptorSetLayoutBinding fragMatBinding{};
+            fragMatBinding.binding = kMaxShadowTextures;
+            fragMatBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            fragMatBinding.descriptorCount = 1;
+            fragMatBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+            bindings.push_back(fragMatBinding);
+        }
+
+        // Vertex MaterialProperties UBO at binding 14
+        {
+            VkDescriptorSetLayoutBinding vtxMatBinding{};
+            vtxMatBinding.binding = 14;
+            vtxMatBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            vtxMatBinding.descriptorCount = 1;
+            vtxMatBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+            bindings.push_back(vtxMatBinding);
+        }
 
         VkDescriptorSetLayoutCreateInfo layoutInfo{};
         layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        layoutInfo.bindingCount = 1;
-        layoutInfo.pBindings = &materialBinding;
+        layoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
+        layoutInfo.pBindings = bindings.data();
 
         if (vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &m_shadowMaterialDescSetLayout) != VK_SUCCESS) {
             INXLOG_ERROR("Failed to create shadow material descriptor set layout");
@@ -1070,16 +1109,18 @@ bool InxVkCoreModular::EnsureShadowPipeline(VkRenderPass /*compatibleRenderPass*
     }
 
     if (m_shadowMaterialDescPool == VK_NULL_HANDLE) {
-        VkDescriptorPoolSize poolSize{};
-        poolSize.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        poolSize.descriptorCount = 1024;
+        std::array<VkDescriptorPoolSize, 2> poolSizes{};
+        poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        poolSizes[0].descriptorCount = 1024 * 2; // vertex UBO + fragment UBO per set
+        poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        poolSizes[1].descriptorCount = 1024 * kMaxShadowTextures;
 
         VkDescriptorPoolCreateInfo poolInfo{};
         poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
         poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
         poolInfo.maxSets = 1024;
-        poolInfo.poolSizeCount = 1;
-        poolInfo.pPoolSizes = &poolSize;
+        poolInfo.poolSizeCount = static_cast<uint32_t>(poolSizes.size());
+        poolInfo.pPoolSizes = poolSizes.data();
 
         if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &m_shadowMaterialDescPool) != VK_SUCCESS) {
             INXLOG_ERROR("Failed to create shadow material descriptor pool");

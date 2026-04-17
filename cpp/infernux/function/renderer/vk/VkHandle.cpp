@@ -351,15 +351,23 @@ VkSamplerHandle &VkSamplerHandle::operator=(VkSamplerHandle &&other) noexcept
 }
 
 bool VkSamplerHandle::Create(VkDevice device, VkPhysicalDevice physicalDevice, VkFilter filter,
-                             VkSamplerAddressMode addressMode, uint32_t mipLevels)
+                             VkSamplerAddressMode addressMode, uint32_t mipLevels, int aniso)
 {
     Destroy();
 
     m_device = device;
 
-    // Get max anisotropy
+    // Get device limits for anisotropy clamping
     VkPhysicalDeviceProperties properties{};
     vkGetPhysicalDeviceProperties(physicalDevice, &properties);
+
+    // Determine effective anisotropy: -1 = device max, 0 = disabled, 1..16 = explicit
+    bool anisoEnabled = (aniso != 0);
+    float maxAniso = 1.0f;
+    if (anisoEnabled) {
+        float requested = (aniso < 0) ? properties.limits.maxSamplerAnisotropy : static_cast<float>(aniso);
+        maxAniso = (std::min)(requested, properties.limits.maxSamplerAnisotropy);
+    }
 
     VkSamplerCreateInfo samplerInfo{};
     samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
@@ -368,13 +376,14 @@ bool VkSamplerHandle::Create(VkDevice device, VkPhysicalDevice physicalDevice, V
     samplerInfo.addressModeU = addressMode;
     samplerInfo.addressModeV = addressMode;
     samplerInfo.addressModeW = addressMode;
-    samplerInfo.anisotropyEnable = VK_TRUE;
-    samplerInfo.maxAnisotropy = properties.limits.maxSamplerAnisotropy;
+    samplerInfo.anisotropyEnable = anisoEnabled ? VK_TRUE : VK_FALSE;
+    samplerInfo.maxAnisotropy = maxAniso;
     samplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
     samplerInfo.unnormalizedCoordinates = VK_FALSE;
     samplerInfo.compareEnable = VK_FALSE;
     samplerInfo.compareOp = VK_COMPARE_OP_ALWAYS;
-    samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+    samplerInfo.mipmapMode =
+        (filter == VK_FILTER_NEAREST) ? VK_SAMPLER_MIPMAP_MODE_NEAREST : VK_SAMPLER_MIPMAP_MODE_LINEAR;
     samplerInfo.minLod = 0.0f;
     samplerInfo.maxLod = static_cast<float>(mipLevels);
 
@@ -400,7 +409,8 @@ void VkSamplerHandle::Destroy() noexcept
 
 bool VkTexture::CreateFromPixels(VmaAllocator allocator, VkDevice device, VkPhysicalDevice physicalDevice,
                                  VkCommandPool cmdPool, VkQueue graphicsQueue, const unsigned char *pixels,
-                                 uint32_t width, uint32_t height, VkFormat format, bool generateMipmaps)
+                                 uint32_t width, uint32_t height, VkFormat format, bool generateMipmaps,
+                                 VkFilter filter, VkSamplerAddressMode addressMode, int aniso)
 {
     // Compute per-pixel byte size based on format
     uint32_t bytesPerPixel = 4; // Default: RGBA8
@@ -585,7 +595,7 @@ bool VkTexture::CreateFromPixels(VmaAllocator allocator, VkDevice device, VkPhys
     }
 
     // Create sampler with mip LOD range
-    if (!m_sampler.Create(device, physicalDevice, VK_FILTER_LINEAR, VK_SAMPLER_ADDRESS_MODE_REPEAT, mipLevels)) {
+    if (!m_sampler.Create(device, physicalDevice, filter, addressMode, mipLevels, aniso)) {
         return false;
     }
 

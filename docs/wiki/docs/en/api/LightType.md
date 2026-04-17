@@ -6,8 +6,6 @@ enum in <b>Infernux</b>
 
 ## Description
 
-Light component type.
-
 <!-- USER CONTENT START --> description
 
 <!-- USER CONTENT END -->

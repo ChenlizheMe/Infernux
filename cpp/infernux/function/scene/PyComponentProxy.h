@@ -73,13 +73,12 @@ class PyComponentProxy : public Component
 
     [[nodiscard]] const char *GetTypeName() const override;
 
-    /// Python components always receive Awake/OnEnable/OnDisable in edit mode
-    /// so GameObject active-state changes match Unity semantics. Per-frame
-    /// edit-mode Update/FixedUpdate/LateUpdate remain gated separately by
-    /// @execute_in_edit_mode.
+    /// Python components only receive Awake/OnEnable/OnDisable in edit mode
+    /// when explicitly decorated with @execute_in_edit_mode, matching the
+    /// gating used for per-frame Update/FixedUpdate/LateUpdate.
     [[nodiscard]] bool WantsEditModeLifecycle() const override
     {
-        return true;
+        return m_executeInEditMode;
     }
 
     [[nodiscard]] bool WantsEditModeUpdate() const override

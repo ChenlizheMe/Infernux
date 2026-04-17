@@ -84,13 +84,17 @@ class Material:
     @staticmethod
     def create_lit(name: str = "New Material") -> "Material":
         """Create a new PBR lit material (default_lit shader)."""
-        native = InxMaterial.create_default_lit(name)
+        native = InxMaterial.create_default_lit()
+        if name != "New Material":
+            native.name = name
         return Material(native)
 
     @staticmethod
     def create_unlit(name: str = "Unlit Material") -> "Material":
         """Create a new unlit material (default_unlit shader)."""
-        native = InxMaterial.create_default_unlit(name)
+        native = InxMaterial.create_default_unlit()
+        if name != "Unlit Material":
+            native.name = name
         return Material(native)
 
     @staticmethod

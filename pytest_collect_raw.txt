@@ -1,0 +1,8 @@
+============================= test session starts =============================
+platform win32 -- Python 3.12.11, pytest-9.0.2, pluggy-1.6.0 -- C:\ProgramData\anaconda3\envs\infengine\python.exe
+cachedir: .pytest_cache
+rootdir: E:\project\InfEngine
+configfile: pyproject.toml
+plugins: anyio-4.13.0
+collecting ... 
+

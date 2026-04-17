@@ -30,7 +30,7 @@ def wire_creation_callbacks(ctx):
         if not scene:
             return
         types = [PrimitiveType.Cube, PrimitiveType.Sphere, PrimitiveType.Capsule,
-                 PrimitiveType.Cylinder, PrimitiveType.Plane]
+                 PrimitiveType.Cylinder, PrimitiveType.Plane, PrimitiveType.Quad]
         if type_idx < 0 or type_idx >= len(types):
             return
         new_obj = scene.create_primitive(types[type_idx])
@@ -99,6 +99,23 @@ def wire_creation_callbacks(ctx):
             if new_obj:
                 _finalize(new_obj, parent_id, "Create Empty")
 
+    def _create_sprite_renderer(parent_id):
+        from Infernux.lib import SceneManager
+        scene = SceneManager.instance().get_active_scene()
+        if not scene:
+            return
+        new_obj = scene.create_game_object("Sprite")
+        if not new_obj:
+            return
+        cpp_comp = new_obj.add_component("SpriteRenderer")
+        if cpp_comp is None:
+            scene.destroy_game_object(new_obj)
+            return
+        # Force Python wrapper creation so material is set up immediately
+        from Infernux.components.builtin.sprite_renderer import SpriteRenderer
+        SpriteRenderer._get_or_create_wrapper(cpp_comp, new_obj)
+        _finalize(new_obj, parent_id, "Create Sprite Renderer")
+
     def _find_canvas_parent_id(scene, parent_id):
         if parent_id == 0:
             return 0
@@ -160,9 +177,13 @@ def wire_creation_callbacks(ctx):
 
     hp.create_primitive = _create_primitive
     hp.create_light = _create_light
-    hp.create_camera = _create_camera
-    hp.create_render_stack = _create_render_stack
     hp.create_empty = _create_empty
-    hp.create_ui_canvas = _create_ui_canvas
-    hp.create_ui_text = _create_ui_text
-    hp.create_ui_button = _create_ui_button
+
+    # Data-driven entries for Rendering and UI context menus
+    hp.clear_create_entries()
+    hp.add_create_entry("Rendering", "hierarchy.camera", _create_camera)
+    hp.add_create_entry("Rendering", "hierarchy.render_stack", _create_render_stack)
+    hp.add_create_entry("Rendering", "hierarchy.sprite_renderer", _create_sprite_renderer)
+    hp.add_create_entry("UI", "hierarchy.ui_canvas", _create_ui_canvas)
+    hp.add_create_entry("UI", "hierarchy.ui_text", _create_ui_text)
+    hp.add_create_entry("UI", "hierarchy.ui_button", _create_ui_button)

@@ -92,6 +92,33 @@ class InxTexture
         m_maxSize = size;
     }
 
+    [[nodiscard]] const std::string &GetFilterMode() const
+    {
+        return m_filterMode;
+    }
+    void SetFilterMode(const std::string &mode)
+    {
+        m_filterMode = mode;
+    }
+
+    [[nodiscard]] const std::string &GetWrapMode() const
+    {
+        return m_wrapMode;
+    }
+    void SetWrapMode(const std::string &mode)
+    {
+        m_wrapMode = mode;
+    }
+
+    [[nodiscard]] int GetAnisoLevel() const
+    {
+        return m_anisoLevel;
+    }
+    void SetAnisoLevel(int level)
+    {
+        m_anisoLevel = level;
+    }
+
     [[nodiscard]] bool IsNormalMapMode() const
     {
         return m_textureType == "normal_map";
@@ -126,6 +153,9 @@ class InxTexture
     bool m_srgb = true;
     bool m_generateMipmaps = true;
     int m_maxSize = 2048;
+    std::string m_filterMode = "bilinear"; // "point", "bilinear", "trilinear"
+    std::string m_wrapMode = "repeat";     // "repeat", "clamp", "mirror"
+    int m_anisoLevel = -1;                 // -1 = device max, 0 = off, 1-16 = explicit
 };
 
 } // namespace infernux

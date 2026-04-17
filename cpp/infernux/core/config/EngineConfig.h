@@ -117,7 +117,10 @@ struct EngineConfig
     uint32_t physicsMaxContactConstraints = 65536;
 
     /// Number of collision substeps per physics step.
-    int physicsCollisionSteps = 1;
+    /// 2 substeps halve the effective delta per collision check, preventing
+    /// tunneling for fast-moving objects and improving contact precision for
+    /// thin colliders.  Cost is ~1.5× one step (broadphase is shared).
+    int physicsCollisionSteps = 2;
 
     /// Default gravity vector.
     glm::vec3 physicsGravity{0.0f, -9.81f, 0.0f};

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <type_traits>
 #include <vector>
 
 namespace infernux
@@ -111,6 +112,36 @@ template <typename T> class InxContiguousPool
             }
         }
         return handles;
+    }
+
+    /// Iterate all alive elements without allocating a handle vector.
+    /// @p func receives (T &value).  Returning false from func stops early.
+    template <typename Func> void ForEachAlive(Func &&func)
+    {
+        for (auto &slot : m_slots) {
+            if (slot.alive) {
+                if constexpr (std::is_same_v<decltype(func(slot.value)), bool>) {
+                    if (!func(slot.value))
+                        return;
+                } else {
+                    func(slot.value);
+                }
+            }
+        }
+    }
+
+    template <typename Func> void ForEachAlive(Func &&func) const
+    {
+        for (const auto &slot : m_slots) {
+            if (slot.alive) {
+                if constexpr (std::is_same_v<decltype(func(slot.value)), bool>) {
+                    if (!func(slot.value))
+                        return;
+                } else {
+                    func(slot.value);
+                }
+            }
+        }
     }
 
   private:

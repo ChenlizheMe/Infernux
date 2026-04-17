@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>JIT 加速脚本 - Infernux Scripting API</title>
+    <link rel="icon" type="image/png" href="/Infernux/assets/logo.png">
+    <link rel="stylesheet" href="/Infernux/css/style.css?v=2">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        /* ======================================================
+           Infernux API Reference — Unity-Inspired Dark Theme
+           ====================================================== */
+
+        /* Layout */
+        .api-layout {
+            display: flex;
+            min-height: calc(100vh - var(--nav-height));
+            padding-top: var(--nav-height);
+        }
+
+        /* ---- Sidebar ---- */
+        .api-sidebar {
+            width: 280px;
+            background: #0b0b12;
+            border-right: 1px solid var(--border);
+            position: sticky;
+            top: var(--nav-height);
+            height: calc(100vh - var(--nav-height));
+            overflow-y: auto;
+            flex-shrink: 0;
+        }
+        .api-sidebar::-webkit-scrollbar { width: 5px; }
+        .api-sidebar::-webkit-scrollbar-track { background: transparent; }
+        .api-sidebar::-webkit-scrollbar-thumb { background: #2a2a3a; border-radius: 3px; }
+
+        .sidebar-hdr {
+            padding: 14px 18px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .sidebar-hdr h3 {
+            margin: 0;
+            font-size: 0.78rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            color: var(--text-muted);
+        }
+
+        /* Language toggle */
+        .lang-sw {
+            display: flex;
+            gap: 1px;
+            background: var(--border);
+            border-radius: 4px;
+            overflow: hidden;
+        }
+        .lang-sw a {
+            padding: 3px 10px;
+            font-size: 0.7rem;
+            font-weight: 600;
+            color: var(--text-muted);
+            background: var(--bg-elevated);
+            text-decoration: none;
+            transition: all 0.12s;
+        }
+        .lang-sw a.on {
+            background: var(--primary);
+            color: #fff;
+        }
+        .lang-sw a:hover:not(.on) {
+            color: var(--text-primary);
+            background: var(--bg-hover);
+        }
+
+        /* Namespace tree */
+        .ns-tree { padding: 6px 0 20px; }
+
+        .ns-group { margin-bottom: 1px; }
+
+        .ns-hd {
+            display: flex;
+            align-items: center;
+            padding: 7px 16px;
+            cursor: pointer;
+            user-select: none;
+            transition: background 0.1s;
+        }
+        .ns-hd:hover { background: rgba(255,255,255,0.025); }
+
+        .ns-arr {
+            width: 14px;
+            font-size: 0.5rem;
+            color: #555;
+            transition: transform 0.15s;
+            margin-right: 8px;
+            flex-shrink: 0;
+        }
+        .ns-hd.open .ns-arr { transform: rotate(90deg); }
+
+        .ns-nm {
+            font-size: 0.84rem;
+            font-weight: 500;
+            color: var(--text-secondary);
+        }
+        .ns-hd.hi .ns-nm { color: var(--primary); }
+
+        .ns-ch {
+            display: none;
+            padding: 2px 0 4px;
+        }
+        .ns-hd.open + .ns-ch { display: block; }
+
+        .ns-ch a {
+            display: block;
+            padding: 3px 16px 3px 38px;
+            font-size: 0.82rem;
+            color: var(--text-muted);
+            text-decoration: none;
+            transition: color 0.1s, background 0.1s;
+            border-left: 2px solid transparent;
+        }
+        .ns-ch a:hover {
+            color: var(--text-primary);
+            background: rgba(255,255,255,0.02);
+        }
+        .ns-ch a.cur {
+            color: var(--text-primary);
+            background: rgba(255,107,53,0.07);
+            border-left-color: var(--primary);
+            font-weight: 600;
+        }
+
+        /* ---- Content ---- */
+        .api-main {
+            flex: 1;
+            padding: 36px 56px 80px;
+            max-width: 880px;
+            min-width: 0;
+        }
+
+        /* H1 — class name */
+        .api-main h1 {
+            font-size: 1.85rem;
+            font-weight: 700;
+            margin: 0 0 4px;
+            padding: 0;
+            border: none;
+            color: var(--text-primary);
+        }
+
+        /* "class in Package" subtitle */
+        .api-main .class-info {
+            font-size: 0.88rem;
+            color: var(--text-muted);
+            margin-bottom: 22px;
+            padding-bottom: 18px;
+            border-bottom: 1px solid var(--border);
+        }
+        .api-main .class-info b { color: var(--text-secondary); }
+        .api-main .class-info a { color: var(--primary); }
+
+        /* H2 — section headers */
+        .api-main h2 {
+            font-size: 0.92rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.6px;
+            color: var(--text-muted);
+            margin: 30px 0 8px;
+            padding-bottom: 6px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .api-main h3 {
+            font-size: 0.9rem;
+            font-weight: 600;
+            color: var(--text-secondary);
+            margin: 18px 0 6px;
+        }
+
+        /* Paragraphs */
+        .api-main p {
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+            line-height: 1.75;
+            margin-bottom: 12px;
+        }
+
+        .api-main blockquote {
+            margin: 12px 0;
+            padding: 10px 16px;
+            background: rgba(255,107,53,0.04);
+            border-left: 3px solid var(--primary);
+            border-radius: 0 4px 4px 0;
+        }
+        .api-main blockquote p { margin: 0; font-size: 0.85rem; }
+
+        /* Tables — Unity style: hidden header, 2-col */
+        .api-main table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 4px 0 18px;
+        }
+        .api-main thead { display: none; }
+
+        .api-main tbody tr {
+            border-bottom: 1px solid rgba(255,255,255,0.04);
+        }
+        .api-main tbody tr:last-child { border-bottom: none; }
+
+        .api-main td {
+            padding: 7px 0;
+            font-size: 0.86rem;
+            vertical-align: top;
+        }
+        .api-main td:first-child {
+            width: 200px;
+            padding-right: 20px;
+            color: var(--primary);
+            font-size: 0.86rem;
+            font-weight: 500;
+        }
+        .api-main td:last-child { color: var(--text-secondary); }
+        .api-main td a { color: var(--primary); }
+        .api-main tbody tr:hover { background: rgba(255,255,255,0.012); }
+
+        /* Inline code — normal font, subtle highlight */
+        .api-main code {
+            font-family: inherit;
+            font-size: inherit;
+            background: rgba(255,255,255,0.06);
+            padding: 1px 5px;
+            border-radius: 3px;
+            color: var(--primary-light);
+        }
+
+        /* Code blocks */
+        .api-main pre {
+            background: #0d0d15;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 16px 20px;
+            overflow-x: auto;
+            margin: 10px 0 18px;
+        }
+        .api-main pre code {
+            font-family: var(--font-mono);
+            background: none;
+            padding: 0;
+            font-size: 0.83rem;
+            line-height: 1.65;
+            color: var(--text-secondary);
+        }
+
+        /* Lists */
+        .api-main ul, .api-main ol { padding-left: 18px; margin-bottom: 12px; }
+        .api-main li {
+            margin-bottom: 4px;
+            color: var(--text-secondary);
+            font-size: 0.88rem;
+            line-height: 1.6;
+        }
+
+        .api-main hr {
+            border: none;
+            border-top: 1px solid var(--border);
+            margin: 26px 0;
+        }
+
+        /* ---- Footer ---- */
+        .api-ft { margin-left: 280px; }
+        .api-ft .footer-bottom p { font-size: 0.8rem; }
+
+        /* ---- Responsive ---- */
+        @media (max-width: 1024px) {
+            .api-sidebar { width: 240px; }
+            .api-main { padding: 28px 32px 60px; }
+            .api-ft { margin-left: 240px; }
+        }
+        @media (max-width: 768px) {
+            .api-layout { flex-direction: column; }
+            .api-sidebar {
+                width: 100%; position: relative; top: 0;
+                height: auto; max-height: 50vh;
+                border-right: none; border-bottom: 1px solid var(--border);
+            }
+            .api-main { padding: 20px; max-width: 100%; }
+            .api-ft { margin-left: 0; }
+        }
+    </style>
+</head>
+<body>
+    <!-- Top Navigation -->
+    <nav class="navbar">
+        <div class="nav-container">
+            <a href="/Infernux/index.html" class="nav-logo">
+                <span class="logo-icon"><img src="/Infernux/assets/logo.png" alt="Infernux logo"></span>
+                <span class="logo-text">Infernux</span>
+            </a>
+            <div class="nav-links">
+                <a href="/Infernux/index.html">首页</a>
+                <a href="/Infernux/index.html#system">特性</a>
+                <a href="/Infernux/index.html#capabilities">能力</a>
+                <a href="/Infernux/index.html#difference">架构</a>
+                <a href="/Infernux/roadmap.html">路线图</a>
+                <a href="/Infernux/wiki.html" class="active">文档</a>
+                <a href="https://github.com/ChenlizheMe/Infernux" target="_blank">
+                    <i class="fab fa-github"></i> GitHub
+                </a>
+            </div>
+            <div class="nav-right">
+                <button class="theme-toggle" onclick="toggleTheme()" title="Toggle theme">
+                    <i class="fas fa-moon" id="theme-icon"></i>
+                </button>
+                <button class="mobile-menu-btn" onclick="toggleMobileMenu()">
+                    <i class="fas fa-bars"></i>
+                </button>
+            </div>
+        </div>
+    </nav>
+
+    
+    <!-- Article Layout (No Sidebar) -->
+    <main class="page-shell" style="padding-top: calc(var(--nav-height) + 60px); min-height: 80vh; padding-bottom: 80px;">
+        <div class="container" style="max-width: 860px; margin: 0 auto;">
+            <div class="api-main" style="padding: 0; max-width: none;">
+                <h1 id="jit">JIT 加速脚本<a class="headerlink" href="#jit" title="Permanent link">&para;</a></h1>
+<p>这一页把技术报告 <a href="https://arxiv.org/pdf/2604.10263"><em>Infernux: A Python-Native Game Engine with JIT-Accelerated Scripting</em></a> 里最关键的 JIT 部分整理成一个更适合项目文档阅读的版本。</p>
+<h2 id="jit_1">为什么需要 JIT 路径<a class="headerlink" href="#jit_1" title="Permanent link">&para;</a></h2>
+<p>Python 适合做玩法、工具和热重载工作流，但如果每帧都对大量对象做逐个属性访问，Python 和 C++ 之间的边界开销会迅速压垮吞吐。Infernux 的做法不是放弃 Python，而是把最热的内层循环挪到更接近原生代码的执行路径上。</p>
+<p>报告里把这件事拆成两个协同机制：</p>
+<ul>
+<li>一个 batch bridge，用一次边界穿越把引擎状态搬进连续的 NumPy 数组。</li>
+<li>一个基于 Numba 的可选 JIT 路径，把标注过的 Python 更新函数编译成 LLVM 机器码。</li>
+</ul>
+<p>重点不是把 Python 换成别的脚本语言，而是继续让 Python 负责 authoring，同时尽可能削掉高频更新里的解释器成本。</p>
+<h2 id="batch-jit">先 batch，再 JIT<a class="headerlink" href="#batch-jit" title="Permanent link">&para;</a></h2>
+<p>报告里强调，JIT 不是孤立存在的，它依赖 batch 数据桥的配合。典型每帧更新流程大致如下：</p>
+<div class="language-python highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="n">positions</span> <span class="o">=</span> <span class="n">batch_read</span><span class="p">(</span><span class="n">targets</span><span class="p">,</span> <span class="s2">&quot;position&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="n">jit_wave_kernel</span><span class="p">(</span><span class="n">positions</span><span class="p">,</span> <span class="n">time_value</span><span class="p">,</span> <span class="n">count</span><span class="p">)</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="n">batch_write</span><span class="p">(</span><span class="n">targets</span><span class="p">,</span> <span class="n">positions</span><span class="p">,</span> <span class="s2">&quot;position&quot;</span><span class="p">)</span>
+</code></pre></div>
+<p>这样做的意义是把 Python 与 C++ 之间的调用次数固定在每帧常数级，而不是随着对象数量线性增长。JIT 内核则只面对紧密排列的数组，这也是 Numba 最擅长的输入形态。</p>
+<h2 id="infernux-numba">Infernux 在 Numba 之上补了什么<a class="headerlink" href="#infernux-numba" title="Permanent link">&para;</a></h2>
+<p>项目里的 JIT 装饰器并不只是简单调用一次 <code>numba.njit</code>。报告总结的增强点主要有三条：</p>
+<ul>
+<li>当机器上没有安装 Numba 时，自动退回纯 Python 路径，同时发出运行时警告，让性能退化是可见的。</li>
+<li>使用基于字节码的编译缓存，使缓存能跨模块重载和编辑器热重载继续生效。</li>
+<li>对 Nuitka 打包提供部分兼容。Numba 本身仍然依赖运行时的 CPython，所以这不是完全意义上的 AOT 替代，更像是分发层面的兼容处理。</li>
+</ul>
+<p>换句话说，JIT 被整合进了引擎自己的重载、缓存和打包模型，而不是单纯做成一个独立优化开关。</p>
+<h2 id="_1">自动并行化<a class="headerlink" href="#_1" title="Permanent link">&para;</a></h2>
+<p>JIT 部分里最有 Infernux 自身特色的是 auto-parallel 模式。开启之后，AST 重写器会扫描形如 <code>for i in range(n)</code> 的计数循环，并在循环体满足一组保守条件时把它提升成 <code>prange</code>，交给 Numba 做线程级并行。</p>
+<p>它不会尝试并行化所有循环，以下几类都会被拒绝：</p>
+<ul>
+<li><code>for x in arr</code> 这类迭代器循环。</li>
+<li><code>while</code> 循环。</li>
+<li>包含 <code>break</code>、<code>yield</code>、异常处理、提前返回等不受支持控制流的循环体。</li>
+<li>写入模式看起来不是“按索引写入彼此不重叠数组位置”的循环。</li>
+</ul>
+<p>报告也明确说明，这里的别名分析只是语法层面的检查，不是完整编译器意义上的 alias analysis。但对 Infernux 主要场景来说，这已经够用：最常见的内核就是按实体 ID 索引批量写 position、rotation、scale 等 SoA 列。</p>
+<h2 id="_2">预热与热重载<a class="headerlink" href="#_2" title="Permanent link">&para;</a></h2>
+<p>报告指出，串行版和并行版一起编译会带来冷启动开销，在测试机器上通常每个被装饰函数大约是 50 到 200 ms。Infernux 通过两种方式把这个成本移出交互主路径：</p>
+<ul>
+<li>提供 warm-up helper，在场景加载时就预编译已注册的 JIT 内核。</li>
+<li>在热重载场景里，只重编译发生改动的函数，未改动函数继续复用已有机器码缓存。</li>
+</ul>
+<p>这其实比单纯“跑得快”更重要，因为编辑器工作流要求的不只是峰值吞吐，还要求脚本热改时延迟可控。</p>
+<h2 id="_3">报告里的核心结果<a class="headerlink" href="#_3" title="Permanent link">&para;</a></h2>
+<p>JIT 部分最干净的实验是纯计算测试，也就是不涉及渲染、也不把结果写回 Transform，只比较脚本吞吐本身。在这个实验里：</p>
+<ul>
+<li>auto-parallel JIT 路径在 10k 到 1M 元素范围内都维持了很高的帧率。</li>
+<li>在 1M 元素规模下，报告中的 runtime 结果达到 848 FPS。</li>
+<li>同一配置下，它相对 Unity IL2CPP 参考实现达到 6.9 倍吞吐，相对非 JIT 的 NumPy 路径达到 10.5 倍。</li>
+</ul>
+<p>真正有意义的不是某个单点数字，而是这说明：当边界调用被 batch 化、热循环被编译后，Python 仍然可以支撑实时 authoring 场景，而不必退回到“编辑器一套语言、运行时另一套语言”的双轨结构。</p>
+<h2 id="_4">当前边界与下一步<a class="headerlink" href="#_4" title="Permanent link">&para;</a></h2>
+<p>报告最后也很坦白：剩下最大的瓶颈已经不是 JIT 内部的算术吞吐，而是 Python 与 C++ 的通信边界本身。每一次 batch dispatch 仍然要走 pybind11、拿 GIL、做类型转换、再返回。</p>
+<p>所以 JIT 之后的下一步路线图不是继续卷编译器，而是改造边界层，例如 lock-free command ring。JIT 已经把“算得慢”的问题压下去了，接下来限制上限的是“过边界还不够便宜”。</p>
+<h2 id="_5">完整技术报告<a class="headerlink" href="#_5" title="Permanent link">&para;</a></h2>
+<p>完整的系统背景、实验设置和性能表格请直接阅读原报告：</p>
+<ul>
+<li><a href="https://arxiv.org/pdf/2604.10263">Infernux: A Python-Native Game Engine with JIT-Accelerated Scripting（arXiv:2604.10263）</a></li>
+</ul>
+            </div>
+        </div>
+    </main>
+
+    <!-- Footer -->
+    <footer class="footer">
+        <div class="container">
+            <div class="footer-bottom">
+                <p>&copy; 2024-2026 Infernux Engine. MIT License.</p>
+            </div>
+        </div>
+    </footer>
+    
+
+    <script src="/Infernux/js/main.js?v=2"></script>
+    <script>
+    document.addEventListener('DOMContentLoaded', function() {
+        document.querySelectorAll('.ns-hd').forEach(function(h) {
+            h.addEventListener('click', function() { this.classList.toggle('open'); });
+        });
+    });
+    </script>
+</body>
+</html>

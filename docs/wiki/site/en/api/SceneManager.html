@@ -389,6 +389,12 @@
                     </div><div class="ns-group">
                         <div class="ns-hd">
                             <span class="ns-arr">&#9654;</span>
+                            <span class="ns-nm">Infernux.jit</span>
+                        </div>
+                        <div class="ns-ch"><a href="/Infernux/wiki/site/en/api/njit.html" class="">njit</a><a href="/Infernux/wiki/site/en/api/warmup.html" class="">warmup</a></div>
+                    </div><div class="ns-group">
+                        <div class="ns-hd">
+                            <span class="ns-arr">&#9654;</span>
                             <span class="ns-nm">Infernux.math</span>
                         </div>
                         <div class="ns-ch"><a href="/Infernux/wiki/site/en/api/quaternion.html" class="">quaternion</a><a href="/Infernux/wiki/site/en/api/vector2.html" class="">vector2</a><a href="/Infernux/wiki/site/en/api/vector3.html" class="">vector3</a><a href="/Infernux/wiki/site/en/api/vector4.html" class="">vector4</a></div>
@@ -450,6 +456,27 @@ class in <b>Infernux.scene</b>
 <p>description</p>
 <!-- USER CONTENT END -->
 
+<h2 id="properties">Properties<a class="headerlink" href="#properties" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Name</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>active_scene</td>
+<td><code>Optional[object]</code></td>
+<td><em>(read-only)</em></td>
+</tr>
+</tbody>
+</table>
+<!-- USER CONTENT START -->
+<p>properties</p>
+<!-- USER CONTENT END -->
+
 <h2 id="static-methods">Static Methods<a class="headerlink" href="#static-methods" title="Permanent link">&para;</a></h2>
 <table>
 <thead>
@@ -502,6 +529,10 @@ class in <b>Infernux.scene</b>
 <tr>
 <td><code>static SceneManager.get_all_scene_names() → List[str]</code></td>
 <td>Get a list of all scene names in the build.</td>
+</tr>
+<tr>
+<td><code>static SceneManager.dont_destroy_on_load(game_object: object) → None</code></td>
+<td>Mark a game object so it survives scene loads.</td>
 </tr>
 </tbody>
 </table>

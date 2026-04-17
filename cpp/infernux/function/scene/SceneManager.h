@@ -154,6 +154,12 @@ class SceneManager
     /// @brief Stop play mode
     void Stop();
 
+    /// @brief Set a callback that fires when Play()/Stop() transitions occur.
+    void SetPlayStateChangedCallback(std::function<void(bool)> cb)
+    {
+        m_onPlayStateChanged = std::move(cb);
+    }
+
     /// @brief Pause play mode
     void Pause();
 
@@ -270,6 +276,11 @@ class SceneManager
     /// Called once at the start of play to fix stale editor-mode positions.
     void ForceAllBodiesToCurrentTransform();
 
+    /// Activate all dynamic (non-kinematic) rigidbodies so they are awake
+    /// when play mode starts.  Jolt bodies default to sleeping and won't
+    /// respond to gravity until explicitly activated.
+    void ActivateAllDynamicBodies();
+
     /// Walk all Rigidbodies and write Jolt position/rotation back to Transform.
     void SyncRigidbodiesToTransform();
 
@@ -307,6 +318,8 @@ class SceneManager
     // Callbacks
     SceneCallback m_onSceneLoaded;
     SceneCallback m_onSceneUnloaded;
+    /// Called from Play()/Stop() so the renderer can bypass idle sleep.
+    std::function<void(bool)> m_onPlayStateChanged;
 
     // MeshRenderer component registry — populated by MeshRenderer OnEnable/OnDisable.
     // Avoids per-frame GetAllObjects() + dynamic_cast in CollectRenderables.
