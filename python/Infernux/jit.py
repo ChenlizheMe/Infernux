@@ -41,10 +41,11 @@ _JIT_CHECK_ENV = "_INFERNUX_JIT_RUNTIME_CHECKED"
 
 
 def _sync_exports() -> None:
-    global JIT_AVAILABLE, njit, warmup
+    global JIT_AVAILABLE, njit, warmup, prange
     JIT_AVAILABLE = _jit_kernels.JIT_AVAILABLE
     njit = _jit_kernels.njit
     warmup = _jit_kernels.warmup
+    prange = _jit_kernels.prange
 
 
 def _run_python(args: list[str], *, timeout: int) -> subprocess.CompletedProcess:
@@ -154,6 +155,7 @@ __all__ = [
     "JIT_AVAILABLE",
     "ensure_jit_runtime",
     "njit",
+    "prange",
     "warmup",
     "precompile_jit",
 ]

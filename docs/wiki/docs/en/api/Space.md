@@ -6,8 +6,6 @@ enum in <b>Infernux</b>
 
 ## Description
 
-Coordinate space for Transform operations.
-
 <!-- USER CONTENT START --> description
 
 <!-- USER CONTENT END -->

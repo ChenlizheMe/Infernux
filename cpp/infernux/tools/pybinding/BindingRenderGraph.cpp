@@ -6,7 +6,7 @@
  * - Configuration of render passes
  * - Reading pass output pixels to NumPy arrays
  * - Getting pass texture IDs for ImGui display
- * - Phase 2: Python-driven RenderGraph topology definition
+ * - Render graph topology definition from Python
  */
 
 #include "Infernux.h"
@@ -30,7 +30,7 @@ void RegisterRenderGraphBindings(py::module_ &m)
     // builder in Infernux.rendergraph) as its exclusive pass-definition API.
 
     // ========================================================================
-    // Phase 2: Python-Driven RenderGraph Topology Types
+    // RenderGraph topology binding types
     // ========================================================================
 
     // GraphPassActionType enum
@@ -110,9 +110,9 @@ void RegisterRenderGraphBindings(py::module_ &m)
     py::class_<SceneRenderGraph>(m, "SceneRenderGraph")
         // Pass configuration
         .def("mark_dirty", &SceneRenderGraph::MarkDirty, "Force rebuild of the render graph on next frame")
-        // Phase 2: Python-driven render graph topology
+        // Render graph topology defined from Python
         .def("apply_python_graph", &SceneRenderGraph::ApplyPythonGraph, py::arg("description"),
-             "Apply a Python-defined render graph topology (Phase 2)")
+             "Apply a render graph topology defined in Python")
         .def("has_python_graph", &SceneRenderGraph::HasPythonGraph, "Check if a Python graph topology has been applied")
         .def("get_pass_count", &SceneRenderGraph::GetPassCount, "Get number of configured passes")
         .def("get_debug_string", &SceneRenderGraph::GetDebugString, "Get debug visualization of the render graph");

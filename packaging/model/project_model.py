@@ -292,6 +292,19 @@ class ProjectModel:
         ProjectModel.validate_python_runtime(ProjectModel._get_project_python(project_dir))
 
     @staticmethod
+    def _get_site_packages(project_dir: str) -> str:
+        """Return the site-packages directory for the project's Python runtime."""
+        if is_frozen():
+            runtime_dir = os.path.join(project_dir, ".runtime", "python312")
+            if sys.platform == "win32":
+                return os.path.join(runtime_dir, "Lib", "site-packages")
+            return os.path.join(runtime_dir, "lib", "python3.12", "site-packages")
+        venv_dir = os.path.join(project_dir, ".venv")
+        if sys.platform == "win32":
+            return os.path.join(venv_dir, "Lib", "site-packages")
+        return os.path.join(venv_dir, "lib", "python3.12", "site-packages")
+
+    @staticmethod
     def _create_vscode_workspace(project_dir: str):
         """
         Create .vscode/ config so that opening any file inside the project
@@ -302,10 +315,12 @@ class ProjectModel:
 
         # ── settings.json ───────────────────────────────────────────────
         project_python = ProjectModel._get_project_python(project_dir)
+        site_packages = ProjectModel._get_site_packages(project_dir)
         settings = {
             "python.defaultInterpreterPath": project_python,
             "python.analysis.typeCheckingMode": "basic",
             "python.analysis.autoImportCompletions": True,
+            "python.analysis.extraPaths": [site_packages],
             "python.analysis.diagnosticSeverityOverrides": {
                 "reportMissingModuleSource": "none",
             },
@@ -346,6 +361,7 @@ class ProjectModel:
                 "typeCheckingMode": "basic",
                 "reportMissingModuleSource": False,
                 "reportWildcardImportFromLibrary": False,
+                "extraPaths": [site_packages],
                 "include": ["Assets"],
             }
         else:
@@ -356,6 +372,7 @@ class ProjectModel:
                 "typeCheckingMode": "basic",
                 "reportMissingModuleSource": False,
                 "reportWildcardImportFromLibrary": False,
+                "extraPaths": [site_packages],
                 "include": ["Assets"],
             }
         pyright_path = os.path.join(project_dir, "pyrightconfig.json")

@@ -6,8 +6,6 @@ enum in <b>Infernux</b>
 
 ## Description
 
-Shadow casting mode.
-
 <!-- USER CONTENT START --> description
 
 <!-- USER CONTENT END -->

@@ -10,6 +10,16 @@
 #include <unordered_set>
 #include <vector>
 
+/// A single data-driven entry for the Hierarchy "Create" context menu.
+/// Python registers these via ``add_create_entry()`` — no C++ changes
+/// needed when adding new component types.
+struct HierarchyCreateEntry
+{
+    std::string category;                   ///< Menu section: "Rendering", "UI", etc.
+    std::string localeKey;                  ///< Translation key, e.g. "hierarchy.camera"
+    std::function<void(uint64_t)> callback; ///< (parentId) → void
+};
+
 namespace infernux
 {
 
@@ -98,12 +108,14 @@ class HierarchyPanel : public EditorPanel
 
     std::function<void(int, uint64_t)> createPrimitive; // (typeIdx, parentId)
     std::function<void(int, uint64_t)> createLight;     // (typeIdx, parentId)
-    std::function<void(uint64_t)> createCamera;
-    std::function<void(uint64_t)> createRenderStack;
     std::function<void(uint64_t)> createEmpty;
-    std::function<void(uint64_t)> createUiCanvas;
-    std::function<void(uint64_t)> createUiText;
-    std::function<void(uint64_t)> createUiButton;
+
+    /// Data-driven create-menu entries (populated from Python).
+    std::vector<HierarchyCreateEntry> createEntries;
+    void AddCreateEntry(const std::string &category, const std::string &localeKey,
+                        std::function<void(uint64_t)> callback);
+    void ClearCreateEntries();
+
     std::function<void(uint64_t)> saveAsPrefab;
     std::function<void(uint64_t)> prefabSelectAsset;
     std::function<void(uint64_t)> prefabOpenAsset;

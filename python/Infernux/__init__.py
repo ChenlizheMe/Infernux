@@ -33,16 +33,7 @@ from Infernux.coroutine import (
     WaitWhile,
 )
 from Infernux.batch import batch_read, batch_write, create_batch_handle
-
-
-def _dedupe(items: list[str]) -> list[str]:
-    seen: set[str] = set()
-    result: list[str] = []
-    for item in items:
-        if item not in seen:
-            seen.add(item)
-            result.append(item)
-    return result
+from Infernux.instantiate import Instantiate, Destroy
 
 
 def __getattr__(name: str):
@@ -65,51 +56,109 @@ def __getattr__(name: str):
     raise AttributeError(f"module 'Infernux' has no attribute {name!r}")
 
 
-__all__ = _dedupe(
-    list(_components_module.__all__)
-    + list(core.__all__)
-    + [
-        "release_engine",
-        "Engine",
-        "LogLevel",
-        "Vector2",
-        "Vector3",
-        "vec4f",
-        "quatf",
-        "vector2",
-        "vector3",
-        "vector4",
-        "quaternion",
-        "GameObject",
-        "Transform",
-        "Component",
-        "Space",
-        "PrimitiveType",
-        "Debug",
-        "debug",
-        "log",
-        "log_warning",
-        "log_error",
-        "log_exception",
-        "core",
-        "rendergraph",
-        "renderstack",
-        "scene",
-        "input",
-        "ui",
-        "GameObjectQuery",
-        "LayerMask",
-        "SceneManager",
-        "Time",
-        "Mathf",
-        "Coroutine",
-        "WaitForSeconds",
-        "WaitForSecondsRealtime",
-        "WaitForEndOfFrame",
-        "WaitForFixedUpdate",
-        "WaitUntil",
-        "WaitWhile",
-        "batch_read",
-        "batch_write",
-    ]
-)
+# ── Public API surface for ``from Infernux import *`` ──────────────
+# Curated list: only symbols commonly needed in game scripts.
+# Internal / advanced helpers stay accessible via their submodules
+# (e.g. ``from Infernux.debug import debug``).
+__all__ = [
+    # Engine
+    "Engine",
+    "LogLevel",
+    "release_engine",
+    # Math
+    "Vector2",
+    "Vector3",
+    "vec4f",
+    "quatf",
+    "vector2",
+    "vector3",
+    "vector4",
+    "quaternion",
+    # Game Objects
+    "GameObject",
+    "Transform",
+    "Component",
+    "Space",
+    "PrimitiveType",
+    # Components — user-facing
+    "InxComponent",
+    "serialized_field",
+    "int_field",
+    "list_field",
+    "component_field",
+    "component_list_field",
+    "hide_field",
+    "FieldType",
+    "GameObjectRef",
+    "MaterialRef",
+    "ComponentRef",
+    "PrefabRef",
+    "SerializableObject",
+    # Builtin components
+    "Light",
+    "MeshRenderer",
+    "Camera",
+    "Collider",
+    "BoxCollider",
+    "SphereCollider",
+    "CapsuleCollider",
+    "MeshCollider",
+    "Rigidbody",
+    "RigidbodyConstraints",
+    "CollisionDetectionMode",
+    "RigidbodyInterpolation",
+    "AudioSource",
+    "AudioListener",
+    # Decorators
+    "require_component",
+    "disallow_multiple",
+    "execute_in_edit_mode",
+    "add_component_menu",
+    "icon",
+    "help_url",
+    "RequireComponent",
+    "DisallowMultipleComponent",
+    "ExecuteInEditMode",
+    "AddComponentMenu",
+    "HelpURL",
+    "Icon",
+    # Core assets
+    "Material",
+    "Texture",
+    "Shader",
+    "AudioClip",
+    "AssetManager",
+    "TextureRef",
+    "ShaderRef",
+    "AudioClipRef",
+    # Debug — class only (use Debug.log / Debug.log_warning / …)
+    "Debug",
+    # Submodules
+    "core",
+    "rendergraph",
+    "renderstack",
+    "scene",
+    "input",
+    "ui",
+    # Scene
+    "GameObjectQuery",
+    "LayerMask",
+    "SceneManager",
+    # Timing & math utilities
+    "Time",
+    "Mathf",
+    # Coroutines
+    "Coroutine",
+    "WaitForSeconds",
+    "WaitForSecondsRealtime",
+    "WaitForEndOfFrame",
+    "WaitForFixedUpdate",
+    "WaitUntil",
+    "WaitWhile",
+    # Batch processing
+    "batch_read",
+    "batch_write",
+    # Object lifecycle
+    "Instantiate",
+    "Destroy",
+]

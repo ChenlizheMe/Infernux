@@ -6,8 +6,6 @@
 
 ## 描述
 
-光源阴影模式枚举。
-
 <!-- USER CONTENT START --> description
 
 <!-- USER CONTENT END -->

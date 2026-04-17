@@ -25,6 +25,7 @@
 #include "function/scene/Scene.h"
 #include "function/scene/SceneManager.h"
 #include "function/scene/SphereCollider.h"
+#include "function/scene/SpriteRenderer.h"
 #include "function/scene/Transform.h"
 #include "function/scene/physics/PhysicsECSStore.h"
 #include <functional>
@@ -76,7 +77,8 @@ enum class PrimitiveType
     Sphere,
     Capsule,
     Cylinder,
-    Plane
+    Plane,
+    Quad
 };
 
 /**
@@ -110,6 +112,11 @@ static void GetPrimitiveMeshData(PrimitiveType type, const std::vector<Vertex> *
         outVertices = &PrimitiveMeshes::GetPlaneVertices();
         outIndices = &PrimitiveMeshes::GetPlaneIndices();
         outDefaultName = "Plane";
+        break;
+    case PrimitiveType::Quad:
+        outVertices = &PrimitiveMeshes::GetQuadVertices();
+        outIndices = &PrimitiveMeshes::GetQuadIndices();
+        outDefaultName = "Quad";
         break;
     }
 }
@@ -254,6 +261,7 @@ void RegisterSceneBindings(py::module_ &m)
         .value("Capsule", PrimitiveType::Capsule)
         .value("Cylinder", PrimitiveType::Cylinder)
         .value("Plane", PrimitiveType::Plane)
+        .value("Quad", PrimitiveType::Quad)
         .export_values();
 
     // ========================================================================
@@ -515,9 +523,19 @@ void RegisterSceneBindings(py::module_ &m)
             "set_material_slot_count", [](MeshRenderer &mr, uint32_t count) { mr.SetMaterialSlotCount(count); },
             py::arg("count"), "Set the number of material slots")
         .def("serialize", &MeshRenderer::Serialize, "Serialize MeshRenderer to JSON string")
+        .def(
+            "set_primitive_mesh",
+            [](MeshRenderer &mr, PrimitiveType type) {
+                const std::vector<Vertex> *vertices = nullptr;
+                const std::vector<uint32_t> *indices = nullptr;
+                const char *defaultName = "Primitive";
+                GetPrimitiveMeshData(type, vertices, indices, defaultName);
+                mr.SetSharedPrimitiveMesh(*vertices, *indices, defaultName);
+            },
+            py::arg("type"), "Set the mesh to a built-in primitive (Cube, Sphere, Quad, etc.)")
 
         // ====================================================================
-        // Phase 1: Mesh data access (for AI/CV and Python-side mesh inspection)
+        // Mesh data access for scripting and inspection tools
         // ====================================================================
         .def_property_readonly(
             "vertex_count",
@@ -652,6 +670,28 @@ void RegisterSceneBindings(py::module_ &m)
             "Get world-space AABB as (min_x, min_y, min_z, max_x, max_y, max_z)");
 
     // ========================================================================
+    // SpriteRenderer — inherits MeshRenderer for rendering, adds sprite props
+    // ========================================================================
+    py::class_<SpriteRenderer, MeshRenderer>(m, "SpriteRenderer")
+        .def(py::init<>())
+        .def_property("sprite_guid", &SpriteRenderer::GetSpriteGuid, &SpriteRenderer::SetSpriteGuid,
+                      "Asset GUID of the sprite texture")
+        .def_property("frame_index", &SpriteRenderer::GetFrameIndex, &SpriteRenderer::SetFrameIndex,
+                      "Index of the sprite frame to display")
+        .def_property(
+            "sprite_color",
+            [](const SpriteRenderer &sr) -> py::tuple {
+                const auto &c = sr.GetColor();
+                return py::make_tuple(c.r, c.g, c.b, c.a);
+            },
+            [](SpriteRenderer &sr, const py::tuple &t) {
+                sr.SetColor(glm::vec4(t[0].cast<float>(), t[1].cast<float>(), t[2].cast<float>(), t[3].cast<float>()));
+            },
+            "Sprite tint color (r, g, b, a)")
+        .def_property("flip_x", &SpriteRenderer::GetFlipX, &SpriteRenderer::SetFlipX, "Flip sprite horizontally")
+        .def_property("flip_y", &SpriteRenderer::GetFlipY, &SpriteRenderer::SetFlipY, "Flip sprite vertically");
+
+    // ========================================================================
     // LightType enum (matches Unity)
     // ========================================================================
     py::enum_<LightType>(m, "LightType")
@@ -694,7 +734,7 @@ void RegisterSceneBindings(py::module_ &m)
         .def_property("shadow_strength", &Light::GetShadowStrength, &Light::SetShadowStrength, "Shadow strength (0-1)")
         .def_property("shadow_bias", &Light::GetShadowBias, &Light::SetShadowBias, "Shadow depth bias")
 
-        // Shadow mapping matrices (Phase 4.4.3)
+        // Shadow mapping matrices
         .def("get_light_view_matrix", &Light::GetLightViewMatrix, "Get the light's view matrix for shadow mapping")
         .def("get_light_projection_matrix", &Light::GetLightProjectionMatrix, py::arg("shadow_extent") = 20.0f,
              py::arg("near_plane") = 0.1f, py::arg("far_plane") = 100.0f,
@@ -720,7 +760,7 @@ void RegisterSceneBindings(py::module_ &m)
         .export_values();
 
     // ========================================================================
-    // CameraClearFlags enum (Phase 1)
+    // CameraClearFlags enum
     // ========================================================================
     py::enum_<CameraClearFlags>(m, "CameraClearFlags")
         .value("Skybox", CameraClearFlags::Skybox)
@@ -751,17 +791,17 @@ void RegisterSceneBindings(py::module_ &m)
                       "Rendering depth (lower depth renders first, like Unity Camera.depth)")
         .def_property("culling_mask", &Camera::GetCullingMask, &Camera::SetCullingMask,
                       "Layer culling bitmask (which layers this camera renders)")
-        // Phase 1: Clear flags & background color
+        // Clear flags & background color
         .def_property("clear_flags", &Camera::GetClearFlags, &Camera::SetClearFlags,
                       "Camera clear flags (Skybox, SolidColor, DepthOnly, DontClear)")
         .def_property(
             "background_color", [](const Camera &c) -> glm::vec4 { return c.GetBackgroundColor(); },
             [](Camera &c, const glm::vec4 &v) { c.SetBackgroundColor(v); },
             "Background color as vec4f (r, g, b, a) — used when clear_flags == SolidColor")
-        // Phase 0: Screen dimensions (read-only, set by renderer)
+        // Screen dimensions (read-only, set by renderer)
         .def_property_readonly("pixel_width", &Camera::GetPixelWidth, "Render target width in pixels")
         .def_property_readonly("pixel_height", &Camera::GetPixelHeight, "Render target height in pixels")
-        // Phase 0: Coordinate conversion
+        // Coordinate conversion
         .def(
             "screen_to_world_point",
             [](const Camera &c, float x, float y, float depth) { return c.ScreenToWorldPoint(glm::vec2(x, y), depth); },
@@ -842,6 +882,8 @@ void RegisterSceneBindings(py::module_ &m)
         .def_property("layer", &GameObject::GetLayer, &GameObject::SetLayer, "Layer index (0-31) for this GameObject")
         .def_property("is_static", &GameObject::IsStatic, &GameObject::SetStatic,
                       "Static flag for this GameObject (Unity: gameObject.isStatic)")
+        .def_property_readonly("is_persistent", &GameObject::IsPersistent,
+                               "True if this object is marked DontDestroyOnLoad")
         .def_property("prefab_guid", &GameObject::GetPrefabGuid, &GameObject::SetPrefabGuid,
                       "GUID of the source .prefab asset (empty = not a prefab instance)")
         .def_property("prefab_root", &GameObject::IsPrefabRoot, &GameObject::SetPrefabRoot,

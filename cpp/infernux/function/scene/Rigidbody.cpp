@@ -273,8 +273,39 @@ void Rigidbody::SetIsKinematic(bool kinematic)
     auto &d = DataMut();
     if (d.isKinematic == kinematic)
         return;
+    bool wasKinematic = d.isKinematic;
     d.isKinematic = kinematic;
     NotifyCollidersBodyTypeChanged();
+
+    // When switching kinematic → dynamic, synchronise interpolation caches
+    // from the current Jolt body position.  During kinematic mode neither
+    // SyncPhysicsToTransform nor ApplyInterpolatedTransform update
+    // previousPhysicsPosition / currentPhysicsPosition, so they remain at
+    // the pre-drag value.  Without this reset, the first
+    // ApplyInterpolatedRigidbodies call after the switch overwrites the
+    // Transform with the stale position, causing a one-frame flash-back.
+    if (wasKinematic && !kinematic) {
+        auto *go = GetGameObject();
+        if (go) {
+            uint32_t bid = GetPrimaryBodyId(go);
+            if (bid != 0xFFFFFFFF) {
+                auto &pw = PhysicsWorld::Instance();
+                glm::vec3 bodyPos = pw.GetBodyPosition(bid);
+                glm::quat bodyRot = glm::normalize(pw.GetBodyRotation(bid));
+                d.previousPhysicsPosition = bodyPos;
+                d.previousPhysicsRotation = bodyRot;
+                d.currentPhysicsPosition = bodyPos;
+                d.currentPhysicsRotation = bodyRot;
+                d.hasPhysicsPose = true;
+            }
+            Transform *tf = go->GetTransform();
+            if (tf) {
+                d.lastSyncedPosition = tf->GetPosition();
+                d.lastSyncedRotation = tf->GetWorldRotation();
+                d.hasSyncedOnce = true;
+            }
+        }
+    }
 }
 
 void Rigidbody::SetConstraints(int constraints)
@@ -598,6 +629,12 @@ void Rigidbody::SyncPhysicsToTransform()
         return;
 
     auto &pw = PhysicsWorld::Instance();
+
+    // Skip sleeping bodies — their position hasn't changed since last sync.
+    // At 10k+ bodies, the vast majority are sleeping, so this avoids the
+    // BodyInterface reads (even with NoLock, they touch Jolt internal arrays).
+    if (pw.IsBodySleeping(bid) && d.hasPhysicsPose)
+        return;
 
     glm::vec3 bodyPos = pw.GetBodyPosition(bid);
     glm::quat bodyRot = glm::normalize(pw.GetBodyRotation(bid));

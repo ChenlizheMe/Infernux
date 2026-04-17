@@ -82,8 +82,6 @@ from .decorators import (
 
 __all__ = [
     "InxComponent",
-    "BuiltinComponent",
-    "CppProperty",
     "Component",
     "Transform",
     "Light",
@@ -107,6 +105,7 @@ __all__ = [
     "GameObjectRef",
     "MaterialRef",
     "ComponentRef",
+    "PrefabRef",
     "SerializableObject",
     "list_field",
     "component_field",

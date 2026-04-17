@@ -53,6 +53,12 @@ void DestroyLingeringMaterialPassPipelines(VkDevice device)
 
         for (int passIndex = 0; passIndex < static_cast<int>(ShaderCompileTarget::Count); ++passIndex) {
             const auto pass = static_cast<ShaderCompileTarget>(passIndex);
+            // Shadow pipelines are owned by m_shadowPipelineCache and
+            // destroyed in CleanupShadowPipeline() — skip here.
+            if (pass == ShaderCompileTarget::Shadow) {
+                material->ClearPassPipeline(pass);
+                continue;
+            }
             const VkPipeline pipeline = material->GetPassPipeline(pass);
             if (pipeline != VK_NULL_HANDLE) {
                 if (destroyedPipelines.insert(pipeline).second) {
@@ -338,6 +344,20 @@ void InxVkCoreModular::InvalidateShaderCache(const std::string &shaderId)
     // Invalidate all materials using this shader in MaterialPipelineManager
     if (m_materialPipelineManagerInitialized) {
         m_materialPipelineManager.InvalidateMaterialsUsingShader(shaderId);
+    }
+
+    // Invalidate cached shadow pipelines that reference this shader
+    {
+        VkDevice dev = GetDevice();
+        for (auto it = m_shadowPipelineCache.begin(); it != m_shadowPipelineCache.end();) {
+            if (it->first.find(shaderId) != std::string::npos) {
+                if (it->second != VK_NULL_HANDLE)
+                    vkDestroyPipeline(dev, it->second, nullptr);
+                it = m_shadowPipelineCache.erase(it);
+            } else {
+                ++it;
+            }
+        }
     }
 
     // Also unload the shader module so it gets recreated

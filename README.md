@@ -10,7 +10,7 @@
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License" /></a>
-  <img src="https://img.shields.io/badge/version-0.1.2-orange.svg" alt="Version" />
+  <img src="https://img.shields.io/badge/version-0.1.3-orange.svg" alt="Version" />
   <img src="https://img.shields.io/badge/platform-Windows-lightgrey.svg" alt="Platform" />
   <img src="https://img.shields.io/badge/python-3.12+-brightgreen.svg" alt="Python" />
   <img src="https://img.shields.io/badge/C%2B%2B-17-blue.svg" alt="C++ 17" />
@@ -21,56 +21,56 @@
   <a href="README-zh.md">中文文档</a> ·
   <a href="https://chenlizheme.github.io/Infernux/">Website</a> ·
   <a href="https://chenlizheme.github.io/Infernux/wiki.html">Docs</a> ·
+  <a href="https://arxiv.org/pdf/2604.10263">Technical Report</a> ·
   <a href="#quick-start">Quick Start</a>
 </p>
 
----
+## Runtime Capture
+
+<p align="center">
+  <img src="docs/assets/demo.png" alt="Editor capture showing 10,000 cubes rendered in Infernux" width="100%" />
+</p>
+
+<p align="center">
+  <em>Editor session left running in Play mode while the scene continues to render at runtime.</em>
+</p>
 
 ## Overview
 
-Infernux is a from-scratch engine for teams that want to own the runtime, the tools, and the iteration loop.
+Infernux is a from-scratch engine for developers who want control over the runtime, the editor workflow, and the scripting surface instead of treating the engine as a sealed product.
 
-The project combines:
+The project combines three layers:
 
-- a native C++17 / Vulkan runtime for rendering, scene systems, platform integration, and physics
-- a Python layer for gameplay, editor tooling, content workflows, and render-stack authoring
-- an MIT license with no royalties, runtime fees, or closed engine surface
+- A native C++17 / Vulkan runtime for rendering, scene systems, physics, audio, and platform services.
+- A pybind11 bridge that exposes the native runtime to Python.
+- A Python layer for gameplay, editor tooling, content workflows, build automation, and render authoring.
 
-The goal is straightforward: keep the hot path native, keep the authoring loop fast, and keep the architecture readable enough that you can extend it without fighting hidden engine policy.
+The architectural goal is straightforward: keep the hot path native, keep iteration fast, and keep the codebase understandable enough that teams can extend it without reverse-engineering hidden policy.
 
-## Why Infernux
+## Current Scope
 
-- Scriptable rendering: the render pipeline is exposed through RenderGraph and RenderStack APIs instead of being locked behind editor-only configuration.
-- Python where iteration matters: gameplay, editor extensions, asset workflows, and automation all live in the same scripting ecosystem.
-- Repository-first development: the codebase is intended to be inspectable and modifiable, not treated as a black box.
-- Honest scope: the current release is a Windows technical preview with a working runtime/editor core, not a finished multi-platform engine.
+Infernux is currently a Windows-first technical preview. The project already contains a usable editor/runtime core, but it should still be evaluated as an actively evolving engine rather than a finished commercial platform.
 
-## Current Status
-
-The project already has a usable foundation for real engine work:
+Core capabilities available today include:
 
 - Vulkan forward and deferred rendering, PBR, cascaded shadows, MSAA, shader reflection, and post-processing.
-- RenderGraph and RenderStack systems that can be authored from Python.
-- Jolt physics integration with rigidbodies, colliders, queries, callbacks, and layer filtering.
-- SDL3-based audio, scene/resource management, GUID-based assets, and dependency tracking.
-- A built-in editor with Hierarchy, Inspector, Scene View, Game View, Project, Console, UI editor, build settings, and play-mode isolation.
-- Python-side component lifecycle, coroutine utilities, prefab workflows, serialized fields, and hot-reload support.
-- Game UI primitives including Canvas, Text, Image, Button, and event routing.
-- Hub packaging flows for both a standalone bundle and a Windows installer.
-
-Near-term roadmap priorities are animation, advanced UI controls, more onboarding material, and a stronger content pipeline.
+- RenderGraph and RenderStack APIs authored from Python.
+- Jolt physics integration with rigidbodies, colliders, scene queries, callbacks, and layer filtering.
+- GUID-based assets, dependency tracking, scene serialization, prefab workflows, and play-mode isolation.
+- An integrated editor with Hierarchy, Inspector, Scene View, Game View, Project, Console, UI editing, and build settings.
+- Python-side component lifecycle, coroutines, serialized fields, and script reload support.
+- Basic runtime UI primitives including Canvas, Text, Image, Button, and pointer events.
+- Packaging paths for the Hub, a standalone bundle, and a Windows installer.
 
 ## Architecture
 
-The engine is split by responsibility rather than ideology.
-
 | Layer | Responsibility |
 |:------|:---------------|
-| C++17 / Vulkan | Renderer, resource ownership, physics, scene systems, platform services |
+| C++17 / Vulkan | Rendering, resource ownership, scene systems, physics, audio, platform integration |
 | pybind11 bridge | Native bindings exposed to Python |
 | Python | Gameplay, editor logic, tooling, automation, render authoring |
 
-This division keeps performance-sensitive systems native while leaving day-to-day production code in a language that is faster to iterate on and easier to integrate with external tooling.
+This split keeps performance-sensitive systems in native code while leaving day-to-day production code in a language that is easier to iterate on and easier to connect to external tooling and data pipelines.
 
 ## Quick Start
 
@@ -95,7 +95,7 @@ This division keeps performance-sensitive systems native while leaving day-to-da
 
 | Dependency | Version |
 |:-----------|:--------|
-| macOS | 12+ (Apple Silicon or Intel) |
+| macOS | 12+ |
 | Python | 3.12+ |
 | Vulkan SDK | 1.3+ (LunarG SDK with MoltenVK) |
 | CMake | 3.22+ |
@@ -103,39 +103,31 @@ This division keeps performance-sensitive systems native while leaving day-to-da
 | Xcode Command Line Tools | Latest |
 | pybind11 | 2.11+ |
 
-Install the Vulkan SDK from <https://vulkan.lunarg.com/sdk/home> (macOS tab). After installation, source the setup script:
+Install the Vulkan SDK from <https://vulkan.lunarg.com/sdk/home> and source the environment script after installation.
 
 ```bash
 source ~/VulkanSDK/<version>/setup-env.sh
-```
-
-Install Ninja and CMake via Homebrew if not already present:
-
-```bash
 brew install cmake ninja
 ```
 
 </details>
 
-Use any Python 3.12 environment you prefer. The examples below use Conda because that is the most common workflow in this repository.
+Any Python 3.12 environment works. The commands below use Conda because that is the most common workflow in this repository.
 
-### Clone the repository
+### Clone
 
 ```bash
 git clone --recurse-submodules https://github.com/ChenlizheMe/Infernux.git
 cd Infernux
 ```
 
-If you already cloned without submodules:
+If the repository was cloned without submodules:
 
 ```bash
 git submodule update --init --recursive
 ```
 
-### Build the engine
-
-<details>
-<summary><b>Windows</b></summary>
+### Build
 
 ```bash
 conda create -n infengine python=3.12 -y
@@ -145,22 +137,9 @@ cmake --preset release
 cmake --build --preset release
 ```
 
-</details>
+On macOS, replace `release` with `release-macos`.
 
-<details>
-<summary><b>macOS</b></summary>
-
-```bash
-conda create -n infengine python=3.12 -y
-conda activate infengine
-pip install -r requirements.txt
-cmake --preset release-macos
-cmake --build --preset release-macos
-```
-
-</details>
-
-This builds the native module, copies the required runtime dependencies, and installs the Python package into the active environment so `import Infernux` works directly from the workspace.
+The build copies the native module and runtime dependencies into the Python package so `import Infernux` works directly from the active environment.
 
 ### Launch the Hub in development mode
 
@@ -169,7 +148,7 @@ conda activate infengine
 python packaging/launcher.py
 ```
 
-Development mode uses your current Python environment and local build outputs. It does not install the Hub's private runtime.
+Development mode uses the current Python environment and local build outputs. It does not install the Hub's managed runtime.
 
 ### Run tests
 
@@ -183,9 +162,10 @@ python -m pytest test/ -v
 
 - Website: <https://chenlizheme.github.io/Infernux/>
 - Documentation hub: <https://chenlizheme.github.io/Infernux/wiki.html>
-- API reference: generated from the Python package and published as static HTML under `docs/wiki/site/`
+- Technical report: [Infernux: A Python-Native Game Engine with JIT-Accelerated Scripting (arXiv:2604.10263)](https://arxiv.org/pdf/2604.10263)
+- API reference: generated from the Python package and published under `docs/wiki/site/`
 
-To regenerate the API Markdown and HTML site locally:
+To regenerate the API markdown and static site locally:
 
 ```bash
 conda activate infengine
@@ -193,11 +173,11 @@ python docs/wiki/generate_api_docs.py
 python -m mkdocs build --clean -f docs/wiki/mkdocs.yml
 ```
 
-The equivalent CMake targets are `generate_api_docs` and `build_wiki_html`.
+Equivalent CMake targets are `generate_api_docs` and `build_wiki_html`.
 
 ## Packaging
 
-There are two supported Hub distribution paths.
+Two distribution paths are currently supported for the Hub.
 
 ### Standalone bundle
 
@@ -205,7 +185,7 @@ There are two supported Hub distribution paths.
 cmake --build --preset packaging
 ```
 
-This produces the portable PyInstaller output under `dist/Infernux Hub/`. It is useful for local validation and developer-facing distribution.
+This produces the portable PyInstaller output under `dist/Infernux Hub/`.
 
 ### Windows installer
 
@@ -213,13 +193,28 @@ This produces the portable PyInstaller output under `dist/Infernux Hub/`. It is 
 cmake --build --preset packaging-installer
 ```
 
-This produces the graphical Windows installer for the Hub. The installer flow downloads and stages the matching Python 3.12 runtime for the host architecture, then provisions project runtimes from that private Hub-managed base.
+This produces the graphical Windows installer, which stages the matching Python 3.12 runtime for the host architecture and provisions project runtimes from that managed base.
+
+## Citation
+
+If you use Infernux in research, technical writing, or published work, cite it as software:
+
+```bibtex
+@software{chen2026infernux,
+  author  = {Chen, Lizhe},
+  title   = {Infernux},
+  year    = {2026},
+  version = {0.1.3},
+  url     = {https://github.com/ChenlizheMe/Infernux},
+  note    = {Open-source game engine with a C++17/Vulkan runtime and a Python production layer}
+}
+```
 
 ## Contributing
 
-Bug reports, feature requests, and workflow feedback are useful right now. If you are filing an issue, include the engine version, environment details, reproduction steps, and whether the problem is in the native runtime, the Python layer, or packaging.
+Bug reports, feature requests, and workflow feedback are all useful at the current stage. When filing an issue, include the engine version, environment details, reproduction steps, and whether the problem sits in the native runtime, the Python layer, or packaging.
 
-Contribution and support policies live in the repository community files:
+Contribution and support policies live in:
 
 - `CONTRIBUTING.md`
 - `SECURITY.md`
@@ -228,89 +223,3 @@ Contribution and support policies live in the repository community files:
 ## License
 
 Infernux is released under the MIT License. See `LICENSE` for details.
-- installs the selected Infernux version into each project's runtime
-
-This means each project owns a complete, self-contained Python copy. It does not share a runtime with other projects.
-
----
-
-## Architecture
-
-```text
-Python authoring layer
-  -> editor panels, components, RenderGraph authoring, tooling, project workflows
-  -> pybind11 binding seam
-C++ engine core
-  -> renderer, scene, resources, physics, audio, platform services
-External stack
-  -> Vulkan, SDL3, Jolt, ImGui, Assimp, GLM, glslang, VMA
-```
-
-### Practical flow
-
-1. Author gameplay or rendering logic in Python.
-2. Bind that logic to editor-visible data and scene objects.
-3. Describe render passes through the RenderGraph API.
-4. The native backend handles scheduling, memory, and GPU execution.
-
-This is the main architectural promise of the engine: **high-level iteration without surrendering low-level ownership**.
-
----
-
-## Status
-
-### Working
-
-- Vulkan rendering (forward + deferred), PBR, shadows, 8 post-processing effects
-- Python scripting with hot-reload and editor integration
-- Full editor (12 panels, gizmos, undo/redo, play mode)
-- Jolt physics (rigidbodies, colliders, raycasting, collision layers)
-- SDL3 audio with 3D spatialization
-- Asset pipeline (GUID-based AssetDatabase, .meta files, dependency graph)
-- Prefab system (save/instantiate/override tracking)
-- Game UI system (Canvas, Text, Image, Button, event system)
-- Standalone game build via Nuitka
-- Numba JIT integration with `@njit` decorator, automatic fallback, and `.py` attribute for explicit Python path
-- Hub launcher and Windows installer
-
-### In progress
-
-- Animation system (skeletal animation, state machines)
-- Advanced UI controls (ScrollView, Slider, layout groups)
-- Documentation, tutorials, and example projects
-
----
-
-## Roadmap
-
-| Version | Focus |
-|:--------|:------|
-| v0.1 | **Current** — Rendering, physics, audio, scripting, editor, prefabs, game UI, standalone build. Usable for basic games without animation |
-| v0.2 | Animation system, advanced UI controls (ScrollView, Slider, layout), asset rename safety |
-| v0.3 | Particles, terrain, model/content pipeline improvements |
-| v0.4 | Networking foundations |
-| v1.0 | Documentation, examples, production readiness |
-
----
-
-## Contributing
-
-1. Read the README and the docs site first.
-2. Check the roadmap to understand current priorities.
-3. Open an issue or discussion before pushing broad architectural changes.
-4. Submit focused pull requests with a clear engineering goal.
-
-This repository benefits most from contributions that preserve the core idea of the project: explicit architecture, short iteration loops, and a stack the team actually owns.
-
----
-
-## Contact
-
-- Email: [chenlizheme@outlook.com](mailto:chenlizheme@outlook.com)
-- GitHub: [https://github.com/ChenlizheMe/Infernux](https://github.com/ChenlizheMe/Infernux)
-
----
-
-## License
-
-MIT License. See [LICENSE](LICENSE) for details.

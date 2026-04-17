@@ -170,7 +170,7 @@ class MeshRenderer : public Component
     [[nodiscard]] std::shared_ptr<InxMaterial> GetMaterial(uint32_t slot = 0) const;
 
     /// @brief Get the effective material for a slot (returns default if none).
-    [[nodiscard]] std::shared_ptr<InxMaterial> GetEffectiveMaterial(uint32_t slot = 0) const;
+    [[nodiscard]] virtual std::shared_ptr<InxMaterial> GetEffectiveMaterial(uint32_t slot = 0) const;
 
     /// @brief Get the GUID of the material at a specific slot.
     [[nodiscard]] std::string GetMaterialGuid(uint32_t slot = 0) const;
@@ -281,6 +281,9 @@ class MeshRenderer : public Component
 
     /// @brief Get world-space bounding box (transformed by GameObject)
     void GetWorldBounds(glm::vec3 &outMin, glm::vec3 &outMax) const;
+
+    /// @brief Compute world bounds from a pre-computed world matrix (avoids double GetWorldMatrix)
+    void ComputeWorldBounds(const glm::mat4 &worldMatrix, glm::vec3 &outMin, glm::vec3 &outMax) const;
 
     /// @brief Compute world bounds from a pre-computed world matrix (avoids double GetWorldMatrix)
     void ComputeWorldBounds(const glm::mat4 &worldMatrix, glm::vec3 &outMin, glm::vec3 &outMax) const;

@@ -2,7 +2,7 @@
  * @file OutlineRenderer.cpp
  * @brief Post-process selection outline renderer implementation
  *
- * Extracted from InxVkCoreModular.cpp (Phase 1 refactoring).
+ * Extracted from InxVkCoreModular.cpp during editor/renderer separation.
  */
 
 #include "OutlineRenderer.h"

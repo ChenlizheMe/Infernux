@@ -2,7 +2,7 @@
  * @file CommandBuffer.h
  * @brief Deferred-recording command buffer for the Scriptable Render Pipeline.
  *
- * Part of Phase 2 refactoring: CommandBuffer API + ScriptableRenderContext enhancement.
+ * Provides the deferred command-buffer API used by ScriptableRenderContext.
  *
  * Design: Python calls (e.g. cmd.draw_renderers()) do NOT immediately operate
  * on Vulkan.  Instead, commands are recorded into a std::vector<RenderCommand>.
@@ -228,7 +228,7 @@ class CommandBuffer
     void SetGlobalMatrix(const std::string &name, const std::array<float, 16> &data);
 
     // ====================================================================
-    // Async Readback (AI/CV Integration)
+    // Async readback
     // ====================================================================
 
     /// @brief Request an asynchronous GPU→CPU readback of a render target.

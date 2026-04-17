@@ -12,25 +12,13 @@ theme:
 nav:
   - Home: index.md
   - English Guides:
-    - Tutorials:
-      - Audio in Infernux: en/tutorials/audio.md
-      - Building and Packaging Projects: en/tutorials/building.md
-      - Coroutines and Time: en/tutorials/coroutines.md
-      - Physics in Infernux: en/tutorials/physics.md
-      - Rendering with RenderGraph and RenderStack: en/tutorials/rendering.md
-      - Building UI in Infernux: en/tutorials/ui.md
     - Architecture:
       - Why Infernux Exists: en/architecture/about.md
+      - JIT-Accelerated Scripting: en/architecture/jit.md
   - 中文指南:
-    - 教程:
-      - Infernux 音频入门: zh/tutorials/audio.md
-      - 构建与打包: zh/tutorials/building.md
-      - 协程与时间系统: zh/tutorials/coroutines.md
-      - Infernux 物理入门: zh/tutorials/physics.md
-      - 渲染、RenderGraph 与 RenderStack: zh/tutorials/rendering.md
-      - Infernux UI 入门: zh/tutorials/ui.md
     - 架构:
       - 为什么会有Infernux: zh/architecture/about.md
+      - JIT 加速脚本: zh/architecture/jit.md
   - API Reference:
     - Overview: en/api/index.md
     - Infernux:

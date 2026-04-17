@@ -12,6 +12,16 @@ Manages scene loading, unloading, and queries.
 
 <!-- USER CONTENT END -->
 
+## Properties
+
+| Name | Type | Description |
+|------|------|------|
+| active_scene | `Optional[object]` |  *(read-only)* |
+
+<!-- USER CONTENT START --> properties
+
+<!-- USER CONTENT END -->
+
 ## Static Methods
 
 | Method | Description |
@@ -27,6 +37,7 @@ Manages scene loading, unloading, and queries.
 | `static SceneManager.get_scene_path(build_index: int) → Optional[str]` | Get a scene file path by build index. |
 | `static SceneManager.get_build_index(name: str) → int` | Get the build index of a scene by name. |
 | `static SceneManager.get_all_scene_names() → List[str]` | Get a list of all scene names in the build. |
+| `static SceneManager.dont_destroy_on_load(game_object: object) → None` | Mark a game object so it survives scene loads. |
 
 <!-- USER CONTENT START --> static_methods
 

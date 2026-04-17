@@ -61,12 +61,12 @@ void RegisterRenderPipelineBindings(py::module_ &m)
              "Submit all culling results as full draw calls (filtering done by graph pass callbacks)")
         .def("render_with_graph", &ScriptableRenderContext::RenderWithGraph, py::arg("camera"), py::arg("description"),
              "Single-call render: setup + cull + apply_graph + submit (avoids Python round-trips)")
-        // Phase 2: CommandBuffer integration
+        // CommandBuffer integration
         .def("execute_command_buffer", &ScriptableRenderContext::ExecuteCommandBuffer, py::arg("cmd"),
              "Execute a deferred CommandBuffer (commands are buffered until submit)")
         .def("get_camera_target", &ScriptableRenderContext::GetCameraTarget, py::arg("camera"),
              "Get a handle representing the final camera render target")
-        // Phase 2: Global shader parameters (immediate mode)
+        // Global shader parameters (immediate mode)
         .def(
             "set_global_texture",
             [](ScriptableRenderContext &self, const std::string &name, RenderTargetHandle handle) {

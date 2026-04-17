@@ -546,7 +546,22 @@ void RegisterResourceBindings(py::module_ &m)
         .def("has_override", &InxMaterial::HasOverride, py::arg("flag"),
              "Check if a RenderState field is user-overridden")
         .def("sync_alpha_clip_property", &InxMaterial::SyncAlphaClipProperty,
-             "Sync internal _AlphaClipThreshold material property from RenderState");
+             "Sync internal _AlphaClipThreshold material property from RenderState")
+        // Clone / Instantiate (Unity-style Object.Instantiate for materials)
+        .def("clone", &InxMaterial::Clone,
+             "Create a deep copy of this material (Unity: new Material(original)). "
+             "Copies all properties, shader names, and render state. "
+             "GPU state is lazily recreated. The clone has no GUID (runtime-only).")
+        .def_static(
+            "instantiate",
+            [](const std::shared_ptr<InxMaterial> &original) -> std::shared_ptr<InxMaterial> {
+                if (!original)
+                    return nullptr;
+                return original->Clone();
+            },
+            py::arg("original"),
+            "Clone a material (Unity: Object.Instantiate). Deep-copies all properties; "
+            "shader and texture references are shared. Returns a new runtime material instance.");
 
     // RenderStateOverride — bitmask flags for per-material render state overrides
     py::enum_<RenderStateOverride>(m, "RenderStateOverride", py::arithmetic())
@@ -567,23 +582,42 @@ void RegisterResourceBindings(py::module_ &m)
         .def(py::init<>())
         // Rasterization
         .def_readwrite("cull_mode", &RenderState::cullMode, "VkCullModeFlags: 0=None, 1=Front, 2=Back, 3=FrontAndBack")
-        .def_readwrite("front_face", &RenderState::frontFace, "VkFrontFace: 0=CounterClockwise, 1=Clockwise")
-        .def_readwrite("polygon_mode", &RenderState::polygonMode, "VkPolygonMode: 0=Fill, 1=Line, 2=Point")
+        .def_property(
+            "front_face", [](const RenderState &rs) { return static_cast<int>(rs.frontFace); },
+            [](RenderState &rs, int v) { rs.frontFace = static_cast<VkFrontFace>(v); },
+            "VkFrontFace: 0=CounterClockwise, 1=Clockwise")
+        .def_property(
+            "polygon_mode", [](const RenderState &rs) { return static_cast<int>(rs.polygonMode); },
+            [](RenderState &rs, int v) { rs.polygonMode = static_cast<VkPolygonMode>(v); },
+            "VkPolygonMode: 0=Fill, 1=Line, 2=Point")
         .def_readwrite("line_width", &RenderState::lineWidth)
         // Depth
         .def_readwrite("depth_test_enable", &RenderState::depthTestEnable)
         .def_readwrite("depth_write_enable", &RenderState::depthWriteEnable)
-        .def_readwrite(
-            "depth_compare_op", &RenderState::depthCompareOp,
+        .def_property(
+            "depth_compare_op", [](const RenderState &rs) { return static_cast<int>(rs.depthCompareOp); },
+            [](RenderState &rs, int v) { rs.depthCompareOp = static_cast<VkCompareOp>(v); },
             "VkCompareOp: 0=Never,1=Less,2=Equal,3=LessOrEqual,4=Greater,5=NotEqual,6=GreaterOrEqual,7=Always")
         // Blending
         .def_readwrite("blend_enable", &RenderState::blendEnable)
-        .def_readwrite("src_color_blend_factor", &RenderState::srcColorBlendFactor)
-        .def_readwrite("dst_color_blend_factor", &RenderState::dstColorBlendFactor)
-        .def_readwrite("color_blend_op", &RenderState::colorBlendOp)
-        .def_readwrite("src_alpha_blend_factor", &RenderState::srcAlphaBlendFactor)
-        .def_readwrite("dst_alpha_blend_factor", &RenderState::dstAlphaBlendFactor)
-        .def_readwrite("alpha_blend_op", &RenderState::alphaBlendOp)
+        .def_property(
+            "src_color_blend_factor", [](const RenderState &rs) { return static_cast<int>(rs.srcColorBlendFactor); },
+            [](RenderState &rs, int v) { rs.srcColorBlendFactor = static_cast<VkBlendFactor>(v); })
+        .def_property(
+            "dst_color_blend_factor", [](const RenderState &rs) { return static_cast<int>(rs.dstColorBlendFactor); },
+            [](RenderState &rs, int v) { rs.dstColorBlendFactor = static_cast<VkBlendFactor>(v); })
+        .def_property(
+            "color_blend_op", [](const RenderState &rs) { return static_cast<int>(rs.colorBlendOp); },
+            [](RenderState &rs, int v) { rs.colorBlendOp = static_cast<VkBlendOp>(v); })
+        .def_property(
+            "src_alpha_blend_factor", [](const RenderState &rs) { return static_cast<int>(rs.srcAlphaBlendFactor); },
+            [](RenderState &rs, int v) { rs.srcAlphaBlendFactor = static_cast<VkBlendFactor>(v); })
+        .def_property(
+            "dst_alpha_blend_factor", [](const RenderState &rs) { return static_cast<int>(rs.dstAlphaBlendFactor); },
+            [](RenderState &rs, int v) { rs.dstAlphaBlendFactor = static_cast<VkBlendFactor>(v); })
+        .def_property(
+            "alpha_blend_op", [](const RenderState &rs) { return static_cast<int>(rs.alphaBlendOp); },
+            [](RenderState &rs, int v) { rs.alphaBlendOp = static_cast<VkBlendOp>(v); })
         // Render queue
         .def_readwrite("render_queue", &RenderState::renderQueue, "Sorting order: 2000=Opaque, 3000=Transparent")
         // Alpha clip

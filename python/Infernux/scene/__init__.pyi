@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Union, Optional, List
+from typing import ClassVar, Union, Optional, List
 
 from Infernux.lib import TagLayerManager as TagLayerManager
 
@@ -51,6 +51,7 @@ class SceneManager:
     """Manages scene loading, unloading, and queries."""
 
     _pending_scene_load: Optional[str]
+    active_scene: ClassVar[Optional[object]]
 
     @staticmethod
     def get_active_scene() -> Optional[object]:
@@ -95,6 +96,10 @@ class SceneManager:
     @staticmethod
     def get_all_scene_names() -> List[str]:
         """Get a list of all scene names in the build."""
+        ...
+    @staticmethod
+    def dont_destroy_on_load(game_object: object) -> None:
+        """Mark a game object so it survives scene loads."""
         ...
 
 

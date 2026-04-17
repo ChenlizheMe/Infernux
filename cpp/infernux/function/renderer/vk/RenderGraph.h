@@ -217,7 +217,7 @@ struct ResourceAccess
 };
 
 // ============================================================================
-// Resource State (Phase 1: Layout Tracking)
+// Resource state and layout tracking
 // ============================================================================
 
 /**
@@ -407,7 +407,7 @@ struct RenderPassData
     // Color/depth outputs
     std::vector<ResourceHandle> colorOutputs;
     ResourceHandle depthOutput;
-    ResourceHandle depthInput;    ///< Read-only depth attachment (Phase 1: depth sharing)
+    ResourceHandle depthInput;    ///< Read-only depth attachment shared from an earlier pass
     ResourceHandle resolveOutput; // MSAA resolve target (1x)
 
     // Render area
@@ -473,7 +473,7 @@ struct ResourceData
     uint32_t lastPass = 0;
     uint32_t refCount = 0;
 
-    // Phase 1: Layout state tracking
+    // Layout state tracking
     VkImageLayout currentLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 };
 
@@ -754,7 +754,7 @@ class RenderGraph
     /// @brief Compute resource lifetimes
     void ComputeResourceLifetimes();
 
-    /// @brief Topological sort via Kahn's algorithm (Phase 1)
+    /// @brief Topological sort via Kahn's algorithm
     void TopologicalSort();
 
     /// @brief Allocate transient resources
@@ -770,14 +770,14 @@ class RenderGraph
     ///        viewport and scissor so Execute() can skip per-frame construction.
     void PrecomputeExecuteData();
 
-    /// @brief Insert barriers between passes (Phase 1: precise layout tracking)
+    /// @brief Insert barriers between passes using tracked resource layouts
     void InsertBarriers(VkCommandBuffer cmdBuffer, uint32_t passIndex);
 
     /// @brief Free transient resources
     void FreeResources();
 
     // ========================================================================
-    // Phase 1: Layout / Barrier Helpers
+    // Layout / barrier helpers
     // ========================================================================
 
     /// @brief Convert ResourceUsage to appropriate VkImageLayout
@@ -796,7 +796,7 @@ class RenderGraph
     bool IsResourceUsedAfter(uint32_t resourceId, uint32_t passIndex) const;
 
     // ========================================================================
-    // Phase 1: RenderPass / Framebuffer Caching
+    // RenderPass / framebuffer caching
     // ========================================================================
 
     /// @brief Compute hash for RenderPassConfig (for cache lookup)
@@ -830,7 +830,7 @@ class RenderGraph
     // State
     bool m_compiled = false;
 
-    // Phase 1: Per-resource layout state (reset each Execute())
+    // Per-resource layout state (reset each Execute())
     // Flat vector indexed by resource id — O(1) lookup, memcpy reset.
     std::vector<ResourceState> m_resourceStates;
     // Initial states set during Import/SetBackbuffer — restored at the
@@ -842,10 +842,10 @@ class RenderGraph
     std::vector<VkImageMemoryBarrier> m_barrierScratch;
     std::vector<VkClearValue> m_clearValueScratch;
 
-    // Phase 1: RenderPass cache (long-lived across frames)
+    // RenderPass cache (long-lived across frames)
     std::unordered_map<size_t, VkRenderPass> m_renderPassCache;
 
-    // Phase 1: Framebuffer cache (long-lived across frames)
+    // Framebuffer cache (long-lived across frames)
     struct FramebufferCacheEntry
     {
         VkFramebuffer framebuffer = VK_NULL_HANDLE;
@@ -853,7 +853,7 @@ class RenderGraph
     };
     std::unordered_map<size_t, FramebufferCacheEntry> m_framebufferCache;
 
-    // Phase 1: Track which cache entries were used this frame
+    // Track which cache entries were used this frame
     std::vector<size_t> m_usedRenderPassKeys;
     std::vector<size_t> m_usedFramebufferKeys;
 

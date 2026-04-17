@@ -129,7 +129,7 @@ struct UniformBufferObject
  * Represents a single draw call with its own material, transform,
  * and per-object mesh buffer references.
  *
- * Phase 2.3.4: Each DrawCall now carries non-owning pointers to the
+ * Each DrawCall carries non-owning pointers to the
  * object's vertex/index data. The renderer creates persistent per-object
  * GPU buffers, eliminating the per-frame combined-buffer copy.
  */
@@ -144,7 +144,7 @@ struct DrawCall
     bool frustumVisible = true;      // Whether object passed main-camera frustum culling
     AABB worldBounds;                // World-space bounding box for shadow cascade culling
 
-    // Per-object mesh data pointers (Phase 2.3.4)
+    // Per-object mesh data pointers
     // Non-owning references to MeshRenderer's persistent vertex/index data.
     // Used by the renderer to create/update per-object GPU buffers.
     const std::vector<Vertex> *meshVertices = nullptr;

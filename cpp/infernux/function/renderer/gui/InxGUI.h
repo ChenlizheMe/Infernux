@@ -34,6 +34,11 @@ class InxGUI
     void RecordCommand(VkCommandBuffer cmdBuf);
     void Shutdown();
 
+    void SetPlayerMode(bool enabled)
+    {
+        m_playerMode = enabled;
+    }
+
     [[nodiscard]] const std::unordered_map<std::string, double> &GetLastPanelTimesMs() const
     {
         return m_lastPanelTimesMs;
@@ -108,6 +113,7 @@ class InxGUI
     std::unordered_map<std::string, double> m_lastPanelTimesMs;
     std::unordered_map<std::string, ImGuiTextureResource> m_textures_umap;
     ResourcePreviewManager m_resourcePreviewManager;
+    bool m_playerMode = false;
 
     void ApplyPendingDockTabSelections();
 };

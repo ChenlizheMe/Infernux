@@ -284,6 +284,7 @@ void AssetRegistry::InitializeBuiltinMaterials()
     };
 
     registerBuiltin("DefaultLit", InxMaterial::CreateDefaultLit());
+    registerBuiltin("DefaultUnlit", InxMaterial::CreateDefaultUnlit());
     registerBuiltin("GizmoMaterial", InxMaterial::CreateGizmoMaterial());
     registerBuiltin("GridMaterial", InxMaterial::CreateGridMaterial());
     registerBuiltin("ComponentGizmosMaterial", InxMaterial::CreateComponentGizmosMaterial());

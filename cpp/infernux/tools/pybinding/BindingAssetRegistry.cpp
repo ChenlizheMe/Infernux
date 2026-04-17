@@ -12,7 +12,7 @@ namespace infernux
 
 void RegisterAssetRegistryBindings(py::module_ &m)
 {
-    // ── InxMesh — read-only runtime mesh asset (Phase 0) ────────────────
+    // ── InxMesh — read-only runtime mesh asset ───────────────────────────
     py::class_<InxMesh, std::shared_ptr<InxMesh>>(m, "InxMesh")
         .def_property_readonly("name", &InxMesh::GetName, "Mesh asset name")
         .def_property_readonly("guid", &InxMesh::GetGuid, "Mesh asset GUID")
@@ -82,7 +82,7 @@ void RegisterAssetRegistryBindings(py::module_ &m)
         .def("load_builtin_material_from_file", &AssetRegistry::LoadBuiltinMaterialFromFile, py::arg("key"),
              py::arg("mat_file_path"), "Load/replace a builtin material from a .mat file (e.g. key='DefaultLit')")
 
-        // Mesh convenience wrappers (Phase 0+1)
+        // Mesh convenience wrappers
         .def(
             "load_mesh",
             [](AssetRegistry &self, const std::string &path) {

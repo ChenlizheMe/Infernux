@@ -297,7 +297,8 @@ std::unique_ptr<VkImageHandle> VkResourceManager::CreateDepthBuffer(uint32_t wid
 }
 
 std::unique_ptr<VkTexture> VkResourceManager::LoadTexture(const std::string &filePath, bool generateMipmaps,
-                                                          VkFormat format, int maxSize, bool normalMapMode)
+                                                          VkFormat format, int maxSize, bool normalMapMode,
+                                                          VkFilter filter, VkSamplerAddressMode addressMode, int aniso)
 {
     int texWidth, texHeight, texChannels;
     // Read file bytes first to support Unicode paths on Windows
@@ -323,7 +324,7 @@ std::unique_ptr<VkTexture> VkResourceManager::LoadTexture(const std::string &fil
         auto texture = std::make_unique<VkTexture>();
         if (!texture->CreateFromPixels(m_vmaAllocator, m_device, m_physicalDevice, m_commandPool, m_graphicsQueue,
                                        reinterpret_cast<const unsigned char *>(floatPixels), texWidth, texHeight,
-                                       hdrFormat, generateMipmaps)) {
+                                       hdrFormat, generateMipmaps, filter, addressMode, aniso)) {
             stbi_image_free(floatPixels);
             return nullptr;
         }
@@ -365,7 +366,8 @@ std::unique_ptr<VkTexture> VkResourceManager::LoadTexture(const std::string &fil
     }
 
     const unsigned char *srcPixels = resizedBuf.empty() ? basePixels : resizedBuf.data();
-    auto texture = CreateTextureFromPixels(srcPixels, finalW, finalH, format, generateMipmaps);
+    auto texture =
+        CreateTextureFromPixels(srcPixels, finalW, finalH, format, generateMipmaps, filter, addressMode, aniso);
 
     stbi_image_free(pixels);
 
@@ -374,12 +376,13 @@ std::unique_ptr<VkTexture> VkResourceManager::LoadTexture(const std::string &fil
 
 std::unique_ptr<VkTexture> VkResourceManager::CreateTextureFromPixels(const unsigned char *pixels, uint32_t width,
                                                                       uint32_t height, VkFormat format,
-                                                                      bool generateMipmaps)
+                                                                      bool generateMipmaps, VkFilter filter,
+                                                                      VkSamplerAddressMode addressMode, int aniso)
 {
     auto texture = std::make_unique<VkTexture>();
 
     if (!texture->CreateFromPixels(m_vmaAllocator, m_device, m_physicalDevice, m_commandPool, m_graphicsQueue, pixels,
-                                   width, height, format, generateMipmaps)) {
+                                   width, height, format, generateMipmaps, filter, addressMode, aniso)) {
         return nullptr;
     }
 

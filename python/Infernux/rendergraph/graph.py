@@ -1,10 +1,10 @@
 """
-RenderGraph Builder API (Phase 2)
+RenderGraph builder API.
 
 Pure Python graph builder that constructs a RenderGraphDescription.
 The description is then sent to C++ for DAG compilation and execution.
 
-Design: Builder pattern with fluent API for clean, LLM-friendly usage.
+Design: builder pattern with a fluent API for straightforward authoring.
 
     graph = RenderGraph("ForwardPipeline")
     graph.create_texture("color", camera_target=True)

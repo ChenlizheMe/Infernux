@@ -69,7 +69,7 @@ struct EngineConfig
     int32_t shadowCasterQueueMin = 0;
     int32_t shadowCasterQueueMax = 2999;
 
-    /// Component gizmos queue range (Python-driven, depth-tested).
+    /// Component gizmos queue range (script-side, depth-tested).
     int32_t componentGizmoQueueMin = 10000;
     int32_t componentGizmoQueueMax = 20000;
 
@@ -117,7 +117,10 @@ struct EngineConfig
     uint32_t physicsMaxContactConstraints = 65536;
 
     /// Number of collision substeps per physics step.
-    int physicsCollisionSteps = 1;
+    /// 2 substeps halve the effective delta per collision check, preventing
+    /// tunneling for fast-moving objects and improving contact precision for
+    /// thin colliders.  Cost is ~1.5× one step (broadphase is shared).
+    int physicsCollisionSteps = 2;
 
     /// Default gravity vector.
     glm::vec3 physicsGravity{0.0f, -9.81f, 0.0f};

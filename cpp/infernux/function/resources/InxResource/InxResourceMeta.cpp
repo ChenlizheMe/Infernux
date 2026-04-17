@@ -204,6 +204,10 @@ bool InxResourceMeta::SaveToFile(const std::string &metaFilePath) const
                 entry["value"] = std::any_cast<float>(value);
             } else if (typeName == "enum infernux::ResourceType") {
                 entry["value"] = InxTypeRegistry::GetInstance().ToString(typeName, value);
+            } else if (typeName == "json_array" || typeName == "json_object") {
+                // Stored as a raw JSON string — parse it back so the .meta
+                // file contains the original structured JSON, not an escaped string.
+                entry["value"] = nlohmann::json::parse(std::any_cast<std::string>(value));
             } else {
                 INXLOG_WARN("Unknown type for JSON serialization: ", typeName);
                 continue;
@@ -262,22 +266,38 @@ bool InxResourceMeta::LoadFromFile(const std::string &metaFilePath)
 
             std::string typeName = entry["type"].get<std::string>();
 
-            if (typeName == "string") {
-                AddMetadata(key, entry["value"].get<std::string>());
-            } else if (typeName == "int") {
-                AddMetadata(key, entry["value"].get<int>());
-            } else if (typeName == "bool") {
-                AddMetadata(key, entry["value"].get<bool>());
-            } else if (typeName == "size_t") {
-                AddMetadata(key, entry["value"].get<size_t>());
-            } else if (typeName == "float") {
-                AddMetadata(key, entry["value"].get<float>());
-            } else if (typeName == "enum infernux::ResourceType") {
-                std::string valStr = entry["value"].get<std::string>();
-                std::any resourceType = InxTypeRegistry::GetInstance().FromString(typeName, valStr);
-                AddMetadata(key, std::any_cast<ResourceType>(resourceType));
-            } else {
-                INXLOG_WARN("Unknown type in JSON meta: ", typeName);
+            try {
+                if (typeName == "string") {
+                    if (entry["value"].is_string()) {
+                        AddMetadata(key, entry["value"].get<std::string>());
+                    } else {
+                        // Legacy: Python wrote a list/dict with type "string".
+                        // Treat it as json_array/json_object to preserve data.
+                        typeName = entry["value"].is_array() ? "json_array" : "json_object";
+                        m_metadata[key] = std::make_pair(typeName, std::any(entry["value"].dump()));
+                    }
+                } else if (typeName == "int") {
+                    AddMetadata(key, entry["value"].get<int>());
+                } else if (typeName == "bool") {
+                    AddMetadata(key, entry["value"].get<bool>());
+                } else if (typeName == "size_t") {
+                    AddMetadata(key, entry["value"].get<size_t>());
+                } else if (typeName == "float") {
+                    AddMetadata(key, entry["value"].get<float>());
+                } else if (typeName == "enum infernux::ResourceType") {
+                    std::string valStr = entry["value"].get<std::string>();
+                    std::any resourceType = InxTypeRegistry::GetInstance().FromString(typeName, valStr);
+                    AddMetadata(key, std::any_cast<ResourceType>(resourceType));
+                } else if (typeName == "json_array" || typeName == "json_object") {
+                    // Python-only structured data (e.g. sprite_frames) — store
+                    // the raw JSON string so the round-trip through C++ SaveToFile
+                    // preserves it, but C++ code never needs to interpret it.
+                    AddMetadata(key, entry["value"].dump());
+                } else {
+                    INXLOG_WARN("Unknown type in JSON meta: ", typeName);
+                }
+            } catch (const std::exception &entryEx) {
+                INXLOG_WARN("Skipping meta entry '", key, "' (type ", typeName, "): ", entryEx.what());
             }
         }
         INXLOG_DEBUG("Meta file loaded: ", metaFilePath);

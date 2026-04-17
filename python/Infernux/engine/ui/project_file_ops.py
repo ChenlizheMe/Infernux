@@ -8,8 +8,6 @@ depend on ``ProjectPanel`` internals.
 import os
 import shutil
 
-from Infernux.debug import *
-
 
 # ---------------------------------------------------------------------------
 # Templates
@@ -141,6 +139,25 @@ def _iter_asset_move_pairs(old_path: str, new_path: str):
         yield old_path, new_path
 
 
+def _update_build_settings_scene_path(old_path: str, new_path: str):
+    """Replace *old_path* with *new_path* in BuildSettings.json scene list."""
+    try:
+        from .build_settings_panel import load_build_settings, save_build_settings
+        settings = load_build_settings()
+        scenes = settings.get("scenes", [])
+        old_norm = os.path.normcase(os.path.abspath(old_path))
+        changed = False
+        for i, s in enumerate(scenes):
+            if os.path.normcase(os.path.abspath(s)) == old_norm:
+                scenes[i] = os.path.abspath(new_path)
+                changed = True
+        if changed:
+            settings["scenes"] = scenes
+            save_build_settings(settings)
+    except Exception as _exc:
+        Debug.log(f"[BuildSettings] Failed to update scene path: {_exc}")
+
+
 def _notify_asset_moved(old_path: str, new_path: str, asset_database=None):
     from Infernux.core.assets import AssetManager
     from . import asset_inspector
@@ -157,6 +174,10 @@ def _notify_asset_moved(old_path: str, new_path: str, asset_database=None):
     except Exception as _exc:
         Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         pass
+
+    # Update BuildSettings.json when a .scene file is renamed/moved
+    if old_path.lower().endswith(".scene"):
+        _update_build_settings_scene_path(old_path, new_path)
 
     asset_inspector.invalidate_asset(old_path)
     asset_inspector.invalidate_asset(new_path)
@@ -448,42 +469,37 @@ def _detach_prefab_instances(prefab_path: str, asset_database=None):
 
 
 def delete_item(item_path: str, asset_database=None):
-   def delete_item(item_path: str, asset_database=None):
-    """Delete a file or directory via AssetDatabase to keep caches consistent."""
+    """Delete a file or directory from the filesystem and notify AssetDatabase."""
     if not item_path or not os.path.exists(item_path):
         return
 
-    if asset_database is None:
-        from Infernux.lib import asset_database as adb
-        asset_database = adb
+    is_dir = os.path.isdir(item_path)
 
-    if not os.path.isdir(item_path) and item_path.lower().endswith('.prefab'):
+    # For .prefab files, detach all scene instances BEFORE deleting the asset.
+    # This turns prefab instances into regular scene objects instead of leaving
+    # them orphaned with a dangling prefab_guid.
+    if not is_dir and item_path.lower().endswith('.prefab'):
         _detach_prefab_instances(item_path, asset_database)
 
-    if os.path.isdir(item_path):
-        for root, dirs, files in os.walk(item_path, topdown=False):
-            for name in files:
-                full_path = os.path.join(root, name)
-                try:
-                    asset_database.delete_asset(full_path)
-                except Exception as e:
-                    Debug.log(f"Failed to delete asset {full_path}: {e}")
-            for name in dirs:
-                full_path = os.path.join(root, name)
-                try:
-                    asset_database.delete_asset(full_path)
-                except Exception:
-                    pass
-        try:
-            os.rmdir(item_path)
-        except OSError as e:
-            Debug.log(f"Failed to remove directory {item_path}: {e}")
-    else:
-        try:
-            asset_database.delete_asset(item_path)
-        except Exception as e:
-            Debug.log(f"Failed to delete asset {item_path}: {e}")
+    # Notify BEFORE removing the file — GUID is still resolvable at this point
+    if not is_dir:
+        from Infernux.core.assets import AssetManager
+        AssetManager.on_asset_deleted(item_path)
 
+        if asset_database:
+            asset_database.on_asset_deleted(item_path)
+
+    try:
+        if is_dir:
+            import shutil
+            shutil.rmtree(item_path)
+        else:
+            os.remove(item_path)
+    except OSError as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+        return
+
+    # Invalidate inspector cache so a recreated file won't reuse stale data
     from . import asset_inspector
     asset_inspector.invalidate_asset(item_path)
 

@@ -113,6 +113,19 @@ class GameObject
     }
 
     // ========================================================================
+    // DontDestroyOnLoad (Unity: Object.DontDestroyOnLoad)
+    // ========================================================================
+
+    [[nodiscard]] bool IsPersistent() const
+    {
+        return m_persistent;
+    }
+    void SetPersistent(bool persistent)
+    {
+        m_persistent = persistent;
+    }
+
+    // ========================================================================
     // Prefab instance tracking
     // ========================================================================
 
@@ -289,11 +302,7 @@ class GameObject
 
         for (auto it = m_components.begin(); it != m_components.end(); ++it) {
             if (dynamic_cast<T *>(it->get())) {
-                if (!CanRemoveComponent(it->get()))
-                    return false;
-                (*it)->CallOnDestroy();
-                m_components.erase(it);
-                return true;
+                return RemoveComponent(it->get());
             }
         }
         return false;
@@ -413,11 +422,15 @@ class GameObject
   private:
     friend class Scene;
     friend class SceneManager;
+    friend void InvalidateGameObjectLifecycleCaches(GameObject *gameObject);
 
     void SetScene(Scene *scene);
 
     void PostAddComponent(Component *component);
     void HandleActiveStateChanged(bool wasActiveInHierarchy, bool isActiveInHierarchy);
+    void InvalidateComponentExecutionCache();
+    void RefreshLifecycleDispatchFlags();
+    [[nodiscard]] const std::vector<Component *> &GetComponentsInExecutionOrderCached() const;
 
     void CollectAllDescendants(std::vector<GameObject *> &out) const;
 
@@ -427,11 +440,18 @@ class GameObject
     uint64_t m_id;
     bool m_active = true;
     bool m_isStatic = false;
+    bool m_persistent = false;
+    bool m_hasPyProxy = false; // true when a PyComponentProxy is attached
+    bool m_hasUpdateReceivers = false;
+    bool m_hasFixedUpdateReceivers = false;
+    bool m_hasLateUpdateReceivers = false;
     std::string m_tag = "Untagged";
     int m_layer = 0; // Default layer
 
     Transform m_transform;
     std::vector<std::unique_ptr<Component>> m_components;
+    mutable std::vector<Component *> m_executionOrderCache;
+    mutable bool m_executionOrderCacheDirty = true;
 
     GameObject *m_parent = nullptr;
     std::vector<std::unique_ptr<GameObject>> m_children;

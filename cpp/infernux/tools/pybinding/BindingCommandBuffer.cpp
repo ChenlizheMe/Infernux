@@ -2,7 +2,7 @@
  * @file BindingCommandBuffer.cpp
  * @brief pybind11 bindings for CommandBuffer + RenderTargetHandle + enhanced SRC.
  *
- * Part of Phase 2 refactoring.
+ * Part of the deferred command-buffer binding surface.
  *
  * Exposes the deferred-recording CommandBuffer API to Python, allowing
  * users to write custom render pipelines with full control over render

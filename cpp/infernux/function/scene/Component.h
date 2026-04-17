@@ -14,6 +14,7 @@ class GameObject;
 class Transform;
 class Collider;
 struct CollisionInfo;
+void InvalidateGameObjectLifecycleCaches(GameObject *gameObject);
 
 /**
  * @brief Base class for all components that can be attached to GameObjects.
@@ -263,7 +264,13 @@ class Component
     /// @brief Set per-component execution order (Unity-style script order baseline).
     void SetExecutionOrder(int order)
     {
+        if (m_executionOrder == order) {
+            return;
+        }
         m_executionOrder = order;
+        if (m_gameObject) {
+            InvalidateGameObjectLifecycleCaches(m_gameObject);
+        }
     }
 
     /// @brief Get component type name for serialization/debugging

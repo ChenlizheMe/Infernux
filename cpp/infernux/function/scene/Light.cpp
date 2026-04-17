@@ -143,7 +143,7 @@ bool Light::Deserialize(const std::string &jsonStr)
 }
 
 // ============================================================================
-// Shadow Mapping — Light View/Projection (Phase 4.4.3)
+// Shadow mapping — light view/projection helpers
 // ============================================================================
 
 glm::mat4 Light::GetLightViewMatrix(const glm::vec3 &shadowCenter) const

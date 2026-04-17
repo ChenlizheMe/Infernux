@@ -33,4 +33,6 @@ def precompile_jit() -> None:
     """No-op kept for backward compatibility."""
     ...
 
+prange: Any
+
 __all__: list[str]

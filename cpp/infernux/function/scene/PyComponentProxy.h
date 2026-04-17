@@ -73,13 +73,12 @@ class PyComponentProxy : public Component
 
     [[nodiscard]] const char *GetTypeName() const override;
 
-    /// Python components always receive Awake/OnEnable/OnDisable in edit mode
-    /// so GameObject active-state changes match Unity semantics. Per-frame
-    /// edit-mode Update/FixedUpdate/LateUpdate remain gated separately by
-    /// @execute_in_edit_mode.
+    /// Python components only receive Awake/OnEnable/OnDisable in edit mode
+    /// when explicitly decorated with @execute_in_edit_mode, matching the
+    /// gating used for per-frame Update/FixedUpdate/LateUpdate.
     [[nodiscard]] bool WantsEditModeLifecycle() const override
     {
-        return true;
+        return m_executeInEditMode;
     }
 
     [[nodiscard]] bool WantsEditModeUpdate() const override
@@ -146,12 +145,17 @@ class PyComponentProxy : public Component
   private:
     void BindPythonMirror();
     void SyncPythonMirror() const;
+    void RefreshCoroutineSchedulerFlag();
 
     py::object m_pyComponent;
     std::string m_typeName;
     std::string m_typeGuid;   // Stable type GUID (hash of module.classname)
     std::string m_scriptGuid; // Stable GUID for the script asset
     bool m_executeInEditMode = false;
+    bool m_overridesUpdate = true;
+    bool m_overridesFixedUpdate = true;
+    bool m_overridesLateUpdate = true;
+    bool m_hasCoroutineScheduler = false;
 };
 
 } // namespace infernux

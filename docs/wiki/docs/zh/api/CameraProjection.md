@@ -6,8 +6,6 @@
 
 ## 描述
 
-摄像机投影模式枚举。
-
 <!-- USER CONTENT START --> description
 
 <!-- USER CONTENT END -->

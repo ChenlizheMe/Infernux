@@ -10,9 +10,9 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import IntEnum
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -23,6 +23,7 @@ class TextureType(IntEnum):
     DEFAULT = 0
     NORMAL_MAP = 1
     UI = 2
+    SPRITE = 3
 
 
 class WrapMode(IntEnum):
@@ -58,6 +59,37 @@ class FilterMode(IntEnum):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Sprite Frame
+# ═══════════════════════════════════════════════════════════════════════════
+
+@dataclass
+class SpriteFrame:
+    """One rectangular region inside a sprite-sheet texture."""
+    name: str = ""
+    x: int = 0
+    y: int = 0
+    w: int = 0
+    h: int = 0
+    pivot_x: float = 0.5
+    pivot_y: float = 0.5
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {"name": self.name, "x": self.x, "y": self.y,
+                "w": self.w, "h": self.h,
+                "pivot_x": self.pivot_x, "pivot_y": self.pivot_y}
+
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "SpriteFrame":
+        return cls(
+            name=str(d.get("name", "")),
+            x=int(d.get("x", 0)), y=int(d.get("y", 0)),
+            w=int(d.get("w", 0)), h=int(d.get("h", 0)),
+            pivot_x=float(d.get("pivot_x", 0.5)),
+            pivot_y=float(d.get("pivot_y", 0.5)),
+        )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Texture Import Settings
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -72,20 +104,27 @@ class TextureImportSettings:
     srgb: bool = True
     max_size: int = 2048
     aniso_level: int = 1
+    sprite_frames: List[SpriteFrame] = field(default_factory=list)
 
     def _sync_derived_fields(self):
-        """Re-derive sRGB from texture_type. Call after mutating texture_type.
+        """Re-derive settings from texture_type. Call after mutating texture_type.
 
-        NORMAL_MAP forces sRGB off (user cannot override).
-        Other modes leave the current sRGB value unchanged.
+        NORMAL_MAP forces sRGB off.
+        SPRITE forces point filtering, clamp wrapping, no mipmaps.
+        Other modes leave the current values unchanged.
         """
         if self.texture_type == TextureType.NORMAL_MAP:
             self.srgb = False
+        elif self.texture_type == TextureType.SPRITE:
+            self.filter_mode = FilterMode.POINT
+            self.wrap_mode = WrapMode.CLAMP
+            self.generate_mipmaps = False
+            self.srgb = True
 
     # ── Serialization ──────────────────────────────────────────────────
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        d: Dict[str, Any] = {
             "texture_type": self.texture_type.name.lower(),
             "wrap_mode": self.wrap_mode.to_string(),
             "filter_mode": self.filter_mode.to_string(),
@@ -94,12 +133,24 @@ class TextureImportSettings:
             "max_size": self.max_size,
             "aniso_level": self.aniso_level,
         }
+        if self.sprite_frames:
+            d["sprite_frames"] = [f.to_dict() for f in self.sprite_frames]
+        return d
 
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "TextureImportSettings":
         tt_str = d.get("texture_type", "default")
-        tt_map = {"default": TextureType.DEFAULT, "normal_map": TextureType.NORMAL_MAP, "ui": TextureType.UI}
+        tt_map = {"default": TextureType.DEFAULT, "normal_map": TextureType.NORMAL_MAP, "ui": TextureType.UI, "sprite": TextureType.SPRITE}
         tt = tt_map.get(tt_str, TextureType.DEFAULT)
+        raw_frames = d.get("sprite_frames", [])
+        # raw_frames may be a JSON string if C++ round-tripped the .meta
+        if isinstance(raw_frames, str):
+            try:
+                import json as _json
+                raw_frames = _json.loads(raw_frames)
+            except Exception:
+                raw_frames = []
+        frames = [SpriteFrame.from_dict(f) for f in raw_frames] if raw_frames else []
         return cls(
             texture_type=tt,
             wrap_mode=WrapMode.from_string(d.get("wrap_mode", "repeat")),
@@ -108,10 +159,11 @@ class TextureImportSettings:
             srgb=bool(d.get("srgb", tt != TextureType.NORMAL_MAP)),
             max_size=int(d.get("max_size", 2048)),
             aniso_level=int(d.get("aniso_level", 1)),
+            sprite_frames=frames,
         )
 
     def copy(self) -> "TextureImportSettings":
-        """Return a shallow copy."""
+        """Return a deep copy (sprite_frames are duplicated)."""
         return TextureImportSettings(
             texture_type=self.texture_type,
             wrap_mode=self.wrap_mode,
@@ -120,6 +172,7 @@ class TextureImportSettings:
             srgb=self.srgb,
             max_size=self.max_size,
             aniso_level=self.aniso_level,
+            sprite_frames=[SpriteFrame(**f.__dict__) for f in self.sprite_frames],
         )
 
     def __eq__(self, other):
@@ -131,7 +184,8 @@ class TextureImportSettings:
                 and self.generate_mipmaps == other.generate_mipmaps
                 and self.srgb == other.srgb
                 and self.max_size == other.max_size
-                and self.aniso_level == other.aniso_level)
+                and self.aniso_level == other.aniso_level
+                and self.sprite_frames == other.sprite_frames)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -291,6 +345,10 @@ def _python_type_to_meta_tag(value) -> str:
         return "int"
     if isinstance(value, float):
         return "float"
+    if isinstance(value, list):
+        return "json_array"
+    if isinstance(value, dict):
+        return "json_object"
     return "string"
 
 

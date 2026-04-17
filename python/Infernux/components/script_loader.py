@@ -228,6 +228,9 @@ def load_component_class_from_file(file_path: str, type_name: str = "") -> Optio
         for component_class in components:
             if component_class.__name__ == type_name:
                 return component_class
+        # Class was likely renamed — if exactly one subclass exists, use it.
+        if len(components) == 1:
+            return components[0]
         return None
 
     if len(components) != 1:

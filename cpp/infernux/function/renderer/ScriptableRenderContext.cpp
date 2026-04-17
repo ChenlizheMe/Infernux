@@ -258,7 +258,7 @@ void ScriptableRenderContext::SubmitCulling(CullingResults culling)
 #endif
     }
 
-    // Auto-append component gizmos (Python-driven, depth-tested)
+    // Auto-append component gizmos (script-side, depth-tested)
     if (m_gizmoCtx.componentGizmos && m_gizmoCtx.componentGizmos->HasData()) {
 #if INFERNUX_FRAME_PROFILE
         t0 = Clock::now();
@@ -273,7 +273,7 @@ void ScriptableRenderContext::SubmitCulling(CullingResults culling)
 #endif
     }
 
-    // Auto-append component gizmo icons (Python-driven, billboard diamonds)
+    // Auto-append component gizmo icons (script-side, billboard diamonds)
     if (m_gizmoCtx.componentGizmos && m_gizmoCtx.componentGizmos->HasIconData()) {
 #if INFERNUX_FRAME_PROFILE
         t0 = Clock::now();
@@ -430,7 +430,7 @@ void ScriptableRenderContext::RenderWithGraph(Camera *camera, const RenderGraphD
 }
 
 // ============================================================================
-// Phase 2: CommandBuffer Integration
+// CommandBuffer integration
 // ============================================================================
 
 void ScriptableRenderContext::ExecuteCommandBuffer(CommandBuffer &cmd)
@@ -510,7 +510,7 @@ void ScriptableRenderContext::ProcessPendingCommandBuffers()
 }
 
 // ============================================================================
-// Phase 2: Camera Target
+// Camera target
 // ============================================================================
 
 RenderTargetHandle ScriptableRenderContext::GetCameraTarget(Camera * /*camera*/) const
@@ -521,7 +521,7 @@ RenderTargetHandle ScriptableRenderContext::GetCameraTarget(Camera * /*camera*/)
 }
 
 // ============================================================================
-// Phase 2: Global Shader Parameters (immediate mode)
+// Global shader parameters (immediate mode)
 // ============================================================================
 
 void ScriptableRenderContext::SetGlobalTexture(const std::string &name, RenderTargetHandle handle)

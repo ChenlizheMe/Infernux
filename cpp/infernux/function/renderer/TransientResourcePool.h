@@ -2,7 +2,7 @@
  * @file TransientResourcePool.h
  * @brief Pool-based allocator for temporary render targets used by CommandBuffer.
  *
- * Part of Phase 2 refactoring.
+ * Used by the deferred command-buffer path.
  *
  * Manages the lifecycle of transient GPU images:
  * - Acquire(): allocate or reuse a render target matching (w, h, format, samples)

@@ -147,6 +147,15 @@ class SceneManager:
     # Unity-aligned API
     # ------------------------------------------------------------------
 
+    active_scene = None  # overwritten by the property below
+
+    class _ActiveSceneDescriptor:
+        """Static property descriptor — ``SceneManager.active_scene``."""
+        def __get__(self, obj, objtype=None):
+            return _NativeSceneManager.instance().get_active_scene()
+
+    active_scene = _ActiveSceneDescriptor()
+
     @staticmethod
     def get_active_scene():
         """Return the currently active Scene (Unity: ``SceneManager.GetActiveScene()``)."""
@@ -388,6 +397,11 @@ class SceneManager:
             os.path.splitext(os.path.basename(p))[0]
             for p in SceneManager._load_build_list()
         ]
+
+    @staticmethod
+    def dont_destroy_on_load(game_object) -> None:
+        """Mark *game_object* so it survives scene loads (Unity: ``DontDestroyOnLoad``)."""
+        _NativeSceneManager.instance().dont_destroy_on_load(game_object)
 
 
 __all__ = [

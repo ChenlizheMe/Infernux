@@ -143,9 +143,8 @@ void RenderGraph::TopologicalSort()
     }
 
     // ====================================================================
-    // Bug 1 fix: build resource_id → writer_pass_id map in O(n × w),
-    // then iterate reader passes in O(n × r) to create edges.
-    // Previous code had 4-level nested loops ⇒ O(n² × r × w).
+    // Build a resource_id → writer_pass_id map first, then connect reader
+    // passes from that map. This avoids the previous deeply nested scan.
     // ====================================================================
 
     // A single resource may be written by multiple passes (e.g. depth
@@ -441,7 +440,7 @@ bool RenderGraph::AllocateResources()
     VkPhysicalDevice physDevice = m_context->GetPhysicalDevice();
 
     // ========================================================================
-    // Phase 1: Create VkImages/VkBuffers and gather memory requirements
+    // Create VkImages/VkBuffers and gather memory requirements
     // ========================================================================
 
     struct AllocationRequest
@@ -566,7 +565,7 @@ bool RenderGraph::AllocateResources()
     }
 
     // ========================================================================
-    // Phase 2: Memory Aliasing for Transient Images
+    // Memory aliasing for transient images
     //
     // Group transient images with non-overlapping lifetimes and compatible
     // memory types onto shared VkDeviceMemory allocations.  This reduces
@@ -791,7 +790,7 @@ bool RenderGraph::CreateVulkanRenderPasses()
             depthFormat = resource.textureDesc.format;
         }
 
-        // Phase 1: Determine whether depth must be stored (needed by later passes)
+        // Determine whether depth must be stored for later passes
         bool needStoreDepth = false;
         if (effectiveDepth.IsValid()) {
             needStoreDepth = IsResourceUsedAfter(effectiveDepth.id, pass.id);
@@ -836,7 +835,7 @@ bool RenderGraph::CreateVulkanRenderPasses()
         // PRESENT_SRC_KHR for swapchain targets (set via SetBackbufferFinalLayout)
         config.colorFinalLayout = m_backbufferFinalLayout;
 
-        // Phase 1: Use RenderPass cache
+        // Use RenderPass cache
         // Include MRT attachment count + formats in cache key
         size_t cacheKey = HashRenderPassConfig(
             colorFormat, depthFormat, sampleCount, config.clearColor, config.clearDepth, config.storeDepth,
@@ -894,7 +893,7 @@ bool RenderGraph::CreateFramebuffers()
             }
         }
 
-        // Phase 1: Add depth attachment (write OR read-only)
+        // Add depth attachment (write or read-only)
         ResourceHandle effectiveDepth = GetEffectiveDepth(pass);
         if (effectiveDepth.IsValid()) {
             VkImageView view = ResolveTextureView(effectiveDepth);
@@ -915,7 +914,7 @@ bool RenderGraph::CreateFramebuffers()
             continue;
         }
 
-        // Phase 1: Use framebuffer cache
+        // Use framebuffer cache
         size_t fbKey =
             HashFramebuffer(pass.vulkanRenderPass, attachments, pass.renderArea.width, pass.renderArea.height);
         auto cacheIt = m_framebufferCache.find(fbKey);
@@ -1008,7 +1007,7 @@ void RenderGraph::PrecomputeExecuteData()
 
 void RenderGraph::InsertBarriers(VkCommandBuffer cmdBuffer, uint32_t passIndex)
 {
-    // Phase 1: Precise barrier insertion with tracked resource layouts
+    // Precise barrier insertion with tracked resource layouts
     const auto &pass = m_passes[passIndex];
 
     m_barrierScratch.clear();

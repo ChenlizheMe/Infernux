@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from .component import InxComponent as InxComponent
-from .builtin_component import BuiltinComponent as BuiltinComponent, CppProperty as CppProperty
+from .builtin_component import BuiltinComponent, CppProperty
 from .builtin import (
     Light as Light,
     MeshRenderer as MeshRenderer,
@@ -38,6 +38,7 @@ from .ref_wrappers import (
     GameObjectRef as GameObjectRef,
     MaterialRef as MaterialRef,
     ComponentRef as ComponentRef,
+    PrefabRef as PrefabRef,
 )
 from .inspector import (
     ComponentInspector as ComponentInspector,
@@ -73,8 +74,6 @@ from .decorators import (
 
 __all__ = [
     "InxComponent",
-    "BuiltinComponent",
-    "CppProperty",
     "Component",
     "Transform",
     "Light",
@@ -98,6 +97,7 @@ __all__ = [
     "GameObjectRef",
     "MaterialRef",
     "ComponentRef",
+    "PrefabRef",
     "SerializableObject",
     "list_field",
     "component_field",

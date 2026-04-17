@@ -40,6 +40,12 @@ void BoxCollider::AutoFitToMesh()
     glm::vec3 boundsMax = mr->GetLocalBoundsMax();
     glm::vec3 extent = boundsMax - boundsMin;
 
+    // Set m_size faithfully to mesh extents with only a tiny floor for
+    // numerical stability.  Like Unity, the BoxCollider stores the *visual*
+    // size; the physics layer (CreateJoltShapeRaw) applies its own minimum
+    // half-extent so thin meshes still get a working collision shape,
+    // similar to how PhysX's contactOffset (default 0.01) provides a
+    // detection shell even for zero-thickness colliders.
     m_size = glm::max(extent, glm::vec3(0.001f));
     DataMut().center = (boundsMin + boundsMax) * 0.5f;
 }
@@ -53,9 +59,17 @@ void *BoxCollider::CreateJoltShapeRaw() const
         }
     }
 
-    // Jolt expects half-extents; Unity exposes full size
-    glm::vec3 halfExt = m_size * 0.5f * glm::abs(signedScale);
-    JPH::Shape *shape = new JPH::BoxShape(JPH::Vec3(halfExt.x, halfExt.y, halfExt.z));
+    // Jolt expects half-extents; Unity exposes full size.
+    // Minimum half-extent must comfortably exceed Jolt mPenetrationSlop
+    // (tuned to 0.002 m).  0.01 m → total thickness 0.02 m = 10× slop,
+    // thin enough for visually flat Quads/Planes while keeping a stable
+    // collision shell.  Convex radius ≤ 40 % of thinnest axis so the
+    // inner box always retains ≥ 60 % real volume.
+    static constexpr float kMinHalfExtent = 0.01f;
+    glm::vec3 halfExt = glm::max(m_size * 0.5f * glm::abs(signedScale), glm::vec3(kMinHalfExtent));
+    float minHalf = glm::min(halfExt.x, glm::min(halfExt.y, halfExt.z));
+    float convexRadius = std::min(JPH::cDefaultConvexRadius, minHalf * 0.4f);
+    JPH::Shape *shape = new JPH::BoxShape(JPH::Vec3(halfExt.x, halfExt.y, halfExt.z), convexRadius);
 
     glm::vec3 center = GetCenter() * signedScale;
     if (center != glm::vec3(0.0f)) {

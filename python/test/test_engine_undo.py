@@ -7,6 +7,7 @@ undo.py and selection_manager.py directly via importlib.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 import importlib.util
 import os
 import sys
@@ -16,8 +17,8 @@ import types
 import pytest
 
 # ── Direct-load helper ───────────────────────────────────────────────
-# Load a .py file as if it were a top-level module, avoiding __init__.py
-# chains that pull in the C++ native backend.
+# Load a module or package file directly, avoiding __init__.py chains that
+# pull in the C++ native backend.
 
 _PROJECT_PY = os.path.normpath(
     os.path.join(os.path.dirname(__file__), os.pardir, "Infernux"))
@@ -28,8 +29,33 @@ def _direct_import(module_name: str, rel_path: str):
     if module_name in sys.modules:
         return sys.modules[module_name]
     filepath = os.path.join(_PROJECT_PY, *rel_path.split("/"))
-    spec = importlib.util.spec_from_file_location(module_name, filepath)
+
+    package_dir = None
+    if os.path.isdir(filepath):
+        package_dir = filepath
+        filepath = os.path.join(filepath, "__init__.py")
+    elif not os.path.exists(filepath) and filepath.endswith(".py"):
+        candidate_package_dir = filepath[:-3]
+        candidate_init = os.path.join(candidate_package_dir, "__init__.py")
+        if os.path.exists(candidate_init):
+            package_dir = candidate_package_dir
+            filepath = candidate_init
+
+    if package_dir is not None:
+        spec = importlib.util.spec_from_file_location(
+            module_name,
+            filepath,
+            submodule_search_locations=[package_dir],
+        )
+    else:
+        spec = importlib.util.spec_from_file_location(module_name, filepath)
+
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Cannot import {module_name!r} from {filepath!r}")
+
     mod = importlib.util.module_from_spec(spec)
+    if package_dir is not None:
+        mod.__path__ = [package_dir]
     sys.modules[module_name] = mod
     spec.loader.exec_module(mod)
     return mod
@@ -75,6 +101,29 @@ InspectorUndoTracker = _undo_mod.InspectorUndoTracker
 RenderStackFieldCommand = _undo_mod.RenderStackFieldCommand
 _snapshot_value = _undo_mod._snapshot_value
 SelectionManager = _sel_mod.SelectionManager
+_helpers_mod = sys.modules["Infernux.engine.undo._helpers"]
+_property_mod = sys.modules["Infernux.engine.undo._property_commands"]
+_structural_mod = sys.modules["Infernux.engine.undo._structural_commands"]
+_recreate_mod = sys.modules["Infernux.engine.undo._recreate"]
+
+
+def _patch_undo_modules(monkeypatch, attr: str, value):
+    for mod in (_undo_mod, _helpers_mod, _property_mod, _structural_mod):
+        if hasattr(mod, attr):
+            monkeypatch.setattr(mod, attr, value)
+
+
+@contextmanager
+def _override_recreate_game_object(fn):
+    orig_root = _undo_mod._recreate_game_object_from_json
+    orig_sub = _recreate_mod._recreate_game_object_from_json
+    _undo_mod._recreate_game_object_from_json = fn
+    _recreate_mod._recreate_game_object_from_json = fn
+    try:
+        yield
+    finally:
+        _undo_mod._recreate_game_object_from_json = orig_root
+        _recreate_mod._recreate_game_object_from_json = orig_sub
 
 
 # ── Helpers ──
@@ -216,7 +265,7 @@ class TestSetPropertyCommand:
 
         target = _NativeTarget()
         cmd = SetPropertyCommand(target, "x", 1, 2)
-        monkeypatch.setattr(_undo_mod_ref, "_get_active_scene", lambda: None)
+        _patch_undo_modules(monkeypatch, "_get_active_scene", lambda: None)
         cmd.undo()
         assert target.x == 99
 
@@ -234,7 +283,7 @@ class TestSetPropertyCommand:
                 return live if object_id == 7 else None
 
         cmd = SetPropertyCommand(stale, "active", True, False)
-        monkeypatch.setattr(_undo_mod_ref, "_get_active_scene", lambda: _Scene())
+        _patch_undo_modules(monkeypatch, "_get_active_scene", lambda: _Scene())
 
         cmd.execute()
         assert live.active is False
@@ -271,7 +320,7 @@ class TestSetPropertyCommand:
             def find_by_id(self, oid):
                 return fake_obj if oid == 7 else None
 
-        monkeypatch.setattr(_undo_mod_ref, "_get_active_scene", lambda: _FakeScene())
+        _patch_undo_modules(monkeypatch, "_get_active_scene", lambda: _FakeScene())
 
         resolve = getattr(_undo_mod_ref, "_resolve_live_ref")
         result = resolve("stale_ref", 7, "_PyComp")
@@ -1162,9 +1211,9 @@ class TestDeleteCommandSelectionRestore:
 
     @pytest.fixture(autouse=True)
     def _patch_scene(self, monkeypatch):
-        monkeypatch.setattr(_undo_mod_ref, "_get_active_scene", lambda: None)
-        monkeypatch.setattr(_undo_mod_ref, "_bump_inspector_structure", lambda: None)
-        monkeypatch.setattr(_undo_mod_ref, "_notify_gizmos_scene_changed", lambda: None)
+        _patch_undo_modules(monkeypatch, "_get_active_scene", lambda: None)
+        _patch_undo_modules(monkeypatch, "_bump_inspector_structure", lambda: None)
+        _patch_undo_modules(monkeypatch, "_notify_gizmos_scene_changed", lambda: None)
 
     @pytest.fixture(autouse=True)
     def _fresh_sel(self):
@@ -1187,12 +1236,8 @@ class TestDeleteCommandSelectionRestore:
             self.sel.set_ids([42])
             cmd = DeleteGameObjectCommand(42, "Delete")
             cmd._snapshot_json = '{"id": 42}'
-            orig_recreate = _undo_mod_ref._recreate_game_object_from_json
-            _undo_mod_ref._recreate_game_object_from_json = lambda *a, **k: None
-            try:
+            with _override_recreate_game_object(lambda *a, **k: None):
                 cmd.undo()
-            finally:
-                _undo_mod_ref._recreate_game_object_from_json = orig_recreate
             assert restored == [[42]]
         finally:
             DeleteGameObjectCommand._selection_restore_fn = old_fn
@@ -1215,12 +1260,8 @@ class TestDeleteCommandSelectionRestore:
             cmd = DeleteGameObjectCommand(42, "Delete")
             cmd._pre_delete_selection_ids = [42]
             cmd._snapshot_json = '{"id": 42}'
-            orig_recreate = _undo_mod_ref._recreate_game_object_from_json
-            _undo_mod_ref._recreate_game_object_from_json = lambda *a, **k: None
-            try:
+            with _override_recreate_game_object(lambda *a, **k: None):
                 cmd.undo()  # should not raise
-            finally:
-                _undo_mod_ref._recreate_game_object_from_json = orig_recreate
         finally:
             DeleteGameObjectCommand._selection_restore_fn = old_fn
 
@@ -1233,12 +1274,8 @@ class TestDeleteCommandSelectionRestore:
             # Don't select anything → pre_delete_selection_ids is []
             cmd = DeleteGameObjectCommand(42, "Delete")
             cmd._snapshot_json = '{"id": 42}'
-            orig_recreate = _undo_mod_ref._recreate_game_object_from_json
-            _undo_mod_ref._recreate_game_object_from_json = lambda *a, **k: None
-            try:
+            with _override_recreate_game_object(lambda *a, **k: None):
                 cmd.undo()
-            finally:
-                _undo_mod_ref._recreate_game_object_from_json = orig_recreate
             # Empty list → fn not called (guard: `if fn and ids`)
             assert restored == []
         finally:
@@ -1251,9 +1288,9 @@ class TestCreateCommandSelectionRestore:
 
     @pytest.fixture(autouse=True)
     def _patch_scene(self, monkeypatch):
-        monkeypatch.setattr(_undo_mod_ref, "_get_active_scene", lambda: None)
-        monkeypatch.setattr(_undo_mod_ref, "_bump_inspector_structure", lambda: None)
-        monkeypatch.setattr(_undo_mod_ref, "_notify_gizmos_scene_changed", lambda: None)
+        _patch_undo_modules(monkeypatch, "_get_active_scene", lambda: None)
+        _patch_undo_modules(monkeypatch, "_bump_inspector_structure", lambda: None)
+        _patch_undo_modules(monkeypatch, "_notify_gizmos_scene_changed", lambda: None)
 
     def test_undo_clears_selection(self, _reset_undo_manager):
         restored = []
@@ -1270,8 +1307,8 @@ class TestCreateCommandSelectionRestore:
 class TestImmediateDestroyHelpers:
     @pytest.fixture(autouse=True)
     def _patch_editor_side_effects(self, monkeypatch):
-        monkeypatch.setattr(_undo_mod_ref, "_bump_inspector_structure", lambda: None)
-        monkeypatch.setattr(_undo_mod_ref, "_notify_gizmos_scene_changed", lambda: None)
+        _patch_undo_modules(monkeypatch, "_bump_inspector_structure", lambda: None)
+        _patch_undo_modules(monkeypatch, "_notify_gizmos_scene_changed", lambda: None)
 
     def test_destroy_game_object_immediately_invalidates_tree_and_flushes(self, monkeypatch):
         class _FakeWrapper:
@@ -1320,8 +1357,8 @@ class TestImmediateDestroyHelpers:
         root = _FakeObject(1, "Root", [_FakeComp(10)], [child])
         scene = _FakeScene()
         side_fx = []
-        monkeypatch.setattr(_undo_mod_ref, "_bump_inspector_structure", lambda: side_fx.append("bump"))
-        monkeypatch.setattr(_undo_mod_ref, "_notify_gizmos_scene_changed", lambda: side_fx.append("gizmo"))
+        _patch_undo_modules(monkeypatch, "_bump_inspector_structure", lambda: side_fx.append("bump"))
+        _patch_undo_modules(monkeypatch, "_notify_gizmos_scene_changed", lambda: side_fx.append("gizmo"))
 
         _undo_mod_ref._destroy_game_object_immediately(scene, root)
 
@@ -1359,9 +1396,9 @@ class TestImmediateDestroyHelpers:
         fake_obj = _FakeObject(42)
         fake_scene = _FakeScene(fake_obj)
         calls = []
-        monkeypatch.setattr(_undo_mod_ref, "_get_active_scene", lambda: fake_scene)
-        monkeypatch.setattr(
-            _undo_mod_ref,
+        _patch_undo_modules(monkeypatch, "_get_active_scene", lambda: fake_scene)
+        _patch_undo_modules(
+            monkeypatch,
             "_destroy_game_object_immediately",
             lambda scene, obj: calls.append((scene is fake_scene, obj.id)),
         )
@@ -1383,12 +1420,8 @@ class TestImmediateDestroyHelpers:
             cmd = CreateGameObjectCommand(99, "Create")
             cmd._post_create_ids = [99]
             cmd._snapshot_json = '{"id": 99}'
-            orig_recreate = _undo_mod_ref._recreate_game_object_from_json
-            _undo_mod_ref._recreate_game_object_from_json = lambda *a, **k: None
-            try:
+            with _override_recreate_game_object(lambda *a, **k: None):
                 cmd.redo()
-            finally:
-                _undo_mod_ref._recreate_game_object_from_json = orig_recreate
             assert restored == [[99]]
         finally:
             CreateGameObjectCommand._selection_restore_fn = old_fn
@@ -1402,12 +1435,8 @@ class TestImmediateDestroyHelpers:
             cmd = CreateGameObjectCommand(99, "Create")
             cmd._post_create_ids = []
             cmd._snapshot_json = '{"id": 99}'
-            orig_recreate = _undo_mod_ref._recreate_game_object_from_json
-            _undo_mod_ref._recreate_game_object_from_json = lambda *a, **k: None
-            try:
+            with _override_recreate_game_object(lambda *a, **k: None):
                 cmd.redo()
-            finally:
-                _undo_mod_ref._recreate_game_object_from_json = orig_recreate
             assert restored == []
         finally:
             CreateGameObjectCommand._selection_restore_fn = old_fn

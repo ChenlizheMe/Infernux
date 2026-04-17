@@ -640,6 +640,22 @@ def _wire_add_remove_and_drop(ctx):
             _record_add_component_compound, _get_component_ids
         )
         if is_native:
+            # Block adding MeshRenderer when SpriteRenderer manages it.
+            if type_name_or_path == "MeshRenderer":
+                for c in _get_components_safe(obj):
+                    if getattr(c, 'type_name', '') == 'SpriteRenderer':
+                        Debug.log_warning(
+                            "Cannot add MeshRenderer — "
+                            "SpriteRenderer already manages the renderer.")
+                        return
+            # Block adding SpriteRenderer when MeshRenderer exists.
+            if type_name_or_path == "SpriteRenderer":
+                for c in _get_components_safe(obj):
+                    if getattr(c, 'type_name', '') == 'MeshRenderer':
+                        Debug.log_warning(
+                            "Cannot add SpriteRenderer — "
+                            "a MeshRenderer already exists. Remove it first.")
+                        return
             before_ids = _get_component_ids(obj)
             result = obj.add_component(type_name_or_path)
             if result is not None:
@@ -658,6 +674,10 @@ def _wire_add_remove_and_drop(ctx):
             except ImportError as _exc:
                 Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             comp_cls = _engine_py_map.get(type_name_or_path)
+            if comp_cls is None:
+                # Try engine Python-only components via registry
+                from Infernux.components.registry import get_type
+                comp_cls = get_type(type_name_or_path)
             if comp_cls is None:
                 Debug.log_error(f"Unknown engine component: {type_name_or_path}")
                 return

@@ -17,15 +17,6 @@ from .asset_types import (
     AudioImportSettings as AudioImportSettings,
     AudioCompressionFormat as AudioCompressionFormat,
     MeshImportSettings as MeshImportSettings,
-    asset_category_from_extension as asset_category_from_extension,
-    read_meta_file as read_meta_file,
-    write_meta_fields as write_meta_fields,
-    read_texture_import_settings as read_texture_import_settings,
-    write_texture_import_settings as write_texture_import_settings,
-    read_audio_import_settings as read_audio_import_settings,
-    write_audio_import_settings as write_audio_import_settings,
-    read_mesh_import_settings as read_mesh_import_settings,
-    write_mesh_import_settings as write_mesh_import_settings,
 )
 from .asset_ref import (
     TextureRef as TextureRef,

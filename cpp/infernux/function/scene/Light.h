@@ -233,7 +233,7 @@ class Light : public Component
     }
 
     // ========================================================================
-    // Shadow Mapping — Light View/Projection (Phase 4.4.3)
+    // Shadow mapping — light view/projection helpers
     // ========================================================================
 
     /// @brief Get the light's view matrix for shadow mapping.

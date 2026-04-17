@@ -417,6 +417,10 @@ class Engine():
     def set_gui_font(self, font_path, font_size=18):
         self._engine.set_gui_font(_safe_path(font_path), font_size)
 
+    def set_gui_player_mode(self, enabled: bool):
+        """Skip DockSpace/layout overhead in standalone player builds."""
+        self._engine.set_gui_player_mode(bool(enabled))
+
     def get_display_scale(self) -> float:
         """Return the OS display scale factor (e.g. 2.0 for 200% Windows scaling)."""
         return self._engine.get_display_scale()

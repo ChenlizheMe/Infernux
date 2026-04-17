@@ -92,7 +92,7 @@ I18N = {
     "inherits":             {"en": "Inherits from",         "zh": "继承自"},
     "package":              {"en": "Package",               "zh": "包"},
     "packages":             {"en": "Packages",              "zh": "包"},
-    "version":              {"en": "Version 0.1.2",         "zh": "版本 0.1.2"},
+    "version":              {"en": "Version 0.1.3",         "zh": "版本 0.1.3"},
     "api_ref_title":        {"en": "Infernux Scripting API", "zh": "Infernux 脚本 API"},
     "api_ref_welcome":      {
         "en": "Welcome to the Infernux Scripting API Reference. Browse packages from the sidebar to see class documentation.",

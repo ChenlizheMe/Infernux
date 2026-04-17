@@ -422,15 +422,18 @@ class VkSamplerHandle
     VkSamplerHandle &operator=(VkSamplerHandle &&other) noexcept;
 
     /**
-     * @brief Create a sampler with default settings
+     * @brief Create a sampler with configurable settings
      * @param device The Vulkan device
      * @param physicalDevice Physical device for max anisotropy query
      * @param filter Magnification and minification filter
      * @param addressMode Address mode for UVW
+     * @param mipLevels Number of mip levels (controls maxLod)
+     * @param aniso Anisotropy level (0 = disabled, 1..16 clamped to device max)
      * @return true if creation succeeded
      */
     bool Create(VkDevice device, VkPhysicalDevice physicalDevice, VkFilter filter = VK_FILTER_LINEAR,
-                VkSamplerAddressMode addressMode = VK_SAMPLER_ADDRESS_MODE_REPEAT, uint32_t mipLevels = 1);
+                VkSamplerAddressMode addressMode = VK_SAMPLER_ADDRESS_MODE_REPEAT, uint32_t mipLevels = 1,
+                int aniso = -1);
 
     /**
      * @brief Destroy the sampler
@@ -496,7 +499,9 @@ class VkTexture
      */
     bool CreateFromPixels(VmaAllocator allocator, VkDevice device, VkPhysicalDevice physicalDevice,
                           VkCommandPool cmdPool, VkQueue graphicsQueue, const unsigned char *pixels, uint32_t width,
-                          uint32_t height, VkFormat format = VK_FORMAT_R8G8B8A8_SRGB, bool generateMipmaps = false);
+                          uint32_t height, VkFormat format = VK_FORMAT_R8G8B8A8_SRGB, bool generateMipmaps = false,
+                          VkFilter filter = VK_FILTER_LINEAR,
+                          VkSamplerAddressMode addressMode = VK_SAMPLER_ADDRESS_MODE_REPEAT, int aniso = -1);
 
     /**
      * @brief Create a solid color texture

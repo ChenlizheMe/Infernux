@@ -297,18 +297,9 @@ class PlayModeManager(PlayModeSerializationMixin):
             from Infernux.components.builtin_component import BuiltinComponent
             BuiltinComponent._clear_cache()
 
-            # 2. Rebuild scene from snapshot
-            if not self._rebuild_active_scene(self._scene_backup, for_play=True):
-                Debug.log_error("Failed to rebuild runtime scene for Play Mode")
-                self._state = PlayModeState.EDIT
-                try:
-                    self._rebuild_active_scene(self._scene_backup, for_play=False, restore_scene_path=True)
-                except Exception as exc:
-                    Debug.log_error(f"Failed to restore scene after play-mode build failure: {exc}")
-                self._notify_state_change(PlayModeState.EDIT, PlayModeState.EDIT)
-                return False
-
-            # 3. Transition state and enter C++ play mode
+            # 2. Transition state early so that "clear on play" fires
+            #    BEFORE Python components are restored (which triggers
+            #    Awake → OnEnable and may produce user-visible logs).
             old_state = self._state
             self._state = PlayModeState.PLAYING
             try:
@@ -318,6 +309,25 @@ class PlayModeManager(PlayModeSerializationMixin):
                 Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
                 pass
             self._notify_state_change(old_state, self._state)
+
+            # 3. Rebuild scene from snapshot (Python component restore will
+            #    trigger Awake/OnEnable — their logs now survive the clear).
+            if not self._rebuild_active_scene(self._scene_backup, for_play=True):
+                Debug.log_error("Failed to rebuild runtime scene for Play Mode")
+                self._state = PlayModeState.EDIT
+                try:
+                    from Infernux.core.material import Material
+                    Material._suppress_auto_save = False
+                except ImportError:
+                    pass
+                try:
+                    self._rebuild_active_scene(self._scene_backup, for_play=False, restore_scene_path=True)
+                except Exception as exc:
+                    Debug.log_error(f"Failed to restore scene after play-mode build failure: {exc}")
+                self._notify_state_change(PlayModeState.PLAYING, PlayModeState.EDIT)
+                return False
+
+            # 4. Enter C++ play mode (Scene::Start drives remaining lifecycle)
             scene_manager = self._get_scene_manager()
             if scene_manager:
                 scene_manager.play()
@@ -623,6 +633,14 @@ class PlayModeManager(PlayModeSerializationMixin):
 
         self._restore_pending_py_components()
 
+        # Force-init SpriteRenderer wrappers so their materials (texture,
+        # color, uvRect) are created before the first render frame.
+        try:
+            from Infernux.components.builtin.sprite_renderer import SpriteRenderer
+            SpriteRenderer.init_all_in_scene()
+        except Exception as exc:
+            Debug.log_internal(f"SpriteRenderer init after rebuild: {exc}")
+
         if restore_scene_path:
             self._restore_scene_file_path()
 
@@ -708,6 +726,10 @@ class PlayModeManager(PlayModeSerializationMixin):
 
             target_type_name = state.get("type_name") or getattr(old_comp, "type_name", type(old_comp).__name__)
             component_class = reloaded_by_name.get(target_type_name)
+
+            # Class was likely renamed — if exactly one subclass exists, use it.
+            if component_class is None and len(reloaded_classes) == 1:
+                component_class = reloaded_classes[0]
 
             if component_class is None:
                 Debug.log_error(

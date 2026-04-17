@@ -114,6 +114,19 @@ PyComponentProxy::PyComponentProxy(py::object pyComponent)
             py::object pyType = m_pyComponent.attr("__class__");
             m_typeName = pyType.attr("__name__").cast<std::string>();
 
+            try {
+                py::object inxComponentType = py::module_::import("Infernux.components").attr("InxComponent");
+                m_overridesUpdate = !pyType.attr("update").is(inxComponentType.attr("update"));
+                m_overridesFixedUpdate = !pyType.attr("fixed_update").is(inxComponentType.attr("fixed_update"));
+                m_overridesLateUpdate = !pyType.attr("late_update").is(inxComponentType.attr("late_update"));
+            } catch (const py::error_already_set &e) {
+                INXLOG_WARN("[PyComponentProxy] Failed to inspect lifecycle overrides for '", m_typeName,
+                            "': ", e.what());
+                m_overridesUpdate = true;
+                m_overridesFixedUpdate = true;
+                m_overridesLateUpdate = true;
+            }
+
             if (py::hasattr(pyType, "_execute_in_edit_mode_")) {
                 try {
                     m_executeInEditMode = pyType.attr("_execute_in_edit_mode_").cast<bool>();
@@ -143,6 +156,8 @@ PyComponentProxy::PyComponentProxy(py::object pyComponent)
                     m_scriptGuid = guidAttr.cast<std::string>();
                 }
             }
+
+            RefreshCoroutineSchedulerFlag();
         } catch (const py::error_already_set &e) {
             INXLOG_ERROR("[PyComponentProxy] Failed to get type name: ", e.what());
         }
@@ -158,7 +173,10 @@ PyComponentProxy::~PyComponentProxy()
 
 PyComponentProxy::PyComponentProxy(PyComponentProxy &&other) noexcept
     : Component(std::move(other)), m_pyComponent(std::move(other.m_pyComponent)),
-      m_typeName(std::move(other.m_typeName)), m_typeGuid(std::move(other.m_typeGuid))
+      m_typeName(std::move(other.m_typeName)), m_typeGuid(std::move(other.m_typeGuid)),
+      m_scriptGuid(std::move(other.m_scriptGuid)), m_executeInEditMode(other.m_executeInEditMode),
+      m_overridesUpdate(other.m_overridesUpdate), m_overridesFixedUpdate(other.m_overridesFixedUpdate),
+      m_overridesLateUpdate(other.m_overridesLateUpdate), m_hasCoroutineScheduler(other.m_hasCoroutineScheduler)
 {
     other.m_pyComponent = py::none();
 }
@@ -170,9 +188,35 @@ PyComponentProxy &PyComponentProxy::operator=(PyComponentProxy &&other) noexcept
         m_pyComponent = std::move(other.m_pyComponent);
         m_typeName = std::move(other.m_typeName);
         m_typeGuid = std::move(other.m_typeGuid);
+        m_scriptGuid = std::move(other.m_scriptGuid);
+        m_executeInEditMode = other.m_executeInEditMode;
+        m_overridesUpdate = other.m_overridesUpdate;
+        m_overridesFixedUpdate = other.m_overridesFixedUpdate;
+        m_overridesLateUpdate = other.m_overridesLateUpdate;
+        m_hasCoroutineScheduler = other.m_hasCoroutineScheduler;
         other.m_pyComponent = py::none();
     }
     return *this;
+}
+
+void PyComponentProxy::RefreshCoroutineSchedulerFlag()
+{
+    if (m_pyComponent.is_none()) {
+        m_hasCoroutineScheduler = false;
+        return;
+    }
+
+    try {
+        if (!py::hasattr(m_pyComponent, "_coroutine_scheduler")) {
+            m_hasCoroutineScheduler = false;
+            return;
+        }
+
+        m_hasCoroutineScheduler = !m_pyComponent.attr("_coroutine_scheduler").is_none();
+    } catch (const py::error_already_set &e) {
+        INXLOG_WARN("[PyComponentProxy] Failed to inspect coroutine scheduler for '", m_typeName, "': ", e.what());
+        m_hasCoroutineScheduler = true;
+    }
 }
 
 void PyComponentProxy::BindPythonMirror()
@@ -207,6 +251,7 @@ void PyComponentProxy::Awake()
 
         // Call Python awake
         CallPythonLifecycleNoArg(m_pyComponent, m_typeName, "_call_awake", "awake");
+        RefreshCoroutineSchedulerFlag();
         SyncPythonMirror();
     } catch (const py::error_already_set &e) {
         INXLOG_ERROR("[PyComponentProxy] Error in ", m_typeName, ".awake setup: ", e.what());
@@ -220,6 +265,7 @@ void PyComponentProxy::OnEnable()
 
     SyncPythonMirror();
     CallPythonLifecycleNoArg(m_pyComponent, m_typeName, "_call_on_enable", "on_enable");
+    RefreshCoroutineSchedulerFlag();
 }
 
 void PyComponentProxy::Start()
@@ -228,6 +274,7 @@ void PyComponentProxy::Start()
         return;
 
     CallPythonLifecycleNoArg(m_pyComponent, m_typeName, "_call_start", "start");
+    RefreshCoroutineSchedulerFlag();
     SyncPythonMirror();
 }
 
@@ -236,7 +283,11 @@ void PyComponentProxy::Update(float deltaTime)
     if (m_pyComponent.is_none())
         return;
 
+    if (!m_overridesUpdate && !m_hasCoroutineScheduler)
+        return;
+
     CallPythonLifecycleFloatArg(m_pyComponent, m_typeName, "_call_update", "update", deltaTime);
+    RefreshCoroutineSchedulerFlag();
 }
 
 void PyComponentProxy::FixedUpdate(float fixedDeltaTime)
@@ -244,7 +295,11 @@ void PyComponentProxy::FixedUpdate(float fixedDeltaTime)
     if (m_pyComponent.is_none())
         return;
 
+    if (!m_overridesFixedUpdate && !m_hasCoroutineScheduler)
+        return;
+
     CallPythonLifecycleFloatArg(m_pyComponent, m_typeName, "_call_fixed_update", "fixed_update", fixedDeltaTime);
+    RefreshCoroutineSchedulerFlag();
 }
 
 void PyComponentProxy::LateUpdate(float deltaTime)
@@ -252,34 +307,41 @@ void PyComponentProxy::LateUpdate(float deltaTime)
     if (m_pyComponent.is_none())
         return;
 
+    if (!m_overridesLateUpdate && !m_hasCoroutineScheduler)
+        return;
+
     CallPythonLifecycleFloatArg(m_pyComponent, m_typeName, "_call_late_update", "late_update", deltaTime);
+    RefreshCoroutineSchedulerFlag();
 }
 
 void PyComponentProxy::TickWhileDisabledUpdate(float deltaTime)
 {
-    if (m_pyComponent.is_none())
+    if (m_pyComponent.is_none() || !m_hasCoroutineScheduler)
         return;
 
     CallPythonLifecycleFloatArg(m_pyComponent, m_typeName, "_tick_coroutines_update", "tick_coroutines_update",
                                 deltaTime);
+    RefreshCoroutineSchedulerFlag();
 }
 
 void PyComponentProxy::TickWhileDisabledFixedUpdate(float fixedDeltaTime)
 {
-    if (m_pyComponent.is_none())
+    if (m_pyComponent.is_none() || !m_hasCoroutineScheduler)
         return;
 
     CallPythonLifecycleFloatArg(m_pyComponent, m_typeName, "_tick_coroutines_fixed_update",
                                 "tick_coroutines_fixed_update", fixedDeltaTime);
+    RefreshCoroutineSchedulerFlag();
 }
 
 void PyComponentProxy::TickWhileDisabledLateUpdate(float deltaTime)
 {
-    if (m_pyComponent.is_none())
+    if (m_pyComponent.is_none() || !m_hasCoroutineScheduler)
         return;
 
     CallPythonLifecycleFloatArg(m_pyComponent, m_typeName, "_tick_coroutines_late_update",
                                 "tick_coroutines_late_update", deltaTime);
+    RefreshCoroutineSchedulerFlag();
 }
 
 void PyComponentProxy::OnDisable()

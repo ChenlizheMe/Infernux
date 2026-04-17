@@ -568,6 +568,14 @@ PYBIND11_MODULE(_Infernux, m)
             },
             py::arg("visible"), "Enable/disable scene view rendering")
         .def(
+            "set_gui_player_mode",
+            [](Infernux &self, bool enabled) {
+                auto *r = self.GetRenderer();
+                if (r)
+                    r->SetGUIPlayerMode(enabled);
+            },
+            py::arg("enabled"), "Skip DockSpace/layout overhead in standalone player mode")
+        .def(
             "is_game_camera_enabled",
             [](Infernux &self) -> bool {
                 auto *r = self.GetRenderer();

@@ -139,6 +139,15 @@ class InxShaderLoader
     /// Register an additional directory to scan for @import resolution.
     static void AddShaderSearchPath(const std::string &dir);
 
+    /// Invalidate cached shader-id maps and shading-model descriptors for a
+    /// directory so the next compile rescans the filesystem.
+    /// Pass an empty string to clear ALL cached directories.
+    static void InvalidateDirectoryCache(const std::string &dir = "");
+
+    /// Invalidate cached shader templates so edits under _templates/ are
+    /// picked up on the next compile / reload.
+    static void InvalidateTemplateCache();
+
     /// Get the currently registered shader search paths.
     static const std::vector<std::string> &GetShaderSearchPaths()
     {

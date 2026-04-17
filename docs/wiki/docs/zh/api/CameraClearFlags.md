@@ -6,8 +6,6 @@
 
 ## 描述
 
-摄像机清除模式枚举。
-
 <!-- USER CONTENT START --> description
 
 <!-- USER CONTENT END -->

@@ -6,8 +6,6 @@
 
 ## 描述
 
-日志级别枚举。
-
 <!-- USER CONTENT START --> description
 
 <!-- USER CONTENT END -->

@@ -1,12 +1,12 @@
 /**
  * @file RenderGraphDescription.h
- * @brief Data structures for Python-driven RenderGraph topology (Phase 2)
+ * @brief Data structures for render-graph topology defined from Python
  *
  * These POD structures capture the render graph topology defined in Python,
  * allowing C++ to receive, compile, and execute the graph with automatic
  * Vulkan barrier insertion and transient resource management.
  *
- * Architecture (Phase 2):
+ * Architecture:
  *   Python has "definition authority" — defines pass topology, resource
  *   connections, and per-pass render actions.
  *   C++ has "compilation authority" — performs DAG compilation, dead-pass

@@ -1,8 +1,8 @@
 """
-Pythonic Material Wrapper (Phase 1)
+Material wrapper.
 
 Wraps the C++ InxMaterial with context manager support, property caching,
-and a clean API suitable for AI-assisted development.
+and a clean scripting API.
 
 Usage::
 
@@ -51,7 +51,7 @@ class Material:
     Provides:
     - Context manager for scoped lifecycle
     - Clean property setters/getters
-    - Factory methods matching Unity's Material API
+    - Factory methods for common material workflows
     - Serialization to/from dict
     """
 
@@ -84,13 +84,17 @@ class Material:
     @staticmethod
     def create_lit(name: str = "New Material") -> "Material":
         """Create a new PBR lit material (default_lit shader)."""
-        native = InxMaterial.create_default_lit(name)
+        native = InxMaterial.create_default_lit()
+        if name != "New Material":
+            native.name = name
         return Material(native)
 
     @staticmethod
     def create_unlit(name: str = "Unlit Material") -> "Material":
         """Create a new unlit material (default_unlit shader)."""
-        native = InxMaterial.create_default_unlit(name)
+        native = InxMaterial.create_default_unlit()
+        if name != "Unlit Material":
+            native.name = name
         return Material(native)
 
     @staticmethod
@@ -582,3 +586,17 @@ class Material:
 
     def __hash__(self):
         return hash(self.guid)
+
+    # ==========================================================================
+    # Clone / Instantiate (Unity-style)
+    # ==========================================================================
+
+    def clone(self) -> "Material":
+        """Create a deep copy of this material (Unity: ``new Material(original)``).
+
+        All properties, shader names, and render state are copied.
+        Texture references remain shared (same as Unity).
+        The clone is a runtime-only instance with no GUID or file path.
+        """
+        cloned_native = self._native.clone()
+        return Material(cloned_native)

@@ -25,6 +25,7 @@
 #include <glm/gtc/matrix_transform.hpp>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstring>
 #include <unordered_set>
@@ -226,7 +227,7 @@ void InxVkCoreModular::CmdUpdateShadowUBO(VkCommandBuffer cmdBuf)
 }
 
 // ============================================================================
-// Phase 2: Filtered Draw — renders only draw calls within a queue range
+// Filtered draw — renders only draw calls within a queue range
 // ============================================================================
 
 void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width, uint32_t height, int queueMin,
@@ -308,9 +309,15 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
                 continue;
         }
 
-        // Compute view-space depth for sorting.
-        glm::vec4 viewPos = m_stagedUBO.view * glm::vec4(glm::vec3(dc.worldMatrix[3]), 1.0f);
-        float sortKey = viewPos.z;
+        // Compute view-space depth for transparent sort only.
+        // Opaque front_to_back groups by material hash + vertex buffer
+        // (stable order), so depth sort is unnecessary and its O(N log N)
+        // cost every frame is avoided via the is_sorted() early-out.
+        float sortKey = 0.0f;
+        if (sortMode == "back_to_front") {
+            glm::vec4 viewPos = m_stagedUBO.view * glm::vec4(glm::vec3(dc.worldMatrix[3]), 1.0f);
+            sortKey = viewPos.z;
+        }
 
         // Material + mesh hash for grouping optimization
         size_t matHash = std::hash<void *>{}(static_cast<void *>(material));
@@ -369,19 +376,37 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
     }
 
     // ---- Sort if requested (skip for 0-1 elements) ----
+    // Uniform-batch fast path: when every eligible entry shares the same
+    // material hash and vertex buffer, all entries will be emitted as a
+    // single instanced draw regardless of ordering.  Sorting would only
+    // permute elements within that single batch, so we skip it entirely.
+    bool uniformBatch = false;
+    if (m_eligibleScratch.size() > 1) {
+        const size_t firstMatHash = m_eligibleScratch[0].materialHash;
+        const VkBuffer firstVB = m_eligibleScratch[0].vertexBuf;
+        uniformBatch = true;
+        for (size_t i = 1; i < m_eligibleScratch.size(); ++i) {
+            if (m_eligibleScratch[i].materialHash != firstMatHash || m_eligibleScratch[i].vertexBuf != firstVB) {
+                uniformBatch = false;
+                break;
+            }
+        }
+    }
+
     // is_sorted() early-out: O(N) comparison-only scan avoids the O(N log N)
     // std::sort when the eligible scratch is already in correct order from
     // a previous frame (common in stable scenes with static camera).
-    if (m_eligibleScratch.size() > 1) {
+    if (m_eligibleScratch.size() > 1 && !uniformBatch) {
         // In left-handed view space: near objects have small positive Z, far
         // objects have larger positive Z.
         if (sortMode == "front_to_back") {
+            // Group by material + vertex buffer only (no depth).
+            // This order is stable across frames for static material assignments,
+            // so is_sorted() returns true and std::sort is skipped entirely.
             auto cmp = [](const SortableDrawCall &a, const SortableDrawCall &b) {
                 if (a.materialHash != b.materialHash)
                     return a.materialHash < b.materialHash;
-                if (a.vertexBuf != b.vertexBuf)
-                    return a.vertexBuf < b.vertexBuf;
-                return a.sortKey < b.sortKey;
+                return a.vertexBuf < b.vertexBuf;
             };
             if (!std::is_sorted(m_eligibleScratch.begin(), m_eligibleScratch.end(), cmp)) {
                 std::sort(m_eligibleScratch.begin(), m_eligibleScratch.end(), cmp);
@@ -546,13 +571,13 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
             continue;
         }
 
-        // Check GPU buffers for this entry
-        const auto &bufIt = entry.bufIt;
+        // Check GPU buffers for this entry — fresh lookup to avoid stale iterators
+        auto bufIt = m_perObjectBuffers.find(dc.objectId);
         if (bufIt == m_perObjectBuffers.end() || !bufIt->second.vertexBuffer || !bufIt->second.indexBuffer) {
             static int bufWarnCount = 0;
             if (bufWarnCount++ < 10) {
-                INXLOG_WARN("[DrawSceneFiltered] no GPU buffers for objectId=", dc.objectId, " material='",
-                            matRaw->GetName(), "' queue=", matRaw->GetRenderQueue());
+                // INXLOG_WARN("[DrawSceneFiltered] no GPU buffers for objectId=", dc.objectId, " material='",
+                //             matRaw->GetName(), "' queue=", matRaw->GetRenderQueue());
             }
             emitBatch();
             continue;
@@ -1008,17 +1033,55 @@ bool InxVkCoreModular::EnsureShadowPipeline(VkRenderPass /*compatibleRenderPass*
         }
     }
 
+    // --- Create shadow material descriptor set layout (set 2) ---
+    //
+    // This set serves two purposes:
+    //   (a) Vertex-stage MaterialProperties UBO at binding 14 (all shadow materials)
+    //   (b) Fragment-stage texture samplers (bindings 0..N-1) and fragment
+    //       MaterialProperties UBO (binding N) for alpha-clip shadow materials.
+    //
+    // We declare up to kMaxShadowTextures sampler slots so the layout is
+    // compatible with any alpha-clip shader.  Non-alpha-clip materials simply
+    // leave those bindings unused.
+    static constexpr uint32_t kMaxShadowTextures = 8;
+
     if (m_shadowMaterialDescSetLayout == VK_NULL_HANDLE) {
-        VkDescriptorSetLayoutBinding materialBinding{};
-        materialBinding.binding = 14;
-        materialBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        materialBinding.descriptorCount = 1;
-        materialBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+        std::vector<VkDescriptorSetLayoutBinding> bindings;
+
+        // Texture samplers for alpha-clip fragment (binding 0..kMaxShadowTextures-1)
+        for (uint32_t i = 0; i < kMaxShadowTextures; ++i) {
+            VkDescriptorSetLayoutBinding texBinding{};
+            texBinding.binding = i;
+            texBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            texBinding.descriptorCount = 1;
+            texBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+            bindings.push_back(texBinding);
+        }
+
+        // Fragment MaterialProperties UBO at binding = kMaxShadowTextures
+        {
+            VkDescriptorSetLayoutBinding fragMatBinding{};
+            fragMatBinding.binding = kMaxShadowTextures;
+            fragMatBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            fragMatBinding.descriptorCount = 1;
+            fragMatBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+            bindings.push_back(fragMatBinding);
+        }
+
+        // Vertex MaterialProperties UBO at binding 14
+        {
+            VkDescriptorSetLayoutBinding vtxMatBinding{};
+            vtxMatBinding.binding = 14;
+            vtxMatBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            vtxMatBinding.descriptorCount = 1;
+            vtxMatBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+            bindings.push_back(vtxMatBinding);
+        }
 
         VkDescriptorSetLayoutCreateInfo layoutInfo{};
         layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        layoutInfo.bindingCount = 1;
-        layoutInfo.pBindings = &materialBinding;
+        layoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
+        layoutInfo.pBindings = bindings.data();
 
         if (vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &m_shadowMaterialDescSetLayout) != VK_SUCCESS) {
             INXLOG_ERROR("Failed to create shadow material descriptor set layout");
@@ -1046,16 +1109,18 @@ bool InxVkCoreModular::EnsureShadowPipeline(VkRenderPass /*compatibleRenderPass*
     }
 
     if (m_shadowMaterialDescPool == VK_NULL_HANDLE) {
-        VkDescriptorPoolSize poolSize{};
-        poolSize.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        poolSize.descriptorCount = 1024;
+        std::array<VkDescriptorPoolSize, 2> poolSizes{};
+        poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        poolSizes[0].descriptorCount = 1024 * 2; // vertex UBO + fragment UBO per set
+        poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        poolSizes[1].descriptorCount = 1024 * kMaxShadowTextures;
 
         VkDescriptorPoolCreateInfo poolInfo{};
         poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
         poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
         poolInfo.maxSets = 1024;
-        poolInfo.poolSizeCount = 1;
-        poolInfo.pPoolSizes = &poolSize;
+        poolInfo.poolSizeCount = static_cast<uint32_t>(poolSizes.size());
+        poolInfo.pPoolSizes = poolSizes.data();
 
         if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &m_shadowMaterialDescPool) != VK_SUCCESS) {
             INXLOG_ERROR("Failed to create shadow material descriptor pool");
@@ -1236,11 +1301,17 @@ void InxVkCoreModular::CleanupShadowPipeline()
         vkDestroyRenderPass(device, m_shadowCompatRenderPass, nullptr);
         m_shadowCompatRenderPass = VK_NULL_HANDLE;
     }
+    // Destroy cached shadow pipelines
+    for (auto &[key, pipeline] : m_shadowPipelineCache) {
+        if (pipeline != VK_NULL_HANDLE)
+            vkDestroyPipeline(device, pipeline, nullptr);
+    }
+    m_shadowPipelineCache.clear();
     m_shadowPipelineReady = false;
 }
 
 // ============================================================================
-// Per-Object Buffer Management (Phase 2.3.4)
+// Per-object buffer management
 // ============================================================================
 
 void InxVkCoreModular::EnsureObjectBuffers(uint64_t objectId, const std::vector<Vertex> &vertices,

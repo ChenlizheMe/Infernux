@@ -6,8 +6,6 @@ enum in <b>Infernux</b>
 
 ## Description
 
-Engine log severity levels.
-
 <!-- USER CONTENT START --> description
 
 <!-- USER CONTENT END -->

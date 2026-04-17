@@ -401,7 +401,7 @@ class InxMaterial
     }
 
     // ========================================================================
-    // Multi-Pass Pipeline Storage (Phase 6)
+    // Multi-pass pipeline storage
     //
     // Each material can hold independent pipeline data per compile target
     // (Forward, GBuffer, Shadow).  This replaces the old single-pipeline
@@ -495,7 +495,7 @@ class InxMaterial
     /// @brief Create the editor tools material (translate/rotate/scale handles, no depth test)
     static std::shared_ptr<InxMaterial> CreateEditorToolsMaterial();
 
-    /// @brief Create the component gizmos material (Python-driven, depth-tested, queue 30000)
+    /// @brief Create the component gizmos material (script-side, depth-tested, queue 30000)
     static std::shared_ptr<InxMaterial> CreateComponentGizmosMaterial();
 
     /// @brief Create the component gizmo icon material (TRIANGLE_LIST billboards, queue 31000)
@@ -513,13 +513,23 @@ class InxMaterial
     /// @brief Create the error material (purple-black checkerboard for shader mismatch)
     static std::shared_ptr<InxMaterial> CreateErrorMaterial();
 
-  private:
-    friend class MaterialLoader;
+    // ========================================================================
+    // Clone (Unity-style Object.Instantiate for materials)
+    // ========================================================================
+
+    /// @brief Create a deep copy of this material (Unity: Object.Instantiate).
+    /// Copies all properties, shader names, and render state.
+    /// GPU-transient state (pipelines, UBO) is NOT copied — lazily recreated.
+    /// The clone has no GUID and no file path (runtime-only instance).
+    [[nodiscard]] std::shared_ptr<InxMaterial> Clone() const;
 
     void SetGuid(const std::string &guid)
     {
         m_guid = guid;
     }
+
+  private:
+    friend class MaterialLoader;
 
     std::string m_name;
     std::string m_guid;
@@ -543,7 +553,7 @@ class InxMaterial
     // Material properties
     std::unordered_map<std::string, MaterialProperty> m_properties;
 
-    // Multi-pass pipeline storage (Phase 6)
+    // Multi-pass pipeline storage
     // Indexed by ShaderCompileTarget: 0=Forward, 1=GBuffer, 2=Shadow
     PassPipeline m_passPipelines[static_cast<int>(ShaderCompileTarget::Count)];
 

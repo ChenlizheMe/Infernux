@@ -3,7 +3,7 @@ import sys
 sys.dont_write_bytecode = True
 
 from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QMessageBox, QDialog,QFileDialog,
+    QApplication, QMainWindow, QWidget, QMessageBox, QDialog,
     QHBoxLayout, QVBoxLayout, QSizePolicy, QStackedWidget,
 )
 from PySide6.QtCore import Qt, QTimer
@@ -129,20 +129,13 @@ class GameEngineLauncher(QMainWindow):
             self.installs_view.refresh()
             return
 
-        if sys.platform == "win32":
-            install_msg = "C:\\User\\Public\\InfernuxHub"
-        elif sys.platform == "darwin":
-            install_msg = "~/Library/Application Support/InfernuxHub"
-        else:
-            install_msg = "~/.local/share/InfernuxHub"
-
         QMessageBox.information(
             self,
             "Python 3.12 Setup",
             "Infernux Hub needs Python 3.12 to create and launch projects.\n\n"
             "The recommended path is to install Infernux Hub through the installer. The installer or standalone Hub will\n"
-            f"download the matching full Python 3.12 installer for this machine when needed and install it under\n"
-            f"{install_msg}.  Each project then receives its own full copy of the runtime.",
+            "download the matching full Python 3.12 installer for this machine when needed and install it under\n"
+            "C:\\Users\\Public\\InfernuxHub.  Each project then receives its own full copy of the runtime.",
         )
 
         dlg = PythonRuntimeInstallDialog(self.runtime_manager, self)
@@ -162,12 +155,8 @@ def _handle_uninstall() -> int:
     """Remove registry entries, Start Menu shortcut, and optionally the install directory."""
     if sys.platform == "darwin":
         return _handle_uninstall_macos()
-    elif sys.platform == "linux":
-        _handle_uninstall_linux()
-    elif sys.platform == "win32":
-        _handle_uninstall_win32()
-
-def _handle_uninstall_win32():    
+    if sys.platform != "win32":
+        return 1
     import winreg
 
     # Read install location from registry before removing the key.
@@ -197,7 +186,6 @@ def _handle_uninstall_win32():
             _shutil.rmtree(os.path.join(buf.value, "Infernux Hub"), ignore_errors=True)
     except Exception as _exc:
         logging.getLogger(__name__).debug("[Suppressed] %s: %s", type(_exc).__name__, _exc)
-
         pass
 
     # Ask user if they want to remove install files
@@ -214,6 +202,7 @@ def _handle_uninstall_win32():
 
     QMessageBox.information(None, "Uninstall Complete", "Infernux Hub has been uninstalled.")
     return 0
+
 
 def _handle_uninstall_macos() -> int:
     """Remove Infernux Hub from macOS."""
@@ -244,27 +233,6 @@ def _handle_uninstall_macos() -> int:
     QMessageBox.information(None, "Uninstall Complete", "Infernux Hub has been uninstalled.")
     return 0
 
-def _handle_uninstall_linux() -> int:
-    import shutil as _shutil
-
-    data_dir = os.path.expanduser("~/.local/share/InfernuxHub")
-    config_dir = os.path.expanduser("~/.local/share/InfernuxHub")
-    desktop_file = os.path.expanduser("~/.local/share/applications/infernux-hub.desktop")
-
-    paths_to_remove = [p for p in [data_dir, config_dir, desktop_file] if os.path.exists(p)]
-
-    if paths_to_remove:
-        msg = "Do you want to remove the following data and configurations?\n\n" + "\n".join(paths_to_remove)
-        answer = QMessageBox.question(None, "Uninstall Infernux Hub", msg)
-        if answer == QMessageBox.Yes:
-            for p in paths_to_remove:
-                if os.path.isdir(p):
-                    _shutil.rmtree(p, ignore_errors=True)
-                else:
-                    os.remove(p)
-                    
-    QMessageBox.information(None, "Uninstall Complete", "Infernux Hub has been uninstalled.")
-    return 0
 
 if __name__ == "__main__":
     if "--uninstall" in sys.argv:

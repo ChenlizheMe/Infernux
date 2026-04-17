@@ -8,7 +8,7 @@ Design Principles:
     - C++ handles: physics, rendering, memory management, resource I/O
     - Python handles: business logic, render graph topology, component scripting
     - All resource lifecycle managed via context managers or explicit acquire/release
-    - AI/LLM-friendly API surface — clear, minimal, self-documenting
+    - Clear, minimal, self-documenting API surface
 
 Usage::
 
@@ -33,7 +33,7 @@ from .shader import Shader
 from .audio_clip import AudioClip
 from .assets import AssetManager
 from .asset_types import (
-    TextureImportSettings, TextureType, WrapMode, FilterMode,
+    TextureImportSettings, TextureType, WrapMode, FilterMode, SpriteFrame,
     ShaderAssetInfo, FontAssetInfo, asset_category_from_extension,
     AudioImportSettings, AudioCompressionFormat,
     MeshImportSettings,

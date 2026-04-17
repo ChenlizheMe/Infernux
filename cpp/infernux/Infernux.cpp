@@ -204,7 +204,15 @@ void Infernux::InitRenderer(int width, int height, const std::string &projectPat
 
     m_renderer->Init(width, height, m_metadata);
 
-    // Redirect log output to Logs/engine.log.
+    // Wire SceneManager to renderer so Play()/Stop() directly bypass idle
+    // sleep without relying on the Python callback chain timing.
+    {
+        auto *renderer = m_renderer.get();
+        SceneManager::Instance().SetPlayStateChangedCallback([renderer](bool playing) {
+            if (renderer)
+                renderer->SetPlayModeRendering(playing);
+        });
+    }
     // Debug / RelWithDebInfo: truncate on startup and write through.
     // Release: retain only the last 100 lines and dump them on exit.
 #if INFERNUX_FILE_LOGGING
@@ -844,6 +852,12 @@ std::string Infernux::ReloadShader(const std::string &shaderPath)
 
     // Re-register meta (updates shader_id annotations from source)
     adb->ModifyResource(shaderPath);
+
+    // Invalidate shader-id map cache for this directory so shading models
+    // and imports added/modified since the last compile are discovered.
+    InxShaderLoader::InvalidateDirectoryCache(FromFsPath(ToFsPath(shaderPath).parent_path()));
+    InxShaderLoader::InvalidateTemplateCache();
+
     if (guid.empty()) {
         guid = adb->RegisterResource(shaderPath, ResourceType::Shader);
     } else {

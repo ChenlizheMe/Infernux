@@ -1,7 +1,7 @@
 # Infernux Scripting API
 
 <div class="class-info">
-Version 0.1.2
+Version 0.1.3
  &nbsp;|&nbsp; <a href="../../zh/api/index.html">中文</a>
 </div>
 
