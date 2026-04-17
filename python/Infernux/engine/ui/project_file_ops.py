@@ -448,7 +448,8 @@ def _detach_prefab_instances(prefab_path: str, asset_database=None):
 
 
 def delete_item(item_path: str, asset_database=None):
-    """Delete a file or directory from the filesystem and notify AssetDatabase."""
+   def delete_item(item_path: str, asset_database=None):
+    """Delete a file or directory via AssetDatabase to keep caches consistent."""
     if not item_path or not os.path.exists(item_path):
         return
 
@@ -467,26 +468,22 @@ def delete_item(item_path: str, asset_database=None):
                     asset_database.delete_asset(full_path)
                 except Exception as e:
                     Debug.log(f"Failed to delete asset {full_path}: {e}")
-            
             for name in dirs:
                 full_path = os.path.join(root, name)
                 try:
                     asset_database.delete_asset(full_path)
-                except Exception as e:
-                     Debug.log(f"Failed to delete asset {full_path}: {e}")
-            
+                except Exception:
+                    pass
         try:
             os.rmdir(item_path)
         except OSError as e:
             Debug.log(f"Failed to remove directory {item_path}: {e}")
     else:
-        # 单个文件：直接调用 delete_asset
         try:
             asset_database.delete_asset(item_path)
         except Exception as e:
             Debug.log(f"Failed to delete asset {item_path}: {e}")
 
-    # Invalidate inspector cache so a recreated file won't reuse stale data
     from . import asset_inspector
     asset_inspector.invalidate_asset(item_path)
 
