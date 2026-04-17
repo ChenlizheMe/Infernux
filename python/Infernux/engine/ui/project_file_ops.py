@@ -8,6 +8,8 @@ depend on ``ProjectPanel`` internals.
 import os
 import shutil
 
+from Infernux.debug import *
+
 
 # ---------------------------------------------------------------------------
 # Templates
@@ -450,31 +452,39 @@ def delete_item(item_path: str, asset_database=None):
     if not item_path or not os.path.exists(item_path):
         return
 
-    is_dir = os.path.isdir(item_path)
+    if asset_database is None:
+        from Infernux.lib import asset_database as adb
+        asset_database = adb
 
-    # For .prefab files, detach all scene instances BEFORE deleting the asset.
-    # This turns prefab instances into regular scene objects instead of leaving
-    # them orphaned with a dangling prefab_guid.
-    if not is_dir and item_path.lower().endswith('.prefab'):
+    if not os.path.isdir(item_path) and item_path.lower().endswith('.prefab'):
         _detach_prefab_instances(item_path, asset_database)
 
-    # Notify BEFORE removing the file — GUID is still resolvable at this point
-    if not is_dir:
-        from Infernux.core.assets import AssetManager
-        AssetManager.on_asset_deleted(item_path)
-
-        if asset_database:
-            asset_database.on_asset_deleted(item_path)
-
-    try:
-        if is_dir:
-            import shutil
-            shutil.rmtree(item_path)
-        else:
-            os.remove(item_path)
-    except OSError as _exc:
-        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-        return
+    if os.path.isdir(item_path):
+        for root, dirs, files in os.walk(item_path, topdown=False):
+            for name in files:
+                full_path = os.path.join(root, name)
+                try:
+                    asset_database.delete_asset(full_path)
+                except Exception as e:
+                    Debug.log(f"Failed to delete asset {full_path}: {e}")
+            
+            for name in dirs:
+                full_path = os.path.join(root, name)
+                try:
+                    asset_database.delete_asset(full_path)
+                except Exception as e:
+                     Debug.log(f"Failed to delete asset {full_path}: {e}")
+            
+        try:
+            os.rmdir(item_path)
+        except OSError as e:
+            Debug.log(f"Failed to remove directory {item_path}: {e}")
+    else:
+        # 单个文件：直接调用 delete_asset
+        try:
+            asset_database.delete_asset(item_path)
+        except Exception as e:
+            Debug.log(f"Failed to delete asset {item_path}: {e}")
 
     # Invalidate inspector cache so a recreated file won't reuse stale data
     from . import asset_inspector

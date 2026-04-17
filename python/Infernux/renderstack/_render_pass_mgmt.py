@@ -52,6 +52,7 @@ from Infernux.renderstack._pipeline_common import (
 )
 from Infernux.renderstack.injection_point import InjectionPoint
 from Infernux.renderstack.resource_bus import ResourceBus
+from Infernux.debug import Debug
 
 
 if TYPE_CHECKING:
