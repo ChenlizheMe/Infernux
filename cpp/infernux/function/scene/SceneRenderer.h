@@ -3,7 +3,6 @@
 #include "../scene/SceneSystem.h"
 #include <function/renderer/Frustum.h>
 #include <function/renderer/InxRenderStruct.h>
-#include <function/renderer/ProfileConfig.h>
 #include <function/resources/InxMaterial/InxMaterial.h>
 #include <functional>
 #include <memory>
@@ -24,20 +23,10 @@ struct RenderableObject
     uint64_t objectId;
     glm::mat4 worldMatrix;
     MeshRef mesh;
-    std::shared_ptr<InxMaterial> renderMaterial; // Actual material for rendering (kept alive by MeshRenderer)
-    InxMaterial *renderMaterialRaw = nullptr;    // Raw pointer for fast sort/access
+    std::shared_ptr<InxMaterial> renderMaterial; // Actual material for rendering
     MeshRenderer *meshRenderer = nullptr;        // Direct pointer to avoid re-lookup
     AABB worldBounds;                            // World-space bounding box for culling
-    size_t drawCallStart = 0;                    // Cached span in m_cachedDrawCalls
-    size_t drawCallCount = 0;                    // Number of draw calls emitted for this renderable
     bool visible;
-};
-
-struct CameraDrawCallResult
-{
-    std::vector<DrawCall> visibleDrawCalls;
-    std::vector<DrawCall> shadowDrawCalls;
-    const std::vector<DrawCall> *shadowDrawCallsRef = nullptr; ///< Zero-copy ref (valid when cullingMask == all)
 };
 
 /**
@@ -60,8 +49,8 @@ class SceneRenderer
     // ========================================================================
 
     /// @brief Prepare render data for the current frame using editor camera.
-    /// When useActiveCameraCulling is false, only updates transforms/bounds/cache state.
-    void PrepareFrame(bool useActiveCameraCulling = true);
+    /// Call this before DrawFrame()
+    void PrepareFrame();
 
     /// @brief Prepare render data for a specific camera (independent culling).
     /// Used by Game View to cull against the game camera's frustum.
@@ -101,12 +90,12 @@ class SceneRenderer
     /// @brief Build draw calls from visible renderables.
     /// Converts the culled/sorted RenderableObject list into DrawCall + combined vertex/index data.
     /// @note Vertices remain in model/local space; per-object world transform is applied on GPU via push constants.
-    [[nodiscard]] const DrawCallResult &BuildDrawCalls();
+    [[nodiscard]] DrawCallResult BuildDrawCalls() const;
 
     /// @brief Build draw calls by re-culling existing renderables against a different camera.
-    /// Reuses cached draw-call spans and world bounds from PrepareFrame().
-    /// Returns a forward-visible set, plus an optional layer-filtered shadow candidate set.
-    [[nodiscard]] CameraDrawCallResult BuildDrawCallsForCamera(Camera *camera, bool includeShadowDrawCalls);
+    /// Reuses renderables collected by PrepareFrame() to avoid re-collecting world matrices,
+    /// bounds, and materials. Only re-applies frustum culling with the given camera.
+    [[nodiscard]] DrawCallResult BuildDrawCallsForCamera(Camera *camera) const;
 
     // ========================================================================
     // Settings
@@ -125,44 +114,10 @@ class SceneRenderer
     /// @brief Set aspect ratio (from window)
     void SetAspectRatio(float aspect);
 
-#if INFERNUX_FRAME_PROFILE
-    struct ProfileSnapshot
-    {
-        double prepareMs = 0.0;
-        double collectMs = 0.0;
-        double updateMs = 0.0;
-        double cullMs = 0.0;
-        double sortMs = 0.0;
-        double buildMs = 0.0;
-        double buildCameraMs = 0.0;
-        double prepareCalls = 0.0;
-        double prepareFastCalls = 0.0;
-        double prepareSlowCalls = 0.0;
-        double buildCalls = 0.0;
-        double buildCameraCalls = 0.0;
-        double renderables = 0.0;
-        double visible = 0.0;
-        double drawCalls = 0.0;
-    };
-
-    [[nodiscard]] const ProfileSnapshot &GetProfileSnapshot() const
-    {
-        return m_profileSnapshot;
-    }
-
-    void ResetProfileSnapshot()
-    {
-        m_profileSnapshot = {};
-    }
-#endif
-
   private:
     void CollectRenderables(uint32_t cullingMask = 0xFFFFFFFF);
     void PerformCulling();
     void SortRenderables();
-
-    /// @brief Fast-path: update world matrices, bounds, optional culling, and cached draw calls in one pass.
-    void UpdateCachedRenderableTransforms(bool useActiveCameraCulling);
 
     /// @brief Shared draw-call emission logic used by both BuildDrawCalls() and BuildDrawCallsForCamera().
     void EmitDrawCallsForRenderable(DrawCallResult &result, const RenderableObject &renderable, bool visible,
@@ -175,24 +130,6 @@ class SceneRenderer
 
     // Cached camera state for the frame
     Camera *m_activeCamera = nullptr;
-
-    // ── Renderable cache ─────────────────────────────────────────────
-    // When the renderer set hasn't changed (same MeshRenderers, same
-    // enable/disable state), we skip full CollectRenderables/Sort and
-    // only update world matrices + bounds in-place.
-    uint64_t m_cachedMeshRendererVersion = 0;
-
-    // Draw call cache: reused when renderables are cached.
-    DrawCallResult m_cachedDrawCalls;
-    bool m_drawCallsCacheValid = false;
-
-    // True after a frustum-culled frame marks some draw calls as invisible.
-    // Cleared by a one-time sweep when switching back to non-frustum mode.
-    bool m_frustumVisibilityDirty = false;
-
-#if INFERNUX_FRAME_PROFILE
-    ProfileSnapshot m_profileSnapshot;
-#endif
 };
 
 /**
@@ -222,7 +159,7 @@ class SceneRenderBridge
     void OnWindowResize(uint32_t width, uint32_t height);
 
     /// @brief Prepare editor camera rendering (call once per frame before draw calls)
-    void PrepareFrame(bool useActiveCameraCulling = true);
+    void PrepareFrame();
 
     /// @brief Prepare rendering for a specific camera (independent culling).
     /// @param camera The camera to cull and collect renderables for.
@@ -232,11 +169,11 @@ class SceneRenderBridge
     /// @brief Build draw calls for a camera reusing the editor camera's renderables.
     /// Avoids re-collecting world matrices, bounds, and materials (from PrepareFrame).
     /// Only re-applies frustum culling and layer filtering for the given camera.
-    [[nodiscard]] CameraDrawCallResult CullAndBuildForCamera(Camera *camera, bool includeShadowDrawCalls);
+    [[nodiscard]] DrawCallResult CullAndBuildForCamera(Camera *camera) const;
 
     /// @brief Build draw calls from the current frame's visible renderables.
     /// Delegates to SceneRenderer::BuildDrawCalls().
-    [[nodiscard]] const DrawCallResult &BuildDrawCalls();
+    [[nodiscard]] DrawCallResult BuildDrawCalls() const;
 
     /// @brief Get the editor camera.
     [[nodiscard]] Camera *GetEditorCamera() const;

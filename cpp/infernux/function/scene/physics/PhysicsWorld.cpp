@@ -1088,25 +1088,20 @@ std::vector<RaycastHit> PhysicsWorld::RaycastAll(const glm::vec3 &origin, const 
 }
 
 // ============================================================================
-// Overlap queries (Unity: Physics.OverlapSphere / OverlapBox)
+// Shared overlap / shape-cast implementations
 // ============================================================================
 
-std::vector<Collider *> PhysicsWorld::OverlapSphere(const glm::vec3 &center, float radius, uint32_t layerMask,
-                                                    bool queryTriggers) const
+std::vector<Collider *> PhysicsWorld::OverlapShapeImpl(const JPH::Shape &shape, const glm::vec3 &center,
+                                                       uint32_t layerMask, bool queryTriggers) const
 {
     std::vector<Collider *> results;
-    if (!m_initialized || layerMask == 0)
-        return results;
-
-    JPH::SphereShape sphere(radius);
     JPH::CollideShapeSettings settings;
-
     JPH::RMat44 transform = JPH::RMat44::sTranslation(JPH::RVec3(center.x, center.y, center.z));
 
     const JPH::NarrowPhaseQuery &npQuery = m_physicsSystem->GetNarrowPhaseQuery();
     JPH::AllHitCollisionCollector<JPH::CollideShapeCollector> collector;
     LayerMaskObjectFilter objectFilter(layerMask);
-    npQuery.CollideShape(&sphere, JPH::Vec3::sReplicate(1.0f), transform, settings,
+    npQuery.CollideShape(&shape, JPH::Vec3::sReplicate(1.0f), transform, settings,
                          JPH::RVec3(center.x, center.y, center.z), collector, JPH::BroadPhaseLayerFilter(),
                          objectFilter);
 
@@ -1126,59 +1121,15 @@ std::vector<Collider *> PhysicsWorld::OverlapSphere(const glm::vec3 &center, flo
     return results;
 }
 
-std::vector<Collider *> PhysicsWorld::OverlapBox(const glm::vec3 &center, const glm::vec3 &halfExtents,
-                                                 uint32_t layerMask, bool queryTriggers) const
+bool PhysicsWorld::ShapeCastImpl(const JPH::Shape &shape, const glm::vec3 &origin, const glm::vec3 &direction,
+                                 float maxDistance, RaycastHit &outHit, uint32_t layerMask, bool queryTriggers) const
 {
-    std::vector<Collider *> results;
-    if (!m_initialized || layerMask == 0)
-        return results;
-
-    JPH::BoxShape box(JPH::Vec3(halfExtents.x, halfExtents.y, halfExtents.z));
-    JPH::CollideShapeSettings settings;
-
-    JPH::RMat44 transform = JPH::RMat44::sTranslation(JPH::RVec3(center.x, center.y, center.z));
-
-    const JPH::NarrowPhaseQuery &npQuery = m_physicsSystem->GetNarrowPhaseQuery();
-    JPH::AllHitCollisionCollector<JPH::CollideShapeCollector> collector;
-    LayerMaskObjectFilter objectFilter(layerMask);
-    npQuery.CollideShape(&box, JPH::Vec3::sReplicate(1.0f), transform, settings,
-                         JPH::RVec3(center.x, center.y, center.z), collector, JPH::BroadPhaseLayerFilter(),
-                         objectFilter);
-
-    if (!collector.HadHit())
-        return results;
-
-    std::unordered_set<Collider *> seen;
-    for (const auto &hit : collector.mHits) {
-        uint32_t bodyId = hit.mBodyID2.GetIndexAndSequenceNumber();
-        if (!queryTriggers && IsBodySensor(bodyId))
-            continue;
-        Collider *col = ResolveColliderForSubShape(bodyId, hit.mSubShapeID2.GetValue());
-        if (col && seen.insert(col).second) {
-            results.push_back(col);
-        }
-    }
-    return results;
-}
-
-// ============================================================================
-// Shape cast queries (Unity: Physics.SphereCast / BoxCast)
-// ============================================================================
-
-bool PhysicsWorld::SphereCast(const glm::vec3 &origin, float radius, const glm::vec3 &direction, float maxDistance,
-                              RaycastHit &outHit, uint32_t layerMask, bool queryTriggers) const
-{
-    if (!m_initialized || layerMask == 0 || radius < 0.0f)
-        return false;
-
-    JPH::SphereShape sphere(radius);
     glm::vec3 dir(0.0f);
-    if (!NormalizeQueryDirection(direction, maxDistance, dir)) {
+    if (!NormalizeQueryDirection(direction, maxDistance, dir))
         return false;
-    }
 
     JPH::RShapeCast shapeCast = JPH::RShapeCast::sFromWorldTransform(
-        &sphere, JPH::Vec3::sReplicate(1.0f), JPH::RMat44::sTranslation(JPH::RVec3(origin.x, origin.y, origin.z)),
+        &shape, JPH::Vec3::sReplicate(1.0f), JPH::RMat44::sTranslation(JPH::RVec3(origin.x, origin.y, origin.z)),
         JPH::Vec3(dir.x * maxDistance, dir.y * maxDistance, dir.z * maxDistance));
 
     JPH::ShapeCastSettings castSettings;
@@ -1213,6 +1164,41 @@ bool PhysicsWorld::SphereCast(const glm::vec3 &origin, float radius, const glm::
     return true;
 }
 
+// ============================================================================
+// Overlap queries (Unity: Physics.OverlapSphere / OverlapBox)
+// ============================================================================
+
+std::vector<Collider *> PhysicsWorld::OverlapSphere(const glm::vec3 &center, float radius, uint32_t layerMask,
+                                                    bool queryTriggers) const
+{
+    if (!m_initialized || layerMask == 0)
+        return {};
+    JPH::SphereShape sphere(radius);
+    return OverlapShapeImpl(sphere, center, layerMask, queryTriggers);
+}
+
+std::vector<Collider *> PhysicsWorld::OverlapBox(const glm::vec3 &center, const glm::vec3 &halfExtents,
+                                                 uint32_t layerMask, bool queryTriggers) const
+{
+    if (!m_initialized || layerMask == 0)
+        return {};
+    JPH::BoxShape box(JPH::Vec3(halfExtents.x, halfExtents.y, halfExtents.z));
+    return OverlapShapeImpl(box, center, layerMask, queryTriggers);
+}
+
+// ============================================================================
+// Shape cast queries (Unity: Physics.SphereCast / BoxCast)
+// ============================================================================
+
+bool PhysicsWorld::SphereCast(const glm::vec3 &origin, float radius, const glm::vec3 &direction, float maxDistance,
+                              RaycastHit &outHit, uint32_t layerMask, bool queryTriggers) const
+{
+    if (!m_initialized || layerMask == 0 || radius < 0.0f)
+        return false;
+    JPH::SphereShape sphere(radius);
+    return ShapeCastImpl(sphere, origin, direction, maxDistance, outHit, layerMask, queryTriggers);
+}
+
 bool PhysicsWorld::BoxCast(const glm::vec3 &center, const glm::vec3 &halfExtents, const glm::vec3 &direction,
                            float maxDistance, RaycastHit &outHit, uint32_t layerMask, bool queryTriggers) const
 {
@@ -1223,45 +1209,7 @@ bool PhysicsWorld::BoxCast(const glm::vec3 &center, const glm::vec3 &halfExtents
         return false;
 
     JPH::BoxShape box(JPH::Vec3(halfExtents.x, halfExtents.y, halfExtents.z));
-    glm::vec3 dir(0.0f);
-    if (!NormalizeQueryDirection(direction, maxDistance, dir)) {
-        return false;
-    }
-
-    JPH::RShapeCast shapeCast = JPH::RShapeCast::sFromWorldTransform(
-        &box, JPH::Vec3::sReplicate(1.0f), JPH::RMat44::sTranslation(JPH::RVec3(center.x, center.y, center.z)),
-        JPH::Vec3(dir.x * maxDistance, dir.y * maxDistance, dir.z * maxDistance));
-
-    JPH::ShapeCastSettings castSettings;
-    JPH::ClosestHitCollisionCollector<JPH::CastShapeCollector> collector;
-    LayerMaskObjectFilter objectFilter(layerMask);
-
-    const JPH::NarrowPhaseQuery &npQuery = m_physicsSystem->GetNarrowPhaseQuery();
-    npQuery.CastShape(shapeCast, castSettings, JPH::RVec3(center.x, center.y, center.z), collector,
-                      JPH::BroadPhaseLayerFilter(), objectFilter);
-
-    if (!collector.HadHit())
-        return false;
-
-    const auto &result = collector.mHit;
-    uint32_t bodyId = result.mBodyID2.GetIndexAndSequenceNumber();
-    if (!queryTriggers && IsBodySensor(bodyId))
-        return false;
-
-    outHit.distance = result.mFraction * maxDistance;
-    outHit.point = center + dir * outHit.distance;
-    outHit.bodyId = bodyId;
-    outHit.normal =
-        glm::vec3(-result.mPenetrationAxis.GetX(), -result.mPenetrationAxis.GetY(), -result.mPenetrationAxis.GetZ());
-    float nLen = glm::length(outHit.normal);
-    if (nLen > kEpsilon)
-        outHit.normal /= nLen;
-
-    outHit.collider = ResolveColliderForSubShape(bodyId, result.mSubShapeID2.GetValue());
-    if (outHit.collider && outHit.collider->GetGameObject())
-        outHit.gameObject = outHit.collider->GetGameObject();
-
-    return true;
+    return ShapeCastImpl(box, center, direction, maxDistance, outHit, layerMask, queryTriggers);
 }
 
 // ============================================================================

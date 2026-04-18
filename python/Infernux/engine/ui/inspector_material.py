@@ -29,8 +29,6 @@ from .inspector_utils import (
 )
 from .theme import Theme, ImGuiCol, ImGuiStyleVar
 from . import inspector_shader_utils as shader_utils
-from Infernux.debug import Debug
-import logging
 
 
 def _record_profile_timing(bucket: str, start_time: float) -> None:
@@ -43,97 +41,6 @@ def _record_profile_timing(bucket: str, start_time: float) -> None:
 #  Material property renderer (JSON type system: ptype 0-7)
 # ═══════════════════════════════════════════════════════════════════════════
 
-def _get_asset_database():
-    """Get the asset database from EditorServices or AssetRegistry (fallback)."""
-    try:
-        from .editor_services import EditorServices
-        adb = EditorServices.instance()._asset_database
-        if adb:
-            return adb
-    except Exception as _exc:
-        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-        pass
-    try:
-        from Infernux.lib import AssetRegistry
-        return AssetRegistry.instance().get_asset_database()
-    except Exception as _exc:
-        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-        return None
-
-
-def _resolve_path_to_guid(path_str):
-    """Resolve a filesystem path to an asset GUID."""
-    adb = _get_asset_database()
-    return adb.get_guid_from_path(path_str) or "" if adb else ""
-
-
-def _resolve_texture_display(prop):
-    """Return display text for a texture property's GUID."""
-    import os
-    tex_guid = prop.get("guid", "")
-    if not isinstance(tex_guid, str) or not tex_guid:
-        return t("igui.none")
-    adb = _get_asset_database()
-    if adb:
-        tex_path = adb.get_path_from_guid(tex_guid)
-        if tex_path:
-            return os.path.basename(tex_path)
-    return tex_guid[:8] + "..."
-
-
-def _render_texture2d_property(ctx, prop, prop_name, wid_prefix, plw):
-    """Render a Texture2D material property (GUID-only v2). Returns True if changed."""
-    changed = False
-    display = _resolve_texture_display(prop)
-    field_label(ctx, prop_name, plw)
-
-    from .igui import IGUI
-
-    def _on_tex_drop(payload):
-        nonlocal changed
-        dropped = str(payload).replace("\\", "/")
-        guid = _resolve_path_to_guid(dropped)
-        if not guid:
-            logging.getLogger(__name__).warning(
-                "Cannot resolve dropped texture path to GUID: %s", dropped)
-            return
-        prop["guid"] = guid
-        changed = True
-
-    def _on_tex_pick(picked_path):
-        nonlocal changed
-        picked = str(picked_path).replace("\\", "/")
-        guid = _resolve_path_to_guid(picked)
-        if not guid:
-            logging.getLogger(__name__).warning(
-                "Cannot resolve picked texture path to GUID: %s", picked)
-            return
-        prop["guid"] = guid
-        changed = True
-
-    def _on_tex_clear():
-        nonlocal changed
-        prop["guid"] = ""
-        changed = True
-
-    def _tex_asset_items(filt):
-        from .inspector_components import _picker_assets
-        return _picker_assets(filt, "*.png", assets_only=True) + _picker_assets(filt, "*.jpg", assets_only=True)
-
-    IGUI.object_field(
-        ctx,
-        f"{wid_prefix}_{prop_name}_tex",
-        display, "Texture",
-        clickable=True,
-        accept="TEXTURE_FILE",
-        on_drop=_on_tex_drop,
-        picker_asset_items=_tex_asset_items,
-        on_pick=_on_tex_pick,
-        on_clear=_on_tex_clear,
-    )
-    return changed
-
-
 def render_material_property(
     ctx: InxGUIContext,
     prop_name: str,
@@ -144,6 +51,7 @@ def render_material_property(
     wid_prefix: str = "mp",
 ) -> bool:
     """Render one material property row.  Returns ``True`` if changed."""
+    import os
     changed = False
     wid = f"##{wid_prefix}_{prop_name}"
 
@@ -204,8 +112,96 @@ def render_material_property(
             prop["value"] = arr
             changed = True
 
-    elif ptype == 6:  # Texture2D
-        changed = _render_texture2d_property(ctx, prop, prop_name, wid_prefix, plw)
+    elif ptype == 6:  # Texture2D — GUID-only (v2)
+        tex_guid = prop.get("guid", "")
+        if not isinstance(tex_guid, str):
+            tex_guid = ""
+        has_texture = bool(tex_guid)
+        display = t("igui.none")
+        if has_texture:
+            try:
+                from .editor_services import EditorServices
+                adb = EditorServices.instance()._asset_database
+                if adb:
+                    tex_path = adb.get_path_from_guid(tex_guid)
+                    if tex_path:
+                        display = os.path.basename(tex_path)
+                    else:
+                        display = tex_guid[:8] + "..."
+                else:
+                    display = tex_guid[:8] + "..."
+            except Exception:
+                display = tex_guid[:8] + "..."
+        field_label(ctx, prop_name, plw)
+
+        from .igui import IGUI
+
+        def _get_asset_database():
+            try:
+                from .editor_services import EditorServices
+                adb = EditorServices.instance()._asset_database
+                if adb:
+                    return adb
+            except Exception:
+                pass
+            try:
+                from Infernux.lib import AssetRegistry
+                return AssetRegistry.instance().get_asset_database()
+            except Exception:
+                return None
+
+        def _resolve_path_to_guid(path_str):
+            adb = _get_asset_database()
+            if adb:
+                return adb.get_guid_from_path(path_str) or ""
+            return ""
+
+        def _on_tex_drop(payload):
+            nonlocal changed
+            dropped = str(payload).replace("\\", "/")
+            guid = _resolve_path_to_guid(dropped)
+            if guid:
+                prop["guid"] = guid
+            else:
+                import logging
+                logging.getLogger(__name__).warning(
+                    "Cannot resolve dropped texture path to GUID: %s", dropped)
+                return
+            changed = True
+
+        def _on_tex_pick(picked_path):
+            nonlocal changed
+            picked = str(picked_path).replace("\\", "/")
+            guid = _resolve_path_to_guid(picked)
+            if guid:
+                prop["guid"] = guid
+            else:
+                import logging
+                logging.getLogger(__name__).warning(
+                    "Cannot resolve picked texture path to GUID: %s", picked)
+                return
+            changed = True
+
+        def _on_tex_clear():
+            nonlocal changed
+            prop["guid"] = ""
+            changed = True
+
+        def _tex_asset_items(filt):
+            from .inspector_components import _picker_assets
+            return _picker_assets(filt, "*.png") + _picker_assets(filt, "*.jpg")
+
+        IGUI.object_field(
+            ctx,
+            f"{wid_prefix}_{prop_name}_tex",
+            display, "Texture",
+            clickable=True,
+            accept="TEXTURE_FILE",
+            on_drop=_on_tex_drop,
+            picker_asset_items=_tex_asset_items,
+            on_pick=_on_tex_pick,
+            on_clear=_on_tex_clear,
+        )
 
     elif ptype == 7:  # Color
         if value is not None and len(value) >= 4:
@@ -311,142 +307,6 @@ def _render_shader_section(ctx, mat_data, state, is_builtin, default_open):
     return changed, requires_deserialize, requires_pipeline_refresh, change_key
 
 
-def _render_so_surface_and_cull(ctx, rs, mat_data, overrides, so_lw):
-    """Surface Type + Cull Mode options. Return *(overrides, change_key)*."""
-    change_key = ""
-    # Surface Type (Opaque / Transparent)
-    surface_items = [t("material.opaque"), t("material.transparent")]
-    cur_surface = 1 if rs.get("blendEnable", False) else 0
-    field_label(ctx, t("material.surface_type"), so_lw)
-    new_surface = ctx.combo("##mat_surface_type", cur_surface, surface_items)
-    if new_surface != cur_surface:
-        if new_surface == 1:  # Transparent
-            rs["blendEnable"] = True
-            rs["srcColorBlendFactor"] = 6
-            rs["dstColorBlendFactor"] = 7
-            rs["colorBlendOp"] = 0
-            rs["srcAlphaBlendFactor"] = 0
-            rs["dstAlphaBlendFactor"] = 1
-            rs["alphaBlendOp"] = 0
-            rs["depthWriteEnable"] = False
-            rs["renderQueue"] = 3000
-            overrides |= 0x80 | 0x10 | 0x20 | 0x02 | 0x40
-        else:  # Opaque
-            rs["blendEnable"] = False
-            rs["depthWriteEnable"] = True
-            rs["renderQueue"] = 2000
-            overrides |= 0x80 | 0x10 | 0x02 | 0x40
-        mat_data["renderStateOverrides"] = overrides
-        change_key = "render_state.surface_type"
-    # Cull Mode
-    cull_items = [t("material.cull_none"), t("material.cull_front"), t("material.cull_back")]
-    cull_val = int(rs.get("cullMode", 2))
-    cull_idx = {0: 0, 1: 1, 2: 2}.get(cull_val, 2)
-    field_label(ctx, t("material.cull_mode"), so_lw)
-    new_cull_idx = ctx.combo("##mat_cull_mode", cull_idx, cull_items)
-    if new_cull_idx != cull_idx:
-        rs["cullMode"] = new_cull_idx
-        overrides |= 0x01
-        mat_data["renderStateOverrides"] = overrides
-        change_key = "render_state.cull_mode"
-    return overrides, change_key
-
-
-def _render_so_depth_and_blend(ctx, rs, mat_data, overrides, so_lw):
-    """Depth Write + Depth Test + Blend Mode options. Return *(overrides, change_key)*."""
-    change_key = ""
-    # Depth Write
-    dw_val = rs.get("depthWriteEnable", True)
-    field_label(ctx, t("material.depth_write"), so_lw)
-    new_dw = ctx.checkbox("##mat_depth_write", dw_val)
-    if new_dw != dw_val:
-        rs["depthWriteEnable"] = new_dw
-        overrides |= 0x02
-        mat_data["renderStateOverrides"] = overrides
-        change_key = "render_state.depth_write"
-    # Depth Test
-    compare_items = [t("material.compare_never"), t("material.compare_less"), t("material.compare_equal"), t("material.compare_less_equal"),
-                     t("material.compare_greater"), t("material.compare_not_equal"), t("material.compare_greater_equal"), t("material.compare_always")]
-    dt_enable = rs.get("depthTestEnable", True)
-    dt_op = int(rs.get("depthCompareOp", 1))
-    field_label(ctx, t("material.depth_test"), so_lw)
-    if dt_enable:
-        new_op = ctx.combo("##mat_depth_test", dt_op, compare_items)
-    else:
-        new_op = ctx.combo("##mat_depth_test", 7, ["Off"] + compare_items[1:])
-        new_op = 0 if new_op == 0 else new_op
-    if not dt_enable and new_op > 0:
-        rs["depthTestEnable"] = True
-        rs["depthCompareOp"] = new_op
-        overrides |= 0x04 | 0x08
-        mat_data["renderStateOverrides"] = overrides
-        change_key = "render_state.depth_test"
-    elif dt_enable and new_op != dt_op:
-        rs["depthCompareOp"] = new_op
-        overrides |= 0x08
-        mat_data["renderStateOverrides"] = overrides
-        change_key = "render_state.depth_test"
-    # Blend Mode (only visible when transparent)
-    if rs.get("blendEnable", False):
-        blend_items = [t("material.blend_alpha"), t("material.blend_additive"), t("material.blend_premultiply")]
-        src = int(rs.get("srcColorBlendFactor", 6))
-        dst = int(rs.get("dstColorBlendFactor", 7))
-        if src == 1 and dst == 1:
-            cur_blend_idx = 1
-        elif src == 1 and dst == 7:
-            cur_blend_idx = 2
-        else:
-            cur_blend_idx = 0
-        field_label(ctx, t("material.blend_mode"), so_lw)
-        new_blend_idx = ctx.combo("##mat_blend_mode", cur_blend_idx, blend_items)
-        if new_blend_idx != cur_blend_idx:
-            _BLEND = {0: (6, 7), 1: (1, 1), 2: (1, 7)}
-            rs["srcColorBlendFactor"], rs["dstColorBlendFactor"] = _BLEND[new_blend_idx]
-            rs["colorBlendOp"] = 0
-            overrides |= 0x20
-            mat_data["renderStateOverrides"] = overrides
-            change_key = "render_state.blend_mode"
-    return overrides, change_key
-
-
-def _render_so_clip_and_queue(ctx, rs, mat_data, overrides, so_lw):
-    """Alpha Clip + Render Queue options. Return *(overrides, change_key)*."""
-    change_key = ""
-    # Alpha Clip
-    ac_enabled = rs.get("alphaClipEnabled", False)
-    ac_threshold = float(rs.get("alphaClipThreshold", 0.5))
-    field_label(ctx, t("material.alpha_clip"), so_lw)
-    new_ac = ctx.checkbox("##mat_alpha_clip", ac_enabled)
-    if new_ac != ac_enabled:
-        rs["alphaClipEnabled"] = new_ac
-        if new_ac and "alphaClipThreshold" not in rs:
-            rs["alphaClipThreshold"] = 0.5
-        overrides |= 0x100
-        mat_data["renderStateOverrides"] = overrides
-        change_key = "render_state.alpha_clip"
-    if rs.get("alphaClipEnabled", False):
-        field_label(ctx, t("material.threshold"), so_lw)
-        new_threshold = ctx.float_slider("##mat_alpha_threshold", ac_threshold, 0.0, 1.0)
-        if abs(new_threshold - ac_threshold) > 1e-5:
-            rs["alphaClipThreshold"] = new_threshold
-            overrides |= 0x100
-            mat_data["renderStateOverrides"] = overrides
-            change_key = "render_state.alpha_threshold"
-    # Render Queue
-    is_transparent = rs.get("blendEnable", False)
-    rq_min, rq_max = (2501, 5000) if is_transparent else (0, 2500)
-    rq = int(rs.get("renderQueue", 2000))
-    rq = max(rq_min, min(rq, rq_max))
-    field_label(ctx, t("material.render_queue"), so_lw)
-    new_rq = int(ctx.drag_int("##mat_render_queue", rq, 1.0, rq_min, rq_max))
-    if new_rq != rq:
-        rs["renderQueue"] = new_rq
-        overrides |= 0x40
-        mat_data["renderStateOverrides"] = overrides
-        change_key = "render_state.render_queue"
-    return overrides, change_key
-
-
 def _render_surface_options_section(ctx, mat_data, is_builtin, default_open):
     """Render surface options (cull, depth, blend, alpha clip, render queue).
 
@@ -470,16 +330,137 @@ def _render_surface_options_section(ctx, mat_data, is_builtin, default_open):
                      t("material.render_queue")]
         so_lw = max_label_w(ctx, so_labels)
 
-        overrides, ck1 = _render_so_surface_and_cull(ctx, rs, mat_data, overrides, so_lw)
-        overrides, ck2 = _render_so_depth_and_blend(ctx, rs, mat_data, overrides, so_lw)
-        overrides, ck3 = _render_so_clip_and_queue(ctx, rs, mat_data, overrides, so_lw)
+        def _mark(key):
+            nonlocal changed, requires_deserialize, requires_pipeline_refresh, change_key
+            changed = True
+            change_key = key
+            requires_deserialize = True
+            requires_pipeline_refresh = True
 
-        for ck in (ck1, ck2, ck3):
-            if ck:
-                changed = True
-                change_key = ck
-                requires_deserialize = True
-                requires_pipeline_refresh = True
+        # --- Surface Type (Opaque / Transparent) ---
+        surface_items = [t("material.opaque"), t("material.transparent")]
+        cur_surface = 1 if rs.get("blendEnable", False) else 0
+        field_label(ctx, t("material.surface_type"), so_lw)
+        new_surface = ctx.combo("##mat_surface_type", cur_surface, surface_items)
+        if new_surface != cur_surface:
+            if new_surface == 1:  # Transparent
+                rs["blendEnable"] = True
+                rs["srcColorBlendFactor"] = 6
+                rs["dstColorBlendFactor"] = 7
+                rs["colorBlendOp"] = 0
+                rs["srcAlphaBlendFactor"] = 0
+                rs["dstAlphaBlendFactor"] = 1
+                rs["alphaBlendOp"] = 0
+                rs["depthWriteEnable"] = False
+                rs["renderQueue"] = 3000
+                overrides |= 0x80 | 0x10 | 0x20 | 0x02 | 0x40
+            else:  # Opaque
+                rs["blendEnable"] = False
+                rs["depthWriteEnable"] = True
+                rs["renderQueue"] = 2000
+                overrides |= 0x80 | 0x10 | 0x02 | 0x40
+            mat_data["renderStateOverrides"] = overrides
+            _mark("render_state.surface_type")
+
+        # --- Cull Mode ---
+        cull_items = [t("material.cull_none"), t("material.cull_front"), t("material.cull_back")]
+        cull_val = int(rs.get("cullMode", 2))
+        cull_idx = {0: 0, 1: 1, 2: 2}.get(cull_val, 2)
+        field_label(ctx, t("material.cull_mode"), so_lw)
+        new_cull_idx = ctx.combo("##mat_cull_mode", cull_idx, cull_items)
+        if new_cull_idx != cull_idx:
+            rs["cullMode"] = new_cull_idx
+            overrides |= 0x01
+            mat_data["renderStateOverrides"] = overrides
+            _mark("render_state.cull_mode")
+
+        # --- Depth Write ---
+        dw_val = rs.get("depthWriteEnable", True)
+        field_label(ctx, t("material.depth_write"), so_lw)
+        new_dw = ctx.checkbox("##mat_depth_write", dw_val)
+        if new_dw != dw_val:
+            rs["depthWriteEnable"] = new_dw
+            overrides |= 0x02
+            mat_data["renderStateOverrides"] = overrides
+            _mark("render_state.depth_write")
+
+        # --- Depth Test ---
+        compare_items = [t("material.compare_never"), t("material.compare_less"), t("material.compare_equal"), t("material.compare_less_equal"),
+                         t("material.compare_greater"), t("material.compare_not_equal"), t("material.compare_greater_equal"), t("material.compare_always")]
+        dt_enable = rs.get("depthTestEnable", True)
+        dt_op = int(rs.get("depthCompareOp", 1))
+        field_label(ctx, t("material.depth_test"), so_lw)
+        if dt_enable:
+            new_op = ctx.combo("##mat_depth_test", dt_op, compare_items)
+        else:
+            new_op = ctx.combo("##mat_depth_test", 7, ["Off"] + compare_items[1:])
+            new_op = 0 if new_op == 0 else new_op
+        if not dt_enable and new_op > 0:
+            rs["depthTestEnable"] = True
+            rs["depthCompareOp"] = new_op
+            overrides |= 0x04 | 0x08
+            mat_data["renderStateOverrides"] = overrides
+            _mark("render_state.depth_test")
+        elif dt_enable and new_op != dt_op:
+            rs["depthCompareOp"] = new_op
+            overrides |= 0x08
+            mat_data["renderStateOverrides"] = overrides
+            _mark("render_state.depth_test")
+
+        # --- Blend Mode (only visible when transparent) ---
+        if rs.get("blendEnable", False):
+            blend_items = [t("material.blend_alpha"), t("material.blend_additive"), t("material.blend_premultiply")]
+            src = int(rs.get("srcColorBlendFactor", 6))
+            dst = int(rs.get("dstColorBlendFactor", 7))
+            if src == 1 and dst == 1:
+                cur_blend_idx = 1
+            elif src == 1 and dst == 7:
+                cur_blend_idx = 2
+            else:
+                cur_blend_idx = 0
+            field_label(ctx, t("material.blend_mode"), so_lw)
+            new_blend_idx = ctx.combo("##mat_blend_mode", cur_blend_idx, blend_items)
+            if new_blend_idx != cur_blend_idx:
+                _BLEND = {0: (6, 7), 1: (1, 1), 2: (1, 7)}
+                rs["srcColorBlendFactor"], rs["dstColorBlendFactor"] = _BLEND[new_blend_idx]
+                rs["colorBlendOp"] = 0
+                overrides |= 0x20
+                mat_data["renderStateOverrides"] = overrides
+                _mark("render_state.blend_mode")
+
+        # --- Alpha Clip ---
+        ac_enabled = rs.get("alphaClipEnabled", False)
+        ac_threshold = float(rs.get("alphaClipThreshold", 0.5))
+        field_label(ctx, t("material.alpha_clip"), so_lw)
+        new_ac = ctx.checkbox("##mat_alpha_clip", ac_enabled)
+        if new_ac != ac_enabled:
+            rs["alphaClipEnabled"] = new_ac
+            if new_ac and "alphaClipThreshold" not in rs:
+                rs["alphaClipThreshold"] = 0.5
+            overrides |= 0x100
+            mat_data["renderStateOverrides"] = overrides
+            _mark("render_state.alpha_clip")
+        if rs.get("alphaClipEnabled", False):
+            field_label(ctx, t("material.threshold"), so_lw)
+            new_threshold = ctx.float_slider("##mat_alpha_threshold", ac_threshold, 0.0, 1.0)
+            if abs(new_threshold - ac_threshold) > 1e-5:
+                rs["alphaClipThreshold"] = new_threshold
+                overrides |= 0x100
+                mat_data["renderStateOverrides"] = overrides
+                _mark("render_state.alpha_threshold")
+
+        # --- Render Queue ---
+        is_transparent = rs.get("blendEnable", False)
+        rq_min, rq_max = (2501, 5000) if is_transparent else (0, 2500)
+        rq = int(rs.get("renderQueue", 2000))
+        rq = max(rq_min, min(rq, rq_max))
+        field_label(ctx, t("material.render_queue"), so_lw)
+        new_rq = int(ctx.drag_int("##mat_render_queue", rq, 1.0, rq_min, rq_max))
+        if new_rq != rq:
+            rs["renderQueue"] = new_rq
+            overrides |= 0x40
+            mat_data["renderStateOverrides"] = overrides
+            _mark("render_state.render_queue")
 
     _record_profile_timing("materialSurface", section_t0)
     if is_builtin:
@@ -553,59 +534,13 @@ def _apply_material_changes(panel, state, mat_data, native_mat,
                     refresh_callback=lambda _mat: _refresh_pipeline(panel),
                     edit_key=change_key,
                 ))
-    except (RuntimeError, ValueError) as _exc:
-        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+    except (RuntimeError, ValueError):
         pass
 
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Body renderer (called from asset_inspector)
 # ═══════════════════════════════════════════════════════════════════════════
-
-
-def _sync_shader_annotations(mat_data, state):
-    """Synchronise shader property annotations into *mat_data*.
-
-    Returns ``(changed, requires_deserialize)`` — True if new/removed
-    properties were detected and pushed to the native material.
-    """
-    vert_shader_id = mat_data.get("shaders", {}).get("vertex", "")
-    frag_shader_id = mat_data.get("shaders", {}).get("fragment", "")
-    prop_gen = shader_utils.get_shader_property_generation()
-    sync_key = f"{vert_shader_id}|{frag_shader_id}:{prop_gen}"
-    last_sync_key = state.extra.get("shader_sync_key", "")
-    last_validation_key = state.extra.get("shader_validation_key", "")
-    mat_version = state.extra.get("mat_version", -1)
-    last_validation_version = state.extra.get("shader_validation_mat_version", -2)
-    needs_validation = (
-        sync_key != last_validation_key
-        or not mat_data.get("_shader_property_order")
-        or (mat_version != -1 and mat_version != last_validation_version)
-    )
-    missing_shader_props = False
-    if needs_validation and (vert_shader_id or frag_shader_id):
-        current_props = mat_data.get("properties", {})
-        expected_shader_props = shader_utils.get_all_shader_property_names(vert_shader_id, frag_shader_id)
-        missing_shader_props = any(name not in current_props for name in expected_shader_props)
-        state.extra["shader_validation_key"] = sync_key
-        if mat_version != -1:
-            state.extra["shader_validation_mat_version"] = mat_version
-
-    changed = False
-    requires_deserialize = False
-    if (vert_shader_id or frag_shader_id) and (sync_key != last_sync_key or missing_shader_props):
-        old_key = last_sync_key.rsplit(":", 1)[0] if last_sync_key else ""
-        remove = (f"{vert_shader_id}|{frag_shader_id}" == old_key) and bool(old_key)
-        state.extra["shader_sync_key"] = sync_key
-        if vert_shader_id or frag_shader_id:
-            old_prop_names = set(mat_data.get("properties", {}).keys())
-            shader_utils.sync_all_shader_properties(mat_data, vert_shader_id, frag_shader_id,
-                                                    remove_unknown=remove)
-            new_prop_names = set(mat_data.get("properties", {}).keys())
-            if new_prop_names != old_prop_names:
-                changed = True
-                requires_deserialize = True
-    return changed, requires_deserialize
 
 
 def render_material_body(ctx: InxGUIContext, panel, state):
@@ -642,9 +577,44 @@ def render_material_body(ctx: InxGUIContext, panel, state):
     change_key = ""
 
     # Sync shader annotations (both vertex + fragment properties)
-    sync_ch, sync_ds = _sync_shader_annotations(mat_data, state)
-    changed |= sync_ch
-    requires_deserialize |= sync_ds
+    vert_shader_id = mat_data.get("shaders", {}).get("vertex", "")
+    frag_shader_id = mat_data.get("shaders", {}).get("fragment", "")
+    prop_gen = shader_utils.get_shader_property_generation()
+    sync_key = f"{vert_shader_id}|{frag_shader_id}:{prop_gen}"
+    last_sync_key = state.extra.get("shader_sync_key", "")
+    last_validation_key = state.extra.get("shader_validation_key", "")
+    mat_version = state.extra.get("mat_version", -1)
+    last_validation_version = state.extra.get("shader_validation_mat_version", -2)
+    needs_validation = (
+        sync_key != last_validation_key
+        or not mat_data.get("_shader_property_order")
+        or (mat_version != -1 and mat_version != last_validation_version)
+    )
+    missing_shader_props = False
+    if needs_validation and (vert_shader_id or frag_shader_id):
+        current_props = mat_data.get("properties", {})
+        expected_shader_props = shader_utils.get_all_shader_property_names(vert_shader_id, frag_shader_id)
+        missing_shader_props = any(name not in current_props for name in expected_shader_props)
+        state.extra["shader_validation_key"] = sync_key
+        if mat_version != -1:
+            state.extra["shader_validation_mat_version"] = mat_version
+
+    if (vert_shader_id or frag_shader_id) and (sync_key != last_sync_key or missing_shader_props):
+        old_key = last_sync_key.rsplit(":", 1)[0] if last_sync_key else ""
+        # On hot-reload (same shaders, new generation) remove stale properties
+        remove = (f"{vert_shader_id}|{frag_shader_id}" == old_key) and bool(old_key)
+        state.extra["shader_sync_key"] = sync_key
+        if vert_shader_id or frag_shader_id:
+            old_prop_names = set(mat_data.get("properties", {}).keys())
+            shader_utils.sync_all_shader_properties(mat_data, vert_shader_id, frag_shader_id,
+                                                    remove_unknown=remove)
+            new_prop_names = set(mat_data.get("properties", {}).keys())
+            if new_prop_names != old_prop_names:
+                # Sync added/removed properties — push to native material so
+                # the C++ UBO gets the correct default values and so the merge
+                # in _refresh_material preserves them on subsequent frames.
+                changed = True
+                requires_deserialize = True
 
     # ── Shader Section ─────────────────────────────────────────────────
     s_ch, s_ds, s_pr, s_ck = _render_shader_section(ctx, mat_data, state, is_builtin, default_open_sections)
@@ -845,18 +815,7 @@ def _get_inline_material_extra(panel, native_mat) -> dict:
 
 def _refresh_pipeline(panel):
     """Ask the engine to rebuild the material pipeline."""
-    engine = None
-    if panel and hasattr(panel, '_get_native_engine'):
-        engine = panel._get_native_engine()
-    if engine is None:
-        try:
-            from Infernux.engine.ui.editor_services import EditorServices
-            svc = EditorServices.instance()
-            if svc:
-                engine = svc.native_engine
-        except Exception as _exc:
-            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-            pass
+    engine = panel._get_native_engine() if panel else None
     if engine and _native_mat and hasattr(engine, 'refresh_material_pipeline'):
         engine.refresh_material_pipeline(_native_mat)
 

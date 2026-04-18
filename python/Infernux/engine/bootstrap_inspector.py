@@ -192,6 +192,122 @@ def _wire_material_sections(ip, _t, engine, _inspector_support,
     ip.render_material_sections = _render_material_sections
 
 
+def _get_add_component_entries():
+    """Build the list of addable component entries (native + engine + scripts).
+
+    No closure dependencies — safe as a module-level function.
+    """
+    from Infernux.lib import InspectorAddComponentEntry, get_registered_component_types
+
+    entries = []
+    for type_name in sorted(get_registered_component_types()):
+        if type_name == "Transform":
+            continue
+        e = InspectorAddComponentEntry()
+        e.display_name = type_name
+        e.category = "Built-in"
+        e.is_native = True
+        entries.append(e)
+
+    from Infernux.renderstack.render_stack import RenderStack
+    for display_name, _comp_cls in [("RenderStack", RenderStack)]:
+        e = InspectorAddComponentEntry()
+        e.display_name = display_name
+        e.category = "Engine"
+        e.is_native = False
+        e.script_path = ""
+        entries.append(e)
+
+    import os
+    from Infernux.engine.project_context import get_project_root
+    from Infernux.components.script_loader import load_component_from_file, ScriptLoadError
+
+    project_root = get_project_root()
+    if project_root and os.path.isdir(project_root):
+        for dirpath, _dirnames, filenames in os.walk(project_root):
+            rel = os.path.relpath(dirpath, project_root)
+            if any(part.startswith('.') or part in (
+                    '__pycache__', 'build', 'Library',
+                    'ProjectSettings', 'Logs', 'Temp')
+                   for part in rel.split(os.sep)):
+                continue
+            for fn in filenames:
+                if not fn.endswith('.py') or fn.startswith('_'):
+                    continue
+                full = os.path.join(dirpath, fn)
+                with open(full, 'r', encoding='utf-8', errors='ignore') as f:
+                    content = f.read(4096)
+                if 'InxComponent' not in content:
+                    continue
+                try:
+                    comp_class = load_component_from_file(full)
+                except (ScriptLoadError, Exception):
+                    continue
+                e = InspectorAddComponentEntry()
+                e.display_name = comp_class.__name__
+                e.category = "Scripts"
+                e.is_native = False
+                e.script_path = full
+                entries.append(e)
+    return entries
+
+
+def _load_script_component(script_path, asset_database):
+    """Load a script component from *script_path*, returning the instance or ``None``.
+
+    Logs errors via ``Debug`` on failure.
+    """
+    from Infernux.components import load_and_create_component
+    from Infernux.debug import Debug
+    try:
+        instance = load_and_create_component(
+            script_path, asset_database=asset_database)
+    except Exception as exc:
+        Debug.log_error(f"Failed to load script '{script_path}': {exc}")
+        return None
+    if instance is None:
+        Debug.log_error(f"No InxComponent found in '{script_path}'")
+    return instance
+
+
+def _remove_component_impl(obj_id, type_name, comp_id, is_native,
+                           resolve_component, can_remove_component,
+                           invalidate_cache, bump_values):
+    """Remove a component from an object — module-level, no closure deps."""
+    from Infernux.lib import SceneManager
+    scene = SceneManager.instance().get_active_scene()
+    obj = scene.find_by_id(obj_id) if scene else None
+    if obj is None:
+        return False
+    comp = resolve_component(obj_id, comp_id, is_native)
+    if comp is None:
+        return False
+    if not can_remove_component(obj, comp, type_name, is_native):
+        return False
+    from Infernux.engine.undo import UndoManager
+    mgr = UndoManager.instance()
+    if is_native:
+        from Infernux.engine.undo import RemoveNativeComponentCommand
+        if mgr:
+            mgr.execute(RemoveNativeComponentCommand(obj.id, type_name, comp))
+            invalidate_cache()
+            bump_values()
+            return True
+        ok = obj.remove_component(comp) is not False
+    else:
+        from Infernux.engine.undo import RemovePyComponentCommand
+        if mgr:
+            mgr.execute(RemovePyComponentCommand(obj.id, comp))
+            invalidate_cache()
+            bump_values()
+            return True
+        ok = obj.remove_py_component(comp) is not False
+    if ok:
+        invalidate_cache()
+        bump_values()
+    return ok
+
+
 def wire_inspector_callbacks(bs: EditorBootstrap) -> None:
     """Wire C++ InspectorPanel callbacks to Python managers."""
     ip = bs.inspector_panel
@@ -744,59 +860,6 @@ def wire_inspector_callbacks(bs: EditorBootstrap) -> None:
     ip.set_component_enabled = _set_component_enabled
 
     # ── Add Component ──────────────────────────────────────────────
-    from Infernux.lib import InspectorAddComponentEntry
-
-    def _get_add_component_entries():
-        entries = []
-        from Infernux.lib import get_registered_component_types
-        for type_name in sorted(get_registered_component_types()):
-            if type_name == "Transform":
-                continue
-            e = InspectorAddComponentEntry()
-            e.display_name = type_name
-            e.category = "Built-in"
-            e.is_native = True
-            entries.append(e)
-        from Infernux.renderstack.render_stack import RenderStack
-        for display_name, comp_cls in [("RenderStack", RenderStack)]:
-            e = InspectorAddComponentEntry()
-            e.display_name = display_name
-            e.category = "Engine"
-            e.is_native = False
-            e.script_path = ""
-            entries.append(e)
-        import os
-        from Infernux.engine.project_context import get_project_root
-        from Infernux.components.script_loader import load_component_from_file, ScriptLoadError
-        project_root = get_project_root()
-        if project_root and os.path.isdir(project_root):
-            for dirpath, _dirnames, filenames in os.walk(project_root):
-                rel = os.path.relpath(dirpath, project_root)
-                if any(part.startswith('.') or part in (
-                        '__pycache__', 'build', 'Library',
-                        'ProjectSettings', 'Logs', 'Temp')
-                       for part in rel.split(os.sep)):
-                    continue
-                for fn in filenames:
-                    if not fn.endswith('.py') or fn.startswith('_'):
-                        continue
-                    full = os.path.join(dirpath, fn)
-                    with open(full, 'r', encoding='utf-8', errors='ignore') as f:
-                        content = f.read(4096)
-                    if 'InxComponent' not in content:
-                        continue
-                    try:
-                        comp_class = load_component_from_file(full)
-                    except (ScriptLoadError, Exception):
-                        continue
-                    e = InspectorAddComponentEntry()
-                    e.display_name = comp_class.__name__
-                    e.category = "Scripts"
-                    e.is_native = False
-                    e.script_path = full
-                    entries.append(e)
-        return entries
-
     ip.get_add_component_entries = _get_add_component_entries
 
     def _add_component(type_name_or_path, is_native, script_path):
@@ -823,93 +886,53 @@ def wire_inspector_callbacks(bs: EditorBootstrap) -> None:
                 _bump_inspector_values()
             else:
                 Debug.log_error(f"Failed to add component: {type_name_or_path}")
+        elif not script_path:
+            _engine_py_map = {"RenderStack": None}
+            try:
+                from Infernux.renderstack.render_stack import RenderStack as _RS
+                _engine_py_map["RenderStack"] = _RS
+            except ImportError:
+                pass
+            comp_cls = _engine_py_map.get(type_name_or_path)
+            if comp_cls is None:
+                Debug.log_error(f"Unknown engine component: {type_name_or_path}")
+                return
+            if getattr(comp_cls, '_disallow_multiple_', False):
+                for pc in (obj.get_py_components() or []):
+                    if isinstance(pc, comp_cls):
+                        Debug.log_warning(
+                            f"Cannot add another '{comp_cls.__name__}' — "
+                            f"only one per scene is allowed")
+                        return
+            instance = comp_cls()
+            before_ids = _get_component_ids(obj)
+            obj.add_py_component(instance)
+            _record_add_component_compound(
+                obj, comp_cls.__name__, instance, before_ids, is_py=True)
+            _invalidate_component_cache()
+            _bump_inspector_values()
+            Debug.log_internal(f"Added component {comp_cls.__name__}")
         else:
-            if not script_path:
-                _engine_py_map = {"RenderStack": None}
-                try:
-                    from Infernux.renderstack.render_stack import RenderStack as _RS
-                    _engine_py_map["RenderStack"] = _RS
-                except ImportError:
-                    pass
-                comp_cls = _engine_py_map.get(type_name_or_path)
-                if comp_cls is None:
-                    Debug.log_error(f"Unknown engine component: {type_name_or_path}")
-                    return
-                if getattr(comp_cls, '_disallow_multiple_', False):
-                    for pc in (obj.get_py_components() or []):
-                        if isinstance(pc, comp_cls):
-                            Debug.log_warning(
-                                f"Cannot add another '{comp_cls.__name__}' — "
-                                f"only one per scene is allowed")
-                            return
-                instance = comp_cls()
-                before_ids = _get_component_ids(obj)
-                obj.add_py_component(instance)
-                _record_add_component_compound(
-                    obj, comp_cls.__name__, instance, before_ids, is_py=True)
-                _invalidate_component_cache()
-                _bump_inspector_values()
-                Debug.log_internal(f"Added component {comp_cls.__name__}")
-            else:
-                from Infernux.components import load_and_create_component
-                adb = engine.get_asset_database()
-                try:
-                    component_instance = load_and_create_component(
-                        script_path, asset_database=adb)
-                except Exception as exc:
-                    Debug.log_error(f"Failed to load script '{script_path}': {exc}")
-                    return
-                if component_instance is None:
-                    Debug.log_error(f"No InxComponent found in '{script_path}'")
-                    return
-                before_ids = _get_component_ids(obj)
-                obj.add_py_component(component_instance)
-                _record_add_component_compound(
-                    obj, component_instance.type_name,
-                    component_instance, before_ids, is_py=True)
-                _invalidate_component_cache()
-                _bump_inspector_values()
-                Debug.log_internal(f"Added component {component_instance.type_name}")
+            adb = engine.get_asset_database()
+            instance = _load_script_component(script_path, adb)
+            if instance is None:
+                return
+            before_ids = _get_component_ids(obj)
+            obj.add_py_component(instance)
+            _record_add_component_compound(
+                obj, instance.type_name, instance, before_ids, is_py=True)
+            _invalidate_component_cache()
+            _bump_inspector_values()
+            Debug.log_internal(f"Added component {instance.type_name}")
 
     ip.add_component = _add_component
 
     # ── Remove Component ───────────────────────────────────────────
     def _remove_component(obj_id, type_name, comp_id, is_native):
-        scene = SceneManager.instance().get_active_scene()
-        obj = scene.find_by_id(obj_id) if scene else None
-        if obj is None:
-            return False
-        comp = _resolve_component(obj_id, comp_id, is_native)
-        if comp is not None:
-            if not _can_remove_component(obj, comp, type_name, is_native):
-                return False
-            from Infernux.engine.undo import UndoManager
-            mgr = UndoManager.instance()
-            if is_native:
-                from Infernux.engine.undo import RemoveNativeComponentCommand
-                if mgr:
-                    mgr.execute(RemoveNativeComponentCommand(obj.id, type_name, comp))
-                    _invalidate_component_cache()
-                    _bump_inspector_values()
-                    return True
-                ok = obj.remove_component(comp) is not False
-                if ok:
-                    _invalidate_component_cache()
-                    _bump_inspector_values()
-                return ok
-            else:
-                from Infernux.engine.undo import RemovePyComponentCommand
-                if mgr:
-                    mgr.execute(RemovePyComponentCommand(obj.id, comp))
-                    _invalidate_component_cache()
-                    _bump_inspector_values()
-                    return True
-                ok = obj.remove_py_component(comp) is not False
-                if ok:
-                    _invalidate_component_cache()
-                    _bump_inspector_values()
-                return ok
-        return False
+        return _remove_component_impl(
+            obj_id, type_name, comp_id, is_native,
+            _resolve_component, _can_remove_component,
+            _invalidate_component_cache, _bump_inspector_values)
 
     ip.remove_component = _remove_component
 
@@ -1012,17 +1035,9 @@ def wire_inspector_callbacks(bs: EditorBootstrap) -> None:
         obj = scene.find_by_id(primary) if scene else None
         if obj is None:
             return
-        from Infernux.components import load_and_create_component
-        from Infernux.debug import Debug
         adb = engine.get_asset_database()
-        try:
-            instance = load_and_create_component(
-                script_path, asset_database=adb)
-        except Exception as exc:
-            Debug.log_error(f"Failed to load script '{script_path}': {exc}")
-            return
+        instance = _load_script_component(script_path, adb)
         if instance is None:
-            Debug.log_error(f"No InxComponent found in '{script_path}'")
             return
         from Infernux.engine.ui.inspector_components import (
             _record_add_component_compound, _get_component_ids
