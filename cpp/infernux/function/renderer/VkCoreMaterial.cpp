@@ -896,7 +896,7 @@ void InxVkCoreModular::CreateMaterialShadowPipeline(InxMaterial *material, const
         // We must write ALL declared bindings to avoid validation errors
         // (Vulkan requires every binding to be updated unless PARTIALLY_BOUND).
         static constexpr uint32_t kMaxShadowTextures = 8;
-        bufferInfos.reserve(4);                // vtx UBO + frag UBO + up to 2 dummies
+        bufferInfos.reserve(4);                 // vtx UBO + frag UBO + up to 2 dummies
         imageInfos.reserve(kMaxShadowTextures); // up to 8 texture slots
 
         // Collect sorted texture bindings for alpha-clip (needed for both

@@ -756,9 +756,8 @@ uint64_t InxGUI::UploadTextureForImGui(const std::string &name, const unsigned c
     samplerInfo.unnormalizedCoordinates = VK_FALSE;
     samplerInfo.compareEnable = VK_FALSE;
     samplerInfo.compareOp = VK_COMPARE_OP_ALWAYS;
-    samplerInfo.mipmapMode = (filter == VK_FILTER_NEAREST)
-        ? VK_SAMPLER_MIPMAP_MODE_NEAREST
-        : VK_SAMPLER_MIPMAP_MODE_LINEAR;
+    samplerInfo.mipmapMode =
+        (filter == VK_FILTER_NEAREST) ? VK_SAMPLER_MIPMAP_MODE_NEAREST : VK_SAMPLER_MIPMAP_MODE_LINEAR;
 
     if (vkCreateSampler(device, &samplerInfo, nullptr, &tex.sampler) != VK_SUCCESS) {
         INXLOG_ERROR("InxGUI::UploadTextureForImGui(): Failed to create sampler for '", name, "'");

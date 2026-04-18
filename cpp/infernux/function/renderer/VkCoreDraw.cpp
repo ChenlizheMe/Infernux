@@ -727,7 +727,8 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
         VkPipeline pip = dc.material->GetPassPipeline(ShaderCompileTarget::Shadow);
         if (pip == VK_NULL_HANDLE) {
             // Lazy creation: shadow shared resources are ready, create per-material pipeline now
-            CreateMaterialShadowPipeline(dc.material, dc.material->GetVertShaderName(), dc.material->GetFragShaderName());
+            CreateMaterialShadowPipeline(dc.material, dc.material->GetVertShaderName(),
+                                         dc.material->GetFragShaderName());
             pip = dc.material->GetPassPipeline(ShaderCompileTarget::Shadow);
         }
         if (pip == VK_NULL_HANDLE)

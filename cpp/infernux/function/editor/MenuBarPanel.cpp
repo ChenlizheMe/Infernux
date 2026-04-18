@@ -203,7 +203,10 @@ void MenuBarPanel::RenderDynamicMenus(InxGUIContext *ctx)
 
         bool found = false;
         for (const auto &t : topMenus)
-            if (t == top) { found = true; break; }
+            if (t == top) {
+                found = true;
+                break;
+            }
         if (!found)
             topMenus.push_back(top);
     }
@@ -213,8 +216,10 @@ void MenuBarPanel::RenderDynamicMenus(InxGUIContext *ctx)
         // Build i18n key: "Animation" -> "menu.animation"
         std::string key = "menu." + top;
         for (auto &c : key)
-            if (c == ' ') c = '_';
-            else c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            if (c == ' ')
+                c = '_';
+            else
+                c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
 
         std::string label = T(key);
         // Fallback: if T() returned the key tail, use original name
@@ -225,15 +230,14 @@ void MenuBarPanel::RenderDynamicMenus(InxGUIContext *ctx)
     }
 }
 
-void MenuBarPanel::RenderMenuGroup(
-    const std::string &topMenu,
-    const std::string &translatedLabel,
-    const std::vector<WindowTypeInfo> &types,
-    const std::map<std::string, bool> &openWins)
+void MenuBarPanel::RenderMenuGroup(const std::string &topMenu, const std::string &translatedLabel,
+                                   const std::vector<WindowTypeInfo> &types,
+                                   const std::map<std::string, bool> &openWins)
 {
     // Collect entries belonging to this top-level menu.
-    struct Entry {
-        std::string subMenu;     // "" = direct child, else sub-menu label
+    struct Entry
+    {
+        std::string subMenu; // "" = direct child, else sub-menu label
         std::string typeId;
         std::string displayName;
         bool singleton;
@@ -253,9 +257,9 @@ void MenuBarPanel::RenderMenuGroup(
             continue;
 
         Entry e;
-        e.typeId      = info.typeId;
+        e.typeId = info.typeId;
         e.displayName = info.displayName;
-        e.singleton   = info.singleton;
+        e.singleton = info.singleton;
 
         if (info.menuPath.size() > topLen + 1)
             e.subMenu = info.menuPath.substr(topLen + 1);
@@ -265,7 +269,10 @@ void MenuBarPanel::RenderMenuGroup(
         if (!e.subMenu.empty()) {
             bool found = false;
             for (const auto &s : subMenuOrder)
-                if (s == e.subMenu) { found = true; break; }
+                if (s == e.subMenu) {
+                    found = true;
+                    break;
+                }
             if (!found)
                 subMenuOrder.push_back(e.subMenu);
         }
@@ -287,9 +294,11 @@ void MenuBarPanel::RenderMenuGroup(
 
         if (ImGui::MenuItem(e.displayName.c_str(), "", isOpen, canCreate)) {
             if (isOpen) {
-                if (closeWindow) closeWindow(e.typeId);
+                if (closeWindow)
+                    closeWindow(e.typeId);
             } else {
-                if (openWindow) openWindow(e.typeId);
+                if (openWindow)
+                    openWindow(e.typeId);
             }
         }
     };
@@ -305,8 +314,10 @@ void MenuBarPanel::RenderMenuGroup(
         // Build i18n key: e.g. "Animation" + "2D Animation" -> "menu.animation_2d_animation"
         std::string smKey = "menu." + topMenu + "_" + sm;
         for (auto &c : smKey)
-            if (c == ' ') c = '_';
-            else c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            if (c == ' ')
+                c = '_';
+            else
+                c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
 
         std::string smLabel = T(smKey);
         if (smLabel == smKey.substr(smKey.rfind('.') + 1))
