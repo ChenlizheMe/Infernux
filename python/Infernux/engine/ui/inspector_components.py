@@ -13,6 +13,7 @@ import time as _time
 from dataclasses import replace
 from Infernux.components.component import InxComponent
 from Infernux.lib import InxGUIContext
+from Infernux.debug import Debug
 from Infernux.engine.i18n import t
 from . import inspector_support as _inspector_support
 from .inspector_utils import (
@@ -655,8 +656,148 @@ def render_cpp_component_generic(ctx: InxGUIContext, comp):
 _ASSET_REF_CONFIG = None  # lazy-initialized (needs FieldType import)
 
 
-def _try_custom_py_renderer(ctx, py_comp):
-    """Try custom on_inspector_gui override or registered renderer. Returns True if handled."""
+def _get_asset_ref_config():
+    global _ASSET_REF_CONFIG
+    if _ASSET_REF_CONFIG is None:
+        from Infernux.components.serialized_field import FieldType
+        _ASSET_REF_CONFIG = {
+            FieldType.MATERIAL: ("Material",  "MATERIAL_FILE", ("*.mat",),                     "mat"),
+            FieldType.TEXTURE:  ("Texture",   "TEXTURE_FILE",  ("*.png", "*.jpg"),              "tex"),
+            FieldType.SHADER:   ("Shader",    "SHADER_FILE",   ("*.vert", "*.frag"),            "shd"),
+            FieldType.ASSET:    ("AudioClip", "AUDIO_FILE",    ("*.wav", "*.mp3", "*.ogg"),     "aud"),
+        }
+    return _ASSET_REF_CONFIG
+
+
+def _render_asset_reference_field(ctx, comp, field_name, metadata, current_value, field_type, lw):
+    """Render a MATERIAL / TEXTURE / SHADER / ASSET reference field.
+
+    Delegates display-name extraction to ``_get_reference_display_name``,
+    uses ``_apply_reference_drop`` for drag-drop, and ``_picker_assets``
+    for the picker dialog.
+    """
+    type_hint, drag_type, globs, prefix = _get_asset_ref_config()[field_type]
+    display = _get_reference_display_name(field_type, current_value)
+
+    def _on_pick(path, _fn=field_name, _comp=comp, _ft=field_type):
+        ref = _create_reference_value_from_payload(_ft, path)
+        if ref is not None:
+            old = getattr(_comp, _fn, None)
+            _record_property(_comp, _fn, old, ref, f"Set {_fn}")
+
+    def _on_clear(_fn=field_name, _comp=comp):
+        old = getattr(_comp, _fn, None)
+        _record_property(_comp, _fn, old, None, f"Clear {_fn}")
+
+    def _picker(filt):
+        result = []
+        for g in globs:
+            result += _picker_assets(filt, g)
+        return result
+
+    field_label(ctx, pretty_field_name(field_name), lw)
+    render_object_field(
+        ctx, f"{prefix}_ref_{field_name}", display, type_hint,
+        accept_drag_type=drag_type,
+        on_drop_callback=lambda payload, _fn=field_name, _comp=comp, _ft=field_type: _apply_reference_drop(_ft, _comp, _fn, payload),
+        picker_asset_items=_picker,
+        on_pick=_on_pick,
+        on_clear=_on_clear,
+    )
+
+
+def _render_component_ref_inline(ctx, py_comp, field_name, metadata, lw):
+    """Render a FieldType.COMPONENT reference field (extracted from render_py_component)."""
+    from Infernux.components.ref_wrappers import ComponentRef
+    from Infernux.components.serialized_field import get_raw_field_value, FieldType
+    _comp_ref = get_raw_field_value(py_comp, field_name)
+    if not isinstance(_comp_ref, ComponentRef):
+        _comp_ref = ComponentRef()
+    _display = _comp_ref.display_name
+    _type_hint = metadata.component_type or "Component"
+    _ct = metadata.component_type
+
+    def _comp_scene(filt, _ct=_ct):
+        return _picker_scene_gameobjects(filt, required_component=_ct)
+
+    def _comp_on_pick(go, _fn=field_name, _comp=py_comp, _ct=_ct):
+        ref = _create_component_ref_from_go(go, _ct)
+        if ref is not None:
+            old = get_raw_field_value(_comp, _fn)
+            _record_property(_comp, _fn, old, ref, f"Set {_fn}")
+
+    def _comp_on_clear(_fn=field_name, _comp=py_comp):
+        old = get_raw_field_value(_comp, _fn)
+        _record_property(_comp, _fn, old, ComponentRef(), f"Clear {_fn}")
+
+    field_label(ctx, pretty_field_name(field_name), lw)
+    render_object_field(
+        ctx, f"comp_ref_{field_name}", _display, _type_hint,
+        accept_drag_type=["HIERARCHY_GAMEOBJECT", "PREFAB_GUID", "PREFAB_FILE"],
+        on_drop_callback=lambda payload, _fn=field_name, _comp=py_comp, _ct=metadata.component_type: _apply_reference_drop(FieldType.COMPONENT, _comp, _fn, payload, _ct),
+        picker_scene_items=_comp_scene,
+        on_pick=_comp_on_pick,
+        on_clear=_comp_on_clear,
+    )
+
+
+def _render_gameobject_ref_inline(ctx, py_comp, field_name, metadata, current_value, lw):
+    """Render a FieldType.GAME_OBJECT reference field (extracted from render_py_component)."""
+    from Infernux.components.ref_wrappers import PrefabRef, GameObjectRef
+    if isinstance(current_value, PrefabRef):
+        display = current_value.name
+        _type_hint_prefix = "Prefab"
+    else:
+        _display_obj = current_value
+        if hasattr(current_value, 'resolve'):
+            _display_obj = current_value.resolve()
+        display = _display_obj.name if _display_obj and hasattr(_display_obj, 'name') else "None"
+        _type_hint_prefix = "GameObject"
+    _type_hint = _type_hint_prefix
+    _req_comp = metadata.required_component
+    if _req_comp:
+        _type_hint = f"{_type_hint_prefix}:{_req_comp}"
+
+    def _go_scene(filt, _rc=_req_comp):
+        return _picker_scene_gameobjects(filt, required_component=_rc)
+
+    def _go_on_pick(go, _fn=field_name, _comp=py_comp):
+        ref = GameObjectRef(go)
+        old = getattr(_comp, _fn, None)
+        _record_property(_comp, _fn, old, ref, f"Set {_fn}")
+
+    def _go_on_clear(_fn=field_name, _comp=py_comp):
+        old = getattr(_comp, _fn, None)
+        _record_property(_comp, _fn, old, None, f"Clear {_fn}")
+
+    field_label(ctx, pretty_field_name(field_name), lw)
+    render_object_field(
+        ctx, f"go_ref_{field_name}", display, _type_hint,
+        accept_drag_type=["HIERARCHY_GAMEOBJECT", "PREFAB_GUID", "PREFAB_FILE"],
+        on_drop_callback=lambda payload, _fn=field_name, _comp=py_comp, _rc=_req_comp: _apply_gameobject_or_prefab_drop(_comp, _fn, payload, _rc),
+        picker_scene_items=_go_scene,
+        on_pick=_go_on_pick,
+        on_clear=_go_on_clear,
+    )
+
+
+def render_py_component(ctx: InxGUIContext, py_comp):
+    """Render a Python InxComponent's serialized fields.
+
+    Dispatch priority:
+    1. ``on_inspector_gui(ctx)`` override on the component class itself
+    2. Custom renderer registered via ``register_py_component_renderer``
+    3. Generic auto-generated serialized-field inspector
+
+    Uses C++ batch property renderer for scalar fields to minimize pybind11
+    overhead.  Non-scalar fields are rendered individually.
+
+    Supports:
+    - ``group``: fields with the same group name are wrapped in a
+      ``collapsing_header`` section.
+    - ``info_text``: dimmed description line rendered after the field.
+    """
+    # 1. Check for on_inspector_gui override on the component class
     on_gui = getattr(type(py_comp), 'on_inspector_gui', None)
     if on_gui is not None:
         from Infernux.components.component import InxComponent
@@ -795,7 +936,37 @@ def render_py_component(ctx: InxGUIContext, py_comp):
             _tooltip_and_info(ctx, metadata)
             continue
 
-        if _render_py_nonscalar_field(ctx, py_comp, field_name, metadata, current_value, lw, _flush):
+        # ── Non-scalar types: flush batch, render individually ──
+        if metadata.field_type == FieldType.LIST:
+            _flush()
+            from Infernux.components.serialized_field import get_raw_field_value
+            _raw_list = get_raw_field_value(py_comp, field_name)
+            _render_list_field(ctx, py_comp, field_name, metadata, _raw_list, lw)
+            _tooltip_and_info(ctx, metadata)
+            continue
+
+        if metadata.field_type == FieldType.SERIALIZABLE_OBJECT:
+            _flush()
+            _render_serializable_object_field(ctx, py_comp, field_name, metadata, current_value, lw)
+            _tooltip_and_info(ctx, metadata)
+            continue
+
+        if metadata.field_type == FieldType.COMPONENT:
+            _flush()
+            _render_component_ref_inline(ctx, py_comp, field_name, metadata, lw)
+            _tooltip_and_info(ctx, metadata)
+            continue
+
+        if metadata.field_type == FieldType.GAME_OBJECT:
+            _flush()
+            _render_gameobject_ref_inline(ctx, py_comp, field_name, metadata, current_value, lw)
+            _tooltip_and_info(ctx, metadata)
+            continue
+
+        if metadata.field_type in _get_asset_ref_config():
+            _flush()
+            _render_asset_reference_field(ctx, py_comp, field_name, metadata, current_value, metadata.field_type, lw)
+            _tooltip_and_info(ctx, metadata)
             continue
 
         # ── Scalar field → try batch ──

@@ -2,7 +2,7 @@
  * @file OutlineRenderer.cpp
  * @brief Post-process selection outline renderer implementation
  *
- * Extracted from InxVkCoreModular.cpp during editor/renderer separation.
+ * Extracted from InxVkCoreModular.cpp (Phase 1 refactoring).
  */
 
 #include "OutlineRenderer.h"
@@ -11,7 +11,6 @@
 #include "MaterialPipelineManager.h"
 #include "SceneRenderTarget.h"
 #include "shader/ShaderProgram.h"
-#include "vk/VkPipelineHelpers.h"
 #include "vk/VkRenderUtils.h"
 #include <function/resources/InxMaterial/InxMaterial.h>
 
@@ -33,10 +32,15 @@ namespace
 constexpr uint32_t kOutlineSceneUBOBinding = 0;
 constexpr uint32_t kOutlineVertexMaterialUBOBinding = 14;
 
-using infernux::vkrender::MakeMultisampleState;
-using infernux::vkrender::MakeShaderStageInfo;
-using infernux::vkrender::MakeTriangleListInputAssembly;
-using DynamicViewportState = infernux::vkrender::DynamicViewportScissorState;
+VkPipelineShaderStageCreateInfo MakeShaderStageInfo(VkShaderStageFlagBits stage, VkShaderModule module)
+{
+    VkPipelineShaderStageCreateInfo shaderStage{};
+    shaderStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    shaderStage.stage = stage;
+    shaderStage.module = module;
+    shaderStage.pName = "main";
+    return shaderStage;
+}
 
 struct MeshVertexInputState
 {
@@ -53,6 +57,32 @@ struct MeshVertexInputState
         createInfo.pVertexAttributeDescriptions = attrDescs.data();
     }
 };
+
+struct DynamicViewportState
+{
+    std::array<VkDynamicState, 2> dynamicStates = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+    VkPipelineDynamicStateCreateInfo dynamicState{};
+    VkPipelineViewportStateCreateInfo viewportState{};
+
+    DynamicViewportState()
+    {
+        dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+        dynamicState.dynamicStateCount = static_cast<uint32_t>(dynamicStates.size());
+        dynamicState.pDynamicStates = dynamicStates.data();
+
+        viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+        viewportState.viewportCount = 1;
+        viewportState.scissorCount = 1;
+    }
+};
+
+VkPipelineInputAssemblyStateCreateInfo MakeTriangleListInputAssembly()
+{
+    VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
+    inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    return inputAssembly;
+}
 
 VkPipelineRasterizationStateCreateInfo MakeRasterizationState(VkCullModeFlags cullMode)
 {
@@ -72,6 +102,14 @@ VkPipelineDepthStencilStateCreateInfo MakeDepthStencilState(VkBool32 depthTestEn
     depthStencil.depthTestEnable = depthTestEnable;
     depthStencil.depthWriteEnable = depthWriteEnable;
     return depthStencil;
+}
+
+VkPipelineMultisampleStateCreateInfo MakeMultisampleState(VkSampleCountFlagBits sampleCount)
+{
+    VkPipelineMultisampleStateCreateInfo multisampling{};
+    multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+    multisampling.rasterizationSamples = sampleCount;
+    return multisampling;
 }
 
 VkPipelineColorBlendAttachmentState MakeOpaqueColorBlendAttachment()
@@ -675,7 +713,8 @@ void OutlineRenderer::CreateOutlineMaterialResources()
     }
 }
 
-VkPipeline OutlineRenderer::CreateMaskPipeline(const VkPipelineShaderStageCreateInfo stages[2], VkPipelineLayout layout)
+VkPipeline OutlineRenderer::CreateMaskPipeline(const VkPipelineShaderStageCreateInfo stages[2],
+                                               VkPipelineLayout layout)
 {
     MeshVertexInputState vertexInput;
     VkPipelineInputAssemblyStateCreateInfo inputAssembly = MakeTriangleListInputAssembly();
@@ -790,26 +829,30 @@ VkDescriptorSet OutlineRenderer::GetOrCreateMtlOutlineDescSet(InxMaterial *mater
 }
 
 // ============================================================================
-// Internal: Shared render-pass begin helper
+// Internal: Mask Pass
 // ============================================================================
 
-void OutlineRenderer::BeginRenderPassWithFullViewport(VkCommandBuffer cmdBuf, VkRenderPass rp, VkFramebuffer fb,
-                                                      const VkClearValue &clearVal)
+void OutlineRenderer::RenderOutlineMask(VkCommandBuffer cmdBuf, const std::vector<DrawCall> &drawCalls)
 {
     uint32_t w = m_sceneRenderTarget->GetWidth();
     uint32_t h = m_sceneRenderTarget->GetHeight();
 
+    // Begin mask render pass (clears mask to black, no depth)
+    VkClearValue clearValue{};
+    clearValue.color = {{0.0f, 0.0f, 0.0f, 0.0f}};
+
     VkRenderPassBeginInfo rpBegin{};
     rpBegin.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-    rpBegin.renderPass = rp;
-    rpBegin.framebuffer = fb;
+    rpBegin.renderPass = m_outlineMaskRenderPass;
+    rpBegin.framebuffer = m_outlineMaskFramebuffer;
     rpBegin.renderArea.offset = {0, 0};
     rpBegin.renderArea.extent = {w, h};
     rpBegin.clearValueCount = 1;
-    rpBegin.pClearValues = &clearVal;
+    rpBegin.pClearValues = &clearValue;
 
     vkCmdBeginRenderPass(cmdBuf, &rpBegin, VK_SUBPASS_CONTENTS_INLINE);
 
+    // Set viewport and scissor
     VkViewport viewport{};
     viewport.x = 0.0f;
     viewport.y = 0.0f;
@@ -823,20 +866,6 @@ void OutlineRenderer::BeginRenderPassWithFullViewport(VkCommandBuffer cmdBuf, Vk
     scissor.offset = {0, 0};
     scissor.extent = {w, h};
     vkCmdSetScissor(cmdBuf, 0, 1, &scissor);
-}
-
-// ============================================================================
-// Internal: Mask Pass
-// ============================================================================
-
-void OutlineRenderer::RenderOutlineMask(VkCommandBuffer cmdBuf, const std::vector<DrawCall> &drawCalls)
-{
-    uint32_t w = m_sceneRenderTarget->GetWidth();
-    uint32_t h = m_sceneRenderTarget->GetHeight();
-
-    VkClearValue clearValue{};
-    clearValue.color = {{0.0f, 0.0f, 0.0f, 0.0f}};
-    BeginRenderPassWithFullViewport(cmdBuf, m_outlineMaskRenderPass, m_outlineMaskFramebuffer, clearValue);
 
     // Render the selected object
     for (const auto &dc : drawCalls) {
@@ -872,8 +901,8 @@ void OutlineRenderer::RenderOutlineMask(VkCommandBuffer cmdBuf, const std::vecto
         if (dc.material) {
             ShaderProgram *fwdProgram = dc.material->GetPassShaderProgram(ShaderCompileTarget::Forward);
             if (fwdProgram && fwdProgram->HasVertexMaterialUBO()) {
-                VkPipeline mtlPipeline = GetOrCreateMtlOutlinePipeline(dc.material);
-                VkDescriptorSet mtlDescSet = GetOrCreateMtlOutlineDescSet(dc.material);
+                VkPipeline mtlPipeline = GetOrCreateMtlOutlinePipeline(dc.material.get());
+                VkDescriptorSet mtlDescSet = GetOrCreateMtlOutlineDescSet(dc.material.get());
 
                 if (mtlPipeline != VK_NULL_HANDLE && mtlDescSet != VK_NULL_HANDLE) {
                     // Write the object's world transform to the per-frame instance buffer
@@ -926,9 +955,35 @@ void OutlineRenderer::RenderOutlineComposite(VkCommandBuffer cmdBuf)
     uint32_t w = m_sceneRenderTarget->GetWidth();
     uint32_t h = m_sceneRenderTarget->GetHeight();
 
+    // Begin composite render pass
     VkClearValue dummyClear{};
     dummyClear.color = {{0.0f, 0.0f, 0.0f, 1.0f}};
-    BeginRenderPassWithFullViewport(cmdBuf, m_outlineCompositeRenderPass, m_outlineCompositeFramebuffer, dummyClear);
+
+    VkRenderPassBeginInfo rpBegin{};
+    rpBegin.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    rpBegin.renderPass = m_outlineCompositeRenderPass;
+    rpBegin.framebuffer = m_outlineCompositeFramebuffer;
+    rpBegin.renderArea.offset = {0, 0};
+    rpBegin.renderArea.extent = {w, h};
+    rpBegin.clearValueCount = 1;
+    rpBegin.pClearValues = &dummyClear;
+
+    vkCmdBeginRenderPass(cmdBuf, &rpBegin, VK_SUBPASS_CONTENTS_INLINE);
+
+    // Set viewport and scissor
+    VkViewport viewport{};
+    viewport.x = 0.0f;
+    viewport.y = 0.0f;
+    viewport.width = static_cast<float>(w);
+    viewport.height = static_cast<float>(h);
+    viewport.minDepth = 0.0f;
+    viewport.maxDepth = 1.0f;
+    vkCmdSetViewport(cmdBuf, 0, 1, &viewport);
+
+    VkRect2D scissor{};
+    scissor.offset = {0, 0};
+    scissor.extent = {w, h};
+    vkCmdSetScissor(cmdBuf, 0, 1, &scissor);
 
     // Bind composite pipeline
     vkCmdBindPipeline(cmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS, m_outlineCompositePipeline);

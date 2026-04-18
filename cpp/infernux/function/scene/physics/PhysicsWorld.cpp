@@ -259,28 +259,6 @@ void PhysicsWorld::Initialize()
     m_physicsSystem->Init(cfg.physicsMaxBodies, 0, cfg.physicsMaxBodyPairs, cfg.physicsMaxContactConstraints,
                           m_layers->bpInterface, m_layers->objVsBpFilter, m_layers->objPairFilter);
 
-    // Tune physics settings for thin-body stability and precision.
-    //  - Penetration slop: 2 mm (default 20 mm). Min BoxShape thickness is
-    //    2 × kMinHalfExtent = 0.02 m; 2 mm slop keeps sinking at 10 %.
-    //  - Speculative contact: 10 mm (default 20 mm).  Tighter for thin shells.
-    //  - Position solver: 3 iterations (default 2). Better stacking stability.
-    //  - LinearCast max penetration: 10 % of inner radius (default 25 %).
-    //  - Baumgarte: 0.15 (default 0.2). Softer correction prevents violent
-    //    pop-out when thin bodies briefly penetrate a surface.
-    //  - Max penetration distance: 50 mm (default 200 mm). Limits per-step
-    //    correction so thin-body overlaps resolve gradually.
-    //  - LinearCast threshold: 50 % (default 75 %). Triggers CCD earlier,
-    //    critical for thin bodies whose inner radius is very small.
-    JPH::PhysicsSettings settings = m_physicsSystem->GetPhysicsSettings();
-    settings.mPenetrationSlop = 0.002f;           // 2 mm  (default 20 mm)
-    settings.mSpeculativeContactDistance = 0.01f; // 10 mm (default 20 mm)
-    settings.mNumPositionSteps = 3;               // (default 2)
-    settings.mLinearCastMaxPenetration = 0.1f;    // (default 0.25)
-    settings.mBaumgarte = 0.15f;                  // softer penetration correction (default 0.2)
-    settings.mMaxPenetrationDistance = 0.05f;     // limit per-step correction for thin bodies (default 0.2)
-    settings.mLinearCastThreshold = 0.5f;         // trigger CCD earlier for thin bodies (default 0.75)
-    m_physicsSystem->SetPhysicsSettings(settings);
-
     // Gravity
     m_physicsSystem->SetGravity(JPH::Vec3(cfg.physicsGravity.x, cfg.physicsGravity.y, cfg.physicsGravity.z));
 
@@ -611,40 +589,6 @@ void PhysicsWorld::AddBodyToBroadphase(uint32_t bodyId, bool isStatic)
     bodyInterface.AddBody(JPH::BodyID(bodyId), isStatic ? JPH::EActivation::DontActivate : JPH::EActivation::Activate);
 }
 
-void PhysicsWorld::AddBodiesBatch(const std::vector<std::pair<uint32_t, bool>> &bodies)
-{
-    if (!m_initialized || bodies.empty())
-        return;
-
-    // Separate static and dynamic bodies since they need different activation modes.
-    std::vector<JPH::BodyID> staticIds;
-    std::vector<JPH::BodyID> dynamicIds;
-    staticIds.reserve(bodies.size());
-    dynamicIds.reserve(bodies.size() / 4); // most spawned bodies are static
-
-    for (auto &[id, isStatic] : bodies) {
-        if (id == 0xFFFFFFFF)
-            continue;
-        if (isStatic)
-            staticIds.push_back(JPH::BodyID(id));
-        else
-            dynamicIds.push_back(JPH::BodyID(id));
-    }
-
-    JPH::BodyInterface &bi = m_physicsSystem->GetBodyInterface();
-
-    if (!staticIds.empty()) {
-        JPH::BodyInterface::AddState state = bi.AddBodiesPrepare(staticIds.data(), static_cast<int>(staticIds.size()));
-        bi.AddBodiesFinalize(staticIds.data(), static_cast<int>(staticIds.size()), state,
-                             JPH::EActivation::DontActivate);
-    }
-    if (!dynamicIds.empty()) {
-        JPH::BodyInterface::AddState state =
-            bi.AddBodiesPrepare(dynamicIds.data(), static_cast<int>(dynamicIds.size()));
-        bi.AddBodiesFinalize(dynamicIds.data(), static_cast<int>(dynamicIds.size()), state, JPH::EActivation::Activate);
-    }
-}
-
 void PhysicsWorld::RemoveBodyFromBroadphase(uint32_t bodyId)
 {
     if (!m_initialized || bodyId == 0xFFFFFFFF)
@@ -778,7 +722,7 @@ glm::vec3 PhysicsWorld::GetBodyLinearVelocity(uint32_t bodyId) const
     if (!m_initialized || bodyId == 0xFFFFFFFF)
         return glm::vec3(0.0f);
 
-    const JPH::BodyInterface &bi = m_physicsSystem->GetBodyInterfaceNoLock();
+    JPH::BodyInterface &bi = m_physicsSystem->GetBodyInterface();
     JPH::Vec3 v = bi.GetLinearVelocity(JPH::BodyID(bodyId));
     return glm::vec3(v.GetX(), v.GetY(), v.GetZ());
 }
@@ -797,7 +741,7 @@ glm::vec3 PhysicsWorld::GetBodyAngularVelocity(uint32_t bodyId) const
     if (!m_initialized || bodyId == 0xFFFFFFFF)
         return glm::vec3(0.0f);
 
-    const JPH::BodyInterface &bi = m_physicsSystem->GetBodyInterfaceNoLock();
+    JPH::BodyInterface &bi = m_physicsSystem->GetBodyInterface();
     JPH::Vec3 v = bi.GetAngularVelocity(JPH::BodyID(bodyId));
     return glm::vec3(v.GetX(), v.GetY(), v.GetZ());
 }
@@ -881,20 +825,6 @@ void PhysicsWorld::SetBodyAllowedDOFs(uint32_t bodyId, int allowedDOFs, float ma
         if (body.IsDynamic()) {
             JPH::MassProperties massProps = body.GetShape()->GetMassProperties();
             massProps.ScaleToMass(mass > 0.001f ? mass : 0.001f);
-
-            // Thin-body inertia stabilization: ensure no principal axis has
-            // less than 10 % of the maximum moment of inertia.  This prevents
-            // extreme angular accelerations for flat / thin shapes (e.g.
-            // sprites, panels) where one dimension is much smaller than the
-            // others.
-            JPH::Vec3 diag = massProps.mInertia.GetDiagonal3();
-            float maxI = std::max({diag.GetX(), diag.GetY(), diag.GetZ()});
-            if (maxI > 1e-10f) {
-                float minI = maxI * 0.1f;
-                massProps.mInertia.SetDiagonal3(
-                    JPH::Vec3(std::max(diag.GetX(), minI), std::max(diag.GetY(), minI), std::max(diag.GetZ(), minI)));
-            }
-
             body.GetMotionProperties()->SetMassProperties(static_cast<JPH::EAllowedDOFs>(allowedDOFs), massProps);
         }
     }
@@ -957,7 +887,7 @@ bool PhysicsWorld::IsBodySleeping(uint32_t bodyId) const
     if (!m_initialized || bodyId == 0xFFFFFFFF)
         return true;
 
-    const JPH::BodyInterface &bi = m_physicsSystem->GetBodyInterfaceNoLock();
+    JPH::BodyInterface &bi = m_physicsSystem->GetBodyInterface();
     return !bi.IsActive(JPH::BodyID(bodyId));
 }
 
@@ -1029,8 +959,7 @@ glm::vec3 PhysicsWorld::GetBodyPosition(uint32_t bodyId) const
     if (!m_initialized || bodyId == 0xFFFFFFFF)
         return glm::vec3(0.0f);
 
-    // NoLock: safe because this is called from main thread AFTER Step().
-    const JPH::BodyInterface &bi = m_physicsSystem->GetBodyInterfaceNoLock();
+    JPH::BodyInterface &bi = m_physicsSystem->GetBodyInterface();
     JPH::RVec3 p = bi.GetPosition(JPH::BodyID(bodyId));
     return glm::vec3(static_cast<float>(p.GetX()), static_cast<float>(p.GetY()), static_cast<float>(p.GetZ()));
 }
@@ -1040,7 +969,7 @@ glm::quat PhysicsWorld::GetBodyRotation(uint32_t bodyId) const
     if (!m_initialized || bodyId == 0xFFFFFFFF)
         return glm::quat(1, 0, 0, 0);
 
-    const JPH::BodyInterface &bi = m_physicsSystem->GetBodyInterfaceNoLock();
+    JPH::BodyInterface &bi = m_physicsSystem->GetBodyInterface();
     JPH::Quat q = bi.GetRotation(JPH::BodyID(bodyId));
     return glm::normalize(glm::quat(q.GetW(), q.GetX(), q.GetY(), q.GetZ()));
 }
@@ -1050,7 +979,7 @@ glm::vec3 PhysicsWorld::GetBodyCenterOfMassPosition(uint32_t bodyId) const
     if (!m_initialized || bodyId == 0xFFFFFFFF)
         return glm::vec3(0.0f);
 
-    const JPH::BodyInterface &bi = m_physicsSystem->GetBodyInterfaceNoLock();
+    JPH::BodyInterface &bi = m_physicsSystem->GetBodyInterface();
     JPH::RVec3 p = bi.GetCenterOfMassPosition(JPH::BodyID(bodyId));
     return glm::vec3(static_cast<float>(p.GetX()), static_cast<float>(p.GetY()), static_cast<float>(p.GetZ()));
 }
@@ -1159,20 +1088,25 @@ std::vector<RaycastHit> PhysicsWorld::RaycastAll(const glm::vec3 &origin, const 
 }
 
 // ============================================================================
-// Shared overlap / shape-cast implementations
+// Overlap queries (Unity: Physics.OverlapSphere / OverlapBox)
 // ============================================================================
 
-std::vector<Collider *> PhysicsWorld::OverlapShapeImpl(const JPH::Shape &shape, const glm::vec3 &center,
-                                                       uint32_t layerMask, bool queryTriggers) const
+std::vector<Collider *> PhysicsWorld::OverlapSphere(const glm::vec3 &center, float radius, uint32_t layerMask,
+                                                    bool queryTriggers) const
 {
     std::vector<Collider *> results;
+    if (!m_initialized || layerMask == 0)
+        return results;
+
+    JPH::SphereShape sphere(radius);
     JPH::CollideShapeSettings settings;
+
     JPH::RMat44 transform = JPH::RMat44::sTranslation(JPH::RVec3(center.x, center.y, center.z));
 
     const JPH::NarrowPhaseQuery &npQuery = m_physicsSystem->GetNarrowPhaseQuery();
     JPH::AllHitCollisionCollector<JPH::CollideShapeCollector> collector;
     LayerMaskObjectFilter objectFilter(layerMask);
-    npQuery.CollideShape(&shape, JPH::Vec3::sReplicate(1.0f), transform, settings,
+    npQuery.CollideShape(&sphere, JPH::Vec3::sReplicate(1.0f), transform, settings,
                          JPH::RVec3(center.x, center.y, center.z), collector, JPH::BroadPhaseLayerFilter(),
                          objectFilter);
 
@@ -1192,15 +1126,59 @@ std::vector<Collider *> PhysicsWorld::OverlapShapeImpl(const JPH::Shape &shape, 
     return results;
 }
 
-bool PhysicsWorld::ShapeCastImpl(const JPH::Shape &shape, const glm::vec3 &origin, const glm::vec3 &direction,
-                                 float maxDistance, RaycastHit &outHit, uint32_t layerMask, bool queryTriggers) const
+std::vector<Collider *> PhysicsWorld::OverlapBox(const glm::vec3 &center, const glm::vec3 &halfExtents,
+                                                 uint32_t layerMask, bool queryTriggers) const
 {
-    glm::vec3 dir(0.0f);
-    if (!NormalizeQueryDirection(direction, maxDistance, dir))
+    std::vector<Collider *> results;
+    if (!m_initialized || layerMask == 0)
+        return results;
+
+    JPH::BoxShape box(JPH::Vec3(halfExtents.x, halfExtents.y, halfExtents.z));
+    JPH::CollideShapeSettings settings;
+
+    JPH::RMat44 transform = JPH::RMat44::sTranslation(JPH::RVec3(center.x, center.y, center.z));
+
+    const JPH::NarrowPhaseQuery &npQuery = m_physicsSystem->GetNarrowPhaseQuery();
+    JPH::AllHitCollisionCollector<JPH::CollideShapeCollector> collector;
+    LayerMaskObjectFilter objectFilter(layerMask);
+    npQuery.CollideShape(&box, JPH::Vec3::sReplicate(1.0f), transform, settings,
+                         JPH::RVec3(center.x, center.y, center.z), collector, JPH::BroadPhaseLayerFilter(),
+                         objectFilter);
+
+    if (!collector.HadHit())
+        return results;
+
+    std::unordered_set<Collider *> seen;
+    for (const auto &hit : collector.mHits) {
+        uint32_t bodyId = hit.mBodyID2.GetIndexAndSequenceNumber();
+        if (!queryTriggers && IsBodySensor(bodyId))
+            continue;
+        Collider *col = ResolveColliderForSubShape(bodyId, hit.mSubShapeID2.GetValue());
+        if (col && seen.insert(col).second) {
+            results.push_back(col);
+        }
+    }
+    return results;
+}
+
+// ============================================================================
+// Shape cast queries (Unity: Physics.SphereCast / BoxCast)
+// ============================================================================
+
+bool PhysicsWorld::SphereCast(const glm::vec3 &origin, float radius, const glm::vec3 &direction, float maxDistance,
+                              RaycastHit &outHit, uint32_t layerMask, bool queryTriggers) const
+{
+    if (!m_initialized || layerMask == 0 || radius < 0.0f)
         return false;
 
+    JPH::SphereShape sphere(radius);
+    glm::vec3 dir(0.0f);
+    if (!NormalizeQueryDirection(direction, maxDistance, dir)) {
+        return false;
+    }
+
     JPH::RShapeCast shapeCast = JPH::RShapeCast::sFromWorldTransform(
-        &shape, JPH::Vec3::sReplicate(1.0f), JPH::RMat44::sTranslation(JPH::RVec3(origin.x, origin.y, origin.z)),
+        &sphere, JPH::Vec3::sReplicate(1.0f), JPH::RMat44::sTranslation(JPH::RVec3(origin.x, origin.y, origin.z)),
         JPH::Vec3(dir.x * maxDistance, dir.y * maxDistance, dir.z * maxDistance));
 
     JPH::ShapeCastSettings castSettings;
@@ -1235,41 +1213,6 @@ bool PhysicsWorld::ShapeCastImpl(const JPH::Shape &shape, const glm::vec3 &origi
     return true;
 }
 
-// ============================================================================
-// Overlap queries (Unity: Physics.OverlapSphere / OverlapBox)
-// ============================================================================
-
-std::vector<Collider *> PhysicsWorld::OverlapSphere(const glm::vec3 &center, float radius, uint32_t layerMask,
-                                                    bool queryTriggers) const
-{
-    if (!m_initialized || layerMask == 0)
-        return {};
-    JPH::SphereShape sphere(radius);
-    return OverlapShapeImpl(sphere, center, layerMask, queryTriggers);
-}
-
-std::vector<Collider *> PhysicsWorld::OverlapBox(const glm::vec3 &center, const glm::vec3 &halfExtents,
-                                                 uint32_t layerMask, bool queryTriggers) const
-{
-    if (!m_initialized || layerMask == 0)
-        return {};
-    JPH::BoxShape box(JPH::Vec3(halfExtents.x, halfExtents.y, halfExtents.z));
-    return OverlapShapeImpl(box, center, layerMask, queryTriggers);
-}
-
-// ============================================================================
-// Shape cast queries (Unity: Physics.SphereCast / BoxCast)
-// ============================================================================
-
-bool PhysicsWorld::SphereCast(const glm::vec3 &origin, float radius, const glm::vec3 &direction, float maxDistance,
-                              RaycastHit &outHit, uint32_t layerMask, bool queryTriggers) const
-{
-    if (!m_initialized || layerMask == 0 || radius < 0.0f)
-        return false;
-    JPH::SphereShape sphere(radius);
-    return ShapeCastImpl(sphere, origin, direction, maxDistance, outHit, layerMask, queryTriggers);
-}
-
 bool PhysicsWorld::BoxCast(const glm::vec3 &center, const glm::vec3 &halfExtents, const glm::vec3 &direction,
                            float maxDistance, RaycastHit &outHit, uint32_t layerMask, bool queryTriggers) const
 {
@@ -1280,7 +1223,45 @@ bool PhysicsWorld::BoxCast(const glm::vec3 &center, const glm::vec3 &halfExtents
         return false;
 
     JPH::BoxShape box(JPH::Vec3(halfExtents.x, halfExtents.y, halfExtents.z));
-    return ShapeCastImpl(box, center, direction, maxDistance, outHit, layerMask, queryTriggers);
+    glm::vec3 dir(0.0f);
+    if (!NormalizeQueryDirection(direction, maxDistance, dir)) {
+        return false;
+    }
+
+    JPH::RShapeCast shapeCast = JPH::RShapeCast::sFromWorldTransform(
+        &box, JPH::Vec3::sReplicate(1.0f), JPH::RMat44::sTranslation(JPH::RVec3(center.x, center.y, center.z)),
+        JPH::Vec3(dir.x * maxDistance, dir.y * maxDistance, dir.z * maxDistance));
+
+    JPH::ShapeCastSettings castSettings;
+    JPH::ClosestHitCollisionCollector<JPH::CastShapeCollector> collector;
+    LayerMaskObjectFilter objectFilter(layerMask);
+
+    const JPH::NarrowPhaseQuery &npQuery = m_physicsSystem->GetNarrowPhaseQuery();
+    npQuery.CastShape(shapeCast, castSettings, JPH::RVec3(center.x, center.y, center.z), collector,
+                      JPH::BroadPhaseLayerFilter(), objectFilter);
+
+    if (!collector.HadHit())
+        return false;
+
+    const auto &result = collector.mHit;
+    uint32_t bodyId = result.mBodyID2.GetIndexAndSequenceNumber();
+    if (!queryTriggers && IsBodySensor(bodyId))
+        return false;
+
+    outHit.distance = result.mFraction * maxDistance;
+    outHit.point = center + dir * outHit.distance;
+    outHit.bodyId = bodyId;
+    outHit.normal =
+        glm::vec3(-result.mPenetrationAxis.GetX(), -result.mPenetrationAxis.GetY(), -result.mPenetrationAxis.GetZ());
+    float nLen = glm::length(outHit.normal);
+    if (nLen > kEpsilon)
+        outHit.normal /= nLen;
+
+    outHit.collider = ResolveColliderForSubShape(bodyId, result.mSubShapeID2.GetValue());
+    if (outHit.collider && outHit.collider->GetGameObject())
+        outHit.gameObject = outHit.collider->GetGameObject();
+
+    return true;
 }
 
 // ============================================================================
@@ -1354,51 +1335,26 @@ void PhysicsWorld::EnsureSceneBodiesRegistered(Scene *scene)
         return;
 
     bool anyRegistered = false;
-    auto &store = PhysicsECSStore::Instance();
 
-    // Flush deferred body creation queue first (from Collider::Awake).
-    auto pendingBodies = store.ConsumePendingBodyCreations();
-    for (auto handle : pendingBodies) {
-        if (!store.IsValid(handle))
-            continue;
-        auto &data = store.GetCollider(handle);
-        auto *col = data.owner;
-        if (!col || !col->IsEnabled() || data.bodyId != 0xFFFFFFFF)
-            continue;
-        col->RegisterBody();
-        if (data.bodyId != 0xFFFFFFFF) {
-            col->AddToBroadphase();
-            anyRegistered = true;
-        }
-    }
-
-    // Walk all alive colliders — register any that still lack a body
-    // (shouldn't normally happen after the pending queue flush, but
-    // guards against edge cases).
-    auto handles = store.GetAliveColliderHandles();
+    auto handles = PhysicsECSStore::Instance().GetAliveColliderHandles();
     for (auto handle : handles) {
-        auto &data = store.GetCollider(handle);
+        auto &data = PhysicsECSStore::Instance().GetCollider(handle);
         auto *col = data.owner;
         if (!col || !col->IsEnabled())
             continue;
 
+        // If body not yet registered, register and add to broadphase
         if (col->GetBodyId() == 0xFFFFFFFF) {
             col->RegisterBody();
             col->AddToBroadphase();
             anyRegistered = true;
         }
 
+        // Sync transform
         col->SyncTransformToPhysics();
     }
 
-    // Flush deferred broadphase additions, then rebuild the BVH tree
-    // so raycasts can find newly added static bodies.
-    auto pending = store.ConsumePendingBroadphaseAdds();
-    for (auto &[bodyId, isStatic] : pending) {
-        AddBodyToBroadphase(bodyId, isStatic);
-        anyRegistered = true;
-    }
-
+    // Rebuild broad-phase tree so raycasts can find newly added static bodies
     if (anyRegistered) {
         m_physicsSystem->OptimizeBroadPhase();
     }
