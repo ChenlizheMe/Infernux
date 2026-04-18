@@ -71,33 +71,36 @@ def _runtime_installer_info_for_machine() -> tuple[str, str]:
         if machine in { "amd64", "x86_64"}:
             return (
                 "python-3.12.8-linux-x86_64.tar.gz",
-                "https://ghfast.top/https://github.com/indygreg/python-build-standalone/releases/download/20241206/cpython-3.12.8+20241206-x86_64-unknown-linux-gnu-install_only.tar.gz"
+                "https://www.python.org/ftp/python/3.12.8/Python-3.12.8.tgz"
             )
+        
     if sys.platform == "darwin":
         # macOS universal2 installer from python.org
         return (
             "python-3.12.8-macos11.pkg",
             "https://www.python.org/ftp/python/3.12.8/python-3.12.8-macos11.pkg",
         )
-    if machine in {"amd64", "x86_64"}:
+    
+    if sys.platform == "win32": 
+        if machine in {"amd64", "x86_64"}:
+            return (
+                "python-3.12.8-amd64.exe",
+                "https://www.python.org/ftp/python/3.12.8/python-3.12.8-amd64.exe",
+            )
+        if machine in {"arm64", "aarch64"}:
+            return (
+                "python-3.12.8-arm64.exe",
+                "https://www.python.org/ftp/python/3.12.8/python-3.12.8-arm64.exe",
+            )
+        if machine in {"x86", "i386", "i686"}:
+            return (
+                "python-3.12.8.exe",
+                "https://www.python.org/ftp/python/3.12.8/python-3.12.8.exe",
+            )
         return (
             "python-3.12.8-amd64.exe",
             "https://www.python.org/ftp/python/3.12.8/python-3.12.8-amd64.exe",
         )
-    if machine in {"arm64", "aarch64"}:
-        return (
-            "python-3.12.8-arm64.exe",
-            "https://www.python.org/ftp/python/3.12.8/python-3.12.8-arm64.exe",
-        )
-    if machine in {"x86", "i386", "i686"}:
-        return (
-            "python-3.12.8.exe",
-            "https://www.python.org/ftp/python/3.12.8/python-3.12.8.exe",
-        )
-    return (
-        "python-3.12.8-amd64.exe",
-        "https://www.python.org/ftp/python/3.12.8/python-3.12.8-amd64.exe",
-    )
 
 
 def _run_command(args: list[str], *, timeout: int, raise_on_error: bool = False) -> subprocess.CompletedProcess:
