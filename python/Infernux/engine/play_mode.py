@@ -279,8 +279,12 @@ class PlayModeManager(PlayModeSerializationMixin):
         # ── Step functions (closures capture self) ───────────────────
         def step_enter():
             """Save scene, rebuild from snapshot, and activate play — all in one frame."""
-            # 1. Serialize scene + init timing (do not clear undo — asset editors keep history)
+            # 1. Serialize scene + clear undo + init timing
             self._save_scene_state()
+            from Infernux.engine.undo import UndoManager
+            _undo = UndoManager.instance()
+            if _undo:
+                _undo.clear()
             self._last_frame_time = time.time()
             self._total_play_time = 0.0
             self._delta_time = 0.0
@@ -413,11 +417,12 @@ class PlayModeManager(PlayModeSerializationMixin):
                     "— editor may be in a degraded state"
                 )
 
-            # 2. Sync scene dirty baseline without nuking undo stacks
+            # 2. Clear undo and notify listeners
             from Infernux.engine.undo import UndoManager
             _undo = UndoManager.instance()
             if _undo:
-                _undo.set_scene_dirty_baseline(self._scene_dirty_backup)
+                _undo.clear(scene_is_dirty=self._scene_dirty_backup)
+                _undo.sync_dirty_state()
             else:
                 from Infernux.engine.scene_manager import SceneFileManager
                 sfm = SceneFileManager.instance()

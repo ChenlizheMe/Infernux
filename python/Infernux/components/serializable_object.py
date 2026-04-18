@@ -267,7 +267,8 @@ def _serialize_so_value(value: Any) -> Any:
         return {"__enum__": type(value).__qualname__, "name": value.name}
 
     # GameObjectRef / PrefabRef / MaterialRef
-    from .ref_wrappers import GameObjectRef, MaterialRef, PrefabRef
+    from .ref_wrappers import GameObjectRef, PrefabRef
+    from Infernux.core.asset_ref import MaterialRef
     if isinstance(value, GameObjectRef):
         return {"__game_object__": value.persistent_id}
     if isinstance(value, PrefabRef):

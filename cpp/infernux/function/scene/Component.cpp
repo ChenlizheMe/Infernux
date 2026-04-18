@@ -244,7 +244,6 @@ bool Component::Deserialize(const std::string &jsonStr)
         if (j.contains("component_id")) {
             SetComponentID(j["component_id"].get<uint64_t>());
         }
-        // instance_guid is now derived from component_id; ignore legacy string values
         return true;
     } catch (const std::exception &e) {
         return false;

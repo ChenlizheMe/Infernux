@@ -37,6 +37,7 @@ from .builtin import (
     AudioListener,
     SpriteRenderer,
 )
+from Infernux.core.asset_ref import MaterialRef
 from Infernux.lib import Transform, Component
 from .serializable_object import SerializableObject
 from .serialized_field import (
@@ -51,7 +52,7 @@ from .serialized_field import (
     get_field_value,
     set_field_value,
 )
-from .ref_wrappers import GameObjectRef, MaterialRef, ComponentRef, PrefabRef
+from .ref_wrappers import GameObjectRef, ComponentRef, PrefabRef
 from .script_loader import (
     load_component_from_file,
     load_all_components_from_file,

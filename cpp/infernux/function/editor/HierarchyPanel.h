@@ -52,10 +52,7 @@ class HierarchyPanel : public EditorPanel
     void ExpandToObject(uint64_t objId);
 
     /// Allow external panels (UIEditorPanel) to queue an auto-expand.
-    void SetPendingExpandId(uint64_t id)
-    {
-        m_pendingExpandId = id;
-    }
+    void SetPendingExpandId(uint64_t id);
 
     // ── Selection callbacks (wrap Python SelectionManager) ───────────
 
@@ -219,10 +216,6 @@ class HierarchyPanel : public EditorPanel
     bool m_pendingCtrl = false;
     bool m_pendingShift = false;
 
-    // ── Pending auto-expand ──────────────────────────────────────────
-    uint64_t m_pendingExpandId = 0;
-    std::unordered_set<uint64_t> m_pendingExpandIds;
-
     // ── Inline rename ────────────────────────────────────────────────
     uint64_t m_renameId = 0;
     char m_renameBuf[256] = {};
@@ -267,8 +260,10 @@ class HierarchyPanel : public EditorPanel
     [[nodiscard]] bool IsInCanvasTree(GameObject *obj) const;
     void RefreshCanvasRootIds(const std::vector<GameObject *> &roots);
 
+    /// Ensure a hierarchy node is expanded on the next flat-list render.
+    void EnsureNodeExpanded(uint64_t id);
+
     // Tree rendering
-    void RenderGameObjectTree(InxGUIContext *ctx, GameObject *obj);
     void RenderRenameInput(InxGUIContext *ctx, GameObject *obj);
     void RenderItemContextMenu(InxGUIContext *ctx, GameObject *obj);
     void RenderReorderSep(InxGUIContext *ctx, const char *sepId, std::function<void(uint64_t)> onDrop);

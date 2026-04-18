@@ -510,7 +510,7 @@ class InxVkCoreModular
     }
 
     /// @brief Refresh a material's pipeline using its vertex and fragment shader names.
-    bool RefreshMaterialPipeline(std::shared_ptr<InxMaterial> material, const std::string &vertShaderName,
+    bool RefreshMaterialPipeline(InxMaterial *material, const std::string &vertShaderName,
                                  const std::string &fragShaderName);
 
     /// @brief Render a material preview sphere using real GPU shaders.
@@ -523,7 +523,7 @@ class InxVkCoreModular
 
     /// @brief Create a per-material shadow pipeline using the material's shadow
     ///        vertex and fragment variants.
-    void CreateMaterialShadowPipeline(std::shared_ptr<InxMaterial> material, const std::string &vertShaderName,
+    void CreateMaterialShadowPipeline(InxMaterial *material, const std::string &vertShaderName,
                                       const std::string &fragShaderName);
 
     /// @brief Initialize material system (default material, pipelines)

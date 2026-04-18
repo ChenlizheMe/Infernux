@@ -167,9 +167,6 @@ def load_all_components_from_file(file_path: str) -> List[Type[InxComponent]]:
     module_aliases = get_script_module_aliases(file_path)
     primary_module_name = module_aliases[0] if module_aliases else _unique_module_name_for_path(file_path)
     modules_to_clear = list(module_aliases)
-    legacy_unique_name = _unique_module_name_for_path(file_path)
-    if legacy_unique_name not in modules_to_clear:
-        modules_to_clear.append(legacy_unique_name)
     _clear_loaded_script_modules(modules_to_clear)
 
     importlib.invalidate_caches()

@@ -152,7 +152,7 @@ class Infernux
     /// @brief Refresh a material's pipeline by reloading shaders
     /// @param material The material to refresh
     /// @return true if successful, false otherwise
-    bool RefreshMaterialPipeline(std::shared_ptr<InxMaterial> material);
+    bool RefreshMaterialPipeline(InxMaterial *material);
 
     /// @brief Reload a shader from file (hot-reload support)
     /// @param shaderPath The path to the shader file (.vert or .frag)

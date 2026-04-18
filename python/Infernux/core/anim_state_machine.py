@@ -16,72 +16,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
-
-
-@dataclass
-class AnimParameter:
-    """Declared variable for transition conditions (matches runtime SpiritAnimator parameters)."""
-
-    name: str = "NewVar"
-    kind: str = "float"  # bool, float, int
-    default_bool: bool = False
-    default_float: float = 0.0
-    default_int: int = 0
-
-    def to_dict(self) -> dict:
-        out: Dict[str, Any] = {"name": self.name, "kind": self.kind}
-        if self.kind == "bool":
-            out["default_bool"] = self.default_bool
-        elif self.kind == "float":
-            out["default_float"] = self.default_float
-        elif self.kind == "int":
-            out["default_int"] = self.default_int
-        return out
-
-    @classmethod
-    def from_dict(cls, d: dict) -> "AnimParameter":
-        raw_kind = str(d.get("kind", d.get("param_type", "float")))
-        if raw_kind == "trigger":
-            kind = "bool"
-        else:
-            kind = raw_kind
-
-        def _as_float(v: Any, fallback: float) -> float:
-            try:
-                return float(v)
-            except (TypeError, ValueError):
-                return fallback
-
-        def _as_int(v: Any, fallback: int) -> int:
-            try:
-                return int(v)
-            except (TypeError, ValueError):
-                return fallback
-
-        legacy_default = d.get("default")
-
-        bool_v = d.get("default_bool", None)
-        if bool_v is None and isinstance(legacy_default, bool):
-            bool_v = legacy_default
-        if bool_v is None:
-            bool_v = False
-
-        float_v = d.get("default_float", None)
-        if float_v is None and isinstance(legacy_default, (int, float)) and not isinstance(legacy_default, bool):
-            float_v = legacy_default
-
-        int_v = d.get("default_int", None)
-        if int_v is None and isinstance(legacy_default, int) and not isinstance(legacy_default, bool):
-            int_v = legacy_default
-
-        return cls(
-            name=str(d.get("name", "NewVar")),
-            kind=kind,
-            default_bool=bool(bool_v),
-            default_float=_as_float(float_v, 0.0),
-            default_int=_as_int(int_v, 0),
-        )
+from typing import Any, Dict, List, Optional
 
 
 @dataclass
@@ -116,58 +51,31 @@ class AnimState:
     clip_guid: str = ""       # GUID of the referenced .animclip2d / .animclip3d
     clip_path: str = ""       # fallback path (editor-only hint)
     speed: float = 1.0
-    # 0..1: minimum normalized clip progress before outgoing transitions are considered.
-    # 1.0 = must reach end of current clip segment (default; matches "play full clip then transition").
-    exit_time_normalized: float = 1.0
     loop: bool = True         # whether to loop the clip in this state
-    # If True, SpiritAnimator.play(state) restarts the clip when already in that state.
-    # If False, play() is a no-op while that state is already playing (e.g. safe to call every frame).
-    restart_same_clip: bool = False
     transitions: List[AnimTransition] = field(default_factory=list)
     # Visual position in the node editor (editor-only, persisted for convenience)
     position: List[float] = field(default_factory=lambda: [0.0, 0.0])
-    # Optional RGBA for graph node header (editor-only); None = type default
-    header_color: Optional[Tuple[float, float, float, float]] = None
 
     def to_dict(self) -> dict:
-        d: Dict[str, Any] = {
+        return {
             "name": self.name,
             "clip_guid": self.clip_guid,
-            "clip_path": self.clip_path,
             "speed": self.speed,
-            "exit_time_normalized": self.exit_time_normalized,
             "loop": self.loop,
-            "restart_same_clip": self.restart_same_clip,
             "transitions": [t.to_dict() for t in self.transitions],
             "position": list(self.position),
         }
-        if self.header_color is not None:
-            d["header_color"] = [float(x) for x in self.header_color]
-        return d
 
     @classmethod
     def from_dict(cls, d: dict) -> AnimState:
-        hc_raw = d.get("header_color")
-        header_color: Optional[Tuple[float, float, float, float]] = None
-        if isinstance(hc_raw, (list, tuple)) and len(hc_raw) >= 3:
-            hr = max(0.0, min(1.0, float(hc_raw[0])))
-            hg = max(0.0, min(1.0, float(hc_raw[1])))
-            hb = max(0.0, min(1.0, float(hc_raw[2])))
-            ha = max(0.0, min(1.0, float(hc_raw[3]))) if len(hc_raw) > 3 else 1.0
-            header_color = (hr, hg, hb, ha)
         return cls(
             name=str(d.get("name", "New State")),
             clip_guid=str(d.get("clip_guid", "")),
             clip_path=str(d.get("clip_path", "")),
             speed=float(d.get("speed", 1.0)),
-            exit_time_normalized=max(
-                0.0, min(1.0, float(d.get("exit_time_normalized", 1.0)))
-            ),
             loop=bool(d.get("loop", True)),
-            restart_same_clip=bool(d.get("restart_same_clip", False)),
             transitions=[AnimTransition.from_dict(t) for t in d.get("transitions", [])],
             position=list(d.get("position", [0.0, 0.0])),
-            header_color=header_color,
         )
 
 
@@ -179,7 +87,6 @@ class AnimStateMachine:
     default_state: str = ""                          # name of entry state
     mode: str = "2d"                                 # "2d" or "3d"
     states: List[AnimState] = field(default_factory=list)
-    parameters: List[AnimParameter] = field(default_factory=list)
     file_path: str = field(default="", repr=False, compare=False)
 
     # ── Serialization ─────────────────────────────────────────────────
@@ -190,23 +97,15 @@ class AnimStateMachine:
             "default_state": self.default_state,
             "mode": self.mode,
             "states": [s.to_dict() for s in self.states],
-            "parameters": [p.to_dict() for p in self.parameters],
         }
 
     @classmethod
     def from_dict(cls, d: dict) -> AnimStateMachine:
-        raw_params = d.get("parameters") or []
-        params: List[AnimParameter] = []
-        if isinstance(raw_params, list):
-            for item in raw_params:
-                if isinstance(item, dict):
-                    params.append(AnimParameter.from_dict(item))
         return cls(
             name=str(d.get("name", "New State Machine")),
             default_state=str(d.get("default_state", "")),
             mode=str(d.get("mode", "2d")),
             states=[AnimState.from_dict(s) for s in d.get("states", [])],
-            parameters=params,
         )
 
     def copy(self) -> AnimStateMachine:

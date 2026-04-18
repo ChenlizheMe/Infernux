@@ -527,12 +527,13 @@ void InxVkCoreModular::ReinitializeMaterialPipelines(VkSampleCountFlagBits newSa
     m_gpuMaterialPreview.reset();
 }
 
-bool InxVkCoreModular::RefreshMaterialPipeline(std::shared_ptr<InxMaterial> material, const std::string &vertShaderName,
+bool InxVkCoreModular::RefreshMaterialPipeline(InxMaterial *material, const std::string &vertShaderName,
                                                const std::string &fragShaderName)
 {
     if (!material) {
         return false;
     }
+    const std::shared_ptr<InxMaterial> matView(material, [](InxMaterial *) {});
 
     // Apply shader render-state annotations to the material before pipeline creation.
     // Fragment shader annotations take priority (they define the surface behaviour).
@@ -552,7 +553,7 @@ bool InxVkCoreModular::RefreshMaterialPipeline(std::shared_ptr<InxMaterial> mate
         VkBuffer lightingUbo = m_lightingUboBuffers.empty() ? VK_NULL_HANDLE : m_lightingUboBuffers[0]->GetBuffer();
         VkDeviceSize lightingUboSize = sizeof(ShaderLightingUBO);
         auto *renderData = m_materialPipelineManager.GetOrCreateRenderDataWithReflection(
-            material, *vertCode, *fragCode, material->GetShaderId(), sceneUbo, sceneUboSize, lightingUbo,
+            matView, *vertCode, *fragCode, material->GetShaderId(), sceneUbo, sceneUboSize, lightingUbo,
             lightingUboSize);
 
         bool forwardOk = renderData && renderData->isValid;
@@ -820,10 +821,12 @@ VkShaderModule InxVkCoreModular::GetShaderModule(const std::string &name, const 
 // Per-material shadow pipeline creation
 // ============================================================================
 
-void InxVkCoreModular::CreateMaterialShadowPipeline(std::shared_ptr<InxMaterial> material,
-                                                    const std::string &vertShaderName,
+void InxVkCoreModular::CreateMaterialShadowPipeline(InxMaterial *material, const std::string &vertShaderName,
                                                     const std::string &fragShaderName)
 {
+    if (!material)
+        return;
+
     // Shared shadow resources must be ready
     if (m_shadowCompatRenderPass == VK_NULL_HANDLE || m_shadowPipelineLayout == VK_NULL_HANDLE)
         return;
@@ -893,7 +896,7 @@ void InxVkCoreModular::CreateMaterialShadowPipeline(std::shared_ptr<InxMaterial>
         // We must write ALL declared bindings to avoid validation errors
         // (Vulkan requires every binding to be updated unless PARTIALLY_BOUND).
         static constexpr uint32_t kMaxShadowTextures = 8;
-        bufferInfos.reserve(4);                 // vtx UBO + frag UBO + up to 2 dummies
+        bufferInfos.reserve(4);                // vtx UBO + frag UBO + up to 2 dummies
         imageInfos.reserve(kMaxShadowTextures); // up to 8 texture slots
 
         // Collect sorted texture bindings for alpha-clip (needed for both
@@ -1211,7 +1214,7 @@ bool InxVkCoreModular::RenderMaterialPreviewGPU(std::shared_ptr<InxMaterial> mat
         const std::string &fragName = material->GetFragShaderName();
         if (fragName.empty())
             return false;
-        if (!RefreshMaterialPipeline(material, vertName, fragName))
+        if (!RefreshMaterialPipeline(material.get(), vertName, fragName))
             return false;
     }
 

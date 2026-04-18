@@ -48,7 +48,7 @@ def _make_list_default_element(metadata, element_type):
         from Infernux.components.ref_wrappers import GameObjectRef
         return GameObjectRef(persistent_id=0)
     if element_type == FieldType.MATERIAL:
-        from Infernux.components.ref_wrappers import MaterialRef
+        from Infernux.core.asset_ref import MaterialRef
         return MaterialRef(guid="")
     if element_type == FieldType.TEXTURE:
         from Infernux.core.asset_ref import TextureRef

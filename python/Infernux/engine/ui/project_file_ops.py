@@ -98,9 +98,7 @@ ANIMCLIP_TEMPLATE = '''{
 ANIMFSM_TEMPLATE = '''{
   "name": "{fsm_name}",
   "default_state": "",
-  "mode": "2d",
-  "states": [],
-  "parameters": []
+  "states": []
 }
 '''
 

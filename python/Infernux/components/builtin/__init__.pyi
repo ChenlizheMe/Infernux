@@ -16,6 +16,7 @@ from .rigidbody import (
 )
 from .audio_source import AudioSource as AudioSource
 from .audio_listener import AudioListener as AudioListener
+from .sprite_renderer import SpriteRenderer as SpriteRenderer
 
 __all__ = [
     "Light",
@@ -32,4 +33,5 @@ __all__ = [
     "RigidbodyInterpolation",
     "AudioSource",
     "AudioListener",
+    "SpriteRenderer",
 ]

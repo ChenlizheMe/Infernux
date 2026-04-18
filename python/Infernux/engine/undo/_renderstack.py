@@ -1,4 +1,4 @@
-"""RenderStack snapshot/restore and backward-compatibility command shims."""
+"""RenderStack snapshot/restore and undo commands for the render pipeline."""
 
 from __future__ import annotations
 
@@ -106,7 +106,7 @@ def restore_renderstack(stack: Any, json_str: str) -> None:
     stack.invalidate_graph()
 
 
-# -- Backward-compat command shims --
+# -- RenderStack undo commands --
 
 class RenderStackFieldCommand(SetPropertyCommand):
     def __init__(self, stack: Any, target: Any, field_name: str,

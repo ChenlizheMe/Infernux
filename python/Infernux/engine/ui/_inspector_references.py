@@ -101,7 +101,7 @@ def _create_reference_value_from_payload(element_type, payload, required_compone
 
     if element_type == FieldType.MATERIAL:
         from Infernux.core.material import Material
-        from Infernux.components.ref_wrappers import MaterialRef
+        from Infernux.core.asset_ref import MaterialRef
 
         mat = Material.load(file_path)
         if mat is None:

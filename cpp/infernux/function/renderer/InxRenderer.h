@@ -145,7 +145,7 @@ class InxRenderer
     }
 
     // Material pipeline refresh - call this after modifying material shader paths
-    bool RefreshMaterialPipeline(std::shared_ptr<InxMaterial> material);
+    bool RefreshMaterialPipeline(InxMaterial *material);
 
     /// @brief Render a material preview sphere using the material's real GPU pipeline.
     /// @return true if GPU rendering succeeded and outPixels was filled.

@@ -19,8 +19,10 @@ from .builtin import (
     RigidbodyInterpolation as RigidbodyInterpolation,
     AudioSource as AudioSource,
     AudioListener as AudioListener,
+    SpriteRenderer as SpriteRenderer,
 )
-from Infernux.lib._Infernux import Transform as Transform, Component as Component
+from Infernux.core.asset_ref import MaterialRef as MaterialRef
+from Infernux.lib import Transform as Transform, Component as Component
 from .serializable_object import SerializableObject as SerializableObject
 from .serialized_field import (
     serialized_field as serialized_field,
@@ -36,13 +38,8 @@ from .serialized_field import (
 )
 from .ref_wrappers import (
     GameObjectRef as GameObjectRef,
-    MaterialRef as MaterialRef,
     ComponentRef as ComponentRef,
     PrefabRef as PrefabRef,
-)
-from .inspector import (
-    ComponentInspector as ComponentInspector,
-    InspectorData as InspectorData,
 )
 from .script_loader import (
     load_component_from_file as load_component_from_file,
@@ -71,6 +68,7 @@ from .decorators import (
     HelpURL as HelpURL,
     Icon as Icon,
 )
+from .animator2d import SpiritAnimator as SpiritAnimator
 
 __all__ = [
     "InxComponent",
@@ -90,6 +88,7 @@ __all__ = [
     "RigidbodyInterpolation",
     "AudioSource",
     "AudioListener",
+    "SpriteRenderer",
     "serialized_field",
     "int_field",
     "hide_field",
@@ -105,8 +104,6 @@ __all__ = [
     "get_serialized_fields",
     "get_field_value",
     "set_field_value",
-    "ComponentInspector",
-    "InspectorData",
     "load_component_from_file",
     "load_all_components_from_file",
     "create_component_instance",
@@ -128,4 +125,5 @@ __all__ = [
     "AddComponentMenu",
     "HelpURL",
     "Icon",
+    "SpiritAnimator",
 ]

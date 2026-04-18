@@ -6,7 +6,6 @@ Handles:
 - Background grid (scales with zoom)
 - Node rendering (header + body + pins) with shadows
 - Curved connection lines (cubic bezier) with arrow heads
-- Camera as graph-space view centre + zoom; pan is derived from the real canvas item rect
 - Canvas panning (middle-mouse drag)
 - Scroll-wheel zoom (centred on cursor)
 - Node dragging
@@ -33,11 +32,59 @@ from Infernux.core.node_graph import (
     PinDef,
     PinKind,
 )
-from Infernux.engine.ui.imgui_keys import KEY_C, KEY_DELETE, KEY_V, MOD_CTRL
-from Infernux.engine.ui.theme import Theme
 
 if TYPE_CHECKING:
     from Infernux.lib import InxGUIContext
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Visual constants (at zoom = 1.0)
+# ═══════════════════════════════════════════════════════════════════════════
+
+_GRID_SIZE = 20.0
+_GRID_COLOR = (0.14, 0.14, 0.16, 1.0)
+_GRID_COLOR2 = (0.19, 0.19, 0.22, 1.0)
+
+_NODE_ROUNDING = 8.0
+_NODE_BORDER_THICKNESS = 1.2
+_NODE_HEADER_H = 28.0
+_NODE_PIN_ROW_H = 24.0
+_NODE_PAD_X = 10.0
+_NODE_BODY_MIN_H = 8.0
+_PIN_RADIUS = 5.5
+_PIN_HIT_RADIUS = 12.0
+
+_LINK_THICKNESS = 2.5
+_LINK_SEGMENTS = 28
+
+_BG_COLOR = (0.10, 0.10, 0.11, 1.0)
+_NODE_BODY_COLOR = (0.18, 0.18, 0.20, 1.0)
+_NODE_SHADOW_COLOR = (0.0, 0.0, 0.0, 0.35)
+_NODE_SELECTED_BORDER = (0.95, 0.70, 0.15, 1.0)
+_NODE_BORDER_COLOR = (0.30, 0.30, 0.34, 1.0)
+_PIN_HOVER_COLOR = (1.0, 1.0, 1.0, 0.7)
+
+_LINK_DEFAULT_COLOR = (0.60, 0.60, 0.62, 0.90)
+_LINK_SELECTED_COLOR = (0.95, 0.70, 0.15, 1.0)
+_LINK_HOVER_COLOR = (0.80, 0.80, 0.85, 1.0)
+_PENDING_LINK_COLOR = (1.0, 1.0, 1.0, 0.45)
+
+_TEXT_COLOR = (0.92, 0.92, 0.92, 1.0)
+_TEXT_DIM_COLOR = (0.55, 0.55, 0.58, 1.0)
+_TEXT_BODY_COLOR = (0.42, 0.42, 0.45, 1.0)
+
+_ZOOM_MIN = 0.3
+_ZOOM_MAX = 2.5
+_ZOOM_SPEED = 0.08
+
+_MINIMAP_SIZE = 120.0
+_MINIMAP_PAD = 8.0
+_MINIMAP_BG = (0.08, 0.08, 0.10, 0.7)
+_MINIMAP_NODE = (0.45, 0.45, 0.50, 0.6)
+_MINIMAP_VIEW = (0.95, 0.70, 0.15, 0.5)
+
+# ImGuiKey constant for Delete
+_KEY_DELETE = 522
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -45,11 +92,8 @@ if TYPE_CHECKING:
 # ═══════════════════════════════════════════════════════════════════════════
 
 def _bezier_points(
-    x1: float, y1: float, x2: float, y2: float,
-    segments: int = None,
+    x1: float, y1: float, x2: float, y2: float, segments: int = _LINK_SEGMENTS
 ) -> List[Tuple[float, float]]:
-    if segments is None:
-        segments = Theme.NODE_GRAPH_LINK_SEGMENTS
     dx = abs(x2 - x1) * 0.5
     dx = max(dx, 30.0)
     cx1, cy1 = x1 + dx, y1
@@ -62,26 +106,6 @@ def _bezier_points(
         py = it**3 * y1 + 3 * it**2 * t * cy1 + 3 * it * t**2 * cy2 + t**3 * y2
         pts.append((px, py))
     return pts
-
-
-def _resolve_node_header_rgba(node: GraphNode, typedef: NodeTypeDef) -> Tuple[float, float, float, float]:
-    """Return header tint: ``node.data[''header_color'']`` if valid, else ``typedef.header_color``."""
-    raw = node.data.get("header_color")
-    fb = typedef.header_color
-    if isinstance(fb, (list, tuple)) and len(fb) >= 3:
-        fr = float(fb[0])
-        fg = float(fb[1])
-        fb_ = float(fb[2])
-        fa = float(fb[3]) if len(fb) > 3 else 1.0
-    else:
-        fr, fg, fb_, fa = 0.3, 0.3, 0.3, 1.0
-    if not isinstance(raw, (list, tuple)) or len(raw) < 3:
-        return fr, fg, fb_, max(0.0, min(1.0, fa))
-    r = max(0.0, min(1.0, float(raw[0])))
-    g = max(0.0, min(1.0, float(raw[1])))
-    b = max(0.0, min(1.0, float(raw[2])))
-    a = max(0.0, min(1.0, float(raw[3]))) if len(raw) > 3 else 1.0
-    return r, g, b, a
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -117,17 +141,10 @@ class NodeGraphView:
     def __init__(self) -> None:
         self.graph: Optional[NodeGraph] = None
 
-        # Camera: (cam_center_gx, cam_center_gy) is the graph point kept at the
-        # canvas item centre; pan_x/y are derived each frame from origin + item rect.
-        self.cam_center_gx: float = 0.0
-        self.cam_center_gy: float = 0.0
-        self.zoom: float = 1.0
+        # Camera
         self.pan_x: float = 50.0
         self.pan_y: float = 50.0
-        self._cam_center_initialized: bool = False
-        self._pending_camera: Optional[Tuple[float, float, float]] = None
-        self._viewport_icx: float = 0.0
-        self._viewport_icy: float = 0.0
+        self.zoom: float = 1.0
 
         # Selection
         self.selected_nodes: List[str] = []
@@ -153,14 +170,7 @@ class NodeGraphView:
         self._origin_y: float = 0.0
         self._canvas_w: float = 0.0
         self._canvas_h: float = 0.0
-        # Last non-zero graph child size (for persistence when save_state runs outside render)
-        self._last_graph_canvas_w: float = 0.0
-        self._last_graph_canvas_h: float = 0.0
-        # Screen rect of ``##canvas_bg`` (updated each frame after ``invisible_button``)
-        self._canvas_item_min_x: float = 0.0
-        self._canvas_item_max_x: float = 0.0
-        self._canvas_item_min_y: float = 0.0
-        self._canvas_item_max_y: float = 0.0
+
         # Cached layouts
         self._layouts: Dict[str, _NodeLayout] = {}
 
@@ -176,88 +186,15 @@ class NodeGraphView:
         self.on_nodes_deleted: Optional[Callable[[List[str]], None]] = None
         self.on_node_add_request: Optional[Callable[[str, float, float], None]] = None
         self.on_node_selected: Optional[Callable[[str], None]] = None
-        # Called immediately before user-driven selection changes (click), so editors can snapshot undo.
-        self.on_before_selection_change: Optional[Callable[[], None]] = None
         # Drop handler: (payload_type, payload_str, graph_x, graph_y)
         self.on_canvas_drop: Optional[Callable[[str, str, float, float], None]] = None
-        # If set, called on left-click on a node (after pins); return True to skip drag.
-        self.on_node_primary_click: Optional[Callable[[str, float, float], bool]] = None
-        self.on_node_drag_start: Optional[Callable[[str], None]] = None
-        self.on_node_drag_end: Optional[Callable[[str], None]] = None
-        self.on_copy: Optional[Callable[[], None]] = None
-        self.on_paste: Optional[Callable[[], None]] = None
-        # Header color swatch popup (see ``NodeTypeDef.header_color_swatch``).
-        self.on_node_header_color_begin: Optional[Callable[[str], None]] = None
-        self.on_node_header_color_end: Optional[Callable[[str], None]] = None
-        self.on_node_header_color_changed: Optional[Callable[[str], None]] = None
 
         self._body_renderers: Dict[str, Callable] = {}
-        self._hdr_color_popup_uid: str = ""
-        self._hdr_popup_session_open: bool = False
-
-    def _clamp_zoom(self, z: float) -> float:
-        return max(Theme.NODE_GRAPH_ZOOM_MIN, min(Theme.NODE_GRAPH_ZOOM_MAX, float(z)))
-
-    def reset_camera_defaults(self) -> None:
-        """Reset camera for a blank graph (e.g. editor New)."""
-        self.cam_center_gx = 0.0
-        self.cam_center_gy = 0.0
-        self.zoom = 1.0
-        self.pan_x = 50.0
-        self.pan_y = 50.0
-        self._cam_center_initialized = False
-        self._pending_camera = None
-
-    def schedule_camera(self, gx: float, gy: float, zoom: float) -> None:
-        """Queue graph-space centre + zoom; applied on next render when layout anchors exist."""
-        self._pending_camera = (float(gx), float(gy), self._clamp_zoom(zoom))
-
-    def set_legacy_pan_zoom(self, pan_x: float, pan_y: float, zoom: float) -> None:
-        """Restore only legacy pan/zoom; graph centre is inferred on first layout."""
-        self.pan_x = float(pan_x)
-        self.pan_y = float(pan_y)
-        self.zoom = self._clamp_zoom(zoom)
-        self._cam_center_initialized = False
-        self._pending_camera = None
-
-    def _apply_pending_camera(self) -> None:
-        if self._pending_camera is None:
-            return
-        gx, gy, z = self._pending_camera
-        self._pending_camera = None
-        self.cam_center_gx = gx
-        self.cam_center_gy = gy
-        self.zoom = z
-        self._cam_center_initialized = True
-
-    def _sync_pan_from_camera_anchor(self) -> None:
-        if self._canvas_item_max_x <= self._canvas_item_min_x:
-            return
-        icx = (self._canvas_item_min_x + self._canvas_item_max_x) * 0.5
-        icy = (self._canvas_item_min_y + self._canvas_item_max_y) * 0.5
-        self._viewport_icx = icx
-        self._viewport_icy = icy
-        z = self._clamp_zoom(self.zoom)
-        self.zoom = z
-        if not self._cam_center_initialized:
-            self.cam_center_gx = (icx - self._origin_x - self.pan_x) / z
-            self.cam_center_gy = (icy - self._origin_y - self.pan_y) / z
-            self._cam_center_initialized = True
-        self.pan_x = icx - self._origin_x - self.cam_center_gx * z
-        self.pan_y = icy - self._origin_y - self.cam_center_gy * z
-
-    def _notify_before_selection_change(self) -> None:
-        if self.on_before_selection_change:
-            self.on_before_selection_change()
 
     # ── Public API ────────────────────────────────────────────────────
 
     def register_body_renderer(self, type_id: str, renderer: Callable) -> None:
         self._body_renderers[type_id] = renderer
-
-    def get_layout(self, uid: str) -> Optional[_NodeLayout]:
-        """Return cached screen-space layout for *uid*, or None."""
-        return self._layouts.get(uid)
 
     def screen_to_graph(self, sx: float, sy: float) -> Tuple[float, float]:
         gx = (sx - self._origin_x - self.pan_x) / self.zoom
@@ -278,49 +215,8 @@ class NodeGraphView:
         max_y = max(n.pos_y for n in self.graph.nodes)
         cx = (min_x + max_x) * 0.5
         cy = (min_y + max_y) * 0.5
-        self.cam_center_gx = cx
-        self.cam_center_gy = cy
-        self._cam_center_initialized = True
-        if self._canvas_item_max_x > self._canvas_item_min_x:
-            self._sync_pan_from_camera_anchor()
-        else:
-            z = self._clamp_zoom(self.zoom)
-            self.zoom = z
-            self._cam_center_initialized = True
-            self.pan_x = self._canvas_w * 0.5 - cx * z
-            self.pan_y = self._canvas_h * 0.5 - cy * z
-
-    def queue_camera_restore_graph_center(
-        self,
-        *,
-        center_gx: float,
-        center_gy: float,
-        zoom: float,
-    ) -> None:
-        """Restore camera from graph-space viewport centre (stable across dock / resize)."""
-        self.schedule_camera(center_gx, center_gy, zoom)
-
-    def queue_camera_restore(
-        self,
-        *,
-        pan_x: float,
-        pan_y: float,
-        zoom: float,
-        ref_w: float,
-        ref_h: float,
-    ) -> None:
-        """Legacy: convert saved pan + reference child size to graph-space centre."""
-        rw = float(ref_w)
-        rh = float(ref_h)
-        px = float(pan_x)
-        py = float(pan_y)
-        z = self._clamp_zoom(zoom)
-        if rw >= 1.0 and rh >= 1.0:
-            gx = (rw * 0.5 - px) / z
-            gy = (rh * 0.5 - py) / z
-            self.schedule_camera(gx, gy, z)
-        else:
-            self.set_legacy_pan_zoom(px, py, z)
+        self.pan_x = self._canvas_w * 0.5 - cx * self.zoom
+        self.pan_y = self._canvas_h * 0.5 - cy * self.zoom
 
     # ── Main render ───────────────────────────────────────────────────
 
@@ -335,9 +231,6 @@ class NodeGraphView:
 
         self._canvas_w = canvas_w
         self._canvas_h = canvas_h
-        if canvas_w >= 1.0 and canvas_h >= 1.0:
-            self._last_graph_canvas_w = canvas_w
-            self._last_graph_canvas_h = canvas_h
 
         if not ctx.begin_child("##node_graph_canvas", canvas_w, canvas_h, False):
             ctx.end_child()
@@ -350,12 +243,6 @@ class NodeGraphView:
         ctx.set_cursor_pos_x(0)
         ctx.set_cursor_pos_y(0)
         ctx.invisible_button("##canvas_bg", canvas_w, canvas_h)
-        self._canvas_item_min_x = ctx.get_item_rect_min_x()
-        self._canvas_item_max_x = ctx.get_item_rect_max_x()
-        self._canvas_item_min_y = ctx.get_item_rect_min_y()
-        self._canvas_item_max_y = ctx.get_item_rect_max_y()
-        self._apply_pending_camera()
-        self._sync_pan_from_camera_anchor()
         canvas_hovered = ctx.is_item_hovered()
 
         # Clipping
@@ -366,7 +253,7 @@ class NodeGraphView:
         ctx.push_draw_list_clip_rect(clip_x0, clip_y0, clip_x1, clip_y1)
 
         # Background
-        ctx.draw_filled_rect(clip_x0, clip_y0, clip_x1, clip_y1, *Theme.NODE_GRAPH_BG)
+        ctx.draw_filled_rect(clip_x0, clip_y0, clip_x1, clip_y1, *_BG_COLOR)
 
         # Grid
         self._draw_grid(ctx, clip_x0, clip_y0, clip_x1, clip_y1)
@@ -399,17 +286,15 @@ class NodeGraphView:
 
         # Zoom indicator
         if abs(self.zoom - 1.0) > 0.01:
-            zt = Theme.TEXT_DIM
             ctx.draw_text(
                 clip_x0 + 8, clip_y1 - 22,
-                f"{self.zoom * 100:.0f}%", zt[0], zt[1], zt[2], 0.8, 0.0,
+                f"{self.zoom * 100:.0f}%", 0.55, 0.55, 0.58, 0.8, 0.0,
             )
 
         ctx.pop_draw_list_clip_rect()
 
         # Handle interaction
         self._handle_interaction(ctx, canvas_hovered, canvas_w, canvas_h)
-        self._draw_header_color_popup(ctx)
 
         # Drop targets on the canvas
         if ctx.begin_drag_drop_target():
@@ -433,15 +318,14 @@ class NodeGraphView:
     # ── Grid ──────────────────────────────────────────────────────────
 
     def _draw_grid(self, ctx, x0, y0, x1, y1):
-        step = Theme.NODE_GRAPH_GRID_SIZE * self.zoom
+        step = _GRID_SIZE * self.zoom
         if step < 4.0:
-            step = Theme.NODE_GRAPH_GRID_SIZE * 5 * self.zoom
+            step = _GRID_SIZE * 5 * self.zoom
         ox = self.pan_x % step
         oy = self.pan_y % step
 
         alpha = min(1.0, self.zoom)
-        gc = Theme.NODE_GRAPH_GRID_COLOR
-        col = (gc[0], gc[1], gc[2], gc[3] * alpha)
+        col = (_GRID_COLOR[0], _GRID_COLOR[1], _GRID_COLOR[2], _GRID_COLOR[3] * alpha)
         x = x0 + ox
         while x < x1:
             ctx.draw_line(x, y0, x, y1, *col, 0.5)
@@ -456,11 +340,11 @@ class NodeGraphView:
         big_oy = self.pan_y % big_step
         x = x0 + big_ox
         while x < x1:
-            ctx.draw_line(x, y0, x, y1, *Theme.NODE_GRAPH_GRID_COLOR_ALT, 1.0)
+            ctx.draw_line(x, y0, x, y1, *_GRID_COLOR2, 1.0)
             x += big_step
         y = y0 + big_oy
         while y < y1:
-            ctx.draw_line(x0, y, x1, y, *Theme.NODE_GRAPH_GRID_COLOR_ALT, 1.0)
+            ctx.draw_line(x0, y, x1, y, *_GRID_COLOR2, 1.0)
             y += big_step
 
     # ── Layout ────────────────────────────────────────────────────────
@@ -482,21 +366,15 @@ class NodeGraphView:
             max_pins = max(len(in_pins), len(out_pins), 1)
 
             w = typedef.min_width * z
-            extra_pad = getattr(typedef, "body_bottom_pad", 0.0) or 0.0
-            h = (
-                Theme.NODE_GRAPH_NODE_HEADER_H
-                + max_pins * Theme.NODE_GRAPH_NODE_PIN_ROW_H
-                + Theme.NODE_GRAPH_NODE_BODY_MIN_H
-                + extra_pad
-            ) * z
+            h = (_NODE_HEADER_H + max_pins * _NODE_PIN_ROW_H + _NODE_BODY_MIN_H) * z
 
             sx = self._origin_x + node.pos_x * z + self.pan_x
             sy = self._origin_y + node.pos_y * z + self.pan_y
 
             layout = _NodeLayout(node=node, typedef=typedef, sx=sx, sy=sy, w=w, h=h)
 
-            hdr_h = Theme.NODE_GRAPH_NODE_HEADER_H * z
-            row_h = Theme.NODE_GRAPH_NODE_PIN_ROW_H * z
+            hdr_h = _NODE_HEADER_H * z
+            row_h = _NODE_PIN_ROW_H * z
 
             for i, pdef in enumerate(in_pins):
                 cy = sy + hdr_h + i * row_h + row_h * 0.5
@@ -518,83 +396,54 @@ class NodeGraphView:
         sx, sy, w, h = layout.sx, layout.sy, layout.w, layout.h
         z = self.zoom
         is_selected = layout.node.uid in self.selected_nodes
-        rounding = Theme.NODE_GRAPH_NODE_ROUNDING * z
-        hdr_h = Theme.NODE_GRAPH_NODE_HEADER_H * z
-        pad_x = Theme.NODE_GRAPH_NODE_PAD_X * z
+        rounding = _NODE_ROUNDING * z
+        hdr_h = _NODE_HEADER_H * z
+        pad_x = _NODE_PAD_X * z
 
         # Shadow
         sh = 3.0 * z
         ctx.draw_filled_rect(
             sx + sh, sy + sh, sx + w + sh, sy + h + sh,
-            *Theme.NODE_GRAPH_NODE_SHADOW, rounding,
+            *_NODE_SHADOW_COLOR, rounding,
         )
 
         # Body
-        ctx.draw_filled_rect(sx, sy, sx + w, sy + h, *Theme.NODE_GRAPH_NODE_BODY, rounding)
+        ctx.draw_filled_rect(sx, sy, sx + w, sy + h, *_NODE_BODY_COLOR, rounding)
 
         # Header
-        hdr = _resolve_node_header_rgba(layout.node, layout.typedef)
+        hdr = layout.typedef.header_color
         ctx.draw_filled_rect(sx, sy, sx + w, sy + hdr_h, *hdr, rounding)
         flat_h = min(rounding, hdr_h * 0.5)
         ctx.draw_filled_rect(sx, sy + hdr_h - flat_h, sx + w, sy + hdr_h, *hdr, 0)
 
-        swatch_reserve = 0.0
-        if layout.typedef.header_color_swatch:
-            swatch_reserve = (
-                Theme.NODE_GRAPH_HEADER_SWATCH_GAP * z
-                + Theme.NODE_GRAPH_HEADER_SWATCH * z
-            )
-
         # Header label
         label = layout.node.data.get("label", layout.typedef.label)
-        font_sz = max(
-            Theme.NODE_GRAPH_NODE_TITLE_FONT_MIN,
-            Theme.NODE_GRAPH_NODE_TITLE_FONT_ZOOM_SCALE * z,
-        )
+        font_sz = max(11.0, 13.0 * z)
         ctx.draw_text_aligned(
-            sx + pad_x, sy, sx + w - pad_x - swatch_reserve, sy + hdr_h,
-            label, *Theme.NODE_GRAPH_TEXT, 0.0, 0.5, font_sz,
+            sx + pad_x, sy, sx + w - pad_x, sy + hdr_h,
+            label, *_TEXT_COLOR, 0.0, 0.5, font_sz,
         )
-
-        if layout.typedef.header_color_swatch:
-            gap = Theme.NODE_GRAPH_HEADER_SWATCH_GAP * z
-            sw = Theme.NODE_GRAPH_HEADER_SWATCH * z
-            ox2 = sx + w - pad_x - sw
-            oy2 = sy + (hdr_h - sw) * 0.5
-            hc = _resolve_node_header_rgba(layout.node, layout.typedef)
-            rnd = max(1.0, 2.0 * z * 0.35)
-            ctx.draw_filled_rect(ox2, oy2, ox2 + sw, oy2 + sw, hc[0], hc[1], hc[2], hc[3], rnd)
-            bd = Theme.NODE_GRAPH_NODE_BORDER
-            ctx.draw_rect(
-                ox2, oy2, ox2 + sw, oy2 + sw,
-                bd[0], bd[1], bd[2], bd[3],
-                max(1.0, Theme.NODE_GRAPH_NODE_BORDER_THICKNESS * z), rnd,
-            )
 
         # Subtitle (e.g. clip path)
         subtitle = layout.node.data.get("subtitle", "")
         if subtitle:
             body_top = sy + hdr_h + 2 * z
-            sub_font = max(
-                Theme.NODE_GRAPH_NODE_SUBTITLE_FONT_MIN,
-                Theme.NODE_GRAPH_NODE_SUBTITLE_FONT_ZOOM_SCALE * z,
-            )
+            sub_font = max(9.0, 10.0 * z)
             ctx.draw_text_aligned(
                 sx + pad_x, body_top, sx + w - pad_x, body_top + 16 * z,
-                subtitle, *Theme.NODE_GRAPH_TEXT_BODY, 0.0, 0.0, sub_font,
+                subtitle, *_TEXT_BODY_COLOR, 0.0, 0.0, sub_font,
             )
 
         # Border
         if is_selected:
             ctx.draw_rect(sx, sy, sx + w, sy + h,
-                          *Theme.APPLY_BUTTON, 2.5 * z, rounding)
+                          *_NODE_SELECTED_BORDER, 2.5 * z, rounding)
         else:
             ctx.draw_rect(sx, sy, sx + w, sy + h,
-                          *Theme.NODE_GRAPH_NODE_BORDER,
-                          Theme.NODE_GRAPH_NODE_BORDER_THICKNESS * z, rounding)
+                          *_NODE_BORDER_COLOR, _NODE_BORDER_THICKNESS * z, rounding)
 
         # Pins
-        pin_r = Theme.NODE_GRAPH_PIN_RADIUS * z
+        pin_r = _PIN_RADIUS * z
         node_uid = layout.node.uid
         for pl in layout.input_pins:
             self._draw_pin(ctx, pl, PinKind.INPUT, pin_r, node_uid)
@@ -602,30 +451,19 @@ class NodeGraphView:
             self._draw_pin(ctx, pl, PinKind.OUTPUT, pin_r, node_uid)
 
         # Pin labels
-        dim_font = max(
-            Theme.NODE_GRAPH_NODE_PIN_FONT_MIN,
-            Theme.NODE_GRAPH_NODE_PIN_FONT_ZOOM_SCALE * z,
-        )
-        plc = layout.typedef.pin_label_color
-        if plc is not None and isinstance(plc, (list, tuple)) and len(plc) >= 3:
-            pin_lbl = (
-                float(plc[0]), float(plc[1]), float(plc[2]),
-                float(plc[3]) if len(plc) > 3 else 1.0,
-            )
-        else:
-            pin_lbl = Theme.NODE_GRAPH_TEXT_DIM
-        row_h = Theme.NODE_GRAPH_NODE_PIN_ROW_H * z
+        dim_font = max(9.0, 10.5 * z)
+        row_h = _NODE_PIN_ROW_H * z
         for pl in layout.input_pins:
             ctx.draw_text_aligned(
                 pl.cx + pin_r + 4 * z, pl.cy - row_h * 0.5,
                 pl.cx + w * 0.45, pl.cy + row_h * 0.5,
-                pl.pin_def.label, pin_lbl[0], pin_lbl[1], pin_lbl[2], pin_lbl[3], 0.0, 0.5, dim_font,
+                pl.pin_def.label, *_TEXT_DIM_COLOR, 0.0, 0.5, dim_font,
             )
         for pl in layout.output_pins:
             ctx.draw_text_aligned(
                 sx + w * 0.55, pl.cy - row_h * 0.5,
                 pl.cx - pin_r - 4 * z, pl.cy + row_h * 0.5,
-                pl.pin_def.label, pin_lbl[0], pin_lbl[1], pin_lbl[2], pin_lbl[3], 1.0, 0.5, dim_font,
+                pl.pin_def.label, *_TEXT_DIM_COLOR, 1.0, 0.5, dim_font,
             )
 
         # Custom body renderer
@@ -638,9 +476,7 @@ class NodeGraphView:
     def _draw_pin(self, ctx, pl: _PinLayout, kind: PinKind, radius: float,
                    node_uid: str = "") -> None:
         color = pl.pin_def.color
-        connected = self._is_pin_connected(
-            node_uid, pl.pin_def.id, kind == PinKind.OUTPUT
-        )
+        connected = self._is_pin_connected(pl.pin_def.id, kind == PinKind.OUTPUT)
         if connected:
             ctx.draw_filled_circle(pl.cx, pl.cy, radius, *color)
         else:
@@ -652,15 +488,15 @@ class NodeGraphView:
         if (hp_pin and hp_pin == pl.pin_def.id and hp_kind == kind
                 and hp_node == node_uid):
             ctx.draw_circle(pl.cx, pl.cy, radius + 3.0 * self.zoom,
-                            *Theme.NODE_GRAPH_PIN_HOVER_RING, 1.8 * self.zoom)
+                            *_PIN_HOVER_COLOR, 1.8 * self.zoom)
 
-    def _is_pin_connected(self, node_uid: str, pin_id: str, is_output: bool) -> bool:
+    def _is_pin_connected(self, pin_id: str, is_output: bool) -> bool:
         if self.graph is None:
             return False
         for lk in self.graph.links:
-            if is_output and lk.source_node == node_uid and lk.source_pin == pin_id:
+            if is_output and lk.source_pin == pin_id:
                 return True
-            if not is_output and lk.target_node == node_uid and lk.target_pin == pin_id:
+            if not is_output and lk.target_pin == pin_id:
                 return True
         return False
 
@@ -690,16 +526,14 @@ class NodeGraphView:
             is_hov = lk.uid == self._hovered_link
 
             if is_sel:
-                color, thick = Theme.APPLY_BUTTON, 3.5 * self.zoom
+                color, thick = _LINK_SELECTED_COLOR, 3.5 * self.zoom
             elif is_hov:
-                color, thick = Theme.NODE_GRAPH_LINK_HOVER, 3.0 * self.zoom
+                color, thick = _LINK_HOVER_COLOR, 3.0 * self.zoom
             else:
-                color, thick = (
-                    Theme.NODE_GRAPH_LINK_DEFAULT,
-                    Theme.NODE_GRAPH_LINK_THICKNESS * self.zoom,
-                )
+                color, thick = _LINK_DEFAULT_COLOR, _LINK_THICKNESS * self.zoom
 
-            self._draw_bezier(ctx, sx2, sy2, ex2, ey2, color, thick)
+            cond = lk.data.get("condition", "")
+            self._draw_bezier(ctx, sx2, sy2, ex2, ey2, color, thick, cond)
 
     def _draw_pending_link(self, ctx) -> None:
         src_l = self._layouts.get(self._drag_src_node)
@@ -710,10 +544,10 @@ class NodeGraphView:
             return
         self._draw_bezier(
             ctx, sx2, sy2, self._drag_end_x, self._drag_end_y,
-            Theme.NODE_GRAPH_LINK_PENDING, 2.0 * self.zoom,
+            _PENDING_LINK_COLOR, 2.0 * self.zoom,
         )
 
-    def _draw_bezier(self, ctx, x1, y1, x2, y2, color, thickness):
+    def _draw_bezier(self, ctx, x1, y1, x2, y2, color, thickness, label=""):
         pts = _bezier_points(x1, y1, x2, y2)
         for i in range(len(pts) - 1):
             ctx.draw_line(
@@ -730,73 +564,14 @@ class NodeGraphView:
                 ax = ex - a_len * math.cos(angle + off)
                 ay = ey - a_len * math.sin(angle + off)
                 ctx.draw_line(ex, ey, ax, ay, *color, thickness)
-
-    def _header_swatch_screen_rect(self, layout: _NodeLayout) -> Optional[Tuple[float, float, float, float]]:
-        if not layout.typedef.header_color_swatch:
-            return None
-        z = self.zoom
-        sx, sy, w = layout.sx, layout.sy, layout.w
-        hdr_h = Theme.NODE_GRAPH_NODE_HEADER_H * z
-        pad_x = Theme.NODE_GRAPH_NODE_PAD_X * z
-        sw = Theme.NODE_GRAPH_HEADER_SWATCH * z
-        ox2 = sx + w - pad_x - sw
-        oy2 = sy + (hdr_h - sw) * 0.5
-        return ox2, oy2, ox2 + sw, oy2 + sw
-
-    def _hit_header_swatch(self, mx: float, my: float) -> str:
-        for uid in reversed(list(self._layouts)):
-            layout = self._layouts[uid]
-            r = self._header_swatch_screen_rect(layout)
-            if r is None:
-                continue
-            x0, y0, x1, y1 = r
-            if x0 <= mx <= x1 and y0 <= my <= y1:
-                return uid
-        return ""
-
-    def _draw_header_color_popup(self, ctx) -> None:
-        uid = self._hdr_color_popup_uid
-        if not uid or self.graph is None:
-            return
-        nid = "##ng_hdr_color_" + uid
-        opened = ctx.begin_popup(nid)
-        if opened:
-            node = self.graph.find_node(uid)
-            td = self.graph.get_type(node.type_id) if node else None
-            if node is None or td is None:
-                ctx.end_popup()
-                return
-            if not self._hdr_popup_session_open:
-                self._hdr_popup_session_open = True
-                if self.on_node_header_color_begin:
-                    self.on_node_header_color_begin(uid)
-            hdr = _resolve_node_header_rgba(node, td)
-            hb = td.header_color
-            br = float(hb[0]) if isinstance(hb, (list, tuple)) and len(hb) > 0 else 0.3
-            bg = float(hb[1]) if isinstance(hb, (list, tuple)) and len(hb) > 1 else 0.3
-            bb = float(hb[2]) if isinstance(hb, (list, tuple)) and len(hb) > 2 else 0.3
-            ba = float(hb[3]) if isinstance(hb, (list, tuple)) and len(hb) > 3 else 1.0
-            nr, ng, nb, na = ctx.color_edit("##hdr_col_pick", hdr[0], hdr[1], hdr[2], hdr[3])
-            if (nr, ng, nb, na) != hdr:
-                if (abs(nr - br) < 1e-3 and abs(ng - bg) < 1e-3 and abs(nb - bb) < 1e-3
-                        and abs(na - ba) < 1e-3):
-                    node.data.pop("header_color", None)
-                else:
-                    node.data["header_color"] = [nr, ng, nb, na]
-                if self.on_node_header_color_changed:
-                    self.on_node_header_color_changed(uid)
-            if ctx.button("Default##ng_hdr_def_btn"):
-                node.data.pop("header_color", None)
-                if self.on_node_header_color_changed:
-                    self.on_node_header_color_changed(uid)
-            ctx.end_popup()
-        else:
-            if self._hdr_popup_session_open:
-                self._hdr_popup_session_open = False
-                self._hdr_color_popup_uid = ""
-                if self.on_node_header_color_end:
-                    self.on_node_header_color_end(uid)
-            # else: popup not yet visible this frame — keep uid
+        # Condition label at midpoint
+        if label:
+            mid = pts[len(pts) // 2]
+            fsz = max(9.0, 10.0 * self.zoom)
+            ctx.draw_text(
+                mid[0] + 4, mid[1] - 10 * self.zoom,
+                label, 0.75, 0.75, 0.55, 0.9, fsz,
+            )
 
     def _find_pin_pos(self, layout, pin_id, kind):
         pins = layout.output_pins if kind == PinKind.OUTPUT else layout.input_pins
@@ -818,20 +593,11 @@ class NodeGraphView:
         n_y0 = min(n.pos_y for n in nodes)
         n_y1 = max(n.pos_y + 80 for n in nodes)
 
-        # Visible graph-space rect from actual canvas item corners (padding-safe).
-        if self._canvas_item_max_x > self._canvas_item_min_x:
-            v_gx0, v_gy0 = self.screen_to_graph(self._canvas_item_min_x, self._canvas_item_min_y)
-            v_gx1, v_gy1 = self.screen_to_graph(self._canvas_item_max_x, self._canvas_item_max_y)
-            if v_gx0 > v_gx1:
-                v_gx0, v_gx1 = v_gx1, v_gx0
-            if v_gy0 > v_gy1:
-                v_gy0, v_gy1 = v_gy1, v_gy0
-        else:
-            z = max(self.zoom, 1e-6)
-            v_gx0 = -self.pan_x / z
-            v_gy0 = -self.pan_y / z
-            v_gx1 = v_gx0 + self._canvas_w / z
-            v_gy1 = v_gy0 + self._canvas_h / z
+        # Compute visible graph-space viewport
+        v_gx0 = -self.pan_x / self.zoom
+        v_gy0 = -self.pan_y / self.zoom
+        v_gx1 = v_gx0 + self._canvas_w / self.zoom
+        v_gy1 = v_gy0 + self._canvas_h / self.zoom
 
         # Union of nodes and viewport — this is the total extent we must show
         total_x0 = min(n_x0, v_gx0) - 20
@@ -843,17 +609,17 @@ class NodeGraphView:
 
         # Auto-size minimap to aspect ratio (capped)
         aspect = total_w / total_h
-        mm_w = Theme.NODE_GRAPH_MINIMAP_SIZE
+        mm_w = _MINIMAP_SIZE
         mm_h = mm_w / max(aspect, 0.3)
-        mm_h = min(mm_h, Theme.NODE_GRAPH_MINIMAP_SIZE)
+        mm_h = min(mm_h, _MINIMAP_SIZE)
         mm_w = min(mm_w, mm_h * aspect) if aspect < 0.3 else mm_w
 
-        mm_x = cx1 - mm_w - Theme.NODE_GRAPH_MINIMAP_PAD
-        mm_y = cy1 - mm_h - Theme.NODE_GRAPH_MINIMAP_PAD
+        mm_x = cx1 - mm_w - _MINIMAP_PAD
+        mm_y = cy1 - mm_h - _MINIMAP_PAD
 
         # Background
         ctx.draw_filled_rect(mm_x, mm_y, mm_x + mm_w, mm_y + mm_h,
-                             *Theme.NODE_GRAPH_MINIMAP_BG, 4.0)
+                             *_MINIMAP_BG, 4.0)
 
         # Clip minimap contents to its bounds
         ctx.push_draw_list_clip_rect(mm_x, mm_y, mm_x + mm_w, mm_y + mm_h)
@@ -874,15 +640,14 @@ class NodeGraphView:
             ny = off_y + (n.pos_y - total_y0) * s
             nw = max(3, 120 * s)
             nh = max(2, 50 * s)
-            ctx.draw_filled_rect(nx, ny, nx + nw, ny + nh, *Theme.NODE_GRAPH_MINIMAP_NODE, 1.0)
+            ctx.draw_filled_rect(nx, ny, nx + nw, ny + nh, *_MINIMAP_NODE, 1.0)
 
         # Draw viewport rectangle
         vx0 = off_x + (v_gx0 - total_x0) * s
         vy0 = off_y + (v_gy0 - total_y0) * s
         vx1 = off_x + (v_gx1 - total_x0) * s
         vy1 = off_y + (v_gy1 - total_y0) * s
-        ab = Theme.APPLY_BUTTON
-        ctx.draw_rect(vx0, vy0, vx1, vy1, ab[0], ab[1], ab[2], 0.45, 1.0, 2.0)
+        ctx.draw_rect(vx0, vy0, vx1, vy1, *_MINIMAP_VIEW, 1.0, 2.0)
 
         ctx.pop_draw_list_clip_rect()
 
@@ -912,10 +677,7 @@ class NodeGraphView:
                     node.pos_y += dy / self.zoom
                 ctx.reset_mouse_drag_delta(0)
             else:
-                ended_id = self._drag_node_id
                 self._dragging_node = False
-                if self.on_node_drag_end:
-                    self.on_node_drag_end(ended_id)
             return
 
         # Panning
@@ -923,12 +685,8 @@ class NodeGraphView:
             if ctx.is_mouse_button_down(2):
                 dx = ctx.get_mouse_drag_delta_x(2)
                 dy = ctx.get_mouse_drag_delta_y(2)
-                z = self._clamp_zoom(self.zoom)
-                self.zoom = z
-                self.cam_center_gx -= dx / z
-                self.cam_center_gy -= dy / z
-                self._cam_center_initialized = True
-                self._sync_pan_from_camera_anchor()
+                self.pan_x += dx
+                self.pan_y += dy
                 ctx.reset_mouse_drag_delta(2)
             else:
                 self._panning = False
@@ -936,7 +694,7 @@ class NodeGraphView:
 
         # Delete key — remove selected nodes or link even when the cursor
         # is no longer hovering the canvas after selection.
-        if ctx.is_key_pressed(KEY_DELETE):
+        if ctx.is_key_pressed(_KEY_DELETE):
             if self.selected_nodes:
                 if self.on_nodes_deleted:
                     self.on_nodes_deleted(list(self.selected_nodes))
@@ -954,30 +712,17 @@ class NodeGraphView:
                 self.selected_link = ""
                 return
 
-        if canvas_hovered and ctx.is_key_down(MOD_CTRL):
-            if ctx.is_key_pressed(KEY_C) and self.on_copy:
-                self.on_copy()
-            if ctx.is_key_pressed(KEY_V) and self.on_paste:
-                self.on_paste()
-
         if not canvas_hovered:
             return
 
-        # Zoom (scroll wheel): keep graph point under cursor fixed.
+        # Zoom (scroll wheel, centred on cursor)
         wheel = ctx.get_mouse_wheel_delta()
         if abs(wheel) > 0.01:
-            icx = self._viewport_icx
-            icy = self._viewport_icy
-            gx_m = (mx - self._origin_x - self.pan_x) / self.zoom
-            gy_m = (my - self._origin_y - self.pan_y) / self.zoom
-            old_z = self.zoom
-            new_z = self._clamp_zoom(self.zoom + wheel * Theme.NODE_GRAPH_ZOOM_SPEED)
-            if abs(new_z - old_z) >= 1e-9:
-                self.zoom = new_z
-                self.cam_center_gx = gx_m - (mx - icx) / new_z
-                self.cam_center_gy = gy_m - (my - icy) / new_z
-                self._cam_center_initialized = True
-                self._sync_pan_from_camera_anchor()
+            old_zoom = self.zoom
+            self.zoom = max(_ZOOM_MIN, min(_ZOOM_MAX, self.zoom + wheel * _ZOOM_SPEED))
+            ratio = self.zoom / old_zoom
+            self.pan_x = mx - self._origin_x - (mx - self._origin_x - self.pan_x) * ratio
+            self.pan_y = my - self._origin_y - (my - self._origin_y - self.pan_y) * ratio
 
         # Middle-mouse → panning
         if ctx.is_mouse_button_clicked(2):
@@ -988,7 +733,6 @@ class NodeGraphView:
         if ctx.is_mouse_button_clicked(1):
             hit_lk = self._hit_test_link(mx, my)
             if hit_lk:
-                self._notify_before_selection_change()
                 self.selected_link = hit_lk
                 self.selected_nodes.clear()
                 if self.on_node_selected:
@@ -996,16 +740,6 @@ class NodeGraphView:
 
         # Left click
         if ctx.is_mouse_button_clicked(0):
-            sw_uid = self._hit_header_swatch(mx, my)
-            if sw_uid:
-                self._notify_before_selection_change()
-                self.selected_nodes = [sw_uid]
-                self.selected_link = ""
-                if self.on_node_selected:
-                    self.on_node_selected(sw_uid)
-                self._hdr_color_popup_uid = sw_uid
-                ctx.open_popup("##ng_hdr_color_" + sw_uid)
-                return
             # Pins first
             hit_node, hit_pin, hit_kind = self._hit_test_pin(mx, my)
             if hit_pin is not None:
@@ -1038,25 +772,17 @@ class NodeGraphView:
             # Nodes
             hit_uid = self._hit_test_node(mx, my)
             if hit_uid:
-                self._notify_before_selection_change()
                 self.selected_nodes = [hit_uid]
                 self.selected_link = ""
+                self._dragging_node = True
+                self._drag_node_id = hit_uid
                 if self.on_node_selected:
                     self.on_node_selected(hit_uid)
-                consumed = False
-                if self.on_node_primary_click:
-                    consumed = bool(self.on_node_primary_click(hit_uid, mx, my))
-                if not consumed:
-                    self._dragging_node = True
-                    self._drag_node_id = hit_uid
-                    if self.on_node_drag_start:
-                        self.on_node_drag_start(hit_uid)
                 return
 
             # Links
             hit_lk = self._hit_test_link(mx, my)
             if hit_lk:
-                self._notify_before_selection_change()
                 self.selected_link = hit_lk
                 self.selected_nodes.clear()
                 if self.on_node_selected:
@@ -1064,7 +790,6 @@ class NodeGraphView:
                 return
 
             # Empty space — deselect
-            self._notify_before_selection_change()
             self.selected_nodes.clear()
             self.selected_link = ""
             if self.on_node_selected:
@@ -1073,7 +798,7 @@ class NodeGraphView:
     # ── Hit testing ───────────────────────────────────────────────────
 
     def _hit_test_pin(self, mx, my):
-        hit_r = Theme.NODE_GRAPH_PIN_HIT_RADIUS * self.zoom
+        hit_r = _PIN_HIT_RADIUS * self.zoom
         for uid, layout in self._layouts.items():
             for pl in layout.output_pins:
                 if _dist(mx, my, pl.cx, pl.cy) <= hit_r:
@@ -1093,7 +818,7 @@ class NodeGraphView:
 
     def _find_drag_target_pin(self, mx, my):
         """Find the nearest valid target pin during a link drag."""
-        hit_r = Theme.NODE_GRAPH_PIN_HIT_RADIUS * self.zoom
+        hit_r = _PIN_HIT_RADIUS * self.zoom
         want_kind = (PinKind.INPUT if self._drag_src_kind == PinKind.OUTPUT
                      else PinKind.OUTPUT)
         for uid, layout in self._layouts.items():
@@ -1198,8 +923,6 @@ class NodeGraphView:
             self.center_on_nodes()
         if ctx.menu_item("Reset Zoom", "", False, True):
             self.zoom = 1.0
-            self._cam_center_initialized = True
-            self._sync_pan_from_camera_anchor()
 
 
 # ═══════════════════════════════════════════════════════════════════════════

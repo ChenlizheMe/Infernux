@@ -78,21 +78,11 @@ def get_script_module_name(path: Optional[str]) -> Optional[str]:
 
 
 def get_script_module_aliases(path: Optional[str]) -> list[str]:
-    """Return all supported import names for a user script.
-
-    The first entry is the canonical modern import path. A legacy
-    ``Assets.``-prefixed alias is added for backwards compatibility.
-    """
+    """Return import names for a user script (canonical module path under ``Assets/``)."""
     module_name = get_script_module_name(path)
     if not module_name:
         return []
-
-    aliases = [module_name]
-    if get_project_root():
-        legacy_alias = f"Assets.{module_name}"
-        if legacy_alias not in aliases:
-            aliases.append(legacy_alias)
-    return aliases
+    return [module_name]
 
 
 def get_script_import_paths(path: Optional[str] = None) -> list[str]:
@@ -102,8 +92,7 @@ def get_script_import_paths(path: Optional[str] = None) -> list[str]:
     - Scripts directly under ``Assets/`` can import siblings as ``import foo``.
     - Scripts under subfolders use asset-root-relative imports such as
       ``from scripts.foo import Bar``.
-    - Legacy ``Assets.foo`` imports remain supported by also exposing the
-      project root as a fallback import root.
+    - The project root may be included so non-asset modules resolve when needed.
     """
     resolved = resolve_script_path(path) if path else None
     resolved_abs = os.path.abspath(resolved) if resolved else ""

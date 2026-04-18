@@ -19,7 +19,7 @@ namespace py = pybind11;
 namespace infernux
 {
 
-// ── helper free-functions (mirror the old Vector4f static API) ──────────────
+// ── helper free-functions (Vector4 math utilities) ─────────────────────────
 namespace vec4_util
 {
 

@@ -20,7 +20,7 @@ bool IsSceneUBOBinding(const MergedDescriptorBinding &binding)
 
 bool IsLightingUBOBinding(const MergedDescriptorBinding &binding)
 {
-    return binding.set == 0 && (binding.name == kLightingUBOName || binding.binding == 1);
+    return binding.set == 0 && binding.name == kLightingUBOName;
 }
 
 void AppendBufferWrite(std::vector<VkWriteDescriptorSet> &writes, std::vector<VkDescriptorBufferInfo> &bufferInfos,
@@ -592,8 +592,6 @@ void MaterialDescriptorManager::UpdateDescriptorBindings(MaterialDescriptorSet &
                 bufferInfo.offset = 0;
                 bufferInfo.range = sceneUBOSize;
             } else if (IsLightingUBOBinding(binding) && lightingUBO != VK_NULL_HANDLE) {
-                // Lighting UBO is identified by reflected name first and only
-                // falls back to binding=1 for legacy/generated shader layouts.
                 INXLOG_DEBUG("    -> Binding LightingUBO, size=", lightingUBOSize);
                 bufferInfo.buffer = lightingUBO;
                 bufferInfo.offset = 0;

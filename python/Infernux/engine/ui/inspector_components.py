@@ -29,7 +29,7 @@ from .inspector_utils import (
 )
 from .theme import Theme, ImGuiCol
 
-# ── Sub-module imports (re-exported for backward compatibility) ──
+# ── Sub-module imports (re-exported for inspector_components consumers) ──
 from ._inspector_undo import (  # noqa: F401
     _notify_scene_modified, _is_python_component_entry,
     _record_property, _record_material_slot, _record_generic_component,

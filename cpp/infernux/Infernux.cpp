@@ -780,7 +780,7 @@ bool Infernux::EnsureShaderLoaded(const std::string &shaderId, const std::string
     return ReloadShader(shaderPath).empty();
 }
 
-bool Infernux::RefreshMaterialPipeline(std::shared_ptr<InxMaterial> material)
+bool Infernux::RefreshMaterialPipeline(InxMaterial *material)
 {
     INXLOG_DEBUG("Infernux::RefreshMaterialPipeline called");
     if (!CheckEngineValid("refresh material pipeline") || !m_renderer) {

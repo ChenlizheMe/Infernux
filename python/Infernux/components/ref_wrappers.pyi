@@ -37,10 +37,6 @@ class GameObjectRef:
         ...
 
 
-# MaterialRef is defined in Infernux.core.asset_ref and re-exported here.
-from Infernux.core.asset_ref import MaterialRef as MaterialRef
-
-
 class PrefabRef:
     """Reference to a prefab asset stored on disk.
 

@@ -65,6 +65,16 @@ class AudioClipRef(AssetRefBase):
     ...
 
 
+class AnimationClipRef(AssetRefBase):
+    """Reference to an AnimationClip asset (2D/3D clip JSON)."""
+    ...
+
+
+class AnimStateMachineRef(AssetRefBase):
+    """Reference to an AnimStateMachine asset (``.animfsm``)."""
+    ...
+
+
 class MaterialRef(AssetRefBase):
     """GUID-based reference to a Material asset."""
 

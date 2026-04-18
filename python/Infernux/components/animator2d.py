@@ -144,8 +144,6 @@ class SpiritAnimator(InxComponent):
             state = self._get_current_state()
             should_loop = state.loop if state else clip.loop
             if should_loop:
-                # Evaluate transitions at loop boundary while elapsed >= duration (progress 1.0)
-                self._try_auto_transition()
                 self._elapsed %= duration
             else:
                 self._elapsed = duration
@@ -254,21 +252,9 @@ class SpiritAnimator(InxComponent):
                 f"[SpiritAnimator] Controller is mode='{fsm.mode}', expected '2d'."
             )
         self._fsm = fsm
-        self._seed_parameters_from_fsm(fsm)
         # Pre-cache all clips
         for state in fsm.states:
             self._resolve_clip(state)
-
-    def _seed_parameters_from_fsm(self, fsm: AnimStateMachine) -> None:
-        """Expose FSM parameter defaults in condition eval (``eval`` ctx)."""
-        self._parameters = {}
-        for p in fsm.parameters:
-            if p.kind == "bool":
-                self._parameters[p.name] = bool(p.default_bool)
-            elif p.kind == "int":
-                self._parameters[p.name] = int(p.default_int)
-            else:
-                self._parameters[p.name] = float(p.default_float)
 
     def _resolve_clip(self, state: AnimState) -> Optional[AnimationClip]:
         """Resolve and cache the AnimationClip for an FSM state."""
@@ -302,10 +288,6 @@ class SpiritAnimator(InxComponent):
             Debug.log_warning(f"[SpiritAnimator] State not found: '{state_name}'")
             return False
 
-        if not getattr(state, "restart_same_clip", False):
-            if self._playing and self._current_state_name == state_name:
-                return True
-
         clip = self._resolve_clip(state)
         self._current_state_name = state_name
         self._current_clip = clip
@@ -324,22 +306,10 @@ class SpiritAnimator(InxComponent):
             return self._fsm.get_state(self._current_state_name)
         return None
 
-    def _exit_time_gate_ok(self, state: AnimState) -> bool:
-        """Require normalized clip progress >= state's exit_time before any outgoing transition."""
-        if not self._current_clip or self._current_clip.duration <= 0:
-            return True
-        thr = float(getattr(state, "exit_time_normalized", 1.0))
-        thr = max(0.0, min(1.0, thr))
-        d = self._current_clip.duration
-        progress = min(max(self._elapsed / d, 0.0), 1.0)
-        return progress + 1e-7 >= thr
-
     def _try_auto_transition(self):
         """Evaluate outgoing transitions from the current state."""
         state = self._get_current_state()
         if not state:
-            return
-        if not self._exit_time_gate_ok(state):
             return
         for tr in state.transitions:
             if self._evaluate_condition(tr):

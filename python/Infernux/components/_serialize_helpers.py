@@ -91,7 +91,7 @@ def deserialize_dict_ref(value: dict) -> Any:
                          path_hint=value.get("__path_hint__", ""))
 
     if "__material_ref__" in value:
-        from .ref_wrappers import MaterialRef
+        from Infernux.core.asset_ref import MaterialRef
         return MaterialRef(guid=value["__material_ref__"],
                            path_hint=value.get("__path_hint__", ""))
 
@@ -145,7 +145,7 @@ def make_null_ref(field_type, field_meta=None) -> Any:
         from .ref_wrappers import GameObjectRef
         return GameObjectRef(persistent_id=0)
     if field_type == FieldType.MATERIAL:
-        from .ref_wrappers import MaterialRef
+        from Infernux.core.asset_ref import MaterialRef
         return MaterialRef(guid="")
     if field_type == FieldType.TEXTURE:
         from Infernux.core.asset_ref import TextureRef

@@ -398,18 +398,8 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
         _panel_state.put("project", {"current_path": self.project_panel.get_current_path()})
         _panel_state.put("window_manager", self.window_manager.save_state())
 
-        # Persist individual panel states for every window id we still track
-        # (singletons live in _default_instances; dynamically opened ids may only
-        # appear in _window_instances until closed — those must still save).
-        wm = self.window_manager
-        seen_ids: set[str] = set()
-        for wid in set(wm._default_instances.keys()) | set(wm._window_instances.keys()):
-            if wid in seen_ids:
-                continue
-            seen_ids.add(wid)
-            inst = wm._window_instances.get(wid) or wm._default_instances.get(wid)
-            if inst is None:
-                continue
+        # Persist individual panel states for all registered windows
+        for wid, inst in self.window_manager._default_instances.items():
             if hasattr(inst, "save_state") and callable(inst.save_state):
                 try:
                     data = inst.save_state()

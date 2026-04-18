@@ -329,7 +329,7 @@ def _ensure_game_object_ref(value):
 
 
 def _ensure_material_ref(value):
-    from .ref_wrappers import MaterialRef
+    from Infernux.core.asset_ref import MaterialRef
     if isinstance(value, MaterialRef):
         return value
     if value is None:
@@ -411,7 +411,7 @@ def _resolve_single_reference(value: Any, field_type: FieldType) -> Any:
         from .ref_wrappers import ComponentRef
         return value.resolve() if isinstance(value, ComponentRef) else value
     if field_type == FieldType.MATERIAL:
-        from .ref_wrappers import MaterialRef
+        from Infernux.core.asset_ref import MaterialRef
         return value.resolve() if isinstance(value, MaterialRef) else value
     if field_type == FieldType.TEXTURE:
         from Infernux.core.asset_ref import TextureRef
@@ -821,7 +821,7 @@ def _make_ref_default(type_name: str):
         from .ref_wrappers import GameObjectRef
         return GameObjectRef()
     if type_name == 'Material':
-        from .ref_wrappers import MaterialRef
+        from Infernux.core.asset_ref import MaterialRef
         return MaterialRef()
     if type_name in ('Texture', 'TextureRef'):
         from ..core.asset_ref import TextureRef

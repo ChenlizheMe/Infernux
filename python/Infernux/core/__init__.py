@@ -36,7 +36,6 @@ from .anim_state_machine import (
     AnimStateMachine,
     AnimState,
     AnimTransition,
-    AnimParameter,
 )
 from .assets import AssetManager
 from .asset_types import (
@@ -66,7 +65,6 @@ __all__ = [
     "AnimStateMachine",
     "AnimState",
     "AnimTransition",
-    "AnimParameter",
     "AssetManager",
     "TextureImportSettings",
     "TextureType",

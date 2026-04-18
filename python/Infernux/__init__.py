@@ -20,6 +20,7 @@ from Infernux import renderstack
 from Infernux import scene
 from Infernux.scene import GameObjectQuery, LayerMask, SceneManager
 from Infernux import input
+from Infernux.input import Input, KeyCode
 from Infernux import ui
 from Infernux.timing import Time
 from Infernux.mathf import Mathf
@@ -110,6 +111,9 @@ __all__ = [
     "AudioListener",
     "SpriteRenderer",
     "SpiritAnimator",
+    # Input (static API; submodule ``input`` remains for qualified imports)
+    "Input",
+    "KeyCode",
     # Decorators
     "require_component",
     "disallow_multiple",
@@ -129,16 +133,15 @@ __all__ = [
     "Shader",
     "AudioClip",
     "AnimationClip",
-    "AnimStateMachine",
-    "AnimState",
-    "AnimTransition",
-    "AnimParameter",
     "AssetManager",
     "TextureRef",
     "ShaderRef",
     "AudioClipRef",
     "AnimationClipRef",
+    "AnimStateMachine",
     "AnimStateMachineRef",
+    "AnimState",
+    "AnimTransition",
     # Debug — class only (use Debug.log / Debug.log_warning / …)
     "Debug",
     # Submodules

@@ -18,7 +18,7 @@ namespace py = pybind11;
 namespace infernux
 {
 
-// ── helper free-functions (mirror the old Vector3f static API) ──────────────
+// ── helper free-functions (Vector3 math utilities) ─────────────────────────
 namespace vec3_util
 {
 

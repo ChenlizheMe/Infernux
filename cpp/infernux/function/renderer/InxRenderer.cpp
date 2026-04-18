@@ -1558,7 +1558,7 @@ GizmosDrawCallBuffer *InxRenderer::GetGizmosDrawCallBuffer()
     return m_componentGizmos.get();
 }
 
-bool InxRenderer::RefreshMaterialPipeline(std::shared_ptr<InxMaterial> material)
+bool InxRenderer::RefreshMaterialPipeline(InxMaterial *material)
 {
     INXLOG_DEBUG("RefreshMaterialPipeline called");
 
@@ -1672,7 +1672,7 @@ bool InxRenderer::RefreshMaterialsUsingShader(const std::string &shaderId)
 
         if (matches) {
             INXLOG_DEBUG("RefreshMaterialsUsingShader: refreshing material '", material->GetName(), "'");
-            if (RefreshMaterialPipeline(material)) {
+            if (RefreshMaterialPipeline(material.get())) {
                 anyRefreshed = true;
             }
         }

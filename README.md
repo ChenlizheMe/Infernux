@@ -10,7 +10,7 @@
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License" /></a>
-  <img src="https://img.shields.io/badge/version-0.1.4-orange.svg" alt="Version" />
+  <img src="https://img.shields.io/badge/version-0.1.3-orange.svg" alt="Version" />
   <img src="https://img.shields.io/badge/platform-Windows-lightgrey.svg" alt="Platform" />
   <img src="https://img.shields.io/badge/python-3.12+-brightgreen.svg" alt="Python" />
   <img src="https://img.shields.io/badge/C%2B%2B-17-blue.svg" alt="C++ 17" />
@@ -60,7 +60,6 @@ Core capabilities available today include:
 - An integrated editor with Hierarchy, Inspector, Scene View, Game View, Project, Console, UI editing, and build settings.
 - Python-side component lifecycle, coroutines, serialized fields, and script reload support.
 - Basic runtime UI primitives including Canvas, Text, Image, Button, and pointer events.
-- **2D animation (preview):** sprite `SpiritAnimator`, `AnimClip2D` assets, animation state machine assets, and editor panels for authoring. Expect breaking changes while the stack stabilizes.
 - Packaging paths for the Hub, a standalone bundle, and a Windows installer.
 
 ## Architecture
@@ -205,7 +204,7 @@ If you use Infernux in research, technical writing, or published work, cite it a
   author  = {Chen, Lizhe},
   title   = {Infernux},
   year    = {2026},
-  version = {0.1.4},
+  version = {0.1.3},
   url     = {https://github.com/ChenlizheMe/Infernux},
   note    = {Open-source game engine with a C++17/Vulkan runtime and a Python production layer}
 }

@@ -201,11 +201,10 @@ class WindowManager:
     def save_state(self) -> Dict[str, Any]:
         from .closable_panel import ClosablePanel
 
-        all_ids = set(self._default_instances.keys()) | set(self._open_windows.keys())
         return {
             "open_windows": {
                 window_id: bool(self._open_windows.get(window_id, False))
-                for window_id in all_ids
+                for window_id in self._default_instances.keys()
             },
             "active_panel_id": ClosablePanel.get_active_panel_id() or "",
             "project_console_front_id": self._project_console_front_id,

@@ -87,8 +87,10 @@ class MenuBarPanel : public InxGUIRenderable
     /// Render a single top-level menu for panels whose menuPath starts with
     /// @p topMenu.  Panels with exact match become top-level items; those
     /// with a '/' suffix become sub-menus (e.g. "Animation/2D Animation").
-    void RenderMenuGroup(const std::string &topMenu, const std::string &translatedLabel,
-                         const std::vector<WindowTypeInfo> &types, const std::map<std::string, bool> &openWins);
+    void RenderMenuGroup(const std::string &topMenu,
+                         const std::string &translatedLabel,
+                         const std::vector<WindowTypeInfo> &types,
+                         const std::map<std::string, bool> &openWins);
 
     std::string T(const std::string &key) const;
 

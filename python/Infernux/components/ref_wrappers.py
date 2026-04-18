@@ -9,8 +9,7 @@ C++ exception.
 live object via ``Scene.find_by_id``.  If the object has been destroyed
 the wrapper evaluates to falsy and all attribute access returns ``None``.
 
-``MaterialRef`` is defined in ``Infernux.core.asset_ref`` and re-exported
-here for module-level import convenience.
+Use ``from Infernux.core.asset_ref import MaterialRef`` for material references.
 """
 
 from __future__ import annotations
@@ -20,8 +19,6 @@ import logging
 import os
 from typing import Any, Optional
 
-# Re-export MaterialRef from core so existing callers still work.
-from Infernux.core.asset_ref import MaterialRef  # noqa: F401
 from Infernux.debug import Debug
 
 _log = logging.getLogger("Infernux.ref")

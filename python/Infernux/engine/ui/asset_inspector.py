@@ -508,7 +508,7 @@ def _load_animclip(path: str):
 
 def _render_animclip_body(ctx: InxGUIContext, panel, state: _State):
     from Infernux.core.animation_clip import AnimationClip
-    from .inspector_utils import render_compact_section_header, render_info_text
+    from .inspector_utils import render_compact_section_header, render_inspector_checkbox, render_info_text
     from .inspector_components import render_object_field
 
     clip: AnimationClip = state.settings
@@ -521,6 +521,7 @@ def _render_animclip_body(ctx: InxGUIContext, panel, state: _State):
         t("asset.animclip_texture"),
         t("asset.animclip_preview_texture"),
         t("asset.animclip_fps"),
+        t("asset.animclip_loop"),
         t("asset.animclip_frames"),
     ]
     lw = max_label_w(ctx, labels)
@@ -586,6 +587,12 @@ def _render_animclip_body(ctx: InxGUIContext, panel, state: _State):
     if new_fps != clip.fps:
         clip.fps = max(0.1, new_fps)
         changed = True
+
+    # ── Loop (read-only) ───────────────────────────────────────
+    field_label(ctx, t("asset.animclip_loop"), lw)
+    ctx.begin_disabled(True)
+    render_inspector_checkbox(ctx, "##animclip_loop", clip.loop)
+    ctx.end_disabled()
 
     ctx.separator()
 
@@ -768,7 +775,11 @@ def _render_animclip_preview(ctx: InxGUIContext, clip, state: _State):
             pb["frame_idx"] += steps
             pb["last_time"] = now
             if pb["frame_idx"] >= fc:
-                pb["frame_idx"] = pb["frame_idx"] % fc
+                if clip.loop:
+                    pb["frame_idx"] = pb["frame_idx"] % fc
+                else:
+                    pb["frame_idx"] = fc - 1
+                    pb["playing"] = False
 
     fi = max(0, min(pb["frame_idx"], fc - 1))
     src_idx = clip.frame_indices[fi]

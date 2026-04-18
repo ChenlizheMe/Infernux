@@ -68,17 +68,16 @@ from Infernux.core import Material as Material
 from Infernux.core import Texture as Texture
 from Infernux.core import Shader as Shader
 from Infernux.core import AudioClip as AudioClip
-from Infernux.core import AnimationClip as AnimationClip
-from Infernux.core import AnimStateMachine as AnimStateMachine
-from Infernux.core import AnimState as AnimState
-from Infernux.core import AnimTransition as AnimTransition
-from Infernux.core import AnimParameter as AnimParameter
 from Infernux.core import AssetManager as AssetManager
 from Infernux.core import TextureRef as TextureRef
 from Infernux.core import ShaderRef as ShaderRef
 from Infernux.core import AudioClipRef as AudioClipRef
+from Infernux.core import AnimationClip as AnimationClip
 from Infernux.core import AnimationClipRef as AnimationClipRef
+from Infernux.core import AnimStateMachine as AnimStateMachine
 from Infernux.core import AnimStateMachineRef as AnimStateMachineRef
+from Infernux.core import AnimState as AnimState
+from Infernux.core import AnimTransition as AnimTransition
 # Debug — class only (use Debug.log / Debug.log_warning / …)
 from Infernux.debug import Debug as Debug
 # Submodules
@@ -87,6 +86,8 @@ from Infernux import rendergraph as rendergraph
 from Infernux import renderstack as renderstack
 from Infernux import scene as scene
 from Infernux import input as input
+from Infernux.input import Input as Input
+from Infernux.input import KeyCode as KeyCode
 from Infernux import ui as ui
 # Scene
 from Infernux.scene import GameObjectQuery as GameObjectQuery
@@ -108,6 +109,8 @@ from Infernux.coroutine import (
 # Batch processing
 from Infernux.batch import batch_read as batch_read
 from Infernux.batch import batch_write as batch_write
+from Infernux.instantiate import Instantiate as Instantiate
+from Infernux.instantiate import Destroy as Destroy
 # JIT helpers (lazy-loaded via __getattr__ at runtime)
 from Infernux import jit as jit
 from Infernux.jit import JIT_AVAILABLE as JIT_AVAILABLE

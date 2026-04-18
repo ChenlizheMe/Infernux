@@ -161,7 +161,9 @@ class ComponentSerializationMixin:
             return value._serialize()
 
         # ComponentRef — component reference
-        from Infernux.components.ref_wrappers import GameObjectRef, MaterialRef, ComponentRef
+        from Infernux.components.ref_wrappers import GameObjectRef, ComponentRef
+        from Infernux.core.asset_ref import MaterialRef
+
         if isinstance(value, ComponentRef):
             return value._serialize()
 

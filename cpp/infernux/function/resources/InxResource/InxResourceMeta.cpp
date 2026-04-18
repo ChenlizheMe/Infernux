@@ -268,14 +268,12 @@ bool InxResourceMeta::LoadFromFile(const std::string &metaFilePath)
 
             try {
                 if (typeName == "string") {
-                    if (entry["value"].is_string()) {
-                        AddMetadata(key, entry["value"].get<std::string>());
-                    } else {
-                        // Legacy: Python wrote a list/dict with type "string".
-                        // Treat it as json_array/json_object to preserve data.
-                        typeName = entry["value"].is_array() ? "json_array" : "json_object";
-                        m_metadata[key] = std::make_pair(typeName, std::any(entry["value"].dump()));
+                    if (!entry["value"].is_string()) {
+                        INXLOG_WARN("InxResourceMeta::LoadFromFile: metadata '", key,
+                                    "' declares type string but value is not a JSON string — skipping");
+                        continue;
                     }
+                    AddMetadata(key, entry["value"].get<std::string>());
                 } else if (typeName == "int") {
                     AddMetadata(key, entry["value"].get<int>());
                 } else if (typeName == "bool") {
