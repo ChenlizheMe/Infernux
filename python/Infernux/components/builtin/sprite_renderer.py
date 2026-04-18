@@ -49,6 +49,15 @@ def _get_asset_database():
     except Exception:
         pass
     try:
+        from Infernux.engine.scene_manager import SceneFileManager
+        sfm = SceneFileManager.instance()
+        if sfm is not None:
+            adb = getattr(sfm, "_asset_database", None)
+            if adb:
+                return adb
+    except Exception:
+        pass
+    try:
         from Infernux.lib import AssetRegistry
         return AssetRegistry.instance().get_asset_database()
     except Exception:
@@ -123,7 +132,7 @@ class SpriteRenderer(BuiltinComponent):
     _last_color: tuple = None
     _last_sprite: str = ""
     _material_ready: bool = False
-    _instance_counter: int = 0  # class-level counter for unique material names
+    _instance_counter: int = 0  # fallback when component_id is not yet available
 
     # ── Binding hook ────────────────────────────────────────────────
 
@@ -203,7 +212,10 @@ class SpriteRenderer(BuiltinComponent):
                 try:
                     cpp_comp = obj.get_component("SpriteRenderer")
                     if cpp_comp is not None:
-                        SpriteRenderer._get_or_create_wrapper(cpp_comp, obj)
+                        w = SpriteRenderer._get_or_create_wrapper(cpp_comp, obj)
+                        # Default sprite_unlit is not a saved .mat — slot 0 is often
+                        # null in scene JSON; always push runtime material + texSampler.
+                        w._ensure_material()
                         count += 1
                 except Exception:
                     pass
@@ -228,6 +240,7 @@ class SpriteRenderer(BuiltinComponent):
         cpp = self._cpp_component
         if cpp is not None:
             cpp.sprite_guid = guid
+        self._ensure_material()
         self._load_sprite_data()
         self._apply_uv_rect()
 
@@ -369,6 +382,9 @@ class SpriteRenderer(BuiltinComponent):
         Debug.log(f"SpriteRenderer: resolved GUID = {guid!r}")
         if guid:
             _record_builtin_property(self, "sprite_guid", old, guid, "Set sprite")
+            # Ensure slot 0 has sprite_unlit before binding texSampler (C++ uses
+            # DefaultUnlit when material is null — reads as a white quad).
+            self._ensure_material()
             self._load_sprite_data()
             self._apply_uv_rect()
         else:
@@ -384,6 +400,9 @@ class SpriteRenderer(BuiltinComponent):
         self._sprite_frames = []
         self._tex_w = 0
         self._tex_h = 0
+        self._ensure_material()
+        self._load_sprite_data()
+        self._apply_uv_rect()
 
     def _on_material_drop(self, payload):
         mat_path = str(payload)
@@ -563,12 +582,18 @@ class SpriteRenderer(BuiltinComponent):
             mat.surface_type = "opaque"
             mat.alpha_clip_enabled = True
             mat.alpha_clip_threshold = 0.5
-            # Give each instance a unique name so GetMaterialKey() returns a
-            # unique key — the renderer shares UBO/descriptor data per key,
-            # so without this all SpriteRenderers would share one set of
-            # material properties (color, texture, uvRect).
-            SpriteRenderer._instance_counter += 1
-            mat._native.name = f"SpriteUnlit_Inst{SpriteRenderer._instance_counter}"
+            # Unique GetMaterialKey per SpriteRenderer (renderer batches by key).
+            # Prefer stable C++ component_id so Play/Stop and default materials
+            # line up; scene JSON often stores materials[] as null for runtime mats.
+            try:
+                cid = int(cpp.component_id)
+            except Exception:
+                cid = 0
+            if cid:
+                mat._native.name = f"SpriteUnlit_Runtime_{cid}"
+            else:
+                SpriteRenderer._instance_counter += 1
+                mat._native.name = f"SpriteUnlit_Inst{SpriteRenderer._instance_counter}"
             mat.set_color("baseColor", 1.0, 1.0, 1.0, 1.0)
             mat.set_vector4("uvRect", 0.0, 0.0, 1.0, 1.0)
             self._sprite_material = mat._native

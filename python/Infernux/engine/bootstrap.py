@@ -140,6 +140,21 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
 
         self._report_progress("Loading scene\u2026")
         self._load_initial_scene()
+        # Default SpriteRenderer materials are runtime-only (no .mat GUID). The game
+        # camera is otherwise enabled from GameViewPanel::on_render_content — if
+        # that panel has not drawn yet, request a full-speed frame so the first
+        # game RT pass still runs with materials created by init_all_in_scene.
+        if self.engine:
+            try:
+                self.engine.set_game_camera_enabled(True)
+            except Exception as _exc:
+                _log.debug("set_game_camera_enabled failed: %s", _exc)
+            try:
+                ne = self.engine.get_native_engine()
+                if ne:
+                    ne.request_full_speed_frame()
+            except Exception as _exc:
+                _log.debug("request_full_speed_frame failed: %s", _exc)
 
     def _report_progress(self, message: str):
         """Notify the launcher splash of the current bootstrap step."""

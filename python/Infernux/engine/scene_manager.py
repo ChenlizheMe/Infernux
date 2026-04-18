@@ -645,6 +645,12 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin, SceneConfirmationMixin)
         if self._on_scene_changed:
             self._on_scene_changed()
 
+        try:
+            from Infernux.components.builtin.sprite_renderer import SpriteRenderer
+            SpriteRenderer.init_all_in_scene(scene)
+        except Exception as exc:
+            Debug.log_internal(f"SpriteRenderer init after new scene: {exc}")
+
     @staticmethod
     def _populate_default_objects(scene) -> None:
         """Add a default Main Camera and Directional Light to *scene*.

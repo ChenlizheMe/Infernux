@@ -16,6 +16,24 @@
 
 namespace fs = std::filesystem;
 
+namespace
+{
+/// True when the mouse is over the docked/floating Inspector window (screen space).
+/// Prevents Project panel from clearing file selection when clicking empty Inspector space.
+bool IsMouseOverInspectorWindow()
+{
+    ImGuiWindow *win = ImGui::FindWindowByName("Inspector###inspector");
+    if (win == nullptr || win->Hidden)
+        return false;
+    const ImVec2 mp = ImGui::GetIO().MousePos;
+    const float x0 = win->Pos.x;
+    const float y0 = win->Pos.y;
+    const float x1 = x0 + win->SizeFull.x;
+    const float y1 = y0 + win->SizeFull.y;
+    return mp.x >= x0 && mp.x <= x1 && mp.y >= y0 && mp.y <= y1;
+}
+} // namespace
+
 // ImGui key constants
 static constexpr int kKeyLeftCtrl = ImGuiKey_LeftCtrl;
 static constexpr int kKeyRightCtrl = ImGuiKey_RightCtrl;
@@ -1605,7 +1623,7 @@ void ProjectPanel::OnRenderContent(InxGUIContext *ctx)
         hasSelection &&
         (ImGui::IsMouseClicked(0) || ImGui::IsMouseClicked(1) || ImGui::IsMouseClicked(2)) &&
         !ImGui::IsWindowHovered(ImGuiHoveredFlags_RootAndChildWindows) &&
-        !ImGui::IsAnyItemActive();
+        !ImGui::IsAnyItemActive() && !IsMouseOverInspectorWindow();
     if (clickedOutsideProject)
         ClearSelection();
 }

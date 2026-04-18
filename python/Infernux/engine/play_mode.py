@@ -279,6 +279,14 @@ class PlayModeManager(PlayModeSerializationMixin):
         # ── Step functions (closures capture self) ───────────────────
         def step_enter():
             """Save scene, rebuild from snapshot, and activate play — all in one frame."""
+            # Push default sprite_unlit + texSampler on C++ while BuiltinComponent
+            # cache is still valid (runtime mats are not in the JSON snapshot).
+            try:
+                from Infernux.components.builtin.sprite_renderer import SpriteRenderer
+                SpriteRenderer.init_all_in_scene()
+            except Exception as _exc:
+                Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+                pass
             # 1. Serialize scene + clear undo + init timing
             self._save_scene_state()
             from Infernux.engine.undo import UndoManager
@@ -645,6 +653,13 @@ class PlayModeManager(PlayModeSerializationMixin):
             Debug.log_internal(f"SpriteRenderer init after rebuild: {exc}")
 
         self._restore_pending_py_components()
+
+        # Awake/OnEnable may touch renderers; re-apply default materials + textures.
+        try:
+            from Infernux.components.builtin.sprite_renderer import SpriteRenderer
+            SpriteRenderer.init_all_in_scene()
+        except Exception as exc:
+            Debug.log_internal(f"SpriteRenderer init after py restore: {exc}")
 
         if restore_scene_path:
             self._restore_scene_file_path()
