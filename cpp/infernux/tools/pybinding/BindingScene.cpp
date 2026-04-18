@@ -625,6 +625,10 @@ void RegisterSceneBindings(py::module_ &m)
                 return result;
             },
             "Get all indices as a flat list")
+        .def_property(
+            "node_group", [](const MeshRenderer &mr) { return mr.GetNodeGroup(); },
+            [](MeshRenderer &mr, int32_t g) { mr.SetNodeGroup(g); },
+            "Assimp node-group index for split FBX objects (-1 = whole mesh)")
         .def_property_readonly(
             "mesh_asset_guid", [](const MeshRenderer &mr) -> std::string { return mr.GetMeshAssetGuid(); },
             "GUID of the mesh asset (empty if using inline mesh)")

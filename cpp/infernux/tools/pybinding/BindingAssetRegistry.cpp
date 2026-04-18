@@ -42,6 +42,7 @@ void RegisterAssetRegistryBindings(py::module_ &m)
                 d["vertex_start"] = sub.vertexStart;
                 d["vertex_count"] = sub.vertexCount;
                 d["material_slot"] = sub.materialSlot;
+                d["node_group"] = sub.nodeGroup;
                 d["bounds_min"] = py::make_tuple(sub.boundsMin.x, sub.boundsMin.y, sub.boundsMin.z);
                 d["bounds_max"] = py::make_tuple(sub.boundsMax.x, sub.boundsMax.y, sub.boundsMax.z);
                 return d;

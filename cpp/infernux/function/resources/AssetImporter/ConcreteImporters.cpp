@@ -10,12 +10,146 @@
 #include <assimp/postprocess.h>
 #include <assimp/scene.h>
 
+#include <algorithm>
+#include <assimp/material.h>
 #include <filesystem>
 #include <fstream>
+#include <glm/glm.hpp>
 #include <nlohmann/json.hpp>
+#include <unordered_map>
 
 namespace infernux
 {
+
+namespace
+{
+
+glm::mat4 AiToGlmImport(const aiMatrix4x4 &m)
+{
+    return glm::mat4(m.a1, m.b1, m.c1, m.d1, m.a2, m.b2, m.c2, m.d2, m.a3, m.b3, m.c3, m.d3, m.a4, m.b4, m.c4, m.d4);
+}
+
+struct CollectedMeshImport
+{
+    uint32_t meshIndex;
+    glm::mat4 worldTransform;
+    uint32_t nodeGroup;
+};
+
+static void CollectMeshesImport(const aiNode *node, const glm::mat4 &parentTransform,
+                                std::vector<CollectedMeshImport> &outMeshes, std::vector<std::string> &outNodeNames)
+{
+    glm::mat4 nodeTransform = parentTransform * AiToGlmImport(node->mTransformation);
+
+    if (node->mNumMeshes > 0) {
+        uint32_t group = static_cast<uint32_t>(outNodeNames.size());
+        outNodeNames.push_back(node->mName.C_Str());
+        for (unsigned int i = 0; i < node->mNumMeshes; ++i) {
+            outMeshes.push_back({node->mMeshes[i], nodeTransform, group});
+        }
+    }
+
+    for (unsigned int i = 0; i < node->mNumChildren; ++i) {
+        CollectMeshesImport(node->mChildren[i], nodeTransform, outMeshes, outNodeNames);
+    }
+}
+
+static nlohmann::json SerializeAiMaterialForImport(const aiMaterial *mat)
+{
+    nlohmann::json j;
+    aiString aiName;
+    mat->Get(AI_MATKEY_NAME, aiName);
+    std::string name = aiName.C_Str();
+    if (name.empty())
+        name = "Material";
+    j["name"] = name;
+
+    aiColor4D base(1.f, 1.f, 1.f, 1.f);
+    if (mat->Get(AI_MATKEY_BASE_COLOR, base) != AI_SUCCESS) {
+        if (mat->Get(AI_MATKEY_COLOR_DIFFUSE, base) != AI_SUCCESS) {
+            aiColor3D d3(1.f, 1.f, 1.f);
+            if (mat->Get(AI_MATKEY_COLOR_DIFFUSE, d3) == AI_SUCCESS) {
+                base.r = d3.r;
+                base.g = d3.g;
+                base.b = d3.b;
+                base.a = 1.f;
+            }
+        }
+    }
+
+    float opacity = 1.f;
+    if (mat->Get(AI_MATKEY_OPACITY, opacity) == AI_SUCCESS) {
+        base.a = std::clamp(opacity, 0.f, 1.f);
+    }
+
+    j["baseColor"] = nlohmann::json::array({base.r, base.g, base.b, base.a});
+
+    float metallic = 0.f;
+    mat->Get(AI_MATKEY_METALLIC_FACTOR, metallic);
+    j["metallic"] = static_cast<double>(std::clamp(metallic, 0.f, 1.f));
+
+    float rough = 0.5f;
+    if (mat->Get(AI_MATKEY_ROUGHNESS_FACTOR, rough) != AI_SUCCESS) {
+        float shininess = 0.f;
+        if (mat->Get(AI_MATKEY_SHININESS, shininess) == AI_SUCCESS && shininess > 1e-4f) {
+            rough = 1.f - std::clamp(std::sqrt(shininess / 128.f), 0.f, 1.f);
+        }
+    }
+    rough = std::clamp(rough, 0.f, 1.f);
+    j["smoothness"] = static_cast<double>(1.f - rough);
+
+    std::string texPath;
+    if (mat->GetTextureCount(aiTextureType_BASE_COLOR) > 0) {
+        aiString p;
+        if (mat->GetTexture(aiTextureType_BASE_COLOR, 0, &p) == AI_SUCCESS)
+            texPath = p.C_Str();
+    }
+    if (texPath.empty() && mat->GetTextureCount(aiTextureType_DIFFUSE) > 0) {
+        aiString p;
+        if (mat->GetTexture(aiTextureType_DIFFUSE, 0, &p) == AI_SUCCESS)
+            texPath = p.C_Str();
+    }
+    j["albedoTexturePath"] = texPath;
+
+    return j;
+}
+
+static void BuildMeshOrderedImportMaterials(const aiScene *scene, nlohmann::json &importMaterialsJson,
+                                            std::vector<std::string> &slotNamesOut)
+{
+    importMaterialsJson = nlohmann::json::array();
+    slotNamesOut.clear();
+    if (!scene || !scene->mRootNode)
+        return;
+
+    std::vector<CollectedMeshImport> collectedMeshes;
+    std::vector<std::string> nodeNames;
+    collectedMeshes.reserve(scene->mNumMeshes);
+    CollectMeshesImport(scene->mRootNode, glm::mat4(1.0f), collectedMeshes, nodeNames);
+
+    std::unordered_map<unsigned int, uint32_t> aiMatToSlot;
+
+    for (const auto &cm : collectedMeshes) {
+        const aiMesh *aiM = scene->mMeshes[cm.meshIndex];
+        if (!(aiM->mPrimitiveTypes & aiPrimitiveType_TRIANGLE))
+            continue;
+
+        auto it = aiMatToSlot.find(aiM->mMaterialIndex);
+        if (it != aiMatToSlot.end())
+            continue;
+
+        const uint32_t slot = static_cast<uint32_t>(importMaterialsJson.size());
+        aiMatToSlot[aiM->mMaterialIndex] = slot;
+
+        if (aiM->mMaterialIndex < scene->mNumMaterials) {
+            importMaterialsJson.push_back(SerializeAiMaterialForImport(scene->mMaterials[aiM->mMaterialIndex]));
+            const std::string &nm = importMaterialsJson.back()["name"].get_ref<const std::string &>();
+            slotNamesOut.push_back(nm);
+        }
+    }
+}
+
+} // namespace
 
 void MaterialImporter::ScanDependencies(const ImportContext &ctx)
 {
@@ -157,17 +291,11 @@ bool ModelImporter::Import(const ImportContext &ctx)
             totalIndices += aiM->mFaces[f].mNumIndices;
     }
 
-    // Extract unique material names
+    // Material slots + FBX/Assimp surface data — **same encounter order as MeshLoader**
+    // (not raw scene->mMaterials[] order, which can disagree with merged mesh slots).
+    nlohmann::json importMaterialsJson;
     std::vector<std::string> materialSlots;
-    materialSlots.reserve(scene->mNumMaterials);
-    for (unsigned int i = 0; i < scene->mNumMaterials; ++i) {
-        aiString aiName;
-        scene->mMaterials[i]->Get(AI_MATKEY_NAME, aiName);
-        std::string name = aiName.C_Str();
-        if (name.empty())
-            name = "Material_" + std::to_string(i);
-        materialSlots.push_back(std::move(name));
-    }
+    BuildMeshOrderedImportMaterials(scene, importMaterialsJson, materialSlots);
 
     // ── Write metadata to .meta ─────────────────────────────────────────
 
@@ -185,6 +313,9 @@ bool ModelImporter::Import(const ImportContext &ctx)
         slotsStr += materialSlots[i];
     }
     ctx.meta->AddMetadata("material_slots", slotsStr);
+
+    // Serialized JSON array: name, baseColor, metallic, smoothness, albedoTexturePath (relative to model file)
+    ctx.meta->AddMetadata("import_materials", importMaterialsJson.dump());
 
     INXLOG_INFO("ModelImporter: imported '", FromFsPath(sourcePath.filename()), "' — ", meshCount, " mesh(es), ",
                 totalVertices, " verts, ", totalIndices, " indices, ", materialSlots.size(), " material slot(s)");

@@ -208,14 +208,16 @@ class IGUI:
         clicked = False
         ctx.push_id_str(field_id)
 
-        # Leading spaces so label text lines up with scalar fields (Selectable clips tightly).
-        full_text = f"   {display_text} ({type_hint})"
+        full_text = f"{display_text} ({type_hint})"
         if len(full_text) > 38:
             full_text = full_text[:35] + "..."
 
         avail_width = ctx.get_content_region_avail_width()
+        lead = float(getattr(Theme, "OBJECT_FIELD_LEADING_INDENT", 0.0) or 0.0)
+        ctx.set_cursor_pos_x(ctx.get_cursor_pos_x() + lead)
+        inner_w = max(avail_width - lead, 10.0)
         btn_w = _MINI_ICON_BTN_SIDE if has_picker else 0.0
-        field_w = max(avail_width - btn_w, 10.0)
+        field_w = max(inner_w - btn_w, 10.0)
 
         # Match scalar field text inset; suppress ImGui's own frame border so hover
         # highlight aligns with our custom outline (avoids a sliver past the left edge).
@@ -225,7 +227,7 @@ class IGUI:
         ctx.push_style_var_float(ImGuiStyleVar.FrameBorderSize, 0.0)
         # Selectable uses Header* colors; match list-body fill so hover stays inside the outline.
         ctx.push_style_color(ImGuiCol.Header, *Theme.INSPECTOR_LIST_BODY_BG)
-        ctx.push_style_color(ImGuiCol.HeaderHovered, *Theme.INSPECTOR_LIST_BODY_BG)
+        ctx.push_style_color(ImGuiCol.HeaderHovered, *Theme.INSPECTOR_LIST_BODY_BG_HOVERED)
         ctx.push_style_color(ImGuiCol.HeaderActive, *Theme.INSPECTOR_LIST_BODY_BG)
 
         ctx.begin_group()
@@ -240,7 +242,7 @@ class IGUI:
         # ── Picker dot button ──
         if has_picker:
             ctx.same_line(0, 0)
-            ctx.set_cursor_pos_x(ctx.get_cursor_pos_x() + (avail_width - btn_w - field_w))
+            ctx.set_cursor_pos_x(ctx.get_cursor_pos_x() + (inner_w - btn_w - field_w))
             if IGUI._mini_icon_button(ctx, "##picker", Theme.ICON_IMG_PICKER, Theme.ICON_PICKER):
                 ctx.open_popup("##obj_picker")
                 _popup_needs_focus.add(field_id)

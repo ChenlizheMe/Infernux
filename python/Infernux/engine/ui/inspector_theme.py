@@ -26,6 +26,8 @@ class InspectorThemeBase:
     INSPECTOR_MIN_LABEL_WIDTH = 156.0
     INSPECTOR_FRAME_PAD = (4.0, 2.0)
     OBJECT_FIELD_TEXT_INSET_X: float = 12.0
+    # Whole object-reference row shifted right (ImGui "two cells" ~ 2× default spacing)
+    OBJECT_FIELD_LEADING_INDENT: float = 16.0
     INSPECTOR_ITEM_SPC = (4.0, 2.0)
     INSPECTOR_SUBITEM_SPC = (4.0, 2.0)
     INSPECTOR_SECTION_GAP = 6.0
@@ -72,6 +74,7 @@ class InspectorThemeBase:
 
     # -- List body
     INSPECTOR_LIST_BODY_BG: RGBA = (0.10, 0.10, 0.10, 0.82)
+    INSPECTOR_LIST_BODY_BG_HOVERED: RGBA = (0.20, 0.20, 0.22, 0.92)
     INSPECTOR_LIST_BODY_BORDER: RGBA = (0.22, 0.22, 0.22, 1.0)
     INSPECTOR_LIST_BODY_ROUNDING: float = 0.0
     INSPECTOR_LIST_BODY_PAD_X: float = 4.0

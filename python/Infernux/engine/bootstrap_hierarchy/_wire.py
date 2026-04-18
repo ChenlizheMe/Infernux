@@ -238,6 +238,13 @@ def _wire_drop_and_delete(ctx):
             return
         new_obj = scene.create_from_model(guid)
         if new_obj:
+            try:
+                from Infernux.engine.model_import_materials import (
+                    apply_imported_materials_to_model_instance,
+                )
+                apply_imported_materials_to_model_instance(new_obj, guid)
+            except Exception as _exc:
+                Debug.log_warning(f"Model import materials: {_exc}")
             from Infernux.lib import SceneManager as _SM2
             _finalize_drop(new_obj, parent_id, "Create Model",
                            sel, undo, hp, _SM2)

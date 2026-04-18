@@ -745,6 +745,7 @@ class MeshRenderer(Component):
     casts_shadows: bool
     receives_shadows: bool
     submesh_index: int
+    node_group: int
     mesh_pivot_offset: Vector3
 
     def get_world_bounds(self) -> Tuple[float, float, float, float, float, float]: ...
