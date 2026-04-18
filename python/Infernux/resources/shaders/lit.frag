@@ -15,6 +15,7 @@
 @property: smoothnessMap, Texture2D, white
 @property: aoMap, Texture2D, white
 @property: normalMap, Texture2D, normal
+@property: emissionMap, Texture2D, white
 
 void surface(out SurfaceData s) {
     s = InitSurfaceData();
@@ -25,7 +26,8 @@ void surface(out SurfaceData s) {
     s.smoothness = sampleGrayscale(smoothnessMap) * material.smoothness;
     s.occlusion  = sampleGrayscale(aoMap) * material.ambientOcclusion;
     s.normalWS   = sampleNormal(normalMap, material.normalScale);
-    s.emission   = material.emissionColor.rgb * material.emissionColor.a;
+    vec3 emissiveTex = sampleAlbedo(emissionMap);
+    s.emission   = emissiveTex * material.emissionColor.rgb * material.emissionColor.a;
     s.alpha      = texColor.a * material.baseColor.a;
     s.specularHighlights = material.specularHighlights;
 }

@@ -40,6 +40,7 @@ _LIT_MAT_TEMPLATE: Dict[str, Any] = {
         "smoothnessMap": {"type": 6, "guid": ""},
         "aoMap": {"type": 6, "guid": ""},
         "normalMap": {"type": 6, "guid": ""},
+        "emissionMap": {"type": 6, "guid": ""},
     },
 }
 
@@ -126,12 +127,14 @@ def _lit_mat_dict(spec: Dict[str, Any], mesh_dir: str, adb, albedo_guid: str) ->
 
     norm_g = _resolve_texture_guid(mesh_dir, str(spec.get("normalTexturePath", "") or ""), adb)
     ao_g = _resolve_texture_guid(mesh_dir, str(spec.get("occlusionTexturePath", "") or ""), adb)
+    emis_g = _resolve_texture_guid(mesh_dir, str(spec.get("emissionTexturePath", "") or ""), adb)
 
     root["properties"]["texSampler"]["guid"] = albedo_guid or ""
     root["properties"]["metallicMap"]["guid"] = met_g or ""
     root["properties"]["smoothnessMap"]["guid"] = rough_g or ""
     root["properties"]["normalMap"]["guid"] = norm_g or ""
     root["properties"]["aoMap"]["guid"] = ao_g or ""
+    root["properties"]["emissionMap"]["guid"] = emis_g or ""
     return root
 
 

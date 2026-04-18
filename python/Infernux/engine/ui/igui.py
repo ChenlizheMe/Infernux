@@ -208,7 +208,10 @@ class IGUI:
         clicked = False
         ctx.push_id_str(field_id)
 
-        full_text = f"{display_text} ({type_hint})"
+        _prefix = getattr(Theme, "OBJECT_FIELD_LEADING_PREFIX", None)
+        if not isinstance(_prefix, str):
+            _prefix = "  "
+        full_text = f"{_prefix}{display_text} ({type_hint})"
         if len(full_text) > 38:
             full_text = full_text[:35] + "..."
 
@@ -216,10 +219,7 @@ class IGUI:
         btn_w = _MINI_ICON_BTN_SIDE if has_picker else 0.0
         field_w = max(avail_width - btn_w, 10.0)
 
-        # Inner text inset only: keep the selectable + outline at full content width;
-        # indent label text via extra left FramePadding (do not move the whole widget).
-        _lead = float(getattr(Theme, "OBJECT_FIELD_LEADING_INDENT", 0.0) or 0.0)
-        _fpx = Theme.INSPECTOR_FRAME_PAD[0] + Theme.OBJECT_FIELD_TEXT_INSET_X + _lead
+        _fpx = Theme.INSPECTOR_FRAME_PAD[0] + Theme.OBJECT_FIELD_TEXT_INSET_X
         _fpy = Theme.INSPECTOR_FRAME_PAD[1]
 
         ctx.push_style_var_vec2(ImGuiStyleVar.FramePadding, _fpx, _fpy)
@@ -236,7 +236,7 @@ class IGUI:
             if ctx.selectable(full_text, selected, 0, field_w, 0.0):
                 clicked = True
         else:
-            ctx.selectable(f"[{full_text}]", False, 0, field_w, 0.0)
+            ctx.selectable(full_text, False, 0, field_w, 0.0)
 
         # ── Picker dot button ──
         if has_picker:

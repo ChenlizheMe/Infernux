@@ -852,6 +852,7 @@ std::shared_ptr<InxMaterial> InxMaterial::CreateDefaultLit()
     material->SetColor("emissionColor", glm::vec4(0.0f, 0.0f, 0.0f, 0.0f));
     material->SetFloat("normalScale", 1.0f);
     material->SetFloat("specularHighlights", 1.0f);
+    material->SetTextureGuid("emissionMap", std::string{});
 
     // Mark as built-in (shader cannot be changed by user)
     material->SetBuiltin(true);

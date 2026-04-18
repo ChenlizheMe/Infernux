@@ -26,8 +26,8 @@ class InspectorThemeBase:
     INSPECTOR_MIN_LABEL_WIDTH = 156.0
     INSPECTOR_FRAME_PAD = (4.0, 2.0)
     OBJECT_FIELD_TEXT_INSET_X: float = 12.0
-    # Extra left padding **inside** the object-field selectable (text only); outline stays full width.
-    OBJECT_FIELD_LEADING_INDENT: float = 16.0
+    # Prepended to object-field label text (resource indent). Use spaces, not layout hacks.
+    OBJECT_FIELD_LEADING_PREFIX: str = "  "
     INSPECTOR_ITEM_SPC = (4.0, 2.0)
     INSPECTOR_SUBITEM_SPC = (4.0, 2.0)
     INSPECTOR_SECTION_GAP = 6.0
