@@ -526,6 +526,10 @@ class InxVkCoreModular
     void CreateMaterialShadowPipeline(std::shared_ptr<InxMaterial> material, const std::string &vertShaderName,
                                       const std::string &fragShaderName);
 
+    /// Shadow pipeline layout always includes set 2; bind this when a material
+    /// has no per-material shadow descriptors (e.g. alpha clip off, no vtx UBO).
+    bool EnsureShadowMaterialDummyDescriptorSet();
+
     /// @brief Initialize material system (default material, pipelines)
     void InitializeMaterialSystem();
 
@@ -1033,6 +1037,8 @@ class InxVkCoreModular
     // ========================================================================
     VkDescriptorSetLayout m_perViewDescSetLayout = VK_NULL_HANDLE;
     VkDescriptorPool m_perViewDescPool = VK_NULL_HANDLE;
+    /// Valid dummy bindings for layout set 2 (never freed per material).
+    VkDescriptorSet m_shadowMaterialDummyDescSet = VK_NULL_HANDLE;
     VkDescriptorSet m_activeShadowDescSet = VK_NULL_HANDLE; ///< Currently active per-view desc for draw calls
 
     /// Shadow cascade VP override for DrawShadowCasters CPU-side frustum culling.

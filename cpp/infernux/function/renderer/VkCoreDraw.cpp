@@ -735,8 +735,12 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
         }
         if (pip == VK_NULL_HANDLE)
             continue; // no per-material shadow pipeline available, skip
-        m_shadowDrawScratch.push_back(
-            {&dc, bufIt, pip, dc.material->GetPassDescriptorSet(ShaderCompileTarget::Shadow), dc.worldBounds});
+        // m_shadowDrawScratch.push_back(
+        //     {&dc, bufIt, pip, dc.material->GetPassDescriptorSet(ShaderCompileTarget::Shadow), dc.worldBounds});
+        VkDescriptorSet shadowMatDesc = dc.material->GetPassDescriptorSet(ShaderCompileTarget::Shadow);
+        if (shadowMatDesc == VK_NULL_HANDLE)
+            shadowMatDesc = m_shadowMaterialDummyDescSet;
+        m_shadowDrawScratch.push_back({&dc, bufIt, pip, shadowMatDesc, dc.worldBounds});
     }
 
 #if INFERNUX_FRAME_PROFILE
@@ -925,11 +929,13 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
                 lastBoundPipeline = sd.shadowPipeline;
             }
 
-            if (sd.shadowMaterialDescSet != lastBoundShadowMaterialDescSet &&
-                sd.shadowMaterialDescSet != VK_NULL_HANDLE) {
-                vkCmdBindDescriptorSets(cmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS, m_shadowPipelineLayout, 2, 1,
-                                        &sd.shadowMaterialDescSet, 0, nullptr);
-                lastBoundShadowMaterialDescSet = sd.shadowMaterialDescSet;
+            VkDescriptorSet matDesc = sd.shadowMaterialDescSet;
+            if (matDesc == VK_NULL_HANDLE)
+                matDesc = m_shadowMaterialDummyDescSet;
+            if (matDesc != lastBoundShadowMaterialDescSet && matDesc != VK_NULL_HANDLE) {
+                vkCmdBindDescriptorSets(cmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS, m_shadowPipelineLayout, 2, 1, &matDesc,
+                                        0, nullptr);
+                lastBoundShadowMaterialDescSet = matDesc;
             }
 
             if (vb != currentVertexBuffer) {
@@ -1227,7 +1233,7 @@ bool InxVkCoreModular::EnsureShadowPipeline(VkRenderPass /*compatibleRenderPass*
             return false;
         }
     }
-
+    (void)EnsureShadowMaterialDummyDescriptorSet();
     m_shadowPipelineReady = true;
     // INXLOG_INFO("Shadow pipeline infrastructure created successfully");
     return true;
@@ -1264,6 +1270,10 @@ void InxVkCoreModular::CleanupShadowPipeline()
     if (m_shadowPipelineLayout != VK_NULL_HANDLE) {
         vkDestroyPipelineLayout(device, m_shadowPipelineLayout, nullptr);
         m_shadowPipelineLayout = VK_NULL_HANDLE;
+    }
+    if (m_shadowMaterialDummyDescSet != VK_NULL_HANDLE && m_shadowMaterialDescPool != VK_NULL_HANDLE) {
+        vkFreeDescriptorSets(device, m_shadowMaterialDescPool, 1, &m_shadowMaterialDummyDescSet);
+        m_shadowMaterialDummyDescSet = VK_NULL_HANDLE;
     }
     if (m_shadowDescPool != VK_NULL_HANDLE) {
         vkDestroyDescriptorPool(device, m_shadowDescPool, nullptr);

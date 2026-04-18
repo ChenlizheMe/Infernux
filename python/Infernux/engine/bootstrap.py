@@ -141,6 +141,18 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
         self._report_progress("Loading scene\u2026")
         self._load_initial_scene()
 
+        if self.engine:
+            try:
+                self.engine.set_game_camera_enabled(True)
+            except Exception as _exc:
+                pass
+            try:
+                ne = self.engine.get_native_engine()
+                if ne:
+                    ne.request_full_speed_frame()
+            except Exception as _exc:
+                pass
+
     def _report_progress(self, message: str):
         """Notify the launcher splash of the current bootstrap step."""
         self._progress_step += 1
@@ -340,7 +352,6 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
                 if buf.value:
                     docs_dir = pathlib.Path(buf.value)
             except (OSError, ValueError) as _exc:
-                Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
                 pass
         if docs_dir is None:
             docs_dir = pathlib.Path.home() / "Documents"
@@ -359,7 +370,6 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
             try:
                 os.remove(old_ini)
             except OSError as _exc:
-                Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
                 pass
 
         need_reset = True
@@ -369,7 +379,6 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
                     if f.read().strip() == str(_LAYOUT_VERSION):
                         need_reset = False
             except OSError as _exc:
-                Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
                 pass
         if need_reset:
             if os.path.isfile(imgui_ini_path):

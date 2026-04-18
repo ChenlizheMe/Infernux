@@ -820,6 +820,72 @@ VkShaderModule InxVkCoreModular::GetShaderModule(const std::string &name, const 
 // Per-material shadow pipeline creation
 // ============================================================================
 
+bool InxVkCoreModular::EnsureShadowMaterialDummyDescriptorSet()
+{
+    if (m_shadowMaterialDummyDescSet != VK_NULL_HANDLE)
+        return true;
+    if (m_shadowMaterialDescPool == VK_NULL_HANDLE || m_shadowMaterialDescSetLayout == VK_NULL_HANDLE)
+        return false;
+    VkDevice device = GetDevice();
+    auto *defaultTex = m_textureCache.Find("white");
+    if (!defaultTex || defaultTex->GetView() == VK_NULL_HANDLE || defaultTex->GetSampler() == VK_NULL_HANDLE)
+        return false;
+    if (m_uniformBuffers.empty() || !m_uniformBuffers[0])
+        return false;
+    VkDescriptorSetAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    allocInfo.descriptorPool = m_shadowMaterialDescPool;
+    allocInfo.descriptorSetCount = 1;
+    allocInfo.pSetLayouts = &m_shadowMaterialDescSetLayout;
+    VkDescriptorSet set = VK_NULL_HANDLE;
+    if (vkAllocateDescriptorSets(device, &allocInfo, &set) != VK_SUCCESS)
+        return false;
+    static constexpr uint32_t kMaxShadowTextures = 8;
+    std::vector<VkDescriptorImageInfo> imageInfos(kMaxShadowTextures);
+    std::vector<VkWriteDescriptorSet> writes;
+    writes.reserve(kMaxShadowTextures + 2);
+    for (uint32_t i = 0; i < kMaxShadowTextures; ++i) {
+        imageInfos[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        imageInfos[i].imageView = defaultTex->GetView();
+        imageInfos[i].sampler = defaultTex->GetSampler();
+        VkWriteDescriptorSet w{};
+        w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        w.dstSet = set;
+        w.dstBinding = i;
+        w.descriptorCount = 1;
+        w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        w.pImageInfo = &imageInfos[i];
+        writes.push_back(w);
+    }
+    VkDescriptorBufferInfo fragBi{};
+    fragBi.buffer = m_uniformBuffers[0]->GetBuffer();
+    fragBi.offset = 0;
+    fragBi.range = 16;
+    VkWriteDescriptorSet wf{};
+    wf.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    wf.dstSet = set;
+    wf.dstBinding = kMaxShadowTextures;
+    wf.descriptorCount = 1;
+    wf.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    wf.pBufferInfo = &fragBi;
+    VkDescriptorBufferInfo vtxBi{};
+    vtxBi.buffer = m_uniformBuffers[0]->GetBuffer();
+    vtxBi.offset = 0;
+    vtxBi.range = 16;
+    VkWriteDescriptorSet wv{};
+    wv.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    wv.dstSet = set;
+    wv.dstBinding = 14;
+    wv.descriptorCount = 1;
+    wv.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    wv.pBufferInfo = &vtxBi;
+    writes.push_back(wf);
+    writes.push_back(wv);
+    vkUpdateDescriptorSets(device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+    m_shadowMaterialDummyDescSet = set;
+    return true;
+}
+
 void InxVkCoreModular::CreateMaterialShadowPipeline(std::shared_ptr<InxMaterial> material,
                                                     const std::string &vertShaderName,
                                                     const std::string &fragShaderName)
@@ -843,7 +909,8 @@ void InxVkCoreModular::CreateMaterialShadowPipeline(std::shared_ptr<InxMaterial>
     bool needsShadowMaterialDesc = hasVertexMaterialUBO || hasAlphaClip;
 
     auto retireOldShadowDescriptorSet = [&](VkDescriptorSet descriptorSet) {
-        if (descriptorSet == VK_NULL_HANDLE || m_shadowMaterialDescPool == VK_NULL_HANDLE) {
+        if (descriptorSet == VK_NULL_HANDLE || descriptorSet == m_shadowMaterialDummyDescSet ||
+            m_shadowMaterialDescPool == VK_NULL_HANDLE) {
             return;
         }
         if (m_shadowPipelineReady) {
@@ -864,7 +931,8 @@ void InxVkCoreModular::CreateMaterialShadowPipeline(std::shared_ptr<InxMaterial>
         }
 
         VkDescriptorSet oldShadowDescSet = material->GetPassDescriptorSet(ShaderCompileTarget::Shadow);
-        if (oldShadowDescSet != VK_NULL_HANDLE) {
+        if (oldShadowDescSet != VK_NULL_HANDLE && oldShadowDescSet != m_shadowMaterialDummyDescSet) {
+
             retireOldShadowDescriptorSet(oldShadowDescSet);
             material->SetPassDescriptorSet(ShaderCompileTarget::Shadow, VK_NULL_HANDLE);
         }
@@ -1079,8 +1147,15 @@ void InxVkCoreModular::CreateMaterialShadowPipeline(std::shared_ptr<InxMaterial>
 
         material->SetPassDescriptorSet(ShaderCompileTarget::Shadow, shadowMaterialDescSet);
     } else {
-        retireOldShadowDescriptorSet(material->GetPassDescriptorSet(ShaderCompileTarget::Shadow));
-        material->SetPassDescriptorSet(ShaderCompileTarget::Shadow, VK_NULL_HANDLE);
+        VkDescriptorSet old = material->GetPassDescriptorSet(ShaderCompileTarget::Shadow);
+        if (old != VK_NULL_HANDLE && old != m_shadowMaterialDummyDescSet) {
+            retireOldShadowDescriptorSet(old);
+        }
+        if (EnsureShadowMaterialDummyDescriptorSet()) {
+            material->SetPassDescriptorSet(ShaderCompileTarget::Shadow, m_shadowMaterialDummyDescSet);
+        } else {
+            material->SetPassDescriptorSet(ShaderCompileTarget::Shadow, VK_NULL_HANDLE);
+        }
     }
 
     // Vertex shader: prefer shadow vertex variant, fall back to forward pass vertex shader

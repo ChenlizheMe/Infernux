@@ -203,7 +203,9 @@ class SpriteRenderer(BuiltinComponent):
                 try:
                     cpp_comp = obj.get_component("SpriteRenderer")
                     if cpp_comp is not None:
-                        SpriteRenderer._get_or_create_wrapper(cpp_comp, obj)
+                        # SpriteRenderer._get_or_create_wrapper(cpp_comp, obj)
+                        w = SpriteRenderer._get_or_create_wrapper(cpp_comp, obj)
+                        w._ensure_material()
                         count += 1
                 except Exception:
                     pass

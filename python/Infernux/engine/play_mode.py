@@ -279,6 +279,12 @@ class PlayModeManager(PlayModeSerializationMixin):
         # ── Step functions (closures capture self) ───────────────────
         def step_enter():
             """Save scene, rebuild from snapshot, and activate play — all in one frame."""
+            try:
+                from Infernux.components.builtin.sprite_renderer import SpriteRenderer
+                SpriteRenderer.init_all_in_scene()
+            except Exception as _exc:
+                Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+                pass
             # 1. Serialize scene + init timing (do not clear undo — asset editors keep history)
             self._save_scene_state()
             self._last_frame_time = time.time()
@@ -640,6 +646,12 @@ class PlayModeManager(PlayModeSerializationMixin):
             Debug.log_internal(f"SpriteRenderer init after rebuild: {exc}")
 
         self._restore_pending_py_components()
+
+        try:
+            from Infernux.components.builtin.sprite_renderer import SpriteRenderer
+            SpriteRenderer.init_all_in_scene()
+        except Exception as exc:
+            Debug.log_internal(f"SpriteRenderer init after py restore: {exc}")
 
         if restore_scene_path:
             self._restore_scene_file_path()

@@ -45,6 +45,7 @@ def _rebuild_material_entries(renderers):
     """Build the valid_entries list from collected renderers."""
     valid_entries = []
     for renderer, mat_count, material_guids, slot_names in renderers:
+        renderer_type = getattr(renderer, "type_name", "") or ""
         for slot_idx in range(mat_count):
             try:
                 mat = renderer.get_effective_material(slot_idx)
@@ -61,6 +62,7 @@ def _rebuild_material_entries(renderers):
                 "label": label,
                 "material": mat,
                 "is_default": is_default,
+                "renderer_type": renderer_type,
             })
     return valid_entries
 
@@ -152,13 +154,22 @@ def wire_material_sections(ip, _t, engine, _inspector_support,
 
             if entry["is_default"]:
                 render_info_text(ctx, "Using the renderer's effective default material")
-
+            lock_inline_material_body = (
+                entry.get("renderer_type") == "SpriteRenderer"
+                and entry["is_default"]
+            )
             adapter = _make_inline_material_panel_adapter()
             ctx.push_id(index)
             try:
-                mat_ui.render_inline_material_body(
-                    ctx, adapter, entry["material"],
-                    cache_key=f"obj_mat_{obj_id}_{index}")
+                if lock_inline_material_body:
+                    ctx.begin_disabled(True)
+                try:
+                    mat_ui.render_inline_material_body(
+                        ctx, adapter, entry["material"],
+                        cache_key=f"obj_mat_{obj_id}_{index}")
+                finally:
+                    if lock_inline_material_body:
+                        ctx.end_disabled()
             finally:
                 ctx.pop_id()
                 adapter._sync_back()
