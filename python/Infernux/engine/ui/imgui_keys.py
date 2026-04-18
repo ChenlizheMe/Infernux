@@ -30,7 +30,10 @@ KEY_SPACE       = 524
 KEY_ENTER       = 525
 KEY_ESCAPE      = 526
 
-# ── Modifiers ─────────────────────────────────────────────────────────
+# ── Modifiers (ImGuiKey_ModXXX bit flags, matches imgui.h) ─────────────
+MOD_CTRL = 1 << 12  # 4096 — use with ``ctx.is_key_down(MOD_CTRL)``
+
+# ── Modifiers (named keys) ────────────────────────────────────────────
 KEY_LEFT_CTRL   = 527
 KEY_LEFT_SHIFT  = 528
 KEY_LEFT_ALT    = 529

@@ -23,6 +23,7 @@ from .inspector_utils import (
     DRAG_SPEED_DEFAULT, MIN_LABEL_WIDTH,
 )
 from .theme import Theme, ImGuiCol, ImGuiStyleVar, ImGuiTreeNodeFlags
+from .panel_spacing import push_inspector_material_block
 
 if TYPE_CHECKING:
     from Infernux.renderstack.render_stack import RenderStack, PassEntry
@@ -254,8 +255,7 @@ def _render_pass_bar(ctx: InxGUIContext, label: str, uid: int) -> None:
 
 def render_renderstack_inspector(ctx: InxGUIContext, stack: "RenderStack") -> None:
     inspector_state = _get_renderstack_inspector_state(stack)
-    ctx.push_style_var_vec2(ImGuiStyleVar.FramePadding, *Theme.INSPECTOR_FRAME_PAD)
-    ctx.push_style_var_vec2(ImGuiStyleVar.ItemSpacing, *Theme.INSPECTOR_ITEM_SPC)
+    push_inspector_material_block(ctx)
     section_t0 = _time.perf_counter()
     _render_pipeline(ctx, stack, inspector_state)
     _record_profile_timing("renderstackPipeline", section_t0)

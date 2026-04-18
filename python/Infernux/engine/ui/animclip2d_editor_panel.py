@@ -21,6 +21,7 @@ from Infernux.engine.i18n import t
 from Infernux.lib import InxGUIContext
 
 from .editor_panel import EditorPanel
+from .imgui_keys import KEY_S, MOD_CTRL
 from .igui import IGUI
 from .panel_registry import editor_panel
 from .theme import Theme, ImGuiCol, ImGuiStyleVar
@@ -146,13 +147,9 @@ class AnimClip2DEditorPanel(EditorPanel):
     # Render — layout: header -> tabs -> preview/details -> sequence -> palette
     # ------------------------------------------------------------------
 
-    # ImGuiKey / ImGuiMod constants
-    _IMGUI_MOD_CTRL = 1 << 12  # 4096
-    _IMGUI_KEY_S = 564
-
     def on_render_content(self, ctx: InxGUIContext):
         # Ctrl+S save shortcut
-        if ctx.is_key_down(self._IMGUI_MOD_CTRL) and ctx.is_key_pressed(self._IMGUI_KEY_S):
+        if ctx.is_key_down(MOD_CTRL) and ctx.is_key_pressed(KEY_S):
             clip = self._active_clip
             if clip is not None and self._tex is not None and len(clip.frame_indices) > 0:
                 self._save_clip(clip)

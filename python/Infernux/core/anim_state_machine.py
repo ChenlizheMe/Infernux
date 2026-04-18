@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 
 @dataclass
@@ -126,9 +126,11 @@ class AnimState:
     transitions: List[AnimTransition] = field(default_factory=list)
     # Visual position in the node editor (editor-only, persisted for convenience)
     position: List[float] = field(default_factory=lambda: [0.0, 0.0])
+    # Optional RGBA for graph node header (editor-only); None = type default
+    header_color: Optional[Tuple[float, float, float, float]] = None
 
     def to_dict(self) -> dict:
-        return {
+        d: Dict[str, Any] = {
             "name": self.name,
             "clip_guid": self.clip_guid,
             "clip_path": self.clip_path,
@@ -139,9 +141,20 @@ class AnimState:
             "transitions": [t.to_dict() for t in self.transitions],
             "position": list(self.position),
         }
+        if self.header_color is not None:
+            d["header_color"] = [float(x) for x in self.header_color]
+        return d
 
     @classmethod
     def from_dict(cls, d: dict) -> AnimState:
+        hc_raw = d.get("header_color")
+        header_color: Optional[Tuple[float, float, float, float]] = None
+        if isinstance(hc_raw, (list, tuple)) and len(hc_raw) >= 3:
+            hr = max(0.0, min(1.0, float(hc_raw[0])))
+            hg = max(0.0, min(1.0, float(hc_raw[1])))
+            hb = max(0.0, min(1.0, float(hc_raw[2])))
+            ha = max(0.0, min(1.0, float(hc_raw[3]))) if len(hc_raw) > 3 else 1.0
+            header_color = (hr, hg, hb, ha)
         return cls(
             name=str(d.get("name", "New State")),
             clip_guid=str(d.get("clip_guid", "")),
@@ -154,6 +167,7 @@ class AnimState:
             restart_same_clip=bool(d.get("restart_same_clip", False)),
             transitions=[AnimTransition.from_dict(t) for t in d.get("transitions", [])],
             position=list(d.get("position", [0.0, 0.0])),
+            header_color=header_color,
         )
 
 

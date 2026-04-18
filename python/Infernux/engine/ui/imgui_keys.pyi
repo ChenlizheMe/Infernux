@@ -26,6 +26,9 @@ KEY_SPACE: int
 KEY_ENTER: int
 KEY_ESCAPE: int
 
+# Modifier bit flags (use with ``ctx.is_key_down(MOD_CTRL)``)
+MOD_CTRL: int
+
 # Modifiers
 KEY_LEFT_CTRL: int
 KEY_LEFT_SHIFT: int

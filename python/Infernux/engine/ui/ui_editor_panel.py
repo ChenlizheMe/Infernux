@@ -458,6 +458,11 @@ class UIEditorPanel(UIEditorCanvasOps, UIEditorGeometryMixin, UIEditorAlignmentM
 
         area = (area_min_x, area_min_y, area_max_x, area_max_y)
         ctx.push_draw_list_clip_rect(*area, True)
+        ws = Theme.UI_EDITOR_WORKSPACE_BG
+        ctx.draw_filled_rect(
+            area_min_x, area_min_y, area_max_x, area_max_y,
+            ws[0], ws[1], ws[2], ws[3], 0.0,
+        )
         hovered_canvas_id, hovered_elem, hovered_all = self._draw_canvases_and_hittest(
             ctx, all_canvases, inp, area)
         self._draw_selection_overlay(
@@ -673,6 +678,12 @@ class UIEditorPanel(UIEditorCanvasOps, UIEditorGeometryMixin, UIEditorAlignmentM
             bg = Theme.UI_EDITOR_CANVAS_BG
             ctx.draw_filled_rect(v_tl_x, v_tl_y, v_br_x, v_br_y,
                                  bg[0], bg[1], bg[2], bg[3] * alpha_mult, 0.0)
+            bd = Theme.UI_EDITOR_CANVAS_BORDER
+            ctx.draw_rect(
+                v_tl_x, v_tl_y, v_br_x, v_br_y,
+                bd[0], bd[1], bd[2], bd[3] * alpha_mult,
+                Theme.NODE_GRAPH_NODE_BORDER_THICKNESS, 0.0,
+            )
 
     def _hittest_canvas_hover(self, inp, canvas, canvas_go, is_active, is_focused,
                               origin_x, origin_y, ref_w, ref_h, pick_tol, bounds,

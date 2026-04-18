@@ -37,6 +37,7 @@ from Infernux.engine.i18n import t
 from Infernux.lib import InxGUIContext
 
 from .editor_panel import EditorPanel
+from .imgui_keys import KEY_S, MOD_CTRL
 from .node_graph_view import NodeGraphView
 from ._inspector_references import render_object_field, _picker_assets
 from .inspector_utils import field_label, max_label_w
@@ -199,11 +200,19 @@ _STATE_TYPE = NodeTypeDef(
     label="State",
     header_color=(0.20, 0.20, 0.22, 1.0),
     pins=[
-        PinDef(id="in", label="In", kind=PinKind.INPUT, color=(0.50, 0.52, 0.55, 1.0)),
+        PinDef(
+            id="in",
+            label="In",
+            kind=PinKind.INPUT,
+            color=(0.50, 0.52, 0.55, 1.0),
+            max_connections=1,
+        ),
         PinDef(id="out", label="Out", kind=PinKind.OUTPUT, color=(0.52, 0.54, 0.56, 1.0)),
     ],
-    min_width=172.0,
+    min_width=148.0,
     body_bottom_pad=0.0,
+    header_color_swatch=True,
+    pin_label_color=(0.93, 0.94, 0.96, 1.0),
 )
 
 _ENTRY_TYPE = NodeTypeDef(
@@ -217,8 +226,8 @@ _ENTRY_TYPE = NodeTypeDef(
     deletable=False,
 )
 
-_DETAIL_PANEL_W = 288.0
-_VARS_PANEL_W = 280.0
+_DETAIL_PANEL_W = 232.0
+_VARS_PANEL_W = 216.0
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -278,9 +287,16 @@ class AnimFSMEditorPanel(EditorPanel):
         self._undo_drag_snapshot: Optional[dict] = None
         self._pending_selection_undo_before: Optional[dict] = None
         self._clipboard_fsm_nodes: Optional[dict] = None
+        self._hdr_color_popup_undo_before: Optional[dict] = None
+        self._view.on_node_header_color_begin = self._on_node_header_color_popup_begin
+        self._view.on_node_header_color_end = self._on_node_header_color_popup_end
+        self._view.on_node_header_color_changed = self._on_node_header_color_changed
 
         self._view.on_copy = self._on_graph_copy
         self._view.on_paste = self._on_graph_paste
+
+        # After toolbar "New", do not resurrect ``file_path`` from panel_state.json.
+        self._explicit_new_without_disk: bool = False
 
         # Start with a blank FSM
         self._new_fsm()
@@ -289,12 +305,27 @@ class AnimFSMEditorPanel(EditorPanel):
 
     def _open_animfsm(self, file_path: str):
         """Load an .animfsm file into the editor."""
-        fsm = AnimStateMachine.load(file_path)
+        fp = os.path.normpath((file_path or "").strip())
+        if not fp:
+            return
+        if not os.path.isabs(fp):
+            try:
+                from Infernux.engine.project_context import get_project_root
+
+                root = get_project_root()
+            except Exception:
+                root = None
+            if root:
+                fp = os.path.normpath(os.path.join(root, fp.replace("/", os.sep)))
+            else:
+                fp = os.path.normpath(os.path.abspath(fp))
+        fsm = AnimStateMachine.load(fp)
         if fsm is None:
-            Debug.log_warning(f"Failed to load animfsm: {file_path}")
+            Debug.log_warning(f"Failed to load animfsm: {fp}")
             return
         self._fsm = fsm
-        self._file_path = file_path
+        self._file_path = fp
+        self._explicit_new_without_disk = False
         self._selected_uid = ""
         self._dirty = False
         for state in fsm.states:
@@ -304,12 +335,15 @@ class AnimFSMEditorPanel(EditorPanel):
                 state.clip_path = ""
         self._sync_graph_from_fsm()
 
-    def _new_fsm(self):
+    def _new_fsm(self, *, user_initiated: bool = False):
         """Create a blank FSM for editing."""
         self._fsm = AnimStateMachine(name="New State Machine")
         self._file_path = ""
+        if user_initiated:
+            self._explicit_new_without_disk = True
         self._selected_uid = ""
         self._dirty = False
+        self._view.reset_camera_defaults()
         self._sync_graph_from_fsm()
 
     # ── Lifecycle ──────────────────────────────────────────────────────
@@ -349,12 +383,41 @@ class AnimFSMEditorPanel(EditorPanel):
 
     def save_state(self) -> dict:
         """Persist open file path even if ``_open_animfsm`` is deferred to first frame."""
+        from Infernux.engine.ui import panel_state as _ps
+
         data: dict = {}
         fp = (self._file_path or "").strip()
+        if not fp and self._fsm is not None:
+            fp = (getattr(self._fsm, "file_path", None) or "").strip()
         rel_fallback = ""
         if not fp and self._panel_restore_data:
             fp = (self._panel_restore_data.get("file_path") or "").strip()
             rel_fallback = (self._panel_restore_data.get("file_path_rel") or "").strip()
+        # Project / toolbar persist fires often while ``_file_path`` can be unset for a frame;
+        # keep the last on-disk path from panel_state unless the user hit "New".
+        if (
+            not fp
+            and not self._explicit_new_without_disk
+        ):
+            prev = _ps.get(f"panel:{self.window_id}") or {}
+            pfp = (prev.get("file_path") or "").strip()
+            if pfp:
+                np = os.path.normpath(pfp)
+                if os.path.isfile(np):
+                    fp = np
+            if not fp:
+                rel_p = (prev.get("file_path_rel") or "").strip()
+                if rel_p:
+                    try:
+                        from Infernux.engine.project_context import get_project_root
+
+                        root = get_project_root()
+                    except Exception:
+                        root = None
+                    if root:
+                        cand = os.path.normpath(os.path.join(root, rel_p.replace("/", os.sep)))
+                        if os.path.isfile(cand):
+                            fp = cand
         if fp:
             data["file_path"] = fp
             try:
@@ -375,14 +438,41 @@ class AnimFSMEditorPanel(EditorPanel):
             data["pan_x"] = self._view.pan_x
             data["pan_y"] = self._view.pan_y
             data["zoom"] = self._view.zoom
+            cam_prev = _ps.get(f"panel:{self.window_id}") or {}
+            # Queued restore not applied yet — keep prior graph-space snapshot.
+            if getattr(self._view, "_pending_camera", None) is not None:
+                for k in ("graph_canvas_w", "graph_canvas_h", "view_center_gx", "view_center_gy"):
+                    if k in cam_prev:
+                        data[k] = cam_prev[k]
+            else:
+                cw, ch = self._view._canvas_w, self._view._canvas_h
+                if cw < 1.0 or ch < 1.0:
+                    cw = float(getattr(self._view, "_last_graph_canvas_w", 0.0) or 0.0)
+                    ch = float(getattr(self._view, "_last_graph_canvas_h", 0.0) or 0.0)
+                if cw >= 1.0 and ch >= 1.0:
+                    data["graph_canvas_w"] = cw
+                    data["graph_canvas_h"] = ch
+                if getattr(self._view, "_cam_center_initialized", False):
+                    data["view_center_gx"] = float(self._view.cam_center_gx)
+                    data["view_center_gy"] = float(self._view.cam_center_gy)
+                else:
+                    for k in ("view_center_gx", "view_center_gy"):
+                        if k in cam_prev:
+                            data[k] = cam_prev[k]
+                    if cw < 1.0 or ch < 1.0:
+                        for k in ("graph_canvas_w", "graph_canvas_h"):
+                            if k in cam_prev:
+                                data[k] = cam_prev[k]
         return data
 
     def _resolve_saved_fsm_path(self, data: dict) -> str:
         """Resolve persisted path using absolute path, then project-relative."""
         fp = (data.get("file_path") or "").strip()
         rel = (data.get("file_path_rel") or "").strip()
-        if fp and os.path.isfile(fp):
-            return fp
+        if fp:
+            nfp = os.path.normpath(fp)
+            if os.path.isfile(nfp):
+                return nfp
         if rel:
             try:
                 from Infernux.engine.project_context import get_project_root
@@ -396,16 +486,36 @@ class AnimFSMEditorPanel(EditorPanel):
                 pass
         return ""
 
+    def _apply_saved_camera_from_dict(self, data: dict) -> None:
+        """Restore graph camera (prefers graph-space centre — stable across dock / window size)."""
+        if not self._view:
+            return
+        px = float(data.get("pan_x", self._view.pan_x))
+        py = float(data.get("pan_y", self._view.pan_y))
+        z = float(data.get("zoom", self._view.zoom))
+        z = max(Theme.NODE_GRAPH_ZOOM_MIN, min(Theme.NODE_GRAPH_ZOOM_MAX, z))
+        if "view_center_gx" in data and "view_center_gy" in data:
+            try:
+                gxc = float(data["view_center_gx"])
+                gyc = float(data["view_center_gy"])
+            except (TypeError, ValueError):
+                gxc = gyc = 0.0
+            self._view.queue_camera_restore_graph_center(center_gx=gxc, center_gy=gyc, zoom=z)
+            return
+        rw = float(data.get("graph_canvas_w", 0) or 0)
+        rh = float(data.get("graph_canvas_h", 0) or 0)
+        if rw >= 1.0 and rh >= 1.0:
+            self._view.queue_camera_restore(pan_x=px, pan_y=py, zoom=z, ref_w=rw, ref_h=rh)
+        else:
+            self._view.set_legacy_pan_zoom(px, py, z)
+
     def load_state(self, data: dict) -> None:
         if not data:
             self._panel_restore_data = None
             self._panel_state_restored_once = True
             return
         self._panel_restore_data = dict(data)
-        if self._view:
-            self._view.pan_x = float(data.get("pan_x", self._view.pan_x))
-            self._view.pan_y = float(data.get("pan_y", self._view.pan_y))
-            self._view.zoom = float(data.get("zoom", self._view.zoom))
+        self._apply_saved_camera_from_dict(data)
         self._panel_state_restored_once = False
 
     def _apply_pending_panel_restore(self) -> None:
@@ -433,7 +543,15 @@ class AnimFSMEditorPanel(EditorPanel):
         except Exception:
             root = None
         if root is None:
+            # Project root not ready yet — retry on later frames; do not mark done.
             return
+        # Root is available but the file is still missing: log once and stop retrying.
+        if not getattr(self, "_logged_fsm_restore_miss", False):
+            self._logged_fsm_restore_miss = True
+            Debug.log_warning(
+                "AnimFSM editor: could not restore last .animfsm "
+                f"(file missing or path invalid). file_path={fp!r} file_path_rel={rel!r}"
+            )
         self._panel_state_restored_once = True
 
     # ── Undo (AnimStateMachine snapshots; edit mode only) ─────────────
@@ -549,13 +667,20 @@ class AnimFSMEditorPanel(EditorPanel):
     # Rendering
     # ═══════════════════════════════════════════════════════════════════
 
-    # ImGuiKey / ImGuiMod constants
-    _IMGUI_MOD_CTRL = 1 << 12  # 4096
-    _IMGUI_KEY_S = 564
-
     def on_render_content(self, ctx: InxGUIContext):
         if not self._panel_state_restored_once:
-            if self._panel_restore_data is None:
+            fp_live = (self._file_path or "").strip()
+            if fp_live and os.path.isfile(fp_live):
+                # Project / asset pipeline opened a file before the first paint; do not
+                # replace it with a possibly stale ``panel_state`` snapshot from disk.
+                from Infernux.engine.ui import panel_state as _ps
+
+                pdata = _ps.get(f"panel:{self.window_id}") or {}
+                if pdata:
+                    self._apply_saved_camera_from_dict(pdata)
+                self._panel_restore_data = None
+                self._panel_state_restored_once = True
+            elif self._panel_restore_data is None:
                 from Infernux.engine.ui import panel_state as _ps
 
                 data = _ps.get(f"panel:{self.window_id}")
@@ -566,8 +691,8 @@ class AnimFSMEditorPanel(EditorPanel):
             self._apply_pending_panel_restore()
 
         # Ctrl+S save shortcut
-        if (ctx.is_key_down(self._IMGUI_MOD_CTRL)
-                and ctx.is_key_pressed(self._IMGUI_KEY_S)
+        if (ctx.is_key_down(MOD_CTRL)
+                and ctx.is_key_pressed(KEY_S)
                 and self._fsm is not None):
             self._do_save()
 
@@ -577,8 +702,8 @@ class AnimFSMEditorPanel(EditorPanel):
         avail_w = ctx.get_content_region_avail_width()
         avail_h = ctx.get_content_region_avail_height()
 
-        vars_w = min(_VARS_PANEL_W, max(140.0, avail_w * 0.22))
-        detail_w = min(_DETAIL_PANEL_W, max(200.0, avail_w * 0.28))
+        vars_w = min(_VARS_PANEL_W, max(128.0, avail_w * 0.18))
+        detail_w = min(_DETAIL_PANEL_W, max(168.0, avail_w * 0.22))
         graph_w = max(120.0, avail_w - vars_w - detail_w - 8.0)
 
         # Left: declared parameters (for transition conditions)
@@ -645,7 +770,7 @@ class AnimFSMEditorPanel(EditorPanel):
 
         if ctx.button(t("animfsm_editor.new")):
             before = self._undo_snapshot()
-            self._new_fsm()
+            self._new_fsm(user_initiated=True)
             self._try_record_undo("New state machine", before, self._undo_snapshot())
             return
 
@@ -1151,6 +1276,54 @@ class AnimFSMEditorPanel(EditorPanel):
     # FSM ↔ Graph synchronization
     # ═══════════════════════════════════════════════════════════════════
 
+    def _sync_state_header_from_node(self, uid: str) -> None:
+        """Copy ``node.data[''header_color'']`` into :class:`AnimState`."""
+        fsm = self._fsm
+        if fsm is None:
+            return
+        name = self._uid_to_name.get(uid, "")
+        if not name:
+            return
+        state = fsm.get_state(name)
+        node = self._graph.find_node(uid)
+        if state is None or node is None:
+            return
+        raw = node.data.get("header_color")
+        hb = _STATE_TYPE.header_color
+        br = float(hb[0])
+        bg = float(hb[1])
+        bb = float(hb[2])
+        ba = float(hb[3]) if len(hb) > 3 else 1.0
+        if isinstance(raw, (list, tuple)) and len(raw) >= 3:
+            nr = max(0.0, min(1.0, float(raw[0])))
+            ng = max(0.0, min(1.0, float(raw[1])))
+            nb = max(0.0, min(1.0, float(raw[2])))
+            na = max(0.0, min(1.0, float(raw[3]))) if len(raw) > 3 else 1.0
+            if (abs(nr - br) < 1e-3 and abs(ng - bg) < 1e-3 and abs(nb - bb) < 1e-3
+                    and abs(na - ba) < 1e-3):
+                state.header_color = None
+            else:
+                state.header_color = (nr, ng, nb, na)
+        else:
+            state.header_color = None
+
+    def _on_node_header_color_popup_begin(self, uid: str) -> None:
+        self._hdr_color_popup_undo_before = self._undo_snapshot()
+
+    def _on_node_header_color_popup_end(self, uid: str) -> None:
+        self._sync_state_header_from_node(uid)
+        if self._hdr_color_popup_undo_before is not None:
+            self._try_record_undo(
+                "Change state header color",
+                self._hdr_color_popup_undo_before,
+                self._undo_snapshot(),
+            )
+        self._hdr_color_popup_undo_before = None
+
+    def _on_node_header_color_changed(self, uid: str) -> None:
+        self._sync_state_header_from_node(uid)
+        self._dirty = True
+
     def _sync_graph_from_fsm(self):
         """Rebuild the NodeGraph from the current AnimStateMachine."""
         self._graph.clear()
@@ -1179,6 +1352,10 @@ class AnimFSMEditorPanel(EditorPanel):
             node.data["label"] = state.name
             node.data["loop"] = state.loop
             node.data["restart_same_clip"] = state.restart_same_clip
+            if state.header_color is not None:
+                node.data["header_color"] = [float(x) for x in state.header_color]
+            else:
+                node.data.pop("header_color", None)
             self._name_to_uid[state.name] = node.uid
             self._uid_to_name[node.uid] = state.name
 
@@ -1636,7 +1813,10 @@ class AnimFSMEditorPanel(EditorPanel):
         if fsm is None:
             return
         if fsm.save(target):
+            target = os.path.normpath(target)
             self._file_path = target
+            fsm.file_path = target
+            self._explicit_new_without_disk = False
             self._dirty = False
             Debug.log(f"Saved animfsm: {target}")
             self._hot_reload_animators(target)

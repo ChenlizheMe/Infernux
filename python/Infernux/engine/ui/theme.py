@@ -1,14 +1,16 @@
 """
-Infernux Infernux Editor Theme
-==============================================
+Infernux Editor Theme
+=====================
 
+This module is the **main theme configuration** for the Infernux Editor.
+Inspector-specific tokens live in :mod:`Infernux.engine.ui.inspector_theme`
+and are inherited into :class:`Theme` for a single ``Theme.*`` access path.
 
-This is the **single theme configuration file** for the Infernux Editor.
-Change colors and sizes here to restyle the entire editor.
-
-Structure:
-
-All colors are **sRGB-space RGBA tuples** (float, 0-1).
+**Color space:** values on :class:`Theme` (and the inspector base) are authored
+as **display / sRGB 0–1** tuples for ImGui and the swapchain path used here.
+The helpers ``srgb_to_linear`` / ``srgb3`` / ``hex_to_linear`` are for cases
+where you need linear RGB (e.g. matching GPU math), not for everyday Theme
+fields.
 
 Usage::
 
@@ -22,6 +24,8 @@ Usage::
 from __future__ import annotations
 from typing import Iterable, Optional, Tuple
 
+from .inspector_theme import InspectorThemeBase
+
 # Color type alias (R, G, B, A) all float [0..1]
 RGBA = Tuple[float, float, float, float]
 
@@ -31,8 +35,7 @@ RGBA = Tuple[float, float, float, float]
 # ╚══════════════════════════════════════════════════════════════════════════╝
 
 def srgb_to_linear(s: float) -> float:
-    """
-    Convert a single sRGB [0,1] component to linear space."""
+    """Convert a single sRGB [0,1] component to linear space (for non-Theme math)."""
     if s <= 0.04045:
         return s / 12.92
     return ((s + 0.055) / 1.055) ** 2.4
@@ -218,15 +221,15 @@ class ImGuiStyleVar:
 # ║  3. Theme — Editor Theme Configuration ║
 # ║                                                                         ║
 # ║  Modify values below to restyle the entire editor.                      ║
-# ║  All colors are sRGB-space RGBA (UNORM swapchain, no hw conversion).    ║
+# ║  Default colors are sRGB-like 0–1 for ImGui (see module docstring).      ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
 
-class Theme:
+class Theme(InspectorThemeBase):
     """
-    Central theme for the Infernux Editor — single source of truth for
-    all colors, sizes, icons, and layout constants.
+    Central theme for the Infernux Editor — colors, sizes, icons, and layout.
 
-    Modify values in this class to customize the editor appearance.
+    Inspector tokens are defined on :class:`~Infernux.engine.ui.inspector_theme.InspectorThemeBase`
+    and inherited here so existing ``Theme.INSPECTOR_*`` references keep working.
     """
 
     # ══════════════════════════════════════════════════════════════════════
@@ -351,75 +354,50 @@ class Theme:
     BORDER_THICKNESS  : float = 2.0  # Border thickness (px)
 
     # ══════════════════════════════════════════════════════════════════════
-    #  Inspector Panel Layout & Colors
+    #  Node graph editor (shared by FSM / future graph panels)
     # ══════════════════════════════════════════════════════════════════════
 
-    # -- Layout Sizes
-    INSPECTOR_INIT_SIZE        = (300, 500)  # Initial window size (w, h)
-    INSPECTOR_MIN_PROPS_H      = 100  # Min properties height
-    INSPECTOR_MIN_RAWDATA_H    = 100  # Min raw-data height
-    INSPECTOR_SPLITTER_H       = 8  # Splitter bar height
-    INSPECTOR_DEFAULT_RATIO    = 0.4  # Properties ratio
-    INSPECTOR_LABEL_PAD        = 18.0  # Label padding
-    INSPECTOR_MIN_LABEL_WIDTH  = 156.0  # Min label width
-    INSPECTOR_FRAME_PAD        = (4.0, 2.0)  # Frame padding
-    # Extra left inset for object/reference fields (~3 monospace chars) so label text
-    # lines up with scalar fields; added to FramePadding.x inside ``IGUI.object_field``.
-    OBJECT_FIELD_TEXT_INSET_X  : float = 12.0
-    INSPECTOR_ITEM_SPC         = (4.0, 2.0)  # Item spacing
-    INSPECTOR_SUBITEM_SPC      = (4.0, 2.0)  # Sub-item spacing
-    INSPECTOR_SECTION_GAP      = 6.0  # Section gap
-    INSPECTOR_TITLE_GAP        = 10.0  # Title gap
-
-    # -- Component Header
-    INSPECTOR_HEADER_PRIMARY_FRAME_PAD = (4.0, 2.0)  # Primary header frame padding
-    INSPECTOR_HEADER_SECONDARY_FRAME_PAD = (4.0, 2.0)  # Secondary header frame padding
-    INSPECTOR_HEADER_LIST_FRAME_PAD  = (4.0, 2.0)  # List header frame padding
-    INSPECTOR_HEADER_PRIMARY_FONT_SCALE= 1.0  # Primary header font scale
-    INSPECTOR_HEADER_SECONDARY_FONT_SCALE= 1.0  # Secondary header font scale
-    INSPECTOR_HEADER_LIST_FONT_SCALE = 1.0  # List header font scale
-    INSPECTOR_HEADER_ITEM_SPC   = (4.0, 2.0)  # Header item spacing
-    INSPECTOR_HEADER_BORDER_SIZE = 0.0  # Header border size
-    INSPECTOR_ACTION_ALIGN_X    = 0.0  # Action button alignment
-    INSPECTOR_HEADER_CONTENT_INDENT = 28.0  # Header content indent (px)
-    ADD_COMP_SEARCH_W          = 240  # "Search components" input width
-    COMPONENT_ICON_SIZE        = 16  # Component icon size (px)
-    COMP_ENABLED_CB_OFFSET     = 40  # Enabled checkbox right offset
-
-    # -- Checkbox Style
-    INSPECTOR_CHECKBOX_FONT_SCALE= 1.0  # Checkbox font scale
-    INSPECTOR_CHECKBOX_FRAME_PAD = (4.0, 2.0)  # Checkbox frame padding
-    INSPECTOR_CHECKBOX_SLOT_W    = 22.0  # Checkbox slot width
-
-    # -- Inspector Header Colors
-    INSPECTOR_HEADER_PRIMARY    : RGBA = (0.235, 0.235, 0.235, 1.0)  # Primary (Unity gray)
-    INSPECTOR_HEADER_PRIMARY_HOVERED : RGBA = (0.28,  0.24,  0.24,  1.0)  # Primary hovered (red tint)
-    INSPECTOR_HEADER_PRIMARY_ACTIVE  : RGBA = (0.32,  0.25,  0.25,  1.0)  # Primary active
-    INSPECTOR_HEADER_SECONDARY  : RGBA = (0.18,  0.18,  0.18,  1.0)  # Secondary (same scale, darker tone)
-    INSPECTOR_HEADER_SECONDARY_HOVERED : RGBA = (0.22,  0.20,  0.20,  1.0)
-    INSPECTOR_HEADER_SECONDARY_ACTIVE  : RGBA = (0.26,  0.22,  0.22,  1.0)
-    INSPECTOR_HEADER_LIST       : RGBA = (0.16,  0.16,  0.16,  1.0)  # List header (distinct from component header)
-    INSPECTOR_HEADER_LIST_HOVERED : RGBA = (0.20,  0.18,  0.18,  1.0)
-    INSPECTOR_HEADER_LIST_ACTIVE  : RGBA = (0.24,  0.20,  0.20,  1.0)
-
-    # -- Inspector Inline Buttons
-    INSPECTOR_INLINE_BTN_IDLE  : RGBA = (0.20,  0.20,  0.20,  1.0)  # Idle
-    INSPECTOR_INLINE_BTN_HOVER : RGBA = (0.28,  0.24,  0.24,  1.0)  # Hover (red tint)
-    INSPECTOR_INLINE_BTN_ACTIVE: RGBA = (0.922, 0.341, 0.341, 1.0)  # Active (theme red #EB5757)
-    INSPECTOR_INLINE_BTN_ON    : RGBA = (0.80,  0.30,  0.30,  1.0)  # Active (dimmer red)
-    INSPECTOR_INLINE_BTN_GAP   : float = 4.0  # Button gap
-    INSPECTOR_INLINE_BTN_H     : float = 0.0  # Button height (0=auto)
-
-    # -- List Body (Unity-style boxed area)
-    INSPECTOR_LIST_BODY_BG      : RGBA = (0.10,  0.10,  0.10,  0.82)  # Distinct dark bg behind list items
-    INSPECTOR_LIST_BODY_BORDER  : RGBA = (0.22,  0.22,  0.22,  1.0)  # Border separating list body from component bg
-    INSPECTOR_LIST_BODY_ROUNDING: float = 0.0   # Bottom corner rounding
-    INSPECTOR_LIST_BODY_PAD_X   : float = 4.0   # Horizontal padding inside list body
-    INSPECTOR_LIST_BODY_PAD_Y   : float = 2.0   # Vertical padding inside list body
-    INSPECTOR_SMALL_ICON_BTN_FRAME_PAD: tuple = (4.0, 2.0)  # Match standard inspector control height
-
-    # -- Color Swatch Border
-    COLOR_SWATCH_BORDER       : RGBA = (0.4, 0.4, 0.4, 1.0)
+    NODE_GRAPH_GRID_SIZE: float = 20.0
+    NODE_GRAPH_GRID_COLOR: RGBA = (0.13, 0.13, 0.14, 1.0)
+    NODE_GRAPH_GRID_COLOR_ALT: RGBA = (0.18, 0.18, 0.19, 1.0)
+    NODE_GRAPH_BG: RGBA = (0.07, 0.07, 0.08, 1.0)
+    NODE_GRAPH_NODE_ROUNDING: float = 5.0
+    NODE_GRAPH_NODE_BORDER_THICKNESS: float = 1.0
+    NODE_GRAPH_NODE_HEADER_H: float = 26.0
+    NODE_GRAPH_NODE_PIN_ROW_H: float = 22.0
+    NODE_GRAPH_NODE_PAD_X: float = 10.0
+    # Node label font sizes: ``max(MIN, SCALE * zoom)`` (screen px)
+    NODE_GRAPH_NODE_TITLE_FONT_MIN: float = 13.5
+    NODE_GRAPH_NODE_TITLE_FONT_ZOOM_SCALE: float = 16.0
+    NODE_GRAPH_NODE_PIN_FONT_MIN: float = 12.0
+    NODE_GRAPH_NODE_PIN_FONT_ZOOM_SCALE: float = 13.5
+    NODE_GRAPH_HEADER_SWATCH: float = 14.0
+    NODE_GRAPH_HEADER_SWATCH_GAP: float = 5.0
+    NODE_GRAPH_NODE_SUBTITLE_FONT_MIN: float = 10.5
+    NODE_GRAPH_NODE_SUBTITLE_FONT_ZOOM_SCALE: float = 11.5
+    NODE_GRAPH_NODE_BODY_MIN_H: float = 10.0
+    NODE_GRAPH_PIN_RADIUS: float = 5.0
+    NODE_GRAPH_PIN_HIT_RADIUS: float = 11.0
+    NODE_GRAPH_PIN_HOVER_RING: RGBA = (0.88, 0.88, 0.90, 0.75)
+    NODE_GRAPH_NODE_BODY: RGBA = (0.13, 0.13, 0.14, 1.0)
+    NODE_GRAPH_NODE_SHADOW: RGBA = (0.0, 0.0, 0.0, 0.5)
+    NODE_GRAPH_NODE_BORDER: RGBA = (0.28, 0.28, 0.30, 1.0)
+    NODE_GRAPH_LINK_THICKNESS: float = 2.0
+    NODE_GRAPH_LINK_SEGMENTS: int = 28
+    NODE_GRAPH_LINK_DEFAULT: RGBA = (0.42, 0.42, 0.44, 0.88)
+    NODE_GRAPH_LINK_HOVER: RGBA = (0.55, 0.55, 0.58, 1.0)
+    NODE_GRAPH_LINK_PENDING: RGBA = (0.65, 0.65, 0.68, 0.5)
+    NODE_GRAPH_TEXT: RGBA = (0.90, 0.91, 0.92, 1.0)
+    NODE_GRAPH_TEXT_DIM: RGBA = (0.52, 0.53, 0.55, 1.0)
+    NODE_GRAPH_TEXT_BODY: RGBA = (0.62, 0.63, 0.65, 1.0)
+    NODE_GRAPH_LINK_LABEL: RGBA = (0.55, 0.55, 0.55, 0.9)
+    NODE_GRAPH_ZOOM_MIN: float = 0.3
+    NODE_GRAPH_ZOOM_MAX: float = 2.5
+    NODE_GRAPH_ZOOM_SPEED: float = 0.08
+    NODE_GRAPH_MINIMAP_SIZE: float = 120.0
+    NODE_GRAPH_MINIMAP_PAD: float = 8.0
+    NODE_GRAPH_MINIMAP_BG: RGBA = (0.06, 0.06, 0.07, 0.75)
+    NODE_GRAPH_MINIMAP_NODE: RGBA = (0.38, 0.38, 0.40, 0.65)
 
     # ══════════════════════════════════════════════════════════════════════
     #  Toolbar Panel Spacing
@@ -512,27 +490,30 @@ class Theme:
     SCENE_OVERLAY_BORDER_SIZE : float = 0.0  # Border size
 
     # ══════════════════════════════════════════════════════════════════════
-    #  UI UI Editor Panel
+    #  UI Editor Panel (palette aligned with NODE_GRAPH_* + APPLY_BUTTON)
     # ══════════════════════════════════════════════════════════════════════
 
-    # -- Canvas
-    UI_EDITOR_CANVAS_BG       : RGBA = (0.12, 0.12, 0.12, 1.0)  # Canvas background (neutral dark)
-    UI_EDITOR_CANVAS_BORDER   : RGBA = (0.30, 0.30, 0.30, 1.0)  # Canvas border (neutral gray)
+    # -- Workspace void (same as node graph canvas background)
+    UI_EDITOR_WORKSPACE_BG    : RGBA = (0.07, 0.07, 0.08, 1.0)
+
+    # -- Canvas (node body / border — matches graph nodes)
+    UI_EDITOR_CANVAS_BG       : RGBA = (0.13, 0.13, 0.14, 1.0)
+    UI_EDITOR_CANVAS_BORDER   : RGBA = (0.28, 0.28, 0.30, 1.0)
 
     # -- Multi-Canvas Layout
     UI_EDITOR_CANVAS_HEADER_H      : float = 22.0   # Canvas header bar height (screen px)
-    UI_EDITOR_CANVAS_HEADER_BG     : RGBA = (0.18, 0.18, 0.18, 1.0)
-    UI_EDITOR_CANVAS_HEADER_BG_FOC : RGBA = (0.22, 0.30, 0.36, 1.0)  # Focused canvas header
-    UI_EDITOR_CANVAS_HEADER_TEXT   : RGBA = (0.85, 0.85, 0.85, 1.0)
+    UI_EDITOR_CANVAS_HEADER_BG     : RGBA = (0.18, 0.18, 0.19, 1.0)
+    UI_EDITOR_CANVAS_HEADER_BG_FOC : RGBA = (0.22, 0.16, 0.16, 1.0)  # subtle theme-red focus
+    UI_EDITOR_CANVAS_HEADER_TEXT   : RGBA = (0.90, 0.91, 0.92, 1.0)
     UI_EDITOR_CANVAS_SPACING       : float = 60.0   # Auto-layout gap between canvases (workspace px)
     UI_EDITOR_CANVAS_INACTIVE_ALPHA: float = 0.35    # Alpha multiplier for inactive canvases
 
-    # -- Element Interaction
-    UI_EDITOR_ELEMENT_HOVER   : RGBA = (0.00, 0.74, 0.83, 0.12)  # Element hover (cyan glow)
-    UI_EDITOR_ELEMENT_SELECT  : RGBA = (0.00, 0.74, 0.83, 1.0)  # Element selected (electric cyan)
+    # -- Element Interaction (same accent as selected graph nodes)
+    UI_EDITOR_ELEMENT_HOVER   : RGBA = (0.922, 0.341, 0.341, 0.12)
+    UI_EDITOR_ELEMENT_SELECT  : RGBA = (0.922, 0.341, 0.341, 1.0)
 
     # -- Handles
-    UI_EDITOR_HANDLE_COLOR    : RGBA = (1.0, 1.0, 1.0, 1.0)  # Handle color
+    UI_EDITOR_HANDLE_COLOR    : RGBA = (0.90, 0.91, 0.92, 1.0)
     UI_EDITOR_HANDLE_SIZE     : float = 4.0  # Handle half-size (px)
 
     # -- Zoom & Viewport
@@ -543,7 +524,7 @@ class Theme:
 
     # -- Labels
     UI_EDITOR_LABEL_OFFSET    : float = 16.0  # Canvas top label offset (px)
-    UI_EDITOR_LABEL_COLOR     : RGBA = (0.6, 0.6, 0.6, 0.7)  # Label color
+    UI_EDITOR_LABEL_COLOR     : RGBA = (0.52, 0.53, 0.55, 0.85)
 
     # -- Rotation Handle
     UI_EDITOR_ROTATE_DISTANCE : float = 22.0  # Offset from top-mid (px)
@@ -557,7 +538,7 @@ class Theme:
     # -- Placeholder
     UI_EDITOR_PLACEHOLDER_TINT : float = 0.3  # Placeholder tint multiplier
     UI_EDITOR_PLACEHOLDER_ALPHA: float = 0.5  # Placeholder alpha
-    UI_EDITOR_FALLBACK_TEXT   : RGBA = (0.7, 0.7, 0.7, 1.0)  # Fallback text color
+    UI_EDITOR_FALLBACK_TEXT   : RGBA = (0.52, 0.53, 0.55, 1.0)
 
     # -- Window & Toolbar Layout
     UI_EDITOR_INIT_WINDOW_W   : float = 800.0  # Initial window width
@@ -587,8 +568,8 @@ class Theme:
     UI_EDITOR_SNAP_DEFAULT    : int = 100  # Step at smallest zoom
 
     # -- Alignment Guides
-    UI_EDITOR_ALIGN_GUIDE     : RGBA = (0.18, 0.72, 1.0, 0.95)  # Guide line color
-    UI_EDITOR_ALIGN_GUIDE_FAINT: RGBA = (0.18, 0.72, 1.0, 0.30)  # Faint guide color
+    UI_EDITOR_ALIGN_GUIDE     : RGBA = (0.922, 0.341, 0.341, 0.95)
+    UI_EDITOR_ALIGN_GUIDE_FAINT: RGBA = (0.922, 0.341, 0.341, 0.28)
     UI_EDITOR_ALIGN_GUIDE_W   : float = 1.5  # Guide line width
     UI_EDITOR_ALIGN_SNAP_PX   : float = 8.0  # Snap threshold (px)
     UI_EDITOR_ALIGN_BTN_W     : float = 34.0  # Align button width
