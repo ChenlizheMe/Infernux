@@ -203,6 +203,15 @@ class ComponentSerializationMixin:
                 d["__path_hint__"] = value.path_hint
             return d
 
+        # Generic AssetRefBase (AnimStateMachineRef, AnimationClipRef, etc.)
+        # — delegate to the shared registry-aware helper.
+        from Infernux.core.asset_ref import AssetRefBase
+        if isinstance(value, AssetRefBase):
+            from ._serialize_helpers import _serialize_asset_ref
+            ref_dict = _serialize_asset_ref(value)
+            if ref_dict is not None:
+                return ref_dict
+
         # Raw GameObject reference — store persistent ID (scene-stable)
         if hasattr(value, 'id') and hasattr(value, 'name') and hasattr(value, 'transform'):
             return {"__game_object__": int(value.id)}

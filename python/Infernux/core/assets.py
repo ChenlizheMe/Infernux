@@ -32,8 +32,12 @@ from Infernux.core.shader import Shader
 from Infernux.core.audio_clip import AudioClip
 from Infernux.core.asset_types import (
     IMAGE_EXTENSIONS, SHADER_EXTENSIONS, MATERIAL_EXTENSIONS, AUDIO_EXTENSIONS,
+    ANIMCLIP_EXTENSIONS,
+    ANIMFSM_EXTENSIONS,
     asset_category_from_extension,
 )
+from Infernux.core.animation_clip import AnimationClip
+from Infernux.core.anim_state_machine import AnimStateMachine
 
 # ── Constants ──
 _META_SUPPRESSION_TIMEOUT: float = 2.0  # seconds
@@ -234,6 +238,8 @@ class AssetManager:
         cls.register_import_strategy("audio", write_audio_import_settings)
         cls.register_import_strategy("mesh", write_mesh_import_settings)
         cls.register_save_strategy("material", cls._save_material_resource)
+        cls.register_save_strategy("animclip", cls._save_animclip_resource)
+        cls.register_save_strategy("animfsm", cls._save_animfsm_resource)
 
         cls._execution_strategies_initialized = True
 
@@ -334,6 +340,22 @@ class AssetManager:
             return
         cls.invalidate_path(path)
         cls._invalidate_material_ui_cache(path)
+
+    @classmethod
+    def _save_animclip_resource(cls, resource_obj):
+        """Save an AnimationClip resource."""
+        save = getattr(resource_obj, "save", None)
+        if not callable(save):
+            return False
+        return save()
+
+    @classmethod
+    def _save_animfsm_resource(cls, resource_obj):
+        """Save an AnimStateMachine resource."""
+        save = getattr(resource_obj, "save", None)
+        if not callable(save):
+            return False
+        return save()
 
     @classmethod
     def flush_scheduled_saves(cls, key: Optional[str] = None):
@@ -456,6 +478,10 @@ class AssetManager:
             return Shader
         if ext in AUDIO_EXTENSIONS:
             return AudioClip
+        if ext in ANIMCLIP_EXTENSIONS:
+            return AnimationClip
+        if ext in ANIMFSM_EXTENSIONS:
+            return AnimStateMachine
         return None
 
     @classmethod
@@ -472,6 +498,10 @@ class AssetManager:
             return ShaderAssetInfo.from_path(path, guid=guid)
         if asset_type is AudioClip:
             return AudioClip.load(path)
+        if asset_type is AnimationClip:
+            return AnimationClip.load(path)
+        if asset_type is AnimStateMachine:
+            return AnimStateMachine.load(path)
         return None
 
     @classmethod
@@ -491,6 +521,15 @@ class AssetManager:
         if guid:
             cls._texture_cache.pop(guid, None)
             cls._cache.pop(guid, None)
+
+    @classmethod
+    def is_meta_watcher_suppressed(cls, path: str) -> bool:
+        """Return whether the current .meta watcher event should be ignored."""
+        normalized = cls._normalize_asset_path(path)
+        if not normalized:
+            return False
+        expiry = cls._meta_write_suppression.get(normalized)
+        return expiry is not None and time.monotonic() < expiry
 
     @classmethod
     def _reload_mesh_asset(cls, path: str) -> None:

@@ -165,6 +165,19 @@ class MaterialPipelineManager
     void InvalidateMaterialsUsingShader(const std::string &shaderId);
 
     /**
+     * @brief Remove render data for materials that reference a specific texture.
+     *
+     * This is used when a texture is reimported and its cached VkImageView /
+     * VkSampler handles are about to be destroyed. It also covers runtime-only
+     * material instances that are not tracked by the asset dependency graph.
+     *
+     * @param textureRef GUID-style texture reference when available
+     * @param texturePath Path-style texture reference for fallback matching
+     * @return Number of materials invalidated
+     */
+    uint32_t InvalidateMaterialsUsingTexture(const std::string &textureRef, const std::string &texturePath);
+
+    /**
      * @brief Mark ALL cached material pipelines as dirty.
      *
      * Called when the render graph topology changes (e.g. forward→deferred switch,

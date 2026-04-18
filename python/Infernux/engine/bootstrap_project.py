@@ -71,6 +71,10 @@ def wire_project_callbacks(bs: EditorBootstrap) -> None:
         file_ops.create_material, cur, name, adb)
     pp.create_scene = lambda cur, name: _safe_project_create(
         file_ops.create_scene, cur, name, adb)
+    pp.create_animclip = lambda cur, name: _safe_project_create(
+        file_ops.create_animclip, cur, name, adb)
+    pp.create_animfsm = lambda cur, name: _safe_project_create(
+        file_ops.create_animfsm, cur, name, adb)
     pp.do_rename = lambda old, new_name: _safe_project_path(
         file_ops.do_rename, old, new_name, adb)
     pp.get_unique_name = lambda cur, base, ext: (
@@ -221,6 +225,28 @@ def wire_project_callbacks(bs: EditorBootstrap) -> None:
         SceneFileManager.instance().open_prefab_mode_with_undo(path)
         if SceneFileManager.instance() else None
     )
+
+    def _open_anim_clip(file_path):
+        from Infernux.engine.ui.window_manager import WindowManager
+        wm = WindowManager.instance()
+        if wm is None:
+            return
+        panel = wm.open_window("animclip2d_editor")
+        if panel is not None and hasattr(panel, '_open_animclip'):
+            panel._open_animclip(file_path)
+
+    pp.open_anim_clip = _open_anim_clip
+
+    def _open_anim_fsm(file_path):
+        from Infernux.engine.ui.window_manager import WindowManager
+        wm = WindowManager.instance()
+        if wm is None:
+            return
+        panel = wm.open_window("animfsm_editor")
+        if panel is not None and hasattr(panel, '_open_animfsm'):
+            panel._open_animfsm(file_path)
+
+    pp.open_anim_fsm = _open_anim_fsm
 
     pp.reveal_in_explorer = lambda path: (
         project_utils.reveal_in_file_explorer(path)

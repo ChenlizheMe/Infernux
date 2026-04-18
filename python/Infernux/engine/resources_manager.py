@@ -135,32 +135,30 @@ class ResourceChangeHandler(FileSystemEventHandler):
             src = event.src_path
             lower = src.replace("\\", "/").lower()
 
-            # .meta file changed → propagate as modification of the owning asset
+            # .meta file changed → queue for main-thread processing.
+            # The watcher thread must NOT call C++ GPU/pipeline functions
+            # directly — that races with the render loop and causes
+            # use-after-free of Vulkan handles (VkImageView, descriptor sets).
             if lower.endswith(".meta") and not lower.endswith(".meta.tmp"):
                 owner_path = src[:-5]  # strip ".meta"
                 if os.path.isfile(owner_path):
-                    Debug.log_internal(f"[Meta Modified] {src} -> owner {owner_path}")
-                    # Refresh in-memory meta from disk (re-register the resource)
-                    # so that subsequent reloads read the updated import settings.
-                    if self._asset_database:
-                        self._asset_database.on_asset_modified(owner_path)
                     from Infernux.core.assets import AssetManager
-                    AssetManager.on_asset_modified(owner_path)
-                    self._emit_asset_changed(owner_path, "modified")
+                    if AssetManager.is_meta_watcher_suppressed(owner_path):
+                        Debug.log_internal(f"[Meta Modified] suppressed watcher echo for '{owner_path}'")
+                        return
+                    with self._queue_lock:
+                        key = ("meta", owner_path)
+                        if key not in self._pending_reload_queue:
+                            self._pending_reload_queue.append(key)
                 return
 
             if self._should_ignore(src):
                 return
-            # Debug.log_internal(f"[Modified] {src}")
-            # Invalidate stale asset caches (material / texture)
-            from Infernux.core.assets import AssetManager
-            AssetManager.on_asset_modified(src)
-            # Use AssetDatabase to update meta (preserves GUID, updates content_hash)
-            if self._asset_database:
-                self._asset_database.on_asset_modified(event.src_path)
-            else:
-                self._engine.modify_resources(event.src_path)
-            self._emit_asset_changed(src, "modified")
+            # Asset content changed → queue for main-thread processing.
+            with self._queue_lock:
+                key = ("asset", src)
+                if key not in self._pending_reload_queue:
+                    self._pending_reload_queue.append(key)
             # Check Python scripts on modification
             if event.src_path.endswith('.py'):
                 self._queue_script_reload(event.src_path)
@@ -227,11 +225,34 @@ class ResourceChangeHandler(FileSystemEventHandler):
             try:
                 if isinstance(item, tuple) and item[0] == "shader":
                     self._reload_shader(item[1])
+                elif isinstance(item, tuple) and item[0] == "meta":
+                    self._process_meta_change(item[1])
+                elif isinstance(item, tuple) and item[0] == "asset":
+                    self._process_asset_modified(item[1])
                 elif isinstance(item, str):
                     self._check_script(item)
             except Exception as exc:
                 Debug.log_error(f"Reload failed for {item}: {exc}")
-    
+
+    def _process_meta_change(self, owner_path: str):
+        """Handle .meta file change on the main thread."""
+        Debug.log_internal(f"[Meta Modified] {owner_path}.meta -> owner {owner_path}")
+        if self._asset_database:
+            self._asset_database.on_asset_modified(owner_path)
+        from Infernux.core.assets import AssetManager
+        AssetManager.on_asset_modified(owner_path)
+        self._emit_asset_changed(owner_path, "modified")
+
+    def _process_asset_modified(self, src_path: str):
+        """Handle asset content change on the main thread."""
+        from Infernux.core.assets import AssetManager
+        AssetManager.on_asset_modified(src_path)
+        if self._asset_database:
+            self._asset_database.on_asset_modified(src_path)
+        else:
+            self._engine.modify_resources(src_path)
+        self._emit_asset_changed(src_path, "modified")
+
     def _check_script(self, file_path: str):
         """Check a Python script for syntax errors and hot-reload components."""
         # Verify file exists and is readable (ensures write is complete)

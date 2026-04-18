@@ -558,7 +558,7 @@ class TestMaterial:
         cube = scene.create_primitive(PrimitiveType.Cube, "MatCube")
         mr = cube.get_component("MeshRenderer")
         mat = InxMaterial.create_default_lit()
-        mr.render_material = mat
+        mr.material = mat
         assert mr.get_material(0) is not None
 
 

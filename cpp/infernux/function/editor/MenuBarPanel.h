@@ -19,11 +19,18 @@ struct WindowTypeInfo
 {
     std::string typeId;
     std::string displayName;
+    std::string menuPath = "Window";
     bool singleton = true;
 };
 
-/// C++ native menu bar — Project / Window menus + keyboard shortcuts.
+/// C++ native menu bar — Project / dynamic menus / Window + keyboard shortcuts.
 /// Not dockable (inherits InxGUIRenderable directly).
+///
+/// Menus between Project and Window are built dynamically from panel
+/// `menuPath` values.  For example, a Python panel decorated with
+///   @editor_panel(menu_path="Animation/2D Animation")
+/// will automatically appear under an "Animation" top-level menu
+/// in a "2D Animation" sub-menu — no C++ changes needed.
 ///
 /// Floating sub-panels (BuildSettings, Preferences, PhysicsLayerMatrix) and
 /// the save-confirmation popup are still rendered from Python; this panel
@@ -74,7 +81,14 @@ class MenuBarPanel : public InxGUIRenderable
   private:
     void HandleShortcuts(InxGUIContext *ctx);
     void RenderProjectMenu(InxGUIContext *ctx);
+    void RenderDynamicMenus(InxGUIContext *ctx);
     void RenderWindowMenu(InxGUIContext *ctx);
+
+    /// Render a single top-level menu for panels whose menuPath starts with
+    /// @p topMenu.  Panels with exact match become top-level items; those
+    /// with a '/' suffix become sub-menus (e.g. "Animation/2D Animation").
+    void RenderMenuGroup(const std::string &topMenu, const std::string &translatedLabel,
+                         const std::vector<WindowTypeInfo> &types, const std::map<std::string, bool> &openWins);
 
     std::string T(const std::string &key) const;
 

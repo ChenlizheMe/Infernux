@@ -79,6 +79,10 @@ class ClosablePanel(InxGUIRenderable):
     def get_active_panel_id(cls) -> Optional[str]:
         return cls._active_panel_id
 
+    def _window_title_suffix(self) -> str:
+        """Return a suffix appended to the window title (e.g. ' *' for dirty)."""
+        return ""
+
     @classmethod
     def focus_panel_by_id(cls, panel_id: str):
         """Mark *panel_id* as active (used by undo replay to set focus target)."""
@@ -103,6 +107,7 @@ class ClosablePanel(InxGUIRenderable):
             display = t(self._title_key)
         else:
             display = self._title
+        display += self._window_title_suffix()
         safe_title = str(display).replace('\x00', '�').encode('utf-8', errors='replace').decode('utf-8', errors='replace')
         # Use ### to keep a stable ImGui window ID independent of the
         # displayed title so docking layout survives locale changes.

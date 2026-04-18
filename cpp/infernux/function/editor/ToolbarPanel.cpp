@@ -71,8 +71,11 @@ void ToolbarPanel::OnRenderContent(InxGUIContext *ctx)
     float winW = ctx->GetWindowWidth();
     RenderPlayControls(ctx, winW);
     RenderRightDropdowns(ctx, winW);
+}
 
-    // Pop the 5 style vars pushed in PreRender
+void ToolbarPanel::PostRender(InxGUIContext * /*ctx*/)
+{
+    // Pop the 5 style vars pushed in PreRender (always, even when collapsed)
     ImGui::PopStyleVar(5);
 }
 

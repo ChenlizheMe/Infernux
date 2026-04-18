@@ -35,6 +35,7 @@ from .builtin import (
     RigidbodyInterpolation,
     AudioSource,
     AudioListener,
+    SpriteRenderer,
 )
 from Infernux.lib import Transform, Component
 from .serializable_object import SerializableObject
@@ -79,6 +80,7 @@ from .decorators import (
     HelpURL,
     Icon,
 )
+from .animator2d import SpiritAnimator
 
 __all__ = [
     "InxComponent",
@@ -98,6 +100,7 @@ __all__ = [
     "RigidbodyInterpolation",
     "AudioSource",
     "AudioListener",
+    "SpriteRenderer",
     "serialized_field",
     "int_field",
     "hide_field",
@@ -136,4 +139,6 @@ __all__ = [
     "AddComponentMenu",
     "HelpURL",
     "Icon",
+    # Animation
+    "SpiritAnimator",
 ]

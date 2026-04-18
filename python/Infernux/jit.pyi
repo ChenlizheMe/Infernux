@@ -29,10 +29,6 @@ def warmup(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> None:
     """Pre-compile a ``@njit`` function by calling it with representative args."""
     ...
 
-def precompile_jit() -> None:
-    """No-op kept for backward compatibility."""
-    ...
-
 prange: Any
 
 __all__: list[str]

@@ -208,13 +208,25 @@ class IGUI:
         clicked = False
         ctx.push_id_str(field_id)
 
-        full_text = f"{display_text} ({type_hint})"
-        if len(full_text) > 35:
-            full_text = full_text[:32] + "..."
+        # Leading spaces so label text lines up with scalar fields (Selectable clips tightly).
+        full_text = f"   {display_text} ({type_hint})"
+        if len(full_text) > 38:
+            full_text = full_text[:35] + "..."
 
         avail_width = ctx.get_content_region_avail_width()
         btn_w = _MINI_ICON_BTN_SIDE if has_picker else 0.0
         field_w = max(avail_width - btn_w, 10.0)
+
+        # Match scalar field text inset; suppress ImGui's own frame border so hover
+        # highlight aligns with our custom outline (avoids a sliver past the left edge).
+        _fpx = Theme.INSPECTOR_FRAME_PAD[0] + Theme.OBJECT_FIELD_TEXT_INSET_X
+        _fpy = Theme.INSPECTOR_FRAME_PAD[1]
+        ctx.push_style_var_vec2(ImGuiStyleVar.FramePadding, _fpx, _fpy)
+        ctx.push_style_var_float(ImGuiStyleVar.FrameBorderSize, 0.0)
+        # Selectable uses Header* colors; match list-body fill so hover stays inside the outline.
+        ctx.push_style_color(ImGuiCol.Header, *Theme.INSPECTOR_LIST_BODY_BG)
+        ctx.push_style_color(ImGuiCol.HeaderHovered, *Theme.INSPECTOR_LIST_BODY_BG)
+        ctx.push_style_color(ImGuiCol.HeaderActive, *Theme.INSPECTOR_LIST_BODY_BG)
 
         ctx.begin_group()
 
@@ -242,10 +254,12 @@ class IGUI:
             )
 
         ctx.end_group()
+        ctx.pop_style_color(3)
+        ctx.pop_style_var(2)
 
-        # Outline the whole object field so reference/picker slots read like
-        # other inspector inputs.
-        IGUI._draw_item_outline(ctx, *Theme.BORDER, 1.0)
+        # Outline the whole object field — match list-body / frame chrome used
+        # alongside scalar inspector fields (see Theme.INSPECTOR_LIST_BODY_BORDER).
+        IGUI._draw_item_outline(ctx, *Theme.INSPECTOR_LIST_BODY_BORDER, 1.0)
 
         if accept and on_drop:
             if isinstance(accept, str):

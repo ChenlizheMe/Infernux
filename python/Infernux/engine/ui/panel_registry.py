@@ -99,6 +99,7 @@ class PanelRegistry:
                 factory=reg.factory,
                 singleton=reg.singleton,
                 title_key=reg.title_key,
+                menu_path=reg.menu_path,
             )
             count += 1
             Debug.log_internal(
@@ -142,7 +143,8 @@ def editor_panel(
             via ``t(title_key)``.  When set, the panel title and
             Window-menu label update automatically on locale change.
         menu_path: Menu path for grouping (default ``"Window"``).
-            Future use — currently all panels appear under Window.
+            Slash-separated — ``"Animation/2D Animation"`` places the
+            panel under *Animation → 2D Animation* in the menu bar.
         factory: Optional callable that returns a new panel instance.
             Defaults to ``panel_class()``.
         singleton: If *True* (default) only one instance is allowed.

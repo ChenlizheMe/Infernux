@@ -5,8 +5,8 @@ Provides a static ``Input`` class whose API mirrors ``UnityEngine.Input``
 but uses Python-idiomatic snake_case naming.
 
 Quick reference (Unity → Infernux):
-    ``Input.GetKey("w")``            → ``Input.get_key("w")``
-    ``Input.GetKeyDown(KeyCode.Space)`` → ``Input.get_key_down(KeyCode.SPACE)``
+    ``Input.GetKey("w")``            → ``Input.get_key("w")``  *(held this frame)*
+    ``Input.GetKeyDown(KeyCode.Space)`` → ``Input.get_key_down(KeyCode.SPACE)``  *(first frame only)*
     ``Input.GetMouseButton(0)``      → ``Input.get_mouse_button(0)``
     ``Input.mousePosition``          → ``Input.mouse_position``
     ``Input.GetAxis("Horizontal")``  → ``Input.get_axis("Horizontal")``
@@ -289,7 +289,10 @@ class Input(metaclass=_InputMeta):
 
     @staticmethod
     def get_key_down(key: Union[str, int]) -> bool:
-        """``True`` during the frame *key* was first pressed."""
+        """``True`` only on the frame *key* transitions to pressed (Unity ``GetKeyDown``).
+
+        For "while held" semantics, use :meth:`get_key` (Unity ``GetKey``).
+        """
         if not Input._game_focused:
             return False
         sc = Input._resolve_key(key)

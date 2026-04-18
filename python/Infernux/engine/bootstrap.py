@@ -40,7 +40,7 @@ from Infernux.engine.ui import panel_state as _panel_state
 _log = logging.getLogger("Infernux.bootstrap")
 
 _LAYOUT_VERSION = 5
-_TOTAL_STEPS = 13
+_TOTAL_STEPS = 12
 
 
 def _signal_progress(current_step: int, total: int, message: str) -> None:
@@ -65,7 +65,10 @@ from ._bootstrap_wiring import BootstrapWiringMixin
 class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWiringMixin):
     """Orchestrates the full editor startup sequence."""
 
+    _instance: Optional["EditorBootstrap"] = None
+
     def __init__(self, project_path: str, engine_log_level=LogLevel.Info):
+        EditorBootstrap._instance = self
         self.project_path = project_path
         self.engine_log_level = engine_log_level
 
@@ -98,15 +101,16 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
         # Progress tracking for launcher splash
         self._progress_step = 0
 
+    @classmethod
+    def instance(cls) -> Optional["EditorBootstrap"]:
+        return cls._instance
+
     # ── Public entry point ─────────────────────────────────────────────
 
     def run(self):
         """Execute all bootstrap steps and start the main loop."""
         self._report_progress("Checking project requirements\u2026")
         self._ensure_project_requirements()
-
-        self._report_progress("Compiling JIT kernels\u2026")
-        self._precompile_jit()
 
         self._report_progress("Initializing renderer\u2026")
         self._init_engine()
@@ -148,13 +152,6 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
         from Infernux.engine.project_requirements import ensure_project_requirements
 
         ensure_project_requirements(self.project_path, auto_install=True)
-
-    @staticmethod
-    def _precompile_jit():
-        from Infernux.jit import precompile_jit
-
-        precompile_jit()
-
 
     def _init_engine(self):
         self.engine = Engine(self.engine_log_level)
@@ -401,6 +398,27 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
             })
         _panel_state.put("project", {"current_path": self.project_panel.get_current_path()})
         _panel_state.put("window_manager", self.window_manager.save_state())
+
+        # Persist individual panel states for every window id we still track
+        # (singletons live in _default_instances; dynamically opened ids may only
+        # appear in _window_instances until closed — those must still save).
+        wm = self.window_manager
+        seen_ids: set[str] = set()
+        for wid in set(wm._default_instances.keys()) | set(wm._window_instances.keys()):
+            if wid in seen_ids:
+                continue
+            seen_ids.add(wid)
+            inst = wm._window_instances.get(wid) or wm._default_instances.get(wid)
+            if inst is None:
+                continue
+            if hasattr(inst, "save_state") and callable(inst.save_state):
+                try:
+                    data = inst.save_state()
+                    if data:
+                        _panel_state.put(f"panel:{wid}", data)
+                except Exception:
+                    pass
+
         _panel_state.save()
 
     def _load_initial_scene(self):

@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>JIT-Accelerated Scripting - Infernux Scripting API</title>
+    <title>Deep Dive: JIT-Accelerated Scripting in Infernux - Infernux Scripting API</title>
     <link rel="icon" type="image/png" href="/Infernux/assets/logo.png">
     <link rel="stylesheet" href="/Infernux/css/style.css?v=2">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
@@ -328,62 +328,224 @@
     <main class="page-shell" style="padding-top: calc(var(--nav-height) + 60px); min-height: 80vh; padding-bottom: 80px;">
         <div class="container" style="max-width: 860px; margin: 0 auto;">
             <div class="api-main" style="padding: 0; max-width: none;">
-                <h1 id="jit-accelerated-scripting">JIT-Accelerated Scripting<a class="headerlink" href="#jit-accelerated-scripting" title="Permanent link">&para;</a></h1>
-<p>This page condenses the JIT section of the technical report, <a href="https://arxiv.org/pdf/2604.10263"><em>Infernux: A Python-Native Game Engine with JIT-Accelerated Scripting</em></a>, into a shorter project-facing note.</p>
-<h2 id="why-the-jit-path-exists">Why the JIT path exists<a class="headerlink" href="#why-the-jit-path-exists" title="Permanent link">&para;</a></h2>
-<p>Pure Python is expressive, reloadable, and fits the engine's editor-first workflow, but per-object property access across the Python and C++ boundary is too expensive for large per-frame workloads. Infernux addresses that bottleneck with two mechanisms that are designed to work together:</p>
-<ul>
-<li>A batch data bridge that moves engine state through contiguous NumPy arrays in one boundary crossing.</li>
-<li>An optional JIT path built on Numba that compiles annotated Python update functions to LLVM machine code.</li>
-</ul>
-<p>The practical goal is not to replace Python with a different gameplay language. It is to keep Python as the authoring language while moving the tight inner loop closer to native throughput.</p>
-<h2 id="batch-first-then-jit">Batch first, then JIT<a class="headerlink" href="#batch-first-then-jit" title="Permanent link">&para;</a></h2>
-<p>The report treats JIT as part of a larger performance bridge rather than a standalone compiler trick. Typical frame logic follows this shape:</p>
-<div class="language-python highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="n">positions</span> <span class="o">=</span> <span class="n">batch_read</span><span class="p">(</span><span class="n">targets</span><span class="p">,</span> <span class="s2">&quot;position&quot;</span><span class="p">)</span>
-<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="n">jit_wave_kernel</span><span class="p">(</span><span class="n">positions</span><span class="p">,</span> <span class="n">time_value</span><span class="p">,</span> <span class="n">count</span><span class="p">)</span>
-<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="n">batch_write</span><span class="p">(</span><span class="n">targets</span><span class="p">,</span> <span class="n">positions</span><span class="p">,</span> <span class="s2">&quot;position&quot;</span><span class="p">)</span>
+                <h1 id="deep-dive-jit-accelerated-scripting-in-infernux">Deep Dive: JIT-Accelerated Scripting in Infernux<a class="headerlink" href="#deep-dive-jit-accelerated-scripting-in-infernux" title="Permanent link">&para;</a></h1>
+<p>Infernux is a game engine whose entire gameplay layer is written in Python. That is a deliberate architectural choice — Python gives us hot reload, a massive ecosystem, and a low barrier to entry — but it also means that every per-frame update loop is, by default, interpreted. When you need to touch 100,000 transforms each frame, interpretation is not fast enough. This page walks through how the engine's JIT subsystem solves that problem, what design decisions it makes under the hood, and where the work is heading next.</p>
+<p>For the formal evaluation and benchmark tables, see the full technical report: <a href="https://arxiv.org/pdf/2604.10263"><em>Infernux: A Python-Native Game Engine with JIT-Accelerated Scripting</em> (arXiv:2604.10263)</a>.</p>
+<hr />
+<h2 id="1-the-problem-death-by-a-thousand-boundary-crossings">1 &ensp; The problem: death by a thousand boundary crossings<a class="headerlink" href="#1-the-problem-death-by-a-thousand-boundary-crossings" title="Permanent link">&para;</a></h2>
+<p>Consider what happens when a naive Python script updates every entity's position:</p>
+<div class="language-python highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="k">for</span> <span class="n">obj</span> <span class="ow">in</span> <span class="n">scene</span><span class="o">.</span><span class="n">objects</span><span class="p">:</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="n">pos</span> <span class="o">=</span> <span class="n">obj</span><span class="o">.</span><span class="n">transform</span><span class="o">.</span><span class="n">position</span>          <span class="c1"># Python → C++ → Python</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="n">pos</span><span class="o">.</span><span class="n">y</span> <span class="o">+=</span> <span class="n">math</span><span class="o">.</span><span class="n">sin</span><span class="p">(</span><span class="n">time</span> <span class="o">+</span> <span class="n">pos</span><span class="o">.</span><span class="n">x</span><span class="p">)</span>       <span class="c1"># pure Python math</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="n">obj</span><span class="o">.</span><span class="n">transform</span><span class="o">.</span><span class="n">position</span> <span class="o">=</span> <span class="n">pos</span>          <span class="c1"># Python → C++ → Python</span>
 </code></pre></div>
-<p>That pattern keeps the number of Python-to-C++ crossings constant per frame instead of scaling with object count. The JIT kernel then works on dense arrays, which is exactly the case where Numba performs well.</p>
-<h2 id="what-infernux-adds-on-top-of-numba">What Infernux adds on top of Numba<a class="headerlink" href="#what-infernux-adds-on-top-of-numba" title="Permanent link">&para;</a></h2>
-<p>The engine's JIT decorator is intentionally more opinionated than calling <code>numba.njit</code> directly.</p>
+<p>Each iteration crosses the pybind11 boundary twice: once to read, once to write. Every crossing acquires the GIL, converts between C++ and Python types, and dispatches through pybind11's type-caster machinery. At 10 objects this is invisible. At 100,000 objects it burns more time in boundary overhead than in the actual math.</p>
+<p>The engine's performance story therefore has two chapters, and they must be read in order.</p>
+<hr />
+<h2 id="2-chapter-one-the-batch-data-bridge">2 &ensp; Chapter one: the batch data bridge<a class="headerlink" href="#2-chapter-one-the-batch-data-bridge" title="Permanent link">&para;</a></h2>
+<p>Before any JIT compilation can help, we need to eliminate per-object boundary crossings. The batch bridge does this by moving engine state through contiguous NumPy arrays in a single call:</p>
+<div class="language-python highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="n">positions</span> <span class="o">=</span> <span class="n">batch_read</span><span class="p">(</span><span class="n">targets</span><span class="p">,</span> <span class="s2">&quot;position&quot;</span><span class="p">)</span>   <span class="c1"># one crossing, returns (N,3) array</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="n">jit_wave_kernel</span><span class="p">(</span><span class="n">positions</span><span class="p">,</span> <span class="n">time_value</span><span class="p">,</span> <span class="n">count</span><span class="p">)</span>  <span class="c1"># pure array math, no crossings</span>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="n">batch_write</span><span class="p">(</span><span class="n">targets</span><span class="p">,</span> <span class="n">positions</span><span class="p">,</span> <span class="s2">&quot;position&quot;</span><span class="p">)</span>    <span class="c1"># one crossing, writes back</span>
+</code></pre></div>
+<p>Internally, <code>batch_read</code> dispatches through a tiered fast path:</p>
+<ol>
+<li><strong>C++ Transform path</strong> — for <code>position</code>, <code>rotation</code>, <code>scale</code> and other Transform properties, the call goes directly to <code>TransformECSStore::GatherVec3</code> / <code>GatherQuat</code> in C++, which memcpys from the SoA store into a pre-allocated NumPy buffer with the GIL released.</li>
+<li><strong>ComponentDataStore path</strong> — for user-defined <code>InxComponent</code> fields backed by the typed CDS (Float64, Int64, Bool, Vec2–Vec4), C++ scatter/gather routines handle the bulk copy.</li>
+<li><strong>Python fallback</strong> — for anything else, a <code>getattr</code> loop collects values one by one. This is the slow path, but it is always correct.</li>
+</ol>
+<p>A <code>create_batch_handle()</code> call can further cache the underlying C++ <code>Transform*</code> pointers so that repeated frames skip the O(N) pybind11 cast of the target list.</p>
+<p>The result: boundary-crossing cost becomes O(1) per frame per property instead of O(N). The data that arrives in the kernel is a dense, cache-friendly NumPy ndarray — exactly the input shape that LLVM vectorizers love.</p>
+<hr />
+<h2 id="3-chapter-two-compiling-the-kernel">3 &ensp; Chapter two: compiling the kernel<a class="headerlink" href="#3-chapter-two-compiling-the-kernel" title="Permanent link">&para;</a></h2>
+<p>With boundary crossings eliminated, the remaining cost is the Python interpreter evaluating the inner loop. A sine-and-add loop over 100k floats in CPython takes milliseconds. The same loop compiled to native SIMD code takes microseconds. That is where JIT comes in.</p>
+<h3 id="31-the-njit-decorator">3.1 &ensp; The <code>njit</code> decorator<a class="headerlink" href="#31-the-njit-decorator" title="Permanent link">&para;</a></h3>
+<p>The engine exposes a single entry point: <code>from Infernux.jit import njit</code>. Depending on argument style, it does different things:</p>
+<table>
+<thead>
+<tr>
+<th>Usage</th>
+<th>Behavior</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>@njit</code></td>
+<td>Compile one serial variant via Numba, cache by bytecode key.</td>
+</tr>
+<tr>
+<td><code>@njit(cache=True, auto_parallel=True)</code></td>
+<td>Compile <strong>two</strong> variants (serial + parallel), AST-rewrite the parallel one, and build an auto-selecting dispatcher.</td>
+</tr>
+</tbody>
+</table>
+<p>When Numba is not installed, <code>njit</code> degrades to a transparent pass-through: the original Python function runs as-is, and a runtime warning is emitted so the performance loss is visible rather than silent.</p>
+<h3 id="32-bytecode-keyed-compilation-cache">3.2 &ensp; Bytecode-keyed compilation cache<a class="headerlink" href="#32-bytecode-keyed-compilation-cache" title="Permanent link">&para;</a></h3>
+<p>Traditional Numba caching keys on <code>(module, function_name)</code>. That breaks in a game engine where scripts are reloaded dozens of times per session — the module identity changes, but the code may not have.</p>
+<p>Infernux keys the cache on:</p>
+<div class="language-text highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>(co_filename, func_name, sha256(co_code)[:16], kwargs_tag)
+</code></pre></div>
+<p>The <code>sha256</code> of the raw bytecode means that if the function body has not changed, the cached machine code is reused even after a hot reload cycle destroys and recreates the module object. If the bytecode <em>has</em> changed, only that function is recompiled; every other kernel keeps its cached variant.</p>
+<p>This is stored in an in-process <code>dict</code> (<code>_compiled_cache</code>). There is no filesystem lock contention, no stale <code>.nbi</code> files to manually clean, and no edge cases from Numba's built-in file cache interacting with Nuitka's frozen importers.</p>
+<h3 id="33-graceful-degradation-and-self-healing">3.3 &ensp; Graceful degradation and self-healing<a class="headerlink" href="#33-graceful-degradation-and-self-healing" title="Permanent link">&para;</a></h3>
+<p>The JIT subsystem anticipates three runtime environments:</p>
 <ul>
-<li>It degrades gracefully to pure Python when Numba is not installed, while emitting a runtime warning so the slowdown is visible.</li>
-<li>It uses a bytecode-keyed cache that survives module reloads and editor hot reload cycles.</li>
-<li>It preserves partial compatibility with Nuitka-based packaging. Numba still requires CPython at runtime, so this is a distribution convenience rather than a full AOT replacement.</li>
+<li><strong>Full Numba available</strong> — compile and cache normally.</li>
+<li><strong>Numba missing</strong> — fall back to plain Python. <code>ensure_jit_runtime()</code> can optionally auto-install Numba via pip (a self-healing path: import fails → install → reimport → succeed).</li>
+<li><strong>Nuitka-compiled distribution</strong> — Numba's file-backed cache is disabled (because <code>co_filename</code> no longer points to a real <code>.py</code> file), but in-memory compilation still works. This gives packaged builds JIT performance without requiring the end user to have a compiler toolchain.</li>
 </ul>
-<p>In other words, the JIT path is integrated into the engine's reload and packaging model instead of being treated as an isolated optimization utility.</p>
-<h2 id="auto-parallelization">Auto-parallelization<a class="headerlink" href="#auto-parallelization" title="Permanent link">&para;</a></h2>
-<p>The paper's most engine-specific JIT feature is the auto-parallel mode. When enabled, an AST rewriter inspects counted loops of the form <code>for i in range(n)</code> and promotes them to <code>prange</code> when the loop body satisfies a conservative set of rules.</p>
-<p>The rewriter does <strong>not</strong> try to parallelize every loop. It rejects:</p>
+<p>Every compiled function object carries a <code>.py</code> attribute pointing to the original Python callable, so introspection and debugging always have a fallback.</p>
+<hr />
+<h2 id="4-auto-parallelization-from-range-to-prange">4 &ensp; Auto-parallelization: from <code>range</code> to <code>prange</code><a class="headerlink" href="#4-auto-parallelization-from-range-to-prange" title="Permanent link">&para;</a></h2>
+<p>This is the most engine-specific part of the JIT subsystem, and it is worth understanding in detail.</p>
+<h3 id="41-the-idea">4.1 &ensp; The idea<a class="headerlink" href="#41-the-idea" title="Permanent link">&para;</a></h3>
+<p>Numba supports <code>prange</code> — a parallel range that distributes loop iterations across threads. But asking every gameplay programmer to manually write <code>prange</code>, verify there are no data races, and handle the serial fallback when parallelism is not profitable is unrealistic. The engine should do this automatically when it is safe.</p>
+<h3 id="42-the-ast-rewriter">4.2 &ensp; The AST rewriter<a class="headerlink" href="#42-the-ast-rewriter" title="Permanent link">&para;</a></h3>
+<p>When <code>auto_parallel=True</code> is set, the engine takes the source of the decorated function, parses it into a Python AST, and runs <code>_AutoParallelRangeTransformer</code> — a <code>ast.NodeTransformer</code> subclass that visits every <code>for</code> node and asks:</p>
+<ol>
+<li>
+<p><strong>Is this a counted loop?</strong> — The iterator must be a direct <code>range(...)</code> call. Iterator-style loops (<code>for x in arr</code>) and <code>while</code> loops are never touched.</p>
+</li>
+<li>
+<p><strong>Is the body free of unsupported control flow?</strong> — <code>return</code>, <code>break</code>, <code>yield</code>, and <code>try/except</code> inside the loop body all abort the rewrite. These constructs either have unclear parallel semantics or are not supported by Numba's parallel backend.</p>
+</li>
+<li>
+<p><strong>Is the write pattern safe?</strong> — The rewriter checks for two patterns:</p>
+</li>
+<li><strong>Supported reductions</strong>: augmented assignments like <code>total += arr[i]</code>, <code>product *= arr[i]</code>. These are recognized as commutative reductions that Numba can partition across threads.</li>
+<li><strong>Embarrassingly parallel indexed stores</strong>: array writes of the form <code>out[i] = expr</code> where the index is the loop variable. Because each iteration writes to a unique index, there are no data races.</li>
+</ol>
+<p>If neither pattern is found, the loop is left serial.</p>
+<ol>
+<li><strong>Rewrite</strong>: If all checks pass, <code>range</code> is replaced with <code>prange</code> in the AST, the modified source is compiled via <code>exec</code>, and the resulting function object is handed to Numba with <code>parallel=True</code>.</li>
+</ol>
+<div class="language-text highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>Original:    for i in range(n):  out[i] = arr[i] * scale
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>                                      ↓ AST rewrite
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>Rewritten:   for i in prange(n): out[i] = arr[i] * scale
+</code></pre></div>
+<h3 id="43-why-syntactic-analysis-is-enough">4.3 &ensp; Why syntactic analysis is enough<a class="headerlink" href="#43-why-syntactic-analysis-is-enough" title="Permanent link">&para;</a></h3>
+<p>A real compiler would need full alias analysis to prove that <code>out[i]</code> and <code>arr[j]</code> don't alias for <code>i ≠ j</code>. The engine's rewriter deliberately skips that and uses a syntactic heuristic: if the write target is <code>&lt;array&gt;[&lt;loop_var&gt;]</code>, it is assumed disjoint.</p>
+<p>This is sound for the dominant game-engine use case: SoA property updates indexed by entity ID. <code>positions[i]</code>, <code>velocities[i]</code>, <code>scales[i]</code> — every kernel the engine ships looks like this. The heuristic rejects anything more complex, which is the conservative-safe direction to err in: you might miss a parallelization opportunity, but you never introduce a data race.</p>
+<h3 id="44-prebuilt-sidecars-for-distribution">4.4 &ensp; Prebuilt sidecars for distribution<a class="headerlink" href="#44-prebuilt-sidecars-for-distribution" title="Permanent link">&para;</a></h3>
+<p>For packaged builds, live AST rewriting at startup adds latency. The build system can pre-generate <code>.autop.pyc</code> sidecar files via <code>build_auto_parallel_sidecar_source()</code>. At runtime, <code>_load_prebuilt_auto_parallel_variant()</code> checks for sidecars first and only falls back to live rewriting if none are found.</p>
+<hr />
+<h2 id="5-the-dual-variant-dispatcher">5 &ensp; The dual-variant dispatcher<a class="headerlink" href="#5-the-dual-variant-dispatcher" title="Permanent link">&para;</a></h2>
+<p>Parallel execution is not always faster. For small N, thread-pool overhead dominates. For large N, parallel throughput wins. The engine handles this with a dual-variant dispatch architecture.</p>
+<h3 id="51-compilation">5.1 &ensp; Compilation<a class="headerlink" href="#51-compilation" title="Permanent link">&para;</a></h3>
+<p>When <code>auto_parallel=True</code>, the engine compiles <strong>two</strong> Numba functions from the same source:</p>
 <ul>
-<li>Iterator-style loops such as <code>for x in arr</code>.</li>
-<li><code>while</code> loops.</li>
-<li>Bodies containing unsupported control flow such as <code>break</code>, <code>yield</code>, exception handling, or early return.</li>
-<li>Writes that do not look like disjoint indexed array stores.</li>
+<li><code>fn_serial</code> — compiled with <code>parallel=False</code>, the original <code>range</code> loops.</li>
+<li><code>fn_parallel</code> — compiled with <code>parallel=True</code>, <code>range</code> rewritten to <code>prange</code>.</li>
 </ul>
-<p>The aliasing check is intentionally syntactic rather than fully semantic. In practice, that is acceptable for the dominant engine use case: updating positions, rotations, scales, or other SoA columns indexed by entity ID.</p>
-<h2 id="warm-up-and-hot-reload">Warm-up and hot reload<a class="headerlink" href="#warm-up-and-hot-reload" title="Permanent link">&para;</a></h2>
-<p>Compiling both a serial and a parallel variant introduces cold-start cost. The report places typical compile latency at roughly 50-200 ms per decorated function on the benchmark machine. Infernux hides that cost in two ways:</p>
+<p>Both are cached under their respective <code>kwargs_tag</code> so the bytecode cache distinguishes them.</p>
+<h3 id="52-warm-up-and-pinning">5.2 &ensp; Warm-up and pinning<a class="headerlink" href="#52-warm-up-and-pinning" title="Permanent link">&para;</a></h3>
+<p>The <code>warmup()</code> function does more than just trigger compilation. For dual-variant kernels, it runs a <strong>two-pass benchmark</strong>:</p>
+<ol>
+<li>Call <code>fn_serial(*args)</code> and <code>fn_parallel(*args)</code> once each to force compilation (cold run, discarded).</li>
+<li>Measure steady-state latency of both variants on the actual warm-up arguments.</li>
+<li><strong>Pin</strong> the faster variant as the default dispatch target.</li>
+</ol>
+<p>This pinning happens at scene load time. The rationale: if your scene has 50 objects, the serial path is probably faster, and the dispatcher should not pay thread-pool overhead every frame. If your scene has 500,000 objects, the parallel path wins, and the dispatcher should use it from the first real frame.</p>
+<h3 id="53-runtime-fallback">5.3 &ensp; Runtime fallback<a class="headerlink" href="#53-runtime-fallback" title="Permanent link">&para;</a></h3>
+<p>Even after pinning, the parallel variant can fail at runtime (e.g., Numba's thread pool hits an OS limit). The dispatcher catches the exception and <strong>self-heals</strong> to the serial variant for the rest of the session, logging a warning.</p>
+<hr />
+<h2 id="6-warm-up-and-hot-reload-in-practice">6 &ensp; Warm-up and hot reload in practice<a class="headerlink" href="#6-warm-up-and-hot-reload-in-practice" title="Permanent link">&para;</a></h2>
+<h3 id="61-cold-start-cost">6.1 &ensp; Cold-start cost<a class="headerlink" href="#61-cold-start-cost" title="Permanent link">&para;</a></h3>
+<p>Compiling a serial + parallel pair through Numba/LLVM typically costs 50–200 ms per function on a modern desktop CPU. That is acceptable at scene load but unacceptable in the middle of gameplay.</p>
+<h3 id="62-the-warm-up-helper">6.2 &ensp; The warm-up helper<a class="headerlink" href="#62-the-warm-up-helper" title="Permanent link">&para;</a></h3>
+<div class="language-python highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.jit</span><span class="w"> </span><span class="kn">import</span> <span class="n">warmup</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="k">def</span><span class="w"> </span><span class="nf">on_scene_load</span><span class="p">():</span>
+<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>    <span class="n">dummy_positions</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">zeros</span><span class="p">((</span><span class="mi">1000</span><span class="p">,</span> <span class="mi">3</span><span class="p">),</span> <span class="n">dtype</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">float32</span><span class="p">)</span>
+<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>    <span class="n">warmup</span><span class="p">(</span><span class="n">jit_wave_kernel</span><span class="p">,</span> <span class="n">dummy_positions</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mi">1000</span><span class="p">)</span>
+</code></pre></div>
+<p>By calling <code>warmup()</code> during scene load (or a loading screen), the compilation cost is hidden from the player. The dummy arguments also serve as the benchmark input for dual-variant pinning.</p>
+<h3 id="63-hot-reload-integration">6.3 &ensp; Hot reload integration<a class="headerlink" href="#63-hot-reload-integration" title="Permanent link">&para;</a></h3>
+<p>When a script is modified in the editor and reloaded:</p>
+<ol>
+<li>The module is re-imported, creating new function objects.</li>
+<li><code>njit</code> computes the bytecode key for each function.</li>
+<li>If the key matches an existing cache entry → reuse, zero compilation cost.</li>
+<li>If the key is new (code changed) → recompile only that function. Other kernels are untouched.</li>
+</ol>
+<p>This means editing a single script function triggers at most one 50–200 ms recompile, not a full-project rebuild. For an editor-first engine, this is as important as raw throughput.</p>
+<hr />
+<h2 id="7-performance-results">7 &ensp; Performance results<a class="headerlink" href="#7-performance-results" title="Permanent link">&para;</a></h2>
+<p>The cleanest measurement from the technical report is the <em>pure-compute benchmark</em> — no rendering, no Transform write-back, just scripting throughput.</p>
+<table>
+<thead>
+<tr>
+<th>Element count</th>
+<th>Auto-parallel JIT</th>
+<th>NumPy (no JIT)</th>
+<th>Unity IL2CPP</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>10k</td>
+<td>&gt;3000 FPS</td>
+<td>~800 FPS</td>
+<td>~2400 FPS</td>
+</tr>
+<tr>
+<td>100k</td>
+<td>~2200 FPS</td>
+<td>~120 FPS</td>
+<td>~600 FPS</td>
+</tr>
+<tr>
+<td>1M</td>
+<td><strong>848 FPS</strong></td>
+<td>~80 FPS</td>
+<td>~123 FPS</td>
+</tr>
+</tbody>
+</table>
+<p>At 1M elements: <strong>6.9× faster than Unity IL2CPP</strong>, <strong>10.5× faster than the non-JIT NumPy path</strong>.</p>
+<p>The takeaway is not one number but a scaling curve: as entity count grows, the JIT path degrades gracefully while the interpreted path collapses. Python remains viable for real-time authoring when the inner loop is compiled and boundary crossings are batched.</p>
+<hr />
+<h2 id="8-current-limitations">8 &ensp; Current limitations<a class="headerlink" href="#8-current-limitations" title="Permanent link">&para;</a></h2>
+<p>The system is honest about what it does not solve:</p>
 <ul>
-<li>A warm-up helper can precompile registered kernels during scene load.</li>
-<li>During hot reload, only the modified function is recompiled; unchanged kernels keep their cached machine code.</li>
+<li><strong>The boundary is now the bottleneck.</strong> Each <code>batch_read</code> / <code>batch_write</code> call still crosses pybind11, acquires the GIL, performs type conversion, and returns. Kernel compute is no longer the ceiling; boundary latency is.</li>
+<li><strong>Static variant pinning assumes stable workloads.</strong> The warm-up benchmark pins serial or parallel based on a single measurement at scene load. If the workload changes dramatically at runtime, the pinned choice may become suboptimal.</li>
+<li><strong>Syntactic alias analysis is conservative.</strong> Some loops that are actually safe to parallelize are rejected because the write pattern does not match the <code>arr[i] = ...</code> template.</li>
 </ul>
-<p>This is an important design choice for editor workflows. The goal is not just high throughput after compilation, but also predictable iteration while scripts are being changed live.</p>
-<h2 id="what-the-report-shows">What the report shows<a class="headerlink" href="#what-the-report-shows" title="Permanent link">&para;</a></h2>
-<p>The cleanest JIT result in the report is the pure-compute benchmark, where no rendering and no Transform write-back are involved. In that workload:</p>
+<hr />
+<h2 id="9-what-comes-next">9 &ensp; What comes next<a class="headerlink" href="#9-what-comes-next" title="Permanent link">&para;</a></h2>
+<h3 id="91-lock-free-command-ring">9.1 &ensp; Lock-free command ring<a class="headerlink" href="#91-lock-free-command-ring" title="Permanent link">&para;</a></h3>
+<p>The next planned boundary optimization is a lock-free ring buffer between the Python scripting thread and the C++ runtime. Instead of synchronous pybind11 calls, batch dispatches would be enqueued as command packets and consumed by the native side without GIL contention. This attacks the boundary-crossing bottleneck that the JIT path has exposed.</p>
+<h3 id="92-adaptive-jit-dynamic-problem-scale-monitoring">9.2 &ensp; Adaptive JIT: dynamic problem-scale monitoring<a class="headerlink" href="#92-adaptive-jit-dynamic-problem-scale-monitoring" title="Permanent link">&para;</a></h3>
+<p>This is the direction we are most actively exploring, and it addresses a fundamental tension in game workloads.</p>
+<p><strong>The core observation:</strong> problem scale in a game is not static. A player might face 20 enemies one second and 300 the next. A particle system might emit 500 particles in a calm scene and 50,000 during an explosion. The optimal parallelization strategy depends on N — and N changes every frame.</p>
+<p>Static variant pinning (as described in Section 5.2) picks serial or parallel once at warm-up time and sticks with it. That is a reasonable default, but it leaves performance on the table in dynamic scenarios:</p>
 <ul>
-<li>The auto-parallel JIT path sustains high frame rates as element count scales from 10k to 1M.</li>
-<li>At 1M elements, the runtime result in the paper reaches 848 FPS.</li>
-<li>That is reported as 6.9x faster than the Unity IL2CPP reference and 10.5x faster than the non-JIT NumPy path for the same workload.</li>
+<li>If pinned to parallel and N drops below the crossover point, thread-pool overhead wastes cycles.</li>
+<li>If pinned to serial and N spikes, the kernel misses an opportunity to scale across cores.</li>
 </ul>
-<p>The larger point is not a single headline number. It is that Python remains viable for real-time authoring when engine state is batched and the heavy loop is compiled.</p>
-<h2 id="limits-and-next-step">Limits and next step<a class="headerlink" href="#limits-and-next-step" title="Permanent link">&para;</a></h2>
-<p>The report is explicit that the remaining bottleneck is no longer arithmetic throughput inside the compiled kernel. It is the communication boundary itself. Each batch dispatch still crosses pybind11, acquires the GIL, performs type conversion, and returns.</p>
-<p>That is why the roadmap after JIT focuses on a lock-free command ring for the Python-to-native path. The JIT path already reduces compute cost sharply; the next ceiling is the boundary crossing around it.</p>
-<h2 id="read-the-full-report">Read the full report<a class="headerlink" href="#read-the-full-report" title="Permanent link">&para;</a></h2>
-<p>For the complete evaluation, benchmark tables, and system context, read the full report:</p>
+<p><strong>The idea under exploration</strong> is an <em>adaptive JIT dispatcher</em>: a lightweight monitor running on a dedicated sub-thread that continuously observes the actual problem scale (N) each operator is being called with. When it detects that the current variant is no longer optimal for the observed N, it asynchronously triggers a variant swap:</p>
+<div class="language-text highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>Main thread:    kernel(data, N=30)  →  serial variant (fast for small N)
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>                    ...
+<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>                kernel(data, N=8000) → serial variant (suboptimal!)
+<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>                    ...
+<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>Monitor thread: observes N trending upward → signals &quot;switch to parallel&quot;
+<a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>                    ...
+<a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a>Main thread:    kernel(data, N=12000) → parallel variant (now optimal)
+</code></pre></div>
+<p>The key design constraints are:</p>
 <ul>
-<li><a href="https://arxiv.org/pdf/2604.10263">Infernux: A Python-Native Game Engine with JIT-Accelerated Scripting (arXiv:2604.10263)</a></li>
+<li><strong>Zero contention on the hot path.</strong> The main thread must never block waiting for the monitor's decision. Variant swaps are <em>eventual</em> — the main thread reads a single atomic pointer to decide which variant to call, and the monitor updates that pointer asynchronously.</li>
+<li><strong>Hysteresis to avoid thrashing.</strong> Switching variants has a cost (cache-line invalidation, thread-pool wake-up). The monitor should use windowed averaging or exponential smoothing to distinguish sustained scale changes from momentary spikes.</li>
+<li><strong>Per-operator granularity.</strong> Different kernels have different serial-parallel crossover points. The monitor tracks N independently for each registered operator.</li>
+</ul>
+<p>This would make the JIT subsystem not just a static compiler but a runtime-adaptive execution layer — one that continuously tunes its parallelization strategy to match the actual workload the game is producing, frame by frame.</p>
+<p>This work is in the early exploration stage, but it addresses a real gap: existing JIT systems in scientific computing assume stable problem sizes, while game workloads are inherently dynamic. Bridging that gap is the next frontier for the engine's performance story.</p>
+<hr />
+<h2 id="further-reading">Further reading<a class="headerlink" href="#further-reading" title="Permanent link">&para;</a></h2>
+<ul>
+<li><a href="https://arxiv.org/pdf/2604.10263">Infernux: A Python-Native Game Engine with JIT-Accelerated Scripting (arXiv:2604.10263)</a> — full technical report with benchmark methodology and evaluation.</li>
+<li><a href="about.html">Architecture Overview</a> — how the C++ runtime, pybind11 bindings, and Python production layer fit together.</li>
 </ul>
             </div>
         </div>

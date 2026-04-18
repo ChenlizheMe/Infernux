@@ -26,7 +26,7 @@ Creating a custom panel::
 
 from __future__ import annotations
 
-from typing import Optional, TYPE_CHECKING
+from typing import List, Optional, TYPE_CHECKING
 
 from .closable_panel import ClosablePanel
 
@@ -156,6 +156,89 @@ class EditorPanel(ClosablePanel):
         Override this instead of ``on_render``.
         """
         pass
+
+    # ------------------------------------------------------------------
+    # Unified Empty State
+    # ------------------------------------------------------------------
+
+    def _render_empty_state(
+        self,
+        ctx: InxGUIContext,
+        hint: Optional[str] = None,
+        *,
+        drop_types: Optional[List[str]] = None,
+        on_drop=None,
+        min_height: float = 220.0,
+    ) -> None:
+        """Draw a centered bordered hint box — the standard "nothing loaded" UI.
+
+        This is the canonical empty-state rendering that all panels should
+        use so every editor window has a consistent look.
+
+        Args:
+            ctx: The ImGui context.
+            hint: Text shown inside the drop zone.  Falls back to
+                ``_empty_state_hint()``.
+            drop_types: Accepted drag-and-drop payload types.
+                Falls back to ``_empty_state_drop_types()``.
+            on_drop: Callback ``(payload_type, payload)`` when a drop is
+                accepted.  Falls back to ``_on_empty_state_drop``.
+            min_height: Minimum height of the empty-state region.
+        """
+        from .igui import IGUI
+
+        hint = hint or self._empty_state_hint()
+        drop_types = drop_types if drop_types is not None else self._empty_state_drop_types()
+        on_drop = on_drop or getattr(self, '_on_empty_state_drop', None)
+
+        avail_w = ctx.get_content_region_avail_width()
+        empty_h = max(ctx.get_content_region_avail_height(), min_height)
+
+        ctx.begin_child(f"##{self._window_id}_empty_state", avail_w, empty_h, True)
+        try:
+            region_w = ctx.get_content_region_avail_width()
+            region_h = ctx.get_content_region_avail_height()
+            zone_w = min(max(region_w - 28.0, 220.0), 460.0)
+            zone_h = min(max(region_h - 36.0, 140.0), 250.0)
+            start_x = ctx.get_cursor_pos_x() + (region_w - zone_w) * 0.5
+            start_y = ctx.get_cursor_pos_y() + (region_h - zone_h) * 0.5
+
+            ctx.set_cursor_pos_x(start_x)
+            ctx.set_cursor_pos_y(start_y)
+            ctx.invisible_button(f"##{self._window_id}_drop_zone", zone_w, zone_h)
+
+            bx0 = ctx.get_item_rect_min_x()
+            by0 = ctx.get_item_rect_min_y()
+            bx1 = ctx.get_item_rect_max_x()
+            by1 = ctx.get_item_rect_max_y()
+            ctx.draw_rect(bx0, by0, bx1, by1, 0.55, 0.55, 0.55, 0.55, 2.0, 8.0)
+            ctx.draw_text_aligned(
+                bx0, by0, bx1, by1,
+                hint,
+                0.72, 0.72, 0.72, 0.95,
+                0.5, 0.5,
+            )
+
+            if drop_types and on_drop:
+                IGUI.multi_drop_target(ctx, drop_types, on_drop, outline=True)
+        finally:
+            ctx.end_child()
+
+    def _empty_state_hint(self) -> str:
+        """Return the hint text for the default empty state.
+
+        Override to customize the empty-state message.
+        """
+        from Infernux.engine.i18n import t
+        return t("panel.empty_hint")
+
+    def _empty_state_drop_types(self) -> List[str]:
+        """Return accepted drop-target payload types for the empty state.
+
+        Override to accept specific drop types.  Return ``[]`` to disable
+        the drop zone.
+        """
+        return []
 
     # ------------------------------------------------------------------
     # State Persistence

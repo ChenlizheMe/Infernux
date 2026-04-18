@@ -56,6 +56,8 @@ class EditorPanel : public InxGUIRenderable
         }
 
         ImGui::End();
+
+        PostRender(ctx);
     }
 
   protected:
@@ -70,6 +72,12 @@ class EditorPanel : public InxGUIRenderable
 
     /// Override for per-frame work before window begins.
     virtual void PreRender(InxGUIContext * /*ctx*/)
+    {
+    }
+
+    /// Override for per-frame cleanup after window ends.
+    /// Always called (even when the window is collapsed/hidden).
+    virtual void PostRender(InxGUIContext * /*ctx*/)
     {
     }
 

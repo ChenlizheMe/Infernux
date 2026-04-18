@@ -96,6 +96,7 @@ class FieldMetadata:
     serializable_class: Optional[Type] = None  # For SERIALIZABLE_OBJECT: the concrete class to instantiate
     component_type: Optional[str] = None       # For COMPONENT (ComponentRef): target component type name
     hdr: bool = False                            # For COLOR: allow HDR mode toggle
+    asset_type: Optional[str] = None             # For ASSET: registered asset type name (e.g. "AudioClip", "AnimStateMachine")
 
     # For internal use
     python_type: Optional[Type] = None
@@ -378,6 +379,28 @@ def _ensure_audio_clip_ref(value):
     return ref
 
 
+def _ensure_asset_ref(value, asset_type: str = "AudioClip"):
+    """Wrap *value* in the appropriate AssetRefBase subclass for *asset_type*."""
+    from Infernux.core.asset_ref import AssetRefBase, get_asset_type_config
+    cfg = get_asset_type_config(asset_type)
+    if cfg is None:
+        return _ensure_audio_clip_ref(value)
+    ref_class = cfg["ref_class"]
+    if isinstance(value, ref_class):
+        return value
+    # Accept any AssetRefBase — transfer guid/path_hint
+    if isinstance(value, AssetRefBase):
+        return ref_class(guid=value.guid, path_hint=value.path_hint)
+    ref = ref_class()
+    if value is None:
+        return ref
+    guid, path_hint = _extract_guid_and_path(value, ('file_path', 'source_path'))
+    ref.guid = guid
+    ref.path_hint = path_hint
+    ref._cached = value
+    return ref
+
+
 def _resolve_single_reference(value: Any, field_type: FieldType) -> Any:
     if value is None:
         return None
@@ -397,8 +420,8 @@ def _resolve_single_reference(value: Any, field_type: FieldType) -> Any:
         from Infernux.core.asset_ref import ShaderRef
         return value.resolve() if isinstance(value, ShaderRef) else value
     if field_type == FieldType.ASSET:
-        from Infernux.core.asset_ref import AudioClipRef
-        return value.resolve() if isinstance(value, AudioClipRef) else value
+        from Infernux.core.asset_ref import AssetRefBase
+        return value.resolve() if isinstance(value, AssetRefBase) else value
     return value
 
 
@@ -437,9 +460,11 @@ def normalize_runtime_field_value(value: Any, field_meta_or_type) -> Any:
     if hasattr(field_meta_or_type, 'field_type'):
         field_type = field_meta_or_type.field_type
         element_type = getattr(field_meta_or_type, 'element_type', None)
+        asset_type = getattr(field_meta_or_type, 'asset_type', None)
     else:
         field_type = field_meta_or_type
         element_type = None
+        asset_type = None
 
     if field_type == FieldType.COMPONENT:
         return _ensure_component_ref(value)
@@ -452,7 +477,7 @@ def normalize_runtime_field_value(value: Any, field_meta_or_type) -> Any:
     if field_type == FieldType.SHADER:
         return _ensure_shader_ref(value)
     if field_type == FieldType.ASSET:
-        return _ensure_audio_clip_ref(value)
+        return _ensure_asset_ref(value, asset_type or "AudioClip")
     if field_type == FieldType.LIST and isinstance(value, list):
         if element_type == FieldType.COMPONENT:
             return [_ensure_component_ref(v) for v in value]
@@ -821,6 +846,7 @@ def serialized_field(
     element_class: Optional[Type] = None,
     serializable_class: Optional[Type] = None,
     component_type: Optional[str] = None,
+    asset_type: Optional[str] = None,
     range: Optional[Tuple[float, float]] = None,
     tooltip: str = "",
     readonly: bool = False,
@@ -877,6 +903,8 @@ def serialized_field(
     # Infer field type if not provided
     if field_type is None and component_type:
         inferred_type = FieldType.COMPONENT
+    elif field_type is None and asset_type:
+        inferred_type = FieldType.ASSET
     else:
         inferred_type = field_type or _infer_field_type(None, default)
 
@@ -894,7 +922,7 @@ def serialized_field(
         elif inferred_type == FieldType.SHADER:
             default = _ensure_shader_ref(None)
         elif inferred_type == FieldType.ASSET:
-            default = _ensure_audio_clip_ref(None)
+            default = _ensure_asset_ref(None, asset_type or "AudioClip")
 
     inferred_element_type = element_type
     if inferred_type == FieldType.LIST and inferred_element_type is None:
@@ -927,6 +955,7 @@ def serialized_field(
         serializable_class=serializable_class,
         component_type=component_type,
         hdr=hdr,
+        asset_type=asset_type,
     )
     
     return SerializedFieldDescriptor(metadata)

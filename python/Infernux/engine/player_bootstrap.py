@@ -79,7 +79,6 @@ class PlayerBootstrap:
     def run(self):
         """Execute all bootstrap phases and start the main loop."""
         self._ensure_project_requirements()
-        self._precompile_jit()
         self._init_engine()
         self._load_tag_layer_settings()
         self._create_managers()
@@ -96,17 +95,6 @@ class PlayerBootstrap:
         except ImportError as _exc:
             Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             pass
-
-    @staticmethod
-    def _precompile_jit():
-        try:
-            from Infernux.jit import precompile_jit
-
-            precompile_jit()
-        except ImportError as _exc:
-            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-            pass
-
 
     def _init_engine(self):
         self.engine = Engine(self.engine_log_level)

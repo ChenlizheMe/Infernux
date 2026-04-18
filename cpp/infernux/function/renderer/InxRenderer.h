@@ -101,7 +101,8 @@ class InxRenderer
     void SetGUIPlayerMode(bool enabled);
 
     // ImGui texture management
-    uint64_t UploadTextureForImGui(const std::string &name, const unsigned char *pixels, int width, int height);
+    uint64_t UploadTextureForImGui(const std::string &name, const unsigned char *pixels, int width, int height,
+                                   VkFilter filter = VK_FILTER_LINEAR);
     void RemoveImGuiTexture(const std::string &name);
     bool HasImGuiTexture(const std::string &name) const;
     uint64_t GetImGuiTextureId(const std::string &name) const;

@@ -187,6 +187,12 @@ class UndoManager:
         self._base_scene_dirty = bool(scene_is_dirty)
         self._fire_state_changed()
 
+    def set_scene_dirty_baseline(self, scene_is_dirty: bool) -> None:
+        """Update scene dirty baseline without clearing stacks (e.g. after play mode exit)."""
+        self._base_scene_dirty = bool(scene_is_dirty)
+        self._sync_dirty()
+        self._fire_state_changed()
+
     def mark_save_point(self) -> None:
         self._save_point = self._dirty_depth
         self._base_scene_dirty = False

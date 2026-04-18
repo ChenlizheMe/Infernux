@@ -85,6 +85,7 @@ class ToolbarPanel : public EditorPanel
     void OnRenderContent(InxGUIContext *ctx) override;
     ImGuiWindowFlags GetWindowFlags() const override;
     void PreRender(InxGUIContext *ctx) override;
+    void PostRender(InxGUIContext *ctx) override;
 
   private:
     CameraSettings m_cameraSettings;

@@ -488,6 +488,10 @@ class UndoManager:
         """Clear both undo and redo stacks."""
         ...
 
+    def set_scene_dirty_baseline(self, scene_is_dirty: bool) -> None:
+        """Update scene dirty baseline without clearing stacks."""
+        ...
+
     def mark_save_point(self) -> None:
         """Record the current stack depth as the "saved" point."""
         ...

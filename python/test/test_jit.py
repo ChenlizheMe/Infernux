@@ -65,12 +65,6 @@ class TestEnsureJitRuntime:
         assert state["installed"] is True
 
 
-class TestPrecompileJit:
-    def test_precompile_jit_is_noop(self):
-        # precompile_jit() is kept for backward compat; it does nothing.
-        jit.precompile_jit()  # should not raise
-
-
 class TestAutoParallelNjit:
     @staticmethod
     def _fake_numba_njit(*factory_args, **factory_kwargs):

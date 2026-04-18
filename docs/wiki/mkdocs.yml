@@ -14,11 +14,11 @@ nav:
   - English Guides:
     - Architecture:
       - Why Infernux Exists: en/architecture/about.md
-      - JIT-Accelerated Scripting: en/architecture/jit.md
+      - "Deep Dive: JIT-Accelerated Scripting in Infernux": en/architecture/jit.md
   - 中文指南:
     - 架构:
       - 为什么会有Infernux: zh/architecture/about.md
-      - JIT 加速脚本: zh/architecture/jit.md
+      - 深入理解：Infernux 的 JIT 加速脚本系统: zh/architecture/jit.md
   - API Reference:
     - Overview: en/api/index.md
     - Infernux:

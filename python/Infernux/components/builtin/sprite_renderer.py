@@ -85,6 +85,7 @@ class SpriteRenderer(BuiltinComponent):
         default=0,
         range=(0, 9999),
         tooltip="Index of the frame to display",
+        visible_when=lambda comp: not comp._is_driven_by_animator(),
     )
 
     sprite_color = CppProperty(
@@ -478,6 +479,23 @@ class SpriteRenderer(BuiltinComponent):
             pass
         return ""
 
+    def sync_visual(self):
+        """Public API: push the current C++ properties (frame, flip, color)
+        to the material.  Called by external drivers like SpiritAnimator
+        after they update ``frame_index`` from Python."""
+        self._sync_material_if_dirty()
+
+    def _is_driven_by_animator(self) -> bool:
+        """Return True if a SpiritAnimator is attached to this GameObject."""
+        try:
+            go = self.game_object
+            if go is None:
+                return False
+            from Infernux.components.animator2d import SpiritAnimator
+            return go.get_component(SpiritAnimator) is not None
+        except Exception:
+            return False
+
     def _sync_material_if_dirty(self):
         """Push changed CppProperty values to the material (called per Inspector frame)."""
         cpp = self._cpp_component
@@ -554,12 +572,15 @@ class SpriteRenderer(BuiltinComponent):
             mat.set_color("baseColor", 1.0, 1.0, 1.0, 1.0)
             mat.set_vector4("uvRect", 0.0, 0.0, 1.0, 1.0)
             self._sprite_material = mat._native
-            cpp.set_material(0, mat._native)
             self._material_ready = True
-            # Load texture if sprite_guid was deserialized
+            # Bind the sprite texture BEFORE assigning the material to the
+            # C++ component.  This ensures the descriptor set that C++ creates
+            # on set_material() already contains the real texture, avoiding
+            # a one-frame flash of the white fallback texture.
             self._load_sprite_data()
             self._apply_uv_rect()
             self._apply_color()
+            cpp.set_material(0, mat._native)
         except Exception as e:
             Debug.log_warning(f"SpriteRenderer: failed to create material: {e}")
 

@@ -42,13 +42,12 @@ def __getattr__(name: str):
     This keeps Numba out of ordinary star-import paths while still supporting:
 
         from Infernux import njit
-        from Infernux import precompile_jit
         from Infernux import jit
     """
     if name == "jit":
         return importlib.import_module("Infernux.jit")
     if name in {
-        "njit", "warmup", "precompile_jit", "ensure_jit_runtime",
+        "njit", "warmup", "ensure_jit_runtime",
         "JIT_AVAILABLE",
     }:
         jit_module = importlib.import_module("Infernux.jit")
@@ -109,6 +108,8 @@ __all__ = [
     "RigidbodyInterpolation",
     "AudioSource",
     "AudioListener",
+    "SpriteRenderer",
+    "SpiritAnimator",
     # Decorators
     "require_component",
     "disallow_multiple",
@@ -127,10 +128,17 @@ __all__ = [
     "Texture",
     "Shader",
     "AudioClip",
+    "AnimationClip",
+    "AnimStateMachine",
+    "AnimState",
+    "AnimTransition",
+    "AnimParameter",
     "AssetManager",
     "TextureRef",
     "ShaderRef",
     "AudioClipRef",
+    "AnimationClipRef",
+    "AnimStateMachineRef",
     # Debug — class only (use Debug.log / Debug.log_warning / …)
     "Debug",
     # Submodules

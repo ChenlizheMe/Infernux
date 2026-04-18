@@ -23,6 +23,8 @@ if not _os.environ.get("_INFERNUX_PLAYER_MODE"):
     from .viewport_utils import ViewportInfo, capture_viewport_info
     from .ui_editor_panel import UIEditorPanel
     from .selection_manager import SelectionManager
+    from .animclip2d_editor_panel import AnimClip2DEditorPanel
+    from .animfsm_editor_panel import AnimFSMEditorPanel
 
     # New panel framework
     from .editor_panel import EditorPanel
@@ -52,6 +54,7 @@ if not _os.environ.get("_INFERNUX_PLAYER_MODE"):
         "capture_viewport_info",
         "UIEditorPanel",
         "SelectionManager",
+        "AnimClip2DEditorPanel",
         # New panel framework
         "EditorPanel",
         "EditorServices",

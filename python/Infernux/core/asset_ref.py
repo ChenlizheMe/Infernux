@@ -166,6 +166,141 @@ class AudioClipRef(AssetRefBase):
         return AssetManager.load_by_guid(self._guid, asset_type=AudioClip)
 
 
+class AnimStateMachineRef(AssetRefBase):
+    """Reference to an AnimStateMachine (.animfsm) asset."""
+
+    def _do_resolve(self):
+        if not self._guid and self._path_hint:
+            from Infernux.core.anim_state_machine import AnimStateMachine
+            return AnimStateMachine.load(self._path_hint)
+        db = _get_asset_database()
+        if db and self._guid:
+            try:
+                path = db.get_path_from_guid(self._guid)
+                if path:
+                    from Infernux.core.anim_state_machine import AnimStateMachine
+                    return AnimStateMachine.load(path)
+            except Exception:
+                pass
+        return None
+
+
+class AnimationClipRef(AssetRefBase):
+    """Reference to an AnimationClip (.animclip2d) asset."""
+
+    def _do_resolve(self):
+        if not self._guid and self._path_hint:
+            from Infernux.core.animation_clip import AnimationClip
+            return AnimationClip.load(self._path_hint)
+        db = _get_asset_database()
+        if db and self._guid:
+            try:
+                path = db.get_path_from_guid(self._guid)
+                if path:
+                    from Infernux.core.animation_clip import AnimationClip
+                    return AnimationClip.load(path)
+            except Exception:
+                pass
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Asset type registry — central config for all ASSET-typed serialized fields.
+#
+# Each entry maps an *asset_type* name (used in ``serialized_field()``) to:
+#   ref_class   — AssetRefBase subclass for wrapping/resolving the GUID
+#   dict_key    — unique JSON key used during serialization
+#   drag_type   — ImGui drag-drop payload type emitted by the Project panel
+#   extensions  — file globs for the asset picker
+#   display     — human-readable type label for the inspector object field
+#   prefix      — short id prefix for the inspector widget
+# ---------------------------------------------------------------------------
+
+_ASSET_TYPE_REGISTRY: dict = {}
+
+
+def _ensure_registry():
+    """Populate the registry on first access (avoids import-time cycles)."""
+    if _ASSET_TYPE_REGISTRY:
+        return
+    _ASSET_TYPE_REGISTRY.update({
+        "AudioClip": {
+            "ref_class":  AudioClipRef,
+            "dict_key":   "__audio_clip_ref__",
+            "drag_type":  "AUDIO_FILE",
+            "extensions": ("*.wav", "*.mp3", "*.ogg"),
+            "display":    "AudioClip",
+            "prefix":     "aud",
+        },
+        "AnimStateMachine": {
+            "ref_class":  AnimStateMachineRef,
+            "dict_key":   "__animfsm_ref__",
+            "drag_type":  "ANIMFSM_FILE",
+            "extensions": ("*.animfsm",),
+            "display":    "AnimFSM",
+            "prefix":     "fsm",
+        },
+        "AnimationClip": {
+            "ref_class":  AnimationClipRef,
+            "dict_key":   "__animclip_ref__",
+            "drag_type":  "ANIMCLIP_FILE",
+            "extensions": ("*.animclip2d",),
+            "display":    "AnimClip2D",
+            "prefix":     "aclip",
+        },
+    })
+
+
+def register_asset_type(asset_type: str, *, ref_class, dict_key: str,
+                        drag_type: str, extensions: tuple,
+                        display: str, prefix: str):
+    """Register a new asset type for use with ``FieldType.ASSET``.
+
+    Call this early (e.g. in a plug-in's ``__init__``) to make the type
+    available to serialization and the inspector.
+    """
+    _ensure_registry()
+    _ASSET_TYPE_REGISTRY[asset_type] = {
+        "ref_class":  ref_class,
+        "dict_key":   dict_key,
+        "drag_type":  drag_type,
+        "extensions": extensions,
+        "display":    display,
+        "prefix":     prefix,
+    }
+
+
+def get_asset_type_config(asset_type: str) -> Optional[dict]:
+    """Return the registry entry for *asset_type*, or ``None``."""
+    _ensure_registry()
+    return _ASSET_TYPE_REGISTRY.get(asset_type)
+
+
+def get_all_asset_type_configs() -> dict:
+    """Return the full registry dict (asset_type → config)."""
+    _ensure_registry()
+    return _ASSET_TYPE_REGISTRY
+
+
+def get_asset_type_for_ref(ref) -> Optional[str]:
+    """Given an AssetRefBase instance, return its asset_type name."""
+    _ensure_registry()
+    ref_cls = type(ref)
+    for name, cfg in _ASSET_TYPE_REGISTRY.items():
+        if cfg["ref_class"] is ref_cls:
+            return name
+    return None
+
+
+def get_asset_type_for_dict_key(key: str) -> Optional[str]:
+    """Given a serialization dict key, return the asset_type name."""
+    _ensure_registry()
+    for name, cfg in _ASSET_TYPE_REGISTRY.items():
+        if cfg["dict_key"] == key:
+            return name
+    return None
+
+
 class MaterialRef(AssetRefBase):
     """GUID-based reference to a Material asset.
 

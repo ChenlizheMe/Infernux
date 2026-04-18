@@ -90,7 +90,7 @@ def _infer_list_element_type(metadata, current_value):
     return FieldType.STRING
 
 
-def _list_drag_drop_type(element_type):
+def _list_drag_drop_type(element_type, metadata=None):
     from Infernux.components.serialized_field import FieldType
 
     mapping = {
@@ -98,9 +98,16 @@ def _list_drag_drop_type(element_type):
         FieldType.MATERIAL: "MATERIAL_FILE",
         FieldType.TEXTURE: "TEXTURE_FILE",
         FieldType.SHADER: "SHADER_FILE",
-        FieldType.ASSET: "AUDIO_FILE",
         FieldType.COMPONENT: "HIERARCHY_GAMEOBJECT",
     }
+    if element_type == FieldType.ASSET:
+        asset_type = getattr(metadata, "asset_type", None) if metadata else None
+        if asset_type:
+            from Infernux.core.asset_ref import get_asset_type_config
+            cfg = get_asset_type_config(asset_type)
+            if cfg:
+                return cfg["drag_type"]
+        return "AUDIO_FILE"  # fallback
     return mapping.get(element_type)
 
 
@@ -116,6 +123,12 @@ def _list_type_hint(element_type, metadata):
     if element_type == FieldType.SHADER:
         return "Shader"
     if element_type == FieldType.ASSET:
+        asset_type = getattr(metadata, "asset_type", None) if metadata else None
+        if asset_type:
+            from Infernux.core.asset_ref import get_asset_type_config
+            cfg = get_asset_type_config(asset_type)
+            if cfg:
+                return cfg["display"]
         return "AudioClip"
     if element_type == FieldType.COMPONENT:
         comp_type = getattr(metadata, 'component_type', '') or ''
@@ -138,11 +151,19 @@ def _make_list_picker_providers(element_type, metadata):
     if element_type == FieldType.SHADER:
         return (None, lambda filt: _picker_assets(filt, "*.vert") + _picker_assets(filt, "*.frag"))
     if element_type == FieldType.ASSET:
+        asset_type = getattr(metadata, "asset_type", None) if metadata else None
+        if asset_type:
+            from Infernux.core.asset_ref import get_asset_type_config
+            cfg = get_asset_type_config(asset_type)
+            if cfg:
+                exts = cfg["extensions"]
+                return (None, lambda filt, _exts=exts: sum(
+                    (_picker_assets(filt, e) for e in _exts), []))
         return (None, lambda filt: _picker_assets(filt, "*.wav") + _picker_assets(filt, "*.mp3") + _picker_assets(filt, "*.ogg"))
     return (None, None)
 
 
-def _create_list_pick_ref(element_type, value, required_component=None):
+def _create_list_pick_ref(element_type, value, required_component=None, metadata=None):
     """Create a reference wrapper from a picker selection for a list element."""
     from Infernux.components.serialized_field import FieldType
 
@@ -161,7 +182,7 @@ def _create_list_pick_ref(element_type, value, required_component=None):
     if element_type == FieldType.SHADER:
         return _create_reference_value_from_payload(FieldType.SHADER, value)
     if element_type == FieldType.ASSET:
-        return _create_reference_value_from_payload(FieldType.ASSET, value)
+        return _create_reference_value_from_payload(FieldType.ASSET, value, metadata=metadata)
     return None
 
 
@@ -175,18 +196,18 @@ def _render_reference_list_item(ctx, field_name, index, item, items, metadata, e
     changed = False
     _req = metadata.component_type if element_type == FieldType.COMPONENT else metadata.required_component
 
-    def _replace_item(payload, _index=index, _req=_req):
+    def _replace_item(payload, _index=index, _req=_req, _meta=metadata):
         nonlocal changed
-        value = _create_reference_value_from_payload(element_type, payload, _req)
+        value = _create_reference_value_from_payload(element_type, payload, _req, metadata=_meta)
         if value is not None:
             items[_index] = value
             changed = True
 
     _li_scene, _li_assets = _make_list_picker_providers(element_type, metadata)
 
-    def _li_on_pick(value, _index=index, _et=element_type, _req=_req):
+    def _li_on_pick(value, _index=index, _et=element_type, _req=_req, _meta=metadata):
         nonlocal changed
-        ref = _create_list_pick_ref(_et, value, _req)
+        ref = _create_list_pick_ref(_et, value, _req, metadata=_meta)
         if ref is not None:
             items[_index] = ref
             changed = True
@@ -201,7 +222,7 @@ def _render_reference_list_item(ctx, field_name, index, item, items, metadata, e
         f"list_{field_name}_{index}",
         _get_reference_display_name(element_type, item),
         _list_type_hint(element_type, metadata),
-        accept=_list_drag_drop_type(element_type),
+        accept=_list_drag_drop_type(element_type, metadata),
         on_drop=_replace_item,
         picker_scene_items=_li_scene,
         picker_asset_items=_li_assets,
@@ -349,13 +370,13 @@ def _render_list_field(ctx: InxGUIContext, comp, field_name: str, metadata, curr
             changed = True
 
     # Header drop callback (for reference types)
-    _hdr_drag_type = _list_drag_drop_type(element_type) if element_type in reference_types else None
+    _hdr_drag_type = _list_drag_drop_type(element_type, metadata) if element_type in reference_types else None
     _hdr_req = (metadata.component_type if element_type == FieldType.COMPONENT
                 else metadata.required_component) if element_type in reference_types else None
 
     def _header_drop(payload):
         nonlocal changed
-        value = _create_reference_value_from_payload(element_type, payload, _hdr_req)
+        value = _create_reference_value_from_payload(element_type, payload, _hdr_req, metadata=metadata)
         if value is not None:
             items.append(value)
             changed = True

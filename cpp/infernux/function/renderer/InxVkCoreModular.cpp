@@ -372,14 +372,23 @@ void InxVkCoreModular::InvalidateTextureCache(const std::string &textureIdentifi
     // Cache keys are GUID-based ("GUID::srgb" or "GUID::unorm").
     // Resolve the identifier to a GUID for matching against cache keys.
     std::string matchKey = textureIdentifier;
+    std::string matchPath = textureIdentifier;
     std::replace(matchKey.begin(), matchKey.end(), '\\', '/');
+    std::replace(matchPath.begin(), matchPath.end(), '\\', '/');
 
     auto *adb = AssetRegistry::Instance().GetAssetDatabase();
     if (adb) {
         // If the identifier looks like a path, resolve it to a GUID
         std::string guid = adb->GetGuidFromPath(textureIdentifier);
-        if (!guid.empty())
+        if (!guid.empty()) {
             matchKey = guid;
+        } else {
+            std::string resolvedPath = adb->GetPathFromGuid(textureIdentifier);
+            if (!resolvedPath.empty()) {
+                matchPath = resolvedPath;
+                std::replace(matchPath.begin(), matchPath.end(), '\\', '/');
+            }
+        }
         // If it was already a GUID, GetGuidFromPath returns empty → keep as-is
     }
 
@@ -387,6 +396,14 @@ void InxVkCoreModular::InvalidateTextureCache(const std::string &textureIdentifi
 
     // Wait for GPU to finish using the texture
     m_deviceContext.WaitIdle();
+
+    // Runtime materials such as SpriteRenderer instances are not represented
+    // in the asset dependency graph, but their descriptor sets can still hold
+    // raw VkImageView/VkSampler handles for this texture. Remove those render
+    // data entries before destroying the cached VkTexture objects.
+    if (m_materialPipelineManagerInitialized) {
+        m_materialPipelineManager.InvalidateMaterialsUsingTexture(matchKey, matchPath);
+    }
 
     // Evict all cached variants for this GUID/path
     size_t evicted = m_textureCache.EvictByPrefix(matchKey);

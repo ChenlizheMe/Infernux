@@ -28,6 +28,7 @@
 #include <cctype>
 #include <filesystem>
 #include <glm/glm.hpp>
+#include <set>
 #include <unordered_set>
 
 #include <cstring>
@@ -888,11 +889,12 @@ void InxVkCoreModular::CreateMaterialShadowPipeline(std::shared_ptr<InxMaterial>
         std::vector<VkDescriptorBufferInfo> bufferInfos;
         std::vector<VkDescriptorImageInfo> imageInfos;
 
-        // Max textures + up to 2 UBOs; pre-size to avoid realloc
-        const size_t maxTexCount =
-            (hasAlphaClip && forwardMaterialDesc) ? forwardMaterialDesc->textureBindings.size() : 0;
-        bufferInfos.reserve(2);
-        imageInfos.reserve(maxTexCount);
+        // Shadow material desc layout has up to 8 texture slots + 2 UBOs.
+        // We must write ALL declared bindings to avoid validation errors
+        // (Vulkan requires every binding to be updated unless PARTIALLY_BOUND).
+        static constexpr uint32_t kMaxShadowTextures = 8;
+        bufferInfos.reserve(4);                 // vtx UBO + frag UBO + up to 2 dummies
+        imageInfos.reserve(kMaxShadowTextures); // up to 8 texture slots
 
         // Collect sorted texture bindings for alpha-clip (needed for both
         // texture writes and to determine fragment MaterialProperties binding)
@@ -978,6 +980,97 @@ void InxVkCoreModular::CreateMaterialShadowPipeline(std::shared_ptr<InxMaterial>
             w.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
             w.pBufferInfo = &bufferInfos[fragUboInfoIdx];
             writes.push_back(w);
+        }
+
+        // --- Phase 3: fill unused bindings with defaults to satisfy validation ---
+        // Vulkan requires every binding in the layout to be updated before use.
+        // Use the default white texture for unused sampler slots and a dummy
+        // buffer for the fragment UBO slot if it wasn't written.
+        auto *defaultTex = m_textureCache.Find("white");
+        if (defaultTex) {
+            std::set<uint32_t> writtenTexBindings(texShadowBindings.begin(), texShadowBindings.end());
+            for (uint32_t i = 0; i < kMaxShadowTextures; ++i) {
+                if (writtenTexBindings.count(i))
+                    continue;
+                VkDescriptorImageInfo ii{};
+                ii.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                ii.imageView = defaultTex->GetView();
+                ii.sampler = defaultTex->GetSampler();
+                imageInfos.push_back(ii);
+
+                VkWriteDescriptorSet w{};
+                w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                w.dstSet = shadowMaterialDescSet;
+                w.dstBinding = i;
+                w.descriptorCount = 1;
+                w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                w.pImageInfo = &imageInfos.back();
+                writes.push_back(w);
+            }
+        }
+
+        // Fragment UBO at binding 8: if not written, use the vertex UBO buffer
+        // as a dummy (the shader won't actually read it for non-alpha-clip).
+        if (fragUboInfoIdx == SIZE_MAX && vtxUboInfoIdx != SIZE_MAX) {
+            // Reuse vertex UBO buffer info as a valid placeholder
+            VkDescriptorBufferInfo dummyBi{};
+            dummyBi.buffer = bufferInfos[vtxUboInfoIdx].buffer;
+            dummyBi.offset = 0;
+            dummyBi.range = bufferInfos[vtxUboInfoIdx].range;
+            bufferInfos.push_back(dummyBi);
+
+            VkWriteDescriptorSet w{};
+            w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            w.dstSet = shadowMaterialDescSet;
+            w.dstBinding = 8;
+            w.descriptorCount = 1;
+            w.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            w.pBufferInfo = &bufferInfos.back();
+            writes.push_back(w);
+        } else if (fragUboInfoIdx == SIZE_MAX && !m_uniformBuffers.empty() && m_uniformBuffers[0]) {
+            // Fallback: use scene UBO as a valid placeholder
+            VkDescriptorBufferInfo dummyBi{};
+            dummyBi.buffer = m_uniformBuffers[0]->GetBuffer();
+            dummyBi.offset = 0;
+            dummyBi.range = 16; // minimum valid range
+            bufferInfos.push_back(dummyBi);
+
+            VkWriteDescriptorSet w{};
+            w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            w.dstSet = shadowMaterialDescSet;
+            w.dstBinding = 8;
+            w.descriptorCount = 1;
+            w.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            w.pBufferInfo = &bufferInfos.back();
+            writes.push_back(w);
+        }
+
+        // Vertex UBO at binding 14: if not written, use a dummy buffer
+        if (vtxUboInfoIdx == SIZE_MAX) {
+            VkBuffer dummyBuf = VK_NULL_HANDLE;
+            VkDeviceSize dummyRange = 16;
+            if (fragUboInfoIdx != SIZE_MAX) {
+                dummyBuf = bufferInfos[fragUboInfoIdx].buffer;
+                dummyRange = bufferInfos[fragUboInfoIdx].range;
+            } else if (!m_uniformBuffers.empty() && m_uniformBuffers[0]) {
+                dummyBuf = m_uniformBuffers[0]->GetBuffer();
+            }
+            if (dummyBuf != VK_NULL_HANDLE) {
+                VkDescriptorBufferInfo dummyBi{};
+                dummyBi.buffer = dummyBuf;
+                dummyBi.offset = 0;
+                dummyBi.range = dummyRange;
+                bufferInfos.push_back(dummyBi);
+
+                VkWriteDescriptorSet w{};
+                w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                w.dstSet = shadowMaterialDescSet;
+                w.dstBinding = 14;
+                w.descriptorCount = 1;
+                w.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+                w.pBufferInfo = &bufferInfos.back();
+                writes.push_back(w);
+            }
         }
 
         if (!writes.empty()) {

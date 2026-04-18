@@ -29,13 +29,6 @@ class MeshRenderer(BuiltinComponent):
     # ---- Material properties ----
 
     @property
-    def render_material(self) -> Any:
-        """The material at slot 0 (convenience property)."""
-        ...
-    @render_material.setter
-    def render_material(self, value: Any) -> None: ...
-
-    @property
     def material_guid(self) -> str:
         """The asset GUID of the material at slot 0."""
         ...

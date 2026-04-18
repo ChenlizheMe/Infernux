@@ -272,5 +272,22 @@ class BootstrapPanelsMixin:
         if ws:
             wm.load_state(ws)
 
+        # Restore individual panel states for every tracked window id
+        seen_restore: set[str] = set()
+        for wid in set(wm._default_instances.keys()) | set(wm._window_instances.keys()):
+            if wid in seen_restore:
+                continue
+            seen_restore.add(wid)
+            inst = wm._window_instances.get(wid) or wm._default_instances.get(wid)
+            if inst is None:
+                continue
+            if hasattr(inst, "load_state") and callable(inst.load_state):
+                data = _panel_state.get(f"panel:{wid}")
+                if data:
+                    try:
+                        inst.load_state(data)
+                    except Exception:
+                        pass
+
         self._persist_editor_state()
 

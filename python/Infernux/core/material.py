@@ -22,7 +22,7 @@ Usage::
     mat = Material.load("materials/gold.mat")
 
     # Assign to a MeshRenderer
-    mesh_renderer.render_material = mat.native
+    mesh_renderer.material = mat.native
 """
 
 from __future__ import annotations

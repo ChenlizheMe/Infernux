@@ -60,6 +60,7 @@ Core capabilities available today include:
 - An integrated editor with Hierarchy, Inspector, Scene View, Game View, Project, Console, UI editing, and build settings.
 - Python-side component lifecycle, coroutines, serialized fields, and script reload support.
 - Basic runtime UI primitives including Canvas, Text, Image, Button, and pointer events.
+- **2D animation (preview):** sprite `SpiritAnimator`, `AnimClip2D` assets, animation state machine assets, and editor panels for authoring. Expect breaking changes while the stack stabilizes.
 - Packaging paths for the Hub, a standalone bundle, and a Windows installer.
 
 ## Architecture

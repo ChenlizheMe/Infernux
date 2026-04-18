@@ -71,7 +71,7 @@ def _resolve_guid_and_path(payload: str):
 # ── Reference value creation ──
 
 
-def _create_reference_value_from_payload(element_type, payload, required_component: str = None):
+def _create_reference_value_from_payload(element_type, payload, required_component: str = None, metadata=None):
     from Infernux.components.serialized_field import FieldType
 
     if element_type == FieldType.GAME_OBJECT:
@@ -117,8 +117,15 @@ def _create_reference_value_from_payload(element_type, payload, required_compone
         return ShaderRef(guid=_asset_guid_from_path(file_path), path_hint=file_path)
 
     if element_type == FieldType.ASSET:
+        guid = _asset_guid_from_path(file_path)
+        asset_type = getattr(metadata, "asset_type", None) if metadata else None
+        if asset_type:
+            from Infernux.core.asset_ref import get_asset_type_config
+            cfg = get_asset_type_config(asset_type)
+            if cfg:
+                return cfg["ref_class"](guid=guid, path_hint=file_path)
         from Infernux.core.asset_ref import AudioClipRef
-        return AudioClipRef(guid=_asset_guid_from_path(file_path), path_hint=file_path)
+        return AudioClipRef(guid=guid, path_hint=file_path)
 
     if element_type == FieldType.COMPONENT:
         from Infernux.lib import SceneManager as _SM
@@ -283,25 +290,71 @@ _ASSET_REF_CONFIG = None  # lazy-initialized (needs FieldType import)
 
 
 def _get_asset_ref_config():
+    """Return the base config for the built-in reference FieldTypes.
+
+    ``FieldType.ASSET`` entries are resolved dynamically via the
+    ``asset_type`` metadata and the registry in ``asset_ref.py``.
+    """
     global _ASSET_REF_CONFIG
     if _ASSET_REF_CONFIG is None:
         from Infernux.components.serialized_field import FieldType
         _ASSET_REF_CONFIG = {
-            FieldType.MATERIAL: ("Material",  "MATERIAL_FILE", ("*.mat",),                     "mat"),
-            FieldType.TEXTURE:  ("Texture",   "TEXTURE_FILE",  ("*.png", "*.jpg"),              "tex"),
-            FieldType.SHADER:   ("Shader",    "SHADER_FILE",   ("*.vert", "*.frag"),            "shd"),
-            FieldType.ASSET:    ("AudioClip", "AUDIO_FILE",    ("*.wav", "*.mp3", "*.ogg"),     "aud"),
+            FieldType.MATERIAL: ("Material",  "MATERIAL_FILE", ("*.mat",),            "mat"),
+            FieldType.TEXTURE:  ("Texture",   "TEXTURE_FILE",  ("*.png", "*.jpg"),     "tex"),
+            FieldType.SHADER:   ("Shader",    "SHADER_FILE",   ("*.vert", "*.frag"),   "shd"),
+            # ASSET is kept as a fallback; _resolve_asset_config overrides it.
+            FieldType.ASSET:    ("AudioClip", "AUDIO_FILE",    ("*.wav", "*.mp3", "*.ogg"), "aud"),
         }
     return _ASSET_REF_CONFIG
 
 
+def _resolve_asset_config(metadata):
+    """Return (display, drag_type, extensions, prefix) for an ASSET field,
+    using the registry when *metadata.asset_type* is set."""
+    asset_type = getattr(metadata, "asset_type", None) if metadata else None
+    if asset_type:
+        from Infernux.core.asset_ref import get_asset_type_config
+        cfg = get_asset_type_config(asset_type)
+        if cfg:
+            return (cfg["display"], cfg["drag_type"],
+                    cfg["extensions"], cfg["prefix"])
+    # Fallback to default ASSET entry
+    from Infernux.components.serialized_field import FieldType
+    return _get_asset_ref_config()[FieldType.ASSET]
+
+
+def _create_asset_ref_from_payload(metadata, file_path: str):
+    """Create the correct AssetRefBase subclass from a file path,
+    using *metadata.asset_type* to select the right ref class."""
+    asset_type = getattr(metadata, "asset_type", None) if metadata else None
+    guid = _asset_guid_from_path(file_path)
+    if asset_type:
+        from Infernux.core.asset_ref import get_asset_type_config
+        cfg = get_asset_type_config(asset_type)
+        if cfg:
+            return cfg["ref_class"](guid=guid, path_hint=file_path)
+    # Fallback
+    from Infernux.core.asset_ref import AudioClipRef
+    return AudioClipRef(guid=guid, path_hint=file_path)
+
+
 def _render_asset_reference_field(ctx, comp, field_name, metadata, current_value, field_type, lw):
     """Render a MATERIAL / TEXTURE / SHADER / ASSET reference field."""
-    type_hint, drag_type, globs, prefix = _get_asset_ref_config()[field_type]
+    from Infernux.components.serialized_field import FieldType as _FT
+
+    # For ASSET fields, resolve config from registry using metadata.asset_type
+    if field_type == _FT.ASSET:
+        type_hint, drag_type, globs, prefix = _resolve_asset_config(metadata)
+    else:
+        type_hint, drag_type, globs, prefix = _get_asset_ref_config()[field_type]
+
     display = _get_reference_display_name(field_type, current_value)
 
-    def _on_pick(path, _fn=field_name, _comp=comp, _ft=field_type):
-        ref = _create_reference_value_from_payload(_ft, path)
+    def _on_pick(path, _fn=field_name, _comp=comp, _ft=field_type, _meta=metadata):
+        if _ft == _FT.ASSET:
+            ref = _create_asset_ref_from_payload(_meta, path)
+        else:
+            ref = _create_reference_value_from_payload(_ft, path)
         if ref is not None:
             old = getattr(_comp, _fn, None)
             _record_property(_comp, _fn, old, ref, f"Set {_fn}")
@@ -310,7 +363,6 @@ def _render_asset_reference_field(ctx, comp, field_name, metadata, current_value
         old = getattr(_comp, _fn, None)
         _record_property(_comp, _fn, old, None, f"Clear {_fn}")
 
-    from Infernux.components.serialized_field import FieldType as _FT
     _assets_only = (field_type == _FT.TEXTURE)
 
     def _picker(filt):
@@ -319,11 +371,21 @@ def _render_asset_reference_field(ctx, comp, field_name, metadata, current_value
             result += _picker_assets(filt, g, assets_only=_assets_only)
         return result
 
+    def _on_drop(payload, _fn=field_name, _comp=comp, _ft=field_type, _meta=metadata):
+        if _ft == _FT.ASSET:
+            file_path = str(payload) if not isinstance(payload, str) else payload
+            ref = _create_asset_ref_from_payload(_meta, file_path)
+            if ref is not None:
+                old = getattr(_comp, _fn, None)
+                _record_property(_comp, _fn, old, ref, f"Set {_fn}")
+        else:
+            _apply_reference_drop(_ft, _comp, _fn, payload)
+
     field_label(ctx, pretty_field_name(field_name), lw)
     render_object_field(
         ctx, f"{prefix}_ref_{field_name}", display, type_hint,
         accept_drag_type=drag_type,
-        on_drop_callback=lambda payload, _fn=field_name, _comp=comp, _ft=field_type: _apply_reference_drop(_ft, _comp, _fn, payload),
+        on_drop_callback=_on_drop,
         picker_asset_items=_picker,
         on_pick=_on_pick,
         on_clear=_on_clear,

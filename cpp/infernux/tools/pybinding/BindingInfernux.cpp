@@ -445,12 +445,13 @@ PYBIND11_MODULE(_Infernux, m)
              "Get the asset database instance")
         .def(
             "upload_texture_for_imgui",
-            [](Infernux &self, const std::string &name, const std::vector<unsigned char> &pixels, int width,
-               int height) -> uint64_t {
+            [](Infernux &self, const std::string &name, const std::vector<unsigned char> &pixels, int width, int height,
+               bool nearest) -> uint64_t {
                 auto *r = self.GetRenderer();
-                return r ? r->UploadTextureForImGui(name, pixels.data(), width, height) : 0;
+                VkFilter f = nearest ? VK_FILTER_NEAREST : VK_FILTER_LINEAR;
+                return r ? r->UploadTextureForImGui(name, pixels.data(), width, height, f) : 0;
             },
-            py::arg("name"), py::arg("pixels"), py::arg("width"), py::arg("height"),
+            py::arg("name"), py::arg("pixels"), py::arg("width"), py::arg("height"), py::arg("nearest") = false,
             "Upload texture data for ImGui display, returns texture ID")
         .def(
             "remove_imgui_texture",

@@ -67,8 +67,10 @@ class InxGUI
     /// @param pixels RGBA pixel data
     /// @param width Texture width
     /// @param height Texture height
+    /// @param filter VK_FILTER_LINEAR (default) or VK_FILTER_NEAREST for point sampling
     /// @return Texture ID (VkDescriptorSet as uint64_t) for use in ImGui::Image
-    uint64_t UploadTextureForImGui(const std::string &name, const unsigned char *pixels, int width, int height);
+    uint64_t UploadTextureForImGui(const std::string &name, const unsigned char *pixels, int width, int height,
+                                   VkFilter filter = VK_FILTER_LINEAR);
 
     /// @brief Remove a previously uploaded ImGui texture
     /// @param name Texture identifier
@@ -112,6 +114,7 @@ class InxGUI
     std::vector<std::string> m_pendingDockTabSelections;
     std::unordered_map<std::string, double> m_lastPanelTimesMs;
     std::unordered_map<std::string, ImGuiTextureResource> m_textures_umap;
+    std::vector<std::string> m_pendingTextureRemovals;
     ResourcePreviewManager m_resourcePreviewManager;
     bool m_playerMode = false;
 

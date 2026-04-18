@@ -410,6 +410,8 @@ void InxGUIContext::SetTooltip(const std::string &text)
 void InxGUIContext::Image(void *textureId, float width, float height, float uv0_x, float uv0_y, float uv1_x,
                           float uv1_y)
 {
+    if (!textureId)
+        return;
     ImGui::Image(reinterpret_cast<ImTextureID>(textureId), ImVec2(width, height), ImVec2(uv0_x, uv0_y),
                  ImVec2(uv1_x, uv1_y));
 }
@@ -417,6 +419,8 @@ void InxGUIContext::Image(void *textureId, float width, float height, float uv0_
 bool InxGUIContext::ImageButton(const std::string &id, void *textureId, float width, float height, float uv0_x,
                                 float uv0_y, float uv1_x, float uv1_y)
 {
+    if (!textureId)
+        return false;
     return ImGui::ImageButton(id.c_str(), reinterpret_cast<ImTextureID>(textureId), ImVec2(width, height),
                               ImVec2(uv0_x, uv0_y), ImVec2(uv1_x, uv1_y));
 }
@@ -1054,6 +1058,8 @@ void InxGUIContext::DrawImageRect(uint64_t textureId, float minX, float minY, fl
                                   float uv0_y, float uv1_x, float uv1_y, float tintR, float tintG, float tintB,
                                   float tintA, float rotation, bool mirrorH, bool mirrorV, float rounding)
 {
+    if (textureId == 0)
+        return;
     ImDrawList *drawList = ImGui::GetWindowDrawList();
     if (!drawList)
         return;

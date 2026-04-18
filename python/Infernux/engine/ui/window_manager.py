@@ -14,12 +14,14 @@ class WindowInfo:
                  display_name: str,
                  factory: Optional[Callable[[], InxGUIRenderable]] = None,
                  singleton: bool = True,
-                 title_key: Optional[str] = None):
+                 title_key: Optional[str] = None,
+                 menu_path: str = "Window"):
         self.window_class = window_class
         self._display_name = display_name
         self.title_key = title_key
         self.factory = factory or (lambda: window_class())
         self.singleton = singleton  # If True, only one instance allowed
+        self.menu_path = menu_path  # Slash-separated menu path, e.g. "Animation/2D Animation"
 
     @property
     def display_name(self) -> str:
@@ -48,6 +50,7 @@ class WindowManager:
         self._open_windows: Dict[str, bool] = {}  # window_id -> is_open
         self._window_instances: Dict[str, InxGUIRenderable] = {}  # window_id -> instance
         self._default_instances: Dict[str, InxGUIRenderable] = {}  # window_id -> original instance
+        self._builtin_defaults: set = set()  # window_ids that should reopen on reset
         self._project_console_front_id = "project"
         self._on_state_changed: Optional[Callable[[], None]] = None
         self._imgui_ini_path: Optional[str] = None
@@ -78,17 +81,19 @@ class WindowManager:
                              display_name: str,
                              factory: Optional[Callable[[], InxGUIRenderable]] = None,
                              singleton: bool = True,
-                             title_key: Optional[str] = None):
+                             title_key: Optional[str] = None,
+                             menu_path: str = "Window"):
         """
         Register a window type that can be created from the Window menu.
         
         Args:
             type_id: Unique identifier for this window type
             window_class: The class of the window
-            display_name: Display name shown in the Window menu (e.g., "层级 Hierarchy")
+            display_name: Display name shown in menus
             factory: Optional factory function to create instances
             singleton: If True, only one instance of this window is allowed
             title_key: Optional i18n key for dynamic title resolution
+            menu_path: Slash-separated menu path (e.g. "Window", "Animation/2D Animation")
         """
         self._registered_types[type_id] = WindowInfo(
             window_class=window_class,
@@ -96,6 +101,7 @@ class WindowManager:
             factory=factory,
             singleton=singleton,
             title_key=title_key,
+            menu_path=menu_path,
         )
     
     def open_window(self, type_id: str, instance_id: Optional[str] = None) -> Optional[InxGUIRenderable]:
@@ -139,6 +145,10 @@ class WindowManager:
             instance.open()
         self._window_instances[window_id] = instance
         self._open_windows[window_id] = True
+        # Ensure singleton panels participate in save/load persistence
+        # so their open state survives engine restarts.
+        if info.singleton and window_id not in self._default_instances:
+            self._default_instances[window_id] = instance
         self._notify_state_changed()
 
         def _register_instance(target_id=window_id, target_instance=instance):
@@ -191,10 +201,11 @@ class WindowManager:
     def save_state(self) -> Dict[str, Any]:
         from .closable_panel import ClosablePanel
 
+        all_ids = set(self._default_instances.keys()) | set(self._open_windows.keys())
         return {
             "open_windows": {
                 window_id: bool(self._open_windows.get(window_id, False))
-                for window_id in self._default_instances.keys()
+                for window_id in all_ids
             },
             "active_panel_id": ClosablePanel.get_active_panel_id() or "",
             "project_console_front_id": self._project_console_front_id,
@@ -206,7 +217,12 @@ class WindowManager:
 
         open_windows = data.get('open_windows', {}) or {}
         for window_id, is_open in open_windows.items():
+            # Lazily create registered-type windows not yet in _default_instances.
+            # If the user opened this panel in a prior session and it was saved
+            # as open, restore it now.
             if window_id not in self._default_instances:
+                if is_open and window_id in self._registered_types:
+                    self.open_window(window_id)
                 continue
 
             instance = self._default_instances[window_id]
@@ -249,6 +265,7 @@ class WindowManager:
         self._window_instances[window_id] = instance
         self._open_windows[window_id] = True
         self._default_instances[window_id] = instance
+        self._builtin_defaults.add(window_id)
         if window_id in {"project", "console"} and self._project_console_front_id not in {"project", "console"}:
             self._project_console_front_id = window_id
         
@@ -281,15 +298,18 @@ class WindowManager:
         self._pending_actions.append(action)
 
     def _apply_reset_layout(self):
-        # 1. Close any dynamically-opened windows (not part of default set)
-        dynamic_ids = [wid for wid in list(self._open_windows) if wid not in self._default_instances]
+        # 1. Close any dynamically-opened windows (not part of builtin default set)
+        dynamic_ids = [wid for wid in list(self._open_windows) if wid not in self._builtin_defaults]
         for wid in dynamic_ids:
             self._open_windows[wid] = False
             self._engine.unregister_gui(wid)
             self._window_instances.pop(wid, None)
 
-        # 2. Force ALL default panels to be open and registered
-        for window_id, instance in self._default_instances.items():
+        # 2. Force ALL builtin default panels to be open and registered
+        for window_id in self._builtin_defaults:
+            instance = self._default_instances.get(window_id)
+            if instance is None:
+                continue
             if hasattr(instance, '_is_open'):
                 instance._is_open = True
 

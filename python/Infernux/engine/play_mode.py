@@ -279,12 +279,8 @@ class PlayModeManager(PlayModeSerializationMixin):
         # ── Step functions (closures capture self) ───────────────────
         def step_enter():
             """Save scene, rebuild from snapshot, and activate play — all in one frame."""
-            # 1. Serialize scene + clear undo + init timing
+            # 1. Serialize scene + init timing (do not clear undo — asset editors keep history)
             self._save_scene_state()
-            from Infernux.engine.undo import UndoManager
-            _undo = UndoManager.instance()
-            if _undo:
-                _undo.clear()
             self._last_frame_time = time.time()
             self._total_play_time = 0.0
             self._delta_time = 0.0
@@ -417,12 +413,11 @@ class PlayModeManager(PlayModeSerializationMixin):
                     "— editor may be in a degraded state"
                 )
 
-            # 2. Clear undo and notify listeners
+            # 2. Sync scene dirty baseline without nuking undo stacks
             from Infernux.engine.undo import UndoManager
             _undo = UndoManager.instance()
             if _undo:
-                _undo.clear(scene_is_dirty=self._scene_dirty_backup)
-                _undo.sync_dirty_state()
+                _undo.set_scene_dirty_baseline(self._scene_dirty_backup)
             else:
                 from Infernux.engine.scene_manager import SceneFileManager
                 sfm = SceneFileManager.instance()
@@ -631,15 +626,20 @@ class PlayModeManager(PlayModeSerializationMixin):
         if for_play and hasattr(scene, "set_playing"):
             scene.set_playing(True)
 
-        self._restore_pending_py_components()
-
         # Force-init SpriteRenderer wrappers so their materials (texture,
         # color, uvRect) are created before the first render frame.
+        # This must run BEFORE _restore_pending_py_components() because
+        # Python component Awake/OnEnable callbacks may trigger rendering
+        # or inspect SpriteRenderer state, and the C++ render pass at the
+        # end of this frame needs fully-bound materials to avoid a
+        # white-quad flash.
         try:
             from Infernux.components.builtin.sprite_renderer import SpriteRenderer
             SpriteRenderer.init_all_in_scene()
         except Exception as exc:
             Debug.log_internal(f"SpriteRenderer init after rebuild: {exc}")
+
+        self._restore_pending_py_components()
 
         if restore_scene_path:
             self._restore_scene_file_path()

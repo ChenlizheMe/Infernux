@@ -48,6 +48,8 @@ from Infernux.components import CollisionDetectionMode as CollisionDetectionMode
 from Infernux.components import RigidbodyInterpolation as RigidbodyInterpolation
 from Infernux.components import AudioSource as AudioSource
 from Infernux.components import AudioListener as AudioListener
+from Infernux.components import SpriteRenderer as SpriteRenderer
+from Infernux.components import SpiritAnimator as SpiritAnimator
 # Decorators
 from Infernux.components import require_component as require_component
 from Infernux.components import disallow_multiple as disallow_multiple
@@ -66,10 +68,17 @@ from Infernux.core import Material as Material
 from Infernux.core import Texture as Texture
 from Infernux.core import Shader as Shader
 from Infernux.core import AudioClip as AudioClip
+from Infernux.core import AnimationClip as AnimationClip
+from Infernux.core import AnimStateMachine as AnimStateMachine
+from Infernux.core import AnimState as AnimState
+from Infernux.core import AnimTransition as AnimTransition
+from Infernux.core import AnimParameter as AnimParameter
 from Infernux.core import AssetManager as AssetManager
 from Infernux.core import TextureRef as TextureRef
 from Infernux.core import ShaderRef as ShaderRef
 from Infernux.core import AudioClipRef as AudioClipRef
+from Infernux.core import AnimationClipRef as AnimationClipRef
+from Infernux.core import AnimStateMachineRef as AnimStateMachineRef
 # Debug — class only (use Debug.log / Debug.log_warning / …)
 from Infernux.debug import Debug as Debug
 # Submodules
@@ -105,4 +114,3 @@ from Infernux.jit import JIT_AVAILABLE as JIT_AVAILABLE
 from Infernux.jit import ensure_jit_runtime as ensure_jit_runtime
 from Infernux.jit import njit as njit
 from Infernux.jit import warmup as warmup
-from Infernux.jit import precompile_jit as precompile_jit

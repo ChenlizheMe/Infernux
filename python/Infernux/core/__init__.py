@@ -31,6 +31,13 @@ from .material import Material
 from .texture import Texture
 from .shader import Shader
 from .audio_clip import AudioClip
+from .animation_clip import AnimationClip
+from .anim_state_machine import (
+    AnimStateMachine,
+    AnimState,
+    AnimTransition,
+    AnimParameter,
+)
 from .assets import AssetManager
 from .asset_types import (
     TextureImportSettings, TextureType, WrapMode, FilterMode, SpriteFrame,
@@ -42,13 +49,24 @@ from .asset_types import (
     read_audio_import_settings, write_audio_import_settings,
     read_mesh_import_settings, write_mesh_import_settings,
 )
-from .asset_ref import TextureRef, ShaderRef, AudioClipRef
+from .asset_ref import (
+    TextureRef,
+    ShaderRef,
+    AudioClipRef,
+    AnimationClipRef,
+    AnimStateMachineRef,
+)
 
 __all__ = [
     "Material",
     "Texture",
     "Shader",
     "AudioClip",
+    "AnimationClip",
+    "AnimStateMachine",
+    "AnimState",
+    "AnimTransition",
+    "AnimParameter",
     "AssetManager",
     "TextureImportSettings",
     "TextureType",
@@ -62,4 +80,6 @@ __all__ = [
     "TextureRef",
     "ShaderRef",
     "AudioClipRef",
+    "AnimationClipRef",
+    "AnimStateMachineRef",
 ]

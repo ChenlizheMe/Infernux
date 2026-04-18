@@ -142,20 +142,10 @@ def ensure_jit_runtime(*, auto_install: bool = True) -> bool:
     return JIT_AVAILABLE
 
 
-def precompile_jit() -> None:
-    """No-op kept for backward compatibility.
-
-    Previously warmed up built-in JIT kernels; those are now pure Python.
-    User code should use ``warmup(fn, *args)`` for their own functions.
-    """
-    pass
-
-
 __all__ = [
     "JIT_AVAILABLE",
     "ensure_jit_runtime",
     "njit",
     "prange",
     "warmup",
-    "precompile_jit",
 ]

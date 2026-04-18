@@ -116,7 +116,7 @@ def _save_editor_settings(settings: dict):
 
 
 # ---------------------------------------------------------------------------
-# File dialog — Win32 native (fast), with tkinter fallback
+# File dialog — delegates to the unified save_file_dialog in _dialogs.py
 # ---------------------------------------------------------------------------
 
 def _show_save_dialog(initial_dir: str, callback: Callable[[Optional[str]], None],
@@ -125,75 +125,21 @@ def _show_save_dialog(initial_dir: str, callback: Callable[[Optional[str]], None
     def _run():
         result: Optional[str] = None
         try:
-            if os.name == "nt":
-                result = _win32_save_dialog(initial_dir, default_filename)
+            from Infernux.engine.ui._dialogs import save_file_dialog
+            result = save_file_dialog(
+                title="Save Scene",
+                win32_filter="Scene files (*.scene)\0*.scene\0All files (*.*)\0*.*\0\0",
+                initial_dir=initial_dir,
+                default_filename=default_filename,
+                default_ext="scene",
+                tk_filetypes=[("Scene files", "*.scene"), ("All Files", "*.*")],
+            )
         except Exception as exc:
             Debug.log_warning(f"Save dialog unavailable on this platform: {exc}")
         callback(result)
 
     t = threading.Thread(target=_run, daemon=True)
     t.start()
-
-
-def _win32_save_dialog(initial_dir: str, default_filename: str = "Untitled Scene.scene") -> Optional[str]:
-    """Use the Win32 GetSaveFileNameW API directly via ctypes.
-    Much faster than tkinter which has to load the entire Tcl/Tk runtime."""
-    import ctypes
-    import ctypes.wintypes as wt
-
-    OFN_OVERWRITEPROMPT = 0x00000002
-    OFN_NOCHANGEDIR     = 0x00000008
-    OFN_EXPLORER        = 0x00080000
-    MAX_PATH = 1024
-
-    class OPENFILENAMEW(ctypes.Structure):
-        _fields_ = [
-            ("lStructSize",       wt.DWORD),
-            ("hwndOwner",         wt.HWND),
-            ("hInstance",         wt.HINSTANCE),
-            ("lpstrFilter",       wt.LPCWSTR),
-            ("lpstrCustomFilter", wt.LPWSTR),
-            ("nMaxCustFilter",    wt.DWORD),
-            ("nFilterIndex",      wt.DWORD),
-            ("lpstrFile",         wt.LPWSTR),
-            ("nMaxFile",          wt.DWORD),
-            ("lpstrFileTitle",    wt.LPWSTR),
-            ("nMaxFileTitle",     wt.DWORD),
-            ("lpstrInitialDir",   wt.LPCWSTR),
-            ("lpstrTitle",        wt.LPCWSTR),
-            ("Flags",             wt.DWORD),
-            ("nFileOffset",       wt.WORD),
-            ("nFileExtension",    wt.WORD),
-            ("lpstrDefExt",       wt.LPCWSTR),
-            ("lCustData",         ctypes.POINTER(ctypes.c_long)),
-            ("lpfnHook",          ctypes.c_void_p),
-            ("lpTemplateName",    wt.LPCWSTR),
-            ("pvReserved",        ctypes.c_void_p),
-            ("dwReserved",        wt.DWORD),
-            ("FlagsEx",           wt.DWORD),
-        ]
-
-    default_filename = (default_filename or "Untitled Scene.scene").strip() or "Untitled Scene.scene"
-    for ch in '<>:"/\\|?*':
-        default_filename = default_filename.replace(ch, '_')
-
-    default_target = os.path.join(initial_dir, default_filename)
-
-    buf = ctypes.create_unicode_buffer(MAX_PATH)
-    buf.value = default_target
-    ofn = OPENFILENAMEW()
-    ofn.lStructSize    = ctypes.sizeof(OPENFILENAMEW)
-    ofn.lpstrFilter    = "Scene files (*.scene)\0*.scene\0All files (*.*)\0*.*\0\0"
-    ofn.lpstrFile      = ctypes.cast(buf, wt.LPWSTR)
-    ofn.nMaxFile       = MAX_PATH
-    ofn.lpstrInitialDir = initial_dir
-    ofn.lpstrTitle     = "保存场景 Save Scene"
-    ofn.Flags          = OFN_OVERWRITEPROMPT | OFN_NOCHANGEDIR | OFN_EXPLORER
-    ofn.lpstrDefExt    = "scene"
-
-    if ctypes.windll.comdlg32.GetSaveFileNameW(ctypes.byref(ofn)):
-        return buf.value
-    return None
 
 
 # ---------------------------------------------------------------------------

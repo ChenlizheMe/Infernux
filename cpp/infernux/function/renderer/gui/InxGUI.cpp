@@ -325,6 +325,35 @@ void InxGUI::BuildFrame()
 {
     static auto ctx = std::make_unique<InxGUIContext>();
 
+    // Flush deferred texture removals BEFORE starting the new ImGui frame.
+    // Textures queued for removal during the previous frame are now safe to
+    // destroy because Render()/RenderDrawData() has already consumed the
+    // draw list that may have referenced their descriptor sets.
+    if (!m_pendingTextureRemovals.empty()) {
+        VkDevice device = m_vkCore_ptr->GetDevice();
+        vkDeviceWaitIdle(device);
+
+        for (const auto &name : m_pendingTextureRemovals) {
+            auto it = m_textures_umap.find(name);
+            if (it == m_textures_umap.end())
+                continue;
+
+            auto &tex = it->second;
+            if (tex.descriptorSet != VK_NULL_HANDLE)
+                ImGui_ImplVulkan_RemoveTexture(tex.descriptorSet);
+            if (tex.sampler != VK_NULL_HANDLE)
+                vkDestroySampler(device, tex.sampler, nullptr);
+            if (tex.imageView != VK_NULL_HANDLE)
+                vkDestroyImageView(device, tex.imageView, nullptr);
+            if (tex.image != VK_NULL_HANDLE) {
+                VmaAllocator allocator = m_vkCore_ptr->GetDeviceContext().GetVmaAllocator();
+                vmaDestroyImage(allocator, tex.image, tex.allocation);
+            }
+            m_textures_umap.erase(it);
+        }
+        m_pendingTextureRemovals.clear();
+    }
+
     ImGui_ImplSDL3_NewFrame();
     ImGui_ImplVulkan_NewFrame();
     ImGui::NewFrame();
@@ -426,6 +455,8 @@ void InxGUI::BuildFrame()
             ImGui::DockBuilderDockWindow("###scene_view", dockScene);
             ImGui::DockBuilderDockWindow("###game_view", dockScene);
             ImGui::DockBuilderDockWindow("###ui_editor", dockScene);
+            ImGui::DockBuilderDockWindow("###animclip2d_editor", dockScene);
+            ImGui::DockBuilderDockWindow("###animfsm_editor", dockScene);
             ImGui::DockBuilderDockWindow("###console", dockBottom);
             ImGui::DockBuilderDockWindow("###project", dockBottom);
 
@@ -512,6 +543,9 @@ void InxGUI::RecordCommand(VkCommandBuffer cmdBuf)
 
 void InxGUI::Shutdown()
 {
+    // Flush any pending texture removals
+    m_pendingTextureRemovals.clear();
+
     // Clean up InxGUI-owned textures (image, imageView, sampler, memory).
     // Descriptor sets allocated from m_descriptorPool_vk are freed implicitly
     // when the pool is destroyed below, so we don't free them individually.
@@ -572,13 +606,34 @@ void InxGUI::Unregister(const std::string &name)
     }
 }
 
-uint64_t InxGUI::UploadTextureForImGui(const std::string &name, const unsigned char *pixels, int width, int height)
+uint64_t InxGUI::UploadTextureForImGui(const std::string &name, const unsigned char *pixels, int width, int height,
+                                       VkFilter filter)
 {
     // Check if texture already exists
     auto it = m_textures_umap.find(name);
     if (it != m_textures_umap.end()) {
-        // Remove existing texture first
-        RemoveImGuiTexture(name);
+        // Must destroy immediately (not deferred) because we're about to
+        // reuse the same name for a new upload in this call.
+        VkDevice device_rm = m_vkCore_ptr->GetDevice();
+        vkDeviceWaitIdle(device_rm);
+
+        auto &oldTex = it->second;
+        if (oldTex.descriptorSet != VK_NULL_HANDLE)
+            ImGui_ImplVulkan_RemoveTexture(oldTex.descriptorSet);
+        if (oldTex.sampler != VK_NULL_HANDLE)
+            vkDestroySampler(device_rm, oldTex.sampler, nullptr);
+        if (oldTex.imageView != VK_NULL_HANDLE)
+            vkDestroyImageView(device_rm, oldTex.imageView, nullptr);
+        if (oldTex.image != VK_NULL_HANDLE) {
+            VmaAllocator alloc_rm = m_vkCore_ptr->GetDeviceContext().GetVmaAllocator();
+            vmaDestroyImage(alloc_rm, oldTex.image, oldTex.allocation);
+        }
+        m_textures_umap.erase(it);
+
+        // Also remove from pending queue if it was there
+        m_pendingTextureRemovals.erase(
+            std::remove(m_pendingTextureRemovals.begin(), m_pendingTextureRemovals.end(), name),
+            m_pendingTextureRemovals.end());
     }
 
     VkDevice device = m_vkCore_ptr->GetDevice();
@@ -690,8 +745,8 @@ uint64_t InxGUI::UploadTextureForImGui(const std::string &name, const unsigned c
     // Create sampler
     VkSamplerCreateInfo samplerInfo{};
     samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-    samplerInfo.magFilter = VK_FILTER_LINEAR;
-    samplerInfo.minFilter = VK_FILTER_LINEAR;
+    samplerInfo.magFilter = filter;
+    samplerInfo.minFilter = filter;
     samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
@@ -701,7 +756,8 @@ uint64_t InxGUI::UploadTextureForImGui(const std::string &name, const unsigned c
     samplerInfo.unnormalizedCoordinates = VK_FALSE;
     samplerInfo.compareEnable = VK_FALSE;
     samplerInfo.compareOp = VK_COMPARE_OP_ALWAYS;
-    samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+    samplerInfo.mipmapMode =
+        (filter == VK_FILTER_NEAREST) ? VK_SAMPLER_MIPMAP_MODE_NEAREST : VK_SAMPLER_MIPMAP_MODE_LINEAR;
 
     if (vkCreateSampler(device, &samplerInfo, nullptr, &tex.sampler) != VK_SUCCESS) {
         INXLOG_ERROR("InxGUI::UploadTextureForImGui(): Failed to create sampler for '", name, "'");
@@ -734,36 +790,31 @@ void InxGUI::RemoveImGuiTexture(const std::string &name)
         return;
     }
 
-    VkDevice device = m_vkCore_ptr->GetDevice();
-    auto &tex = it->second;
-
-    // Wait for GPU to finish using the texture
-    vkDeviceWaitIdle(device);
-
-    if (tex.descriptorSet != VK_NULL_HANDLE) {
-        ImGui_ImplVulkan_RemoveTexture(tex.descriptorSet);
-    }
-    if (tex.sampler != VK_NULL_HANDLE) {
-        vkDestroySampler(device, tex.sampler, nullptr);
-    }
-    if (tex.imageView != VK_NULL_HANDLE) {
-        vkDestroyImageView(device, tex.imageView, nullptr);
-    }
-    if (tex.image != VK_NULL_HANDLE) {
-        VmaAllocator allocator = m_vkCore_ptr->GetDeviceContext().GetVmaAllocator();
-        vmaDestroyImage(allocator, tex.image, tex.allocation);
-    }
-
-    m_textures_umap.erase(it);
+    // Defer actual destruction to the start of the next frame.
+    // Destroying descriptor sets / Vulkan resources mid-frame would
+    // invalidate draw commands already emitted by other panels.
+    m_pendingTextureRemovals.push_back(name);
 }
 
 bool InxGUI::HasImGuiTexture(const std::string &name) const
 {
-    return m_textures_umap.find(name) != m_textures_umap.end();
+    if (m_textures_umap.find(name) == m_textures_umap.end())
+        return false;
+    // Treat pending-removal textures as absent
+    for (const auto &pending : m_pendingTextureRemovals) {
+        if (pending == name)
+            return false;
+    }
+    return true;
 }
 
 uint64_t InxGUI::GetImGuiTextureId(const std::string &name) const
 {
+    // Treat pending-removal textures as absent
+    for (const auto &pending : m_pendingTextureRemovals) {
+        if (pending == name)
+            return 0;
+    }
     auto it = m_textures_umap.find(name);
     if (it != m_textures_umap.end()) {
         return reinterpret_cast<uint64_t>(it->second.descriptorSet);

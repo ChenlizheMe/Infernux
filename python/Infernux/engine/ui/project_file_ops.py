@@ -8,6 +8,8 @@ depend on ``ProjectPanel`` internals.
 import os
 import shutil
 
+from Infernux.debug import Debug
+
 
 # ---------------------------------------------------------------------------
 # Templates
@@ -82,6 +84,24 @@ MATERIAL_TEMPLATE = '''{{
     }}
   }}
 }}
+'''
+
+ANIMCLIP_TEMPLATE = '''{
+  "name": "{clip_name}",
+  "authoring_texture_guid": "",
+  "frame_indices": [],
+  "fps": 12.0,
+  "loop": true
+}
+'''
+
+ANIMFSM_TEMPLATE = '''{
+  "name": "{fsm_name}",
+  "default_state": "",
+  "mode": "2d",
+  "states": [],
+  "parameters": []
+}
 '''
 
 
@@ -181,6 +201,12 @@ def _notify_asset_moved(old_path: str, new_path: str, asset_database=None):
 
     asset_inspector.invalidate_asset(old_path)
     asset_inspector.invalidate_asset(new_path)
+
+    try:
+        from Infernux.engine.ui.event_bus import EditorEventBus, EditorEvent
+        EditorEventBus.instance().emit(EditorEvent.ASSET_CHANGED, new_path, "moved")
+    except Exception as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
 
 
 def move_path(old_path: str, new_path: str, asset_database=None):
@@ -429,6 +455,76 @@ def create_prefab_from_gameobject(game_object, current_path: str,
     return False, "Failed to save prefab"
 
 
+def create_animclip(current_path: str, clip_name: str, asset_database=None):
+    """Create a ``.animclip2d`` file from template. Returns ``(True, "")`` or ``(False, error_msg)``."""
+    if not clip_name or not current_path:
+        return False, "Invalid animation clip name"
+
+    clip_name = clip_name.strip()
+    if not clip_name:
+        return False, "Animation clip name cannot be empty"
+
+    if clip_name.endswith('.animclip2d'):
+        clip_name = clip_name[:-11]
+
+    file_name = clip_name + '.animclip2d'
+    file_path = os.path.join(current_path, file_name)
+
+    if os.path.exists(file_path):
+        return False, f"'{file_name}' already exists"
+
+    content = ANIMCLIP_TEMPLATE.format(clip_name=clip_name)
+    try:
+        with open(file_path, 'w', encoding='utf-8') as f:
+            f.write(content)
+    except OSError as exc:
+        return False, str(exc)
+
+    if asset_database:
+        try:
+            guid = asset_database.import_asset(file_path)
+            print(f"[ProjectPanel] Registered animclip2d: {file_name} -> {guid}")
+        except Exception as exc:
+            return False, str(exc)
+
+    return True, ""
+
+
+def create_animfsm(current_path: str, fsm_name: str, asset_database=None):
+    """Create a ``.animfsm`` file from template. Returns ``(True, "")`` or ``(False, error_msg)``."""
+    if not fsm_name or not current_path:
+        return False, "Invalid state machine name"
+
+    fsm_name = fsm_name.strip()
+    if not fsm_name:
+        return False, "State machine name cannot be empty"
+
+    if fsm_name.endswith('.animfsm'):
+        fsm_name = fsm_name[:-8]
+
+    file_name = fsm_name + '.animfsm'
+    file_path = os.path.join(current_path, file_name)
+
+    if os.path.exists(file_path):
+        return False, f"'{file_name}' already exists"
+
+    content = ANIMFSM_TEMPLATE.format(fsm_name=fsm_name)
+    try:
+        with open(file_path, 'w', encoding='utf-8') as f:
+            f.write(content)
+    except OSError as exc:
+        return False, str(exc)
+
+    if asset_database:
+        try:
+            guid = asset_database.import_asset(file_path)
+            print(f"[ProjectPanel] Registered animfsm: {file_name} -> {guid}")
+        except Exception as exc:
+            return False, str(exc)
+
+    return True, ""
+
+
 # ---------------------------------------------------------------------------
 # Delete & Rename
 # ---------------------------------------------------------------------------
@@ -494,9 +590,28 @@ def delete_item(item_path: str, asset_database=None):
             import shutil
             shutil.rmtree(item_path)
         else:
-            os.remove(item_path)
+            # On Windows, transient locks (antivirus, indexer, font loader)
+            # can prevent deletion.  Retry with increasing delays.
+            import gc
+            import time
+            last_exc = None
+            for _attempt in range(5):
+                try:
+                    os.remove(item_path)
+                    last_exc = None
+                    break
+                except PermissionError as pe:
+                    last_exc = pe
+                    gc.collect()
+                    time.sleep(0.15 * (_attempt + 1))
+            if last_exc is not None:
+                Debug.log_warning(
+                    f"Cannot delete '{os.path.basename(item_path)}': "
+                    f"file may be in use by another process. ({last_exc})"
+                )
+                return
     except OSError as _exc:
-        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+        Debug.log_warning(f"Delete failed: {type(_exc).__name__}: {_exc}")
         return
 
     # Invalidate inspector cache so a recreated file won't reuse stale data

@@ -121,9 +121,6 @@ class MeshRenderer(BuiltinComponent):
     def sharedMaterials(self, value: list) -> None:
         self.materials = value
 
-    # Legacy alias
-    render_material = material
-
     @property
     def material_guid(self) -> str:
         """The material GUID for slot 0 (empty string if none)."""

@@ -20,7 +20,6 @@ Renders a mesh with assigned materials.
 |------|------|------|
 | casts_shadows | `bool` | Whether this renderer casts shadows. |
 | receives_shadows | `bool` | Whether this renderer receives shadows. |
-| render_material | `Any` | The material at slot 0 (convenience property). |
 | material_guid | `str` | The asset GUID of the material at slot 0. |
 | material_count | `int` | The number of material slots on this renderer. *(read-only)* |
 | has_mesh_asset | `bool` | Whether a mesh asset is assigned to this renderer. *(read-only)* |

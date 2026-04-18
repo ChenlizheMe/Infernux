@@ -682,6 +682,65 @@ void MaterialPipelineManager::InvalidateMaterialsUsingShader(const std::string &
     INXLOG_INFO("Invalidated ", materialsToRemove.size(), " materials using shader '", shaderId, "'");
 }
 
+uint32_t MaterialPipelineManager::InvalidateMaterialsUsingTexture(const std::string &textureRef,
+                                                                  const std::string &texturePath)
+{
+    auto normalize = [](std::string value) {
+        std::replace(value.begin(), value.end(), '\\', '/');
+        return value;
+    };
+
+    const std::string normalizedRef = normalize(textureRef);
+    const std::string normalizedPath = normalize(texturePath);
+    if (normalizedRef.empty() && normalizedPath.empty()) {
+        return 0;
+    }
+
+    std::vector<std::string> materialsToRemove;
+    materialsToRemove.reserve(m_renderDataMap.size());
+
+    for (const auto &[name, data] : m_renderDataMap) {
+        if (!data || !data->material) {
+            continue;
+        }
+
+        bool matches = false;
+        for (const auto &[propName, prop] : data->material->GetAllProperties()) {
+            (void)propName;
+            if (prop.type != MaterialPropertyType::Texture2D) {
+                continue;
+            }
+
+            const auto *value = std::get_if<std::string>(&prop.value);
+            if (!value || value->empty()) {
+                continue;
+            }
+
+            const std::string normalizedValue = normalize(*value);
+            if ((!normalizedRef.empty() && normalizedValue == normalizedRef) ||
+                (!normalizedPath.empty() && normalizedValue == normalizedPath)) {
+                matches = true;
+                break;
+            }
+        }
+
+        if (matches) {
+            materialsToRemove.push_back(name);
+        }
+    }
+
+    for (const auto &name : materialsToRemove) {
+        RemoveRenderData(name);
+    }
+
+    if (!materialsToRemove.empty()) {
+        INXLOG_INFO("Invalidated ", materialsToRemove.size(), " materials using texture ref '", normalizedRef,
+                    "' path '", normalizedPath, "'");
+    }
+
+    return static_cast<uint32_t>(materialsToRemove.size());
+}
+
 void MaterialPipelineManager::InvalidateAllMaterialPipelines()
 {
     uint32_t count = 0;

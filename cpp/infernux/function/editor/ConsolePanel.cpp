@@ -126,6 +126,32 @@ void ConsolePanel::SelectLatestEntry()
     ImGui::SetWindowFocus((m_title + "###" + m_windowId).c_str());
 }
 
+void ConsolePanel::GetLastVisibleForStatusBar(std::string &outMsg, std::string &outLevel)
+{
+    outMsg.clear();
+    outLevel = "info";
+    EnsureCache();
+    if (m_visible.empty())
+        return;
+    const VisibleEntry &ve = m_visible.back();
+    if (ve.logIndex >= m_logs.size())
+        return;
+    const LogEntry &log = m_logs[ve.logIndex];
+    outMsg = log.firstLine;
+    switch (log.level) {
+    case LOG_WARN:
+        outLevel = "warning";
+        break;
+    case LOG_ERROR:
+    case LOG_FATAL:
+        outLevel = "error";
+        break;
+    default:
+        outLevel = "info";
+        break;
+    }
+}
+
 // ════════════════════════════════════════════════════════════════════
 // Render
 // ════════════════════════════════════════════════════════════════════

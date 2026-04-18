@@ -1885,6 +1885,13 @@ def _generate_nav_fragment(nav_entries: Dict[str, List[Tuple[str, str]]]):
     print(f"\nNav fragment written to {path.relative_to(PROJECT_ROOT)}")
 
 
+def _yaml_quote_nav_key(display: str) -> str:
+    """Quote nav labels that contain ':' so PyYAML does not split the key."""
+    if ":" in display:
+        return json.dumps(display, ensure_ascii=False)
+    return display
+
+
 def _generate_mkdocs_yml(nav_entries: Dict[str, List[Tuple[str, str]]]):
     """Regenerate the full mkdocs.yml with auto-generated API nav."""
     manual_nav_entries = _collect_manual_nav_entries()
@@ -1913,7 +1920,8 @@ def _generate_mkdocs_yml(nav_entries: Dict[str, List[Tuple[str, str]]]):
             entries = groups[group_key]
             lines.append(f"    - {_humanize_doc_group(group_key, lang)}:")
             for display, relative_path in entries:
-                lines.append(f"      - {display}: {relative_path}")
+                key = _yaml_quote_nav_key(display)
+                lines.append(f"      - {key}: {relative_path}")
 
     for lang, section_title in [("en", "API Reference"), ("zh", "API 参考手册")]:
         prefix = f"{lang}/api"
@@ -1923,7 +1931,8 @@ def _generate_mkdocs_yml(nav_entries: Dict[str, List[Tuple[str, str]]]):
         for mod_name, entries in sorted(nav_entries.items()):
             lines.append(f"    - {mod_name}:")
             for display, filename in sorted(entries):
-                lines.append(f"      - {display}: {prefix}/{filename}")
+                key = _yaml_quote_nav_key(display)
+                lines.append(f"      - {key}: {prefix}/{filename}")
 
     lines.append("")
     lines.append("markdown_extensions:")

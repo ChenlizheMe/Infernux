@@ -119,17 +119,24 @@ void StatusBarPanel::RenderContent(InxGUIContext *ctx, float dispW)
     ImGui::SameLine(6.0f);
 
     // ── Level icon + message ─────────────────────────────────────
-    const ImVec4 &clr = LevelColor();
+    // Prefer the native console's last *visible* line (matches Clear / filters).
+    std::string lineMsg = m_latestMsg;
+    std::string lineLevel = m_latestLevel;
+    if (m_console) {
+        m_console->GetLastVisibleForStatusBar(lineMsg, lineLevel);
+    }
+
+    const ImVec4 &clr = LevelColorForString(lineLevel);
     ImGui::PushStyleColor(ImGuiCol_Text, clr);
 
     std::string icon;
-    if (m_latestLevel == "error")
+    if (lineLevel == "error")
         icon = std::string(EditorTheme::ICON_ERROR) + " ";
-    else if (m_latestLevel == "warning")
+    else if (lineLevel == "warning")
         icon = std::string(EditorTheme::ICON_WARNING) + " ";
 
     // Truncate
-    std::string msg = m_latestMsg;
+    std::string msg = lineMsg;
     int maxChars = (std::max)(10, static_cast<int>((leftZoneW - 160.0f) / 8.0f));
     if (static_cast<int>(msg.size()) > maxChars) {
         msg = msg.substr(0, maxChars - 1) + "\xe2\x80\xa6"; // …
@@ -207,9 +214,14 @@ void StatusBarPanel::RenderEngineStatus(InxGUIContext *ctx, float dispW, float l
 
 const ImVec4 &StatusBarPanel::LevelColor() const
 {
-    if (m_latestLevel == "error")
+    return LevelColorForString(m_latestLevel);
+}
+
+const ImVec4 &StatusBarPanel::LevelColorForString(const std::string &level) const
+{
+    if (level == "error")
         return EditorTheme::LOG_ERROR;
-    if (m_latestLevel == "warning")
+    if (level == "warning")
         return EditorTheme::LOG_WARNING;
     return EditorTheme::LOG_INFO;
 }

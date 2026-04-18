@@ -23,20 +23,33 @@ def _serialize_asset_ref(value: Any) -> Optional[dict]:
 
     Returns None if *value* is not a recognised asset-ref type.
     """
-    from Infernux.core.asset_ref import TextureRef, ShaderRef, AudioClipRef
+    from Infernux.core.asset_ref import (
+        TextureRef, ShaderRef, AssetRefBase,
+        get_all_asset_type_configs,
+    )
 
-    _ASSET_REF_KEY_MAP: list[Tuple[type, str]] = [
+    # Fixed non-ASSET ref types (TEXTURE / SHADER have their own FieldType)
+    _FIXED_KEY_MAP: list[Tuple[type, str]] = [
         (TextureRef, "__texture_ref__"),
         (ShaderRef, "__shader_ref__"),
-        (AudioClipRef, "__audio_clip_ref__"),
     ]
 
-    for ref_type, dict_key in _ASSET_REF_KEY_MAP:
+    for ref_type, dict_key in _FIXED_KEY_MAP:
         if isinstance(value, ref_type):
             d: dict = {dict_key: value.guid}
             if value.path_hint:
                 d["__path_hint__"] = value.path_hint
             return d
+
+    # Dynamic ASSET-typed refs from the registry
+    if isinstance(value, AssetRefBase):
+        for _name, cfg in get_all_asset_type_configs().items():
+            if isinstance(value, cfg["ref_class"]):
+                d = {cfg["dict_key"]: value.guid}
+                if value.path_hint:
+                    d["__path_hint__"] = value.path_hint
+                return d
+
     return None
 
 
@@ -97,6 +110,14 @@ def deserialize_dict_ref(value: dict) -> Any:
         return AudioClipRef(guid=value["__audio_clip_ref__"],
                             path_hint=value.get("__path_hint__", ""))
 
+    # Dynamic ASSET-typed refs from the registry
+    from Infernux.core.asset_ref import get_all_asset_type_configs
+    for _name, cfg in get_all_asset_type_configs().items():
+        dk = cfg["dict_key"]
+        if dk in value:
+            return cfg["ref_class"](guid=value[dk],
+                                    path_hint=value.get("__path_hint__", ""))
+
     if "__component_ref__" in value:
         from .ref_wrappers import ComponentRef
         return ComponentRef._from_dict(value["__component_ref__"])
@@ -133,6 +154,11 @@ def make_null_ref(field_type, field_meta=None) -> Any:
         from Infernux.core.asset_ref import ShaderRef
         return ShaderRef()
     if field_type == FieldType.ASSET:
+        asset_type = getattr(field_meta, "asset_type", None) or "AudioClip"
+        from Infernux.core.asset_ref import get_asset_type_config
+        cfg = get_asset_type_config(asset_type)
+        if cfg:
+            return cfg["ref_class"]()
         from Infernux.core.asset_ref import AudioClipRef
         return AudioClipRef()
     if field_type == FieldType.COMPONENT:

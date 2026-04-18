@@ -125,7 +125,7 @@ class BuildDependencyMixin:
                                 elif node.module == "Infernux":
                                     imported_names = {alias.name for alias in node.names}
                                     if imported_names & {
-                                        "jit", "njit", "warmup", "precompile_jit",
+                                        "jit", "njit", "warmup",
                                         "JIT_AVAILABLE",
                                     }:
                                         uses_infernux_jit = True

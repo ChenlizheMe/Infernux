@@ -42,6 +42,9 @@ class ConsolePanel : public EditorPanel
     /// Called from status bar click.
     void SelectLatestEntry();
 
+    /// Last log line currently visible in the panel (respects filters), for the status bar.
+    void GetLastVisibleForStatusBar(std::string &outMsg, std::string &outLevel);
+
     /// Python callback: invoked on double-click with (sourceFile, sourceLine).
     std::function<void(const std::string &, int)> onDoubleClickEntry;
 
@@ -84,7 +87,7 @@ class ConsolePanel : public EditorPanel
     void OnLogMessage(LogLevel level, const char *file, int line, const std::string &message, bool internalOnly);
 
     // ── Log storage ──
-    static constexpr size_t MAX_LOGS = 2000;
+    static constexpr size_t MAX_LOGS = 2147483647u;
     std::deque<LogEntry> m_logs;
     uint64_t m_nextUid = 1;
     mutable std::mutex m_logMutex;       // protects m_logs + m_pendingLogs
