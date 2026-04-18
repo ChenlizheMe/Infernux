@@ -26,7 +26,7 @@ class InspectorThemeBase:
     INSPECTOR_MIN_LABEL_WIDTH = 156.0
     INSPECTOR_FRAME_PAD = (4.0, 2.0)
     OBJECT_FIELD_TEXT_INSET_X: float = 12.0
-    # Whole object-reference row shifted right (ImGui "two cells" ~ 2× default spacing)
+    # Extra left padding **inside** the object-field selectable (text only); outline stays full width.
     OBJECT_FIELD_LEADING_INDENT: float = 16.0
     INSPECTOR_ITEM_SPC = (4.0, 2.0)
     INSPECTOR_SUBITEM_SPC = (4.0, 2.0)

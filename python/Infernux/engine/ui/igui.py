@@ -213,16 +213,15 @@ class IGUI:
             full_text = full_text[:35] + "..."
 
         avail_width = ctx.get_content_region_avail_width()
-        lead = float(getattr(Theme, "OBJECT_FIELD_LEADING_INDENT", 0.0) or 0.0)
-        ctx.set_cursor_pos_x(ctx.get_cursor_pos_x() + lead)
-        inner_w = max(avail_width - lead, 10.0)
         btn_w = _MINI_ICON_BTN_SIDE if has_picker else 0.0
-        field_w = max(inner_w - btn_w, 10.0)
+        field_w = max(avail_width - btn_w, 10.0)
 
-        # Match scalar field text inset; suppress ImGui's own frame border so hover
-        # highlight aligns with our custom outline (avoids a sliver past the left edge).
-        _fpx = Theme.INSPECTOR_FRAME_PAD[0] + Theme.OBJECT_FIELD_TEXT_INSET_X
+        # Inner text inset only: keep the selectable + outline at full content width;
+        # indent label text via extra left FramePadding (do not move the whole widget).
+        _lead = float(getattr(Theme, "OBJECT_FIELD_LEADING_INDENT", 0.0) or 0.0)
+        _fpx = Theme.INSPECTOR_FRAME_PAD[0] + Theme.OBJECT_FIELD_TEXT_INSET_X + _lead
         _fpy = Theme.INSPECTOR_FRAME_PAD[1]
+
         ctx.push_style_var_vec2(ImGuiStyleVar.FramePadding, _fpx, _fpy)
         ctx.push_style_var_float(ImGuiStyleVar.FrameBorderSize, 0.0)
         # Selectable uses Header* colors; match list-body fill so hover stays inside the outline.
@@ -242,7 +241,7 @@ class IGUI:
         # ── Picker dot button ──
         if has_picker:
             ctx.same_line(0, 0)
-            ctx.set_cursor_pos_x(ctx.get_cursor_pos_x() + (inner_w - btn_w - field_w))
+            ctx.set_cursor_pos_x(ctx.get_cursor_pos_x() + (avail_width - btn_w - field_w))
             if IGUI._mini_icon_button(ctx, "##picker", Theme.ICON_IMG_PICKER, Theme.ICON_PICKER):
                 ctx.open_popup("##obj_picker")
                 _popup_needs_focus.add(field_id)

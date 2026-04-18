@@ -78,7 +78,10 @@ def _resolve_texture_guid(mesh_dir: str, rel: str, adb) -> str:
         return ""
     # Strip Assimp/FBX prefix paths like "../textures/foo.png"
     clean = rel.lstrip("./")
-    abs_tex = os.path.normpath(os.path.join(mesh_dir, clean))
+    if os.path.isabs(clean):
+        abs_tex = os.path.normpath(clean)
+    else:
+        abs_tex = os.path.normpath(os.path.join(mesh_dir, clean))
     if not os.path.isfile(abs_tex):
         return ""
     try:
@@ -91,7 +94,7 @@ def _resolve_texture_guid(mesh_dir: str, rel: str, adb) -> str:
         return ""
 
 
-def _lit_mat_dict(spec: Dict[str, Any], tex_guid: str) -> Dict[str, Any]:
+def _lit_mat_dict(spec: Dict[str, Any], mesh_dir: str, adb, albedo_guid: str) -> Dict[str, Any]:
     root = copy.deepcopy(_LIT_MAT_TEMPLATE)
     name = str(spec.get("name") or "ImportedLit")
     root["name"] = name
@@ -103,7 +106,32 @@ def _lit_mat_dict(spec: Dict[str, Any], tex_guid: str) -> Dict[str, Any]:
         ]
     root["properties"]["metallic"]["value"] = float(spec.get("metallic", 0.0))
     root["properties"]["smoothness"]["value"] = float(spec.get("smoothness", 0.5))
-    root["properties"]["texSampler"]["guid"] = tex_guid or ""
+    root["properties"]["ambientOcclusion"]["value"] = float(spec.get("ambientOcclusion", 1.0))
+
+    ec = spec.get("emissionColor") or [0.0, 0.0, 0.0, 0.0]
+    if isinstance(ec, (list, tuple)) and len(ec) >= 3:
+        ea = float(ec[3]) if len(ec) > 3 else 1.0
+        root["properties"]["emissionColor"]["value"] = [
+            float(ec[0]), float(ec[1]), float(ec[2]), ea,
+        ]
+
+    mr_path = str(spec.get("metallicRoughnessTexturePath", "") or "")
+    mr_g = _resolve_texture_guid(mesh_dir, mr_path, adb) if mr_path else ""
+    met_g = _resolve_texture_guid(mesh_dir, str(spec.get("metallicTexturePath", "") or ""), adb)
+    rough_g = _resolve_texture_guid(mesh_dir, str(spec.get("roughnessTexturePath", "") or ""), adb)
+    if not met_g and mr_g:
+        met_g = mr_g
+    if not rough_g and mr_g:
+        rough_g = mr_g
+
+    norm_g = _resolve_texture_guid(mesh_dir, str(spec.get("normalTexturePath", "") or ""), adb)
+    ao_g = _resolve_texture_guid(mesh_dir, str(spec.get("occlusionTexturePath", "") or ""), adb)
+
+    root["properties"]["texSampler"]["guid"] = albedo_guid or ""
+    root["properties"]["metallicMap"]["guid"] = met_g or ""
+    root["properties"]["smoothnessMap"]["guid"] = rough_g or ""
+    root["properties"]["normalMap"]["guid"] = norm_g or ""
+    root["properties"]["aoMap"]["guid"] = ao_g or ""
     return root
 
 
@@ -130,7 +158,7 @@ def ensure_imported_material_files(mesh_abs_path: str, adb) -> Tuple[List[str], 
         safe = _sanitize_filename(str(spec.get("name", f"slot_{i}")))
         mat_path = os.path.join(out_dir, f"{i:02d}_{safe}.mat")
         tex_guid = _resolve_texture_guid(mesh_dir, str(spec.get("albedoTexturePath", "")), adb)
-        data = _lit_mat_dict(spec, tex_guid)
+        data = _lit_mat_dict(spec, mesh_dir, adb, tex_guid)
         try:
             with open(mat_path, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)

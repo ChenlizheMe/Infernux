@@ -54,6 +54,21 @@ static void CollectMeshesImport(const aiNode *node, const glm::mat4 &parentTrans
     }
 }
 
+static std::string FirstTexturePath(const aiMaterial *mat, std::initializer_list<aiTextureType> types)
+{
+    for (aiTextureType tt : types) {
+        if (mat->GetTextureCount(tt) == 0)
+            continue;
+        aiString p;
+        if (mat->GetTexture(tt, 0, &p) != AI_SUCCESS)
+            continue;
+        std::string s(p.C_Str());
+        if (!s.empty() && s[0] != '*')
+            return s;
+    }
+    return {};
+}
+
 static nlohmann::json SerializeAiMaterialForImport(const aiMaterial *mat)
 {
     nlohmann::json j;
@@ -89,27 +104,46 @@ static nlohmann::json SerializeAiMaterialForImport(const aiMaterial *mat)
     j["metallic"] = static_cast<double>(std::clamp(metallic, 0.f, 1.f));
 
     float rough = 0.5f;
-    if (mat->Get(AI_MATKEY_ROUGHNESS_FACTOR, rough) != AI_SUCCESS) {
+    const bool roughFromPbr = (mat->Get(AI_MATKEY_ROUGHNESS_FACTOR, rough) == AI_SUCCESS);
+    if (!roughFromPbr) {
         float shininess = 0.f;
         if (mat->Get(AI_MATKEY_SHININESS, shininess) == AI_SUCCESS && shininess > 1e-4f) {
+            // Phong / MTL Ns — map high Ns to smoother surfaces
             rough = 1.f - std::clamp(std::sqrt(shininess / 128.f), 0.f, 1.f);
+        } else {
+            aiColor3D spec(0.f, 0.f, 0.f);
+            if (mat->Get(AI_MATKEY_COLOR_SPECULAR, spec) == AI_SUCCESS) {
+                const float lum = (spec.r + spec.g + spec.b) * (1.f / 3.f);
+                if (lum > 1e-3f)
+                    rough = std::clamp(1.f - std::sqrt(lum), 0.f, 1.f);
+            }
         }
     }
     rough = std::clamp(rough, 0.f, 1.f);
     j["smoothness"] = static_cast<double>(1.f - rough);
 
-    std::string texPath;
-    if (mat->GetTextureCount(aiTextureType_BASE_COLOR) > 0) {
-        aiString p;
-        if (mat->GetTexture(aiTextureType_BASE_COLOR, 0, &p) == AI_SUCCESS)
-            texPath = p.C_Str();
+    j["albedoTexturePath"] = FirstTexturePath(mat, {aiTextureType_BASE_COLOR, aiTextureType_DIFFUSE});
+    j["metallicRoughnessTexturePath"] = FirstTexturePath(mat, {aiTextureType_GLTF_METALLIC_ROUGHNESS});
+    j["metallicTexturePath"] = FirstTexturePath(mat, {aiTextureType_METALNESS});
+    j["roughnessTexturePath"] = FirstTexturePath(mat, {aiTextureType_DIFFUSE_ROUGHNESS, aiTextureType_SHININESS});
+    j["normalTexturePath"] =
+        FirstTexturePath(mat, {aiTextureType_NORMALS, aiTextureType_NORMAL_CAMERA, aiTextureType_HEIGHT});
+    j["occlusionTexturePath"] = FirstTexturePath(mat, {aiTextureType_AMBIENT_OCCLUSION, aiTextureType_LIGHTMAP});
+    j["emissionTexturePath"] = FirstTexturePath(mat, {aiTextureType_EMISSIVE, aiTextureType_EMISSION_COLOR});
+
+    aiColor4D em(0.f, 0.f, 0.f, 1.f);
+    if (mat->Get(AI_MATKEY_COLOR_EMISSIVE, em) != AI_SUCCESS) {
+        aiColor3D e3(0.f, 0.f, 0.f);
+        if (mat->Get(AI_MATKEY_COLOR_EMISSIVE, e3) == AI_SUCCESS) {
+            em.r = e3.r;
+            em.g = e3.g;
+            em.b = e3.b;
+            em.a = 1.f;
+        }
     }
-    if (texPath.empty() && mat->GetTextureCount(aiTextureType_DIFFUSE) > 0) {
-        aiString p;
-        if (mat->GetTexture(aiTextureType_DIFFUSE, 0, &p) == AI_SUCCESS)
-            texPath = p.C_Str();
-    }
-    j["albedoTexturePath"] = texPath;
+    j["emissionColor"] = nlohmann::json::array({em.r, em.g, em.b, em.a});
+
+    j["ambientOcclusion"] = 1.0;
 
     return j;
 }
