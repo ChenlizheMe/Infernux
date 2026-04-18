@@ -93,7 +93,8 @@ def wire_material_sections(ip, _t, engine, _inspector_support,
         from Infernux.components.builtin_component import BuiltinComponent
         from Infernux.engine.ui import inspector_material as mat_ui
         from Infernux.engine.ui.inspector_utils import render_compact_section_header, render_info_text
-        from Infernux.engine.ui.theme import Theme, ImGuiCol, ImGuiStyleVar
+        from Infernux.engine.ui.theme import Theme, ImGuiCol
+        from Infernux.engine.ui.panel_spacing import push_inspector_material_block
 
         scene, items, native_map, _py_map = get_cached_maps(obj_id)
         obj = scene.find_by_id(obj_id) if scene else None
@@ -139,8 +140,7 @@ def wire_material_sections(ip, _t, engine, _inspector_support,
         if not valid_entries:
             return
 
-        ctx.push_style_var_vec2(ImGuiStyleVar.FramePadding, *Theme.INSPECTOR_FRAME_PAD)
-        ctx.push_style_var_vec2(ImGuiStyleVar.ItemSpacing, *Theme.INSPECTOR_ITEM_SPC)
+        push_inspector_material_block(ctx)
         for index, entry in enumerate(valid_entries):
             title = entry["label"]
             if multiple_renderers and owner_name:

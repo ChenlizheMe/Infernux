@@ -28,6 +28,7 @@ from .inspector_utils import (
     LABEL_PAD,
 )
 from .theme import Theme, ImGuiCol, ImGuiStyleVar
+from .panel_spacing import push_inspector_material_block
 from . import inspector_shader_utils as shader_utils
 from Infernux.debug import Debug
 import logging
@@ -633,8 +634,7 @@ def render_material_body(ctx: InxGUIContext, panel, state):
     if is_builtin:
         ctx.label(t("material.builtin_locked"))
 
-    ctx.push_style_var_vec2(ImGuiStyleVar.FramePadding, *Theme.INSPECTOR_FRAME_PAD)
-    ctx.push_style_var_vec2(ImGuiStyleVar.ItemSpacing, *Theme.INSPECTOR_ITEM_SPC)
+    push_inspector_material_block(ctx)
 
     changed = False
     requires_deserialize = False
