@@ -44,8 +44,19 @@ def _prefs_path() -> str:
 class PreferencesStore:
     """Minimal JSON-backed preferences storage."""
 
+    _instance: PreferencesStore | None = None
+    _initialized: bool = False
+
+    def __new__(cls) -> PreferencesStore:
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
     def __init__(self) -> None:
+        if self.__class__._initialized:
+            return
         self._path = _prefs_path()
+        self.__class__._initialized = True
 
     def load(self) -> dict:
         """Load and return the full preferences dictionary."""

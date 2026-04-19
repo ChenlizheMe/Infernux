@@ -527,25 +527,12 @@ def _ensure_pycharm_project_files(project_root: str) -> bool:
     '',
 ])
 
-
-    pyproject_path = os.path.join(project_root, 'pyproject.toml')
-    pyproject_toml = '\n'.join([
-        '[project]',
-        f'name = "{project_name.lower().replace(" ", "-")}"',
-        'version = "0.1.0"',
-        'requires-python = ">=3.12,<3.13"',
-        '',
-    ])
-
     try:
         _write_if_changed(os.path.join(idea_dir, 'modules.xml'), modules_xml)
         _write_if_changed(os.path.join(idea_dir, 'misc.xml'), misc_xml)
         _write_if_changed(os.path.join(idea_dir, f'{module_name}.iml'), iml_xml)
         _write_if_changed(os.path.join(idea_dir, '.gitignore'), idea_gitignore)
         _write_if_changed(setup_guide_path, setup_md)
-
-        if not os.path.isfile(pyproject_path):
-            _write_if_changed(pyproject_path, pyproject_toml)
 
         if not os.path.isfile(runtime_python):
             Debug.log(f"[Suppressed] Bundled runtime not found: {runtime_python}")
@@ -586,6 +573,8 @@ def open_in_pycharm(file_path: str, line: int = 0, project_root: str = "") -> bo
         elif not os.path.isdir(project_root):
             project_root = ""
 
+    
+    project_initialized = False
     if project_root:
         idea_dir = os.path.join(project_root, '.idea')
         setup_guide_path = os.path.join(project_root, 'PYCHARM_SETUP.zh-CN.en.md')
@@ -616,7 +605,8 @@ def open_in_pycharm(file_path: str, line: int = 0, project_root: str = "") -> bo
             cmd.append(project_root)
 
         # Then open the setup guide so the user sees the interpreter instructions.
-        if setup_guide_path and os.path.isfile(setup_guide_path):
+        # open it first-time initialization only
+        if setup_guide_path and os.path.isfile(setup_guide_path) and not project_initialized:
             cmd.append(setup_guide_path)
 
         # Finally open the target file.
