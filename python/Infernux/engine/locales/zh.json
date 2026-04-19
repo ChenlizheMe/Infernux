@@ -23,6 +23,8 @@
   "prefs.ide": "IDE偏好",
   "prefs.ide.vscode": "VS Code",
   "prefs.ide.pycharm": "PyCharm",
+  "prefs.ide.available_hint": "此处仅显示当前检测到的 IDE。",
+  "prefs.ide.none_available": "未检测到受支持的 IDE。代码文件将回退为使用系统默认程序打开。",
   "build.fullscreen_borderless": "全屏无边框",
   "build.windowed": "窗口模式",
   "toolbar.play": "播放",

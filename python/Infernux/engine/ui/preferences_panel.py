@@ -9,12 +9,12 @@ from __future__ import annotations
 
 from Infernux.engine.i18n import t, get_locale, set_locale
 from Infernux.engine.ide_preference import get_ide, set_ide
+from .project_utils import detect_available_ides
 from .theme import Theme
 
 
 _LOCALES = ["en", "zh"]
 _LOCALE_LABELS = ["English", "简体中文"]
-_IDES = ["vscode", "pycharm"]
 
 
 class PreferencesPanel:
@@ -83,10 +83,27 @@ class PreferencesPanel:
         avail = ctx.get_content_region_avail_width()
         ctx.set_next_item_width(avail)
 
-        ide_labels = [t("prefs.ide.vscode"), t("prefs.ide.pycharm")]
+        available_ides = detect_available_ides()
         current_ide = get_ide()
-        current_ide_idx = _IDES.index(current_ide) if current_ide in _IDES else 0
-        new_ide_idx = ctx.combo("##preferred_ide", current_ide_idx, ide_labels)
-        if new_ide_idx != current_ide_idx:
-            set_ide(_IDES[new_ide_idx])
 
+        if available_ides:
+            if current_ide not in available_ides:
+                current_ide = available_ides[0]
+
+            ide_labels = []
+            for ide in available_ides:
+                if ide == "vscode":
+                    ide_labels.append(t("prefs.ide.vscode"))
+                elif ide == "pycharm":
+                    ide_labels.append(t("prefs.ide.pycharm"))
+                else:
+                    ide_labels.append(ide)
+
+            current_ide_idx = available_ides.index(current_ide)
+            new_ide_idx = ctx.combo("##preferred_ide", current_ide_idx, ide_labels)
+            if new_ide_idx != current_ide_idx:
+                set_ide(available_ides[new_ide_idx])
+
+            ctx.text_wrapped(t("prefs.ide.available_hint"))
+        else:
+            ctx.text_wrapped(t("prefs.ide.none_available"))

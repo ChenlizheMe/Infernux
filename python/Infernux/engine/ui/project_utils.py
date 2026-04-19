@@ -14,6 +14,9 @@ HIDDEN_EXTENSIONS = {'.meta', '.pyc', '.pyo', '.tmp'}
 HIDDEN_PREFIXES = {'.', '__'}
 HIDDEN_FILES = {'imgui.ini'}
 
+# IDE support
+SUPPORTED_IDES = ("vscode", "pycharm")
+_AVAILABLE_IDES_CACHE: dict[str, bool] | None = None
 
 def should_show(name: str) -> bool:
     """Check if a file or folder should be shown (filters hidden files)."""
@@ -26,6 +29,33 @@ def should_show(name: str) -> bool:
     if ext.lower() in HIDDEN_EXTENSIONS:
         return False
     return True
+
+
+def detect_available_ides(force_refresh: bool = False) -> list[str]:
+    """Return installed/available IDEs, cached for repeated checks."""
+    global _AVAILABLE_IDES_CACHE
+
+    if _AVAILABLE_IDES_CACHE is None or force_refresh:
+        _AVAILABLE_IDES_CACHE = {
+            "vscode": _find_vscode_executable() is not None,
+            "pycharm": _find_pycharm_executable() is not None,
+        }
+
+    return [ide for ide in SUPPORTED_IDES if _AVAILABLE_IDES_CACHE.get(ide, False)]
+
+
+def is_ide_available(ide: str, force_refresh: bool = False) -> bool:
+    """Return whether a supported IDE is available."""
+    if ide not in SUPPORTED_IDES:
+        return False
+    return ide in detect_available_ides(force_refresh=force_refresh)
+
+
+def get_ide_launch_order(preferred_ide: str) -> list[str]:
+    """Return the preferred IDE first, then the remaining supported IDE."""
+    if preferred_ide == "pycharm":
+        return ["pycharm", "vscode"]
+    return ["vscode", "pycharm"]
 
 
 def _find_vscode_executable() -> str | None:
@@ -649,19 +679,31 @@ def open_file_with_system(file_path: str, project_root: str = ""):
     _, ext = os.path.splitext(file_path)
     ext = ext.lower()
 
-    # For code files, try to open in the preferred IDE with the project root
+    # For code files, try IDEs first.
+    # If the preferred IDE is available, try it first and then the other IDE.
+    # If the preferred IDE is unavailable, fall back to the current default order:
+    # VS Code -> PyCharm.
     if ext in CODE_EXTENSIONS and project_root:
         preferred_ide = get_ide()
+        available_ides = detect_available_ides()
 
-        if preferred_ide == "vscode":
-            if open_in_vscode(file_path, project_root=project_root):
-                return
-            print("[ProjectPanel] VS Code not found, falling back to system default")
+        ide_order = ["vscode", "pycharm"]
+        if preferred_ide in available_ides:
+            ide_order = [preferred_ide] + [ide for ide in ide_order if ide != preferred_ide]
 
-        elif preferred_ide == "pycharm":
-            if open_in_pycharm(file_path, project_root=project_root):
-                return
-            print("[ProjectPanel] PyCharm not found, falling back to system default")
+        for ide in ide_order:
+            if ide not in available_ides:
+                continue
+
+            if ide == "vscode":
+                if open_in_vscode(file_path, project_root=project_root):
+                    return
+                Debug.log("[ProjectPanel] VS Code launch failed, trying next IDE")
+
+            elif ide == "pycharm":
+                if open_in_pycharm(file_path, project_root=project_root):
+                    return
+                Debug.log("[ProjectPanel] PyCharm launch failed, trying next IDE")
 
     # Fallback: open with OS default application
     system = platform.system()
