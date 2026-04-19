@@ -63,7 +63,6 @@ pybind11_add_module(_Infernux MODULE
 target_include_directories(_Infernux PRIVATE
     ${INFERNUX_INCLUDE_DIRS}
     ${CMAKE_SOURCE_DIR}/external
-    ${CMAKE_SOURCE_DIR}/external/json/include
     ${CMAKE_SOURCE_DIR}/cpp/infernux
 )
 
