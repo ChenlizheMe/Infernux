@@ -139,6 +139,8 @@ target_link_libraries(imgui PUBLIC
     SDL3::SDL3
 )
 
+set_target_properties(imgui PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
 # ------------------------------------------------------------------------------
 # Restore Build Type
 # ------------------------------------------------------------------------------

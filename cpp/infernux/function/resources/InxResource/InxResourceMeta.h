@@ -1,5 +1,5 @@
 #pragma once
-#include <core/Reflection/InxTypeRegistry.h>
+#include <core/reflection/InxTypeRegistry.h>
 #include <core/types/InxFwdType.h>
 
 #include <any>

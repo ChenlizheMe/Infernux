@@ -862,10 +862,14 @@ class RenderGraph
     std::vector<VmaAllocation> m_aliasedMemoryHeaps;
 
 #if INFERNUX_FRAME_PROFILE
-    inline static ExecuteProfileSnapshot s_executeProfile = {};
+    static ExecuteProfileSnapshot s_executeProfile; // The windows msvc will parse later. But linux gcc will not. 
     inline static std::unordered_map<std::string, PassCallbackProfileEntry> s_callbackProfiles;
 #endif
 };
+
+#if INFERNUX_FRAME_PROFILE
+inline RenderGraph::ExecuteProfileSnapshot RenderGraph::s_executeProfile = {};
+#endif
 
 } // namespace vk
 } // namespace infernux

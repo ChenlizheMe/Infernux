@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <filesystem>
 #include <utility>
+#include <cstring>
 
 namespace infernux
 {

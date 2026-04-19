@@ -1,9 +1,7 @@
 #include "Infernux.h"
-
 #ifdef DrawText
 #undef DrawText
 #endif
-
 #include "gui/InxGUIContext.h"
 #include "gui/InxGUIRenderable.h"
 #include "gui/InxResourcePreviewer.h"

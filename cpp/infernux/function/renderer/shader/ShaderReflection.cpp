@@ -5,6 +5,8 @@
 #include <spirv_cross/spirv_cross.hpp>
 #include <spirv_cross/spirv_glsl.hpp>
 
+#include <cstring>
+
 namespace infernux
 {
 
