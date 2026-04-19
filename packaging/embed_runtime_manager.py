@@ -25,8 +25,6 @@ _REQUIRED_RUNTIME_MODULES = runtime_modules()
 
 
 def _runtime_lib_names() -> list[str]:
-    if sys.platform == "linux":
-        return ["libpython3.12.so", "libpython3.so", "libpython3.12.a"]
     if sys.platform == "darwin":
         return ["libpython3.12.dylib", "libpython3.dylib"]
     return ["python312.lib", "python3.lib"]
@@ -42,22 +40,12 @@ class PythonRuntimeError(RuntimeError):
 
 def _default_runtime_dir() -> str:
     if is_frozen():
-        if sys.platform == "win32":
-            return str(_PUBLIC_RUNTIME_ROOT)
-        return "/usr/local/share/InfernuxHub/runtime"
+        return str(_PUBLIC_RUNTIME_ROOT)
 
-    if sys.platform == "win32":
-        local_app_data = os.environ.get("LOCALAPPDATA")
-        if local_app_data:
-            return os.path.join(local_app_data, "InfernuxHub", "runtime")
-        return str(_RUNTIME_ROOT)
-    else:
-        xdg_data_home = os.environ.get("XDG_DATA_HOME")
-        if xdg_data_home:
-            base_dir = Path(xdg_data_home)
-        else:
-            base_dir = Path.home() / ".local" / "share"
-        return str(base_dir / "Infernux" / "runtime")
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if local_app_data:
+        return os.path.join(local_app_data, "InfernuxHub", "runtime")
+    return str(_RUNTIME_ROOT)
 
 
 def _emit_status(callback: Optional[Callable[[str], None]], message: str) -> None:
@@ -67,40 +55,31 @@ def _emit_status(callback: Optional[Callable[[str], None]], message: str) -> Non
 
 def _runtime_installer_info_for_machine() -> tuple[str, str]:
     machine = (platform.machine() or os.environ.get("PROCESSOR_ARCHITECTURE") or "").lower()
-    if sys.platform == "linux":
-        if machine in { "amd64", "x86_64"}:
-            return (
-                "python-3.12.8-linux-x86_64.tar.gz",
-                "https://www.python.org/ftp/python/3.12.8/Python-3.12.8.tgz"
-            )
-        
     if sys.platform == "darwin":
         # macOS universal2 installer from python.org
         return (
             "python-3.12.8-macos11.pkg",
             "https://www.python.org/ftp/python/3.12.8/python-3.12.8-macos11.pkg",
         )
-    
-    if sys.platform == "win32": 
-        if machine in {"amd64", "x86_64"}:
-            return (
-                "python-3.12.8-amd64.exe",
-                "https://www.python.org/ftp/python/3.12.8/python-3.12.8-amd64.exe",
-            )
-        if machine in {"arm64", "aarch64"}:
-            return (
-                "python-3.12.8-arm64.exe",
-                "https://www.python.org/ftp/python/3.12.8/python-3.12.8-arm64.exe",
-            )
-        if machine in {"x86", "i386", "i686"}:
-            return (
-                "python-3.12.8.exe",
-                "https://www.python.org/ftp/python/3.12.8/python-3.12.8.exe",
-            )
+    if machine in {"amd64", "x86_64"}:
         return (
             "python-3.12.8-amd64.exe",
             "https://www.python.org/ftp/python/3.12.8/python-3.12.8-amd64.exe",
         )
+    if machine in {"arm64", "aarch64"}:
+        return (
+            "python-3.12.8-arm64.exe",
+            "https://www.python.org/ftp/python/3.12.8/python-3.12.8-arm64.exe",
+        )
+    if machine in {"x86", "i386", "i686"}:
+        return (
+            "python-3.12.8.exe",
+            "https://www.python.org/ftp/python/3.12.8/python-3.12.8.exe",
+        )
+    return (
+        "python-3.12.8-amd64.exe",
+        "https://www.python.org/ftp/python/3.12.8/python-3.12.8-amd64.exe",
+    )
 
 
 def _run_command(args: list[str], *, timeout: int, raise_on_error: bool = False) -> subprocess.CompletedProcess:
@@ -138,35 +117,24 @@ def _find_python_in_root(root: str) -> Optional[str]:
     if not root or not os.path.isdir(root):
         return None
 
-    if sys.platform == "win32":
-        direct_candidates = [
-            os.path.join(root, "python.exe"),
-            os.path.join(root, "Python.exe"),
-            os.path.join(root, "Python312", "python.exe"),
-            os.path.join(root, "bin", "python"),
-        ]
-    else:
-        direct_candidates = [
-            os.path.join(root, "bin", "python3.12"),
-            os.path.join(root, "bin", "python3"),
-            os.path.join(root, "bin", "python"),
-            os.path.join(root, "python"),
-        ]
+    direct_candidates = [
+        os.path.join(root, "python.exe"),
+        os.path.join(root, "Python.exe"),
+        os.path.join(root, "Python312", "python.exe"),
+        os.path.join(root, "bin", "python"),
+    ]
     for candidate in direct_candidates:
         if os.path.isfile(candidate):
-            if sys.platform != "win32" and not os.access(candidate, os.X_OK):
-                continue
+            return candidate
 
     for current_root, _dirs, files in os.walk(root):
         for filename in files:
             if sys.platform == "win32":
                 if filename.lower() != "python.exe":
                     continue
-            else:
-                if filename in ['python3.12', "python3", "python"]:
-                    path = os.path.join(current_root, filename)
-                    if os.access(current_root, os.X_OK):
-                        return path
+            elif filename != "python":
+                continue
+            return os.path.join(current_root, filename)
     return None
 
 
@@ -181,8 +149,6 @@ def _pth_files(root: str) -> list[str]:
 
 
 def _is_embedded_root(root: str) -> bool:
-    if sys.platform != "win32":
-        return False
     return bool(_pth_files(root))
 
 
@@ -250,35 +216,25 @@ def _is_python312(python_exe: str) -> bool:
 
 
 def _site_packages_root(runtime_root: str) -> str:
-    base = os.path.dirname(runtime_root) # 得到 python 根目录
-    if sys.platform != "win32":
-        path = os.path.join(base, "lib", "python3.12", "site-packages")
+    if sys.platform == "darwin":
+        path = os.path.join(runtime_root, "lib", "python3.12", "site-packages")
     else:
-        path = os.path.join(base, "Lib", "site-packages")
+        path = os.path.join(runtime_root, "Lib", "site-packages")
     os.makedirs(path, exist_ok=True)
     return path
 
+
 def _has_build_support(root: str) -> bool:
-    # Linux 下 include 文件夹里通常还有一个 python3.12 目录
-    include_path = os.path.join(root, "include")
-    
-    # 检查 Python.h 是否在 include 根目录或 include/python3.12 下
-    header_exists = (
-        os.path.isfile(os.path.join(include_path, "Python.h")) or
-        os.path.isfile(os.path.join(include_path, "python3.12", "Python.h"))
-    )
-    
-    if not header_exists:
-        return False
-
-    # 检查库文件
-    if sys.platform == "win32":
-        lib_dir = os.path.join(root, "libs")
+    include_dir = os.path.join(root, "include")
+    if sys.platform == "darwin":
+        libs_dir = os.path.join(root, "lib")
     else:
-        lib_dir = os.path.join(root, "lib")
+        libs_dir = os.path.join(root, "libs")
+    if not os.path.isfile(os.path.join(include_dir, "Python.h")):
+        return False
+    return any(os.path.isfile(os.path.join(libs_dir, name)) for name in _runtime_lib_names())
 
-    return any(os.path.isfile(os.path.join(lib_dir, name)) for name in _runtime_lib_names())
-    
+
 def _copy_tree(src: str, dest: str) -> None:
     shutil.rmtree(dest, ignore_errors=True)
     shutil.copytree(src, dest)
@@ -314,36 +270,26 @@ def _copy_directory_contents(src_root: str, dest_root: str) -> None:
 
 
 def _copy_build_support(src_root: str, dest_root: str) -> bool:
-    # 自动识别源目录的 include 和 lib 路径
-    src_include = os.path.join(src_root, "include")
-    # 兼容 python-build-standalone 的路径：include/python3.12
-    if not os.path.exists(os.path.join(src_include, "Python.h")):
-        src_include = os.path.join(src_root, "include", "python3.12")
-
-    src_libs = os.path.join(src_root, "libs") if sys.platform == "win32" else os.path.join(src_root, "lib")
-    
-    if not os.path.exists(os.path.join(src_include, "Python.h")):
+    include_src = os.path.join(src_root, "include")
+    libs_src = os.path.join(src_root, "libs")
+    if not os.path.isfile(os.path.join(include_src, "Python.h")):
         return False
 
-    # 创建目标目录
-    target_libs_dir = os.path.join(dest_root, "libs" if sys.platform == "win32" else "lib")
-    os.makedirs(target_libs_dir, exist_ok=True)
-
-    # 复制库文件
     copied_lib = False
+    os.makedirs(os.path.join(dest_root, "libs"), exist_ok=True)
     for name in _runtime_lib_names():
-        source_path = os.path.join(src_libs, name)
-        if os.path.isfile(source_path):
-            shutil.copy2(source_path, os.path.join(target_libs_dir, name))
-            copied_lib = True
+        source_path = os.path.join(libs_src, name)
+        if not os.path.isfile(source_path):
+            continue
+        shutil.copy2(source_path, os.path.join(dest_root, "libs", name))
+        copied_lib = True
 
     if not copied_lib:
         return False
 
-    # 复制整个 include 文件夹
-    target_include_dir = os.path.join(dest_root, "include")
-    _copy_tree(src_include, target_include_dir)
+    _copy_tree(include_src, os.path.join(dest_root, "include"))
     return True
+
 
 def _download_file(url: str, dest: str, *, user_agent: str, timeout: int = 120) -> None:
     req = urllib.request.Request(url)
@@ -412,7 +358,6 @@ class PythonRuntimeManager:
         roots = [self.private_runtime_root()]
         for root in roots:
             candidate = _find_python_in_root(root)
-            print(f"Checking candidate: {candidate}")
             if candidate and _is_python312(candidate) and not _is_embedded_root(root):
                 return candidate
         return None
@@ -538,13 +483,11 @@ class PythonRuntimeManager:
         return None
 
     def _prepare_managed_runtime(self, python_exe: str, *, on_status: Optional[Callable[[str], None]] = None) -> None:
-        runtime_root = os.path.dirname(os.path.dirname(python_exe))
-        if sys.platform == "win32" and _is_embedded_root(runtime_root):
-            runtime_root = os.path.dirname(python_exe)
+        runtime_root = os.path.dirname(python_exe)
+        if _is_embedded_root(runtime_root):
             raise PythonRuntimeError(
                 "Infernux Hub requires a full Python 3.12 runtime for Nuitka builds, but an embeddable runtime was detected."
             )
-
         self._ensure_runtime_build_support(runtime_root, on_status=on_status)
         self._ensure_pip(python_exe, on_status=on_status)
         self._ensure_runtime_packages(python_exe, on_status=on_status)
@@ -594,9 +537,6 @@ class PythonRuntimeManager:
 
         if sys.platform == "darwin":
             return self._install_runtime_to_root_macos(runtime_root, on_status=on_status)
-        
-        if sys.platform == "linux":
-            return self._install_runtime_to_root_linux(runtime_root, on_status=on_status)
 
         if sys.platform != "win32":
             raise PythonRuntimeError("Infernux Hub currently supports managed Python installation on Windows and macOS only.")
@@ -680,35 +620,6 @@ class PythonRuntimeManager:
         raise PythonRuntimeError(
             "Python 3.12 .pkg installation completed, but python3.12 was not found afterwards."
         )
-    
-    def _install_runtime_to_root_linux(
-            self,
-            runtime_root: str,
-            *,
-            on_status: Optional[Callable[str], None] = None,
-    ) -> str:
-        import tarfile
-
-        installer_path = self._ensure_runtime_installer(on_status=on_status)
-        os.makedirs(runtime_root, exist_ok=True)
-
-        _emit_status(on_status, "Extracting managed Python 3.12 runtime (Linux)...")
-
-        try:
-            with tarfile.open(installer_path, "r:gz") as tar:
-                tar.extractall(path=runtime_root)
-        except Exception as exc:
-            raise PythonRuntimeError(f"Failed to extract Linux runtime: {exc}")
-        
-        python_exe = _find_python_in_root(runtime_root)
-        
-        if not python_exe:
-             raise PythonRuntimeError("Extraction finished, but python binary not found.")
-             
-        # 确保有执行权限
-        os.chmod(python_exe, 0o755)
-        
-        return python_exe
 
     def _get_pip_script_path(self, *, on_status: Optional[Callable[[str], None]] = None) -> str:
         target_path = os.path.join(self.installed_runtime_dir(), "get-pip.py")

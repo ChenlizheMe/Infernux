@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import sys
 import shutil
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
@@ -139,11 +138,9 @@ class PythonRuntimeInstallDialog(QDialog):
         title.setObjectName("cardName")
         layout.addWidget(title)
 
-        expected_path = "C:\\Users\\Public\\InfernuxHub" if sys.platform == "win32" else "~/.local/share/InfernuxHub"
-
         detail = QLabel(
             "A background setup process is preparing a managed full Python 3.12 runtime "
-            f"under {expected_path}. Each new project will receive its own copy of this runtime. "
+            "under C:\\Users\\Public\\InfernuxHub. Each new project will receive its own copy of this runtime. "
             "This window will close automatically when installation finishes."
         )
         detail.setWordWrap(True)
@@ -465,22 +462,14 @@ class InstallsView(QWidget):
 
         self._runtime_card.show()
         runtime_path = self._runtime_manager.get_runtime_path()
-
-        if sys.platform == "win32":
-            expected_loc = "C:\\Users\\Public\\InfernuxHub"
-        else:
-            expected_loc = "~/.local/share/InfernuxHub"
-
         if runtime_path:
             self._runtime_status.setText("Python 3.12 runtime is ready")
             self._runtime_path.setText(runtime_path)
             self._runtime_button.setText("Reinstall Python 3.12")
         else:
             self._runtime_status.setText("Python 3.12 runtime is missing")
-            # 动态替换提示文本中的路径
             self._runtime_path.setText(
-                f"The Hub is expected to prepare a managed full Python 3.12 runtime under {expected_loc}. "
-                "If it is still missing, Hub will download the matching Python 3.12 installer for this machine."
+                "The installed Hub is expected to prepare a managed full Python 3.12 runtime under C:\\Users\\Public\\InfernuxHub during setup. If it is still missing, Hub will download the matching Python 3.12 installer for this machine."
             )
             self._runtime_button.setText("Install Python 3.12")
 

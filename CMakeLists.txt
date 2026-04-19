@@ -1,6 +1,11 @@
 cmake_minimum_required(VERSION 3.22)
 project(Infernux LANGUAGES CXX)
 
+#------------------------------------------------------------------------------
+# Linux: force -fPIC for all static libraries (fixes imgui linking error)
+# ------------------------------------------------------------------------------
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
 # ------------------------------------------------------------------------------
 # C++ Standard
 # ------------------------------------------------------------------------------
@@ -63,6 +68,7 @@ pybind11_add_module(_Infernux MODULE
 target_include_directories(_Infernux PRIVATE
     ${INFERNUX_INCLUDE_DIRS}
     ${CMAKE_SOURCE_DIR}/external
+    ${CMAKE_SOURCE_DIR}/cpp/infernux
 )
 
 # Set UTF-8 encoding for MSVC to avoid C4819 warnings
