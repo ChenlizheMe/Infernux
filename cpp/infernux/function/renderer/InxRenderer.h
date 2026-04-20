@@ -155,9 +155,8 @@ class InxRenderer
 
     /// @brief Render a mesh preview using real GPU shaders with per-submesh materials.
     /// @return true if GPU rendering succeeded and outPixels was filled.
-    bool RenderMeshPreviewGPU(const InxMesh &mesh,
-                              const std::vector<std::shared_ptr<InxMaterial>> &materials,
-                              int size, std::vector<unsigned char> &outPixels);
+    bool RenderMeshPreviewGPU(const InxMesh &mesh, const std::vector<std::shared_ptr<InxMaterial>> &materials, int size,
+                              std::vector<unsigned char> &outPixels);
 
     // Refresh all materials using a specific shader
     bool RefreshMaterialsUsingShader(const std::string &shaderId);

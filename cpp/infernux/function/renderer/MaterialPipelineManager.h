@@ -161,7 +161,7 @@ class MaterialPipelineManager
      */
     [[nodiscard]] bool IsDescriptorSetLive(VkDescriptorSet ds) const
     {
-      return m_descriptorManager.IsDescriptorSetLive(ds);
+        return m_descriptorManager.IsDescriptorSetLive(ds);
     }
 
     /**

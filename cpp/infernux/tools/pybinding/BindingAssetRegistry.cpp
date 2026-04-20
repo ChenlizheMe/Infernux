@@ -29,10 +29,9 @@ void RegisterAssetRegistryBindings(py::module_ &m)
                 py::list result;
                 for (const auto &sd : self.GetMaterialSlotData()) {
                     py::dict d;
-                    d["base_color"] =
-                        py::make_tuple(sd.baseColor.r, sd.baseColor.g, sd.baseColor.b, sd.baseColor.a);
-                    d["emission_color"] = py::make_tuple(sd.emissionColor.r, sd.emissionColor.g,
-                                                         sd.emissionColor.b, sd.emissionColor.a);
+                    d["base_color"] = py::make_tuple(sd.baseColor.r, sd.baseColor.g, sd.baseColor.b, sd.baseColor.a);
+                    d["emission_color"] =
+                        py::make_tuple(sd.emissionColor.r, sd.emissionColor.g, sd.emissionColor.b, sd.emissionColor.a);
                     d["metallic"] = sd.metallic;
                     d["smoothness"] = sd.smoothness;
                     d["opacity"] = sd.opacity;

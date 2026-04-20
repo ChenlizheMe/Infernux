@@ -1,8 +1,8 @@
 #pragma once
 
 #include <function/renderer/vk/VkHandle.h>
-#include <function/resources/InxMesh/InxMesh.h>
 #include <function/resources/InxMaterial/InxMaterial.h>
+#include <function/resources/InxMesh/InxMesh.h>
 #include <memory>
 #include <vector>
 
@@ -36,9 +36,7 @@ class GPUMeshPreview
     /// @param size       Output image width and height (square).
     /// @param outPixels  Receives size*size*4 bytes of RGBA8 pixel data.
     /// @return true on success.
-    bool RenderToPixels(const InxMesh &mesh,
-                        const std::vector<std::shared_ptr<InxMaterial>> &materials,
-                        int size,
+    bool RenderToPixels(const InxMesh &mesh, const std::vector<std::shared_ptr<InxMaterial>> &materials, int size,
                         std::vector<unsigned char> &outPixels);
 
   private:

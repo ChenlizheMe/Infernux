@@ -25,12 +25,12 @@
 #include <function/resources/AssetDependencyGraph.h>
 #include <function/resources/AssetRegistry/AssetRegistry.h>
 #include <function/resources/InxFileLoader/InxDefaultLoader.hpp>
-#include <function/resources/InxFileLoader/InxTextureLoader.hpp>
 #include <function/resources/InxFileLoader/InxPythonScriptLoader.hpp>
 #include <function/resources/InxFileLoader/InxShaderLoader.hpp>
+#include <function/resources/InxFileLoader/InxTextureLoader.hpp>
 #include <function/resources/InxMaterial/MaterialLoader.h>
-#include <function/resources/InxMesh/MeshLoader.h>
 #include <function/resources/InxMesh/InxMesh.h>
+#include <function/resources/InxMesh/MeshLoader.h>
 #include <function/resources/InxTexture/InxTexture.h>
 #include <function/resources/InxTexture/TextureLoader.h>
 #include <function/resources/ShaderAsset/ShaderAsset.h>
@@ -103,8 +103,7 @@ glm::mat4 ReadNodeLocalMatrix(const json &node)
     const glm::vec3 rotation = ReadVec3(*it, "rotation", glm::vec3(0.0f));
     const glm::vec3 scale = ReadVec3(*it, "scale", glm::vec3(1.0f));
 
-    return glm::translate(glm::mat4(1.0f), position) *
-           glm::mat4_cast(PreviewEulerYXZToQuat(rotation)) *
+    return glm::translate(glm::mat4(1.0f), position) * glm::mat4_cast(PreviewEulerYXZToQuat(rotation)) *
            glm::scale(glm::mat4(1.0f), scale);
 }
 
@@ -165,12 +164,8 @@ void ComputeBoundsFromVertices(const std::vector<Vertex> &vertices, glm::vec3 &o
     }
 }
 
-void ComputeBoundsFromIndexRange(const std::vector<Vertex> &vertices,
-                                 const std::vector<uint32_t> &indices,
-                                 uint32_t indexStart,
-                                 uint32_t indexCount,
-                                 glm::vec3 &outMin,
-                                 glm::vec3 &outMax)
+void ComputeBoundsFromIndexRange(const std::vector<Vertex> &vertices, const std::vector<uint32_t> &indices,
+                                 uint32_t indexStart, uint32_t indexCount, glm::vec3 &outMin, glm::vec3 &outMax)
 {
     constexpr float kInf = std::numeric_limits<float>::max();
     outMin = glm::vec3(kInf);
@@ -209,8 +204,7 @@ std::shared_ptr<InxMaterial> BuildPreviewMaterialFromSlotData(const MaterialSlot
     return mat;
 }
 
-std::shared_ptr<InxMaterial> ResolvePrefabPreviewMaterial(const json &componentJson,
-                                                          uint32_t materialSlot,
+std::shared_ptr<InxMaterial> ResolvePrefabPreviewMaterial(const json &componentJson, uint32_t materialSlot,
                                                           const std::shared_ptr<InxMesh> &assetMesh,
                                                           const std::shared_ptr<InxMaterial> &defaultMat,
                                                           const std::shared_ptr<InxMaterial> &errorMat)
@@ -240,10 +234,8 @@ std::shared_ptr<InxMaterial> ResolvePrefabPreviewMaterial(const json &componentJ
     return BuildPreviewMaterialFromSlotData(slotData, defaultMat);
 }
 
-bool AppendPrefabMeshComponent(const json &componentJson,
-                               const glm::mat4 &worldMatrix,
-                               PrefabPreviewAggregate &aggregate,
-                               const std::shared_ptr<InxMaterial> &defaultMat,
+bool AppendPrefabMeshComponent(const json &componentJson, const glm::mat4 &worldMatrix,
+                               PrefabPreviewAggregate &aggregate, const std::shared_ptr<InxMaterial> &defaultMat,
                                const std::shared_ptr<InxMaterial> &errorMat)
 {
     if (!componentJson.is_object())
@@ -376,9 +368,9 @@ bool AppendPrefabMeshComponent(const json &componentJson,
         Vertex vertex = srcVertex;
         vertex.pos = glm::vec3(worldMatrix * glm::vec4(srcVertex.pos + pivotOffset, 1.0f));
         vertex.normal = NormalizeOrFallback(normalMatrix * srcVertex.normal, srcVertex.normal);
-        vertex.tangent = glm::vec4(
-            NormalizeOrFallback(normalMatrix * glm::vec3(srcVertex.tangent), glm::vec3(srcVertex.tangent)),
-            srcVertex.tangent.w * tangentHandedness);
+        vertex.tangent =
+            glm::vec4(NormalizeOrFallback(normalMatrix * glm::vec3(srcVertex.tangent), glm::vec3(srcVertex.tangent)),
+                      srcVertex.tangent.w * tangentHandedness);
         aggregate.vertices.push_back(vertex);
     }
 
@@ -397,9 +389,8 @@ bool AppendPrefabMeshComponent(const json &componentJson,
             aggregate.indices.push_back((*srcIndices)[index] + vertexBase);
 
         previewSubMesh.indexCount = static_cast<uint32_t>(aggregate.indices.size()) - previewSubMesh.indexStart;
-        ComputeBoundsFromIndexRange(aggregate.vertices, aggregate.indices,
-                                    previewSubMesh.indexStart, previewSubMesh.indexCount,
-                                    previewSubMesh.boundsMin, previewSubMesh.boundsMax);
+        ComputeBoundsFromIndexRange(aggregate.vertices, aggregate.indices, previewSubMesh.indexStart,
+                                    previewSubMesh.indexCount, previewSubMesh.boundsMin, previewSubMesh.boundsMax);
 
         aggregate.materials.push_back(
             ResolvePrefabPreviewMaterial(componentJson, subMesh->materialSlot, assetMesh, defaultMat, errorMat));
@@ -409,11 +400,8 @@ bool AppendPrefabMeshComponent(const json &componentJson,
     return true;
 }
 
-void AppendPrefabNodePreview(const json &nodeJson,
-                             const glm::mat4 &parentWorld,
-                             bool parentActive,
-                             PrefabPreviewAggregate &aggregate,
-                             const std::shared_ptr<InxMaterial> &defaultMat,
+void AppendPrefabNodePreview(const json &nodeJson, const glm::mat4 &parentWorld, bool parentActive,
+                             PrefabPreviewAggregate &aggregate, const std::shared_ptr<InxMaterial> &defaultMat,
                              const std::shared_ptr<InxMaterial> &errorMat)
 {
     if (!nodeJson.is_object())
@@ -438,8 +426,7 @@ void AppendPrefabNodePreview(const json &nodeJson,
     }
 }
 
-bool BuildPrefabPreviewMesh(const std::string &prefabFilePath,
-                            std::shared_ptr<InxMesh> &outMesh,
+bool BuildPrefabPreviewMesh(const std::string &prefabFilePath, std::shared_ptr<InxMesh> &outMesh,
                             std::vector<std::shared_ptr<InxMaterial>> &outMaterials)
 {
     std::ifstream input(ToFsPath(prefabFilePath), std::ios::binary);
@@ -664,9 +651,8 @@ void Infernux::InitPreviewTaskSystem(uint32_t workerCount)
                 PreviewTaskItem item;
                 {
                     std::unique_lock<std::mutex> lock(m_previewTaskMutex);
-                    m_previewTaskCv.wait(lock, [this]() {
-                        return m_previewStopRequested || !m_previewTaskQueue.empty();
-                    });
+                    m_previewTaskCv.wait(lock,
+                                         [this]() { return m_previewStopRequested || !m_previewTaskQueue.empty(); });
 
                     if (m_previewStopRequested && m_previewTaskQueue.empty())
                         return;
@@ -807,7 +793,8 @@ static void ApplySrgbPreviewInPlace(std::vector<unsigned char> &pixels)
     }
 }
 
-bool Infernux::ScheduleMaterialPreviewTask(const std::string &resourceKey, const std::string &matFilePath, uint64_t stamp)
+bool Infernux::ScheduleMaterialPreviewTask(const std::string &resourceKey, const std::string &matFilePath,
+                                           uint64_t stamp)
 {
     // Legacy wrapper — delegates to the unified query function with mtime hint.
     QueryOrScheduleMaterialPreview(resourceKey, matFilePath, "", stamp);
@@ -815,7 +802,7 @@ bool Infernux::ScheduleMaterialPreviewTask(const std::string &resourceKey, const
 }
 
 uint64_t Infernux::QueryOrScheduleMaterialPreview(const std::string &resourceKey, const std::string &matFilePath,
-                                                   const std::string &materialJson, uint64_t fileMtimeHint)
+                                                  const std::string &materialJson, uint64_t fileMtimeHint)
 {
     if (resourceKey.empty())
         return 0;
@@ -829,7 +816,7 @@ uint64_t Infernux::QueryOrScheduleMaterialPreview(const std::string &resourceKey
         state.textureName = BuildPreviewTextureName(resourceKey);
 
     // ── Detect content changes ──────────────────────────────────
-    std::string renderJson;  // JSON to use if we schedule a render
+    std::string renderJson; // JSON to use if we schedule a render
 
     if (!materialJson.empty()) {
         const uint64_t h = std::hash<std::string>{}(materialJson);
@@ -837,7 +824,7 @@ uint64_t Infernux::QueryOrScheduleMaterialPreview(const std::string &resourceKey
             state.lastJsonHash = h;
             state.generation++;
         }
-        renderJson = materialJson;  // prefer JSON for rendering
+        renderJson = materialJson; // prefer JSON for rendering
     }
 
     if (fileMtimeHint != 0 && fileMtimeHint != state.lastFileMtime) {
@@ -913,8 +900,7 @@ void Infernux::PumpPreviewTasks()
             const bool batchMode = (queueSize >= 2);
             constexpr int kMaterialCooldownMs = 300;
             auto now = std::chrono::steady_clock::now();
-            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-                now - m_lastMaterialRenderTime);
+            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - m_lastMaterialRenderTime);
 
             int maxRenders = 0;
             if (batchMode) {
@@ -943,12 +929,10 @@ void Infernux::PumpPreviewTasks()
                 bool ok = false;
                 if (!req.materialJson.empty()) {
                     // Render from in-memory JSON snapshot (Inspector live edits).
-                    ok = MaterialPreviewer::RenderFromJson(
-                        req.materialJson, 256, pixels, adb, m_renderer.get());
+                    ok = MaterialPreviewer::RenderFromJson(req.materialJson, 256, pixels, adb, m_renderer.get());
                 } else {
                     // Render from disk file (ProjectPanel thumbnails).
-                    ok = MaterialPreviewer::RenderToPixels(
-                        req.matFilePath, 256, pixels, adb, m_renderer.get());
+                    ok = MaterialPreviewer::RenderToPixels(req.matFilePath, 256, pixels, adb, m_renderer.get());
                 }
 
                 if (!ok || pixels.empty()) {
@@ -975,8 +959,8 @@ void Infernux::PumpPreviewTasks()
                 if (texName.empty())
                     continue;
 
-                const uint64_t texId = m_renderer->UploadTextureForImGui(
-                    texName, pixels.data(), 256, 256, VK_FILTER_LINEAR);
+                const uint64_t texId =
+                    m_renderer->UploadTextureForImGui(texName, pixels.data(), 256, 256, VK_FILTER_LINEAR);
 
                 {
                     std::lock_guard<std::mutex> lock(m_previewResultMutex);
@@ -1018,18 +1002,14 @@ void Infernux::PumpPreviewTasks()
                 stateSnapshot = it->second;
             }
 
-            if (!completed.success || completed.pixels.empty() ||
-                completed.width <= 0 || completed.height <= 0)
+            if (!completed.success || completed.pixels.empty() || completed.width <= 0 || completed.height <= 0)
                 continue;
 
             if (stateSnapshot.textureName.empty())
                 continue;
 
             const uint64_t texId = m_renderer->UploadTextureForImGui(
-                stateSnapshot.textureName,
-                completed.pixels.data(),
-                completed.width,
-                completed.height,
+                stateSnapshot.textureName, completed.pixels.data(), completed.width, completed.height,
                 completed.nearest ? VK_FILTER_NEAREST : VK_FILTER_LINEAR);
 
             {
@@ -1096,8 +1076,7 @@ void Infernux::PumpPreviewTasks()
                         continue;
                     }
                 } else {
-                    mesh = AssetRegistry::Instance().LoadAssetByPath<InxMesh>(
-                        req.meshFilePath, ResourceType::Mesh);
+                    mesh = AssetRegistry::Instance().LoadAssetByPath<InxMesh>(req.meshFilePath, ResourceType::Mesh);
                     if (mesh)
                         materials = BuildDefaultPreviewMaterialsForMesh(*mesh);
                 }
@@ -1138,8 +1117,8 @@ void Infernux::PumpPreviewTasks()
                 if (texName.empty())
                     continue;
 
-                const uint64_t texId = m_renderer->UploadTextureForImGui(
-                    texName, pixels.data(), kMeshPreviewSize, kMeshPreviewSize, VK_FILTER_LINEAR);
+                const uint64_t texId = m_renderer->UploadTextureForImGui(texName, pixels.data(), kMeshPreviewSize,
+                                                                         kMeshPreviewSize, VK_FILTER_LINEAR);
 
                 {
                     std::lock_guard<std::mutex> lock(m_previewResultMutex);
@@ -1180,11 +1159,9 @@ void Infernux::FlushAllMaterialPreviews()
         AssetDatabase *adb = GetAssetDatabase();
         bool ok = false;
         if (!req.materialJson.empty()) {
-            ok = MaterialPreviewer::RenderFromJson(
-                req.materialJson, 256, pixels, adb, m_renderer.get());
+            ok = MaterialPreviewer::RenderFromJson(req.materialJson, 256, pixels, adb, m_renderer.get());
         } else {
-            ok = MaterialPreviewer::RenderToPixels(
-                req.matFilePath, 256, pixels, adb, m_renderer.get());
+            ok = MaterialPreviewer::RenderToPixels(req.matFilePath, 256, pixels, adb, m_renderer.get());
         }
 
         if (!ok || pixels.empty()) {
@@ -1211,8 +1188,7 @@ void Infernux::FlushAllMaterialPreviews()
         if (texName.empty())
             continue;
 
-        const uint64_t texId = m_renderer->UploadTextureForImGui(
-            texName, pixels.data(), 256, 256, VK_FILTER_LINEAR);
+        const uint64_t texId = m_renderer->UploadTextureForImGui(texName, pixels.data(), 256, 256, VK_FILTER_LINEAR);
 
         {
             std::lock_guard<std::mutex> lock(m_previewResultMutex);
@@ -1289,9 +1265,10 @@ void Infernux::InvalidateTexturePreviewTask(const std::string &resourceKey)
     }
 }
 
-std::tuple<uint64_t, int, int> Infernux::QueryOrScheduleTexturePreview(
-    const std::string &resourceKey, const std::string &textureFilePath,
-    uint64_t contentStampHint, bool nearest, bool srgb, bool pump)
+std::tuple<uint64_t, int, int> Infernux::QueryOrScheduleTexturePreview(const std::string &resourceKey,
+                                                                       const std::string &textureFilePath,
+                                                                       uint64_t contentStampHint, bool nearest,
+                                                                       bool srgb, bool pump)
 {
     if (resourceKey.empty() || textureFilePath.empty())
         return {0, 0, 0};
@@ -1361,7 +1338,8 @@ std::tuple<uint64_t, int, int> Infernux::QueryOrScheduleTexturePreview(
             std::vector<unsigned char> sampled;
             int outW = 0;
             int outH = 0;
-            DownsampleNearestRgba(texData.pixels, texData.width, texData.height, kPreviewResolution, sampled, outW, outH);
+            DownsampleNearestRgba(texData.pixels, texData.width, texData.height, kPreviewResolution, sampled, outW,
+                                  outH);
             if (sampled.empty() || outW <= 0 || outH <= 0) {
                 std::lock_guard<std::mutex> lock(m_previewResultMutex);
                 m_texturePreviewCompletedQueue.push(std::move(completed));
@@ -1385,9 +1363,9 @@ std::tuple<uint64_t, int, int> Infernux::QueryOrScheduleTexturePreview(
     return {texId, w, h};
 }
 
-bool Infernux::ScheduleTexturePreviewFromMemory(
-    const std::string &resourceKey, const std::vector<unsigned char> &imageData,
-    uint64_t stamp, bool nearest)
+bool Infernux::ScheduleTexturePreviewFromMemory(const std::string &resourceKey,
+                                                const std::vector<unsigned char> &imageData, uint64_t stamp,
+                                                bool nearest)
 {
     if (resourceKey.empty() || imageData.empty())
         return false;
@@ -1412,7 +1390,7 @@ bool Infernux::ScheduleTexturePreviewFromMemory(
             return true;
 
         if (state.inFlight)
-            return true;  // already in-flight
+            return true; // already in-flight
 
         state.inFlight = true;
         state.nearest = nearest;
@@ -1450,9 +1428,8 @@ bool Infernux::ScheduleTexturePreviewFromMemory(
     return true;
 }
 
-uint64_t Infernux::QueryOrScheduleMeshPreview(const std::string &resourceKey,
-                                               const std::string &meshFilePath,
-                                               uint64_t fileMtimeHint)
+uint64_t Infernux::QueryOrScheduleMeshPreview(const std::string &resourceKey, const std::string &meshFilePath,
+                                              uint64_t fileMtimeHint)
 {
     if (resourceKey.empty() || meshFilePath.empty())
         return 0;

@@ -225,7 +225,8 @@ bool GPUMaterialPreview::RenderToPixels(InxMaterial &material, int size, std::ve
                 previewPassMaterials.clear();
                 previewPassMaterials.push_back(singlePass.get());
             } else {
-                INXLOG_DEBUG("GPUMaterialPreview: transparent preview alpha override unavailable, using original pipeline");
+                INXLOG_DEBUG(
+                    "GPUMaterialPreview: transparent preview alpha override unavailable, using original pipeline");
             }
         }
     }
@@ -245,11 +246,11 @@ bool GPUMaterialPreview::RenderToPixels(InxMaterial &material, int size, std::ve
             return false;
         }
 
-        MaterialRenderData *rd =
-            m_vkCore->GetMaterialPipelineManager().GetRenderData(passMat->GetMaterialKey());
+        MaterialRenderData *rd = m_vkCore->GetMaterialPipelineManager().GetRenderData(passMat->GetMaterialKey());
         if (!rd || !rd->isValid || rd->descriptorSet == VK_NULL_HANDLE) {
             auto matShared = std::shared_ptr<InxMaterial>(passMat, [](InxMaterial *) {});
-            if (!m_vkCore->RefreshMaterialPipeline(matShared, passMat->GetVertShaderName(), passMat->GetFragShaderName())) {
+            if (!m_vkCore->RefreshMaterialPipeline(matShared, passMat->GetVertShaderName(),
+                                                   passMat->GetFragShaderName())) {
                 return false;
             }
             rd = m_vkCore->GetMaterialPipelineManager().GetRenderData(passMat->GetMaterialKey());
@@ -485,17 +486,16 @@ bool GPUMaterialPreview::RenderToPixels(InxMaterial &material, int size, std::ve
 
         const uint64_t descRaw = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(binding.materialDescSet));
         if ((descRaw & 0xffffull) == 0x00dfull || (descRaw & 0xfffffull) == 0x002b6ull) {
-            INXLOG_WARN("GPUMaterialPreview: suspicious set0 descriptor=", descRaw,
-                        " material='", binding.material ? binding.material->GetMaterialKey() : std::string(), "'");
+            INXLOG_WARN("GPUMaterialPreview: suspicious set0 descriptor=", descRaw, " material='",
+                        binding.material ? binding.material->GetMaterialKey() : std::string(), "'");
         }
 
         if (binding.materialDescSet != VK_NULL_HANDLE &&
             !m_vkCore->GetMaterialPipelineManager().IsDescriptorSetLive(binding.materialDescSet)) {
             static int deadPreviewDescWarnCount = 0;
             if (deadPreviewDescWarnCount++ < 8) {
-                INXLOG_WARN("GPUMaterialPreview: DEAD set0 descriptor=", descRaw,
-                            " material='", binding.material ? binding.material->GetMaterialKey() : std::string(),
-                            "' - skipping pass");
+                INXLOG_WARN("GPUMaterialPreview: DEAD set0 descriptor=", descRaw, " material='",
+                            binding.material ? binding.material->GetMaterialKey() : std::string(), "' - skipping pass");
             }
             continue;
         }
@@ -504,8 +504,8 @@ bool GPUMaterialPreview::RenderToPixels(InxMaterial &material, int size, std::ve
 
         // Set 0 — material (scene UBO + lighting UBO + material UBO + textures)
         vkdebug::CmdBindDescriptorSetsTracked("GPUMaterialPreview.RenderToPixels.Set0", cmd,
-                              VK_PIPELINE_BIND_POINT_GRAPHICS, binding.pipelineLayout, 0, 1,
-                              &binding.materialDescSet, 0, nullptr);
+                                              VK_PIPELINE_BIND_POINT_GRAPHICS, binding.pipelineLayout, 0, 1,
+                                              &binding.materialDescSet, 0, nullptr);
 
         // Set 1 — shadow (if the shader declares it)
         if (binding.program->HasDeclaredDescriptorSet(1)) {

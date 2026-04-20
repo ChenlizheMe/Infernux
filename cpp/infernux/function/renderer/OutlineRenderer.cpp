@@ -898,17 +898,15 @@ void OutlineRenderer::RenderOutlineMask(VkCommandBuffer cmdBuf, const std::vecto
                         vkCmdBindPipeline(cmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS, mtlPipeline);
 
                         // Set 0: scene UBO + vertex material UBO
-                        vkdebug::CmdBindDescriptorSetsTracked("OutlineRenderer.RenderOutlineMask.Set0", cmdBuf,
-                                                              VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                                              m_outlineMtlPipelineLayout, 0, 1, &mtlDescSet, 0,
-                                                              nullptr);
+                        vkdebug::CmdBindDescriptorSetsTracked(
+                            "OutlineRenderer.RenderOutlineMask.Set0", cmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            m_outlineMtlPipelineLayout, 0, 1, &mtlDescSet, 0, nullptr);
 
                         // Set 2: outline globals (globals UBO + outline instance buffer)
                         VkDescriptorSet globalsDescSet = m_outlineGlobalsDescSets[frameIdx];
-                        vkdebug::CmdBindDescriptorSetsTracked("OutlineRenderer.RenderOutlineMask.Set2", cmdBuf,
-                                                              VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                                              m_outlineMtlPipelineLayout, 2, 1, &globalsDescSet,
-                                                              0, nullptr);
+                        vkdebug::CmdBindDescriptorSetsTracked(
+                            "OutlineRenderer.RenderOutlineMask.Set2", cmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            m_outlineMtlPipelineLayout, 2, 1, &globalsDescSet, 0, nullptr);
 
                         vkCmdPushConstants(cmdBuf, m_outlineMtlPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0,
                                            sizeof(PushConstants), &pushData);
@@ -925,8 +923,8 @@ void OutlineRenderer::RenderOutlineMask(VkCommandBuffer cmdBuf, const std::vecto
         if (!usePerMaterialPipeline) {
             vkCmdBindPipeline(cmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS, m_outlineMaskPipeline);
             vkdebug::CmdBindDescriptorSetsTracked("OutlineRenderer.RenderOutlineMask.FallbackSet0", cmdBuf,
-                                                  VK_PIPELINE_BIND_POINT_GRAPHICS, m_outlineMaskPipelineLayout, 0,
-                                                  1, &m_outlineMaskDescSet, 0, nullptr);
+                                                  VK_PIPELINE_BIND_POINT_GRAPHICS, m_outlineMaskPipelineLayout, 0, 1,
+                                                  &m_outlineMaskDescSet, 0, nullptr);
             vkCmdPushConstants(cmdBuf, m_outlineMaskPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0,
                                sizeof(PushConstants), &pushData);
             vkCmdDrawIndexed(cmdBuf, dc.indexCount, 1, dc.indexStart, 0, 0);

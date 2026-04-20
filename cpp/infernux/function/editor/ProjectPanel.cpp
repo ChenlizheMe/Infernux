@@ -64,10 +64,8 @@ namespace
 {
 inline ImU32 ProjectSelectionOutlineColor()
 {
-    return IM_COL32(static_cast<int>(EditorTheme::ACCENT_R * 255.0f),
-                    static_cast<int>(EditorTheme::ACCENT_G * 255.0f),
-                    static_cast<int>(EditorTheme::ACCENT_B * 255.0f),
-                    255);
+    return IM_COL32(static_cast<int>(EditorTheme::ACCENT_R * 255.0f), static_cast<int>(EditorTheme::ACCENT_G * 255.0f),
+                    static_cast<int>(EditorTheme::ACCENT_B * 255.0f), 255);
 }
 
 constexpr float kProjectSelectionOutlineThickness = 2.0f;
@@ -526,7 +524,8 @@ ProjectPanel::DirSnapshot *ProjectPanel::GetDirSnapshot(const std::string &path)
             if (IsImageExt(item.ext) || IsMaterialExt(item.ext)) {
                 auto ftime = entry.last_write_time(ec);
                 if (!ec) {
-                    const auto rawNs = std::chrono::duration_cast<std::chrono::nanoseconds>(ftime.time_since_epoch()).count();
+                    const auto rawNs =
+                        std::chrono::duration_cast<std::chrono::nanoseconds>(ftime.time_since_epoch()).count();
                     std::memcpy(&item.mtimeNs, &rawNs, sizeof(item.mtimeNs));
                 }
             }
@@ -702,8 +701,7 @@ uint64_t ProjectPanel::GetThumbnail(const std::string &filePath, uint64_t cached
 
     const std::string resourceKey = std::string("tex|") + filePath;
     // pump=false: PreRender already pumped once this frame.
-    auto [texId, w, h] = m_engine->QueryOrScheduleTexturePreview(
-        resourceKey, filePath, texMtime, nearest, srgb, false);
+    auto [texId, w, h] = m_engine->QueryOrScheduleTexturePreview(resourceKey, filePath, texMtime, nearest, srgb, false);
     return texId;
 }
 
@@ -1742,8 +1740,8 @@ void ProjectPanel::RenderFileGrid(InxGUIContext *ctx)
                 ImVec2 drawMin = rMin;
                 ImVec2 drawMax = rMax;
                 if (srcW > 0 && srcH > 0) {
-                    const float scale = std::min(iconSize / static_cast<float>(srcW),
-                                                 iconSize / static_cast<float>(srcH));
+                    const float scale =
+                        std::min(iconSize / static_cast<float>(srcW), iconSize / static_cast<float>(srcH));
                     const float drawW = std::max(1.0f, static_cast<float>(srcW) * scale);
                     const float drawH = std::max(1.0f, static_cast<float>(srcH) * scale);
                     drawMin.x += (iconSize - drawW) * 0.5f;

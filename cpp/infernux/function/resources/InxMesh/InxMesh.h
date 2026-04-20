@@ -43,7 +43,7 @@ struct SubMesh
  */
 struct MaterialSlotData
 {
-    glm::vec4 baseColor{1.0f, 1.0f, 1.0f, 1.0f};   ///< Diffuse / albedo colour (RGBA)
+    glm::vec4 baseColor{1.0f, 1.0f, 1.0f, 1.0f};     ///< Diffuse / albedo colour (RGBA)
     glm::vec4 emissionColor{0.0f, 0.0f, 0.0f, 0.0f}; ///< Emission colour (RGBA)
     float metallic = 0.0f;
     float smoothness = 0.5f;

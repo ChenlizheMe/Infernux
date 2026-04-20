@@ -1301,8 +1301,8 @@ bool InxVkCoreModular::RenderMaterialPreviewGPU(std::shared_ptr<InxMaterial> mat
 }
 
 bool InxVkCoreModular::RenderMeshPreviewGPU(const InxMesh &mesh,
-                                            const std::vector<std::shared_ptr<InxMaterial>> &materials,
-                                            int size, std::vector<unsigned char> &outPixels)
+                                            const std::vector<std::shared_ptr<InxMaterial>> &materials, int size,
+                                            std::vector<unsigned char> &outPixels)
 {
     if (size <= 0 || !m_materialPipelineManagerInitialized)
         return false;

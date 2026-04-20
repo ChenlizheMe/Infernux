@@ -416,9 +416,8 @@ void FullscreenRenderer::Draw(VkCommandBuffer cmdBuf, const FullscreenPipelineEn
 
     // Bind descriptor set 0 (input textures)
     if (descSet != VK_NULL_HANDLE) {
-        vkdebug::CmdBindDescriptorSetsTracked("FullscreenRenderer.Draw.Set0", cmdBuf,
-                              VK_PIPELINE_BIND_POINT_GRAPHICS, entry.layout, 0, 1, &descSet, 0,
-                              nullptr);
+        vkdebug::CmdBindDescriptorSetsTracked("FullscreenRenderer.Draw.Set0", cmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                              entry.layout, 0, 1, &descSet, 0, nullptr);
     }
 
     // Bind descriptor set 2 (engine globals UBO) — provides _Globals to fullscreen shaders
@@ -426,8 +425,8 @@ void FullscreenRenderer::Draw(VkCommandBuffer cmdBuf, const FullscreenPipelineEn
         VkDescriptorSet globalsDescSet = m_vkCore->GetCurrentGlobalsDescSet();
         if (globalsDescSet != VK_NULL_HANDLE) {
             vkdebug::CmdBindDescriptorSetsTracked("FullscreenRenderer.Draw.Set2", cmdBuf,
-                                                  VK_PIPELINE_BIND_POINT_GRAPHICS, entry.layout, 2, 1,
-                                                  &globalsDescSet, 0, nullptr);
+                                                  VK_PIPELINE_BIND_POINT_GRAPHICS, entry.layout, 2, 1, &globalsDescSet,
+                                                  0, nullptr);
         }
     }
 

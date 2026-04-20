@@ -790,8 +790,8 @@ uint64_t InxGUI::UploadTextureForImGui(const std::string &name, const unsigned c
             barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
             barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
 
-            vkCmdPipelineBarrier(cmdBuf, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0,
-                                 nullptr, 0, nullptr, 1, &barrier);
+            vkCmdPipelineBarrier(cmdBuf, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr,
+                                 0, nullptr, 1, &barrier);
 
             VkImageBlit blit{};
             blit.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;

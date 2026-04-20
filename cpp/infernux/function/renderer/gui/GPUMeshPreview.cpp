@@ -138,10 +138,8 @@ GPUMeshPreview::~GPUMeshPreview()
 // RenderToPixels
 // ============================================================================
 
-bool GPUMeshPreview::RenderToPixels(const InxMesh &mesh,
-                                    const std::vector<std::shared_ptr<InxMaterial>> &materials,
-                                    int size,
-                                    std::vector<unsigned char> &outPixels)
+bool GPUMeshPreview::RenderToPixels(const InxMesh &mesh, const std::vector<std::shared_ptr<InxMaterial>> &materials,
+                                    int size, std::vector<unsigned char> &outPixels)
 {
     if (!m_vkCore || size <= 0)
         return false;
@@ -204,8 +202,7 @@ bool GPUMeshPreview::RenderToPixels(const InxMesh &mesh,
                                                previewMat->GetFragShaderName()))
             continue;
 
-        MaterialRenderData *rd =
-            m_vkCore->GetMaterialPipelineManager().GetRenderData(previewMat->GetMaterialKey());
+        MaterialRenderData *rd = m_vkCore->GetMaterialPipelineManager().GetRenderData(previewMat->GetMaterialKey());
         if (!rd || !rd->isValid || rd->descriptorSet == VK_NULL_HANDLE)
             continue;
 
@@ -254,20 +251,17 @@ bool GPUMeshPreview::RenderToPixels(const InxMesh &mesh,
     lightingUBO.ambientGroundColor = glm::vec4(0.05f, 0.04f, 0.035f, 0.30f);
     lightingUBO.cameraPos = glm::vec4(cam.cameraPos, 1.0f);
 
-    lightingUBO.directionalLights[0].direction =
-        glm::vec4(glm::normalize(glm::vec3(-0.7f, -1.0f, -0.5f)), 0.0f);
+    lightingUBO.directionalLights[0].direction = glm::vec4(glm::normalize(glm::vec3(-0.7f, -1.0f, -0.5f)), 0.0f);
     lightingUBO.directionalLights[0].color = glm::vec4(1.8f, 1.71f, 1.62f, 1.8f);
 
-    lightingUBO.directionalLights[1].direction =
-        glm::vec4(glm::normalize(glm::vec3(0.5f, 0.3f, -0.7f)), 0.0f);
+    lightingUBO.directionalLights[1].direction = glm::vec4(glm::normalize(glm::vec3(0.5f, 0.3f, -0.7f)), 0.0f);
     lightingUBO.directionalLights[1].color = glm::vec4(0.36f, 0.42f, 0.51f, 0.6f);
 
     // ── Engine globals UBO ───────────────────────────────────────────
     EngineGlobalsUBO globalsUBO{};
     memset(&globalsUBO, 0, sizeof(globalsUBO));
     globalsUBO.screenParams =
-        glm::vec4(static_cast<float>(renderSize), static_cast<float>(renderSize),
-                  1.0f / renderSize, 1.0f / renderSize);
+        glm::vec4(static_cast<float>(renderSize), static_cast<float>(renderSize), 1.0f / renderSize, 1.0f / renderSize);
     globalsUBO.worldSpaceCameraPos = glm::vec4(cam.cameraPos, 1.0f);
 
     // ── Buffer indexing (same rationale as GPUMaterialPreview) ────────
@@ -327,10 +321,9 @@ bool GPUMeshPreview::RenderToPixels(const InxMesh &mesh,
     uboBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
     uboBarrier.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
     uboBarrier.dstAccessMask = VK_ACCESS_UNIFORM_READ_BIT | VK_ACCESS_SHADER_READ_BIT;
-    vkCmdPipelineBarrier(cmd,
-                         VK_PIPELINE_STAGE_HOST_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
-                         VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                         0, 1, &uboBarrier, 0, nullptr, 0, nullptr);
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_HOST_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 1, &uboBarrier,
+                         0, nullptr, 0, nullptr);
 
     // ── Begin render pass ────────────────────────────────────────────
     VkClearValue clearValues[2];
@@ -382,30 +375,22 @@ bool GPUMeshPreview::RenderToPixels(const InxMesh &mesh,
 
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, b.pipeline);
 
-        vkdebug::CmdBindDescriptorSetsTracked("GPUMeshPreview.Set0", cmd,
-                                              VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                              b.pipelineLayout, 0, 1,
-                                              &b.materialDescSet, 0, nullptr);
+        vkdebug::CmdBindDescriptorSetsTracked("GPUMeshPreview.Set0", cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                              b.pipelineLayout, 0, 1, &b.materialDescSet, 0, nullptr);
 
         if (b.program->HasDeclaredDescriptorSet(1) && shadowDesc != VK_NULL_HANDLE) {
-            vkdebug::CmdBindDescriptorSetsTracked("GPUMeshPreview.Set1", cmd,
-                                                  VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                                  b.pipelineLayout, 1, 1,
-                                                  &shadowDesc, 0, nullptr);
+            vkdebug::CmdBindDescriptorSetsTracked("GPUMeshPreview.Set1", cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                                  b.pipelineLayout, 1, 1, &shadowDesc, 0, nullptr);
         }
 
         if (b.program->HasDeclaredDescriptorSet(2) && globalsDesc != VK_NULL_HANDLE) {
-            vkdebug::CmdBindDescriptorSetsTracked("GPUMeshPreview.Set2", cmd,
-                                                  VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                                  b.pipelineLayout, 2, 1,
-                                                  &globalsDesc, 0, nullptr);
+            vkdebug::CmdBindDescriptorSetsTracked("GPUMeshPreview.Set2", cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                                  b.pipelineLayout, 2, 1, &globalsDesc, 0, nullptr);
         }
 
-        vkCmdPushConstants(cmd, b.pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT,
-                           0, sizeof(PushConstants), &pushData);
+        vkCmdPushConstants(cmd, b.pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(PushConstants), &pushData);
 
-        vkCmdDrawIndexed(cmd, b.submesh->indexCount, 1,
-                         b.submesh->indexStart, 0, 0);
+        vkCmdDrawIndexed(cmd, b.submesh->indexCount, 1, b.submesh->indexStart, 0, 0);
     }
 
     vkCmdEndRenderPass(cmd);
@@ -413,50 +398,43 @@ bool GPUMeshPreview::RenderToPixels(const InxMesh &mesh,
     // ── MSAA resolve + readback ──────────────────────────────────────
     if (m_sampleCount != VK_SAMPLE_COUNT_1_BIT) {
         VkImageMemoryBarrier msaaBarrier = vkrender::MakeImageBarrier(
-            m_msaaColor.GetImage(), VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT,
-            VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
-        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-                             VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &msaaBarrier);
+            m_msaaColor.GetImage(), VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            VK_IMAGE_ASPECT_COLOR_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0,
+                             nullptr, 0, nullptr, 1, &msaaBarrier);
 
         VkImageMemoryBarrier resolveBarrier = vkrender::MakeImageBarrier(
-            m_resolveColor.GetImage(), VK_IMAGE_LAYOUT_UNDEFINED,
-            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT,
-            0, VK_ACCESS_TRANSFER_WRITE_BIT);
-        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                             VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &resolveBarrier);
+            m_resolveColor.GetImage(), VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            VK_IMAGE_ASPECT_COLOR_BIT, 0, VK_ACCESS_TRANSFER_WRITE_BIT);
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0,
+                             nullptr, 1, &resolveBarrier);
 
         VkImageResolve resolveRegion{};
         resolveRegion.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
         resolveRegion.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
         resolveRegion.extent = {static_cast<uint32_t>(renderSize), static_cast<uint32_t>(renderSize), 1};
-        vkCmdResolveImage(cmd, m_msaaColor.GetImage(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                          m_resolveColor.GetImage(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &resolveRegion);
+        vkCmdResolveImage(cmd, m_msaaColor.GetImage(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, m_resolveColor.GetImage(),
+                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &resolveRegion);
 
         VkImageMemoryBarrier readbackBarrier = vkrender::MakeImageBarrier(
-            m_resolveColor.GetImage(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT,
-            VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
-        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                             VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &readbackBarrier);
+            m_resolveColor.GetImage(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            VK_IMAGE_ASPECT_COLOR_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0,
+                             nullptr, 1, &readbackBarrier);
     } else {
         VkImageMemoryBarrier barrier = vkrender::MakeImageBarrier(
-            m_msaaColor.GetImage(), VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT,
-            VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
-        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-                             VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+            m_msaaColor.GetImage(), VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            VK_IMAGE_ASPECT_COLOR_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0,
+                             nullptr, 0, nullptr, 1, &barrier);
     }
 
-    VkImage srcImage = (m_sampleCount != VK_SAMPLE_COUNT_1_BIT)
-                            ? m_resolveColor.GetImage()
-                            : m_msaaColor.GetImage();
+    VkImage srcImage = (m_sampleCount != VK_SAMPLE_COUNT_1_BIT) ? m_resolveColor.GetImage() : m_msaaColor.GetImage();
 
     VkBufferImageCopy copyRegion{};
     copyRegion.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
     copyRegion.imageExtent = {static_cast<uint32_t>(renderSize), static_cast<uint32_t>(renderSize), 1};
-    vkCmdCopyImageToBuffer(cmd, srcImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                           m_staging.GetBuffer(), 1, &copyRegion);
+    vkCmdCopyImageToBuffer(cmd, srcImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, m_staging.GetBuffer(), 1, &copyRegion);
 
     m_vkCore->EndSingleTimeCommands(cmd);
 
@@ -475,17 +453,20 @@ bool GPUMeshPreview::RenderToPixels(const InxMesh &mesh,
             uint32_t exponent = (h >> 10) & 0x1F;
             uint32_t mantissa = h & 0x3FF;
             if (exponent == 0) {
-                if (mantissa == 0) return sign ? -0.0f : 0.0f;
+                if (mantissa == 0)
+                    return sign ? -0.0f : 0.0f;
                 float val = (mantissa / 1024.0f) * std::pow(2.0f, -14.0f);
                 return sign ? -val : val;
             }
-            if (exponent == 31) return mantissa ? 0.0f : (sign ? -1e30f : 1e30f);
+            if (exponent == 31)
+                return mantissa ? 0.0f : (sign ? -1e30f : 1e30f);
             float val = std::pow(2.0f, static_cast<float>(exponent) - 15.0f) * (1.0f + mantissa / 1024.0f);
             return sign ? -val : val;
         };
 
         auto linearToSrgb = [](float c) -> float {
-            if (c <= 0.0031308f) return c * 12.92f;
+            if (c <= 0.0031308f)
+                return c * 12.92f;
             return 1.055f * std::pow(c, 1.0f / 2.4f) - 0.055f;
         };
 
@@ -641,8 +622,7 @@ void GPUMeshPreview::CreateFramebuffer(int size)
 
     if (m_depthFormat != VK_FORMAT_UNDEFINED) {
         m_depth.Create(allocator, device, w, h, m_depthFormat, VK_IMAGE_TILING_OPTIMAL,
-                       VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
-                       VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_sampleCount);
+                       VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_sampleCount);
         m_depth.CreateView(m_depthFormat, VK_IMAGE_ASPECT_DEPTH_BIT);
     }
 

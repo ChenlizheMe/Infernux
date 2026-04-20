@@ -22,8 +22,8 @@
 #include <cmath>
 #include <core/log/InxLog.h>
 #include <cstring>
-#include <function/renderer/vk/VkPipelineHelpers.h>
 #include <function/renderer/vk/DescriptorBindTrace.h>
+#include <function/renderer/vk/VkPipelineHelpers.h>
 #include <function/renderer/vk/VkRenderUtils.h>
 #include <imgui_internal.h> // for ImGui::GetDrawListSharedData()
 #include <type_traits>
@@ -780,8 +780,8 @@ void InxScreenUIRenderer::Render(VkCommandBuffer cmdBuf, ScreenUIList list, uint
         }
     }
     vkdebug::CmdBindDescriptorSetsTracked("InxScreenUIRenderer.Render.Set0Font", cmdBuf,
-                                          VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipelineLayout, 0, 1,
-                                          &m_fontDescriptorSet, 0, nullptr);
+                                          VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipelineLayout, 0, 1, &m_fontDescriptorSet,
+                                          0, nullptr);
     VkDescriptorSet lastBoundDescSet = m_fontDescriptorSet;
 
     // ---- Issue draw commands ----
@@ -813,8 +813,8 @@ void InxScreenUIRenderer::Render(VkCommandBuffer cmdBuf, ScreenUIList list, uint
         }
         if (texDescSet != lastBoundDescSet) {
             vkdebug::CmdBindDescriptorSetsTracked("InxScreenUIRenderer.Render.Set0Tex", cmdBuf,
-                                                  VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipelineLayout, 0, 1,
-                                                  &texDescSet, 0, nullptr);
+                                                  VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipelineLayout, 0, 1, &texDescSet,
+                                                  0, nullptr);
             lastBoundDescSet = texDescSet;
         }
 

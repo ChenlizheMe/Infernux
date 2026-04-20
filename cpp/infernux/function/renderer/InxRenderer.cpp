@@ -1598,8 +1598,7 @@ bool InxRenderer::RenderMaterialPreviewGPU(std::shared_ptr<InxMaterial> material
     return m_vkCore->RenderMaterialPreviewGPU(material, size, outPixels);
 }
 
-bool InxRenderer::RenderMeshPreviewGPU(const InxMesh &mesh,
-                                       const std::vector<std::shared_ptr<InxMaterial>> &materials,
+bool InxRenderer::RenderMeshPreviewGPU(const InxMesh &mesh, const std::vector<std::shared_ptr<InxMaterial>> &materials,
                                        int size, std::vector<unsigned char> &outPixels)
 {
     if (!m_vkCore)

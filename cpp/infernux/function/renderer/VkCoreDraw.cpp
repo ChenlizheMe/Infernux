@@ -566,31 +566,30 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
             const std::string materialKey = matRaw->GetMaterialKey();
             MaterialRenderData *rd = m_materialPipelineManager.GetRenderData(materialKey);
 
-                // Check if descriptor handle was invalidated by any code path
-                // (pool reset, free, or reinit) without render data knowing.
-                if (rd && rd->isValid && rd->descriptorSet != VK_NULL_HANDLE &&
-                    !m_materialPipelineManager.IsDescriptorSetLive(rd->descriptorSet)) {
-                    static int deadDescWarnCount = 0;
-                    if (deadDescWarnCount++ < 16) {
-                        const uint64_t rawHandle =
-                            static_cast<uint64_t>(reinterpret_cast<uintptr_t>(rd->descriptorSet));
-                        INXLOG_WARN("[DrawSceneFiltered] DEAD descriptor 0x", rawHandle,
-                                    " for mat '", matRaw->GetName(), "' (key='", matRaw->GetMaterialKey(),
-                                    "') — handle not in live tracking set. Pool was reset or set freed by"
-                                    " an unknown code path. Forcing re-pipeline.");
-                    }
-                    rd->isValid = false;
+            // Check if descriptor handle was invalidated by any code path
+            // (pool reset, free, or reinit) without render data knowing.
+            if (rd && rd->isValid && rd->descriptorSet != VK_NULL_HANDLE &&
+                !m_materialPipelineManager.IsDescriptorSetLive(rd->descriptorSet)) {
+                static int deadDescWarnCount = 0;
+                if (deadDescWarnCount++ < 16) {
+                    const uint64_t rawHandle = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(rd->descriptorSet));
+                    INXLOG_WARN("[DrawSceneFiltered] DEAD descriptor 0x", rawHandle, " for mat '", matRaw->GetName(),
+                                "' (key='", matRaw->GetMaterialKey(),
+                                "') — handle not in live tracking set. Pool was reset or set freed by"
+                                " an unknown code path. Forcing re-pipeline.");
                 }
-                if (!rd || !rd->isValid || rd->descriptorSet == VK_NULL_HANDLE) {
-                    const std::string &vertName = matRaw->GetVertShaderName();
-                    const std::string &fragName = matRaw->GetFragShaderName();
-                    if (!fragName.empty()) {
-                        auto matShared = std::shared_ptr<InxMaterial>(matRaw, [](InxMaterial *) {});
-                        if (RefreshMaterialPipeline(matShared, vertName, fragName)) {
-                            rd = m_materialPipelineManager.GetRenderData(materialKey);
-                        }
+                rd->isValid = false;
+            }
+            if (!rd || !rd->isValid || rd->descriptorSet == VK_NULL_HANDLE) {
+                const std::string &vertName = matRaw->GetVertShaderName();
+                const std::string &fragName = matRaw->GetFragShaderName();
+                if (!fragName.empty()) {
+                    auto matShared = std::shared_ptr<InxMaterial>(matRaw, [](InxMaterial *) {});
+                    if (RefreshMaterialPipeline(matShared, vertName, fragName)) {
+                        rd = m_materialPipelineManager.GetRenderData(materialKey);
                     }
                 }
+            }
 
             if (rd && rd->isValid && rd->descriptorSet != VK_NULL_HANDLE) {
                 if (rd->pipeline != VK_NULL_HANDLE)
@@ -669,8 +668,8 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
                 static int staleSet0WarnCount = 0;
                 if (staleSet0WarnCount++ < 32) {
                     const uint64_t rawHandle = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(descriptorSet));
-                    INXLOG_WARN("[DrawSceneFiltered] stale set0 descriptor before bind: 0x", rawHandle,
-                                " mat='", matRaw->GetMaterialKey(), "' name='", matRaw->GetName(),
+                    INXLOG_WARN("[DrawSceneFiltered] stale set0 descriptor before bind: 0x", rawHandle, " mat='",
+                                matRaw->GetMaterialKey(), "' name='", matRaw->GetName(),
                                 "' -- forcing pipeline refresh");
                 }
 
@@ -702,8 +701,8 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
             }
 
             vkdebug::CmdBindDescriptorSetsTracked("VkCoreDraw.DrawSceneFiltered.Set0", cmdBuf,
-                                                  VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1,
-                                                  &descriptorSet, 0, nullptr);
+                                                  VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSet,
+                                                  0, nullptr);
             currentDescriptorSet = descriptorSet;
             currentLayout = pipelineLayout;
 
@@ -916,8 +915,8 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
         // Bind per-cascade descriptor set (set 0)
         VkDescriptorSet cascadeDescSet = m_shadowDescSets[descIdx];
         vkdebug::CmdBindDescriptorSetsTracked("VkCoreDraw.DrawShadowCasters.Set0", cmdBuf,
-                              VK_PIPELINE_BIND_POINT_GRAPHICS, m_shadowPipelineLayout, 0, 1,
-                              &cascadeDescSet, 0, nullptr);
+                                              VK_PIPELINE_BIND_POINT_GRAPHICS, m_shadowPipelineLayout, 0, 1,
+                                              &cascadeDescSet, 0, nullptr);
 
         const Frustum &cascadeFrustum = cascadeFrustums[ci];
         VkBuffer currentVertexBuffer = VK_NULL_HANDLE;

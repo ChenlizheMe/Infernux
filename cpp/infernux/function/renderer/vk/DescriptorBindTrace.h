@@ -105,8 +105,8 @@ inline void RecordDescriptorBind(const char *site, VkCommandBuffer cmdBuf, VkPip
         const int warnIndex = DescriptorBindSuspiciousWarnCount().fetch_add(1, std::memory_order_relaxed);
         if (warnIndex < 48) {
             INXLOG_WARN("[VkBindTrace] suspicious descriptor raw=0x", raw, " site=", (site ? site : "<null>"),
-                        " firstSet=", firstSet, " localIndex=", i, " count=", descriptorSetCount,
-                        " cmd=0x", snapshot.commandBufferRaw, " layout=0x", snapshot.pipelineLayoutRaw);
+                        " firstSet=", firstSet, " localIndex=", i, " count=", descriptorSetCount, " cmd=0x",
+                        snapshot.commandBufferRaw, " layout=0x", snapshot.pipelineLayoutRaw);
         }
     }
 }

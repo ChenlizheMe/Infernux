@@ -529,9 +529,8 @@ class InxVkCoreModular
     /// @param size      Output image width and height (square).
     /// @param outPixels Receives RGBA8 pixel data (size*size*4 bytes).
     /// @return true if GPU rendering succeeded.
-    bool RenderMeshPreviewGPU(const InxMesh &mesh,
-                              const std::vector<std::shared_ptr<InxMaterial>> &materials,
-                              int size, std::vector<unsigned char> &outPixels);
+    bool RenderMeshPreviewGPU(const InxMesh &mesh, const std::vector<std::shared_ptr<InxMaterial>> &materials, int size,
+                              std::vector<unsigned char> &outPixels);
 
     /// @brief Create a per-material shadow pipeline using the material's shadow
     ///        vertex and fragment variants.

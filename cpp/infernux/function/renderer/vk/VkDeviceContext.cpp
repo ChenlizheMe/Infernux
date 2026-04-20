@@ -14,8 +14,8 @@
 #include <algorithm>
 #include <cstdlib>
 #include <cstring>
-#include <sstream>
 #include <set>
+#include <sstream>
 
 namespace infernux
 {
@@ -68,12 +68,11 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL DebugCallback(VkDebugUtilsMessageSeverityF
             const auto lastBind = infernux::vkdebug::GetLastDescriptorBindSnapshot();
             if (lastBind.sequence > 0) {
                 INXLOG_ERROR("[VkBindTrace] lastTrackedBind seq=", lastBind.sequence,
-                             " site=", (lastBind.site ? lastBind.site : "<null>"),
-                             " firstSet=", lastBind.firstSet, " count=", lastBind.descriptorSetCount,
-                             " cmd=0x", lastBind.commandBufferRaw, " layout=0x", lastBind.pipelineLayoutRaw,
-                             " set[0]=0x", lastBind.descriptorSetRaws[0], " set[1]=0x",
-                             lastBind.descriptorSetRaws[1], " set[2]=0x", lastBind.descriptorSetRaws[2],
-                             " set[3]=0x", lastBind.descriptorSetRaws[3]);
+                             " site=", (lastBind.site ? lastBind.site : "<null>"), " firstSet=", lastBind.firstSet,
+                             " count=", lastBind.descriptorSetCount, " cmd=0x", lastBind.commandBufferRaw, " layout=0x",
+                             lastBind.pipelineLayoutRaw, " set[0]=0x", lastBind.descriptorSetRaws[0], " set[1]=0x",
+                             lastBind.descriptorSetRaws[1], " set[2]=0x", lastBind.descriptorSetRaws[2], " set[3]=0x",
+                             lastBind.descriptorSetRaws[3]);
             } else {
                 INXLOG_ERROR("[VkBindTrace] no tracked bind call has been recorded yet");
             }
@@ -85,11 +84,11 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL DebugCallback(VkDebugUtilsMessageSeverityF
                 infernux::vkdebug::DescriptorBindTraceSnapshot matched{};
                 uint32_t localIndex = 0;
                 if (infernux::vkdebug::FindRecentDescriptorBindByRaw(badRaw, matched, localIndex)) {
-                    INXLOG_ERROR("[VkBindTrace] matchedRaw=0x", badRawHex.str(), " at site=",
-                                 (matched.site ? matched.site : "<null>"), " seq=", matched.sequence,
+                    INXLOG_ERROR("[VkBindTrace] matchedRaw=0x", badRawHex.str(),
+                                 " at site=", (matched.site ? matched.site : "<null>"), " seq=", matched.sequence,
                                  " firstSet=", matched.firstSet, " localIndex=", localIndex,
-                                 " absoluteSet=", (matched.firstSet + localIndex),
-                                 " cmd=0x", matched.commandBufferRaw, " layout=0x", matched.pipelineLayoutRaw);
+                                 " absoluteSet=", (matched.firstSet + localIndex), " cmd=0x", matched.commandBufferRaw,
+                                 " layout=0x", matched.pipelineLayoutRaw);
                 }
             }
 

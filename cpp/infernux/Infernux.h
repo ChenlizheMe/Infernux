@@ -1,14 +1,14 @@
 #pragma once
-#include <core/types/InxFwdType.h>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <core/types/InxFwdType.h>
 #include <filesystem>
 #include <functional>
 #include <iostream>
+#include <memory>
 #include <mutex>
 #include <queue>
-#include <memory>
 #include <thread>
 #include <tuple>
 #include <unordered_map>
@@ -211,8 +211,8 @@ class Infernux
                                             const std::string &materialJson = "", uint64_t fileMtimeHint = 0);
 
     /// @brief Schedule a texture preview generation task (legacy wrapper).
-    bool ScheduleTexturePreviewTask(const std::string &resourceKey, const std::string &textureFilePath,
-                                    uint64_t stamp, bool nearest = false, bool srgb = false);
+    bool ScheduleTexturePreviewTask(const std::string &resourceKey, const std::string &textureFilePath, uint64_t stamp,
+                                    bool nearest = false, bool srgb = false);
 
     /// @brief Pump completed preview tasks on main thread and upload textures.
     void PumpPreviewTasks();
@@ -246,9 +246,10 @@ class Infernux
     ///
     /// @param contentStampHint Caller-provided content hash (mtime combo, etc.).
     ///        C++ uses this to detect changes and bump the generation counter.
-    std::tuple<uint64_t, int, int> QueryOrScheduleTexturePreview(
-        const std::string &resourceKey, const std::string &textureFilePath,
-        uint64_t contentStampHint, bool nearest, bool srgb, bool pump);
+    std::tuple<uint64_t, int, int> QueryOrScheduleTexturePreview(const std::string &resourceKey,
+                                                                 const std::string &textureFilePath,
+                                                                 uint64_t contentStampHint, bool nearest, bool srgb,
+                                                                 bool pump);
 
     /// @brief Schedule texture preview from in-memory data (JPEG/PNG/etc.).
     ///
@@ -258,9 +259,8 @@ class Infernux
     /// @param stamp Revision stamp
     /// @param nearest Use point filter for uploaded texture
     /// @return true if task accepted
-    bool ScheduleTexturePreviewFromMemory(
-        const std::string &resourceKey, const std::vector<unsigned char> &imageData,
-        uint64_t stamp, bool nearest);
+    bool ScheduleTexturePreviewFromMemory(const std::string &resourceKey, const std::vector<unsigned char> &imageData,
+                                          uint64_t stamp, bool nearest);
 
     /// @brief Combined query + schedule for mesh/model preview.
     ///
@@ -272,8 +272,7 @@ class Infernux
     /// @param meshFilePath   Path to the model file (.fbx, .obj, .gltf, ...)
     /// @param fileMtimeHint  File mtime for change detection (0 = unknown)
     /// @return ImGui texture id (0 if not ready yet)
-    uint64_t QueryOrScheduleMeshPreview(const std::string &resourceKey,
-                                        const std::string &meshFilePath,
+    uint64_t QueryOrScheduleMeshPreview(const std::string &resourceKey, const std::string &meshFilePath,
                                         uint64_t fileMtimeHint = 0);
 
     /// @brief Schedule async material save from JSON snapshot.
@@ -356,7 +355,7 @@ class Infernux
         std::string resourceKey;
         std::string matFilePath;
         uint64_t generation = 0;
-        std::string materialJson;  ///< If non-empty, render from this JSON instead of reading matFilePath from disk.
+        std::string materialJson; ///< If non-empty, render from this JSON instead of reading matFilePath from disk.
     };
 
     struct TexturePreviewRequest
@@ -386,10 +385,10 @@ class Infernux
 
     struct MaterialPreviewState
     {
-        uint64_t generation = 0;       ///< Monotonic counter, bumped on detected content change
-        uint64_t readyGeneration = 0;  ///< Generation of last completed render
-        uint64_t lastJsonHash = 0;     ///< std::hash of last JSON string seen
-        uint64_t lastFileMtime = 0;     ///< Last file mtime seen from ProjectPanel
+        uint64_t generation = 0;      ///< Monotonic counter, bumped on detected content change
+        uint64_t readyGeneration = 0; ///< Generation of last completed render
+        uint64_t lastJsonHash = 0;    ///< std::hash of last JSON string seen
+        uint64_t lastFileMtime = 0;   ///< Last file mtime seen from ProjectPanel
         bool inFlight = false;
         int readySize = 0;
         std::string textureName;
@@ -398,9 +397,9 @@ class Infernux
 
     struct TexturePreviewState
     {
-        uint64_t generation = 0;        ///< Monotonic counter, bumped on detected content change
-        uint64_t readyGeneration = 0;   ///< Generation of last completed render
-        uint64_t lastContentStamp = 0;   ///< Last content stamp seen from caller
+        uint64_t generation = 0;       ///< Monotonic counter, bumped on detected content change
+        uint64_t readyGeneration = 0;  ///< Generation of last completed render
+        uint64_t lastContentStamp = 0; ///< Last content stamp seen from caller
         bool inFlight = false;
         int readyWidth = 0;
         int readyHeight = 0;
@@ -419,7 +418,7 @@ class Infernux
         int readySize = 0;
         std::string textureName;
         uint64_t textureId = 0;
-        std::string meshFilePath;     ///< Absolute path to model file
+        std::string meshFilePath; ///< Absolute path to model file
     };
 
     void EnqueuePreviewTask(std::function<void()> fn);
