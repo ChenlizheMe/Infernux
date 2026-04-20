@@ -51,13 +51,6 @@ def is_ide_available(ide: str, force_refresh: bool = False) -> bool:
     return ide in detect_available_ides(force_refresh=force_refresh)
 
 
-def get_ide_launch_order(preferred_ide: str) -> list[str]:
-    """Return the preferred IDE first, then the remaining supported IDE."""
-    if preferred_ide == "pycharm":
-        return ["pycharm", "vscode"]
-    return ["vscode", "pycharm"]
-
-
 def _find_vscode_executable() -> str | None:
     """Locate the VS Code CLI executable on the current platform.
 
