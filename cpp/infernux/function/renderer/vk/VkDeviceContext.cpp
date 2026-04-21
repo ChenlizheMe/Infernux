@@ -147,7 +147,9 @@ VkDeviceContext::VkDeviceContext(VkDeviceContext &&other) noexcept
       m_physicalDevice(other.m_physicalDevice), m_device(other.m_device), m_vmaAllocator(other.m_vmaAllocator),
       m_graphicsQueue(other.m_graphicsQueue), m_presentQueue(other.m_presentQueue),
       m_queueIndices(other.m_queueIndices), m_deviceProperties(other.m_deviceProperties),
-      m_deviceFeatures(other.m_deviceFeatures), m_validationEnabled(other.m_validationEnabled)
+      m_deviceFeatures(other.m_deviceFeatures),
+      m_descriptorIndexingEnabled(other.m_descriptorIndexingEnabled),
+      m_timelineSemaphoreEnabled(other.m_timelineSemaphoreEnabled), m_validationEnabled(other.m_validationEnabled)
 {
     other.m_instance = VK_NULL_HANDLE;
     other.m_debugMessenger = VK_NULL_HANDLE;
@@ -157,6 +159,8 @@ VkDeviceContext::VkDeviceContext(VkDeviceContext &&other) noexcept
     other.m_vmaAllocator = VK_NULL_HANDLE;
     other.m_graphicsQueue = VK_NULL_HANDLE;
     other.m_presentQueue = VK_NULL_HANDLE;
+    other.m_descriptorIndexingEnabled = false;
+    other.m_timelineSemaphoreEnabled = false;
 }
 
 VkDeviceContext &VkDeviceContext::operator=(VkDeviceContext &&other) noexcept
@@ -175,6 +179,8 @@ VkDeviceContext &VkDeviceContext::operator=(VkDeviceContext &&other) noexcept
         m_queueIndices = other.m_queueIndices;
         m_deviceProperties = other.m_deviceProperties;
         m_deviceFeatures = other.m_deviceFeatures;
+        m_descriptorIndexingEnabled = other.m_descriptorIndexingEnabled;
+        m_timelineSemaphoreEnabled = other.m_timelineSemaphoreEnabled;
         m_validationEnabled = other.m_validationEnabled;
 
         other.m_instance = VK_NULL_HANDLE;
@@ -185,6 +191,8 @@ VkDeviceContext &VkDeviceContext::operator=(VkDeviceContext &&other) noexcept
         other.m_vmaAllocator = VK_NULL_HANDLE;
         other.m_graphicsQueue = VK_NULL_HANDLE;
         other.m_presentQueue = VK_NULL_HANDLE;
+        other.m_descriptorIndexingEnabled = false;
+        other.m_timelineSemaphoreEnabled = false;
     }
     return *this;
 }
@@ -583,16 +591,56 @@ bool VkDeviceContext::CreateLogicalDevice(const DeviceConfig &config)
         queueCreateInfos.push_back(queueCreateInfo);
     }
 
-    // Device features
+    // ────────────────────────────────────────────────────────────────────
+    // Device features — use the Vulkan 1.2 pNext chain so we can opt into
+    // descriptor-indexing capabilities (UPDATE_AFTER_BIND, partially bound,
+    // etc.) that let mid-frame descriptor writes proceed without a full
+    // GPU drain.
+    // ────────────────────────────────────────────────────────────────────
+
+    // Query everything the GPU supports through the Vulkan 1.2 chain so we
+    // can selectively enable only what we need.
+    VkPhysicalDeviceVulkan12Features supported12{};
+    supported12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+    VkPhysicalDeviceFeatures2 supportedFeatures2{};
+    supportedFeatures2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+    supportedFeatures2.pNext = &supported12;
+    vkGetPhysicalDeviceFeatures2(m_physicalDevice, &supportedFeatures2);
+    const VkPhysicalDeviceFeatures &supportedFeatures = supportedFeatures2.features;
+
     VkPhysicalDeviceFeatures deviceFeatures{};
     deviceFeatures.samplerAnisotropy = VK_TRUE;
     deviceFeatures.fillModeNonSolid = VK_TRUE; // For wireframe
     deviceFeatures.depthBiasClamp = VK_TRUE;   // For shadow depth bias clamping
-
-    // Query supported features — wideLines is unavailable on MoltenVK (macOS)
-    VkPhysicalDeviceFeatures supportedFeatures;
-    vkGetPhysicalDeviceFeatures(m_physicalDevice, &supportedFeatures);
     deviceFeatures.wideLines = supportedFeatures.wideLines; // For debug lines (when available)
+
+    // Vulkan 1.2 features — opt into descriptor-indexing capabilities only
+    // when the driver advertises them. UPDATE_AFTER_BIND is what unlocks
+    // non-stalling material descriptor updates (see MaterialDescriptor.cpp).
+    VkPhysicalDeviceVulkan12Features features12{};
+    features12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+    features12.descriptorIndexing = supported12.descriptorIndexing;
+    features12.descriptorBindingPartiallyBound = supported12.descriptorBindingPartiallyBound;
+    features12.descriptorBindingVariableDescriptorCount = supported12.descriptorBindingVariableDescriptorCount;
+    features12.descriptorBindingSampledImageUpdateAfterBind =
+        supported12.descriptorBindingSampledImageUpdateAfterBind;
+    features12.descriptorBindingUniformBufferUpdateAfterBind =
+        supported12.descriptorBindingUniformBufferUpdateAfterBind;
+    features12.descriptorBindingStorageBufferUpdateAfterBind =
+        supported12.descriptorBindingStorageBufferUpdateAfterBind;
+    features12.descriptorBindingUpdateUnusedWhilePending = supported12.descriptorBindingUpdateUnusedWhilePending;
+    features12.runtimeDescriptorArray = supported12.runtimeDescriptorArray;
+    // Timeline semaphores enable lock-free producer/consumer sync between
+    // upload tasks and the render thread without per-fence allocation.
+    features12.timelineSemaphore = supported12.timelineSemaphore;
+
+    m_descriptorIndexingEnabled = (features12.descriptorBindingSampledImageUpdateAfterBind == VK_TRUE);
+    m_timelineSemaphoreEnabled = (features12.timelineSemaphore == VK_TRUE);
+
+    VkPhysicalDeviceFeatures2 enabledFeatures2{};
+    enabledFeatures2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+    enabledFeatures2.features = deviceFeatures;
+    enabledFeatures2.pNext = &features12;
 
     // Build device extension list
     std::vector<const char *> deviceExtensions(DEVICE_EXTENSIONS.begin(), DEVICE_EXTENSIONS.end());
@@ -600,12 +648,14 @@ bool VkDeviceContext::CreateLogicalDevice(const DeviceConfig &config)
     deviceExtensions.push_back("VK_KHR_portability_subset");
 #endif
 
-    // Device create info
+    // Device create info — enabledFeatures lives inside pNext (features2),
+    // so pEnabledFeatures must be NULL per the Vulkan spec.
     VkDeviceCreateInfo createInfo{};
     createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
+    createInfo.pNext = &enabledFeatures2;
     createInfo.queueCreateInfoCount = static_cast<uint32_t>(queueCreateInfos.size());
     createInfo.pQueueCreateInfos = queueCreateInfos.data();
-    createInfo.pEnabledFeatures = &deviceFeatures;
+    createInfo.pEnabledFeatures = nullptr;
     createInfo.enabledExtensionCount = static_cast<uint32_t>(deviceExtensions.size());
     createInfo.ppEnabledExtensionNames = deviceExtensions.data();
 

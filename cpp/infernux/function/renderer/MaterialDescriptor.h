@@ -260,6 +260,21 @@ class MaterialDescriptorManager
     }
 
     /**
+     * @brief Opt into the Vulkan 1.2 UPDATE_AFTER_BIND fast path.
+     *
+     * Must be called BEFORE Initialize(): the choice flips both the pool
+     * flags (UPDATE_AFTER_BIND_BIT) and the WaitForGpuIdleBeforeSharedDescriptorWrite
+     * branch. When enabled, descriptor writes proceed without a vkDeviceWaitIdle.
+     * Both the device and the matching ShaderProgram layouts must already be
+     * configured with the descriptor-indexing flags — see
+     * VkDeviceContext::CreateLogicalDevice and ShaderProgram::SetUpdateAfterBindEnabled.
+     */
+    void SetUpdateAfterBindEnabled(bool enabled)
+    {
+        m_updateAfterBindEnabled = enabled;
+    }
+
+    /**
      * @brief Remove descriptor set for a material
      */
     void RemoveDescriptorSet(const std::string &materialName);
@@ -352,6 +367,10 @@ class MaterialDescriptorManager
     // When non-null, stale descriptor sets are pushed here instead of
     // being freed immediately (avoids use-after-free on in-flight frames).
     FrameDeletionQueue *m_deletionQueue = nullptr;
+
+    /// True when the device supports descriptor-indexing UPDATE_AFTER_BIND
+    /// and the layouts/pool were created with the matching flags.
+    bool m_updateAfterBindEnabled = false;
 
     /**
      * @brief Allocate a new descriptor pool page and append to m_descriptorPools.

@@ -181,11 +181,29 @@ class ShaderProgram
         return s_globalsDescSetLayout;
     }
 
+    /**
+     * @brief Globally enable VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND on
+     * material-set sampler bindings. Set once at startup based on the
+     * device's Vulkan 1.2 descriptor-indexing support; when true, the
+     * material descriptor pool/layout pair is created with the matching
+     * UPDATE_AFTER_BIND_POOL bit so MaterialDescriptorManager can rewrite
+     * bindings without a full GPU drain.
+     */
+    static void SetUpdateAfterBindEnabled(bool enabled)
+    {
+        s_updateAfterBindEnabled = enabled;
+    }
+    static bool IsUpdateAfterBindEnabled()
+    {
+        return s_updateAfterBindEnabled;
+    }
+
   private:
     VkDevice m_device = VK_NULL_HANDLE;
     std::string m_shaderId;
 
     static inline VkDescriptorSetLayout s_globalsDescSetLayout = VK_NULL_HANDLE;
+    static inline bool s_updateAfterBindEnabled = false;
 
     // Shader modules
     VkShaderModule m_vertModule = VK_NULL_HANDLE;

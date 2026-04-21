@@ -363,12 +363,33 @@ bool ShaderProgram::CreateDescriptorSetLayouts()
         setBindings[merged.set].push_back(binding);
     }
 
-    // Create a layout for each set
+    // Create a layout for each set.
+    //
+    // For the material set (set 0) we opt into VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT
+    // on every binding when the device supports descriptor indexing. This is what
+    // lets MaterialDescriptorManager rewrite a sampler/UBO binding while the GPU is
+    // sampling the descriptor set, eliminating the per-edit vkDeviceWaitIdle stall.
+    //
+    // Sets 1, 2 (per-view, globals) keep the legacy layout — they are written once
+    // per frame on the CPU before any submission and have no live-update concern.
+    const bool enableUpdateAfterBind = IsUpdateAfterBindEnabled();
     for (auto &[setIndex, bindings] : setBindings) {
         VkDescriptorSetLayoutCreateInfo layoutInfo{};
         layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
         layoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
         layoutInfo.pBindings = bindings.data();
+
+        std::vector<VkDescriptorBindingFlags> bindingFlags;
+        VkDescriptorSetLayoutBindingFlagsCreateInfo bindingFlagsInfo{};
+        if (enableUpdateAfterBind && setIndex == 0) {
+            bindingFlags.assign(bindings.size(), VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT |
+                                                     VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT);
+            bindingFlagsInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
+            bindingFlagsInfo.bindingCount = static_cast<uint32_t>(bindingFlags.size());
+            bindingFlagsInfo.pBindingFlags = bindingFlags.data();
+            layoutInfo.pNext = &bindingFlagsInfo;
+            layoutInfo.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
+        }
 
         VkDescriptorSetLayout layout;
         if (vkCreateDescriptorSetLayout(m_device, &layoutInfo, nullptr, &layout) != VK_SUCCESS) {
@@ -377,7 +398,8 @@ bool ShaderProgram::CreateDescriptorSetLayouts()
         }
 
         m_descriptorSetLayouts[setIndex] = layout;
-        INXLOG_DEBUG("Created descriptor set layout for set ", setIndex, " with ", bindings.size(), " bindings");
+        INXLOG_DEBUG("Created descriptor set layout for set ", setIndex, " with ", bindings.size(), " bindings",
+                     (enableUpdateAfterBind && setIndex == 0) ? " (UPDATE_AFTER_BIND)" : "");
     }
 
     // If no bindings, create an empty layout for set 0

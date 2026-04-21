@@ -415,7 +415,8 @@ void InxVkCoreModular::InitializeMaterialSystem()
         VkFormat depthFormat = m_deviceContext.FindDepthFormat();
         m_materialPipelineManager.Initialize(m_deviceContext.GetVmaAllocator(), GetDevice(), GetPhysicalDevice(),
                                              colorFormat, depthFormat, m_msaaSampleCount,
-                                             m_shaderCache.GetProgramCache(), &m_deletionQueue);
+                                             m_shaderCache.GetProgramCache(), &m_deletionQueue,
+                                             m_deviceContext.IsDescriptorIndexingEnabled());
         m_materialPipelineManagerInitialized = true;
 
         auto *whiteTex = m_textureCache.Find("white");
@@ -504,7 +505,7 @@ void InxVkCoreModular::ReinitializeMaterialPipelines(VkSampleCountFlagBits newSa
     VkFormat depthFormat = m_deviceContext.FindDepthFormat();
     m_materialPipelineManager.Initialize(m_deviceContext.GetVmaAllocator(), GetDevice(), GetPhysicalDevice(),
                                          colorFormat, depthFormat, newSampleCount, m_shaderCache.GetProgramCache(),
-                                         &m_deletionQueue);
+                                         &m_deletionQueue, m_deviceContext.IsDescriptorIndexingEnabled());
     m_materialPipelineManagerInitialized = true;
 
     // Restore default textures

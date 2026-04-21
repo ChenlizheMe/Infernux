@@ -66,7 +66,7 @@ class MaterialPipelineManager
      */
     void Initialize(VmaAllocator allocator, VkDevice device, VkPhysicalDevice physicalDevice, VkFormat colorFormat,
                     VkFormat depthFormat, VkSampleCountFlagBits sampleCount, ShaderProgramCache &shaderProgramCache,
-                    FrameDeletionQueue *deletionQueue = nullptr);
+                    FrameDeletionQueue *deletionQueue = nullptr, bool descriptorIndexingEnabled = false);
 
     /**
      * @brief Cleanup all resources

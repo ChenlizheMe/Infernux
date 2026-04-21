@@ -185,6 +185,22 @@ class VkDeviceContext
         return m_deviceFeatures;
     }
 
+    /// @brief Whether descriptor-indexing UPDATE_AFTER_BIND was enabled at
+    /// device creation time. Callers should branch on this before opting in
+    /// to non-stalling descriptor updates so headless/legacy GPUs continue
+    /// to fall back to the GPU-drain path.
+    [[nodiscard]] bool IsDescriptorIndexingEnabled() const
+    {
+        return m_descriptorIndexingEnabled;
+    }
+
+    /// @brief Whether timeline semaphores were enabled at device creation —
+    /// reserved for future async-transfer / async-compute integrations.
+    [[nodiscard]] bool IsTimelineSemaphoreEnabled() const
+    {
+        return m_timelineSemaphoreEnabled;
+    }
+
     /// @brief Get the VMA allocator handle
     [[nodiscard]] VmaAllocator GetVmaAllocator() const
     {
@@ -294,6 +310,12 @@ class VkDeviceContext
     QueueFamilyIndices m_queueIndices{};
     VkPhysicalDeviceProperties m_deviceProperties{};
     VkPhysicalDeviceFeatures m_deviceFeatures{};
+
+    // Vulkan 1.2 capability flags resolved at device creation. Callers gate
+    // optional fast paths on these so the engine still runs correctly on
+    // older / restricted GPUs that do not advertise the features.
+    bool m_descriptorIndexingEnabled = false;
+    bool m_timelineSemaphoreEnabled = false;
 
     // ========================================================================
     // Configuration

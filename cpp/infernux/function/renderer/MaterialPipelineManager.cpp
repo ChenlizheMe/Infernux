@@ -145,7 +145,8 @@ MaterialPipelineManager::~MaterialPipelineManager()
 
 void MaterialPipelineManager::Initialize(VmaAllocator allocator, VkDevice device, VkPhysicalDevice physicalDevice,
                                          VkFormat colorFormat, VkFormat depthFormat, VkSampleCountFlagBits sampleCount,
-                                         ShaderProgramCache &shaderProgramCache, FrameDeletionQueue *deletionQueue)
+                                         ShaderProgramCache &shaderProgramCache, FrameDeletionQueue *deletionQueue,
+                                         bool descriptorIndexingEnabled)
 {
     m_device = device;
     m_physicalDevice = physicalDevice;
@@ -160,7 +161,14 @@ void MaterialPipelineManager::Initialize(VmaAllocator allocator, VkDevice device
     // Initialize shader program cache
     m_shaderProgramCache->Initialize(device);
 
-    // Initialize material descriptor manager
+    // Plumb the descriptor-indexing decision through to BOTH the layouts
+    // (created lazily by ShaderProgram::CreateDescriptorSetLayouts on shader
+    // load) AND the pool (created here in Initialize). Setting the static
+    // flag before Initialize() guarantees the very first ShaderProgram and
+    // the descriptor pool agree on whether UPDATE_AFTER_BIND is on, which
+    // Vulkan validation requires.
+    ShaderProgram::SetUpdateAfterBindEnabled(descriptorIndexingEnabled);
+    m_descriptorManager.SetUpdateAfterBindEnabled(descriptorIndexingEnabled);
     m_descriptorManager.Initialize(allocator, device, physicalDevice);
     m_descriptorManager.SetDeletionQueue(deletionQueue);
 

@@ -288,9 +288,17 @@ VkDescriptorPool MaterialDescriptorManager::CreateDescriptorPool(uint32_t maxMat
         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, maxMaterials * samplerDescriptorsPerMaterial},
     };
 
+    VkDescriptorPoolCreateFlags poolFlags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+    if (m_updateAfterBindEnabled) {
+        // Required when any layout allocated from this pool carries
+        // VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT
+        // (see ShaderProgram::CreateDescriptorSetLayouts).
+        poolFlags |= VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
+    }
+
     VkDescriptorPoolCreateInfo poolInfo{};
     poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT; // Allow freeing individual sets
+    poolInfo.flags = poolFlags;
     poolInfo.maxSets = maxMaterials;
     poolInfo.poolSizeCount = static_cast<uint32_t>(poolSizes.size());
     poolInfo.pPoolSizes = poolSizes.data();
@@ -745,9 +753,17 @@ void MaterialDescriptorManager::BindTexture(const std::string &materialName, uin
 
 void MaterialDescriptorManager::WaitForGpuIdleBeforeSharedDescriptorWrite()
 {
-    // See the helper's declaration in MaterialDescriptor.h for the rationale.
-    // Centralising the drain here gives a single audit point for the future
-    // double-buffered / FrameDeletionQueue replacement.
+    // Fast path: when descriptor indexing UPDATE_AFTER_BIND is enabled,
+    // the driver tracks descriptor liveness internally and lets us rewrite
+    // bindings that are currently in command buffers in flight. No drain
+    // is required and the editor texture-edit hot path becomes truly free.
+    if (m_updateAfterBindEnabled) {
+        return;
+    }
+
+    // Legacy fallback: layouts/pools were created without the descriptor-
+    // indexing flags (older GPU or feature unsupported), so we still have
+    // to drain the device before mutating a shared descriptor set.
     if (m_device != VK_NULL_HANDLE) {
         vkDeviceWaitIdle(m_device);
     }
