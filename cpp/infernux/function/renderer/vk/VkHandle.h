@@ -16,6 +16,7 @@
 
 #include "VkTypes.h"
 #include <core/log/InxLog.h>
+#include <vector>
 #include <vk_mem_alloc.h>
 
 namespace infernux
@@ -327,6 +328,27 @@ class VkImageHandle
                 VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT, uint32_t mipLevels = 1);
 
     /**
+     * @brief Create an image with explicit cross-queue concurrent sharing.
+     *
+     * Identical to Create() above except the resulting VkImage uses
+     * VK_SHARING_MODE_CONCURRENT across @p sharedQueueFamilies, which
+     * lets transfer-queue uploads be sampled from the graphics queue
+     * without an explicit queue family ownership transfer barrier. Pays
+     * a small driver-level performance cost (variable by vendor) in
+     * exchange for that simplicity. Recommended ONLY for resources that
+     * actually cross queues — purely graphics-side render targets should
+     * stick to the EXCLUSIVE overload.
+     *
+     * Pre: @p sharedQueueFamilies must contain at least 2 distinct
+     * family indices; otherwise CONCURRENT is not legal and the call
+     * silently downgrades to EXCLUSIVE.
+     */
+    bool CreateConcurrent(VmaAllocator allocator, VkDevice device, uint32_t width, uint32_t height, VkFormat format,
+                          VkImageTiling tiling, VkImageUsageFlags usage, VkMemoryPropertyFlags properties,
+                          const std::vector<uint32_t> &sharedQueueFamilies,
+                          VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT, uint32_t mipLevels = 1);
+
+    /**
      * @brief Create an image view for this image
      * @param format View format
      * @param aspectFlags Image aspect flags
@@ -486,22 +508,42 @@ class VkTexture
     VkTexture &operator=(VkTexture &&) noexcept = default;
 
     /**
-     * @brief Create a texture from raw pixel data
-     * @param device Vulkan device
-     * @param physicalDevice Physical device
-     * @param cmdBuffer Command buffer for upload operations
-     * @param graphicsQueue Queue for command submission
-     * @param pixels RGBA pixel data
-     * @param width Image width
-     * @param height Image height
-     * @param format Image format
-     * @return true if creation succeeded
+     * @brief Create a texture from raw pixel data (legacy synchronous path)
+     *
+     * Submits all transfer + layout-transition + mipmap-blit work to a
+     * single-time command buffer on the supplied graphics queue and blocks
+     * the caller until the GPU signals completion. Allocates and destroys
+     * its own VkFence per upload — for hot-path texture loading prefer the
+     * pooled overload below.
      */
     bool CreateFromPixels(VmaAllocator allocator, VkDevice device, VkPhysicalDevice physicalDevice,
                           VkCommandPool cmdPool, VkQueue graphicsQueue, const unsigned char *pixels, uint32_t width,
                           uint32_t height, VkFormat format = VK_FORMAT_R8G8B8A8_SRGB, bool generateMipmaps = false,
                           VkFilter filter = VK_FILTER_LINEAR,
                           VkSamplerAddressMode addressMode = VK_SAMPLER_ADDRESS_MODE_REPEAT, int aniso = -1);
+
+    /**
+     * @brief Create a texture from raw pixel data using an async transfer context.
+     *
+     * Routes the upload through AsyncTransferContext (pooled fences + cmd
+     * buffers, optionally submitted on the dedicated DMA queue when the
+     * GPU exposes one). When async is capable the image is created with
+     * VK_SHARING_MODE_CONCURRENT across [graphicsFamily, transferFamily]
+     * so the renderer can sample it without an explicit queue family
+     * ownership transfer barrier.
+     *
+     * Falls back to the legacy graphics-queue path below the layer when
+     * @p transfer.IsAsyncCapable() is false (single-queue-family GPUs).
+     *
+     * Currently still blocks the caller until the upload completes — full
+     * deferred / streaming loading is the next step on top of this API.
+     */
+    bool CreateFromPixelsAsync(VmaAllocator allocator, VkDevice device, VkPhysicalDevice physicalDevice,
+                               class AsyncTransferContext &transfer, uint32_t graphicsQueueFamily,
+                               const unsigned char *pixels, uint32_t width, uint32_t height,
+                               VkFormat format = VK_FORMAT_R8G8B8A8_SRGB, bool generateMipmaps = false,
+                               VkFilter filter = VK_FILTER_LINEAR,
+                               VkSamplerAddressMode addressMode = VK_SAMPLER_ADDRESS_MODE_REPEAT, int aniso = -1);
 
     /**
      * @brief Create a solid color texture

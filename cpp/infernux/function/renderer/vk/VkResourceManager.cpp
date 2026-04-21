@@ -4,6 +4,7 @@
  */
 
 #include "VkResourceManager.h"
+#include "AsyncTransferContext.h"
 #include "VkDeviceContext.h"
 #include <SDL3/SDL.h>
 #include <core/error/InxError.h>
@@ -396,6 +397,23 @@ std::unique_ptr<VkTexture> VkResourceManager::CreateTextureFromPixels(const unsi
                                                                       VkSamplerAddressMode addressMode, int aniso)
 {
     auto texture = std::make_unique<VkTexture>();
+
+    // Phase 5d-1: prefer the async transfer queue when the device exposes
+    // a dedicated DMA family AND we don't need graphics-queue features
+    // (e.g. mipmap blits). CreateFromPixelsAsync returns false when it
+    // can't satisfy the request, in which case we transparently fall
+    // through to the legacy synchronous graphics-queue path so callers
+    // never observe the difference beyond perf.
+    if (m_asyncTransfer != nullptr && m_asyncTransfer->IsAsyncCapable()) {
+        if (texture->CreateFromPixelsAsync(m_vmaAllocator, m_device, m_physicalDevice, *m_asyncTransfer,
+                                           m_graphicsQueueFamily, pixels, width, height, format, generateMipmaps,
+                                           filter, addressMode, aniso)) {
+            return texture;
+        }
+        // Reset the in-progress texture so the synchronous fallback below
+        // gets a clean handle to write into.
+        texture = std::make_unique<VkTexture>();
+    }
 
     if (!texture->CreateFromPixels(m_vmaAllocator, m_device, m_physicalDevice, m_commandPool, m_graphicsQueue, pixels,
                                    width, height, format, generateMipmaps, filter, addressMode, aniso)) {

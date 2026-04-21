@@ -402,6 +402,25 @@ class VkResourceManager
         m_skipWaitIdle = v;
     }
 
+    /**
+     * @brief Plug an AsyncTransferContext for opt-in async-queue uploads.
+     *
+     * When set, CreateTextureFromPixels first attempts the async path
+     * (VK_SHARING_MODE_CONCURRENT image + transfer-queue submit). On
+     * single-queue-family GPUs, when async upload isn't legal (e.g. mipmap
+     * generation requires graphics-queue blit), or when the async submit
+     * itself fails, we transparently fall back to the legacy graphics-queue
+     * synchronous path so behaviour is identical from the caller's view.
+     *
+     * Pass nullptr to disable; resource manager is independent of the
+     * async-transfer subsystem.
+     */
+    void SetAsyncTransferContext(class AsyncTransferContext *transfer, uint32_t graphicsQueueFamily)
+    {
+        m_asyncTransfer = transfer;
+        m_graphicsQueueFamily = graphicsQueueFamily;
+    }
+
   private:
     bool m_skipWaitIdle = false;
     VmaAllocator m_vmaAllocator = VK_NULL_HANDLE;
@@ -409,6 +428,12 @@ class VkResourceManager
     VkPhysicalDevice m_physicalDevice = VK_NULL_HANDLE;
     VkQueue m_graphicsQueue = VK_NULL_HANDLE;
     VkCommandPool m_commandPool = VK_NULL_HANDLE;
+
+    // Optional plug-in async-transfer context. Lifetime is owned externally
+    // (typically InxVkCoreModular::m_asyncTransferContext) — VkResourceManager
+    // never destroys it. nullptr means "always use the synchronous path".
+    class AsyncTransferContext *m_asyncTransfer = nullptr;
+    uint32_t m_graphicsQueueFamily = 0;
 
     // Cached samplers
     VkSampler m_linearSampler = VK_NULL_HANDLE;

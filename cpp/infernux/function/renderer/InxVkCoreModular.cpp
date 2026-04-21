@@ -223,10 +223,17 @@ void InxVkCoreModular::PrepareSurface()
     // unlocks truly parallel asset uploads. Failures are non-fatal — the
     // engine simply keeps using the synchronous VkResourceManager path.
     const auto &queueIndices = m_deviceContext.GetQueueIndices();
-    const uint32_t transferFamily = queueIndices.transferFamily.value_or(queueIndices.graphicsFamily.value_or(0));
-    if (!m_asyncTransferContext.Initialize(m_deviceContext.GetDevice(), transferFamily,
-                                           m_deviceContext.GetTransferQueue(),
-                                           m_deviceContext.HasDedicatedTransferQueue())) {
+    const uint32_t graphicsFamily = queueIndices.graphicsFamily.value_or(0);
+    const uint32_t transferFamily = queueIndices.transferFamily.value_or(graphicsFamily);
+    if (m_asyncTransferContext.Initialize(m_deviceContext.GetDevice(), transferFamily,
+                                          m_deviceContext.GetTransferQueue(),
+                                          m_deviceContext.HasDedicatedTransferQueue())) {
+        // Plug the async context into the resource manager so non-mipmap
+        // texture uploads route through the dedicated DMA queue. Mipmap
+        // generation still falls back to the graphics queue because
+        // vkCmdBlitImage is not legal on transfer-only queues.
+        m_resourceManager.SetAsyncTransferContext(&m_asyncTransferContext, graphicsFamily);
+    } else {
         INXLOG_WARN("Async transfer context unavailable; uploads will use the graphics queue.");
     }
 
