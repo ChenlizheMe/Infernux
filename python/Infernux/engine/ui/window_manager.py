@@ -32,16 +32,29 @@ class WindowInfo:
 
 
 class WindowManager:
-    """
-    Centralized window manager for the editor.
-    
+    """Centralized window manager for the editor.
+
     Features:
-    - Register window types for the Window menu
-    - Track open/closed windows
-    - Create new window instances
-    - Provide window state to panels
+    - Register window types for the Window menu.
+    - Track open/closed state per window_id.
+    - Create new window instances.
+    - Persist panel state across editor restarts.
+
+    Two distinct meanings of "closed" coexist on purpose:
+
+    * **Builtin / singleton panels** stay registered with the native ImGui
+      renderer for the entire editor session and only flip ``_is_open`` to
+      hide their window. This is required because re-registering an
+      ``InxGUIRenderable`` mid-frame races the docking layout.
+    * **Dynamic panels** (e.g. animation / 2D-anim editors opened from the
+      Window menu) are unregistered from the native renderer when closed and
+      lazily re-created on the next ``open_window``.
+
+    Always go through ``set_window_open`` / ``open_window`` / ``close_window``
+    rather than mutating ``_is_open`` directly so persistence and pending
+    register/unregister actions stay consistent.
     """
-    
+
     _instance: Optional['WindowManager'] = None
     _RESET_REQUIRED_PANEL_IDS = {"inspector", "project"}
     
