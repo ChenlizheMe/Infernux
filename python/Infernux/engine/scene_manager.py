@@ -85,9 +85,8 @@ def _effective_project_root() -> Optional[str]:
         services = EditorServices.instance()
         if services and services.project_path and os.path.isdir(services.project_path):
             return os.path.abspath(services.project_path)
-    except Exception as _exc:
-        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-        pass
+    except Exception as exc:
+        Debug.log_suppressed("scene_manager._effective_project_root.editor_services", exc)
 
     cwd = os.getcwd()
     if os.path.isdir(os.path.join(cwd, "Assets")):
@@ -231,8 +230,8 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin, SceneConfirmationMixin)
             if native is not None:
                 self._engine = native
             return native
-        except Exception as _exc:
-            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+        except Exception as exc:
+            Debug.log_suppressed("SceneFileManager._native_engine_for_close.editor_services", exc)
             return None
 
     # ------------------------------------------------------------------
@@ -538,9 +537,8 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin, SceneConfirmationMixin)
         if self._engine:
             try:
                 self._engine.pump_events()
-            except Exception as _exc:
-                Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-                pass
+            except Exception as exc:
+                Debug.log_suppressed("SceneFileManager.pump_events", exc)
 
     def _prepare_native_scene_swap(self):
         """Clear native editor state and drain GPU work before scene replacement."""

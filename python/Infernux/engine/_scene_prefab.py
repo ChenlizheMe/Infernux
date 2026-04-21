@@ -206,9 +206,8 @@ class ScenePrefabMixin:
                 saved_prefab_guid = self._asset_database.get_guid_from_path(
                     self.prefab_mode_path
                 ) or None
-            except Exception as _exc:
-                Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-                pass
+            except Exception as exc:
+                Debug.log_suppressed("ScenePrefabMixin.exit_prefab_mode.resolve_prefab_guid", exc)
 
         # Clear the RenderStack singleton before the swap — matches the
         # pattern in _do_open_scene / _do_new_scene to avoid stale refs.
@@ -359,9 +358,11 @@ class ScenePrefabMixin:
                         p = self._asset_database.get_path_from_guid(guid)
                         if p and os.path.isfile(p):
                             guid_to_path[guid] = p
-                    except Exception as _exc:
-                        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-                        pass
+                    except Exception as exc:
+                        Debug.log_suppressed(
+                            f"ScenePrefabMixin.refresh_prefab_instances.resolve[{guid[:8]}]",
+                            exc,
+                        )
                 children = list(obj.get_children()) if hasattr(obj, 'get_children') else []
                 _walk(children)
 
