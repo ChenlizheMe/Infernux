@@ -396,11 +396,6 @@ void RenderPassOutput::CleanupResources()
         m_sampler = VK_NULL_HANDLE;
     }
 
-    if (m_readbackFence != VK_NULL_HANDLE) {
-        vkDestroyFence(device, m_readbackFence, nullptr);
-        m_readbackFence = VK_NULL_HANDLE;
-    }
-
     if (m_colorStagingBuffer != VK_NULL_HANDLE) {
         vmaDestroyBuffer(allocator, m_colorStagingBuffer, m_colorStagingAllocation);
         m_colorStagingBuffer = VK_NULL_HANDLE;
