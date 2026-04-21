@@ -19,8 +19,8 @@ def _get_live_game_object(game_object_id: int):
         return None
     try:
         return scene.find_by_id(game_object_id)
-    except Exception as _exc:
-        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+    except Exception as exc:
+        Debug.log_suppressed("undo._snapshots._get_live_game_object.find_by_id", exc)
         return None
 
 
@@ -32,8 +32,8 @@ def _get_live_transform(game_object_id: int):
         t = obj.get_transform()
         if t is not None:
             return t
-    except Exception as _exc:
-        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+    except Exception as exc:
+        Debug.log_suppressed("undo._snapshots._get_live_transform.get_transform", exc)
     return getattr(obj, 'transform', None)
 
 
@@ -56,14 +56,14 @@ def _get_nth_live_native_component(game_object_id: int, type_name: str,
                     continue
                 if isinstance(comp, InxComponent) or hasattr(comp, 'get_py_component'):
                     continue
-            except Exception as _exc:
-                Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+            except Exception as exc:
+                Debug.log_suppressed("undo._snapshots._get_nth_live_native_component.filter", exc)
                 continue
             if match_index == ordinal:
                 return comp
             match_index += 1
-    except Exception as _exc:
-        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+    except Exception as exc:
+        Debug.log_suppressed("undo._snapshots._get_nth_live_native_component.iter", exc)
     return None
 
 
@@ -83,14 +83,14 @@ def _get_nth_live_py_component(game_object_id: int, type_name: str,
                     continue
                 if getattr(comp, '_is_destroyed', False):
                     continue
-            except Exception as _exc:
-                Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+            except Exception as exc:
+                Debug.log_suppressed("undo._snapshots._get_nth_live_py_component.filter", exc)
                 continue
             if match_index == ordinal:
                 return comp
             match_index += 1
-    except Exception as _exc:
-        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+    except Exception as exc:
+        Debug.log_suppressed("undo._snapshots._get_nth_live_py_component.iter", exc)
     return None
 
 

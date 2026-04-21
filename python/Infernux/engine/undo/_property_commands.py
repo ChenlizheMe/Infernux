@@ -183,8 +183,8 @@ class MaterialJsonCommand(UndoCommand):
                 try:
                     from Infernux.core.assets import AssetManager
                     AssetManager.on_material_saved(fp)
-                except Exception as _exc:
-                    Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+                except Exception as exc:
+                    Debug.log_suppressed("undo._property_commands.AssetManager.on_material_saved", exc)
         if self._refresh_callback:
             self._refresh_callback(self._material)
 

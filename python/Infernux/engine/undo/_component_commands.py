@@ -22,8 +22,8 @@ def _snapshot_py_fields(py_comp: Any) -> str:
         return ""
     try:
         return py_comp._serialize_fields()
-    except Exception as _exc:
-        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+    except Exception as exc:
+        Debug.log_suppressed("undo._component_commands._snapshot_py_fields", exc)
         return ""
 
 
@@ -49,16 +49,16 @@ def _find_py_ordinal(object_id: int, py_comp: Any) -> int:
             try:
                 ct = _comp_type_name_of(current)
                 cg = getattr(current, '_script_guid', '') or ''
-            except Exception as _exc:
-                Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+            except Exception as exc:
+                Debug.log_suppressed("undo._component_commands._find_py_ordinal.read_meta", exc)
                 continue
             if ct != target_type or cg != target_guid:
                 continue
             if current is py_comp:
                 return ordinal
             ordinal += 1
-    except Exception as _exc:
-        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+    except Exception as exc:
+        Debug.log_suppressed("undo._component_commands._find_py_ordinal.iter", exc)
     return 0
 
 
@@ -73,8 +73,8 @@ def _resolve_live_py(obj, type_name: str, script_guid: str,
         for current in obj.get_py_components():
             if current is fallback:
                 return current
-    except Exception as _exc:
-        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+    except Exception as exc:
+        Debug.log_suppressed("undo._component_commands._resolve_live_py.fallback_lookup", exc)
     return None
 
 
@@ -115,13 +115,13 @@ def _instantiate_py_snapshot(type_name: str, script_guid: str,
 
     try:
         instance.enabled = enabled
-    except Exception as _exc:
-        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+    except Exception as exc:
+        Debug.log_suppressed("undo._component_commands._instantiate_py_snapshot.set_enabled", exc)
     if script_guid:
         try:
             instance._script_guid = script_guid
-        except Exception as _exc:
-            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+        except Exception as exc:
+            Debug.log_suppressed("undo._component_commands._instantiate_py_snapshot.set_script_guid", exc)
     return instance
 
 
@@ -135,8 +135,8 @@ def _snapshot_and_remove_native(object_id: int, type_name: str,
     if hasattr(live, "serialize"):
         try:
             json_snap = live.serialize()
-        except Exception as _exc:
-            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+        except Exception as exc:
+            Debug.log_suppressed("undo._component_commands._snapshot_and_remove_native.serialize", exc)
     obj.remove_component(live)
     _invalidate_builtin_wrapper(live)
     _bump_inspector_structure()
@@ -154,8 +154,8 @@ def _add_native_from_snapshot(object_id: int, type_name: str,
     if json_snapshot and hasattr(result, "deserialize"):
         try:
             result.deserialize(json_snapshot)
-        except Exception as _exc:
-            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+        except Exception as exc:
+            Debug.log_suppressed("undo._component_commands._add_native_from_snapshot.deserialize", exc)
     _bump_inspector_structure()
     _notify_gizmos_scene_changed()
 
@@ -184,8 +184,8 @@ def _add_py_from_snapshot(object_id: int, type_name: str, script_guid: str,
     if hasattr(instance, '_call_on_after_deserialize'):
         try:
             instance._call_on_after_deserialize()
-        except Exception as _exc:
-            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+        except Exception as exc:
+            Debug.log_suppressed("undo._component_commands._add_py_from_snapshot.on_after_deserialize", exc)
     _bump_inspector_structure()
     return instance
 
@@ -228,8 +228,8 @@ class RemoveNativeComponentCommand(UndoCommand):
         if comp_ref is not None and hasattr(comp_ref, "serialize"):
             try:
                 self._json_snapshot = comp_ref.serialize()
-            except Exception as _exc:
-                Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+            except Exception as exc:
+                Debug.log_suppressed("undo._component_commands.RemoveNativeComponentCommand.snapshot", exc)
 
     def execute(self) -> None:
         self._do_remove()

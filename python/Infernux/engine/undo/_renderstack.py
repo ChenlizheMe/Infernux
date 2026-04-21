@@ -73,8 +73,11 @@ def restore_renderstack(stack: Any, json_str: str) -> None:
         for name, val in data["pipeline_params"].items():
             try:
                 setattr(pipeline, name, val)
-            except (AttributeError, TypeError) as _exc:
-                Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+            except (AttributeError, TypeError) as exc:
+                Debug.log_suppressed(
+                    f"undo._renderstack.restore_pipeline_param[{name}]",
+                    exc,
+                )
 
     current_names = [e.render_pass.name for e in list(stack.pass_entries)]
     for name in current_names:

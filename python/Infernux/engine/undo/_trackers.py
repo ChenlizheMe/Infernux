@@ -101,8 +101,8 @@ class InspectorUndoTracker:
             return
         try:
             pre = snapshot_fn()
-        except Exception as _exc:
-            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+        except Exception as exc:
+            Debug.log_suppressed("undo._trackers.snapshot_fn(pre)", exc)
             return
         entry = _TrackedEntry(pre, snapshot_fn, restore_fn, description, marks_dirty)
         entry.seen_generation = self._frame_generation
@@ -132,8 +132,8 @@ class InspectorUndoTracker:
         for key, entry in self._entries.items():
             try:
                 post = entry.snapshot_fn()
-            except Exception as _exc:
-                Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+            except Exception as exc:
+                Debug.log_suppressed("undo._trackers.snapshot_fn(post)", exc)
                 continue
             if post != entry.pre_snapshot:
                 cmd = InspectorSnapshotCommand(

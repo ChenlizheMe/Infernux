@@ -60,14 +60,14 @@ def _resolve_target(stored_ref: Any, game_object_id: int,
         live = obj.get_component(comp_type_name)
         if live is not None:
             return live
-    except Exception as _exc:
-        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+    except Exception as exc:
+        Debug.log_suppressed("undo._resolve_target.get_component", exc)
     try:
         for pc in obj.get_py_components():
             if type(pc).__name__ == comp_type_name:
                 return pc
-    except Exception as _exc:
-        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+    except Exception as exc:
+        Debug.log_suppressed("undo._resolve_target.get_py_components", exc)
     return None
 
 
@@ -80,14 +80,14 @@ def _find_live_native_component(obj, type_name: str):
             c = obj.get_component(type_name)
             if c is not None:
                 return c
-        except Exception as _exc:
-            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+        except Exception as exc:
+            Debug.log_suppressed("undo._find_live_native_component.get_component", exc)
     try:
         for c in obj.get_components():
             if getattr(c, 'type_name', None) == type_name:
                 return c
-    except Exception as _exc:
-        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+    except Exception as exc:
+        Debug.log_suppressed("undo._find_live_native_component.get_components", exc)
     return None
 
 
@@ -97,8 +97,8 @@ def _get_current_selection_ids() -> List[int]:
         sel = SelectionManager.instance()
         if sel:
             return sel.get_ids()
-    except Exception as _exc:
-        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+    except Exception as exc:
+        Debug.log_suppressed("undo._get_current_selection_ids", exc)
     return []
 
 
@@ -106,16 +106,18 @@ def _bump_inspector_structure():
     try:
         from Infernux.engine.ui.inspector_support import bump_component_structure_version
         bump_component_structure_version()
-    except ImportError as _exc:
-        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+    except ImportError:
+        # Inspector module not available (e.g. headless / player mode) — no-op.
+        pass
 
 
 def _bump_inspector_values():
     try:
         from Infernux.engine.ui.inspector_support import bump_inspector_value_generation
         bump_inspector_value_generation()
-    except ImportError as _exc:
-        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+    except ImportError:
+        # Inspector module not available (e.g. headless / player mode) — no-op.
+        pass
 
 
 def _require_scene_object(object_id: int, label: str):
@@ -136,8 +138,8 @@ def _notify_gizmos_scene_changed():
 def _invalidate_builtin_wrapper(comp_ref):
     try:
         comp_id = comp_ref.component_id
-    except Exception as _exc:
-        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+    except Exception as exc:
+        Debug.log_suppressed("undo._invalidate_builtin_wrapper.read_component_id", exc)
         return
     from Infernux.components.builtin_component import BuiltinComponent
     wrapper = BuiltinComponent._wrapper_cache.get(comp_id)
@@ -148,8 +150,9 @@ def _invalidate_builtin_wrapper(comp_ref):
 def _invalidate_builtin_wrappers_for_tree(obj):
     try:
         from Infernux.components.builtin_component import BuiltinComponent
-    except ImportError as _exc:
-        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+    except ImportError:
+        # BuiltinComponent module not yet available — wrappers will lazily
+        # rebuild themselves the next time they are queried.
         return
     cache = BuiltinComponent._wrapper_cache
     pending = [obj]
@@ -164,12 +167,12 @@ def _invalidate_builtin_wrappers_for_tree(obj):
                     wrapper = cache.get(comp_id)
                     if wrapper is not None:
                         wrapper._invalidate_native_binding()
-        except Exception as _exc:
-            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+        except Exception as exc:
+            Debug.log_suppressed("undo._invalidate_builtin_wrappers_for_tree.get_components", exc)
         try:
             pending.extend(current.get_children())
-        except Exception as _exc:
-            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+        except Exception as exc:
+            Debug.log_suppressed("undo._invalidate_builtin_wrappers_for_tree.get_children", exc)
 
 
 def _destroy_game_object_immediately(scene, obj):
@@ -180,8 +183,8 @@ def _destroy_game_object_immediately(scene, obj):
     if hasattr(scene, "process_pending_destroys"):
         try:
             scene.process_pending_destroys()
-        except Exception as _exc:
-            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+        except Exception as exc:
+            Debug.log_suppressed("undo._destroy_game_object_immediately.process_pending_destroys", exc)
     _bump_inspector_structure()
     _notify_gizmos_scene_changed()
 
