@@ -399,10 +399,10 @@ void InxRenderer::DrawFrame()
     if (m_deltaTime > 0.1f)
         m_deltaTime = 0.1f;
 
-        // ========================================================================
-        // Frame Profiler — prints per-phase timings every 120 frames.
-        // Controlled by INFERNUX_FRAME_PROFILE in ProfileConfig.h (0 = off, 1 = on).
-        // ========================================================================
+    // ========================================================================
+    // Frame Profiler — prints per-phase timings every 120 frames.
+    // Controlled by INFERNUX_FRAME_PROFILE in ProfileConfig.h (0 = off, 1 = on).
+    // ========================================================================
 
 #if INFERNUX_FRAME_PROFILE
     struct FrameProfiler
