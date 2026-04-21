@@ -4,6 +4,7 @@
  */
 
 #include "VkDeviceContext.h"
+#include "DescriptorBindTrace.h"
 #include "VmaContext.h"
 #include <core/error/InxError.h>
 
@@ -11,13 +12,43 @@
 #include <SDL3/SDL_vulkan.h>
 
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
 #include <set>
+#include <sstream>
 
 namespace infernux
 {
 namespace vk
 {
+
+namespace
+{
+bool ExtractDescriptorRawFromValidationMessage(const char *message, uint64_t &outRaw)
+{
+    outRaw = 0ull;
+    if (!message)
+        return false;
+
+    const char *p = std::strstr(message, "Object 0x");
+    if (!p)
+        p = std::strstr(message, "(VkDescriptorSet 0x");
+    if (!p)
+        return false;
+
+    const char *hex = std::strstr(p, "0x");
+    if (!hex)
+        return false;
+
+    char *end = nullptr;
+    const unsigned long long parsed = std::strtoull(hex + 2, &end, 16);
+    if (end == hex + 2)
+        return false;
+
+    outRaw = static_cast<uint64_t>(parsed);
+    return true;
+}
+} // namespace
 
 // ============================================================================
 // Debug Callback
@@ -31,6 +62,45 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL DebugCallback(VkDebugUtilsMessageSeverityF
     // Filter by severity
     if (messageSeverity >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) {
         INXLOG_ERROR("Vulkan Validation Error: ", pCallbackData->pMessage);
+
+        if (pCallbackData && pCallbackData->pMessage &&
+            std::strstr(pCallbackData->pMessage, "vkCmdBindDescriptorSets()") != nullptr) {
+            const auto lastBind = infernux::vkdebug::GetLastDescriptorBindSnapshot();
+            if (lastBind.sequence > 0) {
+                INXLOG_ERROR("[VkBindTrace] lastTrackedBind seq=", lastBind.sequence,
+                             " site=", (lastBind.site ? lastBind.site : "<null>"), " firstSet=", lastBind.firstSet,
+                             " count=", lastBind.descriptorSetCount, " cmd=0x", lastBind.commandBufferRaw, " layout=0x",
+                             lastBind.pipelineLayoutRaw, " set[0]=0x", lastBind.descriptorSetRaws[0], " set[1]=0x",
+                             lastBind.descriptorSetRaws[1], " set[2]=0x", lastBind.descriptorSetRaws[2], " set[3]=0x",
+                             lastBind.descriptorSetRaws[3]);
+            } else {
+                INXLOG_ERROR("[VkBindTrace] no tracked bind call has been recorded yet");
+            }
+
+            uint64_t badRaw = 0ull;
+            if (ExtractDescriptorRawFromValidationMessage(pCallbackData->pMessage, badRaw)) {
+                std::ostringstream badRawHex;
+                badRawHex << std::hex << badRaw;
+                infernux::vkdebug::DescriptorBindTraceSnapshot matched{};
+                uint32_t localIndex = 0;
+                if (infernux::vkdebug::FindRecentDescriptorBindByRaw(badRaw, matched, localIndex)) {
+                    INXLOG_ERROR("[VkBindTrace] matchedRaw=0x", badRawHex.str(),
+                                 " at site=", (matched.site ? matched.site : "<null>"), " seq=", matched.sequence,
+                                 " firstSet=", matched.firstSet, " localIndex=", localIndex,
+                                 " absoluteSet=", (matched.firstSet + localIndex), " cmd=0x", matched.commandBufferRaw,
+                                 " layout=0x", matched.pipelineLayoutRaw);
+                }
+            }
+
+            if (pCallbackData->cmdBufLabelCount > 0 && pCallbackData->pCmdBufLabels) {
+                for (uint32_t i = 0; i < pCallbackData->cmdBufLabelCount; ++i) {
+                    const char *name = pCallbackData->pCmdBufLabels[i].pLabelName;
+                    if (name && name[0] != '\0') {
+                        INXLOG_ERROR("[VkBindTrace] cmdBufLabel[", i, "]='", name, "'");
+                    }
+                }
+            }
+        }
     } else if (messageSeverity >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT) {
         INXLOG_WARN("Vulkan Validation Warning: ", pCallbackData->pMessage);
     } else if (messageSeverity >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT) {

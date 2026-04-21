@@ -126,6 +126,8 @@ class AnimState:
     transitions: List[AnimTransition] = field(default_factory=list)
     # Visual position in the node editor (editor-only, persisted for convenience)
     position: List[float] = field(default_factory=lambda: [0.0, 0.0])
+    # Optional custom node header color in editor RGBA.
+    header_color: List[float] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -138,10 +140,23 @@ class AnimState:
             "restart_same_clip": self.restart_same_clip,
             "transitions": [t.to_dict() for t in self.transitions],
             "position": list(self.position),
+            "header_color": list(self.header_color),
         }
 
     @classmethod
     def from_dict(cls, d: dict) -> AnimState:
+        raw_header = d.get("header_color", [])
+        header_color: List[float] = []
+        if isinstance(raw_header, (list, tuple)) and len(raw_header) >= 3:
+            try:
+                header_color = [
+                    float(raw_header[0]),
+                    float(raw_header[1]),
+                    float(raw_header[2]),
+                    float(raw_header[3]) if len(raw_header) >= 4 else 1.0,
+                ]
+            except (TypeError, ValueError):
+                header_color = []
         return cls(
             name=str(d.get("name", "New State")),
             clip_guid=str(d.get("clip_guid", "")),
@@ -154,6 +169,7 @@ class AnimState:
             restart_same_clip=bool(d.get("restart_same_clip", False)),
             transitions=[AnimTransition.from_dict(t) for t in d.get("transitions", [])],
             position=list(d.get("position", [0.0, 0.0])),
+            header_color=header_color,
         )
 
 

@@ -28,6 +28,7 @@ class GizmosDrawCallBuffer;
 class InxGUI;
 class InxGUIRenderable;
 class InxMaterial;
+class InxMesh;
 class InxVkCoreModular;
 class InxView;
 class OutlineRenderer;
@@ -151,6 +152,11 @@ class InxRenderer
     /// @return true if GPU rendering succeeded and outPixels was filled.
     bool RenderMaterialPreviewGPU(std::shared_ptr<InxMaterial> material, int size,
                                   std::vector<unsigned char> &outPixels);
+
+    /// @brief Render a mesh preview using real GPU shaders with per-submesh materials.
+    /// @return true if GPU rendering succeeded and outPixels was filled.
+    bool RenderMeshPreviewGPU(const InxMesh &mesh, const std::vector<std::shared_ptr<InxMaterial>> &materials, int size,
+                              std::vector<unsigned char> &outPixels);
 
     // Refresh all materials using a specific shader
     bool RefreshMaterialsUsingShader(const std::string &shaderId);

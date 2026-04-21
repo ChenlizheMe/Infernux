@@ -64,6 +64,17 @@ class BootstrapPanelsMixin:
             title_key="panel.inspector",
         )
 
+        from Infernux.lib import ProjectPanel as NativeProjectPanel
+
+        wm.register_window_type(
+            type_id="project",
+            window_class=NativeProjectPanel,
+            display_name="Project",
+            factory=self._create_native_project_panel,
+            singleton=True,
+            title_key="panel.project",
+        )
+
         # Override factories for panels that need runtime dependencies.
         # Panels with no-arg constructors use the default factory (cls()).
         _factories = {
@@ -265,9 +276,9 @@ class BootstrapPanelsMixin:
         engine.register_gui("ui_editor", self.ui_editor)
         wm.register_existing_window("ui_editor", self.ui_editor, "ui_editor")
 
-        self.project_panel.on_state_changed = self._persist_editor_state
-        wm.set_on_state_changed(self._persist_editor_state)
-
+        # During startup restore, suppress state-changed callbacks so we don't
+        # overwrite persisted panel payloads with default/empty panel data.
+        self._suspend_persist_state = True
         ws = _panel_state.get("window_manager")
         if ws:
             wm.load_state(ws)
@@ -288,6 +299,14 @@ class BootstrapPanelsMixin:
                         inst.load_state(data)
                     except Exception:
                         pass
+
+        self._suspend_persist_state = False
+        self.project_panel.on_state_changed = self._persist_editor_state
+        wm.set_on_state_changed(self._persist_editor_state)
+        try:
+            self.engine.set_before_exit_callback(self._persist_editor_state)
+        except Exception:
+            pass
 
         self._persist_editor_state()
 

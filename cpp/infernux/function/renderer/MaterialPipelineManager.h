@@ -157,6 +157,14 @@ class MaterialPipelineManager
     }
 
     /**
+     * @brief Returns true if the VkDescriptorSet belongs to this manager and is still live.
+     */
+    [[nodiscard]] bool IsDescriptorSetLive(VkDescriptorSet ds) const
+    {
+        return m_descriptorManager.IsDescriptorSetLive(ds);
+    }
+
+    /**
      * @brief Invalidate render data for materials using a specific shader
      *
      * This should be called when a shader is hot-reloaded to force pipeline recreation.

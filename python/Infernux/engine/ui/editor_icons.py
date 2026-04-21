@@ -10,17 +10,15 @@ Usage::
 """
 
 import os
-from Infernux.lib import TextureLoader
 import Infernux.resources as _resources
+from Infernux.engine.texture_task_bridge import texture_stamp, query_or_schedule_texture
 
 _cache: dict[str, int] = {}
-_loaded: bool = False
 
 
 def _ensure_loaded(native_engine) -> None:
     """Upload all known editor icons (once)."""
-    global _loaded
-    if _loaded or native_engine is None:
+    if native_engine is None:
         return
 
     _ICONS = [
@@ -30,20 +28,22 @@ def _ensure_loaded(native_engine) -> None:
         "tool_none", "tool_move", "tool_rotate", "tool_scale",
     ]
     for name in _ICONS:
-        tex_name = f"__edicon__{name}"
-        if native_engine.has_imgui_texture(tex_name):
-            _cache[name] = native_engine.get_imgui_texture_id(tex_name)
-            continue
         path = os.path.join(_resources.file_type_icons_dir, f"{name}.png")
         if not os.path.isfile(path):
             continue
-        td = TextureLoader.load_from_file(path)
-        if td and td.is_valid():
-            tid = native_engine.upload_texture_for_imgui(
-                tex_name, td.get_pixels_list(), td.width, td.height)
-            if tid != 0:
-                _cache[name] = tid
-    _loaded = True
+        stamp = texture_stamp(path, "editor_icon")
+        if stamp == 0:
+            continue
+        tid, _, _ = query_or_schedule_texture(
+            native_engine,
+            f"edicon|{name}",
+            path,
+            int(stamp),
+            nearest=False,
+            srgb=False,
+        )
+        if tid != 0:
+            _cache[name] = tid
 
 
 class EditorIcons:
@@ -63,6 +63,4 @@ class EditorIcons:
     @staticmethod
     def reset():
         """Clear the cache (e.g. after engine re-init)."""
-        global _loaded
         _cache.clear()
-        _loaded = False

@@ -569,7 +569,13 @@ def render_component_header(
         ctx.set_next_item_open(True, Theme.COND_FIRST_USE_EVER)
     ctx.set_next_item_allow_overlap()
     header_key = header_id or type_name
+    _clip_wx = ctx.get_window_pos_x()
+    _clip_cx = ctx.get_cursor_pos_x()
+    _clip_avail = ctx.get_content_region_avail_width()
+    _clip_max_x = _clip_wx + _clip_cx + _clip_avail - Theme.INSPECTOR_HEADER_RIGHT_MARGIN
+    ctx.push_draw_list_clip_rect(0.0, 0.0, _clip_max_x, 1e7, True)
     header_open = ctx.collapsing_header(f"##comp_{header_key}")
+    ctx.pop_draw_list_clip_rect()
     header_height = max(0.0, ctx.get_item_rect_max_y() - ctx.get_item_rect_min_y())
 
     # ── overlay icon / checkbox / label on the same row ──
@@ -665,7 +671,13 @@ def render_compact_section_header(
         ctx.image(icon_id, Theme.COMPONENT_ICON_SIZE, Theme.COMPONENT_ICON_SIZE)
         ctx.same_line()
 
+    _cs_wx = ctx.get_window_pos_x()
+    _cs_cx = ctx.get_cursor_pos_x()
+    _cs_avail = ctx.get_content_region_avail_width()
+    _cs_max_x = _cs_wx + _cs_cx + _cs_avail - Theme.INSPECTOR_HEADER_RIGHT_MARGIN
+    ctx.push_draw_list_clip_rect(0.0, 0.0, _cs_max_x, 1e7, True)
     header_open = ctx.collapsing_header(label)
+    ctx.pop_draw_list_clip_rect()
 
     if text_color is not None:
         ctx.pop_style_color(1)

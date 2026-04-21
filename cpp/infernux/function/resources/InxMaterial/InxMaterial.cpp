@@ -299,6 +299,47 @@ InxMaterial::InxMaterial(const std::string &name, const std::string &shaderName)
 {
 }
 
+InxMaterial::InxMaterial(const InxMaterial &other)
+    : m_name(other.m_name), m_guid(other.m_guid), m_filePath(other.m_filePath), m_builtin(other.m_builtin),
+      m_vertShaderName(other.m_vertShaderName), m_fragShaderName(other.m_fragShaderName), m_passTag(other.m_passTag),
+      m_renderState(other.m_renderState), m_renderStateOverrides(other.m_renderStateOverrides),
+      m_properties(other.m_properties), m_pipelineDirty(true), m_propertiesDirty(true), m_version(0),
+      m_isDeleted(other.m_isDeleted)
+{
+    // GPU-transient state must never be copied across logical material instances.
+}
+
+InxMaterial &InxMaterial::operator=(const InxMaterial &other)
+{
+    if (this == &other) {
+        return *this;
+    }
+
+    m_name = other.m_name;
+    m_guid = other.m_guid;
+    m_filePath = other.m_filePath;
+    m_builtin = other.m_builtin;
+    m_vertShaderName = other.m_vertShaderName;
+    m_fragShaderName = other.m_fragShaderName;
+    m_passTag = other.m_passTag;
+    m_renderState = other.m_renderState;
+    m_renderStateOverrides = other.m_renderStateOverrides;
+    m_properties = other.m_properties;
+
+    // Reset runtime-only GPU state so this instance cannot retain stale handles.
+    ClearAllPassPipelines();
+    m_uboBuffer = VK_NULL_HANDLE;
+    m_uboAllocator = VK_NULL_HANDLE;
+    m_uboAllocation = VK_NULL_HANDLE;
+    m_uboMappedData = nullptr;
+    m_pipelineDirty = true;
+    m_propertiesDirty = true;
+    m_version = 0;
+    m_isDeleted = other.m_isDeleted;
+
+    return *this;
+}
+
 void InxMaterial::SetFloat(const std::string &name, float value)
 {
     m_properties[name] = MaterialProperty{name, MaterialPropertyType::Float, value};

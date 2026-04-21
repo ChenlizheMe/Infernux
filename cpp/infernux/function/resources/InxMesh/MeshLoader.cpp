@@ -184,6 +184,7 @@ static std::shared_ptr<InxMesh> ConvertScene(const aiScene *scene, const MeshImp
     // share the same material index → same slot.
     std::unordered_map<unsigned int, uint32_t> aiMatToSlot;
     std::vector<std::string> materialSlotNames;
+    std::vector<MaterialSlotData> materialSlotDataVec;
 
     uint32_t currentVertexOffset = 0;
     uint32_t currentIndexOffset = 0;
@@ -287,14 +288,49 @@ static std::shared_ptr<InxMesh> ConvertScene(const aiScene *scene, const MeshImp
 
             // Extract material name from Assimp
             std::string matName;
+            MaterialSlotData slotData;
             if (aiM->mMaterialIndex < scene->mNumMaterials) {
+                const aiMaterial *aiMat = scene->mMaterials[aiM->mMaterialIndex];
                 aiString aiName;
-                scene->mMaterials[aiM->mMaterialIndex]->Get(AI_MATKEY_NAME, aiName);
+                aiMat->Get(AI_MATKEY_NAME, aiName);
                 matName = aiName.C_Str();
+
+                // Diffuse / base colour
+                aiColor4D diffuse;
+                if (aiMat->Get(AI_MATKEY_COLOR_DIFFUSE, diffuse) == AI_SUCCESS) {
+                    slotData.baseColor = glm::vec4(diffuse.r, diffuse.g, diffuse.b, diffuse.a);
+                }
+                // Try PBR base color as override (glTF workflow)
+                aiColor4D pbrBase;
+                if (aiMat->Get(AI_MATKEY_BASE_COLOR, pbrBase) == AI_SUCCESS) {
+                    slotData.baseColor = glm::vec4(pbrBase.r, pbrBase.g, pbrBase.b, pbrBase.a);
+                }
+                // Emission colour
+                aiColor4D emission;
+                if (aiMat->Get(AI_MATKEY_COLOR_EMISSIVE, emission) == AI_SUCCESS) {
+                    slotData.emissionColor = glm::vec4(emission.r, emission.g, emission.b, emission.a);
+                }
+                // Metallic factor
+                float metallic = 0.0f;
+                if (aiMat->Get(AI_MATKEY_METALLIC_FACTOR, metallic) == AI_SUCCESS) {
+                    slotData.metallic = metallic;
+                }
+                // Roughness → smoothness
+                float roughness = 0.5f;
+                if (aiMat->Get(AI_MATKEY_ROUGHNESS_FACTOR, roughness) == AI_SUCCESS) {
+                    slotData.smoothness = 1.0f - roughness;
+                }
+                // Opacity
+                float opacity = 1.0f;
+                if (aiMat->Get(AI_MATKEY_OPACITY, opacity) == AI_SUCCESS) {
+                    slotData.opacity = opacity;
+                    slotData.baseColor.a *= opacity;
+                }
             }
             if (matName.empty())
                 matName = "Material_" + std::to_string(slot);
             materialSlotNames.push_back(matName);
+            materialSlotDataVec.push_back(slotData);
         }
 
         // ── SubMesh ─────────────────────────────────────────────────
@@ -324,6 +360,7 @@ static std::shared_ptr<InxMesh> ConvertScene(const aiScene *scene, const MeshImp
 
     mesh->SetData(std::move(vertices), std::move(indices), std::move(subMeshes));
     mesh->SetMaterialSlotNames(std::move(materialSlotNames));
+    mesh->SetMaterialSlotData(std::move(materialSlotDataVec));
     mesh->SetNodeNames(std::move(nodeNames));
 
     return mesh;
@@ -411,6 +448,7 @@ bool MeshLoader::Reload(std::shared_ptr<void> existing, const std::string &fileP
     target->SetData(std::vector<Vertex>(loaded->GetVertices()), std::vector<uint32_t>(loaded->GetIndices()),
                     std::vector<SubMesh>(loaded->GetSubMeshes()));
     target->SetMaterialSlotNames(std::vector<std::string>(loaded->GetMaterialSlotNames()));
+    target->SetMaterialSlotData(std::vector<MaterialSlotData>(loaded->GetMaterialSlotData()));
 
     INXLOG_INFO("MeshLoader::Reload: updated '", target->GetName(), "' in-place");
     return true;

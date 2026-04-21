@@ -22,6 +22,7 @@
 #include <core/config/MathConstants.h>
 #include <function/resources/AssetRegistry/AssetRegistry.h>
 #include <function/resources/InxMaterial/InxMaterial.h>
+#include <function/resources/InxMesh/InxMesh.h>
 #include <function/scene/Camera.h>
 #include <function/scene/Light.h>
 #include <function/scene/LightingData.h>
@@ -1580,6 +1581,14 @@ bool InxRenderer::RenderMaterialPreviewGPU(std::shared_ptr<InxMaterial> material
     if (!m_vkCore || !material)
         return false;
     return m_vkCore->RenderMaterialPreviewGPU(material, size, outPixels);
+}
+
+bool InxRenderer::RenderMeshPreviewGPU(const InxMesh &mesh, const std::vector<std::shared_ptr<InxMaterial>> &materials,
+                                       int size, std::vector<unsigned char> &outPixels)
+{
+    if (!m_vkCore)
+        return false;
+    return m_vkCore->RenderMeshPreviewGPU(mesh, materials, size, outPixels);
 }
 
 void InxRenderer::InvalidateShaderCache(const std::string &shaderId)

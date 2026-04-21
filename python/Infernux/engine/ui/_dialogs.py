@@ -210,6 +210,42 @@ def show_system_error_dialog(title: str, message: str) -> None:
         root.destroy()
 
 
+def ask_save_discard_cancel(title: str, message: str) -> str:
+    """Show a Save/Discard/Cancel confirmation dialog.
+
+    Returns one of: ``"save"``, ``"discard"``, ``"cancel"``.
+    """
+    if sys.platform == "win32":
+        import ctypes
+
+        MB_YESNOCANCEL = 0x00000003
+        MB_ICONQUESTION = 0x00000020
+        IDYES = 6
+        IDNO = 7
+        ret = ctypes.windll.user32.MessageBoxW(0, message, title, MB_YESNOCANCEL | MB_ICONQUESTION)
+        if ret == IDYES:
+            return "save"
+        if ret == IDNO:
+            return "discard"
+        return "cancel"
+
+    import tkinter as tk
+    from tkinter import messagebox
+
+    root = tk.Tk()
+    root.withdraw()
+    root.attributes("-topmost", True)
+    try:
+        res = messagebox.askyesnocancel(title, message, parent=root)
+        if res is True:
+            return "save"
+        if res is False:
+            return "discard"
+        return "cancel"
+    finally:
+        root.destroy()
+
+
 # ---------------------------------------------------------------------------
 # Save-file dialog  (cross-platform, synchronous)
 # ---------------------------------------------------------------------------

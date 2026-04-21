@@ -60,7 +60,9 @@ namespace infernux
 
 class EditorGizmos;
 class GPUMaterialPreview;
+class GPUMeshPreview;
 class InxMaterial;
+class InxMesh;
 class SceneRenderTarget;
 struct RenderState;
 
@@ -521,6 +523,15 @@ class InxVkCoreModular
     bool RenderMaterialPreviewGPU(std::shared_ptr<InxMaterial> material, int size,
                                   std::vector<unsigned char> &outPixels);
 
+    /// @brief Render a mesh preview using real GPU shaders.
+    /// @param mesh      Loaded mesh asset with vertices/indices.
+    /// @param materials Per-submesh materials (matched by SubMesh::materialSlot).
+    /// @param size      Output image width and height (square).
+    /// @param outPixels Receives RGBA8 pixel data (size*size*4 bytes).
+    /// @return true if GPU rendering succeeded.
+    bool RenderMeshPreviewGPU(const InxMesh &mesh, const std::vector<std::shared_ptr<InxMaterial>> &materials, int size,
+                              std::vector<unsigned char> &outPixels);
+
     /// @brief Create a per-material shadow pipeline using the material's shadow
     ///        vertex and fragment variants.
     void CreateMaterialShadowPipeline(std::shared_ptr<InxMaterial> material, const std::string &vertShaderName,
@@ -874,6 +885,8 @@ class InxVkCoreModular
 
     // GPU material preview (lazy-initialized)
     std::unique_ptr<GPUMaterialPreview> m_gpuMaterialPreview;
+    // GPU mesh preview (lazy-initialized)
+    std::unique_ptr<GPUMeshPreview> m_gpuMeshPreview;
 
     /// @brief Shared texture resolution logic (used by TextureResolver lambda).
     /// Resolves textureRef (GUID or path) → GPU image, using GUID-based cache keys.

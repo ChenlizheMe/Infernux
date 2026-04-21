@@ -324,34 +324,70 @@ void InxGUI::SetGUIFont(const char *fontPath, float fontSize)
 void InxGUI::BuildFrame()
 {
     static auto ctx = std::make_unique<InxGUIContext>();
+    ++m_guiFrameCounter;
 
-    // Flush deferred texture removals BEFORE starting the new ImGui frame.
-    // Textures queued for removal during the previous frame are now safe to
-    // destroy because Render()/RenderDrawData() has already consumed the
-    // draw list that may have referenced their descriptor sets.
-    if (!m_pendingTextureRemovals.empty()) {
+    constexpr uint64_t kTextureReleaseGraceFrames = 8;
+
+    auto releaseTextureResourceNow = [&](const ImGuiTextureResource &tex) {
         VkDevice device = m_vkCore_ptr->GetDevice();
-        vkDeviceWaitIdle(device);
+        if (tex.descriptorSet != VK_NULL_HANDLE)
+            ImGui_ImplVulkan_RemoveTexture(tex.descriptorSet);
+        if (tex.sampler != VK_NULL_HANDLE)
+            vkDestroySampler(device, tex.sampler, nullptr);
+        if (tex.imageView != VK_NULL_HANDLE)
+            vkDestroyImageView(device, tex.imageView, nullptr);
+        if (tex.image != VK_NULL_HANDLE) {
+            VmaAllocator allocator = m_vkCore_ptr->GetDeviceContext().GetVmaAllocator();
+            vmaDestroyImage(allocator, tex.image, tex.allocation);
+        }
+    };
 
+    // Queue removals first, then release after a grace window.
+    // Some panels may still emit one or two frames with stale cached TexID;
+    // delaying descriptor destruction prevents invalid VkDescriptorSet binds.
+    if (!m_pendingTextureRemovals.empty() || !m_pendingTextureResourceReleases.empty()) {
         for (const auto &name : m_pendingTextureRemovals) {
             auto it = m_textures_umap.find(name);
             if (it == m_textures_umap.end())
                 continue;
 
-            auto &tex = it->second;
-            if (tex.descriptorSet != VK_NULL_HANDLE)
-                ImGui_ImplVulkan_RemoveTexture(tex.descriptorSet);
-            if (tex.sampler != VK_NULL_HANDLE)
-                vkDestroySampler(device, tex.sampler, nullptr);
-            if (tex.imageView != VK_NULL_HANDLE)
-                vkDestroyImageView(device, tex.imageView, nullptr);
-            if (tex.image != VK_NULL_HANDLE) {
-                VmaAllocator allocator = m_vkCore_ptr->GetDeviceContext().GetVmaAllocator();
-                vmaDestroyImage(allocator, tex.image, tex.allocation);
-            }
+            m_deferredTextureReleases.push_back(
+                DeferredTextureRelease{it->second, m_guiFrameCounter + kTextureReleaseGraceFrames});
             m_textures_umap.erase(it);
         }
+
+        for (auto &tex : m_pendingTextureResourceReleases) {
+            m_deferredTextureReleases.push_back(
+                DeferredTextureRelease{tex, m_guiFrameCounter + kTextureReleaseGraceFrames});
+        }
+
+        m_pendingTextureResourceReleases.clear();
         m_pendingTextureRemovals.clear();
+    }
+
+    if (!m_deferredTextureReleases.empty()) {
+        std::vector<DeferredTextureRelease> stillDeferred;
+        std::vector<ImGuiTextureResource> readyToRelease;
+        stillDeferred.reserve(m_deferredTextureReleases.size());
+        readyToRelease.reserve(m_deferredTextureReleases.size());
+
+        for (auto &entry : m_deferredTextureReleases) {
+            if (entry.releaseFrame > m_guiFrameCounter) {
+                stillDeferred.push_back(entry);
+                continue;
+            }
+            readyToRelease.push_back(entry.resource);
+        }
+
+        if (!readyToRelease.empty()) {
+            // Some panels cache TexID for longer than the grace window.
+            // Runtime destruction can still invalidate those stale IDs.
+            // Keep retired resources alive and release them in Shutdown().
+            m_retiredTextureResources.insert(m_retiredTextureResources.end(), readyToRelease.begin(),
+                                             readyToRelease.end());
+        }
+
+        m_deferredTextureReleases.swap(stillDeferred);
     }
 
     ImGui_ImplSDL3_NewFrame();
@@ -543,7 +579,49 @@ void InxGUI::RecordCommand(VkCommandBuffer cmdBuf)
 
 void InxGUI::Shutdown()
 {
-    // Flush any pending texture removals
+    VkDevice device = m_vkCore_ptr->GetDevice();
+    vkDeviceWaitIdle(device);
+
+    // Flush any pending replaced textures that have not yet reached BuildFrame cleanup.
+    for (auto &tex : m_pendingTextureResourceReleases) {
+        if (tex.descriptorSet != VK_NULL_HANDLE)
+            ImGui_ImplVulkan_RemoveTexture(tex.descriptorSet);
+        if (tex.sampler != VK_NULL_HANDLE)
+            vkDestroySampler(m_vkCore_ptr->GetDevice(), tex.sampler, nullptr);
+        if (tex.imageView != VK_NULL_HANDLE)
+            vkDestroyImageView(m_vkCore_ptr->GetDevice(), tex.imageView, nullptr);
+        if (tex.image != VK_NULL_HANDLE) {
+            vmaDestroyImage(m_vkCore_ptr->GetDeviceContext().GetVmaAllocator(), tex.image, tex.allocation);
+        }
+    }
+    m_pendingTextureResourceReleases.clear();
+
+    for (auto &entry : m_deferredTextureReleases) {
+        auto &tex = entry.resource;
+        if (tex.descriptorSet != VK_NULL_HANDLE)
+            ImGui_ImplVulkan_RemoveTexture(tex.descriptorSet);
+        if (tex.sampler != VK_NULL_HANDLE)
+            vkDestroySampler(m_vkCore_ptr->GetDevice(), tex.sampler, nullptr);
+        if (tex.imageView != VK_NULL_HANDLE)
+            vkDestroyImageView(m_vkCore_ptr->GetDevice(), tex.imageView, nullptr);
+        if (tex.image != VK_NULL_HANDLE) {
+            vmaDestroyImage(m_vkCore_ptr->GetDeviceContext().GetVmaAllocator(), tex.image, tex.allocation);
+        }
+    }
+    m_deferredTextureReleases.clear();
+
+    for (auto &tex : m_retiredTextureResources) {
+        if (tex.descriptorSet != VK_NULL_HANDLE)
+            ImGui_ImplVulkan_RemoveTexture(tex.descriptorSet);
+        if (tex.sampler != VK_NULL_HANDLE)
+            vkDestroySampler(m_vkCore_ptr->GetDevice(), tex.sampler, nullptr);
+        if (tex.imageView != VK_NULL_HANDLE)
+            vkDestroyImageView(m_vkCore_ptr->GetDevice(), tex.imageView, nullptr);
+        if (tex.image != VK_NULL_HANDLE) {
+            vmaDestroyImage(m_vkCore_ptr->GetDeviceContext().GetVmaAllocator(), tex.image, tex.allocation);
+        }
+    }
+    m_retiredTextureResources.clear();
     m_pendingTextureRemovals.clear();
 
     // Clean up InxGUI-owned textures (image, imageView, sampler, memory).
@@ -609,39 +687,25 @@ void InxGUI::Unregister(const std::string &name)
 uint64_t InxGUI::UploadTextureForImGui(const std::string &name, const unsigned char *pixels, int width, int height,
                                        VkFilter filter)
 {
-    // Check if texture already exists
-    auto it = m_textures_umap.find(name);
-    if (it != m_textures_umap.end()) {
-        // Must destroy immediately (not deferred) because we're about to
-        // reuse the same name for a new upload in this call.
-        VkDevice device_rm = m_vkCore_ptr->GetDevice();
-        vkDeviceWaitIdle(device_rm);
-
-        auto &oldTex = it->second;
-        if (oldTex.descriptorSet != VK_NULL_HANDLE)
-            ImGui_ImplVulkan_RemoveTexture(oldTex.descriptorSet);
-        if (oldTex.sampler != VK_NULL_HANDLE)
-            vkDestroySampler(device_rm, oldTex.sampler, nullptr);
-        if (oldTex.imageView != VK_NULL_HANDLE)
-            vkDestroyImageView(device_rm, oldTex.imageView, nullptr);
-        if (oldTex.image != VK_NULL_HANDLE) {
-            VmaAllocator alloc_rm = m_vkCore_ptr->GetDeviceContext().GetVmaAllocator();
-            vmaDestroyImage(alloc_rm, oldTex.image, oldTex.allocation);
-        }
-        m_textures_umap.erase(it);
-
-        // Also remove from pending queue if it was there
-        m_pendingTextureRemovals.erase(
-            std::remove(m_pendingTextureRemovals.begin(), m_pendingTextureRemovals.end(), name),
-            m_pendingTextureRemovals.end());
-    }
+    // Keep current texture alive as a fallback while building a replacement.
+    auto existingIt = m_textures_umap.find(name);
+    const uint64_t fallbackTexId =
+        (existingIt != m_textures_umap.end()) ? reinterpret_cast<uint64_t>(existingIt->second.descriptorSet) : 0;
 
     VkDevice device = m_vkCore_ptr->GetDevice();
-    VkPhysicalDevice physDevice = m_vkCore_ptr->GetPhysicalDevice();
-    VkQueue queue = m_vkCore_ptr->GetGraphicsQueue();
-    VkCommandPool cmdPool = m_vkCore_ptr->GetCommandPool();
+    VkPhysicalDevice physicalDevice = m_vkCore_ptr->GetPhysicalDevice();
+    constexpr VkFormat kGuiTextureFormat = VK_FORMAT_R8G8B8A8_UNORM;
 
     VkDeviceSize imageSize = width * height * 4; // RGBA
+
+    uint32_t mipLevels = 1;
+    if (filter != VK_FILTER_NEAREST && width > 1 && height > 1) {
+        VkFormatProperties formatProps{};
+        vkGetPhysicalDeviceFormatProperties(physicalDevice, kGuiTextureFormat, &formatProps);
+        if ((formatProps.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT) != 0) {
+            mipLevels = static_cast<uint32_t>(std::floor(std::log2((std::max)(width, height)))) + 1;
+        }
+    }
 
     // Create staging buffer via VMA
     VkBuffer stagingBuffer;
@@ -666,12 +730,14 @@ uint64_t InxGUI::UploadTextureForImGui(const std::string &name, const unsigned c
     imageInfo.extent.width = static_cast<uint32_t>(width);
     imageInfo.extent.height = static_cast<uint32_t>(height);
     imageInfo.extent.depth = 1;
-    imageInfo.mipLevels = 1;
+    imageInfo.mipLevels = mipLevels;
     imageInfo.arrayLayers = 1;
-    imageInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
+    imageInfo.format = kGuiTextureFormat;
     imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
     imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     imageInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    if (mipLevels > 1)
+        imageInfo.usage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
     imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
 
@@ -683,16 +749,17 @@ uint64_t InxGUI::UploadTextureForImGui(const std::string &name, const unsigned c
     if (result != VK_SUCCESS) {
         INXLOG_ERROR("InxGUI::UploadTextureForImGui(): Failed to create image for '", name, "'");
         vmaDestroyBuffer(allocator, stagingBuffer, stagingAllocation);
-        return 0;
+        return fallbackTexId;
     }
 
     // Transition image layout and copy buffer to image
     VkCommandBuffer cmdBuf = m_vkCore_ptr->BeginSingleTimeCommands();
 
-    // Transition to TRANSFER_DST
+    // Transition all mip levels to TRANSFER_DST.
     VkImageMemoryBarrier barrier =
         vkrender::MakeImageBarrier(tex.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                                    VK_IMAGE_ASPECT_COLOR_BIT, 0, VK_ACCESS_TRANSFER_WRITE_BIT);
+    barrier.subresourceRange.levelCount = mipLevels;
 
     vkCmdPipelineBarrier(cmdBuf, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0,
                          nullptr, 1, &barrier);
@@ -711,13 +778,71 @@ uint64_t InxGUI::UploadTextureForImGui(const std::string &name, const unsigned c
 
     vkCmdCopyBufferToImage(cmdBuf, stagingBuffer, tex.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 
-    // Transition to SHADER_READ_ONLY
-    barrier = vkrender::MakeImageBarrier(tex.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                                         VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT,
-                                         VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT);
+    if (mipLevels > 1) {
+        int32_t mipWidth = width;
+        int32_t mipHeight = height;
 
-    vkCmdPipelineBarrier(cmdBuf, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr,
-                         0, nullptr, 1, &barrier);
+        for (uint32_t i = 1; i < mipLevels; ++i) {
+            barrier.subresourceRange.baseMipLevel = i - 1;
+            barrier.subresourceRange.levelCount = 1;
+            barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+            barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+
+            vkCmdPipelineBarrier(cmdBuf, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr,
+                                 0, nullptr, 1, &barrier);
+
+            VkImageBlit blit{};
+            blit.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            blit.srcSubresource.mipLevel = i - 1;
+            blit.srcSubresource.baseArrayLayer = 0;
+            blit.srcSubresource.layerCount = 1;
+            blit.srcOffsets[0] = {0, 0, 0};
+            blit.srcOffsets[1] = {mipWidth, mipHeight, 1};
+
+            const int32_t nextWidth = mipWidth > 1 ? mipWidth / 2 : 1;
+            const int32_t nextHeight = mipHeight > 1 ? mipHeight / 2 : 1;
+
+            blit.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            blit.dstSubresource.mipLevel = i;
+            blit.dstSubresource.baseArrayLayer = 0;
+            blit.dstSubresource.layerCount = 1;
+            blit.dstOffsets[0] = {0, 0, 0};
+            blit.dstOffsets[1] = {nextWidth, nextHeight, 1};
+
+            vkCmdBlitImage(cmdBuf, tex.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, tex.image,
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
+
+            barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+            barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+            barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+            vkCmdPipelineBarrier(cmdBuf, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0,
+                                 nullptr, 0, nullptr, 1, &barrier);
+
+            mipWidth = nextWidth;
+            mipHeight = nextHeight;
+        }
+
+        barrier.subresourceRange.baseMipLevel = mipLevels - 1;
+        barrier.subresourceRange.levelCount = 1;
+        barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+        vkCmdPipelineBarrier(cmdBuf, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0,
+                             nullptr, 0, nullptr, 1, &barrier);
+    } else {
+        barrier = vkrender::MakeImageBarrier(tex.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT,
+                                             VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT);
+
+        vkCmdPipelineBarrier(cmdBuf, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0,
+                             nullptr, 0, nullptr, 1, &barrier);
+    }
 
     m_vkCore_ptr->EndSingleTimeCommands(cmdBuf);
 
@@ -729,17 +854,17 @@ uint64_t InxGUI::UploadTextureForImGui(const std::string &name, const unsigned c
     viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
     viewInfo.image = tex.image;
     viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    viewInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
+    viewInfo.format = kGuiTextureFormat;
     viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     viewInfo.subresourceRange.baseMipLevel = 0;
-    viewInfo.subresourceRange.levelCount = 1;
+    viewInfo.subresourceRange.levelCount = mipLevels;
     viewInfo.subresourceRange.baseArrayLayer = 0;
     viewInfo.subresourceRange.layerCount = 1;
 
     if (vkCreateImageView(device, &viewInfo, nullptr, &tex.imageView) != VK_SUCCESS) {
         INXLOG_ERROR("InxGUI::UploadTextureForImGui(): Failed to create image view for '", name, "'");
         vmaDestroyImage(allocator, tex.image, tex.allocation);
-        return 0;
+        return fallbackTexId;
     }
 
     // Create sampler
@@ -758,12 +883,14 @@ uint64_t InxGUI::UploadTextureForImGui(const std::string &name, const unsigned c
     samplerInfo.compareOp = VK_COMPARE_OP_ALWAYS;
     samplerInfo.mipmapMode =
         (filter == VK_FILTER_NEAREST) ? VK_SAMPLER_MIPMAP_MODE_NEAREST : VK_SAMPLER_MIPMAP_MODE_LINEAR;
+    samplerInfo.minLod = 0.0f;
+    samplerInfo.maxLod = static_cast<float>(mipLevels);
 
     if (vkCreateSampler(device, &samplerInfo, nullptr, &tex.sampler) != VK_SUCCESS) {
         INXLOG_ERROR("InxGUI::UploadTextureForImGui(): Failed to create sampler for '", name, "'");
         vkDestroyImageView(device, tex.imageView, nullptr);
         vmaDestroyImage(allocator, tex.image, tex.allocation);
-        return 0;
+        return fallbackTexId;
     }
 
     // Create descriptor set for ImGui
@@ -775,7 +902,15 @@ uint64_t InxGUI::UploadTextureForImGui(const std::string &name, const unsigned c
         vkDestroySampler(device, tex.sampler, nullptr);
         vkDestroyImageView(device, tex.imageView, nullptr);
         vmaDestroyImage(allocator, tex.image, tex.allocation);
-        return 0;
+        return fallbackTexId;
+    }
+
+    // New texture is ready. Swap mapping atomically and defer old resource release.
+    if (existingIt != m_textures_umap.end()) {
+        m_pendingTextureResourceReleases.push_back(existingIt->second);
+        m_pendingTextureRemovals.erase(
+            std::remove(m_pendingTextureRemovals.begin(), m_pendingTextureRemovals.end(), name),
+            m_pendingTextureRemovals.end());
     }
 
     m_textures_umap[name] = tex;

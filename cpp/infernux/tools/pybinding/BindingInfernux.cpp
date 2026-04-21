@@ -482,19 +482,51 @@ PYBIND11_MODULE(_Infernux, m)
                 return r ? r->GetResourcePreviewManager() : nullptr;
             },
             py::return_value_policy::reference, "Get the resource preview manager for file previews")
-        .def(
-            "render_material_preview_pixels",
-            [](Infernux &self, const std::string &matFilePath, int size) -> py::object {
-                std::vector<unsigned char> pixels;
-                AssetDatabase *adb = self.GetAssetDatabase();
-                InxRenderer *renderer = self.GetRenderer();
-                if (!MaterialPreviewer::RenderToPixels(matFilePath, size, pixels, adb, renderer))
-                    return py::none();
-                return py::cast(std::move(pixels));
-            },
-            py::arg("mat_file_path"), py::arg("size") = 128,
-            "Render a PBR sphere preview for a .mat file (GPU with CPU fallback). Returns list[int] of RGBA pixels, or "
-            "None on failure.")
+        .def("init_preview_task_system", &Infernux::InitPreviewTaskSystem, py::arg("worker_count") = 1,
+             "Initialize C++ preview task worker threads")
+        .def("shutdown_preview_task_system", &Infernux::ShutdownPreviewTaskSystem,
+             "Shutdown C++ preview task worker threads")
+        .def("schedule_material_preview_task", &Infernux::ScheduleMaterialPreviewTask, py::arg("resource_key"),
+             py::arg("mat_file_path"), py::arg("stamp"), py::call_guard<py::gil_scoped_release>(),
+             "Schedule material preview generation task (legacy)")
+        .def("query_or_schedule_material_preview", &Infernux::QueryOrScheduleMaterialPreview, py::arg("resource_key"),
+             py::arg("mat_file_path"), py::arg("material_json") = "", py::arg("file_mtime_hint") = 0,
+             py::call_guard<py::gil_scoped_release>(),
+             "Combined query + schedule for material preview. Returns ImGui texture id.")
+        .def("query_or_schedule_mesh_preview", &Infernux::QueryOrScheduleMeshPreview, py::arg("resource_key"),
+             py::arg("mesh_file_path"), py::arg("file_mtime_hint") = 0, py::call_guard<py::gil_scoped_release>(),
+             "Combined query + schedule for mesh/model preview. Returns ImGui texture id.")
+        .def("schedule_texture_preview_task", &Infernux::ScheduleTexturePreviewTask, py::arg("resource_key"),
+             py::arg("texture_file_path"), py::arg("stamp"), py::arg("nearest") = false, py::arg("srgb") = false,
+             py::call_guard<py::gil_scoped_release>(), "Schedule texture preview generation task (always 256x256)")
+        .def("pump_preview_tasks", &Infernux::PumpPreviewTasks, py::call_guard<py::gil_scoped_release>(),
+             "Pump completed preview tasks and upload textures on main thread")
+        .def("flush_all_material_previews", &Infernux::FlushAllMaterialPreviews,
+             py::call_guard<py::gil_scoped_release>(),
+             "Synchronously render+upload ALL queued material previews (bootstrap only)")
+        .def("get_material_preview_texture_id", &Infernux::GetMaterialPreviewTextureId, py::arg("resource_key"),
+             py::call_guard<py::gil_scoped_release>(),
+             "Get texture id for material preview (stale-return for anti-flicker)")
+        .def("get_texture_preview_texture_id", &Infernux::GetTexturePreviewTextureId, py::arg("resource_key"),
+             py::call_guard<py::gil_scoped_release>(),
+             "Get texture id for texture preview (stale-return for anti-flicker)")
+        .def("get_texture_preview_size", &Infernux::GetTexturePreviewSize, py::arg("resource_key"),
+             py::call_guard<py::gil_scoped_release>(), "Get texture preview dimensions (stale-return for anti-flicker)")
+        .def("invalidate_material_preview_task", &Infernux::InvalidateMaterialPreviewTask, py::arg("resource_key"),
+             py::call_guard<py::gil_scoped_release>(), "Invalidate one material preview task/cache entry")
+        .def("invalidate_texture_preview_task", &Infernux::InvalidateTexturePreviewTask, py::arg("resource_key"),
+             py::call_guard<py::gil_scoped_release>(), "Invalidate one texture preview task/cache entry")
+        .def("query_or_schedule_texture_preview", &Infernux::QueryOrScheduleTexturePreview, py::arg("resource_key"),
+             py::arg("texture_file_path"), py::arg("content_stamp_hint"), py::arg("nearest") = false,
+             py::arg("srgb") = false, py::arg("pump") = true, py::call_guard<py::gil_scoped_release>(),
+             "Combined pump + query + schedule for texture preview. Returns (tex_id, width, height). C++ manages "
+             "caching via generation counterching via generation counter.")
+        .def("schedule_texture_preview_from_memory", &Infernux::ScheduleTexturePreviewFromMemory,
+             py::arg("resource_key"), py::arg("image_data"), py::arg("stamp"), py::arg("nearest") = false,
+             py::call_guard<py::gil_scoped_release>(),
+             "Schedule texture preview from in-memory image bytes (JPEG/PNG/etc.)")
+        .def("schedule_material_save_snapshot_task", &Infernux::ScheduleMaterialSaveSnapshotTask, py::arg("key"),
+             py::arg("file_path"), py::arg("json_snapshot"), "Schedule async material save task from JSON snapshot")
         // ========================================================================
         // Editor Camera (property-based object access — preferred API)
         // ========================================================================

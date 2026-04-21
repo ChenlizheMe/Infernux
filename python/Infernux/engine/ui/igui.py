@@ -235,7 +235,7 @@ class IGUI:
             if ctx.selectable(full_text, selected, 0, field_w, 0.0):
                 clicked = True
         else:
-            ctx.selectable(f"[{full_text}]", False, 0, field_w, 0.0)
+            ctx.selectable(full_text, False, 0, field_w, 0.0)
 
         # ── Picker dot button ──
         if has_picker:

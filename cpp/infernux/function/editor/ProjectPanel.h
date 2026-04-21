@@ -7,7 +7,6 @@
 #include <function/resources/InxFileLoader/InxTextureLoader.hpp>
 
 #include <cstdint>
-#include <deque>
 #include <filesystem>
 #include <functional>
 #include <string>
@@ -17,6 +16,8 @@
 
 namespace infernux
 {
+
+class Infernux;
 
 /// C++ native Project panel — Unity-style asset browser with folder tree,
 /// file grid, thumbnails, drag-drop, inline rename, and virtual scrolling.
@@ -33,6 +34,7 @@ class ProjectPanel : public EditorPanel
     // ── Public API (called from Python bootstrap / other panels) ─────
 
     void SetRootPath(const std::string &path);
+    void SetEngine(Infernux *engine);
     void SetRenderer(InxRenderer *renderer);
     void SetAssetDatabase(AssetDatabase *adb);
     void SetIconsDirectory(const std::string &dir);
@@ -41,6 +43,7 @@ class ProjectPanel : public EditorPanel
     void SetSelectedFile(const std::string &path);
 
     void InvalidateMaterialThumbnail(const std::string &filePath);
+    void InvalidateTextureThumbnail(const std::string &filePath);
 
     /// Invalidate the directory cache so listing refreshes next frame.
     void InvalidateDirCache();
@@ -153,14 +156,14 @@ class ProjectPanel : public EditorPanel
         std::string path;
         std::string ext;
         std::string parentPath; // for sub-assets
-        int64_t mtimeNs = 0;
+        uint64_t mtimeNs = 0;
         int slotIndex = -1; // for SubMaterial
     };
 
     // ── Directory snapshot cache ─────────────────────────────────────
     struct DirSnapshot
     {
-        int64_t mtimeNs = 0;
+        uint64_t mtimeNs = 0;
         double lastValidatedAt = 0.0; // steady-clock seconds
         std::vector<FileItem> dirs;
         std::vector<FileItem> files;
@@ -182,7 +185,7 @@ class ProjectPanel : public EditorPanel
     // Augmented items (with model sub-assets)
     struct AugmentedCache
     {
-        int64_t mtimeNs = 0;
+        uint64_t mtimeNs = 0;
         std::vector<std::string> expandedPaths;
         std::vector<FileItem> items;
     };
@@ -220,50 +223,17 @@ class ProjectPanel : public EditorPanel
     float m_gridTextLineHeight = 0.0f;
 
     // ── Thumbnail system ─────────────────────────────────────────────
-    struct ThumbnailEntry
-    {
-        uint64_t texId = 0;
-        int64_t mtimeNs = 0;
-    };
-    std::unordered_map<std::string, ThumbnailEntry> m_thumbnailCache;
+    std::unordered_map<std::string, std::pair<uint64_t, double>> m_materialMtimeCache;
+    std::unordered_map<std::string, std::pair<uint64_t, double>> m_textureMtimeCache;
+    std::unordered_map<std::string, std::pair<uint64_t, double>> m_modelMtimeCache;
 
-    struct ThumbnailRequest
-    {
-        std::string dirPath;
-        std::string kind; // "image" or "material"
-        std::string filePath;
-
-        bool operator==(const ThumbnailRequest &o) const
-        {
-            return dirPath == o.dirPath && kind == o.kind && filePath == o.filePath;
-        }
-    };
-    struct ThumbnailRequestHash
-    {
-        size_t operator()(const ThumbnailRequest &r) const
-        {
-            size_t h = std::hash<std::string>{}(r.filePath);
-            h ^= std::hash<std::string>{}(r.kind) + 0x9e3779b9 + (h << 6) + (h >> 2);
-            return h;
-        }
-    };
-    std::deque<ThumbnailRequest> m_thumbQueue;
-    std::unordered_set<ThumbnailRequest, ThumbnailRequestHash> m_thumbQueueKeys;
-    std::unordered_map<std::string, double> m_thumbRetryAfter; // key = "kind|path" → monotonic deadline
-    std::string m_thumbQueuePath;
-    std::unordered_map<std::string, std::pair<int64_t, double>> m_materialMtimeCache;
-    int m_thumbsLoadedThisFrame = 0;
-
-    void QueueThumbnailRequest(const std::string &kind, const std::string &filePath);
     void ProcessPendingThumbnails();
-    void ClearThumbnailQueue();
-    uint64_t GetThumbnail(const std::string &filePath, int64_t cachedMtimeNs);
+    uint64_t GetThumbnail(const std::string &filePath, uint64_t cachedMtimeNs);
     uint64_t GetMaterialThumbnail(const std::string &filePath);
-    int64_t GetMaterialMtimeNs(const std::string &filePath);
-
-    // Static helper: downsample texture to max_px
-    static bool DownsampleTexture(const std::string &filePath, int maxPx, std::vector<unsigned char> &outPixels,
-                                  int &outWidth, int &outHeight);
+    uint64_t GetModelThumbnail(const std::string &filePath);
+    uint64_t GetPrefabThumbnail(const std::string &filePath);
+    uint64_t GetMaterialMtimeNs(const std::string &filePath);
+    uint64_t GetTextureMtimeNs(const std::string &filePath);
 
     // ── File-type icon cache ─────────────────────────────────────────
     std::unordered_map<std::string, uint64_t> m_typeIconCache;
@@ -341,6 +311,7 @@ class ProjectPanel : public EditorPanel
     std::vector<FileItem> *m_visibleItems = nullptr;
 
     // External refs
+    Infernux *m_engine = nullptr;
     InxRenderer *m_renderer = nullptr;
     AssetDatabase *m_assetDatabase = nullptr;
 
@@ -389,15 +360,12 @@ class ProjectPanel : public EditorPanel
     // ── Path utility ─────────────────────────────────────────────────
     static std::string NormalizePath(const std::string &path);
     static bool IsPathWithin(const std::string &path, const std::string &parent);
-    static int64_t GetMtimeNs(const std::string &path);
+    static uint64_t GetMtimeNs(const std::string &path);
 
     // ── Grid layout ──────────────────────────────────────────────────
     static constexpr int ICON_SIZE = 64;
     static constexpr int GRID_PADDING = 10;
     static constexpr int CELL_WIDTH = ICON_SIZE + GRID_PADDING;
-    static constexpr int THUMBNAIL_MAX_PX = 128;
-    static constexpr int THUMBS_PER_FRAME = 1;
-    static constexpr double THUMB_RETRY_DELAY = 1.0;
     static constexpr double DIR_CACHE_TTL = 0.5; // seconds before re-checking mtime
 
     double m_frameTimeNow = 0.0; // steady_clock time cached once per frame

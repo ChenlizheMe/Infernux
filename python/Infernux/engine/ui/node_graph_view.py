@@ -48,12 +48,15 @@ _GRID_COLOR2 = (0.18, 0.18, 0.19, 1.0)
 
 _NODE_ROUNDING = 5.0
 _NODE_BORDER_THICKNESS = 1.0
-_NODE_HEADER_H = 26.0
+_NODE_HEADER_H = 30.0
 _NODE_PIN_ROW_H = 22.0
 _NODE_PAD_X = 10.0
 _NODE_BODY_MIN_H = 10.0
 _PIN_RADIUS = 5.0
 _PIN_HIT_RADIUS = 11.0
+_HEADER_COLOR_SWATCH_SIZE = 14.0
+_HEADER_COLOR_SWATCH_PAD = 7.0
+_HEADER_COLOR_SWATCH_OUTLINE = (0.88, 0.89, 0.91, 0.92)
 
 _LINK_THICKNESS = 2.0
 _LINK_SEGMENTS = 28
@@ -204,8 +207,16 @@ class NodeGraphView:
         self.on_node_primary_click: Optional[Callable[[str, float, float], bool]] = None
         self.on_node_drag_start: Optional[Callable[[str], None]] = None
         self.on_node_drag_end: Optional[Callable[[str], None]] = None
+        self.on_node_header_color_changed: Optional[
+            Callable[[str, Tuple[float, float, float, float], Tuple[float, float, float, float], bool], None]
+        ] = None
         self.on_copy: Optional[Callable[[], None]] = None
         self.on_paste: Optional[Callable[[], None]] = None
+
+        self._header_color_popup_node_uid: str = ""
+        self._open_header_color_popup_next_frame: bool = False
+        self._header_color_popup_initial_color: Optional[Tuple[float, float, float, float]] = None
+        self._header_color_popup_changed: bool = False
 
         self._body_renderers: Dict[str, Callable] = {}
 
@@ -321,6 +332,9 @@ class NodeGraphView:
 
         # Handle interaction
         self._handle_interaction(ctx, canvas_hovered, canvas_w, canvas_h)
+
+        # Header color popup
+        self._draw_header_color_popup(ctx)
 
         # Drop targets on the canvas
         if ctx.begin_drag_drop_target():
@@ -438,17 +452,30 @@ class NodeGraphView:
         ctx.draw_filled_rect(sx, sy, sx + w, sy + h, *_NODE_BODY_COLOR, rounding)
 
         # Header
-        hdr = layout.typedef.header_color
+        hdr = self._resolve_node_header_color(layout)
         ctx.draw_filled_rect(sx, sy, sx + w, sy + hdr_h, *hdr, rounding)
         flat_h = min(rounding, hdr_h * 0.5)
         ctx.draw_filled_rect(sx, sy + hdr_h - flat_h, sx + w, sy + hdr_h, *hdr, 0)
 
         # Header label
         label = layout.node.data.get("label", layout.typedef.label)
-        font_sz = max(11.0, 13.0 * z)
+        font_sz = max(12.5, 15.0 * z)
+        sw_x1, sw_y1, sw_x2, sw_y2 = self._node_header_swatch_rect(layout)
         ctx.draw_text_aligned(
-            sx + pad_x, sy, sx + w - pad_x, sy + hdr_h,
+            sx + pad_x, sy, max(sx + pad_x + 1.0, sw_x1 - 6.0 * z), sy + hdr_h,
             label, *_TEXT_COLOR, 0.0, 0.5, font_sz,
+        )
+
+        # Header color swatch (right half)
+        ctx.draw_filled_rect(sw_x1, sw_y1, sw_x2, sw_y2, *hdr, 2.0 * z)
+        ctx.draw_rect(
+            sw_x1,
+            sw_y1,
+            sw_x2,
+            sw_y2,
+            *_HEADER_COLOR_SWATCH_OUTLINE,
+            max(1.0, 1.15 * z),
+            2.0 * z,
         )
 
         # Subtitle (e.g. clip path)
@@ -478,7 +505,7 @@ class NodeGraphView:
             self._draw_pin(ctx, pl, PinKind.OUTPUT, pin_r, node_uid)
 
         # Pin labels
-        dim_font = max(9.0, 10.5 * z)
+        dim_font = max(10.5, 12.5 * z)
         row_h = _NODE_PIN_ROW_H * z
         for pl in layout.input_pins:
             ctx.draw_text_aligned(
@@ -559,8 +586,7 @@ class NodeGraphView:
             else:
                 color, thick = _LINK_DEFAULT_COLOR, _LINK_THICKNESS * self.zoom
 
-            cond = lk.data.get("condition", "")
-            self._draw_bezier(ctx, sx2, sy2, ex2, ey2, color, thick, cond)
+            self._draw_bezier(ctx, sx2, sy2, ex2, ey2, color, thick)
 
     def _draw_pending_link(self, ctx) -> None:
         src_l = self._layouts.get(self._drag_src_node)
@@ -574,7 +600,7 @@ class NodeGraphView:
             _PENDING_LINK_COLOR, 2.0 * self.zoom,
         )
 
-    def _draw_bezier(self, ctx, x1, y1, x2, y2, color, thickness, label=""):
+    def _draw_bezier(self, ctx, x1, y1, x2, y2, color, thickness):
         pts = _bezier_points(x1, y1, x2, y2)
         for i in range(len(pts) - 1):
             ctx.draw_line(
@@ -591,14 +617,96 @@ class NodeGraphView:
                 ax = ex - a_len * math.cos(angle + off)
                 ay = ey - a_len * math.sin(angle + off)
                 ctx.draw_line(ex, ey, ax, ay, *color, thickness)
-        # Condition label at midpoint
-        if label:
-            mid = pts[len(pts) // 2]
-            fsz = max(9.0, 10.0 * self.zoom)
-            ctx.draw_text(
-                mid[0] + 4, mid[1] - 10 * self.zoom,
-                label, 0.75, 0.75, 0.55, 0.9, fsz,
+    def _resolve_node_header_color(self, layout: _NodeLayout) -> Tuple[float, float, float, float]:
+        raw = layout.node.data.get("header_color", layout.typedef.header_color)
+        return self._coerce_rgba(raw, layout.typedef.header_color)
+
+    def _coerce_rgba(self, value, fallback) -> Tuple[float, float, float, float]:
+        try:
+            if isinstance(value, (list, tuple)) and len(value) >= 3:
+                r = float(value[0])
+                g = float(value[1])
+                b = float(value[2])
+                a = float(value[3]) if len(value) >= 4 else 1.0
+                return (r, g, b, a)
+        except Exception:
+            pass
+        if isinstance(fallback, (list, tuple)) and len(fallback) >= 3:
+            a = float(fallback[3]) if len(fallback) >= 4 else 1.0
+            return (float(fallback[0]), float(fallback[1]), float(fallback[2]), a)
+        return (0.3, 0.3, 0.3, 1.0)
+
+    def _node_header_swatch_rect(self, layout: _NodeLayout) -> Tuple[float, float, float, float]:
+        z = self.zoom
+        sx, sy, w = layout.sx, layout.sy, layout.w
+        hdr_h = _NODE_HEADER_H * z
+        sw = max(10.0 * z, _HEADER_COLOR_SWATCH_SIZE * z)
+        pad = _HEADER_COLOR_SWATCH_PAD * z
+        x2 = sx + w - pad
+        x1 = x2 - sw
+        right_half_min = sx + w * 0.5 + 2.0 * z
+        if x1 < right_half_min:
+            x1 = right_half_min
+            x2 = x1 + sw
+        y1 = sy + (hdr_h - sw) * 0.5
+        y2 = y1 + sw
+        return (x1, y1, x2, y2)
+
+    def _hit_test_header_color_swatch(self, mx: float, my: float) -> str:
+        for uid in reversed(list(self._layouts)):
+            layout = self._layouts[uid]
+            x1, y1, x2, y2 = self._node_header_swatch_rect(layout)
+            if x1 <= mx <= x2 and y1 <= my <= y2:
+                return uid
+        return ""
+
+    def _draw_header_color_popup(self, ctx) -> None:
+        uid = self._header_color_popup_node_uid
+        if not uid or self.graph is None:
+            return
+
+        popup_id = f"##node_header_color_popup_{uid}"
+        if self._open_header_color_popup_next_frame:
+            ctx.open_popup(popup_id)
+            self._open_header_color_popup_next_frame = False
+
+        node = self.graph.find_node(uid)
+        layout = self._layouts.get(uid)
+        if node is None or layout is None:
+            self._header_color_popup_initial_color = None
+            self._header_color_popup_changed = False
+            self._header_color_popup_node_uid = ""
+            return
+
+        base = self._resolve_node_header_color(layout)
+        if ctx.begin_popup(popup_id):
+            changed, nr, ng, nb, na = ctx.color_picker(
+                f"##node_header_color_picker_{uid}",
+                float(base[0]),
+                float(base[1]),
+                float(base[2]),
+                float(base[3]),
+                1 << 18,
             )
+            if changed:
+                new_color = (float(nr), float(ng), float(nb), float(na))
+                old_color = base
+                if new_color != old_color:
+                    self._header_color_popup_changed = True
+                    if self.on_node_header_color_changed is not None:
+                        self.on_node_header_color_changed(uid, old_color, new_color, False)
+                    else:
+                        node.data["header_color"] = new_color
+            ctx.end_popup()
+        else:
+            if self._header_color_popup_changed:
+                final_color = self._coerce_rgba(node.data.get("header_color", base), base)
+                initial_color = self._header_color_popup_initial_color or final_color
+                if initial_color != final_color and self.on_node_header_color_changed is not None:
+                    self.on_node_header_color_changed(uid, initial_color, final_color, True)
+            self._header_color_popup_initial_color = None
+            self._header_color_popup_changed = False
+            self._header_color_popup_node_uid = ""
 
     def _find_pin_pos(self, layout, pin_id, kind):
         pins = layout.output_pins if kind == PinKind.OUTPUT else layout.input_pins
@@ -777,6 +885,24 @@ class NodeGraphView:
 
         # Left click
         if ctx.is_mouse_button_clicked(0):
+            # Header color swatch
+            hit_color_uid = self._hit_test_header_color_swatch(mx, my)
+            if hit_color_uid:
+                self._notify_before_selection_change()
+                self.selected_nodes = [hit_color_uid]
+                self.selected_link = ""
+                if self.on_node_selected:
+                    self.on_node_selected(hit_color_uid)
+                self._header_color_popup_node_uid = hit_color_uid
+                layout = self._layouts.get(hit_color_uid)
+                if layout is not None:
+                    self._header_color_popup_initial_color = self._resolve_node_header_color(layout)
+                else:
+                    self._header_color_popup_initial_color = None
+                self._header_color_popup_changed = False
+                self._open_header_color_popup_next_frame = True
+                return
+
             # Pins first
             hit_node, hit_pin, hit_kind = self._hit_test_pin(mx, my)
             if hit_pin is not None:

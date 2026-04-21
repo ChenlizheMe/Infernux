@@ -84,12 +84,30 @@ class BootstrapWiringMixin:
         def _get_registered_types():
             types = wm.get_registered_types()
             result = []
+            seen = set()
             for type_id, info in types.items():
                 wti = WindowTypeInfo()
                 wti.type_id = type_id
                 wti.display_name = info.display_name
                 wti.menu_path = info.menu_path
                 wti.singleton = info.singleton
+                result.append(wti)
+                seen.add(type_id)
+
+            # Safety net: keep core editor panels discoverable from Window menu
+            # even if registration order/state gets out of sync.
+            essential = {
+                "inspector": "Inspector",
+                "project": "Project",
+            }
+            for type_id, label in essential.items():
+                if type_id in seen:
+                    continue
+                wti = WindowTypeInfo()
+                wti.type_id = type_id
+                wti.display_name = label
+                wti.menu_path = "Window"
+                wti.singleton = True
                 result.append(wti)
             return result
         def _get_open_windows():

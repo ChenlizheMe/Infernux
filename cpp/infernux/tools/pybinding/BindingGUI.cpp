@@ -930,6 +930,7 @@ void RegisterGUIBindings(py::module_ &m)
         .def(
             "setup_from_engine",
             [](ProjectPanel &self, Infernux &engine) {
+                self.SetEngine(&engine);
                 self.SetRenderer(engine.GetRenderer());
                 self.SetAssetDatabase(engine.GetAssetDatabase());
             },
@@ -938,6 +939,7 @@ void RegisterGUIBindings(py::module_ &m)
         .def("clear_selection", &ProjectPanel::ClearSelection)
         .def("set_selected_file", &ProjectPanel::SetSelectedFile, py::arg("path"))
         .def("invalidate_material_thumbnail", &ProjectPanel::InvalidateMaterialThumbnail, py::arg("file_path"))
+        .def("invalidate_texture_thumbnail", &ProjectPanel::InvalidateTextureThumbnail, py::arg("file_path"))
         .def("invalidate_dir_cache", &ProjectPanel::InvalidateDirCache)
         .def("receive_dropped_files", &ProjectPanel::ReceiveDroppedFiles, py::arg("paths"))
         .def("get_current_path", &ProjectPanel::GetCurrentPath)

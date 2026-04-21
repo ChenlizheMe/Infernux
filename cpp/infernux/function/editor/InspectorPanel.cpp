@@ -815,7 +815,13 @@ std::pair<bool, bool> InspectorPanel::RenderComponentHeader(InxGUIContext * /*ct
     ImGui::SetNextItemAllowOverlap();
 
     std::string headerKey = "##comp_" + headerId;
+    {
+        float clipMaxX = ImGui::GetWindowPos().x + ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x -
+                         EditorTheme::INSPECTOR_HEADER_RIGHT_MARGIN;
+        ImGui::GetWindowDrawList()->PushClipRect(ImVec2(0.0f, 0.0f), ImVec2(clipMaxX, 1e7f), true);
+    }
     bool headerOpen = ImGui::CollapsingHeader(headerKey.c_str());
+    ImGui::GetWindowDrawList()->PopClipRect();
 
     float headerMinY = ImGui::GetItemRectMin().y;
     float headerMaxY = ImGui::GetItemRectMax().y;

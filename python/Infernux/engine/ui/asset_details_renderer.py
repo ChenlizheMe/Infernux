@@ -19,6 +19,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import zlib
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -41,7 +42,12 @@ from Infernux.core.asset_types import (
 from .inspector_utils import max_label_w, field_label, render_apply_revert
 from .theme import Theme, ImGuiCol
 from .asset_execution_layer import AssetAccessMode, get_asset_execution_layer
+from .asset_resource_preview import render_resource_preview_rect
+from Infernux.engine.texture_task_bridge import texture_stamp, query_or_schedule_texture
 from Infernux.debug import Debug
+
+
+_U64 = 0xFFFFFFFFFFFFFFFF
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -244,7 +250,7 @@ def _ensure_categories():
             FieldDef("flip_uvs", "asset.flip_uvs", WidgetType.CHECKBOX),
             FieldDef("optimize_mesh", "asset.optimize_mesh", WidgetType.CHECKBOX),
         ],
-        custom_header_fn=_render_mesh_info,
+        custom_header_fn=_render_mesh_header,
         extra_meta_keys=["mesh_count", "vertex_count", "index_count", "material_slot_count"],
         show_header=False,
     )
@@ -264,6 +270,7 @@ def _ensure_categories():
         display_name="asset.display_prefab",
         access_mode=AssetAccessMode.READ_WRITE_RESOURCE,
         load_fn=_load_prefab,
+        custom_header_fn=_render_prefab_preview,
         custom_body_fn=_render_prefab_body,
         autosave_debounce=0.5,
     )
@@ -343,6 +350,7 @@ def _load_material(path: str):
         "cached_json": json.dumps(cached),
         "shader_cache": {".vert": None, ".frag": None},
         "shader_sync_key": "",
+        "_applied_version": native.get_version(),
     }
 
 
@@ -636,65 +644,92 @@ def _resolve_authoring_texture_path(clip) -> str:
     return ""
 
 
-def _ensure_animclip_preview_texture(state: _State, tex_file: str) -> bool:
-    """Upload the sprite-sheet texture for the animclip inspector preview."""
-    from Infernux.debug import Debug
+def _safe_mtime_ns(path: str) -> int:
+    try:
+        return int(os.stat(path).st_mtime_ns)
+    except OSError:
+        return 0
 
-    pv = state.extra.get("_animclip_pv")
-    if pv and pv.get("file") == tex_file and pv.get("tex_id"):
-        return True
+
+def _animclip_texture_stamp(path: str, nearest: bool, srgb: bool) -> int:
+    image_mtime = _safe_mtime_ns(path)
+    meta_mtime = _safe_mtime_ns(f"{path}.meta")
+    base = int((image_mtime ^ ((meta_mtime * 2654435761) & _U64)) & _U64)
+    setting_hash = int(zlib.crc32(f"{int(nearest)}|{int(srgb)}".encode("utf-8")) & 0xFFFFFFFF)
+    return int((base ^ setting_hash) & _U64)
+
+
+def _read_animclip_preview_settings(tex_file: str):
+    use_nearest = False
+    use_srgb = False
+    frames = []
+    try:
+        settings = read_texture_import_settings(tex_file)
+        if settings:
+            use_nearest = getattr(settings, "filter_mode", None) == FilterMode.POINT
+            use_srgb = bool(getattr(settings, "srgb", False))
+            if settings.sprite_frames:
+                frames = list(settings.sprite_frames)
+    except Exception:
+        pass
+    return use_nearest, use_srgb, frames
+
+
+def _ensure_animclip_preview_texture(state: _State, tex_file: str) -> bool:
+    """Queue/fetch sprite-sheet preview via native C++ task system."""
 
     if not tex_file:
         return False
 
     try:
-        from Infernux.lib import TextureLoader
-        td = TextureLoader.load_from_file(tex_file)
-        if not td or td.width <= 0 or not td.is_valid():
-            return False
-    except Exception:
-        return False
-
-    try:
         from Infernux.engine.ui.editor_services import EditorServices
+
         svc = EditorServices.instance()
         native = svc.native_engine if svc else None
         if not native:
             return False
 
-        cache_name = f"__animclip_insp__{os.path.normpath(tex_file)}"
-        if native.has_imgui_texture(cache_name):
-            tex_id = native.get_imgui_texture_id(cache_name)
-        else:
-            pixels = td.get_pixels_list()
-            use_nearest = False
-            try:
-                from Infernux.core.asset_types import read_texture_import_settings, FilterMode
-                settings = read_texture_import_settings(tex_file)
-                use_nearest = (getattr(settings, 'filter_mode', None) == FilterMode.POINT)
-            except Exception:
-                pass
-            tex_id = native.upload_texture_for_imgui(cache_name, list(pixels), td.width, td.height, nearest=use_nearest)
-
-        if not tex_id:
+        use_nearest, use_srgb, frames = _read_animclip_preview_settings(tex_file)
+        stamp = _animclip_texture_stamp(tex_file, use_nearest, use_srgb)
+        if stamp == 0:
             return False
 
-        # Read sprite frames
-        frames = []
-        try:
-            from Infernux.core.asset_types import read_texture_import_settings, SpriteFrame
-            settings = read_texture_import_settings(tex_file)
-            if settings.sprite_frames:
-                frames = list(settings.sprite_frames)
-        except Exception:
-            pass
+        norm_path = os.path.normpath(tex_file)
+        resource_key = f"animclip_insp|{norm_path}|{int(use_nearest)}|{int(use_srgb)}"
+
+        pv = state.extra.get("_animclip_pv")
+        if (
+            pv
+            and pv.get("resource_key") == resource_key
+            and int(pv.get("stamp", 0)) == int(stamp)
+            and int(pv.get("tex_id", 0)) != 0
+        ):
+            return True
+
+        native.pump_preview_tasks()
+        tex_id, tex_w, tex_h = native.query_or_schedule_texture_preview(
+            resource_key, norm_path, int(stamp), bool(use_nearest), bool(use_srgb), False)
+        tex_id = int(tex_id)
+        tex_w = int(tex_w)
+        tex_h = int(tex_h)
+
+        if tex_id == 0:
+            return False
+
+        if tex_w <= 0 or tex_h <= 0:
+            return False
+
         if not frames:
-            from Infernux.core.asset_types import SpriteFrame
-            frames = [SpriteFrame(name="frame_0", x=0, y=0, w=td.width, h=td.height)]
+            frames = [SpriteFrame(name="frame_0", x=0, y=0, w=tex_w, h=tex_h)]
 
         state.extra["_animclip_pv"] = {
-            "file": tex_file, "tex_id": tex_id,
-            "tex_w": td.width, "tex_h": td.height, "frames": frames,
+            "file": norm_path,
+            "resource_key": resource_key,
+            "stamp": int(stamp),
+            "tex_id": tex_id,
+            "tex_w": tex_w,
+            "tex_h": tex_h,
+            "frames": frames,
         }
         return True
     except Exception as exc:
@@ -924,16 +959,28 @@ def _render_animfsm_body(ctx: InxGUIContext, panel, state: _State):
 
 def _refresh_material(state: _State):
     native = state.extra.get("native_mat")
-    if native:
-        try:
-            fresh = json.loads(native.serialize())
-            merged = _merge_material_cached_data(state.extra.get("cached_data"), fresh)
-            _sync_material_shader_metadata(merged)
-            state.extra["cached_data"] = merged
-            state.extra["cached_json"] = json.dumps(merged)
-        except (RuntimeError, ValueError, json.JSONDecodeError) as _exc:
-            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-            pass
+    if not native:
+        return
+    try:
+        current_version = native.get_version()
+    except (AttributeError, RuntimeError):
+        current_version = -1
+    # Fast-path: when the only mutations since the last refresh came from
+    # the Python-side property editor (sliders, combos, etc.), cached_data
+    # is already in sync with the native material.  Skip the expensive
+    # serialize -> parse -> merge -> re-serialize round-trip (~1-7 ms).
+    applied_version = state.extra.get("_applied_version", -2)
+    if current_version != -1 and current_version == applied_version:
+        return
+    state.extra["_applied_version"] = current_version
+    try:
+        fresh = json.loads(native.serialize())
+        merged = _merge_material_cached_data(state.extra.get("cached_data"), fresh)
+        _sync_material_shader_metadata(merged)
+        state.extra["cached_data"] = merged
+        state.extra["cached_json"] = json.dumps(merged)
+    except (RuntimeError, ValueError, json.JSONDecodeError) as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
 
 
 def _merge_material_cached_data(existing: Optional[dict], fresh: dict) -> dict:
@@ -1187,6 +1234,38 @@ def _on_revert():
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+def _render_mesh_header(ctx: InxGUIContext, panel, state: _State):
+    """Render mesh preview + mesh metadata in inspector header."""
+    avail_w = max(32.0, ctx.get_content_region_avail_width() - 8.0)
+    draw_h = min(max(avail_w, 120.0), 320.0)
+
+    if not render_resource_preview_rect(ctx, panel, state.file_path, avail_w, draw_h,
+                                        preview_size=int(draw_h),
+                                        preserve_aspect=True,
+                                        center=True):
+        ctx.push_style_color(ImGuiCol.Text, *Theme.META_TEXT)
+        ctx.label("Model preview unavailable.")
+        ctx.pop_style_color(1)
+        ctx.separator()
+
+    _render_mesh_info(ctx, panel, state)
+
+
+def _render_prefab_preview(ctx: InxGUIContext, panel, state: _State):
+    """Render prefab preview via standalone resource preview module."""
+    avail_w = max(32.0, ctx.get_content_region_avail_width() - 8.0)
+    draw_h = min(max(avail_w, 140.0), 360.0)
+
+    if not render_resource_preview_rect(ctx, panel, state.file_path, avail_w, draw_h,
+                                        preview_size=int(draw_h),
+                                        preserve_aspect=True,
+                                        center=True):
+        ctx.push_style_color(ImGuiCol.Text, *Theme.META_TEXT)
+        ctx.label("Prefab preview unavailable.")
+        ctx.pop_style_color(1)
+    ctx.separator()
+
+
 def _render_mesh_info(ctx: InxGUIContext, panel, state: _State):
     """Render mesh metadata summary (vertex count, submesh count, etc.)."""
     meta = state.meta
@@ -1255,8 +1334,6 @@ _sprite_state = _SpriteEditorState()
 
 def _ensure_sprite_texture(state: _State) -> bool:
     """Load the texture dimensions + ImGui texture ID for the sprite editor."""
-    from Infernux.debug import Debug
-
     ss = _sprite_state
     # Track sRGB + filter_mode so we re-upload when either changes
     cur_srgb = getattr(state.settings, 'srgb', False)
@@ -1269,8 +1346,6 @@ def _ensure_sprite_texture(state: _State) -> bool:
     same_file = (ss.file_path == state.file_path)
     saved_rows = ss.slice_rows if same_file else 1
     saved_cols = ss.slice_cols if same_file else 1
-    # Remember the old cache name so we can remove it after successful re-upload
-    old_cache_name = getattr(ss, '_cache_name', "")
     ss.reset()
     ss.slice_rows = saved_rows
     ss.slice_cols = saved_cols
@@ -1278,65 +1353,37 @@ def _ensure_sprite_texture(state: _State) -> bool:
     ss._srgb = cur_srgb
     ss._filter = cur_filter
 
-    # Load texture data once
-    try:
-        from Infernux.lib import TextureLoader
-        td = TextureLoader.load_from_file(state.file_path)
-        if not td or td.width <= 0 or not td.is_valid():
-            Debug.log_warning(f"[SpriteEditor] TextureLoader failed for: {state.file_path}")
-            return False
-        ss.tex_w = td.width
-        ss.tex_h = td.height
-    except Exception as exc:
-        Debug.log_warning(f"[SpriteEditor] TextureLoader exception: {exc}")
-        return False
-
-    # Upload for ImGui preview
     try:
         from Infernux.engine.ui.editor_services import EditorServices
         svc = EditorServices.instance()
         native = svc.native_engine if svc else None
         if not native:
             Debug.log_warning("[SpriteEditor] No native engine via EditorServices")
-            return ss.tex_w > 0
+            return False
 
         filter_tag = cur_filter.name if cur_filter else "default"
         srgb_tag = "srgb" if cur_srgb else "linear"
-        cache_name = (f"__sprite_preview__{srgb_tag}_{filter_tag}__"
-                      f"{os.path.normpath(state.file_path)}")
-        if native.has_imgui_texture(cache_name):
-            ss.texture_id = native.get_imgui_texture_id(cache_name)
-        else:
-            pixels = td.get_pixels_list()
-            w, h = td.width, td.height
+        norm_path = os.path.normpath(state.file_path)
+        stamp = texture_stamp(norm_path, "sprite_preview", filter_tag, srgb_tag)
+        if stamp == 0:
+            return False
 
-            if cur_srgb:
-                import array
-                _LUT = [int(((i / 255.0) ** (1.0 / 2.2)) * 255.0 + 0.5)
-                        for i in range(256)]
-                pixels = list(array.array('B', (
-                    _LUT[pixels[j]] if (j % 4) != 3 else pixels[j]
-                    for j in range(len(pixels))
-                )))
+        resource_key = f"sprite_preview|{srgb_tag}_{filter_tag}|{norm_path}"
+        tex_id, tex_w, tex_h = query_or_schedule_texture(
+            native,
+            resource_key,
+            norm_path,
+            int(stamp),
+            nearest=(cur_filter == FilterMode.POINT),
+            srgb=bool(cur_srgb),
+            pump=True,
+        )
 
-            # Determine if point (nearest) filtering is requested
-            use_nearest = (cur_filter == FilterMode.POINT)
-
-            ss.texture_id = native.upload_texture_for_imgui(
-                cache_name, pixels, w, h, nearest=use_nearest)
-        if not ss.texture_id:
-            Debug.log_warning(f"[SpriteEditor] upload_texture_for_imgui returned 0 for {cache_name}")
-        else:
-            ss._cache_name = cache_name
-            # Clean up old GPU texture now that the new one is valid
-            if old_cache_name and old_cache_name != cache_name:
-                try:
-                    if native.has_imgui_texture(old_cache_name):
-                        native.remove_imgui_texture(old_cache_name)
-                except Exception:
-                    pass
+        ss.texture_id = int(tex_id)
+        ss.tex_w = max(int(tex_w), 0)
+        ss.tex_h = max(int(tex_h), 0)
     except Exception as exc:
-        Debug.log_warning(f"[SpriteEditor] Upload exception: {exc}")
+        Debug.log_warning(f"[SpriteEditor] Preview task exception: {exc}")
         ss.texture_id = 0
     return ss.tex_w > 0
 
@@ -1595,14 +1642,19 @@ _SPLITTER_H = 14.0
 
 
 def _render_texture_preview(ctx: InxGUIContext, panel, state: _State):
-    """Render a safe placeholder instead of the native texture preview.
+    """Render texture preview via standalone resource preview module."""
+    avail_w = max(32.0, ctx.get_content_region_avail_width() - 8.0)
+    draw_h = min(max(float(state.extra.get("preview_height", 200.0)), _PREVIEW_MIN_H), _PREVIEW_MAX_H)
 
-    The native preview path is temporarily disabled while investigating asset
-    selection crashes that reproduce reliably on texture clicks.
-    """
-    ctx.push_style_color(ImGuiCol.Text, *Theme.META_TEXT)
-    ctx.label("Texture preview temporarily disabled in safe mode.")
-    ctx.pop_style_color(1)
+    if not render_resource_preview_rect(ctx, panel, state.file_path, avail_w, draw_h,
+                                        preview_size=int(max(avail_w, draw_h)),
+                                        texture_settings=state.settings,
+                                        preserve_aspect=True,
+                                        center=True):
+        ctx.push_style_color(ImGuiCol.Text, *Theme.META_TEXT)
+        ctx.label("Texture preview unavailable.")
+        ctx.pop_style_color(1)
+
     ctx.separator()
 
 

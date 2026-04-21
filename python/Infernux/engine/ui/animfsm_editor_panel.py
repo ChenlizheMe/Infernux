@@ -217,8 +217,8 @@ _ENTRY_TYPE = NodeTypeDef(
     deletable=False,
 )
 
-_DETAIL_PANEL_W = 288.0
-_VARS_PANEL_W = 280.0
+_DETAIL_PANEL_W = 252.0
+_VARS_PANEL_W = 236.0
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -257,6 +257,7 @@ class AnimFSMEditorPanel(EditorPanel):
         self._view.on_canvas_drop = self._on_canvas_drop
         self._view.on_node_drag_start = self._on_node_drag_start
         self._view.on_node_drag_end = self._on_node_drag_end
+        self._view.on_node_header_color_changed = self._on_node_header_color_changed
         self._view.on_before_selection_change = self._on_before_graph_selection_change
 
         # Currently selected node uid
@@ -277,6 +278,7 @@ class AnimFSMEditorPanel(EditorPanel):
         self._panel_restore_data: Optional[dict] = None
         self._undo_drag_snapshot: Optional[dict] = None
         self._pending_selection_undo_before: Optional[dict] = None
+        self._last_selection_undo_snapshot: Optional[dict] = None
         self._clipboard_fsm_nodes: Optional[dict] = None
 
         self._view.on_copy = self._on_graph_copy
@@ -284,17 +286,38 @@ class AnimFSMEditorPanel(EditorPanel):
 
         # Start with a blank FSM
         self._new_fsm()
+        self._last_selection_undo_snapshot = self._undo_snapshot()
 
     # ── Public API ────────────────────────────────────────────────────
 
+    def _normalize_fsm_path(self, path: str) -> str:
+        """Return a normalized absolute FSM path when possible."""
+        p = (path or "").strip()
+        if not p:
+            return ""
+        p = os.path.normpath(p)
+        if os.path.isabs(p):
+            return p
+        try:
+            from Infernux.engine.project_context import get_project_root
+
+            root = get_project_root()
+        except Exception:
+            root = None
+        if root:
+            return os.path.normpath(os.path.join(root, p))
+        return os.path.abspath(p)
+
     def _open_animfsm(self, file_path: str):
         """Load an .animfsm file into the editor."""
-        fsm = AnimStateMachine.load(file_path)
+        normalized_path = self._normalize_fsm_path(file_path)
+        target_path = normalized_path or file_path
+        fsm = AnimStateMachine.load(target_path)
         if fsm is None:
-            Debug.log_warning(f"Failed to load animfsm: {file_path}")
+            Debug.log_warning(f"Failed to load animfsm: {target_path}")
             return
         self._fsm = fsm
-        self._file_path = file_path
+        self._file_path = target_path
         self._selected_uid = ""
         self._dirty = False
         for state in fsm.states:
@@ -341,20 +364,49 @@ class AnimFSMEditorPanel(EditorPanel):
                 pmm.remove_state_change_listener(self._on_play_mode_changed)
         except Exception:
             pass
+        try:
+            from Infernux.engine.project_context import set_panel_dirty
+
+            set_panel_dirty(self.window_id, False)
+        except Exception:
+            pass
 
     def _window_title_suffix(self) -> str:
+        self._sync_project_dirty_flag()
         return " *" if self._dirty else ""
+
+    def _sync_project_dirty_flag(self) -> None:
+        try:
+            from Infernux.engine.project_context import set_panel_dirty
+
+            set_panel_dirty(self.window_id, bool(self._dirty))
+        except Exception:
+            pass
 
     # ── State persistence ──────────────────────────────────────────────
 
     def save_state(self) -> dict:
         """Persist open file path even if ``_open_animfsm`` is deferred to first frame."""
         data: dict = {}
-        fp = (self._file_path or "").strip()
+        fp = self._normalize_fsm_path(self._file_path)
+        if not fp and self._fsm is not None:
+            fp = self._normalize_fsm_path(getattr(self._fsm, "file_path", "") or "")
         rel_fallback = ""
         if not fp and self._panel_restore_data:
-            fp = (self._panel_restore_data.get("file_path") or "").strip()
+            fp = self._normalize_fsm_path(self._panel_restore_data.get("file_path") or "")
             rel_fallback = (self._panel_restore_data.get("file_path_rel") or "").strip()
+        if not fp and not rel_fallback:
+            # Startup/load ordering can trigger a save before this panel has
+            # finished restoring; preserve any existing persisted target path.
+            try:
+                from Infernux.engine.ui import panel_state as _ps
+
+                prev = _ps.get(f"panel:{self.window_id}")
+                if prev:
+                    fp = self._normalize_fsm_path(prev.get("file_path") or "")
+                    rel_fallback = (prev.get("file_path_rel") or "").strip()
+            except Exception:
+                pass
         if fp:
             data["file_path"] = fp
             try:
@@ -379,7 +431,7 @@ class AnimFSMEditorPanel(EditorPanel):
 
     def _resolve_saved_fsm_path(self, data: dict) -> str:
         """Resolve persisted path using absolute path, then project-relative."""
-        fp = (data.get("file_path") or "").strip()
+        fp = self._normalize_fsm_path(data.get("file_path") or "")
         rel = (data.get("file_path_rel") or "").strip()
         if fp and os.path.isfile(fp):
             return fp
@@ -454,10 +506,16 @@ class AnimFSMEditorPanel(EditorPanel):
         fsm_data: dict = {}
         if self._fsm is not None:
             fsm_data = copy.deepcopy(self._fsm.to_dict())
+        selected_key = ""
+        if self._selected_uid:
+            if self._selected_uid == self._entry_uid:
+                selected_key = "__entry__"
+            else:
+                selected_key = self._uid_to_name.get(self._selected_uid, "")
         return {
             "fsm": fsm_data,
             "ui": {
-                "selected_state": self._uid_to_name.get(self._selected_uid, "") if self._selected_uid else "",
+                "selected_state": selected_key,
                 "link_key": self._link_key_for_undo(),
             },
         }
@@ -478,7 +536,11 @@ class AnimFSMEditorPanel(EditorPanel):
             self._sync_graph_from_fsm()
         self._dirty = True
         sel = (ui.get("selected_state") or "").strip() if isinstance(ui, dict) else ""
-        if sel and sel in self._name_to_uid:
+        if sel == "__entry__" and self._entry_uid:
+            uid = self._entry_uid
+            self._selected_uid = uid
+            self._view.selected_nodes = [uid]
+        elif sel and sel in self._name_to_uid:
             uid = self._name_to_uid[sel]
             self._selected_uid = uid
             self._view.selected_nodes = [uid]
@@ -496,6 +558,7 @@ class AnimFSMEditorPanel(EditorPanel):
                     if lk.source_node == su and lk.target_node == du:
                         self._view.selected_link = lk.uid
                         break
+        self._sync_project_dirty_flag()
 
     def _animfsm_undo_enabled(self) -> bool:
         from Infernux.engine.play_mode import PlayModeManager, PlayModeState
@@ -510,26 +573,13 @@ class AnimFSMEditorPanel(EditorPanel):
         return True
 
     def _try_record_undo(self, description: str, before: dict, after: dict) -> None:
-        if before == after:
-            return
-        if not self._animfsm_undo_enabled():
-            return
-        from Infernux.engine.undo import UndoManager, LambdaCommand
+        from Infernux.engine.undo import record_node_graph_snapshot
 
-        mgr = UndoManager.instance()
-        if not mgr:
-            return
-
-        def _apply(d: dict) -> None:
-            self._apply_undo_snapshot(d)
-
-        mgr.record(
-            LambdaCommand(
-                description,
-                undo_fn=lambda: _apply(before),
-                redo_fn=lambda: _apply(after),
-                marks_dirty=False,
-            )
+        record_node_graph_snapshot(
+            description=description,
+            before_snapshot=before,
+            after_snapshot=after,
+            apply_snapshot=self._apply_undo_snapshot,
         )
 
     def _initial_size(self):
@@ -1179,6 +1229,16 @@ class AnimFSMEditorPanel(EditorPanel):
             node.data["label"] = state.name
             node.data["loop"] = state.loop
             node.data["restart_same_clip"] = state.restart_same_clip
+            if isinstance(state.header_color, (list, tuple)) and len(state.header_color) >= 3:
+                try:
+                    node.data["header_color"] = (
+                        float(state.header_color[0]),
+                        float(state.header_color[1]),
+                        float(state.header_color[2]),
+                        float(state.header_color[3]) if len(state.header_color) >= 4 else 1.0,
+                    )
+                except (TypeError, ValueError):
+                    pass
             self._name_to_uid[state.name] = node.uid
             self._uid_to_name[node.uid] = state.name
 
@@ -1201,7 +1261,7 @@ class AnimFSMEditorPanel(EditorPanel):
                     lk.data.pop("cond_joins", None)
 
     def _sync_fsm_positions(self):
-        """Write node positions back to FSM state.position fields."""
+        """Write node visual data (position/color) back to FSM states."""
         fsm = self._fsm
         if fsm is None:
             return
@@ -1210,6 +1270,19 @@ class AnimFSMEditorPanel(EditorPanel):
             node = self._graph.find_node(uid) if uid else None
             if node:
                 state.position = [node.pos_x, node.pos_y]
+                raw = node.data.get("header_color", [])
+                if isinstance(raw, (list, tuple)) and len(raw) >= 3:
+                    try:
+                        state.header_color = [
+                            float(raw[0]),
+                            float(raw[1]),
+                            float(raw[2]),
+                            float(raw[3]) if len(raw) >= 4 else 1.0,
+                        ]
+                    except (TypeError, ValueError):
+                        state.header_color = []
+                else:
+                    state.header_color = []
 
     def _update_entry_link(self):
         """Ensure the entry node points to the current default state."""
@@ -1323,12 +1396,61 @@ class AnimFSMEditorPanel(EditorPanel):
             self._undo_drag_snapshot = None
             return
         self._sync_fsm_positions()
+        self._dirty = True
+        self._sync_project_dirty_flag()
         before = self._undo_drag_snapshot
         self._undo_drag_snapshot = None
         if before is None:
             return
         after = self._undo_snapshot()
         self._try_record_undo("Move state node", before, after)
+
+    def _on_node_header_color_changed(
+        self,
+        node_uid: str,
+        old_color: Tuple[float, float, float, float],
+        new_color: Tuple[float, float, float, float],
+        commit_undo: bool,
+    ) -> None:
+        node = self._graph.find_node(node_uid)
+        if node is None or node_uid == self._entry_uid:
+            return
+        node.data["header_color"] = new_color
+
+        state_name = self._uid_to_name.get(node_uid, "")
+        if self._fsm is not None and state_name:
+            state = self._fsm.get_state(state_name)
+            if state is not None:
+                state.header_color = [
+                    float(new_color[0]),
+                    float(new_color[1]),
+                    float(new_color[2]),
+                    float(new_color[3]),
+                ]
+
+        self._dirty = True
+        self._sync_project_dirty_flag()
+
+        # During color picker drag we only preview/apply changes.
+        # Record exactly one undo command when the popup closes.
+        if not commit_undo:
+            return
+
+        after = self._undo_snapshot()
+        before = copy.deepcopy(after)
+        fsm = before.get("fsm") or {}
+        states = fsm.get("states") if isinstance(fsm, dict) else None
+        if isinstance(states, list):
+            for s in states:
+                if str(s.get("name", "")) == state_name:
+                    s["header_color"] = [
+                        float(old_color[0]),
+                        float(old_color[1]),
+                        float(old_color[2]),
+                        float(old_color[3]),
+                    ]
+                    break
+        self._try_record_undo("Change state header color", before, after)
 
     def _on_link_created(self, src_node: str, src_pin: str, dst_node: str, dst_pin: str):
         """User created a connection by dragging between pins."""
@@ -1423,16 +1545,18 @@ class AnimFSMEditorPanel(EditorPanel):
         self._pending_selection_undo_before = self._undo_snapshot()
 
     def _on_node_selected(self, uid: str):
+        before = self._pending_selection_undo_before or self._last_selection_undo_snapshot
         self._selected_uid = uid
         self._clear_external_selection()
-        if self._pending_selection_undo_before is not None:
+        if before is not None:
             after = self._undo_snapshot()
             self._try_record_undo(
                 "Graph selection",
-                self._pending_selection_undo_before,
+                before,
                 after,
             )
-            self._pending_selection_undo_before = None
+            self._last_selection_undo_snapshot = after
+        self._pending_selection_undo_before = None
 
     def _clear_external_selection(self):
         """Clear hierarchy / scene selection only; keep Project panel file selection."""
@@ -1610,26 +1734,22 @@ class AnimFSMEditorPanel(EditorPanel):
         initial_dir = os.path.join(root, "Assets") if root else "."
         safe_name = (self._fsm.name or "NewStateMachine").replace(" ", "_")
         default_filename = f"{safe_name}.animfsm"
+        result = None
+        try:
+            from ._dialogs import save_file_dialog
 
-        def _run():
-            result = None
-            try:
-                from ._dialogs import save_file_dialog
-                result = save_file_dialog(
-                    title="Save Animation State Machine",
-                    win32_filter="AnimFSM files (*.animfsm)\0*.animfsm\0All files (*.*)\0*.*\0\0",
-                    initial_dir=initial_dir,
-                    default_filename=default_filename,
-                    default_ext="animfsm",
-                    tk_filetypes=[("AnimFSM", "*.animfsm"), ("All Files", "*.*")],
-                )
-            except Exception as exc:
-                Debug.log_warning(f"[AnimFSM] Save dialog error: {exc}")
-            if result:
-                self._execute_save(result)
-
-        t = threading.Thread(target=_run, daemon=True)
-        t.start()
+            result = save_file_dialog(
+                title="Save Animation State Machine",
+                win32_filter="AnimFSM files (*.animfsm)\0*.animfsm\0All files (*.*)\0*.*\0\0",
+                initial_dir=initial_dir,
+                default_filename=default_filename,
+                default_ext="animfsm",
+                tk_filetypes=[("AnimFSM", "*.animfsm"), ("All Files", "*.*")],
+            )
+        except Exception as exc:
+            Debug.log_warning(f"[AnimFSM] Save dialog error: {exc}")
+        if result:
+            self._execute_save(result)
 
     def _execute_save(self, target: str):
         fsm = self._fsm
@@ -1638,6 +1758,7 @@ class AnimFSMEditorPanel(EditorPanel):
         if fsm.save(target):
             self._file_path = target
             self._dirty = False
+            self._sync_project_dirty_flag()
             Debug.log(f"Saved animfsm: {target}")
             self._hot_reload_animators(target)
         else:

@@ -10,6 +10,7 @@
 #include "ComponentBindingRegistry.h"
 #include "core/log/InxLog.h"
 #include "function/resources/AssetRegistry/AssetRegistry.h"
+#include "function/resources/InxMaterial/InxMaterial.h"
 #include "function/resources/InxMesh/InxMesh.h"
 #include "function/scene/BoxCollider.h"
 #include "function/scene/Camera.h"
@@ -201,6 +202,33 @@ static py::list CreatePrimitiveObjectsBatch(Scene *scene, PrimitiveType type, si
 /**
  * @brief Helper function to create a GameObject from a mesh asset GUID.
  */
+/// Apply FBX-extracted material data to a MeshRenderer's slots.
+static void ApplyFbxMaterialData(MeshRenderer *renderer, const std::shared_ptr<InxMesh> &mesh)
+{
+    if (!renderer || !mesh)
+        return;
+    const auto &slotData = mesh->GetMaterialSlotData();
+    if (slotData.empty())
+        return;
+    auto defaultMat = AssetRegistry::Instance().GetBuiltinMaterial("DefaultLit");
+    if (!defaultMat)
+        return;
+
+    uint32_t slotCount = static_cast<uint32_t>(renderer->GetMaterialGuids().size());
+    for (uint32_t s = 0; s < slotCount && s < static_cast<uint32_t>(slotData.size()); ++s) {
+        // Skip slots that already have an assigned material
+        if (renderer->GetMaterial(s))
+            continue;
+        const auto &sd = slotData[s];
+        auto mat = defaultMat->Clone();
+        mat->SetColor("baseColor", sd.baseColor);
+        mat->SetColor("emissionColor", sd.emissionColor);
+        mat->SetFloat("metallic", sd.metallic);
+        mat->SetFloat("smoothness", sd.smoothness);
+        renderer->SetMaterial(s, std::move(mat));
+    }
+}
+
 static GameObject *CreateModelObject(Scene *scene, const std::string &guid, const std::string &name = "")
 {
     auto &registry = AssetRegistry::Instance();
@@ -224,6 +252,7 @@ static GameObject *CreateModelObject(Scene *scene, const std::string &guid, cons
         MeshRenderer *renderer = obj->AddComponent<MeshRenderer>();
         if (renderer) {
             renderer->SetMeshAsset(guid, mesh);
+            ApplyFbxMaterialData(renderer, mesh);
         }
         return obj;
     }
@@ -244,6 +273,7 @@ static GameObject *CreateModelObject(Scene *scene, const std::string &guid, cons
         if (renderer) {
             renderer->SetMeshAsset(guid, mesh);
             renderer->SetNodeGroup(static_cast<int32_t>(g));
+            ApplyFbxMaterialData(renderer, mesh);
         }
     }
 

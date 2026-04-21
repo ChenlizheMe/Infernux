@@ -11,6 +11,7 @@
 #include <function/renderer/InxVkCoreModular.h>
 #include <function/renderer/MaterialPipelineManager.h>
 #include <function/renderer/shader/ShaderProgram.h>
+#include <function/renderer/vk/DescriptorBindTrace.h>
 #include <function/renderer/vk/VkRenderUtils.h>
 #include <function/renderer/vk/VkResourceManager.h>
 #include <function/resources/InxMaterial/InxMaterial.h>
@@ -29,10 +30,10 @@ namespace infernux
 
 namespace
 {
-constexpr float kPreviewMatteR = 0.125f;
-constexpr float kPreviewMatteG = 0.125f;
-constexpr float kPreviewMatteB = 0.125f;
-constexpr float kPreviewMatteA = 1.0f;
+constexpr float kPreviewMatteR = 0.0f;
+constexpr float kPreviewMatteG = 0.0f;
+constexpr float kPreviewMatteB = 0.0f;
+constexpr float kPreviewMatteA = 0.0f;
 constexpr float kPreviewCameraDistance = 2.0f;
 constexpr float kPreviewModelScale = 1.28f;
 constexpr int kPreviewSupersampleFactor = 2;
@@ -156,23 +157,139 @@ bool GPUMaterialPreview::RenderToPixels(InxMaterial &material, int size, std::ve
     const glm::mat4 previewModel = glm::scale(glm::mat4(1.0f), glm::vec3(kPreviewModelScale));
     const glm::mat4 previewNormal = glm::transpose(glm::inverse(previewModel));
 
-    // Ensure the material has a forward pipeline
-    VkPipeline pipeline = material.GetPassPipeline(ShaderCompileTarget::Forward);
-    VkPipelineLayout pipelineLayout = material.GetPassPipelineLayout(ShaderCompileTarget::Forward);
-    VkDescriptorSet matDescSet = material.GetPassDescriptorSet(ShaderCompileTarget::Forward);
-    ShaderProgram *program = material.GetPassShaderProgram(ShaderCompileTarget::Forward);
+    std::vector<std::shared_ptr<InxMaterial>> ownedPreviewMaterials;
+    std::vector<InxMaterial *> previewPassMaterials;
 
-    if (pipeline == VK_NULL_HANDLE || pipelineLayout == VK_NULL_HANDLE || matDescSet == VK_NULL_HANDLE ||
-        program == nullptr) {
-        INXLOG_WARN("GPUMaterialPreview: material pipeline not ready");
+    // Always isolate preview rendering from the caller's material instance.
+    // Even opaque previews can otherwise overwrite or invalidate the live
+    // material's forward pass handles while the main scene is still drawing.
+    auto basePreviewMaterial = material.Clone();
+    if (!basePreviewMaterial) {
         return false;
+    }
+    basePreviewMaterial->ClearAllPassPipelines();
+    if (!m_vkCore->RefreshMaterialPipeline(basePreviewMaterial, basePreviewMaterial->GetVertShaderName(),
+                                           basePreviewMaterial->GetFragShaderName())) {
+        INXLOG_WARN("GPUMaterialPreview: preview base pipeline not ready");
+        return false;
+    }
+    ownedPreviewMaterials.push_back(basePreviewMaterial);
+    previewPassMaterials.push_back(basePreviewMaterial.get());
+
+    const RenderState &baseState = basePreviewMaterial->GetRenderState();
+    if (baseState.blendEnable) {
+        auto buildPreviewPass = [&](VkCullModeFlags cullMode, bool overrideCull) -> std::shared_ptr<InxMaterial> {
+            // Preview passes must not reuse the source material's GUID/name key,
+            // otherwise descriptor-cache replacement can invalidate the live set
+            // still used by the main scene.
+            auto passMaterial = basePreviewMaterial->Clone();
+            RenderState state = passMaterial->GetRenderState();
+            if (overrideCull)
+                state.cullMode = cullMode;
+
+            // Preview path uses transparent clear color (alpha=0), so alpha must
+            // be written by the material pass instead of preserving destination alpha.
+            state.srcAlphaBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+            state.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+            state.alphaBlendOp = VK_BLEND_OP_ADD;
+
+            passMaterial->SetRenderState(state);
+            passMaterial->MarkOverride(RenderStateOverride::BlendMode);
+            if (overrideCull)
+                passMaterial->MarkOverride(RenderStateOverride::CullMode);
+            passMaterial->ClearAllPassPipelines();
+
+            if (!m_vkCore->RefreshMaterialPipeline(passMaterial, passMaterial->GetVertShaderName(),
+                                                   passMaterial->GetFragShaderName())) {
+                return nullptr;
+            }
+            return passMaterial;
+        };
+
+        if (!baseState.depthWriteEnable && baseState.cullMode == VK_CULL_MODE_NONE) {
+            auto backFacePass = buildPreviewPass(VK_CULL_MODE_FRONT_BIT, true);
+            auto frontFacePass = buildPreviewPass(VK_CULL_MODE_BACK_BIT, true);
+            if (backFacePass && frontFacePass) {
+                ownedPreviewMaterials.push_back(backFacePass);
+                ownedPreviewMaterials.push_back(frontFacePass);
+                previewPassMaterials.clear();
+                previewPassMaterials.push_back(backFacePass.get());
+                previewPassMaterials.push_back(frontFacePass.get());
+            } else {
+                INXLOG_DEBUG("GPUMaterialPreview: transparent two-pass preview unavailable, using original pipeline");
+            }
+        } else {
+            auto singlePass = buildPreviewPass(baseState.cullMode, false);
+            if (singlePass) {
+                ownedPreviewMaterials.push_back(singlePass);
+                previewPassMaterials.clear();
+                previewPassMaterials.push_back(singlePass.get());
+            } else {
+                INXLOG_DEBUG(
+                    "GPUMaterialPreview: transparent preview alpha override unavailable, using original pipeline");
+            }
+        }
+    }
+
+    struct PreviewPassBinding
+    {
+        InxMaterial *material = nullptr;
+        VkPipeline pipeline = VK_NULL_HANDLE;
+        VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
+        VkDescriptorSet materialDescSet = VK_NULL_HANDLE;
+        ShaderProgram *program = nullptr;
+    };
+
+    auto refreshPassBinding = [&](PreviewPassBinding &binding) -> bool {
+        InxMaterial *passMat = binding.material;
+        if (!passMat) {
+            return false;
+        }
+
+        MaterialRenderData *rd = m_vkCore->GetMaterialPipelineManager().GetRenderData(passMat->GetMaterialKey());
+        if (!rd || !rd->isValid || rd->descriptorSet == VK_NULL_HANDLE) {
+            auto matShared = std::shared_ptr<InxMaterial>(passMat, [](InxMaterial *) {});
+            if (!m_vkCore->RefreshMaterialPipeline(matShared, passMat->GetVertShaderName(),
+                                                   passMat->GetFragShaderName())) {
+                return false;
+            }
+            rd = m_vkCore->GetMaterialPipelineManager().GetRenderData(passMat->GetMaterialKey());
+        }
+
+        if (rd && rd->isValid && rd->descriptorSet != VK_NULL_HANDLE) {
+            passMat->SetPassPipeline(ShaderCompileTarget::Forward, rd->pipeline);
+            passMat->SetPassPipelineLayout(ShaderCompileTarget::Forward, rd->pipelineLayout);
+            passMat->SetPassDescriptorSet(ShaderCompileTarget::Forward, rd->descriptorSet);
+            passMat->SetPassShaderProgram(ShaderCompileTarget::Forward, rd->shaderProgram);
+        }
+
+        binding.pipeline = passMat->GetPassPipeline(ShaderCompileTarget::Forward);
+        binding.pipelineLayout = passMat->GetPassPipelineLayout(ShaderCompileTarget::Forward);
+        binding.materialDescSet = passMat->GetPassDescriptorSet(ShaderCompileTarget::Forward);
+        binding.program = passMat->GetPassShaderProgram(ShaderCompileTarget::Forward);
+
+        return binding.pipeline != VK_NULL_HANDLE && binding.pipelineLayout != VK_NULL_HANDLE &&
+               binding.materialDescSet != VK_NULL_HANDLE && binding.program != nullptr;
+    };
+
+    std::vector<PreviewPassBinding> passBindings;
+    passBindings.reserve(previewPassMaterials.size());
+    for (InxMaterial *passMat : previewPassMaterials) {
+        PreviewPassBinding binding{};
+        binding.material = passMat;
+        if (!refreshPassBinding(binding)) {
+            INXLOG_WARN("GPUMaterialPreview: preview pass pipeline not ready");
+            return false;
+        }
+        passBindings.push_back(binding);
     }
 
     if (!EnsureResources(renderSize))
         return false;
 
     // Update material UBO so GPU-side data is current
-    m_vkCore->UpdateMaterialUBO(material);
+    for (auto &binding : passBindings)
+        m_vkCore->UpdateMaterialUBO(*binding.material);
 
     // ------------------------------------------------------------------
     // Prepare preview scene UBO (camera looking at sphere)
@@ -277,7 +394,9 @@ bool GPUMaterialPreview::RenderToPixels(InxMaterial &material, int size, std::ve
         }
     }
 
-    if (program->HasDeclaredDescriptorSet(1)) {
+    ShaderProgram *primaryProgram = passBindings.front().program;
+
+    if (primaryProgram->HasDeclaredDescriptorSet(1)) {
         shadowDesc = m_vkCore->GetActiveShadowDescriptorSet();
         if (shadowDesc == VK_NULL_HANDLE) {
             if (m_fallbackShadowDescSet == VK_NULL_HANDLE)
@@ -290,7 +409,7 @@ bool GPUMaterialPreview::RenderToPixels(InxMaterial &material, int size, std::ve
         }
     }
 
-    if (program->HasDeclaredDescriptorSet(2)) {
+    if (primaryProgram->HasDeclaredDescriptorSet(2)) {
         if (globalsUBOBuf == VK_NULL_HANDLE || instanceSSBOBuf == VK_NULL_HANDLE) {
             INXLOG_WARN("GPUMaterialPreview: shader requires set 2 but globals or instance buffers are unavailable");
             return false;
@@ -344,23 +463,6 @@ bool GPUMaterialPreview::RenderToPixels(InxMaterial &material, int size, std::ve
     scissor.extent = {static_cast<uint32_t>(renderSize), static_cast<uint32_t>(renderSize)};
     vkCmdSetScissor(cmd, 0, 1, &scissor);
 
-    // Bind material pipeline
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
-
-    // Bind descriptor sets
-    // Set 0 — material (scene UBO + lighting UBO + material UBO + textures)
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &matDescSet, 0, nullptr);
-
-    // Set 1 — shadow (if the shader declares it)
-    if (program->HasDeclaredDescriptorSet(1)) {
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 1, 1, &shadowDesc, 0, nullptr);
-    }
-
-    // Set 2 — engine globals (if the shader declares it)
-    if (program->HasDeclaredDescriptorSet(2)) {
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 2, 1, &globalsDesc, 0, nullptr);
-    }
-
     // Bind sphere geometry
     VkBuffer vbo = m_sphereVBO->GetBuffer();
     VkDeviceSize offsets[] = {0};
@@ -376,10 +478,53 @@ bool GPUMaterialPreview::RenderToPixels(InxMaterial &material, int size, std::ve
     PushConstants pushData{};
     pushData.model = previewModel;
     pushData.normalMat = previewNormal;
-    vkCmdPushConstants(cmd, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(PushConstants), &pushData);
+    for (auto &binding : passBindings) {
+        if (!refreshPassBinding(binding)) {
+            INXLOG_WARN("GPUMaterialPreview: preview pass became invalid before draw");
+            return false;
+        }
 
-    // Draw sphere
-    vkCmdDrawIndexed(cmd, m_sphereIndexCount, 1, 0, 0, 0);
+        const uint64_t descRaw = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(binding.materialDescSet));
+        if ((descRaw & 0xffffull) == 0x00dfull || (descRaw & 0xfffffull) == 0x002b6ull) {
+            INXLOG_WARN("GPUMaterialPreview: suspicious set0 descriptor=", descRaw, " material='",
+                        binding.material ? binding.material->GetMaterialKey() : std::string(), "'");
+        }
+
+        if (binding.materialDescSet != VK_NULL_HANDLE &&
+            !m_vkCore->GetMaterialPipelineManager().IsDescriptorSetLive(binding.materialDescSet)) {
+            static int deadPreviewDescWarnCount = 0;
+            if (deadPreviewDescWarnCount++ < 8) {
+                INXLOG_WARN("GPUMaterialPreview: DEAD set0 descriptor=", descRaw, " material='",
+                            binding.material ? binding.material->GetMaterialKey() : std::string(), "' - skipping pass");
+            }
+            continue;
+        }
+
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, binding.pipeline);
+
+        // Set 0 — material (scene UBO + lighting UBO + material UBO + textures)
+        vkdebug::CmdBindDescriptorSetsTracked("GPUMaterialPreview.RenderToPixels.Set0", cmd,
+                                              VK_PIPELINE_BIND_POINT_GRAPHICS, binding.pipelineLayout, 0, 1,
+                                              &binding.materialDescSet, 0, nullptr);
+
+        // Set 1 — shadow (if the shader declares it)
+        if (binding.program->HasDeclaredDescriptorSet(1)) {
+            vkdebug::CmdBindDescriptorSetsTracked("GPUMaterialPreview.RenderToPixels.Set1", cmd,
+                                                  VK_PIPELINE_BIND_POINT_GRAPHICS, binding.pipelineLayout, 1, 1,
+                                                  &shadowDesc, 0, nullptr);
+        }
+
+        // Set 2 — engine globals (if the shader declares it)
+        if (binding.program->HasDeclaredDescriptorSet(2)) {
+            vkdebug::CmdBindDescriptorSetsTracked("GPUMaterialPreview.RenderToPixels.Set2", cmd,
+                                                  VK_PIPELINE_BIND_POINT_GRAPHICS, binding.pipelineLayout, 2, 1,
+                                                  &globalsDesc, 0, nullptr);
+        }
+
+        vkCmdPushConstants(cmd, binding.pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(PushConstants),
+                           &pushData);
+        vkCmdDrawIndexed(cmd, m_sphereIndexCount, 1, 0, 0, 0);
+    }
 
     vkCmdEndRenderPass(cmd);
 
@@ -485,7 +630,9 @@ bool GPUMaterialPreview::RenderToPixels(InxMaterial &material, int size, std::ve
             float r = halfToFloat(src[i * 4 + 0]);
             float g = halfToFloat(src[i * 4 + 1]);
             float b = halfToFloat(src[i * 4 + 2]);
-            float a = ComputePreviewCoverage(x, y, renderSize);
+            const float srcAlpha = std::clamp(halfToFloat(src[i * 4 + 3]), 0.0f, 1.0f);
+            const float coverage = ComputePreviewCoverage(x, y, renderSize);
+            const float a = std::clamp(srcAlpha * coverage, 0.0f, 1.0f);
 
             if (a <= 0.0f) {
                 renderPixels[i * 4 + 0] = 0;
@@ -529,7 +676,9 @@ bool GPUMaterialPreview::RenderToPixels(InxMaterial &material, int size, std::ve
             unsigned char r = src[i * 4 + 0];
             unsigned char g = src[i * 4 + 1];
             unsigned char b = src[i * 4 + 2];
-            float a = ComputePreviewCoverage(x, y, renderSize);
+            const float srcAlpha = static_cast<float>(src[i * 4 + 3]) / 255.0f;
+            const float coverage = ComputePreviewCoverage(x, y, renderSize);
+            const float a = std::clamp(srcAlpha * coverage, 0.0f, 1.0f);
 
             if (a <= 0.0f) {
                 renderPixels[i * 4 + 0] = 0;

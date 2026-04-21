@@ -3,11 +3,11 @@ SplashPlayer — renders a sequence of splash images / videos at game startup.
 
 Supports two item types:
 
-* **image** — loaded via the engine's TextureLoader (stb_image), rendered
+* **image** — loaded via the C++ texture preview task system, rendered
   fullscreen with configurable fade-in / hold / fade-out timing.
 * **video** — pre-extracted at build time into ``.infsplash`` binary blobs
-  (JPEG frame sequences).  Frames are decoded at runtime via
-  ``TextureLoader.load_from_memory()`` and rendered at the original FPS.
+  (JPEG frame sequences).  Frames are decoded on a C++ worker thread via
+  ``schedule_texture_preview_from_memory()`` and rendered at the original FPS.
 
 Auto-scales each item to fill the viewport.
 """
@@ -19,12 +19,11 @@ import struct
 import time as _time
 from typing import Dict, List, Optional
 from Infernux.debug import Debug
+from Infernux.engine.texture_task_bridge import texture_stamp, query_or_schedule_texture
 
 
 class SplashPlayer:
     """Plays a list of splash items sequentially, then reports completion."""
-
-    _TEX_NAME = "_inf_splash"
 
     def __init__(self, splash_items: List[Dict], data_root: str):
         self._items = splash_items or []
@@ -37,6 +36,7 @@ class SplashPlayer:
         self._tex_id: int = 0
         self._img_w: int = 0
         self._img_h: int = 0
+        self._tex_resource_key: str = ""
 
         # Video state
         self._vfile = None
@@ -150,15 +150,24 @@ class SplashPlayer:
             self._load_image(native_engine, path)
 
     def _load_image(self, native_engine, path: str):
-        from Infernux.lib import TextureLoader
-        td = TextureLoader.load_from_file(path)
-        if not td.is_valid():
+        if not os.path.isfile(path):
             return
-        self._img_w = td.width
-        self._img_h = td.height
-        self._tex_id = native_engine.upload_texture_for_imgui(
-            self._TEX_NAME, td.get_pixels_list(), td.width, td.height,
+        stamp = texture_stamp(path, "splash_image")
+        if stamp == 0:
+            return
+        self._tex_resource_key = f"splash|{os.path.normpath(path)}"
+        tex_id, tex_w, tex_h = query_or_schedule_texture(
+            native_engine,
+            self._tex_resource_key,
+            path,
+            int(stamp),
+            nearest=False,
+            srgb=False,
+            pump=True,
         )
+        self._tex_id = int(tex_id)
+        self._img_w = int(tex_w)
+        self._img_h = int(tex_h)
 
     def _load_video(self, native_engine, path: str):
         try:
@@ -197,26 +206,25 @@ class SplashPlayer:
         self._vfile.seek(self._vdata_offset + offset)
         jpeg = self._vfile.read(size)
 
-        from Infernux.lib import TextureLoader
-        td = TextureLoader.load_from_memory(jpeg)
-        if not td.is_valid():
-            return
-
-        # Replace previous texture
-        if self._tex_id:
-            native_engine.remove_imgui_texture(self._TEX_NAME)
-        self._tex_id = native_engine.upload_texture_for_imgui(
-            self._TEX_NAME, td.get_pixels_list(), td.width, td.height,
+        self._tex_resource_key = f"splash_video|{frame_idx}"
+        stamp = frame_idx + 1  # simple per-frame stamp
+        native_engine.schedule_texture_preview_from_memory(
+            self._tex_resource_key, jpeg, stamp, False,
         )
+        native_engine.pump_preview_tasks()
+        tex_id = int(native_engine.get_texture_preview_texture_id(self._tex_resource_key))
+        if tex_id != 0:
+            self._tex_id = tex_id
 
     def _unload_item(self, native_engine):
         if self._tex_id:
             try:
-                native_engine.remove_imgui_texture(self._TEX_NAME)
+                if self._tex_resource_key:
+                    native_engine.invalidate_texture_preview_task(self._tex_resource_key)
             except Exception as _exc:
                 Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-                pass
             self._tex_id = 0
+        self._tex_resource_key = ""
         if self._vfile:
             self._vfile.close()
             self._vfile = None

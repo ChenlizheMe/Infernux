@@ -26,7 +26,8 @@ Creating a custom panel::
 
 from __future__ import annotations
 
-from typing import List, Optional, TYPE_CHECKING
+import os
+from typing import Any, List, Optional, TYPE_CHECKING
 
 from .closable_panel import ClosablePanel
 
@@ -58,6 +59,36 @@ class EditorPanel(ClosablePanel):
     def __init__(self, title: str, window_id: Optional[str] = None):
         super().__init__(title, window_id)
         self._enable_called = False
+
+    # Keys that should never be part of generic persisted panel state.
+    _AUTO_STATE_SKIP_KEYS = {
+        "_window_manager",
+        "_enable_called",
+        "_panel_was_focused",
+        "_is_open",
+        "_window_id",
+        "_title",
+        "_title_key",
+    }
+
+    # Heuristic skip prefixes for runtime-only heavy references.
+    _AUTO_STATE_SKIP_PREFIXES = (
+        "_engine",
+        "_window_manager",
+        "_services",
+        "_event",
+        "_manager",
+        "_graph",
+        "_view",
+        "_ctx",
+        "_native",
+    )
+
+    # Hard limit so an auto-persisted panel cannot bloat panel_state.json.
+    _AUTO_STATE_MAX_KEYS = 64
+    _AUTO_STATE_MAX_ITEMS = 128
+    _AUTO_STATE_MAX_STR_LEN = 4096
+    _AUTO_STATE_MAX_DEPTH = 4
 
     # ------------------------------------------------------------------
     # Service and Event Access
@@ -244,13 +275,154 @@ class EditorPanel(ClosablePanel):
     # State Persistence
     # ------------------------------------------------------------------
 
+    @classmethod
+    def _auto_state_is_supported_scalar(cls, value: Any) -> bool:
+        return value is None or isinstance(value, (bool, int, float, str))
+
+    @classmethod
+    def _auto_state_normalize_path_value(cls, key: str, value: str) -> str:
+        if not isinstance(value, str):
+            return value
+        text = value.strip()
+        if not text:
+            return text
+        if "path" not in key.lower():
+            return text
+        text = text.replace("/", os.sep)
+        if os.path.isabs(text):
+            return os.path.normpath(text)
+        try:
+            from Infernux.engine.project_context import get_project_root
+
+            root = get_project_root()
+        except Exception:
+            root = None
+        if root:
+            return os.path.normpath(os.path.join(root, text))
+        return os.path.abspath(text)
+
+    @classmethod
+    def _auto_state_serialize_value(
+        cls,
+        key: str,
+        value: Any,
+        *,
+        depth: int,
+    ) -> tuple[bool, Any]:
+        if depth > cls._AUTO_STATE_MAX_DEPTH:
+            return False, None
+
+        if cls._auto_state_is_supported_scalar(value):
+            if isinstance(value, str):
+                if len(value) > cls._AUTO_STATE_MAX_STR_LEN:
+                    return False, None
+                return True, cls._auto_state_normalize_path_value(key, value)
+            return True, value
+
+        if isinstance(value, (list, tuple)):
+            if len(value) > cls._AUTO_STATE_MAX_ITEMS:
+                return False, None
+            out = []
+            for item in value:
+                ok, s = cls._auto_state_serialize_value(key, item, depth=depth + 1)
+                if not ok:
+                    return False, None
+                out.append(s)
+            return True, out
+
+        if isinstance(value, dict):
+            if len(value) > cls._AUTO_STATE_MAX_ITEMS:
+                return False, None
+            out_dict = {}
+            for k, v in value.items():
+                if not isinstance(k, str):
+                    return False, None
+                ok, s = cls._auto_state_serialize_value(k, v, depth=depth + 1)
+                if not ok:
+                    return False, None
+                out_dict[k] = s
+            return True, out_dict
+
+        return False, None
+
+    @classmethod
+    def _auto_state_should_skip_key(cls, key: str) -> bool:
+        if key in cls._AUTO_STATE_SKIP_KEYS:
+            return True
+        if key.startswith("__"):
+            return True
+        return any(key.startswith(prefix) for prefix in cls._AUTO_STATE_SKIP_PREFIXES)
+
+    def _collect_auto_state(self) -> dict:
+        """Collect a safe generic state snapshot for panels without custom persistence."""
+        state: dict[str, Any] = {}
+        for key, value in self.__dict__.items():
+            if len(state) >= self._AUTO_STATE_MAX_KEYS:
+                break
+            if self._auto_state_should_skip_key(key):
+                continue
+            if callable(value):
+                continue
+            ok, serialized = self._auto_state_serialize_value(key, value, depth=0)
+            if ok:
+                state[key] = serialized
+        return state
+
+    @classmethod
+    def _resolve_auto_state_path_value(cls, key: str, value: Any) -> Any:
+        if not isinstance(value, str):
+            return value
+        text = value.strip()
+        if not text:
+            return text
+        if "path" not in key.lower():
+            return text
+        text = text.replace("/", os.sep)
+        if os.path.isabs(text):
+            return os.path.normpath(text)
+        try:
+            from Infernux.engine.project_context import get_project_root
+
+            root = get_project_root()
+        except Exception:
+            root = None
+        if root:
+            return os.path.normpath(os.path.join(root, text))
+        return text
+
+    def _apply_auto_state(self, data: dict) -> None:
+        """Apply generic persisted state for panels without custom persistence."""
+        if not isinstance(data, dict):
+            return
+        for key, value in data.items():
+            if self._auto_state_should_skip_key(key):
+                continue
+            if not hasattr(self, key):
+                continue
+            try:
+                setattr(self, key, self._resolve_auto_state_path_value(key, value))
+            except Exception:
+                continue
+
     def save_state(self) -> dict:
-        """Return a panel state dict for persistence."""
-        return {}
+        """Return a panel state dict for persistence.
+
+        Default behavior auto-persists simple JSON-safe fields so custom
+        panels gain basic restore behavior without extra code.
+        """
+        auto_state = self._collect_auto_state()
+        if not auto_state:
+            return {}
+        return {"__auto_state__": auto_state}
 
     def load_state(self, data: dict) -> None:
         """Restore panel state from persisted data."""
-        pass
+        if not isinstance(data, dict):
+            return
+        # Backward compatibility: if a panel previously stored a flat dict,
+        # still allow auto-apply when it is fully JSON-safe.
+        auto_state = data.get("__auto_state__") if isinstance(data.get("__auto_state__"), dict) else data
+        self._apply_auto_state(auto_state)
 
     # ------------------------------------------------------------------
     # Unified Render Frame

@@ -44,7 +44,7 @@ from .asset_types import (
     ShaderAssetInfo, FontAssetInfo, asset_category_from_extension,
     AudioImportSettings, AudioCompressionFormat,
     MeshImportSettings,
-    read_meta_file, write_meta_fields,
+    read_meta_file, write_meta_fields, write_meta_fields_async,
     read_texture_import_settings, write_texture_import_settings,
     read_audio_import_settings, write_audio_import_settings,
     read_mesh_import_settings, write_mesh_import_settings,

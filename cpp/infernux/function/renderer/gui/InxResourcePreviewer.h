@@ -294,6 +294,10 @@ class MaterialPreviewer : public IResourcePreviewer
     static bool RenderToPixels(const std::string &matFilePath, int size, std::vector<unsigned char> &outPixels,
                                AssetDatabase *adb = nullptr, InxRenderer *renderer = nullptr);
 
+    /// @brief Render from a JSON string instead of reading from disk.
+    static bool RenderFromJson(const std::string &materialJson, int size, std::vector<unsigned char> &outPixels,
+                               AssetDatabase *adb = nullptr, InxRenderer *renderer = nullptr);
+
   private:
     InxGUI *m_gui = nullptr;
     int m_previewSize;

@@ -183,9 +183,6 @@ def release_engine(project_path: str, engine_log_level=LogLevel.Info):
 
         bootstrap.engine.show()
         bootstrap.engine.run()
-
-        # ── Save panel states on exit ──
-        bootstrap._persist_editor_state()
     finally:
         _remove_project_lock(lock_path, lock_token)
 

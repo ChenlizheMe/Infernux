@@ -22,6 +22,7 @@
 #include <cmath>
 #include <core/log/InxLog.h>
 #include <cstring>
+#include <function/renderer/vk/DescriptorBindTrace.h>
 #include <function/renderer/vk/VkPipelineHelpers.h>
 #include <function/renderer/vk/VkRenderUtils.h>
 #include <imgui_internal.h> // for ImGui::GetDrawListSharedData()
@@ -765,8 +766,22 @@ void InxScreenUIRenderer::Render(VkCommandBuffer cmdBuf, ScreenUIList list, uint
                        pushConstants.data());
 
     // ---- Bind font atlas descriptor set ----
-    vkCmdBindDescriptorSets(cmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipelineLayout, 0, 1, &m_fontDescriptorSet, 0,
-                            nullptr);
+    {
+        const uint64_t fontDescRaw = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(m_fontDescriptorSet));
+        const uint32_t lo = static_cast<uint32_t>(fontDescRaw & 0xffffffffull);
+        const uint32_t hi = static_cast<uint32_t>((fontDescRaw >> 32) & 0xffffffffull);
+        if (hi == lo && lo != 0u && lo <= 0x000fffffu) {
+            static int badUiDescWarnCount = 0;
+            if (badUiDescWarnCount++ < 16) {
+                INXLOG_WARN("[InxScreenUIRenderer] suspicious font set0 desc=0x", fontDescRaw,
+                            " -- skip UI batch to avoid invalid bind");
+            }
+            return;
+        }
+    }
+    vkdebug::CmdBindDescriptorSetsTracked("InxScreenUIRenderer.Render.Set0Font", cmdBuf,
+                                          VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipelineLayout, 0, 1, &m_fontDescriptorSet,
+                                          0, nullptr);
     VkDescriptorSet lastBoundDescSet = m_fontDescriptorSet;
 
     // ---- Issue draw commands ----
@@ -783,9 +798,23 @@ void InxScreenUIRenderer::Render(VkCommandBuffer cmdBuf, ScreenUIList list, uint
 
         // Per-command texture (usually font atlas)
         VkDescriptorSet texDescSet = reinterpret_cast<VkDescriptorSet>(static_cast<uintptr_t>(cmd.GetTexID()));
+        {
+            const uint64_t texDescRaw = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(texDescSet));
+            const uint32_t lo = static_cast<uint32_t>(texDescRaw & 0xffffffffull);
+            const uint32_t hi = static_cast<uint32_t>((texDescRaw >> 32) & 0xffffffffull);
+            if (hi == lo && lo != 0u && lo <= 0x000fffffu) {
+                static int badUiTexDescWarnCount = 0;
+                if (badUiTexDescWarnCount++ < 24) {
+                    INXLOG_WARN("[InxScreenUIRenderer] suspicious cmd texture set0 desc=0x", texDescRaw,
+                                " -- skip draw command");
+                }
+                continue;
+            }
+        }
         if (texDescSet != lastBoundDescSet) {
-            vkCmdBindDescriptorSets(cmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipelineLayout, 0, 1, &texDescSet, 0,
-                                    nullptr);
+            vkdebug::CmdBindDescriptorSetsTracked("InxScreenUIRenderer.Render.Set0Tex", cmdBuf,
+                                                  VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipelineLayout, 0, 1, &texDescSet,
+                                                  0, nullptr);
             lastBoundDescSet = texDescSet;
         }
 

@@ -5,7 +5,7 @@ This module provides ``render_material_body(ctx, panel, state)`` which renders
 the material-specific UI sections: shader selection, render settings,
 dynamic properties, and auto-save scheduling.
 
-State is managed by the unified ``asset_inspector`` module.
+State is managed by the unified ``asset_details_renderer`` module.
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ from Infernux.lib import InxGUIContext
 from Infernux.engine.i18n import t
 from . import inspector_support as _inspector_support
 from .asset_execution_layer import AssetAccessMode, get_asset_execution_layer
+from .asset_resource_preview import get_resource_preview_texture_id
 from .inspector_utils import (
     max_label_w,
     field_label,
@@ -37,6 +38,33 @@ def _record_profile_timing(bucket: str, start_time: float) -> None:
     _inspector_support.record_inspector_profile_timing(
         bucket, (_time.perf_counter() - start_time) * 1000.0,
     )
+
+
+def _draw_centered_texture(ctx: InxGUIContext, tex_id: int, width: float, height: float,
+                           src_w: int = 256, src_h: int = 256) -> bool:
+    """Draw a cached preview texture without touching the preview query path."""
+    if tex_id == 0 or width <= 0.0 or height <= 0.0 or src_w <= 0 or src_h <= 0:
+        return False
+
+    scale = min(float(width) / float(src_w), float(height) / float(src_h))
+    draw_w = max(1.0, float(src_w) * scale)
+    draw_h = max(1.0, float(src_h) * scale)
+
+    offset_y = max((float(height) - draw_h) * 0.5, 0.0)
+    if offset_y > 0.0:
+        ctx.dummy(1.0, offset_y)
+
+    offset_x = max((float(width) - draw_w) * 0.5, 0.0)
+    if offset_x > 0.0:
+        ctx.set_cursor_pos_x(ctx.get_cursor_pos_x() + offset_x)
+
+    ctx.image(tex_id, draw_w, draw_h)
+
+    remaining_y = max(float(height) - draw_h - offset_y, 0.0)
+    if remaining_y > 0.0:
+        ctx.dummy(1.0, remaining_y)
+
+    return True
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -530,36 +558,102 @@ def _render_properties_section(ctx, mat_data, is_builtin, default_open):
 
 
 def _apply_material_changes(panel, state, mat_data, native_mat,
-                            requires_pipeline_refresh, old_json, change_key, exec_layer):
+                            requires_deserialize, requires_pipeline_refresh,
+                            old_json, change_key, exec_layer):
     """Serialize and save material changes, record undo."""
     try:
-        native_mat.deserialize(json.dumps(mat_data))
+        # Hot-path optimization: most property drags already push values via
+        # native setters in render_material_property. Full JSON deserialize is
+        # only needed when material structure changed (shader sync/texture slots).
+        if requires_deserialize:
+            native_mat.deserialize(json.dumps(mat_data))
         if requires_pipeline_refresh:
             _refresh_pipeline(panel)
-        _ensure_material_file_path(panel, native_mat)
+
+        # Use cached file-path when available (avoids per-frame panel lookup).
+        file_path = state.extra.get("_mat_file_path", "")
+        if not file_path:
+            file_path = _ensure_material_file_path(panel, native_mat)
+            if file_path:
+                state.extra["_mat_file_path"] = file_path
+
         if exec_layer:
             exec_layer.schedule_rw_save(native_mat)
-        new_json = json.dumps(mat_data)
-        state.extra["cached_json"] = new_json
-        from Infernux.engine.undo import UndoManager, MaterialJsonCommand
-        mgr = UndoManager.instance()
-        if mgr and not mgr.is_executing and mgr.enabled and old_json:
-            if new_json != old_json:
+
+        # ── Deferred undo ───────────────────────────────────────────
+        # During continuous drag (60 fps), calling json.dumps every frame
+        # costs ~1-5 ms and is the main source of drag stutter.  Instead,
+        # we save the pre-drag JSON once and mark a pending undo commit.
+        # The actual json.dumps + record happens in render_material_body
+        # on the first frame where changed=False (drag ended).
+        if requires_deserialize:
+            # Structural changes (shader swap, texture slot) always need
+            # an immediate snapshot because they can't be replayed
+            # incrementally.
+            new_json = json.dumps(mat_data)
+            state.extra["cached_json"] = new_json
+            # Pre-capture save snapshot.
+            if file_path:
+                from Infernux.core.assets import AssetManager
+                AssetManager.set_material_save_snapshot(file_path, new_json)
+            from Infernux.engine.undo import UndoManager, MaterialJsonCommand
+            mgr = UndoManager.instance()
+            if mgr and not mgr.is_executing and mgr.enabled and old_json and new_json != old_json:
                 mgr.record(MaterialJsonCommand(
-                    native_mat,
-                    old_json,
-                    new_json,
-                    "Edit Material",
+                    native_mat, old_json, new_json, "Edit Material",
                     refresh_callback=lambda _mat: _refresh_pipeline(panel),
                     edit_key=change_key,
                 ))
+        else:
+            # Lightweight path: just remember that an undo commit is needed.
+            if not state.extra.get("_undo_pending"):
+                # First frame of this drag — save the starting snapshot.
+                state.extra["_undo_old_json"] = old_json
+                state.extra["_undo_edit_key"] = change_key
+            state.extra["_undo_pending"] = True
     except (RuntimeError, ValueError) as _exc:
         Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         pass
 
 
+def _flush_deferred_undo(panel, state, mat_data, native_mat):
+    """Commit deferred undo snapshot when drag ends (changed=False frame)."""
+    if not state.extra.get("_undo_pending"):
+        return
+    state.extra["_undo_pending"] = False
+
+    old_json = state.extra.pop("_undo_old_json", "")
+    edit_key = state.extra.pop("_undo_edit_key", "")
+    if not old_json:
+        return
+
+    try:
+        from Infernux.engine.undo import UndoManager, MaterialJsonCommand
+        mgr = UndoManager.instance()
+        if not (mgr and not mgr.is_executing and mgr.enabled):
+            return
+        new_json = json.dumps(mat_data)
+        state.extra["cached_json"] = new_json
+
+        # Pre-capture save snapshot so _save_material_resource doesn't need
+        # to call native_mat.serialize() on the main thread.
+        from Infernux.core.assets import AssetManager
+        file_path = state.extra.get("_mat_file_path", "")
+        if file_path:
+            AssetManager.set_material_save_snapshot(file_path, new_json)
+
+        if new_json != old_json:
+            mgr.record(MaterialJsonCommand(
+                native_mat, old_json, new_json, "Edit Material",
+                refresh_callback=lambda _mat: _refresh_pipeline(panel),
+                edit_key=edit_key,
+            ))
+    except (RuntimeError, ValueError) as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+
+
 # ═══════════════════════════════════════════════════════════════════════════
-# Body renderer (called from asset_inspector)
+# Body renderer (called from asset_details_renderer)
 # ═══════════════════════════════════════════════════════════════════════════
 
 
@@ -611,7 +705,7 @@ def _sync_shader_annotations(mat_data, state):
 def render_material_body(ctx: InxGUIContext, panel, state):
     """Render the material-specific inspector body.
 
-    *state* is the ``_State`` object from ``asset_inspector``.  Relevant
+    *state* is the ``_State`` object from ``asset_details_renderer``.  Relevant
     fields: ``state.settings`` (Material wrapper), ``state.extra``
     (native_mat, cached_data, shader_cache), ``state.exec_layer``.
     """
@@ -646,7 +740,15 @@ def render_material_body(ctx: InxGUIContext, panel, state):
     changed |= sync_ch
     requires_deserialize |= sync_ds
 
-    # ── Shader Section ─────────────────────────────────────────────────
+    # ── Top row: left = Shader + Surface, right = centered material preview ──
+    split_cols = 2
+    split_id = "##material_top_split"
+    did_split = ctx.begin_table(split_id, split_cols, 0, 0.0)
+    preview_size = 180.0
+    if did_split:
+        # Left column: Shader + Surface Options
+        ctx.table_next_column()
+
     s_ch, s_ds, s_pr, s_ck = _render_shader_section(ctx, mat_data, state, is_builtin, default_open_sections)
     changed |= s_ch
     requires_deserialize |= s_ds
@@ -656,13 +758,67 @@ def render_material_body(ctx: InxGUIContext, panel, state):
 
     ctx.separator()
 
-    # ── Surface Options (Render Settings) ──────────────────────────────
     so_ch, so_ds, so_pr, so_ck = _render_surface_options_section(ctx, mat_data, is_builtin, default_open_sections)
     changed |= so_ch
     requires_deserialize |= so_ds
     requires_pipeline_refresh |= so_pr
     if so_ck:
         change_key = so_ck
+
+    # Keep preview cache tag stable while user is actively editing; only refresh
+    # after edits settle for a short time, so material controls never stall.
+    now = _time.time()
+    cache_tag = state.extra.get("_material_cache_tag", "")
+    if not cache_tag:
+        # Keep initial tag empty so first inspector draw matches bootstrap prewarm key.
+        cache_tag = ""
+        state.extra["_material_cache_tag"] = cache_tag
+
+    pending_preview_refresh = bool(state.extra.get("_material_preview_pending", False))
+    refresh_ready_at = float(state.extra.get("_material_preview_ready_at", 0.0) or 0.0)
+    if pending_preview_refresh and now >= refresh_ready_at:
+        try:
+            cache_tag = json.dumps(mat_data, sort_keys=True, ensure_ascii=False)
+            state.extra["_material_cache_tag"] = cache_tag
+        except Exception:
+            cache_tag = state.extra.get("_material_cache_tag", cache_tag)
+        state.extra["_material_preview_pending"] = False
+        pending_preview_refresh = False
+
+    if did_split:
+        # Right column: material preview centered in its region.
+        ctx.table_next_column()
+        avail_w = max(140.0, ctx.get_content_region_avail_width())
+        preview_size = min(max(avail_w * 0.90, 140.0), 240.0)
+        preview_path = getattr(state, "file_path", "")
+        if not preview_path and _native_mat is not None:
+            preview_path = _ensure_material_file_path(panel, _native_mat)
+
+        last_preview_path = state.extra.get("_material_preview_path", "")
+        if preview_path != last_preview_path:
+            state.extra["_material_preview_path"] = preview_path
+            state.extra.pop("_material_preview_tex_id", None)
+
+        preview_tex_id = int(state.extra.get("_material_preview_tex_id", 0) or 0)
+        should_query_preview = bool(preview_path) and (not pending_preview_refresh or preview_tex_id == 0)
+        if should_query_preview:
+            # Pass live mat_data JSON so the C++ preview renderer uses the
+            # in-memory state instead of reading the (potentially stale) disk file.
+            queried_tex_id = int(get_resource_preview_texture_id(
+                panel,
+                preview_path,
+                preview_size=int(preview_size),
+                material_json=cache_tag,
+            ) or 0)
+            if queried_tex_id != 0:
+                preview_tex_id = queried_tex_id
+                state.extra["_material_preview_tex_id"] = queried_tex_id
+
+        if not _draw_centered_texture(ctx, preview_tex_id, avail_w, preview_size, 256, 256):
+            ctx.push_style_color(ImGuiCol.Text, *Theme.META_TEXT)
+            ctx.label("Material preview unavailable.")
+            ctx.pop_style_color(1)
+        ctx.end_table()
 
     ctx.separator()
 
@@ -677,8 +833,23 @@ def render_material_body(ctx: InxGUIContext, panel, state):
 
     # ── Auto-save on change ─────────────────────────────────────────────
     if changed:
+        # Defer preview cache-tag update until edits settle; this keeps slider
+        # dragging responsive and avoids preview-triggered hitches.
+        state.extra["_material_preview_pending"] = True
+        state.extra["_material_preview_ready_at"] = _time.time() + 0.30
         _apply_material_changes(panel, state, mat_data, _native_mat,
-                                requires_pipeline_refresh, old_json, change_key, exec_layer)
+                                requires_deserialize, requires_pipeline_refresh,
+                                old_json, change_key, exec_layer)
+        # Mark the native version as "ours" so _refresh_material (called once
+        # per frame by asset_details_renderer) can skip the expensive
+        # serialize -> json.loads -> merge -> json.dumps round-trip.
+        try:
+            state.extra["_applied_version"] = _native_mat.get_version()
+        except (AttributeError, RuntimeError):
+            pass
+    else:
+        # Drag ended (or no edit this frame) — commit deferred undo snapshot.
+        _flush_deferred_undo(panel, state, mat_data, _native_mat)
 
     ctx.pop_style_var(2)
 
@@ -771,7 +942,7 @@ class _InlineMaterialExecLayer:
             "material",
             file_path,
             AssetAccessMode.READ_WRITE_RESOURCE,
-            autosave_debounce_sec=0.35,
+            autosave_debounce_sec=0.25,
         )
         self._panel._inline_material_exec_layer = layer
         layer.schedule_rw_save(resource_obj)
@@ -795,8 +966,12 @@ def _get_inline_material_extra(panel, native_mat) -> dict:
         mat_version = -1
 
     extra = cache.get(mat_id)
-    cache_hit = extra is not None and mat_version != -1 and extra.get("mat_version", -1) == mat_version
+    cache_hit = (extra is not None
+                 and mat_version != -1
+                 and (extra.get("mat_version", -1) == mat_version
+                      or extra.get("_applied_version", -2) == mat_version))
     if cache_hit:
+        extra["mat_version"] = mat_version
         return extra
 
     try:

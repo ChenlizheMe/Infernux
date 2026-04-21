@@ -7,6 +7,8 @@
 #include <glm/glm.hpp>
 #include <memory>
 #include <string_view>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include <vk_mem_alloc.h>
 #include <vulkan/vulkan.h>
@@ -267,6 +269,16 @@ class MaterialDescriptorManager
     uint32_t m_poolPageSize = 256; ///< Number of descriptor sets per pool page
 
     std::unordered_map<std::string, std::unique_ptr<MaterialDescriptorSet>> m_descriptorSets;
+    std::vector<std::shared_ptr<MaterialDescriptorSet>> m_retiredDescriptorSets;
+
+    /// Tracks every VkDescriptorSet handle allocated from this manager's pools.
+    /// Cleared in Clear() after vkResetDescriptorPool invalidates all handles.
+    std::unordered_set<uint64_t> m_allocatedHandles;
+
+    /// Tracks currently active descriptor sets referenced by m_descriptorSets.
+    /// Retired sets are removed from this set immediately so draw-time checks
+    /// can detect stale material handles and refresh pipelines safely.
+    std::unordered_set<uint64_t> m_liveDescriptorHandles;
 
     // Default texture for fallback
     VkImageView m_defaultImageView = VK_NULL_HANDLE;
@@ -286,6 +298,29 @@ class MaterialDescriptorManager
     [[nodiscard]] VkSampler GetDefaultSampler() const
     {
         return m_defaultSampler;
+    }
+
+  private:
+    /**
+     * @brief Returns true if the given handle was allocated from this manager's
+     *        pools AND has not been invalidated by a pool reset (Clear/Shutdown).
+     *
+     * Use this before vkCmdBindDescriptorSets to validate material descriptor
+     * sets that come from this manager, without needing to free individual sets.
+     */
+    [[nodiscard]] bool IsDescriptorSetFromThisManager(VkDescriptorSet ds) const
+    {
+        if (ds == VK_NULL_HANDLE)
+            return false;
+        return m_allocatedHandles.count(reinterpret_cast<uint64_t>(ds)) > 0;
+    }
+
+  public:
+    [[nodiscard]] bool IsDescriptorSetLive(VkDescriptorSet ds) const
+    {
+        if (ds == VK_NULL_HANDLE)
+            return false;
+        return m_liveDescriptorHandles.count(reinterpret_cast<uint64_t>(ds)) > 0;
     }
 
   private:

@@ -228,23 +228,35 @@ def wire_project_callbacks(bs: EditorBootstrap) -> None:
 
     def _open_anim_clip(file_path):
         from Infernux.engine.ui.window_manager import WindowManager
+        from Infernux.engine.ui.closable_panel import ClosablePanel
         wm = WindowManager.instance()
         if wm is None:
             return
         panel = wm.open_window("animclip2d_editor")
         if panel is not None and hasattr(panel, '_open_animclip'):
             panel._open_animclip(file_path)
+            ClosablePanel.focus_panel_by_id("animclip2d_editor")
+            try:
+                wm._engine.select_docked_window("animclip2d_editor")
+            except Exception:
+                pass
 
     pp.open_anim_clip = _open_anim_clip
 
     def _open_anim_fsm(file_path):
         from Infernux.engine.ui.window_manager import WindowManager
+        from Infernux.engine.ui.closable_panel import ClosablePanel
         wm = WindowManager.instance()
         if wm is None:
             return
         panel = wm.open_window("animfsm_editor")
         if panel is not None and hasattr(panel, '_open_animfsm'):
             panel._open_animfsm(file_path)
+            ClosablePanel.focus_panel_by_id("animfsm_editor")
+            try:
+                wm._engine.select_docked_window("animfsm_editor")
+            except Exception:
+                pass
 
     pp.open_anim_fsm = _open_anim_fsm
 
@@ -268,7 +280,7 @@ def wire_project_callbacks(bs: EditorBootstrap) -> None:
     # -- Inspector invalidation --
     def _invalidate_asset_inspector(path):
         try:
-            from Infernux.engine.ui.asset_inspector import (
+            from Infernux.engine.ui.asset_details_renderer import (
                 invalidate_asset)
             invalidate_asset(path)
         except Exception as _exc:

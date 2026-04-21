@@ -11,6 +11,7 @@
 #include "MaterialPipelineManager.h"
 #include "SceneRenderTarget.h"
 #include "shader/ShaderProgram.h"
+#include "vk/DescriptorBindTrace.h"
 #include "vk/VkPipelineHelpers.h"
 #include "vk/VkRenderUtils.h"
 #include <function/resources/InxMaterial/InxMaterial.h>
@@ -876,29 +877,44 @@ void OutlineRenderer::RenderOutlineMask(VkCommandBuffer cmdBuf, const std::vecto
                 VkDescriptorSet mtlDescSet = GetOrCreateMtlOutlineDescSet(dc.material);
 
                 if (mtlPipeline != VK_NULL_HANDLE && mtlDescSet != VK_NULL_HANDLE) {
-                    // Write the object's world transform to the per-frame instance buffer
-                    uint32_t frameIdx =
-                        m_core->GetSwapchain().GetCurrentFrame() % static_cast<uint32_t>(m_outlineInstanceBufs.size());
-                    std::memcpy(m_outlineInstanceBufs[frameIdx].mapped, &dc.worldMatrix, sizeof(glm::mat4));
+                    const uint64_t descRaw = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(mtlDescSet));
+                    const uint32_t lo = static_cast<uint32_t>(descRaw & 0xffffffffull);
+                    const uint32_t hi = static_cast<uint32_t>((descRaw >> 32) & 0xffffffffull);
+                    const bool suspiciousDesc = (hi == lo && lo != 0u && lo <= 0x000fffffu);
+                    if (suspiciousDesc) {
+                        static int badOutlineDescWarnCount = 0;
+                        if (badOutlineDescWarnCount++ < 24) {
+                            INXLOG_WARN("[OutlineRenderer] suspicious per-material set0 desc=0x", descRaw,
+                                        " material='", dc.material->GetMaterialKey(), "' name='",
+                                        dc.material->GetName(), "' -- fallback to fixed outline path");
+                        }
+                    } else {
+                        // Write the object's world transform to the per-frame instance buffer
+                        uint32_t frameIdx = m_core->GetSwapchain().GetCurrentFrame() %
+                                            static_cast<uint32_t>(m_outlineInstanceBufs.size());
+                        std::memcpy(m_outlineInstanceBufs[frameIdx].mapped, &dc.worldMatrix, sizeof(glm::mat4));
 
-                    // Bind per-material pipeline
-                    vkCmdBindPipeline(cmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS, mtlPipeline);
+                        // Bind per-material pipeline
+                        vkCmdBindPipeline(cmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS, mtlPipeline);
 
-                    // Set 0: scene UBO + vertex material UBO
-                    vkCmdBindDescriptorSets(cmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS, m_outlineMtlPipelineLayout, 0, 1,
-                                            &mtlDescSet, 0, nullptr);
+                        // Set 0: scene UBO + vertex material UBO
+                        vkdebug::CmdBindDescriptorSetsTracked(
+                            "OutlineRenderer.RenderOutlineMask.Set0", cmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            m_outlineMtlPipelineLayout, 0, 1, &mtlDescSet, 0, nullptr);
 
-                    // Set 2: outline globals (globals UBO + outline instance buffer)
-                    VkDescriptorSet globalsDescSet = m_outlineGlobalsDescSets[frameIdx];
-                    vkCmdBindDescriptorSets(cmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS, m_outlineMtlPipelineLayout, 2, 1,
-                                            &globalsDescSet, 0, nullptr);
+                        // Set 2: outline globals (globals UBO + outline instance buffer)
+                        VkDescriptorSet globalsDescSet = m_outlineGlobalsDescSets[frameIdx];
+                        vkdebug::CmdBindDescriptorSetsTracked(
+                            "OutlineRenderer.RenderOutlineMask.Set2", cmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            m_outlineMtlPipelineLayout, 2, 1, &globalsDescSet, 0, nullptr);
 
-                    vkCmdPushConstants(cmdBuf, m_outlineMtlPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0,
-                                       sizeof(PushConstants), &pushData);
+                        vkCmdPushConstants(cmdBuf, m_outlineMtlPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0,
+                                           sizeof(PushConstants), &pushData);
 
-                    // Draw with firstInstance=0 so gl_InstanceIndex=0 reads instanceModels[0]
-                    vkCmdDrawIndexed(cmdBuf, dc.indexCount, 1, dc.indexStart, 0, 0);
-                    usePerMaterialPipeline = true;
+                        // Draw with firstInstance=0 so gl_InstanceIndex=0 reads instanceModels[0]
+                        vkCmdDrawIndexed(cmdBuf, dc.indexCount, 1, dc.indexStart, 0, 0);
+                        usePerMaterialPipeline = true;
+                    }
                 }
             }
         }
@@ -906,8 +922,9 @@ void OutlineRenderer::RenderOutlineMask(VkCommandBuffer cmdBuf, const std::vecto
         // Fallback: original fixed outline mask pipeline (no vertex deformation)
         if (!usePerMaterialPipeline) {
             vkCmdBindPipeline(cmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS, m_outlineMaskPipeline);
-            vkCmdBindDescriptorSets(cmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS, m_outlineMaskPipelineLayout, 0, 1,
-                                    &m_outlineMaskDescSet, 0, nullptr);
+            vkdebug::CmdBindDescriptorSetsTracked("OutlineRenderer.RenderOutlineMask.FallbackSet0", cmdBuf,
+                                                  VK_PIPELINE_BIND_POINT_GRAPHICS, m_outlineMaskPipelineLayout, 0, 1,
+                                                  &m_outlineMaskDescSet, 0, nullptr);
             vkCmdPushConstants(cmdBuf, m_outlineMaskPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0,
                                sizeof(PushConstants), &pushData);
             vkCmdDrawIndexed(cmdBuf, dc.indexCount, 1, dc.indexStart, 0, 0);
@@ -934,8 +951,9 @@ void OutlineRenderer::RenderOutlineComposite(VkCommandBuffer cmdBuf)
     vkCmdBindPipeline(cmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS, m_outlineCompositePipeline);
 
     // Bind composite descriptor set (mask texture sampler)
-    vkCmdBindDescriptorSets(cmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS, m_outlineCompositePipelineLayout, 0, 1,
-                            &m_outlineCompositeDescSet, 0, nullptr);
+    vkdebug::CmdBindDescriptorSetsTracked("OutlineRenderer.RenderOutlineComposite.Set0", cmdBuf,
+                                          VK_PIPELINE_BIND_POINT_GRAPHICS, m_outlineCompositePipelineLayout, 0, 1,
+                                          &m_outlineCompositeDescSet, 0, nullptr);
 
     // Push constants: outline color, texel size, outline width
     struct CompositePushConstants

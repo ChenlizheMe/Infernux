@@ -151,9 +151,6 @@ def wire_material_sections(ip, _t, engine, _inspector_support,
                 ctx, f"{title}##mat_entry_{index}", level="secondary", default_open=True
             ):
                 continue
-
-            if entry["is_default"]:
-                render_info_text(ctx, "Using the renderer's effective default material")
             lock_inline_material_body = (
                 entry.get("renderer_type") == "SpriteRenderer"
                 and entry["is_default"]

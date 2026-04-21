@@ -7,8 +7,9 @@ Unity-style Scene View panel with 3D viewport and camera controls.
 
 import math
 import os
-from Infernux.lib import InxGUIContext, TextureLoader, InputManager
+from Infernux.lib import InxGUIContext, InputManager
 from Infernux.engine.i18n import t
+from Infernux.engine.texture_task_bridge import texture_stamp, query_or_schedule_texture
 from .editor_panel import EditorPanel
 from .closable_panel import ClosablePanel
 from .panel_registry import editor_panel
@@ -116,7 +117,7 @@ class SceneViewOverlaysMixin:
 
     def _ensure_tool_icons(self):
         """Lazily upload tool icon textures to GPU."""
-        if self._tool_icons_loaded or not self._engine:
+        if not self._engine:
             return
         native = self._engine.get_native_engine() if hasattr(self._engine, 'get_native_engine') else self._engine
         if native is None:
@@ -127,22 +128,29 @@ class SceneViewOverlaysMixin:
             TOOL_ROTATE:    "tool_rotate.png",
             TOOL_SCALE:     "tool_scale.png",
         }
+        all_ready = True
         for mode, filename in _ICON_MAP.items():
-            tex_name = f"__toolicon__{filename}"
-            if native.has_imgui_texture(tex_name):
-                self._tool_icon_ids[mode] = native.get_imgui_texture_id(tex_name)
-                continue
             icon_path = os.path.join(_resources.file_type_icons_dir, filename)
             if not os.path.isfile(icon_path):
+                all_ready = False
                 continue
-            tex_data = TextureLoader.load_from_file(icon_path)
-            if tex_data and tex_data.is_valid():
-                pixels = tex_data.get_pixels_list()
-                tid = native.upload_texture_for_imgui(
-                    tex_name, pixels, tex_data.width, tex_data.height)
-                if tid != 0:
-                    self._tool_icon_ids[mode] = tid
-        self._tool_icons_loaded = True
+            stamp = texture_stamp(icon_path, "scene_tool_icon")
+            if stamp == 0:
+                all_ready = False
+                continue
+            tid, _, _ = query_or_schedule_texture(
+                native,
+                f"toolicon|{filename}",
+                icon_path,
+                int(stamp),
+                nearest=False,
+                srgb=False,
+            )
+            if tid != 0:
+                self._tool_icon_ids[mode] = tid
+            else:
+                all_ready = False
+        self._tool_icons_loaded = all_ready
 
     def _draw_tool_mode_buttons(self, ctx: InxGUIContext, combo_h: float = 20.0) -> bool:
         """Draw horizontally aligned gizmo-tool icon buttons matching the combo height."""

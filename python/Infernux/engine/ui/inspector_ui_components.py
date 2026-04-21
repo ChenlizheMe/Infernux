@@ -15,6 +15,7 @@ from Infernux.engine.project_context import get_project_root
 
 from .inspector_components import _record_property, register_py_component_renderer
 from Infernux.engine.i18n import t
+from Infernux.engine.texture_task_bridge import texture_stamp, query_or_schedule_texture
 from .inspector_utils import field_label, max_label_w, render_compact_section_header, render_compact_section_title, _render_color_bar, render_inspector_checkbox
 from .theme import Theme
 from Infernux.debug import Debug
@@ -254,12 +255,34 @@ def _set_native_size(comp):
     abs_path = os.path.normpath(os.path.join(project_root, tex_path))
     if not os.path.isfile(abs_path):
         return
-    from Infernux.lib import TextureLoader
-    td = TextureLoader.load_from_file(abs_path)
-    if not td or not td.is_valid():
+
+    try:
+        from .editor_services import EditorServices
+        svc = EditorServices.instance()
+        native = svc.native_engine if svc else None
+    except Exception:
+        native = None
+    if not native:
         return
+
+    stamp = texture_stamp(abs_path, "ui_native_size")
+    if stamp == 0:
+        return
+
+    _, tex_w, tex_h = query_or_schedule_texture(
+        native,
+        f"ui_native_size|{os.path.normpath(tex_path)}",
+        abs_path,
+        int(stamp),
+        nearest=False,
+        srgb=False,
+        pump=True,
+    )
+    if tex_w <= 0 or tex_h <= 0:
+        return
+
     canvas, _, _ = _canvas_dims(comp)
-    w, h = float(td.width), float(td.height)
+    w, h = float(tex_w), float(tex_h)
     if canvas is not None:
         _apply_size_preserve_top_left(comp, w, h, canvas)
     else:

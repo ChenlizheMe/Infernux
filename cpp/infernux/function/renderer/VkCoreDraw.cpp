@@ -11,6 +11,7 @@
 #include "InxVkCoreModular.h"
 #include "ProfileConfig.h"
 #include "SceneRenderGraph.h"
+#include "vk/DescriptorBindTrace.h"
 #include "vk/VkRenderUtils.h"
 #include "vk/VkTypes.h"
 
@@ -557,6 +558,56 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
             }
         }
 
+        // Authoritative descriptor ownership lives in MaterialPipelineManager render data.
+        // During material/texture invalidation, scene-facing material instances can keep
+        // stale Forward pass handles for one frame. If render data is missing/invalid,
+        // force a rebuild before binding; otherwise clear pass handles and skip draw.
+        {
+            const std::string materialKey = matRaw->GetMaterialKey();
+            MaterialRenderData *rd = m_materialPipelineManager.GetRenderData(materialKey);
+
+            // Check if descriptor handle was invalidated by any code path
+            // (pool reset, free, or reinit) without render data knowing.
+            if (rd && rd->isValid && rd->descriptorSet != VK_NULL_HANDLE &&
+                !m_materialPipelineManager.IsDescriptorSetLive(rd->descriptorSet)) {
+                static int deadDescWarnCount = 0;
+                if (deadDescWarnCount++ < 16) {
+                    const uint64_t rawHandle = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(rd->descriptorSet));
+                    INXLOG_WARN("[DrawSceneFiltered] DEAD descriptor 0x", rawHandle, " for mat '", matRaw->GetName(),
+                                "' (key='", matRaw->GetMaterialKey(),
+                                "') — handle not in live tracking set. Pool was reset or set freed by"
+                                " an unknown code path. Forcing re-pipeline.");
+                }
+                rd->isValid = false;
+            }
+            if (!rd || !rd->isValid || rd->descriptorSet == VK_NULL_HANDLE) {
+                const std::string &vertName = matRaw->GetVertShaderName();
+                const std::string &fragName = matRaw->GetFragShaderName();
+                if (!fragName.empty()) {
+                    auto matShared = std::shared_ptr<InxMaterial>(matRaw, [](InxMaterial *) {});
+                    if (RefreshMaterialPipeline(matShared, vertName, fragName)) {
+                        rd = m_materialPipelineManager.GetRenderData(materialKey);
+                    }
+                }
+            }
+
+            if (rd && rd->isValid && rd->descriptorSet != VK_NULL_HANDLE) {
+                if (rd->pipeline != VK_NULL_HANDLE)
+                    pipeline = rd->pipeline;
+                if (rd->pipelineLayout != VK_NULL_HANDLE)
+                    pipelineLayout = rd->pipelineLayout;
+                matRaw->SetPassPipeline(ShaderCompileTarget::Forward, rd->pipeline);
+                matRaw->SetPassPipelineLayout(ShaderCompileTarget::Forward, rd->pipelineLayout);
+                matRaw->SetPassDescriptorSet(ShaderCompileTarget::Forward, rd->descriptorSet);
+                matRaw->SetPassShaderProgram(ShaderCompileTarget::Forward, rd->shaderProgram);
+            } else {
+                matRaw->SetPassPipeline(ShaderCompileTarget::Forward, VK_NULL_HANDLE);
+                matRaw->SetPassPipelineLayout(ShaderCompileTarget::Forward, VK_NULL_HANDLE);
+                matRaw->SetPassDescriptorSet(ShaderCompileTarget::Forward, VK_NULL_HANDLE);
+                matRaw->SetPassShaderProgram(ShaderCompileTarget::Forward, nullptr);
+            }
+        }
+
         VkDescriptorSet descriptorSet = matRaw->GetPassDescriptorSet(ShaderCompileTarget::Forward);
 
         if (descriptorSet == VK_NULL_HANDLE) {
@@ -613,8 +664,45 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
         }
 
         if (descriptorSet != currentDescriptorSet || pipelineLayout != currentLayout) {
-            vkCmdBindDescriptorSets(cmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSet, 0,
-                                    nullptr);
+            if (descriptorSet != VK_NULL_HANDLE && !m_materialPipelineManager.IsDescriptorSetLive(descriptorSet)) {
+                static int staleSet0WarnCount = 0;
+                if (staleSet0WarnCount++ < 32) {
+                    const uint64_t rawHandle = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(descriptorSet));
+                    INXLOG_WARN("[DrawSceneFiltered] stale set0 descriptor before bind: 0x", rawHandle, " mat='",
+                                matRaw->GetMaterialKey(), "' name='", matRaw->GetName(),
+                                "' -- forcing pipeline refresh");
+                }
+
+                const std::string &vertName = matRaw->GetVertShaderName();
+                const std::string &fragName = matRaw->GetFragShaderName();
+                if (!fragName.empty()) {
+                    auto matShared = std::shared_ptr<InxMaterial>(matRaw, [](InxMaterial *) {});
+                    if (RefreshMaterialPipeline(matShared, vertName, fragName)) {
+                        MaterialRenderData *rd = m_materialPipelineManager.GetRenderData(matRaw->GetMaterialKey());
+                        if (rd && rd->isValid && rd->descriptorSet != VK_NULL_HANDLE &&
+                            m_materialPipelineManager.IsDescriptorSetLive(rd->descriptorSet)) {
+                            if (rd->pipeline != VK_NULL_HANDLE)
+                                pipeline = rd->pipeline;
+                            if (rd->pipelineLayout != VK_NULL_HANDLE)
+                                pipelineLayout = rd->pipelineLayout;
+                            descriptorSet = rd->descriptorSet;
+                            matRaw->SetPassPipeline(ShaderCompileTarget::Forward, rd->pipeline);
+                            matRaw->SetPassPipelineLayout(ShaderCompileTarget::Forward, rd->pipelineLayout);
+                            matRaw->SetPassDescriptorSet(ShaderCompileTarget::Forward, rd->descriptorSet);
+                            matRaw->SetPassShaderProgram(ShaderCompileTarget::Forward, rd->shaderProgram);
+                        }
+                    }
+                }
+
+                if (descriptorSet == VK_NULL_HANDLE || !m_materialPipelineManager.IsDescriptorSetLive(descriptorSet)) {
+                    emitBatch();
+                    continue;
+                }
+            }
+
+            vkdebug::CmdBindDescriptorSetsTracked("VkCoreDraw.DrawSceneFiltered.Set0", cmdBuf,
+                                                  VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSet,
+                                                  0, nullptr);
             currentDescriptorSet = descriptorSet;
             currentLayout = pipelineLayout;
 
@@ -622,8 +710,9 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
 
             if (m_activeShadowDescSet != VK_NULL_HANDLE) {
                 if (program && program->HasDeclaredDescriptorSet(1)) {
-                    vkCmdBindDescriptorSets(cmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 1, 1,
-                                            &m_activeShadowDescSet, 0, nullptr);
+                    vkdebug::CmdBindDescriptorSetsTracked("VkCoreDraw.DrawSceneFiltered.Set1", cmdBuf,
+                                                          VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 1, 1,
+                                                          &m_activeShadowDescSet, 0, nullptr);
                 }
             }
 
@@ -631,8 +720,9 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
                 if (frameIndex < m_globalsDescSets.size()) {
                     VkDescriptorSet globalsDescSet = m_globalsDescSets[frameIndex];
                     if (globalsDescSet != VK_NULL_HANDLE) {
-                        vkCmdBindDescriptorSets(cmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 2, 1,
-                                                &globalsDescSet, 0, nullptr);
+                        vkdebug::CmdBindDescriptorSetsTracked("VkCoreDraw.DrawSceneFiltered.Set2", cmdBuf,
+                                                              VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 2, 1,
+                                                              &globalsDescSet, 0, nullptr);
                     }
                 }
             }
@@ -793,8 +883,9 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
     if (frameIndex < m_globalsDescSets.size()) {
         VkDescriptorSet globalsDescSet = m_globalsDescSets[frameIndex];
         if (globalsDescSet != VK_NULL_HANDLE) {
-            vkCmdBindDescriptorSets(cmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS, m_shadowPipelineLayout, 1, 1,
-                                    &globalsDescSet, 0, nullptr);
+            vkdebug::CmdBindDescriptorSetsTracked("VkCoreDraw.DrawShadowCasters.Set1", cmdBuf,
+                                                  VK_PIPELINE_BIND_POINT_GRAPHICS, m_shadowPipelineLayout, 1, 1,
+                                                  &globalsDescSet, 0, nullptr);
         }
     }
 
@@ -823,8 +914,9 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
 
         // Bind per-cascade descriptor set (set 0)
         VkDescriptorSet cascadeDescSet = m_shadowDescSets[descIdx];
-        vkCmdBindDescriptorSets(cmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS, m_shadowPipelineLayout, 0, 1, &cascadeDescSet,
-                                0, nullptr);
+        vkdebug::CmdBindDescriptorSetsTracked("VkCoreDraw.DrawShadowCasters.Set0", cmdBuf,
+                                              VK_PIPELINE_BIND_POINT_GRAPHICS, m_shadowPipelineLayout, 0, 1,
+                                              &cascadeDescSet, 0, nullptr);
 
         const Frustum &cascadeFrustum = cascadeFrustums[ci];
         VkBuffer currentVertexBuffer = VK_NULL_HANDLE;
@@ -933,8 +1025,9 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
             if (matDesc == VK_NULL_HANDLE)
                 matDesc = m_shadowMaterialDummyDescSet;
             if (matDesc != lastBoundShadowMaterialDescSet && matDesc != VK_NULL_HANDLE) {
-                vkCmdBindDescriptorSets(cmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS, m_shadowPipelineLayout, 2, 1, &matDesc,
-                                        0, nullptr);
+                vkdebug::CmdBindDescriptorSetsTracked("VkCoreDraw.DrawShadowCasters.Set2", cmdBuf,
+                                                      VK_PIPELINE_BIND_POINT_GRAPHICS, m_shadowPipelineLayout, 2, 1,
+                                                      &matDesc, 0, nullptr);
                 lastBoundShadowMaterialDescSet = matDesc;
             }
 
@@ -1271,10 +1364,9 @@ void InxVkCoreModular::CleanupShadowPipeline()
         vkDestroyPipelineLayout(device, m_shadowPipelineLayout, nullptr);
         m_shadowPipelineLayout = VK_NULL_HANDLE;
     }
-    if (m_shadowMaterialDummyDescSet != VK_NULL_HANDLE && m_shadowMaterialDescPool != VK_NULL_HANDLE) {
-        vkFreeDescriptorSets(device, m_shadowMaterialDescPool, 1, &m_shadowMaterialDummyDescSet);
-        m_shadowMaterialDummyDescSet = VK_NULL_HANDLE;
-    }
+    // m_shadowMaterialDummyDescSet is allocated from m_shadowMaterialDescPool.
+    // Do not free it individually here; destroying the pool reclaims all sets.
+    m_shadowMaterialDummyDescSet = VK_NULL_HANDLE;
     if (m_shadowDescPool != VK_NULL_HANDLE) {
         vkDestroyDescriptorPool(device, m_shadowDescPool, nullptr);
         m_shadowDescPool = VK_NULL_HANDLE;

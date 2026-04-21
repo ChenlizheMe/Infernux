@@ -10,9 +10,14 @@ from __future__ import annotations
 
 import json
 import os
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from enum import IntEnum
 from typing import Any, Dict, List, Optional
+
+# Shared IO thread pool for background file writes (meta, fallback saves).
+# Max 2 workers: meta writes and material-save fallback are infrequent.
+_io_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="asset-io")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -328,14 +333,24 @@ def write_meta_fields(asset_path: str, updates: Dict[str, Any]) -> bool:
         for key, value in updates.items():
             type_tag = _python_type_to_meta_tag(value)
             entries[key] = {"type": type_tag, "value": value}
+        blob = json.dumps(root, indent=4) + "\n"
         with open(meta_path, "w", encoding="utf-8") as f:
-            json.dump(root, f, indent=4)
-            f.write("\n")
+            f.write(blob)
         return True
     except Exception as e:
         from Infernux.debug import Debug
         Debug.log_warning(f"Failed to write meta file '{meta_path}': {e}")
         return False
+
+
+def write_meta_fields_async(asset_path: str, updates: Dict[str, Any]) -> "Future[bool]":
+    """Fire-and-forget version of :func:`write_meta_fields`.
+
+    Submits the read-modify-write to the shared IO thread pool and returns
+    a :class:`~concurrent.futures.Future`.  Callers that need the result
+    before proceeding can call ``future.result()``.
+    """
+    return _io_pool.submit(write_meta_fields, asset_path, updates)
 
 
 def _python_type_to_meta_tag(value) -> str:

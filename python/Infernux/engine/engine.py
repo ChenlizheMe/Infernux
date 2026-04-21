@@ -30,6 +30,7 @@ class Engine():
         self._gizmo_collect_interval_edit = 1.0 / 60.0
         self._gizmos_uploaded = False
         self._resources_manager = None  # Set in init_renderer (editor only)
+        self._before_exit_callback = None
 
     @staticmethod
     def _parse_present_mode(value) -> int | None:
@@ -324,6 +325,10 @@ class Engine():
     def get_play_mode_manager(self) -> PlayModeManager:
         """Get the play mode manager for controlling play/pause/stop."""
         return self._play_mode_manager
+
+    def set_before_exit_callback(self, callback):
+        """Register a callback invoked right before native engine cleanup."""
+        self._before_exit_callback = callback
     
     def exit(self):
         """
@@ -336,6 +341,18 @@ class Engine():
           2. C++ Cleanup (the heavy part — GPU drain + resource destruction)
           3. Join ResourcesManager thread (should already have exited by now)
         """
+        # Ask dirty editor panels (e.g. animation editors) for save/discard/cancel
+        # before we start irreversible shutdown.
+        if not self._confirm_dirty_panels_before_exit():
+            return
+
+        if callable(self._before_exit_callback):
+            try:
+                self._before_exit_callback()
+            except Exception as _exc:
+                Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+                pass
+
         # Safety net: if cleanup hangs (C++ deadlock, thread stuck), force-kill
         # the process after a generous timeout so we never leave zombie procs.
         import threading as _th
@@ -413,6 +430,49 @@ class Engine():
 
         # 3. Flip state to EDIT so nothing else treats us as playing
         pmm._state = PlayModeState.EDIT
+
+    def _confirm_dirty_panels_before_exit(self) -> bool:
+        """Query global dirty registry and confirm save/discard/cancel one-by-one."""
+        try:
+            from Infernux.engine.project_context import (
+                get_dirty_panel_entries,
+                is_panel_dirty,
+                set_panel_dirty,
+            )
+            from Infernux.engine.ui._dialogs import ask_save_discard_cancel
+
+            for entry in list(get_dirty_panel_entries()):
+                panel_id = str(entry.get("panel_id") or "")
+                title = str(entry.get("title") or panel_id or "Panel")
+                save_handler = entry.get("save_handler")
+                if not panel_id or not is_panel_dirty(panel_id):
+                    continue
+
+                choice = ask_save_discard_cancel(
+                    title=f"Unsaved {title}",
+                    message=f"{title} has unsaved changes. Save before exiting?",
+                )
+                if choice == "cancel":
+                    return False
+                if choice == "discard":
+                    set_panel_dirty(panel_id, False, title=title, save_handler=save_handler)
+                    continue
+
+                # save
+                if not callable(save_handler):
+                    return False
+                try:
+                    save_handler()
+                except Exception as _exc:
+                    Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+                    return False
+                if is_panel_dirty(panel_id):
+                    # Save was cancelled or failed.
+                    return False
+            return True
+        except Exception as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+            return True
 
     def set_gui_font(self, font_path, font_size=18):
         self._engine.set_gui_font(_safe_path(font_path), font_size)

@@ -102,6 +102,12 @@ class InxGUI
         VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
     };
 
+    struct DeferredTextureRelease
+    {
+        ImGuiTextureResource resource;
+        uint64_t releaseFrame = 0;
+    };
+
     InxVkCoreModular *m_vkCore_ptr = nullptr;
     SDL_Window *m_window_ptr = nullptr;
     ImGuiContext *m_imguiContext_ptr = nullptr;
@@ -115,6 +121,10 @@ class InxGUI
     std::unordered_map<std::string, double> m_lastPanelTimesMs;
     std::unordered_map<std::string, ImGuiTextureResource> m_textures_umap;
     std::vector<std::string> m_pendingTextureRemovals;
+    std::vector<ImGuiTextureResource> m_pendingTextureResourceReleases;
+    std::vector<DeferredTextureRelease> m_deferredTextureReleases;
+    std::vector<ImGuiTextureResource> m_retiredTextureResources;
+    uint64_t m_guiFrameCounter = 0;
     ResourcePreviewManager m_resourcePreviewManager;
     bool m_playerMode = false;
 

@@ -45,6 +45,24 @@ class GameViewPanel(EditorPanel):
     WINDOW_TYPE_ID = "game_view"
     WINDOW_DISPLAY_NAME = "Game"
 
+    # Runtime-only cache fields must not be persisted across sessions.
+    _AUTO_STATE_SKIP_KEYS = EditorPanel._AUTO_STATE_SKIP_KEYS | {
+        "_last_game_width",
+        "_last_game_height",
+        "_game_camera_was_enabled",
+        "_fps_accum_time",
+        "_fps_accum_frames",
+        "_display_fps",
+        "_display_frame_ms",
+        "_game_fps_accum_time",
+        "_game_fps_accum_frames",
+        "_display_game_fps",
+        "_display_game_frame_ms",
+        "_cached_fps_text",
+        "_cached_fps_text_w",
+        "_was_focused",
+    }
+
     _RESOLUTION_PRESETS = [
         ("1920\u00d71080", 1920, 1080),
         ("1280\u00d7720", 1280, 720),
@@ -236,8 +254,22 @@ class GameViewPanel(EditorPanel):
     def _window_flags(self) -> int:
         return Theme.WINDOW_FLAGS_VIEWPORT | Theme.WINDOW_FLAGS_NO_SCROLL
 
+    def save_state(self) -> dict:
+        # Game view state is runtime-driven and must not be serialized.
+        return {}
+
+    def load_state(self, data: dict) -> None:
+        # Intentionally ignore persisted data for Game View.
+        return
+
     def _pre_render(self, ctx):
         self._load_resolution_settings()
+
+    def on_enable(self):
+        # Runtime caches must always start from a cold state after open.
+        self._last_game_width = 0
+        self._last_game_height = 0
+        self._game_camera_was_enabled = False
 
     def on_disable(self):
         self._set_game_render_active(False)

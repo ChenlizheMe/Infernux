@@ -380,6 +380,7 @@ class Theme:
     INSPECTOR_HEADER_LIST_FONT_SCALE = 1.0  # List header font scale
     INSPECTOR_HEADER_ITEM_SPC   = (4.0, 2.0)  # Header item spacing
     INSPECTOR_HEADER_BORDER_SIZE = 0.0  # Header border size
+    INSPECTOR_HEADER_RIGHT_MARGIN = 1.0  # How far the header bg stops from the right content edge (aligns with field controls)
     INSPECTOR_ACTION_ALIGN_X    = 0.0  # Action button alignment
     INSPECTOR_HEADER_CONTENT_INDENT = 28.0  # Header content indent (px)
     ADD_COMP_SEARCH_W          = 240  # "Search components" input width

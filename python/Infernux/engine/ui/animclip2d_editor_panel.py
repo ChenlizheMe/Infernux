@@ -11,8 +11,10 @@ Opened from Window menu → 2D Animation Clip Editor.
 from __future__ import annotations
 
 import os
+import json
 import threading
 import time
+import zlib
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
@@ -48,9 +50,11 @@ class _TextureState:
     tex_h: int = 0
     frames: list = field(default_factory=list)   # List[SpriteFrame]
     guid: str = ""
-    # Sampling state tracking — re-upload when these change
+    # Sampling state tracking — reschedule when these change
     filter_tag: str = ""
     srgb_tag: str = ""
+    resource_key: str = ""
+    stamp: int = 0
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -71,6 +75,7 @@ _WIDE_LAYOUT_MIN_W = 920.0
 
 _PLAYBACK_STOPPED = 0
 _PLAYBACK_PLAYING = 1
+_U64 = 0xFFFFFFFFFFFFFFFF
 
 
 @editor_panel(
@@ -91,12 +96,9 @@ class AnimClip2DEditorPanel(EditorPanel):
         self._playback: int = _PLAYBACK_STOPPED
         self._preview_frame_idx: int = 0  # index into active clip's frame_indices
         self._last_frame_time: float = 0.0
-        # Cache name for texture cleanup
-        self._cache_name: str = ""
-        # Raw pixel data kept for re-upload on sampling changes
-        self._raw_pixels: Optional[list] = None
-        self._raw_w: int = 0
-        self._raw_h: int = 0
+        self._dirty: bool = False
+        self._last_saved_signature: str = ""
+        self._mark_saved_snapshot()
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -110,6 +112,51 @@ class AnimClip2DEditorPanel(EditorPanel):
 
     def on_disable(self):
         self._cleanup_texture()
+        try:
+            from Infernux.engine.project_context import set_panel_dirty
+
+            set_panel_dirty(self.window_id, False)
+        except Exception:
+            pass
+
+    def _window_title_suffix(self) -> str:
+        self._recompute_dirty()
+        self._sync_project_dirty_flag()
+        return " *" if self._dirty else ""
+
+    def _sync_project_dirty_flag(self) -> None:
+        try:
+            from Infernux.engine.project_context import set_panel_dirty
+
+            set_panel_dirty(self.window_id, bool(self._dirty))
+        except Exception:
+            pass
+
+    def _current_edit_signature(self) -> str:
+        tex = self._tex
+        blob = {
+            "texture_path": tex.file_path if tex else "",
+            "texture_guid": tex.guid if tex else "",
+            "active": self._active_clip_idx,
+            "clips": [
+                {
+                    "name": c.name,
+                    "frames": list(c.frame_indices),
+                    "fps": float(c.fps),
+                    "saved_path": c.saved_path,
+                }
+                for c in self._clips
+            ],
+        }
+        return json.dumps(blob, sort_keys=True, ensure_ascii=True)
+
+    def _mark_saved_snapshot(self) -> None:
+        self._last_saved_signature = self._current_edit_signature()
+        self._dirty = False
+        self._sync_project_dirty_flag()
+
+    def _recompute_dirty(self) -> None:
+        self._dirty = self._current_edit_signature() != self._last_saved_signature
 
     def save_state(self) -> dict:
         clips_data = []
@@ -141,6 +188,7 @@ class AnimClip2DEditorPanel(EditorPanel):
             self._clips = [_ClipState()]
         self._active_clip_idx = max(0, min(
             int(data.get("active_clip", 0)), len(self._clips) - 1))
+        self._mark_saved_snapshot()
 
     # ------------------------------------------------------------------
     # Render — layout: header -> tabs -> preview/details -> sequence -> palette
@@ -151,6 +199,8 @@ class AnimClip2DEditorPanel(EditorPanel):
     _IMGUI_KEY_S = 564
 
     def on_render_content(self, ctx: InxGUIContext):
+        self._recompute_dirty()
+        self._sync_project_dirty_flag()
         # Ctrl+S save shortcut
         if ctx.is_key_down(self._IMGUI_MOD_CTRL) and ctx.is_key_pressed(self._IMGUI_KEY_S):
             clip = self._active_clip
@@ -161,12 +211,16 @@ class AnimClip2DEditorPanel(EditorPanel):
         self._render_texture_slot(ctx, avail_w)
         ctx.dummy(0, 8)
 
-        if self._tex is None or self._tex.texture_id == 0:
+        if self._tex is None:
             self._render_empty_state(ctx)
             return
 
         # Guard against stale texture (e.g. import settings changed externally)
         if not self._validate_texture():
+            self._render_empty_state(ctx)
+            return
+
+        if self._tex.texture_id == 0:
             self._render_empty_state(ctx)
             return
 
@@ -658,6 +712,63 @@ class AnimClip2DEditorPanel(EditorPanel):
     # Texture loading
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _safe_mtime_ns(path: str) -> int:
+        try:
+            return int(os.stat(path).st_mtime_ns)
+        except OSError:
+            return 0
+
+    @classmethod
+    def _build_texture_stamp(cls, file_path: str, filter_tag: str, srgb_tag: str) -> int:
+        image_mtime = cls._safe_mtime_ns(file_path)
+        meta_mtime = cls._safe_mtime_ns(f"{file_path}.meta")
+        base = int((image_mtime ^ ((meta_mtime * 2654435761) & _U64)) & _U64)
+        setting_hash = int(zlib.crc32(f"{filter_tag}|{srgb_tag}".encode("utf-8")) & 0xFFFFFFFF)
+        return int((base ^ setting_hash) & _U64)
+
+    @staticmethod
+    def _get_native_engine():
+        try:
+            from .editor_services import EditorServices
+
+            svc = EditorServices.instance()
+            return svc.native_engine if svc else None
+        except Exception:
+            return None
+
+    @staticmethod
+    def _read_texture_sampling(file_path: str):
+        filter_tag = "default"
+        srgb_tag = "linear"
+        use_nearest = False
+        use_srgb = False
+        try:
+            from Infernux.core.asset_types import read_texture_import_settings, FilterMode
+
+            settings = read_texture_import_settings(file_path)
+            cur_filter = getattr(settings, 'filter_mode', None)
+            use_srgb = bool(getattr(settings, 'srgb', False))
+            filter_tag = cur_filter.name if cur_filter else "default"
+            srgb_tag = "srgb" if use_srgb else "linear"
+            use_nearest = (cur_filter == FilterMode.POINT)
+        except Exception:
+            pass
+        return filter_tag, srgb_tag, use_nearest, use_srgb
+
+    @staticmethod
+    def _read_sprite_frames(file_path: str):
+        frames = []
+        try:
+            from Infernux.core.asset_types import read_texture_import_settings
+
+            settings = read_texture_import_settings(file_path)
+            if settings and settings.sprite_frames:
+                frames = list(settings.sprite_frames)
+        except Exception:
+            pass
+        return frames
+
     def _on_texture_drop(self, payload):
         """Handle TEXTURE_FILE drop — payload is a file path."""
         if isinstance(payload, str) and payload:
@@ -670,116 +781,35 @@ class AnimClip2DEditorPanel(EditorPanel):
 
     def _load_texture(self, file_path: str):
         """Load a sprite-sheet texture and extract frame data from its .meta."""
-        # Invalidate current texture state immediately so no stale
-        # descriptor-set can be used if the re-upload below fails.
-        old_cache_name = self._cache_name
         self._tex = None
-
-        try:
-            from Infernux.lib import TextureLoader
-            td = TextureLoader.load_from_file(file_path)
-            if not td or td.width <= 0 or not td.is_valid():
-                Debug.log_warning(f"[AnimClipEditor] TextureLoader failed: {file_path}")
-                self._cleanup_texture()
-                return
-        except Exception as exc:
-            Debug.log_warning(f"[AnimClipEditor] TextureLoader exception: {exc}")
-            self._cleanup_texture()
+        if not file_path or not os.path.isfile(file_path):
             return
 
-        # Read import settings (filter_mode, srgb) for sampling-aware upload
-        filter_tag = "default"
-        srgb_tag = "linear"
-        try:
-            from Infernux.core.asset_types import read_texture_import_settings, FilterMode
-            settings = read_texture_import_settings(file_path)
-            cur_filter = getattr(settings, 'filter_mode', None)
-            cur_srgb = getattr(settings, 'srgb', False)
-            filter_tag = cur_filter.name if cur_filter else "default"
-            srgb_tag = "srgb" if cur_srgb else "linear"
-        except Exception:
-            cur_filter = None
-            cur_srgb = False
-
-        # Store raw pixels for potential re-upload on settings change
-        raw_pixels = td.get_pixels_list()
-        raw_w, raw_h = td.width, td.height
-        self._raw_pixels = raw_pixels
-        self._raw_w = raw_w
-        self._raw_h = raw_h
-
-        # Upload to ImGui with sampling-aware processing
-        try:
-            from .editor_services import EditorServices
-            svc = EditorServices.instance()
-            native = svc.native_engine if svc else None
-            if not native:
-                Debug.log_warning("[AnimClipEditor] No native engine")
-                self._cleanup_texture()
-                return
-
-            cache_name = (f"__animclip_editor__{srgb_tag}_{filter_tag}__"
-                          f"{os.path.normpath(file_path)}")
-
-            if native.has_imgui_texture(cache_name):
-                texture_id = native.get_imgui_texture_id(cache_name)
-            else:
-                pixels = list(raw_pixels)
-                w, h = raw_w, raw_h
-
-                # Apply sRGB gamma curve for preview
-                if cur_srgb:
-                    import array
-                    _LUT = [int(((i / 255.0) ** (1.0 / 2.2)) * 255.0 + 0.5)
-                            for i in range(256)]
-                    pixels = list(array.array('B', (
-                        _LUT[pixels[j]] if (j % 4) != 3 else pixels[j]
-                        for j in range(len(pixels))
-                    )))
-
-                # Determine if point (nearest) filtering is requested
-                use_nearest = False
-                try:
-                    from Infernux.core.asset_types import FilterMode as FM
-                    use_nearest = (cur_filter == FM.POINT)
-                except Exception:
-                    pass
-
-                texture_id = native.upload_texture_for_imgui(
-                    cache_name, pixels, w, h, nearest=use_nearest)
-
-            if not texture_id:
-                Debug.log_warning(f"[AnimClipEditor] upload_texture_for_imgui returned 0")
-                self._cleanup_texture()
-                return
-
-            # New upload succeeded — now safe to remove the old texture.
-            if old_cache_name and old_cache_name != cache_name:
-                try:
-                    if native.has_imgui_texture(old_cache_name):
-                        native.remove_imgui_texture(old_cache_name)
-                except Exception:
-                    pass
-
-            self._cache_name = cache_name
-        except Exception as exc:
-            Debug.log_warning(f"[AnimClipEditor] Upload exception: {exc}")
-            self._cleanup_texture()
+        native = self._get_native_engine()
+        if not native:
+            Debug.log_warning("[AnimClipEditor] No native engine")
             return
+
+        filter_tag, srgb_tag, use_nearest, use_srgb = self._read_texture_sampling(file_path)
+        norm_path = os.path.normpath(file_path)
+        resource_key = f"animclip_editor|{srgb_tag}_{filter_tag}|{norm_path}"
+        stamp = self._build_texture_stamp(norm_path, filter_tag, srgb_tag)
+        if stamp == 0:
+            return
+
+        native.pump_preview_tasks()
+        texture_id, tex_w, tex_h = native.query_or_schedule_texture_preview(
+            resource_key, norm_path, int(stamp), bool(use_nearest), bool(use_srgb), False)
+        texture_id = int(texture_id)
+        tex_w = int(tex_w)
+        tex_h = int(tex_h)
 
         # Read sprite frames from .meta
-        frames = []
-        try:
-            from Infernux.core.asset_types import read_texture_import_settings, SpriteFrame
-            settings = read_texture_import_settings(file_path)
-            if settings.sprite_frames:
-                frames = list(settings.sprite_frames)
-        except Exception:
-            pass
-
-        if not frames:
+        frames = self._read_sprite_frames(norm_path)
+        if not frames and tex_w > 0 and tex_h > 0:
             from Infernux.core.asset_types import SpriteFrame
-            frames = [SpriteFrame(name="frame_0", x=0, y=0, w=td.width, h=td.height)]
+
+            frames = [SpriteFrame(name="frame_0", x=0, y=0, w=tex_w, h=tex_h)]
 
         # Resolve GUID
         guid = ""
@@ -792,31 +822,27 @@ class AnimClip2DEditorPanel(EditorPanel):
             pass
 
         self._tex = _TextureState(
-            file_path=file_path,
+            file_path=norm_path,
             texture_id=texture_id,
-            tex_w=td.width,
-            tex_h=td.height,
+            tex_w=max(tex_w, 0),
+            tex_h=max(tex_h, 0),
             frames=frames,
             guid=guid,
             filter_tag=filter_tag,
             srgb_tag=srgb_tag,
+            resource_key=resource_key,
+            stamp=int(stamp),
         )
 
     def _cleanup_texture(self):
-        """Release ImGui texture cache."""
-        if self._cache_name:
+        """Invalidate preview task entry for the currently loaded texture."""
+        tex = self._tex
+        native = self._get_native_engine()
+        if tex and native and tex.resource_key:
             try:
-                from .editor_services import EditorServices
-                svc = EditorServices.instance()
-                native = svc.native_engine if svc else None
-                if native and native.has_imgui_texture(self._cache_name):
-                    native.remove_imgui_texture(self._cache_name)
+                native.invalidate_texture_preview_task(tex.resource_key)
             except Exception:
                 pass
-            self._cache_name = ""
-        self._raw_pixels = None
-        self._raw_w = 0
-        self._raw_h = 0
 
     # ------------------------------------------------------------------
     # Texture validation — detect stale handles & sampling changes
@@ -831,55 +857,50 @@ class AnimClip2DEditorPanel(EditorPanel):
         if tex is None:
             return False
 
-        try:
-            from .editor_services import EditorServices
-            svc = EditorServices.instance()
-            native = svc.native_engine if svc else None
-            if native is None:
-                return False
-        except Exception:
+        if not tex.file_path or not os.path.isfile(tex.file_path):
             return False
 
-        # Re-read current import settings to detect changes
-        cur_filter_tag = tex.filter_tag
-        cur_srgb_tag = tex.srgb_tag
-        try:
-            from Infernux.core.asset_types import read_texture_import_settings
-            settings = read_texture_import_settings(tex.file_path)
-            cur_filter = getattr(settings, 'filter_mode', None)
-            cur_srgb = getattr(settings, 'srgb', False)
-            cur_filter_tag = cur_filter.name if cur_filter else "default"
-            cur_srgb_tag = "srgb" if cur_srgb else "linear"
+        native = self._get_native_engine()
+        if native is None:
+            return False
 
-            # Also refresh sprite frames
-            if settings.sprite_frames:
-                tex.frames = list(settings.sprite_frames)
-            elif not tex.frames:
-                from Infernux.core.asset_types import SpriteFrame
-                tex.frames = [SpriteFrame(
-                    name="frame_0", x=0, y=0, w=tex.tex_w, h=tex.tex_h)]
-        except Exception:
-            pass
+        filter_tag, srgb_tag, use_nearest, use_srgb = self._read_texture_sampling(tex.file_path)
+        norm_path = os.path.normpath(tex.file_path)
+        resource_key = f"animclip_editor|{srgb_tag}_{filter_tag}|{norm_path}"
+        stamp = self._build_texture_stamp(norm_path, filter_tag, srgb_tag)
+        if stamp == 0:
+            return False
 
-        settings_changed = (
-            cur_filter_tag != tex.filter_tag or cur_srgb_tag != tex.srgb_tag
-        )
-        texture_missing = (
-            not self._cache_name
-            or not native.has_imgui_texture(self._cache_name)
-        )
+        if tex.resource_key != resource_key or int(tex.stamp) != int(stamp):
+            tex.resource_key = resource_key
+            tex.stamp = int(stamp)
+            tex.filter_tag = filter_tag
+            tex.srgb_tag = srgb_tag
+            tex.texture_id = 0
 
-        if settings_changed or texture_missing:
-            # Save file_path before _load_texture (which sets self._tex = None)
-            file_path = tex.file_path
-            if self._raw_pixels and file_path:
-                self._load_texture(file_path)
-            elif file_path and os.path.isfile(file_path):
-                self._load_texture(file_path)
-            # After _load_texture, self._tex is either a new valid state or None
-            return self._tex is not None and self._tex.texture_id != 0
+        native.pump_preview_tasks()
+        texture_id, tex_w, tex_h = native.query_or_schedule_texture_preview(
+            resource_key, norm_path, int(stamp), bool(use_nearest), bool(use_srgb), False)
+        texture_id = int(texture_id)
+        tex_w = int(tex_w)
+        tex_h = int(tex_h)
 
-        return tex.texture_id != 0
+        if texture_id != 0:
+            tex.texture_id = texture_id
+
+        if tex_w > 0 and tex_h > 0:
+            tex.tex_w = tex_w
+            tex.tex_h = tex_h
+
+        frames = self._read_sprite_frames(norm_path)
+        if frames:
+            tex.frames = frames
+        elif not tex.frames and tex.tex_w > 0 and tex.tex_h > 0:
+            from Infernux.core.asset_types import SpriteFrame
+
+            tex.frames = [SpriteFrame(name="frame_0", x=0, y=0, w=tex.tex_w, h=tex.tex_h)]
+
+        return True
 
     # ------------------------------------------------------------------
     # Open existing .animclip2d
@@ -933,6 +954,7 @@ class AnimClip2DEditorPanel(EditorPanel):
         self._clips = [cs]
         self._active_clip_idx = 0
         self._stop_playback()
+        self._mark_saved_snapshot()
 
     # ------------------------------------------------------------------
     # Save
@@ -970,6 +992,7 @@ class AnimClip2DEditorPanel(EditorPanel):
                 AssetManager.reimport_asset(save_path)
             except Exception:
                 pass
+            self._mark_saved_snapshot()
         else:
             Debug.log_warning(f"[AnimClipEditor] Failed to save: {save_path}")
 
@@ -984,28 +1007,22 @@ class AnimClip2DEditorPanel(EditorPanel):
         safe_name = clip.name.replace(" ", "_").replace("/", "_").replace("\\", "_")
         default_filename = f"{safe_name}.animclip2d"
 
-        def _on_result(result_path):
-            if result_path:
-                self._do_save_clip(clip, result_path)
+        result = None
+        try:
+            from ._dialogs import save_file_dialog
 
-        def _run():
-            result = None
-            try:
-                from ._dialogs import save_file_dialog
-                result = save_file_dialog(
-                    title="Save 2D Animation Clip",
-                    win32_filter="2D AnimClip files (*.animclip2d)\0*.animclip2d\0All files (*.*)\0*.*\0\0",
-                    initial_dir=initial_dir,
-                    default_filename=default_filename,
-                    default_ext="animclip2d",
-                    tk_filetypes=[("2D AnimClip", "*.animclip2d"), ("All Files", "*.*")],
-                )
-            except Exception as exc:
-                Debug.log_warning(f"[AnimClipEditor] Save dialog error: {exc}")
-            _on_result(result)
-
-        t = threading.Thread(target=_run, daemon=True)
-        t.start()
+            result = save_file_dialog(
+                title="Save 2D Animation Clip",
+                win32_filter="2D AnimClip files (*.animclip2d)\0*.animclip2d\0All files (*.*)\0*.*\0\0",
+                initial_dir=initial_dir,
+                default_filename=default_filename,
+                default_ext="animclip2d",
+                tk_filetypes=[("2D AnimClip", "*.animclip2d"), ("All Files", "*.*")],
+            )
+        except Exception as exc:
+            Debug.log_warning(f"[AnimClipEditor] Save dialog error: {exc}")
+        if result:
+            self._do_save_clip(clip, result)
 
     # ------------------------------------------------------------------
     # Playback helpers

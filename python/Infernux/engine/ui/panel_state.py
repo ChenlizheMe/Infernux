@@ -38,6 +38,12 @@ def put(panel_id: str, data: dict) -> None:
         _state[panel_id] = data
 
 
+def delete(panel_id: str) -> None:
+    """Remove a panel state entry if it exists."""
+    with _lock:
+        _state.pop(panel_id, None)
+
+
 def save() -> None:
     """Write the current state to disk."""
     if not _state_path:

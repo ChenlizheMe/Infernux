@@ -153,8 +153,8 @@ class InxMaterial
     ~InxMaterial() = default;
 
     // Copy/Move
-    InxMaterial(const InxMaterial &) = default;
-    InxMaterial &operator=(const InxMaterial &) = default;
+    InxMaterial(const InxMaterial &other);
+    InxMaterial &operator=(const InxMaterial &other);
     InxMaterial(InxMaterial &&) = default;
     InxMaterial &operator=(InxMaterial &&) = default;
 

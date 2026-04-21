@@ -180,7 +180,7 @@ def _update_build_settings_scene_path(old_path: str, new_path: str):
 
 def _notify_asset_moved(old_path: str, new_path: str, asset_database=None):
     from Infernux.core.assets import AssetManager
-    from . import asset_inspector
+    from . import asset_details_renderer
 
     if asset_database:
         try:
@@ -199,8 +199,8 @@ def _notify_asset_moved(old_path: str, new_path: str, asset_database=None):
     if old_path.lower().endswith(".scene"):
         _update_build_settings_scene_path(old_path, new_path)
 
-    asset_inspector.invalidate_asset(old_path)
-    asset_inspector.invalidate_asset(new_path)
+    asset_details_renderer.invalidate_asset(old_path)
+    asset_details_renderer.invalidate_asset(new_path)
 
     try:
         from Infernux.engine.ui.event_bus import EditorEventBus, EditorEvent
@@ -615,8 +615,8 @@ def delete_item(item_path: str, asset_database=None):
         return
 
     # Invalidate inspector cache so a recreated file won't reuse stale data
-    from . import asset_inspector
-    asset_inspector.invalidate_asset(item_path)
+    from . import asset_details_renderer
+    asset_details_renderer.invalidate_asset(item_path)
 
 
 def do_rename(old_path: str, new_name: str, asset_database=None):

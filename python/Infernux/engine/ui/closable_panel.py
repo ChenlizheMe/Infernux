@@ -53,6 +53,121 @@ class ClosablePanel(InxGUIRenderable):
         """Ensure this panel is visible."""
         self._is_open = True
 
+    def close(self):
+        """Close this panel and notify the window manager."""
+        self._is_open = False
+        if self._window_manager:
+            self._window_manager.set_window_open(self._window_id, False)
+
+    def can_close(self, ctx: InxGUIContext) -> bool:
+        """Return whether the panel can close when the titlebar X is clicked."""
+        return True
+
+    def _resolve_panel_display_title(self) -> str:
+        if self._title_key:
+            try:
+                from Infernux.engine.i18n import t
+
+                return t(self._title_key)
+            except Exception:
+                return self._title
+        return self._title
+
+    def _resolve_panel_save_handler(self):
+        save_fn = getattr(self, "_do_save", None)
+        if callable(save_fn):
+            def _wrapped_save():
+                try:
+                    save_fn()
+                except Exception:
+                    return False
+                # If panels expose _dirty, require it to be cleared after save.
+                if hasattr(self, "_dirty"):
+                    try:
+                        return not bool(getattr(self, "_dirty"))
+                    except Exception:
+                        return False
+                return True
+
+            return _wrapped_save
+
+        # Fallback for clip-like editors exposing _save_clip(active_clip).
+        save_clip_fn = getattr(self, "_save_clip", None)
+        if callable(save_clip_fn):
+            def _wrapped_clip_save():
+                try:
+                    clip = getattr(self, "_active_clip", None)
+                    if clip is None:
+                        return False
+                    save_clip_fn(clip)
+                except Exception:
+                    return False
+                if hasattr(self, "_dirty"):
+                    try:
+                        return not bool(getattr(self, "_dirty"))
+                    except Exception:
+                        return False
+                return True
+
+            return _wrapped_clip_save
+
+        return None
+
+    def _sync_dirty_registry(self) -> None:
+        try:
+            from Infernux.engine.project_context import set_panel_dirty
+
+            dirty = bool(getattr(self, "_dirty", False))
+            set_panel_dirty(
+                self._window_id,
+                dirty,
+                title=self._resolve_panel_display_title(),
+                save_handler=self._resolve_panel_save_handler(),
+            )
+        except Exception:
+            pass
+
+    def _confirm_close_with_dirty_registry(self) -> bool:
+        try:
+            from Infernux.engine.project_context import is_panel_dirty, set_panel_dirty
+            from ._dialogs import ask_save_discard_cancel
+
+            if not is_panel_dirty(self._window_id):
+                return True
+
+            title = self._resolve_panel_display_title()
+            choice = ask_save_discard_cancel(
+                title=f"Unsaved {title}",
+                message=f"{title} has unsaved changes. Save before closing?",
+            )
+            if choice == "cancel":
+                return False
+            if choice == "discard":
+                if hasattr(self, "_dirty"):
+                    try:
+                        setattr(self, "_dirty", False)
+                    except Exception:
+                        pass
+                set_panel_dirty(
+                    self._window_id,
+                    False,
+                    title=title,
+                    save_handler=self._resolve_panel_save_handler(),
+                )
+                return True
+
+            # save
+            save_handler = self._resolve_panel_save_handler()
+            if not callable(save_handler):
+                return False
+            ok = bool(save_handler())
+            if not ok:
+                return False
+            self._sync_dirty_registry()
+            return not bool(getattr(self, "_dirty", False))
+        except Exception:
+            return True
+
     def request_focus(self, ctx: InxGUIContext):
         """Programmatically focus this panel on the next frame."""
         ctx.set_next_window_focus()
@@ -107,6 +222,9 @@ class ClosablePanel(InxGUIRenderable):
             display = t(self._title_key)
         else:
             display = self._title
+
+        self._sync_dirty_registry()
+
         display += self._window_title_suffix()
         safe_title = str(display).replace('\x00', '�').encode('utf-8', errors='replace').decode('utf-8', errors='replace')
         # Use ### to keep a stable ImGui window ID independent of the
@@ -114,9 +232,14 @@ class ClosablePanel(InxGUIRenderable):
         safe_title = f"{safe_title}###{self._window_id}"
         visible, self._is_open = ctx.begin_window_closable(safe_title, self._is_open, flags)
         
-        # If window was closed, notify window manager
-        if not self._is_open and self._window_manager:
-            self._window_manager.set_window_open(self._window_id, False)
+        # If the titlebar close button was pressed, let the panel veto close
+        # (for example, unsaved-change confirmation popups).
+        if not self._is_open:
+            if self._confirm_close_with_dirty_registry() and self.can_close(ctx):
+                if self._window_manager:
+                    self._window_manager.set_window_open(self._window_id, False)
+            else:
+                self._is_open = True
 
         # ── Focus tracking ──
         if visible and self._is_open:

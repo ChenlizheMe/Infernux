@@ -16,6 +16,7 @@ from __future__ import annotations
 import os
 from typing import Optional
 from Infernux.debug import Debug
+from Infernux.engine.texture_task_bridge import texture_stamp, query_or_schedule_texture
 
 
 class UITextureCache:
@@ -28,6 +29,7 @@ class UITextureCache:
     def __init__(self):
         self._cache: dict[str, int] = {}        # GUID (or path fallback) → tid
         self._path_to_key: dict[str, str] = {}  # path → cache key (GUID or path)
+        self._stamp: dict[str, int] = {}        # GUID/path key → latest stamp
 
     # ── internal ─────────────────────────────────────────────────────
 
@@ -57,8 +59,6 @@ class UITextureCache:
             return 0
         key = self._resolve_key(tex_path)
         cached = self._cache.get(key)
-        if cached is not None:
-            return cached
         if engine is None:
             return 0
         native = engine.get_native_engine()
@@ -71,20 +71,29 @@ class UITextureCache:
         abs_path = os.path.normpath(os.path.join(project_root, tex_path))
         if not os.path.isfile(abs_path):
             self._cache[key] = 0
+            self._stamp[key] = 0
             return 0
-        cache_name = f"__ui_img__{key}"
-        if native.has_imgui_texture(cache_name):
-            tid = native.get_imgui_texture_id(cache_name)
-            self._cache[key] = tid
-            return tid
-        from Infernux.lib import TextureLoader
-        td = TextureLoader.load_from_file(abs_path)
-        if not td or not td.is_valid():
+
+        stamp = texture_stamp(abs_path, "ui_cache")
+        if stamp == 0:
             self._cache[key] = 0
+            self._stamp[key] = 0
             return 0
-        pixels = td.get_pixels_list()
-        tid = native.upload_texture_for_imgui(cache_name, pixels, td.width, td.height)
+
+        if cached is not None and self._stamp.get(key) == stamp:
+            return cached
+
+        resource_key = f"ui_img|{key}"
+        tid, _, _ = query_or_schedule_texture(
+            native,
+            resource_key,
+            abs_path,
+            int(stamp),
+            nearest=False,
+            srgb=False,
+        )
         self._cache[key] = tid
+        self._stamp[key] = int(stamp)
         return tid
 
     def get_bound(self, engine):
@@ -109,13 +118,16 @@ class UITextureCache:
         if identifier is None:
             self._cache.clear()
             self._path_to_key.clear()
+            self._stamp.clear()
         else:
             # Direct removal (identifier is a GUID key)
             self._cache.pop(identifier, None)
+            self._stamp.pop(identifier, None)
             # Resolve path → key and remove that too
             resolved = self._path_to_key.pop(identifier, None)
             if resolved and resolved != identifier:
                 self._cache.pop(resolved, None)
+                self._stamp.pop(resolved, None)
 
 
 # ── module-level singleton ────────────────────────────────────────────

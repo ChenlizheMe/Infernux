@@ -35,6 +35,22 @@ struct SubMesh
 };
 
 /**
+ * @brief Per-slot material data extracted from a model file (FBX/OBJ/GLTF).
+ *
+ * Stores the material properties that Assimp reads from the source file
+ * so that default materials can be created with correct colours rather
+ * than falling back to plain white.
+ */
+struct MaterialSlotData
+{
+    glm::vec4 baseColor{1.0f, 1.0f, 1.0f, 1.0f};     ///< Diffuse / albedo colour (RGBA)
+    glm::vec4 emissionColor{0.0f, 0.0f, 0.0f, 0.0f}; ///< Emission colour (RGBA)
+    float metallic = 0.0f;
+    float smoothness = 0.5f;
+    float opacity = 1.0f;
+};
+
+/**
  * @brief Runtime mesh asset — the loaded, GPU-ready representation of a 3D model.
  *
  * InxMesh is the engine's canonical mesh data container, analogous to
@@ -149,6 +165,17 @@ class InxMesh
         return static_cast<uint32_t>(m_materialSlotNames.size());
     }
 
+    // ── Material slot data (extracted from model file) ───────────────
+
+    [[nodiscard]] const std::vector<MaterialSlotData> &GetMaterialSlotData() const
+    {
+        return m_materialSlotData;
+    }
+    void SetMaterialSlotData(std::vector<MaterialSlotData> data)
+    {
+        m_materialSlotData = std::move(data);
+    }
+
     // ── Node group metadata (for per-object hierarchy) ────────────────
 
     [[nodiscard]] const std::vector<std::string> &GetNodeNames() const
@@ -198,6 +225,7 @@ class InxMesh
     glm::vec3 m_boundsMax{0.0f};
 
     std::vector<std::string> m_materialSlotNames;
+    std::vector<MaterialSlotData> m_materialSlotData;
     std::vector<std::string> m_nodeNames; ///< Node names indexed by nodeGroup
 
     /// Recompute m_boundsMin/Max from vertex positions.

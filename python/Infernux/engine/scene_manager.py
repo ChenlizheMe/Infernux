@@ -391,12 +391,49 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin, SceneConfirmationMixin)
         if self._current_scene_path:
             self._save_camera_state(self._current_scene_path)
 
-        if self._dirty:
-            self._request_save_confirmation('close')
-        else:
-            native = self._native_engine_for_close()
+        native = self._native_engine_for_close()
+        if not self._dirty:
             if native:
                 native.confirm_close()
+            return
+
+        # Use the same system Save/Discard/Cancel chain used by other exit
+        # confirmations, instead of a dedicated ImGui popup.
+        from Infernux.engine.ui._dialogs import ask_save_discard_cancel
+
+        choice = ask_save_discard_cancel(
+            title="Unsaved Scene",
+            message="Current scene has unsaved changes. Save before exiting?",
+        )
+        if choice == "cancel":
+            if native:
+                native.cancel_close()
+            self._close_in_progress = False
+            return
+
+        if choice == "discard":
+            self._dirty = False
+            if native:
+                native.confirm_close()
+            return
+
+        # save
+        save_ok = False
+        if self._current_scene_path:
+            save_ok = self._do_save(self._current_scene_path)
+        else:
+            default_path = self._default_scene_save_path()
+            if default_path:
+                save_ok = self._do_save(default_path)
+
+        if save_ok:
+            if native:
+                native.confirm_close()
+            return
+
+        if native:
+            native.cancel_close()
+        self._close_in_progress = False
 
     def load_last_scene_or_default(self):
         """Called at startup — load the last opened scene, or create a default.

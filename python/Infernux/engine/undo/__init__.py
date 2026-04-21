@@ -100,6 +100,14 @@ from Infernux.engine.undo._recreate import (
     _recreate_game_object_from_json,
 )
 
+# -- AnimFSM --
+from Infernux.engine.undo._animfsm_commands import (
+    NodeGraphSnapshotCommand,
+    record_node_graph_snapshot,
+    AnimFSMSnapshotCommand,
+    record_animfsm_snapshot,
+)
+
 __all__ = [
     "UndoCommand", "CompoundCommand", "LambdaCommand",
     "SetPropertyCommand", "BuiltinPropertyCommand",
@@ -115,4 +123,6 @@ __all__ = [
     "RenderStackFieldCommand", "RenderStackSetPipelineCommand",
     "RenderStackAddPassCommand", "RenderStackMovePassCommand",
     "RenderStackTogglePassCommand", "RenderStackRemovePassCommand",
+    "NodeGraphSnapshotCommand", "record_node_graph_snapshot",
+    "AnimFSMSnapshotCommand", "record_animfsm_snapshot",
 ]

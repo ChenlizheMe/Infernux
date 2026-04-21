@@ -137,6 +137,25 @@ class SceneViewPanel(SceneViewGizmoMixin, SceneViewCameraMixin, SceneViewOverlay
     WINDOW_TYPE_ID = "scene_view"
     WINDOW_DISPLAY_NAME = "Scene"
 
+    # Runtime-only cache/interaction fields must not be restored from disk.
+    _AUTO_STATE_SKIP_KEYS = EditorPanel._AUTO_STATE_SKIP_KEYS | {
+        "_last_frame_time",
+        "_delta_time",
+        "_last_scene_width",
+        "_last_scene_height",
+        "_was_left_down",
+        "_was_right_down",
+        "_was_middle_down",
+        "_last_mouse_x",
+        "_last_mouse_y",
+        "_is_camera_dragging",
+        "_camera_capture_active",
+        "_camera_capture_restore_pos",
+        "_hover_pick_cache_pos",
+        "_hover_pick_cache_result",
+        "_was_focused",
+    }
+
     # Key codes imported from shared imgui_keys module
     KEY_W = _keys.KEY_W
     KEY_A = _keys.KEY_A
@@ -266,6 +285,23 @@ class SceneViewPanel(SceneViewGizmoMixin, SceneViewCameraMixin, SceneViewOverlay
 
     def _window_flags(self) -> int:
         return Theme.WINDOW_FLAGS_VIEWPORT | Theme.WINDOW_FLAGS_NO_SCROLL
+
+    def save_state(self) -> dict:
+        # Scene view keeps many runtime-only camera/gizmo/render caches.
+        # Persisting them across sessions can corrupt first-frame behavior.
+        return {}
+
+    def load_state(self, data: dict) -> None:
+        # Intentionally ignore persisted data for Scene View.
+        return
+
+    def on_enable(self):
+        # Reset transient per-session viewport/input caches.
+        self._last_scene_width = 0
+        self._last_scene_height = 0
+        self._last_frame_time = 0.0
+        self._hover_pick_cache_pos = (-1.0, -1.0)
+        self._hover_pick_cache_result = 0
 
     def on_disable(self):
         """Panel closed — shrink render target to save GPU memory."""

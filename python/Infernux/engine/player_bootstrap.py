@@ -223,6 +223,17 @@ class PlayerBootstrap:
         # Mark scene as playing BEFORE restoring Python components
         scene.set_playing(True)
 
+        # Match the editor play-mode path: SpriteRenderer wrappers must be
+        # recreated before Python components wake up, otherwise packaged
+        # games can rebuild the scene into play mode with missing sprite
+        # material/texture bindings.
+        try:
+            from Infernux.components.builtin.sprite_renderer import SpriteRenderer
+
+            SpriteRenderer.init_all_in_scene(scene)
+        except Exception as exc:
+            Debug.log_internal(f"Player SpriteRenderer init before py restore: {exc}")
+
         # Activate play mode state so tick() / is_playing work correctly
         pm._state = PlayModeState.PLAYING
         pm._last_frame_time = __import__("time").time()
@@ -234,6 +245,16 @@ class PlayerBootstrap:
         # m_hasStarted = true, causing later-added components to have their
         # start() queued instead of called synchronously.
         pm._restore_pending_py_components()
+
+        # Run once more after Python restore so any lazily-created or
+        # animator-driven SpriteRenderers also have bound materials before
+        # the first rendered frame.
+        try:
+            from Infernux.components.builtin.sprite_renderer import SpriteRenderer
+
+            SpriteRenderer.init_all_in_scene(scene)
+        except Exception as exc:
+            Debug.log_internal(f"Player SpriteRenderer init after py restore: {exc}")
 
         # Tell C++ SceneManager to enter play mode (drives lifecycle updates)
         sm.play()

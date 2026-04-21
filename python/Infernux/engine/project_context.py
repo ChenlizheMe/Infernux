@@ -3,12 +3,15 @@ import keyword
 import os
 import sys
 from contextlib import contextmanager
-from typing import Iterator, Optional
+from typing import Iterator, Optional, Callable, Any
 from Infernux.debug import Debug
 
 _project_root: Optional[str] = None
 _guid_manifest: Optional[dict] = None
 _guid_manifest_loaded: bool = False
+_panel_dirty_flags: dict[str, bool] = {}
+_panel_titles: dict[str, str] = {}
+_panel_save_handlers: dict[str, Callable[[], Any]] = {}
 
 
 def set_project_root(path: Optional[str]) -> None:
@@ -20,6 +23,94 @@ def set_project_root(path: Optional[str]) -> None:
 def get_project_root() -> Optional[str]:
     """Get the current project root if set."""
     return _project_root
+
+
+def set_panel_dirty(
+    panel_id: str,
+    is_dirty: bool,
+    *,
+    title: str = "",
+    save_handler: Optional[Callable[[], Any]] = None,
+) -> None:
+    """Set or clear project-scoped dirty state for an editor panel.
+
+    Optional *title* and *save_handler* metadata is stored for unified
+    close/exit confirmation flows.
+    """
+    pid = (panel_id or "").strip()
+    if not pid:
+        return
+    ttl = (title or "").strip()
+    if ttl:
+        _panel_titles[pid] = ttl
+    if save_handler is not None:
+        _panel_save_handlers[pid] = save_handler
+    if is_dirty:
+        _panel_dirty_flags[pid] = True
+    else:
+        _panel_dirty_flags.pop(pid, None)
+
+
+def is_panel_dirty(panel_id: str) -> bool:
+    """Return whether a panel is currently marked dirty."""
+    pid = (panel_id or "").strip()
+    if not pid:
+        return False
+    return bool(_panel_dirty_flags.get(pid, False))
+
+
+def any_panel_dirty() -> bool:
+    """Return whether any editor panel currently has unsaved changes."""
+    return any(_panel_dirty_flags.values())
+
+
+def get_dirty_panels() -> list[str]:
+    """Return IDs of all panels currently marked dirty."""
+    return [pid for pid, dirty in _panel_dirty_flags.items() if dirty]
+
+
+def set_panel_save_handler(panel_id: str, save_handler: Optional[Callable[[], Any]]) -> None:
+    """Set or clear the save callback used by unified dirty confirmation."""
+    pid = (panel_id or "").strip()
+    if not pid:
+        return
+    if save_handler is None:
+        _panel_save_handlers.pop(pid, None)
+    else:
+        _panel_save_handlers[pid] = save_handler
+
+
+def set_panel_title(panel_id: str, title: str) -> None:
+    """Set display title for a panel in unified dirty confirmation dialogs."""
+    pid = (panel_id or "").strip()
+    ttl = (title or "").strip()
+    if not pid or not ttl:
+        return
+    _panel_titles[pid] = ttl
+
+
+def clear_panel_tracking(panel_id: str) -> None:
+    """Remove all dirty tracking metadata for a panel."""
+    pid = (panel_id or "").strip()
+    if not pid:
+        return
+    _panel_dirty_flags.pop(pid, None)
+    _panel_titles.pop(pid, None)
+    _panel_save_handlers.pop(pid, None)
+
+
+def get_dirty_panel_entries() -> list[dict]:
+    """Return dirty panels with metadata for unified close/exit pipelines."""
+    entries: list[dict] = []
+    for pid, dirty in _panel_dirty_flags.items():
+        if not dirty:
+            continue
+        entries.append({
+            "panel_id": pid,
+            "title": _panel_titles.get(pid, pid),
+            "save_handler": _panel_save_handlers.get(pid),
+        })
+    return entries
 
 
 def get_assets_root() -> Optional[str]:

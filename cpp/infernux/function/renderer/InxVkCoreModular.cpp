@@ -11,6 +11,7 @@
 #include "ProfileConfig.h"
 #include "SceneRenderTarget.h"
 #include "gui/GPUMaterialPreview.h"
+#include "gui/GPUMeshPreview.h"
 
 #include <function/renderer/shader/ShaderProgram.h>
 #include <function/resources/AssetRegistry/AssetRegistry.h>
