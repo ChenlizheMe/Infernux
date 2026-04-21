@@ -196,7 +196,8 @@ def wire_clipboard(ctx):
             return False
         from Infernux.lib import SceneManager
         from Infernux.engine.undo import CompoundCommand, CreateGameObjectCommand, UndoManager
-        from Infernux.engine.prefab_manager import _restore_pending_py_components, _strip_prefab_runtime_fields
+        from Infernux.engine.component_restore import restore_pending_py_components
+        from Infernux.engine.prefab_manager import _strip_prefab_runtime_fields
         import json
         scene = SceneManager.instance().get_active_scene()
         if not scene:
@@ -223,7 +224,7 @@ def wire_clipboard(ctx):
         if created and scene.has_pending_py_components():
             sfm2 = bs.scene_file_manager
             adb = getattr(sfm2, "_asset_database", None) if sfm2 else None
-            _restore_pending_py_components(scene, asset_database=adb)
+            restore_pending_py_components(scene, asset_database=adb)
         if not created:
             return False
         cids = [o.id for o in created]

@@ -47,7 +47,8 @@ class ScenePrefabMixin:
             return False
 
         from Infernux.lib import SceneManager
-        from Infernux.engine.prefab_manager import _restore_pending_py_components, _strip_prefab_runtime_fields
+        from Infernux.engine.component_restore import restore_pending_py_components
+        from Infernux.engine.prefab_manager import _strip_prefab_runtime_fields
         from Infernux.engine.ui.selection_manager import SelectionManager
 
         active_scene = SceneManager.instance().get_active_scene()
@@ -115,7 +116,7 @@ class ScenePrefabMixin:
 
         if new_scene.has_pending_py_components():
             try:
-                _restore_pending_py_components(new_scene, self._asset_database)
+                restore_pending_py_components(new_scene, asset_database=self._asset_database)
             except Exception as exc:
                 Debug.log_error(f"Failed to restore prefab Python components: {exc}")
 
@@ -191,7 +192,7 @@ class ScenePrefabMixin:
             return False
 
         from Infernux.lib import SceneManager
-        from Infernux.engine.prefab_manager import _restore_pending_py_components
+        from Infernux.engine.component_restore import restore_pending_py_components
 
         # Always save the prefab on exit
         if self.prefab_mode_path:
@@ -237,7 +238,7 @@ class ScenePrefabMixin:
             scene.deserialize(self._previous_scene_json)
             if scene.has_pending_py_components():
                 try:
-                    _restore_pending_py_components(scene, self._asset_database)
+                    restore_pending_py_components(scene, asset_database=self._asset_database)
                 except Exception as exc:
                     Debug.log_error(f"Failed to restore scene Python components: {exc}")
 
