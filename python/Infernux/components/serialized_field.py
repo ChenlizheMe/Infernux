@@ -278,8 +278,9 @@ def _get_asset_db():
     try:
         from Infernux.core.asset_ref import _get_asset_database
         return _get_asset_database()
-    except ImportError as _exc:
-        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+    except ImportError:
+        # AssetManager is unavailable in standalone player builds where the
+        # editor-only asset database is excluded from the bundle.
         return None
 
 
@@ -292,8 +293,8 @@ def _guid_from_path(path: str) -> str:
     try:
         guid = db.get_guid_from_path(path)
         return guid or ""
-    except Exception as _exc:
-        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+    except Exception as exc:
+        Debug.log_suppressed("serialized_field._guid_for_path", exc)
         return ""
 
 
@@ -580,13 +581,15 @@ def _infer_field_type(python_type: Optional[Type], default: Any) -> FieldType:
         if hasattr(python_type, '__origin__') and python_type.__origin__ in (list, tuple):
             return FieldType.LIST
 
-        # SerializableObject subclass detection
+        # SerializableObject subclass detection.
+        # ImportError is benign: SerializableObject may not be importable
+        # yet during early module load — the field will be classified on
+        # the next inspection pass.
         try:
             from .serializable_object import SerializableObject as _SO
             if isinstance(python_type, type) and issubclass(python_type, _SO):
                 return FieldType.SERIALIZABLE_OBJECT
-        except ImportError as _exc:
-            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+        except ImportError:
             pass
 
         # InxComponent subclass → COMPONENT (e.g. ``text: UIText``)
@@ -594,8 +597,7 @@ def _infer_field_type(python_type: Optional[Type], default: Any) -> FieldType:
             from .component import InxComponent as _IC
             if isinstance(python_type, type) and issubclass(python_type, _IC) and python_type is not _IC:
                 return FieldType.COMPONENT
-        except ImportError as _exc:
-            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+        except ImportError:
             pass
 
     # Infer from default value
@@ -605,8 +607,7 @@ def _infer_field_type(python_type: Optional[Type], default: Any) -> FieldType:
             from .serializable_object import SerializableObject as _SO
             if isinstance(default, _SO):
                 return FieldType.SERIALIZABLE_OBJECT
-        except ImportError as _exc:
-            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+        except ImportError:
             pass
 
         # ComponentRef instance
@@ -614,8 +615,7 @@ def _infer_field_type(python_type: Optional[Type], default: Any) -> FieldType:
             from .ref_wrappers import ComponentRef
             if isinstance(default, ComponentRef):
                 return FieldType.COMPONENT
-        except ImportError as _exc:
-            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+        except ImportError:
             pass
 
         # Order matters: Enum before int (IntEnum is both), bool before int
@@ -708,9 +708,11 @@ def resolve_annotation(annotation) -> Optional['FieldMetadata']:
             resolved = get_type(simple_name)
             if resolved is not None:
                 return resolve_annotation(resolved)
-        except Exception as _exc:
-            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-            pass
+        except Exception as exc:
+            Debug.log_suppressed(
+                f"serialized_field.resolve_annotation.registry_lookup[{simple_name}]",
+                exc,
+            )
         return None
 
     # ── list[X] / List[X] generics ──
@@ -761,8 +763,9 @@ def resolve_annotation(annotation) -> Optional['FieldMetadata']:
                 default=ComponentRef(component_type=type_name),
                 component_type=type_name,
             )
-    except ImportError as _exc:
-        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+    except ImportError:
+        # InxComponent not yet importable during early module load — the
+        # annotation will be reclassified on the next inspection pass.
         pass
 
     # ── Known reference / asset types ──

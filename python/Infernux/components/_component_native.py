@@ -40,8 +40,8 @@ class ComponentNativeMixin:
             return False
         try:
             return isinstance(game_object, GameObject) and int(game_object.id) > 0
-        except Exception as _exc:
-            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+        except Exception as exc:
+            Debug.log_suppressed("_component_native.is_valid_game_object", exc)
             return False
 
     @staticmethod
@@ -51,8 +51,8 @@ class ComponentNativeMixin:
             return False
         try:
             return int(component.component_id) > 0
-        except Exception as _exc:
-            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+        except Exception as exc:
+            Debug.log_suppressed("_component_native.is_valid_native_component", exc)
             return False
 
     def _try_get_game_object(self) -> Optional['GameObject']:
