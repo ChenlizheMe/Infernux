@@ -102,6 +102,11 @@ class AnimationClip3D:
 
     @classmethod
     def load(cls, path: str) -> Optional["AnimationClip3D"]:
+        if not path:
+            return None
+        # Project Panel virtual take: model.fbx::subanim:<index> (not a file on disk)
+        if "::subanim:" in path:
+            return cls.from_embedded_take_virtual_path(path)
         if not os.path.isfile(path):
             return None
         try:

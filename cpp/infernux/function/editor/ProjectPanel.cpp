@@ -2202,12 +2202,28 @@ void ProjectPanel::RenderDragDropSource(InxGUIContext *ctx, const FileItem &item
     }
 
     if (item.type == FileItem::SubMesh) {
-        // Drag embedded FBX sub-entries as the parent model asset (GUID when possible).
         if (item.parentPath.empty()) {
             ctx->EndDragDropSource();
             return;
         }
 
+        // Embedded animation take (model.fbx::subanim:i) — drag as 3D clip, same as a .animclip3d file.
+        // slotIndex >= 0 marks a real take row; overflow / placeholder rows use -1.
+        if (item.path.find(kSubAnimToken) != std::string::npos && item.slotIndex >= 0) {
+            auto &ddMap = GetDragDropMap();
+            auto ddIt = ddMap.find(".animclip3d");
+            if (ddIt != ddMap.end()) {
+                ctx->SetDragDropPayload(ddIt->second.payloadType, item.path);
+                ctx->Label(std::string(ddIt->second.label) + ": " + item.name);
+            } else {
+                ctx->SetDragDropPayload("ANIMCLIP3D_FILE", item.path);
+                ctx->Label("3D AnimClip: " + item.name);
+            }
+            ctx->EndDragDropSource();
+            return;
+        }
+
+        // Other embedded FBX sub-entries: parent model asset (GUID when possible).
         std::string ext = fs::u8path(item.parentPath).extension().string();
         for (auto &c : ext)
             c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));

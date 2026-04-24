@@ -984,6 +984,19 @@ class AnimFSMEditorPanel(EditorPanel):
         mode = getattr(fsm, "mode", "2d") if fsm is not None else "2d"
         return "AnimationClip3D" if mode == "3d" else "AnimationClip"
 
+    def _clip_path_matches_fsm_mode(self, p: str) -> bool:
+        """True if *p* is valid for current FSM mode: .animclip2d / .animclip3d file, or virtual ``::subanim:``."""
+        p = (p or "").strip()
+        if not p:
+            return True
+        expected_ext = ".animclip3d" if self._fsm_clip_asset_type() == "AnimationClip3D" else ".animclip2d"
+        if os.path.splitext(p)[1].lower() == expected_ext:
+            return True
+        # FBX embedded take from Project panel — not a disk file, no file extension on the full path
+        if expected_ext == ".animclip3d" and "::subanim:" in p:
+            return True
+        return False
+
     def _clip_ref_for_state(self, state: AnimState):
         """Build a clip ref (2D/3D) with path hint resolved for Inspector-style labels."""
         path = (state.clip_path or "").strip()
@@ -1605,9 +1618,7 @@ class AnimFSMEditorPanel(EditorPanel):
             p = (payload or "").strip()
             if not p:
                 return
-            ext = os.path.splitext(p)[1].lower()
-            expected = ".animclip3d" if self._fsm_clip_asset_type() == "AnimationClip3D" else ".animclip2d"
-            if ext != expected:
+            if not self._clip_path_matches_fsm_mode(p):
                 return
             # Check if dropped on an existing state node
             for uid, name in self._uid_to_name.items():
@@ -1691,11 +1702,8 @@ class AnimFSMEditorPanel(EditorPanel):
         """Assign a clip path/guid to a state."""
         before = self._undo_snapshot() if record_undo else None
         p = (clip_path or "").strip()
-        if p:
-            ext = os.path.splitext(p)[1].lower()
-            expected = ".animclip3d" if self._fsm_clip_asset_type() == "AnimationClip3D" else ".animclip2d"
-            if ext != expected:
-                return
+        if p and not self._clip_path_matches_fsm_mode(p):
+            return
         state.clip_guid = self._resolve_guid(p) if p else ""
         state.clip_path = "" if state.clip_guid else (p or "")
         self._dirty = True
