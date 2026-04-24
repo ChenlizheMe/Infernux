@@ -718,6 +718,28 @@ bool InxGUIContext::AcceptDragDropPayload(const std::string &type, std::string *
     return false;
 }
 
+bool InxGUIContext::AcceptAnyDragDropPayload(std::string *outType, uint64_t *outU64, std::string *outStr, bool *outIsU64)
+{
+    const ImGuiPayload *preview = ImGui::GetDragDropPayload();
+    if (!preview || preview->DataType[0] == '\0')
+        return false;
+    const ImGuiPayload *acc = ImGui::AcceptDragDropPayload(preview->DataType);
+    if (!acc)
+        return false;
+    outType->assign(preview->DataType);
+    if (acc->DataSize == sizeof(uint64_t)) {
+        *outIsU64 = true;
+        *outU64 = *reinterpret_cast<const uint64_t *>(acc->Data);
+        return true;
+    }
+    *outIsU64 = false;
+    if (acc->DataSize > 0) {
+        *outStr = std::string(static_cast<const char *>(acc->Data), acc->DataSize - 1);
+        return true;
+    }
+    return false;
+}
+
 void InxGUIContext::EndDragDropTarget()
 {
     ImGui::EndDragDropTarget();

@@ -13,7 +13,7 @@ Handles:
 - Node / link selection with hover highlight
 - Right-click context menu
 - Minimap in bottom-right corner
-- Drop targets on the canvas
+- Drop targets on the canvas (accept any ImGui payload type; host ``on_canvas_drop`` filters)
 - Keyboard delete for selected nodes / links
 - Callbacks for graph mutations
 """
@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Optional, Tuple, TYPE_CHECKING
+from typing import Callable, Dict, List, Optional, Tuple, TYPE_CHECKING, Union
 
 from Infernux.core.node_graph import (
     GraphLink,
@@ -201,8 +201,8 @@ class NodeGraphView:
         self.on_node_selected: Optional[Callable[[str], None]] = None
         # Called immediately before user-driven selection changes (click), so editors can snapshot undo.
         self.on_before_selection_change: Optional[Callable[[], None]] = None
-        # Drop handler: (payload_type, payload_str, graph_x, graph_y)
-        self.on_canvas_drop: Optional[Callable[[str, str, float, float], None]] = None
+        # Drop handler: (payload_type, payload path str or uint64 id, graph_x, graph_y)
+        self.on_canvas_drop: Optional[Callable[[str, Union[str, int], float, float], None]] = None
         # If set, called on left-click on a node (after pins); return True to skip drag.
         self.on_node_primary_click: Optional[Callable[[str, float, float], bool]] = None
         self.on_node_drag_start: Optional[Callable[[str], None]] = None
@@ -336,16 +336,15 @@ class NodeGraphView:
         # Header color popup
         self._draw_header_color_popup(ctx)
 
-        # Drop targets on the canvas
+        # Drop targets on the canvas — accept any payload type; host panel decides what to do.
         if ctx.begin_drag_drop_target():
-            for dtype in ("ANIMCLIP_FILE", "ANIMCLIP3D_FILE", "ANIMFSM_FILE", "ASSET_FILE"):
-                payload = ctx.accept_drag_drop_payload(dtype)
-                if payload and self.on_canvas_drop:
-                    mx = ctx.get_mouse_pos_x()
-                    my = ctx.get_mouse_pos_y()
-                    gx, gy = self.screen_to_graph(mx, my)
-                    self.on_canvas_drop(dtype, payload, gx, gy)
-                    break
+            tup = ctx.accept_any_drag_drop_payload()
+            if tup is not None and self.on_canvas_drop:
+                dtype, payload = tup
+                mx = ctx.get_mouse_pos_x()
+                my = ctx.get_mouse_pos_y()
+                gx, gy = self.screen_to_graph(mx, my)
+                self.on_canvas_drop(dtype, payload, gx, gy)
             ctx.end_drag_drop_target()
 
         # Context menu

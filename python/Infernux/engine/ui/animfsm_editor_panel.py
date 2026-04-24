@@ -1612,39 +1612,42 @@ class AnimFSMEditorPanel(EditorPanel):
         if event.new_state == PlayModeState.PLAYING and self._dirty:
             self._do_save()
 
-    def _on_canvas_drop(self, payload_type: str, payload: str, gx: float, gy: float):
-        """Handle items dropped onto the node graph canvas."""
-        if payload and payload_type in ("ANIMCLIP_FILE", "ANIMCLIP3D_FILE"):
-            p = (payload or "").strip()
-            if not p:
+    def _on_canvas_drop(self, payload_type: str, payload, gx: float, gy: float):
+        """Handle items dropped onto the node graph canvas (only 2D/3D clip file paths)."""
+        if payload_type not in ("ANIMCLIP_FILE", "ANIMCLIP3D_FILE"):
+            return
+        if not isinstance(payload, str):
+            return
+        p = payload.strip()
+        if not p:
+            return
+        if not self._clip_path_matches_fsm_mode(p):
+            return
+        # Check if dropped on an existing state node
+        for uid, name in self._uid_to_name.items():
+            node = self._graph.find_node(uid)
+            if node and abs(node.pos_x - gx) < 80 and abs(node.pos_y - gy) < 40:
+                state = self._fsm.get_state(name) if self._fsm else None
+                if state:
+                    self._assign_clip_to_state(state, p, node, record_undo=True)
                 return
-            if not self._clip_path_matches_fsm_mode(p):
-                return
-            # Check if dropped on an existing state node
-            for uid, name in self._uid_to_name.items():
-                node = self._graph.find_node(uid)
-                if node and abs(node.pos_x - gx) < 80 and abs(node.pos_y - gy) < 40:
-                    state = self._fsm.get_state(name) if self._fsm else None
-                    if state:
-                        self._assign_clip_to_state(state, p, node, record_undo=True)
-                    return
-            # Otherwise create a new state with this clip (state name stays independent)
-            if self._fsm:
-                before = self._undo_snapshot()
-                state = self._fsm.add_state()
-                state.position = [gx, gy]
-                node = self._graph.add_node("anim_state", x=gx, y=gy)
-                node.data["label"] = state.name
-                self._name_to_uid[state.name] = node.uid
-                self._uid_to_name[node.uid] = state.name
-                self._assign_clip_to_state(state, p, node, record_undo=False)
-                node.data["loop"] = state.loop
-                node.data["restart_same_clip"] = state.restart_same_clip
-                self._view.selected_nodes = [node.uid]
-                self._selected_uid = node.uid
-                self._update_entry_link()
-                self._dirty = True
-                self._try_record_undo("Drop clip to canvas", before, self._undo_snapshot())
+        # Otherwise create a new state with this clip (state name stays independent)
+        if self._fsm:
+            before = self._undo_snapshot()
+            state = self._fsm.add_state()
+            state.position = [gx, gy]
+            node = self._graph.add_node("anim_state", x=gx, y=gy)
+            node.data["label"] = state.name
+            self._name_to_uid[state.name] = node.uid
+            self._uid_to_name[node.uid] = state.name
+            self._assign_clip_to_state(state, p, node, record_undo=False)
+            node.data["loop"] = state.loop
+            node.data["restart_same_clip"] = state.restart_same_clip
+            self._view.selected_nodes = [node.uid]
+            self._selected_uid = node.uid
+            self._update_entry_link()
+            self._dirty = True
+            self._try_record_undo("Drop clip to canvas", before, self._undo_snapshot())
 
     # ── Helpers ───────────────────────────────────────────────────────
 
