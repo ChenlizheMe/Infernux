@@ -1784,7 +1784,7 @@ class AnimFSMEditorPanel(EditorPanel):
             Debug.log_error(f"Failed to save animfsm: {target}")
 
     def _hot_reload_animators(self, fsm_path: str):
-        """Reload running SpiritAnimators that reference this FSM."""
+        """Reload running 2D/3D animators that reference this FSM."""
         try:
             from Infernux.engine.play_mode import PlayModeManager, PlayModeState
             pmm = PlayModeManager.instance()
@@ -1795,11 +1795,16 @@ class AnimFSMEditorPanel(EditorPanel):
             if not scene:
                 return
             from Infernux.components.animator2d import SpiritAnimator
+            from Infernux.components.animator3d import Animator3D
             norm = os.path.normpath(fsm_path)
             for go in scene.get_all_objects():
                 animator = go.get_component(SpiritAnimator)
                 if animator and animator._fsm and os.path.normpath(
                         animator._fsm.file_path or "") == norm:
                     animator.reload_controller()
+                animator3d = go.get_component(Animator3D)
+                if animator3d and animator3d._fsm and os.path.normpath(
+                        animator3d._fsm.file_path or "") == norm:
+                    animator3d.reload_controller()
         except Exception:
             pass

@@ -8,7 +8,7 @@ def _collect_material_renderers(items, native_map, obj):
     """Collect renderer tuples (MeshRenderer / SpriteRenderer) and their signature parts."""
     from Infernux.components.builtin_component import BuiltinComponent
 
-    _RENDERER_TYPES = {"MeshRenderer", "SpriteRenderer"}
+    _RENDERER_TYPES = {"MeshRenderer", "SkinnedMeshRenderer", "SpriteRenderer"}
 
     renderers = []
     signature_parts = []
@@ -64,6 +64,7 @@ def _rebuild_material_entries(renderers):
                 "label": label,
                 "material": mat,
                 "is_default": is_default,
+                "is_embedded": is_embedded,
                 "renderer_type": renderer_type,
             })
     return valid_entries
@@ -156,7 +157,7 @@ def wire_material_sections(ip, _t, engine, _inspector_support,
             lock_inline_material_body = (
                 entry.get("renderer_type") == "SpriteRenderer"
                 and entry["is_default"]
-            )
+            ) or bool(entry.get("is_embedded", False))
             adapter = _make_inline_material_panel_adapter()
             ctx.push_id(index)
             try:

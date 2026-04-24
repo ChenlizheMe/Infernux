@@ -488,6 +488,7 @@
   "asset.generate_normals": "生成法线",
   "asset.generate_tangents": "生成切线",
   "asset.flip_uvs": "翻转 UV",
+  "asset.swap_uv_channels": "交换 UV 通道",
   "asset.optimize_mesh": "优化网格",
   "asset.display_material": "材质",
   "asset.display_prefab": "预制体",

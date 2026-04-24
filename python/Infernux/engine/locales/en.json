@@ -488,6 +488,7 @@
   "asset.generate_normals": "Generate Normals",
   "asset.generate_tangents": "Generate Tangents",
   "asset.flip_uvs": "Flip UVs",
+  "asset.swap_uv_channels": "Swap UV Channels",
   "asset.optimize_mesh": "Optimize Mesh",
   "asset.display_material": "Material",
   "asset.display_prefab": "Prefab",

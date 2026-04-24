@@ -247,7 +247,7 @@ def _ensure_categories():
                      float_speed=0.001, float_range=(0.0001, 1000.0)),
             FieldDef("generate_normals", "asset.generate_normals", WidgetType.CHECKBOX),
             FieldDef("generate_tangents", "asset.generate_tangents", WidgetType.CHECKBOX),
-            FieldDef("flip_uvs", "asset.flip_uvs", WidgetType.CHECKBOX),
+            FieldDef("swap_uv_channels", "asset.swap_uv_channels", WidgetType.CHECKBOX),
             FieldDef("optimize_mesh", "asset.optimize_mesh", WidgetType.CHECKBOX),
         ],
         custom_header_fn=_render_mesh_header,

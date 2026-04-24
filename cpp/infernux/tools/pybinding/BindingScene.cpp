@@ -12,6 +12,7 @@
 #include "function/resources/AssetRegistry/AssetRegistry.h"
 #include "function/resources/InxMaterial/InxMaterial.h"
 #include "function/resources/InxMesh/InxMesh.h"
+#include "function/resources/InxResource/InxResourceMeta.h"
 #include "function/scene/BoxCollider.h"
 #include "function/scene/Camera.h"
 #include "function/scene/CapsuleCollider.h"
@@ -23,18 +24,21 @@
 #include "function/scene/PrimitiveMeshes.h"
 #include "function/scene/PyComponentProxy.h"
 #include "function/scene/Rigidbody.h"
+#include "function/scene/SkinnedMeshRenderer.h"
 #include "function/scene/Scene.h"
 #include "function/scene/SceneManager.h"
 #include "function/scene/SphereCollider.h"
 #include "function/scene/SpriteRenderer.h"
 #include "function/scene/Transform.h"
 #include "function/scene/physics/PhysicsECSStore.h"
+#include <cctype>
 #include <functional>
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
 #include <pybind11/functional.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
+#include <sstream>
 #include <unordered_map>
 
 namespace py = pybind11;
@@ -236,6 +240,80 @@ static void ApplyFbxMaterialData(MeshRenderer *renderer, const std::shared_ptr<I
     }
 }
 
+static std::string TrimCopy(std::string s)
+{
+    auto notSpace = [](unsigned char ch) { return !std::isspace(ch); };
+    while (!s.empty() && !notSpace(static_cast<unsigned char>(s.front())))
+        s.erase(s.begin());
+    while (!s.empty() && !notSpace(static_cast<unsigned char>(s.back())))
+        s.pop_back();
+    return s;
+}
+
+static std::vector<std::string> SplitCommaList(const std::string &csv)
+{
+    std::vector<std::string> out;
+    std::stringstream ss(csv);
+    std::string item;
+    while (std::getline(ss, item, ',')) {
+        item = TrimCopy(item);
+        if (!item.empty())
+            out.push_back(item);
+    }
+    return out;
+}
+
+static const InxResourceMeta *GetModelMeta(const std::string &guid, const std::shared_ptr<InxMesh> &mesh)
+{
+    auto *adb = AssetRegistry::Instance().GetAssetDatabase();
+    if (!adb)
+        return nullptr;
+    if (!guid.empty()) {
+        if (const auto *meta = adb->GetMetaByGuid(guid))
+            return meta;
+    }
+    if (mesh && !mesh->GetFilePath().empty())
+        return adb->GetMetaByPath(mesh->GetFilePath());
+    return nullptr;
+}
+
+static int TryGetMetaInt(const InxResourceMeta *meta, const std::string &key, int fallback = 0)
+{
+    if (!meta || !meta->HasKey(key))
+        return fallback;
+    try {
+        return meta->GetDataAs<int>(key);
+    } catch (...) {
+        return fallback;
+    }
+}
+
+static std::string TryGetMetaString(const InxResourceMeta *meta, const std::string &key)
+{
+    if (!meta || !meta->HasKey(key))
+        return {};
+    try {
+        return meta->GetDataAs<std::string>(key);
+    } catch (...) {
+        return {};
+    }
+}
+
+static std::vector<std::string> GetAnimationTakeNames(const std::string &guid, const std::shared_ptr<InxMesh> &mesh)
+{
+    return SplitCommaList(TryGetMetaString(GetModelMeta(guid, mesh), "animation_names_csv"));
+}
+
+static bool ShouldUseSkinnedRenderer(const std::string &guid, const std::shared_ptr<InxMesh> &mesh)
+{
+    const auto *meta = GetModelMeta(guid, mesh);
+    if (!meta)
+        return false;
+    if (TryGetMetaInt(meta, "animation_count", 0) > 0)
+        return true;
+    return !GetAnimationTakeNames(guid, mesh).empty();
+}
+
 static GameObject *CreateModelObject(Scene *scene, const std::string &guid, const std::string &name = "")
 {
     auto &registry = AssetRegistry::Instance();
@@ -250,16 +328,29 @@ static GameObject *CreateModelObject(Scene *scene, const std::string &guid, cons
 
     uint32_t nodeGroupCount = mesh->GetNodeGroupCount();
     const auto &nodeNames = mesh->GetNodeNames();
+    const bool useSkinnedRenderer = ShouldUseSkinnedRenderer(guid, mesh);
+    const auto animationTakeNames = GetAnimationTakeNames(guid, mesh);
 
     if (nodeGroupCount <= 1) {
         // Single node — one object with the mesh asset.
         GameObject *obj = scene->CreateGameObject(objName);
         if (!obj)
             return nullptr;
-        MeshRenderer *renderer = obj->AddComponent<MeshRenderer>();
-        if (renderer) {
-            renderer->SetMeshAsset(guid, mesh);
-            ApplyFbxMaterialData(renderer, mesh);
+        if (useSkinnedRenderer) {
+            auto *renderer = obj->AddComponent<SkinnedMeshRenderer>();
+            if (renderer) {
+                renderer->SetSourceModelGuid(guid);
+                renderer->SetSourceModelPath(mesh->GetFilePath());
+                renderer->SetAnimationTakeNames(animationTakeNames);
+                renderer->SetMeshAsset(guid, mesh);
+                ApplyFbxMaterialData(renderer, mesh);
+            }
+        } else {
+            MeshRenderer *renderer = obj->AddComponent<MeshRenderer>();
+            if (renderer) {
+                renderer->SetMeshAsset(guid, mesh);
+                ApplyFbxMaterialData(renderer, mesh);
+            }
         }
         return obj;
     }
@@ -276,11 +367,23 @@ static GameObject *CreateModelObject(Scene *scene, const std::string &guid, cons
         if (!child)
             continue;
         child->GetTransform()->SetParent(container->GetTransform());
-        MeshRenderer *renderer = child->AddComponent<MeshRenderer>();
-        if (renderer) {
-            renderer->SetMeshAsset(guid, mesh);
-            renderer->SetNodeGroup(static_cast<int32_t>(g));
-            ApplyFbxMaterialData(renderer, mesh);
+        if (useSkinnedRenderer) {
+            auto *renderer = child->AddComponent<SkinnedMeshRenderer>();
+            if (renderer) {
+                renderer->SetSourceModelGuid(guid);
+                renderer->SetSourceModelPath(mesh->GetFilePath());
+                renderer->SetAnimationTakeNames(animationTakeNames);
+                renderer->SetMeshAsset(guid, mesh);
+                renderer->SetNodeGroup(static_cast<int32_t>(g));
+                ApplyFbxMaterialData(renderer, mesh);
+            }
+        } else {
+            MeshRenderer *renderer = child->AddComponent<MeshRenderer>();
+            if (renderer) {
+                renderer->SetMeshAsset(guid, mesh);
+                renderer->SetNodeGroup(static_cast<int32_t>(g));
+                ApplyFbxMaterialData(renderer, mesh);
+            }
         }
     }
 
@@ -707,6 +810,28 @@ void RegisterSceneBindings(py::module_ &m)
             "Get world-space AABB as (min_x, min_y, min_z, max_x, max_y, max_z)");
 
     // ========================================================================
+    // SkinnedMeshRenderer — animated model placeholder, inherits MeshRenderer
+    // ========================================================================
+    py::class_<SkinnedMeshRenderer, MeshRenderer>(m, "SkinnedMeshRenderer")
+        .def(py::init<>())
+        .def_property_readonly("source_model_guid", &SkinnedMeshRenderer::GetSourceModelGuid,
+                               "GUID of the animated source model asset")
+        .def_property_readonly("source_model_path", &SkinnedMeshRenderer::GetSourceModelPath,
+                               "Filesystem path of the animated source model")
+        .def_property("active_take_name", &SkinnedMeshRenderer::GetActiveTakeName, &SkinnedMeshRenderer::SetActiveTakeName,
+                      "Currently selected animation take name")
+        .def_property_readonly("has_animation_takes", &SkinnedMeshRenderer::HasAnimationTakes,
+                               "Whether this renderer has any imported animation takes")
+        .def_property_readonly(
+            "animation_take_count",
+            [](const SkinnedMeshRenderer &sr) -> size_t { return sr.GetAnimationTakeNames().size(); },
+            "Number of imported animation takes on the source model")
+        .def(
+            "get_animation_take_names",
+            [](const SkinnedMeshRenderer &sr) { return sr.GetAnimationTakeNames(); },
+            "Get imported animation take names from the source model");
+
+    // ========================================================================
     // SpriteRenderer — inherits MeshRenderer for rendering, adds sprite props
     // ========================================================================
     py::class_<SpriteRenderer, MeshRenderer>(m, "SpriteRenderer")
@@ -867,6 +992,9 @@ void RegisterSceneBindings(py::module_ &m)
     auto &registry = ComponentBindingRegistry::Instance();
     registry.Register("MeshRenderer", [](Component *c) -> py::object {
         return py::cast(dynamic_cast<MeshRenderer *>(c), py::return_value_policy::reference);
+    });
+    registry.Register("SkinnedMeshRenderer", [](Component *c) -> py::object {
+        return py::cast(dynamic_cast<SkinnedMeshRenderer *>(c), py::return_value_policy::reference);
     });
     registry.Register("Light", [](Component *c) -> py::object {
         return py::cast(dynamic_cast<Light *>(c), py::return_value_policy::reference);

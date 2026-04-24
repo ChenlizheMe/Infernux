@@ -122,7 +122,8 @@ def _render_mesh_renderer_materials(ctx: InxGUIContext, comp):
 
     # Ensure we have the Python wrapper
     if not isinstance(comp, BuiltinComponent):
-        wrapper_cls = BuiltinComponent._builtin_registry.get("MeshRenderer")
+        wrapper_cls = BuiltinComponent._builtin_registry.get(getattr(comp, "type_name", "")) \
+            or BuiltinComponent._builtin_registry.get("MeshRenderer")
         go = getattr(comp, 'game_object', None)
         if wrapper_cls and go is not None:
             comp = wrapper_cls._get_or_create_wrapper(comp, go)

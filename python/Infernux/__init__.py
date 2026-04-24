@@ -96,6 +96,7 @@ __all__ = [
     # Builtin components
     "Light",
     "MeshRenderer",
+    "SkinnedMeshRenderer",
     "Camera",
     "Collider",
     "BoxCollider",
@@ -110,6 +111,7 @@ __all__ = [
     "AudioListener",
     "SpriteRenderer",
     "SpiritAnimator",
+    "Animator3D",
     # Decorators
     "require_component",
     "disallow_multiple",

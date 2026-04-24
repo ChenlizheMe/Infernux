@@ -36,7 +36,8 @@ struct MeshImportSettings
     float scaleFactor = 0.01f;
     bool generateNormals = true;
     bool generateTangents = true;
-    bool flipUVs = false;
+    bool flipUVs = true;
+    bool swapUVChannels = false;
     bool optimizeMesh = true;
 };
 
@@ -63,6 +64,8 @@ static MeshImportSettings ReadImportSettings(const std::string &filePath, const 
         settings.generateTangents = meta->GetDataAs<bool>("generate_tangents");
     if (meta->HasKey("flip_uvs"))
         settings.flipUVs = meta->GetDataAs<bool>("flip_uvs");
+    if (meta->HasKey("swap_uv_channels"))
+        settings.swapUVChannels = meta->GetDataAs<bool>("swap_uv_channels");
     if (meta->HasKey("optimize_mesh"))
         settings.optimizeMesh = meta->GetDataAs<bool>("optimize_mesh");
 
@@ -201,7 +204,10 @@ static std::shared_ptr<InxMesh> ConvertScene(const aiScene *scene, const MeshImp
 
         const bool hasNormals = aiM->HasNormals();
         const bool hasTangents = aiM->HasTangentsAndBitangents();
-        const bool hasUVs = aiM->HasTextureCoords(0);
+        const bool hasUV0 = aiM->HasTextureCoords(0);
+        const bool hasUV1 = aiM->HasTextureCoords(1);
+        const bool swapUVs = settings.swapUVChannels && hasUV1;
+        const bool hasUVs = swapUVs ? hasUV1 : hasUV0;
         const bool hasColors = aiM->HasVertexColors(0);
 
         // Compute normal matrix from the world transform (no scale skew for normals)
@@ -242,7 +248,8 @@ static std::shared_ptr<InxMesh> ConvertScene(const aiScene *scene, const MeshImp
 
             // UV (channel 0 only for now)
             if (hasUVs) {
-                vert.texCoord = glm::vec2(aiM->mTextureCoords[0][v].x, aiM->mTextureCoords[0][v].y);
+                const unsigned int uvChannel = swapUVs ? 1u : 0u;
+                vert.texCoord = glm::vec2(aiM->mTextureCoords[uvChannel][v].x, aiM->mTextureCoords[uvChannel][v].y);
             } else {
                 // Auto-generate UV via triplanar-dominant-axis projection
                 // for meshes that have no texture coordinates at all.

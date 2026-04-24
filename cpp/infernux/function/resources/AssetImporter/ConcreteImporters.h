@@ -218,9 +218,19 @@ class ModelImporter final : public AssetImporter
         if (!meta.HasKey("generate_tangents"))
             meta.AddMetadata("generate_tangents", true);
         if (!meta.HasKey("flip_uvs"))
-            meta.AddMetadata("flip_uvs", false);
+            meta.AddMetadata("flip_uvs", true);
+        if (!meta.HasKey("swap_uv_channels"))
+            meta.AddMetadata("swap_uv_channels", false);
         if (!meta.HasKey("optimize_mesh"))
             meta.AddMetadata("optimize_mesh", true);
+        const int importerVersion = meta.HasKey("importer_version") ? meta.GetDataAs<int>("importer_version") : 1;
+        if (importerVersion < 2) {
+            // Migrate old defaults to Unity-like behavior for DCC-authored assets.
+            meta.AddMetadata("flip_uvs", true);
+            if (!meta.HasKey("swap_uv_channels"))
+                meta.AddMetadata("swap_uv_channels", false);
+            meta.AddMetadata("importer_version", 2);
+        }
     }
 };
 

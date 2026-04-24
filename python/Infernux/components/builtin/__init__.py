@@ -20,6 +20,7 @@ Usage::
 
 from .light import Light
 from .mesh_renderer import MeshRenderer
+from .skinned_mesh_renderer import SkinnedMeshRenderer
 from .camera import Camera
 from .collider import Collider
 from .box_collider import BoxCollider
@@ -39,6 +40,7 @@ from .sprite_renderer import SpriteRenderer
 __all__ = [
     "Light",
     "MeshRenderer",
+    "SkinnedMeshRenderer",
     "Camera",
     "Collider",
     "BoxCollider",
