@@ -693,8 +693,6 @@ def _render_animclip3d_body(ctx: InxGUIContext, panel, state: _State):
         t("asset.animclip3d_name"),
         t("asset.animclip3d_source_model"),
         t("asset.animclip3d_take"),
-        t("asset.animclip3d_speed"),
-        t("asset.animclip3d_loop"),
     ]
     lw = max_label_w(ctx, labels)
 
@@ -791,26 +789,12 @@ def _render_animclip3d_body(ctx: InxGUIContext, panel, state: _State):
     field_label(ctx, t("asset.animclip3d_take"), lw)
     take_buf = clip.take_name or ""
     new_take = ctx.text_input("##animclip3d_take", take_buf, 256)
-    if new_take != take_buf:
+    if not embedded and new_take != take_buf:
         clip.take_name = new_take
-        changed = True
-
-    # ── Playback ──────────────────────────────────────────────────
-    field_label(ctx, t("asset.animclip3d_speed"), lw)
-    new_speed = ctx.drag_float("##animclip3d_speed", float(clip.speed), 0.01, 0.0, 10.0)
-    if abs(float(new_speed) - float(clip.speed)) > 1e-6:
-        clip.speed = float(new_speed)
-        changed = True
-
-    field_label(ctx, t("asset.animclip3d_loop"), lw)
-    new_loop = ctx.checkbox("##animclip3d_loop", bool(clip.loop))
-    if bool(new_loop) != bool(clip.loop):
-        clip.loop = bool(new_loop)
         changed = True
 
     if embedded:
         ctx.end_disabled()
-        changed = False
 
     # ── Imported bone summary (read-only) ─────────────────────────
     if clip.bind_pose_bone_names:
@@ -823,7 +807,7 @@ def _render_animclip3d_body(ctx: InxGUIContext, panel, state: _State):
         ctx.label(preview)
         ctx.pop_style_color(1)
 
-    if changed and state.exec_layer:
+    if changed and not embedded and state.exec_layer:
         clip.file_path = state.file_path
         state.exec_layer.schedule_rw_save(clip)
 

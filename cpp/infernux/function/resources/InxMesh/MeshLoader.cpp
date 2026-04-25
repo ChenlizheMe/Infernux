@@ -379,8 +379,6 @@ static std::shared_ptr<InxMesh> ConvertScene(const aiScene *scene, const MeshImp
 
 std::shared_ptr<void> MeshLoader::Load(const std::string &filePath, const std::string &guid, AssetDatabase *adb)
 {
-    INXLOG_INFO("MeshLoader::Load: '", filePath, "' [", guid, "]");
-
     auto fsPath = ToFsPath(filePath);
     if (!std::filesystem::exists(fsPath)) {
         INXLOG_ERROR("MeshLoader::Load: file not found: ", filePath);
@@ -426,10 +424,6 @@ std::shared_ptr<void> MeshLoader::Load(const std::string &filePath, const std::s
 
     mesh->SetGuid(guid);
     mesh->SetFilePath(filePath);
-
-    INXLOG_INFO("MeshLoader::Load: '", name, "' — ", mesh->GetVertexCount(), " verts, ", mesh->GetIndexCount(),
-                " indices, ", mesh->GetSubMeshCount(), " submesh(es), ", mesh->GetMaterialSlotCount(),
-                " material slot(s)");
 
     return mesh;
 }

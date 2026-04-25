@@ -517,7 +517,7 @@
   "asset.animclip3d_speed": "速度",
   "asset.animclip3d_loop": "循环",
   "asset.animclip3d_bind_pose_bones": "绑定姿势骨骼 ({count})",
-  "asset.animclip3d_embedded_hint": "导入模型上内嵌的动画 Take（只读）。如需可编辑的片段，请在工程中创建 .animclip3d 资源。",
+  "asset.animclip3d_embedded_hint": "导入模型上内嵌的动画 Take（只读）。速度与循环由 FSM 状态控制。",
   "asset.animclip_name": "名称",
   "asset.animclip_texture": "构建纹理",
   "asset.animclip_preview_texture": "预览纹理",

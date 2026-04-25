@@ -436,19 +436,47 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
 #endif
 
     // ---- Upload instance model matrices to SSBO (set 2, binding 1) ----
-    // Reset per-frame write offset on new frame
-    if (m_lastInstanceFrame != m_currentFrame) {
-        m_instanceWriteOffset = 0;
-        m_lastInstanceFrame = m_currentFrame;
-    }
+    ResetPerFrameGpuStreamOffsets();
 
     const uint32_t frameIndex = m_currentFrame % m_maxFramesInFlight;
     const size_t totalEligible = m_eligibleScratch.size();
     const uint32_t writeBase = m_instanceWriteOffset;
 
     if (totalEligible > 0 && frameIndex < m_instanceBuffers.size()) {
+        size_t requiredBoneMatrices = m_skinPaletteWriteOffset;
+        for (const auto &entry : m_eligibleScratch) {
+            if (entry.dc->skinBoneMatrices)
+                requiredBoneMatrices += entry.dc->skinBoneMatrices->size();
+        }
+        const VkBuffer previousInstanceBuffer =
+            m_instanceBuffers[frameIndex].buffer ? m_instanceBuffers[frameIndex].buffer->GetBuffer() : VK_NULL_HANDLE;
+        const VkBuffer previousSkinInstanceBuffer = frameIndex < m_skinInstanceBuffers.size() &&
+                                                           m_skinInstanceBuffers[frameIndex].buffer
+                                                       ? m_skinInstanceBuffers[frameIndex].buffer->GetBuffer()
+                                                       : VK_NULL_HANDLE;
+        const VkBuffer previousSkinPaletteBuffer = frameIndex < m_skinPaletteBuffers.size() &&
+                                                          m_skinPaletteBuffers[frameIndex].buffer
+                                                      ? m_skinPaletteBuffers[frameIndex].buffer->GetBuffer()
+                                                      : VK_NULL_HANDLE;
+
         EnsureInstanceBufferCapacity(frameIndex, writeBase + totalEligible);
+        EnsureSkinBuffersCapacity(frameIndex, writeBase + totalEligible, requiredBoneMatrices);
+        const bool instanceBufferChanged = m_instanceBuffers[frameIndex].buffer &&
+                                           previousInstanceBuffer != m_instanceBuffers[frameIndex].buffer->GetBuffer();
+        const bool skinBufferChanged =
+            frameIndex < m_skinInstanceBuffers.size() && frameIndex < m_skinPaletteBuffers.size() &&
+            ((m_skinInstanceBuffers[frameIndex].buffer &&
+              previousSkinInstanceBuffer != m_skinInstanceBuffers[frameIndex].buffer->GetBuffer()) ||
+             (m_skinPaletteBuffers[frameIndex].buffer &&
+              previousSkinPaletteBuffer != m_skinPaletteBuffers[frameIndex].buffer->GetBuffer()));
+        if (instanceBufferChanged)
+            UpdateInstanceBufferDescriptor(frameIndex);
+        if (skinBufferChanged)
+            UpdateSkinBufferDescriptors(frameIndex);
+
         auto &instFrame = m_instanceBuffers[frameIndex];
+        auto &skinInstFrame = m_skinInstanceBuffers[frameIndex];
+        auto &skinPaletteFrame = m_skinPaletteBuffers[frameIndex];
         if (instFrame.buffer) {
             void *mapped = instFrame.mapped;
             if (!mapped) {
@@ -459,6 +487,43 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
                 glm::mat4 *matrices = static_cast<glm::mat4 *>(mapped);
                 for (size_t i = 0; i < totalEligible; ++i) {
                     matrices[writeBase + i] = m_eligibleScratch[i].dc->worldMatrix;
+                }
+            }
+        }
+
+        if (skinInstFrame.buffer && skinPaletteFrame.buffer) {
+            auto *skinInstances = static_cast<GPUSkinInstanceData *>(skinInstFrame.mapped);
+            if (!skinInstances) {
+                skinInstances = static_cast<GPUSkinInstanceData *>(skinInstFrame.buffer->Map());
+                skinInstFrame.mapped = skinInstances;
+            }
+            auto *skinBones = static_cast<glm::mat4 *>(skinPaletteFrame.mapped);
+            if (!skinBones) {
+                skinBones = static_cast<glm::mat4 *>(skinPaletteFrame.buffer->Map());
+                skinPaletteFrame.mapped = skinBones;
+            }
+            if (skinInstances && skinBones) {
+                auto resolveSkinData = [&](const std::vector<glm::mat4> *palette) {
+                    GPUSkinInstanceData skinData{};
+                    if (!palette || palette->empty())
+                        return skinData;
+                    const void *key = static_cast<const void *>(palette);
+                    auto cached = m_skinPaletteFrameCache.find(key);
+                    if (cached != m_skinPaletteFrameCache.end())
+                        return cached->second;
+
+                    skinData.boneOffset = m_skinPaletteWriteOffset;
+                    skinData.boneCount = static_cast<uint32_t>(palette->size());
+                    skinData.flags = kGPUSkinFlagEnabled;
+                    std::memcpy(&skinBones[m_skinPaletteWriteOffset], palette->data(),
+                                palette->size() * sizeof(glm::mat4));
+                    m_skinPaletteWriteOffset += static_cast<uint32_t>(palette->size());
+                    m_skinPaletteFrameCache[key] = skinData;
+                    return skinData;
+                };
+
+                for (size_t i = 0; i < totalEligible; ++i) {
+                    skinInstances[writeBase + i] = resolveSkinData(m_eligibleScratch[i].dc->skinBoneMatrices);
                 }
             }
         }
@@ -879,6 +944,39 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
         }
     }
 
+    size_t maxShadowBoneMatrices = m_skinPaletteWriteOffset;
+    for (const auto &sd : m_shadowDrawScratch) {
+        if (sd.dc->skinBoneMatrices)
+            maxShadowBoneMatrices += sd.dc->skinBoneMatrices->size() * cascadeCount;
+    }
+    const VkBuffer previousInstanceBuffer =
+        m_instanceBuffers[frameIndex].buffer ? m_instanceBuffers[frameIndex].buffer->GetBuffer() : VK_NULL_HANDLE;
+    const VkBuffer previousSkinInstanceBuffer =
+        frameIndex < m_skinInstanceBuffers.size() && m_skinInstanceBuffers[frameIndex].buffer
+            ? m_skinInstanceBuffers[frameIndex].buffer->GetBuffer()
+            : VK_NULL_HANDLE;
+    const VkBuffer previousSkinPaletteBuffer =
+        frameIndex < m_skinPaletteBuffers.size() && m_skinPaletteBuffers[frameIndex].buffer
+            ? m_skinPaletteBuffers[frameIndex].buffer->GetBuffer()
+            : VK_NULL_HANDLE;
+
+    EnsureInstanceBufferCapacity(frameIndex, m_instanceWriteOffset + m_shadowDrawScratch.size() * cascadeCount);
+    EnsureSkinBuffersCapacity(frameIndex, m_instanceWriteOffset + m_shadowDrawScratch.size() * cascadeCount,
+                              maxShadowBoneMatrices);
+
+    const bool instanceBufferChanged = m_instanceBuffers[frameIndex].buffer &&
+                                       previousInstanceBuffer != m_instanceBuffers[frameIndex].buffer->GetBuffer();
+    const bool skinBufferChanged =
+        frameIndex < m_skinInstanceBuffers.size() && frameIndex < m_skinPaletteBuffers.size() &&
+        ((m_skinInstanceBuffers[frameIndex].buffer &&
+          previousSkinInstanceBuffer != m_skinInstanceBuffers[frameIndex].buffer->GetBuffer()) ||
+         (m_skinPaletteBuffers[frameIndex].buffer &&
+          previousSkinPaletteBuffer != m_skinPaletteBuffers[frameIndex].buffer->GetBuffer()));
+    if (instanceBufferChanged)
+        UpdateInstanceBufferDescriptor(frameIndex);
+    if (skinBufferChanged)
+        UpdateSkinBufferDescriptors(frameIndex);
+
     // Bind globals descriptor set (set 1) with instance SSBO — once for all cascades
     if (frameIndex < m_globalsDescSets.size()) {
         VkDescriptorSet globalsDescSet = m_globalsDescSets[frameIndex];
@@ -958,6 +1056,46 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
         glm::mat4 *matrices = static_cast<glm::mat4 *>(mapped);
         for (uint32_t vi = 0; vi < visibleCount; ++vi) {
             matrices[writeBase + vi] = m_shadowDrawScratch[m_shadowCascadeVisible[vi]].dc->worldMatrix;
+        }
+
+        if (frameIndex < m_skinInstanceBuffers.size() && frameIndex < m_skinPaletteBuffers.size()) {
+            auto &skinInstFrame = m_skinInstanceBuffers[frameIndex];
+            auto &skinPaletteFrame = m_skinPaletteBuffers[frameIndex];
+            auto *skinInstances = static_cast<GPUSkinInstanceData *>(skinInstFrame.mapped);
+            if (!skinInstances && skinInstFrame.buffer) {
+                skinInstances = static_cast<GPUSkinInstanceData *>(skinInstFrame.buffer->Map());
+                skinInstFrame.mapped = skinInstances;
+            }
+            auto *skinBones = static_cast<glm::mat4 *>(skinPaletteFrame.mapped);
+            if (!skinBones && skinPaletteFrame.buffer) {
+                skinBones = static_cast<glm::mat4 *>(skinPaletteFrame.buffer->Map());
+                skinPaletteFrame.mapped = skinBones;
+            }
+            if (skinInstances && skinBones) {
+                auto resolveSkinData = [&](const std::vector<glm::mat4> *palette) {
+                    GPUSkinInstanceData skinData{};
+                    if (!palette || palette->empty())
+                        return skinData;
+                    const void *key = static_cast<const void *>(palette);
+                    auto cached = m_skinPaletteFrameCache.find(key);
+                    if (cached != m_skinPaletteFrameCache.end())
+                        return cached->second;
+
+                    skinData.boneOffset = m_skinPaletteWriteOffset;
+                    skinData.boneCount = static_cast<uint32_t>(palette->size());
+                    skinData.flags = kGPUSkinFlagEnabled;
+                    std::memcpy(&skinBones[m_skinPaletteWriteOffset], palette->data(),
+                                palette->size() * sizeof(glm::mat4));
+                    m_skinPaletteWriteOffset += static_cast<uint32_t>(palette->size());
+                    m_skinPaletteFrameCache[key] = skinData;
+                    return skinData;
+                };
+
+                for (uint32_t vi = 0; vi < visibleCount; ++vi) {
+                    const DrawCall *dc = m_shadowDrawScratch[m_shadowCascadeVisible[vi]].dc;
+                    skinInstances[writeBase + vi] = resolveSkinData(dc ? dc->skinBoneMatrices : nullptr);
+                }
+            }
         }
         m_instanceWriteOffset += visibleCount;
 

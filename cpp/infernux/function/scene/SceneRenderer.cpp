@@ -392,11 +392,13 @@ void SceneRenderer::EmitDrawCallsForRenderable(DrawCallResult &result, const Ren
         const std::vector<Vertex> *objVerticesPtr = &meshPtr->GetVertices();
         const std::vector<uint32_t> *objIndicesPtr = &meshPtr->GetIndices();
         const std::vector<SubMesh> *subMeshesPtr = &meshPtr->GetSubMeshes();
+        const std::vector<glm::mat4> *skinBoneMatricesPtr = nullptr;
         if (auto *skinned = dynamic_cast<SkinnedMeshRenderer *>(renderer);
             skinned && skinned->HasRuntimeSkinnedMesh()) {
             objVerticesPtr = &skinned->GetRuntimeSkinnedVertices();
             objIndicesPtr = &skinned->GetRuntimeSkinnedIndices();
             subMeshesPtr = &skinned->GetRuntimeSkinnedSubMeshes();
+            skinBoneMatricesPtr = &skinned->GetRuntimeSkinBoneMatrices();
         }
         const auto &objVertices = *objVerticesPtr;
         const auto &objIndices = *objIndicesPtr;
@@ -421,6 +423,7 @@ void SceneRenderer::EmitDrawCallsForRenderable(DrawCallResult &result, const Ren
             dc.worldBounds = renderable.worldBounds;
             dc.meshVertices = &objVertices;
             dc.meshIndices = &objIndices;
+            dc.skinBoneMatrices = skinBoneMatricesPtr;
             dc.forceBufferUpdate = bufferDirty;
             result.drawCalls.push_back(dc);
         } else if (submeshFilter >= 0 && static_cast<uint32_t>(submeshFilter) < subMeshCount) {
@@ -442,6 +445,7 @@ void SceneRenderer::EmitDrawCallsForRenderable(DrawCallResult &result, const Ren
             dc.worldBounds = renderable.worldBounds;
             dc.meshVertices = &objVertices;
             dc.meshIndices = &objIndices;
+            dc.skinBoneMatrices = skinBoneMatricesPtr;
             dc.forceBufferUpdate = bufferDirty;
             result.drawCalls.push_back(dc);
         } else {
@@ -479,6 +483,7 @@ void SceneRenderer::EmitDrawCallsForRenderable(DrawCallResult &result, const Ren
                 dc.worldBounds = renderable.worldBounds;
                 dc.meshVertices = &objVertices;
                 dc.meshIndices = &objIndices;
+                dc.skinBoneMatrices = skinBoneMatricesPtr;
                 dc.forceBufferUpdate = firstDirty ? bufferDirty : false;
                 firstDirty = false;
                 result.drawCalls.push_back(dc);

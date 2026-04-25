@@ -17,6 +17,8 @@
 #include <fstream>
 #include <platform/filesystem/InxPath.h>
 #include <sstream>
+#include <variant>
+#include <vector>
 
 namespace infernux
 {
@@ -652,6 +654,35 @@ std::vector<std::pair<std::string, std::string>> BinaryPreviewer::GetMetadata() 
 // MaterialPreviewer
 // ============================================================================
 
+/// Drop texture bindings whose GUID does not resolve to an on-disk file so GPU/CPU
+/// preview still draws (albedo samples as white when a slot is empty).
+static void ClearMissingTextureBindings(InxMaterial *mat, AssetDatabase *adb)
+{
+    if (!mat || !adb)
+        return;
+    namespace fs = std::filesystem;
+    std::vector<std::string> toClear;
+    for (const auto &kv : mat->GetAllProperties()) {
+        if (kv.second.type != MaterialPropertyType::Texture2D)
+            continue;
+        if (!std::holds_alternative<std::string>(kv.second.value))
+            continue;
+        const std::string &guid = std::get<std::string>(kv.second.value);
+        if (guid.empty())
+            continue;
+        const std::string p = adb->GetPathFromGuid(guid);
+        if (p.empty()) {
+            toClear.push_back(kv.first);
+            continue;
+        }
+        std::error_code ec;
+        if (!fs::exists(fs::u8path(p), ec))
+            toClear.push_back(kv.first);
+    }
+    for (const auto &name : toClear)
+        mat->ClearTexture(name);
+}
+
 /// Downsample RGBA pixels to target size using box filter.
 static void DownsampleRGBA(const unsigned char *src, int srcW, int srcH, int dstW, int dstH,
                            std::vector<unsigned char> &dst)
@@ -831,6 +862,7 @@ bool MaterialPreviewer::RenderFromJson(const std::string &materialJson, int size
     auto sourceMaterial = std::make_shared<InxMaterial>();
     if (!sourceMaterial->Deserialize(materialJson))
         return false;
+    ClearMissingTextureBindings(sourceMaterial.get(), adb);
 
     // Preview rendering must not reuse the asset material's GUID-backed cache key,
     // otherwise GPU preview pipeline/descriptor recreation can invalidate the live

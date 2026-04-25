@@ -830,12 +830,26 @@ void RegisterSceneBindings(py::module_ &m)
             "get_animation_take_names",
             [](const SkinnedMeshRenderer &sr) { return sr.GetAnimationTakeNames(); },
             "Get imported animation take names from the source model")
+        .def("get_animation_duration_seconds", &SkinnedMeshRenderer::GetAnimationDurationSeconds, py::arg("take_name"),
+             "Get imported animation take duration in seconds")
+        .def("submit_animation_pose", &SkinnedMeshRenderer::SubmitAnimationPose, py::arg("take_name"),
+             py::arg("time_seconds"), py::arg("normalized_time"), py::arg("blend_take_name") = "",
+             py::arg("blend_time_seconds") = 0.0f, py::arg("blend_weight") = 0.0f,
+             "Submit active and blend animation state in one native call")
         .def_property("runtime_animation_time", &SkinnedMeshRenderer::GetRuntimeAnimationTime,
                       &SkinnedMeshRenderer::SetRuntimeAnimationTime,
                       "Current clip time in seconds (runtime; driven by SkeletalAnimator)")
         .def_property("runtime_animation_normalized_time", &SkinnedMeshRenderer::GetRuntimeAnimationNormalizedTime,
                       &SkinnedMeshRenderer::SetRuntimeAnimationNormalizedTime,
-                      "Normalized clip time 0..1 (runtime; driven when duration is known)");
+                      "Normalized clip time 0..1 (runtime; driven when duration is known)")
+        .def_property("blend_take_name", &SkinnedMeshRenderer::GetBlendTakeName, &SkinnedMeshRenderer::SetBlendTakeName,
+                      "Secondary animation take name used for runtime pose blending")
+        .def_property("blend_animation_time", &SkinnedMeshRenderer::GetBlendAnimationTime,
+                      &SkinnedMeshRenderer::SetBlendAnimationTime,
+                      "Secondary animation time in seconds used for runtime pose blending")
+        .def_property("blend_weight", &SkinnedMeshRenderer::GetBlendWeight, &SkinnedMeshRenderer::SetBlendWeight,
+                      "Runtime pose blend weight from active take to blend take")
+        .def("clear_animation_blend", &SkinnedMeshRenderer::ClearAnimationBlend, "Clear runtime pose blending state");
 
     // ========================================================================
     // SpriteRenderer — inherits MeshRenderer for rendering, adds sprite props

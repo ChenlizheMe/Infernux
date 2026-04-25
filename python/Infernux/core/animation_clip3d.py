@@ -93,9 +93,6 @@ class AnimationClip3D:
     # This is duplicated from the model `.meta` for cheap inspector UX.
     bind_pose_bone_names: List[str] = field(default_factory=list)
 
-    speed: float = 1.0
-    loop: bool = True
-
     # Optional seconds (authoring or tooling); 0.0 = unknown. Embedded takes may be unknown.
     duration_hint: float = 0.0
 
@@ -111,8 +108,6 @@ class AnimationClip3D:
             "source_model_path": self.source_model_path,
             "take_name": self.take_name,
             "bind_pose_bone_names": list(self.bind_pose_bone_names),
-            "speed": float(self.speed),
-            "loop": bool(self.loop),
             "duration_hint": float(self.duration_hint),
         }
 
@@ -128,8 +123,6 @@ class AnimationClip3D:
             source_model_path=str(d.get("source_model_path", "")),
             take_name=str(d.get("take_name", "")),
             bind_pose_bone_names=[str(x) for x in bones],
-            speed=float(d.get("speed", 1.0)),
-            loop=bool(d.get("loop", True)),
             duration_hint=float(d.get("duration_hint", 0.0) or 0.0),
         )
 
@@ -179,6 +172,21 @@ class AnimationClip3D:
             return clip
         except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
             return None
+
+    @staticmethod
+    def parse_embedded_take_index(virtual_path: str) -> Optional[int]:
+        """Return take index for ``*::subanim:<int>`` or None."""
+        token = "::subanim:"
+        if token not in virtual_path:
+            return None
+        _, _, rest = virtual_path.partition(token)
+        try:
+            idx = int(rest.strip())
+        except ValueError:
+            return None
+        if idx < 0 or idx >= 999999:
+            return None
+        return idx
 
     @classmethod
     def from_embedded_take_virtual_path(cls, virtual_path: str) -> Optional["AnimationClip3D"]:
@@ -232,8 +240,6 @@ class AnimationClip3D:
             source_model_path=model_disk,
             take_name=take_name,
             bind_pose_bone_names=bind_names,
-            speed=1.0,
-            loop=True,
             duration_hint=0.0,
         )
         clip.file_path = virtual_path

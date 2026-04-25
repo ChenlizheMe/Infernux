@@ -1119,8 +1119,21 @@ class InxVkCoreModular
     std::vector<InstanceBufferFrame> m_instanceBuffers; ///< One per frame-in-flight
     static constexpr size_t INSTANCE_BUFFER_INITIAL_CAPACITY = 256;
 
+    struct SkinBufferFrame
+    {
+        std::unique_ptr<vk::VkBufferHandle> buffer;
+        VkDeviceSize capacity = 0; ///< Element count, not bytes
+        void *mapped = nullptr;
+    };
+    std::vector<SkinBufferFrame> m_skinInstanceBuffers; ///< GPUSkinInstanceData per draw instance
+    std::vector<SkinBufferFrame> m_skinPaletteBuffers;  ///< mat4 bone palettes per draw instance
+    static constexpr size_t SKIN_INSTANCE_BUFFER_INITIAL_CAPACITY = 256;
+    static constexpr size_t SKIN_PALETTE_BUFFER_INITIAL_CAPACITY = 1024;
+
     /// @brief Running write offset into the instance SSBO (reset per frame).
     uint32_t m_instanceWriteOffset = 0;
+    uint32_t m_skinPaletteWriteOffset = 0;
+    std::unordered_map<const void *, GPUSkinInstanceData> m_skinPaletteFrameCache;
     /// @brief Frame counter for detecting new frames and resetting offset.
     uint64_t m_lastInstanceFrame = UINT64_MAX;
 
@@ -1129,6 +1142,9 @@ class InxVkCoreModular
     void EnsureInstanceBufferCapacity(uint32_t frameIndex, size_t instanceCount);
     /// @brief Update the globals descriptor set binding 1 with the current frame's instance buffer.
     void UpdateInstanceBufferDescriptor(uint32_t frameIndex);
+    void EnsureSkinBuffersCapacity(uint32_t frameIndex, size_t skinInstanceCount, size_t boneMatrixCount);
+    void UpdateSkinBufferDescriptors(uint32_t frameIndex);
+    void ResetPerFrameGpuStreamOffsets();
 
   public:
     /// @brief Pre-allocate the instance SSBO for the current frame and update

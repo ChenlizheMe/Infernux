@@ -41,6 +41,8 @@ struct Vertex
     glm::vec4 tangent;                 ///< Tangent vector (xyz) + handedness (w = ±1)
     glm::vec3 color{1.0f, 1.0f, 1.0f}; ///< Vertex color (default white)
     glm::vec2 texCoord;                ///< Primary UV coordinates
+    glm::uvec4 boneIndices{0, 0, 0, 0}; ///< GPU skinning bone indices
+    glm::vec4 boneWeights{0.0f};        ///< GPU skinning weights
 
     static VkVertexInputBindingDescription getBindingDescription()
     {
@@ -52,9 +54,9 @@ struct Vertex
         return bindingDescription;
     }
 
-    static std::array<VkVertexInputAttributeDescription, 5> getAttributeDescriptions()
+    static std::array<VkVertexInputAttributeDescription, 7> getAttributeDescriptions()
     {
-        std::array<VkVertexInputAttributeDescription, 5> attributeDescriptions{};
+        std::array<VkVertexInputAttributeDescription, 7> attributeDescriptions{};
 
         // Location 0: Position
         attributeDescriptions[0].binding = 0;
@@ -86,6 +88,18 @@ struct Vertex
         attributeDescriptions[4].format = VK_FORMAT_R32G32_SFLOAT;
         attributeDescriptions[4].offset = offsetof(Vertex, texCoord);
 
+        // Location 5: Skin bone indices
+        attributeDescriptions[5].binding = 0;
+        attributeDescriptions[5].location = 5;
+        attributeDescriptions[5].format = VK_FORMAT_R32G32B32A32_UINT;
+        attributeDescriptions[5].offset = offsetof(Vertex, boneIndices);
+
+        // Location 6: Skin bone weights
+        attributeDescriptions[6].binding = 0;
+        attributeDescriptions[6].location = 6;
+        attributeDescriptions[6].format = VK_FORMAT_R32G32B32A32_SFLOAT;
+        attributeDescriptions[6].offset = offsetof(Vertex, boneWeights);
+
         return attributeDescriptions;
     }
 
@@ -115,6 +129,16 @@ struct Vertex
         return v;
     }
 };
+
+struct GPUSkinInstanceData
+{
+    uint32_t boneOffset = 0;
+    uint32_t boneCount = 0;
+    uint32_t flags = 0;
+    uint32_t _pad = 0;
+};
+
+static constexpr uint32_t kGPUSkinFlagEnabled = 1u;
 
 struct UniformBufferObject
 {
@@ -149,6 +173,10 @@ struct DrawCall
     // Used by the renderer to create/update per-object GPU buffers.
     const std::vector<Vertex> *meshVertices = nullptr;
     const std::vector<uint32_t> *meshIndices = nullptr;
+
+    // Optional GPU skinning palette. When present, vertex data is the bind-pose
+    // skinned mesh stream and the vertex shader applies these matrices.
+    const std::vector<glm::mat4> *skinBoneMatrices = nullptr;
 
     // When true, forces GPU buffer re-upload even if vertex/index count hasn't
     // changed (e.g. vertex colour change for gizmo highlight).

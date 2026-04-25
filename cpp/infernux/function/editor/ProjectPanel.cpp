@@ -124,12 +124,6 @@ static constexpr int kKeyV = ImGuiKey_V;
 static constexpr int kKeyX = ImGuiKey_X;
 static constexpr int kKeyN = ImGuiKey_N;
 
-// Unicode characters
-static constexpr const char *kExpandedArrow = "\xe2\x96\xbc";   // ▼
-static constexpr const char *kCollapsedArrow = "\xe2\x96\xb6";  // ▶
-static constexpr const char *kSubAssetPrefix = "\xe2\x86\xb3 "; // ↳
-static constexpr const char *kEllipsis = "\xe2\x80\xa6";        // …
-
 namespace infernux
 {
 
@@ -142,6 +136,8 @@ inline ImU32 ProjectSelectionOutlineColor()
 }
 
 constexpr float kProjectSelectionOutlineThickness = 2.0f;
+/// Full-height strip on the right of the model icon (ASCII glyphs only)
+constexpr float kModelExpandStripW = 12.0f;
 
 } // namespace
 
@@ -786,7 +782,7 @@ void ProjectPanel::AppendModelSubAssets(std::vector<FileItem> &out, AssetDatabas
         if (total > show) {
             FileItem sub{};
             sub.type = FileItem::SubMesh;
-            sub.name = std::string("… ") + std::to_string(total - show) + " more animation takes";
+            sub.name = std::string("... ") + std::to_string(total - show) + " more animation takes";
             sub.path = MakeSubAssetVirtualPath(animVirtualBase, kSubAnimToken, 999999);
             sub.ext = ".animclip3d";
             sub.parentPath = modelPath;
@@ -1063,13 +1059,12 @@ float ProjectPanel::GetGridTextLineHeight(InxGUIContext *ctx)
 const ProjectPanel::LabelEntry &ProjectPanel::GetCachedItemLabel(InxGUIContext *ctx, const FileItem &item,
                                                                  float textRegionW)
 {
-    bool isExpanded = (item.type == FileItem::File && IsModelExt(item.ext) && m_expandedModels.count(item.path) > 0);
-
     LabelCacheKey key;
     key.path = item.path;
     key.name = item.name;
     key.type = static_cast<uint8_t>(item.type);
-    key.expanded = isExpanded;
+    // Model expand/collapse is shown with a side button, not in the string (avoids missing glyphs).
+    key.expanded = false;
     key.widthPx = static_cast<int>(textRegionW);
 
     auto it = m_labelCache.find(key);
@@ -1082,30 +1077,27 @@ const ProjectPanel::LabelEntry &ProjectPanel::GetCachedItemLabel(InxGUIContext *
         auto dot = nameDisplay.rfind('.');
         if (dot != std::string::npos)
             nameDisplay = nameDisplay.substr(0, dot);
-        if (IsModelExt(item.ext)) {
-            nameDisplay += "  ";
-            nameDisplay += isExpanded ? kExpandedArrow : kCollapsedArrow;
-        }
     } else if (item.type == FileItem::SubMesh || item.type == FileItem::SubMaterial) {
-        nameDisplay = std::string(kSubAssetPrefix) + item.name;
+        nameDisplay = std::string("  ") + item.name;
     }
 
+    static constexpr const char *kEllipsisAscii = "...";
     float maxTextW = textRegionW - 4.0f;
     float textW = ctx->CalcTextWidth(nameDisplay);
     if (textW > maxTextW) {
-        // Truncate with ellipsis
+        // Truncate with ASCII ellipsis
         std::string truncated = nameDisplay;
         while (truncated.size() > 1) {
             truncated.pop_back();
-            float tw = ctx->CalcTextWidth(truncated + kEllipsis);
+            float tw = ctx->CalcTextWidth(std::string(truncated) + kEllipsisAscii);
             if (tw <= maxTextW) {
-                nameDisplay = truncated + kEllipsis;
+                nameDisplay = truncated + kEllipsisAscii;
                 textW = tw;
                 break;
             }
         }
         if (truncated.size() <= 1) {
-            nameDisplay = kEllipsis;
+            nameDisplay = kEllipsisAscii;
             textW = ctx->CalcTextWidth(nameDisplay);
         }
     }
@@ -1220,10 +1212,8 @@ void ProjectPanel::HandleItemClick(const FileItem &item, InxGUIContext *ctx)
         // Sub-assets: select only
     } else if (doubleClicked) {
         if (IsModelExt(item.ext)) {
-            if (m_expandedModels.count(item.path) > 0)
-                m_expandedModels.erase(item.path);
-            else
-                m_expandedModels.insert(item.path);
+            if (openFile)
+                openFile(item.path);
         } else if (item.ext == ".scene") {
             if (openScene)
                 openScene(item.path);
@@ -1957,7 +1947,11 @@ void ProjectPanel::RenderFileGrid(InxGUIContext *ctx)
                 displayTexId = GetTypeIconId(item);
             }
 
-            // ── Render icon ──
+            // ── Render icon (model: thumbnail on the left + narrow expand strip, same height) ──
+            const bool isModelFile = (item.type == FileItem::File && IsModelExt(item.ext));
+            const float stripW = isModelFile ? kModelExpandStripW : 0.0f;
+            const float thumbW = (stripW > 0.0f) ? (iconSize - stripW) : iconSize;
+
             if (displayTexId != 0) {
                 int srcW = 0;
                 int srcH = 0;
@@ -1976,28 +1970,48 @@ void ProjectPanel::RenderFileGrid(InxGUIContext *ctx)
                     srcH = 256;
                 }
 
+                ImGui::BeginGroup();
                 // InvisibleButton for hit-testing; AddImage for drawing
-                // Much cheaper than ImageButton (no style/border processing)
-                ImGui::InvisibleButton("##ic", ImVec2(iconSize, iconSize));
+                ImGui::InvisibleButton("##ic", ImVec2(thumbW, iconSize));
+                const bool thumbHovered = ImGui::IsItemHovered();
+                const bool thumbRmb = ImGui::IsItemClicked(1);
                 ImVec2 rMin = ImGui::GetItemRectMin();
                 ImVec2 rMax = ImGui::GetItemRectMax();
                 ImVec2 drawMin = rMin;
                 ImVec2 drawMax = rMax;
                 if (srcW > 0 && srcH > 0) {
                     const float scale =
-                        std::min(iconSize / static_cast<float>(srcW), iconSize / static_cast<float>(srcH));
+                        std::min(thumbW / static_cast<float>(srcW), iconSize / static_cast<float>(srcH));
                     const float drawW = std::max(1.0f, static_cast<float>(srcW) * scale);
                     const float drawH = std::max(1.0f, static_cast<float>(srcH) * scale);
-                    drawMin.x += (iconSize - drawW) * 0.5f;
+                    drawMin.x += (thumbW - drawW) * 0.5f;
                     drawMin.y += (iconSize - drawH) * 0.5f;
                     drawMax = ImVec2(drawMin.x + drawW, drawMin.y + drawH);
                 }
                 drawList->AddImage(ImTextureRef(static_cast<ImTextureID>(displayTexId)), drawMin, drawMax);
-                // Select on mouse RELEASE (not press) so that press-and-drag
-                // initiates drag-drop instead of changing the selection.
-                if (ImGui::IsItemHovered() && ImGui::IsMouseReleased(0) && !hasDragPayload)
+                if (isModelFile) {
+                    ImGui::SameLine(0.0f, 0.0f);
+                    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0.0f, 0.0f));
+                    const bool ex = m_expandedModels.count(item.path) > 0;
+                    if (ImGui::Button(ex ? "v" : ">", ImVec2(stripW, iconSize))) {
+                        if (ex)
+                            m_expandedModels.erase(item.path);
+                        else
+                            m_expandedModels.insert(item.path);
+                    }
+                    ImGui::PopStyleVar();
+                }
+                ImGui::EndGroup();
+
+                if (isSelected) {
+                    const ImVec2 g0 = ImGui::GetItemRectMin();
+                    const ImVec2 g1 = ImGui::GetItemRectMax();
+                    drawList->AddRect(g0, g1, ProjectSelectionOutlineColor(), 0.0f, 0,
+                                      kProjectSelectionOutlineThickness);
+                }
+                if (thumbHovered && ImGui::IsMouseReleased(0) && !hasDragPayload)
                     HandleItemClick(item, ctx);
-                if (ImGui::IsItemClicked(1)) {
+                if (thumbRmb) {
                     m_selectedFile = item.path;
                     if (m_selectedSet.count(item.path) == 0) {
                         m_selectedFiles = {item.path};
@@ -2005,9 +2019,6 @@ void ProjectPanel::RenderFileGrid(InxGUIContext *ctx)
                     }
                     NotifySelectionChanged();
                 }
-                if (isSelected)
-                    drawList->AddRect(rMin, rMax, ProjectSelectionOutlineColor(), 0.0f, 0,
-                                      kProjectSelectionOutlineThickness);
             } else {
                 const char *tag = (item.type != FileItem::Dir) ? GetFileTypeTag(item.name) : "[DIR]";
                 ctx->Selectable(tag, isSelected, 0, iconSize, iconSize);

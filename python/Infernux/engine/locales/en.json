@@ -517,7 +517,7 @@
   "asset.animclip3d_speed": "Speed",
   "asset.animclip3d_loop": "Loop",
   "asset.animclip3d_bind_pose_bones": "Bind Pose Bones ({count})",
-  "asset.animclip3d_embedded_hint": "Embedded take on the imported model (read-only). Create a .animclip3d asset to author editable clips.",
+  "asset.animclip3d_embedded_hint": "Embedded take on the imported model (read-only). Speed and loop are controlled by the FSM state.",
   "asset.animclip_name": "Name",
   "asset.animclip_texture": "Authoring Texture",
   "asset.animclip_preview_texture": "Preview Texture",

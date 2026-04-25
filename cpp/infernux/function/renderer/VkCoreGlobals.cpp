@@ -57,7 +57,9 @@ bool InxVkCoreModular::CreateGlobalsDescriptorResources()
 
     // Layout: set 2, binding 0 = uniform buffer (globals UBO), vertex + fragment
     //         set 2, binding 1 = storage buffer (instance models), vertex only
-    VkDescriptorSetLayoutBinding bindings[2]{};
+    //         set 2, binding 2 = storage buffer (skin instance metadata), vertex only
+    //         set 2, binding 3 = storage buffer (bone palettes), vertex only
+    VkDescriptorSetLayoutBinding bindings[4]{};
 
     bindings[0].binding = 0;
     bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
@@ -71,9 +73,21 @@ bool InxVkCoreModular::CreateGlobalsDescriptorResources()
     bindings[1].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
     bindings[1].pImmutableSamplers = nullptr;
 
+    bindings[2].binding = 2;
+    bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    bindings[2].descriptorCount = 1;
+    bindings[2].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+    bindings[2].pImmutableSamplers = nullptr;
+
+    bindings[3].binding = 3;
+    bindings[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    bindings[3].descriptorCount = 1;
+    bindings[3].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+    bindings[3].pImmutableSamplers = nullptr;
+
     VkDescriptorSetLayoutCreateInfo layoutInfo{};
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layoutInfo.bindingCount = 2;
+    layoutInfo.bindingCount = 4;
     layoutInfo.pBindings = bindings;
 
     if (vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &m_globalsDescSetLayout) != VK_SUCCESS) {
@@ -84,12 +98,12 @@ bool InxVkCoreModular::CreateGlobalsDescriptorResources()
     // Publish to ShaderProgram so all pipelines pick up the shared layout at set 2
     ShaderProgram::SetGlobalsDescSetLayout(m_globalsDescSetLayout);
 
-    // Pool: one UBO + one SSBO per frame-in-flight
+    // Pool: one UBO + three SSBOs per frame-in-flight
     VkDescriptorPoolSize poolSizes[2]{};
     poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     poolSizes[0].descriptorCount = static_cast<uint32_t>(m_maxFramesInFlight);
     poolSizes[1].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    poolSizes[1].descriptorCount = static_cast<uint32_t>(m_maxFramesInFlight);
+    poolSizes[1].descriptorCount = static_cast<uint32_t>(m_maxFramesInFlight * 3);
 
     VkDescriptorPoolCreateInfo poolInfo{};
     poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -129,20 +143,35 @@ bool InxVkCoreModular::CreateGlobalsDescriptorResources()
     // Write each descriptor set to point at the corresponding globals buffer
     // and a placeholder instance SSBO
     m_instanceBuffers.resize(m_maxFramesInFlight);
+    m_skinInstanceBuffers.resize(m_maxFramesInFlight);
+    m_skinPaletteBuffers.resize(m_maxFramesInFlight);
     for (size_t i = 0; i < m_maxFramesInFlight; ++i) {
         // Create initial instance buffer for this frame
         const VkDeviceSize initialBytes = INSTANCE_BUFFER_INITIAL_CAPACITY * sizeof(glm::mat4);
         m_instanceBuffers[i].buffer = m_resourceManager.CreateStorageBuffer(initialBytes, /*deviceLocal=*/false);
         m_instanceBuffers[i].capacity = INSTANCE_BUFFER_INITIAL_CAPACITY;
 
-        if (!m_instanceBuffers[i].buffer) {
-            INXLOG_ERROR("Failed to create instance buffer for frame ", i);
+        const VkDeviceSize skinInstanceBytes =
+            SKIN_INSTANCE_BUFFER_INITIAL_CAPACITY * sizeof(GPUSkinInstanceData);
+        m_skinInstanceBuffers[i].buffer =
+            m_resourceManager.CreateStorageBuffer(skinInstanceBytes, /*deviceLocal=*/false);
+        m_skinInstanceBuffers[i].capacity = SKIN_INSTANCE_BUFFER_INITIAL_CAPACITY;
+
+        const VkDeviceSize skinPaletteBytes = SKIN_PALETTE_BUFFER_INITIAL_CAPACITY * sizeof(glm::mat4);
+        m_skinPaletteBuffers[i].buffer =
+            m_resourceManager.CreateStorageBuffer(skinPaletteBytes, /*deviceLocal=*/false);
+        m_skinPaletteBuffers[i].capacity = SKIN_PALETTE_BUFFER_INITIAL_CAPACITY;
+
+        if (!m_instanceBuffers[i].buffer || !m_skinInstanceBuffers[i].buffer || !m_skinPaletteBuffers[i].buffer) {
+            INXLOG_ERROR("Failed to create globals SSBOs for frame ", i);
             continue;
         }
 
         m_instanceBuffers[i].mapped = m_instanceBuffers[i].buffer->Map();
+        m_skinInstanceBuffers[i].mapped = m_skinInstanceBuffers[i].buffer->Map();
+        m_skinPaletteBuffers[i].mapped = m_skinPaletteBuffers[i].buffer->Map();
 
-        VkWriteDescriptorSet writes[2]{};
+        VkWriteDescriptorSet writes[4]{};
 
         // Binding 0: Globals UBO
         VkDescriptorBufferInfo uboBufInfo{};
@@ -174,11 +203,37 @@ bool InxVkCoreModular::CreateGlobalsDescriptorResources()
         writes[1].descriptorCount = 1;
         writes[1].pBufferInfo = &ssboBufInfo;
 
-        vkUpdateDescriptorSets(device, 2, writes, 0, nullptr);
+        VkDescriptorBufferInfo skinInstanceInfo{};
+        skinInstanceInfo.buffer = m_skinInstanceBuffers[i].buffer->GetBuffer();
+        skinInstanceInfo.offset = 0;
+        skinInstanceInfo.range = VK_WHOLE_SIZE;
+
+        writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[2].dstSet = m_globalsDescSets[i];
+        writes[2].dstBinding = 2;
+        writes[2].dstArrayElement = 0;
+        writes[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        writes[2].descriptorCount = 1;
+        writes[2].pBufferInfo = &skinInstanceInfo;
+
+        VkDescriptorBufferInfo skinPaletteInfo{};
+        skinPaletteInfo.buffer = m_skinPaletteBuffers[i].buffer->GetBuffer();
+        skinPaletteInfo.offset = 0;
+        skinPaletteInfo.range = VK_WHOLE_SIZE;
+
+        writes[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[3].dstSet = m_globalsDescSets[i];
+        writes[3].dstBinding = 3;
+        writes[3].dstArrayElement = 0;
+        writes[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        writes[3].descriptorCount = 1;
+        writes[3].pBufferInfo = &skinPaletteInfo;
+
+        vkUpdateDescriptorSets(device, 4, writes, 0, nullptr);
     }
 
     INXLOG_INFO("Created globals descriptor set layout, pool, and ", m_maxFramesInFlight,
-                " sets (set 2) with instance SSBO");
+                " sets (set 2) with instance + skinning SSBOs");
     return true;
 }
 
@@ -189,6 +244,8 @@ void InxVkCoreModular::DestroyGlobalsDescriptorResources()
         return;
 
     m_instanceBuffers.clear();
+    m_skinInstanceBuffers.clear();
+    m_skinPaletteBuffers.clear();
     m_globalsDescSets.clear();
 
     if (m_globalsDescPool != VK_NULL_HANDLE) {
@@ -262,6 +319,69 @@ void InxVkCoreModular::EnsureInstanceBufferCapacity(uint32_t frameIndex, size_t 
     }
 }
 
+void InxVkCoreModular::EnsureSkinBuffersCapacity(uint32_t frameIndex, size_t skinInstanceCount, size_t boneMatrixCount)
+{
+    if (frameIndex >= m_skinInstanceBuffers.size() || frameIndex >= m_skinPaletteBuffers.size())
+        return;
+
+    auto growBuffer = [&](SkinBufferFrame &frame, size_t requiredCount, size_t initialCapacity, size_t elementSize,
+                          const char *label) {
+        if (frame.capacity >= requiredCount && frame.buffer) {
+            if (!frame.mapped)
+                frame.mapped = frame.buffer->Map();
+            return;
+        }
+
+        std::unique_ptr<vk::VkBufferHandle> oldBuffer = std::move(frame.buffer);
+        void *oldMapped = frame.mapped;
+        frame.mapped = nullptr;
+
+        size_t newCapacity = frame.capacity > 0 ? static_cast<size_t>(frame.capacity) : initialCapacity;
+        while (newCapacity < requiredCount)
+            newCapacity *= 2;
+
+        auto newBuffer =
+            m_resourceManager.CreateStorageBuffer(static_cast<VkDeviceSize>(newCapacity * elementSize), false);
+        if (!newBuffer) {
+            INXLOG_ERROR("Failed to grow ", label, " buffer to ", newCapacity, " elements");
+            frame.buffer = std::move(oldBuffer);
+            frame.mapped = oldMapped;
+            return;
+        }
+
+        void *newMapped = newBuffer->Map();
+        if (oldMapped && newMapped) {
+            const size_t preserved =
+                std::min(static_cast<size_t>(frame.capacity), requiredCount) * static_cast<size_t>(elementSize);
+            std::memcpy(newMapped, oldMapped, preserved);
+        }
+
+        frame.buffer = std::move(newBuffer);
+        frame.capacity = static_cast<VkDeviceSize>(newCapacity);
+        frame.mapped = newMapped;
+
+        if (oldBuffer) {
+            auto retiredBuffer = std::shared_ptr<vk::VkBufferHandle>(oldBuffer.release());
+            m_deletionQueue.Push([retiredBuffer]() mutable { retiredBuffer.reset(); });
+        }
+    };
+
+    growBuffer(m_skinInstanceBuffers[frameIndex], skinInstanceCount, SKIN_INSTANCE_BUFFER_INITIAL_CAPACITY,
+               sizeof(GPUSkinInstanceData), "skin instance");
+    growBuffer(m_skinPaletteBuffers[frameIndex], boneMatrixCount, SKIN_PALETTE_BUFFER_INITIAL_CAPACITY,
+               sizeof(glm::mat4), "skin palette");
+}
+
+void InxVkCoreModular::ResetPerFrameGpuStreamOffsets()
+{
+    if (m_lastInstanceFrame != m_currentFrame) {
+        m_instanceWriteOffset = 0;
+        m_skinPaletteWriteOffset = 0;
+        m_skinPaletteFrameCache.clear();
+        m_lastInstanceFrame = m_currentFrame;
+    }
+}
+
 void InxVkCoreModular::PreallocateInstances(size_t totalDrawCalls)
 {
     if (totalDrawCalls == 0)
@@ -269,20 +389,18 @@ void InxVkCoreModular::PreallocateInstances(size_t totalDrawCalls)
 
     const uint32_t frameIndex = m_currentFrame % m_maxFramesInFlight;
 
-    // Reset per-frame write offset on new frame (mirrors logic in RecordGroupedFilteredDrawCalls).
-    if (m_lastInstanceFrame != m_currentFrame) {
-        m_instanceWriteOffset = 0;
-        m_lastInstanceFrame = m_currentFrame;
-    }
+    ResetPerFrameGpuStreamOffsets();
 
     // Upper bound: every draw call can appear once in an opaque pass and
     // once per shadow cascade.  Pre-allocating here guarantees the buffer
     // never grows mid-recording, avoiding descriptor-set-update-while-bound.
     const size_t maxInstances = totalDrawCalls * (1 + NUM_SHADOW_CASCADES);
     EnsureInstanceBufferCapacity(frameIndex, maxInstances);
+    EnsureSkinBuffersCapacity(frameIndex, maxInstances, SKIN_PALETTE_BUFFER_INITIAL_CAPACITY);
 
     // Safe to update the descriptor now — no draws have been recorded yet.
     UpdateInstanceBufferDescriptor(frameIndex);
+    UpdateSkinBufferDescriptors(frameIndex);
 }
 
 bool InxVkCoreModular::WriteInstanceMatrix(uint32_t frameIndex, uint32_t instanceIndex, const glm::mat4 &matrix)
@@ -341,6 +459,48 @@ void InxVkCoreModular::UpdateInstanceBufferDescriptor(uint32_t frameIndex)
     write.pBufferInfo = &ssboBufInfo;
 
     vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
+}
+
+void InxVkCoreModular::UpdateSkinBufferDescriptors(uint32_t frameIndex)
+{
+    VkDevice device = GetDevice();
+    if (device == VK_NULL_HANDLE || frameIndex >= m_globalsDescSets.size() ||
+        frameIndex >= m_skinInstanceBuffers.size() || frameIndex >= m_skinPaletteBuffers.size())
+        return;
+
+    const auto &skinInstances = m_skinInstanceBuffers[frameIndex];
+    const auto &skinPalette = m_skinPaletteBuffers[frameIndex];
+    if (!skinInstances.buffer || !skinPalette.buffer)
+        return;
+
+    VkDescriptorBufferInfo skinInstanceInfo{};
+    skinInstanceInfo.buffer = skinInstances.buffer->GetBuffer();
+    skinInstanceInfo.offset = 0;
+    skinInstanceInfo.range = VK_WHOLE_SIZE;
+
+    VkDescriptorBufferInfo skinPaletteInfo{};
+    skinPaletteInfo.buffer = skinPalette.buffer->GetBuffer();
+    skinPaletteInfo.offset = 0;
+    skinPaletteInfo.range = VK_WHOLE_SIZE;
+
+    VkWriteDescriptorSet writes[2]{};
+    writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[0].dstSet = m_globalsDescSets[frameIndex];
+    writes[0].dstBinding = 2;
+    writes[0].dstArrayElement = 0;
+    writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    writes[0].descriptorCount = 1;
+    writes[0].pBufferInfo = &skinInstanceInfo;
+
+    writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[1].dstSet = m_globalsDescSets[frameIndex];
+    writes[1].dstBinding = 3;
+    writes[1].dstArrayElement = 0;
+    writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    writes[1].descriptorCount = 1;
+    writes[1].pBufferInfo = &skinPaletteInfo;
+
+    vkUpdateDescriptorSets(device, 2, writes, 0, nullptr);
 }
 
 // ============================================================================
