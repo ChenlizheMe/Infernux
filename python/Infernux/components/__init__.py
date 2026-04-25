@@ -23,6 +23,7 @@ from .builtin_component import BuiltinComponent, CppProperty
 from .builtin import (
     Light,
     MeshRenderer,
+    SkinnedMeshRenderer,
     Camera,
     Collider,
     BoxCollider,
@@ -80,7 +81,8 @@ from .decorators import (
     HelpURL,
     Icon,
 )
-from .animator2d import SpiritAnimator
+from .spirit_animator import SpiritAnimator
+from .skeletal_animator import SkeletalAnimator
 
 __all__ = [
     "InxComponent",
@@ -88,6 +90,7 @@ __all__ = [
     "Transform",
     "Light",
     "MeshRenderer",
+    "SkinnedMeshRenderer",
     "Camera",
     "Collider",
     "BoxCollider",
@@ -141,4 +144,5 @@ __all__ = [
     "Icon",
     # Animation
     "SpiritAnimator",
+    "SkeletalAnimator",
 ]

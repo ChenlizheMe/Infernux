@@ -83,6 +83,8 @@ class ProjectPanel : public EditorPanel
     std::function<std::pair<bool, std::string>(const std::string &, const std::string &)> createScene;
     /// Create animation clip: (currentPath, name) → (ok, errorMsg)
     std::function<std::pair<bool, std::string>(const std::string &, const std::string &)> createAnimClip;
+    /// Create 3D animation clip: (currentPath, name) → (ok, errorMsg)
+    std::function<std::pair<bool, std::string>(const std::string &, const std::string &)> createAnimClip3D;
     /// Create animation state machine: (currentPath, name) → (ok, errorMsg)
     std::function<std::pair<bool, std::string>(const std::string &, const std::string &)> createAnimFsm;
     /// Create prefab from hierarchy gameobject: (objId, currentPath)
@@ -178,6 +180,7 @@ class ProjectPanel : public EditorPanel
     DirSnapshot *GetDirSnapshot(const std::string &path);
     DirTreeMeta *GetDirTreeMeta(const std::string &path);
     std::vector<FileItem> *GetProjectItems(const std::string &path, DirSnapshot *snapshot = nullptr);
+    static void AppendModelSubAssets(std::vector<FileItem> &out, AssetDatabase *adb, const FileItem &modelItem);
 
     std::unordered_map<std::string, DirSnapshot> m_dirCache;
     std::unordered_map<std::string, DirTreeMeta> m_dirTreeMetaCache;

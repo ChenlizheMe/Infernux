@@ -493,7 +493,7 @@ class SpriteRenderer(BuiltinComponent):
             go = self.game_object
             if go is None:
                 return False
-            from Infernux.components.animator2d import SpiritAnimator
+            from Infernux.components.spirit_animator import SpiritAnimator
             return go.get_component(SpiritAnimator) is not None
         except Exception:
             return False

@@ -129,6 +129,59 @@ void RestoreBuiltinPrimitiveMesh(const std::string &name, std::vector<Vertex> &v
     indices.assign(builtinIndices->begin(), builtinIndices->end());
 }
 
+constexpr const char *kEmbeddedMaterialToken = "::submat:";
+
+bool ParseEmbeddedMaterialSource(const std::string &sourcePath, std::string &outModelPath, int &outSlot)
+{
+    const size_t pos = sourcePath.find(kEmbeddedMaterialToken);
+    if (pos == std::string::npos)
+        return false;
+
+    outModelPath = sourcePath.substr(0, pos);
+    try {
+        outSlot = std::stoi(sourcePath.substr(pos + std::strlen(kEmbeddedMaterialToken)));
+    } catch (...) {
+        return false;
+    }
+    return !outModelPath.empty() && outSlot >= 0;
+}
+
+std::shared_ptr<InxMaterial> BuildEmbeddedMaterialFromSource(const std::string &sourcePath)
+{
+    std::string modelPath;
+    int slot = -1;
+    if (!ParseEmbeddedMaterialSource(sourcePath, modelPath, slot))
+        return nullptr;
+
+    auto mesh = AssetRegistry::Instance().LoadAssetByPath<InxMesh>(modelPath, ResourceType::Mesh);
+    if (!mesh)
+        return nullptr;
+
+    const auto &slotData = mesh->GetMaterialSlotData();
+    if (slot < 0 || slot >= static_cast<int>(slotData.size()))
+        return nullptr;
+
+    auto defaultMat = AssetRegistry::Instance().GetBuiltinMaterial("DefaultLit");
+    if (!defaultMat)
+        return nullptr;
+
+    auto mat = defaultMat->Clone();
+    const auto &sd = slotData[static_cast<size_t>(slot)];
+    mat->SetColor("baseColor", sd.baseColor);
+    mat->SetColor("emissionColor", sd.emissionColor);
+    mat->SetFloat("metallic", sd.metallic);
+    mat->SetFloat("smoothness", sd.smoothness);
+
+    const auto &slotNames = mesh->GetMaterialSlotNames();
+    if (slot < static_cast<int>(slotNames.size()) && !slotNames[static_cast<size_t>(slot)].empty())
+        mat->SetName(slotNames[static_cast<size_t>(slot)]);
+    else
+        mat->SetName("EmbeddedMaterial_" + std::to_string(slot));
+
+    mat->SetFilePath(sourcePath);
+    return mat;
+}
+
 void NotifyRenderableStateChanged(MeshRenderer *renderer)
 {
     if (renderer)
@@ -551,7 +604,7 @@ void MeshRenderer::ComputeWorldBounds(const glm::mat4 &worldMatrix, glm::vec3 &o
 std::string MeshRenderer::Serialize() const
 {
     json j;
-    j["schema_version"] = 3;
+    j["schema_version"] = 4;
     j["type"] = GetTypeName();
     j["enabled"] = IsEnabled();
     j["component_id"] = GetComponentID();
@@ -573,11 +626,34 @@ std::string MeshRenderer::Serialize() const
         j["meshAssetGuid"] = serializedMeshGuid;
     }
 
-    // Materials — GUID array (v3)
+    // Materials:
+    // - v3 stored GUID-or-null entries only.
+    // - v4 also stores inline/runtime material snapshots for guid-less slots
+    //   (used by FBX embedded materials and other non-asset overrides).
     json materialsJson = json::array();
     for (const auto &ref : m_materials) {
         const auto &guid = ref.GetGuid();
-        materialsJson.push_back(guid.empty() ? nullptr : json(guid));
+        if (!guid.empty()) {
+            materialsJson.push_back(guid);
+            continue;
+        }
+
+        auto mat = ref.Get();
+        if (!mat) {
+            materialsJson.push_back(nullptr);
+            continue;
+        }
+
+        json slotJson = json::object();
+        const std::string &sourcePath = mat->GetFilePath();
+        if (!sourcePath.empty())
+            slotJson["source_path"] = sourcePath;
+
+        const std::string matJson = mat->Serialize();
+        if (!matJson.empty())
+            slotJson["material_json"] = matJson;
+
+        materialsJson.push_back(slotJson.empty() ? json(nullptr) : slotJson);
     }
     j["materials"] = materialsJson;
 
@@ -663,16 +739,26 @@ bool MeshRenderer::Deserialize(const std::string &jsonStr)
         }
 
         // ================================================================
-        // Materials — v3: GUID array via AssetRegistry
+        // Materials
+        // v3: GUID-or-null entries
+        // v4: also supports object entries with source_path / material_json
         // ================================================================
         auto &graph = AssetDependencyGraph::Instance();
+        for (auto &ref : m_materials) {
+            auto mat = ref.Get();
+            if (mat && !mat->GetGuid().empty())
+                graph.RemoveDependency(GetInstanceGuid(), mat->GetGuid());
+        }
         if (j.contains("materials") && j["materials"].is_array()) {
-            // v3 format: array of GUIDs
             const auto &matsJson = j["materials"];
-            m_materials.resize(matsJson.size());
+            m_materials.assign(matsJson.size(), AssetRef<InxMaterial>{});
             for (size_t i = 0; i < matsJson.size(); ++i) {
-                if (!matsJson[i].is_null() && matsJson[i].is_string()) {
-                    std::string guid = matsJson[i].get<std::string>();
+                const auto &slotJson = matsJson[i];
+                if (slotJson.is_null())
+                    continue;
+
+                if (slotJson.is_string()) {
+                    std::string guid = slotJson.get<std::string>();
                     if (!guid.empty()) {
                         m_materials[i].SetGuid(guid);
                         AssetRegistry::Instance().Resolve(m_materials[i], ResourceType::Material);
@@ -680,6 +766,38 @@ bool MeshRenderer::Deserialize(const std::string &jsonStr)
                         if (mat && !mat->GetGuid().empty())
                             graph.AddDependency(GetInstanceGuid(), mat->GetGuid());
                     }
+                    continue;
+                }
+
+                if (!slotJson.is_object())
+                    continue;
+
+                const std::string guid = slotJson.value("guid", std::string());
+                if (!guid.empty()) {
+                    m_materials[i].SetGuid(guid);
+                    AssetRegistry::Instance().Resolve(m_materials[i], ResourceType::Material);
+                    auto mat = m_materials[i].Get();
+                    if (mat && !mat->GetGuid().empty())
+                        graph.AddDependency(GetInstanceGuid(), mat->GetGuid());
+                    continue;
+                }
+
+                const std::string sourcePath = slotJson.value("source_path", std::string());
+                const std::string materialJson = slotJson.value("material_json", std::string());
+
+                std::shared_ptr<InxMaterial> restoredMat;
+                if (!materialJson.empty()) {
+                    restoredMat = std::make_shared<InxMaterial>();
+                    if (!restoredMat->Deserialize(materialJson))
+                        restoredMat.reset();
+                }
+                if (!restoredMat && !sourcePath.empty())
+                    restoredMat = BuildEmbeddedMaterialFromSource(sourcePath);
+
+                if (restoredMat) {
+                    if (!sourcePath.empty())
+                        restoredMat->SetFilePath(sourcePath);
+                    m_materials[i] = AssetRef<InxMaterial>(std::string(), std::move(restoredMat));
                 }
             }
         } else {

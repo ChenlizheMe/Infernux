@@ -113,6 +113,26 @@ class AssetCategoryDef:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Virtual assets (model ::submat / ::subanim) — map to real disk path for .meta
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _meta_host_path_for_virtual_asset(file_path: str) -> str:
+    if not file_path:
+        return file_path
+    for tok in ("::submat:", "::subanim:", "::subbone:"):
+        pos = file_path.find(tok)
+        if pos != -1:
+            base = file_path[:pos]
+            from Infernux.core.animation_clip3d import resolve_model_disk_path_from_virtual_base
+            resolved = resolve_model_disk_path_from_virtual_base(base)
+            if resolved:
+                return resolved
+            return base
+    return file_path
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Unified state
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -145,7 +165,7 @@ class _State:
         self.reset()
         self.file_path = file_path
         self.category = category
-        self.meta = read_meta_file(file_path)
+        self.meta = read_meta_file(_meta_host_path_for_virtual_asset(file_path))
         result = cat_def.load_fn(file_path)
         if result is None:
             return False
@@ -247,11 +267,20 @@ def _ensure_categories():
                      float_speed=0.001, float_range=(0.0001, 1000.0)),
             FieldDef("generate_normals", "asset.generate_normals", WidgetType.CHECKBOX),
             FieldDef("generate_tangents", "asset.generate_tangents", WidgetType.CHECKBOX),
-            FieldDef("flip_uvs", "asset.flip_uvs", WidgetType.CHECKBOX),
+            FieldDef("swap_uv_channels", "asset.swap_uv_channels", WidgetType.CHECKBOX),
             FieldDef("optimize_mesh", "asset.optimize_mesh", WidgetType.CHECKBOX),
         ],
         custom_header_fn=_render_mesh_header,
-        extra_meta_keys=["mesh_count", "vertex_count", "index_count", "material_slot_count"],
+        extra_meta_keys=[
+            "mesh_count",
+            "vertex_count",
+            "index_count",
+            "material_slot_count",
+            "bone_count",
+            "bone_names_csv",
+            "animation_count",
+            "animation_names_csv",
+        ],
         show_header=False,
     )
 
@@ -281,6 +310,15 @@ def _ensure_categories():
         access_mode=AssetAccessMode.READ_WRITE_RESOURCE,
         load_fn=_load_animclip,
         custom_body_fn=_render_animclip_body,
+        autosave_debounce=0.5,
+    )
+
+    # ── 3D Animation Clip ──────────────────────────────────────────────
+    _categories["animclip3d"] = AssetCategoryDef(
+        display_name="asset.display_animclip3d",
+        access_mode=AssetAccessMode.READ_WRITE_RESOURCE,
+        load_fn=_load_animclip3d,
+        custom_body_fn=_render_animclip3d_body,
         autosave_debounce=0.5,
     )
 
@@ -623,6 +661,153 @@ def _render_animclip_body(ctx: InxGUIContext, panel, state: _State):
 
     # ── Auto-save (only FPS changes) ──────────────────────────
     if changed and state.exec_layer:
+        clip.file_path = state.file_path
+        state.exec_layer.schedule_rw_save(clip)
+
+
+def _load_animclip3d(path: str):
+    from Infernux.core.animation_clip3d import AnimationClip3D
+
+    if "::subanim:" in path:
+        clip = AnimationClip3D.from_embedded_take_virtual_path(path)
+        if clip is None:
+            return None
+        return clip, {"clip_path": path, "embedded_model_take": True}
+    clip = AnimationClip3D.load(path)
+    if clip is None:
+        return None
+    return clip, {"clip_path": path, "embedded_model_take": False}
+
+
+def _render_animclip3d_body(ctx: InxGUIContext, panel, state: _State):
+    from Infernux.core.animation_clip3d import AnimationClip3D
+    from Infernux.core.assets import AssetManager
+    from .inspector_components import render_object_field, _picker_assets
+
+    clip: AnimationClip3D = state.settings
+    if not isinstance(clip, AnimationClip3D):
+        ctx.label(t("asset.invalid_animclip3d"))
+        return
+
+    labels = [
+        t("asset.animclip3d_name"),
+        t("asset.animclip3d_source_model"),
+        t("asset.animclip3d_take"),
+    ]
+    lw = max_label_w(ctx, labels)
+
+    ctx.dummy(0, 4)
+
+    embedded = bool(state.extra.get("embedded_model_take"))
+    if embedded:
+        ctx.push_style_color(ImGuiCol.Text, *Theme.META_TEXT)
+        ctx.label(t("asset.animclip3d_embedded_hint"))
+        ctx.pop_style_color(1)
+        ctx.dummy(0, 4)
+
+    clip_display_name = os.path.splitext(os.path.basename(state.file_path))[0] if state.file_path else clip.name
+    field_label(ctx, t("asset.animclip3d_name"), lw)
+    ctx.begin_disabled(True)
+    ctx.text_input("##animclip3d_name", clip_display_name, 256)
+    ctx.end_disabled()
+
+    # ── Source model reference ────────────────────────────────────
+    model_path = (clip.source_model_path or "").strip()
+    if not model_path and (clip.source_model_guid or "").strip():
+        try:
+            adb = getattr(AssetManager, "_asset_database", None)
+            if adb:
+                model_path = adb.get_path_from_guid(clip.source_model_guid) or ""
+        except Exception:
+            model_path = ""
+
+    if model_path and os.path.isfile(model_path):
+        model_display = os.path.basename(model_path)
+    elif clip.source_model_guid:
+        model_display = "(missing) " + clip.source_model_guid[:8] + "…"
+    elif clip.source_model_path:
+        model_display = "(missing) " + os.path.basename(clip.source_model_path)
+    else:
+        model_display = "None (Model)"
+
+    changed = False
+
+    if embedded:
+        ctx.begin_disabled(True)
+
+    field_label(ctx, t("asset.animclip3d_source_model"), lw)
+
+    def _pick_models(filt: str):
+        items = []
+        try:
+            from Infernux.core.asset_types import MESH_EXTENSIONS
+
+            for ext in sorted(MESH_EXTENSIONS):
+                pattern = f"*{ext}"
+                items += _picker_assets(filt, pattern, assets_only=False)
+        except Exception:
+            items += _picker_assets(filt, "*.fbx", assets_only=False)
+        return items
+
+    def _on_model_pick(path: str, _clip=clip):
+        nonlocal changed
+        p = (path or "").strip()
+        if not p:
+            return
+        _clip.source_model_path = p
+        try:
+            _clip.source_model_guid = AssetManager._get_guid_from_path(p) or ""
+        except Exception:
+            _clip.source_model_guid = ""
+        # Pull bind pose bone names from import metadata (cheap UX).
+        meta = read_meta_file(p) or {}
+        csv = str(meta.get("bone_names_csv", "") or "")
+        if csv:
+            _clip.bind_pose_bone_names = [x.strip() for x in csv.split(",") if x.strip()]
+        changed = True
+
+    def _on_model_clear(_clip=clip):
+        nonlocal changed
+        _clip.source_model_guid = ""
+        _clip.source_model_path = ""
+        _clip.bind_pose_bone_names = []
+        changed = True
+
+    render_object_field(
+        ctx,
+        "##animclip3d_model",
+        model_display,
+        "Model",
+        accept_drag_type=("MODEL_FILE", "MODEL_GUID"),
+        on_drop_callback=_on_model_pick,
+        picker_asset_items=_pick_models,
+        on_pick=_on_model_pick,
+        on_clear=_on_model_clear,
+    )
+
+    # ── Take name ─────────────────────────────────────────────────
+    field_label(ctx, t("asset.animclip3d_take"), lw)
+    take_buf = clip.take_name or ""
+    new_take = ctx.text_input("##animclip3d_take", take_buf, 256)
+    if not embedded and new_take != take_buf:
+        clip.take_name = new_take
+        changed = True
+
+    if embedded:
+        ctx.end_disabled()
+
+    # ── Imported bone summary (read-only) ─────────────────────────
+    if clip.bind_pose_bone_names:
+        ctx.separator()
+        ctx.push_style_color(ImGuiCol.Text, *Theme.META_TEXT)
+        ctx.label(t("asset.animclip3d_bind_pose_bones").format(count=len(clip.bind_pose_bone_names)))
+        preview = ", ".join(clip.bind_pose_bone_names[:24])
+        if len(clip.bind_pose_bone_names) > 24:
+            preview += ", …"
+        ctx.label(preview)
+        ctx.pop_style_color(1)
+
+    if changed and not embedded and state.exec_layer:
         clip.file_path = state.file_path
         state.exec_layer.schedule_rw_save(clip)
 
@@ -1283,7 +1468,15 @@ def _render_mesh_info(ctx: InxGUIContext, panel, state: _State):
     from .inspector_utils import render_compact_section_header
 
     if render_compact_section_header(ctx, t("asset.mesh_info"), level="secondary"):
-        labels = [t("asset.mesh_file"), t("asset.mesh_meshes"), t("asset.mesh_vertices"), t("asset.mesh_indices"), t("asset.mesh_material_slots")]
+        labels = [
+            t("asset.mesh_file"),
+            t("asset.mesh_meshes"),
+            t("asset.mesh_vertices"),
+            t("asset.mesh_indices"),
+            t("asset.mesh_material_slots"),
+            t("asset.mesh_bones"),
+            t("asset.mesh_anims"),
+        ]
         lw = max_label_w(ctx, labels)
 
         filename = os.path.basename(state.file_path)
@@ -1297,6 +1490,10 @@ def _render_mesh_info(ctx: InxGUIContext, panel, state: _State):
         index_count = meta.get("index_count", "?")
         mat_slots = meta.get("material_slot_count", "?")
         mat_names = meta.get("material_slots", "")
+        bone_count = meta.get("bone_count", "?")
+        bone_names = meta.get("bone_names_csv", "")
+        anim_count = meta.get("animation_count", "?")
+        anim_names = meta.get("animation_names_csv", "")
 
         ctx.push_style_color(ImGuiCol.Text, *Theme.META_TEXT)
         field_label(ctx, t("asset.mesh_meshes"), lw)
@@ -1310,6 +1507,18 @@ def _render_mesh_info(ctx: InxGUIContext, panel, state: _State):
         if mat_names:
             field_label(ctx, t("asset.mesh_materials"), lw)
             ctx.label(str(mat_names))
+
+        field_label(ctx, t("asset.mesh_bones"), lw)
+        ctx.label(str(bone_count))
+        if bone_names:
+            field_label(ctx, t("asset.mesh_bone_names"), lw)
+            ctx.label(str(bone_names))
+
+        field_label(ctx, t("asset.mesh_anims"), lw)
+        ctx.label(str(anim_count))
+        if anim_names:
+            field_label(ctx, t("asset.mesh_anim_names"), lw)
+            ctx.label(str(anim_names))
         ctx.pop_style_color(1)
 
     ctx.separator()

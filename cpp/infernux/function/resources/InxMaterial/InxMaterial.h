@@ -397,6 +397,8 @@ class InxMaterial
     {
         if (!m_guid.empty())
             return m_guid;
+        if (!m_filePath.empty())
+            return m_filePath;
         return m_name;
     }
 

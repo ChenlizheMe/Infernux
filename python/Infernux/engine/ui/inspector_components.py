@@ -848,6 +848,7 @@ def render_py_component(ctx: InxGUIContext, py_comp):
 register_component_renderer("Transform", render_transform_component)
 register_component_extra_renderer("AudioSource", _render_audio_source_extra)
 register_component_extra_renderer("MeshRenderer", _render_mesh_renderer_materials)
+register_component_extra_renderer("SkinnedMeshRenderer", _render_mesh_renderer_materials)
 
 # Registers UI component inspectors.
 from . import inspector_ui_components

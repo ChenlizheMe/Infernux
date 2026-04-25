@@ -13,6 +13,8 @@
 #include <filesystem>
 #include <fstream>
 #include <nlohmann/json.hpp>
+#include <unordered_set>
+#include <vector>
 
 namespace infernux
 {
@@ -169,6 +171,55 @@ bool ModelImporter::Import(const ImportContext &ctx)
         materialSlots.push_back(std::move(name));
     }
 
+    // ── Skeleton / skinning bones (unique, stable order) ───────────────
+
+    std::vector<std::string> boneNames;
+    boneNames.reserve(128);
+    std::unordered_set<std::string> seenBones;
+    for (unsigned int mi = 0; mi < scene->mNumMeshes; ++mi) {
+        const aiMesh *mesh = scene->mMeshes[mi];
+        if (!mesh)
+            continue;
+        for (unsigned int bi = 0; bi < mesh->mNumBones; ++bi) {
+            const aiBone *bone = mesh->mBones[bi];
+            if (!bone)
+                continue;
+            std::string bname = bone->mName.C_Str();
+            if (bname.empty())
+                continue;
+            if (seenBones.insert(bname).second)
+                boneNames.push_back(std::move(bname));
+        }
+    }
+
+    std::string bonesStr;
+    for (size_t i = 0; i < boneNames.size(); ++i) {
+        if (i > 0)
+            bonesStr += ',';
+        bonesStr += boneNames[i];
+    }
+
+    // ── Embedded animation clips (names only for authoring) ───────────
+
+    std::vector<std::string> animNames;
+    animNames.reserve(scene->mNumAnimations);
+    for (unsigned int ai = 0; ai < scene->mNumAnimations; ++ai) {
+        const aiAnimation *anim = scene->mAnimations[ai];
+        if (!anim)
+            continue;
+        std::string aname = anim->mName.C_Str();
+        if (aname.empty())
+            aname = "Anim_" + std::to_string(ai);
+        animNames.push_back(std::move(aname));
+    }
+
+    std::string animsStr;
+    for (size_t i = 0; i < animNames.size(); ++i) {
+        if (i > 0)
+            animsStr += ',';
+        animsStr += animNames[i];
+    }
+
     // ── Write metadata to .meta ─────────────────────────────────────────
 
     ctx.meta->AddMetadata("mesh_count", static_cast<int>(meshCount));
@@ -186,8 +237,15 @@ bool ModelImporter::Import(const ImportContext &ctx)
     }
     ctx.meta->AddMetadata("material_slots", slotsStr);
 
+    ctx.meta->AddMetadata("bone_count", static_cast<int>(boneNames.size()));
+    ctx.meta->AddMetadata("bone_names_csv", bonesStr);
+
+    ctx.meta->AddMetadata("animation_count", static_cast<int>(animNames.size()));
+    ctx.meta->AddMetadata("animation_names_csv", animsStr);
+
     INXLOG_INFO("ModelImporter: imported '", FromFsPath(sourcePath.filename()), "' — ", meshCount, " mesh(es), ",
-                totalVertices, " verts, ", totalIndices, " indices, ", materialSlots.size(), " material slot(s)");
+                totalVertices, " verts, ", totalIndices, " indices, ", materialSlots.size(), " material slot(s), ",
+                boneNames.size(), " bone(s), ", animNames.size(), " anim(s)");
 
     return true;
 }

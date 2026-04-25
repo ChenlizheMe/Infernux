@@ -1,5 +1,6 @@
 #include "SceneRenderer.h"
 #include "SceneManager.h"
+#include "SkinnedMeshRenderer.h"
 #include <algorithm>
 #include <chrono>
 #include <cstring>
@@ -277,6 +278,7 @@ void SceneRenderer::UpdateCachedRenderableTransforms(bool useActiveCameraCulling
 
         // Detect transform change: skip bounds + draw-call patch for static objects.
         const bool transformChanged = std::memcmp(&worldMatrix, &renderable.worldMatrix, sizeof(glm::mat4)) != 0;
+        const bool bufferDirty = mr->ConsumeMeshBufferDirty();
 
         if (transformChanged) {
             renderable.worldMatrix = worldMatrix;
@@ -293,8 +295,8 @@ void SceneRenderer::UpdateCachedRenderableTransforms(bool useActiveCameraCulling
         }
 
         if (m_drawCallsCacheValid && renderable.drawCallCount > 0) {
-            if (transformChanged) {
-                // Full patch: transform changed — update matrix, bounds, visibility.
+            if (transformChanged || bufferDirty) {
+                // Full patch: transform changed or dynamic mesh data needs a GPU re-upload.
                 const size_t drawCallEnd =
                     std::min(renderable.drawCallStart + renderable.drawCallCount, m_cachedDrawCalls.drawCalls.size());
                 const glm::vec3 &pivot = mr->GetMeshPivotOffset();
@@ -303,7 +305,6 @@ void SceneRenderer::UpdateCachedRenderableTransforms(bool useActiveCameraCulling
                     drawWorldMatrix = worldMatrix * glm::translate(glm::mat4(1.0f), pivot);
                 }
 
-                const bool bufferDirty = mr->ConsumeMeshBufferDirty();
                 bool firstDirty = true;
                 for (size_t drawCallIndex = renderable.drawCallStart; drawCallIndex < drawCallEnd; ++drawCallIndex) {
                     DrawCall &dc = m_cachedDrawCalls.drawCalls[drawCallIndex];
@@ -388,14 +389,25 @@ void SceneRenderer::EmitDrawCallsForRenderable(DrawCallResult &result, const Ren
         auto meshPtr = renderer->GetMeshAssetRef().Get();
         if (!meshPtr)
             return;
-        const auto &objVertices = meshPtr->GetVertices();
-        const auto &objIndices = meshPtr->GetIndices();
+        const std::vector<Vertex> *objVerticesPtr = &meshPtr->GetVertices();
+        const std::vector<uint32_t> *objIndicesPtr = &meshPtr->GetIndices();
+        const std::vector<SubMesh> *subMeshesPtr = &meshPtr->GetSubMeshes();
+        const std::vector<glm::mat4> *skinBoneMatricesPtr = nullptr;
+        if (auto *skinned = dynamic_cast<SkinnedMeshRenderer *>(renderer);
+            skinned && skinned->HasRuntimeSkinnedMesh()) {
+            objVerticesPtr = &skinned->GetRuntimeSkinnedVertices();
+            objIndicesPtr = &skinned->GetRuntimeSkinnedIndices();
+            subMeshesPtr = &skinned->GetRuntimeSkinnedSubMeshes();
+            skinBoneMatricesPtr = &skinned->GetRuntimeSkinBoneMatrices();
+        }
+        const auto &objVertices = *objVerticesPtr;
+        const auto &objIndices = *objIndicesPtr;
         if (objVertices.empty() || objIndices.empty())
             return;
 
         const glm::mat4 &worldMatrix = renderable.worldMatrix;
 
-        uint32_t subMeshCount = meshPtr->GetSubMeshCount();
+        uint32_t subMeshCount = static_cast<uint32_t>(subMeshesPtr ? subMeshesPtr->size() : 0);
         int32_t submeshFilter = renderer->GetSubmeshIndex();
         int32_t nodeGroup = renderer->GetNodeGroup();
         if (subMeshCount == 0) {
@@ -411,11 +423,12 @@ void SceneRenderer::EmitDrawCallsForRenderable(DrawCallResult &result, const Ren
             dc.worldBounds = renderable.worldBounds;
             dc.meshVertices = &objVertices;
             dc.meshIndices = &objIndices;
+            dc.skinBoneMatrices = skinBoneMatricesPtr;
             dc.forceBufferUpdate = bufferDirty;
             result.drawCalls.push_back(dc);
         } else if (submeshFilter >= 0 && static_cast<uint32_t>(submeshFilter) < subMeshCount) {
             // Single submesh mode — render only the specified submesh
-            const auto &sub = meshPtr->GetSubMesh(static_cast<uint32_t>(submeshFilter));
+            const auto &sub = (*subMeshesPtr)[static_cast<uint32_t>(submeshFilter)];
             glm::mat4 effectiveMatrix = worldMatrix;
             const glm::vec3 &pivot = renderer->GetMeshPivotOffset();
             if (pivot != glm::vec3(0.0f)) {
@@ -432,6 +445,7 @@ void SceneRenderer::EmitDrawCallsForRenderable(DrawCallResult &result, const Ren
             dc.worldBounds = renderable.worldBounds;
             dc.meshVertices = &objVertices;
             dc.meshIndices = &objIndices;
+            dc.skinBoneMatrices = skinBoneMatricesPtr;
             dc.forceBufferUpdate = bufferDirty;
             result.drawCalls.push_back(dc);
         } else {
@@ -443,7 +457,7 @@ void SceneRenderer::EmitDrawCallsForRenderable(DrawCallResult &result, const Ren
             uint32_t nextSlotIdx = 0;
             if (nodeGroup >= 0) {
                 for (uint32_t si = 0; si < subMeshCount; ++si) {
-                    const auto &s = meshPtr->GetSubMesh(si);
+                    const auto &s = (*subMeshesPtr)[si];
                     if (static_cast<int32_t>(s.nodeGroup) != nodeGroup)
                         continue;
                     if (s.materialSlot < SLOT_REMAP_CAP && slotRemap[s.materialSlot] == 0xFFFFFFFF)
@@ -452,7 +466,7 @@ void SceneRenderer::EmitDrawCallsForRenderable(DrawCallResult &result, const Ren
             }
             bool firstDirty = true;
             for (uint32_t si = 0; si < subMeshCount; ++si) {
-                const auto &sub = meshPtr->GetSubMesh(si);
+                const auto &sub = (*subMeshesPtr)[si];
                 if (nodeGroup >= 0 && static_cast<int32_t>(sub.nodeGroup) != nodeGroup)
                     continue;
                 DrawCall dc;
@@ -469,6 +483,7 @@ void SceneRenderer::EmitDrawCallsForRenderable(DrawCallResult &result, const Ren
                 dc.worldBounds = renderable.worldBounds;
                 dc.meshVertices = &objVertices;
                 dc.meshIndices = &objIndices;
+                dc.skinBoneMatrices = skinBoneMatricesPtr;
                 dc.forceBufferUpdate = firstDirty ? bufferDirty : false;
                 firstDirty = false;
                 result.drawCalls.push_back(dc);

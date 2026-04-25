@@ -411,7 +411,11 @@ class MeshImportSettings:
     scale_factor: float = 0.01
     generate_normals: bool = True
     generate_tangents: bool = True
-    flip_uvs: bool = False
+    # Internal compatibility knob: Unity-like default for DCC-authored meshes is
+    # to keep model/textures aligned without requiring per-asset UV flipping.
+    flip_uvs: bool = True
+    # Unity-style public setting: swap primary/secondary UV channels.
+    swap_uv_channels: bool = False
     optimize_mesh: bool = True
 
     def to_dict(self) -> Dict[str, Any]:
@@ -420,16 +424,24 @@ class MeshImportSettings:
             "generate_normals": self.generate_normals,
             "generate_tangents": self.generate_tangents,
             "flip_uvs": self.flip_uvs,
+            "swap_uv_channels": self.swap_uv_channels,
             "optimize_mesh": self.optimize_mesh,
         }
 
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "MeshImportSettings":
+        importer_version = int(d.get("importer_version", 1) or 1)
+        flip_uvs = bool(d.get("flip_uvs", True))
+        # Migration: importer v1 defaulted to false, which breaks many Blender/DCC assets
+        # in our Vulkan path. v2 aligns to Unity-like import expectations.
+        if importer_version < 2:
+            flip_uvs = True
         return cls(
             scale_factor=float(d.get("scale_factor", 0.01)),
             generate_normals=bool(d.get("generate_normals", True)),
             generate_tangents=bool(d.get("generate_tangents", True)),
-            flip_uvs=bool(d.get("flip_uvs", False)),
+            flip_uvs=flip_uvs,
+            swap_uv_channels=bool(d.get("swap_uv_channels", False)),
             optimize_mesh=bool(d.get("optimize_mesh", True)),
         )
 
@@ -439,6 +451,7 @@ class MeshImportSettings:
             generate_normals=self.generate_normals,
             generate_tangents=self.generate_tangents,
             flip_uvs=self.flip_uvs,
+            swap_uv_channels=self.swap_uv_channels,
             optimize_mesh=self.optimize_mesh,
         )
 
@@ -449,6 +462,7 @@ class MeshImportSettings:
                 and self.generate_normals == other.generate_normals
                 and self.generate_tangents == other.generate_tangents
                 and self.flip_uvs == other.flip_uvs
+                and self.swap_uv_channels == other.swap_uv_channels
                 and self.optimize_mesh == other.optimize_mesh)
 
 
@@ -499,6 +513,9 @@ PREFAB_EXTENSIONS = frozenset({".prefab"})
 # Animation clip extension
 ANIMCLIP_EXTENSIONS = frozenset({".animclip2d"})
 
+# 3D animation clip extension (skeletal takes embedded in model files)
+ANIMCLIP3D_EXTENSIONS = frozenset({".animclip3d"})
+
 # Animation state machine extension
 ANIMFSM_EXTENSIONS = frozenset({".animfsm"})
 
@@ -522,6 +539,8 @@ def asset_category_from_extension(ext: str) -> Optional[str]:
         return "prefab"
     if ext in ANIMCLIP_EXTENSIONS:
         return "animclip"
+    if ext in ANIMCLIP3D_EXTENSIONS:
+        return "animclip3d"
     if ext in ANIMFSM_EXTENSIONS:
         return "animfsm"
     return None

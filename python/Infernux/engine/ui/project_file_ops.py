@@ -95,6 +95,18 @@ ANIMCLIP_TEMPLATE = '''{
 }
 '''
 
+ANIMCLIP3D_TEMPLATE = '''{
+  "schema_version": 1,
+  "name": "{clip_name}",
+  "source_model_guid": "",
+  "source_model_path": "",
+  "take_name": "",
+  "bind_pose_bone_names": [],
+  "speed": 1.0,
+  "loop": true
+}
+'''
+
 ANIMFSM_TEMPLATE = '''{
   "name": "{fsm_name}",
   "default_state": "",
@@ -484,6 +496,41 @@ def create_animclip(current_path: str, clip_name: str, asset_database=None):
         try:
             guid = asset_database.import_asset(file_path)
             print(f"[ProjectPanel] Registered animclip2d: {file_name} -> {guid}")
+        except Exception as exc:
+            return False, str(exc)
+
+    return True, ""
+
+
+def create_animclip3d(current_path: str, clip_name: str, asset_database=None):
+    """Create a ``.animclip3d`` file from template. Returns ``(True, "")`` or ``(False, error_msg)``."""
+    if not clip_name or not current_path:
+        return False, "Invalid 3D animation clip name"
+
+    clip_name = clip_name.strip()
+    if not clip_name:
+        return False, "3D animation clip name cannot be empty"
+
+    if clip_name.endswith('.animclip3d'):
+        clip_name = clip_name[:-11]
+
+    file_name = clip_name + '.animclip3d'
+    file_path = os.path.join(current_path, file_name)
+
+    if os.path.exists(file_path):
+        return False, f"'{file_name}' already exists"
+
+    content = ANIMCLIP3D_TEMPLATE.format(clip_name=clip_name)
+    try:
+        with open(file_path, 'w', encoding='utf-8') as f:
+            f.write(content)
+    except OSError as exc:
+        return False, str(exc)
+
+    if asset_database:
+        try:
+            guid = asset_database.import_asset(file_path)
+            print(f"[ProjectPanel] Registered animclip3d: {file_name} -> {guid}")
         except Exception as exc:
             return False, str(exc)
 

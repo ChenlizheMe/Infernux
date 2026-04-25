@@ -62,6 +62,21 @@ namespace
 
 using json = nlohmann::json;
 
+bool ParseModelEmbeddedMaterialSlot(const std::string &path, std::string &outModel, int &outSlot)
+{
+    constexpr const char kTok[] = "::submat:";
+    const size_t pos = path.find(kTok);
+    if (pos == std::string::npos)
+        return false;
+    outModel = path.substr(0, pos);
+    try {
+        outSlot = std::stoi(path.substr(pos + sizeof(kTok) - 1));
+    } catch (...) {
+        return false;
+    }
+    return !outModel.empty() && outSlot >= 0;
+}
+
 struct PrefabPreviewAggregate
 {
     std::vector<Vertex> vertices;
@@ -931,8 +946,15 @@ void Infernux::PumpPreviewTasks()
                     // Render from in-memory JSON snapshot (Inspector live edits).
                     ok = MaterialPreviewer::RenderFromJson(req.materialJson, 256, pixels, adb, m_renderer.get());
                 } else {
-                    // Render from disk file (ProjectPanel thumbnails).
-                    ok = MaterialPreviewer::RenderToPixels(req.matFilePath, 256, pixels, adb, m_renderer.get());
+                    std::string embedModel;
+                    int embedSlot = -1;
+                    if (ParseModelEmbeddedMaterialSlot(req.matFilePath, embedModel, embedSlot)) {
+                        ok = MaterialPreviewer::RenderModelEmbeddedMaterialToPixels(
+                            embedModel, static_cast<uint32_t>(embedSlot), 256, pixels, adb, m_renderer.get());
+                    } else {
+                        // Render from disk file (ProjectPanel thumbnails).
+                        ok = MaterialPreviewer::RenderToPixels(req.matFilePath, 256, pixels, adb, m_renderer.get());
+                    }
                 }
 
                 if (!ok || pixels.empty()) {
@@ -1161,7 +1183,14 @@ void Infernux::FlushAllMaterialPreviews()
         if (!req.materialJson.empty()) {
             ok = MaterialPreviewer::RenderFromJson(req.materialJson, 256, pixels, adb, m_renderer.get());
         } else {
-            ok = MaterialPreviewer::RenderToPixels(req.matFilePath, 256, pixels, adb, m_renderer.get());
+            std::string embedModel;
+            int embedSlot = -1;
+            if (ParseModelEmbeddedMaterialSlot(req.matFilePath, embedModel, embedSlot)) {
+                ok = MaterialPreviewer::RenderModelEmbeddedMaterialToPixels(
+                    embedModel, static_cast<uint32_t>(embedSlot), 256, pixels, adb, m_renderer.get());
+            } else {
+                ok = MaterialPreviewer::RenderToPixels(req.matFilePath, 256, pixels, adb, m_renderer.get());
+            }
         }
 
         if (!ok || pixels.empty()) {

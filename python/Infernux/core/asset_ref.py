@@ -176,7 +176,8 @@ class AnimStateMachineRef(AssetRefBase):
         db = _get_asset_database()
         if db and self._guid:
             try:
-                path = db.get_path_from_guid(self._guid)
+                from Infernux.core.animation_clip3d import resolve_disk_path_for_guid_string
+                path = resolve_disk_path_for_guid_string(db, self._guid) or db.get_path_from_guid(self._guid)
                 if path:
                     from Infernux.core.anim_state_machine import AnimStateMachine
                     return AnimStateMachine.load(path)
@@ -199,6 +200,25 @@ class AnimationClipRef(AssetRefBase):
                 if path:
                     from Infernux.core.animation_clip import AnimationClip
                     return AnimationClip.load(path)
+            except Exception:
+                pass
+        return None
+
+
+class AnimationClip3DRef(AssetRefBase):
+    """Reference to an AnimationClip3D (.animclip3d) asset."""
+
+    def _do_resolve(self):
+        if not self._guid and self._path_hint:
+            from Infernux.core.animation_clip3d import AnimationClip3D
+            return AnimationClip3D.load(self._path_hint)
+        db = _get_asset_database()
+        if db and self._guid:
+            try:
+                path = db.get_path_from_guid(self._guid)
+                if path:
+                    from Infernux.core.animation_clip3d import AnimationClip3D
+                    return AnimationClip3D.load(path)
             except Exception:
                 pass
         return None
@@ -247,6 +267,14 @@ def _ensure_registry():
             "extensions": ("*.animclip2d",),
             "display":    "AnimClip2D",
             "prefix":     "aclip",
+        },
+        "AnimationClip3D": {
+            "ref_class":  AnimationClip3DRef,
+            "dict_key":   "__animclip3d_ref__",
+            "drag_type":  "ANIMCLIP3D_FILE",
+            "extensions": ("*.animclip3d",),
+            "display":    "AnimClip3D",
+            "prefix":     "aclip3d",
         },
     })
 

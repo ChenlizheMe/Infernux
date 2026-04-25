@@ -21,12 +21,31 @@ layout(std430, set = 2, binding = 1) readonly buffer InstanceBuffer {
     mat4 instanceModels[];
 };
 
+struct SkinInstanceData {
+    uint boneOffset;
+    uint boneCount;
+    uint flags;
+    uint _pad;
+};
+
+// Skin metadata and bone palettes share the engine globals set so every
+// material can render skinned and static meshes through the same pipeline.
+layout(std430, set = 2, binding = 2) readonly buffer SkinInstanceBuffer {
+    SkinInstanceData skinInstances[];
+};
+
+layout(std430, set = 2, binding = 3) readonly buffer SkinBonePaletteBuffer {
+    mat4 skinBones[];
+};
+
 // Vertex attributes
 layout(location = 0) in vec3 inPosition;
 layout(location = 1) in vec3 inNormal;
 layout(location = 2) in vec4 inTangent;
 layout(location = 3) in vec3 inColor;
 layout(location = 4) in vec2 inTexCoord;
+layout(location = 5) in uvec4 inBoneIndices;
+layout(location = 6) in vec4 inBoneWeights;
 
 // Unified varyings — all shading models use the same set
 layout(location = 0) out vec3 v_WorldPos;

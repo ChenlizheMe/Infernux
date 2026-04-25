@@ -32,6 +32,8 @@ from typing import Optional, Tuple
 
 from Infernux.lib import InxMaterial
 
+_EMBEDDED_MODEL_MAT_TOKEN = "::submat:"
+
 # ── Vulkan blend factor constants (VkBlendFactor) ──
 _VK_BLEND_SRC_ALPHA: int = 6
 _VK_BLEND_ONE_MINUS_SRC_ALPHA: int = 7
@@ -103,6 +105,57 @@ class Material:
         return Material(native)
 
     @staticmethod
+    def _parse_embedded_model_material_path(file_path: str) -> Optional[Tuple[str, int]]:
+        if _EMBEDDED_MODEL_MAT_TOKEN not in file_path:
+            return None
+        base, _, idx_s = file_path.partition(_EMBEDDED_MODEL_MAT_TOKEN)
+        if not base or not idx_s:
+            return None
+        try:
+            slot = int(idx_s)
+        except ValueError:
+            return None
+        if slot < 0:
+            return None
+        return (base, slot)
+
+    @staticmethod
+    def _load_embedded_model_material_slot(model_path: str, slot: int, virtual_path: str) -> Optional["Material"]:
+        """Build a DefaultLit material from Assimp-extracted slot data (FBX inline materials)."""
+        try:
+            from Infernux.lib import AssetRegistry, InxMaterial
+            reg = AssetRegistry.instance()
+            mesh = reg.load_mesh(model_path)
+            if mesh is None:
+                return None
+            slots = mesh.get_material_slot_data()
+            if slot < 0 or slot >= len(slots):
+                return None
+            sd = slots[slot]
+            nat = InxMaterial.create_default_lit()
+            nat.is_builtin = False
+            bc = sd["base_color"]
+            ec = sd["emission_color"]
+            nat.set_color("baseColor", (float(bc[0]), float(bc[1]), float(bc[2]), float(bc[3])))
+            nat.set_color("emissionColor", (float(ec[0]), float(ec[1]), float(ec[2]), float(ec[3])))
+            nat.set_float("metallic", float(sd["metallic"]))
+            nat.set_float("smoothness", float(sd["smoothness"]))
+            try:
+                names = mesh.material_slot_names
+                if slot < len(names) and names[slot]:
+                    nat.name = str(names[slot])
+                else:
+                    nat.name = f"EmbeddedMaterial_{slot}"
+            except (TypeError, IndexError, AttributeError):
+                nat.name = f"EmbeddedMaterial_{slot}"
+            nat.file_path = virtual_path
+            return Material.from_native(nat)
+        except (RuntimeError, AttributeError, KeyError, TypeError) as _exc:
+            from Infernux.debug import Debug
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+            return None
+
+    @staticmethod
     def load(file_path: str) -> Optional["Material"]:
         """Load a material from a .mat file.
 
@@ -111,6 +164,11 @@ class Material:
         that property changes via set_color / set_float are immediately
         visible everywhere (Unity-like behaviour).
         """
+        embedded = Material._parse_embedded_model_material_path(file_path)
+        if embedded:
+            model_path, slot = embedded
+            return Material._load_embedded_model_material_slot(model_path, slot, file_path)
+
         try:
             from Infernux.lib import AssetRegistry
             registry = AssetRegistry.instance()

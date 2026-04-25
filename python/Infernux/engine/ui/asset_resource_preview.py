@@ -100,9 +100,15 @@ def _try_get_cpp_material_preview_texture(native: Any, norm_path: str,
 
     cache_key = f"mat|{norm_path}"
     try:
+        if hasattr(native, "pump_preview_tasks"):
+            native.pump_preview_tasks()
         if hasattr(native, 'query_or_schedule_material_preview'):
-            return int(native.query_or_schedule_material_preview(
+            tex_id = int(native.query_or_schedule_material_preview(
                 cache_key, norm_path, material_json, int(file_mtime_hint)))
+            if tex_id == 0 and hasattr(native, "pump_preview_tasks") and hasattr(native, "get_material_preview_texture_id"):
+                native.pump_preview_tasks()
+                tex_id = int(native.get_material_preview_texture_id(cache_key) or 0)
+            return tex_id
         # Fallback for older native builds without unified API
         return int(native.get_material_preview_texture_id(cache_key) or 0)
     except Exception as exc:
@@ -131,6 +137,12 @@ def get_resource_preview_texture_id(panel: Any, file_path: str, preview_size: in
 
     norm_path = os.path.normpath(file_path)
     ext = os.path.splitext(norm_path)[1].lower()
+
+    if "::submat:" in norm_path:
+        base_model = norm_path.split("::submat:", 1)[0]
+        mtime = 0 if material_json else safe_mtime_ns(base_model)
+        return _try_get_cpp_material_preview_texture(
+            native, norm_path, material_json=material_json, file_mtime_hint=mtime)
 
     if ext in _IMAGE_EXTS:
         tex_id, _, _ = _try_get_cpp_texture_preview(native, norm_path, texture_settings)
@@ -167,7 +179,15 @@ def render_resource_preview_rect(ctx: Any, panel: Any, file_path: str, width: fl
     src_w = 0
     src_h = 0
 
-    if ext in _MODEL_EXTS or ext in _PREFAB_EXTS:
+    if "::submat:" in norm_path:
+        base_model = norm_path.split("::submat:", 1)[0]
+        mtime = 0 if cache_tag else safe_mtime_ns(base_model)
+        tex_id = _try_get_cpp_material_preview_texture(
+            native, norm_path, material_json=cache_tag, file_mtime_hint=mtime)
+        if tex_id != 0:
+            src_w = 256
+            src_h = 256
+    elif ext in _MODEL_EXTS or ext in _PREFAB_EXTS:
         tex_id = _try_get_cpp_mesh_preview(native, norm_path)
         if tex_id == 0:
             return False

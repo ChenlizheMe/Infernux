@@ -22,12 +22,29 @@ layout(std430, set = 1, binding = 1) readonly buffer InstanceBuffer {
     mat4 instanceModels[];
 };
 
+struct SkinInstanceData {
+    uint boneOffset;
+    uint boneCount;
+    uint flags;
+    uint _pad;
+};
+
+layout(std430, set = 1, binding = 2) readonly buffer SkinInstanceBuffer {
+    SkinInstanceData skinInstances[];
+};
+
+layout(std430, set = 1, binding = 3) readonly buffer SkinBonePaletteBuffer {
+    mat4 skinBones[];
+};
+
 // Vertex attributes (same layout as forward pass)
 layout(location = 0) in vec3 inPosition;
 layout(location = 1) in vec3 inNormal;
 layout(location = 2) in vec4 inTangent;
 layout(location = 3) in vec3 inColor;
 layout(location = 4) in vec2 inTexCoord;
+layout(location = 5) in uvec4 inBoneIndices;
+layout(location = 6) in vec4 inBoneWeights;
 
 // Unified varyings — must match fragment_varyings.glsl for interface compatibility
 layout(location = 0) out vec3 v_WorldPos;

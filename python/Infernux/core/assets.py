@@ -33,10 +33,12 @@ from Infernux.core.audio_clip import AudioClip
 from Infernux.core.asset_types import (
     IMAGE_EXTENSIONS, SHADER_EXTENSIONS, MATERIAL_EXTENSIONS, AUDIO_EXTENSIONS,
     ANIMCLIP_EXTENSIONS,
+    ANIMCLIP3D_EXTENSIONS,
     ANIMFSM_EXTENSIONS,
     asset_category_from_extension,
 )
 from Infernux.core.animation_clip import AnimationClip
+from Infernux.core.animation_clip3d import AnimationClip3D
 from Infernux.core.anim_state_machine import AnimStateMachine
 
 # ── Constants ──
@@ -245,6 +247,7 @@ class AssetManager:
         cls.register_import_strategy("mesh", write_mesh_import_settings)
         cls.register_save_strategy("material", cls._save_material_resource)
         cls.register_save_strategy("animclip", cls._save_animclip_resource)
+        cls.register_save_strategy("animclip3d", cls._save_animclip3d_resource)
         cls.register_save_strategy("animfsm", cls._save_animfsm_resource)
 
         cls._execution_strategies_initialized = True
@@ -342,6 +345,8 @@ class AssetManager:
     @classmethod
     def schedule_asset_save(cls, asset_category: str, key: str, resource_obj, debounce_sec: float = _DEFAULT_DEBOUNCE_SEC):
         """Schedule a debounced save by category strategy, without exposing save callback to caller."""
+        if asset_category == "material" and key and "::submat:" in key:
+            return
         # Fast path: if a record already exists for this key, just bump the
         # deadline.  This avoids creating a new lambda + dict lookup through
         # the strategy registry on every slider-drag frame.
@@ -369,6 +374,8 @@ class AssetManager:
         uses this snapshot instead of calling native_mat.serialize()
         on the main thread.
         """
+        if file_path and "::submat:" in file_path:
+            return
         if file_path and json_str:
             cls._material_save_snapshots[os.path.normpath(file_path)] = json_str
 
@@ -431,6 +438,14 @@ class AssetManager:
     @classmethod
     def _save_animclip_resource(cls, resource_obj):
         """Save an AnimationClip resource."""
+        save = getattr(resource_obj, "save", None)
+        if not callable(save):
+            return False
+        return save()
+
+    @classmethod
+    def _save_animclip3d_resource(cls, resource_obj):
+        """Save an AnimationClip3D resource."""
         save = getattr(resource_obj, "save", None)
         if not callable(save):
             return False
@@ -577,6 +592,8 @@ class AssetManager:
             return AudioClip
         if ext in ANIMCLIP_EXTENSIONS:
             return AnimationClip
+        if ext in ANIMCLIP3D_EXTENSIONS:
+            return AnimationClip3D
         if ext in ANIMFSM_EXTENSIONS:
             return AnimStateMachine
         return None
@@ -597,6 +614,8 @@ class AssetManager:
             return AudioClip.load(path)
         if asset_type is AnimationClip:
             return AnimationClip.load(path)
+        if asset_type is AnimationClip3D:
+            return AnimationClip3D.load(path)
         if asset_type is AnimStateMachine:
             return AnimStateMachine.load(path)
         return None

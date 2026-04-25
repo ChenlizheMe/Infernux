@@ -562,6 +562,9 @@ def _apply_material_changes(panel, state, mat_data, native_mat,
                             old_json, change_key, exec_layer):
     """Serialize and save material changes, record undo."""
     try:
+        embedded_path = getattr(state, "file_path", "") or ""
+        is_embedded = "::submat:" in embedded_path
+
         # Hot-path optimization: most property drags already push values via
         # native setters in render_material_property. Full JSON deserialize is
         # only needed when material structure changed (shader sync/texture slots).
@@ -569,6 +572,14 @@ def _apply_material_changes(panel, state, mat_data, native_mat,
             native_mat.deserialize(json.dumps(mat_data))
         if requires_pipeline_refresh:
             _refresh_pipeline(panel)
+
+        if is_embedded:
+            state.extra["cached_json"] = json.dumps(mat_data)
+            try:
+                state.extra["_applied_version"] = native_mat.get_version()
+            except (AttributeError, RuntimeError):
+                pass
+            return
 
         # Use cached file-path when available (avoids per-frame panel lookup).
         file_path = state.extra.get("_mat_file_path", "")
@@ -722,13 +733,23 @@ def render_material_body(ctx: InxGUIContext, panel, state):
     if is_builtin:
         mat_data["builtin"] = True
 
+    is_embedded_slot = "::submat:" in (getattr(state, "file_path", "") or "")
+    # Built-in materials use per-section disabled(); embedded uses one outer disabled()
+    # so every control (including pickers) looks non-interactive like a default slot material.
+    section_readonly = is_builtin
+
     default_open_sections = bool(state.extra.get("default_open_sections", True))
 
     if is_builtin:
         ctx.label(t("material.builtin_locked"))
+    elif is_embedded_slot:
+        ctx.label(t("material.embedded_model_slot"))
 
     ctx.push_style_var_vec2(ImGuiStyleVar.FramePadding, *Theme.INSPECTOR_FRAME_PAD)
     ctx.push_style_var_vec2(ImGuiStyleVar.ItemSpacing, *Theme.INSPECTOR_ITEM_SPC)
+
+    if is_embedded_slot:
+        ctx.begin_disabled(True)
 
     changed = False
     requires_deserialize = False
@@ -749,7 +770,7 @@ def render_material_body(ctx: InxGUIContext, panel, state):
         # Left column: Shader + Surface Options
         ctx.table_next_column()
 
-    s_ch, s_ds, s_pr, s_ck = _render_shader_section(ctx, mat_data, state, is_builtin, default_open_sections)
+    s_ch, s_ds, s_pr, s_ck = _render_shader_section(ctx, mat_data, state, section_readonly, default_open_sections)
     changed |= s_ch
     requires_deserialize |= s_ds
     requires_pipeline_refresh |= s_pr
@@ -758,7 +779,7 @@ def render_material_body(ctx: InxGUIContext, panel, state):
 
     ctx.separator()
 
-    so_ch, so_ds, so_pr, so_ck = _render_surface_options_section(ctx, mat_data, is_builtin, default_open_sections)
+    so_ch, so_ds, so_pr, so_ck = _render_surface_options_section(ctx, mat_data, section_readonly, default_open_sections)
     changed |= so_ch
     requires_deserialize |= so_ds
     requires_pipeline_refresh |= so_pr
@@ -823,7 +844,7 @@ def render_material_body(ctx: InxGUIContext, panel, state):
     ctx.separator()
 
     # ── Properties ─────────────────────────────────────────────────────
-    p_ch, p_ck, p_ds = _render_properties_section(ctx, mat_data, is_builtin, default_open_sections)
+    p_ch, p_ck, p_ds = _render_properties_section(ctx, mat_data, section_readonly, default_open_sections)
     changed |= p_ch
     requires_deserialize |= p_ds
     if p_ck:
@@ -850,6 +871,9 @@ def render_material_body(ctx: InxGUIContext, panel, state):
     else:
         # Drag ended (or no edit this frame) — commit deferred undo snapshot.
         _flush_deferred_undo(panel, state, mat_data, _native_mat)
+
+    if is_embedded_slot:
+        ctx.end_disabled()
 
     ctx.pop_style_var(2)
 

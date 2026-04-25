@@ -1,0 +1,58 @@
+"""
+SkinnedMeshRenderer — Python wrapper for the native SkinnedMeshRenderer component.
+
+This currently reuses MeshRenderer's rendering/material API while exposing
+animated-model metadata and the active take selection used by SkeletalAnimator.
+"""
+
+from __future__ import annotations
+
+from typing import List
+
+from Infernux.components.builtin.mesh_renderer import MeshRenderer
+from Infernux.components.builtin_component import CppProperty
+from Infernux.components.serialized_field import FieldType
+
+
+class SkinnedMeshRenderer(MeshRenderer):
+    """Python facade for the native animated-model renderer component."""
+
+    _cpp_type_name = "SkinnedMeshRenderer"
+    _component_category_ = "Rendering"
+
+    source_model_guid = CppProperty(
+        "source_model_guid",
+        FieldType.STRING,
+        default="",
+        readonly=True,
+        visible_when=lambda _c: False,
+        tooltip="GUID of the source animated model asset",
+    )
+    source_model_path = CppProperty(
+        "source_model_path",
+        FieldType.STRING,
+        default="",
+        readonly=True,
+        visible_when=lambda _c: False,
+        tooltip="Filesystem path of the source animated model",
+    )
+    active_take_name = CppProperty(
+        "active_take_name",
+        FieldType.STRING,
+        default="",
+        tooltip="Currently selected animation take name",
+    )
+
+    def get_animation_take_names(self) -> List[str]:
+        cpp = self._cpp_component
+        if cpp is None:
+            return []
+        return list(cpp.get_animation_take_names())
+
+    @property
+    def animation_take_count(self) -> int:
+        return len(self.get_animation_take_names())
+
+    @property
+    def has_animation_takes(self) -> bool:
+        return self.animation_take_count > 0

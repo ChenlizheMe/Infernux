@@ -485,6 +485,20 @@ void RegisterGUIBindings(py::module_ &m)
                                                                     return py::none();
                                                                 },
             py::arg("type"), "Accept drag-drop payload, returns data (int or str) or None")
+        .def(
+            "accept_any_drag_drop_payload",
+            [](InxGUIContext &ctx) -> py::object {
+                std::string ty;
+                uint64_t u64 = 0;
+                std::string s;
+                bool isU64 = false;
+                if (!ctx.AcceptAnyDragDropPayload(&ty, &u64, &s, &isU64))
+                    return py::none();
+                if (isU64)
+                    return py::make_tuple(ty, py::cast(u64));
+                return py::make_tuple(ty, py::cast(s));
+            },
+            "Accept whatever drag payload is offered (type string + str or uint64). None if none.")
         .def("end_drag_drop_target", &InxGUIContext::EndDragDropTarget, "End drag-drop target")
         // Mouse cursor
         .def("set_mouse_cursor", &InxGUIContext::SetMouseCursor, py::arg("cursor_type"),
@@ -955,6 +969,7 @@ void RegisterGUIBindings(py::module_ &m)
         .def_readwrite("create_material", &ProjectPanel::createMaterial)
         .def_readwrite("create_scene", &ProjectPanel::createScene)
         .def_readwrite("create_animclip", &ProjectPanel::createAnimClip)
+        .def_readwrite("create_animclip3d", &ProjectPanel::createAnimClip3D)
         .def_readwrite("create_animfsm", &ProjectPanel::createAnimFsm)
         .def_readwrite("create_prefab_from_hierarchy", &ProjectPanel::createPrefabFromHierarchy)
         .def_readwrite("delete_items", &ProjectPanel::deleteItems)

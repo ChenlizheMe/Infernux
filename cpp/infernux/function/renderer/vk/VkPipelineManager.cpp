@@ -4,6 +4,7 @@
  */
 
 #include "VkPipelineManager.h"
+#include "../InxRenderStruct.h"
 #include "VkRenderUtils.h"
 #include <core/error/InxError.h>
 #include <platform/filesystem/InxPath.h>
@@ -612,36 +613,9 @@ VertexInputConfig VkPipelineManager::GetStandardMeshVertexInput()
 {
     VertexInputConfig config;
 
-    // Single binding for interleaved vertex data
-    VkVertexInputBindingDescription binding{};
-    binding.binding = 0;
-    binding.stride = sizeof(float) * (3 + 3 + 2); // pos(3) + normal(3) + texCoord(2)
-    binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
-    config.bindings.push_back(binding);
-
-    // Position attribute
-    VkVertexInputAttributeDescription posAttr{};
-    posAttr.binding = 0;
-    posAttr.location = 0;
-    posAttr.format = VK_FORMAT_R32G32B32_SFLOAT;
-    posAttr.offset = 0;
-    config.attributes.push_back(posAttr);
-
-    // Normal attribute
-    VkVertexInputAttributeDescription normalAttr{};
-    normalAttr.binding = 0;
-    normalAttr.location = 1;
-    normalAttr.format = VK_FORMAT_R32G32B32_SFLOAT;
-    normalAttr.offset = sizeof(float) * 3;
-    config.attributes.push_back(normalAttr);
-
-    // TexCoord attribute
-    VkVertexInputAttributeDescription texCoordAttr{};
-    texCoordAttr.binding = 0;
-    texCoordAttr.location = 2;
-    texCoordAttr.format = VK_FORMAT_R32G32_SFLOAT;
-    texCoordAttr.offset = sizeof(float) * 6;
-    config.attributes.push_back(texCoordAttr);
+    config.bindings.push_back(Vertex::getBindingDescription());
+    const auto attributes = Vertex::getAttributeDescriptions();
+    config.attributes.insert(config.attributes.end(), attributes.begin(), attributes.end());
 
     return config;
 }

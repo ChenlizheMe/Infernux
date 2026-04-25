@@ -298,6 +298,11 @@ class MaterialPreviewer : public IResourcePreviewer
     static bool RenderFromJson(const std::string &materialJson, int size, std::vector<unsigned char> &outPixels,
                                AssetDatabase *adb = nullptr, InxRenderer *renderer = nullptr);
 
+    /// @brief Preview material extracted from an imported model slot (FBX inline materials).
+    static bool RenderModelEmbeddedMaterialToPixels(const std::string &modelPath, uint32_t slotIndex, int size,
+                                                    std::vector<unsigned char> &outPixels, AssetDatabase *adb = nullptr,
+                                                    InxRenderer *renderer = nullptr);
+
   private:
     InxGUI *m_gui = nullptr;
     int m_previewSize;

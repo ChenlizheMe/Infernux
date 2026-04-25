@@ -122,7 +122,8 @@ def _render_mesh_renderer_materials(ctx: InxGUIContext, comp):
 
     # Ensure we have the Python wrapper
     if not isinstance(comp, BuiltinComponent):
-        wrapper_cls = BuiltinComponent._builtin_registry.get("MeshRenderer")
+        wrapper_cls = BuiltinComponent._builtin_registry.get(getattr(comp, "type_name", "")) \
+            or BuiltinComponent._builtin_registry.get("MeshRenderer")
         go = getattr(comp, 'game_object', None)
         if wrapper_cls and go is not None:
             comp = wrapper_cls._get_or_create_wrapper(comp, go)
@@ -161,13 +162,15 @@ def _render_mesh_renderer_materials(ctx: InxGUIContext, comp):
             slot_label = f"Element {slot_idx}"
 
         # Determine display name
-        is_default = (slot_idx >= len(material_guids)) or (not material_guids[slot_idx])
         mat = None
         try:
             mat = comp.get_effective_material(slot_idx)
         except (RuntimeError, IndexError) as _exc:
             Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             pass
+        mat_path = getattr(mat, "file_path", "") if mat else ""
+        is_embedded = isinstance(mat_path, str) and "::submat:" in mat_path
+        is_default = ((slot_idx >= len(material_guids)) or (not material_guids[slot_idx])) and not is_embedded
         mat_name = getattr(mat, 'name', 'None') if mat else 'None'
         display_name = mat_name + (" (Default)" if is_default else "")
 
@@ -178,7 +181,7 @@ def _render_mesh_renderer_materials(ctx: InxGUIContext, comp):
                 adb = registry.get_asset_database()
                 if not adb:
                     return
-                guid = adb.get_guid_from_path(mat_path)
+                guid = adb.get_guid_from_path(str(mat_path))
                 if not guid:
                     return
                 old_guid = ""

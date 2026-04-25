@@ -13,6 +13,18 @@ void main() {
     v.color    = inColor;
     v.texCoord = inTexCoord;
 ${VERTEX_CALL}
+    SkinInstanceData skin = skinInstances[gl_InstanceIndex];
+    if ((skin.flags & 1u) != 0u && skin.boneCount > 0u) {
+        mat4 skinMat =
+            inBoneWeights.x * skinBones[skin.boneOffset + min(inBoneIndices.x, skin.boneCount - 1u)] +
+            inBoneWeights.y * skinBones[skin.boneOffset + min(inBoneIndices.y, skin.boneCount - 1u)] +
+            inBoneWeights.z * skinBones[skin.boneOffset + min(inBoneIndices.z, skin.boneCount - 1u)] +
+            inBoneWeights.w * skinBones[skin.boneOffset + min(inBoneIndices.w, skin.boneCount - 1u)];
+        v.position = (skinMat * vec4(v.position, 1.0)).xyz;
+        mat3 skinNormalMat = mat3(skinMat);
+        v.normal = normalize(skinNormalMat * v.normal);
+        v.tangent = vec4(normalize(skinNormalMat * v.tangent.xyz), v.tangent.w);
+    }
     mat4 instModel    = instanceModels[gl_InstanceIndex];
     vec4 worldPos     = instModel * vec4(v.position, 1.0);
     mat3 normalMatrix = mat3(instModel);

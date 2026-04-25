@@ -74,6 +74,8 @@ def wire_project_callbacks(bs: EditorBootstrap) -> None:
         file_ops.create_scene, cur, name, adb)
     pp.create_animclip = lambda cur, name: _safe_project_create(
         file_ops.create_animclip, cur, name, adb)
+    pp.create_animclip3d = lambda cur, name: _safe_project_create(
+        file_ops.create_animclip3d, cur, name, adb)
     pp.create_animfsm = lambda cur, name: _safe_project_create(
         file_ops.create_animfsm, cur, name, adb)
     pp.do_rename = lambda old, new_name: _safe_project_path(
