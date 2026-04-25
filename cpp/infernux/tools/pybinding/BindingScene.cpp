@@ -24,9 +24,9 @@
 #include "function/scene/PrimitiveMeshes.h"
 #include "function/scene/PyComponentProxy.h"
 #include "function/scene/Rigidbody.h"
-#include "function/scene/SkinnedMeshRenderer.h"
 #include "function/scene/Scene.h"
 #include "function/scene/SceneManager.h"
+#include "function/scene/SkinnedMeshRenderer.h"
 #include "function/scene/SphereCollider.h"
 #include "function/scene/SpriteRenderer.h"
 #include "function/scene/Transform.h"
@@ -818,8 +818,8 @@ void RegisterSceneBindings(py::module_ &m)
                                "GUID of the animated source model asset")
         .def_property_readonly("source_model_path", &SkinnedMeshRenderer::GetSourceModelPath,
                                "Filesystem path of the animated source model")
-        .def_property("active_take_name", &SkinnedMeshRenderer::GetActiveTakeName, &SkinnedMeshRenderer::SetActiveTakeName,
-                      "Currently selected animation take name")
+        .def_property("active_take_name", &SkinnedMeshRenderer::GetActiveTakeName,
+                      &SkinnedMeshRenderer::SetActiveTakeName, "Currently selected animation take name")
         .def_property_readonly("has_animation_takes", &SkinnedMeshRenderer::HasAnimationTakes,
                                "Whether this renderer has any imported animation takes")
         .def_property_readonly(
@@ -827,8 +827,7 @@ void RegisterSceneBindings(py::module_ &m)
             [](const SkinnedMeshRenderer &sr) -> size_t { return sr.GetAnimationTakeNames().size(); },
             "Number of imported animation takes on the source model")
         .def(
-            "get_animation_take_names",
-            [](const SkinnedMeshRenderer &sr) { return sr.GetAnimationTakeNames(); },
+            "get_animation_take_names", [](const SkinnedMeshRenderer &sr) { return sr.GetAnimationTakeNames(); },
             "Get imported animation take names from the source model")
         .def("get_animation_duration_seconds", &SkinnedMeshRenderer::GetAnimationDurationSeconds, py::arg("take_name"),
              "Get imported animation take duration in seconds")

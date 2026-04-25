@@ -718,7 +718,8 @@ bool InxGUIContext::AcceptDragDropPayload(const std::string &type, std::string *
     return false;
 }
 
-bool InxGUIContext::AcceptAnyDragDropPayload(std::string *outType, uint64_t *outU64, std::string *outStr, bool *outIsU64)
+bool InxGUIContext::AcceptAnyDragDropPayload(std::string *outType, uint64_t *outU64, std::string *outStr,
+                                             bool *outIsU64)
 {
     const ImGuiPayload *preview = ImGui::GetDragDropPayload();
     if (!preview || preview->DataType[0] == '\0')

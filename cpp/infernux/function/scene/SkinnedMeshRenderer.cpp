@@ -53,8 +53,8 @@ void SkinnedMeshRenderer::SetRuntimeAnimationTime(float t)
 }
 
 void SkinnedMeshRenderer::SubmitAnimationPose(const std::string &takeName, float timeSeconds, float normalizedTime,
-                                             const std::string &blendTakeName, float blendTimeSeconds,
-                                             float blendWeight)
+                                              const std::string &blendTakeName, float blendTimeSeconds,
+                                              float blendWeight)
 {
     m_activeTakeName = takeName;
     m_runtimeAnimationTime = timeSeconds;

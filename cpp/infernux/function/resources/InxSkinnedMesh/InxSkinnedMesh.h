@@ -104,7 +104,7 @@ class InxSkinnedMesh
 
   private:
     [[nodiscard]] SkinnedNodePose SampleNodePose(const SkinnedRuntimeAnimation *anim, const SkinnedRuntimeNode &node,
-                                                double tTicks) const;
+                                                 double tTicks) const;
     [[nodiscard]] std::vector<glm::mat4> BuildBoneMatrices(const SkinnedSampleRequest &request) const;
 };
 

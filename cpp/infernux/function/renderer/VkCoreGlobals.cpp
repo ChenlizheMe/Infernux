@@ -151,15 +151,13 @@ bool InxVkCoreModular::CreateGlobalsDescriptorResources()
         m_instanceBuffers[i].buffer = m_resourceManager.CreateStorageBuffer(initialBytes, /*deviceLocal=*/false);
         m_instanceBuffers[i].capacity = INSTANCE_BUFFER_INITIAL_CAPACITY;
 
-        const VkDeviceSize skinInstanceBytes =
-            SKIN_INSTANCE_BUFFER_INITIAL_CAPACITY * sizeof(GPUSkinInstanceData);
+        const VkDeviceSize skinInstanceBytes = SKIN_INSTANCE_BUFFER_INITIAL_CAPACITY * sizeof(GPUSkinInstanceData);
         m_skinInstanceBuffers[i].buffer =
             m_resourceManager.CreateStorageBuffer(skinInstanceBytes, /*deviceLocal=*/false);
         m_skinInstanceBuffers[i].capacity = SKIN_INSTANCE_BUFFER_INITIAL_CAPACITY;
 
         const VkDeviceSize skinPaletteBytes = SKIN_PALETTE_BUFFER_INITIAL_CAPACITY * sizeof(glm::mat4);
-        m_skinPaletteBuffers[i].buffer =
-            m_resourceManager.CreateStorageBuffer(skinPaletteBytes, /*deviceLocal=*/false);
+        m_skinPaletteBuffers[i].buffer = m_resourceManager.CreateStorageBuffer(skinPaletteBytes, /*deviceLocal=*/false);
         m_skinPaletteBuffers[i].capacity = SKIN_PALETTE_BUFFER_INITIAL_CAPACITY;
 
         if (!m_instanceBuffers[i].buffer || !m_skinInstanceBuffers[i].buffer || !m_skinPaletteBuffers[i].buffer) {

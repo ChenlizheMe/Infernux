@@ -450,14 +450,14 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
         }
         const VkBuffer previousInstanceBuffer =
             m_instanceBuffers[frameIndex].buffer ? m_instanceBuffers[frameIndex].buffer->GetBuffer() : VK_NULL_HANDLE;
-        const VkBuffer previousSkinInstanceBuffer = frameIndex < m_skinInstanceBuffers.size() &&
-                                                           m_skinInstanceBuffers[frameIndex].buffer
-                                                       ? m_skinInstanceBuffers[frameIndex].buffer->GetBuffer()
-                                                       : VK_NULL_HANDLE;
-        const VkBuffer previousSkinPaletteBuffer = frameIndex < m_skinPaletteBuffers.size() &&
-                                                          m_skinPaletteBuffers[frameIndex].buffer
-                                                      ? m_skinPaletteBuffers[frameIndex].buffer->GetBuffer()
-                                                      : VK_NULL_HANDLE;
+        const VkBuffer previousSkinInstanceBuffer =
+            frameIndex < m_skinInstanceBuffers.size() && m_skinInstanceBuffers[frameIndex].buffer
+                ? m_skinInstanceBuffers[frameIndex].buffer->GetBuffer()
+                : VK_NULL_HANDLE;
+        const VkBuffer previousSkinPaletteBuffer =
+            frameIndex < m_skinPaletteBuffers.size() && m_skinPaletteBuffers[frameIndex].buffer
+                ? m_skinPaletteBuffers[frameIndex].buffer->GetBuffer()
+                : VK_NULL_HANDLE;
 
         EnsureInstanceBufferCapacity(frameIndex, writeBase + totalEligible);
         EnsureSkinBuffersCapacity(frameIndex, writeBase + totalEligible, requiredBoneMatrices);

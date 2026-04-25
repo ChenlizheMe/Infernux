@@ -173,9 +173,8 @@ SkinnedNodePose InxSkinnedMesh::SampleNodePose(const SkinnedRuntimeAnimation *an
 std::vector<glm::mat4> InxSkinnedMesh::BuildBoneMatrices(const SkinnedSampleRequest &request) const
 {
     const SkinnedRuntimeAnimation *anim = FindAnimation(request.takeName);
-    const SkinnedRuntimeAnimation *blendAnim = (request.blendWeight > 0.0f && !request.blendTakeName.empty())
-                                                  ? FindAnimation(request.blendTakeName)
-                                                  : nullptr;
+    const SkinnedRuntimeAnimation *blendAnim =
+        (request.blendWeight > 0.0f && !request.blendTakeName.empty()) ? FindAnimation(request.blendTakeName) : nullptr;
     const double tTicks = ToAnimationTicks(anim, request.timeSeconds);
     const double blendTicks = ToAnimationTicks(blendAnim, request.blendTimeSeconds);
     const float w = (blendAnim && blendAnim != anim) ? glm::clamp(request.blendWeight, 0.0f, 1.0f) : 0.0f;

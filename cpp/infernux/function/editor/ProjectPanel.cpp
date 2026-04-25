@@ -176,16 +176,15 @@ bool ProjectPanel::IsModelExt(const std::string &ext)
 const std::unordered_map<std::string, std::string> &ProjectPanel::GetIconMap()
 {
     static const std::unordered_map<std::string, std::string> map = {
-        {"__dir__", "folder"},    {".py", "script_py"},     {".lua", "script_lua"},   {".cs", "script_cs"},
-        {".cpp", "script_cpp"},   {".c", "script_cpp"},     {".h", "script_cpp"},     {".vert", "shader_vert"},
-        {".frag", "shader_frag"}, {".glsl", "shader_glsl"}, {".hlsl", "shader_hlsl"}, {".mat", "material"},
-        {".png", "image"},        {".jpg", "image"},        {".jpeg", "image"},       {".bmp", "image"},
-        {".tga", "image"},        {".gif", "image"},        {".fbx", "model_3d"},     {".obj", "model_3d"},
-        {".gltf", "model_3d"},    {".glb", "model_3d"},     {".wav", "audio"},        {".ttf", "font"},
-        {".otf", "font"},         {".txt", "text"},         {".md", "readme"},        {".json", "config"},
-        {".yaml", "config"},      {".yml", "config"},       {".xml", "config"},       {".scene", "scene"},
-        {".prefab", "prefab"},
-        {".animclip3d", "config"},
+        {"__dir__", "folder"},    {".py", "script_py"},      {".lua", "script_lua"},   {".cs", "script_cs"},
+        {".cpp", "script_cpp"},   {".c", "script_cpp"},      {".h", "script_cpp"},     {".vert", "shader_vert"},
+        {".frag", "shader_frag"}, {".glsl", "shader_glsl"},  {".hlsl", "shader_hlsl"}, {".mat", "material"},
+        {".png", "image"},        {".jpg", "image"},         {".jpeg", "image"},       {".bmp", "image"},
+        {".tga", "image"},        {".gif", "image"},         {".fbx", "model_3d"},     {".obj", "model_3d"},
+        {".gltf", "model_3d"},    {".glb", "model_3d"},      {".wav", "audio"},        {".ttf", "font"},
+        {".otf", "font"},         {".txt", "text"},          {".md", "readme"},        {".json", "config"},
+        {".yaml", "config"},      {".yml", "config"},        {".xml", "config"},       {".scene", "scene"},
+        {".prefab", "prefab"},    {".animclip3d", "config"},
     };
     return map;
 }
@@ -197,16 +196,26 @@ const std::unordered_map<std::string, std::string> &ProjectPanel::GetIconMap()
 const std::unordered_map<std::string, ProjectPanel::DragDropInfo> &ProjectPanel::GetDragDropMap()
 {
     static const std::unordered_map<std::string, DragDropInfo> map = {
-        {".py", {"SCRIPT_FILE", "Script"}},        {".mat", {"MATERIAL_FILE", "Material"}},
-        {".vert", {"SHADER_FILE", "Shader"}},      {".frag", {"SHADER_FILE", "Shader"}},
-        {".glsl", {"SHADER_FILE", "Shader"}},      {".hlsl", {"SHADER_FILE", "Shader"}},
-        {".png", {"TEXTURE_FILE", "Texture"}},     {".jpg", {"TEXTURE_FILE", "Texture"}},
-        {".jpeg", {"TEXTURE_FILE", "Texture"}},    {".bmp", {"TEXTURE_FILE", "Texture"}},
-        {".tga", {"TEXTURE_FILE", "Texture"}},     {".gif", {"TEXTURE_FILE", "Texture"}},
-        {".psd", {"TEXTURE_FILE", "Texture"}},     {".hdr", {"TEXTURE_FILE", "Texture"}},
-        {".pic", {"TEXTURE_FILE", "Texture"}},     {".wav", {"AUDIO_FILE", "Audio"}},
-        {".ttf", {"FONT_FILE", "Font"}},           {".otf", {"FONT_FILE", "Font"}},
-        {".scene", {"SCENE_FILE", "Scene"}},       {".animclip2d", {"ANIMCLIP_FILE", "2D AnimClip"}},
+        {".py", {"SCRIPT_FILE", "Script"}},
+        {".mat", {"MATERIAL_FILE", "Material"}},
+        {".vert", {"SHADER_FILE", "Shader"}},
+        {".frag", {"SHADER_FILE", "Shader"}},
+        {".glsl", {"SHADER_FILE", "Shader"}},
+        {".hlsl", {"SHADER_FILE", "Shader"}},
+        {".png", {"TEXTURE_FILE", "Texture"}},
+        {".jpg", {"TEXTURE_FILE", "Texture"}},
+        {".jpeg", {"TEXTURE_FILE", "Texture"}},
+        {".bmp", {"TEXTURE_FILE", "Texture"}},
+        {".tga", {"TEXTURE_FILE", "Texture"}},
+        {".gif", {"TEXTURE_FILE", "Texture"}},
+        {".psd", {"TEXTURE_FILE", "Texture"}},
+        {".hdr", {"TEXTURE_FILE", "Texture"}},
+        {".pic", {"TEXTURE_FILE", "Texture"}},
+        {".wav", {"AUDIO_FILE", "Audio"}},
+        {".ttf", {"FONT_FILE", "Font"}},
+        {".otf", {"FONT_FILE", "Font"}},
+        {".scene", {"SCENE_FILE", "Scene"}},
+        {".animclip2d", {"ANIMCLIP_FILE", "2D AnimClip"}},
         {".animclip3d", {"ANIMCLIP3D_FILE", "3D AnimClip"}},
         {".animfsm", {"ANIMFSM_FILE", "AnimFSM"}},
     };

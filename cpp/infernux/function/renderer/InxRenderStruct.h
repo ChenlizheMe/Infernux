@@ -36,11 +36,11 @@ class InxMaterial;
  */
 struct Vertex
 {
-    glm::vec3 pos;                     ///< Position in local space
-    glm::vec3 normal;                  ///< Normal vector (normalized)
-    glm::vec4 tangent;                 ///< Tangent vector (xyz) + handedness (w = ±1)
-    glm::vec3 color{1.0f, 1.0f, 1.0f}; ///< Vertex color (default white)
-    glm::vec2 texCoord;                ///< Primary UV coordinates
+    glm::vec3 pos;                      ///< Position in local space
+    glm::vec3 normal;                   ///< Normal vector (normalized)
+    glm::vec4 tangent;                  ///< Tangent vector (xyz) + handedness (w = ±1)
+    glm::vec3 color{1.0f, 1.0f, 1.0f};  ///< Vertex color (default white)
+    glm::vec2 texCoord;                 ///< Primary UV coordinates
     glm::uvec4 boneIndices{0, 0, 0, 0}; ///< GPU skinning bone indices
     glm::vec4 boneWeights{0.0f};        ///< GPU skinning weights
 

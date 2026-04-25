@@ -889,8 +889,8 @@ bool MaterialPreviewer::RenderFromJson(const std::string &materialJson, int size
 }
 
 bool MaterialPreviewer::RenderModelEmbeddedMaterialToPixels(const std::string &modelPath, uint32_t slotIndex, int size,
-                                                            std::vector<unsigned char> &outPixels,
-                                                            AssetDatabase *adb, InxRenderer *renderer)
+                                                            std::vector<unsigned char> &outPixels, AssetDatabase *adb,
+                                                            InxRenderer *renderer)
 {
     if (modelPath.empty())
         return false;

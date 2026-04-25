@@ -300,8 +300,8 @@ class MaterialPreviewer : public IResourcePreviewer
 
     /// @brief Preview material extracted from an imported model slot (FBX inline materials).
     static bool RenderModelEmbeddedMaterialToPixels(const std::string &modelPath, uint32_t slotIndex, int size,
-                                                    std::vector<unsigned char> &outPixels,
-                                                    AssetDatabase *adb = nullptr, InxRenderer *renderer = nullptr);
+                                                    std::vector<unsigned char> &outPixels, AssetDatabase *adb = nullptr,
+                                                    InxRenderer *renderer = nullptr);
 
   private:
     InxGUI *m_gui = nullptr;

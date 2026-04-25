@@ -12,9 +12,9 @@
 
 #include <filesystem>
 #include <fstream>
+#include <nlohmann/json.hpp>
 #include <unordered_set>
 #include <vector>
-#include <nlohmann/json.hpp>
 
 namespace infernux
 {
