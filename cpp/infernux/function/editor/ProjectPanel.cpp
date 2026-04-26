@@ -38,6 +38,15 @@ static std::string TrimCopy(std::string s)
     return s;
 }
 
+/// "Armature | Action" from importers → display / row id "Armature" only.
+static std::string StripPipeDisplaySuffix(const std::string &s)
+{
+    auto pos = s.find(" | ");
+    if (pos == std::string::npos)
+        return s;
+    return TrimCopy(s.substr(0, pos));
+}
+
 static std::vector<std::string> SplitCommaList(const std::string &csv)
 {
     std::vector<std::string> out;
@@ -136,8 +145,10 @@ inline ImU32 ProjectSelectionOutlineColor()
 }
 
 constexpr float kProjectSelectionOutlineThickness = 2.0f;
-/// Full-height strip on the right of the model icon (ASCII glyphs only)
+/// Full-height click strip on the right of the model icon (image drawn with aspect preserved).
 constexpr float kModelExpandStripW = 12.0f;
+/// Pixel size of `model_expand_*.png` in repo (square); used only for correct scaling in the strip.
+constexpr float kModelExpandIconSrcPx = 32.0f;
 
 } // namespace
 
@@ -176,15 +187,16 @@ bool ProjectPanel::IsModelExt(const std::string &ext)
 const std::unordered_map<std::string, std::string> &ProjectPanel::GetIconMap()
 {
     static const std::unordered_map<std::string, std::string> map = {
-        {"__dir__", "folder"},    {".py", "script_py"},      {".lua", "script_lua"},   {".cs", "script_cs"},
-        {".cpp", "script_cpp"},   {".c", "script_cpp"},      {".h", "script_cpp"},     {".vert", "shader_vert"},
-        {".frag", "shader_frag"}, {".glsl", "shader_glsl"},  {".hlsl", "shader_hlsl"}, {".mat", "material"},
-        {".png", "image"},        {".jpg", "image"},         {".jpeg", "image"},       {".bmp", "image"},
-        {".tga", "image"},        {".gif", "image"},         {".fbx", "model_3d"},     {".obj", "model_3d"},
-        {".gltf", "model_3d"},    {".glb", "model_3d"},      {".wav", "audio"},        {".ttf", "font"},
-        {".otf", "font"},         {".txt", "text"},          {".md", "readme"},        {".json", "config"},
-        {".yaml", "config"},      {".yml", "config"},        {".xml", "config"},       {".scene", "scene"},
-        {".prefab", "prefab"},    {".animclip3d", "config"},
+        {"__dir__", "folder"},   {".py", "script_py"},
+        {".vert", "shader_vert"},
+        {".frag", "shader_frag"},
+        {".hlsl", "shader_hlsl"},
+        {".fbx", "model_3d"},    {".obj", "model_3d"},        {".gltf", "model_3d"},
+        {".glb", "model_3d"},    {".wav", "audio"},           {".ttf", "font"},
+        {".otf", "font"},        {".txt", "text"},            {".md", "readme"},
+        {".scene", "scene"},     {".prefab", "prefab"},       {".animclip2d", "animclip2d"},
+        {".animclip3d", "animclip3d"},
+        {".animfsm", "animfsm"},
     };
     return map;
 }
@@ -780,7 +792,7 @@ void ProjectPanel::AppendModelSubAssets(std::vector<FileItem> &out, AssetDatabas
             FileItem sub{};
             sub.type = FileItem::SubMesh;
             const std::string &takeName = animNames[static_cast<size_t>(i)];
-            sub.name = takeName + ".animclip3d";
+            sub.name = StripPipeDisplaySuffix(takeName) + ".animclip3d";
             sub.path = MakeSubAssetVirtualPath(animVirtualBase, kSubAnimToken, i);
             sub.ext = ".animclip3d";
             sub.parentPath = modelPath;
@@ -1004,7 +1016,8 @@ void ProjectPanel::EnsureTypeIconsLoaded()
     std::unordered_set<std::string> needed;
     for (auto &[_, iconName] : GetIconMap())
         needed.insert(iconName);
-    needed.insert("file"); // generic fallback
+    needed.insert("model_expand_open");
+    needed.insert("model_expand_closed");
 
     std::error_code ec;
     for (auto &iconKey : needed) {
@@ -1033,23 +1046,24 @@ void ProjectPanel::EnsureTypeIconsLoaded()
 uint64_t ProjectPanel::GetTypeIconId(const FileItem &item) const
 {
     const std::string *key = nullptr;
-    static const std::string fallbackKey = "file";
     auto &iconMap = GetIconMap();
 
     if (item.type == FileItem::Dir) {
         auto sit = iconMap.find("__dir__");
-        key = sit != iconMap.end() ? &sit->second : &fallbackKey;
+        key = sit != iconMap.end() ? &sit->second : nullptr;
     } else if (item.type == FileItem::SubMesh) {
         auto mapIt = iconMap.find(item.ext.empty() ? ".fbx" : item.ext);
-        key = mapIt != iconMap.end() ? &mapIt->second : &fallbackKey;
+        key = mapIt != iconMap.end() ? &mapIt->second : nullptr;
     } else if (item.type == FileItem::SubMaterial) {
         auto sit = iconMap.find(".mat");
-        key = sit != iconMap.end() ? &sit->second : &fallbackKey;
+        key = sit != iconMap.end() ? &sit->second : nullptr;
     } else {
         auto mapIt = iconMap.find(item.ext);
-        key = mapIt != iconMap.end() ? &mapIt->second : &fallbackKey;
+        key = mapIt != iconMap.end() ? &mapIt->second : nullptr;
     }
 
+    if (!key)
+        return 0;
     auto it = m_typeIconCache.find(*key);
     return it != m_typeIconCache.end() ? it->second : 0;
 }
@@ -1086,7 +1100,19 @@ const ProjectPanel::LabelEntry &ProjectPanel::GetCachedItemLabel(InxGUIContext *
         auto dot = nameDisplay.rfind('.');
         if (dot != std::string::npos)
             nameDisplay = nameDisplay.substr(0, dot);
-    } else if (item.type == FileItem::SubMesh || item.type == FileItem::SubMaterial) {
+    } else if (item.type == FileItem::SubMesh) {
+        std::string subLabel = item.name;
+        if (item.ext == ".animclip3d" && !subLabel.empty()) {
+            auto d = subLabel.rfind('.');
+            if (d != std::string::npos) {
+                std::string stem = subLabel.substr(0, d);
+                std::string ext = subLabel.substr(d);
+                stem = StripPipeDisplaySuffix(stem);
+                subLabel = std::move(stem) + ext;
+            }
+        }
+        nameDisplay = std::string("  ") + subLabel;
+    } else if (item.type == FileItem::SubMaterial) {
         nameDisplay = std::string("  ") + item.name;
     }
 
@@ -1935,8 +1961,7 @@ void ProjectPanel::RenderFileGrid(InxGUIContext *ctx)
             // ── Resolve display texture (inline for speed) ──
             uint64_t displayTexId = 0;
             if (item.type == FileItem::SubMesh) {
-                auto tic = m_typeIconCache.find("model_3d");
-                displayTexId = tic != m_typeIconCache.end() ? tic->second : 0;
+                displayTexId = GetTypeIconId(item);
             } else if (item.type == FileItem::SubMaterial) {
                 displayTexId = GetMaterialThumbnail(item.path);
                 if (displayTexId == 0)
@@ -2002,7 +2027,39 @@ void ProjectPanel::RenderFileGrid(InxGUIContext *ctx)
                     ImGui::SameLine(0.0f, 0.0f);
                     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0.0f, 0.0f));
                     const bool ex = m_expandedModels.count(item.path) > 0;
-                    if (ImGui::Button(ex ? "v" : ">", ImVec2(stripW, iconSize))) {
+                    uint64_t expandTex = 0;
+                    if (ex) {
+                        auto eit = m_typeIconCache.find("model_expand_open");
+                        expandTex = eit != m_typeIconCache.end() ? eit->second : 0;
+                    } else {
+                        auto eit = m_typeIconCache.find("model_expand_closed");
+                        expandTex = eit != m_typeIconCache.end() ? eit->second : 0;
+                    }
+                    bool expandClicked = false;
+                    if (expandTex != 0) {
+                        // ImageButton with ImVec2(stripW, iconSize) distorts a square art asset; keep hit area
+                        // full strip x icon height but draw the glyph with aspect preserved and centered.
+                        ImGui::InvisibleButton("##mdlexpand", ImVec2(stripW, iconSize));
+                        expandClicked =
+                            ImGui::IsItemHovered() && ImGui::IsMouseReleased(0) && !hasDragPayload;
+                        const ImVec2 ex0 = ImGui::GetItemRectMin();
+                        const ImVec2 ex1 = ImGui::GetItemRectMax();
+                        const float exW = ex1.x - ex0.x;
+                        const float exH = ex1.y - ex0.y;
+                        const float srcW = kModelExpandIconSrcPx;
+                        const float srcH = kModelExpandIconSrcPx;
+                        const float gScale = std::min(exW / srcW, exH / srcH);
+                        const float dW = std::max(1.0f, srcW * gScale);
+                        const float dH = std::max(1.0f, srcH * gScale);
+                        const float cx = (ex0.x + ex1.x) * 0.5f;
+                        const float cy = (ex0.y + ex1.y) * 0.5f;
+                        const ImVec2 dmin(cx - dW * 0.5f, cy - dH * 0.5f);
+                        const ImVec2 dmax(cx + dW * 0.5f, cy + dH * 0.5f);
+                        drawList->AddImage(ImTextureRef(static_cast<ImTextureID>(expandTex)), dmin, dmax);
+                    } else {
+                        expandClicked = ImGui::Button(ex ? "v" : ">", ImVec2(stripW, iconSize));
+                    }
+                    if (expandClicked) {
                         if (ex)
                             m_expandedModels.erase(item.path);
                         else

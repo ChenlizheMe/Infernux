@@ -6,14 +6,14 @@ used by the editor and player at runtime.
 Example::
 
     from Infernux.resources import icon_path, file_type_icons_dir
-    print(icon_path)           # .../resources/pictures/icon.png
+    print(icon_path)           # .../resources/icons/icon.png
     print(file_type_icons_dir) # .../resources/icons/
 """
 
 from __future__ import annotations
 
 icon_path: str
-"""Absolute path to the engine window icon (``resources/pictures/icon.png``)."""
+"""Absolute path to the engine window icon (``resources/icons/icon.png``)."""
 
 engine_font_path: str
 """Absolute path to the default UI font (``PingFangTC-Regular.otf``)."""

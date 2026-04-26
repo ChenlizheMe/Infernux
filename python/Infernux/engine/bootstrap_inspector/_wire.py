@@ -347,7 +347,9 @@ def _wire_icons_and_body(ctx):
                 f"compicon|{key}",
                 icon_path,
                 int(stamp),
-                nearest=False,
+                # Inspector draws ~COMPONENT_ICON_SIZE logical px; linear + mips from a 256px
+                # atlas reads mushy. Point sampling + smaller CPU downscale matches Unity-like crisp UI.
+                nearest=True,
                 srgb=False,
             )
             if tid != 0:

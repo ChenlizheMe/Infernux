@@ -839,6 +839,10 @@ std::pair<bool, bool> InspectorPanel::RenderComponentHeader(InxGUIContext * /*ct
         float drawSize = (std::min)({iconSize, slotMax.x - slotMin.x, slotMax.y - slotMin.y});
         float drawX = slotMin.x + (std::max)(0.0f, (slotMax.x - slotMin.x - drawSize) * 0.5f);
         float drawY = slotMin.y + (std::max)(0.0f, (slotMax.y - slotMin.y - drawSize) * 0.5f);
+        // Snap to integer pixels to avoid bilinear mush on subpixel edges (common vs Unity crisp UI).
+        drawSize = std::floor(drawSize);
+        drawX = std::floor(drawX);
+        drawY = std::floor(drawY);
 
         ImDrawList *drawList = ImGui::GetWindowDrawList();
         ImTextureRef texRef(static_cast<ImTextureID>(iconId));
