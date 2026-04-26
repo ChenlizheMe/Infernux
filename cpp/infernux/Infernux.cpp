@@ -1349,31 +1349,31 @@ std::tuple<uint64_t, int, int> Infernux::QueryOrScheduleTexturePreview(const std
         }
     }
 
-        if (shouldEnqueue) {
-            constexpr int kDefaultPreviewResolution = 256;
-            // Inspector component icons (~16 logical px, often 2x framebuffer); keep GPU texture near
-            // display density instead of a 256px atlas + heavy minification.
-            constexpr int kComponentIconPreviewMaxDim = 64;
-            EnqueuePreviewTask([this, req, kDefaultPreviewResolution, kComponentIconPreviewMaxDim]() {
-                TexturePreviewCompleted completed;
-                completed.resourceKey = req.resourceKey;
-                completed.generation = req.generation;
-                completed.nearest = req.nearest;
+    if (shouldEnqueue) {
+        constexpr int kDefaultPreviewResolution = 256;
+        // Inspector component icons (~16 logical px, often 2x framebuffer); keep GPU texture near
+        // display density instead of a 256px atlas + heavy minification.
+        constexpr int kComponentIconPreviewMaxDim = 64;
+        EnqueuePreviewTask([this, req, kDefaultPreviewResolution, kComponentIconPreviewMaxDim]() {
+            TexturePreviewCompleted completed;
+            completed.resourceKey = req.resourceKey;
+            completed.generation = req.generation;
+            completed.nearest = req.nearest;
 
-                auto texData = InxTextureLoader::LoadFromFile(req.textureFilePath);
-                if (!texData.IsValid()) {
-                    std::lock_guard<std::mutex> lock(m_previewResultMutex);
-                    m_texturePreviewCompletedQueue.push(std::move(completed));
-                    return;
-                }
+            auto texData = InxTextureLoader::LoadFromFile(req.textureFilePath);
+            if (!texData.IsValid()) {
+                std::lock_guard<std::mutex> lock(m_previewResultMutex);
+                m_texturePreviewCompletedQueue.push(std::move(completed));
+                return;
+            }
 
-                std::vector<unsigned char> sampled;
-                int outW = 0;
-                int outH = 0;
-                const int maxDim = (!req.resourceKey.empty() && req.resourceKey.compare(0, 9, "compicon|") == 0)
-                                       ? kComponentIconPreviewMaxDim
-                                       : kDefaultPreviewResolution;
-                DownsampleNearestRgba(texData.pixels, texData.width, texData.height, maxDim, sampled, outW, outH);
+            std::vector<unsigned char> sampled;
+            int outW = 0;
+            int outH = 0;
+            const int maxDim = (!req.resourceKey.empty() && req.resourceKey.compare(0, 9, "compicon|") == 0)
+                                   ? kComponentIconPreviewMaxDim
+                                   : kDefaultPreviewResolution;
+            DownsampleNearestRgba(texData.pixels, texData.width, texData.height, maxDim, sampled, outW, outH);
             if (sampled.empty() || outW <= 0 || outH <= 0) {
                 std::lock_guard<std::mutex> lock(m_previewResultMutex);
                 m_texturePreviewCompletedQueue.push(std::move(completed));

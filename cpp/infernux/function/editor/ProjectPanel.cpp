@@ -187,14 +187,23 @@ bool ProjectPanel::IsModelExt(const std::string &ext)
 const std::unordered_map<std::string, std::string> &ProjectPanel::GetIconMap()
 {
     static const std::unordered_map<std::string, std::string> map = {
-        {"__dir__", "folder"},   {".py", "script_py"},
+        {"__dir__", "folder"},
+        {".py", "script_py"},
         {".vert", "shader_vert"},
         {".frag", "shader_frag"},
         {".hlsl", "shader_hlsl"},
-        {".fbx", "model_3d"},    {".obj", "model_3d"},        {".gltf", "model_3d"},
-        {".glb", "model_3d"},    {".wav", "audio"},           {".ttf", "font"},
-        {".otf", "font"},        {".txt", "text"},            {".md", "readme"},
-        {".scene", "scene"},     {".prefab", "prefab"},       {".animclip2d", "animclip2d"},
+        {".fbx", "model_3d"},
+        {".obj", "model_3d"},
+        {".gltf", "model_3d"},
+        {".glb", "model_3d"},
+        {".wav", "audio"},
+        {".ttf", "font"},
+        {".otf", "font"},
+        {".txt", "text"},
+        {".md", "readme"},
+        {".scene", "scene"},
+        {".prefab", "prefab"},
+        {".animclip2d", "animclip2d"},
         {".animclip3d", "animclip3d"},
         {".animfsm", "animfsm"},
     };
@@ -2040,8 +2049,7 @@ void ProjectPanel::RenderFileGrid(InxGUIContext *ctx)
                         // ImageButton with ImVec2(stripW, iconSize) distorts a square art asset; keep hit area
                         // full strip x icon height but draw the glyph with aspect preserved and centered.
                         ImGui::InvisibleButton("##mdlexpand", ImVec2(stripW, iconSize));
-                        expandClicked =
-                            ImGui::IsItemHovered() && ImGui::IsMouseReleased(0) && !hasDragPayload;
+                        expandClicked = ImGui::IsItemHovered() && ImGui::IsMouseReleased(0) && !hasDragPayload;
                         const ImVec2 ex0 = ImGui::GetItemRectMin();
                         const ImVec2 ex1 = ImGui::GetItemRectMax();
                         const float exW = ex1.x - ex0.x;
