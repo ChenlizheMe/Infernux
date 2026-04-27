@@ -169,7 +169,9 @@ python -m pytest test/ -v
 - Technical report: [Infernux: A Python-Native Game Engine with JIT-Accelerated Scripting (arXiv:2604.10263)](https://arxiv.org/pdf/2604.10263)
 - API reference: generated from the Python package and published under `docs/wiki/site/`
 
-To regenerate the API markdown and static site locally:
+Pushes to `main` or `master` trigger GitHub Actions to regenerate the API markdown and static site, then commit the generated output back to the repository.
+
+You can still regenerate everything locally:
 
 ```bash
 conda activate infengine

@@ -1,0 +1,72 @@
+name: Build Wiki
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - ".github/workflows/build-wiki.yml"
+      - "docs/wiki/docs/**"
+      - "docs/wiki/theme/**"
+      - "docs/wiki/generate_api_docs.py"
+      - "docs/wiki/mkdocs.yml"
+      - "docs/wiki/requirements.txt"
+      - "python/Infernux/**"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-wiki-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Generate and commit wiki
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.ref_name }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: docs/wiki/requirements.txt
+
+      - name: Install documentation dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r docs/wiki/requirements.txt
+
+      - name: Generate API Markdown
+        env:
+          PYTHONIOENCODING: utf-8
+        run: python docs/wiki/generate_api_docs.py
+
+      - name: Build static wiki
+        env:
+          PYTHONIOENCODING: utf-8
+        run: python -m mkdocs build --clean -f docs/wiki/mkdocs.yml
+
+      - name: Commit generated wiki output
+        shell: bash
+        run: |
+          git add docs/wiki/docs docs/wiki/site docs/wiki/mkdocs.yml docs/wiki/mkdocs_api_nav.yml docs/assets/wiki-docs.json
+
+          if git diff --cached --quiet; then
+            echo "No generated wiki changes to commit."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "docs: regenerate wiki [skip ci]"
+          git push origin HEAD:${{ github.ref_name }}

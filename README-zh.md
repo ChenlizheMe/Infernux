@@ -159,7 +159,9 @@ python -m pytest test/ -v
 - 技术报告：[Infernux: A Python-Native Game Engine with JIT-Accelerated Scripting（arXiv:2604.10263）](https://arxiv.org/pdf/2604.10263)
 - API 参考：从 Python 包自动生成，并发布到 `docs/wiki/site/`
 
-本地重新生成 API Markdown 和静态站点：
+推送到 `main` 或 `master` 后，GitHub Actions 会自动重新生成 API Markdown 和静态站点，并把生成结果提交回仓库。
+
+本地仍可手动重新生成：
 
 ```bash
 conda activate infengine
