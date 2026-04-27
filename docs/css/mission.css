@@ -1,0 +1,66 @@
+/* =====================================================================
+   Mission ribbon — top-of-page identity strip (NASA Punk).
+   The base layout already lives in style.css; this file fine-tunes the
+   bilingual engine name and the hazard stripes that frame it.
+   --------------------------------------------------------------------- */
+
+.mission-ribbon {
+    position: relative;
+    background:
+        linear-gradient(90deg, var(--accent) 0%, var(--accent-deep) 60%, var(--accent) 100%);
+    overflow: hidden;
+}
+
+.mission-ribbon::before,
+.mission-ribbon::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 56px;
+    background:
+        repeating-linear-gradient(
+            -45deg,
+            #1c0808 0 6px,
+            #f3e1d6 6px 12px
+        );
+    opacity: 0.85;
+    pointer-events: none;
+}
+
+.mission-ribbon::before { left: 0; }
+.mission-ribbon::after { right: 0; }
+
+.mission-ribbon-inner {
+    position: relative;
+    z-index: 1;
+}
+
+.mission-kicker {
+    text-shadow: 0 0 10px rgba(0, 0, 0, 0.35);
+}
+
+.mission-name {
+    text-shadow: 0 0 12px rgba(255, 207, 184, 0.35);
+}
+
+.mission-name .mission-accent {
+    color: #fff8ef;
+    text-shadow:
+        0 0 4px rgba(255, 248, 239, 0.7),
+        0 0 14px rgba(255, 207, 184, 0.45);
+}
+
+.mission-sub {
+    color: rgba(253, 243, 240, 0.78);
+    border-left: 1px solid rgba(253, 243, 240, 0.4);
+    padding-left: 14px;
+}
+
+@media (max-width: 820px) {
+    .mission-ribbon::before,
+    .mission-ribbon::after { width: 28px; }
+
+    .mission-name { font-size: 0.86rem; letter-spacing: 0.22em; }
+    .mission-sub { font-size: 0.74rem; letter-spacing: 0.28em; padding-left: 10px; }
+}

@@ -2,11 +2,13 @@
   <img src="docs/assets/logo.png" alt="Infernux logo" width="128" />
 </p>
 
-<h1 align="center">Infernux</h1>
+<h1 align="center">Infernux · 熔炉</h1>
 
 <p align="center">
   <strong>Open-source game engine with a C++17 / Vulkan runtime and a Python production layer.</strong>
 </p>
+
+<p align="center"><em>Chinese name: <strong>熔炉</strong> (official Chinese branding). The repository and package name remain <code>Infernux</code>.</em></p>
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License" /></a>

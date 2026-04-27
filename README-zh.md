@@ -2,11 +2,13 @@
   <img src="docs/assets/logo.png" alt="Infernux logo" width="128" />
 </p>
 
-<h1 align="center">Infernux</h1>
+<h1 align="center">熔炉</h1>
 
 <p align="center">
-  <strong>开源游戏引擎，采用 C++17 / Vulkan 原生运行时，以及负责生产工作流的 Python 层。</strong>
+  <strong>Infernux · 开源游戏引擎。C++17 / Vulkan 原生运行时，搭配负责生产工作流的 Python 层。</strong>
 </p>
+
+<p align="center"><em>「熔炉」为本引擎中文名；工程与包名仍使用 <code>Infernux</code>。</em></p>
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License" /></a>

@@ -1,18 +1,13 @@
-.docs-entry-grid {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-}
-
-.docs-entry-grid .hub-card {
-    min-height: 230px;
-    background: linear-gradient(180deg, var(--bg-panel) 0%, var(--bg-elevated) 100%);
-}
-
-.docs-entry-grid .hub-card p {
-    max-width: calc(100% - 24px);
-}
+/* =====================================================================
+   Wiki / Documentation deck. NASA Punk system.
+   --------------------------------------------------------------------- */
 
 .docs-hero {
-    margin-bottom: 12px;
+    margin-bottom: 18px;
+}
+
+.docs-hero .hub-actions {
+    margin-top: 28px;
 }
 
 .docs-library {
@@ -21,22 +16,26 @@
 
 .docs-library-groups {
     display: grid;
-    gap: 28px;
+    gap: 36px;
     margin-top: 24px;
 }
 
 .docs-library-status,
 .docs-library-empty {
-    padding: 22px 24px;
-    border-radius: 22px;
-    border: 1px dashed var(--border);
-    background: linear-gradient(180deg, var(--bg-panel) 0%, var(--bg-elevated) 100%);
+    padding: 26px 28px;
+    border-radius: var(--radius-md);
+    border: 1px dashed var(--border-strong);
+    background:
+        linear-gradient(180deg, var(--bg-panel) 0%, var(--bg-elevated) 100%);
     color: var(--text-muted);
+    font-family: var(--font-mono);
+    font-size: 0.92rem;
+    letter-spacing: 0.06em;
 }
 
 .docs-library-group {
     display: grid;
-    gap: 16px;
+    gap: 18px;
 }
 
 .docs-library-group-head {
@@ -44,18 +43,27 @@
     align-items: end;
     justify-content: space-between;
     gap: 16px;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 12px;
 }
 
 .docs-library-group-head h3 {
     margin: 0;
-    font-size: 1.25rem;
+    font-family: var(--font-display);
+    font-size: 1.32rem;
+    letter-spacing: -0.01em;
 }
 
 .docs-library-group-meta {
-    color: var(--text-soft);
-    font-size: 0.84rem;
+    color: var(--accent);
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    letter-spacing: 0.18em;
     text-transform: uppercase;
-    letter-spacing: 0.08em;
+    border: 1px solid var(--accent-line);
+    padding: 4px 10px;
+    border-radius: var(--radius-xs);
+    background: var(--accent-soft);
 }
 
 .docs-library-grid {
@@ -66,44 +74,43 @@
 
 .docs-library-card {
     min-height: 220px;
-    background: linear-gradient(180deg, var(--bg-panel) 0%, var(--bg-elevated) 100%);
+    background:
+        linear-gradient(180deg, var(--bg-panel) 0%, var(--bg-elevated) 100%);
+    padding: 24px 22px 22px;
+    transition: transform 0.18s ease, border-color 0.18s ease;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+}
+
+.docs-library-card:hover {
+    transform: translateY(-3px);
+    border-color: var(--border-accent);
 }
 
 .docs-library-card .card-mark {
     margin-bottom: 14px;
 }
 
+.docs-library-card h3 {
+    font-family: var(--font-display);
+    font-size: 1.12rem;
+    line-height: 1.25;
+    margin-bottom: 10px;
+}
+
+.docs-library-card p {
+    color: var(--text-muted);
+    font-size: 0.94rem;
+    line-height: 1.55;
+}
+
 .docs-library-path {
     display: block;
-    margin-top: 14px;
+    margin-top: 16px;
     color: var(--text-soft);
-    font-size: 0.82rem;
-    letter-spacing: 0.03em;
-}
-
-@media (max-width: 1080px) {
-    .docs-entry-grid {
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-    }
-
-    .docs-library-grid {
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-    }
-}
-
-@media (max-width: 820px) {
-    .docs-entry-grid {
-        grid-template-columns: 1fr;
-    }
-
-    .docs-library-grid {
-        grid-template-columns: 1fr;
-    }
-
-    .docs-library-group-head {
-        flex-direction: column;
-        align-items: start;
-    }
+    font-family: var(--font-mono);
+    font-size: 0.74rem;
+    letter-spacing: 0.04em;
 }
 
 .wiki-toolbar {
@@ -118,19 +125,28 @@
 .wiki-search-input {
     flex: 1;
     min-width: 250px;
-    padding: 12px 18px;
-    border-radius: 12px;
-    border: 1px solid var(--border);
+    padding: 12px 16px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border-strong);
     background: var(--bg-panel);
-    color: var(--text-normal);
-    font-size: 0.95rem;
+    color: var(--text);
+    font-family: var(--font-mono);
+    font-size: 0.92rem;
+    letter-spacing: 0.04em;
     outline: none;
-    transition: border-color 0.2s, box-shadow 0.2s;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.wiki-search-input::placeholder {
+    color: var(--text-soft);
+    text-transform: uppercase;
+    letter-spacing: 0.18em;
+    font-size: 0.78rem;
 }
 
 .wiki-search-input:focus {
     border-color: var(--accent);
-    box-shadow: 0 0 0 3px rgba(global-accent, 0.15); /* Needs actual accent var if available, we'll rely on border mostly */
+    box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
 .wiki-tags-filter {
@@ -149,20 +165,22 @@
 
 .wiki-category-btn {
     padding: 6px 14px;
-    border-radius: 8px;
-    font-size: 0.85rem;
-    font-weight: 500;
+    border-radius: var(--radius-xs);
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
     cursor: pointer;
     background: var(--bg-panel);
-    border: 1px solid var(--border);
-    color: var(--text-normal);
+    border: 1px solid var(--border-strong);
+    color: var(--text);
     transition: all 0.2s ease;
     user-select: none;
 }
 
 .wiki-category-btn:hover {
-    border-color: var(--text-muted);
-    background: var(--bg-elevated);
+    border-color: var(--accent-line);
+    color: var(--accent);
 }
 
 .wiki-category-btn.active {
@@ -173,20 +191,21 @@
 
 .wiki-tag {
     padding: 4px 12px;
-    border-radius: 20px;
-    font-size: 0.75rem;
+    border-radius: 999px;
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
     cursor: pointer;
     background: transparent;
-    border: 1px solid var(--border);
+    border: 1px solid var(--border-strong);
     color: var(--text-muted);
-    transition: all 0.2s;
+    transition: all 0.18s ease;
     user-select: none;
+    letter-spacing: 0.08em;
 }
 
 .wiki-tag:hover {
-    color: var(--text-normal);
-    border-color: var(--text-muted);
-    background: var(--bg-elevated);
+    color: var(--accent);
+    border-color: var(--accent-line);
 }
 
 .wiki-tag.active {
@@ -205,13 +224,29 @@
 
 .card-tags .wiki-tag {
     padding: 2px 8px;
-    font-size: 0.72rem;
+    font-size: 0.7rem;
     cursor: default;
 }
 
 .card-tags .wiki-tag:hover {
     color: var(--text-muted);
-    border-color: var(--border);
+    border-color: var(--border-strong);
     background: transparent;
 }
 
+@media (max-width: 1080px) {
+    .docs-library-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+}
+
+@media (max-width: 820px) {
+    .docs-library-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .docs-library-group-head {
+        flex-direction: column;
+        align-items: start;
+    }
+}
