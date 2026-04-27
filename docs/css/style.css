@@ -101,7 +101,18 @@
 
     --nav-bg: rgba(244, 241, 232, 0.86);
     --nav-bg-scroll: rgba(244, 241, 232, 0.96);
-    --code-bg: #0e1018;
+    /* Code panels in light mode: light “paper” block so syntax colors stay legible on cream page */
+    --code-bg: #f2ece2;
+    --code-surface-2: #e4dcd0;
+    --code-border-strong: rgba(20, 22, 30, 0.14);
+    --code-text-default: #1e2128;
+    --code-hl-keyword: #b12d2d;
+    --code-hl-class: #8a4b00;
+    --code-hl-fn: #1a5f9e;
+    --code-hl-param: #9a2d4a;
+    --code-hl-string: #2d6a3a;
+    --code-hl-number: #a65f0c;
+    --code-hl-comment: #5c6370;
 
     color-scheme: light;
 }
@@ -607,7 +618,6 @@ img { max-width: 100%; display: block; }
 }
 
 /* Hero panel: mission console */
-.micro-card,
 .metric-card,
 .pillar-card,
 .capability-card,
@@ -623,54 +633,6 @@ img { max-width: 100%; display: block; }
     background:
         linear-gradient(180deg, var(--bg-panel) 0%, var(--bg-elevated) 100%);
     box-shadow: var(--shadow-soft);
-}
-
-.micro-card {
-    padding: 22px;
-    position: relative;
-    overflow: hidden;
-}
-
-.micro-card::after {
-    content: "OP-CODE / 0x015";
-    position: absolute;
-    top: 12px;
-    right: 16px;
-    font-family: var(--font-mono);
-    font-size: 0.7rem;
-    color: var(--text-faint);
-    letter-spacing: 0.22em;
-}
-
-.micro-label {
-    color: var(--text-soft);
-    text-transform: uppercase;
-    letter-spacing: 0.22em;
-    font-family: var(--font-mono);
-    font-size: 0.72rem;
-    margin-bottom: 14px;
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-}
-
-.micro-label::before {
-    content: "";
-    width: 18px;
-    height: 1px;
-    background: var(--accent);
-}
-
-.micro-title {
-    font-family: var(--font-display);
-    font-size: 1.32rem;
-    margin-bottom: 12px;
-    letter-spacing: -0.01em;
-}
-
-.micro-copy {
-    color: var(--text-muted);
-    font-size: 0.94rem;
 }
 
 /* Code preview */
@@ -731,6 +693,30 @@ img { max-width: 100%; display: block; }
 .comment { color: #5e6470; font-style: italic; }
 .literal { color: #f3b36a; }
 .decorator { color: #d08cff; }
+
+/* Light theme: code preview readable on warm background */
+[data-theme="light"] .code-preview {
+    background: var(--code-bg);
+    border-color: var(--code-border-strong);
+    box-shadow: 0 1px 0 rgba(255, 255, 255, 0.65) inset, var(--shadow-soft);
+}
+
+[data-theme="light"] .code-header {
+    background: var(--code-surface-2);
+    border-bottom-color: var(--code-border-strong);
+}
+
+[data-theme="light"] .code-preview code {
+    color: var(--code-text-default);
+}
+
+[data-theme="light"] .code-preview .keyword { color: var(--code-hl-keyword); }
+[data-theme="light"] .code-preview .class-name { color: var(--code-hl-class); }
+[data-theme="light"] .code-preview .function { color: var(--code-hl-fn); }
+[data-theme="light"] .code-preview .param { color: var(--code-hl-param); }
+[data-theme="light"] .code-preview .string { color: var(--code-hl-string); }
+[data-theme="light"] .code-preview .number { color: var(--code-hl-number); }
+[data-theme="light"] .code-preview .comment { color: var(--code-hl-comment); }
 
 /* ── Manifesto strip (telemetry banner) ──────────────────────────── */
 .manifesto-strip {

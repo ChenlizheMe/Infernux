@@ -8,7 +8,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap">
-    <link rel="stylesheet" href="css/style.css?v=4">
+    <link rel="stylesheet" href="css/style.css?v=5">
     <link rel="stylesheet" href="css/mission.css?v=2">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 </head>
@@ -31,7 +31,6 @@
                     <a href="#home" class="active" data-i18n="nav.home">Home</a>
                     <a href="#system" data-i18n="nav.features">Principles</a>
                     <a href="#capabilities" data-i18n="nav.showcase">Capabilities</a>
-                    <a href="#difference" data-i18n="nav.comparison">Architecture</a>
                     <a href="roadmap.html" data-i18n="nav.roadmap">Roadmap</a>
                     <a href="wiki.html" data-i18n="nav.docs">Docs</a>
                     <a href="https://github.com/ChenlizheMe/Infernux" target="_blank" rel="noopener">
@@ -92,32 +91,18 @@
                         </div>
                     </div>
                     <div class="hero-panel">
-                        <div class="micro-card">
-                            <div class="micro-label" data-i18n="home.panel.manifest.label">Engine readout</div>
-                            <div class="micro-title" data-i18n="home.panel.manifest.title">Runtime, editor, animation, and packaging on one stack.</div>
-                            <p class="micro-copy" data-i18n="home.panel.manifest.body">Vulkan rendering, Jolt physics, the editor shell, Python hot-reload, GUID-based asset workflows, play-mode isolation, 2D/3D animation previews, skinned meshes, and standalone packaging are wired into the same build today.</p>
-                        </div>
                         <div class="code-preview">
                             <div class="code-header">
                                 <span class="dot red"></span>
                                 <span class="dot yellow"></span>
                                 <span class="dot green"></span>
-                                <span class="filename">render_pipeline.py</span>
+                                <span class="filename">mover.py</span>
                             </div>
-                            <pre><code><span class="keyword">class</span> <span class="class-name">StudioPipeline</span>(RenderPipeline):
-    <span class="keyword">def</span> <span class="function">render</span>(<span class="param">self</span>, ctx, cameras):
-        <span class="keyword">for</span> camera <span class="keyword">in</span> cameras:
-            culling = ctx.cull(camera)
-            graph   = RenderGraph(<span class="string">"FrameGraph"</span>)
+                            <pre><code><span class="keyword">from</span> Infernux <span class="keyword">import</span> *
 
-            gbuffer  = graph.add_pass(<span class="string">"GBuffer"</span>)
-            lighting = graph.add_pass(<span class="string">"Lighting"</span>)
-            outline  = graph.add_pass(<span class="string">"Outline"</span>)
-
-            lighting.read(<span class="string">"gbuffer_normal"</span>)
-            outline.read(<span class="string">"depth"</span>)
-            ctx.apply_graph(graph.build())
-            ctx.submit_culling(culling)</code></pre>
+<span class="keyword">class</span> <span class="class-name">Mover</span>(InxComponent):
+    <span class="keyword">def</span> <span class="function">update</span>(<span class="param">self</span>, delta_time: float):
+        <span class="param">self</span>.transform.translate(Vector3(<span class="number">0.2</span>, <span class="number">0.0</span>, <span class="number">0.0</span>) * delta_time)</code></pre>
                         </div>
                     </div>
                 </div>
@@ -225,102 +210,6 @@
                 </div>
             </section>
 
-            <section id="difference" class="section">
-                <div class="section-head">
-                    <div>
-                        <div class="section-kicker" data-i18n="home.difference.kicker">Stack anatomy</div>
-                        <h2 class="section-title" data-i18n="home.difference.title">Native ownership where it matters, Python where iteration speed matters.</h2>
-                    </div>
-                    <p class="section-intro" data-i18n="home.difference.intro">熔炉 keeps performance-critical systems in C++17 and puts iteration-heavy work in Python, with pybind11 sitting between them as an explicit binding seam.</p>
-                </div>
-                <div class="stack-layout">
-                    <div class="stack-board" data-reveal>
-                        <h3 data-i18n="home.stack.title">Layered architecture</h3>
-                        <div class="stack-layer">
-                            <small data-i18n="home.stack.layer1.label">L4 · Project & tools</small>
-                            <div data-i18n="home.stack.layer1.body">PySide6 Hub launcher, editor panels, project management, and content workflows.</div>
-                        </div>
-                        <div class="stack-layer">
-                            <small data-i18n="home.stack.layer2.label">L3 · Gameplay & render</small>
-                            <div data-i18n="home.stack.layer2.body">Python components, RenderGraph authoring, runtime behaviors, and render-stack scripting.</div>
-                        </div>
-                        <div class="stack-layer">
-                            <small data-i18n="home.stack.layer3.label">L2 · Binding seam</small>
-                            <div data-i18n="home.stack.layer3.body">pybind11 keeps the Python API direct enough to debug while preserving native ownership boundaries.</div>
-                        </div>
-                        <div class="stack-layer">
-                            <small data-i18n="home.stack.layer4.label">L1 · Native core</small>
-                            <div data-i18n="home.stack.layer4.body">Scene systems, Vulkan renderer, Jolt physics, resource ownership, and platform abstraction in C++17.</div>
-                        </div>
-                    </div>
-                    <div class="pipeline-board" data-reveal>
-                        <h3 data-i18n="home.pipeline.title">Flight plan: project to runtime</h3>
-                        <div class="pipeline-stages">
-                            <div class="pipeline-stage">
-                                <div class="stage-index">01</div>
-                                <div>
-                                    <small data-i18n="home.pipeline.step1.label">Author</small>
-                                    <div data-i18n="home.pipeline.step1.body">Write gameplay or render logic in Python and expose parameters through serialized inspector fields.</div>
-                                </div>
-                            </div>
-                            <div class="pipeline-stage">
-                                <div class="stage-index">02</div>
-                                <div>
-                                    <small data-i18n="home.pipeline.step2.label">Describe</small>
-                                    <div data-i18n="home.pipeline.step2.body">Author passes, resources, and dependencies through RenderGraph and related pipeline APIs.</div>
-                                </div>
-                            </div>
-                            <div class="pipeline-stage">
-                                <div class="stage-index">03</div>
-                                <div>
-                                    <small data-i18n="home.pipeline.step3.label">Run</small>
-                                    <div data-i18n="home.pipeline.step3.body">The native backend handles Vulkan scheduling, barriers, memory management, and submission.</div>
-                                </div>
-                            </div>
-                            <div class="pipeline-stage">
-                                <div class="stage-index">04</div>
-                                <div>
-                                    <small data-i18n="home.pipeline.step4.label">Iterate</small>
-                                    <div data-i18n="home.pipeline.step4.body">Inspect the result in the editor, hot-reload scripts, retune the data, and repeat without restarting the project.</div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </section>
-
-            <section class="section">
-                <div class="section-head">
-                    <div>
-                        <div class="section-kicker" data-i18n="home.workflow.kicker">Studio workflow</div>
-                        <h2 class="section-title" data-i18n="home.workflow.title">From cold-start to validated runtime in four explicit steps.</h2>
-                    </div>
-                    <p class="section-intro" data-i18n="home.workflow.intro">This is the day-to-day loop the engine is trying to optimize, not a marketing-level feature list.</p>
-                </div>
-                <div class="workflow-row">
-                    <article class="step-card" data-reveal>
-                        <div class="card-mark"><i class="fas fa-folder-open"></i></div>
-                        <h3 data-i18n="home.workflow.card1.title">01 · Create</h3>
-                        <p data-i18n="home.workflow.card1.body">Use the Hub to create or open projects. Assets are tracked through stable GUIDs and <code>.meta</code> sidecar files.</p>
-                    </article>
-                    <article class="step-card" data-reveal>
-                        <div class="card-mark"><i class="fas fa-cubes"></i></div>
-                        <h3 data-i18n="home.workflow.card2.title">02 · Author</h3>
-                        <p data-i18n="home.workflow.card2.body">Compose scenes, attach scripts, configure materials, and wire render behavior through one consistent data model.</p>
-                    </article>
-                    <article class="step-card" data-reveal>
-                        <div class="card-mark"><i class="fas fa-sliders-h"></i></div>
-                        <h3 data-i18n="home.workflow.card3.title">03 · Inspect</h3>
-                        <p data-i18n="home.workflow.card3.body">Use Scene View, Inspector, console filters, and editor-side tooling to shorten the iteration distance.</p>
-                    </article>
-                    <article class="step-card" data-reveal>
-                        <div class="card-mark"><i class="fas fa-rocket"></i></div>
-                        <h3 data-i18n="home.workflow.card4.title">04 · Run</h3>
-                        <p data-i18n="home.workflow.card4.body">Run the scene with play-mode isolation, profile the render graph, validate scripting hooks, and keep the loop tight.</p>
-                    </article>
-                </div>
-            </section>
-
             <section class="section">
                 <div class="section-head">
                     <div>
@@ -394,7 +283,7 @@
         </div>
     </footer>
 
-    <script src="js/i18n.js?v=4"></script>
+    <script src="js/i18n.js?v=5"></script>
     <script src="js/main.js?v=3"></script>
 </body>
 </html>
