@@ -20,6 +20,7 @@ Utility class for logging messages to the console.
 | `static Debug.log_warning(message: Any, context: Any = ...) → None` | Log a warning message to the console. |
 | `static Debug.log_error(message: Any, context: Any = ..., source_file: str = ..., source_line: int = ...) → None` | Log an error message to the console. |
 | `static Debug.log_exception(exception: Exception, context: Any = ...) → None` | Log an exception to the console. |
+| `static Debug.log_suppressed(where: str, exc: BaseException, context: Any = ...) → None` | Log an exception that was deliberately swallowed by the caller. |
 | `static Debug.log_assert(condition: bool, message: Any = ..., context: Any = ...) → None` | Assert a condition and log if it fails. |
 | `static Debug.clear_console() → None` | Clear all messages in the debug console. |
 | `static Debug.log_internal(message: Any, context: Any = ...) → None` | Log an internal engine message (hidden from user by default). |
