@@ -199,7 +199,7 @@ const translations = {
         "download.hubInstaller": "下载 Hub 安装器",
 
         "home.hero.badge": "RELEASE 0.1.5 · 已上线",
-        "home.hero.kicker": "开源 · MIT · WIN64（多平台拓展正在开发中）",
+        "home.hero.kicker": "开源 · MIT · WIN64（多平台正在路上！）",
         "home.hero.title": "<span class=\"accent\">熔炉</span>初燃，来一起添把火",
         "home.hero.description": "熔炉（Infernux）是一个由 Python-C++ 混合编程构造的游戏引擎。 C++17 用于构造引擎的高性能核心， Python3.12 则用于实现编辑器工具，并作为游戏逻辑脚本提供给开发者。",
         "home.hero.docs": "阅读文档",
