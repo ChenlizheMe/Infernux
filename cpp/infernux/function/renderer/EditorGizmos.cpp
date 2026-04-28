@@ -56,7 +56,7 @@ DrawCallResult EditorGizmos::GetDrawCalls(std::shared_ptr<InxMaterial> gizmoMate
                 DrawCall dc;
                 dc.indexStart = 0;
                 dc.indexCount = static_cast<uint32_t>(gridInds.size());
-                dc.worldMatrix = glm::mat4(1.0f); // Identity - gizmos are already in world space
+                dc.worldMatrix = glm::mat4(1.0f); // Grid shader consumes clip-space quad positions directly
                 dc.material = gridMaterial ? gridMaterial.get() : gizmoMaterial.get();
                 dc.objectId = 0; // Gizmo objectId = 0
                 dc.meshVertices = &gridVerts;
@@ -269,22 +269,18 @@ void EditorGizmos::CreateGridMesh()
     m_gridVertices.clear();
     m_gridIndices.clear();
 
-    const float halfSize = m_gridSize;
-
-    // Procedural grid: a single large quad on the XZ plane at Y=0.
-    // The fragment shader computes grid lines analytically using fwidth()
-    // for pixel-perfect anti-aliasing at all distances.
+    // Infinite grid: a fullscreen clip-space quad. The shader unprojects each
+    // fragment ray and intersects it with the XZ plane at Y=0.
     glm::vec3 color(0.5f, 0.5f, 0.5f); // Not used by procedural shader, kept for vertex format
-    glm::vec3 normal(0.0f, 1.0f, 0.0f);
+    glm::vec3 normal(0.0f, 0.0f, 1.0f);
     glm::vec4 tangent(1.0f, 0.0f, 0.0f, 1.0f);
 
-    // Four corners of the grid plane
-    m_gridVertices.push_back(Vertex::CreateFull({-halfSize, 0.0f, -halfSize}, normal, tangent, color, {0.0f, 0.0f}));
-    m_gridVertices.push_back(Vertex::CreateFull({halfSize, 0.0f, -halfSize}, normal, tangent, color, {1.0f, 0.0f}));
-    m_gridVertices.push_back(Vertex::CreateFull({halfSize, 0.0f, halfSize}, normal, tangent, color, {1.0f, 1.0f}));
-    m_gridVertices.push_back(Vertex::CreateFull({-halfSize, 0.0f, halfSize}, normal, tangent, color, {0.0f, 1.0f}));
+    m_gridVertices.push_back(Vertex::CreateFull({-1.0f, -1.0f, 0.0f}, normal, tangent, color, {0.0f, 0.0f}));
+    m_gridVertices.push_back(Vertex::CreateFull({1.0f, -1.0f, 0.0f}, normal, tangent, color, {1.0f, 0.0f}));
+    m_gridVertices.push_back(Vertex::CreateFull({1.0f, 1.0f, 0.0f}, normal, tangent, color, {1.0f, 1.0f}));
+    m_gridVertices.push_back(Vertex::CreateFull({-1.0f, 1.0f, 0.0f}, normal, tangent, color, {0.0f, 1.0f}));
 
-    // Single face — cullMode=NONE in grid material handles both sides.
+    // Two triangles covering the whole viewport.
     m_gridIndices.push_back(0);
     m_gridIndices.push_back(1);
     m_gridIndices.push_back(2);
