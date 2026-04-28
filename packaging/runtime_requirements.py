@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-RUNTIME_PROFILE_VERSION = 2
+RUNTIME_PROFILE_VERSION = 3
 
 # Keep the managed runtime limited to the packages needed to launch Infernux
 # projects and build standalone players from a project's private Python copy.
@@ -17,6 +17,8 @@ _RUNTIME_PACKAGE_SPECS: tuple[tuple[str, str], ...] = (
     ("Pillow", "PIL"),
     ("imageio", "imageio"),
     ("av", "av"),
+    ("mcp", "mcp"),
+    ("fastmcp", "fastmcp"),
 )
 
 

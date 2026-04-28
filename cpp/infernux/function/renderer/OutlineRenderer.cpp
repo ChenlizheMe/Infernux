@@ -14,6 +14,8 @@
 #include "vk/DescriptorBindTrace.h"
 #include "vk/VkPipelineHelpers.h"
 #include "vk/VkRenderUtils.h"
+#include "VertexInputFilter.h"
+#include "shader/ShaderReflection.h"
 #include <function/resources/InxMaterial/InxMaterial.h>
 
 #include <core/error/InxError.h>
@@ -24,6 +26,7 @@
 
 #include <array>
 #include <cstring>
+#include <vector>
 
 namespace infernux
 {
@@ -41,17 +44,32 @@ using DynamicViewportState = infernux::vkrender::DynamicViewportScissorState;
 
 struct MeshVertexInputState
 {
-    VkVertexInputBindingDescription bindingDesc = Vertex::getBindingDescription();
-    decltype(Vertex::getAttributeDescriptions()) attrDescs = Vertex::getAttributeDescriptions();
+    VkVertexInputBindingDescription bindingDesc{};
+    std::vector<VkVertexInputAttributeDescription> attrDescs;
     VkPipelineVertexInputStateCreateInfo createInfo{};
 
     MeshVertexInputState()
+        : bindingDesc(Vertex::getBindingDescription()),
+          attrDescs(FilterVertexAttributesForReflection(ShaderReflection{}))
     {
+        initCreateInfo();
+    }
+
+    explicit MeshVertexInputState(const ShaderReflection &vertexReflection)
+        : bindingDesc(Vertex::getBindingDescription()),
+          attrDescs(FilterVertexAttributesForReflection(vertexReflection))
+    {
+        initCreateInfo();
+    }
+
+    void initCreateInfo()
+    {
+        createInfo = {};
         createInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-        createInfo.vertexBindingDescriptionCount = 1;
-        createInfo.pVertexBindingDescriptions = &bindingDesc;
+        createInfo.vertexBindingDescriptionCount = attrDescs.empty() ? 0u : 1u;
+        createInfo.pVertexBindingDescriptions = attrDescs.empty() ? nullptr : &bindingDesc;
         createInfo.vertexAttributeDescriptionCount = static_cast<uint32_t>(attrDescs.size());
-        createInfo.pVertexAttributeDescriptions = attrDescs.data();
+        createInfo.pVertexAttributeDescriptions = attrDescs.empty() ? nullptr : attrDescs.data();
     }
 };
 
@@ -487,7 +505,13 @@ void OutlineRenderer::CreateOutlinePipelines()
             MakeShaderStageInfo(VK_SHADER_STAGE_FRAGMENT_BIT, m_core->GetShaderModule("outline_mask", "fragment")),
         };
 
-        m_outlineMaskPipeline = CreateMaskPipeline(stages.data(), m_outlineMaskPipelineLayout);
+        ShaderReflection outlineMaskVertRefl;
+        const auto *outlineMaskVertSpv = m_core->GetShaderCache().FindVertCode("outline_mask");
+        if (!outlineMaskVertSpv || !outlineMaskVertRefl.Reflect(*outlineMaskVertSpv, VK_SHADER_STAGE_VERTEX_BIT)) {
+            outlineMaskVertRefl.Clear();
+        }
+
+        m_outlineMaskPipeline = CreateMaskPipeline(stages.data(), m_outlineMaskPipelineLayout, outlineMaskVertRefl);
         if (m_outlineMaskPipeline == VK_NULL_HANDLE) {
             INXLOG_ERROR("OutlineRenderer: Failed to create outline mask pipeline");
         }
@@ -606,7 +630,8 @@ void OutlineRenderer::CreateOutlineMaterialResources()
         poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
         poolSizes[0].descriptorCount = 64 + framesInFlight; // 32 materials × 2 bindings + globals UBOs
         poolSizes[1].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        poolSizes[1].descriptorCount = framesInFlight; // instance SSBOs
+        // Globals set at index 2 has three STORAGE_BUFFER bindings (instance + skin meta + palettes) per frame.
+        poolSizes[1].descriptorCount = framesInFlight * 3;
 
         VkDescriptorPoolCreateInfo poolInfo{};
         poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -676,9 +701,10 @@ void OutlineRenderer::CreateOutlineMaterialResources()
     }
 }
 
-VkPipeline OutlineRenderer::CreateMaskPipeline(const VkPipelineShaderStageCreateInfo stages[2], VkPipelineLayout layout)
+VkPipeline OutlineRenderer::CreateMaskPipeline(const VkPipelineShaderStageCreateInfo stages[2], VkPipelineLayout layout,
+                                                 const ShaderReflection &vertexReflection)
 {
-    MeshVertexInputState vertexInput;
+    MeshVertexInputState vertexInput(vertexReflection);
     VkPipelineInputAssemblyStateCreateInfo inputAssembly = MakeTriangleListInputAssembly();
     DynamicViewportState viewportState;
     VkPipelineRasterizationStateCreateInfo raster = MakeRasterizationState(VK_CULL_MODE_NONE);
@@ -734,7 +760,7 @@ VkPipeline OutlineRenderer::GetOrCreateMtlOutlinePipeline(InxMaterial *material)
         MakeShaderStageInfo(VK_SHADER_STAGE_FRAGMENT_BIT, fragModule),
     };
 
-    VkPipeline pipeline = CreateMaskPipeline(stages.data(), m_outlineMtlPipelineLayout);
+    VkPipeline pipeline = CreateMaskPipeline(stages.data(), m_outlineMtlPipelineLayout, program->GetVertexReflection());
     if (pipeline == VK_NULL_HANDLE) {
         INXLOG_WARN("OutlineRenderer: Failed to create per-material outline pipeline for '", material->GetName(), "'");
         return VK_NULL_HANDLE;

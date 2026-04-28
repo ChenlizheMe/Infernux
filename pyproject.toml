@@ -28,6 +28,8 @@ dependencies = [
     "Pillow>=10.4.0",
     "imageio>=2.34.0",
     "av>=12.0.0",
+    "mcp>=1.24,<2",
+    "fastmcp",
 ]
 
 [project.urls]

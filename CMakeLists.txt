@@ -166,6 +166,10 @@ target_compile_definitions(_Infernux PRIVATE
     $<$<CONFIG:MinSizeRel>:INFERNUX_FILE_LOGGING=1>
     $<$<CONFIG:Release>:INFERNUX_DEFERRED_FILE_LOGGING=1>
     $<$<CONFIG:MinSizeRel>:INFERNUX_DEFERRED_FILE_LOGGING=1>
+    # Vulkan validation layers: on for Debug / RelWithDebInfo (preset "debug"),
+    # off for Release / MinSizeRel (preset "release"). See InxVkCoreModular::Init.
+    $<$<CONFIG:Debug>:INFERNUX_VULKAN_VALIDATION_LAYERS=1>
+    $<$<CONFIG:RelWithDebInfo>:INFERNUX_VULKAN_VALIDATION_LAYERS=1>
 )
 
 target_link_libraries(_Infernux PRIVATE

@@ -185,6 +185,10 @@ void InxVkCoreModular::Init(InxAppMetadata appMetaData, InxAppMetadata rendererM
     m_deviceConfig.appName = appMetaData.appName ? appMetaData.appName : "Infernux App";
     m_deviceConfig.engineName = rendererMetaData.appName ? rendererMetaData.appName : "Infernux";
 
+#if defined(INFERNUX_VULKAN_VALIDATION_LAYERS)
+    m_deviceConfig.enableValidationLayers = true;
+#endif
+
     // Initialize instance only (device will be created in PrepareSurface after surface is available)
     if (!m_deviceContext.InitializeInstance(m_deviceConfig)) {
         INXLOG_ERROR("Failed to initialize Vulkan instance");

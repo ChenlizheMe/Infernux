@@ -184,6 +184,11 @@ def release_engine(project_path: str, engine_log_level=LogLevel.Info):
         bootstrap.engine.show()
         bootstrap.engine.run()
     finally:
+        try:
+            from Infernux.mcp import stop_server
+            stop_server()
+        except Exception as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         _remove_project_lock(lock_path, lock_token)
 
     # Force-terminate: this is a standalone engine child process.
