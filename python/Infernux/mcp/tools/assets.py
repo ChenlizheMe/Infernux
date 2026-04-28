@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import json
 import shutil
 
 from Infernux.mcp.tools.common import (
@@ -245,6 +246,220 @@ def register_asset_tools(mcp, project_path: str) -> None:
             }
 
         return main_thread("asset.resolve", _resolve)
+
+    @mcp.tool(name="asset.import")
+    def asset_import(path: str) -> dict:
+        """Import or re-import one asset path."""
+
+        def _import():
+            file_path = resolve_project_path(project_path, path)
+            if not os.path.exists(file_path):
+                raise FileNotFoundError(f"Path not found: {path}")
+            notify_asset_changed(file_path, "modified")
+            return {"path": os.path.relpath(file_path, project_path).replace("\\", "/"), "imported": True}
+
+        return main_thread("asset.import", _import)
+
+    @mcp.tool(name="asset.move")
+    def asset_move(path: str, new_path: str, overwrite: bool = False) -> dict:
+        """Move a file or directory inside the project."""
+
+        def _move():
+            src = resolve_project_path(project_path, path)
+            dst = resolve_project_path(project_path, new_path)
+            if not os.path.exists(src):
+                raise FileNotFoundError(f"Path not found: {path}")
+            if os.path.exists(dst):
+                if not overwrite:
+                    raise FileExistsError(f"Destination already exists: {new_path}")
+                if os.path.isdir(dst):
+                    shutil.rmtree(dst)
+                else:
+                    os.remove(dst)
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            adb = get_asset_database()
+            try:
+                from Infernux.engine.ui.project_file_ops import move_path
+                moved = move_path(src, dst, adb)
+                if moved:
+                    dst = moved
+                else:
+                    shutil.move(src, dst)
+            except Exception:
+                shutil.move(src, dst)
+            if adb:
+                try:
+                    adb.on_asset_moved(src, dst)
+                except Exception:
+                    pass
+            return {
+                "old_path": os.path.relpath(src, project_path).replace("\\", "/"),
+                "path": os.path.relpath(dst, project_path).replace("\\", "/"),
+            }
+
+        return main_thread("asset.move", _move)
+
+    @mcp.tool(name="asset.rename")
+    def asset_rename(path: str, new_name: str) -> dict:
+        """Rename a file or directory in place."""
+
+        def _rename():
+            src = resolve_project_path(project_path, path)
+            if not os.path.exists(src):
+                raise FileNotFoundError(f"Path not found: {path}")
+            try:
+                from Infernux.engine.ui.project_file_ops import do_rename
+                dst = do_rename(src, new_name, get_asset_database())
+            except Exception:
+                dst = None
+            if not dst:
+                dst = os.path.join(os.path.dirname(src), new_name)
+                if os.path.exists(dst):
+                    raise FileExistsError(f"Destination already exists: {new_name}")
+                os.rename(src, dst)
+            notify_asset_changed(dst, "modified")
+            return {"path": os.path.relpath(dst, project_path).replace("\\", "/")}
+
+        return main_thread("asset.rename", _rename)
+
+    @mcp.tool(name="asset.copy")
+    def asset_copy(path: str, new_path: str, overwrite: bool = False) -> dict:
+        """Copy a file or directory inside the project."""
+
+        def _copy():
+            src = resolve_project_path(project_path, path)
+            dst = resolve_project_path(project_path, new_path)
+            if not os.path.exists(src):
+                raise FileNotFoundError(f"Path not found: {path}")
+            if os.path.exists(dst):
+                if not overwrite:
+                    raise FileExistsError(f"Destination already exists: {new_path}")
+                if os.path.isdir(dst):
+                    shutil.rmtree(dst)
+                else:
+                    os.remove(dst)
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            if os.path.isdir(src):
+                shutil.copytree(src, dst)
+            else:
+                shutil.copy2(src, dst)
+            notify_asset_changed(dst, "created")
+            return {
+                "source": os.path.relpath(src, project_path).replace("\\", "/"),
+                "path": os.path.relpath(dst, project_path).replace("\\", "/"),
+            }
+
+        return main_thread("asset.copy", _copy)
+
+    @mcp.tool(name="asset.get_meta")
+    def asset_get_meta(path: str = "", guid: str = "") -> dict:
+        """Return AssetDatabase metadata when available."""
+
+        def _meta():
+            adb = get_asset_database()
+            if adb is None:
+                raise RuntimeError("AssetDatabase is not available.")
+            meta = None
+            if guid:
+                meta = adb.get_meta_by_guid(guid)
+            elif path:
+                meta = adb.get_meta_by_path(resolve_project_path(project_path, path))
+            else:
+                raise ValueError("Provide path or guid.")
+            if meta is None:
+                raise FileNotFoundError("Asset metadata not found.")
+            return {
+                "guid": str(getattr(meta, "guid", guid or "")),
+                "path": str(getattr(meta, "path", path or "")),
+                "type": str(getattr(getattr(meta, "type", None), "name", getattr(meta, "type", ""))),
+            }
+
+        return main_thread("asset.get_meta", _meta)
+
+    @mcp.tool(name="asset.list_by_type")
+    def asset_list_by_type(asset_type: str, limit: int = 500) -> dict:
+        """List AssetDatabase resources by resource type name."""
+
+        def _list_by_type():
+            adb = get_asset_database()
+            if adb is None:
+                raise RuntimeError("AssetDatabase is not available.")
+            matches = []
+            for guid in adb.get_all_resource_guids():
+                path = adb.get_path_from_guid(guid)
+                type_name = ""
+                try:
+                    type_name = getattr(adb.get_resource_type(path), "name", str(adb.get_resource_type(path)))
+                except Exception:
+                    pass
+                if asset_type and str(type_name).lower() != str(asset_type).lower():
+                    continue
+                matches.append({"guid": guid, "path": os.path.relpath(path, project_path).replace("\\", "/"), "type": type_name})
+                if len(matches) >= max(int(limit), 1):
+                    break
+            return {"assets": matches}
+
+        return main_thread("asset.list_by_type", _list_by_type)
+
+    @mcp.tool(name="asset.read_json")
+    def asset_read_json(path: str, max_bytes: int = 262144) -> dict:
+        """Read and parse a JSON text asset."""
+
+        def _read_json():
+            file_path = resolve_project_path(project_path, path)
+            if not os.path.isfile(file_path):
+                raise FileNotFoundError(f"File not found: {path}")
+            if os.path.getsize(file_path) > max(int(max_bytes), 1):
+                raise ValueError("JSON file is too large.")
+            with open(file_path, "r", encoding="utf-8") as f:
+                return {"path": os.path.relpath(file_path, project_path).replace("\\", "/"), "json": json.load(f)}
+
+        return main_thread("asset.read_json", _read_json)
+
+    @mcp.tool(name="asset.write_json")
+    def asset_write_json(path: str, value: dict | list, overwrite: bool = True, indent: int = 2) -> dict:
+        """Write a JSON text asset."""
+
+        def _write_json():
+            file_path = resolve_project_path(project_path, path)
+            existed = os.path.exists(file_path)
+            if existed and not overwrite:
+                raise FileExistsError(f"File already exists: {path}")
+            os.makedirs(os.path.dirname(file_path), exist_ok=True)
+            with open(file_path, "w", encoding="utf-8", newline="\n") as f:
+                json.dump(value, f, ensure_ascii=False, indent=int(indent))
+                f.write("\n")
+            notify_asset_changed(file_path, "modified" if existed else "created")
+            return {"path": os.path.relpath(file_path, project_path).replace("\\", "/"), "bytes": os.path.getsize(file_path), "created": not existed}
+
+        return main_thread("asset.write_json", _write_json)
+
+    @mcp.tool(name="asset.patch_text")
+    def asset_patch_text(path: str, replacements: list[dict[str, str]]) -> dict:
+        """Apply a sequence of exact text replacements to a file."""
+
+        def _patch_text():
+            file_path = resolve_project_path(project_path, path)
+            if not os.path.isfile(file_path):
+                raise FileNotFoundError(f"File not found: {path}")
+            with open(file_path, "r", encoding="utf-8") as f:
+                text = f.read()
+            trace = []
+            for item in replacements or []:
+                old = item.get("old", "")
+                new = item.get("new", "")
+                count = int(item.get("count", 1) or 1)
+                hits = text.count(old)
+                if hits <= 0:
+                    raise ValueError(f"Patch text was not found: {old[:80]!r}")
+                text = text.replace(old, new, -1 if count <= 0 else count)
+                trace.append({"old": old[:80], "hits": hits, "replaced": hits if count <= 0 else min(hits, count)})
+            with open(file_path, "w", encoding="utf-8", newline="\n") as f:
+                f.write(text)
+            notify_asset_changed(file_path, "modified")
+            return {"path": os.path.relpath(file_path, project_path).replace("\\", "/"), "replacements": trace}
+
+        return main_thread("asset.patch_text", _patch_text)
 
 
 

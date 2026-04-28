@@ -1,7 +1,7 @@
 #pragma once
 
-#include "shader/ShaderReflection.h"
 #include "InxRenderStruct.h"
+#include "shader/ShaderReflection.h"
 
 #include <unordered_set>
 #include <vector>

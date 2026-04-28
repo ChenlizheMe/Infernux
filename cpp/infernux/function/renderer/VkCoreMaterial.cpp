@@ -11,11 +11,11 @@
 
 #include "InxError.h"
 #include "InxVkCoreModular.h"
+#include "VertexInputFilter.h"
 #include "gui/GPUMaterialPreview.h"
 #include "gui/GPUMeshPreview.h"
 #include "vk/VkPipelineHelpers.h"
 #include "vk/VkRenderUtils.h"
-#include "VertexInputFilter.h"
 
 #include <function/renderer/shader/ShaderProgram.h>
 #include <function/renderer/shader/ShaderReflection.h>

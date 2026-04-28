@@ -1,6 +1,7 @@
 #include "TextureLoader.h"
 
 #include <core/log/InxLog.h>
+#include <function/resources/InxFileLoader/InxTextureLoader.hpp>
 #include <function/resources/InxTexture/InxTexture.h>
 
 #include <platform/filesystem/InxPath.h>
@@ -46,6 +47,13 @@ void TextureLoader::CreateMeta(const char *content, size_t contentSize, const st
         metaData.AddMetadata("width", width);
         metaData.AddMetadata("height", height);
         metaData.AddMetadata("channels", channels);
+    } else if (!fileBytes.empty()) {
+        InxTextureData pnmInfo = InxTextureLoader::LoadFromMemory(fileBytes.data(), fileBytes.size(), filePath);
+        if (pnmInfo.IsValid()) {
+            metaData.AddMetadata("width", pnmInfo.width);
+            metaData.AddMetadata("height", pnmInfo.height);
+            metaData.AddMetadata("channels", pnmInfo.channels);
+        }
     }
 
     metaData.AddMetadata("file_type", std::string("texture"));

@@ -118,8 +118,9 @@ struct DeviceConfig
     uint32_t engineVersionMajor = 0;      ///< Engine major version
     uint32_t engineVersionMinor = 1;      ///< Engine minor version
     uint32_t engineVersionPatch = 0;      ///< Engine patch version
-    bool enableValidationLayers = false; ///< Set true at startup when built with INFERNUX_VULKAN_VALIDATION_LAYERS (Debug / RelWithDebInfo)
-    QueueConfig queueConfig;              ///< Queue configuration
+    bool enableValidationLayers =
+        false; ///< Set true at startup when built with INFERNUX_VULKAN_VALIDATION_LAYERS (Debug / RelWithDebInfo)
+    QueueConfig queueConfig; ///< Queue configuration
 };
 
 /**

@@ -10,12 +10,12 @@
 #include "MaterialDescriptor.h"
 #include "MaterialPipelineManager.h"
 #include "SceneRenderTarget.h"
+#include "VertexInputFilter.h"
 #include "shader/ShaderProgram.h"
+#include "shader/ShaderReflection.h"
 #include "vk/DescriptorBindTrace.h"
 #include "vk/VkPipelineHelpers.h"
 #include "vk/VkRenderUtils.h"
-#include "VertexInputFilter.h"
-#include "shader/ShaderReflection.h"
 #include <function/resources/InxMaterial/InxMaterial.h>
 
 #include <core/error/InxError.h>
@@ -56,8 +56,7 @@ struct MeshVertexInputState
     }
 
     explicit MeshVertexInputState(const ShaderReflection &vertexReflection)
-        : bindingDesc(Vertex::getBindingDescription()),
-          attrDescs(FilterVertexAttributesForReflection(vertexReflection))
+        : bindingDesc(Vertex::getBindingDescription()), attrDescs(FilterVertexAttributesForReflection(vertexReflection))
     {
         initCreateInfo();
     }
@@ -702,7 +701,7 @@ void OutlineRenderer::CreateOutlineMaterialResources()
 }
 
 VkPipeline OutlineRenderer::CreateMaskPipeline(const VkPipelineShaderStageCreateInfo stages[2], VkPipelineLayout layout,
-                                                 const ShaderReflection &vertexReflection)
+                                               const ShaderReflection &vertexReflection)
 {
     MeshVertexInputState vertexInput(vertexReflection);
     VkPipelineInputAssemblyStateCreateInfo inputAssembly = MakeTriangleListInputAssembly();

@@ -3,35 +3,136 @@
 from __future__ import annotations
 
 import os
-from typing import Any
+from typing import Any, Callable
 
 from Infernux.mcp.threading import MainThreadCommandQueue
 
+MCP_PROTOCOL_VERSION = "2025-03-26"
+MCP_SERVER_VERSION = "0.2.0"
 
-def ok(data: Any = None) -> dict[str, Any]:
-    return {"ok": True, "data": data if data is not None else {}}
+_TOOL_METADATA: dict[str, dict[str, Any]] = {}
 
 
-def fail(code: str, message: str, *, hint: str = "") -> dict[str, Any]:
+def register_tool_metadata(
+    name: str,
+    *,
+    summary: str = "",
+    parameters: dict[str, Any] | None = None,
+    side_effects: list[str] | None = None,
+    next_suggested_tools: list[str] | None = None,
+    recovery: list[str] | None = None,
+    examples: list[dict[str, Any]] | None = None,
+    concepts: dict[str, str] | None = None,
+) -> None:
+    """Register human/agent-facing metadata for a tool."""
+    _TOOL_METADATA[name] = {
+        "name": name,
+        "summary": summary,
+        "parameters": parameters or {},
+        "side_effects": side_effects or [],
+        "next_suggested_tools": next_suggested_tools or [],
+        "recovery": recovery or [],
+        "examples": examples or [],
+        "concepts": concepts or {},
+    }
+
+
+def get_tool_metadata(name: str) -> dict[str, Any]:
+    meta = dict(_TOOL_METADATA.get(name, {}))
+    if not meta:
+        meta = {
+            "name": name,
+            "summary": "No detailed metadata registered yet.",
+            "parameters": {},
+            "side_effects": [],
+            "next_suggested_tools": [],
+            "recovery": ["Use mcp.capabilities or mcp.list_tools_verbose to inspect available tools."],
+            "examples": [],
+            "concepts": {},
+        }
+    return meta
+
+
+def list_tool_metadata() -> list[dict[str, Any]]:
+    return [get_tool_metadata(name) for name in sorted(_TOOL_METADATA)]
+
+
+def explain_for(
+    tool: str,
+    *,
+    summary: str = "",
+    warnings: list[str] | None = None,
+    side_effects: list[str] | None = None,
+    next_suggested_tools: list[str] | None = None,
+    recovery: list[str] | None = None,
+    concepts: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    meta = get_tool_metadata(tool)
+    return {
+        "tool": tool,
+        "summary": summary or meta.get("summary", ""),
+        "concepts": concepts or meta.get("concepts", {}),
+        "side_effects": side_effects if side_effects is not None else meta.get("side_effects", []),
+        "warnings": warnings or [],
+        "next_suggested_tools": (
+            next_suggested_tools
+            if next_suggested_tools is not None
+            else meta.get("next_suggested_tools", [])
+        ),
+        "recovery": recovery if recovery is not None else meta.get("recovery", []),
+    }
+
+
+def ok(data: Any = None, *, explain: dict[str, Any] | None = None, trace: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    payload: dict[str, Any] = {"ok": True, "data": data if data is not None else {}}
+    if explain is not None:
+        payload["explain"] = explain
+    if trace is not None:
+        payload["trace"] = trace
+    return payload
+
+
+def fail(
+    code: str,
+    message: str,
+    *,
+    hint: str = "",
+    explain: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     error = {"code": code, "message": message}
     if hint:
         error["hint"] = hint
-    return {"ok": False, "error": error}
+    payload: dict[str, Any] = {"ok": False, "error": error}
+    if explain is not None:
+        payload["explain"] = explain
+    return payload
 
 
-def main_thread(name: str, fn, *, timeout_ms: int = 30000) -> dict[str, Any]:
+def main_thread(name: str, fn, *, timeout_ms: int = 30000, explain: dict[str, Any] | None = None) -> dict[str, Any]:
+    response_explain = explain or explain_for(name)
     try:
-        return ok(MainThreadCommandQueue.instance().run_sync(name, fn, timeout_ms=timeout_ms))
+        return ok(MainThreadCommandQueue.instance().run_sync(name, fn, timeout_ms=timeout_ms), explain=response_explain)
     except TimeoutError as exc:
-        return fail("error.timeout", str(exc))
+        return fail(
+            "error.timeout",
+            str(exc),
+            hint="The editor main thread did not process this command in time. Ensure the editor is not blocked by a modal operation.",
+            explain=response_explain,
+        )
     except ValueError as exc:
-        return fail("error.invalid_argument", str(exc))
+        return fail("error.invalid_argument", str(exc), hint="Check parameter schema with mcp.help or component.describe_type.", explain=response_explain)
     except FileExistsError as exc:
-        return fail("error.exists", str(exc))
+        return fail("error.exists", str(exc), hint="Use overwrite=true or choose a different path/name.", explain=response_explain)
     except FileNotFoundError as exc:
-        return fail("error.not_found", str(exc))
+        return fail("error.not_found", str(exc), hint="Use scene.inspect, gameobject.find, or asset.search to locate valid targets.", explain=response_explain)
     except Exception as exc:
-        return fail("error.internal", str(exc))
+        return fail("error.internal", str(exc), hint="Read console.read and retry with a smaller operation.", explain=response_explain)
+
+
+def register_and_tool(mcp, name: str, **metadata: Any) -> Callable:
+    """Register metadata and return mcp.tool for future tools."""
+    register_tool_metadata(name, **metadata)
+    return mcp.tool(name=name)
 
 
 def get_asset_database():

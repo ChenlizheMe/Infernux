@@ -6,7 +6,7 @@ UI creation and agent-driven creation stay behaviorally identical.
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from Infernux.debug import Debug
 
@@ -29,11 +29,15 @@ LIGHT_INDEX = {
 
 class HierarchyCreationService:
     _instance: Optional["HierarchyCreationService"] = None
+    _kind_registry: dict[str, dict[str, Any]] = {}
+    _kind_factories: dict[str, Callable[[Any, int], Any]] = {}
+    _defaults_registered: bool = False
 
     def __init__(self) -> None:
         self._selection_manager = None
         self._undo_tracker = None
         self._hierarchy_panel = None
+        self._ensure_default_kinds()
 
     @classmethod
     def instance(cls) -> "HierarchyCreationService":
@@ -46,24 +50,70 @@ class HierarchyCreationService:
         self._undo_tracker = undo_tracker
         self._hierarchy_panel = hierarchy_panel
 
+    @classmethod
+    def register_create_kind(
+        cls,
+        kind: str,
+        label: str,
+        *,
+        category: str = "",
+        description: str = "",
+        factory: Callable[[Any, int], Any] | None = None,
+    ) -> None:
+        """Register a Hierarchy creation kind.
+
+        This is intentionally shared by UI and MCP. Future editor modules can
+        add objects (including UI widgets) without editing MCP code.
+        """
+        normalized = str(kind).strip()
+        if not normalized:
+            raise ValueError("Create kind cannot be empty.")
+        cls._kind_registry[normalized] = {
+            "kind": normalized,
+            "label": str(label or normalized),
+            "category": str(category or ""),
+            "description": str(description or ""),
+        }
+        if factory is not None:
+            cls._kind_factories[normalized] = factory
+
+    @classmethod
+    def unregister_create_kind(cls, kind: str) -> None:
+        normalized = str(kind).strip()
+        cls._kind_registry.pop(normalized, None)
+        cls._kind_factories.pop(normalized, None)
+
+    @classmethod
+    def _ensure_default_kinds(cls) -> None:
+        if cls._defaults_registered:
+            return
+        cls._defaults_registered = True
+        defaults = [
+            ("empty", "Empty", "General"),
+            ("primitive.cube", "Cube", "3D Object"),
+            ("primitive.sphere", "Sphere", "3D Object"),
+            ("primitive.capsule", "Capsule", "3D Object"),
+            ("primitive.cylinder", "Cylinder", "3D Object"),
+            ("primitive.plane", "Plane", "3D Object"),
+            ("primitive.quad", "Quad", "3D Object"),
+            ("light.directional", "Directional Light", "Light"),
+            ("light.point", "Point Light", "Light"),
+            ("light.spot", "Spot Light", "Light"),
+            ("rendering.camera", "Camera", "Rendering"),
+            ("rendering.render_stack", "RenderStack", "Rendering"),
+            ("rendering.sprite_renderer", "Sprite Renderer", "Rendering"),
+            ("ui.canvas", "Canvas", "UI"),
+            ("ui.text", "Text", "UI"),
+            ("ui.button", "Button", "UI"),
+        ]
+        for kind, label, category in defaults:
+            cls.register_create_kind(kind, label, category=category)
+
     def list_create_kinds(self) -> list[dict[str, str]]:
+        self._ensure_default_kinds()
         return [
-            {"kind": "empty", "label": "Empty"},
-            {"kind": "primitive.cube", "label": "Cube"},
-            {"kind": "primitive.sphere", "label": "Sphere"},
-            {"kind": "primitive.capsule", "label": "Capsule"},
-            {"kind": "primitive.cylinder", "label": "Cylinder"},
-            {"kind": "primitive.plane", "label": "Plane"},
-            {"kind": "primitive.quad", "label": "Quad"},
-            {"kind": "light.directional", "label": "Directional Light"},
-            {"kind": "light.point", "label": "Point Light"},
-            {"kind": "light.spot", "label": "Spot Light"},
-            {"kind": "rendering.camera", "label": "Camera"},
-            {"kind": "rendering.render_stack", "label": "RenderStack"},
-            {"kind": "rendering.sprite_renderer", "label": "Sprite Renderer"},
-            {"kind": "ui.canvas", "label": "Canvas"},
-            {"kind": "ui.text", "label": "Text"},
-            {"kind": "ui.button", "label": "Button"},
+            dict(value)
+            for _kind, value in sorted(self._kind_registry.items(), key=lambda item: (item[1].get("category", ""), item[1].get("label", "")))
         ]
 
     def create(
@@ -102,6 +152,10 @@ class HierarchyCreationService:
         return self._serialize_created(obj, kind, selected=select)
 
     def _create_raw(self, scene, kind: str, parent_id: int):
+        self._ensure_default_kinds()
+        factory = self._kind_factories.get(kind)
+        if factory is not None:
+            return factory(scene, parent_id)
         if kind == "empty":
             return scene.create_game_object("GameObject")
         if kind.startswith("primitive."):

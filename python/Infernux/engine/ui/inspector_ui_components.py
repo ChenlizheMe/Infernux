@@ -78,7 +78,11 @@ def _render_texture_picker(ctx, comp, field_name: str, label: str, lw: float,
             _apply_if_changed(comp, field_name, tex_path, "")
 
     def _asset_items(filt):
-        return _picker_assets(filt, "*.png", assets_only=True) + _picker_assets(filt, "*.jpg", assets_only=True)
+        patterns = ("*.png", "*.jpg", "*.jpeg", "*.bmp", "*.tga", "*.gif", "*.psd", "*.hdr", "*.pic", "*.pnm", "*.pgm", "*.ppm")
+        items = []
+        for pattern in patterns:
+            items += _picker_assets(filt, pattern, assets_only=True)
+        return items
 
     field_label(ctx, label, lw)
     IGUI.object_field(

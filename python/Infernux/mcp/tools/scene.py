@@ -253,6 +253,7 @@ def register_scene_tools(mcp) -> None:
     @mcp.tool(name="gameobject.find")
     def gameobject_find(
         name: str = "",
+        path: str = "",
         tag: str = "",
         component_type: str = "",
         include_inactive: bool = True,
@@ -271,16 +272,115 @@ def register_scene_tools(mcp) -> None:
                     continue
                 if name and name.lower() not in str(obj.name).lower():
                     continue
+                if path and path.lower() not in _object_path(obj).lower():
+                    continue
                 if tag and str(getattr(obj, "tag", "")) != tag:
                     continue
                 if component_type and _find_component(obj, component_type, 0) is None:
                     continue
-                matches.append(_serialize_object(obj, depth=0, include_components=True, include_inactive=True))
+                data = _serialize_object(obj, depth=0, include_components=True, include_inactive=True)
+                data["path"] = _object_path(obj)
+                matches.append(data)
                 if len(matches) >= max(int(limit), 1):
                     break
             return {"matches": matches}
 
         return main_thread("gameobject.find", _find)
+
+    @mcp.tool(name="scene.find")
+    def scene_find(query: dict[str, Any], limit: int = 50) -> dict:
+        """Search scene objects by name/path/tag/layer/component."""
+
+        def _scene_find():
+            from Infernux.lib import SceneManager
+            scene = SceneManager.instance().get_active_scene()
+            if not scene:
+                raise RuntimeError("No active scene.")
+            criteria = query or {}
+            q_name = str(criteria.get("name", "")).lower()
+            q_path = str(criteria.get("path", "")).lower()
+            q_tag = str(criteria.get("tag", ""))
+            q_component = str(criteria.get("component_type", ""))
+            q_layer = criteria.get("layer", None)
+            matches = []
+            for obj in list(scene.get_all_objects() or []):
+                if q_name and q_name not in str(obj.name).lower():
+                    continue
+                obj_path = _object_path(obj)
+                if q_path and q_path not in obj_path.lower():
+                    continue
+                if q_tag and str(getattr(obj, "tag", "")) != q_tag:
+                    continue
+                if q_layer is not None and int(getattr(obj, "layer", -1)) != int(q_layer):
+                    continue
+                if q_component and _find_component(obj, q_component, 0) is None:
+                    continue
+                data = _serialize_object(obj, depth=0, include_components=True, include_inactive=True)
+                data["path"] = obj_path
+                matches.append(data)
+                if len(matches) >= max(int(limit), 1):
+                    break
+            return {"matches": matches}
+
+        return main_thread("scene.find", _scene_find)
+
+    @mcp.tool(name="gameobject.path")
+    def gameobject_path(object_id: int) -> dict:
+        """Return the hierarchy path for a GameObject."""
+
+        def _path():
+            obj = find_game_object(object_id)
+            return {"object_id": int(obj.id), "path": _object_path(obj)}
+
+        return main_thread("gameobject.path", _path)
+
+    @mcp.tool(name="gameobject.find_by_path")
+    def gameobject_find_by_path(path: str) -> dict:
+        """Find a GameObject by exact hierarchy path."""
+
+        def _find_by_path():
+            obj = _find_by_path_exact(path)
+            if obj is None:
+                raise FileNotFoundError(f"GameObject path not found: {path}")
+            data = _serialize_object(obj, depth=1, include_components=True, include_inactive=True)
+            data["path"] = _object_path(obj)
+            return data
+
+        return main_thread("gameobject.find_by_path", _find_by_path)
+
+    @mcp.tool(name="gameobject.ensure_path")
+    def gameobject_ensure_path(path: str, kind: str = "empty", select: bool = False) -> dict:
+        """Ensure a slash-separated hierarchy path exists."""
+
+        def _ensure_path():
+            from Infernux.engine.hierarchy_creation_service import HierarchyCreationService
+            if not path or not str(path).strip("/"):
+                raise ValueError("path must not be empty.")
+            created = []
+            parent_id = 0
+            current_path = ""
+            target_path = str(path).replace("\\", "/").strip("/")
+            for part in [p for p in target_path.split("/") if p]:
+                current_path = f"{current_path}/{part}" if current_path else part
+                existing = _find_by_path_exact(current_path)
+                if existing is not None:
+                    parent_id = int(existing.id)
+                    continue
+                entry = HierarchyCreationService.instance().create(
+                    kind if current_path == target_path else "empty",
+                    parent_id=parent_id,
+                    name=part,
+                    select=False,
+                )
+                created.append(entry)
+                parent_id = int(entry["id"])
+            if select and parent_id:
+                from Infernux.engine.ui.selection_manager import SelectionManager
+                SelectionManager.instance().select(parent_id)
+            final = find_game_object(parent_id)
+            return {"object_id": parent_id, "path": _object_path(final), "created": created}
+
+        return main_thread("gameobject.ensure_path", _ensure_path)
 
     @mcp.tool(name="gameobject.set")
     def gameobject_set(object_id: int, values: dict[str, Any]) -> dict:
@@ -314,6 +414,50 @@ def register_scene_tools(mcp) -> None:
             return {"deleted": True, "object_id": int(object_id), "name": name}
 
         return main_thread("gameobject.delete", _delete)
+
+    @mcp.tool(name="gameobject.batch_delete")
+    def gameobject_batch_delete(object_ids: list[int]) -> dict:
+        """Delete multiple GameObjects."""
+
+        def _batch_delete():
+            deleted = []
+            from Infernux.engine.undo._trackers import HierarchyUndoTracker
+            tracker = HierarchyUndoTracker()
+            for object_id in object_ids or []:
+                obj = find_game_object(int(object_id))
+                deleted.append({"id": int(obj.id), "name": str(obj.name), "path": _object_path(obj)})
+                tracker.record_delete(int(object_id), "MCP Batch Delete GameObject")
+            return {"deleted": deleted}
+
+        return main_thread("gameobject.batch_delete", _batch_delete)
+
+    @mcp.tool(name="gameobject.batch_create")
+    def gameobject_batch_create(items: list[dict[str, Any]]) -> dict:
+        """Create multiple hierarchy objects."""
+
+        def _batch_create():
+            from Infernux.engine.hierarchy_creation_service import HierarchyCreationService
+            created = []
+            for item in items or []:
+                parent_id = int(item.get("parent_id", 0) or 0)
+                parent_path = item.get("parent_path", "")
+                if parent_path:
+                    parent = _find_by_path_exact(parent_path)
+                    if parent is None:
+                        raise FileNotFoundError(f"Parent path not found: {parent_path}")
+                    parent_id = int(parent.id)
+                entry = HierarchyCreationService.instance().create(
+                    str(item.get("kind", "empty")),
+                    parent_id=parent_id,
+                    name=item.get("name") or None,
+                    select=bool(item.get("select", False)),
+                )
+                obj = find_game_object(int(entry["id"]))
+                entry["path"] = _object_path(obj)
+                created.append(entry)
+            return {"created": created}
+
+        return main_thread("gameobject.batch_create", _batch_create)
 
     @mcp.tool(name="gameobject.duplicate")
     def gameobject_duplicate(object_id: int, parent_id: int = 0, name: str = "", select: bool = True) -> dict:
@@ -382,6 +526,34 @@ def register_scene_tools(mcp) -> None:
 
         return main_thread("gameobject.set_sibling_index", _set_sibling_index)
 
+    @mcp.tool(name="scene.clear_generated")
+    def scene_clear_generated(name_prefix: str = "MCP", root_path: str = "") -> dict:
+        """Delete generated scene objects by root path or name prefix."""
+
+        def _clear():
+            from Infernux.lib import SceneManager
+            scene = SceneManager.instance().get_active_scene()
+            if not scene:
+                raise RuntimeError("No active scene.")
+            targets = []
+            if root_path:
+                root = _find_by_path_exact(root_path)
+                if root is not None:
+                    targets.append(root)
+            else:
+                for obj in scene.get_root_objects() or []:
+                    if str(obj.name).startswith(name_prefix):
+                        targets.append(obj)
+            from Infernux.engine.undo._trackers import HierarchyUndoTracker
+            tracker = HierarchyUndoTracker()
+            deleted = []
+            for obj in targets:
+                deleted.append({"id": int(obj.id), "name": str(obj.name), "path": _object_path(obj)})
+                tracker.record_delete(int(obj.id), "MCP Clear Generated")
+            return {"deleted": deleted}
+
+        return main_thread("scene.clear_generated", _clear)
+
     @mcp.tool(name="transform.set")
     def transform_set(object_id: int, values: dict[str, Any]) -> dict:
         """Set Transform fields such as position, euler_angles, or local_scale."""
@@ -439,6 +611,73 @@ def register_scene_tools(mcp) -> None:
 
         return main_thread("component.set_field", _set)
 
+    @mcp.tool(name="component.set_fields")
+    def component_set_fields(object_id: int, component_type: str, values: dict[str, Any], ordinal: int = 0) -> dict:
+        """Set multiple fields/properties on a component."""
+
+        def _set_fields():
+            obj = find_game_object(object_id)
+            comp = _find_component(obj, component_type, int(ordinal))
+            if comp is None:
+                raise FileNotFoundError(f"Component '{component_type}' was not found on GameObject {object_id}.")
+            from Infernux.engine.ui._inspector_undo import _record_property
+            changed = {}
+            for field, value in (values or {}).items():
+                old_value = getattr(comp, field)
+                new_value = _coerce_property_value(field, value)
+                _record_property(comp, field, old_value, new_value, f"Set {component_type}.{field}")
+                changed[field] = serialize_value(getattr(comp, field))
+            return {"object_id": int(obj.id), "component": serialize_component(comp), "changed": changed}
+
+        return main_thread("component.set_fields", _set_fields)
+
+    @mcp.tool(name="component.ensure")
+    def component_ensure(
+        object_id: int,
+        component_type: str,
+        script_path: str = "",
+        fields: dict[str, Any] | None = None,
+    ) -> dict:
+        """Return an existing component or add it if missing."""
+
+        def _ensure():
+            obj = find_game_object(object_id)
+            comp = _find_component(obj, component_type, 0)
+            created = False
+            if comp is None:
+                before_ids = _component_ids(obj)
+                if script_path:
+                    from Infernux.components import load_and_create_component
+                    from Infernux.mcp.tools.common import get_asset_database
+                    comp = load_and_create_component(script_path, asset_database=get_asset_database(), type_name=component_type)
+                    if comp is None:
+                        raise RuntimeError(f"Script did not create component '{component_type}'.")
+                    comp = obj.add_py_component(comp)
+                    is_py = True
+                else:
+                    comp = obj.add_component(component_type)
+                    is_py = _is_python_script_component(comp)
+                if comp is None:
+                    raise RuntimeError(f"Failed to add component '{component_type}'.")
+                from Infernux.engine.ui._inspector_undo import _record_add_component_compound
+                _record_add_component_compound(obj, component_type, comp, before_ids, is_py=is_py)
+                created = True
+            for key, value in (fields or {}).items():
+                setattr(comp, key, _coerce_property_value(key, value))
+            return {"object_id": int(obj.id), "created": created, "component": serialize_component(comp), "components": _all_components(obj)}
+
+        return main_thread("component.ensure", _ensure)
+
+    @mcp.tool(name="component.list_on_object")
+    def component_list_on_object(object_id: int) -> dict:
+        """List components attached to a GameObject."""
+
+        def _list_on_object():
+            obj = find_game_object(object_id)
+            return {"object_id": int(obj.id), "components": _all_components(obj)}
+
+        return main_thread("component.list_on_object", _list_on_object)
+
     @mcp.tool(name="component.get_field")
     def component_get_field(object_id: int, component_type: str, field: str, ordinal: int = 0) -> dict:
         """Read a field/property from a component attached to a GameObject."""
@@ -456,6 +695,19 @@ def register_scene_tools(mcp) -> None:
             }
 
         return main_thread("component.get_field", _get)
+
+    @mcp.tool(name="component.get")
+    def component_get(object_id: int, component_type: str, ordinal: int = 0) -> dict:
+        """Return component metadata and serializable field values."""
+
+        def _get_component():
+            obj = find_game_object(object_id)
+            comp = _find_component(obj, component_type, int(ordinal))
+            if comp is None:
+                raise FileNotFoundError(f"Component '{component_type}' was not found on GameObject {object_id}.")
+            return _component_snapshot(obj, comp)
+
+        return main_thread("component.get", _get_component)
 
     @mcp.tool(name="component.remove")
     def component_remove(object_id: int, component_type: str, ordinal: int = 0) -> dict:
@@ -517,6 +769,60 @@ def register_scene_tools(mcp) -> None:
             return _component_type_entry(component_type, cls, builtin=_is_builtin_component_class(cls), include_fields=True)
 
         return main_thread("component.describe_type", _describe)
+
+    @mcp.tool(name="component.describe_field")
+    def component_describe_field(component_type: str, field: str) -> dict:
+        """Describe one field on a component type."""
+
+        def _describe_field():
+            cls = _component_class_for_name(component_type)
+            if cls is None:
+                raise FileNotFoundError(f"Component type '{component_type}' was not found.")
+            for item in _component_field_schema(cls):
+                if item["name"] == field:
+                    return {"component_type": component_type, "field": item}
+            raise FileNotFoundError(f"Field '{field}' was not found on component type '{component_type}'.")
+
+        return main_thread("component.describe_field", _describe_field)
+
+    @mcp.tool(name="component.get_snapshot")
+    def component_get_snapshot(object_id: int, component_type: str, ordinal: int = 0) -> dict:
+        """Serialize a component snapshot for restore_snapshot."""
+
+        def _snapshot():
+            obj = find_game_object(object_id)
+            comp = _find_component(obj, component_type, int(ordinal))
+            if comp is None:
+                raise FileNotFoundError(f"Component '{component_type}' was not found on GameObject {object_id}.")
+            payload = ""
+            if hasattr(comp, "serialize"):
+                try:
+                    payload = comp.serialize()
+                except Exception:
+                    payload = ""
+            return {**_component_snapshot(obj, comp), "serialized": payload}
+
+        return main_thread("component.get_snapshot", _snapshot)
+
+    @mcp.tool(name="component.restore_snapshot")
+    def component_restore_snapshot(object_id: int, component_type: str, serialized: str, ordinal: int = 0) -> dict:
+        """Restore a component from a serialized component JSON snapshot."""
+
+        def _restore():
+            obj = find_game_object(object_id)
+            comp = _find_component(obj, component_type, int(ordinal))
+            if comp is None:
+                raise FileNotFoundError(f"Component '{component_type}' was not found on GameObject {object_id}.")
+            if not hasattr(comp, "deserialize"):
+                raise ValueError(f"Component '{component_type}' does not support deserialize().")
+            comp.deserialize(serialized)
+            from Infernux.engine.scene_manager import SceneFileManager
+            sfm = SceneFileManager.instance()
+            if sfm:
+                sfm.mark_dirty()
+            return _component_snapshot(obj, comp)
+
+        return main_thread("component.restore_snapshot", _restore)
 
 
 def _serialize_object(obj, *, depth: int, include_components: bool, include_inactive: bool) -> dict[str, Any]:
@@ -587,6 +893,32 @@ def _component_ids(obj) -> set[int]:
     return ids
 
 
+def _object_path(obj) -> str:
+    parts = []
+    current = obj
+    while current is not None:
+        parts.append(str(current.name))
+        try:
+            current = current.get_parent()
+        except Exception:
+            current = None
+    return "/".join(reversed(parts))
+
+
+def _find_by_path_exact(path: str):
+    from Infernux.lib import SceneManager
+    scene = SceneManager.instance().get_active_scene()
+    if not scene:
+        raise RuntimeError("No active scene.")
+    normalized = str(path).replace("\\", "/").strip("/")
+    if not normalized:
+        return None
+    for obj in list(scene.get_all_objects() or []):
+        if _object_path(obj).strip("/") == normalized:
+            return obj
+    return None
+
+
 def _find_component(obj, component_type: str, ordinal: int):
     matches = []
     try:
@@ -604,6 +936,25 @@ def _find_component(obj, component_type: str, ordinal: int):
     if ordinal < 0 or ordinal >= len(matches):
         return None
     return matches[ordinal]
+
+
+def _component_snapshot(obj, comp) -> dict[str, Any]:
+    fields = {}
+    try:
+        from Infernux.components.serialized_field import get_serialized_fields
+        for name in get_serialized_fields(type(comp)):
+            try:
+                fields[name] = serialize_value(getattr(comp, name))
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return {
+        "object_id": int(obj.id),
+        "object_name": str(obj.name),
+        "component": serialize_component(comp),
+        "fields": fields,
+    }
 
 
 def _coerce_property_value(field: str, value: Any) -> Any:

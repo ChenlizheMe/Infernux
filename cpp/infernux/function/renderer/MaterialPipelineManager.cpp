@@ -472,7 +472,8 @@ VkPipeline MaterialPipelineManager::CreatePipelineWithProgram(ShaderProgram *pro
     vertexInputInfo.vertexBindingDescriptionCount = attributeDescriptions.empty() ? 0u : 1u;
     vertexInputInfo.pVertexBindingDescriptions = attributeDescriptions.empty() ? nullptr : &bindingDescription;
     vertexInputInfo.vertexAttributeDescriptionCount = static_cast<uint32_t>(attributeDescriptions.size());
-    vertexInputInfo.pVertexAttributeDescriptions = attributeDescriptions.empty() ? nullptr : attributeDescriptions.data();
+    vertexInputInfo.pVertexAttributeDescriptions =
+        attributeDescriptions.empty() ? nullptr : attributeDescriptions.data();
 
     // Input assembly
     VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
