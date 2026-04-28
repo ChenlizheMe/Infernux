@@ -960,8 +960,8 @@ std::shared_ptr<InxMaterial> InxMaterial::CreateGridMaterial()
     // Keep only a tiny constant bias. Slope-scaled bias explodes at grazing
     // angles when the editor camera is close to the XZ plane, which produces
     // driver-dependent stair-step artifacts on older AMD GPUs.
-    state.depthBiasEnable = true;
-    state.depthBiasConstantFactor = 1.0f;
+    state.depthBiasEnable = false;
+    state.depthBiasConstantFactor = 0.0f;
     state.depthBiasSlopeFactor = 0.0f;
     state.depthBiasClamp = 0.0f;
     state.blendEnable = true;

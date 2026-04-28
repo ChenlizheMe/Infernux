@@ -40,16 +40,6 @@ class EditorGizmos
         return m_showGrid;
     }
 
-    void SetGridSize(float size)
-    {
-        m_gridSize = size;
-        m_gridDirty = true;
-    }
-    [[nodiscard]] float GetGridSize() const
-    {
-        return m_gridSize;
-    }
-
     void SetOutlineWidth(float width)
     {
         m_outlineWidth = width;
@@ -64,10 +54,10 @@ class EditorGizmos
     // Grid mesh data access
     // ========================================================================
 
-    /// @brief Get grid line vertices
+    /// @brief Get infinite-grid fullscreen quad vertices
     [[nodiscard]] const std::vector<Vertex> &GetGridVertices();
 
-    /// @brief Get grid line indices
+    /// @brief Get infinite-grid fullscreen quad indices
     [[nodiscard]] const std::vector<uint32_t> &GetGridIndices();
 
     /// @brief Build draw calls for all editor gizmos (grid).
@@ -150,9 +140,6 @@ class EditorGizmos
     void CreateOutlineMesh();
 
     bool m_showGrid = true;
-
-    // Unity-style grid: large quad, procedural grid lines in fragment shader
-    float m_gridSize = 500.0f; // Grid extends from -size to +size (1000x1000 total)
 
     bool m_gridDirty = true;
 
