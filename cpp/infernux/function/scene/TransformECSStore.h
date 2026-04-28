@@ -305,9 +305,10 @@ class TransformECSStore
     {
         return m_frameCacheActive;
     }
+    [[nodiscard]] bool IsFrameCacheActiveFor(Handle h) const;
 
     // Cached world-space read (O(1) array index).  Caller must check
-    // IsFrameCacheActive() before calling.
+    // IsFrameCacheActiveFor() before calling.
     [[nodiscard]] glm::vec3 GetCachedWorldPosition(uint32_t slotIndex) const
     {
         return m_fcWorldPositions[slotIndex];
@@ -334,6 +335,8 @@ class TransformECSStore
   private:
     TransformECSStore() = default;
 
+    [[nodiscard]] bool IsSlotInScene(size_t index, const Scene *scene) const;
+    [[nodiscard]] bool HasAnyDirtyWorldMatrices() const;
     void SyncObjectWorldMatrices(GameObject *obj);
 
     // ── SoA arrays (all the same length == Capacity()) ───────────────
@@ -351,10 +354,6 @@ class TransformECSStore
 
     // ── Global dirty flag for fast SyncSceneWorldMatrices skip ───────
     bool m_anyWorldMatrixDirty = false;
-    // Set when any rotation-affecting setter is called; cleared by BeginFrameCache.
-    // When false, BeginFrameCache skips the expensive quat_cast extraction.
-    bool m_anyRotationDirtied = true;
-
     // ── Global transform change serial (for physics dirty skip) ──────
     uint64_t m_globalTransformSerial = 0;
 
@@ -368,6 +367,7 @@ class TransformECSStore
     // ── Frame Cache arrays (same length as Capacity()) ───────────────
     std::vector<glm::vec3> m_fcWorldPositions;
     std::vector<glm::quat> m_fcWorldRotations;
+    std::vector<uint8_t> m_fcRotationValid;
     // Dirty flags: bit 0 = world position dirty, bit 1 = world rotation dirty,
     // bit 2 = local position dirty, bit 3 = local scale dirty,
     // bit 4 = local rotation dirty, bit 5 = local euler dirty.

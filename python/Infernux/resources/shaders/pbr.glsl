@@ -139,7 +139,7 @@ float ComputeSpecularOcclusion(float NdotV, float ao, float perceptualRoughness)
 // Guarantees smooth falloff to zero at range boundary.
 // attenParams.x = range (yz unused)
 float calculateAttenuation(vec3 attenParams, float distance) {
-    float range = attenParams.x;
+    float range = max(attenParams.x, 1e-4);
     float d2 = distance * distance;
     float r2 = range * range;
     float ratio2 = d2 / r2;
@@ -161,8 +161,9 @@ float GeometricSpecularAA(vec3 worldNormal, float roughness) {
 
 // Spotlight cone falloff
 float calculateSpotFalloff(vec3 lightDir, vec3 spotDir, float innerAngleCos, float outerAngleCos) {
-    float theta   = dot(lightDir, normalize(-spotDir));
-    float epsilon = innerAngleCos - outerAngleCos;
+    float spotLen2 = max(dot(spotDir, spotDir), 1e-8);
+    float theta   = dot(lightDir, -spotDir * inversesqrt(spotLen2));
+    float epsilon = max(innerAngleCos - outerAngleCos, 1e-4);
     return clamp((theta - outerAngleCos) / epsilon, 0.0, 1.0);
 }
 
@@ -182,7 +183,9 @@ vec3 evaluatePBRLight(vec3 N, vec3 V, vec3 L, vec3 lightRadiance,
                       vec3 albedo, float metallic,
                       float roughness, float perceptualRoughness,
                       vec3 F0, float f90, vec3 energyCompensation) {
-    vec3  H     = normalize(V + L);
+    vec3  halfVec = V + L;
+    float halfLen2 = dot(halfVec, halfVec);
+    vec3  H     = (halfLen2 > 1e-8) ? halfVec * inversesqrt(halfLen2) : N;
     float NdotL = max(dot(N, L), 0.0);
     float NdotV = max(dot(N, V), 0.0);
     float NdotH = max(dot(N, H), 0.0);

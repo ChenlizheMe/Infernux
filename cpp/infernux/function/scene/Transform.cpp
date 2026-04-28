@@ -45,7 +45,7 @@ glm::vec3 Transform::GetWorldDirection(const glm::vec3 &localAxis) const
 glm::vec3 Transform::GetWorldPosition() const
 {
     auto &store = TransformECSStore::Instance();
-    if (store.IsFrameCacheActive()) {
+    if (store.IsFrameCacheActiveFor(m_ecsHandle)) {
         return store.GetCachedWorldPosition(m_ecsHandle.index);
     }
 
@@ -61,7 +61,7 @@ glm::vec3 Transform::GetWorldPosition() const
 void Transform::SetWorldPosition(const glm::vec3 &worldPos)
 {
     auto &store = TransformECSStore::Instance();
-    if (store.IsFrameCacheActive()) {
+    if (store.IsFrameCacheActiveFor(m_ecsHandle)) {
         store.SetCachedWorldPosition(m_ecsHandle.index, worldPos);
         return;
     }
@@ -116,7 +116,7 @@ void Transform::InvalidateWorldMatrix(bool clearWorldEulerExact) const
 glm::quat Transform::GetWorldRotation() const
 {
     auto &store = TransformECSStore::Instance();
-    if (store.IsFrameCacheActive()) {
+    if (store.IsFrameCacheActiveFor(m_ecsHandle)) {
         return store.GetCachedWorldRotation(m_ecsHandle.index);
     }
 
@@ -131,7 +131,7 @@ glm::quat Transform::GetWorldRotation() const
 void Transform::SetWorldRotation(const glm::quat &worldRot)
 {
     auto &store = TransformECSStore::Instance();
-    if (store.IsFrameCacheActive()) {
+    if (store.IsFrameCacheActiveFor(m_ecsHandle)) {
         store.SetCachedWorldRotation(m_ecsHandle.index, glm::normalize(worldRot));
         return;
     }
@@ -188,7 +188,7 @@ void Transform::SetWorldEulerAngles(const glm::vec3 &euler)
     glm::quat worldRot = EulerYXZToQuat(euler);
 
     auto &store = TransformECSStore::Instance();
-    if (store.IsFrameCacheActive()) {
+    if (store.IsFrameCacheActiveFor(m_ecsHandle)) {
         store.SetCachedWorldRotation(m_ecsHandle.index, worldRot);
         return;
     }

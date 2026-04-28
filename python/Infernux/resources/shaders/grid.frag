@@ -16,6 +16,10 @@ layout(std140, binding = 0) uniform UniformBufferObject {
 layout(location = 0) in vec3 fragWorldPos;
 layout(location = 0) out vec4 outColor;
 
+vec2 safeFwidth(vec2 value) {
+    return max(fwidth(value), vec2(1e-4));
+}
+
 void main() {
     // Extract camera world position: pos = -(R^T * t) using view matrix orthogonality
     vec3 cameraPos = -(transpose(mat3(ubo.view)) * ubo.view[3].xyz);
@@ -23,7 +27,7 @@ void main() {
     vec2 coord = fragWorldPos.xz;
 
     // ---- Minor grid lines (every 1 unit) ----
-    vec2 dMinor = fwidth(coord);
+    vec2 dMinor = safeFwidth(coord);
     vec2 gridMinor = abs(fract(coord - 0.5) - 0.5);
     vec2 lineMinor = gridMinor / dMinor;
     float minor = 1.0 - min(min(lineMinor.x, lineMinor.y), 1.0);
@@ -34,7 +38,7 @@ void main() {
 
     // ---- Major grid lines (every 10 units) ----
     vec2 coordMajor = coord / 10.0;
-    vec2 dMajor = fwidth(coordMajor);
+    vec2 dMajor = safeFwidth(coordMajor);
     vec2 gridMajor = abs(fract(coordMajor - 0.5) - 0.5);
     vec2 lineMajor = gridMajor / dMajor;
     float major = 1.0 - min(min(lineMajor.x, lineMajor.y), 1.0);

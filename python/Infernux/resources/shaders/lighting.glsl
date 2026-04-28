@@ -263,13 +263,15 @@ vec3 calculateAllLighting(vec3 worldPos, vec3 N, vec3 V,
         PointLightData light = lighting.pointLights[i];
         vec3  lightVec = light.position.xyz - worldPos;
         float distance = length(lightVec);
-        vec3  L           = normalize(lightVec);
-        float attenuation = calculateAttenuation(light.attenuation.xyz, distance);
-        if (attenuation > 0.001) {
-            vec3 radiance = light.color.rgb * light.color.w * attenuation;
-            Lo += evaluatePBRLight(N, V, L, radiance, albedo, metallic,
-                                   roughness, perceptualRoughness,
-                                   F0, f90, energyCompensation);
+        if (distance > 1e-5) {
+            vec3  L = lightVec / distance;
+            float attenuation = calculateAttenuation(light.attenuation.xyz, distance);
+            if (attenuation > 0.001) {
+                vec3 radiance = light.color.rgb * light.color.w * attenuation;
+                Lo += evaluatePBRLight(N, V, L, radiance, albedo, metallic,
+                                       roughness, perceptualRoughness,
+                                       F0, f90, energyCompensation);
+            }
         }
     }
 
@@ -278,16 +280,18 @@ vec3 calculateAllLighting(vec3 worldPos, vec3 N, vec3 V,
         SpotLightData light = lighting.spotLights[i];
         vec3  lightVec = light.position.xyz - worldPos;
         float distance = length(lightVec);
-        vec3 L = normalize(lightVec);
-        float spotFalloff = calculateSpotFalloff(L, light.direction.xyz,
-                                                  light.spotParams.x, light.spotParams.y);
-        if (spotFalloff > 0.0) {
-            float attenuation = calculateAttenuation(light.attenuation.xyz, distance);
-            if (attenuation > 0.001) {
-                vec3 radiance = light.color.rgb * light.color.w * attenuation * spotFalloff;
-                Lo += evaluatePBRLight(N, V, L, radiance, albedo, metallic,
-                                       roughness, perceptualRoughness,
-                                       F0, f90, energyCompensation);
+        if (distance > 1e-5) {
+            vec3 L = lightVec / distance;
+            float spotFalloff = calculateSpotFalloff(L, light.direction.xyz,
+                                                      light.spotParams.x, light.spotParams.y);
+            if (spotFalloff > 0.0) {
+                float attenuation = calculateAttenuation(light.attenuation.xyz, distance);
+                if (attenuation > 0.001) {
+                    vec3 radiance = light.color.rgb * light.color.w * attenuation * spotFalloff;
+                    Lo += evaluatePBRLight(N, V, L, radiance, albedo, metallic,
+                                           roughness, perceptualRoughness,
+                                           F0, f90, energyCompensation);
+                }
             }
         }
     }

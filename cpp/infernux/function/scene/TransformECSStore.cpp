@@ -2,12 +2,50 @@
 #include "GameObject.h"
 #include "Scene.h"
 #include "Transform.h"
+#include <cmath>
 #include <cstring>
+#include <glm/gtc/constants.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
 
 namespace infernux
 {
+
+namespace
+{
+glm::quat EulerYXZToQuat(const glm::vec3 &eulerDeg)
+{
+    glm::vec3 r = glm::radians(eulerDeg);
+    float cx = std::cos(r.x * 0.5f), sx = std::sin(r.x * 0.5f);
+    float cy = std::cos(r.y * 0.5f), sy = std::sin(r.y * 0.5f);
+    float cz = std::cos(r.z * 0.5f), sz = std::sin(r.z * 0.5f);
+
+    glm::quat q;
+    q.w = cy * cx * cz + sy * sx * sz;
+    q.x = cy * sx * cz + sy * cx * sz;
+    q.y = sy * cx * cz - cy * sx * sz;
+    q.z = cy * cx * sz - sy * sx * cz;
+    return q;
+}
+
+glm::vec3 QuatToEulerYXZ(const glm::quat &rotation)
+{
+    glm::quat q = glm::normalize(rotation);
+    float sinX = 2.0f * (q.w * q.x - q.y * q.z);
+
+    float x, y, z;
+    if (std::abs(sinX) < 0.9999f) {
+        x = std::asin(sinX);
+        y = std::atan2(2.0f * (q.x * q.z + q.w * q.y), 1.0f - 2.0f * (q.x * q.x + q.y * q.y));
+        z = std::atan2(2.0f * (q.x * q.y + q.w * q.z), 1.0f - 2.0f * (q.x * q.x + q.z * q.z));
+    } else {
+        x = std::copysign(glm::half_pi<float>(), sinX);
+        y = std::atan2(-(2.0f * (q.x * q.z - q.w * q.y)), 1.0f - 2.0f * (q.y * q.y + q.z * q.z));
+        z = 0.0f;
+    }
+    return glm::degrees(glm::vec3(x, y, z));
+}
+} // namespace
 
 TransformECSStore &TransformECSStore::Instance()
 {
@@ -44,6 +82,7 @@ TransformECSStore::Handle TransformECSStore::Allocate(Transform *owner)
         // Keep frame cache arrays in sync with capacity.
         m_fcWorldPositions.emplace_back(0.0f, 0.0f, 0.0f);
         m_fcWorldRotations.emplace_back(1.0f, 0.0f, 0.0f, 0.0f);
+        m_fcRotationValid.push_back(0);
         m_fcDirty.push_back(0);
     }
 
@@ -59,6 +98,7 @@ TransformECSStore::Handle TransformECSStore::Allocate(Transform *owner)
     m_cachedWorldMatrices[index] = glm::mat4(1.0f);
     m_worldMatrixDirty[index] = 1;
     m_anyWorldMatrixDirty = true;
+    m_fcRotationValid[index] = 0;
     m_owners[index] = owner;
 
     ++m_aliveCount;
@@ -73,6 +113,7 @@ void TransformECSStore::Release(Handle handle)
     uint32_t idx = handle.index;
     m_owners[idx] = nullptr;
     m_alive[idx] = 0;
+    m_fcRotationValid[idx] = 0;
     ++m_generations[idx];
     m_nextFree[idx] = m_freeListHead;
     m_freeListHead = idx;
@@ -113,6 +154,7 @@ void TransformECSStore::Reserve(size_t capacity)
     m_nextFree.reserve(capacity);
     m_fcWorldPositions.reserve(capacity);
     m_fcWorldRotations.reserve(capacity);
+    m_fcRotationValid.reserve(capacity);
     m_fcDirty.reserve(capacity);
 }
 
@@ -147,6 +189,7 @@ void TransformECSStore::SetSnapshot(Handle h, const TransformECSData &d)
     m_dirty[i] = d.dirty ? 1 : 0;
     m_cachedWorldMatrices[i] = d.cachedWorldMatrix;
     m_worldMatrixDirty[i] = d.worldMatrixDirty ? 1 : 0;
+    m_fcRotationValid[i] = 0;
     if (d.worldMatrixDirty)
         m_anyWorldMatrixDirty = true;
     m_owners[i] = d.owner;
@@ -174,7 +217,7 @@ void TransformECSStore::InvalidateSubtree(Transform *root, bool clearWorldEulerE
     }
     if (clearWorldEulerExact) {
         self.m_worldEulerExact[idx] = 0;
-        self.m_anyRotationDirtied = true;
+        self.m_fcRotationValid[idx] = 0;
     }
 
     GameObject *go = root->GetGameObject();
@@ -213,7 +256,38 @@ void TransformECSStore::SyncSceneWorldMatrices(Scene *scene)
         SyncObjectWorldMatrices(root.get());
     }
 
-    m_anyWorldMatrixDirty = false;
+    m_anyWorldMatrixDirty = HasAnyDirtyWorldMatrices();
+}
+
+bool TransformECSStore::IsFrameCacheActiveFor(Handle h) const
+{
+    if (!m_frameCacheActive || !IsValid(h)) {
+        return false;
+    }
+
+    return IsSlotInScene(h.index, m_fcScene);
+}
+
+bool TransformECSStore::IsSlotInScene(size_t index, const Scene *scene) const
+{
+    if (!scene || index >= m_owners.size() || !m_alive[index]) {
+        return false;
+    }
+
+    Transform *owner = m_owners[index];
+    GameObject *go = owner ? owner->GetGameObject() : nullptr;
+    return go && go->GetScene() == scene;
+}
+
+bool TransformECSStore::HasAnyDirtyWorldMatrices() const
+{
+    const size_t count = m_worldMatrixDirty.size();
+    for (size_t i = 0; i < count; ++i) {
+        if (m_alive[i] && m_worldMatrixDirty[i]) {
+            return true;
+        }
+    }
+    return false;
 }
 
 void TransformECSStore::SyncObjectWorldMatrices(GameObject *obj)
@@ -334,13 +408,13 @@ void TransformECSStore::ScatterLocalRotations(Transform *const *transforms, cons
         uint32_t idx = h.index;
         glm::quat q(in[i * 4 + 3], in[i * 4], in[i * 4 + 1], in[i * 4 + 2]); // glm: (w,x,y,z)
         m_localRotations[idx] = q;
-        m_localEulerAngles[idx] = glm::degrees(glm::eulerAngles(q));
+        m_localEulerAngles[idx] = QuatToEulerYXZ(q);
         m_hasCachedWorldEulerAngles[idx] = 0;
+        m_fcRotationValid[idx] = 0;
         m_dirty[idx] = 1;
         m_worldMatrixDirty[idx] = 1;
     }
     m_anyWorldMatrixDirty = true;
-    m_anyRotationDirtied = true;
     for (size_t i = 0; i < count; ++i) {
         GameObject *go = transforms[i]->GetGameObject();
         if (go && go->GetChildCount() > 0) {
@@ -367,15 +441,13 @@ void TransformECSStore::ScatterLocalEulerAngles(Transform *const *transforms, co
         uint32_t idx = h.index;
         glm::vec3 euler(in[i * 3], in[i * 3 + 1], in[i * 3 + 2]);
         m_localEulerAngles[idx] = euler;
-        // Recompute quaternion from euler (YXZ convention).
-        glm::vec3 rad = glm::radians(euler);
-        m_localRotations[idx] = glm::quat(rad);
+        m_localRotations[idx] = EulerYXZToQuat(euler);
         m_hasCachedWorldEulerAngles[idx] = 0;
+        m_fcRotationValid[idx] = 0;
         m_dirty[idx] = 1;
         m_worldMatrixDirty[idx] = 1;
     }
     m_anyWorldMatrixDirty = true;
-    m_anyRotationDirtied = true;
     for (size_t i = 0; i < count; ++i) {
         GameObject *go = transforms[i]->GetGameObject();
         if (go && go->GetChildCount() > 0) {
@@ -475,29 +547,23 @@ void TransformECSStore::BeginFrameCache(Scene *scene)
     if (m_fcWorldPositions.size() < cap) {
         m_fcWorldPositions.resize(cap);
         m_fcWorldRotations.resize(cap);
+        m_fcRotationValid.resize(cap, 0);
         m_fcDirty.resize(cap, 0);
     }
 
-    // Extract world position (column 3) and rotation from cached world matrices.
-    if (m_anyRotationDirtied) {
-        // Full extraction: position + rotation (expensive quat_cast).
-        for (size_t i = 0; i < cap; ++i) {
-            if (!m_alive[i]) {
-                continue;
-            }
-            const glm::mat4 &wm = m_cachedWorldMatrices[i];
-            m_fcWorldPositions[i] = glm::vec3(wm[3]);
-            m_fcWorldRotations[i] = glm::quat_cast(glm::mat3(wm));
+    // Extract scene-scoped world position and lazily refresh rotation.
+    // Tool objects such as the editor camera are not owned by the active scene
+    // and must not read stale matrices through this per-scene frame cache.
+    for (size_t i = 0; i < cap; ++i) {
+        if (!IsSlotInScene(i, scene)) {
+            continue;
         }
-        m_anyRotationDirtied = false;
-    } else {
-        // Fast path: only extract positions (cheap vec3 copy).
-        // Rotations haven't changed since last snapshot.
-        for (size_t i = 0; i < cap; ++i) {
-            if (!m_alive[i]) {
-                continue;
-            }
-            m_fcWorldPositions[i] = glm::vec3(m_cachedWorldMatrices[i][3]);
+
+        const glm::mat4 &wm = m_cachedWorldMatrices[i];
+        m_fcWorldPositions[i] = glm::vec3(wm[3]);
+        if (!m_fcRotationValid[i]) {
+            m_fcWorldRotations[i] = glm::quat_cast(glm::mat3(wm));
+            m_fcRotationValid[i] = 1;
         }
     }
     std::memset(m_fcDirty.data(), 0, cap);
@@ -518,7 +584,7 @@ void TransformECSStore::EndFrameCache()
     const size_t cap = m_fcDirty.size();
     for (size_t i = 0; i < cap; ++i) {
         const uint8_t d = m_fcDirty[i];
-        if (d == 0 || !m_alive[i]) {
+        if (d == 0 || !IsSlotInScene(i, m_fcScene)) {
             continue;
         }
 
@@ -550,8 +616,9 @@ void TransformECSStore::EndFrameCache()
             } else {
                 m_localRotations[i] = glm::inverse(parent->GetWorldRotation()) * m_fcWorldRotations[i];
             }
-            m_localEulerAngles[i] = glm::degrees(glm::eulerAngles(m_localRotations[i]));
+            m_localEulerAngles[i] = QuatToEulerYXZ(m_localRotations[i]);
             m_hasCachedWorldEulerAngles[i] = 0;
+            m_fcRotationValid[i] = 1;
             m_dirty[i] = 1;
             m_worldMatrixDirty[i] = 1;
         }
@@ -596,8 +663,8 @@ void TransformECSStore::SetCachedWorldPosition(uint32_t slotIndex, const glm::ve
 void TransformECSStore::SetCachedWorldRotation(uint32_t slotIndex, const glm::quat &q)
 {
     m_fcWorldRotations[slotIndex] = q;
+    m_fcRotationValid[slotIndex] = 1;
     m_fcDirty[slotIndex] |= 0x02;
-    m_anyRotationDirtied = true;
 }
 
 void TransformECSStore::SetCachedLocalPosition(uint32_t slotIndex, const glm::vec3 &v)
@@ -619,24 +686,23 @@ void TransformECSStore::SetCachedLocalScale(uint32_t slotIndex, const glm::vec3 
 void TransformECSStore::SetCachedLocalRotation(uint32_t slotIndex, const glm::quat &q)
 {
     m_localRotations[slotIndex] = q;
-    m_localEulerAngles[slotIndex] = glm::degrees(glm::eulerAngles(q));
+    m_localEulerAngles[slotIndex] = QuatToEulerYXZ(q);
     m_hasCachedWorldEulerAngles[slotIndex] = 0;
+    m_fcRotationValid[slotIndex] = 0;
     m_fcDirty[slotIndex] |= 0x10;
     m_worldMatrixDirty[slotIndex] = 1;
     m_anyWorldMatrixDirty = true;
-    m_anyRotationDirtied = true;
 }
 
 void TransformECSStore::SetCachedLocalEulerAngles(uint32_t slotIndex, const glm::vec3 &v)
 {
     m_localEulerAngles[slotIndex] = v;
-    glm::vec3 rad = glm::radians(v);
-    m_localRotations[slotIndex] = glm::quat(rad);
+    m_localRotations[slotIndex] = EulerYXZToQuat(v);
     m_hasCachedWorldEulerAngles[slotIndex] = 0;
+    m_fcRotationValid[slotIndex] = 0;
     m_fcDirty[slotIndex] |= 0x20;
     m_worldMatrixDirty[slotIndex] = 1;
     m_anyWorldMatrixDirty = true;
-    m_anyRotationDirtied = true;
 }
 
 } // namespace infernux

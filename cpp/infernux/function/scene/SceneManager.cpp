@@ -163,9 +163,10 @@ void SceneManager::Update(float deltaTime)
 {
     m_lastFrameProfile = {};
 
-    // Always update editor camera (for editor viewport navigation)
+    // Editor camera navigation is advanced by Infernux::ProcessSceneViewInput,
+    // where the current Scene View hover/capture state is known. Updating it
+    // here would apply stale key state or move twice in one frame.
     auto t0 = ProfileClock::now();
-    m_editorCamera.Update(deltaTime);
     m_lastFrameProfile.editorCameraMs += ProfileMsSince(t0);
 
     if (!m_isPlaying && m_activeScene) {

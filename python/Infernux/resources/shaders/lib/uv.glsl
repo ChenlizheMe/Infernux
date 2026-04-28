@@ -88,19 +88,22 @@ vec2 radialShearUV(vec2 uv, vec2 center, float strengthX, float strengthY, vec2 
 // Simple parallax offset  (Unity: Parallax Offset)
 vec2 parallaxOffset(vec2 uv, vec3 viewDirTangent, float heightMap, float scale) {
     float h = heightMap * scale - scale * 0.5;
-    return uv + viewDirTangent.xy / viewDirTangent.z * h;
+    float viewZ = (viewDirTangent.z < 0.0 ? -1.0 : 1.0) * max(abs(viewDirTangent.z), 1e-4);
+    return uv + viewDirTangent.xy / viewZ * h;
 }
 
 // Parallax Occlusion Mapping  (Unity: Parallax Occlusion Mapping)
 vec2 parallaxOcclusionMapping(sampler2D heightTex, vec2 uv, vec3 viewDirTangent,
                                float heightScale, int numLayers) {
-    float layerDepth = 1.0 / float(numLayers);
+    int layerCount = max(numLayers, 1);
+    float layerDepth = 1.0 / float(layerCount);
     float currentLayerDepth = 0.0;
-    vec2 deltaUV = viewDirTangent.xy / viewDirTangent.z * heightScale / float(numLayers);
+    float viewZ = (viewDirTangent.z < 0.0 ? -1.0 : 1.0) * max(abs(viewDirTangent.z), 1e-4);
+    vec2 deltaUV = viewDirTangent.xy / viewZ * heightScale / float(layerCount);
     vec2 currentUV = uv;
     float currentHeight = texture(heightTex, currentUV).r;
 
-    for (int i = 0; i < numLayers; ++i) {
+    for (int i = 0; i < layerCount; ++i) {
         if (currentLayerDepth >= currentHeight) break;
         currentUV -= deltaUV;
         currentHeight = texture(heightTex, currentUV).r;
@@ -110,7 +113,9 @@ vec2 parallaxOcclusionMapping(sampler2D heightTex, vec2 uv, vec3 viewDirTangent,
     vec2 prevUV = currentUV + deltaUV;
     float afterDepth = currentHeight - currentLayerDepth;
     float beforeDepth = texture(heightTex, prevUV).r - currentLayerDepth + layerDepth;
-    float weight = afterDepth / (afterDepth - beforeDepth);
+    float denom = afterDepth - beforeDepth;
+    denom = (denom < 0.0 ? -1.0 : 1.0) * max(abs(denom), 1e-4);
+    float weight = afterDepth / denom;
     return mix(currentUV, prevUV, weight);
 }
 
@@ -121,7 +126,7 @@ vec2 parallaxOcclusionMapping(sampler2D heightTex, vec2 uv, vec3 viewDirTangent,
 // Triplanar blending weights  (Unity: Triplanar — weight computation)
 vec3 triplanarWeights(vec3 worldNormal, float sharpness) {
     vec3 w = pow(abs(worldNormal), vec3(sharpness));
-    return w / (w.x + w.y + w.z);
+    return w / max(w.x + w.y + w.z, 1e-5);
 }
 
 // Triplanar sampling  (Unity: Triplanar)
