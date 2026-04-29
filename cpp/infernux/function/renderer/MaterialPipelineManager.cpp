@@ -1,5 +1,6 @@
 #include "MaterialPipelineManager.h"
 #include "InxRenderStruct.h"
+#include "VertexInputFilter.h"
 #include "vk/VkPipelineHelpers.h"
 #include "vk/VkRenderUtils.h"
 #include <algorithm>
@@ -460,16 +461,19 @@ VkPipeline MaterialPipelineManager::CreatePipelineWithProgram(ShaderProgram *pro
     // Dynamic state
     vkrender::DynamicViewportScissorState dynVpScissor;
 
-    // Vertex input - using standard Vertex structure
+    // Vertex input - expose only attributes consumed by this vertex shader.
+    // This keeps shaders that do not use skinning inputs from producing Vulkan
+    // validation warnings for locations 5/6.
     auto bindingDescription = Vertex::getBindingDescription();
-    auto attributeDescriptions = Vertex::getAttributeDescriptions();
+    auto attributeDescriptions = FilterVertexAttributesForReflection(program->GetVertexReflection());
 
     VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
     vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-    vertexInputInfo.vertexBindingDescriptionCount = 1;
-    vertexInputInfo.pVertexBindingDescriptions = &bindingDescription;
+    vertexInputInfo.vertexBindingDescriptionCount = attributeDescriptions.empty() ? 0u : 1u;
+    vertexInputInfo.pVertexBindingDescriptions = attributeDescriptions.empty() ? nullptr : &bindingDescription;
     vertexInputInfo.vertexAttributeDescriptionCount = static_cast<uint32_t>(attributeDescriptions.size());
-    vertexInputInfo.pVertexAttributeDescriptions = attributeDescriptions.data();
+    vertexInputInfo.pVertexAttributeDescriptions =
+        attributeDescriptions.empty() ? nullptr : attributeDescriptions.data();
 
     // Input assembly
     VkPipelineInputAssemblyStateCreateInfo inputAssembly{};

@@ -874,7 +874,8 @@ def get_file_type(filename: str) -> str:
     ext = ext.lower()
     types = {
         '.png': '[IMG]', '.jpg': '[IMG]', '.jpeg': '[IMG]', '.bmp': '[IMG]',
-        '.tga': '[IMG]', '.gif': '[IMG]',
+        '.tga': '[IMG]', '.gif': '[IMG]', '.psd': '[IMG]', '.hdr': '[IMG]',
+        '.pic': '[IMG]', '.pnm': '[IMG]', '.pgm': '[IMG]', '.ppm': '[IMG]',
         '.py': '[PY]', '.lua': '[LUA]', '.cs': '[CS]', '.cpp': '[CPP]',
         '.h': '[H]', '.c': '[C]',
         '.vert': '[VERT]', '.frag': '[FRAG]', '.glsl': '[GLSL]', '.hlsl': '[HLSL]',

@@ -175,6 +175,11 @@ class Engine():
             except Exception as exc:
                 Debug.log_suppressed("Engine.pre_gui_tick.DeferredTaskRunner", exc)
             try:
+                from Infernux.mcp.threading import MainThreadCommandQueue
+                MainThreadCommandQueue.instance().drain()
+            except Exception as exc:
+                Debug.log_suppressed("Engine.pre_gui_tick.MainThreadCommandQueue", exc)
+            try:
                 from Infernux.engine.ui.window_manager import WindowManager
                 manager = WindowManager.instance()
                 if manager is not None:

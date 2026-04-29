@@ -306,6 +306,9 @@ class SpriteRenderer(BuiltinComponent):
                 + _picker_assets(filt, "*.psd", assets_only=True)
                 + _picker_assets(filt, "*.hdr", assets_only=True)
                 + _picker_assets(filt, "*.pic", assets_only=True)
+                + _picker_assets(filt, "*.pnm", assets_only=True)
+                + _picker_assets(filt, "*.pgm", assets_only=True)
+                + _picker_assets(filt, "*.ppm", assets_only=True)
             )
 
         field_label(ctx, "Sprite", lw)

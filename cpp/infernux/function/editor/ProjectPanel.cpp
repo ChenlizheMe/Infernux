@@ -156,7 +156,8 @@ constexpr float kModelExpandIconSrcPx = 32.0f;
 // Static extension sets
 // ════════════════════════════════════════════════════════════════════
 
-static const std::unordered_set<std::string> sImageExtensions = {".png", ".jpg", ".jpeg", ".bmp", ".tga", ".gif"};
+static const std::unordered_set<std::string> sImageExtensions = {".png", ".jpg", ".jpeg", ".bmp", ".tga", ".gif",
+                                                                 ".psd", ".hdr", ".pic",  ".pnm", ".pgm", ".ppm"};
 
 static const std::unordered_set<std::string> sMaterialExtensions = {".mat"};
 
@@ -232,6 +233,9 @@ const std::unordered_map<std::string, ProjectPanel::DragDropInfo> &ProjectPanel:
         {".psd", {"TEXTURE_FILE", "Texture"}},
         {".hdr", {"TEXTURE_FILE", "Texture"}},
         {".pic", {"TEXTURE_FILE", "Texture"}},
+        {".pnm", {"TEXTURE_FILE", "Texture"}},
+        {".pgm", {"TEXTURE_FILE", "Texture"}},
+        {".ppm", {"TEXTURE_FILE", "Texture"}},
         {".wav", {"AUDIO_FILE", "Audio"}},
         {".ttf", {"FONT_FILE", "Font"}},
         {".otf", {"FONT_FILE", "Font"}},

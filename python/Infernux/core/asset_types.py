@@ -485,7 +485,7 @@ def write_mesh_import_settings(asset_path: str, settings: MeshImportSettings) ->
 
 # Image extensions supported by InxTextureLoader / stb_image
 IMAGE_EXTENSIONS = frozenset({
-    ".png", ".jpg", ".jpeg", ".bmp", ".tga", ".gif", ".psd", ".hdr", ".pic",
+    ".png", ".jpg", ".jpeg", ".bmp", ".tga", ".gif", ".psd", ".hdr", ".pic", ".pnm", ".pgm", ".ppm",
 })
 
 # Shader extensions supported by ShaderImporter

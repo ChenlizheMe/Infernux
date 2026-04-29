@@ -300,7 +300,12 @@ def _get_asset_ref_config():
         from Infernux.components.serialized_field import FieldType
         _ASSET_REF_CONFIG = {
             FieldType.MATERIAL: ("Material",  "MATERIAL_FILE", ("*.mat",),            "mat"),
-            FieldType.TEXTURE:  ("Texture",   "TEXTURE_FILE",  ("*.png", "*.jpg"),     "tex"),
+            FieldType.TEXTURE:  (
+                "Texture",
+                "TEXTURE_FILE",
+                ("*.png", "*.jpg", "*.jpeg", "*.bmp", "*.tga", "*.gif", "*.psd", "*.hdr", "*.pic", "*.pnm", "*.pgm", "*.ppm"),
+                "tex",
+            ),
             FieldType.SHADER:   ("Shader",    "SHADER_FILE",   ("*.vert", "*.frag"),   "shd"),
             # ASSET is kept as a fallback; _resolve_asset_config overrides it.
             FieldType.ASSET:    ("AudioClip", "AUDIO_FILE",    ("*.wav", "*.mp3", "*.ogg"), "aud"),

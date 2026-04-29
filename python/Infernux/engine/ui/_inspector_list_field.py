@@ -147,7 +147,9 @@ def _make_list_picker_providers(element_type, metadata):
     if element_type == FieldType.MATERIAL:
         return (None, lambda filt: _picker_assets(filt, "*.mat"))
     if element_type == FieldType.TEXTURE:
-        return (None, lambda filt: _picker_assets(filt, "*.png", assets_only=True) + _picker_assets(filt, "*.jpg", assets_only=True))
+        patterns = ("*.png", "*.jpg", "*.jpeg", "*.bmp", "*.tga", "*.gif", "*.psd", "*.hdr", "*.pic", "*.pnm", "*.pgm", "*.ppm")
+        return (None, lambda filt, _patterns=patterns: sum(
+            (_picker_assets(filt, pattern, assets_only=True) for pattern in _patterns), []))
     if element_type == FieldType.SHADER:
         return (None, lambda filt: _picker_assets(filt, "*.vert") + _picker_assets(filt, "*.frag"))
     if element_type == FieldType.ASSET:

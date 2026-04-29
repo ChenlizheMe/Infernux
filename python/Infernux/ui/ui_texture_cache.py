@@ -68,7 +68,7 @@ class UITextureCache:
         project_root = get_project_root()
         if not project_root:
             return 0
-        abs_path = os.path.normpath(os.path.join(project_root, tex_path))
+        abs_path = os.path.normpath(tex_path if os.path.isabs(tex_path) else os.path.join(project_root, tex_path))
         if not os.path.isfile(abs_path):
             self._cache[key] = 0
             self._stamp[key] = 0
@@ -80,7 +80,7 @@ class UITextureCache:
             self._stamp[key] = 0
             return 0
 
-        if cached is not None and self._stamp.get(key) == stamp:
+        if cached is not None and cached != 0 and self._stamp.get(key) == stamp:
             return cached
 
         resource_key = f"ui_img|{key}"
@@ -92,8 +92,15 @@ class UITextureCache:
             nearest=False,
             srgb=False,
         )
-        self._cache[key] = tid
-        self._stamp[key] = int(stamp)
+        # Texture preview loading is asynchronous. A zero texture id means the
+        # request was queued or failed for this frame; do not cache it as final,
+        # or the UI will keep returning 0 forever for the same content stamp.
+        if tid != 0:
+            self._cache[key] = tid
+            self._stamp[key] = int(stamp)
+        else:
+            self._cache.pop(key, None)
+            self._stamp.pop(key, None)
         return tid
 
     def get_bound(self, engine):

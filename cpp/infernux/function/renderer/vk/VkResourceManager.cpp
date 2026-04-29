@@ -8,6 +8,7 @@
 #include "VkDeviceContext.h"
 #include <SDL3/SDL.h>
 #include <core/error/InxError.h>
+#include <function/resources/InxFileLoader/InxTextureLoader.hpp>
 #include <platform/filesystem/InxPath.h>
 
 // STB_IMAGE_IMPLEMENTATION moved here after InxVkCore removal
@@ -352,17 +353,24 @@ std::unique_ptr<VkTexture> VkResourceManager::LoadTexture(const std::string &fil
     // LDR path: load as 8-bit RGBA
     stbi_uc *pixels = stbi_load_from_memory(fileBytes.data(), static_cast<int>(fileBytes.size()), &texWidth, &texHeight,
                                             &texChannels, STBI_rgb_alpha);
+    InxTextureData pnmFallback;
 
     if (!pixels) {
-        INXLOG_ERROR("Failed to load texture: ", filePath);
-        return nullptr;
+        pnmFallback = InxTextureLoader::LoadFromMemory(fileBytes.data(), fileBytes.size(), filePath);
+        if (!pnmFallback.IsValid()) {
+            INXLOG_ERROR("Failed to load texture: ", filePath);
+            return nullptr;
+        }
+        texWidth = pnmFallback.width;
+        texHeight = pnmFallback.height;
+        texChannels = pnmFallback.channels;
     }
 
     // Apply max_size clamping: downscale if either dimension exceeds maxSize
     uint32_t finalW = static_cast<uint32_t>(texWidth);
     uint32_t finalH = static_cast<uint32_t>(texHeight);
     std::vector<unsigned char> resizedBuf;
-    const unsigned char *basePixels = pixels;
+    const unsigned char *basePixels = pixels ? pixels : pnmFallback.pixels.data();
 
     if (normalMapMode) {
         INXLOG_INFO("LoadTexture: preserving authored tangent-space normal map '", filePath, "'");
@@ -386,7 +394,9 @@ std::unique_ptr<VkTexture> VkResourceManager::LoadTexture(const std::string &fil
     auto texture =
         CreateTextureFromPixels(srcPixels, finalW, finalH, format, generateMipmaps, filter, addressMode, aniso);
 
-    stbi_image_free(pixels);
+    if (pixels) {
+        stbi_image_free(pixels);
+    }
 
     return texture;
 }

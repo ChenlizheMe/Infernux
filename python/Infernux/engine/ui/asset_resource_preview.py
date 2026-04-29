@@ -15,7 +15,7 @@ from Infernux.debug import Debug
 from Infernux.engine.texture_task_bridge import safe_mtime_ns
 
 
-_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".tga", ".gif", ".hdr", ".pic", ".psd"}
+_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".tga", ".gif", ".hdr", ".pic", ".psd", ".pnm", ".pgm", ".ppm"}
 _MATERIAL_EXTS = {".mat"}
 _MODEL_EXTS = {".fbx", ".obj", ".gltf", ".glb", ".dae", ".blend"}
 _PREFAB_EXTS = {".prefab"}

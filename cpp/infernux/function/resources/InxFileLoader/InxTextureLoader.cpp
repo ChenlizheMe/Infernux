@@ -1,7 +1,9 @@
 #include "InxTextureLoader.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <core/log/InxLog.h>
+#include <cstdlib>
 #include <filesystem>
 #include <platform/filesystem/InxPath.h>
 #include <stb_image.h>
@@ -9,6 +11,156 @@
 
 namespace infernux
 {
+namespace
+{
+
+void SkipPnmWhitespaceAndComments(const unsigned char *data, size_t dataSize, size_t &pos)
+{
+    while (pos < dataSize) {
+        while (pos < dataSize && std::isspace(static_cast<unsigned char>(data[pos]))) {
+            ++pos;
+        }
+        if (pos < dataSize && data[pos] == '#') {
+            while (pos < dataSize && data[pos] != '\n' && data[pos] != '\r') {
+                ++pos;
+            }
+            continue;
+        }
+        break;
+    }
+}
+
+bool ReadPnmToken(const unsigned char *data, size_t dataSize, size_t &pos, std::string &out)
+{
+    SkipPnmWhitespaceAndComments(data, dataSize, pos);
+    if (pos >= dataSize) {
+        return false;
+    }
+    const size_t start = pos;
+    while (pos < dataSize && !std::isspace(static_cast<unsigned char>(data[pos])) && data[pos] != '#') {
+        ++pos;
+    }
+    out.assign(reinterpret_cast<const char *>(data + start), pos - start);
+    return !out.empty();
+}
+
+bool ReadPnmInt(const unsigned char *data, size_t dataSize, size_t &pos, int &out)
+{
+    std::string token;
+    if (!ReadPnmToken(data, dataSize, pos, token)) {
+        return false;
+    }
+    char *end = nullptr;
+    long value = std::strtol(token.c_str(), &end, 10);
+    if (end == token.c_str() || *end != '\0' || value < 0 || value > 65535) {
+        return false;
+    }
+    out = static_cast<int>(value);
+    return true;
+}
+
+unsigned char ScalePnmSample(int value, int maxValue)
+{
+    if (maxValue <= 0) {
+        return 0;
+    }
+    value = std::clamp(value, 0, maxValue);
+    return static_cast<unsigned char>((value * 255 + maxValue / 2) / maxValue);
+}
+
+bool DecodePnmToRgba(const unsigned char *data, size_t dataSize, InxTextureData &result)
+{
+    if (!data || dataSize < 3 || data[0] != 'P') {
+        return false;
+    }
+
+    const unsigned char magic = data[1];
+    const bool asciiRgb = magic == '3';
+    const bool asciiGray = magic == '2';
+    const bool binaryRgb = magic == '6';
+    const bool binaryGray = magic == '5';
+    if (!asciiRgb && !asciiGray && !binaryRgb && !binaryGray) {
+        return false;
+    }
+
+    size_t pos = 2;
+    int width = 0;
+    int height = 0;
+    int maxValue = 0;
+    if (!ReadPnmInt(data, dataSize, pos, width) || !ReadPnmInt(data, dataSize, pos, height) ||
+        !ReadPnmInt(data, dataSize, pos, maxValue)) {
+        return false;
+    }
+    if (width <= 0 || height <= 0 || maxValue <= 0 || maxValue > 65535) {
+        return false;
+    }
+
+    const size_t pixelCount = static_cast<size_t>(width) * static_cast<size_t>(height);
+    result.width = width;
+    result.height = height;
+    result.channels = 4;
+    result.pixels.clear();
+    result.pixels.resize(pixelCount * 4);
+
+    if (asciiRgb || asciiGray) {
+        for (size_t i = 0; i < pixelCount; ++i) {
+            int r = 0;
+            int g = 0;
+            int b = 0;
+            if (asciiRgb) {
+                if (!ReadPnmInt(data, dataSize, pos, r) || !ReadPnmInt(data, dataSize, pos, g) ||
+                    !ReadPnmInt(data, dataSize, pos, b)) {
+                    return false;
+                }
+            } else {
+                if (!ReadPnmInt(data, dataSize, pos, r)) {
+                    return false;
+                }
+                g = r;
+                b = r;
+            }
+            const size_t out = i * 4;
+            result.pixels[out + 0] = ScalePnmSample(r, maxValue);
+            result.pixels[out + 1] = ScalePnmSample(g, maxValue);
+            result.pixels[out + 2] = ScalePnmSample(b, maxValue);
+            result.pixels[out + 3] = 255;
+        }
+        return true;
+    }
+
+    // Binary P5/P6: one whitespace byte separates the header from pixel bytes.
+    SkipPnmWhitespaceAndComments(data, dataSize, pos);
+    const int srcChannels = binaryRgb ? 3 : 1;
+    const int bytesPerSample = maxValue > 255 ? 2 : 1;
+    const size_t required = pixelCount * static_cast<size_t>(srcChannels) * static_cast<size_t>(bytesPerSample);
+    if (pos + required > dataSize) {
+        return false;
+    }
+
+    for (size_t i = 0; i < pixelCount; ++i) {
+        int samples[3] = {0, 0, 0};
+        for (int c = 0; c < srcChannels; ++c) {
+            if (bytesPerSample == 1) {
+                samples[c] = data[pos++];
+            } else {
+                samples[c] = (static_cast<int>(data[pos]) << 8) | static_cast<int>(data[pos + 1]);
+                pos += 2;
+            }
+        }
+        if (srcChannels == 1) {
+            samples[1] = samples[0];
+            samples[2] = samples[0];
+        }
+        const size_t out = i * 4;
+        result.pixels[out + 0] = ScalePnmSample(samples[0], maxValue);
+        result.pixels[out + 1] = ScalePnmSample(samples[1], maxValue);
+        result.pixels[out + 2] = ScalePnmSample(samples[2], maxValue);
+        result.pixels[out + 3] = 255;
+    }
+    return true;
+}
+
+} // namespace
 
 InxTextureData InxTextureLoader::LoadFromFile(const std::string &filePath, const std::string &name)
 {
@@ -27,6 +179,10 @@ InxTextureData InxTextureLoader::LoadFromFile(const std::string &filePath, const
                                             &channels, STBI_rgb_alpha);
 
     if (!pixels) {
+        if (DecodePnmToRgba(fileBytes.data(), fileBytes.size(), result)) {
+            INXLOG_DEBUG("Loaded PNM texture: ", result.name, " [", result.width, "x", result.height, "]");
+            return result;
+        }
         INXLOG_ERROR("stbi_load failed for: ", filePath, " - ", stbi_failure_reason());
         return result;
     }
@@ -53,6 +209,10 @@ InxTextureData InxTextureLoader::LoadFromMemory(const unsigned char *data, size_
         stbi_load_from_memory(data, static_cast<int>(dataSize), &width, &height, &channels, STBI_rgb_alpha);
 
     if (!pixels) {
+        if (DecodePnmToRgba(data, dataSize, result)) {
+            INXLOG_DEBUG("Loaded PNM texture from memory: ", result.name, " [", result.width, "x", result.height, "]");
+            return result;
+        }
         INXLOG_ERROR("stbi_load_from_memory failed: ", stbi_failure_reason());
         return result;
     }

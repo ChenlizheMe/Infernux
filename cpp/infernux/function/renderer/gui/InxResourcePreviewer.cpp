@@ -236,7 +236,7 @@ ImagePreviewer::~ImagePreviewer()
 
 std::vector<std::string> ImagePreviewer::GetSupportedExtensions() const
 {
-    return {".png", ".jpg", ".jpeg", ".bmp", ".tga", ".hdr", ".gif", ".psd", ".pic", ".pnm"};
+    return {".png", ".jpg", ".jpeg", ".bmp", ".tga", ".hdr", ".gif", ".psd", ".pic", ".pnm", ".pgm", ".ppm"};
 }
 
 bool ImagePreviewer::Load(const std::string &filePath)

@@ -11,12 +11,14 @@
 
 #include "InxError.h"
 #include "InxVkCoreModular.h"
+#include "VertexInputFilter.h"
 #include "gui/GPUMaterialPreview.h"
 #include "gui/GPUMeshPreview.h"
 #include "vk/VkPipelineHelpers.h"
 #include "vk/VkRenderUtils.h"
 
 #include <function/renderer/shader/ShaderProgram.h>
+#include <function/renderer/shader/ShaderReflection.h>
 #include <function/resources/AssetDatabase/AssetDatabase.h>
 #include <function/resources/AssetRegistry/AssetRegistry.h>
 #include <function/resources/InxFileLoader/InxShaderLoader.hpp>
@@ -1202,16 +1204,29 @@ void InxVkCoreModular::CreateMaterialShadowPipeline(std::shared_ptr<InxMaterial>
     // Shader stages
     auto shaderStages = vkrender::MakeVertFragStages(vertModule, fragModule);
 
-    // Vertex input — same layout as the main scene rendering
+    // Vertex input — only attributes consumed by the shadow vertex shader (full mesh buffer still bound).
     auto bindingDesc = Vertex::getBindingDescription();
-    auto attrDescs = Vertex::getAttributeDescriptions();
+    ShaderReflection shadowVertRefl;
+    bool haveVertRefl = false;
+    if (const auto *spv = m_shaderCache.FindVertCode(shadowVertName)) {
+        haveVertRefl = shadowVertRefl.Reflect(*spv, VK_SHADER_STAGE_VERTEX_BIT);
+    }
+    if (!haveVertRefl) {
+        if (const auto *spv = m_shaderCache.FindVertCode(vertShaderName)) {
+            haveVertRefl = shadowVertRefl.Reflect(*spv, VK_SHADER_STAGE_VERTEX_BIT);
+        }
+    }
+    if (!haveVertRefl && forwardProgram != nullptr && vertModule == forwardProgram->GetVertexModule()) {
+        shadowVertRefl = forwardProgram->GetVertexReflection();
+    }
+    std::vector<VkVertexInputAttributeDescription> attrDescs = FilterVertexAttributesForReflection(shadowVertRefl);
 
     VkPipelineVertexInputStateCreateInfo vertexInput{};
     vertexInput.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-    vertexInput.vertexBindingDescriptionCount = 1;
-    vertexInput.pVertexBindingDescriptions = &bindingDesc;
+    vertexInput.vertexBindingDescriptionCount = attrDescs.empty() ? 0u : 1u;
+    vertexInput.pVertexBindingDescriptions = attrDescs.empty() ? nullptr : &bindingDesc;
     vertexInput.vertexAttributeDescriptionCount = static_cast<uint32_t>(attrDescs.size());
-    vertexInput.pVertexAttributeDescriptions = attrDescs.data();
+    vertexInput.pVertexAttributeDescriptions = attrDescs.empty() ? nullptr : attrDescs.data();
 
     auto inputAssembly = vkrender::MakeTriangleListInputAssembly();
 

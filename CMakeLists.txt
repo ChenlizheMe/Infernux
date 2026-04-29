@@ -75,33 +75,25 @@ target_include_directories(_Infernux PRIVATE
 if(MSVC)
     target_compile_options(_Infernux PRIVATE
         /utf-8
-        $<$<CONFIG:Release>:/O2>
-        $<$<CONFIG:Release>:/Ob2>
-        $<$<CONFIG:Release>:/Oi>
-        $<$<CONFIG:Release>:/Ot>
-        $<$<CONFIG:Release>:/Oy>
-        $<$<CONFIG:Release>:/Gy>
-        $<$<CONFIG:Release>:/Gw>
-        $<$<CONFIG:Release>:/GL>
     )
 
     target_link_options(_Infernux PRIVATE
-        $<$<CONFIG:Release>:/LTCG>
-        $<$<CONFIG:Release>:/OPT:REF>
-        $<$<CONFIG:Release>:/OPT:ICF>
+        $<$<CONFIG:Release>:/OPT:NOREF>
+        $<$<CONFIG:Release>:/OPT:NOICF>
     )
 elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
     target_compile_options(_Infernux PRIVATE
-        $<$<CONFIG:Release>:-O3>
+        $<$<CONFIG:Release>:-O0>
+        $<$<CONFIG:Release>:-fno-lto>
     )
 
     target_link_options(_Infernux PRIVATE
-        $<$<CONFIG:Release>:-flto>
+        $<$<CONFIG:Release>:-fno-lto>
     )
 endif()
 
-# Prefer whole-program optimization in Release when the toolchain supports it.
-set_property(TARGET _Infernux PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
+# Disable target-level IPO/LTO in Release while investigating no-log crashes.
+set_property(TARGET _Infernux PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE FALSE)
 
 # ------------------------------------------------------------------------------
 # SPIRV-Cross (from Vulkan SDK)
@@ -166,6 +158,10 @@ target_compile_definitions(_Infernux PRIVATE
     $<$<CONFIG:MinSizeRel>:INFERNUX_FILE_LOGGING=1>
     $<$<CONFIG:Release>:INFERNUX_DEFERRED_FILE_LOGGING=1>
     $<$<CONFIG:MinSizeRel>:INFERNUX_DEFERRED_FILE_LOGGING=1>
+    # Vulkan validation layers: on for Debug / RelWithDebInfo (preset "debug"),
+    # off for Release / MinSizeRel (preset "release"). See InxVkCoreModular::Init.
+    $<$<CONFIG:Debug>:INFERNUX_VULKAN_VALIDATION_LAYERS=1>
+    $<$<CONFIG:RelWithDebInfo>:INFERNUX_VULKAN_VALIDATION_LAYERS=1>
 )
 
 target_link_libraries(_Infernux PRIVATE

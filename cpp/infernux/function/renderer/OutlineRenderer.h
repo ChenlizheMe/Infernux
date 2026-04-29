@@ -37,6 +37,7 @@ class InxVkCoreModular;
 class SceneRenderTarget;
 class InxMaterial;
 class ShaderProgram;
+class ShaderReflection;
 
 /**
  * @brief Self-contained post-process selection outline renderer.
@@ -159,7 +160,8 @@ class OutlineRenderer
     // ========================================================================
 
     void CreateOutlineMaterialResources();
-    VkPipeline CreateMaskPipeline(const VkPipelineShaderStageCreateInfo stages[2], VkPipelineLayout layout);
+    VkPipeline CreateMaskPipeline(const VkPipelineShaderStageCreateInfo stages[2], VkPipelineLayout layout,
+                                  const ShaderReflection &vertexReflection);
     VkPipeline GetOrCreateMtlOutlinePipeline(InxMaterial *material);
     VkDescriptorSet GetOrCreateMtlOutlineDescSet(InxMaterial *material);
 
