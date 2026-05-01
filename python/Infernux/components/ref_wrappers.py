@@ -548,8 +548,10 @@ class ComponentRef:
             return "None"
         # Try to get the GO name
         go_name = ""
-        if hasattr(comp, 'game_object') and comp.game_object:
-            go_name = getattr(comp.game_object, 'name', '')
+        try_go = getattr(comp, "_try_get_game_object", None)
+        go = try_go() if callable(try_go) else None
+        if go is not None:
+            go_name = getattr(go, "name", "")
         elif hasattr(comp, 'name'):
             go_name = comp.name or ""
         type_name = self._component_type or type(comp).__name__

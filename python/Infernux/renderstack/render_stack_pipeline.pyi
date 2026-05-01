@@ -22,6 +22,7 @@ class RenderStackPipeline(RenderPipeline):
     """
 
     name: ClassVar[str]
+    """Display/internal pipeline name: ``"_RenderStackBridge"``."""
 
     def __init__(self) -> None: ...
     def render(self, context: Any, cameras: Any) -> None: ...

@@ -22,7 +22,11 @@ class PassEntry:
 
 
 class RenderStack(InxComponent):
-    """Component that manages a stack of render passes driven by a pipeline."""
+    """Scene singleton component that manages render pipelines and injected passes.
+
+    Runtime class also mixes in render-pass management and pipeline reload
+    behavior; those public methods are mirrored in this stub.
+    """
 
     pipeline_class_name: str
     mounted_passes_json: str
@@ -38,6 +42,9 @@ class RenderStack(InxComponent):
         ...
     def on_destroy(self) -> None:
         """Clean up the render stack when the component is destroyed."""
+        ...
+    def on_inspector_gui(self, ctx: object) -> None:
+        """Render the custom editor inspector for this RenderStack."""
         ...
 
     @staticmethod

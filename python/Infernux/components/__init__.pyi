@@ -7,6 +7,7 @@ from .builtin_component import BuiltinComponent, CppProperty
 from .builtin import (
     Light as Light,
     MeshRenderer as MeshRenderer,
+    SkinnedMeshRenderer as SkinnedMeshRenderer,
     Camera as Camera,
     Collider as Collider,
     BoxCollider as BoxCollider,
@@ -19,6 +20,7 @@ from .builtin import (
     RigidbodyInterpolation as RigidbodyInterpolation,
     AudioSource as AudioSource,
     AudioListener as AudioListener,
+    SpriteRenderer as SpriteRenderer,
 )
 from Infernux.lib._Infernux import Transform as Transform, Component as Component
 from .serializable_object import SerializableObject as SerializableObject
@@ -40,10 +42,6 @@ from .ref_wrappers import (
     ComponentRef as ComponentRef,
     PrefabRef as PrefabRef,
 )
-from .inspector import (
-    ComponentInspector as ComponentInspector,
-    InspectorData as InspectorData,
-)
 from .script_loader import (
     load_component_from_file as load_component_from_file,
     load_all_components_from_file as load_all_components_from_file,
@@ -52,6 +50,8 @@ from .script_loader import (
     get_component_info as get_component_info,
     ScriptLoadError as ScriptLoadError,
 )
+from .spirit_animator import SpiritAnimator as SpiritAnimator
+from .skeletal_animator import SkeletalAnimator as SkeletalAnimator
 from .registry import (
     get_type as get_type,
     get_all_types as get_all_types,
@@ -78,6 +78,7 @@ __all__ = [
     "Transform",
     "Light",
     "MeshRenderer",
+    "SkinnedMeshRenderer",
     "Camera",
     "Collider",
     "BoxCollider",
@@ -90,6 +91,7 @@ __all__ = [
     "RigidbodyInterpolation",
     "AudioSource",
     "AudioListener",
+    "SpriteRenderer",
     "serialized_field",
     "int_field",
     "hide_field",
@@ -105,8 +107,6 @@ __all__ = [
     "get_serialized_fields",
     "get_field_value",
     "set_field_value",
-    "ComponentInspector",
-    "InspectorData",
     "load_component_from_file",
     "load_all_components_from_file",
     "create_component_instance",
@@ -128,4 +128,6 @@ __all__ = [
     "AddComponentMenu",
     "HelpURL",
     "Icon",
+    "SpiritAnimator",
+    "SkeletalAnimator",
 ]

@@ -61,6 +61,26 @@ class TextResizeMode(IntEnum):
     """Both width and height are fixed."""
 
 
+class UIScaleMode(IntEnum):
+    """How a UICanvas scales UI elements, aligned with Unity CanvasScaler."""
+    ConstantPixelSize = 0
+    """UI elements keep their design pixel size."""
+    ScaleWithScreenSize = 1
+    """Scale elements from reference resolution to current screen size."""
+    ConstantPhysicalSize = 2
+    """Future DPI-aware physical sizing; currently behaves like constant pixels."""
+
+
+class ScreenMatchMode(IntEnum):
+    """How ScaleWithScreenSize chooses width/height scale."""
+    MatchWidthOrHeight = 0
+    """Blend between width and height using match_width_or_height."""
+    Expand = 1
+    """Scale so the canvas expands and nothing is cropped."""
+    Shrink = 2
+    """Scale so the canvas shrinks and everything fits."""
+
+
 class UITransitionType(IntEnum):
     """Visual transition type for interactive elements (UISelectable)."""
     ColorTint = 0

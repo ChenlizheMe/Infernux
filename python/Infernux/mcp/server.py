@@ -36,10 +36,40 @@ def start_server(project_path: str, *, host: str = HOST, port: int = PORT) -> bo
         return False
 
     _project_path = project_path
+    from Infernux.mcp.capabilities import configure, feature_enabled, is_enabled
+    capability_config = configure(project_path, write_default=True)
+    if not is_enabled():
+        Debug.log_internal("Infernux MCP server disabled by ProjectSettings/mcp_capabilities.json")
+        return False
+    if feature_enabled("session_call_log"):
+        try:
+            from Infernux.mcp.project_tools.trace import start_session_log
+            info = start_session_log(project_path)
+            Debug.log_internal(f"Infernux MCP session log initialized: {info.get('path')}")
+        except Exception as exc:
+            Debug.log_suppressed("Infernux.mcp.start_session_log", exc)
     _server = FastMCP(SERVER_NAME)
+
+    # Friendly GET probe on PATH — avoids noisy 404 when IDEs/clients hit /mcp without POST.
+    from starlette.requests import Request
+    from starlette.responses import JSONResponse
+
+    @_server.custom_route(PATH, methods=["GET"])  # type: ignore[attr-defined]
+    async def _mcp_get_probe(request: Request) -> JSONResponse:
+        return JSONResponse(
+            {
+                "name": SERVER_NAME,
+                "message": "MCP endpoint is alive. Use POST/streamable-http for MCP calls.",
+                "transport": "streamable-http",
+                "path": PATH,
+                "url": endpoint_url(host=host, port=int(port)),
+            }
+        )
+
     from Infernux.mcp.tools import register_all_tools
-    register_all_tools(_server, project_path)
-    _write_discovery_files(project_path, host=host, port=int(port))
+    register_all_tools(_server, project_path, capability_config)
+    if feature_enabled("discovery_files"):
+        _write_discovery_files(project_path, host=host, port=int(port))
 
     def _run() -> None:
         last_error = None

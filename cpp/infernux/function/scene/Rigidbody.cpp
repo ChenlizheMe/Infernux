@@ -785,9 +785,9 @@ void Rigidbody::SyncExternalMovesToPhysics()
     if (!posDiff && !rotDiff)
         return; // Transform unchanged since last physics write — nothing to do
 
-    INXLOG_WARN("Rigidbody::SyncExternalMovesToPhysics TELEPORT — posDiff=", posDiff, " rotDiff=", rotDiff,
-                " posDelta=", glm::length(currentPos - d.lastSyncedPosition),
-                " rotDelta=", (1.0f - std::abs(glm::dot(currentRot, d.lastSyncedRotation))));
+    // INXLOG_WARN("Rigidbody::SyncExternalMovesToPhysics TELEPORT — posDiff=", posDiff, " rotDiff=", rotDiff,
+    //             " posDelta=", glm::length(currentPos - d.lastSyncedPosition),
+    //             " rotDelta=", (1.0f - std::abs(glm::dot(currentRot, d.lastSyncedRotation))));
 
     // The user (gizmo / inspector) moved the object externally.
     // Teleport ALL sibling collider bodies to the new Transform position.

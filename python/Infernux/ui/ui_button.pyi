@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from typing import List
+
 from Infernux.ui.enums import TextAlignH, TextAlignV
 from Infernux.ui.ui_selectable import UISelectable
 from Infernux.ui.ui_event import UIEvent
+from Infernux.ui.ui_event_entry import UIEventEntry
 from Infernux.ui.ui_event_data import PointerEventData
 
 
@@ -51,7 +54,7 @@ class UIButton(UISelectable):
     letter_spacing: float
     texture_path: str
     background_color: list
-    on_click_entries: list
+    on_click_entries: List[UIEventEntry]
 
     def awake(self) -> None: ...
 

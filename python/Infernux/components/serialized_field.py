@@ -49,6 +49,31 @@ def set_field_change_hooks(
     _on_field_did_change = did_change
 
 
+def _call_field_will_change(instance: 'InxComponent', field_name: str, old_value: Any, new_value: Any) -> bool:
+    if _on_field_will_change is None:
+        return False
+    try:
+        return bool(_on_field_will_change(instance, field_name, old_value, new_value))
+    except Exception as exc:
+        Debug.log_suppressed(
+            f"serialized_field.will_change.{type(instance).__name__}.{field_name}",
+            exc,
+        )
+        return False
+
+
+def _call_field_did_change(instance: 'InxComponent', field_name: str, old_value: Any, new_value: Any) -> None:
+    if _on_field_did_change is None:
+        return
+    try:
+        _on_field_did_change(instance, field_name, old_value, new_value)
+    except Exception as exc:
+        Debug.log_suppressed(
+            f"serialized_field.did_change.{type(instance).__name__}.{field_name}",
+            exc,
+        )
+
+
 class FieldType(Enum):
     """Supported field types for serialization and inspector rendering."""
     INT = auto()
@@ -210,14 +235,14 @@ class SerializedFieldDescriptor:
                     from ._cds_bridge import cds_get
                     old_value = cds_get(self._cds_class_id, self._cds_field_id, self._cds_type_code, slot)
                     if old_value != value:
-                        if _on_field_will_change(instance, self.metadata.name, old_value, value):
+                        if _call_field_will_change(instance, self.metadata.name, old_value, value):
                             return
                 from ._cds_bridge import cds_set, cds_get as _cg
                 old = _cg(self._cds_class_id, self._cds_field_id, self._cds_type_code, slot)
                 cds_set(self._cds_class_id, self._cds_field_id, self._cds_type_code, slot, value)
                 if not getattr(instance, '_inf_deserializing', False):
                     if old != value and _on_field_did_change is not None:
-                        _on_field_did_change(instance, self.metadata.name, old, value)
+                        _call_field_did_change(instance, self.metadata.name, old, value)
                 return
 
         inst_id = id(instance)
@@ -227,7 +252,7 @@ class SerializedFieldDescriptor:
             with self._lock:
                 old_value = self._values.get(inst_id, self.metadata.default)
             if old_value != value:
-                if _on_field_will_change(instance, self.metadata.name, old_value, value):
+                if _call_field_will_change(instance, self.metadata.name, old_value, value):
                     return  # callback handled the write (undo recorded)
 
         # Normal set path
@@ -241,7 +266,7 @@ class SerializedFieldDescriptor:
         # Mark scene dirty via injectable callback
         if not getattr(instance, '_inf_deserializing', False):
             if old != value and _on_field_did_change is not None:
-                _on_field_did_change(instance, self.metadata.name, old, value)
+                _call_field_did_change(instance, self.metadata.name, old, value)
 
         # Periodic batch cleanup as a safety net for ref-cycle GC edge cases.
         self._set_count += 1
@@ -254,6 +279,81 @@ class SerializedFieldDescriptor:
         with self._lock:
             self._values.pop(inst_id, None)
             self._weak_refs.pop(inst_id, None)
+
+    def default_value(self) -> Any:
+        """Return a copy-safe default value for class-level fallback access."""
+        try:
+            return copy.deepcopy(self.metadata.default)
+        except Exception:
+            return self.metadata.default
+
+    def _coerce_other(self, other: Any) -> Any:
+        if isinstance(other, SerializedFieldDescriptor):
+            return other.default_value()
+        return other
+
+    def __repr__(self) -> str:
+        return repr(self.default_value())
+
+    def __str__(self) -> str:
+        return str(self.default_value())
+
+    def __format__(self, format_spec: str) -> str:
+        return format(self.default_value(), format_spec)
+
+    def __bool__(self) -> bool:
+        return bool(self.default_value())
+
+    def __int__(self) -> int:
+        return int(self.default_value())
+
+    def __float__(self) -> float:
+        return float(self.default_value())
+
+    def __index__(self) -> int:
+        return int(self.default_value())
+
+    def __lt__(self, other: Any) -> bool:
+        return self.default_value() < self._coerce_other(other)
+
+    def __le__(self, other: Any) -> bool:
+        return self.default_value() <= self._coerce_other(other)
+
+    def __gt__(self, other: Any) -> bool:
+        return self.default_value() > self._coerce_other(other)
+
+    def __ge__(self, other: Any) -> bool:
+        return self.default_value() >= self._coerce_other(other)
+
+    def __eq__(self, other: Any) -> bool:
+        return self.default_value() == self._coerce_other(other)
+
+    def __ne__(self, other: Any) -> bool:
+        return self.default_value() != self._coerce_other(other)
+
+    def __add__(self, other: Any) -> Any:
+        return self.default_value() + self._coerce_other(other)
+
+    def __radd__(self, other: Any) -> Any:
+        return self._coerce_other(other) + self.default_value()
+
+    def __sub__(self, other: Any) -> Any:
+        return self.default_value() - self._coerce_other(other)
+
+    def __rsub__(self, other: Any) -> Any:
+        return self._coerce_other(other) - self.default_value()
+
+    def __mul__(self, other: Any) -> Any:
+        return self.default_value() * self._coerce_other(other)
+
+    def __rmul__(self, other: Any) -> Any:
+        return self._coerce_other(other) * self.default_value()
+
+    def __truediv__(self, other: Any) -> Any:
+        return self.default_value() / self._coerce_other(other)
+
+    def __rtruediv__(self, other: Any) -> Any:
+        return self._coerce_other(other) / self.default_value()
 
 
 # ═══════════════════════════════════════════════════════════════════════════

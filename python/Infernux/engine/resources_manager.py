@@ -245,6 +245,9 @@ class ResourceChangeHandler(FileSystemEventHandler):
 
     def _process_asset_modified(self, src_path: str):
         """Handle asset content change on the main thread."""
+        if src_path.lower().endswith(".scene") and self._is_active_scene_file(src_path):
+            Debug.log_internal(f"[Scene Modified] ignored watcher echo for active scene: {os.path.basename(src_path)}")
+            return
         from Infernux.core.assets import AssetManager
         AssetManager.on_asset_modified(src_path)
         if self._asset_database:
@@ -252,6 +255,16 @@ class ResourceChangeHandler(FileSystemEventHandler):
         else:
             self._engine.modify_resources(src_path)
         self._emit_asset_changed(src_path, "modified")
+
+    @staticmethod
+    def _is_active_scene_file(path: str) -> bool:
+        try:
+            from Infernux.engine.scene_manager import SceneFileManager
+            sfm = SceneFileManager.instance()
+            active = getattr(sfm, "current_scene_path", "") if sfm else ""
+            return bool(active and os.path.abspath(path) == os.path.abspath(active))
+        except Exception:
+            return False
 
     def _check_script(self, file_path: str):
         """Check a Python script for syntax errors and hot-reload components."""

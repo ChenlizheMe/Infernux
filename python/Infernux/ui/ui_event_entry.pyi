@@ -63,6 +63,14 @@ class UIEventMethodParameter:
     component_type: str
     default_value: Any
 
+    def __init__(
+        self,
+        name: str,
+        kind: str,
+        component_type: str = ...,
+        default_value: Any = ...,
+    ) -> None: ...
+
     @property
     def display_name(self) -> str:
         """Human-readable label for editor display."""
