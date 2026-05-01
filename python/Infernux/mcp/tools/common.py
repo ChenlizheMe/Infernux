@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import inspect
 import os
+import secrets
 import time
 from typing import Any, Callable
 
@@ -12,29 +14,88 @@ MCP_PROTOCOL_VERSION = "2025-03-26"
 MCP_SERVER_VERSION = "0.2.0"
 
 _TOOL_METADATA: dict[str, dict[str, Any]] = {}
+_KNOWLEDGE_TOKENS: dict[str, dict[str, Any]] = {}
+
+
+class KnowledgeTokenError(Exception):
+    def __init__(self, scope: str, required_tool: str, provided: str = "") -> None:
+        self.scope = str(scope or "")
+        self.required_tool = str(required_tool or "")
+        self.provided = str(provided or "")
+        super().__init__(
+            f"Invalid or missing knowledge token for '{self.scope}'. "
+            f"Call {self.required_tool} first to learn the required knowledge and receive a temporary token."
+        )
+
+
+def issue_knowledge_token(scope: str, *, source_tool: str, ttl_seconds: int = 7200) -> dict[str, Any]:
+    """Issue a temporary proof that the agent requested subsystem knowledge."""
+    normalized_scope = str(scope or "").strip().lower()
+    token = f"{normalized_scope}.{secrets.token_urlsafe(18)}"
+    expires_at = time.time() + max(int(ttl_seconds or 7200), 60)
+    _KNOWLEDGE_TOKENS[token] = {
+        "scope": normalized_scope,
+        "source_tool": str(source_tool or ""),
+        "expires_at": expires_at,
+    }
+    return {
+        "scope": normalized_scope,
+        "token": token,
+        "expires_at": expires_at,
+        "ttl_seconds": max(int(ttl_seconds or 7200), 60),
+        "usage": "Pass this value as knowledge_token to gated MCP tools for this subsystem.",
+    }
+
+
+def require_knowledge_token(scope: str, token: str, *, required_tool: str) -> None:
+    """Raise KnowledgeTokenError unless *token* is a live token for *scope*."""
+    normalized_scope = str(scope or "").strip().lower()
+    token = str(token or "").strip()
+    record = _KNOWLEDGE_TOKENS.get(token)
+    if not record or record.get("scope") != normalized_scope or float(record.get("expires_at", 0.0)) < time.time():
+        raise KnowledgeTokenError(normalized_scope, required_tool, token)
 
 
 def register_tool_metadata(
     name: str,
     *,
     summary: str = "",
+    category: str = "",
+    tags: list[str] | None = None,
+    level: str = "semantic",
+    aliases: list[str] | None = None,
     parameters: dict[str, Any] | None = None,
+    preconditions: list[str] | None = None,
+    postconditions: list[str] | None = None,
     side_effects: list[str] | None = None,
     next_suggested_tools: list[str] | None = None,
     recovery: list[str] | None = None,
     examples: list[dict[str, Any]] | None = None,
     concepts: dict[str, str] | None = None,
+    invariants: list[str] | None = None,
+    risk_level: str = "medium",
+    feature: str = "",
 ) -> None:
     """Register human/agent-facing metadata for a tool."""
     _TOOL_METADATA[name] = {
         "name": name,
         "summary": summary,
+        "category": str(category or _default_tool_category(name)),
+        "tags": _normalized_string_list(tags),
+        "level": str(level or "semantic"),
+        "aliases": _normalized_string_list(aliases),
         "parameters": parameters or {},
+        "returns": {},
+        "preconditions": preconditions or [],
+        "postconditions": postconditions or [],
         "side_effects": side_effects or [],
         "next_suggested_tools": next_suggested_tools or [],
         "recovery": recovery or [],
         "examples": examples or [],
         "concepts": concepts or {},
+        "invariants": invariants or [],
+        "risk_level": str(risk_level or "medium"),
+        "feature": str(feature or ""),
     }
 
 
@@ -44,14 +105,161 @@ def get_tool_metadata(name: str) -> dict[str, Any]:
         meta = {
             "name": name,
             "summary": "No detailed metadata registered yet.",
+            "category": _default_tool_category(name),
+            "tags": [],
+            "level": "semantic",
+            "aliases": [],
             "parameters": {},
+            "returns": {},
+            "preconditions": [],
+            "postconditions": [],
             "side_effects": [],
             "next_suggested_tools": [],
             "recovery": ["Use mcp.capabilities or mcp.list_tools_verbose to inspect available tools."],
             "examples": [],
             "concepts": {},
+            "invariants": [],
+            "risk_level": "medium",
+            "feature": "",
         }
     return meta
+
+
+def register_tool_signature(name: str, fn: Callable) -> None:
+    """Merge callable signature details into existing tool metadata."""
+    tool_name = str(name or getattr(fn, "__name__", ""))
+    if not tool_name:
+        return
+    meta = get_tool_metadata(tool_name)
+    signature = _callable_signature_schema(fn)
+    existing_params = meta.get("parameters") or {}
+    if existing_params:
+        merged_params = dict(existing_params)
+        for key, value in signature.get("properties", {}).items():
+            merged_params.setdefault(key, value)
+    else:
+        merged_params = signature.get("properties", {})
+    meta["parameters"] = merged_params
+    meta["required_parameters"] = signature.get("required", [])
+    meta["signature"] = signature.get("signature", "")
+    meta.setdefault("returns", signature.get("returns", {}))
+    if not meta.get("returns"):
+        meta["returns"] = signature.get("returns", {})
+    doc = inspect.getdoc(fn) or ""
+    meta["doc"] = doc or meta.get("doc", "")
+    if doc and (not meta.get("summary") or str(meta.get("summary", "")).startswith("No detailed")):
+        meta["summary"] = doc.splitlines()[0].strip()
+    if not meta.get("examples"):
+        meta["examples"] = [{
+            "description": f"Minimal argument payload for {tool_name}. Replace placeholders before calling.",
+            "arguments": _example_arguments(signature.get("properties", {}), signature.get("required", [])),
+        }]
+    _TOOL_METADATA[tool_name] = meta
+
+
+def _callable_signature_schema(fn: Callable) -> dict[str, Any]:
+    try:
+        sig = inspect.signature(fn)
+    except (TypeError, ValueError):
+        return {"properties": {}, "required": [], "signature": "(...)"}
+    properties: dict[str, Any] = {}
+    required: list[str] = []
+    for name, param in sig.parameters.items():
+        if name.startswith("_"):
+            continue
+        item: dict[str, Any] = {
+            "kind": str(param.kind).replace("Parameter.", ""),
+            "annotation": _annotation_name(param.annotation),
+        }
+        if param.default is inspect._empty:
+            required.append(name)
+        else:
+            item["default"] = _jsonable_default(param.default)
+        properties[name] = item
+    return {
+        "properties": properties,
+        "required": required,
+        "signature": str(sig),
+        "returns": {
+            "annotation": _annotation_name(sig.return_annotation),
+            "envelope": "MCP tools return {'ok': true, 'data': ...} on success or {'ok': false, 'error': ...} on failure.",
+        },
+    }
+
+
+def _annotation_name(annotation: Any) -> str:
+    if annotation is inspect._empty:
+        return "Any"
+    return str(annotation).replace("typing.", "")
+
+
+def _jsonable_default(value: Any) -> Any:
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, (list, tuple)):
+        return list(value)
+    if isinstance(value, dict):
+        return dict(value)
+    return repr(value)
+
+
+def _example_arguments(properties: dict[str, Any], required: list[str]) -> dict[str, Any]:
+    args: dict[str, Any] = {}
+    for name, schema in properties.items():
+        if name not in required and "default" in schema:
+            args[name] = schema["default"]
+            continue
+        args[name] = _placeholder_for_annotation(str(schema.get("annotation", "Any")), name)
+    return args
+
+
+def _placeholder_for_annotation(annotation: str, name: str) -> Any:
+    lowered = annotation.lower()
+    if "bool" in lowered:
+        return False
+    if "int" in lowered:
+        return 0
+    if "float" in lowered:
+        return 0.0
+    if "list" in lowered:
+        return []
+    if "dict" in lowered:
+        return {}
+    if "str" in lowered:
+        return f"<{name}>"
+    return None
+
+
+def _default_tool_category(name: str) -> str:
+    prefix = str(name).split(".", 1)[0]
+    return {
+        "mcp": "foundation/discovery",
+        "engine": "foundation/concepts",
+        "workflow": "foundation/workflows",
+        "project": "project/info",
+        "project_tools": "project/tools",
+        "transaction": "project/transactions",
+        "asset": "assets/files",
+        "editor": "editor/state",
+        "runtime": "runtime/observation",
+        "console": "runtime/console",
+        "scene": "scene/query",
+        "gameobject": "scene/object",
+        "hierarchy": "scene/create",
+        "transform": "scene/transform",
+        "component": "scene/component",
+        "camera": "camera/framing",
+        "lighting": "scene/lighting",
+        "ui": "ui/screen",
+        "material": "assets/materials",
+        "renderstack": "renderstack/pipeline",
+    }.get(prefix, "misc/other")
+
+
+def _normalized_string_list(values: list[str] | None) -> list[str]:
+    if not values:
+        return []
+    return [str(value) for value in values if str(value)]
 
 
 def list_tool_metadata() -> list[dict[str, Any]]:
@@ -109,41 +317,330 @@ def fail(
     return payload
 
 
-def main_thread(name: str, fn, *, timeout_ms: int = 30000, explain: dict[str, Any] | None = None) -> dict[str, Any]:
+def main_thread(
+    name: str,
+    fn,
+    *,
+    timeout_ms: int = 30000,
+    explain: dict[str, Any] | None = None,
+    arguments: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     response_explain = explain or explain_for(name)
+    timeout_ms = _configured_timeout_ms(timeout_ms)
     started = time.monotonic()
+    guard_failure = _scene_guard_failure(name, response_explain)
+    if guard_failure is not None:
+        _record_trace(name, False, started, guard_failure.get("error", {}).get("message", ""), arguments=arguments, result=guard_failure)
+        return guard_failure
     try:
         result = ok(MainThreadCommandQueue.instance().run_sync(name, fn, timeout_ms=timeout_ms), explain=response_explain)
-        _record_trace(name, True, started)
+        _record_trace(name, True, started, arguments=arguments, result=result)
         return result
     except TimeoutError as exc:
-        _record_trace(name, False, started, str(exc))
-        return fail(
+        result = fail(
             "error.timeout",
             str(exc),
             hint="The editor main thread did not process this command in time. Ensure the editor is not blocked by a modal operation.",
             explain=response_explain,
         )
+        _record_trace(name, False, started, str(exc), arguments=arguments, result=result)
+        return result
     except ValueError as exc:
-        _record_trace(name, False, started, str(exc))
-        return fail("error.invalid_argument", str(exc), hint="Check parameter schema with mcp.help or component.describe_type.", explain=response_explain)
+        result = fail("error.invalid_argument", str(exc), hint="Check parameter schema with mcp.help or component.describe_type.", explain=response_explain)
+        _record_trace(name, False, started, str(exc), arguments=arguments, result=result)
+        return result
     except FileExistsError as exc:
-        _record_trace(name, False, started, str(exc))
-        return fail("error.exists", str(exc), hint="Use overwrite=true or choose a different path/name.", explain=response_explain)
+        result = fail("error.exists", str(exc), hint="Treat existing folders as reusable. Use asset.ensure_folder, asset.list, or overwrite=true for files when appropriate.", explain=response_explain)
+        _record_trace(name, False, started, str(exc), arguments=arguments, result=result)
+        return result
     except FileNotFoundError as exc:
-        _record_trace(name, False, started, str(exc))
-        return fail("error.not_found", str(exc), hint="Use scene.inspect, gameobject.find, or asset.search to locate valid targets.", explain=response_explain)
+        result = fail("error.not_found", str(exc), hint="Use scene.inspect, gameobject.find, or asset.search to locate valid targets.", explain=response_explain)
+        _record_trace(name, False, started, str(exc), arguments=arguments, result=result)
+        return result
+    except KnowledgeTokenError as exc:
+        result = fail(
+            "error.knowledge_token_required",
+            str(exc),
+            hint=f"Call {exc.required_tool} to obtain a fresh knowledge token, then retry with knowledge_token=<token>.",
+            explain={
+                **response_explain,
+                "recovery": [
+                    f"Call {exc.required_tool} and read the returned guide.",
+                    "Copy data.knowledge_lock.token from the guide response.",
+                    "Retry this tool with knowledge_token set to that token.",
+                ],
+                "next_suggested_tools": [exc.required_tool, "api.search", "mcp.catalog.search"],
+            },
+        )
+        result["data"] = {
+            "scope": exc.scope,
+            "provided_token": exc.provided,
+            "required_tool": exc.required_tool,
+        }
+        _record_trace(name, False, started, str(exc), arguments=arguments, result=result)
+        return result
     except Exception as exc:
-        _record_trace(name, False, started, str(exc))
-        return fail("error.internal", str(exc), hint="Read console.read and retry with a smaller operation.", explain=response_explain)
+        result = fail("error.internal", str(exc), hint="Read console.read and retry with a smaller operation.", explain=response_explain)
+        _record_trace(name, False, started, str(exc), arguments=arguments, result=result)
+        return result
 
 
-def _record_trace(name: str, ok_flag: bool, started: float, error: str = "") -> None:
+def _record_trace(
+    name: str,
+    ok_flag: bool,
+    started: float,
+    error: str = "",
+    arguments: dict[str, Any] | None = None,
+    result: Any = None,
+) -> None:
     try:
-        from Infernux.mcp.project_tools.trace import record_tool_call
-        record_tool_call(name, ok=ok_flag, elapsed_ms=(time.monotonic() - started) * 1000.0, error=error)
+        from Infernux.mcp.capabilities import feature_enabled
+        from Infernux.mcp.project_tools.trace import record_tool_call, record_tool_result
+        elapsed_ms = (time.monotonic() - started) * 1000.0
+        if feature_enabled("trace_recorder"):
+            record_tool_call(name, ok=ok_flag, elapsed_ms=elapsed_ms, arguments=arguments, result=result, error=error)
+        else:
+            record_tool_result(name, ok=ok_flag, elapsed_ms=elapsed_ms, arguments=arguments, result=result, error=error)
     except Exception:
         pass
+
+
+def _configured_timeout_ms(default: int) -> int:
+    try:
+        from Infernux.mcp.capabilities import limit
+        return int(limit("main_thread_timeout_ms", default) or default)
+    except Exception:
+        return int(default)
+
+
+def _scene_guard_failure(name: str, explain: dict[str, Any]) -> dict[str, Any] | None:
+    try:
+        from Infernux.engine.scene_manager import SceneFileManager
+        sfm = SceneFileManager.instance()
+    except Exception:
+        return None
+    if sfm is None:
+        return None
+    status = scene_status()
+    if name in {"scene.open", "scene.new", "scene.save"}:
+        if status["play_state"] != "edit":
+            return _state_guard_fail(
+                "error.play_mode_active",
+                f"{name} is not allowed while Play Mode is active. Stop Play Mode first.",
+                status,
+                explain,
+                next_tools=["editor.stop", "runtime.wait", "scene.status"],
+            )
+        if status["loading"]:
+            return _state_guard_fail(
+                "error.scene_loading",
+                f"{name} is not allowed while a scene load/new operation is pending.",
+                status,
+                explain,
+                next_tools=["runtime.wait", "scene.status"],
+            )
+    if name in {"scene.open", "scene.new"} and status["dirty"]:
+        return _state_guard_fail(
+            "error.scene_dirty",
+            "The active scene has unsaved changes. Save it before switching scenes.",
+            status,
+            explain,
+            next_tools=["scene.save", "scene.status"],
+        )
+    if _is_edit_mode_mutation(name):
+        if status["play_state"] != "edit":
+            return _state_guard_fail(
+                "error.play_mode_active",
+                f"{name} mutates the editor scene and is not allowed while Play Mode is active.",
+                status,
+                explain,
+                next_tools=["editor.stop", "runtime.wait", "scene.status"],
+            )
+        if status["loading"]:
+            return _state_guard_fail(
+                "error.scene_loading",
+                f"{name} mutates the editor scene and is not allowed while a scene load/new operation is pending.",
+                status,
+                explain,
+                next_tools=["runtime.wait", "scene.status"],
+            )
+    if _requires_saved_scene_file(name) and not status["path"]:
+        return _state_guard_fail(
+            "error.scene_unsaved",
+            "The active scene has not been saved to a .scene file yet. Save it before mutating the scene through MCP.",
+            status,
+            explain,
+            next_tools=["scene.save", "scene.status"],
+        )
+    return None
+
+
+def _state_guard_fail(
+    code: str,
+    message: str,
+    status: dict[str, Any],
+    explain: dict[str, Any],
+    *,
+    next_tools: list[str],
+) -> dict[str, Any]:
+    result = fail(
+        code,
+        message,
+        hint="Inspect data.status and call the suggested next tools before retrying.",
+        explain={
+            **explain,
+            "recovery": [
+                "Call scene.status to inspect the active scene path and dirty flag.",
+                "If the scene is unsaved, call scene.save with data.suggested_save_path or another path under Assets/.",
+                "If Play Mode is active, call editor.stop before editor-scene mutations.",
+                "If scene loading is pending, wait before retrying.",
+                "Retry the original MCP operation after the save succeeds.",
+            ],
+            "next_suggested_tools": next_tools,
+        },
+    )
+    result["data"] = {"status": status, **status}
+    return result
+
+
+def _is_edit_mode_mutation(name: str) -> bool:
+    return _requires_saved_scene_file(name) or name in {"scene.open", "scene.new", "scene.save"}
+
+
+def _requires_saved_scene_file(name: str) -> bool:
+    exact = {
+        "hierarchy.create_object",
+        "gameobject.add_component",
+        "gameobject.delete",
+        "gameobject.batch_delete",
+        "gameobject.batch_create",
+        "gameobject.duplicate",
+        "gameobject.set",
+        "gameobject.set_parent",
+        "gameobject.set_sibling_index",
+        "gameobject.ensure_path",
+        "gameobject.clone_from_json",
+        "gameobject.set_tag_layer",
+        "transform.set",
+        "component.ensure",
+        "component.set_field",
+        "component.set_fields",
+        "component.remove",
+        "component.restore_snapshot",
+        "camera.ensure_main",
+        "camera.set_main",
+        "camera.attach_to_target",
+        "camera.setup_third_person",
+        "camera.setup_2d_card_game",
+        "camera.frame_targets",
+        "camera.look_at",
+        "lighting.ensure_default",
+        "renderstack.find_or_create",
+        "renderstack.set_pipeline",
+        "renderstack.add_pass",
+        "renderstack.remove_pass",
+        "renderstack.set_pass_enabled",
+        "renderstack.set_pass_params",
+    }
+    if name in exact:
+        return True
+    return name.startswith("ui.") and name not in {"ui.inspect", "ui.find_by_text"}
+
+
+def scene_status() -> dict[str, Any]:
+    path = ""
+    dirty = False
+    loading = False
+    scene_name = ""
+    suggested = ""
+    play_state = "edit"
+    try:
+        from Infernux.engine.scene_manager import SceneFileManager
+        sfm = SceneFileManager.instance()
+        if sfm is not None:
+            path = str(getattr(sfm, "current_scene_path", "") or "")
+            dirty = bool(getattr(sfm, "is_dirty", False))
+            loading = bool(getattr(sfm, "is_loading", False))
+            if not path:
+                default_path = getattr(sfm, "_default_scene_save_path", lambda: None)()
+                suggested = _project_rel(default_path) if default_path else ""
+        try:
+            from Infernux.engine.play_mode import PlayModeManager
+            pmm = PlayModeManager.instance()
+            play_state = getattr(getattr(pmm, "state", None), "name", "edit").lower() if pmm else "edit"
+        except Exception:
+            play_state = "edit"
+    except Exception:
+        pass
+    try:
+        from Infernux.lib import SceneManager
+        scene = SceneManager.instance().get_active_scene()
+        scene_name = str(getattr(scene, "name", "") if scene else "")
+    except Exception:
+        pass
+    return {
+        "scene": scene_name,
+        "path": _project_rel(path) if path else "",
+        "absolute_path": path,
+        "dirty": dirty,
+        "loading": loading,
+        "play_state": play_state,
+        "saved_to_file": bool(path),
+        "suggested_save_path": suggested,
+        "requires_save_before_mcp_mutation": not bool(path),
+    }
+
+
+def ensure_not_active_scene_file(project_path: str, file_path: str, operation: str) -> None:
+    """Prevent generic asset tools from editing scene files outside scene APIs."""
+    target = os.path.abspath(file_path)
+    if _path_is_or_contains_scene_file(target):
+        raise ValueError(
+            f"Refusing to {operation} .scene files through generic asset tools. "
+            "Use scene.save for the active scene, scene.open to switch scenes, or close the scene before file-level scene maintenance."
+        )
+    try:
+        from Infernux.engine.scene_manager import SceneFileManager
+        sfm = SceneFileManager.instance()
+        active = os.path.abspath(str(getattr(sfm, "current_scene_path", "") or "")) if sfm else ""
+    except Exception:
+        active = ""
+    if not active:
+        return
+    is_active_scene = target == active
+    contains_active_scene = os.path.isdir(target) and os.path.commonpath([target, active]) == target
+    if is_active_scene or contains_active_scene:
+        raise ValueError(
+            f"Refusing to {operation} the active scene file through generic asset tools. "
+            "Use scene.save for the active scene, or save/close the scene before replacing its file."
+        )
+
+
+def _path_is_or_contains_scene_file(path: str) -> bool:
+    if path.lower().endswith(".scene"):
+        return True
+    if os.path.isdir(path):
+        try:
+            for base, dirs, files in os.walk(path):
+                dirs[:] = [d for d in dirs if d not in {".git", "__pycache__"}]
+                if any(name.lower().endswith(".scene") for name in files):
+                    return True
+        except Exception:
+            return False
+    return False
+
+
+def _project_rel(path: str | None) -> str:
+    if not path:
+        return ""
+    try:
+        from Infernux.engine.project_context import get_project_root
+        root = get_project_root()
+        if root:
+            return os.path.relpath(os.path.abspath(path), os.path.abspath(root)).replace("\\", "/")
+    except Exception:
+        pass
+    return str(path)
 
 
 def register_and_tool(mcp, name: str, **metadata: Any) -> Callable:
@@ -223,6 +720,18 @@ def notify_asset_changed(path: str, action: str = "modified") -> None:
                 return
             except Exception:
                 pass
+
+
+def track_project_path_before_change(project_path: str, path: str, operation: str = "modify") -> None:
+    """Record a best-effort transaction snapshot before mutating a project path."""
+    try:
+        from Infernux.mcp.capabilities import feature_enabled
+        if not feature_enabled("transactions"):
+            return
+        from Infernux.mcp.project_tools.transactions import record_path_before_change
+        record_path_before_change(project_path, path, operation=operation)
+    except Exception:
+        pass
 
 
 def serialize_vector(value) -> Any:

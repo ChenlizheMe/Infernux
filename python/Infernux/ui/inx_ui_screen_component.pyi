@@ -200,9 +200,11 @@ class InxUIScreenComponent(InxUIComponent):
         self,
         px: float, py: float,
         canvas_width: float, canvas_height: float,
+        tolerance: float = ...,
     ) -> bool:
         """Test whether canvas-space point ``(px, py)`` lies inside this element.
 
         Uses the oriented (rotated) bounding box for accurate hit-testing.
+        ``tolerance`` expands the hit area in canvas pixels.
         """
         ...

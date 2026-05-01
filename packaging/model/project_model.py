@@ -316,8 +316,11 @@ class ProjectModel:
         # ── settings.json ───────────────────────────────────────────────
         project_python = ProjectModel._get_project_python(project_dir)
         site_packages = ProjectModel._get_site_packages(project_dir)
+        vscode_python = ProjectModel._vscode_python_path(project_dir)
         settings = {
-            "python.defaultInterpreterPath": project_python,
+            "python.defaultInterpreterPath": vscode_python,
+            "python.pythonPath": vscode_python,
+            "python.terminal.activateEnvironment": True,
             "python.analysis.typeCheckingMode": "basic",
             "python.analysis.autoImportCompletions": True,
             "python.analysis.extraPaths": [site_packages],
@@ -368,6 +371,7 @@ class ProjectModel:
             pyright_config = {
                 "venvPath": ".",
                 "venv": ".venv",
+                "pythonPath": ProjectModel._vscode_python_path(project_dir),
                 "pythonVersion": "3.12",
                 "typeCheckingMode": "basic",
                 "reportMissingModuleSource": False,
@@ -378,3 +382,12 @@ class ProjectModel:
         pyright_path = os.path.join(project_dir, "pyrightconfig.json")
         with open(pyright_path, "w", encoding="utf-8") as f:
             json.dump(pyright_config, f, indent=4, ensure_ascii=False)
+
+    @staticmethod
+    def _vscode_python_path(project_dir: str) -> str:
+        """Return the interpreter path VSCode should store in settings.json."""
+        if is_frozen():
+            return ProjectModel._get_project_python(project_dir).replace("\\", "/")
+        if sys.platform == "win32":
+            return "${workspaceFolder}/.venv/Scripts/python.exe"
+        return "${workspaceFolder}/.venv/bin/python"

@@ -1,4 +1,10 @@
-"""Type stubs for Infernux.core.audio_clip."""
+"""Type stubs for Infernux.core.audio_clip.
+
+Agent note:
+    The runtime wrapper currently documents and reliably supports WAV loading.
+    Some older docs/UI filters may mention OGG/MP3, but the C++ decode path is
+    WAV-only until additional decoders are implemented.
+"""
 
 from __future__ import annotations
 
@@ -8,7 +14,13 @@ from Infernux.lib import AudioClip as CppAudioClip
 
 
 class AudioClip:
-    """Pythonic wrapper around C++ AudioClip."""
+    """Pythonic wrapper around C++ AudioClip.
+
+    Use ``AudioClip.load("Assets/Audio/foo.wav")`` and pass the returned
+    wrapper (or ``clip.native``) to ``AudioSource.set_track_clip`` or
+    ``AudioSource.play_one_shot``. Do not unload a clip while an AudioSource is
+    still using it.
+    """
 
     def __init__(self, native: CppAudioClip) -> None:
         """Wrap an existing C++ AudioClip."""
@@ -17,7 +29,14 @@ class AudioClip:
     # Factory methods
     @staticmethod
     def load(file_path: str) -> Optional[AudioClip]:
-        """Load an audio clip from a file path (WAV, OGG, MP3)."""
+        """Load an audio clip from a file path.
+
+        Args:
+            file_path: Project or absolute path to a WAV file.
+
+        Returns:
+            ``AudioClip`` when decoding succeeds; otherwise ``None``.
+        """
         ...
     @staticmethod
     def from_native(native: CppAudioClip) -> AudioClip:
@@ -63,7 +82,12 @@ class AudioClip:
         """Enter context manager for resource management."""
         ...
     def __exit__(self, exc_type: object, exc_val: object, exc_tb: object) -> None:
-        """Exit context manager and unload audio data."""
+        """Exit context manager and unload audio data.
+
+        Avoid context-manager lifetime for clips assigned to persistent
+        AudioSource tracks, because the clip may unload while playback still
+        references it.
+        """
         ...
     def unload(self) -> None:
         """Unload the audio data from memory."""

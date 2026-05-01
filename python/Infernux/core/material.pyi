@@ -53,6 +53,9 @@ class Material:
     def dispose(self) -> None:
         """Release the underlying native material resources."""
         ...
+    def clone(self) -> Material:
+        """Create a deep copy of this material, including shader state and properties."""
+        ...
 
     # Properties
     @property

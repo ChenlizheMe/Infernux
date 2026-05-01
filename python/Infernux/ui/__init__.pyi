@@ -10,6 +10,8 @@ from .enums import (
     TextAlignV as TextAlignV,
     TextOverflow as TextOverflow,
     TextResizeMode as TextResizeMode,
+    UIScaleMode as UIScaleMode,
+    ScreenMatchMode as ScreenMatchMode,
     UITransitionType as UITransitionType,
 )
 from .inx_ui_component import InxUIComponent as InxUIComponent
@@ -33,6 +35,8 @@ __all__ = [
     "TextAlignV",
     "TextOverflow",
     "TextResizeMode",
+    "UIScaleMode",
+    "ScreenMatchMode",
     "UITransitionType",
     "InxUIComponent",
     "InxUIScreenComponent",

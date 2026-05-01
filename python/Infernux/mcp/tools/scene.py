@@ -2,16 +2,19 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from Infernux.mcp.tools.common import (
     coerce_vector3,
     find_game_object,
     main_thread,
+    require_knowledge_token,
     resolve_asset_path,
     serialize_component,
     serialize_value,
     serialize_vector,
+    scene_status,
 )
 
 
@@ -60,11 +63,30 @@ def register_scene_tools(mcp) -> None:
                 save_path = resolve_asset_path(get_project_root(), path)
                 ok = bool(sfm._do_save(save_path))
             else:
-                ok = bool(sfm.save_current_scene())
-                save_path = getattr(sfm, "current_scene_path", "") or ""
-            return {"saved": ok, "path": save_path, "dirty": bool(getattr(sfm, "is_dirty", False))}
+                current_path = getattr(sfm, "current_scene_path", "") or ""
+                if current_path:
+                    save_path = current_path
+                    ok = bool(sfm._do_save(save_path))
+                else:
+                    default_path = getattr(sfm, "_default_scene_save_path", lambda: None)()
+                    if not default_path:
+                        raise RuntimeError("Cannot determine a default scene save path under Assets/.")
+                    save_path = default_path
+                    ok = bool(sfm._do_save(save_path))
+            return {
+                "saved": ok,
+                "path": _project_rel(save_path) if save_path else "",
+                "absolute_path": save_path,
+                "dirty": bool(getattr(sfm, "is_dirty", False)),
+                "status": scene_status(),
+            }
 
-        return main_thread("scene.save", _save)
+        return main_thread("scene.save", _save, arguments={"path": path})
+
+    @mcp.tool(name="scene.status")
+    def scene_status_tool() -> dict:
+        """Return active scene path, dirty state, and suggested save path."""
+        return main_thread("scene.status", scene_status)
 
     @mcp.tool(name="scene.open")
     def scene_open(path: str) -> dict:
@@ -77,13 +99,25 @@ def register_scene_tools(mcp) -> None:
             sfm = SceneFileManager.instance()
             if sfm is None:
                 raise RuntimeError("SceneFileManager is not available.")
+            if getattr(sfm, "is_dirty", False):
+                raise RuntimeError("The active scene is dirty. Call scene.save before scene.open.")
+            current_path = os.path.abspath(str(getattr(sfm, "current_scene_path", "") or ""))
+            if current_path and os.path.abspath(scene_path) == current_path:
+                return {
+                    "accepted": True,
+                    "already_open": True,
+                    "path": _project_rel(scene_path),
+                    "absolute_path": scene_path,
+                    "loading": bool(getattr(sfm, "is_loading", False)),
+                    "status": scene_status(),
+                }
             accepted = bool(sfm.open_scene(scene_path))
-            return {"accepted": accepted, "path": scene_path, "loading": bool(getattr(sfm, "is_loading", False))}
+            return {"accepted": accepted, "already_open": False, "path": _project_rel(scene_path), "absolute_path": scene_path, "loading": bool(getattr(sfm, "is_loading", False))}
 
-        return main_thread("scene.open", _open)
+        return main_thread("scene.open", _open, arguments={"path": path})
 
     @mcp.tool(name="scene.new")
-    def scene_new() -> dict:
+    def scene_new(force: bool = False, reason: str = "") -> dict:
         """Create a new empty scene through SceneFileManager."""
 
         def _new():
@@ -91,10 +125,16 @@ def register_scene_tools(mcp) -> None:
             sfm = SceneFileManager.instance()
             if sfm is None:
                 raise RuntimeError("SceneFileManager is not available.")
+            if not force:
+                raise ValueError("scene.new is destructive. Pass force=true and a short reason to create a new empty scene.")
+            if not reason:
+                raise ValueError("scene.new requires a reason when force=true.")
+            if getattr(sfm, "is_dirty", False):
+                raise RuntimeError("The active scene is dirty. Call scene.save before scene.new.")
             sfm.new_scene()
-            return {"accepted": True, "loading": bool(getattr(sfm, "is_loading", False))}
+            return {"accepted": True, "loading": bool(getattr(sfm, "is_loading", False)), "status": scene_status()}
 
-        return main_thread("scene.new", _new)
+        return main_thread("scene.new", _new, arguments={"force": force, "reason": reason})
 
     @mcp.tool(name="scene.serialize")
     def scene_serialize() -> dict:
@@ -142,6 +182,7 @@ def register_scene_tools(mcp) -> None:
                         })
             return {
                 "scene": getattr(scene, "name", ""),
+                "status": scene_status(),
                 "object_count": len(objects),
                 "root_count": len(roots),
                 "component_counts": component_counts,
@@ -167,10 +208,12 @@ def register_scene_tools(mcp) -> None:
         component_type: str,
         script_path: str = "",
         fields: dict[str, Any] | None = None,
+        knowledge_token: str = "",
     ) -> dict:
         """Add a native, built-in wrapper, registered Python, or script component."""
 
         def _add():
+            _require_component_knowledge(component_type, knowledge_token)
             obj = find_game_object(object_id)
             before_ids = _component_ids(obj)
             is_py = False
@@ -202,7 +245,7 @@ def register_scene_tools(mcp) -> None:
                 "components": _all_components(obj),
             }
 
-        return main_thread("gameobject.add_component", _add)
+        return main_thread("gameobject.add_component", _add, arguments={"object_id": object_id, "component_type": component_type, "knowledge_token": knowledge_token})
 
     @mcp.tool(name="gameobject.get")
     def gameobject_get(object_id: int, depth: int = 1, include_components: bool = True) -> dict:
@@ -323,6 +366,93 @@ def register_scene_tools(mcp) -> None:
             return {"matches": matches}
 
         return main_thread("scene.find", _scene_find)
+
+    @mcp.tool(name="scene.query.objects")
+    def scene_query_objects(query: dict[str, Any] | None = None, limit: int = 50, include_components: bool = True) -> dict:
+        """Semantic GameObject search by name/path/component/tag/layer/active filters."""
+
+        def _query_objects():
+            from Infernux.lib import SceneManager
+            scene = SceneManager.instance().get_active_scene()
+            if not scene:
+                raise RuntimeError("No active scene.")
+            criteria = query or {}
+            matches = []
+            for obj in list(scene.get_all_objects() or []):
+                if not _matches_scene_query(obj, criteria):
+                    continue
+                data = _serialize_object(obj, depth=0, include_components=bool(include_components), include_inactive=True)
+                data["path"] = _object_path(obj)
+                data["spatial"] = _spatial_summary(obj)
+                matches.append(data)
+                if len(matches) >= max(int(limit), 1):
+                    break
+            result = {"query": criteria, "matches": matches, "count": len(matches)}
+            if not matches:
+                result.update(_empty_query_result(criteria, scene))
+            return result
+
+        return main_thread("scene.query.objects", _query_objects, arguments={"query": query or {}, "limit": limit})
+
+    @mcp.tool(name="scene.query.summary")
+    def scene_query_summary(include_subjects: bool = True, subject_limit: int = 8) -> dict:
+        """Return grouped scene semantics: cameras, lights, renderers, UI, scripts, and likely subjects."""
+
+        def _summary():
+            from Infernux.lib import SceneManager
+            scene = SceneManager.instance().get_active_scene()
+            if not scene:
+                raise RuntimeError("No active scene.")
+            objects = list(scene.get_all_objects() or [])
+            groups = _group_scene_objects(objects)
+            return {
+                "scene": getattr(scene, "name", ""),
+                "status": scene_status(),
+                "object_count": len(objects),
+                "groups": groups,
+                "subjects": _rank_subjects(objects, max(int(subject_limit), 1)) if include_subjects else [],
+            }
+
+        return main_thread("scene.query.summary", _summary)
+
+    @mcp.tool(name="scene.query.subjects")
+    def scene_query_subjects(query: dict[str, Any] | None = None, limit: int = 8) -> dict:
+        """Rank likely primary scene subjects for camera framing or gameplay edits."""
+
+        def _subjects():
+            from Infernux.lib import SceneManager
+            scene = SceneManager.instance().get_active_scene()
+            if not scene:
+                raise RuntimeError("No active scene.")
+            objects = [
+                obj
+                for obj in list(scene.get_all_objects() or [])
+                if _matches_scene_query(obj, query or {})
+            ]
+            subjects = _rank_subjects(objects, max(int(limit), 1))
+            result = {"subjects": subjects, "query": query or {}}
+            if not subjects:
+                result.update(_empty_subject_result(objects, query or {}))
+            return result
+
+        return main_thread("scene.query.subjects", _subjects, arguments={"query": query or {}, "limit": limit})
+
+    @mcp.tool(name="gameobject.describe_spatial")
+    def gameobject_describe_spatial(object_id: int, include_descendants: bool = True) -> dict:
+        """Return transform, hierarchy path, components, and approximate bounds."""
+
+        def _describe_spatial():
+            obj = find_game_object(object_id)
+            return {
+                "object_id": int(obj.id),
+                "name": str(obj.name),
+                "path": _object_path(obj),
+                "components": _component_names(obj),
+                "spatial": _spatial_summary(obj, include_descendants=bool(include_descendants)),
+                "children_count": len(list(obj.get_children() or [])),
+            }
+
+        return main_thread("gameobject.describe_spatial", _describe_spatial, arguments={"object_id": object_id})
 
     @mcp.tool(name="gameobject.path")
     def gameobject_path(object_id: int) -> dict:
@@ -590,10 +720,12 @@ def register_scene_tools(mcp) -> None:
         field: str,
         value: Any,
         ordinal: int = 0,
+        knowledge_token: str = "",
     ) -> dict:
         """Set a field/property on a component attached to a GameObject."""
 
         def _set():
+            _require_component_knowledge(component_type, knowledge_token)
             obj = find_game_object(object_id)
             comp = _find_component(obj, component_type, int(ordinal))
             if comp is None:
@@ -609,13 +741,14 @@ def register_scene_tools(mcp) -> None:
                 "value": serialize_value(getattr(comp, field)),
             }
 
-        return main_thread("component.set_field", _set)
+        return main_thread("component.set_field", _set, arguments={"object_id": object_id, "component_type": component_type, "field": field, "knowledge_token": knowledge_token})
 
     @mcp.tool(name="component.set_fields")
-    def component_set_fields(object_id: int, component_type: str, values: dict[str, Any], ordinal: int = 0) -> dict:
+    def component_set_fields(object_id: int, component_type: str, values: dict[str, Any], ordinal: int = 0, knowledge_token: str = "") -> dict:
         """Set multiple fields/properties on a component."""
 
         def _set_fields():
+            _require_component_knowledge(component_type, knowledge_token)
             obj = find_game_object(object_id)
             comp = _find_component(obj, component_type, int(ordinal))
             if comp is None:
@@ -629,7 +762,7 @@ def register_scene_tools(mcp) -> None:
                 changed[field] = serialize_value(getattr(comp, field))
             return {"object_id": int(obj.id), "component": serialize_component(comp), "changed": changed}
 
-        return main_thread("component.set_fields", _set_fields)
+        return main_thread("component.set_fields", _set_fields, arguments={"object_id": object_id, "component_type": component_type, "knowledge_token": knowledge_token})
 
     @mcp.tool(name="component.ensure")
     def component_ensure(
@@ -637,10 +770,12 @@ def register_scene_tools(mcp) -> None:
         component_type: str,
         script_path: str = "",
         fields: dict[str, Any] | None = None,
+        knowledge_token: str = "",
     ) -> dict:
         """Return an existing component or add it if missing."""
 
         def _ensure():
+            _require_component_knowledge(component_type, knowledge_token)
             obj = find_game_object(object_id)
             comp = _find_component(obj, component_type, 0)
             created = False
@@ -666,7 +801,7 @@ def register_scene_tools(mcp) -> None:
                 setattr(comp, key, _coerce_property_value(key, value))
             return {"object_id": int(obj.id), "created": created, "component": serialize_component(comp), "components": _all_components(obj)}
 
-        return main_thread("component.ensure", _ensure)
+        return main_thread("component.ensure", _ensure, arguments={"object_id": object_id, "component_type": component_type, "knowledge_token": knowledge_token})
 
     @mcp.tool(name="component.list_on_object")
     def component_list_on_object(object_id: int) -> dict:
@@ -1038,3 +1173,300 @@ def _component_field_schema(cls) -> list[dict[str, Any]]:
             "component_type": str(getattr(meta, "component_type", "") or ""),
         })
     return fields
+
+
+def _require_component_knowledge(component_type: str, token: str) -> None:
+    type_name = str(component_type or "")
+    audio_types = {"AudioSource", "AudioListener"}
+    ui_types = {"UICanvas", "UIText", "UIButton", "UIImage", "UISelectable", "InxUIScreenComponent", "InxUIComponent"}
+    if type_name in audio_types:
+        require_knowledge_token("audio", token, required_tool="audio.guide")
+    elif type_name in ui_types:
+        require_knowledge_token("ui", token, required_tool="api.get")
+
+
+def _matches_scene_query(obj, criteria: dict[str, Any]) -> bool:
+    criteria = criteria or {}
+    name = str(getattr(obj, "name", ""))
+    path = _object_path(obj)
+    name_l = name.lower()
+    path_l = path.lower()
+    if criteria.get("name_exact") and str(criteria["name_exact"]).lower() != name_l:
+        return False
+    if criteria.get("name") and str(criteria["name"]).lower() not in name_l:
+        return False
+    if criteria.get("name_contains") and str(criteria["name_contains"]).lower() not in name_l:
+        return False
+    if criteria.get("path_exact") and str(criteria["path_exact"]).strip("/").lower() != path.strip("/").lower():
+        return False
+    if criteria.get("path") and str(criteria["path"]).lower() not in path_l:
+        return False
+    if criteria.get("path_contains") and str(criteria["path_contains"]).lower() not in path_l:
+        return False
+    if criteria.get("tag") and str(getattr(obj, "tag", "")) != str(criteria["tag"]):
+        return False
+    if criteria.get("layer") is not None and int(getattr(obj, "layer", -1)) != int(criteria["layer"]):
+        return False
+    if criteria.get("active") is not None and bool(getattr(obj, "active", True)) != bool(criteria["active"]):
+        return False
+
+    names = set(_component_names(obj))
+    component_type = str(criteria.get("component_type", "") or "")
+    if component_type and component_type not in names:
+        return False
+    any_components = {str(item) for item in criteria.get("component_any", []) or []}
+    if any_components and not names.intersection(any_components):
+        return False
+    all_components = {str(item) for item in criteria.get("component_all", []) or []}
+    if all_components and not all_components.issubset(names):
+        return False
+    excluded = {str(item) for item in criteria.get("exclude_component_any", []) or []}
+    if excluded and names.intersection(excluded):
+        return False
+    return True
+
+
+def _empty_query_result(criteria: dict[str, Any], scene) -> dict[str, Any]:
+    return {
+        "reason": "no_objects_matched_query",
+        "stop_repeating": True,
+        "message": "No GameObjects matched this query. Do not repeat the same query; broaden filters or inspect scene.query.summary.",
+        "query_semantics": {
+            "name": "contains match, case-insensitive",
+            "name_contains": "contains match, case-insensitive",
+            "name_exact": "exact match, case-insensitive",
+            "path": "contains match, case-insensitive",
+            "path_contains": "contains match, case-insensitive",
+            "path_exact": "exact hierarchy path, case-insensitive",
+        },
+        "scene_object_count": len(list(scene.get_all_objects() or [])),
+        "recommended_next_tools": [
+            {"tool": "scene.query.summary", "arguments": {"include_subjects": True, "subject_limit": 8}},
+            {"tool": "scene.query.objects", "arguments": {"query": {}, "limit": 20}},
+        ],
+    }
+
+
+def _empty_subject_result(objects: list[Any], criteria: dict[str, Any]) -> dict[str, Any]:
+    groups = _group_scene_objects(objects)
+    service_count = len(groups.get("cameras", [])) + len(groups.get("lights", []))
+    reason = "only_service_objects_present" if objects and service_count == len(objects) else "no_subject_candidates"
+    return {
+        "reason": reason,
+        "stop_repeating": True,
+        "message": (
+            "No likely camera/gameplay subjects were found. Do not repeat scene.query.subjects with the same query. "
+            "If this is a new/bootstrap scene, create or locate a renderable/gameplay object first."
+        ),
+        "scene_contains_only": {
+            "cameras": groups.get("cameras", []),
+            "lights": groups.get("lights", []),
+            "renderers": groups.get("renderers", []),
+            "ui": groups.get("ui", []),
+            "scripts": groups.get("scripts", []),
+        },
+        "recommended_next_tools": [
+            {"tool": "scene.query.summary", "arguments": {"include_subjects": True, "subject_limit": 8}},
+            {"tool": "hierarchy.create_object", "arguments": {"kind": "primitive.cube", "name": "Subject"}},
+            {"tool": "camera.find_main", "arguments": {}},
+        ],
+    }
+
+
+def _group_scene_objects(objects: list[Any]) -> dict[str, list[dict[str, Any]]]:
+    groups: dict[str, list[dict[str, Any]]] = {
+        "cameras": [],
+        "lights": [],
+        "renderers": [],
+        "ui": [],
+        "scripts": [],
+        "renderstacks": [],
+        "generated_roots": [],
+    }
+    for obj in objects:
+        names = set(_component_names(obj))
+        entry = _object_index_entry(obj, names)
+        if "Camera" in names:
+            groups["cameras"].append(entry)
+        if "Light" in names:
+            groups["lights"].append(entry)
+        if names.intersection({"MeshRenderer", "SpriteRenderer", "SkinnedMeshRenderer"}):
+            groups["renderers"].append(entry)
+        if names.intersection({"UICanvas", "UIText", "UIButton", "UIImage"}):
+            groups["ui"].append(entry)
+        if "RenderStack" in names:
+            groups["renderstacks"].append(entry)
+        if any(name not in {"Transform", "Camera", "Light", "MeshRenderer", "SpriteRenderer", "SkinnedMeshRenderer", "UICanvas", "UIText", "UIButton", "UIImage", "RenderStack"} for name in names):
+            groups["scripts"].append(entry)
+        if str(getattr(obj, "name", "")).lower().startswith(("mcp", "generated", "runtime")):
+            parent = None
+            try:
+                parent = obj.get_parent()
+            except Exception:
+                parent = None
+            if parent is None:
+                groups["generated_roots"].append(entry)
+    return groups
+
+
+def _rank_subjects(objects: list[Any], limit: int) -> list[dict[str, Any]]:
+    scored = []
+    for obj in objects:
+        score, reasons = _subject_score(obj)
+        if score <= 0:
+            continue
+        names = _component_names(obj)
+        scored.append((
+            score,
+            {
+                **_object_index_entry(obj, set(names)),
+                "score": score,
+                "reasons": reasons,
+                "spatial": _spatial_summary(obj),
+            },
+        ))
+    scored.sort(key=lambda item: (-item[0], str(item[1].get("path", ""))))
+    return [item for _score, item in scored[: max(int(limit), 1)]]
+
+
+def _subject_score(obj) -> tuple[int, list[str]]:
+    names = set(_component_names(obj))
+    object_name = str(getattr(obj, "name", ""))
+    lower = object_name.lower()
+    score = 0
+    reasons: list[str] = []
+    render_components = {"MeshRenderer", "SpriteRenderer", "SkinnedMeshRenderer"}
+    ignored_components = {"Camera", "Light", "UICanvas", "UIText", "UIButton", "UIImage", "RenderStack"}
+    if names.intersection(render_components):
+        score += 6
+        reasons.append("has_renderer")
+    if names and not names.issubset(ignored_components | {"Transform"}):
+        score += 2
+        reasons.append("has_gameplay_or_custom_component")
+    for token, weight in {
+        "player": 5,
+        "hero": 5,
+        "main": 4,
+        "subject": 4,
+        "target": 4,
+        "board": 3,
+        "root": 2,
+        "piece": 2,
+        "ball": 2,
+    }.items():
+        if token in lower:
+            score += weight
+            reasons.append(f"name_contains:{token}")
+    if names.intersection({"Camera", "Light"}) and not names.intersection(render_components):
+        score -= 8
+        reasons.append("non_subject_service_object")
+    return score, reasons
+
+
+def _object_index_entry(obj, component_names: set[str] | None = None) -> dict[str, Any]:
+    return {
+        "id": int(obj.id),
+        "name": str(obj.name),
+        "path": _object_path(obj),
+        "active": bool(getattr(obj, "active", True)),
+        "components": sorted(component_names if component_names is not None else _component_names(obj)),
+    }
+
+
+def _component_names(obj) -> list[str]:
+    names: list[str] = []
+    try:
+        for comp in obj.get_components() or []:
+            names.append(str(getattr(comp, "type_name", type(comp).__name__)))
+    except Exception:
+        pass
+    try:
+        for comp in obj.get_py_components() or []:
+            type_name = str(getattr(comp, "type_name", type(comp).__name__))
+            if type_name not in names:
+                names.append(type_name)
+    except Exception:
+        pass
+    return names
+
+
+def _spatial_summary(obj, *, include_descendants: bool = True) -> dict[str, Any]:
+    points = []
+    for item in _object_and_descendants(obj) if include_descendants else [obj]:
+        points.extend(_approx_object_points(item))
+    if not points:
+        points = [_transform_position(obj)]
+    min_v = [min(point[i] for point in points) for i in range(3)]
+    max_v = [max(point[i] for point in points) for i in range(3)]
+    center = [(min_v[i] + max_v[i]) * 0.5 for i in range(3)]
+    size = [max_v[i] - min_v[i] for i in range(3)]
+    return {
+        "transform": _transform_snapshot(obj),
+        "bounds": {"min": min_v, "max": max_v, "center": center, "size": size},
+    }
+
+
+def _object_and_descendants(obj) -> list[Any]:
+    result = [obj]
+    try:
+        children = list(obj.get_children() or [])
+    except Exception:
+        children = []
+    for child in children:
+        result.extend(_object_and_descendants(child))
+    return result
+
+
+def _approx_object_points(obj) -> list[list[float]]:
+    pos = _transform_position(obj)
+    scale = _transform_scale(obj)
+    half = [max(abs(scale[i]) * 0.5, 0.05) for i in range(3)]
+    names = set(_component_names(obj))
+    if not names.intersection({"MeshRenderer", "SpriteRenderer", "SkinnedMeshRenderer"}):
+        half = [0.05, 0.05, 0.05]
+    return [
+        [pos[0] - half[0], pos[1] - half[1], pos[2] - half[2]],
+        [pos[0] + half[0], pos[1] + half[1], pos[2] + half[2]],
+    ]
+
+
+def _transform_snapshot(obj) -> dict[str, Any]:
+    trans = getattr(obj, "transform", None)
+    if trans is None:
+        return {}
+    return {
+        "position": _vector_list(getattr(trans, "position", None)),
+        "local_position": _vector_list(getattr(trans, "local_position", None)),
+        "euler_angles": _vector_list(getattr(trans, "euler_angles", None)),
+        "local_euler_angles": _vector_list(getattr(trans, "local_euler_angles", None)),
+        "local_scale": _vector_list(getattr(trans, "local_scale", None)),
+    }
+
+
+def _transform_position(obj) -> list[float]:
+    trans = getattr(obj, "transform", None)
+    return _vector_list(getattr(trans, "position", None)) if trans is not None else [0.0, 0.0, 0.0]
+
+
+def _transform_scale(obj) -> list[float]:
+    trans = getattr(obj, "transform", None)
+    return _vector_list(getattr(trans, "local_scale", None), default=[1.0, 1.0, 1.0]) if trans is not None else [1.0, 1.0, 1.0]
+
+
+def _vector_list(value, default: list[float] | None = None) -> list[float]:
+    if value is None:
+        return list(default or [0.0, 0.0, 0.0])
+    return [float(getattr(value, axis, 0.0)) for axis in ("x", "y", "z")]
+
+
+def _project_rel(path: str | None) -> str:
+    if not path:
+        return ""
+    try:
+        from Infernux.engine.project_context import get_project_root
+        root = get_project_root()
+        if root:
+            return os.path.relpath(os.path.abspath(path), os.path.abspath(root)).replace("\\", "/")
+    except Exception:
+        pass
+    return str(path)

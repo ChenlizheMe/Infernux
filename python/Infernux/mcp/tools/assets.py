@@ -8,10 +8,13 @@ import shutil
 
 from Infernux.mcp.tools.common import (
     get_asset_database,
+    ensure_not_active_scene_file,
     main_thread,
     notify_asset_changed,
+    require_knowledge_token,
     resolve_project_dir,
     resolve_project_path,
+    track_project_path_before_change,
 )
 
 
@@ -22,13 +25,41 @@ def register_asset_tools(mcp, project_path: str) -> None:
         name: str,
         directory: str = "Assets",
         shader_type: str = "frag",
+        knowledge_token: str = "",
     ) -> dict:
         """Create a built-in resource type: folder, script, material, shader, or scene."""
 
         def _create():
+            if str(kind or "").strip().lower() in {"shader", "material"}:
+                require_knowledge_token("shader", knowledge_token, required_tool="shader.guide")
             return _create_builtin(project_path, kind, name, directory, shader_type)
 
-        return main_thread("asset.create_builtin_resource", _create)
+        return main_thread(
+            "asset.create_builtin_resource",
+            _create,
+            arguments={"kind": kind, "name": name, "directory": directory, "shader_type": shader_type, "knowledge_token": knowledge_token},
+        )
+
+    @mcp.tool(name="asset.ensure_folder")
+    def asset_ensure_folder(path: str) -> dict:
+        """Ensure a project folder exists; succeeds if it already exists."""
+
+        def _ensure_folder():
+            folder = resolve_project_path(project_path, path)
+            if os.path.exists(folder) and not os.path.isdir(folder):
+                raise FileExistsError(f"Path exists but is not a folder: {path}")
+            existed = os.path.isdir(folder)
+            if not existed:
+                track_project_path_before_change(project_path, folder, "ensure_folder")
+                os.makedirs(folder, exist_ok=True)
+                notify_asset_changed(folder, "created")
+            return {
+                "path": os.path.relpath(folder, project_path).replace("\\", "/"),
+                "created": not existed,
+                "existed": existed,
+            }
+
+        return main_thread("asset.ensure_folder", _ensure_folder, arguments={"path": path})
 
     @mcp.tool(name="asset.create_script")
     def asset_create_script(name: str, directory: str = "Assets") -> dict:
@@ -36,14 +67,19 @@ def register_asset_tools(mcp, project_path: str) -> None:
         return main_thread(
             "asset.create_script",
             lambda: _create_builtin(project_path, "script", name, directory, "frag"),
+            arguments={"name": name, "directory": directory},
         )
 
     @mcp.tool(name="asset.create_material")
-    def asset_create_material(name: str, directory: str = "Assets") -> dict:
+    def asset_create_material(name: str, directory: str = "Assets", knowledge_token: str = "") -> dict:
         """Create a material resource from the editor template."""
         return main_thread(
             "asset.create_material",
-            lambda: _create_builtin(project_path, "material", name, directory, "frag"),
+            lambda: (
+                require_knowledge_token("shader", knowledge_token, required_tool="shader.guide")
+                or _create_builtin(project_path, "material", name, directory, "frag")
+            ),
+            arguments={"name": name, "directory": directory, "knowledge_token": knowledge_token},
         )
 
     @mcp.tool(name="asset.list")
@@ -89,7 +125,7 @@ def register_asset_tools(mcp, project_path: str) -> None:
                         break
             return {"root": os.path.relpath(root, project_path).replace("\\", "/"), "entries": entries}
 
-        return main_thread("asset.list", _list)
+        return main_thread("asset.list", _list, arguments={"directory": directory, "recursive": recursive, "include_meta": include_meta, "limit": limit})
 
     @mcp.tool(name="asset.search")
     def asset_search(query: str, directory: str = "Assets", extensions: list[str] | None = None, limit: int = 100) -> dict:
@@ -113,7 +149,7 @@ def register_asset_tools(mcp, project_path: str) -> None:
                         return {"matches": matches}
             return {"matches": matches}
 
-        return main_thread("asset.search", _search)
+        return main_thread("asset.search", _search, arguments={"query": query, "directory": directory, "extensions": extensions or [], "limit": limit})
 
     @mcp.tool(name="asset.read_text")
     def asset_read_text(path: str, max_bytes: int = 262144) -> dict:
@@ -145,6 +181,8 @@ def register_asset_tools(mcp, project_path: str) -> None:
             existed = os.path.exists(file_path)
             if existed and not overwrite:
                 raise FileExistsError(f"File already exists: {path}")
+            ensure_not_active_scene_file(project_path, file_path, "write")
+            track_project_path_before_change(project_path, file_path, "write_text")
             os.makedirs(os.path.dirname(file_path), exist_ok=True)
             with open(file_path, "w", encoding="utf-8", newline="\n") as f:
                 f.write(text or "")
@@ -155,7 +193,7 @@ def register_asset_tools(mcp, project_path: str) -> None:
                 "created": not existed,
             }
 
-        return main_thread("asset.write_text", _write)
+        return main_thread("asset.write_text", _write, arguments={"path": path, "text_bytes": len((text or "").encode("utf-8")), "overwrite": overwrite})
 
     @mcp.tool(name="asset.edit_text")
     def asset_edit_text(path: str, old_text: str, new_text: str, count: int = 1) -> dict:
@@ -172,6 +210,8 @@ def register_asset_tools(mcp, project_path: str) -> None:
                 raise ValueError("old_text was not found.")
             replace_count = -1 if int(count) <= 0 else int(count)
             updated = original.replace(old_text, new_text, replace_count)
+            ensure_not_active_scene_file(project_path, file_path, "edit")
+            track_project_path_before_change(project_path, file_path, "edit_text")
             with open(file_path, "w", encoding="utf-8", newline="\n") as f:
                 f.write(updated)
             notify_asset_changed(file_path, "modified")
@@ -195,6 +235,8 @@ def register_asset_tools(mcp, project_path: str) -> None:
             if not os.path.exists(target):
                 raise FileNotFoundError(f"Path not found: {path}")
             is_dir = os.path.isdir(target)
+            ensure_not_active_scene_file(project_path, target, "delete")
+            track_project_path_before_change(project_path, target, "delete")
             try:
                 from Infernux.engine.ui.project_file_ops import delete_item
                 delete_item(target, get_asset_database())
@@ -269,13 +311,19 @@ def register_asset_tools(mcp, project_path: str) -> None:
             dst = resolve_project_path(project_path, new_path)
             if not os.path.exists(src):
                 raise FileNotFoundError(f"Path not found: {path}")
+            ensure_not_active_scene_file(project_path, dst, "move to")
             if os.path.exists(dst):
                 if not overwrite:
                     raise FileExistsError(f"Destination already exists: {new_path}")
+                ensure_not_active_scene_file(project_path, dst, "overwrite")
+                track_project_path_before_change(project_path, dst, "overwrite")
                 if os.path.isdir(dst):
                     shutil.rmtree(dst)
                 else:
                     os.remove(dst)
+            ensure_not_active_scene_file(project_path, src, "move")
+            track_project_path_before_change(project_path, src, "move")
+            track_project_path_before_change(project_path, dst, "create")
             os.makedirs(os.path.dirname(dst), exist_ok=True)
             adb = get_asset_database()
             try:
@@ -307,6 +355,11 @@ def register_asset_tools(mcp, project_path: str) -> None:
             src = resolve_project_path(project_path, path)
             if not os.path.exists(src):
                 raise FileNotFoundError(f"Path not found: {path}")
+            dst_hint = os.path.join(os.path.dirname(src), new_name)
+            ensure_not_active_scene_file(project_path, src, "rename")
+            ensure_not_active_scene_file(project_path, dst_hint, "rename to")
+            track_project_path_before_change(project_path, src, "rename")
+            track_project_path_before_change(project_path, dst_hint, "create")
             try:
                 from Infernux.engine.ui.project_file_ops import do_rename
                 dst = do_rename(src, new_name, get_asset_database())
@@ -331,13 +384,18 @@ def register_asset_tools(mcp, project_path: str) -> None:
             dst = resolve_project_path(project_path, new_path)
             if not os.path.exists(src):
                 raise FileNotFoundError(f"Path not found: {path}")
+            ensure_not_active_scene_file(project_path, src, "copy")
+            ensure_not_active_scene_file(project_path, dst, "copy to")
             if os.path.exists(dst):
                 if not overwrite:
                     raise FileExistsError(f"Destination already exists: {new_path}")
+                ensure_not_active_scene_file(project_path, dst, "overwrite")
+                track_project_path_before_change(project_path, dst, "overwrite")
                 if os.path.isdir(dst):
                     shutil.rmtree(dst)
                 else:
                     os.remove(dst)
+            track_project_path_before_change(project_path, dst, "copy")
             os.makedirs(os.path.dirname(dst), exist_ok=True)
             if os.path.isdir(src):
                 shutil.copytree(src, dst)
@@ -425,6 +483,8 @@ def register_asset_tools(mcp, project_path: str) -> None:
             existed = os.path.exists(file_path)
             if existed and not overwrite:
                 raise FileExistsError(f"File already exists: {path}")
+            ensure_not_active_scene_file(project_path, file_path, "write")
+            track_project_path_before_change(project_path, file_path, "write_json")
             os.makedirs(os.path.dirname(file_path), exist_ok=True)
             with open(file_path, "w", encoding="utf-8", newline="\n") as f:
                 json.dump(value, f, ensure_ascii=False, indent=int(indent))
@@ -432,7 +492,7 @@ def register_asset_tools(mcp, project_path: str) -> None:
             notify_asset_changed(file_path, "modified" if existed else "created")
             return {"path": os.path.relpath(file_path, project_path).replace("\\", "/"), "bytes": os.path.getsize(file_path), "created": not existed}
 
-        return main_thread("asset.write_json", _write_json)
+        return main_thread("asset.write_json", _write_json, arguments={"path": path, "overwrite": overwrite, "indent": indent})
 
     @mcp.tool(name="asset.patch_text")
     def asset_patch_text(path: str, replacements: list[dict[str, str]]) -> dict:
@@ -454,6 +514,8 @@ def register_asset_tools(mcp, project_path: str) -> None:
                     raise ValueError(f"Patch text was not found: {old[:80]!r}")
                 text = text.replace(old, new, -1 if count <= 0 else count)
                 trace.append({"old": old[:80], "hits": hits, "replaced": hits if count <= 0 else min(hits, count)})
+            ensure_not_active_scene_file(project_path, file_path, "patch")
+            track_project_path_before_change(project_path, file_path, "patch_text")
             with open(file_path, "w", encoding="utf-8", newline="\n") as f:
                 f.write(text)
             notify_asset_changed(file_path, "modified")
@@ -470,27 +532,41 @@ def _create_builtin(project_path: str, kind: str, name: str, directory: str, sha
     adb = get_asset_database()
     normalized = kind.strip().lower()
     if normalized == "folder":
-        success, message = ops.create_folder(target_dir, name)
         path = os.path.join(target_dir, name.strip())
+        if os.path.isdir(path):
+            success, message = True, "Folder already exists."
+            existed = True
+        elif os.path.exists(path):
+            rel_path = os.path.relpath(path, project_path).replace("\\", "/")
+            raise FileExistsError(f"Path exists but is not a folder: {rel_path}")
+        else:
+            track_project_path_before_change(project_path, path, "create_builtin")
+            success, message = ops.create_folder(target_dir, name)
+            existed = False
     elif normalized == "script":
-        success, message = ops.create_script(target_dir, name, adb)
         file_name = name if name.endswith(".py") else name + ".py"
+        track_project_path_before_change(project_path, os.path.join(target_dir, file_name), "create_builtin")
+        success, message = ops.create_script(target_dir, name, adb)
         path = os.path.join(target_dir, file_name)
+        existed = False
     elif normalized == "material":
-        success, message = ops.create_material(target_dir, name, adb)
         base = name[:-4] if name.endswith(".mat") else name
+        track_project_path_before_change(project_path, os.path.join(target_dir, base + ".mat"), "create_builtin")
+        success, message = ops.create_material(target_dir, name, adb)
         path = os.path.join(target_dir, base + ".mat")
+        existed = False
     elif normalized == "shader":
-        success, message = ops.create_shader(target_dir, name, shader_type, adb)
         base = name
         for ext in (".vert", ".frag", ".glsl"):
             if base.endswith(ext):
                 base = base[: -len(ext)]
                 break
+        track_project_path_before_change(project_path, os.path.join(target_dir, base + "." + shader_type), "create_builtin")
+        success, message = ops.create_shader(target_dir, name, shader_type, adb)
         path = os.path.join(target_dir, base + "." + shader_type)
+        existed = False
     elif normalized == "scene":
-        success, message = ops.create_scene(target_dir, name, adb)
-        path = message if success else ""
+        raise ValueError("MCP agents must manage .scene files through scene.save/open/new, not asset.create_builtin_resource(kind='scene').")
     else:
         raise ValueError("kind must be one of: folder, script, material, shader, scene")
 
@@ -506,6 +582,10 @@ def _create_builtin(project_path: str, kind: str, name: str, directory: str, sha
     return {
         "kind": normalized,
         "name": name,
-        "path": path,
+        "path": os.path.relpath(path, project_path).replace("\\", "/") if path else "",
+        "absolute_path": path,
         "guid": guid,
+        "created": not existed,
+        "existed": existed,
+        "message": message,
     }

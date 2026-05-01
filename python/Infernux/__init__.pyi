@@ -36,6 +36,7 @@ from Infernux.components import SerializableObject as SerializableObject
 # Builtin components
 from Infernux.components import Light as Light
 from Infernux.components import MeshRenderer as MeshRenderer
+from Infernux.components import SkinnedMeshRenderer as SkinnedMeshRenderer
 from Infernux.components import Camera as Camera
 from Infernux.components import Collider as Collider
 from Infernux.components import BoxCollider as BoxCollider
@@ -50,6 +51,7 @@ from Infernux.components import AudioSource as AudioSource
 from Infernux.components import AudioListener as AudioListener
 from Infernux.components import SpriteRenderer as SpriteRenderer
 from Infernux.components import SpiritAnimator as SpiritAnimator
+from Infernux.components import SkeletalAnimator as SkeletalAnimator
 # Decorators
 from Infernux.components import require_component as require_component
 from Infernux.components import disallow_multiple as disallow_multiple
