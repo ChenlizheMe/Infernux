@@ -451,7 +451,10 @@ class in <b>Infernux.components.builtin</b>
 
 <p><strong>Inherits from:</strong> <a href="Component.html">BuiltinComponent</a></p>
 <h2 id="description">Description<a class="headerlink" href="#description" title="Permanent link">&para;</a></h2>
-<p>Represents the listener for 3D audio in the scene.</p>
+<p>Represents the listener/ears for 3D audio in the scene.</p>
+<p>Attach one AudioListener to the main camera in most games. The engine keeps
+one active listener; additional enabled listeners remain registered but can
+be standby instead of immediately replacing the active listener.</p>
 <!-- USER CONTENT START -->
 <p>description</p>
 <!-- USER CONTENT END -->

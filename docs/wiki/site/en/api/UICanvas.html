@@ -460,7 +460,12 @@ that all positions, sizes and font sizes adapt proportionally.</p>
     sort_order: Rendering order (lower draws first).
     target_camera_id: Camera GameObject ID (CameraOverlay mode only).
     reference_width: Design reference width in pixels (default 1920).
-    reference_height: Design reference height in pixels (default 1080).</p>
+    reference_height: Design reference height in pixels (default 1080).
+    ui_scale_mode: Canvas scaler mode.
+    screen_match_mode: Width/height match behavior for ScaleWithScreenSize.
+    match_width_or_height: 0 = match width, 1 = match height.
+    pixel_perfect: Round scale to integer pixels when possible.
+    reference_pixels_per_unit: Sprite pixel density hint.</p>
 <!-- USER CONTENT START -->
 <p>description</p>
 <!-- USER CONTENT END -->
@@ -500,6 +505,31 @@ that all positions, sizes and font sizes adapt proportionally.</p>
 <td><code>int</code></td>
 <td></td>
 </tr>
+<tr>
+<td>ui_scale_mode</td>
+<td><code>UIScaleMode</code></td>
+<td></td>
+</tr>
+<tr>
+<td>screen_match_mode</td>
+<td><code>ScreenMatchMode</code></td>
+<td></td>
+</tr>
+<tr>
+<td>match_width_or_height</td>
+<td><code>float</code></td>
+<td></td>
+</tr>
+<tr>
+<td>pixel_perfect</td>
+<td><code>bool</code></td>
+<td></td>
+</tr>
+<tr>
+<td>reference_pixels_per_unit</td>
+<td><code>float</code></td>
+<td></td>
+</tr>
 </tbody>
 </table>
 <!-- USER CONTENT START -->
@@ -516,6 +546,10 @@ that all positions, sizes and font sizes adapt proportionally.</p>
 </thead>
 <tbody>
 <tr>
+<td><code>compute_scale(screen_w: float, screen_h: float) → Tuple[float, float, float]</code></td>
+<td>Compute <code>(scale_x, scale_y, text_scale)</code> for a viewport size.</td>
+</tr>
+<tr>
 <td><code>invalidate_element_cache() → None</code></td>
 <td>Mark the cached element list as stale.</td>
 </tr>
@@ -524,11 +558,11 @@ that all positions, sizes and font sizes adapt proportionally.</p>
 <td>Yield all screen-space UI components on child GameObjects (depth-first).</td>
 </tr>
 <tr>
-<td><code>raycast(canvas_x: float, canvas_y: float) → Optional[InxUIScreenComponent]</code></td>
+<td><code>raycast(canvas_x: float, canvas_y: float, tolerance: float = ...) → Optional[InxUIScreenComponent]</code></td>
 <td>Return the front-most element hit at <code>(canvas_x, canvas_y)</code>, or <code>None</code>.</td>
 </tr>
 <tr>
-<td><code>raycast_all(canvas_x: float, canvas_y: float) → List[InxUIScreenComponent]</code></td>
+<td><code>raycast_all(canvas_x: float, canvas_y: float, tolerance: float = ...) → List[InxUIScreenComponent]</code></td>
 <td>Return all elements hit at the given point, front-to-back order.</td>
 </tr>
 </tbody>

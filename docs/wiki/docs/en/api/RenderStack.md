@@ -8,7 +8,10 @@ class in <b>Infernux.renderstack</b>
 
 ## Description
 
-Component that manages a stack of render passes driven by a pipeline.
+Scene singleton component that manages render pipelines and injected passes.
+
+Runtime class also mixes in render-pass management and pipeline reload
+behavior; those public methods are mirrored in this stub.
 
 <!-- USER CONTENT START --> description
 
@@ -33,6 +36,7 @@ Component that manages a stack of render passes driven by a pipeline.
 
 | Method | Description |
 |------|------|
+| `on_inspector_gui(ctx: object) → None` | Render the custom editor inspector for this RenderStack. |
 | `set_pipeline(pipeline_class_name: str) → None` | Set the active render pipeline by class name. |
 | `add_pass(render_pass: RenderPass) → bool` | Add a render pass to the stack. |
 | `remove_pass(pass_name: str) → bool` | Remove a render pass by name. |

@@ -8,6 +8,11 @@ class in <b>Infernux.core</b>
 
 Pythonic wrapper around C++ AudioClip.
 
+Use ``AudioClip.load("Assets/Audio/foo.wav")`` and pass the returned
+wrapper (or ``clip.native``) to ``AudioSource.set_track_clip`` or
+``AudioSource.play_one_shot``. Do not unload a clip while an AudioSource is
+still using it.
+
 <!-- USER CONTENT START --> description
 
 <!-- USER CONTENT END -->
@@ -53,7 +58,7 @@ Pythonic wrapper around C++ AudioClip.
 
 | Method | Description |
 |------|------|
-| `static AudioClip.load(file_path: str) → Optional[AudioClip]` | Load an audio clip from a file path (WAV, OGG, MP3). |
+| `static AudioClip.load(file_path: str) → Optional[AudioClip]` | Load an audio clip from a file path. |
 | `static AudioClip.from_native(native: CppAudioClip) → AudioClip` | Wrap an existing C++ AudioClip instance. |
 
 <!-- USER CONTENT START --> static_methods

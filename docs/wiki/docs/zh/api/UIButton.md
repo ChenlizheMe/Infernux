@@ -28,7 +28,7 @@ UI 按钮组件。用户点击的地方——程序员 Debug 的地方。
 | letter_spacing | `float` |  |
 | texture_path | `str` |  |
 | background_color | `list` |  |
-| on_click_entries | `list` |  |
+| on_click_entries | `List[UIEventEntry]` |  |
 | on_click | `UIEvent` | 点击事件。 *(只读)* |
 
 <!-- USER CONTENT START --> properties

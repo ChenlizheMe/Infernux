@@ -57,7 +57,7 @@ Example::
 | letter_spacing | `float` |  |
 | texture_path | `str` |  |
 | background_color | `list` |  |
-| on_click_entries | `list` |  |
+| on_click_entries | `List[UIEventEntry]` |  |
 | on_click | `UIEvent` | The click event — call ``add_listener()`` to subscribe. *(read-only)* |
 
 <!-- USER CONTENT START --> properties

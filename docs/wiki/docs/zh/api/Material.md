@@ -53,6 +53,7 @@
 | 方法 | 描述 |
 |------|------|
 | `dispose() → None` | 释放底层原生材质资源。 |
+| `clone() → Material` | Create a deep copy of this material, including shader state and properties. |
 | `set_shader(shader_name: str) → None` | 设置材质使用的着色器。 |
 | `set_float(name: str, value: float) → None` | 设置浮点数 uniform 属性。 |
 | `set_int(name: str, value: int) → None` | 设置整数 uniform 属性。 |

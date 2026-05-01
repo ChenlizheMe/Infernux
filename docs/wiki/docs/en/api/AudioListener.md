@@ -8,7 +8,11 @@ class in <b>Infernux.components.builtin</b>
 
 ## Description
 
-Represents the listener for 3D audio in the scene.
+Represents the listener/ears for 3D audio in the scene.
+
+Attach one AudioListener to the main camera in most games. The engine keeps
+one active listener; additional enabled listeners remain registered but can
+be standby instead of immediately replacing the active listener.
 
 <!-- USER CONTENT START --> description
 

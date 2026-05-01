@@ -469,7 +469,7 @@
 <tr>
 <td>track_count</td>
 <td><code>int</code></td>
-<td>The number of audio tracks on this source.</td>
+<td>Number of audio tracks on this source, valid range 1..16.</td>
 </tr>
 <tr>
 <td>volume</td>
@@ -514,7 +514,7 @@
 <tr>
 <td>output_bus</td>
 <td><code>str</code></td>
-<td>The name of the audio mixer bus to route output to.</td>
+<td>Output mixer/audio bus name.</td>
 </tr>
 <tr>
 <td>is_playing</td>
@@ -548,7 +548,7 @@
 <tbody>
 <tr>
 <td><code>set_track_clip(track_index: int, clip: Any) → None</code></td>
-<td>Assign an audio clip to the specified track.</td>
+<td>Assign an AudioClip wrapper or native clip to a zero-based track.</td>
 </tr>
 <tr>
 <td><code>get_track_clip(track_index: int) → Any</code></td>
@@ -560,7 +560,7 @@
 </tr>
 <tr>
 <td><code>set_track_clip_by_guid(track_index: int, guid: str) → None</code></td>
-<td>Assign an audio clip to a track by its asset GUID.</td>
+<td>Assign an audio clip to a track by asset GUID.</td>
 </tr>
 <tr>
 <td><code>set_track_volume(track_index: int, volume: float) → None</code></td>
@@ -596,7 +596,7 @@
 </tr>
 <tr>
 <td><code>stop_all() → None</code></td>
-<td>Stop playback on all tracks and one-shots.</td>
+<td>Stop playback on all tracks and pooled one-shot voices.</td>
 </tr>
 <tr>
 <td><code>is_track_playing(track_index: int) → bool</code></td>

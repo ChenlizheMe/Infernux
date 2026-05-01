@@ -451,6 +451,10 @@ class in <b>Infernux.core</b>
 
 <h2 id="description">Description<a class="headerlink" href="#description" title="Permanent link">&para;</a></h2>
 <p>Pythonic wrapper around C++ AudioClip.</p>
+<p>Use <code>AudioClip.load("Assets/Audio/foo.wav")</code> and pass the returned
+wrapper (or <code>clip.native</code>) to <code>AudioSource.set_track_clip</code> or
+<code>AudioSource.play_one_shot</code>. Do not unload a clip while an AudioSource is
+still using it.</p>
 <!-- USER CONTENT START -->
 <p>description</p>
 <!-- USER CONTENT END -->
@@ -560,7 +564,7 @@ class in <b>Infernux.core</b>
 <tbody>
 <tr>
 <td><code>static AudioClip.load(file_path: str) → Optional[AudioClip]</code></td>
-<td>Load an audio clip from a file path (WAV, OGG, MP3).</td>
+<td>Load an audio clip from a file path.</td>
 </tr>
 <tr>
 <td><code>static AudioClip.from_native(native: CppAudioClip) → AudioClip</code></td>

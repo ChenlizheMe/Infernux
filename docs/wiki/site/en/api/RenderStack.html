@@ -451,7 +451,9 @@ class in <b>Infernux.renderstack</b>
 
 <p><strong>Inherits from:</strong> <a href="InxComponent.html">InxComponent</a></p>
 <h2 id="description">Description<a class="headerlink" href="#description" title="Permanent link">&para;</a></h2>
-<p>Component that manages a stack of render passes driven by a pipeline.</p>
+<p>Scene singleton component that manages render pipelines and injected passes.</p>
+<p>Runtime class also mixes in render-pass management and pipeline reload
+behavior; those public methods are mirrored in this stub.</p>
 <!-- USER CONTENT START -->
 <p>description</p>
 <!-- USER CONTENT END -->
@@ -511,6 +513,10 @@ class in <b>Infernux.renderstack</b>
 </tr>
 </thead>
 <tbody>
+<tr>
+<td><code>on_inspector_gui(ctx: object) → None</code></td>
+<td>Render the custom editor inspector for this RenderStack.</td>
+</tr>
 <tr>
 <td><code>set_pipeline(pipeline_class_name: str) → None</code></td>
 <td>Set the active render pipeline by class name.</td>

@@ -53,6 +53,7 @@ Pythonic wrapper around C++ InxMaterial.
 | Method | Description |
 |------|------|
 | `dispose() → None` | Release the underlying native material resources. |
+| `clone() → Material` | Create a deep copy of this material, including shader state and properties. |
 | `set_shader(shader_name: str) → None` | Set the shader used by this material. |
 | `set_float(name: str, value: float) → None` | Set a float uniform property on the material. |
 | `set_int(name: str, value: int) → None` | Set an integer uniform property on the material. |

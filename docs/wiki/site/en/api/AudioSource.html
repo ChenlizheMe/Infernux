@@ -451,7 +451,14 @@ class in <b>Infernux.components.builtin</b>
 
 <p><strong>Inherits from:</strong> <a href="Component.html">BuiltinComponent</a></p>
 <h2 id="description">Description<a class="headerlink" href="#description" title="Permanent link">&para;</a></h2>
-<p>Plays audio clips in the scene.</p>
+<p>Multi-track audio playback component.</p>
+<p>Infernux does not expose Unity's single <code>clip</code> field. Instead one
+AudioSource owns <code>track_count</code> tracks. Assign each track with
+<code>set_track_clip(index, clip)</code> or <code>set_track_clip_by_guid(index, guid)</code>,
+then call <code>play(index)</code>. <code>play_on_awake</code> only auto-plays track 0.</p>
+<p>For transient SFX, prefer <code>play_one_shot(clip, volume_scale)</code> rather than
+creating temporary AudioSource objects. Sources are spatialized; for "2D"
+audio, place the AudioSource on/near the AudioListener's GameObject.</p>
 <!-- USER CONTENT START -->
 <p>description</p>
 <!-- USER CONTENT END -->
@@ -469,7 +476,7 @@ class in <b>Infernux.components.builtin</b>
 <tr>
 <td>track_count</td>
 <td><code>int</code></td>
-<td>The number of audio tracks on this source.</td>
+<td>Number of audio tracks on this source, valid range 1..16.</td>
 </tr>
 <tr>
 <td>volume</td>
@@ -489,22 +496,22 @@ class in <b>Infernux.components.builtin</b>
 <tr>
 <td>loop</td>
 <td><code>bool</code></td>
-<td>Whether the audio clip loops when it reaches the end.</td>
+<td>Whether all tracks loop when they reach the end.</td>
 </tr>
 <tr>
 <td>play_on_awake</td>
 <td><code>bool</code></td>
-<td>Whether the audio source plays automatically on awake.</td>
+<td>Whether track 0 plays automatically during component start.</td>
 </tr>
 <tr>
 <td>min_distance</td>
 <td><code>float</code></td>
-<td>The minimum distance for 3D audio attenuation.</td>
+<td>Distance where 3D attenuation begins.</td>
 </tr>
 <tr>
 <td>max_distance</td>
 <td><code>float</code></td>
-<td>The maximum distance for 3D audio attenuation.</td>
+<td>Distance where 3D attenuation reaches minimum volume.</td>
 </tr>
 <tr>
 <td>one_shot_pool_size</td>
@@ -514,7 +521,7 @@ class in <b>Infernux.components.builtin</b>
 <tr>
 <td>output_bus</td>
 <td><code>str</code></td>
-<td>The name of the audio mixer bus to route output to.</td>
+<td>Output mixer/audio bus name.</td>
 </tr>
 <tr>
 <td>is_playing</td>
@@ -548,7 +555,7 @@ class in <b>Infernux.components.builtin</b>
 <tbody>
 <tr>
 <td><code>set_track_clip(track_index: int, clip: Any) → None</code></td>
-<td>Assign an audio clip to the specified track.</td>
+<td>Assign an AudioClip wrapper or native clip to a zero-based track.</td>
 </tr>
 <tr>
 <td><code>get_track_clip(track_index: int) → Any</code></td>
@@ -560,7 +567,7 @@ class in <b>Infernux.components.builtin</b>
 </tr>
 <tr>
 <td><code>set_track_clip_by_guid(track_index: int, guid: str) → None</code></td>
-<td>Assign an audio clip to a track by its asset GUID.</td>
+<td>Assign an audio clip to a track by asset GUID.</td>
 </tr>
 <tr>
 <td><code>set_track_volume(track_index: int, volume: float) → None</code></td>
@@ -572,15 +579,15 @@ class in <b>Infernux.components.builtin</b>
 </tr>
 <tr>
 <td><code>play(track_index: int = ...) → None</code></td>
-<td>Start playback on the specified track.</td>
+<td>Start playback on the specified zero-based track.</td>
 </tr>
 <tr>
 <td><code>stop(track_index: int = ...) → None</code></td>
-<td>Stop playback on the specified track.</td>
+<td>Stop playback on the specified zero-based track.</td>
 </tr>
 <tr>
 <td><code>play_one_shot(clip: Any, volume_scale: float = ...) → None</code></td>
-<td>Play an audio clip as a one-shot sound.</td>
+<td>Play a transient clip using the source's pooled one-shot voices.</td>
 </tr>
 <tr>
 <td><code>stop_one_shots() → None</code></td>
@@ -596,7 +603,7 @@ class in <b>Infernux.components.builtin</b>
 </tr>
 <tr>
 <td><code>stop_all() → None</code></td>
-<td>Stop playback on all tracks and one-shots.</td>
+<td>Stop playback on all tracks and pooled one-shot voices.</td>
 </tr>
 <tr>
 <td><code>is_track_playing(track_index: int) → bool</code></td>

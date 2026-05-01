@@ -33,6 +33,7 @@
 
 | 方法 | 描述 |
 |------|------|
+| `on_inspector_gui(ctx: object) → None` | Render the custom editor inspector for this RenderStack. |
 | `set_pipeline(pipeline_class_name: str) → None` | Set the active render pipeline by class name. |
 | `add_pass(render_pass: RenderPass) → bool` | Add a render pass to the stack. |
 | `remove_pass(pass_name: str) → bool` | Remove a render pass by name. |
