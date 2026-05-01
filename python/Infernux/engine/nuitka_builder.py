@@ -18,6 +18,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 from pathlib import Path
 from typing import Callable, List, Optional
@@ -49,12 +50,286 @@ def _has_msvc_toolchain() -> bool:
     if shutil.which("cl"):
         return True
 
-    program_files = os.environ.get("ProgramFiles", "")
-    if not program_files:
-        return False
+    return bool(_find_msvc_environment_scripts())
 
-    return os.path.exists(
-        os.path.join(program_files, "Microsoft Visual Studio")
+
+def _which_in_env(executable: str, env: dict[str, str]) -> str:
+    return shutil.which(executable, path=env.get("PATH", "")) or ""
+
+
+def _msvc_env_ready(env: dict[str, str]) -> bool:
+    return bool(
+        _which_in_env("cl.exe", env)
+        and env.get("INCLUDE")
+        and env.get("LIB")
+    )
+
+
+def _visual_studio_roots_from_vswhere() -> list[str]:
+    roots: list[str] = []
+    vswhere = os.path.join(
+        os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"),
+        "Microsoft Visual Studio",
+        "Installer",
+        "vswhere.exe",
+    )
+    if not os.path.isfile(vswhere):
+        return roots
+
+    try:
+        completed = subprocess.run(
+            [
+                vswhere,
+                "-products",
+                "*",
+                "-requires",
+                "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
+                "-property",
+                "installationPath",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=20,
+        )
+    except (OSError, subprocess.SubprocessError) as _exc:
+        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+        return roots
+
+    if completed.returncode != 0:
+        return roots
+
+    for line in (completed.stdout or "").splitlines():
+        root = line.strip()
+        if root and os.path.isdir(root):
+            roots.append(root)
+    return roots
+
+
+def _visual_studio_roots_from_registry() -> list[str]:
+    """Discover Visual Studio installation roots from Windows registry.
+
+    ``vswhere`` is the official and most reliable discovery API, but registry
+    fallback matters for non-standard or partially repaired installs where the
+    VS Installer utility is missing from its usual location.  The SxS and Setup
+    keys are written with the actual installation path, so custom drives are
+    covered here.
+    """
+    if sys.platform != "win32":
+        return []
+
+    try:
+        import winreg
+    except ImportError:
+        return []
+
+    roots: list[str] = []
+    seen: set[str] = set()
+
+    def _add(path: str) -> None:
+        if not path:
+            return
+        root = os.path.abspath(os.path.expandvars(path.strip().strip('"')))
+        if not os.path.isdir(root):
+            return
+        normalized = os.path.normcase(root)
+        if normalized in seen:
+            return
+        seen.add(normalized)
+        roots.append(root)
+
+    hives = (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER)
+    views = [0]
+    for view_name in ("KEY_WOW64_64KEY", "KEY_WOW64_32KEY"):
+        value = getattr(winreg, view_name, 0)
+        if value and value not in views:
+            views.append(value)
+
+    # VS7 SxS values are named by major version (e.g. "17.0") and point to
+    # the VS installation root, even when the user installs on a custom drive.
+    sx_s_values: list[tuple[float, str]] = []
+    sx_s_keys = (
+        r"SOFTWARE\Microsoft\VisualStudio\SxS\VS7",
+        r"SOFTWARE\WOW6432Node\Microsoft\VisualStudio\SxS\VS7",
+    )
+    for hive in hives:
+        for access in views:
+            for key_name in sx_s_keys:
+                try:
+                    with winreg.OpenKey(hive, key_name, 0, winreg.KEY_READ | access) as key:
+                        index = 0
+                        while True:
+                            try:
+                                name, value, _kind = winreg.EnumValue(key, index)
+                            except OSError:
+                                break
+                            index += 1
+                            try:
+                                version = float(str(name).split(".", 1)[0])
+                            except ValueError:
+                                version = 0.0
+                            if isinstance(value, str):
+                                sx_s_values.append((version, value))
+                except OSError:
+                    continue
+
+    for _version, path in sorted(sx_s_values, reverse=True):
+        _add(path)
+
+    # Newer installers also expose per-instance Setup keys.  These are useful
+    # when SxS is absent but the installer registration is intact.
+    setup_instance_keys = (
+        r"SOFTWARE\Microsoft\VisualStudio\Setup\Instances",
+        r"SOFTWARE\WOW6432Node\Microsoft\VisualStudio\Setup\Instances",
+    )
+    for hive in hives:
+        for access in views:
+            for key_name in setup_instance_keys:
+                try:
+                    with winreg.OpenKey(hive, key_name, 0, winreg.KEY_READ | access) as key:
+                        index = 0
+                        while True:
+                            try:
+                                subkey_name = winreg.EnumKey(key, index)
+                            except OSError:
+                                break
+                            index += 1
+                            try:
+                                with winreg.OpenKey(key, subkey_name) as instance_key:
+                                    value, _kind = winreg.QueryValueEx(instance_key, "InstallationPath")
+                            except OSError:
+                                continue
+                            if isinstance(value, str):
+                                _add(value)
+                except OSError:
+                    continue
+
+    return roots
+
+
+def _find_msvc_environment_scripts() -> list[tuple[str, list[str]]]:
+    """Return candidate VS environment scripts for x64 MSVC builds."""
+    roots: list[str] = []
+    roots.extend(_visual_studio_roots_from_vswhere())
+    roots.extend(_visual_studio_roots_from_registry())
+
+    for env_name in ("VSINSTALLDIR", "VCINSTALLDIR"):
+        root = os.environ.get(env_name, "")
+        if env_name == "VCINSTALLDIR" and root:
+            root = os.path.abspath(os.path.join(root, "..", ".."))
+        if root and os.path.isdir(root):
+            roots.append(root)
+
+    program_files = os.environ.get("ProgramFiles", r"C:\Program Files")
+    for year in ("2022", "2019"):
+        for edition in ("BuildTools", "Community", "Professional", "Enterprise"):
+            roots.append(os.path.join(program_files, "Microsoft Visual Studio", year, edition))
+
+    candidates: list[tuple[str, list[str]]] = []
+    seen_roots: set[str] = set()
+    for root in roots:
+        normalized_root = os.path.normcase(os.path.abspath(root))
+        if normalized_root in seen_roots:
+            continue
+        seen_roots.add(normalized_root)
+
+        for script, args in (
+            (os.path.join(root, "Common7", "Tools", "VsDevCmd.bat"), ["-arch=x64", "-host_arch=x64"]),
+            (os.path.join(root, "VC", "Auxiliary", "Build", "vcvars64.bat"), []),
+            (os.path.join(root, "VC", "Auxiliary", "Build", "vcvarsall.bat"), ["x64"]),
+        ):
+            if os.path.isfile(script):
+                candidates.append((script, args))
+    return candidates
+
+
+def _capture_msvc_environment(
+    script_path: str,
+    args: list[str],
+    base_env: dict[str, str],
+) -> dict[str, str]:
+    env = dict(base_env)
+    env["VSCMD_SKIP_SENDTELEMETRY"] = "1"
+    quoted_args = " ".join(args)
+    temp_root = env.get("TEMP") if os.path.isdir(env.get("TEMP", "")) else tempfile.gettempdir()
+    batch_dir = tempfile.mkdtemp(prefix="inx_vcvars_", dir=temp_root)
+    batch_path = os.path.join(batch_dir, "capture_env.bat")
+    try:
+        with open(batch_path, "w", encoding="utf-8", newline="\r\n") as f:
+            f.write("@echo off\n")
+            f.write(f'call "{script_path}" {quoted_args} >nul\n')
+            f.write("if errorlevel 1 exit /b %errorlevel%\n")
+            f.write("set\n")
+
+        completed = subprocess.run(
+            ["cmd", "/d", "/c", batch_path],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=env,
+            timeout=90,
+            creationflags=0x08000000,
+        )
+        if completed.returncode != 0:
+            raise RuntimeError((completed.stderr or completed.stdout or "").strip())
+    finally:
+        shutil.rmtree(batch_dir, ignore_errors=True)
+
+    captured: dict[str, str] = {}
+    for line in (completed.stdout or "").splitlines():
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        if key:
+            captured[key] = value
+    return captured
+
+
+def _ensure_windows_msvc_environment(env: dict[str, str]) -> dict[str, str]:
+    """Merge a Visual Studio Developer Command Prompt environment.
+
+    End users normally launch Infernux from the Hub or Explorer, not from a
+    Developer Command Prompt.  Nuitka's SCons backend needs MSVC/Windows SDK
+    variables such as PATH, INCLUDE, LIB, and the cl.exe location; otherwise it
+    can fail with the misleading internal message "scons environment variable
+    CC is not set" even when Visual Studio is installed.
+    """
+    if sys.platform != "win32":
+        return env
+
+    if _msvc_env_ready(env):
+        return env
+
+    failures: list[str] = []
+    for script_path, args in _find_msvc_environment_scripts():
+        try:
+            captured = _capture_msvc_environment(script_path, args, env)
+        except Exception as exc:
+            failures.append(f"{script_path}: {exc}")
+            continue
+
+        merged = dict(env)
+        merged.update(captured)
+        if _msvc_env_ready(merged):
+            merged.setdefault("CC", "cl")
+            merged.setdefault("CXX", "cl")
+            Debug.log_internal(f"Loaded MSVC build environment from {script_path}")
+            return merged
+
+        failures.append(f"{script_path}: cl.exe/INCLUDE/LIB not available after initialization")
+
+    details = "\n".join(failures[-3:])
+    raise RuntimeError(
+        "Windows game builds require an initialized MSVC + Windows SDK build environment.\n"
+        "Visual Studio was detected, but Infernux could not initialize the C++ toolchain "
+        "for Nuitka/SCons.\n"
+        "Install or repair Visual Studio 2022 with 'Desktop development with C++', "
+        "including MSVC v143 and a Windows 10/11 SDK, then try again.\n"
+        f"Details:\n{details}"
     )
 
 
@@ -632,6 +907,9 @@ class NuitkaBuilder:
         )
         if pythonpath_entries:
             env["PYTHONPATH"] = os.pathsep.join(_dedupe_paths(pythonpath_entries))
+
+        if sys.platform == "win32":
+            env = _ensure_windows_msvc_environment(env)
 
         import time as _time
         _nuitka_proc_t0 = _time.perf_counter()
