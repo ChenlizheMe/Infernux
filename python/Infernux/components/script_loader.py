@@ -37,6 +37,11 @@ class ScriptLoadError(Exception):
 _script_errors: dict[str, str] = {}
 
 
+def _normalize_script_path(file_path: str) -> str:
+    """Return a stable absolute key for script-error bookkeeping."""
+    return os.path.normcase(os.path.normpath(os.path.abspath(file_path)))
+
+
 def _unique_module_name_for_path(file_path: str) -> str:
     """Build a fallback module name for scripts without a valid import path."""
     import hashlib
@@ -76,7 +81,7 @@ def _clear_loaded_script_modules(module_names: List[str]) -> None:
 def _record_script_error(file_path: str, exc: Exception) -> None:
     """Record that *file_path* failed to load with *exc*."""
     import traceback
-    norm = os.path.normcase(os.path.normpath(os.path.abspath(file_path)))
+    norm = _normalize_script_path(file_path)
     tb_str = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
     _script_errors[norm] = tb_str
     # Also log to Console so the user sees it
@@ -90,14 +95,39 @@ def _record_script_error(file_path: str, exc: Exception) -> None:
 
 def set_script_error(file_path: str, message: str) -> None:
     """Record an error message for a script (no exception object needed)."""
-    norm = os.path.normcase(os.path.normpath(os.path.abspath(file_path)))
-    _script_errors[norm] = message
+    _script_errors[_normalize_script_path(file_path)] = message
 
 
 def _clear_script_error(file_path: str) -> None:
     """Clear any previously recorded error for *file_path*."""
-    norm = os.path.normcase(os.path.normpath(os.path.abspath(file_path)))
-    _script_errors.pop(norm, None)
+    _script_errors.pop(_normalize_script_path(file_path), None)
+
+
+def clear_deleted_script_errors(path: str) -> list[str]:
+    """Forget tracked script errors for a deleted script path.
+
+    Accepts either a single script file or a directory path. Directory cleanup is
+    useful for editor-side recursive deletes where every nested broken script
+    should stop blocking Play Mode immediately instead of waiting for a restart.
+    """
+    if not path:
+        return []
+
+    normalized = _normalize_script_path(path)
+    removed: list[str] = []
+
+    if os.path.isdir(path):
+        prefix = normalized.rstrip("\\/") + os.sep
+        for key in list(_script_errors.keys()):
+            if key == normalized or key.startswith(prefix):
+                _script_errors.pop(key, None)
+                removed.append(key)
+        return removed
+
+    if normalized in _script_errors:
+        _script_errors.pop(normalized, None)
+        removed.append(normalized)
+    return removed
 
 
 def get_script_errors() -> dict[str, str]:
@@ -112,8 +142,7 @@ def has_script_errors() -> bool:
 
 def get_script_error_by_path(file_path: str) -> Optional[str]:
     """Return the error string for *file_path*, or ``None`` if it loaded OK."""
-    norm = os.path.normcase(os.path.normpath(os.path.abspath(file_path)))
-    return _script_errors.get(norm)
+    return _script_errors.get(_normalize_script_path(file_path))
 
 
 def load_component_from_file(file_path: str) -> Type[InxComponent]:

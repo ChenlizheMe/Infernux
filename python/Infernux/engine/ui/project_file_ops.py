@@ -617,6 +617,9 @@ def delete_item(item_path: str, asset_database=None):
         return
 
     is_dir = os.path.isdir(item_path)
+    if is_dir or item_path.lower().endswith('.py'):
+        from Infernux.components.script_loader import clear_deleted_script_errors
+        clear_deleted_script_errors(item_path)
 
     # For .prefab files, detach all scene instances BEFORE deleting the asset.
     # This turns prefab instances into regular scene objects instead of leaving
