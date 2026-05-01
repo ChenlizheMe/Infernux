@@ -1,7 +1,7 @@
 const translations = {
     en: {
         /* Brand */
-        "brand.ribbonKicker": "Open-source engine · 0.1.5 live",
+        "brand.ribbonKicker": "Open-source engine · 0.1.6 live",
         "brand.ribbonName": "INFER<span class=\"mission-accent\">NUX</span>",
         "brand.ribbonSub": "熔炉 · ENG-CORE",
         "brand.navShort": "熔炉 · INFERNUX",
@@ -23,7 +23,7 @@ const translations = {
         "hero.roadmap": "Roadmap",
         "download.hubInstaller": "Download Hub installer",
 
-        "home.hero.badge": "RELEASE 0.1.5 · LIVE",
+        "home.hero.badge": "RELEASE 0.1.6 · LIVE",
         "home.hero.kicker": "Open source · MIT · Win64 (broader platforms in development)",
         "home.hero.title": "<span class=\"accent\">Infernux</span> — the forge is lit. Come stoke the fire.",
         "home.hero.description": "Infernux (熔炉) is a game engine built from a Python–C++ split: C++17 powers the high-performance core; Python 3.12 drives editor tooling and is the gameplay scripting layer for developers.",
@@ -37,7 +37,7 @@ const translations = {
         "home.manifesto": "Infernux stands on a simple idea: commercial engine licenses keep getting heavier, and indies and small teams pay the price. When “vendor freedom” comes with a growing bill, open source stops being optional — it’s the answer. That is what 熔炉 is for.",
 
         /* Demo */
-        "home.demo.kicker": "Performance study · 0.1.5",
+        "home.demo.kicker": "Performance study · 0.1.6",
         "home.demo.title": "Complex-scene rendering tests show our performance is competitive with Unity.",
         "home.demo.intro": "To stress-test Infernux we built this scene: ten thousand cubes, vertex shader–driven sine motion, lit by one directional light.",
         "home.demo.panel.title": "What the numbers show",
@@ -57,7 +57,7 @@ const translations = {
         "home.system.card3.body": "The engine is and will stay as free for indies and small teams to use commercially as we can make it, so more developers can reach state-of-the-art technology.",
 
         /* Capabilities */
-        "home.capabilities.kicker": "Status board · 0.1.5",
+        "home.capabilities.kicker": "Status board · 0.1.6",
         "home.capabilities.title": "Where the engine stands today.",
         "home.capabilities.intro": "The engine is still in active development: we are tightening every subsystem to reach a solid technical preview. Open issues and send PRs on GitHub.",
         "home.capabilities.render.tag": "SUBSYSTEM · RENDER",
@@ -84,9 +84,9 @@ const translations = {
 
         /* Status */
         "home.status.kicker": "Project status",
-        "home.status.title": "Release 0.1.5: technical preview with animation and upgraded asset workflows.",
+        "home.status.title": "Release 0.1.6: technical preview with animation and upgraded asset workflows.",
         "home.status.intro": "The engine has moved beyond static-scene authoring into animation and content workflows, while the roadmap still calls out what needs production hardening.",
-        "home.status.card1.tag": "CHECKPOINT · 0.1.5",
+        "home.status.card1.tag": "CHECKPOINT · 0.1.6",
         "home.status.card1.title": "Runtime, editor, and animation foundation",
         "home.status.card1.body": "Rendering, physics, audio, Python scripting, prefabs, game UI, editor authoring, GUID asset workflows, 2D/3D animation previews, skinned meshes, asset previews, and standalone build are all online.",
         "home.status.card2.tag": "NEXT · TRANSIT",
@@ -108,7 +108,7 @@ const translations = {
         "footer.email": "Email",
 
         /* Roadmap */
-        "roadmap.hero.badge": "TRANSIT PLAN · 0.1.5 → 1.0",
+        "roadmap.hero.badge": "TRANSIT PLAN · 0.1.6 → 1.0",
         "roadmap.hero.kicker": "Release roadmap",
         "roadmap.hero.title": "A roadmap that reads like engineering work, not decorative ambition.",
         "roadmap.hero.description": "熔炉 is moving from technical preview toward a more complete production pipeline. The priorities below group work by release leverage and workflow impact, not by vague marketing buckets.",
@@ -135,7 +135,7 @@ const translations = {
         "roadmap.lanes.title": "The roadmap is split by what each band actually unlocks.",
         "roadmap.lanes.intro": "Each band answers one practical question: can teams author faster, can content scale, can projects ship, and can the architecture stay readable while the engine grows?",
         "roadmap.lanes.card1.title": "Authoring band",
-        "roadmap.lanes.card1.item1": "Animation state machines and rigged character workflows beyond the 0.1.5 preview.",
+        "roadmap.lanes.card1.item1": "Animation state machines and rigged character workflows beyond the 0.1.6 preview.",
         "roadmap.lanes.card1.item2": "Advanced UI controls (ScrollView, Slider, layout groups).",
         "roadmap.lanes.card1.item3": "Safer asset rename and dependency repair paths.",
         "roadmap.lanes.card2.title": "Content band",
@@ -154,7 +154,7 @@ const translations = {
         "roadmap.priorities.title": "What deserves attention in the next two milestones.",
         "roadmap.priorities.intro": "These items are the ones most likely to improve the engine's day-to-day usefulness for contributors and early projects.",
         "roadmap.priorities.card1.title": "Animation system maturation",
-        "roadmap.priorities.card1.body": "2D / 3D animation previews and skinned meshes shipped in 0.1.5. The next focus is hardening retargeting, blend trees, and runtime control surfaces.",
+        "roadmap.priorities.card1.body": "2D / 3D animation previews and skinned meshes shipped in 0.1.6. The next focus is hardening retargeting, blend trees, and runtime control surfaces.",
         "roadmap.priorities.card2.title": "Advanced UI controls",
         "roadmap.priorities.card2.body": "The base UI system (Canvas, Text, Image, Button) is stable. ScrollView, Slider, layout groups, and editor-level UI tools come next.",
         "roadmap.priorities.card3.title": "Documentation & onboarding",
@@ -176,7 +176,7 @@ const translations = {
 
     zh: {
         /* Brand */
-        "brand.ribbonKicker": "开源引擎 · 0.1.5 已上线",
+        "brand.ribbonKicker": "开源引擎 · 0.1.6 已上线",
         "brand.ribbonName": "<span class=\"mission-accent\">熔</span>炉",
         "brand.ribbonSub": "INFERNUX · ENG-CORE",
         "brand.navShort": "熔炉 · INFERNUX",
@@ -198,7 +198,7 @@ const translations = {
         "hero.roadmap": "路线图",
         "download.hubInstaller": "下载 Hub 安装器",
 
-        "home.hero.badge": "RELEASE 0.1.5 · 已上线",
+        "home.hero.badge": "RELEASE 0.1.6 · 已上线",
         "home.hero.kicker": "开源 · MIT · WIN64（多平台正在路上！）",
         "home.hero.title": "<span class=\"accent\">熔炉</span>初燃，来一起添把火",
         "home.hero.description": "熔炉（Infernux）是一个由 Python-C++ 混合编程构造的游戏引擎。 C++17 用于构造引擎的高性能核心， Python3.12 则用于实现编辑器工具，并作为游戏逻辑脚本提供给开发者。",
@@ -212,7 +212,7 @@ const translations = {
         "home.manifesto": "熔炉的立场很简单——商业引擎的授权费用越来越高，独立开发者与小团队的负担日益增长。商业引擎把创造的自由标上价格，开源就不再是选项，是答案。而这就是熔炉引擎的价值。",
 
         /* Demo */
-        "home.demo.kicker": "性能实验 · 0.1.5",
+        "home.demo.kicker": "性能实验 · 0.1.6",
         "home.demo.title": "复杂场景的渲染实验表明，我们的性能不比Unity差。",
         "home.demo.intro": "为测试熔炉引擎的性能，我们构建了如下场景：一万个立方体，经由顶点着色器驱动正弦波动，受单一方向光源照射。",
         "home.demo.panel.title": "实验结果表明...",
@@ -232,7 +232,7 @@ const translations = {
         "home.system.card3.body": "引擎的本体将采用且尽可能永久对独立开发者或小团队免费开源可商用，我们希望让更多的开发者能用上最先进水平的技术。",
 
         /* Capabilities */
-        "home.capabilities.kicker": "Operations Board · 0.1.5",
+        "home.capabilities.kicker": "Operations Board · 0.1.6",
         "home.capabilities.title": "引擎现状。",
         "home.capabilities.intro": "目前，引擎还处于紧张地开发阶段，我们正在一步一步完善各个功能，以期达到技术预览的标准。欢迎在Github上提Issue或是贡献自己的PR！",
         "home.capabilities.render.tag": "子系统 · RENDER",
@@ -259,9 +259,9 @@ const translations = {
 
         /* Status */
         "home.status.kicker": "项目状态",
-        "home.status.title": "Release 0.1.5：加入动画与资产工作流升级的技术预览版。",
+        "home.status.title": "Release 0.1.6：加入动画与资产工作流升级的技术预览版。",
         "home.status.intro": "引擎已经从静态场景编辑继续向动画和内容工作流推进，同时路线图仍明确标出还需要生产级打磨的部分。",
-        "home.status.card1.tag": "CHECKPOINT · 0.1.5",
+        "home.status.card1.tag": "CHECKPOINT · 0.1.6",
         "home.status.card1.title": "运行时、编辑器与动画基础",
         "home.status.card1.body": "渲染、物理、音频、Python 脚本、预制体、游戏 UI、编辑器编排、GUID 资产工作流、2D/3D 动画预览、蒙皮网格、资产预览与独立构建现在都已上线。",
         "home.status.card2.tag": "下一程 · TRANSIT",
@@ -283,7 +283,7 @@ const translations = {
         "footer.email": "邮箱",
 
         /* Roadmap */
-        "roadmap.hero.badge": "TRANSIT PLAN · 0.1.5 → 1.0",
+        "roadmap.hero.badge": "TRANSIT PLAN · 0.1.6 → 1.0",
         "roadmap.hero.kicker": "发布路线图",
         "roadmap.hero.title": "这是一份像工程进度表的路线图，不是一份装饰性愿景。",
         "roadmap.hero.description": "熔炉正在从技术预览向更完整的生产管线推进。下面的优先级按发布杠杆和工作流影响来分组，而不是按宽泛的营销主题。",
@@ -310,7 +310,7 @@ const translations = {
         "roadmap.lanes.title": "路线图按“每条带能解锁什么”来切分，而不是按主题命名。",
         "roadmap.lanes.intro": "每条带都在回答一个具体问题：团队能否更快创作、内容能否扩张、项目能否发布、架构能否在引擎成长时保持可读。",
         "roadmap.lanes.card1.title": "创作带",
-        "roadmap.lanes.card1.item1": "在 0.1.5 预览之上，继续推进动画状态机与绑定角色工作流。",
+        "roadmap.lanes.card1.item1": "在 0.1.6 预览之上，继续推进动画状态机与绑定角色工作流。",
         "roadmap.lanes.card1.item2": "高级 UI 控件（ScrollView、Slider、布局组件）。",
         "roadmap.lanes.card1.item3": "更安全的资产重命名与依赖修复路径。",
         "roadmap.lanes.card2.title": "内容带",
@@ -329,7 +329,7 @@ const translations = {
         "roadmap.priorities.title": "下两个里程碑里值得花精力的事情。",
         "roadmap.priorities.intro": "这些工作项最有可能直接提升贡献者与早期项目的日常可用性。",
         "roadmap.priorities.card1.title": "动画系统打磨",
-        "roadmap.priorities.card1.body": "0.1.5 已经交付 2D / 3D 动画预览与蒙皮网格。下一步重点是重定向、Blend Tree 与运行时控制面打磨。",
+        "roadmap.priorities.card1.body": "0.1.6 已经交付 2D / 3D 动画预览与蒙皮网格。下一步重点是重定向、Blend Tree 与运行时控制面打磨。",
         "roadmap.priorities.card2.title": "高级 UI 控件",
         "roadmap.priorities.card2.body": "基础 UI 系统（Canvas、Text、Image、Button）已稳定。接下来是 ScrollView、Slider、布局组件以及编辑器级 UI 工具。",
         "roadmap.priorities.card3.title": "文档与上手资料",
