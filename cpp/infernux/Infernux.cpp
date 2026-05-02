@@ -1370,13 +1370,13 @@ std::tuple<uint64_t, int, int> Infernux::QueryOrScheduleTexturePreview(const std
             std::vector<unsigned char> sampled;
             int outW = 0;
             int outH = 0;
-                     const bool spriteEditPreview = !req.resourceKey.empty()
-                                     && req.resourceKey.compare(0, 11, "spriteedit|") == 0;
-                     const int maxDim = spriteEditPreview
-                                ? std::max(texData.width, texData.height)
-                                : ((!req.resourceKey.empty() && req.resourceKey.compare(0, 9, "compicon|") == 0)
-                                    ? kComponentIconPreviewMaxDim
-                                    : kDefaultPreviewResolution);
+            const bool spriteEditPreview =
+                !req.resourceKey.empty() && req.resourceKey.compare(0, 11, "spriteedit|") == 0;
+            const int maxDim = spriteEditPreview
+                                   ? std::max(texData.width, texData.height)
+                                   : ((!req.resourceKey.empty() && req.resourceKey.compare(0, 9, "compicon|") == 0)
+                                          ? kComponentIconPreviewMaxDim
+                                          : kDefaultPreviewResolution);
             DownsampleNearestRgba(texData.pixels, texData.width, texData.height, maxDim, sampled, outW, outH);
             if (sampled.empty() || outW <= 0 || outH <= 0) {
                 std::lock_guard<std::mutex> lock(m_previewResultMutex);
