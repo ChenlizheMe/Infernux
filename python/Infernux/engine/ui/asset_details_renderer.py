@@ -43,6 +43,7 @@ from .inspector_utils import max_label_w, field_label, render_apply_revert
 from .theme import Theme, ImGuiCol
 from .asset_execution_layer import AssetAccessMode, get_asset_execution_layer
 from .asset_resource_preview import render_resource_preview_rect
+from .imgui_keys import KEY_LEFT_CTRL, KEY_RIGHT_CTRL
 from Infernux.engine.texture_task_bridge import texture_stamp, query_or_schedule_texture
 from Infernux.debug import Debug
 
@@ -848,6 +849,8 @@ def _read_animclip_preview_settings(tex_file: str):
     use_nearest = False
     use_srgb = False
     frames = []
+    source_w = 0
+    source_h = 0
     try:
         settings = read_texture_import_settings(tex_file)
         if settings:
@@ -857,7 +860,16 @@ def _read_animclip_preview_settings(tex_file: str):
                 frames = list(settings.sprite_frames)
     except Exception:
         pass
-    return use_nearest, use_srgb, frames
+    try:
+        meta = read_meta_file(tex_file) or {}
+        source_w = int(meta.get("width", 0) or 0)
+        source_h = int(meta.get("height", 0) or 0)
+    except Exception:
+        pass
+    if (source_w <= 0 or source_h <= 0) and frames:
+        source_w = max((int(f.x) + int(f.w) for f in frames), default=0)
+        source_h = max((int(f.y) + int(f.h) for f in frames), default=0)
+    return use_nearest, use_srgb, frames, source_w, source_h
 
 
 def _sprite_frame_imgui_uv(frame: SpriteFrame, tex_w: int, tex_h: int) -> Tuple[float, float, float, float]:
@@ -885,7 +897,7 @@ def _ensure_animclip_preview_texture(state: _State, tex_file: str) -> bool:
         if not native:
             return False
 
-        use_nearest, use_srgb, frames = _read_animclip_preview_settings(tex_file)
+        use_nearest, use_srgb, frames, source_w, source_h = _read_animclip_preview_settings(tex_file)
         stamp = _animclip_texture_stamp(tex_file, use_nearest, use_srgb)
         if stamp == 0:
             return False
@@ -915,16 +927,21 @@ def _ensure_animclip_preview_texture(state: _State, tex_file: str) -> bool:
         if tex_w <= 0 or tex_h <= 0:
             return False
 
+        if source_w <= 0:
+            source_w = tex_w
+        if source_h <= 0:
+            source_h = tex_h
+
         if not frames:
-            frames = [SpriteFrame(name="frame_0", x=0, y=0, w=tex_w, h=tex_h)]
+            frames = [SpriteFrame(name="frame_0", x=0, y=0, w=source_w, h=source_h)]
 
         state.extra["_animclip_pv"] = {
             "file": norm_path,
             "resource_key": resource_key,
             "stamp": int(stamp),
             "tex_id": tex_id,
-            "tex_w": tex_w,
-            "tex_h": tex_h,
+            "tex_w": source_w,
+            "tex_h": source_h,
             "frames": frames,
         }
         return True
@@ -1544,6 +1561,15 @@ class _SpriteEditorState:
         self.slice_cols: int = 1
         self.drag_edge: str = ""  # "", "left", "right", "top", "bottom"
         self.drag_frame_idx: int = -1
+        self.zoom: float = 0.0
+        self.pan_x: float = 0.0
+        self.pan_y: float = 0.0
+        self.view_initialized: bool = False
+        self.pan_drag_button: int = -1
+        self.drag_left: float = 0.0
+        self.drag_right: float = 0.0
+        self.drag_top: float = 0.0
+        self.drag_bottom: float = 0.0
 
 
 _sprite_state = _SpriteEditorState()
@@ -1560,7 +1586,7 @@ def _ensure_sprite_texture(state: _State) -> bool:
     expected_h = int(meta.get("height", 0) or 0)
     dims_match = ((expected_w <= 0 or ss.tex_w == expected_w)
                   and (expected_h <= 0 or ss.tex_h == expected_h))
-    if (ss.file_path == state.file_path and ss.tex_w > 0
+    if (ss.file_path == state.file_path and ss.tex_w > 0 and ss.texture_id != 0
             and getattr(ss, '_srgb', None) == cur_srgb
             and getattr(ss, '_filter', None) == cur_filter
             and dims_match):
@@ -1569,9 +1595,19 @@ def _ensure_sprite_texture(state: _State) -> bool:
     same_file = (ss.file_path == state.file_path)
     saved_rows = ss.slice_rows if same_file else 1
     saved_cols = ss.slice_cols if same_file else 1
+    saved_selected = ss.selected_frame if same_file else -1
+    saved_zoom = ss.zoom if same_file else 0.0
+    saved_pan_x = ss.pan_x if same_file else 0.0
+    saved_pan_y = ss.pan_y if same_file else 0.0
+    saved_view_initialized = ss.view_initialized if same_file else False
     ss.reset()
     ss.slice_rows = saved_rows
     ss.slice_cols = saved_cols
+    ss.selected_frame = saved_selected
+    ss.zoom = saved_zoom
+    ss.pan_x = saved_pan_x
+    ss.pan_y = saved_pan_y
+    ss.view_initialized = saved_view_initialized
     ss.file_path = state.file_path
     ss._srgb = cur_srgb
     ss._filter = cur_filter
@@ -1587,11 +1623,11 @@ def _ensure_sprite_texture(state: _State) -> bool:
         filter_tag = cur_filter.name if cur_filter else "default"
         srgb_tag = "srgb" if cur_srgb else "linear"
         norm_path = os.path.normpath(state.file_path)
-        stamp = texture_stamp(norm_path, "sprite_preview", filter_tag, srgb_tag)
+        stamp = texture_stamp(norm_path, "sprite_edit_preview", filter_tag, srgb_tag)
         if stamp == 0:
             return False
 
-        resource_key = f"sprite_preview|{srgb_tag}_{filter_tag}|{norm_path}"
+        resource_key = f"spriteedit|sprite_preview|{srgb_tag}_{filter_tag}|{norm_path}"
         tex_id, tex_w, tex_h = query_or_schedule_texture(
             native,
             resource_key,
@@ -1651,15 +1687,12 @@ def _render_sprite_body(ctx: InxGUIContext, panel, state: _State):
     # the default 1×1 (e.g. first load of a previously-sliced texture).
     if ss.slice_rows == 1 and ss.slice_cols == 1 and settings.sprite_frames:
         frames = settings.sprite_frames
-        if len(frames) > 1 and ss.tex_w > 0 and ss.tex_h > 0:
-            fw = frames[0].w
-            fh = frames[0].h
-            if fw > 0 and fh > 0:
-                cols = max(1, round(ss.tex_w / fw))
-                rows = max(1, round(ss.tex_h / fh))
-                if rows * cols == len(frames):
-                    ss.slice_rows = rows
-                    ss.slice_cols = cols
+        tex_w = ss.tex_w if ss.tex_w > 0 else max((f.x + f.w for f in frames), default=0)
+        tex_h = ss.tex_h if ss.tex_h > 0 else max((f.y + f.h for f in frames), default=0)
+        if tex_w > 0 and tex_h > 0:
+            v_divs, h_divs = _collect_dividers(settings, tex_w, tex_h)
+            ss.slice_rows = max(1, len(h_divs) + 1)
+            ss.slice_cols = max(1, len(v_divs) + 1)
 
     labels = [t("sprite.image_size"), t("sprite.rows"), t("sprite.cols")]
     lw = max_label_w(ctx, labels)
@@ -1671,11 +1704,11 @@ def _render_sprite_body(ctx: InxGUIContext, panel, state: _State):
     # Auto-slice controls
     field_label(ctx, t("sprite.rows"), lw)
     ctx.set_next_item_width(120)
-    ss.slice_rows = max(1, ctx.input_int("##sprite_rows", ss.slice_rows, 1, 4))
+    ss.slice_rows = max(1, ctx.input_int("##sprite_rows", ss.slice_rows, 1, 1))
 
     field_label(ctx, t("sprite.cols"), lw)
     ctx.set_next_item_width(120)
-    ss.slice_cols = max(1, ctx.input_int("##sprite_cols", ss.slice_cols, 1, 4))
+    ss.slice_cols = max(1, ctx.input_int("##sprite_cols", ss.slice_cols, 1, 1))
 
     ctx.button(t("sprite.auto_slice"), lambda: _auto_slice(settings, ss))
     ctx.dummy(0, 4)
@@ -1752,111 +1785,330 @@ def _rebuild_frames_from_dividers(settings: TextureImportSettings,
     settings.sprite_frames = frames
 
 
+def _fit_sprite_zoom(tex_w: int, tex_h: int, canvas_w: float, canvas_h: float) -> float:
+    if tex_w <= 0 or tex_h <= 0 or canvas_w <= 0.0 or canvas_h <= 0.0:
+        return 1.0
+    return max(min(canvas_w / float(tex_w), canvas_h / float(tex_h)), 0.01)
+
+
+def _clamp_sprite_pan(ss: _SpriteEditorState, canvas_w: float, canvas_h: float) -> None:
+    image_w = ss.tex_w * ss.zoom
+    image_h = ss.tex_h * ss.zoom
+
+    if image_w <= canvas_w:
+        ss.pan_x = (canvas_w - image_w) * 0.5
+    else:
+        ss.pan_x = max(canvas_w - image_w, min(0.0, ss.pan_x))
+
+    if image_h <= canvas_h:
+        ss.pan_y = (canvas_h - image_h) * 0.5
+    else:
+        ss.pan_y = max(canvas_h - image_h, min(0.0, ss.pan_y))
+
+
+def _hit_test_sprite_frame_edge(frame: SpriteFrame, tex_x: float, tex_y: float,
+                                threshold_tex: float) -> str:
+    left = float(frame.x)
+    right = float(frame.x + frame.w)
+    top = float(frame.y)
+    bottom = float(frame.y + frame.h)
+
+    candidates: list[tuple[str, float]] = []
+    if top - threshold_tex <= tex_y <= bottom + threshold_tex:
+        dl = abs(tex_x - left)
+        dr = abs(tex_x - right)
+        if dl <= threshold_tex:
+            candidates.append(("left", dl))
+        if dr <= threshold_tex:
+            candidates.append(("right", dr))
+    if left - threshold_tex <= tex_x <= right + threshold_tex:
+        dt = abs(tex_y - top)
+        db = abs(tex_y - bottom)
+        if dt <= threshold_tex:
+            candidates.append(("top", dt))
+        if db <= threshold_tex:
+            candidates.append(("bottom", db))
+
+    if not candidates:
+        return ""
+    candidates.sort(key=lambda item: item[1])
+    return candidates[0][0]
+
+
+def _frame_contains_point(frame: SpriteFrame, tex_x: float, tex_y: float) -> bool:
+    return (frame.x <= tex_x <= frame.x + frame.w
+            and frame.y <= tex_y <= frame.y + frame.h)
+
+
+def _apply_frame_edge_drag(frame: SpriteFrame, edge: str, tex_x: float, tex_y: float,
+                           tex_w: int, tex_h: int) -> None:
+    min_size = 1
+    left = int(frame.x)
+    right = int(frame.x + frame.w)
+    top = int(frame.y)
+    bottom = int(frame.y + frame.h)
+
+    if edge == "left":
+        left = max(0, min(int(round(tex_x)), right - min_size))
+    elif edge == "right":
+        right = min(tex_w, max(int(round(tex_x)), left + min_size))
+    elif edge == "top":
+        top = max(0, min(int(round(tex_y)), bottom - min_size))
+    elif edge == "bottom":
+        bottom = min(tex_h, max(int(round(tex_y)), top + min_size))
+
+    frame.x = left
+    frame.y = top
+    frame.w = max(min_size, right - left)
+    frame.h = max(min_size, bottom - top)
+
+
+def _begin_frame_edge_drag(ss: _SpriteEditorState, frame_idx: int,
+                           frame: SpriteFrame, edge: str) -> None:
+    ss.drag_frame_idx = frame_idx
+    ss.drag_edge = edge
+    ss.drag_left = float(frame.x)
+    ss.drag_right = float(frame.x + frame.w)
+    ss.drag_top = float(frame.y)
+    ss.drag_bottom = float(frame.y + frame.h)
+
+
+def _commit_frame_edge_drag(ss: _SpriteEditorState, frame: SpriteFrame,
+                            tex_w: int, tex_h: int) -> None:
+    min_size = 1
+    left = max(0, min(int(round(ss.drag_left)), tex_w - min_size))
+    right = min(tex_w, max(int(round(ss.drag_right)), left + min_size))
+    top = max(0, min(int(round(ss.drag_top)), tex_h - min_size))
+    bottom = min(tex_h, max(int(round(ss.drag_bottom)), top + min_size))
+    frame.x = left
+    frame.y = top
+    frame.w = max(min_size, right - left)
+    frame.h = max(min_size, bottom - top)
+
+
+def _apply_frame_edge_drag_preview(ss: _SpriteEditorState, tex_x: float, tex_y: float,
+                                   tex_w: int, tex_h: int) -> None:
+    min_size = 1.0
+    snapped_x = float(max(0, min(tex_w, int(round(tex_x)))))
+    snapped_y = float(max(0, min(tex_h, int(round(tex_y)))))
+    if ss.drag_edge == "left":
+        ss.drag_left = max(0.0, min(snapped_x, ss.drag_right - min_size))
+    elif ss.drag_edge == "right":
+        ss.drag_right = min(float(tex_w), max(snapped_x, ss.drag_left + min_size))
+    elif ss.drag_edge == "top":
+        ss.drag_top = max(0.0, min(snapped_y, ss.drag_bottom - min_size))
+    elif ss.drag_edge == "bottom":
+        ss.drag_bottom = min(float(tex_h), max(snapped_y, ss.drag_top + min_size))
+
+
 def _render_sprite_preview(ctx: InxGUIContext, settings: TextureImportSettings,
                            ss: _SpriteEditorState, state: _State):
-    """Draw the texture image with white divider lines overlaid."""
-    avail_w = ctx.get_content_region_avail_width() - 8
-    if avail_w < 32:
+    """Draw a zoomable sprite viewport with per-frame edge editing."""
+    avail_w = max(ctx.get_content_region_avail_width() - 8.0, 32.0)
+    if avail_w < 32.0 or ss.tex_w <= 0 or ss.tex_h <= 0:
         return
 
-    # Fit image into available width, maintain aspect ratio
-    scale = min(avail_w / ss.tex_w, 600.0 / ss.tex_h) if ss.tex_h > 0 else 1.0
-    draw_w = ss.tex_w * scale
-    draw_h = ss.tex_h * scale
+    if ss.selected_frame >= len(settings.sprite_frames):
+        ss.selected_frame = -1
 
-    # Render the texture image
-    if ss.texture_id:
-        ctx.image(ss.texture_id, draw_w, draw_h)
-    else:
-        cx = ctx.get_cursor_pos_x()
-        cy = ctx.get_cursor_pos_y()
-        wx = ctx.get_window_pos_x()
-        wy = ctx.get_window_pos_y()
-        sy = ctx.get_scroll_y()
-        fb_x = wx + cx
-        fb_y = wy + cy - sy
-        ctx.invisible_button("##sprite_preview_fb", draw_w, draw_h)
-        ctx.draw_filled_rect(fb_x, fb_y, fb_x + draw_w, fb_y + draw_h,
-                             0.15, 0.15, 0.15, 1.0)
+    canvas_h = min(max(320.0, avail_w * 0.6), 720.0)
+    fit_zoom_hint = _fit_sprite_zoom(ss.tex_w, ss.tex_h, avail_w, canvas_h)
 
-    # Screen coords of the image widget
-    img_x = ctx.get_item_rect_min_x()
-    img_y = ctx.get_item_rect_min_y()
-    img_hovered = ctx.is_item_hovered()
+    if ctx.button(f"{t('sprite.fit_view')}##sprite_fit_view"):
+        ss.view_initialized = False
+    ctx.same_line(0, 10)
+    selected_label = t("sprite.preview_none")
+    if 0 <= ss.selected_frame < len(settings.sprite_frames):
+        selected_label = f"#{ss.selected_frame}"
+    shown_zoom = ss.zoom if ss.zoom > 0.0 else fit_zoom_hint
+    ctx.push_style_color(ImGuiCol.Text, *Theme.META_TEXT)
+    ctx.label(t("sprite.preview_status").format(
+        zoom=f"{shown_zoom:.2f}",
+        selected=selected_label,
+    ))
+    ctx.pop_style_color(1)
 
-    # Outer border
-    ctx.draw_rect(img_x, img_y, img_x + draw_w, img_y + draw_h,
-                  1.0, 1.0, 1.0, 0.6, 1.0)
+    if not ctx.begin_child("##sprite_zoom_canvas", 0, canvas_h, True):
+        return
+    try:
+        canvas_w = max(ctx.get_content_region_avail_width(), 8.0)
+        canvas_h_inner = max(ctx.get_content_region_avail_height(), 8.0)
+        ctx.invisible_button("##sprite_canvas_hit", canvas_w, canvas_h_inner)
+        view_min_x = ctx.get_item_rect_min_x()
+        view_min_y = ctx.get_item_rect_min_y()
+        view_max_x = ctx.get_item_rect_max_x()
+        view_max_y = ctx.get_item_rect_max_y()
+        hovered = ctx.is_item_hovered()
 
-    # Collect divider lines from sprite_frames
-    v_divs, h_divs = _collect_dividers(settings, ss.tex_w, ss.tex_h)
+        fit_zoom = _fit_sprite_zoom(ss.tex_w, ss.tex_h, canvas_w, canvas_h_inner)
+        if not ss.view_initialized or ss.zoom <= 0.0:
+            ss.zoom = fit_zoom
+            ss.pan_x = (canvas_w - ss.tex_w * ss.zoom) * 0.5
+            ss.pan_y = (canvas_h_inner - ss.tex_h * ss.zoom) * 0.5
+            ss.view_initialized = True
 
-    # Draw divider lines: thin shadow + white line
-    for vx in v_divs:
-        sx = img_x + vx * scale
-        ctx.draw_line(sx, img_y, sx, img_y + draw_h,
-                      0.0, 0.0, 0.0, 0.4, 3.0)
-        ctx.draw_line(sx, img_y, sx, img_y + draw_h,
-                      1.0, 1.0, 1.0, 0.9, 1.0)
+        ss.zoom = max(ss.zoom, fit_zoom)
+        _clamp_sprite_pan(ss, canvas_w, canvas_h_inner)
 
-    for hy in h_divs:
-        sy_line = img_y + hy * scale
-        ctx.draw_line(img_x, sy_line, img_x + draw_w, sy_line,
-                      0.0, 0.0, 0.0, 0.4, 3.0)
-        ctx.draw_line(img_x, sy_line, img_x + draw_w, sy_line,
-                      1.0, 1.0, 1.0, 0.9, 1.0)
-
-    # ── Interaction: click near a line to start dragging it ─────────────
-    _GRAB_THRESHOLD = 5.0  # pixels
-
-    if img_hovered:
-        mx = ctx.get_mouse_pos_x() - img_x
-        my = ctx.get_mouse_pos_y() - img_y
-
-        if ctx.is_mouse_button_clicked(0):
-            ss.drag_edge = ""
-            ss.drag_frame_idx = -1
-            # Check vertical dividers
-            for i, vx in enumerate(v_divs):
-                if abs(mx - vx * scale) < _GRAB_THRESHOLD:
-                    ss.drag_edge = "v"
-                    ss.drag_frame_idx = i  # index into v_divs
-                    break
+        if ss.pan_drag_button >= 0:
+            if ctx.is_mouse_button_down(ss.pan_drag_button):
+                dx = ctx.get_mouse_drag_delta_x(ss.pan_drag_button)
+                dy = ctx.get_mouse_drag_delta_y(ss.pan_drag_button)
+                ss.pan_x += dx
+                ss.pan_y += dy
+                _clamp_sprite_pan(ss, canvas_w, canvas_h_inner)
+                ctx.reset_mouse_drag_delta(ss.pan_drag_button)
             else:
-                # Check horizontal dividers
-                for i, hy in enumerate(h_divs):
-                    if abs(my - hy * scale) < _GRAB_THRESHOLD:
-                        ss.drag_edge = "h"
-                        ss.drag_frame_idx = i  # index into h_divs
+                ss.pan_drag_button = -1
+
+        ctx.draw_filled_rect(view_min_x, view_min_y, view_max_x, view_max_y,
+                             0.035, 0.035, 0.04, 1.0)
+
+        img_min_x = view_min_x + ss.pan_x
+        img_min_y = view_min_y + ss.pan_y
+        img_max_x = img_min_x + ss.tex_w * ss.zoom
+        img_max_y = img_min_y + ss.tex_h * ss.zoom
+
+        ctx.draw_rect(view_min_x, view_min_y, view_max_x, view_max_y,
+                      1.0, 1.0, 1.0, 0.18, 1.0)
+
+        hovered_frame = -1
+        hovered_edge = ""
+        tex_x = 0.0
+        tex_y = 0.0
+        threshold_tex = 4.0 / max(ss.zoom, 0.001)
+
+        if hovered:
+            local_mx = ctx.get_mouse_pos_x() - view_min_x
+            local_my = ctx.get_mouse_pos_y() - view_min_y
+            ctrl_down = (ctx.is_key_down(KEY_LEFT_CTRL)
+                         or ctx.is_key_down(KEY_RIGHT_CTRL))
+
+            if ctrl_down and abs(ctx.get_mouse_wheel_delta()) > 0.01:
+                old_zoom = ss.zoom
+                anchor_x = (local_mx - ss.pan_x) / max(old_zoom, 0.001)
+                anchor_y = (local_my - ss.pan_y) / max(old_zoom, 0.001)
+                new_zoom = ss.zoom * pow(1.08, ctx.get_mouse_wheel_delta())
+                ss.zoom = max(fit_zoom, min(new_zoom, max(fit_zoom * 128.0, 128.0)))
+                ss.pan_x = local_mx - anchor_x * ss.zoom
+                ss.pan_y = local_my - anchor_y * ss.zoom
+                _clamp_sprite_pan(ss, canvas_w, canvas_h_inner)
+                img_min_x = view_min_x + ss.pan_x
+                img_min_y = view_min_y + ss.pan_y
+                img_max_x = img_min_x + ss.tex_w * ss.zoom
+                img_max_y = img_min_y + ss.tex_h * ss.zoom
+
+            tex_x = (ctx.get_mouse_pos_x() - img_min_x) / max(ss.zoom, 0.001)
+            tex_y = (ctx.get_mouse_pos_y() - img_min_y) / max(ss.zoom, 0.001)
+
+            if 0.0 <= tex_x <= ss.tex_w and 0.0 <= tex_y <= ss.tex_h:
+                indices = list(range(len(settings.sprite_frames) - 1, -1, -1))
+                if 0 <= ss.selected_frame < len(settings.sprite_frames):
+                    indices = [ss.selected_frame] + [i for i in indices if i != ss.selected_frame]
+
+                for idx in indices:
+                    edge = _hit_test_sprite_frame_edge(settings.sprite_frames[idx], tex_x, tex_y, threshold_tex)
+                    if edge:
+                        hovered_frame = idx
+                        hovered_edge = edge
                         break
 
-        # Drag a divider line
-        if ctx.is_mouse_dragging(0) and ss.drag_edge and ss.drag_frame_idx >= 0:
-            if ss.drag_edge == "v" and ss.drag_frame_idx < len(v_divs):
-                new_px = max(1, min(ss.tex_w - 1, round(mx / scale)))
-                v_divs[ss.drag_frame_idx] = new_px
-                v_divs.sort()
-                _rebuild_frames_from_dividers(settings, v_divs, h_divs,
-                                              ss.tex_w, ss.tex_h)
-                try:
-                    ss.drag_frame_idx = v_divs.index(new_px)
-                except ValueError:
-                    ss.drag_frame_idx = -1
-            elif ss.drag_edge == "h" and ss.drag_frame_idx < len(h_divs):
-                new_py = max(1, min(ss.tex_h - 1, round(my / scale)))
-                h_divs[ss.drag_frame_idx] = new_py
-                h_divs.sort()
-                _rebuild_frames_from_dividers(settings, v_divs=v_divs,
-                                              h_divs=h_divs,
-                                              tex_w=ss.tex_w, tex_h=ss.tex_h)
-                try:
-                    ss.drag_frame_idx = h_divs.index(new_py)
-                except ValueError:
-                    ss.drag_frame_idx = -1
+                if hovered_frame < 0:
+                    for idx in indices:
+                        if _frame_contains_point(settings.sprite_frames[idx], tex_x, tex_y):
+                            hovered_frame = idx
+                            break
 
-    if not ctx.is_mouse_button_down(0):
-        ss.drag_edge = ""
-        ss.drag_frame_idx = -1
+            if hovered_edge in {"left", "right"}:
+                ctx.set_mouse_cursor(4)
+            elif hovered_edge in {"top", "bottom"}:
+                ctx.set_mouse_cursor(3)
+            elif ss.pan_drag_button >= 0:
+                ctx.set_mouse_cursor(7)
+
+            if ctx.is_mouse_button_clicked(1):
+                ss.pan_drag_button = 1
+            elif ctx.is_mouse_button_clicked(2):
+                ss.pan_drag_button = 2
+
+            if ctx.is_mouse_button_clicked(0):
+                ss.selected_frame = hovered_frame
+                ss.drag_frame_idx = -1
+                ss.drag_edge = ""
+                if hovered_frame >= 0 and hovered_edge:
+                    _begin_frame_edge_drag(
+                        ss,
+                        hovered_frame,
+                        settings.sprite_frames[hovered_frame],
+                        hovered_edge,
+                    )
+
+        ctx.push_draw_list_clip_rect(view_min_x + 1.0, view_min_y + 1.0,
+                                     view_max_x - 1.0, view_max_y - 1.0, True)
+        try:
+            if ss.texture_id:
+                ctx.draw_image_rect(ss.texture_id, img_min_x, img_min_y, img_max_x, img_max_y)
+
+            if ss.drag_frame_idx >= 0 and ss.drag_edge:
+                if ctx.is_mouse_button_down(0):
+                    drag_tex_x = (ctx.get_mouse_pos_x() - img_min_x) / max(ss.zoom, 0.001)
+                    drag_tex_y = (ctx.get_mouse_pos_y() - img_min_y) / max(ss.zoom, 0.001)
+                    _apply_frame_edge_drag_preview(ss, drag_tex_x, drag_tex_y, ss.tex_w, ss.tex_h)
+                else:
+                    frame = settings.sprite_frames[ss.drag_frame_idx]
+                    _commit_frame_edge_drag(ss, frame, ss.tex_w, ss.tex_h)
+                    ss.drag_frame_idx = -1
+                    ss.drag_edge = ""
+
+            for idx, frame in enumerate(settings.sprite_frames):
+                if idx == ss.drag_frame_idx and ss.drag_edge:
+                    frame_left = ss.drag_left
+                    frame_right = ss.drag_right
+                    frame_top = ss.drag_top
+                    frame_bottom = ss.drag_bottom
+                else:
+                    frame_left = float(frame.x)
+                    frame_right = float(frame.x + frame.w)
+                    frame_top = float(frame.y)
+                    frame_bottom = float(frame.y + frame.h)
+
+                fx0 = img_min_x + frame_left * ss.zoom
+                fy0 = img_min_y + frame_top * ss.zoom
+                fx1 = img_min_x + frame_right * ss.zoom
+                fy1 = img_min_y + frame_bottom * ss.zoom
+
+                is_selected = idx == ss.selected_frame
+                is_hovered = idx == hovered_frame
+
+                if is_selected:
+                    rgba = (0.22, 0.62, 0.98, 1.0)
+                    thickness = 2.0
+                elif is_hovered:
+                    rgba = (0.97, 0.76, 0.24, 1.0)
+                    thickness = 1.5
+                else:
+                    rgba = (1.0, 1.0, 1.0, 0.78)
+                    thickness = 1.0
+
+                ctx.draw_rect(fx0, fy0, fx1, fy1, rgba[0], rgba[1], rgba[2], rgba[3], thickness)
+
+                if min((frame_right - frame_left) * ss.zoom,
+                       (frame_bottom - frame_top) * ss.zoom) >= 18.0:
+                    ctx.draw_text(fx0 + 3.0, fy0 + 2.0, str(idx), 1.0, 1.0, 1.0, 0.92)
+
+                if is_selected:
+                    handle_r = 2.5
+                    cx = (fx0 + fx1) * 0.5
+                    cy = (fy0 + fy1) * 0.5
+                    ctx.draw_filled_circle(fx0, cy, handle_r, rgba[0], rgba[1], rgba[2], 0.95)
+                    ctx.draw_filled_circle(fx1, cy, handle_r, rgba[0], rgba[1], rgba[2], 0.95)
+                    ctx.draw_filled_circle(cx, fy0, handle_r, rgba[0], rgba[1], rgba[2], 0.95)
+                    ctx.draw_filled_circle(cx, fy1, handle_r, rgba[0], rgba[1], rgba[2], 0.95)
+        finally:
+            ctx.pop_draw_list_clip_rect()
+
+    finally:
+        ctx.end_child()
 
 
 # _render_frame_table removed — divider lines replace per-frame editing

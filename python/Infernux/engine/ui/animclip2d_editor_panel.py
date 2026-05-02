@@ -769,6 +769,25 @@ class AnimClip2DEditorPanel(EditorPanel):
             pass
         return frames
 
+    @staticmethod
+    def _read_source_dimensions(file_path: str, frames=None):
+        source_w = 0
+        source_h = 0
+        try:
+            from Infernux.core.asset_types import read_meta_file
+
+            meta = read_meta_file(file_path) or {}
+            source_w = int(meta.get('width', 0) or 0)
+            source_h = int(meta.get('height', 0) or 0)
+        except Exception:
+            pass
+
+        if (source_w <= 0 or source_h <= 0) and frames:
+            source_w = max((int(f.x) + int(f.w) for f in frames), default=0)
+            source_h = max((int(f.y) + int(f.h) for f in frames), default=0)
+
+        return source_w, source_h
+
     def _on_texture_drop(self, payload):
         """Handle TEXTURE_FILE drop — payload is a file path."""
         if isinstance(payload, str) and payload:
@@ -806,10 +825,16 @@ class AnimClip2DEditorPanel(EditorPanel):
 
         # Read sprite frames from .meta
         frames = self._read_sprite_frames(norm_path)
-        if not frames and tex_w > 0 and tex_h > 0:
+        source_w, source_h = self._read_source_dimensions(norm_path, frames)
+        if source_w <= 0:
+            source_w = max(tex_w, 0)
+        if source_h <= 0:
+            source_h = max(tex_h, 0)
+
+        if not frames and source_w > 0 and source_h > 0:
             from Infernux.core.asset_types import SpriteFrame
 
-            frames = [SpriteFrame(name="frame_0", x=0, y=0, w=tex_w, h=tex_h)]
+            frames = [SpriteFrame(name="frame_0", x=0, y=0, w=source_w, h=source_h)]
 
         # Resolve GUID
         guid = ""
@@ -824,8 +849,8 @@ class AnimClip2DEditorPanel(EditorPanel):
         self._tex = _TextureState(
             file_path=norm_path,
             texture_id=texture_id,
-            tex_w=max(tex_w, 0),
-            tex_h=max(tex_h, 0),
+            tex_w=max(source_w, 0),
+            tex_h=max(source_h, 0),
             frames=frames,
             guid=guid,
             filter_tag=filter_tag,
@@ -893,6 +918,17 @@ class AnimClip2DEditorPanel(EditorPanel):
             tex.tex_h = tex_h
 
         frames = self._read_sprite_frames(norm_path)
+        source_w, source_h = self._read_source_dimensions(norm_path, frames)
+        if source_w <= 0:
+            source_w = max(tex_w, tex.tex_w, 0)
+        if source_h <= 0:
+            source_h = max(tex_h, tex.tex_h, 0)
+
+        if source_w > 0:
+            tex.tex_w = source_w
+        if source_h > 0:
+            tex.tex_h = source_h
+
         if frames:
             tex.frames = frames
         elif not tex.frames and tex.tex_w > 0 and tex.tex_h > 0:

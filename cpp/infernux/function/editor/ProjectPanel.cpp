@@ -3,6 +3,7 @@
 #include "Infernux.h"
 
 #include <function/renderer/gui/InxResourcePreviewer.h>
+#include <platform/filesystem/InxPath.h>
 
 #include <algorithm>
 #include <any>
@@ -89,6 +90,13 @@ static std::string ResolveRealAssetPath(const std::string &path)
     }
     return path;
 }
+
+#ifdef INX_PLATFORM_WINDOWS
+static std::string Utf8FromWidePath(const std::wstring &wpath)
+{
+    return infernux::FromFsPath(fs::path(wpath));
+}
+#endif
 
 static std::string SelectionPathForInspector(const std::string &path)
 {
@@ -1353,21 +1361,21 @@ void ProjectPanel::ReceiveDroppedFiles(const std::vector<std::string> &paths)
         if (src.empty() || !fs::exists(fs::u8path(src), ec))
             continue;
 
-        auto name = fs::u8path(src).filename().string();
-        auto dst = (fs::u8path(m_currentPath) / name).string();
+        auto name = FromFsPath(fs::u8path(src).filename());
+        auto dst = FromFsPath(fs::u8path(m_currentPath) / fs::u8path(name));
 
         // If destination already exists, use unique name
         if (fs::exists(fs::u8path(dst), ec)) {
             if (!getUniqueName)
                 continue;
-            auto stem = fs::u8path(name).stem().string();
-            auto ext = fs::u8path(name).extension().string();
+            auto stem = FromFsPath(fs::u8path(name).stem());
+            auto ext = FromFsPath(fs::u8path(name).extension());
             if (fs::is_directory(fs::u8path(src), ec)) {
                 ext = "";
                 stem = name;
             }
             auto uniqueName = getUniqueName(m_currentPath, stem, ext);
-            dst = (fs::u8path(m_currentPath) / (uniqueName + ext)).string();
+            dst = FromFsPath(fs::u8path(m_currentPath) / fs::u8path(uniqueName + ext));
         }
 
         try {
@@ -1499,9 +1507,7 @@ static std::vector<std::string> GetOSClipboardFiles()
             std::wstring wpath(len + 1, L'\0');
             DragQueryFileW(hDrop, i, wpath.data(), len + 1);
             wpath.resize(len);
-            // Convert wstring to UTF-8 via filesystem
-            std::error_code ec;
-            auto u8str = fs::path(wpath).string();
+            auto u8str = Utf8FromWidePath(wpath);
             if (!u8str.empty())
                 result.push_back(std::move(u8str));
         }
@@ -1564,24 +1570,24 @@ void ProjectPanel::ClipboardPaste()
 
     std::vector<std::string> pastedPaths;
     for (auto &src : sources) {
-        auto name = fs::u8path(src).filename().string();
-        auto dst = (fs::u8path(m_currentPath) / name).string();
+        auto name = FromFsPath(fs::u8path(src).filename());
+        auto dst = FromFsPath(fs::u8path(m_currentPath) / fs::u8path(name));
         bool samePath = (NormalizePath(src) == NormalizePath(dst));
 
         if (samePath && isCut)
             continue;
 
-        if (samePath || fs::exists(dst, ec)) {
+        if (samePath || fs::exists(fs::u8path(dst), ec)) {
             if (!getUniqueName)
                 continue;
-            auto stem = fs::u8path(name).stem().string();
-            auto ext = fs::u8path(name).extension().string();
-            if (fs::is_directory(src, ec)) {
+            auto stem = FromFsPath(fs::u8path(name).stem());
+            auto ext = FromFsPath(fs::u8path(name).extension());
+            if (fs::is_directory(fs::u8path(src), ec)) {
                 ext = "";
                 stem = name;
             }
             auto uniqueName = getUniqueName(m_currentPath, stem, ext);
-            dst = (fs::u8path(m_currentPath) / (uniqueName + ext)).string();
+            dst = FromFsPath(fs::u8path(m_currentPath) / fs::u8path(uniqueName + ext));
         }
 
         try {
@@ -1595,7 +1601,7 @@ void ProjectPanel::ClipboardPaste()
                     if (!ec)
                         pastedPaths.push_back(dst);
                 }
-            } else if (fs::is_directory(src, ec)) {
+            } else if (fs::is_directory(fs::u8path(src), ec)) {
                 fs::copy(fs::u8path(src), fs::u8path(dst), fs::copy_options::recursive, ec);
                 if (!ec)
                     pastedPaths.push_back(dst);
