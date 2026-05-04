@@ -604,9 +604,8 @@ DrawCallResult EditorTools::GetDrawCalls(std::shared_ptr<InxMaterial> material, 
         return glm::dot(delta, delta);
     };
 
-    std::stable_sort(result.drawCalls.begin(), result.drawCalls.end(), [&](const DrawCall &a, const DrawCall &b) {
-        return depthKey(a) > depthKey(b);
-    });
+    std::stable_sort(result.drawCalls.begin(), result.drawCalls.end(),
+                     [&](const DrawCall &a, const DrawCall &b) { return depthKey(a) > depthKey(b); });
 
     return result;
 }

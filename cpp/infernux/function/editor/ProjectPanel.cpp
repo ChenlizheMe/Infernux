@@ -1316,8 +1316,8 @@ void ProjectPanel::HandleKeyboardShortcuts(InxGUIContext *ctx)
     if ((copyPressed || cutPressed || pastePressed) && isHierarchySelectionEmpty && !isHierarchySelectionEmpty())
         return;
 
-    bool anyRelevantKey = ctx->IsKeyPressed(kKeyF2) || ctx->IsKeyPressed(kKeyDelete) || copyPressed || cutPressed ||
-                          pastePressed;
+    bool anyRelevantKey =
+        ctx->IsKeyPressed(kKeyF2) || ctx->IsKeyPressed(kKeyDelete) || copyPressed || cutPressed || pastePressed;
     if (!anyRelevantKey)
         return;
 

@@ -1718,13 +1718,15 @@ void HierarchyPanel::OnRenderContent(InxGUIContext *ctx)
                 if (hasDrag) {
                     uint64_t afterObjId = m_flatItems[i].obj->GetID();
                     std::string sepAfterId = "##sep_a_" + std::to_string(afterObjId);
-                    RenderReorderSep(ctx, sepAfterId.c_str(), [this, afterObjId](uint64_t payload) {
-                        MoveObjectAdjacent(payload, afterObjId, true);
-                    }, static_cast<float>(m_flatItems[i].depth) * indentStep);
+                    RenderReorderSep(
+                        ctx, sepAfterId.c_str(),
+                        [this, afterObjId](uint64_t payload) { MoveObjectAdjacent(payload, afterObjId, true); },
+                        static_cast<float>(m_flatItems[i].depth) * indentStep);
 
                     const int nextDepth = (i + 1 < nItems) ? m_flatItems[i + 1].depth : 0;
                     if (m_flatItems[i].depth > nextDepth) {
-                        for (int ancestorDepth = m_flatItems[i].depth - 1; ancestorDepth >= nextDepth; --ancestorDepth) {
+                        for (int ancestorDepth = m_flatItems[i].depth - 1; ancestorDepth >= nextDepth;
+                             --ancestorDepth) {
                             uint64_t ancestorId = 0;
                             for (int j = i - 1; j >= 0; --j) {
                                 if (m_flatItems[j].depth == ancestorDepth) {
@@ -1734,11 +1736,12 @@ void HierarchyPanel::OnRenderContent(InxGUIContext *ctx)
                             }
                             if (ancestorId == 0)
                                 continue;
-                            std::string outdentSepId = "##sep_out_" + std::to_string(afterObjId) + "_" +
-                                                       std::to_string(ancestorDepth);
-                            RenderReorderSep(ctx, outdentSepId.c_str(), [this, ancestorId](uint64_t payload) {
-                                MoveObjectAdjacent(payload, ancestorId, true);
-                            }, static_cast<float>(ancestorDepth) * indentStep, true);
+                            std::string outdentSepId =
+                                "##sep_out_" + std::to_string(afterObjId) + "_" + std::to_string(ancestorDepth);
+                            RenderReorderSep(
+                                ctx, outdentSepId.c_str(),
+                                [this, ancestorId](uint64_t payload) { MoveObjectAdjacent(payload, ancestorId, true); },
+                                static_cast<float>(ancestorDepth) * indentStep, true);
                         }
                     }
                 }

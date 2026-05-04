@@ -4,8 +4,8 @@
 #include <algorithm>
 #include <chrono>
 #include <cstring>
-#include <memory>
 #include <glm/gtc/matrix_transform.hpp>
+#include <memory>
 
 namespace infernux
 {
@@ -301,8 +301,7 @@ void SceneRenderer::UpdateCachedRenderableTransforms(bool useActiveCameraCulling
             std::shared_ptr<const std::vector<glm::mat4>> skinBoneMatricesOwner;
             const std::vector<glm::mat4> *skinBoneMatricesPtr = nullptr;
             const bool isSkinnedRenderer = dynamic_cast<SkinnedMeshRenderer *>(mr) != nullptr;
-            if (auto *skinned = dynamic_cast<SkinnedMeshRenderer *>(mr);
-                skinned && skinned->HasRuntimeSkinnedMesh()) {
+            if (auto *skinned = dynamic_cast<SkinnedMeshRenderer *>(mr); skinned && skinned->HasRuntimeSkinnedMesh()) {
                 skinBoneMatricesOwner = skinned->GetRuntimeSkinBonePalette();
                 skinBoneMatricesPtr = skinBoneMatricesOwner.get();
             }

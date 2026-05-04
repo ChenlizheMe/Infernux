@@ -1745,8 +1745,8 @@ void RegisterSceneBindings(py::module_ &m)
              "Execute one frame while paused (Update + LateUpdate + EndFrame). No-op if not paused.")
         .def("dont_destroy_on_load", &SceneManager::DontDestroyOnLoad, py::arg("game_object"),
              "Mark a root GameObject so it survives scene switches. Unity: DontDestroyOnLoad()")
-           .def("mark_mesh_renderers_dirty", &SceneManager::MarkMeshRenderersDirtyForAsset, py::arg("mesh_guid"),
-               py::arg("mesh_path") = "",
+        .def("mark_mesh_renderers_dirty", &SceneManager::MarkMeshRenderersDirtyForAsset, py::arg("mesh_guid"),
+             py::arg("mesh_path") = "",
              "Mark all MeshRenderers referencing a mesh GUID as needing GPU buffer re-upload");
 
     // ========================================================================

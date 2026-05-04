@@ -3,13 +3,13 @@
 #include <imgui.h>
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <array>
 #include <unordered_map>
 
 namespace infernux
@@ -572,7 +572,8 @@ InspectorPanel::GetCommonComponentsForMultiSelection(const std::vector<uint64_t>
     return m_cachedMultiCommonComponents;
 }
 
-const InspectorPanel::MultiTransformSnapshot &InspectorPanel::GetMultiTransformSnapshot(const std::vector<uint64_t> &ids)
+const InspectorPanel::MultiTransformSnapshot &
+InspectorPanel::GetMultiTransformSnapshot(const std::vector<uint64_t> &ids)
 {
     const uint64_t valueGeneration = getValueGeneration ? getValueGeneration() : 0;
     const bool refreshSnapshot = !m_cachedMultiTransformValid || (m_cachedMultiTransformIds != ids) ||
@@ -646,7 +647,8 @@ void InspectorPanel::RenderMultiEdit(InxGUIContext *ctx, const std::vector<uint6
             const auto &comp = entry.display;
             ImGui::PushID(static_cast<int>(comp.componentId));
 
-            uint64_t iconId = comp.iconId ? comp.iconId : (getComponentIconId ? getComponentIconId(comp.typeName, comp.isScript) : 0);
+            uint64_t iconId =
+                comp.iconId ? comp.iconId : (getComponentIconId ? getComponentIconId(comp.typeName, comp.isScript) : 0);
 
             auto [compOpen, newEnabled] =
                 RenderComponentHeader(ctx, comp.typeName, "multi_comp_" + std::to_string(comp.componentId), iconId,
@@ -669,7 +671,8 @@ void InspectorPanel::RenderMultiEdit(InxGUIContext *ctx, const std::vector<uint6
             ImGui::PopID();
         }
         auto componentBodiesEnd = clock::now();
-        m_subComponentBodies += std::chrono::duration<double, std::milli>(componentBodiesEnd - componentBodiesStart).count();
+        m_subComponentBodies +=
+            std::chrono::duration<double, std::milli>(componentBodiesEnd - componentBodiesStart).count();
 
         // Add Component
         ImGui::Separator();
@@ -879,8 +882,8 @@ void InspectorPanel::RenderMultiTransform(InxGUIContext *ctx, const std::vector<
                 static std::unordered_map<std::string, std::array<char, 64>> mixedBuffers;
                 const std::string bufferKey = std::string(rowId) + ":" + std::to_string(axisIndex);
                 auto &buffer = mixedBuffers[bufferKey];
-                const bool submitted = ImGui::InputTextWithHint(
-                    "##mixed", "--", buffer.data(), buffer.size(), ImGuiInputTextFlags_EnterReturnsTrue);
+                const bool submitted = ImGui::InputTextWithHint("##mixed", "--", buffer.data(), buffer.size(),
+                                                                ImGuiInputTextFlags_EnterReturnsTrue);
                 const bool committed = submitted || ImGui::IsItemDeactivatedAfterEdit();
                 if (committed) {
                     char *end = nullptr;
@@ -895,8 +898,7 @@ void InspectorPanel::RenderMultiTransform(InxGUIContext *ctx, const std::vector<
                 }
             } else {
                 ImGui::DragFloat("##value", &values[axisIndex], speed, -1000000.0f, 1000000.0f, "%.3f");
-                axisChanged[baseIndex + axisIndex] =
-                    std::abs(values[axisIndex] - originalValues[axisIndex]) > 1e-6f;
+                axisChanged[baseIndex + axisIndex] = std::abs(values[axisIndex] - originalValues[axisIndex]) > 1e-6f;
             }
             ImGui::PopID();
         }
