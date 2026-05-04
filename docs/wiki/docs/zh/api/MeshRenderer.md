@@ -51,6 +51,9 @@
 | `get_normals() → List[Tuple[float, float, float]]` | Return the list of vertex normals. |
 | `get_uvs() → List[Tuple[float, float]]` | Return the list of UV coordinates. |
 | `get_indices() → List[int]` | Return the list of triangle indices. |
+| `set_primitive_mesh(primitive_type: Any) → None` | Assign one of the built-in primitive meshes. |
+| `set_mesh_asset_guid(guid: str) → None` | Assign a model/mesh asset by GUID. |
+| `clear_mesh_asset() → None` | Clear the assigned asset mesh. |
 | `serialize() → str` | Serialize the component to a JSON string. |
 
 <!-- USER CONTENT START --> public_methods
