@@ -78,3 +78,18 @@ jobs:
         run: |
           version="${RELEASE_TAG#v}"
           gh release upload "$RELEASE_TAG" "dist/$version/"* --clobber --repo '${{ github.repository }}'
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Publish engine wheels to PyPI
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          version="${RELEASE_TAG#v}"
+          python -m pip install --disable-pip-version-check twine
+          python -m twine check "dist/$version/"*.whl
+          python -m twine upload --non-interactive --skip-existing "dist/$version/"*.whl
