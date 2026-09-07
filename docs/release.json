@@ -15,26 +15,30 @@
     {
       "kind": "hub-installer",
       "name": "InfernuxHubInstaller-0.4.0-windows-x64.exe",
-      "size_bytes": 204879360,
-      "url": "https://github.com/ChenlizheMe/Infernux/releases/download/v0.4.0/InfernuxHubInstaller-0.4.0-windows-x64.exe"
+      "size_bytes": 205080064,
+      "url": "https://downloads.infernux-engine.com/hub/0.4.0/InfernuxHubInstaller-0.4.0-windows-x64.exe",
+      "fallback_url": "https://github.com/ChenlizheMe/Infernux/releases/download/v0.4.0/InfernuxHubInstaller-0.4.0-windows-x64.exe"
     },
     {
       "kind": "python-wheel",
-      "name": "infernux-0.4.0-cp313-cp313-win_amd64.whl",
-      "size_bytes": 20822881,
-      "url": "https://github.com/ChenlizheMe/Infernux/releases/download/v0.4.0/infernux-0.4.0-cp313-cp313-win_amd64.whl"
+      "name": "infernux-0.4.0-1-cp313-cp313-win_amd64.whl",
+      "size_bytes": 20824069,
+      "url": "https://files.pythonhosted.org/packages/eb/ba/8d4a6fe00805c2c5dc48a4db6290cd2e0bf93390f70e1f0fde59d0ac1992/infernux-0.4.0-1-cp313-cp313-win_amd64.whl",
+      "fallback_url": "https://github.com/ChenlizheMe/Infernux/releases/download/v0.4.0/infernux-0.4.0-1-cp313-cp313-win_amd64.whl"
     },
     {
       "kind": "hub-installer",
       "name": "InfernuxHubInstaller-0.4.0-linux-x64",
-      "size_bytes": 451049688,
-      "url": "https://github.com/ChenlizheMe/Infernux/releases/download/v0.4.0/InfernuxHubInstaller-0.4.0-linux-x64"
+      "size_bytes": 468814040,
+      "url": "https://downloads.infernux-engine.com/hub/0.4.0/InfernuxHubInstaller-0.4.0-linux-x64",
+      "fallback_url": "https://github.com/ChenlizheMe/Infernux/releases/download/v0.4.0/InfernuxHubInstaller-0.4.0-linux-x64"
     },
     {
       "kind": "python-wheel",
-      "name": "infernux-0.4.0-cp313-cp313-manylinux_2_35_x86_64.whl",
-      "size_bytes": 36680609,
-      "url": "https://github.com/ChenlizheMe/Infernux/releases/download/v0.4.0/infernux-0.4.0-cp313-cp313-manylinux_2_35_x86_64.whl"
+      "name": "infernux-0.4.0-1-cp313-cp313-manylinux_2_35_x86_64.whl",
+      "size_bytes": 36495498,
+      "url": "https://files.pythonhosted.org/packages/a7/da/85117510c47a0379b84836f1a7a519c407bd8a98be6360881c405688d3fd/infernux-0.4.0-1-cp313-cp313-manylinux_2_35_x86_64.whl",
+      "fallback_url": "https://github.com/ChenlizheMe/Infernux/releases/download/v0.4.0/infernux-0.4.0-1-cp313-cp313-manylinux_2_35_x86_64.whl"
     }
   ]
 }

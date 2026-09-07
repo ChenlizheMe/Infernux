@@ -20,7 +20,8 @@ const currentVersion = String(release.version || "").trim();
 if (!currentVersion) fail("release.json: missing the current release version");
 if (release.tag !== `v${currentVersion}`) fail(`release.json: tag '${release.tag}' does not match version ${currentVersion}`);
 for (const asset of release.assets || []) {
-    if (!String(asset.name || "").includes(currentVersion) || !String(asset.url || "").includes(`/v${currentVersion}/`)) {
+    const urls = [asset.url, asset.fallback_url].map((value) => String(value || ""));
+    if (!String(asset.name || "").includes(currentVersion) || !urls.some((url) => url.includes(currentVersion))) {
         fail(`release.json: ${asset.kind || "asset"} does not target current release ${currentVersion}`);
     }
 }
