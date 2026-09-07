@@ -59,9 +59,7 @@ add_custom_target(package_python
     COMMAND ${CMAKE_COMMAND} -E copy_directory
         "${INFERNUX_PYTHON_WHEEL_DIR}" "${INFERNUX_RELEASE_DIR}"
 
-    DEPENDS
-        stage_python_package
-        "${CMAKE_SOURCE_DIR}/cmake/repair_linux_wheel.py"
+    DEPENDS stage_python_package "${CMAKE_SOURCE_DIR}/cmake/repair_linux_wheel.py"
     COMMENT "Building and verifying the Infernux Python wheel"
     VERBATIM
 )
