@@ -207,6 +207,8 @@ def _catalog_entries(document: Mapping[str, object], official_packages: str) -> 
         repository = str(raw.get("repository", "")).strip()
         if repository:
             source["repository"] = migrate_official_repository(reference, repository)
+            if source.get("type") == "url":
+                source["release_tag"] = f"v{str(raw.get('version', '')).strip()}"
         dependencies = raw.get("dependencies", [])
         pages = raw.get("pages", [])
         intros = raw.get("intros", {})

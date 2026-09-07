@@ -65,13 +65,15 @@ Platform exporters are official InxPackages with independent repositories and re
 
 Each platform plugin carries its precompiled Player and target-specific runtime or build tools. Normal game exports use the installed engine and plugins; they do not require an engine source checkout, Git submodules, CMake, or native engine compilation. For Android, first install **Android support** under Hub's **Installs** page, then import the Android plugin. Hub owns the shared SDK, NDK, JDK, Gradle, and target Python dependencies and supplies their paths to the Editor. OpenGL, OpenGL ES, and WebGL are not fallback product paths.
 
-MCP is no longer welded into the engine. It is the official default plugin `infernux/mcp`. New projects include it. Turn it off or uninstall it if you do not want it.
+MCP is distributed as the official default plugin [`infernux/mcp`](https://github.com/ChenlizheMe/infernux_mcp). New projects include it, and projects that do not need agent access can disable or uninstall it independently of the engine.
 
 Animation-only FBX files can drive a matching skinned model without geometrically guessing joint correspondence; Assimp pivot helpers are handled, while incompatible rigs fail explicitly.
 
 ## Plugins
 
 An Infernux plugin is an InxPackage. Drop a `.inxpkg`, point at a folder, paste a GitHub URL, or install from the official list.
+
+Official packages are downloaded from the Infernux distribution service first, with their repository's GitHub Release as the network fallback. The catalog keeps both channels attached to the same package reference and version.
 
 **Refresh catalog** updates the official list without upgrading installed packages. For a GitHub package, use **Versions** to check compatible releases and explicitly choose an update. Updates preserve asset GUIDs, enabled state, and user-added files; replacing local edits requires your consent. Already installed plugins remain usable offline.
 

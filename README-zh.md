@@ -64,13 +64,15 @@ macOS 和原生 iOS 不属于受支持目标。
 
 各平台插件携带预编译 Player，以及对应目标的运行时或构建工具。普通游戏导出使用已安装的引擎与插件，不需要引擎源码、Git 子模块、CMake 或原生引擎编译。构建 Android 时，先在 Hub 的“安装”页面安装“安卓支持”，再导入安卓插件。Hub 统一管理 SDK、NDK、JDK、Gradle 和目标 Python 依赖，并向编辑器提供路径。OpenGL、OpenGL ES 和 WebGL 都不是产品 fallback。
 
-MCP 不再焊在引擎里。它是官方默认插件 `infernux/mcp`。新项目会带上，不想用就关掉或卸掉。
+MCP 以官方默认插件 [`infernux/mcp`](https://github.com/ChenlizheMe/infernux_mcp) 的形式分发。新项目默认安装；不需要 Agent 操作的项目可以单独禁用或卸载，不影响引擎本体。
 
 独立动画 FBX 可以驱动关节一致的蒙皮模型，能够处理 Assimp 生成的 pivot 辅助节点；骨架不兼容时会明确失败，不再按几何形状猜测关节对应关系。
 
 ## 插件
 
 插件就是一个 InxPackage。丢 `.inxpkg`、选本地目录、贴 GitHub 地址，或从官方列表里装。
+
+官方插件优先从 Infernux 分发服务下载；如果该渠道发生网络故障，再使用同一版本的 GitHub Release。两个渠道始终对应同一个插件标识与版本。
 
 “刷新官方列表”只更新发现目录，不升级已安装插件。GitHub 插件可在“版本”页检查兼容 Release，再显式选择更新。更新保留资产 GUID、启用状态和用户新增文件；覆盖本地修改前会征求确认。已安装插件可继续离线使用。
 

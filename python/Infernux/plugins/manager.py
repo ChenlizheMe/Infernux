@@ -1623,10 +1623,40 @@ class PluginManager:
         if source_type == "url":
             target = os.path.join(workspace, "download.inxpkg")
             _report_progress(progress, "download_package", 0.08)
-            if progress is None:
-                _download_url_package(location, target)
-            else:
-                _download_url_package(location, target, progress=progress)
+            try:
+                if progress is None:
+                    _download_url_package(location, target)
+                else:
+                    _download_url_package(location, target, progress=progress)
+            except OSError:
+                repository = str(descriptor.get("repository", "")).strip()
+                reference = str(descriptor.get("reference", "")).strip()
+                fallback_tag = str(descriptor.get("release_tag", "")).strip()
+                if not descriptor.get("official") or not all(
+                    (repository, reference, fallback_tag)
+                ):
+                    raise
+                from .github_releases import resolve_github_release
+
+                _report_progress(progress, "resolve_releases", 0.08)
+                released = resolve_github_release(
+                    repository,
+                    workspace,
+                    expected_reference=reference,
+                    progress=progress,
+                    release_tag=fallback_tag,
+                )
+                assert released is not None
+                fallback_source = dict(descriptor)
+                fallback_source.update(
+                    {
+                        key: value
+                        for key, value in released.source.items()
+                        if key not in {"type", "location"}
+                    }
+                )
+                fallback_source["acquisition"] = "github-release"
+                return released.path, fallback_source
             return target, descriptor
         revision = str(descriptor.get("revision", "")).strip()
         if source_type == "github":
