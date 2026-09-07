@@ -8,9 +8,6 @@
 /packaging/runtime/
 /packaging/InfernuxHubData/Shared/
 /mcp_captures/
-/python/_mcp_*.py
-/python/_repro_*.py
-/python/_sim_*.py
 /packaging/_vendor/
 cmake-build-*/
 CMakeFiles/
@@ -50,7 +47,6 @@ __pycache__/
 *.py[cod]
 *$py.class
 /.pytest_cache/
-.pytest_cache/
 .mypy_cache/
 .ruff_cache/
 
@@ -103,7 +99,6 @@ ipch/
 Thumbs.db
 ehthumbs.db
 .DS_Store
-.DS_Store?
 desktop.ini
 $RECYCLE.BIN/
 
@@ -134,12 +129,6 @@ $RECYCLE.BIN/
 imgui.ini
 
 # ============================================================================
-# Others
-# ============================================================================
-/dev/
-/packaging/runtime/
-
-# ============================================================================
 # Nuitka build staging & output
 # ============================================================================
 *.build/
@@ -168,6 +157,6 @@ BuildManifest.json
 _script_guid_map.json
 
 # ============================================================================
-# Compiled Python bytecode in project assets
+# Local distribution operator
 # ============================================================================
-Assets/Scripts/**/*.pycbuild_log.txt
+/update_distributions.py
