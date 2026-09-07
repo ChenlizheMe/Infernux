@@ -87,6 +87,9 @@ def test_runtime_pack_is_compiled_from_the_assembled_wheel_payload():
     assert "add_dependencies(prebuild_player_runtime stage_python_package)" in packaging
     assert "DEPENDS stage_python_package" in wheel
     assert "DEPENDS prebuild_player_runtime" not in wheel
+    assert wheel.index("verify_python_wheel.cmake") < wheel.index(
+        "${_infernux_repair_linux_wheel}"
+    )
     assert '"-DPLATFORM_PLAYER_OUTPUT=${INFERNUX_PLATFORM_PLAYER_OUTPUT_DIR}"' in install
     assert '/external/plugins/infernux_${_infernux_player_platform}/package/editor/infernux_${_infernux_player_platform}/player"' in install
     assert '"-DINFERNUX_SOURCE_DIR=${INFERNUX_STAGE_DIR}/python-wheel-source"' in install

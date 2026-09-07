@@ -49,12 +49,12 @@ add_custom_target(package_python
         "${Python3_EXECUTABLE}" -m build --wheel --no-isolation
         --outdir "${INFERNUX_PYTHON_WHEEL_DIR}"
 
-    ${_infernux_repair_linux_wheel}
-
     COMMAND ${CMAKE_COMMAND}
         -DINFERNUX_SOURCE_DIR=${INFERNUX_PYTHON_STAGE_DIR}
         -DINFERNUX_WHEEL_DIR=${INFERNUX_PYTHON_WHEEL_DIR}
         -P "${CMAKE_SOURCE_DIR}/cmake/verify_python_wheel.cmake"
+
+    ${_infernux_repair_linux_wheel}
 
     COMMAND ${CMAKE_COMMAND} -E copy_directory
         "${INFERNUX_PYTHON_WHEEL_DIR}" "${INFERNUX_RELEASE_DIR}"
