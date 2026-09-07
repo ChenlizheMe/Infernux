@@ -47,8 +47,10 @@ class HubUpdate:
     release_url: str
     asset_name: str
     asset_url: str
+    asset_fallback_url: str
     size: int
     manifest_url: str
+    manifest_fallback_url: str
     platform: str
 
 
@@ -89,16 +91,24 @@ def current_hub_version() -> str:
     return version
 
 
-def _request_bytes(url: str) -> bytes:
-    request = urllib.request.Request(
-        url,
-        headers={
-            "Accept": "application/json",
-            "User-Agent": "InfernuxHub-Updater",
-        },
-    )
-    with urllib.request.urlopen(request, timeout=15) as response:
-        return response.read()
+def _request_bytes(url: str, fallback_url: str = "") -> bytes:
+    for candidate in (url, fallback_url):
+        if not candidate:
+            continue
+        request = urllib.request.Request(
+            candidate,
+            headers={
+                "Accept": "application/json",
+                "User-Agent": "InfernuxHub-Updater",
+            },
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=15) as response:
+                return response.read()
+        except OSError:
+            if candidate == fallback_url:
+                raise
+    raise OSError("No Hub download URL was provided")
 
 
 def _catalog_release(document: object) -> dict[str, object]:
@@ -198,7 +208,7 @@ def check_for_update(
     installer_asset = platform_release["installer"]
     if (
         not isinstance(installer_asset, dict)
-        or set(installer_asset) != {"name", "url"}
+        or set(installer_asset) != {"name", "url", "fallback_url"}
         or not isinstance(installer_asset.get("url"), str)
         or not installer_asset["url"]
     ):
@@ -222,14 +232,14 @@ def check_for_update(
     if (
         installer_asset.get("name") != installer_name
         or not isinstance(update_asset, dict)
-        or set(update_asset) != {"name", "url", "size"}
+        or set(update_asset) != {"name", "url", "fallback_url", "size"}
         or update_asset.get("name") != full_name
         or not isinstance(update_asset.get("url"), str)
         or not update_asset["url"]
         or not isinstance(update_asset.get("size"), int)
         or update_asset["size"] <= 0
         or not isinstance(manifest_asset, dict)
-        or set(manifest_asset) != {"name", "url"}
+        or set(manifest_asset) != {"name", "url", "fallback_url"}
         or manifest_asset.get("name") != manifest_name
         or not isinstance(manifest_asset.get("url"), str)
         or not manifest_asset["url"]
@@ -246,8 +256,10 @@ def check_for_update(
         release_url=str(release["release_url"]),
         asset_name=full_name,
         asset_url=update_asset["url"],
+        asset_fallback_url=update_asset["fallback_url"],
         size=update_asset["size"],
         manifest_url=manifest_asset["url"],
+        manifest_fallback_url=manifest_asset["fallback_url"],
         platform=target_platform,
     )
     return HubUpdateCheck(
@@ -273,18 +285,28 @@ def _download(
     destination: Path,
     progress: Callable[[int, int], None] | None = None,
 ) -> None:
-    request = urllib.request.Request(update.asset_url, headers={"User-Agent": "InfernuxHub-Updater"})
     received = 0
-    with urllib.request.urlopen(request) as response, destination.open("wb") as stream:
-        total = int(response.headers.get("Content-Length", update.size or 0))
-        while True:
-            chunk = response.read(1024 * 512)
-            if not chunk:
-                break
-            stream.write(chunk)
-            received += len(chunk)
-            if progress:
-                progress(received, total)
+    for url in (update.asset_url, update.asset_fallback_url):
+        if not url:
+            continue
+        request = urllib.request.Request(url, headers={"User-Agent": "InfernuxHub-Updater"})
+        try:
+            with urllib.request.urlopen(request) as response, destination.open("wb") as stream:
+                total = int(response.headers.get("Content-Length", update.size or 0))
+                while True:
+                    chunk = response.read(1024 * 512)
+                    if not chunk:
+                        break
+                    stream.write(chunk)
+                    received += len(chunk)
+                    if progress:
+                        progress(received, total)
+            break
+        except OSError:
+            destination.unlink(missing_ok=True)
+            received = 0
+            if url == update.asset_fallback_url:
+                raise
     if update.size and received != update.size:
         destination.unlink(missing_ok=True)
         raise ValueError(
@@ -308,7 +330,9 @@ def stage_update(
 
     manifest_name = manifest_asset_name(update.platform)
     manifest_path = base / manifest_name
-    manifest_bytes = _request_bytes(update.manifest_url)
+    manifest_bytes = _request_bytes(
+        update.manifest_url, update.manifest_fallback_url
+    )
     manifest_path.write_bytes(manifest_bytes)
     target_manifest = validate_manifest(json.loads(manifest_bytes.decode("utf-8")))
     if target_manifest["version"] != update.target_version:

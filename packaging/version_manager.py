@@ -625,6 +625,18 @@ def wheel_platform_compatible(path_or_name: str) -> bool:
     return any(tag.platform in platforms for tag in tags)
 
 
+def wheel_build(path_or_name: str) -> tuple[int, str]:
+    """Return the PEP 427 build tag used to order same-version wheels."""
+
+    try:
+        _distribution, _version, build, _tags = parse_wheel_filename(
+            os.path.basename(path_or_name)
+        )
+    except InvalidWheelFilename:
+        return ()
+    return build
+
+
 def _find_wheel_assets(release: dict) -> tuple[EngineWheel, ...]:
     """Find host-compatible CPython wheels in a merged remote release."""
     result: list[EngineWheel] = []
@@ -653,6 +665,7 @@ def _find_wheel_assets(release: dict) -> tuple[EngineWheel, ...]:
             key=lambda wheel: (
                 PythonRuntimeId.parse(wheel.python_version),
                 1 if wheel.source == "pypi" else 0,
+                wheel_build(wheel.filename),
             ),
             reverse=True,
         )

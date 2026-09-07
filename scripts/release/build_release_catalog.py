@@ -9,11 +9,13 @@ import tomllib
 
 
 ROOT = Path(__file__).resolve().parents[2]
+WHEEL_BUILD = "1"
 
 
 def build_catalog(release_dir: Path, published_at: str | None, linux_inventory: Path | None = None) -> None:
     version = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
-    base = f"https://github.com/ChenlizheMe/Infernux/releases/download/v{version}"
+    github_base = f"https://github.com/ChenlizheMe/Infernux/releases/download/v{version}"
+    object_base = f"https://downloads.infernux-engine.com/hub/{version}"
     release_url = f"https://github.com/ChenlizheMe/Infernux/releases/tag/v{version}"
     platforms = {}
     assets = []
@@ -31,14 +33,38 @@ def build_catalog(release_dir: Path, published_at: str | None, linux_inventory: 
             return ci["files"][f"{version}/{name}"] if from_ci else (release_dir / name).stat().st_size
         installer_name = f"InfernuxHubInstaller-{version}-{platform}{suffix}"
         update_name = f"InfernuxHub-{version}-{platform}-full.zip"
-        wheel_name = f"infernux-{version}-cp313-cp313-{wheel_suffix}"
+        wheel_name = f"infernux-{version}-{WHEEL_BUILD}-cp313-cp313-{wheel_suffix}"
         platforms[platform] = {
-            "installer": {"name": installer_name, "url": f"{base}/{installer_name}"},
-            "update": {"name": update_name, "url": f"{base}/{update_name}", "size": asset_size(update_name)},
-            "manifest": {"name": manifest_name, "url": f"{base}/{manifest_name}"},
+            "installer": {
+                "name": installer_name,
+                "url": f"{object_base}/{installer_name}",
+                "fallback_url": f"{github_base}/{installer_name}",
+            },
+            "update": {
+                "name": update_name,
+                "url": f"{object_base}/{update_name}",
+                "fallback_url": f"{github_base}/{update_name}",
+                "size": asset_size(update_name),
+            },
+            "manifest": {
+                "name": manifest_name,
+                "url": f"{object_base}/{manifest_name}",
+                "fallback_url": f"{github_base}/{manifest_name}",
+            },
         }
         for kind, name in (("hub-installer", installer_name), ("python-wheel", wheel_name)):
-            assets.append({"kind": kind, "name": name, "size_bytes": asset_size(name), "url": f"{base}/{name}"})
+            primary = (
+                f"{object_base}/{name}"
+                if kind == "hub-installer"
+                else f"https://pypi.org/project/Infernux/{version}/"
+            )
+            assets.append({
+                "kind": kind,
+                "name": name,
+                "size_bytes": asset_size(name),
+                "url": primary,
+                "fallback_url": f"{github_base}/{name}",
+            })
     release = {
         "schema_version": 2, "version": version, "tag": f"v{version}",
         "name": f"Infernux v{version}", "channel": "stable", "published_at": published_at,

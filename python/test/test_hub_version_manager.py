@@ -196,6 +196,38 @@ class TestDownload:
             "https://github.com/github.whl",
         ]
 
+    def test_newer_pypi_build_tag_wins_within_same_engine_version(
+        self, vm, monkeypatch
+    ):
+        release = {
+            "tag_name": "v9.9.9",
+            "assets": [
+                {
+                    "name": "infernux-9.9.9-cp312-cp312-win_amd64.whl",
+                    "browser_download_url": "https://files.pythonhosted.org/old.whl",
+                    "size": 128,
+                    "source": "pypi",
+                },
+                {
+                    "name": "infernux-9.9.9-1-cp312-cp312-win_amd64.whl",
+                    "browser_download_url": "https://files.pythonhosted.org/new.whl",
+                    "size": 128,
+                    "source": "pypi",
+                },
+            ],
+        }
+        monkeypatch.setattr(vm, "_fetch_releases", lambda: [release])
+        requested = []
+
+        def open_asset(request):
+            requested.append(request.full_url)
+            return _FakeResponse(_make_wheel_bytes())
+
+        monkeypatch.setattr(vm_mod.urllib.request, "urlopen", open_asset)
+
+        vm.download_version("9.9.9")
+        assert requested == ["https://files.pythonhosted.org/new.whl"]
+
     def test_invalid_pypi_wheel_does_not_change_source(self, vm, monkeypatch):
         filename = "infernux-9.9.9-cp312-cp312-win_amd64.whl"
         release = {

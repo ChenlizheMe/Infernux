@@ -22,15 +22,18 @@ def _platform_release(target: str, platform: str, size: int = 1) -> dict:
         "installer": {
             "name": installer,
             "url": f"https://example.invalid/{installer}",
+            "fallback_url": f"https://github.invalid/{installer}",
         },
         "update": {
             "name": full,
             "url": f"https://example.invalid/{full}",
+            "fallback_url": f"https://github.invalid/{full}",
             "size": size,
         },
         "manifest": {
             "name": manifest_asset_name(platform),
             "url": f"https://example.invalid/{manifest_asset_name(platform)}",
+            "fallback_url": f"https://github.invalid/{manifest_asset_name(platform)}",
         },
     }
 
@@ -305,8 +308,10 @@ def test_stage_update_uses_the_archive_and_current_manifests(
         release_url="",
         asset_name=archive_path.name,
         asset_url="",
+        asset_fallback_url="",
         size=archive_path.stat().st_size,
         manifest_url="",
+        manifest_fallback_url="",
         platform=platform,
     )
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
@@ -367,8 +372,10 @@ def test_stage_update_rejects_an_unowned_archive_member(tmp_path: Path, monkeypa
         release_url="",
         asset_name=archive_path.name,
         asset_url="",
+        asset_fallback_url="",
         size=archive_path.stat().st_size,
         manifest_url="",
+        manifest_fallback_url="",
         platform=platform,
     )
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
