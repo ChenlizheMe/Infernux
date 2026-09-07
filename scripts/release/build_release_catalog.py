@@ -15,7 +15,7 @@ WHEEL_BUILD = "2"
 def build_catalog(release_dir: Path, published_at: str | None, linux_inventory: Path | None = None) -> None:
     version = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
     github_base = f"https://github.com/ChenlizheMe/Infernux/releases/download/v{version}"
-    object_base = f"https://downloads.infernux-engine.com/hub/{version}"
+    object_base = f"https://downloads.infernux-engine.com/hub/{version}/build-{WHEEL_BUILD}"
     release_url = f"https://github.com/ChenlizheMe/Infernux/releases/tag/v{version}"
     platforms = {}
     assets = []
