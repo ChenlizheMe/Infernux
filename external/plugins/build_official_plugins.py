@@ -20,6 +20,9 @@ from Infernux.plugins import InxPackage
 from Infernux.plugins.content import discover_plugin_pages, merge_plugin_pages
 
 
+_DISTRIBUTION_BASE_URL = "https://downloads.infernux-engine.com"
+
+
 def _write_json(path: Path, document: dict[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".tmp")
@@ -49,8 +52,6 @@ def build(source_root: Path, output_root: Path, catalog_path: Path) -> None:
             raise RuntimeError("Official plugin source entry must be an object")
         relative = str(source_entry.get("path", "")).strip()
         repository = str(source_entry.get("repository", "")).strip()
-        subdirectory = str(source_entry.get("subdirectory", "")).strip().strip("/")
-        revision = str(source_entry.get("revision", "")).strip()
         plugin_source = (source_root / relative).resolve()
         if plugin_source.parent != source_root.resolve() or not plugin_source.is_dir():
             raise RuntimeError(f"Official plugin source is missing or unsafe: {relative}")
@@ -72,16 +73,13 @@ def build(source_root: Path, output_root: Path, catalog_path: Path) -> None:
             metadata["pages"] = merge_plugin_pages(
                 discover_plugin_pages(str(plugin_source / "package")), manifest.get("pages"),
             )
-        source: dict[str, object] = {}
-        if repository:
-            source = {
-                "type": "github" if "github.com" in repository.casefold() else "git",
-                "location": repository,
-            }
-            if subdirectory:
-                source["subdirectory"] = subdirectory
-            if revision:
-                source["revision"] = revision
+        source: dict[str, object] = {
+            "type": "url",
+            "location": (
+                f"{_DISTRIBUTION_BASE_URL}/plugins/"
+                f"{reference.replace('/', '.')}/{metadata.get('version', '')}/{artifact}"
+            ),
+        }
         registry.append(
             {
                 "reference": reference,

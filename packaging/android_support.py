@@ -38,9 +38,17 @@ GRADLE_VERSION = "8.12"
 ANDROID_PYTHON_SERIES = "3.13"
 ANDROID_PYTHON_ABIS = ("arm64-v8a", "x86_64")
 MANIFEST_NAME = "infernux-android-support.json"
-GITHUB_RELEASES_URL = (
-    "https://api.github.com/repos/ChenlizheMe/Infernux/releases?per_page=30"
-)
+DISTRIBUTION_BASE_URL = "https://downloads.infernux-engine.com"
+_ANDROID_SUPPORT_ASSETS = {
+    "linux-x64": (
+        1_742_442_640,
+        "11491f135074ab3c11ddeb03f9f4982e561f13012362144d821cdf5a81ff1c43",
+    ),
+    "windows-x64": (
+        1_370_034_693,
+        "72463aac19438d756e958834fe2773bfee2248ce4b5afc7348c755aebb997155",
+    ),
+}
 
 
 class AndroidSupportError(RuntimeError):
@@ -452,44 +460,17 @@ class AndroidSupportManager:
 
     @staticmethod
     def _release_asset() -> tuple[str, str, int]:
-        request = urllib.request.Request(
-            GITHUB_RELEASES_URL,
-            headers={
-                "Accept": "application/vnd.github+json",
-                "User-Agent": "Infernux-Hub/1.0",
-                "X-GitHub-Api-Version": "2022-11-28",
-            },
-        )
         try:
-            with urllib.request.urlopen(request, timeout=30) as response:
-                releases = json.load(response)
-        except Exception as exc:
+            size, digest = _ANDROID_SUPPORT_ASSETS[host_id()]
+        except KeyError as exc:
             raise AndroidSupportError(
-                "The Android compatibility release catalog could not be reached"
+                f"No compatible Android support asset is published: {archive_name()}"
             ) from exc
-        expected_name = archive_name()
-        for release in releases if isinstance(releases, list) else ():
-            if not isinstance(release, Mapping):
-                continue
-            for asset in release.get("assets", ()):
-                if not isinstance(asset, Mapping) or asset.get("name") != expected_name:
-                    continue
-                digest = str(asset.get("digest", ""))
-                url = str(asset.get("browser_download_url", ""))
-                size = asset.get("size")
-                if (
-                    not re.fullmatch(r"sha256:[0-9a-f]{64}", digest)
-                    or not url.startswith("https://")
-                    or type(size) is not int
-                    or size <= 0
-                ):
-                    raise AndroidSupportError(
-                        f"Android compatibility release asset is missing immutable provenance: {expected_name}"
-                    )
-                return url, digest.removeprefix("sha256:"), size
-        raise AndroidSupportError(
-            f"No compatible Android support asset is published: {expected_name}"
+        url = (
+            f"{DISTRIBUTION_BASE_URL}/android-support/"
+            f"{ANDROID_SUPPORT_VERSION}/{archive_name()}"
         )
+        return url, digest, size
 
 
 __all__ = [

@@ -14,8 +14,8 @@
       "dependencies": [],
       "repository": "https://github.com/ChenlizheMe/infernux_mcp",
       "source": {
-        "type": "github",
-        "location": "https://github.com/ChenlizheMe/infernux_mcp"
+        "type": "url",
+        "location": "https://downloads.infernux-engine.com/plugins/infernux.mcp/0.1.1/infernux.mcp.inxpkg"
       },
       "category": "Agent",
       "targets": [],
@@ -61,8 +61,8 @@
       "dependencies": [],
       "repository": "https://github.com/ChenlizheMe/infernux_windows",
       "source": {
-        "type": "github",
-        "location": "https://github.com/ChenlizheMe/infernux_windows"
+        "type": "url",
+        "location": "https://downloads.infernux-engine.com/plugins/infernux.platform-windows/0.2.0/infernux.platform-windows.inxpkg"
       },
       "category": "Platform",
       "targets": [
@@ -83,8 +83,8 @@
       "dependencies": [],
       "repository": "https://github.com/ChenlizheMe/infernux_linux",
       "source": {
-        "type": "github",
-        "location": "https://github.com/ChenlizheMe/infernux_linux"
+        "type": "url",
+        "location": "https://downloads.infernux-engine.com/plugins/infernux.platform-linux/0.2.0/infernux.platform-linux.inxpkg"
       },
       "category": "Platform",
       "targets": [
@@ -105,8 +105,8 @@
       "dependencies": [],
       "repository": "https://github.com/ChenlizheMe/infernux_android",
       "source": {
-        "type": "github",
-        "location": "https://github.com/ChenlizheMe/infernux_android"
+        "type": "url",
+        "location": "https://downloads.infernux-engine.com/plugins/infernux.platform-android/0.2.2/infernux.platform-android.inxpkg"
       },
       "category": "Platform",
       "targets": [
@@ -128,8 +128,8 @@
       "dependencies": [],
       "repository": "https://github.com/ChenlizheMe/infernux_web",
       "source": {
-        "type": "github",
-        "location": "https://github.com/ChenlizheMe/infernux_web"
+        "type": "url",
+        "location": "https://downloads.infernux-engine.com/plugins/infernux.platform-web/0.2.0/infernux.platform-web.inxpkg"
       },
       "category": "Platform",
       "targets": [
