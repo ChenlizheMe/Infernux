@@ -43,8 +43,8 @@ jobs:
           version = os.environ["RELEASE_TAG"].removeprefix("v")
           root = Path("dist") / version
           expected = {
-              f"infernux-{version}-1-cp313-cp313-win_amd64.whl": "zip",
-              f"infernux-{version}-1-cp313-cp313-manylinux_2_35_x86_64.whl": "zip",
+              f"infernux-{version}-2-cp313-cp313-win_amd64.whl": "zip",
+              f"infernux-{version}-2-cp313-cp313-manylinux_2_35_x86_64.whl": "zip",
               f"InfernuxHubInstaller-{version}-windows-x64.exe": "file",
               f"InfernuxHubInstaller-{version}-linux-x64": "file",
               f"InfernuxHub-{version}-windows-x64-full.zip": "zip",
