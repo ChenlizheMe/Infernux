@@ -27,8 +27,7 @@ OFFICIAL_REGISTRY_FILENAME = "official-registry.json"
 DEFAULT_LIBRARIES_FILENAME = "default-libraries.json"
 OFFICIAL_REGISTRY_SCHEMA = "infernux.official_plugin_registry"
 OFFICIAL_REGISTRY_URL = (
-    "https://raw.githubusercontent.com/ChenlizheMe/Infernux/codex/plugin-catalog/"
-    "python/Infernux/resources/official_packages/official-registry.json"
+    "https://downloads.infernux-engine.com/plugins/official-registry.json"
 )
 DEFAULT_LIBRARIES_SCHEMA = "infernux.default_libraries"
 _REMOTE_SOURCE_TYPES = {"git", "github", "url"}

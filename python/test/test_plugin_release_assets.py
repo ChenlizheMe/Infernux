@@ -167,7 +167,7 @@ def test_stages_only_repository_owned_packages_without_hashes(tmp_path, monkeypa
     assert not (output / "infernux.mcp.inxpkg").exists()
 
 
-def test_official_catalog_preserves_explicit_source_revision(tmp_path, monkeypatch):
+def test_official_catalog_publishes_a_direct_object_source(tmp_path, monkeypatch):
     module_path = (
         Path(__file__).parents[2] / "external/plugins/build_official_plugins.py"
     )
@@ -201,11 +201,15 @@ def test_official_catalog_preserves_explicit_source_revision(tmp_path, monkeypat
         (tmp_path / "output/official-registry.json").read_text(encoding="utf-8")
     )
     assert registry["packages"][0]["source"] == {
-        "type": "github",
-        "location": "https://github.com/ChenlizheMe/Infernux",
-        "subdirectory": "external/plugins/linux",
-        "revision": "040/multiplatform_build",
+        "type": "url",
+        "location": (
+            "https://downloads.infernux-engine.com/plugins/"
+            "infernux.platform-linux/0.1.0/infernux.platform-linux.inxpkg"
+        ),
     }
+    assert registry["packages"][0]["repository"] == (
+        "https://github.com/ChenlizheMe/Infernux"
+    )
 
 
 def test_rejects_package_metadata_that_disagrees_with_source(tmp_path, monkeypatch):

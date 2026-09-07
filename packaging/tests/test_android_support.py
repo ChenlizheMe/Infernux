@@ -439,33 +439,16 @@ def test_explicit_install_retry_resumes_interrupted_release(tmp_path, monkeypatc
     assert not partials[0].exists()
 
 
-def test_release_asset_requires_a_github_sha256_digest(monkeypatch: pytest.MonkeyPatch) -> None:
-    class _Response:
-        def __enter__(self):
-            return self
+def test_release_asset_uses_only_the_object_distribution_channel() -> None:
+    url, digest, size = android_support.AndroidSupportManager._release_asset()
 
-        def __exit__(self, *_args):
-            return False
-
-        def read(self):
-            return json.dumps(
-                [
-                    {
-                        "assets": [
-                            {
-                                "name": android_support.archive_name(),
-                                "browser_download_url": "https://example.invalid/android.inxkit",
-                                "size": 10,
-                                "digest": None,
-                            }
-                        ]
-                    }
-                ]
-            ).encode("utf-8")
-
-    monkeypatch.setattr(android_support.urllib.request, "urlopen", lambda *_a, **_k: _Response())
-    with pytest.raises(android_support.AndroidSupportError, match="immutable provenance"):
-        android_support.AndroidSupportManager._release_asset()
+    assert url == (
+        f"https://downloads.infernux-engine.com/android-support/"
+        f"{android_support.ANDROID_SUPPORT_VERSION}/{android_support.archive_name()}"
+    )
+    assert len(digest) == 64
+    assert size > 1_000_000_000
+    assert "github.com" not in url
 
 
 def test_release_packager_creates_the_exact_hub_installable_asset(tmp_path: Path) -> None:
