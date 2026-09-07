@@ -32,9 +32,9 @@
     },
     {
       "kind": "python-wheel",
-      "name": "infernux-0.4.0-cp313-cp313-linux_x86_64.whl",
-      "size_bytes": 36509029,
-      "url": "https://github.com/ChenlizheMe/Infernux/releases/download/v0.4.0/infernux-0.4.0-cp313-cp313-linux_x86_64.whl"
+      "name": "infernux-0.4.0-cp313-cp313-manylinux_2_35_x86_64.whl",
+      "size_bytes": 36680609,
+      "url": "https://github.com/ChenlizheMe/Infernux/releases/download/v0.4.0/infernux-0.4.0-cp313-cp313-manylinux_2_35_x86_64.whl"
     }
   ]
 }

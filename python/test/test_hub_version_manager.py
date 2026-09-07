@@ -11,6 +11,7 @@ from __future__ import annotations
 import io
 import os
 import sys
+import urllib.error
 import zipfile
 from pathlib import Path
 
@@ -22,7 +23,7 @@ sys.path.insert(0, os.path.join(
 ))
 
 import version_manager as vm_mod
-from version_manager import VersionManager, DownloadCancelled
+from version_manager import DownloadCancelled, VersionManager, _merge_release_catalogs
 
 
 def _make_wheel_bytes() -> bytes:
@@ -158,6 +159,74 @@ class TestDownload:
                             lambda req: _FakeResponse(payload))
         path = vm.download_version("9.9.9")
         assert zipfile.is_zipfile(path)
+
+    def test_pypi_transport_failure_uses_matching_github_asset(self, vm, monkeypatch):
+        filename = "infernux-9.9.9-cp312-cp312-win_amd64.whl"
+        release = {
+            "tag_name": "v9.9.9",
+            "assets": [
+                {
+                    "name": filename,
+                    "browser_download_url": "https://files.pythonhosted.org/pypi.whl",
+                    "size": 128,
+                    "source": "pypi",
+                },
+                {
+                    "name": filename,
+                    "browser_download_url": "https://github.com/github.whl",
+                    "size": 128,
+                    "source": "github",
+                },
+            ],
+        }
+        monkeypatch.setattr(vm, "_fetch_releases", lambda: [release])
+        requested = []
+
+        def open_asset(request):
+            requested.append(request.full_url)
+            if "pythonhosted" in request.full_url:
+                raise urllib.error.URLError("PyPI unavailable")
+            return _FakeResponse(_make_wheel_bytes())
+
+        monkeypatch.setattr(vm_mod.urllib.request, "urlopen", open_asset)
+
+        assert zipfile.is_zipfile(vm.download_version("9.9.9"))
+        assert requested == [
+            "https://files.pythonhosted.org/pypi.whl",
+            "https://github.com/github.whl",
+        ]
+
+    def test_invalid_pypi_wheel_does_not_change_source(self, vm, monkeypatch):
+        filename = "infernux-9.9.9-cp312-cp312-win_amd64.whl"
+        release = {
+            "tag_name": "v9.9.9",
+            "assets": [
+                {
+                    "name": filename,
+                    "browser_download_url": "https://files.pythonhosted.org/pypi.whl",
+                    "size": 128,
+                    "source": "pypi",
+                },
+                {
+                    "name": filename,
+                    "browser_download_url": "https://github.com/github.whl",
+                    "size": 128,
+                    "source": "github",
+                },
+            ],
+        }
+        monkeypatch.setattr(vm, "_fetch_releases", lambda: [release])
+        requested = []
+
+        def open_asset(request):
+            requested.append(request.full_url)
+            return _FakeResponse(b"not a wheel")
+
+        monkeypatch.setattr(vm_mod.urllib.request, "urlopen", open_asset)
+
+        with pytest.raises(ValueError, match="not a valid wheel"):
+            vm.download_version("9.9.9")
+        assert requested == ["https://files.pythonhosted.org/pypi.whl"]
 
 
 class TestListingHealsCorruption:
@@ -346,6 +415,47 @@ def test_release_assets_are_filtered_by_host_platform(tmp_path, monkeypatch):
     ]
     assert engine.wheel_url == "https://example.invalid/windows.whl"
     assert engine.python_version == "3.13"
+
+
+def test_pypi_and_github_catalogs_merge_with_pypi_preferred(tmp_path, monkeypatch):
+    monkeypatch.setattr(vm_mod, "_VERSIONS_DIR", tmp_path / "versions")
+    filename = "infernux-0.4.0-cp313-cp313-win_amd64.whl"
+    releases = _merge_release_catalogs(
+        [
+            {
+                "tag_name": "v0.4.0",
+                "published_at": "2026-09-01T00:00:00Z",
+                "assets": [
+                    {
+                        "name": filename,
+                        "browser_download_url": "https://github.com/wheel",
+                        "size": 20,
+                    }
+                ],
+            }
+        ],
+        {
+            "releases": {
+                "0.4.0": [
+                    {
+                        "filename": filename,
+                        "url": "https://files.pythonhosted.org/wheel",
+                        "size": 21,
+                        "packagetype": "bdist_wheel",
+                        "yanked": False,
+                    }
+                ]
+            }
+        },
+    )
+    manager = VersionManager(_RuntimeInventory("3.13"))
+    monkeypatch.setattr(manager, "_fetch_releases", lambda: releases)
+
+    [engine] = manager.list_versions()
+
+    assert engine.sources == ("pypi", "github")
+    assert engine.wheel_url == "https://files.pythonhosted.org/wheel"
+    assert [wheel.source for wheel in engine.wheel_options] == ["pypi", "github"]
 
 
 def test_local_engine_install_rejects_foreign_platform_before_copy(
