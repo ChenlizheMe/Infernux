@@ -847,9 +847,10 @@ def test_official_registry_publishes_remote_entry_without_bundled_artifact(tmp_p
                         "category": "Platform",
                         "targets": ["web-wasm32"],
                         "source": {
-                            "type": "github",
-                            "location": "https://github.com/example/infernux-web",
+                            "type": "url",
+                            "location": "https://downloads.example/infernux.platform-web.inxpkg",
                         },
+                        "repository": "https://github.com/example/infernux-web",
                     }
                 ],
             }
@@ -864,10 +865,12 @@ def test_official_registry_publishes_remote_entry_without_bundled_artifact(tmp_p
     assert entry["category"] == "Platform"
     assert entry["targets"] == ["web-wasm32"]
     assert entry["source"] == {
-        "type": "github",
-        "location": "https://github.com/example/infernux-web",
+        "type": "url",
+        "location": "https://downloads.example/infernux.platform-web.inxpkg",
         "official": True,
         "reference": "infernux/platform-web",
+        "repository": "https://github.com/example/infernux-web",
+        "release_tag": "v0.1.0",
     }
 
 
@@ -2157,6 +2160,91 @@ def test_http_package_download_streams_without_forced_time_or_size_limits(
             str(destination),
         )
     assert destination.read_bytes() == b"123456789"
+
+
+def test_official_object_download_uses_primary_channel_without_github(
+    tmp_path, monkeypatch
+):
+    manager = PluginManager(str(_project(tmp_path / "project")))
+    downloaded = b"cloudflare package"
+    workspace = tmp_path / "download"
+    workspace.mkdir()
+
+    def retrieve(url, destination, **_kwargs):
+        assert url == "https://downloads.example/plugin.inxpkg"
+        Path(destination).write_bytes(downloaded)
+
+    monkeypatch.setattr(plugin_manager_module, "_download_url_package", retrieve)
+    monkeypatch.setattr(
+        "Infernux.plugins.github_releases.resolve_github_release",
+        lambda *_args, **_kwargs: pytest.fail("GitHub fallback must remain idle"),
+    )
+
+    path, source = manager._materialize_source(
+        {
+            "type": "url",
+            "location": "https://downloads.example/plugin.inxpkg",
+            "official": True,
+            "reference": "infernux/example",
+            "repository": "https://github.com/example/plugin",
+            "release_tag": "v1.0.0",
+        },
+        str(workspace),
+    )
+
+    assert Path(path).read_bytes() == downloaded
+    assert source["location"] == "https://downloads.example/plugin.inxpkg"
+
+
+def test_official_object_download_falls_back_to_exact_github_release_on_network_error(
+    tmp_path, monkeypatch
+):
+    manager = PluginManager(str(_project(tmp_path / "project")))
+    workspace = tmp_path / "download"
+    workspace.mkdir()
+    fallback = workspace / "github.inxpkg"
+    fallback.write_bytes(b"github package")
+
+    monkeypatch.setattr(
+        plugin_manager_module,
+        "_download_url_package",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("offline")),
+    )
+
+    def resolve(repository, destination, **kwargs):
+        assert repository == "https://github.com/example/plugin"
+        assert destination == str(workspace)
+        assert kwargs["expected_reference"] == "infernux/example"
+        assert kwargs["release_tag"] == "v1.0.0"
+        return SimpleNamespace(
+            path=str(fallback),
+            source={
+                "version": "1.0.0",
+                "release_tag": "v1.0.0",
+                "release_url": "https://github.com/example/plugin/releases/tag/v1.0.0",
+            },
+        )
+
+    monkeypatch.setattr(
+        "Infernux.plugins.github_releases.resolve_github_release", resolve
+    )
+
+    path, source = manager._materialize_source(
+        {
+            "type": "url",
+            "location": "https://downloads.example/plugin.inxpkg",
+            "official": True,
+            "reference": "infernux/example",
+            "repository": "https://github.com/example/plugin",
+            "release_tag": "v1.0.0",
+        },
+        str(workspace),
+    )
+
+    assert path == str(fallback)
+    assert source["type"] == "url"
+    assert source["location"] == "https://downloads.example/plugin.inxpkg"
+    assert source["acquisition"] == "github-release"
 
 
 def test_uninstall_follows_guid_and_removes_plugin_owned_modification(tmp_path):
