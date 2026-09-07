@@ -664,8 +664,8 @@ def _find_wheel_assets(release: dict) -> tuple[EngineWheel, ...]:
             result,
             key=lambda wheel: (
                 PythonRuntimeId.parse(wheel.python_version),
-                1 if wheel.source == "pypi" else 0,
                 wheel_build(wheel.filename),
+                1 if wheel.source == "pypi" else 0,
             ),
             reverse=True,
         )

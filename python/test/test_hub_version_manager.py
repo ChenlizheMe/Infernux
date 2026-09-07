@@ -214,6 +214,12 @@ class TestDownload:
                     "size": 128,
                     "source": "pypi",
                 },
+                {
+                    "name": "infernux-9.9.9-1-cp312-cp312-win_amd64.whl",
+                    "browser_download_url": "https://github.com/new.whl",
+                    "size": 128,
+                    "source": "github",
+                },
             ],
         }
         monkeypatch.setattr(vm, "_fetch_releases", lambda: [release])
@@ -227,6 +233,12 @@ class TestDownload:
 
         vm.download_version("9.9.9")
         assert requested == ["https://files.pythonhosted.org/new.whl"]
+
+        wheels = vm_mod._find_wheel_assets(release)
+        assert [(wheel.filename, wheel.source) for wheel in wheels[:2]] == [
+            ("infernux-9.9.9-1-cp312-cp312-win_amd64.whl", "pypi"),
+            ("infernux-9.9.9-1-cp312-cp312-win_amd64.whl", "github"),
+        ]
 
     def test_invalid_pypi_wheel_does_not_change_source(self, vm, monkeypatch):
         filename = "infernux-9.9.9-cp312-cp312-win_amd64.whl"
