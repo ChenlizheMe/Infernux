@@ -1,6 +1,27 @@
 name: Publish Desktop Release Artifacts
 
 on:
+  workflow_call:
+    inputs:
+      run_id:
+        description: Successful Desktop Release And Tests run ID
+        required: true
+        type: string
+      release_tag:
+        description: Release tag; empty derives v<project.version>
+        required: false
+        type: string
+        default: ''
+      replace_existing_release:
+        description: Allow recovery publication to an existing release
+        required: false
+        type: boolean
+        default: false
+    secrets:
+      PYPI_API_TOKEN:
+        required: true
+      R2_UPLOAD_TOKEN:
+        required: true
   workflow_dispatch:
     inputs:
       run_id:
@@ -8,10 +29,15 @@ on:
         required: true
         type: string
       release_tag:
-        description: Existing GitHub Release tag
-        required: true
-        default: v0.4.0
+        description: Release tag; empty derives v<project.version>
+        required: false
+        default: ''
         type: string
+      replace_existing_release:
+        description: Allow recovery publication to an existing release
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   actions: read
@@ -21,6 +47,54 @@ jobs:
   publish:
     runs-on: ubuntu-22.04
     steps:
+      - name: Resolve the source revision
+        id: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.run_id }}
+        run: |
+          source_sha="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}" --jq .head_sha)"
+          source_branch="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}" --jq .head_branch)"
+          test -n "$source_sha"
+          echo "sha=$source_sha" >> "$GITHUB_OUTPUT"
+          echo "branch=$source_branch" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.source.outputs.sha }}
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Resolve the release identity
+        id: release
+        env:
+          REQUESTED_TAG: ${{ inputs.release_tag }}
+        run: |
+          python - <<'PY'
+          import configparser
+          import os
+          from pathlib import Path
+          import tomllib
+
+          version = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
+          configuration = configparser.ConfigParser()
+          configuration.read("setup.cfg", encoding="utf-8")
+          build = configuration.get("bdist_wheel", "build_number", fallback="").strip()
+          if not build.isdigit() or int(build) < 1:
+              raise SystemExit("setup.cfg must declare a positive bdist_wheel build_number")
+          requested = os.environ.get("REQUESTED_TAG", "").strip()
+          tag = requested or f"v{version}"
+          if tag != f"v{version}":
+              raise SystemExit(f"Release tag {tag!r} does not match project version {version!r}")
+          with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as output:
+              output.write(f"version={version}\n")
+              output.write(f"build={build}\n")
+              output.write(f"tag={tag}\n")
+          PY
+
       - name: Download verified desktop distributions
         uses: actions/download-artifact@v4
         with:
@@ -32,7 +106,8 @@ jobs:
 
       - name: Validate the release payload
         env:
-          RELEASE_TAG: ${{ inputs.release_tag }}
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+          WHEEL_BUILD: ${{ steps.release.outputs.build }}
         run: |
           python - <<'PY'
           import json
@@ -40,11 +115,12 @@ jobs:
           import zipfile
           from pathlib import Path
 
-          version = os.environ["RELEASE_TAG"].removeprefix("v")
+          version = os.environ["RELEASE_VERSION"]
+          build = os.environ["WHEEL_BUILD"]
           root = Path("dist") / version
           expected = {
-              f"infernux-{version}-2-cp313-cp313-win_amd64.whl": "zip",
-              f"infernux-{version}-2-cp313-cp313-manylinux_2_35_x86_64.whl": "zip",
+              f"infernux-{version}-{build}-cp313-cp313-win_amd64.whl": "zip",
+              f"infernux-{version}-{build}-cp313-cp313-manylinux_2_35_x86_64.whl": "zip",
               f"InfernuxHubInstaller-{version}-windows-x64.exe": "file",
               f"InfernuxHubInstaller-{version}-linux-x64": "file",
               f"InfernuxHub-{version}-windows-x64-full.zip": "zip",
@@ -71,25 +147,96 @@ jobs:
           print("Validated", len(expected), "desktop release assets")
           PY
 
-      - name: Upload to the existing GitHub Release
+      - name: Create the release when needed
+        id: github_release
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+          REPLACE_EXISTING: ${{ inputs.replace_existing_release }}
         run: |
-          version="${RELEASE_TAG#v}"
-          gh release upload "$RELEASE_TAG" "dist/$version/"* --clobber --repo '${{ github.repository }}'
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            if [ "$REPLACE_EXISTING" != "true" ]; then
+              echo "Release $RELEASE_TAG already exists; use the recovery option explicitly." >&2
+              exit 1
+            fi
+            echo "created=false" >> "$GITHUB_OUTPUT"
+            draft="$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)"
+            echo "publish=$draft" >> "$GITHUB_OUTPUT"
+          else
+            gh release create "$RELEASE_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$SOURCE_SHA" \
+              --title "Infernux ${RELEASE_TAG#v}" \
+              --generate-notes \
+              --draft
+            echo "created=true" >> "$GITHUB_OUTPUT"
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          fi
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.13'
+      - name: Upload to the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+        run: gh release upload "$RELEASE_TAG" "dist/$RELEASE_VERSION/"* --clobber --repo "$GITHUB_REPOSITORY"
 
       - name: Publish engine wheels to PyPI
         env:
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
         run: |
-          version="${RELEASE_TAG#v}"
           python -m pip install --disable-pip-version-check twine
-          python -m twine check "dist/$version/"*.whl
-          python -m twine upload --non-interactive --skip-existing "dist/$version/"*.whl
+          python -m twine check "dist/$RELEASE_VERSION/"*.whl
+          python -m twine upload --non-interactive --skip-existing "dist/$RELEASE_VERSION/"*.whl
+
+      - name: Publish Hub artifacts to Cloudflare R2
+        env:
+          R2_UPLOAD_TOKEN: ${{ secrets.R2_UPLOAD_TOKEN }}
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+          WHEEL_BUILD: ${{ steps.release.outputs.build }}
+        run: >-
+          python scripts/release/publish_hub_objects.py
+          --release-dir "dist/$RELEASE_VERSION"
+          --version "$RELEASE_VERSION"
+          --build-number "$WHEEL_BUILD"
+
+      - name: Publish the GitHub Release
+        if: steps.github_release.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        run: gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest
+
+      - name: Update the public Hub catalog
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+          SOURCE_BRANCH: ${{ steps.source.outputs.branch }}
+        run: |
+          published_at="$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json publishedAt --jq .publishedAt)"
+          if [ "$SOURCE_BRANCH" != "master" ] && [ "$SOURCE_BRANCH" != "main" ]; then
+            echo "Refusing to publish the Hub catalog from branch: $SOURCE_BRANCH" >&2
+            exit 1
+          fi
+          git fetch origin "$SOURCE_BRANCH"
+          git checkout -B release-catalog "origin/$SOURCE_BRANCH"
+          catalog_version="$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+          if [ "$catalog_version" != "$RELEASE_VERSION" ]; then
+            echo "The release branch moved to version $catalog_version while publishing $RELEASE_VERSION" >&2
+            exit 1
+          fi
+          python scripts/release/build_release_catalog.py \
+            --release-dir "dist/$RELEASE_VERSION" \
+            --published-at "$published_at" \
+            --resolve-pypi
+          if git diff --quiet -- docs/hub-catalog.json docs/release.json; then
+            exit 0
+          fi
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add docs/hub-catalog.json docs/release.json
+          git commit -m "Publish ${RELEASE_TAG} distribution channels [skip ci]"
+          git push origin "HEAD:$SOURCE_BRANCH"

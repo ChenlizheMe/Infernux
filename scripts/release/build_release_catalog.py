@@ -3,20 +3,58 @@
 from __future__ import annotations
 
 import argparse
+import configparser
 import json
 from pathlib import Path
 import tomllib
+import urllib.request
 
 
 ROOT = Path(__file__).resolve().parents[2]
-WHEEL_BUILD = "2"
+MINIMUM_UPDATABLE_VERSION = "0.4.0"
 
 
-def build_catalog(release_dir: Path, published_at: str | None, linux_inventory: Path | None = None) -> None:
+def wheel_build_number() -> str:
+    configuration = configparser.ConfigParser()
+    configuration.read(ROOT / "setup.cfg", encoding="utf-8")
+    value = configuration.get("bdist_wheel", "build_number", fallback="").strip()
+    if not value.isdigit() or int(value) < 1:
+        raise ValueError("setup.cfg must declare a positive bdist_wheel build_number")
+    return value
+
+
+def pypi_wheel_urls(version: str) -> dict[str, str]:
+    request = urllib.request.Request(
+        f"https://pypi.org/pypi/Infernux/{version}/json",
+        headers={"Accept": "application/json", "User-Agent": "Infernux-Release-Publisher"},
+    )
+    with urllib.request.urlopen(request, timeout=30) as response:
+        document = json.load(response)
+    urls = document.get("urls") if isinstance(document, dict) else None
+    if not isinstance(urls, list):
+        raise ValueError(f"PyPI returned no file catalog for Infernux {version}")
+    return {
+        str(item["filename"]): str(item["url"])
+        for item in urls
+        if isinstance(item, dict)
+        and isinstance(item.get("filename"), str)
+        and isinstance(item.get("url"), str)
+    }
+
+
+def build_catalog(
+    release_dir: Path,
+    published_at: str | None,
+    linux_inventory: Path | None = None,
+    *,
+    resolve_pypi: bool = False,
+) -> None:
     version = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
+    wheel_build = wheel_build_number()
     github_base = f"https://github.com/ChenlizheMe/Infernux/releases/download/v{version}"
-    object_base = f"https://downloads.infernux-engine.com/hub/{version}/build-{WHEEL_BUILD}"
+    object_base = f"https://downloads.infernux-engine.com/hub/{version}/build-{wheel_build}"
     release_url = f"https://github.com/ChenlizheMe/Infernux/releases/tag/v{version}"
+    wheel_urls = pypi_wheel_urls(version) if resolve_pypi else {}
     platforms = {}
     assets = []
     ci = json.loads(linux_inventory.read_text(encoding="utf-8")) if linux_inventory else None
@@ -33,7 +71,7 @@ def build_catalog(release_dir: Path, published_at: str | None, linux_inventory: 
             return ci["files"][f"{version}/{name}"] if from_ci else (release_dir / name).stat().st_size
         installer_name = f"InfernuxHubInstaller-{version}-{platform}{suffix}"
         update_name = f"InfernuxHub-{version}-{platform}-full.zip"
-        wheel_name = f"infernux-{version}-{WHEEL_BUILD}-cp313-cp313-{wheel_suffix}"
+        wheel_name = f"infernux-{version}-{wheel_build}-cp313-cp313-{wheel_suffix}"
         platforms[platform] = {
             "installer": {
                 "name": installer_name,
@@ -56,7 +94,7 @@ def build_catalog(release_dir: Path, published_at: str | None, linux_inventory: 
             primary = (
                 f"{object_base}/{name}"
                 if kind == "hub-installer"
-                else f"https://pypi.org/project/Infernux/{version}/"
+                else wheel_urls.get(name, f"https://pypi.org/project/Infernux/{version}/")
             )
             assets.append({
                 "kind": kind,
@@ -76,7 +114,9 @@ def build_catalog(release_dir: Path, published_at: str | None, linux_inventory: 
     catalog["stable"] = version
     catalog["releases"] = [{
         "version": version, "channel": "stable", "published_at": published_at,
-        "release_url": release_url, "minimum_updatable_version": version, "platforms": platforms,
+        "release_url": release_url,
+        "minimum_updatable_version": MINIMUM_UPDATABLE_VERSION,
+        "platforms": platforms,
     }] + [item for item in catalog["releases"] if item["version"] != version]
     for path, document in ((ROOT / "docs/release.json", release), (catalog_path, catalog)):
         path.write_text(json.dumps(document, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -88,5 +128,11 @@ if __name__ == "__main__":
     parser.add_argument("--release-dir", required=True, type=Path)
     parser.add_argument("--published-at", help="Actual GitHub publication timestamp; omit while preparing the release")
     parser.add_argument("--linux-inventory", type=Path, help="Verified Linux CI archive inventory instead of local Linux files")
+    parser.add_argument("--resolve-pypi", action="store_true", help="Use the published files.pythonhosted.org wheel URLs")
     args = parser.parse_args()
-    build_catalog(args.release_dir, args.published_at, args.linux_inventory)
+    build_catalog(
+        args.release_dir,
+        args.published_at,
+        args.linux_inventory,
+        resolve_pypi=args.resolve_pypi,
+    )

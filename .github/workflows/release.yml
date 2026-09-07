@@ -1,0 +1,22 @@
+name: Publish Infernux Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      replace_existing_release:
+        description: Replace or extend an existing release (increment setup.cfg build_number first)
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  build-test-publish:
+    uses: ./.github/workflows/ci.yml
+    with:
+      publish_release: true
+      replace_existing_release: ${{ inputs.replace_existing_release }}
+    secrets: inherit

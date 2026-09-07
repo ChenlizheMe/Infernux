@@ -4,7 +4,35 @@ on:
   pull_request:
   push:
     branches: [master, main]
+  workflow_call:
+    inputs:
+      publish_release:
+        description: Publish verified artifacts to GitHub, PyPI and R2
+        required: false
+        type: boolean
+        default: false
+      replace_existing_release:
+        description: Allow publication to an existing release tag
+        required: false
+        type: boolean
+        default: false
+    secrets:
+      PYPI_API_TOKEN:
+        required: false
+      R2_UPLOAD_TOKEN:
+        required: false
   workflow_dispatch:
+    inputs:
+      publish_release:
+        description: Publish verified artifacts to GitHub, PyPI and R2
+        required: true
+        type: boolean
+        default: false
+      replace_existing_release:
+        description: Allow publication to an existing release tag
+        required: true
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -289,3 +317,19 @@ jobs:
           name: linux-test-results-${{ github.run_id }}-${{ github.run_attempt }}
           path: out/test-results/*.xml
           if-no-files-found: warn
+
+  publish-release:
+    name: Publish verified distributions
+    needs: [portable-hub, windows-desktop, linux-desktop]
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.publish_release &&
+      (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main')
+    permissions:
+      actions: read
+      contents: write
+    uses: ./.github/workflows/publish-desktop-release.yml
+    with:
+      run_id: ${{ github.run_id }}
+      replace_existing_release: ${{ inputs.replace_existing_release }}
+    secrets: inherit
