@@ -46,6 +46,8 @@ $BlockedPaths = [Collections.Generic.List[string]]::new()
 
 $GeneratedRoots = @(
     (Join-Path $Root 'build'),
+    (Join-Path $Root '.wrangler'),
+    (Join-Path $Root 'mcp_captures'),
     (Join-Path $Root 'packaging\runtime'),
     (Join-Path $Root 'packaging\Nuitka'),
     (Join-Path $Root 'packaging\nuitka-crash-report.xml'),
@@ -62,7 +64,19 @@ foreach ($GeneratedRoot in $GeneratedRoots) {
     }
 }
 
-$PythonCaches = @(Get-ChildItem -LiteralPath $Root -Directory -Recurse -Force -Filter '__pycache__' -ErrorAction SilentlyContinue)
+$CacheScanExcludedPrefixes = @(
+    ((Join-Path $Root 'out').TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar),
+    ((Join-Path $Root 'dist').TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar)
+)
+$PythonCaches = @(
+    Get-ChildItem -LiteralPath $Root -Directory -Recurse -Force -Filter '__pycache__' -ErrorAction SilentlyContinue |
+        Where-Object {
+            $Candidate = [IO.Path]::GetFullPath($_.FullName)
+            -not ($CacheScanExcludedPrefixes | Where-Object {
+                $Candidate.StartsWith($_, [StringComparison]::OrdinalIgnoreCase)
+            })
+        }
+)
 foreach ($PythonCache in $PythonCaches) {
     try {
         Remove-GeneratedPath $PythonCache.FullName
@@ -86,6 +100,18 @@ Get-ChildItem -LiteralPath $OutRoot -Force -ErrorAction SilentlyContinue |
 if ((Test-Path -LiteralPath $OutRoot) -and -not (Get-ChildItem -LiteralPath $OutRoot -Force -ErrorAction SilentlyContinue)) {
     Remove-GeneratedPath $OutRoot
 }
+
+# Project fixtures retain authored Assets/Packages/ProjectSettings only. Runtime
+# caches and logs are recreated by each acceptance run and must not accumulate
+# beside the fixture source.
+$FixtureRoot = Join-Path $Root 'tests\fixtures'
+Get-ChildItem -LiteralPath $FixtureRoot -Directory -Force -ErrorAction SilentlyContinue |
+    ForEach-Object {
+        $Fixture = $_.FullName
+        foreach ($GeneratedName in @('Cache', 'Library', 'Logs', '.runtime')) {
+            Remove-GeneratedPath (Join-Path $Fixture $GeneratedName)
+        }
+    }
 
 $LegacyDistEntries = @(
     (Join-Path $Root 'dist\release'),

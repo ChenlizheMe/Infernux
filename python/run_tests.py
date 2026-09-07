@@ -1,34 +1,13 @@
-"""Run Python tests and point developers at manual physics regressions."""
+"""Run the Python regression suite."""
 
-import os
 import sys
 import subprocess
-
-
-def _run_pytest(test_root: str) -> int:
-    import pytest  # noqa: F401
-
-    return subprocess.call([sys.executable, "-m", "pytest", test_root])
-
-
-def _run_unittest(test_root: str) -> int:
-    return subprocess.call([sys.executable, "-m", "unittest", "discover", "-s", test_root, "-p", "test_*.py"])
+from pathlib import Path
 
 
 def main() -> int:
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    test_root = os.path.join(script_dir, "test")
-
-    code = _run_pytest(test_root)
-    if code == -1:
-        print("pytest not found, falling back to unittest discovery.")
-        code = _run_unittest(test_root)
-
-    manual_suite = os.path.join(script_dir, "Infernux", "test", "physics_regression_suite.py")
-    if os.path.isfile(manual_suite):
-        print("Manual physics regression suite:", manual_suite)
-
-    return code
+    test_root = Path(__file__).resolve().with_name("test")
+    return subprocess.call([sys.executable, "-m", "pytest", str(test_root)])
 
 
 if __name__ == "__main__":

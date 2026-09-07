@@ -5,6 +5,9 @@
 /out/
 /dev/
 /tests/fixtures/*/Cache/
+/tests/fixtures/*/Library/
+/tests/fixtures/*/Logs/
+/tests/fixtures/*/.runtime/
 /packaging/runtime/
 /packaging/InfernuxHubData/Shared/
 /mcp_captures/
