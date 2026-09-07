@@ -1,0 +1,80 @@
+name: Publish Desktop Release Artifacts
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: Successful Desktop Release And Tests run ID
+        required: true
+        type: string
+      release_tag:
+        description: Existing GitHub Release tag
+        required: true
+        default: v0.4.0
+        type: string
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Download verified desktop distributions
+        uses: actions/download-artifact@v4
+        with:
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ github.token }}
+          pattern: '*-desktop-distribution-${{ inputs.run_id }}-*'
+          merge-multiple: true
+          path: dist
+
+      - name: Validate the release payload
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import zipfile
+          from pathlib import Path
+
+          version = os.environ["RELEASE_TAG"].removeprefix("v")
+          root = Path("dist") / version
+          expected = {
+              f"infernux-{version}-1-cp313-cp313-win_amd64.whl": "zip",
+              f"infernux-{version}-1-cp313-cp313-manylinux_2_35_x86_64.whl": "zip",
+              f"InfernuxHubInstaller-{version}-windows-x64.exe": "file",
+              f"InfernuxHubInstaller-{version}-linux-x64": "file",
+              f"InfernuxHub-{version}-windows-x64-full.zip": "zip",
+              f"InfernuxHub-{version}-linux-x64-full.zip": "zip",
+              "InfernuxHub-windows-x64-manifest.json": "json",
+              "InfernuxHub-linux-x64-manifest.json": "json",
+          }
+          actual = {path.name for path in root.iterdir() if path.is_file()}
+          if actual != set(expected):
+              raise SystemExit(
+                  f"Desktop release payload mismatch: missing={sorted(set(expected)-actual)}, "
+                  f"unexpected={sorted(actual-set(expected))}"
+              )
+          for name, kind in expected.items():
+              path = root / name
+              if path.stat().st_size <= 0:
+                  raise SystemExit(f"Empty release asset: {name}")
+              if kind == "zip" and not zipfile.is_zipfile(path):
+                  raise SystemExit(f"Invalid ZIP/wheel asset: {name}")
+              if kind == "json":
+                  document = json.loads(path.read_text(encoding="utf-8"))
+                  if document.get("version") != version:
+                      raise SystemExit(f"Manifest version mismatch: {name}")
+          print("Validated", len(expected), "desktop release assets")
+          PY
+
+      - name: Upload to the existing GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          version="${RELEASE_TAG#v}"
+          gh release upload "$RELEASE_TAG" "dist/$version/"* --clobber --repo '${{ github.repository }}'
