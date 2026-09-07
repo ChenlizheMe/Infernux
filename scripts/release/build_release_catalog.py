@@ -9,7 +9,7 @@ import tomllib
 
 
 ROOT = Path(__file__).resolve().parents[2]
-WHEEL_BUILD = "1"
+WHEEL_BUILD = "2"
 
 
 def build_catalog(release_dir: Path, published_at: str | None, linux_inventory: Path | None = None) -> None:
