@@ -20,7 +20,7 @@ def build_catalog(release_dir: Path, published_at: str | None, linux_inventory: 
     ci = json.loads(linux_inventory.read_text(encoding="utf-8")) if linux_inventory else None
     for platform, suffix, wheel_suffix in (
         ("windows-x64", ".exe", "win_amd64.whl"),
-        ("linux-x64", "", "linux_x86_64.whl"),
+        ("linux-x64", "", "manylinux_2_35_x86_64.whl"),
     ):
         manifest_name = f"InfernuxHub-{platform}-manifest.json"
         from_ci = platform == "linux-x64" and ci is not None

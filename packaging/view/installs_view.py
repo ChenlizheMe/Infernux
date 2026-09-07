@@ -219,6 +219,17 @@ class _VersionRow(AnimatedSurfaceFrame):
             size_label.setObjectName("cardDate")
             layout.addWidget(size_label)
 
+        if ev.sources:
+            source_names = {
+                "pypi": "PyPI",
+                "github": "GitHub",
+            }
+            source_label = QLabel(
+                " · ".join(source_names.get(source, source) for source in ev.sources)
+            )
+            source_label.setObjectName("cardDate")
+            layout.addWidget(source_label)
+
         layout.addStretch()
 
         if ev.installed:
@@ -232,7 +243,7 @@ class _VersionRow(AnimatedSurfaceFrame):
 
 
 class InstallEditorDialog(QDialog):
-    """Dialog that lists available versions from GitHub for installation."""
+    """Dialog that lists installable engine versions from public channels."""
 
     runtime_install_requested = Signal(str)
 

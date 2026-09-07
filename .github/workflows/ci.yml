@@ -277,7 +277,6 @@ jobs:
           name: linux-desktop-distribution-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             dist/releases/*/*-manylinux*.whl
-            dist/releases/*/*-linux_x86_64.whl
             dist/releases/*/InfernuxHubInstaller-*-linux-x64
             dist/releases/*/InfernuxHub-*-linux-x64-full.zip
             dist/releases/*/InfernuxHub-linux-x64-manifest.json

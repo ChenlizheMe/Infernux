@@ -1,4 +1,4 @@
-"""Infernux version manager — downloads & caches engine wheels from GitHub Releases.
+"""Infernux version manager — discovers wheels on PyPI and GitHub Releases.
 
 Layout on disk::
 
@@ -43,6 +43,7 @@ class DownloadCancelled(Exception):
 GITHUB_OWNER = "ChenlizheMe"
 GITHUB_REPO = "Infernux"
 _API_BASE = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}"
+_PYPI_API = "https://pypi.org/pypi/Infernux/json"
 _VERSIONS_DIR = Path(get_hub_shared_data_dir()) / "Engines"
 _CACHE_TTL = 300  # seconds before re-fetching release list
 
@@ -53,6 +54,7 @@ class EngineWheel:
     url: str
     size: int
     python_version: str
+    source: str = "github"
 
 
 @dataclass
@@ -68,6 +70,7 @@ class EngineVersion:
     installed: bool = False
     python_version: str = ""
     wheel_options: tuple[EngineWheel, ...] = ()
+    sources: tuple[str, ...] = ()
     compatibility_error: str = ""
 
     @property
@@ -127,6 +130,7 @@ class VersionManager:
                 installed=self.is_installed(ver),
                 python_version=wheel.python_version if wheel else "",
                 wheel_options=wheel_options,
+                sources=tuple(dict.fromkeys(item.source for item in wheel_options)),
                 compatibility_error=compatibility_error,
             )
             versions[ver] = ev
@@ -268,11 +272,12 @@ class VersionManager:
             raise ValueError(f"Version {version} not found in releases")
         if ev.compatibility_error:
             raise ValueError(ev.compatibility_error)
-        wheel = self._preferred_wheel(ev.wheel_options)
-        if wheel is None:
+        wheels = self._preferred_wheels(ev.wheel_options)
+        if not wheels:
             raise ValueError(
                 f"No wheel asset found for Infernux {version} on this platform"
             )
+        wheel = wheels[0]
         self._require_installed_python(wheel.python_version, engine_version=version)
 
         ver_dir = _VERSIONS_DIR / version
@@ -286,43 +291,54 @@ class VersionManager:
                 return str(dest)
             dest.unlink(missing_ok=True)  # heal corrupted leftovers
 
-        # Stream download to a unique temp file
-        req = urllib.request.Request(wheel.url)
-        req.add_header("Accept", "application/octet-stream")
-        req.add_header("User-Agent", "Infernux-Hub/1.0")
-
-        tmp_path = f"{dest}.tmp-{uuid.uuid4().hex[:8]}"
-        try:
-            with urllib.request.urlopen(req) as resp:
-                total = int(resp.headers.get("Content-Length", 0)) or wheel.size
-                downloaded = 0
-                chunk_size = 64 * 1024
-
-                with open(tmp_path, "wb") as f:
-                    while True:
-                        if should_cancel is not None and should_cancel():
-                            raise DownloadCancelled(version)
-                        chunk = resp.read(chunk_size)
-                        if not chunk:
-                            break
-                        f.write(chunk)
-                        downloaded += len(chunk)
-                        if on_progress and total:
-                            on_progress(downloaded, total)
-
-            if not zipfile.is_zipfile(tmp_path):
-                raise ValueError(
-                    f"Downloaded file for {version} is not a valid wheel "
-                    "(truncated or corrupted transfer)."
-                )
-            os.replace(tmp_path, str(dest))
-        finally:
-            # Cancel/error path: never leave partial temp files behind.
-            if os.path.exists(tmp_path):
+        # PyPI wheels sort first. A transport failure gets one deterministic
+        # chance to use the matching GitHub Release asset; invalid content is
+        # never treated as a reason to change sources.
+        transport_error: BaseException | None = None
+        for index, candidate in enumerate(wheels):
+            req = urllib.request.Request(candidate.url)
+            req.add_header("Accept", "application/octet-stream")
+            req.add_header("User-Agent", "Infernux-Hub/1.0")
+            tmp_path = f"{dest}.tmp-{uuid.uuid4().hex[:8]}"
+            try:
                 try:
-                    os.remove(tmp_path)
-                except OSError:
-                    pass
+                    response = urllib.request.urlopen(req)
+                    with response as resp, open(tmp_path, "wb") as stream:
+                        total = int(resp.headers.get("Content-Length", 0)) or candidate.size
+                        downloaded = 0
+                        while True:
+                            if should_cancel is not None and should_cancel():
+                                raise DownloadCancelled(version)
+                            chunk = resp.read(64 * 1024)
+                            if not chunk:
+                                break
+                            stream.write(chunk)
+                            downloaded += len(chunk)
+                            if on_progress and total:
+                                on_progress(downloaded, total)
+                except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as exc:
+                    transport_error = exc
+                    if index + 1 < len(wheels):
+                        continue
+                    raise
+
+                if not zipfile.is_zipfile(tmp_path):
+                    raise ValueError(
+                        f"Downloaded file for {version} is not a valid wheel "
+                        "(truncated or corrupted transfer)."
+                    )
+                os.replace(tmp_path, str(dest))
+                transport_error = None
+                break
+            finally:
+                if os.path.exists(tmp_path):
+                    try:
+                        os.remove(tmp_path)
+                    except OSError:
+                        pass
+
+        if transport_error is not None:
+            raise transport_error
 
         # If the cancelled/failed download left an empty version dir, drop it
         # so it does not show up as an installed version.
@@ -415,7 +431,7 @@ class VersionManager:
     # ── Internal ─────────────────────────────────────────────────────
 
     def _fetch_releases(self) -> list[dict]:
-        """Fetch releases from GitHub API with local-file caching."""
+        """Fetch and merge the PyPI and GitHub catalogs with local caching."""
         now = time.time()
 
         # Try memory cache
@@ -435,20 +451,33 @@ class VersionManager:
                 logging.getLogger(__name__).debug("[Suppressed] %s: %s", type(_exc).__name__, _exc)
                 pass
 
-        # Fetch from GitHub
-        url = f"{_API_BASE}/releases?per_page=50"
-        try:
-            req = urllib.request.Request(url)
-            req.add_header("Accept", "application/vnd.github+json")
-            req.add_header("User-Agent", "Infernux-Hub/1.0")
-            # Optional: use a token if set in env
-            token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
-            if token:
-                req.add_header("Authorization", f"Bearer {token}")
+        github: list[dict] = []
+        pypi: dict = {}
+        reached = False
+        for source, url, accept in (
+            ("pypi", _PYPI_API, "application/json"),
+            ("github", f"{_API_BASE}/releases?per_page=50", "application/vnd.github+json"),
+        ):
+            try:
+                req = urllib.request.Request(url)
+                req.add_header("Accept", accept)
+                req.add_header("User-Agent", "Infernux-Hub/1.0")
+                if source == "github":
+                    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+                    if token:
+                        req.add_header("Authorization", f"Bearer {token}")
+                with urllib.request.urlopen(req, timeout=15) as resp:
+                    document = json.loads(resp.read().decode("utf-8"))
+                if source == "pypi" and isinstance(document, dict):
+                    pypi = document
+                    reached = True
+                elif source == "github" and isinstance(document, list):
+                    github = document
+                    reached = True
+            except (urllib.error.URLError, OSError, ValueError):
+                continue
 
-            with urllib.request.urlopen(req, timeout=15) as resp:
-                releases = json.loads(resp.read().decode("utf-8"))
-        except (urllib.error.URLError, OSError):
+        if not reached:
             # Offline — fall back to disk cache regardless of age
             if self._cache_file.exists():
                 try:
@@ -460,6 +489,8 @@ class VersionManager:
                     logging.getLogger(__name__).debug("[Suppressed] %s: %s", type(_exc).__name__, _exc)
                     pass
             return []
+
+        releases = _merge_release_catalogs(github, pypi)
 
         # Save to disk cache
         cache_data = {"_ts": now, "releases": releases}
@@ -505,20 +536,25 @@ class VersionManager:
     def _preferred_wheel(
         self, wheels: tuple[EngineWheel, ...]
     ) -> EngineWheel | None:
+        preferred = self._preferred_wheels(wheels)
+        return preferred[0] if preferred else None
+
+    def _preferred_wheels(
+        self, wheels: tuple[EngineWheel, ...]
+    ) -> tuple[EngineWheel, ...]:
         if not wheels:
-            return None
+            return ()
         preferred_versions: list[str] = []
         if self._runtime_manager is not None:
             preferred_versions.extend(self._runtime_manager.installed_versions())
         preferred_versions.append(DEFAULT_PYTHON_RUNTIME.series)
         for python_version in preferred_versions:
-            match = next(
-                (wheel for wheel in wheels if wheel.python_version == python_version),
-                None,
+            matches = tuple(
+                wheel for wheel in wheels if wheel.python_version == python_version
             )
-            if match is not None:
-                return match
-        return wheels[0]
+            if matches:
+                return matches
+        return (wheels[0],)
 
     def _preferred_local_wheel(self, wheels: list[str]) -> str:
         wheel_by_python = {
@@ -590,7 +626,7 @@ def wheel_platform_compatible(path_or_name: str) -> bool:
 
 
 def _find_wheel_assets(release: dict) -> tuple[EngineWheel, ...]:
-    """Find all CPython-specific Infernux wheels in a GitHub release."""
+    """Find host-compatible CPython wheels in a merged remote release."""
     result: list[EngineWheel] = []
     for asset in release.get("assets", []):
         name = asset.get("name", "")
@@ -608,12 +644,76 @@ def _find_wheel_assets(release: dict) -> tuple[EngineWheel, ...]:
                     url=asset.get("browser_download_url", ""),
                     size=asset.get("size", 0),
                     python_version=python_version,
+                    source=str(asset.get("source", "github")),
                 )
             )
     return tuple(
         sorted(
             result,
-            key=lambda wheel: PythonRuntimeId.parse(wheel.python_version),
+            key=lambda wheel: (
+                PythonRuntimeId.parse(wheel.python_version),
+                1 if wheel.source == "pypi" else 0,
+            ),
             reverse=True,
         )
+    )
+
+
+def _merge_release_catalogs(github: list[dict], pypi: dict) -> list[dict]:
+    """Normalize both public catalogs; PyPI assets intentionally sort first."""
+
+    merged: dict[str, dict] = {}
+    for release in github:
+        if not isinstance(release, dict):
+            continue
+        version = _tag_to_version(str(release.get("tag_name", "")))
+        if not version:
+            continue
+        normalized = dict(release)
+        normalized["assets"] = [
+            {**asset, "source": "github"}
+            for asset in release.get("assets", [])
+            if isinstance(asset, dict)
+        ]
+        merged[version] = normalized
+
+    releases = pypi.get("releases", {}) if isinstance(pypi, dict) else {}
+    if isinstance(releases, dict):
+        for version, files in releases.items():
+            if not _tag_to_version(str(version)) or not isinstance(files, list):
+                continue
+            wheels = [
+                {
+                    "name": str(item.get("filename", "")),
+                    "browser_download_url": str(item.get("url", "")),
+                    "size": int(item.get("size", 0) or 0),
+                    "source": "pypi",
+                }
+                for item in files
+                if isinstance(item, dict)
+                and item.get("packagetype") == "bdist_wheel"
+                and not item.get("yanked", False)
+                and str(item.get("filename", "")).casefold().endswith(".whl")
+                and str(item.get("url", "")).startswith("https://")
+            ]
+            if not wheels:
+                continue
+            current = merged.setdefault(
+                str(version),
+                {
+                    "tag_name": f"v{version}",
+                    "prerelease": bool(re.search(r"[A-Za-z]", str(version))),
+                    "published_at": max(
+                        (str(item.get("upload_time_iso_8601", "")) for item in files if isinstance(item, dict)),
+                        default="",
+                    ),
+                    "assets": [],
+                },
+            )
+            current["assets"] = wheels + list(current.get("assets", []))
+
+    return sorted(
+        merged.values(),
+        key=lambda release: _version_tuple(_tag_to_version(str(release.get("tag_name", "")))),
+        reverse=True,
     )
