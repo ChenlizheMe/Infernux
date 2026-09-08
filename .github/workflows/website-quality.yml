@@ -11,19 +11,6 @@ on:
       - ".github/ISSUE_TEMPLATE/**"
       - ".github/DISCUSSION_TEMPLATE/**"
       - "scripts/docs/update_api_docs.bat"
-  push:
-    branches:
-      - main
-      - master
-    paths:
-      - "docs/**"
-      - "UpdateLog.md"
-      - ".github/workflows/website-quality.yml"
-      - ".github/workflows/build-wiki.yml"
-      - ".github/workflows/website-health.yml"
-      - ".github/ISSUE_TEMPLATE/**"
-      - ".github/DISCUSSION_TEMPLATE/**"
-      - "scripts/docs/update_api_docs.bat"
   workflow_dispatch:
 
 permissions:

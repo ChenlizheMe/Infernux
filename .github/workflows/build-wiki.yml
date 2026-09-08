@@ -7,6 +7,7 @@ on:
       - master
     paths:
       - ".github/workflows/build-wiki.yml"
+      - ".github/workflows/website-quality.yml"
       - "docs/wiki/docs/**"
       - "docs/wiki/theme/**"
       - "docs/wiki/mkdocs.yml"
