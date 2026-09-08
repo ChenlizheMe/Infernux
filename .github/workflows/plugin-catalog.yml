@@ -31,7 +31,7 @@ jobs:
             if (catalog.$schema !== 'infernux.official_plugin_registry' || !Array.isArray(catalog.packages)) {
               throw new Error('Invalid official plugin catalog');
             }
-            const branch = 'codex/plugin-catalog';
+            const branch = 'plugin-catalog';
             const repo = context.repo;
             const existing = await github.rest.repos.getContent({...repo, path, ref: branch});
             if (existing.data.type !== 'file') throw new Error('Catalog channel target is not a file');

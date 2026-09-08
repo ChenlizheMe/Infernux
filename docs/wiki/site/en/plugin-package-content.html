@@ -288,10 +288,11 @@ not an update of installed packages. The Hub shared plugin library stores the
 catalog, and later editor startups read it without network access. If no catalog
 has ever been downloaded, the engine's bundled snapshot supplies initial discovery.
 Download or validation failures leave the current catalog and installed versions intact.</p>
-<p>The official catalog is published independently on the engine repository's
-<code>codex/plugin-catalog</code> branch. The four former platform subdirectory sources resolve
-to their independent repositories; this compatibility mapping does not rewrite
-installed version locks or replace local author sources.</p>
+<p>The Infernux download service is the primary publication channel for the official
+catalog. The engine repository's <code>plugin-catalog</code> branch keeps an independently
+synchronized copy. The four former platform subdirectory sources resolve to their
+independent repositories; this compatibility mapping does not rewrite installed
+version locks or replace local author sources.</p>
 <p>For an installed GitHub package, open <strong>Versions</strong>, choose <strong>Check versions</strong>, then
 select a compatible release and <strong>Update to selected version</strong>. Checking and
 downloading do not change the installed version. Release notes belong to the

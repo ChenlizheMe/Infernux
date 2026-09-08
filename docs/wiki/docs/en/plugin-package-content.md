@@ -79,10 +79,11 @@ catalog, and later editor startups read it without network access. If no catalog
 has ever been downloaded, the engine's bundled snapshot supplies initial discovery.
 Download or validation failures leave the current catalog and installed versions intact.
 
-The official catalog is published independently on the engine repository's
-`codex/plugin-catalog` branch. The four former platform subdirectory sources resolve
-to their independent repositories; this compatibility mapping does not rewrite
-installed version locks or replace local author sources.
+The Infernux download service is the primary publication channel for the official
+catalog. The engine repository's `plugin-catalog` branch keeps an independently
+synchronized copy. The four former platform subdirectory sources resolve to their
+independent repositories; this compatibility mapping does not rewrite installed
+version locks or replace local author sources.
 
 For an installed GitHub package, open **Versions**, choose **Check versions**, then
 select a compatible release and **Update to selected version**. Checking and
