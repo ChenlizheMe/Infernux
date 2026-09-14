@@ -43,6 +43,7 @@ class PlayerRuntimeSession:
         self._runtime_catalog: Optional[PlayerRuntimeAssetCatalog] = None
         self._state = "stopped"
         self._last_frame_time = time.time()
+        self._membership_warmup_frames = 0
 
     def _refresh_execution_membership(self) -> None:
         refresh = getattr(self._execution_scheduler, "refresh_scene_membership", None)
@@ -202,6 +203,10 @@ class PlayerRuntimeSession:
             self._scene_service_installed = False
             raise
         self._state = "playing"
+        # Native Start may publish Python component mirrors one frame later
+        # on a packaged scene. Keep a short deterministic warm-up window so
+        # the first fixed step cannot observe an empty runtime phase plan.
+        self._membership_warmup_frames = 8
         return True
 
     def tick(self, external_delta_time: Optional[float] = None) -> float:
@@ -214,6 +219,9 @@ class PlayerRuntimeSession:
         """
         if not self.is_playing:
             return 0.0
+        if self._membership_warmup_frames > 0:
+            self._refresh_execution_membership()
+            self._membership_warmup_frames -= 1
         previous_scene_path = self._scene_service.active_scene_path
         self._scene_service.process_pending_load()
         if self._scene_service.active_scene_path != previous_scene_path:
