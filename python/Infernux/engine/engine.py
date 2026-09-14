@@ -305,8 +305,9 @@ class Engine():
                 # A paused Step is intentionally executed outside the
                 # authoring transaction above.  This is the single owner
                 # safe point where the runtime journal may be consumed.
-                if not _PLAYER_MODE and engine._play_mode_manager is not None:
-                    engine._play_mode_manager.process_pending_step()
+                play_mode_manager = getattr(engine, "_play_mode_manager", None)
+                if not _PLAYER_MODE and play_mode_manager is not None:
+                    play_mode_manager.process_pending_step()
 
         self._engine.set_pre_scene_update_callback(_pre_scene_tick)
 
