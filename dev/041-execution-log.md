@@ -3353,3 +3353,8 @@ Final verification for this slice:
 
 - `PlayerRuntimeSession.activate()` 现在在 `SceneManager.play()` 完成 Start/运行期组件发布后再次刷新 scheduler membership，确保 Player 的 native lifecycle phase plan 不会以空计划启动。
 - Windows Release Player 已重新构建通过，构建日志无诊断错误；Player 定向测试 **18 passed**。软体实际位移仍需最终 Player 运行观测确认。
+
+### 2026-09-15 — Player scheduler warm-up 构建复核
+
+- 使用 `283a1192` 后的源码重新构建 Windows Release Player，构建成功且 `diagnostics=[]`。
+- 新 Player 实际启动 10 秒后仍保持响应，窗口标题为 `Infernux041Lab`，CPU 时间约 9.75 秒；随后正常关闭。该结果证明启动链路稳定，但仍不替代 Jelly 位移与 GPU kernel 结果验收。
