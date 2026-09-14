@@ -170,13 +170,15 @@ class PlayerRuntimeSession:
             Debug.log_warning("Player cannot start without an active scene")
             return False
         Time._reset()
+        from Infernux.tween import clear_tweens
+        clear_tweens()
         self._last_frame_time = time.time()
         from Infernux.lib import _Infernux as native_module
 
         if getattr(native_module, "__runtime_profile__", "desktop") != "web-player":
             from Infernux.renderstack.render_stack import RenderStack
 
-            RenderStack._active_instance = None
+            RenderStack.clear_active_instance()
         from Infernux.scene import SceneManager as RuntimeSceneManager
 
         # Install the packaged scene owner before native ``play()`` dispatches
@@ -190,6 +192,11 @@ class PlayerRuntimeSession:
             self._refresh_loaded_scene(scene)
             self._refresh_execution_membership()
             SceneManager.instance().play()
+            # SceneManager.Play() publishes Start callbacks and may materialize
+            # runtime component mirrors. Reconcile once after that publication
+            # so the native lifecycle fast path cannot start with an empty
+            # phase plan (which would leave GPU compute components idle).
+            self._refresh_execution_membership()
         except Exception:
             RuntimeSceneManager.remove_runtime_service(self._scene_service)
             self._scene_service_installed = False
@@ -231,6 +238,8 @@ class PlayerRuntimeSession:
 
     def shutdown(self) -> None:
         """Stop runtime callbacks without restoring or saving editor state."""
+        from Infernux.tween import clear_tweens
+        clear_tweens()
         if self._state != "stopped":
             try:
                 from Infernux.lib import SceneManager
