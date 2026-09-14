@@ -3338,3 +3338,8 @@ Final verification for this slice:
 
 - 对 `Infernux041Lab-PC-acceptance-latest\Infernux041Lab.exe` 做独立启动验收；进程启动后持续运行超过 8 秒，随后通过窗口关闭并确认无残留 Player 进程。
 - 本次只确认 Player 启动/存活与退出生命周期，不把它等同于完整场景交互或 FPS 验收；后两项仍需在可见编辑器和跨平台构建中分别取证。
+
+### 2026-09-15 — PC Player 软体运行链路复核
+
+- 导出包的 `Player.inxmanifest` 声明 `jit=true`，`Runtime/Infernux/_compiler/taichi` 内含 39 个编译器模块和 `taichi_python.cp313-win_amd64.pyd`；`Content.inxpkg` 也包含 `GPUJelly.pyc`、`JellyKernels.pyc`，因此“完全没有携带 Taichi”已排除。
+- 但当前独立 Player 验收只证明进程存活，尚未取得可见运行帧或软体顶点/高度变化证据；“PC Player 软体不动”暂列为未解决的 Player 生命周期/计算执行阻塞项，不能用包体存在文件替代运行通过。下一步应在 Player 日志可见化后确认 `GPUJelly.fixed_update → compute.launch` 是否执行，再修公共 Player 调度或 GPU 编译路径。
