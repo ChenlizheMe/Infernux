@@ -3348,3 +3348,8 @@ Final verification for this slice:
 
 - Player bootstrap 在无 splash 项目中于首次 GUI present 前直接激活初始场景，避免场景进入 Play 依赖首帧相机纹理。
 - Windows Development Player 重新构建通过（约 26.9 s，`diagnostics=[]`）；Player 服务/格式定向测试仍为 **18 passed**。软体 GPU kernel 的运行期位移观测仍待通过 Player 诊断通道确认。
+
+### 2026-09-15 — Player 场景激活后生命周期计划刷新
+
+- `PlayerRuntimeSession.activate()` 现在在 `SceneManager.play()` 完成 Start/运行期组件发布后再次刷新 scheduler membership，确保 Player 的 native lifecycle phase plan 不会以空计划启动。
+- Windows Release Player 已重新构建通过，构建日志无诊断错误；Player 定向测试 **18 passed**。软体实际位移仍需最终 Player 运行观测确认。
