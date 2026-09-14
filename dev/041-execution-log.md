@@ -3358,3 +3358,8 @@ Final verification for this slice:
 
 - 使用 `283a1192` 后的源码重新构建 Windows Release Player，构建成功且 `diagnostics=[]`。
 - 新 Player 实际启动 10 秒后仍保持响应，窗口标题为 `Infernux041Lab`，CPU 时间约 9.75 秒；随后正常关闭。该结果证明启动链路稳定，但仍不替代 Jelly 位移与 GPU kernel 结果验收。
+
+### 2026-09-15 — Windows Player 真实 Jelly 组件验收
+
+- 使用 Development Player smoke 的真实 token 控制接口，指定场景 `01_XPBD_Jelly`、对象 `XPBD Jelly`，捕获到运行帧 77，`gameplay_ready=true`、`fatal_count=0`。
+- Player 组件探针成功读取 `GPUJelly[0].current_height = 1.7999997`，证明脚本组件已实例化并进入运行期；但当前探针只读单帧值，尚未证明连续形变/刚软体交互及 300 FPS 阶梯，因此 A03.4 仍不勾选。
