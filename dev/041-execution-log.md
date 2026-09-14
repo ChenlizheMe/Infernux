@@ -3333,3 +3333,8 @@ Final verification for this slice:
 - Python 计算/JIT/MCP 组合回归 **148 passed**（16.73 s）。
 - 真实 MCP 果冻复核的 `core` 路径可正常捕获；`input` 路径已不再触发运行期事务 safe-point 错误，但 Space 触发后的高度没有变化，故保留为未解决的输入/动作验收缺口，不将其标记为通过。
 - 计划原子条目重新统计为主计划 **104/257**、Compute 合同 **37/76**，合计 **141/333（42.3%）**。本轮只更新有直接证据的统计，A03.4 双向耦合、Taichi 发行收口、完整 UI/RenderTexture、非凸 Raycast、`.blend` 导入和跨平台验收仍未完成。
+
+### 2026-09-15 — Windows PC Player 独立启动复核
+
+- 对 `Infernux041Lab-PC-acceptance-latest\Infernux041Lab.exe` 做独立启动验收；进程启动后持续运行超过 8 秒，随后通过窗口关闭并确认无残留 Player 进程。
+- 本次只确认 Player 启动/存活与退出生命周期，不把它等同于完整场景交互或 FPS 验收；后两项仍需在可见编辑器和跨平台构建中分别取证。
