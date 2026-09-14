@@ -3343,3 +3343,8 @@ Final verification for this slice:
 
 - 导出包的 `Player.inxmanifest` 声明 `jit=true`，`Runtime/Infernux/_compiler/taichi` 内含 39 个编译器模块和 `taichi_python.cp313-win_amd64.pyd`；`Content.inxpkg` 也包含 `GPUJelly.pyc`、`JellyKernels.pyc`，因此“完全没有携带 Taichi”已排除。
 - 但当前独立 Player 验收只证明进程存活，尚未取得可见运行帧或软体顶点/高度变化证据；“PC Player 软体不动”暂列为未解决的 Player 生命周期/计算执行阻塞项，不能用包体存在文件替代运行通过。下一步应在 Player 日志可见化后确认 `GPUJelly.fixed_update → compute.launch` 是否执行，再修公共 Player 调度或 GPU 编译路径。
+
+### 2026-09-15 — Player splashless activation 修复复核
+
+- Player bootstrap 在无 splash 项目中于首次 GUI present 前直接激活初始场景，避免场景进入 Play 依赖首帧相机纹理。
+- Windows Development Player 重新构建通过（约 26.9 s，`diagnostics=[]`）；Player 服务/格式定向测试仍为 **18 passed**。软体 GPU kernel 的运行期位移观测仍待通过 Player 诊断通道确认。
