@@ -117,6 +117,58 @@ def _installed_exporter_registry(project: Path):
     return exporter_registry
 
 
+def _prepare_project_registry(project: Path):
+    """Load project-authored types before cooking project data assets.
+
+    The editor and installed-only acceptance path both refresh the project
+    and run plugin preloads before the first scene/resource is decoded.  The
+    source acceptance path used to load only the platform exporter, which
+    meant DataAsset documents containing project SerializableObject subclasses
+    failed during Cook with an unknown type id.
+    """
+    from Infernux.engine.library_sync import sync_resources
+    from Infernux.engine.project_context import set_project_root
+    from Infernux.plugins import PluginManager
+    from Infernux.components.script_loader import load_all_components_from_file
+    from Infernux.components.component_identity import bind_asset_script_guid
+    from Infernux.components.registry import publish_component_script_types
+
+    set_project_root(str(project))
+    sync_resources(str(project))
+    PluginManager.startup(str(project), runtime=False)
+
+    # Cook decodes DataAsset documents before the normal build script
+    # compilation phase.  Import every project-owned Python source now so
+    # SerializableObject/DataAsset subclasses publish their stable type IDs
+    # before the first artifact is encoded.  This is the same authored-script
+    # boundary used by the editor; it is not a second import/fallback path.
+    roots = (project / "Assets", project / "Packages")
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for script_path in sorted(root.rglob("*.py")):
+            components = tuple(
+                load_all_components_from_file(str(script_path), register=False)
+            )
+            if not components:
+                continue
+            meta_path = script_path.with_name(script_path.name + ".meta")
+            try:
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                script_guid = str(meta["metadata"]["guid"]["value"] or "")
+            except (FileNotFoundError, OSError, KeyError, TypeError, ValueError) as exc:
+                raise RuntimeError(
+                    f"Project script has no readable AssetDatabase GUID: {script_path}"
+                ) from exc
+            if not script_guid:
+                raise RuntimeError(
+                    f"Project script has no AssetDatabase GUID: {script_path}"
+                )
+            for component_type in components:
+                bind_asset_script_guid(component_type, script_guid, register=False)
+            publish_component_script_types(str(script_path), components)
+
+
 def _diagnostic_payload(item) -> dict[str, object]:
     return {
         "severity": item.severity.value,
@@ -259,6 +311,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if arguments.installed:
         registry = _installed_exporter_registry(project)
     else:
+        _prepare_project_registry(project)
         exporter = _load_exporter(arguments.target)
         registry = BuildExporterRegistry()
         registry.register("scripts/acceptance/build-player", exporter)

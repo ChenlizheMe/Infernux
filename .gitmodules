@@ -37,3 +37,6 @@
 [submodule "external/plugins/infernux_web"]
 	path = external/plugins/infernux_web
 	url = https://github.com/ChenlizheMe/infernux_web.git
+[submodule "external/taichi_for_infernux"]
+	path = external/taichi_for_infernux
+	url = https://github.com/ChenlizheMe/taichi_for_infernux.git
