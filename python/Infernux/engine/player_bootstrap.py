@@ -109,6 +109,15 @@ class PlayerBootstrap:
         if self.engine is not None:
             phase("prepare runtime scripts", self.engine.prepare_startup_refresh)
         self._pump_startup_events()
+        # A Player without a splash must enter Play before the first GUI draw.
+        # Waiting for PlayerGUI.on_render() makes simulation startup depend on
+        # the first present/camera texture, leaving a live window with a
+        # non-playing scene (notably GPU compute/soft-body components).
+        # Splash-backed products intentionally keep their deferred activation
+        # contract and are started by PlayerGUI after the splash completes.
+        if self.runtime_session is not None and not self.splash_items:
+            phase("activate runtime scene", self._enter_play_mode)
+            self._pump_startup_events()
         _plog(
             f"[Startup] bootstrap ready: "
             f"{(time.perf_counter() - startup_started) * 1000.0:.1f} ms"
