@@ -194,10 +194,17 @@ class SceneDocumentTransaction:
         from Infernux.lib import SceneManager
 
         manager = SceneManager.instance()
-        scenes = [
-            manager.get_scene_at(index)
-            for index in range(int(manager.scene_count))
-        ]
+        get_scene_at = getattr(manager, "get_scene_at", None)
+        if callable(get_scene_at):
+            scenes = [
+                get_scene_at(index)
+                for index in range(int(manager.scene_count))
+            ]
+        elif os.environ.get("INFERNUX_WEB_RUNTIME") == "1" or os.sys.platform == "emscripten":
+            active = manager.get_active_scene()
+            scenes = [active] if active is not None else []
+        else:
+            raise AttributeError("native SceneManager.get_scene_at is unavailable")
         persistent_scene = manager.get_runtime_persistent_scene()
         if persistent_scene is not None:
             scenes.append(persistent_scene)
@@ -432,11 +439,14 @@ class SceneDocumentTransaction:
                     return True
                 self._native_committed = True
                 phase_started = time.perf_counter()
+                object_id_remap = getattr(self._commit_token, "object_id_remap", None)
+                if object_id_remap is None and os.environ.get("INFERNUX_WEB_RUNTIME") != "1" and os.sys.platform != "emscripten":
+                    raise AttributeError("native scene commit token object_id_remap is unavailable")
                 publish_prepared_scene_python_components(
                     self._scene,
                     self._prepared_graph,
                     clear_registries=self._clear_registries,
-                    object_id_map=dict(self._commit_token.object_id_remap),
+                    object_id_map=(dict(object_id_remap) if object_id_remap is not None else None),
                 )
                 # The replacement was registered while its prepared graph was
                 # attached. Reattach the other resident Scenes without binding

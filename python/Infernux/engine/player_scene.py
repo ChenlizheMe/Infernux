@@ -336,10 +336,14 @@ class PlayerSceneService:
         scene = scene_manager.get_active_scene()
         if scene is not None:
             kept_world = int(scene.world_id)
-            for index in range(int(scene_manager.scene_count) - 1, -1, -1):
-                loaded = scene_manager.get_scene_at(index)
-                if loaded is not None and int(loaded.world_id) != kept_world:
-                    scene_manager.unload_scene(loaded)
+            get_scene_at = getattr(scene_manager, "get_scene_at", None)
+            if callable(get_scene_at):
+                for index in range(int(scene_manager.scene_count) - 1, -1, -1):
+                    loaded = get_scene_at(index)
+                    if loaded is not None and int(loaded.world_id) != kept_world:
+                        scene_manager.unload_scene(loaded)
+            elif os.environ.get("INFERNUX_WEB_RUNTIME") != "1" and os.sys.platform != "emscripten":
+                raise AttributeError("native SceneManager.get_scene_at is unavailable")
             scene_manager.set_active_scene(scene)
         self._active_scene_path = path
         self._last_error = ""
