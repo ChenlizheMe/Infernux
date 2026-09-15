@@ -35,10 +35,14 @@
 #include <Jolt/Physics/PhysicsSystem.h>
 #include <Jolt/RegisterTypes.h>
 
+#include <limits>
+
 #include "InfernuxJoltJobSystemAdapter.h"
 #include "PhysicsContactListener.h"
 #include "PhysicsLayers.h"
 #include "PhysicsWorld.h"
+
+#include "core/threading/JobSystem.h"
 
 #include "../BoxCollider.h"
 #include "../CapsuleCollider.h"
@@ -2056,7 +2060,12 @@ void PhysicsWorld::RaycastBatch(const float *originsXYZ, const float *directions
         throw std::invalid_argument("raycast batch requires non-null storage");
 
     SceneManager::Instance().EnsurePhysicsQueriesCurrent();
-    for (size_t index = 0; index < count; ++index) {
+    // The physics snapshot is immutable for the duration of this call.  Keep
+    // one native query boundary, then fan out large batches through the
+    // engine JobSystem instead of making the caller serialize thousands of
+    // independent narrow-phase casts on the owner thread.  Small batches stay
+    // inline: scheduling overhead is larger than the query itself there.
+    const auto castOne = [&](uint32_t index) {
         const size_t offset = index * 3;
         const glm::vec3 origin(originsXYZ[offset], originsXYZ[offset + 1], originsXYZ[offset + 2]);
         const glm::vec3 direction(directionsXYZ[offset], directionsXYZ[offset + 1], directionsXYZ[offset + 2]);
@@ -2064,6 +2073,17 @@ void PhysicsWorld::RaycastBatch(const float *originsXYZ, const float *directions
         outHitMask[index] = RaycastCurrent(origin, direction, maxDistance, outHits[index], layerMask, queryTriggers)
                                 ? uint8_t{1}
                                 : uint8_t{0};
+    };
+
+    constexpr size_t kParallelRaycastThreshold = 256;
+    if (count >= kParallelRaycastThreshold && count <= std::numeric_limits<uint32_t>::max() &&
+        JobSystem::IsAvailable() && !JobSystem::Get().IsInline() && JobSystem::Get().GetWorkerCount() > 1) {
+        JobSystem::Get().ParallelFor(static_cast<uint32_t>(count), castOne, JobDomain::Physics, JobPriority::Normal);
+        return;
+    }
+
+    for (size_t index = 0; index < count; ++index) {
+        castOne(static_cast<uint32_t>(index));
     }
 }
 
