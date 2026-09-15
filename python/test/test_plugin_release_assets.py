@@ -279,7 +279,7 @@ def test_platform_releases_are_owned_by_independent_repositories():
     assert "${{ inputs.release_tag }}'" not in workflow
     sources = Path(__file__).parents[2] / "external/plugins"
     catalog = json.loads((sources / "plugins.json").read_text(encoding="utf-8"))
-    platforms = [item for item in catalog["plugins"] if item["category"] == "Platform"]
+    platforms = [item for item in catalog["plugins"] if item["category"] == "platform_build"]
     assert len(platforms) == 4
     for item in platforms:
         assert item["repository"] == f"https://github.com/ChenlizheMe/{item['path']}"

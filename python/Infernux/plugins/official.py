@@ -12,6 +12,7 @@ from Infernux.core.document_store import write_document_text
 from Infernux.engine.path_utils import resolved_path
 
 from .cache import package_cache_root
+from .categories import normalize_plugin_category
 from .content import normalize_page_descriptor
 from .manager import PluginManager, PluginState
 from .package import (
@@ -246,7 +247,7 @@ def _catalog_entries(document: Mapping[str, object], official_packages: str) -> 
                 "intro": str(raw.get("intro", "")),
                 "intros": dict(intros),
                 "pages": normalized_pages,
-                "category": str(raw.get("category", "Other")),
+                "category": normalize_plugin_category(raw.get("category", "other")),
                 "targets": [str(value) for value in targets],
                 "source": source,
             }

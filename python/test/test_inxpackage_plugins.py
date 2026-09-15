@@ -862,7 +862,7 @@ def test_official_registry_publishes_remote_entry_without_bundled_artifact(tmp_p
 
     assert len(added) == 1
     entry = PluginRegistry(str(project)).find("infernux/platform-web")
-    assert entry["category"] == "Platform"
+    assert entry["category"] == "platform_build"
     assert entry["targets"] == ["web-wasm32"]
     assert entry["source"] == {
         "type": "url",
@@ -1876,7 +1876,7 @@ def test_official_release_downloads_to_project_cache_then_imports(
         assert registry_entry["source"]["release_tag"] == "v0.4.0"
         assert registry_entry["source"]["cache_scope"] == "hub"
         assert registry_entry["source"]["official"] is True
-        assert registry_entry["category"] == "Platform"
+        assert registry_entry["category"] == "platform_build"
         assert registry_entry["targets"] == ["released-test"]
 
         installed = manager.install_reference(
