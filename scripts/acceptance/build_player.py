@@ -105,16 +105,14 @@ def _prepare_engine(*, installed: bool) -> dict[str, str]:
 
 
 def _installed_exporter_registry(project: Path):
-    from Infernux.engine.build import exporter_registry
-    from Infernux.engine.library_sync import sync_resources
-    from Infernux.engine.project_context import set_project_root
-    from Infernux.plugins import PluginManager
+    """Prepare the installed project boundary and return its exporter registry.
 
-    # Match Editor ordering: plugin preloads can read project assets immediately.
-    set_project_root(str(project))
-    sync_resources(str(project))
-    PluginManager.startup(str(project), runtime=False)
-    return exporter_registry
+    Installed-only builds must publish project-owned SerializableObject and
+    DataAsset types before GameBuilder cooks ``.inxdata`` documents.  Keep this
+    path identical to source acceptance so a wheel-only Hub install exercises
+    the same authoring/runtime contract as the Editor.
+    """
+    return _prepare_project_registry(project)
 
 
 def _prepare_project_registry(project: Path):
@@ -126,6 +124,7 @@ def _prepare_project_registry(project: Path):
     meant DataAsset documents containing project SerializableObject subclasses
     failed during Cook with an unknown type id.
     """
+    from Infernux.engine.build import exporter_registry
     from Infernux.engine.library_sync import sync_resources
     from Infernux.engine.project_context import set_project_root
     from Infernux.plugins import PluginManager
@@ -167,6 +166,8 @@ def _prepare_project_registry(project: Path):
             for component_type in components:
                 bind_asset_script_guid(component_type, script_guid, register=False)
             publish_component_script_types(str(script_path), components)
+
+    return exporter_registry
 
 
 def _diagnostic_payload(item) -> dict[str, object]:
