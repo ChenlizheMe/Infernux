@@ -28,6 +28,8 @@ Usage (from within an InxComponent script)::
 
 from __future__ import annotations
 
+import os
+import sys
 import weakref
 from typing import Any, Dict, Optional, Type, TYPE_CHECKING
 
@@ -133,7 +135,22 @@ class CppProperty:
         from Infernux.lib import _Infernux
         from .value_codec import VALUE_CODECS
 
-        schema = get_native_field_schema(f"native:infernux.{type_name}", field_id)
+        if (
+            (os.environ.get("INFERNUX_WEB_RUNTIME") == "1" or sys.platform == "emscripten")
+            and not hasattr(_Infernux, "_semantic_catalog_snapshot")
+        ):
+            return cls(field_id)
+        try:
+            schema = get_native_field_schema(f"native:infernux.{type_name}", field_id)
+        except AttributeError:
+            # Older prebuilt WebAssembly hosts do not expose the native
+            # semantic-catalog reader.  Web Player has no Inspector and can
+            # still delegate the property directly to its native component;
+            # keep this compatibility boundary explicit and never apply it
+            # to editor or native Player processes.
+            if os.environ.get("INFERNUX_WEB_RUNTIME") != "1" and sys.platform != "emscripten":
+                raise
+            return cls(field_id)
         attributes = schema.to_document()["attributes"]
         enum = attributes.get("enum")
         enum_type = None

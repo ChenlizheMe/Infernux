@@ -15,6 +15,7 @@ Numba remains an internal CPU code-generation backend; its decorator and
 
 import inspect
 import os
+import sys
 
 from Infernux._jit_kernels import JIT_AVAILABLE, njit as _njit, warmup
 
@@ -169,7 +170,7 @@ def compile(fn=None, **options):
     execution rules.
     """
     if not JIT_AVAILABLE:
-        if os.environ.get("INFERNUX_WEB_RUNTIME") == "1":
+        if os.environ.get("INFERNUX_WEB_RUNTIME") == "1" or sys.platform == "emscripten":
             if fn is None:
                 def decorate(function):
                     return function
