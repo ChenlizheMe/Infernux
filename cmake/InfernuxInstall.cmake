@@ -261,6 +261,13 @@ if(TARGET infernux_gpu_jit_compiler)
         DIRECTORY "${INFERNUX_GPU_JIT_INSTALL_ROOT}/Infernux/_compiler/"
         DESTINATION "python/Infernux/_compiler"
         COMPONENT ${INFERNUX_PYTHON_INSTALL_COMPONENT}
+        # The compiler stage may be imported by build-time contract tests,
+        # which can create Python bytecode beside the source modules.  Those
+        # caches are never part of the engine ABI and must not leak into the
+        # wheel or Player payload.
+        PATTERN "__pycache__" EXCLUDE
+        PATTERN "*.pyc" EXCLUDE
+        PATTERN "*.pyo" EXCLUDE
     )
 endif()
 
