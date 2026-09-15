@@ -706,6 +706,24 @@ if(INFERNUX_BUILD_TESTS)
     endif()
     add_test(NAME infernux.camera_culling_isolation COMMAND infernux_camera_culling_isolation_tests)
 
+    add_executable(infernux_blend_model_import_tests
+        cpp/tests/BlendModelImportTests.cpp
+    )
+    target_include_directories(infernux_blend_model_import_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/cpp/infernux
+        ${CMAKE_SOURCE_DIR}/external
+    )
+    target_link_libraries(infernux_blend_model_import_tests PRIVATE infernux_runtime_test_support)
+    target_compile_definitions(infernux_blend_model_import_tests PRIVATE
+        INFERNUX_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+    )
+    if(MSVC)
+        target_compile_options(infernux_blend_model_import_tests PRIVATE /utf-8 /UNDEBUG)
+    else()
+        target_compile_options(infernux_blend_model_import_tests PRIVATE -UNDEBUG)
+    endif()
+    add_test(NAME infernux.blend_model_import COMMAND infernux_blend_model_import_tests)
+
     add_executable(infernux_particle_gpu_runtime_tests
         cpp/tests/ParticleGpuRuntimeTests.cpp
         cpp/infernux/function/renderer/particle/ParticleGpuBillboardRenderer.cpp
