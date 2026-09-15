@@ -5,6 +5,7 @@ import importlib.util
 import json
 from pathlib import Path
 from types import SimpleNamespace
+import textwrap
 
 import pytest
 
@@ -127,6 +128,53 @@ def test_installed_preload_has_project_paths_and_mirrored_resources(tmp_path, mo
 
     monkeypatch.setattr(PluginManager, "startup", startup)
     assert _module()._installed_exporter_registry(tmp_path) is exporter_registry
+
+
+def test_installed_registry_publishes_project_data_asset_types_before_cook(
+    tmp_path, monkeypatch
+):
+    """The wheel-only build must decode authored DataAssets before staging them."""
+    module = _module()
+    script = tmp_path / "Assets" / "BuildConfig.py"
+    script.parent.mkdir(parents=True)
+    (tmp_path / "ProjectSettings").mkdir()
+    script.write_text(
+        textwrap.dedent(
+            """
+            import Infernux as inx
+
+            class BuildConfig(inx.DataAsset):
+                __serialized_type_id__ = "tests.cli.build_config"
+                value = inx.serialized_field(1)
+
+            class BuildProbe(inx.InxComponent):
+                pass
+            """
+        ).lstrip(),
+        encoding="utf-8",
+    )
+    (script.with_name(script.name + ".meta")).write_text(
+        json.dumps({"metadata": {"guid": {"type": "string", "value": "b" * 32}}}),
+        encoding="utf-8",
+    )
+
+    from Infernux.components import registry as component_registry
+    from Infernux.components.serializable_object import get_serializable_class
+    from Infernux.engine import library_sync, project_context
+    from Infernux.plugins import PluginManager
+
+    monkeypatch.setattr(library_sync, "sync_resources", lambda _root: None)
+    monkeypatch.setattr(project_context, "_project_root", None)
+    monkeypatch.setattr(PluginManager, "startup", lambda _root, *, runtime: None)
+    monkeypatch.setattr(
+        component_registry,
+        "publish_component_script_types",
+        lambda _path, _types: (),
+    )
+
+    module._prepare_project_registry(tmp_path)
+
+    assert get_serializable_class("tests.cli.build_config") is not None
 
 
 def test_raw_build_tool_output_is_not_retained_as_phase_progress():
