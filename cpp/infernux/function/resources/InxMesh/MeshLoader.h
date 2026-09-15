@@ -38,8 +38,10 @@ struct MeshSourceImportResult
  *   - Load() produces a new shared_ptr<InxMesh> from imported geometry.
  *   - Reload() replaces the geometry data
  * in-place so all AssetRef holders see updated data without re-resolving.
- *   - ScanDependencies() returns {} — mesh assets do not reference other
- *     assets (material bindings are on the MeshRenderer, not the mesh).
+ *   - ScanDependencies() resolves external material textures to project GUIDs
+ *     at the authoring boundary so
+ * composite model sources are Cook-complete.
+ *     Renderer-authored material bindings remain independent.
  */
 class MeshLoader final : public IAssetLoader
 {

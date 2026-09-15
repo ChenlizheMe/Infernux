@@ -10,8 +10,14 @@
 #include <function/resources/InxSkinnedMesh/SkinnedMeshArtifact.h>
 #include <platform/filesystem/InxPath.h>
 
+#include <assimp/Importer.hpp>
+#include <assimp/material.h>
+#include <assimp/postprocess.h>
+#include <assimp/scene.h>
+
 #include <filesystem>
 #include <fstream>
+#include <set>
 
 namespace infernux
 {
@@ -102,9 +108,60 @@ size_t MeshLoader::EstimateRuntimeBytes(const RuntimeAssetPayload &payload) cons
     return mesh->GetRuntimeMemoryBytes();
 }
 
-std::set<std::string> MeshLoader::ScanDependencies(const std::string &, AssetDatabase *)
+std::set<std::string> MeshLoader::ScanDependencies(const std::string &filePath, AssetDatabase *adb)
 {
-    return {};
+    std::set<std::string> dependencies;
+    if (!adb || filePath.empty())
+        return dependencies;
+
+    const auto sourcePath = ToFsPath(filePath);
+    if (!std::filesystem::is_regular_file(sourcePath))
+        return dependencies;
+
+    // Model import is the authoring boundary where mutable paths may be
+    // resolved to authoritative GUIDs.  Keep runtime loaders GUID-only.
+    Assimp::Importer importer;
+    const aiScene *scene = importer.ReadFile(
+        FromFsPath(sourcePath), aiProcess_Triangulate | aiProcess_JoinIdenticalVertices | aiProcess_SortByPType);
+    if (!scene || !scene->mMaterials)
+        return dependencies;
+
+    const std::filesystem::path sourceDirectory = sourcePath.parent_path();
+    for (unsigned int materialIndex = 0; materialIndex < scene->mNumMaterials; ++materialIndex) {
+        const aiMaterial *material = scene->mMaterials[materialIndex];
+        if (!material)
+            continue;
+        // Scan every texture semantic.  The runtime material may choose only
+        // a subset today, but Cook must not silently omit a source texture
+        // that belongs to a composite model asset.
+        for (unsigned int textureType = aiTextureType_NONE + 1; textureType <= aiTextureType_UNKNOWN; ++textureType) {
+            const auto semantic = static_cast<aiTextureType>(textureType);
+            const unsigned int count = material->GetTextureCount(semantic);
+            for (unsigned int textureIndex = 0; textureIndex < count; ++textureIndex) {
+                aiString texturePath;
+                if (material->GetTexture(semantic, textureIndex, &texturePath) != AI_SUCCESS)
+                    continue;
+                const std::string authoredPath = texturePath.C_Str();
+                // Embedded blobs are part of the source container.  They do
+                // not have a project GUID until the importer gains explicit
+                // embedded-texture extraction; do not invent one from the
+                // literal '*N' token.
+                if (authoredPath.empty() || authoredPath.front() == '*')
+                    continue;
+
+                std::filesystem::path candidate = std::filesystem::u8path(authoredPath);
+                if (candidate.is_relative())
+                    candidate = sourceDirectory / candidate;
+                candidate = candidate.lexically_normal();
+                if (!std::filesystem::is_regular_file(candidate))
+                    continue;
+                const std::string guid = adb->GetGuidFromPath(FromFsPath(candidate));
+                if (!guid.empty())
+                    dependencies.insert(guid);
+            }
+        }
+    }
+    return dependencies;
 }
 
 } // namespace infernux
