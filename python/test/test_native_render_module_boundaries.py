@@ -593,16 +593,17 @@ def test_imgui_display_shader_is_compiled_from_the_current_source() -> None:
     shader = (
         RENDERER / "gui" / "backend" / "infernux_imgui_frag.frag"
     ).read_text(encoding="utf-8")
-    backend_patch = (ROOT / "cmake" / "patch_imgui_vulkan_backend.py").read_text(
+    backend = (ROOT / "external" / "imgui" / "backends" / "imgui_impl_vulkan.cpp").read_text(
         encoding="utf-8"
     )
 
     assert "Vulkan_GLSLANG_VALIDATOR_EXECUTABLE" in external_cmake
     assert "INFERNUX_IMGUI_FRAGMENT_SOURCE" in external_cmake
     assert "INFERNUX_IMGUI_FRAGMENT_HEADER" in external_cmake
+    assert 'INFERNUX_IMGUI_VULKAN_BACKEND "${IMGUI_DIR}/backends/imgui_impl_vulkan.cpp"' in external_cmake
     assert "linear_to_srgb" in shader
     assert "sampled.rgb = linear_to_srgb(sampled.rgb);" in shader
-    assert 'include "infernux_imgui_frag.u32"' in backend_patch
+    assert '#include "infernux_imgui_frag.u32"' in backend
 
 
 def test_completed_async_uploads_retain_timeline_dependency_until_publication() -> None:

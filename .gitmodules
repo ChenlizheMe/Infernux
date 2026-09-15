@@ -9,7 +9,7 @@
 	url = https://github.com/g-truc/glm.git
 [submodule "external/imgui"]
 	path = external/imgui
-	url = https://github.com/ocornut/imgui.git
+	url = https://github.com/ChenlizheMe/imgui.git
 [submodule "external/SDL"]
 	path = external/SDL
 	url = https://github.com/libsdl-org/SDL.git

@@ -338,14 +338,16 @@ set(IMGUI_CORE_SRCS
 )
 
 set(INFERNUX_IMGUI_GENERATED_DIR "${CMAKE_BINARY_DIR}/generated/imgui")
-set(INFERNUX_IMGUI_VULKAN_BACKEND "${INFERNUX_IMGUI_GENERATED_DIR}/imgui_impl_vulkan_infernux.cpp")
+# The Vulkan backend is maintained in the Infernux ImGui fork.  Keep the
+# generated directory only for the project-owned fragment shader header; the
+# backend itself must not be rewritten by a configure-time string patch.
+set(INFERNUX_IMGUI_VULKAN_BACKEND "${IMGUI_DIR}/backends/imgui_impl_vulkan.cpp")
 set(INFERNUX_IMGUI_FRAGMENT_SOURCE
     "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/gui/backend/infernux_imgui_frag.frag")
 set(INFERNUX_IMGUI_FRAGMENT_HEADER
     "${INFERNUX_IMGUI_GENERATED_DIR}/infernux_imgui_frag.u32")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
     "${IMGUI_DIR}/backends/imgui_impl_vulkan.cpp"
-    "${CMAKE_SOURCE_DIR}/cmake/patch_imgui_vulkan_backend.py"
     "${INFERNUX_IMGUI_FRAGMENT_SOURCE}"
 )
 file(MAKE_DIRECTORY "${INFERNUX_IMGUI_GENERATED_DIR}")
@@ -359,17 +361,6 @@ execute_process(
 )
 if(NOT INFERNUX_IMGUI_SHADER_RESULT EQUAL 0)
     message(FATAL_ERROR "Failed to compile the Infernux ImGui fragment shader: ${INFERNUX_IMGUI_SHADER_ERROR}")
-endif()
-execute_process(
-    COMMAND "${Python3_EXECUTABLE}"
-        "${CMAKE_SOURCE_DIR}/cmake/patch_imgui_vulkan_backend.py"
-        --source "${IMGUI_DIR}/backends/imgui_impl_vulkan.cpp"
-        --output "${INFERNUX_IMGUI_VULKAN_BACKEND}"
-    RESULT_VARIABLE INFERNUX_IMGUI_PATCH_RESULT
-    ERROR_VARIABLE INFERNUX_IMGUI_PATCH_ERROR
-)
-if(NOT INFERNUX_IMGUI_PATCH_RESULT EQUAL 0)
-    message(FATAL_ERROR "Failed to prepare the Infernux ImGui Vulkan backend: ${INFERNUX_IMGUI_PATCH_ERROR}")
 endif()
 
 set(IMGUI_BACKEND_SRCS
