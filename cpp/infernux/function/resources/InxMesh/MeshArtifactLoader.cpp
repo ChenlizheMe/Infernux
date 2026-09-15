@@ -149,7 +149,13 @@ std::set<std::string> MeshLoader::ScanDependencies(const std::string &filePath, 
                 if (authoredPath.empty() || authoredPath.front() == '*')
                     continue;
 
-                std::filesystem::path candidate = std::filesystem::u8path(authoredPath);
+                // Blender writes project-relative external paths with a
+                // leading "//".  Strip that authoring marker before asking
+                // std::filesystem to classify the path; on Windows the raw
+                // spelling would otherwise look like a UNC path.
+                const bool blenderRelative = authoredPath.rfind("//", 0) == 0;
+                std::filesystem::path candidate =
+                    std::filesystem::u8path(blenderRelative ? authoredPath.substr(2) : authoredPath);
                 if (candidate.is_relative())
                     candidate = sourceDirectory / candidate;
                 candidate = candidate.lexically_normal();
