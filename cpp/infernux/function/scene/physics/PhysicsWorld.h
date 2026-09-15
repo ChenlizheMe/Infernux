@@ -361,6 +361,9 @@ class PhysicsWorld
                  uint32_t layerMask = (0xFFFFFFFFu & ~(1u << 2)), bool queryTriggers = true) const;
 
     /// Cast a contiguous batch of XYZ float rays after one world synchronization.
+    /// Large batches fan out through the engine JobSystem while the published
+    /// physics snapshot is held stable; callers must not mutate collider state
+    /// concurrently with this call.
     /// Every input row produces one mask entry and one initialized result row;
     /// caller-owned storage must contain @p count elements.
     void RaycastBatch(const float *originsXYZ, const float *directionsXYZ, size_t count, float maxDistance,

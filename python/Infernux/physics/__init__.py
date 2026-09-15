@@ -441,7 +441,9 @@ class Physics(metaclass=_PhysicsMeta):
         only the first N rows are written. ``triangle_index`` is UINT32_MAX
         unless the ray hit a non-convex MeshCollider triangle.
 
-        The same dictionary and arrays are returned unchanged. Misses use
+        Native execution publishes one physics snapshot for the whole batch;
+        large batches are parallelized by the engine JobSystem without a
+        per-ray Python round trip. The same dictionary and arrays are returned unchanged. Misses use
         ``hit=0``, infinite distance and zero object/component identities.
         """
         return _CppPhysics.raycast_batch(
