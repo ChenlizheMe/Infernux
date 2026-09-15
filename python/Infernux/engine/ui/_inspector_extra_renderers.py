@@ -3,6 +3,7 @@
 import os
 
 from Infernux.debug import Debug
+from Infernux.core.asset_types import IMAGE_EXTENSIONS, MESH_EXTENSIONS
 from Infernux.graph.types import (
     AssetReference,
     BUILTIN_MESH_NAMES,
@@ -209,7 +210,7 @@ def _render_particle_system_parameters(ctx: InxGUIContext, comp) -> None:
                 except (TypeError, ValueError):
                     builtin_name = ""
             extensions = (
-                (".fbx", ".obj", ".gltf", ".glb", ".dae")
+                tuple(sorted(MESH_EXTENSIONS))
                 if is_mesh
                 else tuple(sorted(IMAGE_EXTENSIONS))
             )
