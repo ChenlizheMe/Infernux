@@ -3,13 +3,15 @@
 # ============================================================================
 /build/
 /out/
-/dev/
 /tests/fixtures/*/Cache/
 /tests/fixtures/*/Library/
 /tests/fixtures/*/Logs/
 /tests/fixtures/*/.runtime/
 /packaging/runtime/
 /packaging/InfernuxHubData/Shared/
+# Local development plans, probes, and validation logs are intentionally kept
+# outside version control. The working copy remains available to the developer.
+/dev/
 /mcp_captures/
 /packaging/_vendor/
 cmake-build-*/

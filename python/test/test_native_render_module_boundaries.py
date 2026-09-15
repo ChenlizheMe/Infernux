@@ -507,7 +507,10 @@ def test_scene_render_target_depth_is_sampleable_across_pipeline_switches() -> N
     assert "rhi::RenderTexture(device, identity, description).Acquire()" in initialize
     texture_source = (RENDERER / "rhi" / "RhiRenderTexture.cpp").read_text(encoding="utf-8")
     allocate = _function_body(texture_source, "RenderTexture::PrepareGeneration(")
-    assert "auto depthFeatures = FormatFeature::DepthStencilAttachment" in allocate
+    assert re.search(
+        r"auto\s+depthFeatures\s*=\s*FormatFeature::DepthStencilAttachment",
+        allocate,
+    )
     assert "depthFeatures |= FormatFeature::Sampled" in allocate
     assert "image.usage = TextureUsageFlags::DepthStencilAttachment" in allocate
     assert "if (description.sampledDepth)" in allocate
