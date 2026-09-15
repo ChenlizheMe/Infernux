@@ -302,7 +302,7 @@ class UICanvas(InxUIComponent):
 
     def _hit_candidates(self, ref_w, ref_h):
         """Retain broad-phase bounds until topology, pose, layout or policy changes."""
-        from Infernux.lib._Infernux import _UITransformDependencies
+        from .ui_transform_dependencies import create_ui_transform_dependencies
         from .inx_ui_screen_component import clear_rect_cache, _get_layout_revision
         from .ui_render_revision import _get_hit_policy_revision
 
@@ -314,7 +314,7 @@ class UICanvas(InxUIComponent):
         topology = (owner, scene.world_id, scene.structure_version,
                     scene.temporal_discontinuity_revision, id(elements))
         if self.__dict__.get('_hit_topology') != topology:
-            self._hit_geometry = _UITransformDependencies([e.game_object for e in elements], [])
+            self._hit_geometry = create_ui_transform_dependencies([e.game_object for e in elements], [])
             self._hit_topology = topology
             self._hit_pose = None
             self._hit_key = None

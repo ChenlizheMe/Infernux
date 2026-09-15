@@ -108,10 +108,10 @@ def _project_world_ui_targets(targets, ray_origin, ray_direction, layer_mask=0xf
     """Cross the native boundary once per ray, not once per element/property."""
     global _world_projection_targets, _world_projection_geometry
     from Infernux.lib import Vector3
-    from Infernux.lib._Infernux import _UITransformDependencies
+    from Infernux.ui.ui_transform_dependencies import create_ui_transform_dependencies
 
     if targets != _world_projection_targets:
-        _world_projection_geometry = _UITransformDependencies([], [t.game_object for t in targets])
+        _world_projection_geometry = create_ui_transform_dependencies([], [t.game_object for t in targets])
         _world_projection_targets = targets
     if not targets:
         return ()

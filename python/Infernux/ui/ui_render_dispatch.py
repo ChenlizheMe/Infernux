@@ -244,10 +244,10 @@ class _UICommandDependencies:
 
     def revision(self, key, canvases, world_elements):
         if key != self.key:
-            from Infernux.lib._Infernux import _UITransformDependencies
+            from .ui_transform_dependencies import create_ui_transform_dependencies
 
             screen = tuple(element for canvas in canvases for element in canvas._get_elements())
-            self.geometry = _UITransformDependencies(
+            self.geometry = create_ui_transform_dependencies(
                 [element.game_object for element in screen],
                 [element.game_object for element in world_elements],
             )
