@@ -338,7 +338,15 @@ class SceneDocumentTransaction:
                     self._fail(self._ticket.error or "scene document read failed")
                     return True
                 document = self._ticket._take_document()
-                self._file_state = self._ticket.file_state
+                try:
+                    self._file_state = self._ticket.file_state
+                except AttributeError:
+                    # Older precompiled Web hosts do not expose the optional
+                    # file-state metadata.  Player scene loading does not use
+                    # it; native/editor hosts remain strict about the ABI.
+                    if os.environ.get("INFERNUX_WEB_RUNTIME") != "1" and os.sys.platform != "emscripten":
+                        raise
+                    self._file_state = None
                 if not isinstance(document, dict):
                     self._fail("native scene reader returned a non-object document")
                     return True
