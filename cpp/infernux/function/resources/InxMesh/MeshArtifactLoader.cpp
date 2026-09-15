@@ -164,7 +164,10 @@ std::set<std::string> MeshLoader::ScanExternalTexturePaths(const std::string &fi
                 std::filesystem::path candidate = std::filesystem::u8path(normalizedPath);
                 if (candidate.is_relative())
                     candidate = sourceDirectory / candidate;
-                candidate = candidate.lexically_normal();
+                // Keep filesystem identity/normalization in the shared InxPath
+                // boundary.  Do not let an importer create its own lexical
+                // spelling that can diverge from AssetDatabase keys.
+                candidate = ToFsPath(NormalizeFilesystemPathLexically(FromFsPath(candidate)));
                 if (!std::filesystem::is_regular_file(candidate))
                     continue;
                 paths.insert(FromFsPath(candidate));
