@@ -15,7 +15,7 @@ from pathlib import PurePosixPath
 from pathlib import Path
 from typing import Any, Iterable
 
-from Infernux.core.asset_types import AUDIO_EXTENSIONS
+from Infernux.core.asset_types import AUDIO_EXTENSIONS, MESH_EXTENSIONS
 
 from .path_utils import relative_path, resolved_path
 
@@ -52,7 +52,10 @@ RUNTIME_JSON_DOCUMENT_SUFFIXES = frozenset(_DOCUMENT_TYPES) | frozenset(
 )
 _AUDIO_TYPES = {extension: "audio" for extension in AUDIO_EXTENSIONS}
 _DIRECT_TEXTURE_SUFFIXES = {".png", ".jpg", ".jpeg", ".tga", ".bmp", ".hdr", ".exr"}
-_DIRECT_MODEL_SUFFIXES = {".fbx", ".obj", ".gltf", ".glb", ".dae"}
+# Keep runtime classification on the same source-of-truth list used by the
+# AssetDatabase and Project panel.  A source model must not become an opaque
+# blob merely because a newly supported interchange format was added there.
+_DIRECT_MODEL_SUFFIXES = frozenset(MESH_EXTENSIONS)
 _BINARY_ARTIFACT_MAGIC = {
     ".inxtex": b"INXTEXTURE",
     ".inxmesh": b"INXMESHART",

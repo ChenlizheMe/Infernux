@@ -5507,6 +5507,19 @@ def test_authored_native_mesh_is_not_classified_as_a_cooked_artifact(path):
     assert payload_kind_for(logical_type_for_path(path)) != "compiled_artifact"
 
 
+@pytest.mark.parametrize(
+    "path",
+    [
+        "Assets/Models/scene.blend",
+        "Assets/Models/scene.fbx",
+        "Packages/demo/Models/scene.glb",
+    ],
+)
+def test_interchange_model_sources_share_runtime_model_classification(path):
+    assert logical_type_for_path(path) == "model_source"
+    assert payload_kind_for(logical_type_for_path(path)) != "compiled_artifact"
+
+
 def test_cooked_document_catalog_resolves_author_path_dependency_alias():
     scene_payload = json.dumps(
         {
