@@ -129,6 +129,7 @@ def cook_platform_content(
         is BuildConfiguration.DEVELOPMENT,
         lto=False,
         enable_jit=False,
+        allow_python_jit_fallback=bool(platform_host.get("python_jit_fallback", False)),
     )
     builder.freeze_asset_index_entries(catalog_entries)
     def report(message: str, fraction: float) -> None:

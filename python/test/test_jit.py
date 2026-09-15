@@ -53,6 +53,16 @@ class TestPublicJitCompile:
         with pytest.raises(RuntimeError, match="bundled Numba/llvmlite"):
             jit.compile(lambda value: value)
 
+    def test_web_profile_uses_explicit_python_interpreter_path(self, monkeypatch):
+        monkeypatch.setattr(jit, "JIT_AVAILABLE", False)
+        monkeypatch.setenv("INFERNUX_WEB_RUNTIME", "1")
+
+        @jit.compile
+        def advance(value):
+            return value + 1
+
+        assert advance(2) == 3
+
     def test_cpu_buffer_is_direct_jit_storage_and_gpu_is_explicitly_rejected(self):
         import Infernux as inx
 

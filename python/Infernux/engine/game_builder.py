@@ -389,6 +389,7 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
         debug_mode: bool = False,
         lto: bool = True,
         enable_jit: bool = False,
+        allow_python_jit_fallback: bool = False,
         player_runtime_root: str = "",
     ):
         self.project_path = resolved_path(project_path)
@@ -404,6 +405,11 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
         self.debug_mode = debug_mode
         self.lto = lto
         self.enable_jit = enable_jit
+        # Browser/WASM has no native Numba/LLVM payload.  Its platform host
+        # may explicitly opt into the deterministic interpreter path for
+        # ``inx.jit.compile``; desktop and native players keep the strict
+        # compile-time contract and never silently fall back.
+        self.allow_python_jit_fallback = bool(allow_python_jit_fallback)
         host_platform = "windows" if sys.platform == "win32" else "linux"
         self.player_runtime_root = resolved_path(player_runtime_root or os.path.join(
             self.project_path, "Packages", "infernux", f"platform-{host_platform}",
@@ -2680,7 +2686,7 @@ finally:
         cooked = source_text
         if not self.enable_jit:
             cpu_jit = _jit_kernels.cpu_jit_declarations(source_text)
-            if cpu_jit:
+            if cpu_jit and not self.allow_python_jit_fallback:
                 raise RuntimeError("CPU JIT requires the Numba/llvmlite build runtime: "
                                    + ", ".join(cpu_jit))
             required = [name for name, policy in _jit_kernels.auto_parallel_declarations(source_text)
