@@ -20,8 +20,6 @@ from __future__ import annotations
 
 from typing import Optional, List
 
-import numpy as np
-
 from Infernux.math.coerce import coerce_quat, coerce_vec3
 from Infernux.lib import Physics as _CppPhysics
 
@@ -279,6 +277,8 @@ class Physics(metaclass=_PhysicsMeta):
         and velocity limits; static/kinematic bodies do not gain velocity.
         Zero feedback does not wake sleeping bodies.
         """
+        import numpy as np
+
         from Infernux.compute import Buffer
         native_bodies = [body._require_cpp_component() for body in rigidbodies]
         buffers = isinstance(linear_impulses, Buffer), isinstance(angular_impulses, Buffer)

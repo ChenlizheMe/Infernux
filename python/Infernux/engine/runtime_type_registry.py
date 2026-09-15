@@ -33,6 +33,27 @@ _RUNTIME_LIFECYCLE_METHODS = frozenset(
 )
 
 
+def _publish_semantic_edits(edits: list[dict[str, Any]]) -> None:
+    """Publish Player semantic edits when the native catalog is available.
+
+    The precompiled Web Player shipped with older native bindings predates the
+    semantic-catalog transaction methods.  Web keeps the cooked runtime type
+    registry as its authority, so it can continue without attempting to call
+    an ABI that is not present.  Desktop/native builds stay strict: a missing
+    catalog method remains an integration error instead of being hidden.
+    """
+    if not edits:
+        return
+    from Infernux.lib import _Infernux as native
+
+    prepare = getattr(native, "_semantic_catalog_prepare", None)
+    if prepare is None:
+        if os.environ.get("INFERNUX_WEB_RUNTIME") == "1" or os.sys.platform == "emscripten":
+            return
+        raise AttributeError("native semantic catalog transaction is unavailable")
+    prepare(edits).publish()
+
+
 def install_runtime_type_registry(path: str) -> int:
     global _runtime_types, _runtime_registry_installed, _runtime_semantic_owners
 
@@ -90,14 +111,11 @@ def install_runtime_type_registry(path: str) -> int:
         semantic_types.setdefault(owner, []).append(semantic)
         prepared[type_guid] = dict(entry, lifecycle=tuple(sorted(set(phases))))
 
-    from Infernux.lib import _Infernux as native
-
     edits = [
         {"owner": owner, "types": semantic_types.get(owner, [])}
         for owner in sorted(_runtime_semantic_owners | set(semantic_types))
     ]
-    if edits:
-        native._semantic_catalog_prepare(edits).publish()
+    _publish_semantic_edits(edits)
 
     _runtime_types = prepared
     _runtime_registry_installed = True
@@ -162,14 +180,12 @@ def bind_runtime_lifecycle_contract(component_type: type, record: Optional[dict[
 def clear_runtime_type_registry() -> None:
     global _runtime_types, _runtime_registry_installed, _runtime_semantic_owners
     if _runtime_semantic_owners:
-        from Infernux.lib import _Infernux as native
-
-        native._semantic_catalog_prepare(
+        _publish_semantic_edits(
             [
                 {"owner": owner, "types": []}
                 for owner in sorted(_runtime_semantic_owners)
             ]
-        ).publish()
+        )
     _runtime_types = {}
     _runtime_registry_installed = False
     _runtime_semantic_owners = set()
