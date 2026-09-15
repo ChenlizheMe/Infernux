@@ -15,6 +15,7 @@
 #include <assimp/postprocess.h>
 #include <assimp/scene.h>
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <set>
@@ -154,8 +155,13 @@ std::set<std::string> MeshLoader::ScanExternalTexturePaths(const std::string &fi
                 // std::filesystem to classify the path; on Windows the raw
                 // spelling would otherwise look like a UNC path.
                 const bool blenderRelative = authoredPath.rfind("//", 0) == 0;
-                std::filesystem::path candidate =
-                    std::filesystem::u8path(blenderRelative ? authoredPath.substr(2) : authoredPath);
+                std::string normalizedPath = blenderRelative ? authoredPath.substr(2) : authoredPath;
+                // Assimp preserves Windows-authored OBJ/MTL separators even
+                // when the same source is imported on Linux.  Treat both
+                // separators as path separators at this authoring boundary;
+                // runtime identities remain canonical engine paths.
+                std::replace(normalizedPath.begin(), normalizedPath.end(), '\\', '/');
+                std::filesystem::path candidate = std::filesystem::u8path(normalizedPath);
                 if (candidate.is_relative())
                     candidate = sourceDirectory / candidate;
                 candidate = candidate.lexically_normal();
