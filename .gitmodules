@@ -10,6 +10,7 @@
 [submodule "external/imgui"]
 	path = external/imgui
 	url = https://github.com/ChenlizheMe/imgui.git
+	branch = infernux-vulkan
 [submodule "external/SDL"]
 	path = external/SDL
 	url = https://github.com/libsdl-org/SDL.git
@@ -19,6 +20,7 @@
 [submodule "external/JoltPhysics"]
 	path = external/JoltPhysics
 	url = https://github.com/ChenlizheMe/JoltPhysics.git
+	branch = infernux-batch-body-pose
 [submodule "external/VulkanMemoryAllocator"]
 	path = external/VulkanMemoryAllocator
 	url = https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git
@@ -40,3 +42,4 @@
 [submodule "external/taichi_for_infernux"]
 	path = external/taichi_for_infernux
 	url = https://github.com/ChenlizheMe/taichi_for_infernux.git
+	branch = master
