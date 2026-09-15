@@ -207,8 +207,15 @@ def map_runtime_ui_pointer(
     screen_y: float,
     viewport_width: float,
     viewport_height: float,
+    *,
+    include_scene_hit: bool = False,
 ):
-    """Map one viewport point into every runtime UI input surface."""
+    """Map one viewport point into every runtime UI input surface.
+
+    ``include_scene_hit`` lets the Game View share one native query between
+    world-UI occlusion and ordinary GameObject mouse callbacks.  The default
+    return remains the historical positions tuple for UI-only callers.
+    """
     positions = []
     world_intersections = []
     ray_origin = ray_direction = None
@@ -247,24 +254,51 @@ def map_runtime_ui_pointer(
             )
         )
 
+    scene_hit = None
     if world_intersections:
         from Infernux.physics import Physics
 
         furthest = max(distance for _, distance in world_intersections)
-        hit = Physics.raycast(
-            ray_origin,
-            ray_direction,
-            max_distance=furthest,
-            layer_mask=int(camera.culling_mask),
-            query_triggers=False,
-        )
-        if hit is not None:
-            occluder_distance = float(hit.distance)
+        if include_scene_hit:
+            # One query serves both consumers: the closest trigger-inclusive
+            # hit is the GameObject mouse target; the closest non-trigger hit
+            # is the world-UI occluder. Keep the old 1000-unit mouse range
+            # while allowing UI geometry farther away to retain occlusion.
+            hits = list(Physics.raycast_all(
+                ray_origin,
+                ray_direction,
+                max_distance=max(1000.0, furthest),
+                layer_mask=int(camera.culling_mask),
+                query_triggers=True,
+            ) or ())
+            hits.sort(key=lambda value: float(getattr(value, "distance", float("inf"))))
+            scene_hit = next(
+                (value for value in hits
+                 if float(getattr(value, "distance", float("inf"))) <= 1000.0),
+                None,
+            )
+            occluder = next(
+                (value for value in hits
+                 if not bool(getattr(getattr(value, "collider", None), "is_trigger", False))
+                 and float(getattr(value, "distance", float("inf"))) < furthest),
+                None,
+            )
+        else:
+            occluder = Physics.raycast(
+                ray_origin,
+                ray_direction,
+                max_distance=furthest,
+                layer_mask=int(camera.culling_mask),
+                query_triggers=False,
+            )
+        if occluder is not None:
+            occluder_distance = float(occluder.distance)
             for index, distance in world_intersections:
                 if occluder_distance + 1e-4 < distance:
                     positions[index] = (float("nan"), float("nan"), distance)
 
-    return tuple(positions)
+    result = tuple(positions)
+    return (result, scene_hit) if include_scene_hit else result
 
 
 def _collect_world_ui_elements(*scenes):

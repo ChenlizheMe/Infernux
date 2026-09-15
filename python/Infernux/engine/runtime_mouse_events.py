@@ -5,6 +5,9 @@ from __future__ import annotations
 from Infernux.physics import Physics
 
 
+_UNSET_HIT = object()
+
+
 class MouseEventDispatcher:
     """Translate one camera ray into MonoBehaviour-style component callbacks."""
 
@@ -32,13 +35,14 @@ class MouseEventDispatcher:
                 callback()
 
     def process(self, camera, screen_position, viewport_size, *, button: int = 0,
-                enabled: bool = True) -> None:
+                enabled: bool = True, hit=_UNSET_HIT) -> None:
         """Process one mouse frame using top-left viewport pixel coordinates."""
         if not enabled or camera is None or viewport_size[0] <= 0 or viewport_size[1] <= 0:
             self.reset()
             return
-        hit = Physics.raycast_screen(camera, screen_position, viewport_size,
-                                     query_triggers=True)
+        if hit is _UNSET_HIT:
+            hit = Physics.raycast_screen(camera, screen_position, viewport_size,
+                                         query_triggers=True)
         target = getattr(hit, "game_object", None) if hit is not None else None
         if not self._same_object(target, self._hover_object):
             if self._hover_object is not None:

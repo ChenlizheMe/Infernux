@@ -56,3 +56,15 @@ def test_mouse_dispatcher_matches_unity_enter_over_down_drag_up_button_exit(monk
     assert names == ["on_mouse_enter", "on_mouse_over", "on_mouse_over", "on_mouse_down",
                      "on_mouse_drag", "on_mouse_over", "on_mouse_drag", "on_mouse_over",
                      "on_mouse_up", "on_mouse_up_as_button", "on_mouse_exit"]
+
+
+def test_dispatcher_accepts_a_precomputed_hit_without_raycast(monkeypatch):
+    dispatcher = MouseEventDispatcher()
+    hit = SimpleNamespace(game_object=SimpleNamespace(id=17, get_py_components=lambda: ()))
+    calls = []
+    monkeypatch.setattr(
+        "Infernux.engine.runtime_mouse_events.Physics.raycast_screen",
+        lambda *args, **kwargs: calls.append(True),
+    )
+    dispatcher.process(object(), (1, 2), (100, 100), hit=hit)
+    assert calls == []

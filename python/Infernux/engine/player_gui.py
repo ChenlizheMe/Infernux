@@ -56,6 +56,7 @@ class PlayerGUI(InxGUIRenderable):
         self._render_scale = _player_render_scale()
         self._ui_event_processor = UIEventProcessor()
         self._mouse_event_dispatcher = MouseEventDispatcher()
+        self._has_shared_scene_query = False
         self._last_frame_time = time.time()
         self._control = control_channel
         self._activate_play = activate_play
@@ -228,10 +229,10 @@ class PlayerGUI(InxGUIRenderable):
         # The standalone Player owns the entire window. Touchscreen contacts
         # do not define an ImGui mouse-hover state, so UI dispatch must not be
         # gated by the desktop hover bit.
-        self._process_ui_events(display_w, display_h)
-        self._process_mouse_events(display_w, display_h)
+        scene_hit = self._process_ui_events(display_w, display_h)
+        self._process_mouse_events(display_w, display_h, scene_hit=scene_hit)
 
-    def _process_mouse_events(self, game_w: int, game_h: int) -> None:
+    def _process_mouse_events(self, game_w: int, game_h: int, *, scene_hit=None) -> None:
         dispatcher = getattr(self, "_mouse_event_dispatcher", None)
         if dispatcher is None:
             return
@@ -242,7 +243,10 @@ class PlayerGUI(InxGUIRenderable):
             dispatcher.reset()
             return
         x, y, _sx, _sy, _held, _down, _up = Input.get_game_mouse_frame_state(0)
-        dispatcher.process(camera, (x, y), (float(game_w), float(game_h)))
+        if scene_hit is None and not self._has_shared_scene_query:
+            dispatcher.process(camera, (x, y), (float(game_w), float(game_h)))
+        else:
+            dispatcher.process(camera, (x, y), (float(game_w), float(game_h)), hit=scene_hit)
 
     def _process_ui_events(self, game_w: int, game_h: int):
         """Convert mouse and every active touch to independent UI pointers."""
@@ -250,17 +254,27 @@ class PlayerGUI(InxGUIRenderable):
 
         scene = SceneManager.instance().get_active_scene()
         if scene is None:
-            return
+            self._has_shared_scene_query = False
+            return None
 
         persistent_scene = SceneManager.instance().get_runtime_persistent_scene()
         surfaces = collect_runtime_ui_input_surfaces(scene, persistent_scene)
         if not surfaces:
             self._ui_event_processor.reset()
-            return
+            # With no world UI there is no second consumer to share a ray
+            # with; the dispatcher keeps its direct closest-hit path.
+            self._has_shared_scene_query = False
+            return None
 
         camera = scene.effective_game_camera
 
         gx, gy, scroll_x, scroll_y, mouse_held, mouse_down, mouse_up = Input.get_game_mouse_frame_state(0)
+
+        mouse_positions, scene_hit = map_runtime_ui_pointer(
+            surfaces, camera, gx, gy, game_w, game_h,
+            include_scene_hit=True,
+        )
+        self._has_shared_scene_query = True
 
         def canvas_positions(screen_x: float, screen_y: float):
             return map_runtime_ui_pointer(
@@ -271,7 +285,7 @@ class PlayerGUI(InxGUIRenderable):
             UIPointerFrame(
                 pointer_id=-1,
                 pointer_type=PointerType.Mouse,
-                canvas_positions=canvas_positions(gx, gy),
+                canvas_positions=mouse_positions,
                 down=mouse_down,
                 up=mouse_up,
                 held=mouse_held,
@@ -302,3 +316,4 @@ class PlayerGUI(InxGUIRenderable):
         dt = Time.unscaled_delta_time
 
         self._ui_event_processor.process_pointers(surfaces, pointers, dt)
+        return scene_hit
