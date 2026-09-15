@@ -220,6 +220,31 @@ _RESOLVED_RENDERERS: Dict[tuple[type, str], Optional[Callable]] = {}
 _REVISION_MASK = (1 << 64) - 1
 
 
+def canvas_elements(canvas):
+    """Return a canvas' ordered screen elements across module generations."""
+    get_elements = getattr(canvas, "_get_elements", None)
+    if callable(get_elements):
+        return tuple(get_elements() or ())
+    iter_elements = getattr(canvas, "iter_ui_elements", None)
+    if callable(iter_elements):
+        return tuple(iter_elements() or ())
+    owner = getattr(canvas, "game_object", None)
+    if owner is None:
+        return ()
+    from .inx_ui_screen_component import is_ui_screen_component
+    result = []
+
+    def visit(node):
+        for component in node.get_py_components():
+            if is_ui_screen_component(component):
+                result.append(component)
+        for child in node.get_children():
+            visit(child)
+
+    visit(owner)
+    return tuple(result)
+
+
 class _UICommandDependencies:
     """Retain topology once; inspect poses natively and only bound resources.
 
@@ -246,7 +271,7 @@ class _UICommandDependencies:
         if key != self.key:
             from .ui_transform_dependencies import create_ui_transform_dependencies
 
-            screen = tuple(element for canvas in canvases for element in canvas._get_elements())
+            screen = tuple(element for canvas in canvases for element in canvas_elements(canvas))
             self.geometry = create_ui_transform_dependencies(
                 [element.game_object for element in screen],
                 [element.game_object for element in world_elements],

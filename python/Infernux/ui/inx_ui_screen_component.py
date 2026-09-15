@@ -819,3 +819,35 @@ class InxUIScreenComponent(InxUIComponent):
         lx = dx * cos_a + dy * sin_a + rw * 0.5
         ly = -dx * sin_a + dy * cos_a + rh * 0.5
         return (0.0 <= lx <= rw) and (0.0 <= ly <= rh)
+
+
+def is_ui_screen_component(component) -> bool:
+    """Match screen UI elements across duplicated project module overlays."""
+    component_type = type(component)
+    for base in getattr(component_type, "__mro__", ()):
+        if (
+            base.__module__ == InxUIScreenComponent.__module__
+            and base.__qualname__ == InxUIScreenComponent.__qualname__
+        ):
+            return True
+    # A preloaded Web module can retain the concrete UI class without its
+    # original base class in the current interpreter.  Built-in screen
+    # controls still have stable module identities, so recognize that finite
+    # component surface explicitly while leaving Canvas itself out.
+    if (
+        component_type.__module__.startswith("Infernux.ui.ui_")
+        and component_type.__module__.rsplit(".", 1)[-1]
+        in {
+            "ui_button", "ui_frame", "ui_image", "ui_progress_bar", "ui_slider", "ui_text",
+        }
+    ):
+        return True
+    return (
+        isinstance(component, InxUIScreenComponent)
+        or (
+            component_type.__module__ == InxUIScreenComponent.__module__
+            and component_type.__qualname__.startswith(
+                InxUIScreenComponent.__qualname__
+            )
+        )
+    )

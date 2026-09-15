@@ -6,13 +6,15 @@ UIEditorPanel and GameViewPanel.
 
 from __future__ import annotations
 
-from operator import attrgetter
 from typing import List, Tuple, TYPE_CHECKING
 
 if TYPE_CHECKING:
     pass  # avoid circular imports at runtime
 
-_sort_key = attrgetter('sort_order')
+def _sort_key(canvas):
+    # Older Web component overlays may not carry newly added serialized
+    # ordering fields; the authored default is zero and remains deterministic.
+    return int(getattr(canvas, "sort_order", 0) or 0)
 
 # ── Cached canvas collection ────────────────────────────────────────
 # Avoids a full DFS every frame; rebuilt only when Canvas membership changes.
@@ -27,6 +29,22 @@ _runtime_canvas_with_go_cache: list = []
 _runtime_canvas_cache_key = None
 _runtime_canvas_sort_signature: tuple = ()
 _canvas_membership_revision: int = 0
+
+
+def _is_uicanvas_component(component, canvas_type) -> bool:
+    """Recognize the built-in Canvas across a project-module overlay.
+
+    Player script publication can load ``Infernux.ui.ui_canvas`` twice.  The
+    resulting class objects are distinct, but the component's stable module and
+    qualified name remain authoritative for Canvas discovery.
+    """
+    if isinstance(component, canvas_type):
+        return True
+    component_type = type(component)
+    return (
+        component_type.__module__ == canvas_type.__module__
+        and component_type.__qualname__ == canvas_type.__qualname__
+    )
 
 
 def scene_canvas_cache_key(scene) -> tuple[int, int] | None:
@@ -62,7 +80,7 @@ def _rebuild_cache(scene) -> None:
 
     def _walk(go):
         for comp in go.get_py_components():
-            if isinstance(comp, UICanvas):
+            if _is_uicanvas_component(comp, UICanvas):
                 result.append((go, comp))
         for child in go.get_children():
             _walk(child)
@@ -183,7 +201,7 @@ def collect_sorted_runtime_canvases(
 
     def _walk(game_object):
         for component in game_object.get_py_components():
-            if isinstance(component, UICanvas):
+            if _is_uicanvas_component(component, UICanvas):
                 result.append((game_object, component))
         for child in game_object.get_children():
             _walk(child)

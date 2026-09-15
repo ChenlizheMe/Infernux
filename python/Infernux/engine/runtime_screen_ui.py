@@ -8,6 +8,7 @@ Game captures and hidden Game tabs consume the same current-frame HUD.
 from __future__ import annotations
 
 import weakref
+import math
 from Infernux.engine.ui.runtime_canvas_snapshot import (
     collect_sorted_runtime_canvas_snapshot,
     runtime_canvas_snapshot_token,
@@ -15,12 +16,14 @@ from Infernux.engine.ui.runtime_canvas_snapshot import (
 from Infernux.ui.inx_ui_screen_component import (
     WORLD_UI_PIXELS_PER_UNIT,
     clear_rect_cache,
+    is_ui_screen_component,
     _get_layout_revision,
 )
 from Infernux.ui.ui_render_dispatch import (
     dispatch as _ui_dispatch,
     resolve_text_layout as _resolve_text_layout,
     runtime_ui_revision as _runtime_ui_revision,
+    canvas_elements,
     _runtime_command_epoch,
 )
 from Infernux.ui.ui_command_packets import UICommandPackets
@@ -36,6 +39,53 @@ _input_canvas_token = None
 _input_surfaces = ()
 _world_projection_targets = ()
 _world_projection_geometry = None
+
+
+def _canvas_metrics(canvas, viewport_width: float, viewport_height: float):
+    """Return scale and logical size for screen UI canvases.
+
+    Player scene publication can briefly retain a Canvas instance created by a
+    previous Python module identity.  Such an object still carries the
+    authored scalar fields but may not expose the newer helper methods.  Keep
+    the metric calculation at the submission boundary so that this
+    compatibility case does not interrupt the render/input frame.
+    """
+    compute_scale = getattr(canvas, "compute_scale", None)
+    compute_logical_size = getattr(canvas, "compute_logical_size", None)
+    if callable(compute_scale) and callable(compute_logical_size):
+        scale_x, scale_y, text_scale = compute_scale(
+            float(viewport_width), float(viewport_height)
+        )
+        logical_width, logical_height = compute_logical_size(
+            float(viewport_width), float(viewport_height)
+        )
+        return (
+            float(scale_x), float(scale_y), float(text_scale),
+            float(logical_width), float(logical_height),
+        )
+
+    ref_w = max(1.0, float(getattr(canvas, "reference_width", 1920.0)))
+    ref_h = max(1.0, float(getattr(canvas, "reference_height", 1080.0)))
+    screen_w = max(1.0, float(viewport_width))
+    screen_h = max(1.0, float(viewport_height))
+    mode = int(getattr(canvas, "ui_scale_mode", 1))
+    if mode in (0, 2):
+        scale = 1.0
+    else:
+        log_w = math.log2(screen_w / ref_w)
+        log_h = math.log2(screen_h / ref_h)
+        match_mode = int(getattr(canvas, "screen_match_mode", 0))
+        if match_mode == 0:
+            match = max(0.0, min(1.0, float(getattr(canvas, "match_width_or_height", 0.5))))
+            scale = 2.0 ** (log_w * (1.0 - match) + log_h * match)
+        elif match_mode == 1:
+            scale = min(screen_w / ref_w, screen_h / ref_h)
+        else:
+            scale = max(screen_w / ref_w, screen_h / ref_h)
+    if bool(getattr(canvas, "pixel_perfect", False)):
+        scale = max(1.0, round(scale))
+    scale_x = scale_y = max(scale, 1.0e-6)
+    return scale_x, scale_y, min(scale_x, scale_y), screen_w / scale_x, screen_h / scale_y
 
 
 class WorldUIElementTarget:
@@ -240,13 +290,12 @@ def map_runtime_ui_pointer(
             positions.append(position)
             continue
 
-        scale_x, scale_y, _ = surface.compute_scale(
-            float(viewport_width), float(viewport_height)
+        scale_x, scale_y, _, logical_width, logical_height = _canvas_metrics(
+            surface, viewport_width, viewport_height
         )
-        logical_width, logical_height = surface.compute_logical_size(
-            float(viewport_width), float(viewport_height)
-        )
-        surface.set_input_logical_size(logical_width, logical_height)
+        set_input_logical_size = getattr(surface, "set_input_logical_size", None)
+        if callable(set_input_logical_size):
+            set_input_logical_size(logical_width, logical_height)
         positions.append(
             (
                 float(screen_x) / max(scale_x, 1e-6),
@@ -324,10 +373,7 @@ def _collect_world_ui_elements(*scenes):
             isinstance(component, UICanvas) for component in components
         )
         ui_component = next(
-            (
-                component for component in components
-                if isinstance(component, InxUIScreenComponent)
-            ),
+            (component for component in components if is_ui_screen_component(component)),
             None,
         )
         if ui_component is not None and not canvas_here:
@@ -523,24 +569,24 @@ class RuntimeScreenUISubmission:
         if not getattr(canvas, "enabled", True):
             return
 
-        if canvas.render_mode == render_mode.CameraOverlay:
+        canvas_render_mode = getattr(canvas, "render_mode", render_mode.ScreenOverlay)
+        if canvas_render_mode == render_mode.CameraOverlay:
             ui_list = screen_ui_list.Camera
-        elif canvas.render_mode == render_mode.ScreenOverlay:
+        elif canvas_render_mode == render_mode.ScreenOverlay:
             ui_list = screen_ui_list.Overlay
         else:
             return
 
-        if float(canvas.reference_width) < 1 or float(canvas.reference_height) < 1:
+        if float(getattr(canvas, "reference_width", 1920)) < 1 or float(
+            getattr(canvas, "reference_height", 1080)
+        ) < 1:
             return
 
-        scale_x, scale_y, text_scale = canvas.compute_scale(
-            float(game_width), float(game_height)
-        )
-        logical_width, logical_height = canvas.compute_logical_size(
-            float(game_width), float(game_height)
+        scale_x, scale_y, text_scale, logical_width, logical_height = _canvas_metrics(
+            canvas, game_width, game_height
         )
 
-        elements = canvas._get_elements()
+        elements = canvas_elements(canvas)
         args = (ui_list, logical_width, logical_height, scale_x, scale_y,
                 text_scale, get_texture_id)
         if packets is not None:

@@ -9,7 +9,34 @@ from __future__ import annotations
 
 import math
 
-from Infernux.lib import PixelFormat, SampleCount
+try:
+    from Infernux.lib import PixelFormat, SampleCount
+except ImportError:
+    # The Web Player keeps the render-texture authoring API importable even
+    # when its reduced RHI binding does not expose allocation enums.  These
+    # values mirror the native ABI and are only used for deferred descriptions.
+    from enum import IntEnum
+
+    class PixelFormat(IntEnum):
+        UNDEFINED = 0
+        R8_UNORM = 1
+        RG8_UNORM = 2
+        RGBA8_UNORM = 3
+        RGBA8_SRGB = 4
+        BGRA8_UNORM = 5
+        R16_SFLOAT = 7
+        RG16_SFLOAT = 8
+        RGBA16_SFLOAT = 9
+        R32_SFLOAT = 11
+        RGBA32_SFLOAT = 13
+        D32_SFLOAT = 25
+        D24_UNORM_S8_UINT = 26
+
+    class SampleCount(IntEnum):
+        One = 1
+        Two = 2
+        Four = 4
+        Eight = 8
 
 
 class RenderTexture:

@@ -1273,7 +1273,16 @@ def create_component_instance(
         registered_type is not None
         and not str(getattr(registered_type, "_asset_script_guid_", "") or "").strip()
     )
-    if prefer_loaded_type and registered_type is not None and (asset_exists or registered_is_builtin):
+    # Built-in engine components are authoritative in the running engine.
+    # Their stable script GUIDs may also appear in the cooked asset index, but
+    # they must never be routed through project-script loading (which would
+    # turn them into MissingScript placeholders in a Player).
+    if registered_is_builtin and registered_type is not None:
+        component_type = registered_type
+        instance = component_type()
+        instance._script_guid = script_guid
+        return instance, script_path
+    if prefer_loaded_type and registered_type is not None and asset_exists:
         component_type = registered_type
         if component_type is not None:
             instance = component_type()

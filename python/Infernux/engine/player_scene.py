@@ -273,6 +273,11 @@ class PlayerSceneService:
 
     def _new_transaction(self, path: str) -> SceneDocumentTransaction:
         from Infernux.lib import SceneManager
+        # Register the complete engine UI surface before restoring built-in UI
+        # components.  Player loading must not manufacture MissingScript
+        # placeholders simply because a particular control was not imported
+        # by a project script yet.
+        import Infernux.ui  # noqa: F401
 
         scene_manager = SceneManager.instance()
         scene = scene_manager.get_active_scene()
@@ -291,6 +296,7 @@ class PlayerSceneService:
 
     def _new_additive_transaction(self, path: str):
         from Infernux.lib import SceneManager
+        import Infernux.ui  # noqa: F401
 
         scene_manager = SceneManager.instance()
         scene = scene_manager.create_scene(os.path.splitext(os.path.basename(path))[0])

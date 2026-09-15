@@ -22,6 +22,7 @@ from Infernux.components import (
     int_field,
 )
 from .inx_ui_component import InxUIComponent
+from .inx_ui_screen_component import is_ui_screen_component
 from .enums import RenderMode, UIScaleMode, ScreenMatchMode
 from .ui_render_revision import is_unchanged_ui_scalar, mark_runtime_ui_dirty
 
@@ -242,7 +243,7 @@ class UICanvas(InxUIComponent):
         from .inx_ui_screen_component import InxUIScreenComponent
 
         for comp in go.get_py_components():
-            if isinstance(comp, InxUIScreenComponent):
+            if is_ui_screen_component(comp):
                 yield comp
         yield from self._walk_children(go)
 
@@ -250,7 +251,7 @@ class UICanvas(InxUIComponent):
         from .inx_ui_screen_component import InxUIScreenComponent
         for child in parent.get_children():
             for comp in child.get_py_components():
-                if isinstance(comp, InxUIScreenComponent):
+                if is_ui_screen_component(comp):
                     yield comp
             yield from self._walk_children(child)
 

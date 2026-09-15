@@ -677,13 +677,6 @@ void GameObject::ActivatePreparedPythonComponent(Component *component)
     // Reassert it at the lifecycle hand-off so binding hooks cannot leave a
     // freshly loaded Player component disabled before Awake/Start.
     auto *proxy = static_cast<PyComponentProxy *>(component);
-    try {
-        std::fprintf(stderr, "[Infernux Player] activate prepared %s enabled=%d py=%d started=%d playing=%d\n",
-                     proxy->GetTypeName(), component->IsEnabled() ? 1 : 0,
-                     proxy->GetPyComponent().attr("enabled").cast<bool>() ? 1 : 0, m_scene->HasStarted() ? 1 : 0,
-                     m_scene->IsPlaying() ? 1 : 0);
-    } catch (...) {
-    }
     const bool authoredEnabled = proxy->GetPyComponent().attr("enabled").cast<bool>();
     component->m_enabled = authoredEnabled;
     proxy->GetPyComponent().attr("enabled") = py::bool_(authoredEnabled);
