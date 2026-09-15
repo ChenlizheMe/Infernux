@@ -108,15 +108,15 @@ size_t MeshLoader::EstimateRuntimeBytes(const RuntimeAssetPayload &payload) cons
     return mesh->GetRuntimeMemoryBytes();
 }
 
-std::set<std::string> MeshLoader::ScanDependencies(const std::string &filePath, AssetDatabase *adb)
+std::set<std::string> MeshLoader::ScanExternalTexturePaths(const std::string &filePath)
 {
-    std::set<std::string> dependencies;
-    if (!adb || filePath.empty())
-        return dependencies;
+    std::set<std::string> paths;
+    if (filePath.empty())
+        return paths;
 
     const auto sourcePath = ToFsPath(filePath);
     if (!std::filesystem::is_regular_file(sourcePath))
-        return dependencies;
+        return paths;
 
     // Model import is the authoring boundary where mutable paths may be
     // resolved to authoritative GUIDs.  Keep runtime loaders GUID-only.
@@ -124,7 +124,7 @@ std::set<std::string> MeshLoader::ScanDependencies(const std::string &filePath, 
     const aiScene *scene = importer.ReadFile(
         FromFsPath(sourcePath), aiProcess_Triangulate | aiProcess_JoinIdenticalVertices | aiProcess_SortByPType);
     if (!scene || !scene->mMaterials)
-        return dependencies;
+        return paths;
 
     const std::filesystem::path sourceDirectory = sourcePath.parent_path();
     for (unsigned int materialIndex = 0; materialIndex < scene->mNumMaterials; ++materialIndex) {
@@ -161,11 +161,22 @@ std::set<std::string> MeshLoader::ScanDependencies(const std::string &filePath, 
                 candidate = candidate.lexically_normal();
                 if (!std::filesystem::is_regular_file(candidate))
                     continue;
-                const std::string guid = adb->GetGuidFromPath(FromFsPath(candidate));
-                if (!guid.empty())
-                    dependencies.insert(guid);
+                paths.insert(FromFsPath(candidate));
             }
         }
+    }
+    return paths;
+}
+
+std::set<std::string> MeshLoader::ScanDependencies(const std::string &filePath, AssetDatabase *adb)
+{
+    std::set<std::string> dependencies;
+    if (!adb)
+        return dependencies;
+    for (const auto &path : ScanExternalTexturePaths(filePath)) {
+        const std::string guid = adb->GetGuidFromPath(path);
+        if (!guid.empty())
+            dependencies.insert(guid);
     }
     return dependencies;
 }

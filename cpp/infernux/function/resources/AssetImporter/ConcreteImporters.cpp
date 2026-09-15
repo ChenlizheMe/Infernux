@@ -546,6 +546,9 @@ ImportArtifact ModelImporter::Import(const ImportRequest &request) const
                                   checkedMetadataInt(imported.animationNames.size(), "animation_count"));
     artifact.metadata.AddMetadata("animation_names_csv", joinCsv(imported.animationNames));
 
+    const auto externalTextures = MeshLoader::ScanExternalTexturePaths(request.sourcePath);
+    artifact.dependencyPathHints.assign(externalTextures.begin(), externalTextures.end());
+
     if (!artifact.metadata.HasKey("content_hash"))
         throw std::logic_error("ModelImporter metadata has no source content hash");
     artifact.runtimeCpuArtifacts.push_back(ImportArtifact::RuntimeCpuArtifact{

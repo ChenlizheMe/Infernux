@@ -943,6 +943,9 @@ if(INFERNUX_BUILD_TESTS)
         ${CMAKE_SOURCE_DIR}/external
     )
     target_link_libraries(infernux_asset_database_refresh_tests PRIVATE infernux_runtime_test_support)
+    target_compile_definitions(infernux_asset_database_refresh_tests PRIVATE
+        INFERNUX_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+    )
     if(MSVC)
         target_compile_options(infernux_asset_database_refresh_tests PRIVATE /utf-8 /UNDEBUG)
     else()

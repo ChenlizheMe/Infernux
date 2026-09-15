@@ -58,6 +58,28 @@ void ValidateImportedDependencyIdentities(const ImportArtifact &artifact, const 
     }
 }
 
+void ResolveImportedDependencyPathHints(ImportArtifact &artifact,
+                                        const std::unordered_map<std::string, std::string> &pathToGuid,
+                                        const std::string &sourcePath)
+{
+    if (artifact.dependencyPathHints.empty())
+        return;
+
+    std::unordered_set<std::string> dependencies(artifact.dependencies.begin(), artifact.dependencies.end());
+    for (const auto &path : artifact.dependencyPathHints) {
+        const auto it = pathToGuid.find(FilesystemPathKey(path));
+        if (it == pathToGuid.end() || !IsCanonicalAssetGuid(it->second))
+            throw std::runtime_error("Importer for '" + sourcePath + "' could not resolve model dependency path '" +
+                                     path + "' to a project asset GUID");
+        dependencies.insert(it->second);
+    }
+
+    artifact.dependencies.assign(dependencies.begin(), dependencies.end());
+    std::sort(artifact.dependencies.begin(), artifact.dependencies.end());
+    artifact.dependenciesAuthoritative = true;
+    artifact.dependencyPathHints.clear();
+}
+
 InxResourceMeta LoadMetadataDocument(const std::string &path)
 {
     std::ifstream file(ToFsPath(path));
@@ -1553,6 +1575,8 @@ bool AssetDatabase::ContinuePendingImportMerge(const std::shared_ptr<PendingRefr
                 throw std::runtime_error(item.error);
             if (!item.artifact)
                 throw std::logic_error("Worker importer completed without an artifact");
+            ResolveImportedDependencyPathHints(*item.artifact, workingSet.pathToGuid, asset.path);
+            ValidateImportedDependencyIdentities(*item.artifact, asset.path);
             auto runtimeArtifactWrites = TakeRuntimeArtifactWrites(item.artifact->runtimeCpuArtifacts, asset.guid,
                                                                    item.request.resourceType, m_projectRoot);
             workingSet.metas[asset.guid] = std::make_shared<InxResourceMeta>(std::move(item.artifact->metadata));
@@ -2596,6 +2620,7 @@ bool AssetDatabase::RunImporter(const std::string &guid, const std::string &path
     std::string error;
     try {
         ImportArtifact artifact = isReimport ? importer->Reimport(request) : importer->Import(request);
+        ResolveImportedDependencyPathHints(artifact, m_pathToGuid, request.sourcePath);
         ValidateImportedDependencyIdentities(artifact, request.sourcePath);
         std::vector<DocumentTransactionEntry> writes;
         writes.reserve(1 + artifact.runtimeCpuArtifacts.size());

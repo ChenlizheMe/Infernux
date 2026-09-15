@@ -1,10 +1,13 @@
 #include <core/threading/JobSystem.h>
 #include <function/resources/AssetDatabase/AssetDatabase.h>
 #include <function/resources/AssetDatabase/AssetIndex.h>
+#include <function/resources/AssetDependencyGraph.h>
 #include <function/resources/AssetImporter/ImporterRegistry.h>
 #include <function/resources/AssetRegistry/AssetRegistry.h>
 #include <function/resources/InxFileLoader/InxDefaultLoader.hpp>
 #include <function/resources/InxFileLoader/InxPythonScriptLoader.hpp>
+#include <function/resources/InxMesh/MeshLoader.h>
+#include <function/resources/InxTexture/TextureLoader.h>
 #include <platform/filesystem/InxPath.h>
 
 #include <filesystem>
@@ -395,6 +398,62 @@ void TestRuntimeAssetCatalogInstallsStableIdentityWithoutSidecar()
     std::filesystem::remove_all(root);
 }
 
+void TestCompositeModelPublishesExternalTextureGuidDependencies()
+{
+    const auto root = std::filesystem::temp_directory_path() / "infernux-asset-model-dependencies";
+    std::filesystem::remove_all(root);
+    const auto sourceRoot =
+        std::filesystem::path(INFERNUX_SOURCE_DIR) / "external" / "assimp" / "test" / "models" / "OBJ";
+    const auto model = root / "Assets" / "Models" / "spider.obj";
+    const auto material = root / "Assets" / "Models" / "spider.mtl";
+    std::filesystem::create_directories(model.parent_path());
+    std::filesystem::copy_file(sourceRoot / "spider.obj", model, std::filesystem::copy_options::overwrite_existing);
+    std::filesystem::copy_file(sourceRoot / "spider.mtl", material, std::filesystem::copy_options::overwrite_existing);
+    for (const char *name :
+         {"wal67ar_small.jpg", "wal69ar_small.jpg", "SpiderTex.jpg", "drkwood2.jpg", "engineflare1.jpg"}) {
+        std::filesystem::copy_file(sourceRoot / name, model.parent_path() / name,
+                                   std::filesystem::copy_options::overwrite_existing);
+    }
+
+    infernux::AssetDependencyGraph::Instance().Clear();
+    infernux::JobSystem::Initialize(2);
+    try {
+        auto database = std::make_unique<infernux::AssetDatabase>();
+        database->Initialize(infernux::FromFsPath(root));
+        auto &registry = infernux::AssetRegistry::Instance();
+        registry.Initialize(std::move(database));
+        registry.RegisterLoader(infernux::ResourceType::DefaultText,
+                                std::make_unique<infernux::InxDefaultTextLoader>(infernux::ResourceType::DefaultText));
+        registry.RegisterLoader(infernux::ResourceType::Mesh, std::make_unique<infernux::MeshLoader>());
+        registry.RegisterLoader(infernux::ResourceType::Texture, std::make_unique<infernux::TextureLoader>());
+        registry.PopulateAssetDatabaseLoaders();
+        auto *assetDatabase = registry.GetAssetDatabase();
+        assetDatabase->Refresh();
+
+        const auto modelGuid = assetDatabase->GetGuidFromPath(infernux::FromFsPath(model));
+        Require(!modelGuid.empty(), "composite model fixture was not registered");
+        const auto dependencies = infernux::AssetDependencyGraph::Instance().GetDependencies(modelGuid);
+        Require(dependencies.size() == 5, "composite model did not publish five texture GUID dependencies");
+        for (const char *name :
+             {"wal67ar_small.jpg", "wal69ar_small.jpg", "SpiderTex.jpg", "drkwood2.jpg", "engineflare1.jpg"}) {
+            const auto textureGuid = assetDatabase->GetGuidFromPath(infernux::FromFsPath(model.parent_path() / name));
+            Require(!textureGuid.empty() && dependencies.count(textureGuid) == 1,
+                    "composite model texture dependency was not published by GUID");
+        }
+        registry.Shutdown();
+        infernux::JobSystem::Shutdown();
+    } catch (...) {
+        if (infernux::AssetRegistry::Instance().IsInitialized())
+            infernux::AssetRegistry::Instance().Shutdown();
+        infernux::JobSystem::Shutdown();
+        infernux::AssetDependencyGraph::Instance().Clear();
+        std::filesystem::remove_all(root);
+        throw;
+    }
+    infernux::AssetDependencyGraph::Instance().Clear();
+    std::filesystem::remove_all(root);
+}
+
 void TestRuntimeAssetCatalogResolvesBuiltInArchiveResources()
 {
     const auto root = std::filesystem::temp_directory_path() / "infernux-runtime-builtin-catalog";
@@ -532,6 +591,7 @@ int main()
         TestProjectPackagesScanRootSharesTheGuidCatalog();
         TestStartupCatalogSurvivesLiveIndexInvalidation();
         TestRuntimeAssetCatalogInstallsStableIdentityWithoutSidecar();
+        TestCompositeModelPublishesExternalTextureGuidDependencies();
         TestRuntimeAssetCatalogResolvesBuiltInArchiveResources();
         TestRuntimeAssetCatalogResolvesPrimaryContentArtifact();
         TestMoveRequiresRegisteredGuidIdentity();

@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -50,6 +51,11 @@ class MeshLoader final : public IAssetLoader
     ImportSourceDetailed(const std::string &filePath, const std::string &guid, const InxResourceMeta &metadata);
     [[nodiscard]] static std::shared_ptr<InxMesh> ImportSource(const std::string &filePath, const std::string &guid,
                                                                const InxResourceMeta &metadata);
+
+    /// Enumerate regular external texture files referenced by a composite
+    /// model source. The AssetDatabase authoring boundary converts these
+    /// paths to GUID dependencies before publication.
+    [[nodiscard]] static std::set<std::string> ScanExternalTexturePaths(const std::string &filePath);
 
     RuntimeAssetPayload Load(const std::string &filePath, const std::string &guid, AssetDatabase *adb) override;
     [[nodiscard]] bool SupportsWorkerLoad() const noexcept override

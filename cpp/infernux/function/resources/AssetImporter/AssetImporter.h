@@ -41,6 +41,11 @@ struct ImportArtifact
     std::vector<std::string> dependencies;
     bool dependenciesAuthoritative = false;
 
+    // Importers may report source-local paths only as an authoring hand-off.
+    // AssetDatabase resolves these paths against the current scan catalog and
+    // publishes only the resulting GUIDs. They never enter the durable graph.
+    std::vector<std::string> dependencyPathHints;
+
     enum class RuntimeArtifactKind : uint8_t
     {
         Primary,
