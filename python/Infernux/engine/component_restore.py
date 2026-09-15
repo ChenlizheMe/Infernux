@@ -651,8 +651,13 @@ def _publish_prepared_scene_python_components(
         comparable_fields.pop("__component_id__", None)
         prepared_fields = dict(item.fields_document)
         prepared_fields.pop("__component_id__", None)
+        published_game_object_id = (
+            object_id_map.get(item.game_object_id, item.game_object_id)
+            if object_id_map is not None and item.game_object_id is not None
+            else item.game_object_id
+        )
         if (
-            (item.game_object_id is not None and pc.game_object_id != item.game_object_id)
+            (published_game_object_id is not None and pc.game_object_id != published_game_object_id)
             or pc.type_name != item.type_name
             or (getattr(pc, "script_guid", "") or "") != item.script_guid
             or (getattr(pc, "type_guid", "") or "") != item.type_guid
@@ -710,6 +715,9 @@ def _publish_prepared_scene_python_components(
     attached = []
     try:
         for prepared_index, ((target, instance), item) in enumerate(zip(targets, prepared)):
+            # Seed the mirror before native proxy construction; the proxy
+            # constructor reads the Python flag while binding.
+            instance._enabled = item.enabled
             published_instance = target._attach_prepared_py_component(
                 instance,
                 pending[prepared_index].component_index,
@@ -728,6 +736,11 @@ def _publish_prepared_scene_python_components(
                 native_component._set_component_id(item.component_id)
                 instance._component_id = item.component_id
                 instance._refresh_native_handle()
+            # The native attach hook mirrors its default state into Python.
+            # Restore the descriptor's authored enabled bit after binding and
+            # before lifecycle activation, so first Player Start is eligible.
+            native_component.enabled = item.enabled
+            instance._enabled = item.enabled
             native_component.execution_order = item.execution_order
         for _target, instance, _native_component in attached:
             instance._call_on_after_deserialize()

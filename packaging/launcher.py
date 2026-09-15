@@ -332,11 +332,11 @@ class GameEngineLauncher(QMainWindow):
             sys.exit(self.app.exec())
 
     def _bootstrap_hub(self):
-        # Resolve application updates before presenting runtime migration.
-        # This keeps an older Hub from offering engine/runtime actions that a
-        # newer release has made incompatible.
-        self._startup_update_pending = True
-        self.update_controller.check(silent=True)
+        if self.db.get_setting("automatic_update_checks", "enabled") == "enabled":
+            self._startup_update_pending = True
+            self.update_controller.check(silent=True)
+            return
+        self._bootstrap_python_runtime()
 
     def _on_startup_update_check_finished(self):
         if not self._startup_update_pending:
@@ -356,7 +356,8 @@ class GameEngineLauncher(QMainWindow):
 
     def _finish_startup(self):
         self.installs_view.refresh()
-        self.notification_controller.show_pending()
+        if self.db.get_setting("automatic_update_checks", "enabled") == "enabled":
+            self.notification_controller.show_pending()
 
     def _on_close(self):
         self.db.close()

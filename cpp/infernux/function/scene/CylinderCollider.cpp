@@ -23,7 +23,25 @@
 namespace infernux
 {
 
-INFERNUX_REGISTER_VALIDATED_COMPONENT("CylinderCollider", CylinderCollider)
+namespace
+{
+SemanticTypeDescriptor DescribeCylinderCollider()
+{
+    auto type =
+        Collider::DescribeSemanticType("CylinderCollider", "infernux.component.cylinder-collider", "Cylinder Collider");
+    Collider::AddSemanticField(type, "radius", "FLOAT", 0.5, "cylinder_collider.radius",
+                               "cylinder_collider.tooltip.radius")["range"] = {0.001, 100000.0};
+    Collider::AddSemanticField(type, "height", "FLOAT", 1.0, "cylinder_collider.height",
+                               "cylinder_collider.tooltip.height")["range"] = {0.001, 100000.0};
+    Collider::AddSemanticField(type, "direction", "INT", 1, "collider.direction",
+                               "cylinder_collider.tooltip.direction")["range"] = {0, 2};
+    return type;
+}
+
+const bool registeredCylinderCollider = ComponentFactory::Register(
+    "CylinderCollider", [] { return std::make_unique<CylinderCollider>(); },
+    CylinderCollider::ValidateSerializedDocument, CylinderCollider::GetTypeConstraints(), DescribeCylinderCollider);
+} // namespace
 
 void CylinderCollider::SetRadius(float radius)
 {

@@ -283,7 +283,7 @@ def _render_texture2d_property(ctx, prop, prop_name, wid_prefix, plw,
 
     def _assign_texture(payload):
         nonlocal changed
-        guid, path = _project_texture_guid_and_path(payload)
+        guid, path = _project_texture_guid_and_path(payload, allow_render_texture=True)
         if not guid:
             logging.getLogger(__name__).warning(
                 "Texture must belong to the current project's Assets folder: %s", payload)
@@ -306,9 +306,8 @@ def _render_texture2d_property(ctx, prop, prop_name, wid_prefix, plw,
         ctx,
         f"{wid_prefix}_{prop_name}_tex",
         display, "Texture",
-        asset_type="Texture",
+        asset_type="Texture.Sampled",
         clickable=True,
-        accept="TEXTURE_FILE",
         on_assign=_assign_texture,
         on_clear=_on_tex_clear,
         ping_path=_texture_path() or None,

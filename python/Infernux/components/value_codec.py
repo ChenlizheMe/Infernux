@@ -92,9 +92,16 @@ class ValueCodecRegistry:
         raise AssertionError("the built-in codec must be the final decode fallback")
 
     def _encode_builtin(self, value: Any, path: str) -> Any:
-        if isinstance(value, Enum):
+        value_type = type(value)
+        is_enum = isinstance(value, Enum)
+        if not is_enum and hasattr(value_type, "__members__"):
+            from Infernux.lib import _Infernux
+            is_enum = getattr(_Infernux, value_type.__name__, None) is value_type
+        if is_enum:
             from .value_document import make_enum
-            return make_enum(type(value).__qualname__, value.name)
+            if value.name not in value_type.__members__:
+                raise ValueError(f"{path}: unknown {value_type.__qualname__} enum member")
+            return make_enum(value_type.__qualname__, value.name)
         from Infernux.graph.ramp import AnimationCurve, Gradient
         if isinstance(value, (AnimationCurve, Gradient)):
             return self._encode_builtin(value.to_dict(), path)
@@ -515,9 +522,10 @@ class ValueCodecRegistry:
                 raise ValueError(f"{path}: ASSET field has no asset_type contract")
         from Infernux.core.asset_reference_types import asset_type_registry
 
-        expected = asset_type_registry.require(expected_asset_type).type_id
+        descriptor = asset_type_registry.require(expected_asset_type)
+        expected = descriptor.type_id
         actual = asset_type_registry.require(value["asset_type"]).type_id
-        if actual != expected:
+        if actual not in (descriptor.compatible_types or (expected,)):
             raise TypeError(f"{path}: {field_type.name} field requires {expected_asset_type} reference data")
 
 

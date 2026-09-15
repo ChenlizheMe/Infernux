@@ -25,40 +25,6 @@ namespace vk
 namespace
 {
 
-VkPipelineStageFlags ToVkPipelineStages(rhi::PipelineStage stages)
-{
-    VkPipelineStageFlags result = 0;
-    if (rhi::HasAny(stages, rhi::PipelineStage::Top))
-        result |= VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
-    if (rhi::HasAny(stages, rhi::PipelineStage::DrawIndirect))
-        result |= VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT;
-    if (rhi::HasAny(stages, rhi::PipelineStage::VertexInput))
-        result |= VK_PIPELINE_STAGE_VERTEX_INPUT_BIT;
-    if (rhi::HasAny(stages, rhi::PipelineStage::VertexShader))
-        result |= VK_PIPELINE_STAGE_VERTEX_SHADER_BIT;
-    if (rhi::HasAny(stages, rhi::PipelineStage::FragmentShader))
-        result |= VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-    if (rhi::HasAny(stages, rhi::PipelineStage::EarlyDepth))
-        result |= VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
-    if (rhi::HasAny(stages, rhi::PipelineStage::LateDepth))
-        result |= VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
-    if (rhi::HasAny(stages, rhi::PipelineStage::ColorOutput))
-        result |= VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    if (rhi::HasAny(stages, rhi::PipelineStage::ComputeShader))
-        result |= VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
-    if (rhi::HasAny(stages, rhi::PipelineStage::Transfer))
-        result |= VK_PIPELINE_STAGE_TRANSFER_BIT;
-    if (rhi::HasAny(stages, rhi::PipelineStage::Bottom))
-        result |= VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
-    if (rhi::HasAny(stages, rhi::PipelineStage::Host))
-        result |= VK_PIPELINE_STAGE_HOST_BIT;
-    if (rhi::HasAny(stages, rhi::PipelineStage::AllGraphics))
-        result |= VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT;
-    if (rhi::HasAny(stages, rhi::PipelineStage::AllCommands))
-        result |= VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
-    return result;
-}
-
 bool QueueFamilySupportsStages(VkQueueFlags queueFlags, VkPipelineStageFlags stages)
 {
     constexpr VkPipelineStageFlags graphicsOnly =
@@ -78,44 +44,6 @@ bool QueueFamilySupportsStages(VkQueueFlags queueFlags, VkPipelineStageFlags sta
         (queueFlags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT)) == 0)
         return false;
     return true;
-}
-
-VkAccessFlags ToVkAccessFlags(rhi::Access access)
-{
-    VkAccessFlags result = 0;
-    if (rhi::HasAny(access, rhi::Access::IndirectRead))
-        result |= VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
-    if (rhi::HasAny(access, rhi::Access::IndexRead))
-        result |= VK_ACCESS_INDEX_READ_BIT;
-    if (rhi::HasAny(access, rhi::Access::VertexRead))
-        result |= VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT;
-    if (rhi::HasAny(access, rhi::Access::UniformRead))
-        result |= VK_ACCESS_UNIFORM_READ_BIT;
-    if (rhi::HasAny(access, rhi::Access::ShaderRead))
-        result |= VK_ACCESS_SHADER_READ_BIT;
-    if (rhi::HasAny(access, rhi::Access::ShaderWrite))
-        result |= VK_ACCESS_SHADER_WRITE_BIT;
-    if (rhi::HasAny(access, rhi::Access::ColorRead))
-        result |= VK_ACCESS_COLOR_ATTACHMENT_READ_BIT;
-    if (rhi::HasAny(access, rhi::Access::ColorWrite))
-        result |= VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-    if (rhi::HasAny(access, rhi::Access::DepthRead))
-        result |= VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
-    if (rhi::HasAny(access, rhi::Access::DepthWrite))
-        result |= VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-    if (rhi::HasAny(access, rhi::Access::TransferRead))
-        result |= VK_ACCESS_TRANSFER_READ_BIT;
-    if (rhi::HasAny(access, rhi::Access::TransferWrite))
-        result |= VK_ACCESS_TRANSFER_WRITE_BIT;
-    if (rhi::HasAny(access, rhi::Access::HostRead))
-        result |= VK_ACCESS_HOST_READ_BIT;
-    if (rhi::HasAny(access, rhi::Access::HostWrite))
-        result |= VK_ACCESS_HOST_WRITE_BIT;
-    if (rhi::HasAny(access, rhi::Access::MemoryRead))
-        result |= VK_ACCESS_MEMORY_READ_BIT;
-    if (rhi::HasAny(access, rhi::Access::MemoryWrite))
-        result |= VK_ACCESS_MEMORY_WRITE_BIT;
-    return result;
 }
 
 VkImageLayout ToVkImageLayout(rhi::TextureLayout layout)
@@ -510,6 +438,8 @@ bool RenderGraph::CompileQueueOwnershipTransfers()
 
     std::vector<ResourceState> states = m_initialResourceStates;
     states.resize(m_resources.size());
+    std::vector<ResourceAccess> firstAccesses(m_resources.size());
+    std::vector<uint32_t> firstPasses(m_resources.size(), UINT32_MAX);
 
     std::vector<VkQueueFamilyProperties> queueFamilies;
     if (m_context && m_context->GetPhysicalDevice() != VK_NULL_HANDLE) {
@@ -539,6 +469,10 @@ bool RenderGraph::CompileQueueOwnershipTransfers()
             return true;
 
         const bool present = (access.usage & ResourceUsage::Present) != ResourceUsage::None;
+        if (firstPasses[access.handle.id] == UINT32_MAX && !present) {
+            firstPasses[access.handle.id] = pass.id;
+            firstAccesses[access.handle.id] = access;
+        }
         const rhi::QueueRole targetQueue = present ? rhi::QueueRole::Present : pass.queue;
         const NativeQueueBinding targetBinding = bindingFor(targetQueue);
         if (!targetBinding.IsValid()) {
@@ -567,10 +501,15 @@ bool RenderGraph::CompileQueueOwnershipTransfers()
             auto &waits = m_submissionPlan.batches[targetBatch].waitsFor;
             const auto existing = std::find_if(waits.begin(), waits.end(),
                                                [&](const auto &wait) { return wait.sourceBatch == sourceBatch; });
+            // Ownership operations have no pipeline stage without the optional
+            // maintenance8 dependency flag. The semaphore must order the
+            // acquire itself, not only its eventual shader/transfer consumer.
+            const auto waitStages =
+                familyChange && !resource.concurrentQueueSharing ? rhi::PipelineStage::AllCommands : access.stages;
             if (existing == waits.end())
-                waits.push_back({sourceBatch, access.stages});
+                waits.push_back({sourceBatch, waitStages});
             else
-                existing->waitStages = existing->waitStages | access.stages;
+                existing->waitStages = existing->waitStages | waitStages;
         }
 
         // PresentRead is itself the release operation recorded on Graphics;
@@ -638,6 +577,33 @@ bool RenderGraph::CompileQueueOwnershipTransfers()
             state.accessMask = rhi::Access::DepthRead;
             state.stages = rhi::PipelineStage::EarlyDepth | rhi::PipelineStage::LateDepth;
         }
+    }
+    // A graph-owned allocation survives replay. Its last queue must release it
+    // before the next execution's first queue acquires it. Reuse the frame's
+    // existing pre-setup release work; the first execution has no prior owner.
+    for (uint32_t id = 0; id < m_resources.size(); ++id) {
+        const auto &resource = m_resources[id];
+        const uint32_t firstPass = firstPasses[id];
+        if (resource.isExternal || resource.concurrentQueueSharing || firstPass == UINT32_MAX)
+            continue;
+        const auto &last = states[id];
+        const auto firstBinding = bindingFor(m_passes[firstPass].queue);
+        if (last.queueFamily == VK_QUEUE_FAMILY_IGNORED || last.queueFamily == firstBinding.family)
+            continue;
+        QueueOwnershipTransfer transfer;
+        transfer.info.resourceId = id;
+        transfer.info.sourcePass = last.writerPassId;
+        transfer.info.targetPass = firstPass;
+        transfer.info.targetBatch = passToBatch[firstPass];
+        transfer.info.sourceFamily = last.queueFamily;
+        transfer.info.targetFamily = firstBinding.family;
+        transfer.sourceState = last;
+        transfer.targetAccess = firstAccesses[id];
+        transfer.fromPreviousExecution = true;
+        const uint32_t index = static_cast<uint32_t>(m_queueOwnershipTransfers.size());
+        m_queueOwnershipTransfers.push_back(transfer);
+        m_queueOwnershipTransferInfos.push_back(transfer.info);
+        m_externalOutgoingOwnershipTransfers[static_cast<size_t>(last.queue)].push_back(index);
     }
     return true;
 }
@@ -1295,6 +1261,8 @@ bool RenderGraph::CompileGraphicsAttachments()
 
 void RenderGraph::PrecomputeExecuteData()
 {
+    for (auto &resource : m_resources)
+        resource.attachmentBindings.clear();
     for (auto &pass : m_passes) {
         if (pass.culled)
             continue;
@@ -1316,22 +1284,28 @@ void RenderGraph::PrecomputeExecuteData()
             if (!output.IsValid() || output.id >= m_resources.size() ||
                 colorCount >= pass.cachedRenderingColorAttachments.size())
                 continue;
-            const auto &resource = m_resources[output.id];
+            auto &resource = m_resources[output.id];
             VkRenderingAttachmentInfo &attachment = pass.cachedRenderingColorAttachments[colorCount++];
             attachment = {};
             attachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
             attachment.imageView = resource.isExternal ? resource.externalView : resource.allocatedView;
+            if (resource.isExternal)
+                resource.attachmentBindings.push_back(
+                    {pass.id, colorCount - 1, ResourceData::AttachmentBinding::Kind::Color});
             attachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
             attachment.loadOp = pass.clearColorEnabled ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD;
             attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
             attachment.clearValue.color = pass.clearColor;
             if (colorCount == 1 && pass.hasResolveAttachment && pass.resolveOutput.IsValid() &&
                 pass.resolveOutput.id < m_resources.size()) {
-                const auto &resolve = m_resources[pass.resolveOutput.id];
+                auto &resolve = m_resources[pass.resolveOutput.id];
                 attachment.resolveMode = rhi::IsIntegerFormat(rhi::FromVkFormat(resource.textureDesc.format))
                                              ? VK_RESOLVE_MODE_SAMPLE_ZERO_BIT
                                              : VK_RESOLVE_MODE_AVERAGE_BIT;
                 attachment.resolveImageView = resolve.isExternal ? resolve.externalView : resolve.allocatedView;
+                if (resolve.isExternal)
+                    resolve.attachmentBindings.push_back(
+                        {pass.id, colorCount - 1, ResourceData::AttachmentBinding::Kind::Resolve});
                 attachment.resolveImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
             }
         }
@@ -1339,10 +1313,12 @@ void RenderGraph::PrecomputeExecuteData()
         pass.cachedRenderingDepthAttachment = {};
         const ResourceHandle depth = GetEffectiveDepth(pass);
         if (depth.IsValid() && depth.id < m_resources.size()) {
-            const auto &resource = m_resources[depth.id];
+            auto &resource = m_resources[depth.id];
             auto &attachment = pass.cachedRenderingDepthAttachment;
             attachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
             attachment.imageView = resource.isExternal ? resource.externalView : resource.allocatedView;
+            if (resource.isExternal)
+                resource.attachmentBindings.push_back({pass.id, 0, ResourceData::AttachmentBinding::Kind::Depth});
             const bool writableDepth = pass.depthOutput.IsValid();
             attachment.imageLayout = writableDepth ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
                                                    : VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
@@ -1629,6 +1605,8 @@ void RenderGraph::InsertQueueOwnershipReleases(VkCommandBuffer cmdBuffer, uint32
 
     for (const uint32_t transferIndex : *outgoing) {
         if (transferIndex >= m_queueOwnershipTransfers.size())
+            continue;
+        if (!NeedsOwnershipRelease(transferIndex))
             continue;
         const auto &transfer = m_queueOwnershipTransfers[transferIndex];
         if (transfer.info.resourceId >= m_resources.size())

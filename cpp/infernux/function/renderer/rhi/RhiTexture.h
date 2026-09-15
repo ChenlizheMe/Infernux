@@ -36,8 +36,10 @@ class TextureResource final
 
     [[nodiscard]] bool IsValid() const noexcept
     {
+        // Attachment-only images (including MSAA/depth) do not own a sampler.
+        // A sampled publication separately requires one in TextureGpuView.
         return m_device && (!m_lifetime || m_lifetime->alive.load(std::memory_order_acquire)) && m_texture.IsValid() &&
-               m_view.IsValid() && m_sampler.IsValid() && m_residentBytes > 0;
+               m_view.IsValid() && m_residentBytes > 0;
     }
     [[nodiscard]] TextureHandle GetTexture() const noexcept
     {

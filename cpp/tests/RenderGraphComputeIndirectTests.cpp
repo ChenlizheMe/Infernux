@@ -2736,22 +2736,34 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
         !Require(sameFamilyGraph.GetQueueOwnershipTransfers().empty(),
                  "Queues in one family incorrectly emitted an ownership transfer") ||
         !Require(!sameFamilyGraph.GetSubmissionPlan().batches[1].waitsFor.empty() &&
-                     sameFamilyGraph.GetSubmissionPlan().batches[1].waitsFor.front().sourceBatch == 0,
+                     sameFamilyGraph.GetSubmissionPlan().batches[1].waitsFor.front().sourceBatch == 0 &&
+                     (sameFamilyGraph.GetSubmissionPlan().batches[1].waitsFor.front().waitStages &
+                      infernux::rhi::PipelineStage::AllCommands) == infernux::rhi::PipelineStage::None,
                  "Same-family independent lanes lost their timeline dependency"))
         return false;
 
     RenderGraph crossFamilyGraph;
     if (!Require(compileQueueOwnershipFixture({1, 1}, {0, 0}, crossFamilyGraph),
                  "Cross-family queue ownership fixture failed to compile") ||
-        !Require(crossFamilyGraph.GetQueueOwnershipTransfers().size() == 1,
-                 "Cross-family resource use did not compile one ownership transfer"))
+        !Require(crossFamilyGraph.GetQueueOwnershipTransfers().size() == 2,
+                 "Cross-family resource use must compile both the forward and replay ownership transfers"))
         return false;
     const auto &queueTransfer = crossFamilyGraph.GetQueueOwnershipTransfers().front();
+    const auto &replayTransfer = crossFamilyGraph.GetQueueOwnershipTransfers().back();
+    if (!Require(replayTransfer.sourceBatch == infernux::rhi::InvalidSubmissionBatchIndex &&
+                     replayTransfer.targetBatch == 0 && replayTransfer.sourceFamily == 0 &&
+                     replayTransfer.targetFamily == 1,
+                 "Replay ownership must return from the final queue before the next first batch") ||
+        !Require(!crossFamilyGraph.HasExternalQueueOwnershipReleases(infernux::rhi::QueueRole::Graphics),
+                 "A new graph must not release allocations that have never executed"))
+        return false;
     if (!Require(queueTransfer.sourceBatch == 0 && queueTransfer.targetBatch == 1 && queueTransfer.sourceFamily == 1 &&
                      queueTransfer.targetFamily == 0,
                  "Cross-family ownership transfer metadata is incomplete") ||
         !Require(!crossFamilyGraph.GetSubmissionPlan().batches[1].waitsFor.empty() &&
-                     crossFamilyGraph.GetSubmissionPlan().batches[1].waitsFor.front().sourceBatch == 0,
+                     crossFamilyGraph.GetSubmissionPlan().batches[1].waitsFor.front().sourceBatch == 0 &&
+                     (crossFamilyGraph.GetSubmissionPlan().batches[1].waitsFor.front().waitStages &
+                      infernux::rhi::PipelineStage::AllCommands) != infernux::rhi::PipelineStage::None,
                  "Cross-family ownership transfer lost its timeline dependency"))
         return false;
 

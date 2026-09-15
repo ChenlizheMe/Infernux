@@ -53,6 +53,16 @@ struct MaterialSlotData
     float opacity = 1.0f;
 };
 
+/// One immutable geometry generation retained by consumers while in flight.
+struct MeshGeometry
+{
+    std::vector<Vertex> vertices;
+    std::vector<uint32_t> indices;
+    std::vector<SubMesh> subMeshes;
+    glm::vec3 boundsMin{0.0f};
+    glm::vec3 boundsMax{0.0f};
+};
+
 /**
  * @brief Runtime mesh asset — the loaded, GPU-ready representation of a 3D model.
  *
@@ -65,11 +75,13 @@ struct MaterialSlotData
  *   - **Single buffer, multiple submeshes** — minimises GPU buffer count
  *     and allows one vkCmdBindVertexBuffers per model regardless of
  *     how many material slots it uses.
- *   - **Source file is the truth** — no intermediate .mesh format.
- *     The original .fbx/.obj/.gltf is re-parsed by Assimp at load time.
- *     A binary cache can be added later as an optimisation.
- *   - **Vertex layout matches the engine's `Vertex` struct** — Assimp
- *     data is converted once during loading; no runtime format conversion.
+ *   - **Immutable geometry generations** — source import and cooked artifact
+ *     loading publish through SetData.
+ * Draw commands retain the generation
+ *     they reference, independently of later replacement or asset retirement.
+ *
+ * - **Vertex layout matches the engine's `Vertex` struct** — Assimp data is converted once during loading; no runtime
+ * format conversion.
  *
  * Ownership: managed by AssetRegistry via shared_ptr<InxMesh>.
  * MeshRenderers hold AssetRef<InxMesh> resolved through the registry.
@@ -115,46 +127,51 @@ class InxMesh
 
     [[nodiscard]] const std::vector<Vertex> &GetVertices() const
     {
-        return m_vertices;
+        return m_geometry->vertices;
     }
     [[nodiscard]] const std::vector<uint32_t> &GetIndices() const
     {
-        return m_indices;
+        return m_geometry->indices;
     }
 
     [[nodiscard]] uint32_t GetVertexCount() const
     {
-        return static_cast<uint32_t>(m_vertices.size());
+        return static_cast<uint32_t>(m_geometry->vertices.size());
     }
     [[nodiscard]] uint32_t GetIndexCount() const
     {
-        return static_cast<uint32_t>(m_indices.size());
+        return static_cast<uint32_t>(m_geometry->indices.size());
     }
 
     // ── SubMesh access ───────────────────────────────────────────────────
 
     [[nodiscard]] const std::vector<SubMesh> &GetSubMeshes() const
     {
-        return m_subMeshes;
+        return m_geometry->subMeshes;
     }
     [[nodiscard]] uint32_t GetSubMeshCount() const
     {
-        return static_cast<uint32_t>(m_subMeshes.size());
+        return static_cast<uint32_t>(m_geometry->subMeshes.size());
     }
     [[nodiscard]] const SubMesh &GetSubMesh(uint32_t index) const
     {
-        return m_subMeshes.at(index);
+        return m_geometry->subMeshes.at(index);
     }
 
     // ── Bounds ───────────────────────────────────────────────────────────
 
     [[nodiscard]] const glm::vec3 &GetBoundsMin() const
     {
-        return m_boundsMin;
+        return m_geometry->boundsMin;
     }
     [[nodiscard]] const glm::vec3 &GetBoundsMax() const
     {
-        return m_boundsMax;
+        return m_geometry->boundsMax;
+    }
+
+    [[nodiscard]] std::shared_ptr<const MeshGeometry> GetGeometrySnapshot() const
+    {
+        return m_geometry;
     }
 
     [[nodiscard]] uint64_t GetGeneration() const noexcept
@@ -209,6 +226,11 @@ class InxMesh
      */
     void SetData(std::vector<Vertex> vertices, std::vector<uint32_t> indices, std::vector<SubMesh> subMeshes);
 
+    /// Replace a vertex range and publish a new geometry generation. Recompute
+    /// overall/submesh bounds; topology and other vertex attributes are caller-owned.
+    /// This CPU operation does not imply a partial GPU upload.
+    void UpdateVertexRange(size_t first, const std::vector<Vertex> &vertices);
+
     /**
      * @brief Set material slot names extracted from the model file.
      *
@@ -237,21 +259,13 @@ class InxMesh
     std::string m_guid;
     std::string m_filePath;
 
-    std::vector<Vertex> m_vertices;
-    std::vector<uint32_t> m_indices;
-    std::vector<SubMesh> m_subMeshes;
-
-    glm::vec3 m_boundsMin{0.0f};
-    glm::vec3 m_boundsMax{0.0f};
+    std::shared_ptr<const MeshGeometry> m_geometry = std::make_shared<const MeshGeometry>();
 
     std::vector<std::string> m_materialSlotNames;
     std::vector<MaterialSlotData> m_materialSlotData;
     std::vector<std::string> m_nodeNames; ///< Node names indexed by nodeGroup
     std::shared_ptr<const InxSkinnedMesh> m_skinnedData;
     uint64_t m_generation = 0;
-
-    /// Recompute m_boundsMin/Max from vertex positions.
-    void RecalculateBounds();
 };
 
 } // namespace infernux

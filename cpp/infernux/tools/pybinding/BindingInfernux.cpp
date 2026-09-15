@@ -1,5 +1,9 @@
 #include "BindingRegistration.h"
 #include "Infernux.h"
+#include <function/renderer/rhi/RhiComputeBuffer.h>
+#include <function/renderer/rhi/RhiComputeHost.h>
+#include <function/renderer/rhi/RhiComputeKernel.h>
+#include <function/renderer/rhi/RhiRenderTexture.h>
 // Explicit includes for types now only forward-declared in InxRenderer.h
 #include <SDL3/SDL.h>
 #include <algorithm>
@@ -33,6 +37,39 @@ namespace py = pybind11;
 
 namespace
 {
+
+// MSVC's std::filesystem and a few third-party Windows APIs still format
+// exception text through the active code page.  pybind11 expects UTF-8 when
+// it translates a C++ exception to Python; passing that narrow ``what()``
+// string through unchanged turns a useful startup error into a secondary
+// UnicodeDecodeError.  Normalize the message at the boundary so the Player
+// reports the real startup failure even when the project lives under a
+// non-ASCII Windows profile.
+std::string ExceptionMessageUtf8(const char *raw)
+{
+    if (!raw || !*raw)
+        return "native renderer initialization failed";
+#ifdef INX_PLATFORM_WINDOWS
+    const int rawLength = static_cast<int>(std::strlen(raw));
+    int wideLength = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, raw, rawLength, nullptr, 0);
+    UINT codePage = CP_UTF8;
+    if (wideLength <= 0) {
+        codePage = CP_ACP;
+        wideLength = MultiByteToWideChar(codePage, 0, raw, rawLength, nullptr, 0);
+    }
+    if (wideLength > 0) {
+        std::wstring wide(static_cast<size_t>(wideLength), L'\0');
+        MultiByteToWideChar(codePage, 0, raw, rawLength, wide.data(), wideLength);
+        const int utf8Length = WideCharToMultiByte(CP_UTF8, 0, wide.data(), wideLength, nullptr, 0, nullptr, nullptr);
+        if (utf8Length > 0) {
+            std::string result(static_cast<size_t>(utf8Length), '\0');
+            WideCharToMultiByte(CP_UTF8, 0, wide.data(), wideLength, result.data(), utf8Length, nullptr, nullptr);
+            return result;
+        }
+    }
+#endif
+    return std::string(raw);
+}
 
 void LogPythonFrameCallbackError(const char *callbackName, const py::error_already_set &error)
 {
@@ -541,6 +578,79 @@ particle::GpuParticleTransforms DecodeGpuParticleTransforms(const py::buffer &va
     return transforms;
 }
 
+std::vector<rhi::ComputeDispatchDesc> DecodeComputeDispatches(py::iterable values)
+{
+    std::vector<rhi::ComputeDispatchDesc> dispatches;
+    for (const auto value : values) {
+        if (!py::isinstance<py::tuple>(value) && !py::isinstance<py::list>(value))
+            throw py::type_error("Compute dispatch must be a tuple or list");
+        const auto dispatch = py::reinterpret_borrow<py::sequence>(value);
+        if (dispatch.size() != 7)
+            throw py::value_error("Compute dispatch must contain kernel, buffers, access declarations, push constants, "
+                                  "and three group counts");
+        std::vector<rhi::ComputeBufferAccess> accesses;
+        for (const auto accessValue : py::cast<py::iterable>(dispatch[2])) {
+            const auto access = py::cast<std::string>(accessValue);
+            if (access == "read")
+                accesses.push_back(rhi::ComputeBufferAccess::Read);
+            else if (access == "write")
+                accesses.push_back(rhi::ComputeBufferAccess::Write);
+            else if (access == "read_write")
+                accesses.push_back(rhi::ComputeBufferAccess::ReadWrite);
+            else
+                throw py::value_error("Compute buffer access must be read, write, or read_write");
+        }
+        const auto constants = py::cast<py::bytes>(dispatch[3]).cast<std::string>();
+        dispatches.push_back({
+            py::cast<std::shared_ptr<rhi::ComputeKernel>>(dispatch[0]),
+            py::cast<std::vector<std::shared_ptr<rhi::ComputeBuffer>>>(dispatch[1]),
+            std::move(accesses),
+            std::vector<uint8_t>(constants.begin(), constants.end()),
+            py::cast<uint32_t>(dispatch[4]),
+            py::cast<uint32_t>(dispatch[5]),
+            py::cast<uint32_t>(dispatch[6]),
+        });
+    }
+    return dispatches;
+}
+
+std::vector<rhi::ComputeBufferUpdate> DecodeComputeUpdates(py::iterable values)
+{
+    std::vector<rhi::ComputeBufferUpdate> updates;
+    for (const auto value : values) {
+        if (!py::isinstance<py::tuple>(value) && !py::isinstance<py::list>(value))
+            throw py::type_error("Compute buffer update must be a tuple or list");
+        const auto update = py::reinterpret_borrow<py::sequence>(value);
+        if (update.size() != 3)
+            throw py::value_error("Compute buffer update must contain buffer, bytes, and byte offset");
+        const auto bytes = py::cast<py::bytes>(update[1]).cast<std::string>();
+        updates.push_back({
+            py::cast<std::shared_ptr<rhi::ComputeBuffer>>(update[0]),
+            py::cast<uint64_t>(update[2]),
+            std::vector<uint8_t>(bytes.begin(), bytes.end()),
+        });
+    }
+    return updates;
+}
+
+std::vector<rhi::ComputeBufferRead> DecodeComputeReads(py::iterable values)
+{
+    std::vector<rhi::ComputeBufferRead> reads;
+    for (const auto value : values) {
+        if (!py::isinstance<py::tuple>(value) && !py::isinstance<py::list>(value))
+            throw py::type_error("Compute buffer read must be a tuple or list");
+        const auto read = py::reinterpret_borrow<py::sequence>(value);
+        if (read.size() != 3)
+            throw py::value_error("Compute buffer read must contain buffer, byte offset, and byte size");
+        reads.push_back({
+            py::cast<std::shared_ptr<rhi::ComputeBuffer>>(read[0]),
+            py::cast<uint64_t>(read[1]),
+            py::cast<uint64_t>(read[2]),
+        });
+    }
+    return reads;
+}
+
 } // namespace
 
 void infernux::RegisterInfernuxBindings(py::module_ &m)
@@ -555,6 +665,15 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
     m.attr("GIZMO_XZ_PLANE_ID") = EditorTools::XZ_PLANE_ID;
     m.attr("GIZMO_YZ_PLANE_ID") = EditorTools::YZ_PLANE_ID;
     m.attr("GIZMO_CENTER_ID") = EditorTools::CENTER_ID;
+    m.attr("GIZMO_RECT_LEFT_ID") = EditorTools::RECT_LEFT_ID;
+    m.attr("GIZMO_RECT_RIGHT_ID") = EditorTools::RECT_RIGHT_ID;
+    m.attr("GIZMO_RECT_BOTTOM_ID") = EditorTools::RECT_BOTTOM_ID;
+    m.attr("GIZMO_RECT_TOP_ID") = EditorTools::RECT_TOP_ID;
+    m.attr("GIZMO_RECT_BOTTOM_LEFT_ID") = EditorTools::RECT_BOTTOM_LEFT_ID;
+    m.attr("GIZMO_RECT_BOTTOM_RIGHT_ID") = EditorTools::RECT_BOTTOM_RIGHT_ID;
+    m.attr("GIZMO_RECT_TOP_LEFT_ID") = EditorTools::RECT_TOP_LEFT_ID;
+    m.attr("GIZMO_RECT_TOP_RIGHT_ID") = EditorTools::RECT_TOP_RIGHT_ID;
+    m.attr("GIZMO_RECT_CENTER_ID") = EditorTools::RECT_CENTER_ID;
 
     py::enum_<LogLevel>(m, "LogLevel")
         .value("Debug", LogLevel::LOG_DEBUG)
@@ -775,16 +894,39 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
     // ========================================================================
     py::enum_<ScreenUIList>(m, "ScreenUIList")
         .value("Camera", ScreenUIList::Camera)
-        .value("Overlay", ScreenUIList::Overlay);
+        .value("Overlay", ScreenUIList::Overlay)
+        .value("World", ScreenUIList::World);
 
+    py::class_<InxScreenUIRenderer::CommandPacket, std::shared_ptr<InxScreenUIRenderer::CommandPacket>>(
+        m, "_UICommandPacket");
     py::class_<InxScreenUIRenderer>(m, "InxScreenUIRenderer")
+        .def("begin_command_packet", &InxScreenUIRenderer::BeginCommandPacket)
+        .def("end_command_packet", &InxScreenUIRenderer::EndCommandPacket)
+        .def("abort_command_packet", &InxScreenUIRenderer::AbortCommandPacket)
+        .def("append_command_packets", &InxScreenUIRenderer::AppendCommandPackets)
+        .def("command_packet_epoch", &InxScreenUIRenderer::GetCommandPacketEpoch)
         .def("begin_frame", &InxScreenUIRenderer::BeginFrame, py::arg("width"), py::arg("height"),
              "Reset draw lists for a new frame")
         .def("begin_frame_cached", &InxScreenUIRenderer::BeginFrameCached, py::arg("width"), py::arg("height"),
              py::arg("content_revision"), "Reuse draw lists when the UI content revision is unchanged")
+        .def("push_clip_rect", &InxScreenUIRenderer::PushClipRect, py::arg("list"), py::arg("min_x"), py::arg("min_y"),
+             py::arg("max_x"), py::arg("max_y"), "Intersect subsequent Screen UI commands with a clip rectangle")
+        .def("pop_clip_rect", &InxScreenUIRenderer::PopClipRect, py::arg("list"),
+             "Restore the preceding Screen UI clip rectangle")
+        .def("begin_world_element", &InxScreenUIRenderer::BeginWorldElement, py::arg("local_to_world"),
+             py::arg("pivot_x"), py::arg("pivot_y"), py::arg("layer_mask") = 0xffffffffu,
+             "Begin one independent depth-tested world UI element")
+        .def("end_world_element", &InxScreenUIRenderer::EndWorldElement, "Finish the current world UI element")
+        .def("begin_world_object", &InxScreenUIRenderer::BeginWorldObject, py::arg("object"), py::arg("pivot_x"),
+             py::arg("pivot_y"), "Bind local world UI geometry to a live scene pose without rebuilding it on motion")
+        .def("begin_screen_object", &InxScreenUIRenderer::BeginScreenObject, py::arg("object"), py::arg("list"),
+             py::arg("pivot_x"), py::arg("pivot_y"), py::arg("scale_x") = 1.0f, py::arg("scale_y") = 1.0f,
+             "Bind retained screen UI geometry to a live scene pose")
+        .def("end_screen_object", &InxScreenUIRenderer::EndScreenObject, "Finish a retained screen UI object")
         .def("add_filled_rect", &InxScreenUIRenderer::AddFilledRect, py::arg("list"), py::arg("min_x"),
              py::arg("min_y"), py::arg("max_x"), py::arg("max_y"), py::arg("r") = 1.0f, py::arg("g") = 1.0f,
-             py::arg("b") = 1.0f, py::arg("a") = 1.0f, py::arg("rounding") = 0.0f,
+             py::arg("b") = 1.0f, py::arg("a") = 1.0f, py::arg("rounding") = 0.0f, py::arg("rotation") = 0.0f,
+             py::arg("mirror_h") = false, py::arg("mirror_v") = false,
              "Add a filled rectangle to the specified draw list")
         .def("add_image", &InxScreenUIRenderer::AddImage, py::arg("list"), py::arg("texture_id"), py::arg("min_x"),
              py::arg("min_y"), py::arg("max_x"), py::arg("max_y"), py::arg("uv0_x") = 0.0f, py::arg("uv0_y") = 0.0f,
@@ -797,17 +939,21 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
              py::arg("b") = 1.0f, py::arg("a") = 1.0f, py::arg("align_x") = 0.5f, py::arg("align_y") = 0.5f,
              py::arg("font_size") = 0.0f, py::arg("wrap_width") = 0.0f, py::arg("rotation") = 0.0f,
              py::arg("mirror_h") = false, py::arg("mirror_v") = false, py::arg("font_path") = std::string(),
-             py::arg("line_height") = 1.0f, py::arg("letter_spacing") = 0.0f,
+             py::arg("line_height") = 1.0f, py::arg("letter_spacing") = 0.0f, py::arg("clip") = false,
+             py::arg("fallback_font_paths") = std::vector<std::string>(),
              "Add text within a bounding box to the specified draw list with optional rotation and mirroring")
         .def(
             "measure_text",
             [](const InxScreenUIRenderer &renderer, const std::string &text, float font_size, float wrap_width,
-               const std::string &font_path, float line_height, float letter_spacing) -> py::tuple {
-                auto [w, h] = renderer.MeasureText(text, font_size, wrap_width, font_path, line_height, letter_spacing);
+               const std::string &font_path, float line_height, float letter_spacing,
+               const std::vector<std::string> &fallback_font_paths) -> py::tuple {
+                auto [w, h] = renderer.MeasureText(text, font_size, wrap_width, font_path, line_height, letter_spacing,
+                                                   fallback_font_paths);
                 return py::make_tuple(py::float_(w), py::float_(h));
             },
             py::arg("text"), py::arg("font_size") = 0.0f, py::arg("wrap_width") = 0.0f,
             py::arg("font_path") = std::string(), py::arg("line_height") = 1.0f, py::arg("letter_spacing") = 0.0f,
+            py::arg("fallback_font_paths") = std::vector<std::string>(),
             "Measure text size using the active UI font. Returns (width, height).")
         .def("has_commands", &InxScreenUIRenderer::HasCommands, py::arg("list"),
              "Check if the specified draw list has any draw commands")
@@ -867,9 +1013,234 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
         .def_property_readonly("produced_on_worker", &LinkedShaderProgramLoadTicket::WasProducedOnWorker)
         .def("cancel", &LinkedShaderProgramLoadTicket::Cancel);
 
+    // No Python constructor or raw pointer access. The returned lease retains
+    // its engine wrapper; explicit Cleanup also checks outstanding leases.
+    py::class_<rhi::ComputeReadback, std::shared_ptr<rhi::ComputeReadback>>(m, "_ComputeReadback")
+        .def_property_readonly("done", &rhi::ComputeReadback::IsComplete)
+        .def_property_readonly("byte_size", &rhi::ComputeReadback::GetByteSize)
+        .def("get_bytes", [](rhi::ComputeReadback &readback) {
+            std::vector<uint8_t> bytes;
+            {
+                py::gil_scoped_release release;
+                bytes = readback.GetData();
+            }
+            return py::bytes(reinterpret_cast<const char *>(bytes.data()), static_cast<py::ssize_t>(bytes.size()));
+        });
+
+    py::class_<rhi::ComputeBuffer, std::shared_ptr<rhi::ComputeBuffer>>(m, "_ComputeBuffer")
+        .def_property_readonly("byte_size", &rhi::ComputeBuffer::GetByteSize)
+        .def_property_readonly("resource_index",
+                               [](const rhi::ComputeBuffer &buffer) { return buffer.GetBuffer().index; })
+        .def_property_readonly("resource_generation",
+                               [](const rhi::ComputeBuffer &buffer) { return buffer.GetBuffer().generation; })
+        .def_property_readonly("element_count",
+                               [](const rhi::ComputeBuffer &buffer) { return buffer.GetDesc().elementCount; })
+        .def_property_readonly("element_stride",
+                               [](const rhi::ComputeBuffer &buffer) { return buffer.GetDesc().GetElementStride(); })
+        .def_property_readonly("lanes", [](const rhi::ComputeBuffer &buffer) { return buffer.GetDesc().lanes; })
+        .def_property_readonly("scalar_type",
+                               [](const rhi::ComputeBuffer &buffer) {
+                                   switch (buffer.GetDesc().scalarType) {
+                                   case rhi::ComputeScalarType::Float32:
+                                       return "float32";
+                                   case rhi::ComputeScalarType::Int32:
+                                       return "int32";
+                                   case rhi::ComputeScalarType::UInt32:
+                                       return "uint32";
+                                   }
+                                   throw std::runtime_error("Unknown compute buffer scalar type");
+                               })
+        .def(
+            "set_bytes",
+            [](rhi::ComputeBuffer &buffer, py::bytes value, uint64_t offset) {
+                buffer.GetHost().queue.RecordNativeBoundary();
+                std::string bytes = value;
+                buffer.SetData(offset, bytes.data(), static_cast<uint64_t>(bytes.size()));
+            },
+            py::arg("value"), py::arg("offset") = 0)
+        .def(
+            "get_bytes",
+            [](rhi::ComputeBuffer &buffer, uint64_t byteSize, uint64_t offset) {
+                buffer.GetHost().queue.RecordNativeBoundary();
+                auto bytes = buffer.GetData(offset, byteSize);
+                return py::bytes(reinterpret_cast<const char *>(bytes.data()), static_cast<py::ssize_t>(bytes.size()));
+            },
+            py::arg("byte_size"), py::arg("offset") = 0)
+        .def(
+            "get_bytes_async",
+            [](rhi::ComputeBuffer &buffer, uint64_t byteSize, uint64_t offset) {
+                buffer.GetHost().queue.RecordNativeBoundary();
+                return buffer.GetDataAsync(offset, byteSize);
+            },
+            py::arg("byte_size"), py::arg("offset") = 0);
+
+    py::class_<rhi::ComputeKernel, std::shared_ptr<rhi::ComputeKernel>>(m, "_ComputeKernel")
+        .def_property_readonly("buffer_binding_count", &rhi::ComputeKernel::GetBufferBindingCount)
+        .def_property_readonly("buffer_bindings", &rhi::ComputeKernel::GetBufferBindings)
+        .def_property_readonly("push_constant_bytes", &rhi::ComputeKernel::GetPushConstantBytes)
+        .def_property_readonly("pending_dispatch_count", &rhi::ComputeKernel::GetPendingDispatchCount)
+        .def_property_readonly("cached_binding_group_count", &rhi::ComputeKernel::GetCachedBindingGroupCount)
+        .def(
+            "dispatch",
+            [](rhi::ComputeKernel &kernel, std::vector<std::shared_ptr<rhi::ComputeBuffer>> buffers,
+               py::bytes pushConstants, uint32_t groupCountX, uint32_t groupCountY, uint32_t groupCountZ) {
+                kernel.GetHost().queue.RecordNativeBoundary();
+                const std::string constants = pushConstants;
+                kernel.Dispatch(std::move(buffers), constants.empty() ? nullptr : constants.data(),
+                                static_cast<uint32_t>(constants.size()), groupCountX, groupCountY, groupCountZ);
+            },
+            py::arg("buffers"), py::arg("push_constants") = py::bytes(), py::arg("group_count_x") = 1,
+            py::arg("group_count_y") = 1, py::arg("group_count_z") = 1)
+        .def("collect", &rhi::ComputeKernel::Collect)
+        .def("wait", &rhi::ComputeKernel::Wait);
+
+    py::class_<rhi::ComputeHost>(m, "_ComputeHost")
+        .def_property_readonly("identity",
+                               [](rhi::ComputeHost &host) {
+                                   // Leases acquired from one renderer are distinct wrapper objects,
+                                   // but they borrow the same ordered compute lane.  That queue is
+                                   // the compatibility identity for buffers and kernels.
+                                   return reinterpret_cast<uintptr_t>(&host.queue);
+                               })
+        .def(
+            "create_buffer",
+            [](rhi::ComputeHost &host, uint64_t elementCount, const std::string &scalarType, uint8_t lanes) {
+                host.queue.RecordNativeBoundary();
+                rhi::ComputeScalarType scalar;
+                if (scalarType == "float32")
+                    scalar = rhi::ComputeScalarType::Float32;
+                else if (scalarType == "int32")
+                    scalar = rhi::ComputeScalarType::Int32;
+                else if (scalarType == "uint32")
+                    scalar = rhi::ComputeScalarType::UInt32;
+                else
+                    throw std::invalid_argument("Compute buffer scalar_type must be float32, int32, or uint32");
+                return std::make_shared<rhi::ComputeBuffer>(host, rhi::ComputeBufferDesc{elementCount, scalar, lanes});
+            },
+            py::arg("element_count"), py::arg("scalar_type"), py::arg("lanes") = 1, py::keep_alive<0, 1>())
+        .def(
+            "create_kernel",
+            [](rhi::ComputeHost &host, py::bytes spirv, uint32_t bufferBindingCount, uint32_t pushConstantBytes) {
+                host.queue.RecordNativeBoundary();
+                const auto words = DecodeParticleSpirv(spirv, "compute kernel");
+                return std::make_shared<rhi::ComputeKernel>(host, words.data(), words.size(), bufferBindingCount,
+                                                            pushConstantBytes);
+            },
+            py::arg("spirv"), py::arg("buffer_binding_count"), py::arg("push_constant_bytes") = 0,
+            py::keep_alive<0, 1>())
+        .def(
+            "create_kernel_with_bindings",
+            [](rhi::ComputeHost &host, py::bytes spirv, std::vector<uint32_t> bufferBindings,
+               uint32_t pushConstantBytes) {
+                host.queue.RecordNativeBoundary();
+                const auto words = DecodeParticleSpirv(spirv, "compute kernel");
+                return std::make_shared<rhi::ComputeKernel>(host, words.data(), words.size(), std::move(bufferBindings),
+                                                            pushConstantBytes);
+            },
+            py::arg("spirv"), py::arg("buffer_bindings"), py::arg("push_constant_bytes") = 0, py::keep_alive<0, 1>())
+        .def(
+            "_create_kernel_from_compiler",
+            [](rhi::ComputeHost &host, py::bytes spirv, const std::vector<std::pair<uint32_t, std::string>> &bindings,
+               uint32_t pushConstantBytes) {
+                host.queue.RecordNativeBoundary();
+                std::vector<rhi::ComputeBufferBinding> bufferBindings;
+                bufferBindings.reserve(bindings.size());
+                for (const auto &[slot, type] : bindings) {
+                    if (type == "uniform")
+                        bufferBindings.push_back({slot, rhi::BindingType::UniformBuffer});
+                    else if (type == "storage")
+                        bufferBindings.push_back({slot, rhi::BindingType::StorageBuffer});
+                    else
+                        throw py::value_error("Compiler buffer binding type must be uniform or storage");
+                }
+                const auto words = DecodeParticleSpirv(spirv, "compiled compute kernel");
+                return std::make_shared<rhi::ComputeKernel>(host, words.data(), words.size(), std::move(bufferBindings),
+                                                            pushConstantBytes);
+            },
+            py::arg("spirv"), py::arg("bindings"), py::arg("push_constant_bytes") = 0, py::keep_alive<0, 1>())
+        .def(
+            "dispatch_batch",
+            [](rhi::ComputeHost &host, py::iterable values, py::iterable updateValues) {
+                host.queue.RecordNativeBoundary();
+                rhi::SubmitComputeBatch(host, DecodeComputeUpdates(updateValues), DecodeComputeDispatches(values));
+            },
+            py::arg("dispatches"), py::arg("updates") = py::tuple())
+        .def(
+            "dispatch_batch_and_read",
+            [](rhi::ComputeHost &host, py::iterable values, py::iterable updateValues, py::iterable readValues) {
+                host.queue.RecordNativeBoundary();
+                auto dispatches = DecodeComputeDispatches(values);
+                auto updates = DecodeComputeUpdates(updateValues);
+                auto reads = DecodeComputeReads(readValues);
+                std::vector<std::vector<uint8_t>> payloads;
+                {
+                    py::gil_scoped_release release;
+                    payloads = rhi::SubmitComputeBatchAndRead(host, std::move(updates), std::move(dispatches),
+                                                              std::move(reads));
+                }
+                py::list result;
+                for (const auto &payload : payloads)
+                    result.append(py::bytes(reinterpret_cast<const char *>(payload.data()), payload.size()));
+                return result;
+            },
+            py::arg("dispatches"), py::arg("updates"), py::arg("reads"))
+        .def(
+            "set_profiling_enabled",
+            [](rhi::ComputeHost &host, bool enabled) { return host.queue.SetProfilingEnabled(enabled); },
+            py::arg("enabled"))
+        .def("get_profile",
+             [](rhi::ComputeHost &host) {
+                 host.queue.Collect();
+                 const auto frame = host.queue.GetProfile();
+                 py::dict result;
+                 result["serial"] = frame.serial;
+                 result["available"] = frame.available;
+                 py::dict samples;
+                 for (uint32_t i = 0; i < frame.sampleCount; ++i)
+                     samples[py::str(frame.samples[i].Name())] = frame.samples[i].milliseconds;
+                 result["samples_ms"] = std::move(samples);
+                 return result;
+             })
+        .def("get_statistics",
+             [](rhi::ComputeHost &host) {
+                 host.queue.Collect();
+                 const auto statistics = host.queue.GetStatistics();
+                 const auto profile = host.queue.GetProfile();
+                 py::dict result;
+                 result["submission_count"] = statistics.submissionCount;
+                 result["dispatch_count"] = statistics.dispatchCount;
+                 result["upload_request_count"] = statistics.uploadRequestCount;
+                 result["upload_bytes"] = statistics.uploadBytes;
+                 result["readback_request_count"] = statistics.readbackRequestCount;
+                 result["readback_bytes"] = statistics.readbackBytes;
+                 result["staging_allocation_count"] = statistics.stagingAllocationCount;
+                 result["host_map_count"] = statistics.hostMapCount;
+                 result["native_boundary_count"] = statistics.nativeBoundaryCount;
+                 result["wait_count"] = statistics.waitCount;
+                 result["cpu_submit_ms"] = statistics.cpuSubmitMilliseconds;
+                 result["wait_ms"] = statistics.waitMilliseconds;
+                 result["pending_submission_count"] = host.queue.GetPendingSubmissionCount();
+                 result["gpu_profile_available"] = profile.available;
+                 result["gpu_profile_serial"] = profile.serial;
+                 double gpuMilliseconds = 0.0;
+                 for (uint32_t i = 0; i < profile.sampleCount; ++i)
+                     gpuMilliseconds += profile.samples[i].milliseconds;
+                 result["gpu_time_ms"] = profile.available ? py::cast(gpuMilliseconds) : py::none();
+                 return result;
+             })
+        .def("reset_statistics", [](rhi::ComputeHost &host) { host.queue.ResetStatistics(); });
     py::class_<Infernux>(m, "Infernux")
         .def(py::init<std::string, RuntimeMode>(), py::arg("dll_path"), py::arg("mode") = RuntimeMode::Graphical)
-        .def("init_renderer", &Infernux::InitRenderer, py::arg("width"), py::arg("height"), py::arg("project_path"),
+        .def("init_renderer", [](Infernux &engine, int width, int height, const std::string &projectPath,
+                                  const std::string &builtinResourcePath) {
+            try {
+                engine.InitRenderer(width, height, projectPath, builtinResourcePath);
+            } catch (const std::exception &error) {
+                const std::string message = ExceptionMessageUtf8(error.what());
+                PyErr_SetString(PyExc_RuntimeError, message.c_str());
+                throw py::error_already_set();
+            }
+        }, py::arg("width"), py::arg("height"), py::arg("project_path"),
              py::arg("builtin_resource_path") = std::string())
         .def_property_readonly("startup_phase_timings_ms", &Infernux::GetStartupPhaseTimingsMs,
                                py::return_value_policy::reference_internal,
@@ -882,6 +1253,15 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
              "rendered frame in graphical mode (unavailable while run() drives the loop)")
         .def_property_readonly("exit_requested", &Infernux::IsExitRequested, "Whether shutdown has been requested")
         .def_property_readonly("runtime_mode", &Infernux::GetRuntimeMode)
+        .def("_acquire_compute_host", &Infernux::AcquireComputeHost, py::keep_alive<0, 1>())
+        .def("_create_render_texture", &Infernux::CreateRenderTexture, py::arg("description"))
+        .def("_load_render_texture", &Infernux::LoadRenderTexture, py::arg("guid"))
+        .def("_prepare_material_texture_assets", [](Infernux &engine, const std::shared_ptr<InxMaterial> &material) {
+            engine.GetRenderer()->PrepareMaterialTextureAssets(material);
+        }, py::arg("material"))
+        .def("_get_render_texture_ui_texture_id", [](Infernux &engine, const std::shared_ptr<rhi::RenderTexture> &texture) {
+            return engine.GetRenderer()->GetRenderTextureUITextureId(texture);
+        }, py::arg("texture"))
         .def("begin_prepare_linked_shader_programs", &Infernux::BeginPrepareLinkedShaderPrograms,
              py::arg("material_guids"),
              "Compile linked shader programs for loaded materials on the engine JobSystem")
@@ -897,6 +1277,11 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
                                [](const Infernux &self) {
                                    const auto *renderer = self.GetRenderer();
                                    return renderer ? renderer->GetSubmittedMeshUploadCount() : uint64_t{0};
+                               })
+        .def_property_readonly("resident_mesh_vertex_buffer_count",
+                               [](const Infernux &self) {
+                                   const auto *renderer = self.GetRenderer();
+                                   return renderer ? renderer->GetResidentMeshVertexBufferCount() : size_t{0};
                                })
         .def_property_readonly("completed_mesh_gpu_upload_count",
                                [](const Infernux &self) {
@@ -1313,6 +1698,12 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
                                        snapshot.submissionCrossQueueDependencyCount;
                                    result["submission_unordered_compute_graphics_pair_count"] =
                                        snapshot.submissionUnorderedComputeGraphicsPairCount;
+                                   result["submission_resident_compute_write_serial"] =
+                                       snapshot.submissionResidentComputeWriteSerial;
+                                   result["submission_latest_background_compute_serial"] =
+                                       snapshot.submissionLatestBackgroundComputeSerial;
+                                   result["submission_resident_compute_wait_pending"] =
+                                       snapshot.submissionResidentComputeWaitPending;
                                    result["game_render_ms"] = snapshot.gameRenderMs;
                                    result["game_only_frame_ms"] = snapshot.gameOnlyFrameMs;
                                    result["scene_update_ms"] = snapshot.sceneUpdateMs;
@@ -1515,9 +1906,9 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
                 }
             },
             py::arg("callback"),
-            "Set a Python callback invoked each frame after GPU submit + present.\n"
-            "Heavy scene loads run here, sandwiched by SDL_PumpEvents to prevent\n"
-            "Windows from flagging the application as Not Responding.")
+            "Set a Python callback invoked at the frame's owner safe point.\n"
+            "Runs after GPU submission, or without submission when presentation is skipped.\n"
+            "Deferred scene loads and editor maintenance continue while minimized.")
         .def(
             "pump_events",
             [](Infernux &self) -> bool {
@@ -1574,6 +1965,7 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
         .def(
             "cleanup",
             [](Infernux &self) {
+                self.RequireComputeHostsReleased();
                 // Python frame callbacks must be released while this binding
                 // still owns the GIL. Native teardown may then release it while
                 // joining workers and waiting for the GPU without destroying a
@@ -1913,7 +2305,7 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
             "Asynchronously read the most recently submitted scene or game render target")
         .def(
             "request_capture",
-            [](Infernux &self, const std::string &source, const std::string &outputPath) {
+            [](Infernux &self, const std::string &source, const std::string &outputPath, uint64_t cameraComponentId) {
                 auto *renderer = self.GetRenderer();
                 if (!renderer)
                     throw std::logic_error("Capture requires graphical renderer initialization");
@@ -1922,12 +2314,16 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
                     captureSource = CaptureSource::Scene;
                 else if (source == "game")
                     captureSource = CaptureSource::Game;
+                else if (source == "editor")
+                    captureSource = CaptureSource::Editor;
+                else if (source == "camera")
+                    captureSource = CaptureSource::Camera;
                 else
-                    throw std::invalid_argument("Capture source must be 'scene' or 'game'");
-                return renderer->RequestCapture(captureSource, outputPath);
+                    throw std::invalid_argument("Capture source must be 'scene', 'game', 'editor', or 'camera'");
+                return renderer->RequestCapture(captureSource, outputPath, cameraComponentId);
             },
-            py::arg("source"), py::arg("output_path"),
-            "Capture an engine-owned render target asynchronously without reading OS window or desktop pixels")
+            py::arg("source"), py::arg("output_path"), py::arg("camera_component_id") = 0,
+            "Capture an engine-owned Scene, Game, or complete Editor render target without reading desktop pixels")
         .def(
             "query_capture",
             [](Infernux &self, uint64_t captureId) {
@@ -2280,11 +2676,62 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
              py::arg("viewport_width"), py::arg("viewport_height"),
              "Lightweight gizmo axis proximity test for hover highlighting (no scene raycast)")
         .def("set_editor_tool_highlight", &Infernux::SetEditorToolHighlight, py::arg("axis"),
-             "Set the highlighted gizmo axis. 0=None, 1=X, 2=Y, 3=Z.")
+             "Set the highlighted editor-tool handle. 0=None, 1..16=handle ID.")
         .def("set_editor_tool_mode", &Infernux::SetEditorToolMode, py::arg("mode"),
-             "Set the active tool mode. 0=None, 1=Translate, 2=Rotate, 3=Scale.")
+             "Set the active tool mode. 0=None, 1=Translate, 2=Rotate, 3=Scale, 4=Rect.")
         .def("get_editor_tool_mode", &Infernux::GetEditorToolMode,
-             "Get the active tool mode. 0=None, 1=Translate, 2=Rotate, 3=Scale.")
+             "Get the active tool mode. 0=None, 1=Translate, 2=Rotate, 3=Scale, 4=Rect.")
+        .def(
+            "get_editor_rect_frame",
+            [](Infernux &self) -> py::object {
+                auto *renderer = self.GetRenderer();
+                auto *tools = renderer ? renderer->GetEditorTools() : nullptr;
+                if (!tools)
+                    return py::none();
+                const auto &frame = tools->GetRectFrame();
+                if (!frame.valid)
+                    return py::none();
+                py::dict result;
+                result["center"] = py::make_tuple(frame.center.x, frame.center.y, frame.center.z);
+                result["axis_u"] = py::make_tuple(frame.axisU.x, frame.axisU.y, frame.axisU.z);
+                result["axis_v"] = py::make_tuple(frame.axisV.x, frame.axisV.y, frame.axisV.z);
+                result["half_size"] = py::make_tuple(frame.halfU, frame.halfV);
+                result["axis_indices"] = py::make_tuple(frame.axisUIndex, frame.axisVIndex);
+                return result;
+            },
+            "Get the authoritative camera-facing Rect tool frame.")
+        .def(
+            "set_editor_rect_frame_override",
+            [](Infernux &self, uint64_t objectId, const std::array<float, 3> &center,
+               const std::array<float, 3> &axisU, const std::array<float, 3> &axisV,
+               const std::array<float, 2> &halfSize, const std::array<int, 2> &axisIndices) {
+                auto *renderer = self.GetRenderer();
+                auto *tools = renderer ? renderer->GetEditorTools() : nullptr;
+                if (!tools)
+                    return;
+                EditorTools::RectFrame frame;
+                frame.center = {center[0], center[1], center[2]};
+                frame.axisU = glm::normalize(glm::vec3(axisU[0], axisU[1], axisU[2]));
+                frame.axisV = glm::normalize(glm::vec3(axisV[0], axisV[1], axisV[2]));
+                frame.halfU = std::max(halfSize[0], 0.001f);
+                frame.halfV = std::max(halfSize[1], 0.001f);
+                frame.axisUIndex = axisIndices[0];
+                frame.axisVIndex = axisIndices[1];
+                frame.valid = true;
+                tools->SetRectFrameOverride(objectId, frame);
+            },
+            py::arg("object_id"), py::arg("center"), py::arg("axis_u"), py::arg("axis_v"),
+            py::arg("half_size"), py::arg("axis_indices") = std::array<int, 2>{0, 1},
+            "Set a component-authored world-space Rect tool frame for one object.")
+        .def(
+            "clear_editor_rect_frame_override",
+            [](Infernux &self) {
+                auto *renderer = self.GetRenderer();
+                auto *tools = renderer ? renderer->GetEditorTools() : nullptr;
+                if (tools)
+                    tools->ClearRectFrameOverride();
+            },
+            "Clear the component-authored Rect tool frame.")
         .def("set_editor_tool_local_mode", &Infernux::SetEditorToolLocalMode, py::arg("local"),
              "Enable/disable local coordinate mode for editor tools (gizmo aligns to object rotation)")
         .def("screen_to_world_ray", &Infernux::ScreenToWorldRay, py::arg("screen_x"), py::arg("screen_y"),
@@ -2387,6 +2834,52 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
                     buf->Clear();
             },
             "Clear all component gizmo geometry")
+        .def(
+            "clear_component_cpu_gizmos",
+            [](Infernux &self) {
+                auto *renderer = self.GetRenderer();
+                GizmosDrawCallBuffer *buf = renderer ? renderer->GetGizmosDrawCallBuffer() : nullptr;
+                if (buf)
+                    buf->ClearCpuData();
+            },
+            "Clear CPU immediate-mode component gizmos while retaining resident draws")
+        .def(
+            "upload_component_resident_gizmos",
+            [](Infernux &self, const py::sequence &encoded) {
+                auto *renderer = self.GetRenderer();
+                GizmosDrawCallBuffer *buf = renderer ? renderer->GetGizmosDrawCallBuffer() : nullptr;
+                if (!buf)
+                    return;
+                std::vector<GizmosDrawCallBuffer::ResidentDrawDescriptor> descriptors;
+                descriptors.reserve(encoded.size());
+                for (const py::handle itemHandle : encoded) {
+                    const py::tuple item = py::cast<py::tuple>(itemHandle);
+                    if (item.size() != 5)
+                        throw std::invalid_argument("Resident Gizmo descriptor must contain five fields");
+                    GizmosDrawCallBuffer::ResidentDrawDescriptor descriptor;
+                    descriptor.identity = py::cast<uint64_t>(item[0]);
+                    descriptor.vertexBuffer = py::cast<std::shared_ptr<rhi::ComputeBuffer>>(item[1]);
+                    descriptor.vertexCount = py::cast<uint32_t>(item[2]);
+                    if (!buf->HasResidentTopology(descriptor.identity, descriptor.vertexCount)) {
+                        const py::buffer indices = py::cast<py::buffer>(item[3]);
+                        const py::buffer_info indexInfo = indices.request();
+                        if (indexInfo.itemsize != static_cast<py::ssize_t>(sizeof(uint32_t)) ||
+                            indexInfo.ndim != 1 || indexInfo.strides[0] != static_cast<py::ssize_t>(sizeof(uint32_t)))
+                            throw std::invalid_argument("Resident Gizmo indices must be contiguous uint32");
+                        const auto *indexData = static_cast<const uint32_t *>(indexInfo.ptr);
+                        descriptor.indices.assign(indexData, indexData + indexInfo.size);
+                    }
+                    const py::sequence matrix = py::cast<py::sequence>(item[4]);
+                    if (matrix.size() != 16)
+                        throw std::invalid_argument("Resident Gizmo matrix must contain 16 floats");
+                    for (size_t i = 0; i < 16; ++i)
+                        descriptor.worldMatrix[i] = py::cast<float>(matrix[i]);
+                    descriptors.push_back(std::move(descriptor));
+                }
+                buf->SetResidentData(std::move(descriptors));
+            },
+            py::arg("descriptors"),
+            "Publish GPU-resident component Gizmo line draws for the current frame")
         .def(
             "upload_component_gizmo_icons",
             [](Infernux &self, py::buffer positions, py::buffer objectIds, py::buffer iconKinds, int64_t iconCount) {

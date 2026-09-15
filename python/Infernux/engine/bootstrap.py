@@ -113,6 +113,12 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
         self._report_progress("Creating managers\u2026")
         self._create_managers()
 
+        # Authoring operations are engine Host capabilities. Transports such
+        # as MCP discover and invoke this registry but do not own its lifetime.
+        from Infernux.host import install_editor_operations
+
+        install_editor_operations(self.project_path)
+
         self._report_progress("Preloading project plugins\u2026")
         self._load_plugins()
 

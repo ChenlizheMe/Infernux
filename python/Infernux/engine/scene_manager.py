@@ -48,6 +48,15 @@ class _SceneRestoreSnapshot:
     saved_revision: int
 
 
+@dataclass(slots=True)
+class _LoadedSceneDocument:
+    """Authoring identity for one native Scene resident in the Editor."""
+
+    scene: Any
+    resource_path: str
+    document_id: str
+
+
 def _empty_scene_document(name: str) -> dict:
     return {
         "name": name,
@@ -175,9 +184,12 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         self._post_prefab_exit_callback: Optional[Callable[[], None]] = None
         self._scene_transaction = None
         self._scene_transaction_path: Optional[str] = None
+        self._last_scene_load = {"status": "idle", "path": "", "error": ""}
+        self._last_loaded_file_state = None
         self._pending_external_reload: Optional[tuple[str, str]] = None
         self._scene_restore_snapshots: dict[str, _SceneRestoreSnapshot] = {}
         self._pending_scene_before_context = None
+        self._loaded_scene_documents: dict[int, _LoadedSceneDocument] = {}
 
         # True while _do_open_scene / _do_new_scene is running.
         # Prevents stacking deferred loads from rapid user clicks.
@@ -248,13 +260,195 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         return self._scene_document_id
 
     def owns_document(self, document_id: str) -> bool:
-        """Return whether this manager owns the active or suspended scene document."""
+        """Return whether this manager owns a resident or suspended scene document."""
         identifier = str(document_id or "")
         return bool(
             identifier
-            and identifier
-            in {self._scene_document_id, self._previous_scene_document_id}
+            and (
+                identifier in {self._scene_document_id, self._previous_scene_document_id}
+                or any(
+                    binding.document_id == identifier
+                    for binding in self._loaded_scene_documents.values()
+                )
+            )
         )
+
+    @staticmethod
+    def _world_id(scene_or_world_id) -> int:
+        if isinstance(scene_or_world_id, int) and not isinstance(scene_or_world_id, bool):
+            return int(scene_or_world_id)
+        return int(getattr(scene_or_world_id, "world_id", 0) or 0)
+
+    def document_id_for_scene(self, scene_or_world_id) -> str:
+        binding = self._loaded_scene_documents.get(self._world_id(scene_or_world_id))
+        return binding.document_id if binding is not None else ""
+
+    def scene_for_document(self, document_id: str):
+        identifier = str(document_id or "")
+        for binding in self._loaded_scene_documents.values():
+            if binding.document_id == identifier:
+                return binding.scene
+        return None
+
+    def _binding_for_document(self, document_id: str) -> Optional[_LoadedSceneDocument]:
+        identifier = str(document_id or "")
+        for binding in self._loaded_scene_documents.values():
+            if binding.document_id == identifier:
+                return binding
+        return None
+
+    def register_loaded_scene(
+        self,
+        scene,
+        resource_path: str,
+        *,
+        dirty: bool = False,
+    ) -> str:
+        """Bind one additive native Scene to its own editor document."""
+        world_id = self._world_id(scene)
+        if world_id <= 0:
+            raise ValueError("loaded Scene requires a stable World identity")
+        path = resolved_path(resource_path) if resource_path else ""
+        existing = self._loaded_scene_documents.get(world_id)
+        if existing is not None:
+            if path and existing.resource_path and path_key(path) != path_key(existing.resource_path):
+                raise RuntimeError("loaded Scene is already bound to another resource")
+            return existing.document_id
+
+        from Infernux.engine.interaction import DocumentCapability, DocumentRegistry
+
+        title = (
+            os.path.splitext(os.path.basename(path))[0]
+            if path
+            else str(getattr(scene, "name", DEFAULT_SCENE_NAME) or DEFAULT_SCENE_NAME)
+        )
+        document, _created = DocumentRegistry.instance().open_or_create(
+            self._document_key("scene", path),
+            title,
+            resource_path=path,
+            revision=1 if dirty else 0,
+            saved_revision=0,
+            capabilities=(
+                DocumentCapability.SAVE
+                | DocumentCapability.SAVE_AS
+                | DocumentCapability.DISCARD
+            ),
+            controller=self,
+        )
+        self._loaded_scene_documents[world_id] = _LoadedSceneDocument(
+            scene=scene,
+            resource_path=path,
+            document_id=document.document_id,
+        )
+        return document.document_id
+
+    def restore_loaded_scene_bindings(self, bindings) -> None:
+        """Replace transient Play bindings with the authored scene set.
+
+        A runtime ``Single`` load can destroy additive native Scenes while the
+        Editor documents intentionally stay alive.  Stop Mode recreates those
+        Scenes, then publishes the complete Scene-to-document mapping here in
+        one operation so no destroyed native pointer remains addressable.
+        """
+        from Infernux.engine.interaction import DocumentRegistry
+
+        restored: dict[int, _LoadedSceneDocument] = {}
+        document_ids: set[str] = set()
+        registry = DocumentRegistry.instance()
+        for scene, resource_path, document_id in tuple(bindings):
+            world_id = self._world_id(scene)
+            identifier = str(document_id or "")
+            if world_id <= 0:
+                raise ValueError("restored Scene requires a stable World identity")
+            if not identifier:
+                raise ValueError("restored Scene requires an editor document identity")
+            if world_id in restored:
+                raise RuntimeError("two restored Scenes share one World identity")
+            if identifier in document_ids:
+                raise RuntimeError("two restored Scenes share one editor document")
+            registry.require(identifier)
+            path = resolved_path(resource_path) if resource_path else ""
+            restored[world_id] = _LoadedSceneDocument(
+                scene=scene,
+                resource_path=path,
+                document_id=identifier,
+            )
+            document_ids.add(identifier)
+        self._loaded_scene_documents = restored
+
+    def activate_loaded_scene(self, scene_or_world_id) -> bool:
+        """Make one resident Scene and its authoring document active together."""
+        world_id = self._world_id(scene_or_world_id)
+        binding = self._loaded_scene_documents.get(world_id)
+        if binding is None:
+            return False
+        from Infernux.lib import SceneManager
+
+        SceneManager.instance().set_active_scene(binding.scene)
+        self._current_scene_path = binding.resource_path or None
+        self._scene_document_id = binding.document_id
+        try:
+            from Infernux.engine.interaction import FocusService
+
+            focus = FocusService.instance()
+            snapshot = focus.snapshot
+            focus.activate_panel(
+                snapshot.active_panel_id,
+                view_id=snapshot.active_view_id,
+                document_id=binding.document_id,
+                child_context_id=snapshot.child_context_id,
+                reason="scene_activated",
+                record_history=False,
+            )
+        except (AttributeError, ImportError, RuntimeError):
+            pass
+        if self._on_scene_changed:
+            self._on_scene_changed()
+        return True
+
+    def unregister_loaded_scene(self, scene_or_world_id) -> bool:
+        world_id = self._world_id(scene_or_world_id)
+        binding = self._loaded_scene_documents.pop(world_id, None)
+        if binding is None:
+            return False
+        from Infernux.engine.interaction import DocumentRegistry
+
+        document = DocumentRegistry.instance().get(binding.document_id)
+        if document is not None and not document.view_ids:
+            DocumentRegistry.instance().unregister(
+                binding.document_id,
+                preserve_dormant=True,
+            )
+        return True
+
+    def _loaded_scene_document_ids(self) -> tuple[str, ...]:
+        """Return resident Scene documents in their native Scene order."""
+        from Infernux.lib import SceneManager
+
+        native = SceneManager.instance()
+        result: list[str] = []
+        for index in range(int(native.scene_count)):
+            scene = native.get_scene_at(index)
+            document_id = self.document_id_for_scene(scene)
+            if document_id and document_id not in result:
+                result.append(document_id)
+        if self._scene_document_id and self._scene_document_id not in result:
+            result.append(self._scene_document_id)
+        return tuple(result)
+
+    def _unload_non_active_scenes(self) -> None:
+        """Complete an Editor Single replacement after its document commit."""
+        from Infernux.lib import SceneManager
+
+        native = SceneManager.instance()
+        active = native.get_active_scene()
+        active_world_id = self._world_id(active)
+        for index in range(int(native.scene_count) - 1, -1, -1):
+            scene = native.get_scene_at(index)
+            if scene is None or self._world_id(scene) == active_world_id:
+                continue
+            self.unregister_loaded_scene(scene)
+            native.unload_scene(scene)
 
     @property
     def is_dirty(self) -> bool:
@@ -276,6 +470,17 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
             or self._deferred_new_scene
             or self._deferred_exit_prefab
         )
+
+    @property
+    def last_scene_load(self) -> dict[str, str]:
+        """The latest file-load request and its actual transaction outcome."""
+        return dict(self._last_scene_load)
+
+    def _scene_load_failed(self, path: str, error: str) -> None:
+        self._last_scene_load = {
+            "status": "failed", "path": resolved_path(path), "error": str(error),
+        }
+        Debug.log_error(f"Scene load failed for '{path}': {error}")
 
     def mark_dirty(self):
         """Record one real scene-content mutation."""
@@ -315,6 +520,7 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         stable_id: str = "",
         revision: Optional[int] = None,
         saved_revision: Optional[int] = None,
+        loaded_file_state=None,
     ):
         from Infernux.engine.interaction import (
             DocumentCapability,
@@ -340,7 +546,11 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
             controller=self,
         )
         self._scene_document_id = document.document_id
-        if not created:
+        if loaded_file_state is not None:
+            registry.establish_loaded_baseline(
+                document.document_id, durable_file_state=loaded_file_state,
+            )
+        elif not created:
             if revision is not None or saved_revision is not None:
                 registry.restore_revision_state(
                     document.document_id,
@@ -379,6 +589,20 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
                     )
             except (AttributeError, ImportError, RuntimeError):
                 pass
+        if kind == "scene":
+            try:
+                from Infernux.lib import SceneManager
+
+                scene = SceneManager.instance().get_active_scene()
+            except (AttributeError, ImportError, RuntimeError):
+                scene = None
+            world_id = self._world_id(scene)
+            if world_id > 0:
+                self._loaded_scene_documents[world_id] = _LoadedSceneDocument(
+                    scene=scene,
+                    resource_path=path,
+                    document_id=document.document_id,
+                )
         return document
 
     def resource_moved(
@@ -615,13 +839,21 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         # Save current camera state before switching
         if self._current_scene_path:
             self._save_camera_state(self._current_scene_path)
-        if self._dirty:
+        from Infernux.engine.interaction import DocumentRegistry, DocumentState
+
+        registry = DocumentRegistry.instance()
+        document_ids = self._loaded_scene_document_ids()
+        if any(
+            (document := registry.get(document_id)) is not None
+            and (document.is_dirty or document.state is DocumentState.CONFLICT)
+            for document_id in document_ids
+        ):
             from Infernux.engine.ui.dirty_panel_confirmation import (
                 DirtyPanelConfirmationCoordinator,
             )
 
-            DirtyPanelConfirmationCoordinator.instance().request_document_replace(
-                self.document_id,
+            DirtyPanelConfirmationCoordinator.instance().request_documents_replace(
+                document_ids,
                 on_complete=lambda: self._begin_deferred_open(path),
                 on_cancel=self._cancel_scene_navigation,
             )
@@ -650,13 +882,21 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         # Persist camera state before switching away
         if self._current_scene_path:
             self._save_camera_state(self._current_scene_path)
-        if self._dirty:
+        from Infernux.engine.interaction import DocumentRegistry, DocumentState
+
+        registry = DocumentRegistry.instance()
+        document_ids = self._loaded_scene_document_ids()
+        if any(
+            (document := registry.get(document_id)) is not None
+            and (document.is_dirty or document.state is DocumentState.CONFLICT)
+            for document_id in document_ids
+        ):
             from Infernux.engine.ui.dirty_panel_confirmation import (
                 DirtyPanelConfirmationCoordinator,
             )
 
-            DirtyPanelConfirmationCoordinator.instance().request_document_replace(
-                self.document_id,
+            DirtyPanelConfirmationCoordinator.instance().request_documents_replace(
+                document_ids,
                 on_complete=self._begin_deferred_new,
                 on_cancel=self._cancel_scene_navigation,
             )
@@ -742,23 +982,28 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         self._do_new_scene()
 
     # ------------------------------------------------------------------
-    # Deferred scene loading (called from menu_bar every frame)
+    # Deferred scene loading (called at the frame owner safe point)
     # ------------------------------------------------------------------
 
     def _begin_deferred_open(self, path: str):
         """Schedule a scene open for the next frame."""
+        self._last_scene_load = {
+            "status": "pending", "path": resolved_path(path), "error": "",
+        }
         self._deferred_load_path = path
         self._deferred_new_scene = False
 
     def _begin_deferred_new(self):
         """Schedule a new-scene creation for the next frame."""
+        self._last_scene_load = {"status": "idle", "path": "", "error": ""}
         self._deferred_load_path = None
         self._deferred_new_scene = True
 
     def poll_deferred_load(self):
         """Execute a pending deferred scene load/new/prefab-exit.
 
-        Must be called every frame (from menu_bar).  The one-frame delay
+        Called by the engine's post-draw maintenance, including frames with
+        no presentation. The one-frame delay
         between _begin_deferred_open/new and this method gives the
         current frame's GPU submission a chance to complete before
         _prepare_native_scene_swap() calls WaitForGpuIdle(), which
@@ -777,9 +1022,9 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
             self._scene_transaction_path = None
             self._load_in_progress = False
             if transaction.succeeded:
-                self._finish_open_scene(path)
+                self._finish_open_scene(path, file_state=transaction.file_state)
             else:
-                Debug.log_error(f"Scene load failed for '{path}': {transaction.error}")
+                self._scene_load_failed(path, transaction.error)
                 self._cancel_scene_navigation()
             return
 
@@ -799,7 +1044,7 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
                 self._scene_transaction = transaction
                 self._scene_transaction_path = resolved_path(path)
             except Exception as exc:
-                Debug.log_error(f"Scene load failed: {exc}")
+                self._scene_load_failed(path, str(exc))
                 self._load_in_progress = False
                 self._cancel_scene_navigation()
         elif self._deferred_new_scene:
@@ -861,12 +1106,16 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
     def _create_open_scene_transaction(self, path: str):
         """Build a path-backed transaction without mutating the live scene."""
         if not path or not os.path.isfile(path):
-            Debug.log_warning(f"Scene file not found: {path}")
+            self._scene_load_failed(path, f"Scene file not found: {path}")
             return None
 
         if not self._is_under_assets(path):
-            Debug.log_warning("Scene file must be under the project's Assets/ directory.")
+            self._scene_load_failed(path, "Scene file must be under the project's Assets/ directory.")
             return None
+
+        self._last_scene_load = {
+            "status": "loading", "path": resolved_path(path), "error": "",
+        }
 
         from Infernux.lib import SceneManager
         sm = SceneManager.instance()
@@ -885,7 +1134,7 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
                 prepare_runtime_replace()
             self._prepare_native_scene_swap()
             from Infernux.renderstack.render_stack import RenderStack
-            RenderStack._active_instance = None
+            RenderStack.clear_active_instance(scene)
 
         from Infernux.engine.scene_document_transaction import SceneDocumentTransaction
         return SceneDocumentTransaction(
@@ -904,6 +1153,7 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         runtime_load: bool = False,
         record_navigation: bool = True,
         preserve_document: bool = False,
+        file_state=None,
     ) -> None:
         """Publish bookkeeping after a successful Scene transaction.
 
@@ -912,13 +1162,16 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         clear its pre-play undo history.
         """
         self._current_scene_path = resolved_path(path)
+        self._last_loaded_file_state = file_state
         if not runtime_load and not preserve_document:
             self._replace_scene_document(
                 kind="scene",
                 resource_path=self._current_scene_path,
                 title=os.path.splitext(os.path.basename(self._current_scene_path))[0],
                 dirty=False,
+                loaded_file_state=file_state,
             )
+            self._unload_non_active_scenes()
 
         from Infernux.lib import SceneManager
         scene = SceneManager.instance().get_active_scene()
@@ -937,6 +1190,10 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         self._restore_camera_state(self._current_scene_path)
         if not runtime_load:
             self._remember_last_scene(self._current_scene_path)
+
+        self._last_scene_load = {
+            "status": "loaded", "path": resolved_path(path), "error": "",
+        }
 
         # Sync all prefab instances to the latest on-disk prefab data
         self.sync_all_prefab_instances(scene)
@@ -961,12 +1218,13 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
             return False
         transaction.run_to_completion(raise_on_failure=False)
         if not transaction.succeeded:
-            Debug.log_error(f"Scene load failed for '{path}': {transaction.error}")
+            self._scene_load_failed(path, transaction.error)
             return False
         self._finish_open_scene(
             path,
             record_navigation=record_navigation,
             preserve_document=preserve_document,
+            file_state=transaction.file_state,
         )
         return True
 
@@ -999,7 +1257,9 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         )
         if not reloaded:
             return False
-        from Infernux.engine.interaction import DocumentRegistry
+        from Infernux.engine.interaction import (
+            DocumentActionResult, DocumentActionStatus, DocumentRegistry,
+        )
 
         registry = DocumentRegistry.instance()
         document = registry.get(document_id)
@@ -1010,7 +1270,10 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
             resource_path=target,
             controller=self,
         )
-        return True
+        return DocumentActionResult(
+            DocumentActionStatus.APPLIED,
+            durable_file_state=self._last_loaded_file_state,
+        )
 
     def request_external_reload(self, *, document_id: str, resource_path: str):
         """Reload a scene after the user resolves an external-change conflict.
@@ -1048,15 +1311,18 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
             self._advance_pending_external_reload()
             return DocumentActionResult(DocumentActionStatus.PENDING)
 
-        if not self.reload_from_resource(
+        result = self.reload_from_resource(
             document_id=identifier,
             resource_path=target,
-        ):
+        )
+        if not result:
             return DocumentActionResult(
                 DocumentActionStatus.FAILED,
-                "the current scene could not be replaced from disk",
+                self._last_scene_load["error"]
+                or "the current scene could not be replaced from disk",
             )
-        return DocumentActionResult(DocumentActionStatus.APPLIED)
+        return (result if isinstance(result, DocumentActionResult) else
+                DocumentActionResult(DocumentActionStatus.APPLIED))
 
     def _advance_pending_external_reload(self) -> int:
         pending = self._pending_external_reload
@@ -1085,15 +1351,20 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         document_id, target = pending
         self._pending_external_reload = None
         message = ""
+        file_state = None
         try:
-            success = bool(
-                self.reload_from_resource(
-                    document_id=document_id,
-                    resource_path=target,
-                )
+            result = self.reload_from_resource(
+                document_id=document_id,
+                resource_path=target,
             )
+            success = bool(result)
+            from Infernux.engine.interaction import DocumentActionResult
+            if isinstance(result, DocumentActionResult):
+                success = result.accepted
+                file_state = result.durable_file_state
             if not success:
-                message = "the current scene could not be replaced from disk"
+                message = (self._last_scene_load["error"]
+                           or "the current scene could not be replaced from disk")
         except Exception as exc:
             success = False
             message = str(exc)
@@ -1104,6 +1375,7 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
             document_id,
             success=success,
             message=message,
+            durable_file_state=file_state,
         )
         return 1
 
@@ -1151,7 +1423,7 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
             self._prepare_native_scene_swap()
             from Infernux.renderstack.render_stack import RenderStack
 
-            RenderStack._active_instance = None
+            RenderStack.clear_active_instance(scene)
 
         from Infernux.engine.scene_document_transaction import SceneDocumentTransaction
 
@@ -1225,7 +1497,7 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         def before_commit():
             self._prepare_native_scene_swap()
             from Infernux.renderstack.render_stack import RenderStack
-            RenderStack._active_instance = None
+            RenderStack.clear_active_instance(scene)
 
         from Infernux.engine.scene_document_transaction import SceneDocumentTransaction
         transaction = SceneDocumentTransaction(
@@ -1252,6 +1524,7 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
             title=DEFAULT_SCENE_NAME,
             dirty=True,
         )
+        self._unload_non_active_scenes()
 
         # Invalidate gizmos icon cache (scene objects are new)
         from Infernux.gizmos.collector import notify_scene_changed

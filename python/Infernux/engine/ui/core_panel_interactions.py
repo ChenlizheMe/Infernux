@@ -153,6 +153,21 @@ def hierarchy_panel_interaction(
             return None
         return object_id, expanded
 
+    def scene_world_id(context: CommandContext) -> int:
+        try:
+            return int(context.payload.get("world_id", 0) or 0)
+        except (AttributeError, TypeError, ValueError):
+            return 0
+
+    def activate_scene(context: CommandContext) -> bool:
+        world_id = scene_world_id(context)
+        if world_id <= 0:
+            return False
+        from Infernux.engine.scene_manager import SceneFileManager
+
+        scene_files = SceneFileManager.instance()
+        return bool(scene_files and scene_files.activate_loaded_scene(world_id))
+
     def bind(panel: object) -> PanelCommandAdapter:
         _require_methods(
             panel,
@@ -231,6 +246,10 @@ def hierarchy_panel_interaction(
                     ),
                     lambda context: move_args(context) is not None,
                 ),
+                "scene.set_active": BoundPanelCommand(
+                    activate_scene,
+                    lambda context: scene_world_id(context) > 0,
+                ),
                 "hierarchy.set_expanded": BoundPanelCommand(
                     lambda context: bool(
                         (args := expanded_args(context)) is not None
@@ -302,6 +321,7 @@ def hierarchy_panel_interaction(
         "scene.create_model",
         "scene.rename_object",
         "scene.move_hierarchy",
+        "scene.set_active",
         "hierarchy.set_expanded",
     ]
     if creation_service is not None:
@@ -1091,6 +1111,7 @@ def scene_view_panel_interaction(
         "scene.tool.move": (1, "Select Move Tool"),
         "scene.tool.rotate": (2, "Select Rotate Tool"),
         "scene.tool.scale": (3, "Select Scale Tool"),
+        "scene.tool.rect": (4, "Select Rect Tool"),
     }
 
     def bind(panel: object) -> PanelCommandAdapter:
@@ -1226,6 +1247,7 @@ def scene_view_panel_interaction(
                 ("scene.tool.move", "W"),
                 ("scene.tool.rotate", "E"),
                 ("scene.tool.scale", "R"),
+                ("scene.tool.rect", "T"),
                 ("scene.frame_selected", "F"),
             )
         ),
@@ -1255,7 +1277,7 @@ def ui_editor_panel_interaction(
             parent_id = int(context.payload.get("parent_id", 0) or 0)
         except (TypeError, ValueError):
             return None
-        if kind not in {"ui.canvas", "ui.text", "ui.image", "ui.button"}:
+        if kind not in {"ui.canvas", "ui.frame", "ui.text", "ui.image", "ui.button", "ui.progress_bar", "ui.slider"}:
             return None
         return kind, parent_id
 

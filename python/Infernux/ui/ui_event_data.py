@@ -47,7 +47,7 @@ class PointerEventData:
     """
 
     __slots__ = (
-        "position", "delta", "pointer_id", "pointer_type", "canceled", "button",
+        "position", "delta", "canvas_size", "pointer_id", "pointer_type", "canceled", "button",
         "press_position", "click_count",
         "scroll_delta",
         "canvas", "target", "used",
@@ -56,6 +56,7 @@ class PointerEventData:
     def __init__(self):
         self.position: Tuple[float, float] = (0.0, 0.0)
         self.delta: Tuple[float, float] = (0.0, 0.0)
+        self.canvas_size: Tuple[float, float] = (0.0, 0.0)
         self.pointer_id: int = -1
         self.pointer_type: PointerType = PointerType.Mouse
         self.canceled: bool = False

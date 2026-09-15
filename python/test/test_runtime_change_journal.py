@@ -270,8 +270,10 @@ def test_native_frame_records_the_production_barrier_order_without_rebuilding_fo
     scheduler.execute_native_phase("fixed_update", 0.02)
     notify_runtime_component_value_changed(probe, "speed")
     scheduler.consume_native_barrier(RuntimeFrameBarrier.TRANSFORM_TO_PHYSICS)
+    scheduler.execute_native_phase("physics_pre_step", 0.02)
     scheduler.consume_native_barrier(RuntimeFrameBarrier.PHYSICS_SIMULATION)
     scheduler.consume_native_barrier(RuntimeFrameBarrier.PHYSICS_TO_TRANSFORM)
+    scheduler.execute_native_phase("physics_post_step", 0.02)
     scheduler.consume_native_barrier(RuntimeFrameBarrier.TRANSFORM_RESOLVE)
     scheduler.execute_native_phase("update", 0.016)
     scheduler.execute_native_phase("late_update", 0.016)
@@ -290,8 +292,10 @@ def test_native_frame_records_the_production_barrier_order_without_rebuilding_fo
         RuntimeFrameBarrier.SAFE_POINT,
         RuntimeFrameBarrier.FIXED_SCRIPT,
         RuntimeFrameBarrier.TRANSFORM_TO_PHYSICS,
+        RuntimeFrameBarrier.PHYSICS_PRE_SCRIPT,
         RuntimeFrameBarrier.PHYSICS_SIMULATION,
         RuntimeFrameBarrier.PHYSICS_TO_TRANSFORM,
+        RuntimeFrameBarrier.PHYSICS_POST_SCRIPT,
         RuntimeFrameBarrier.TRANSFORM_RESOLVE,
         RuntimeFrameBarrier.UPDATE_SCRIPT,
         RuntimeFrameBarrier.LATE_SCRIPT,

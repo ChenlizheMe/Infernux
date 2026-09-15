@@ -111,7 +111,7 @@ class DefaultForwardPipeline(RenderPipeline):
         """
         # ---- MSAA configuration (from exposed parameter) ----
         msaa_samples = effective_msaa_samples(int(self.msaa_samples))
-        graph.set_msaa_samples(msaa_samples)
+        msaa_samples = graph.set_msaa_samples(msaa_samples)
 
         # ---- Shadow map configuration (from exposed parameters) ----
         # The serialized range is enforced by the descriptor. Keep this

@@ -15,6 +15,7 @@
 #include <function/renderer/ProfileConfig.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <sstream>
 #include <utility>
@@ -718,9 +719,10 @@ void PassBuilder::SetQueueRole(rhi::QueueRole queue)
     if (!m_graph || m_passId >= m_graph->m_passes.size() || queue == rhi::QueueRole::Count)
         return;
     auto &pass = m_graph->m_passes[m_passId];
-    const bool compatible = queue == rhi::QueueRole::Graphics ||
-                            (queue == rhi::QueueRole::Compute && pass.type == PassType::Compute) ||
-                            (queue == rhi::QueueRole::Transfer && pass.type == PassType::Transfer);
+    const bool compatible =
+        queue == rhi::QueueRole::Graphics ||
+        (queue == rhi::QueueRole::Compute && (pass.type == PassType::Compute || pass.type == PassType::Transfer)) ||
+        (queue == rhi::QueueRole::Transfer && pass.type == PassType::Transfer);
     if (!compatible) {
         INXLOG_ERROR("RenderGraph pass '", pass.name, "' rejected incompatible queue override");
         return;
@@ -786,6 +788,7 @@ RenderGraph::RenderGraph(RenderGraph &&other) noexcept
       m_queueOwnershipTransfers(std::move(other.m_queueOwnershipTransfers)),
       m_queueOwnershipTransferInfos(std::move(other.m_queueOwnershipTransferInfos)),
       m_batchOutgoingOwnershipTransfers(std::move(other.m_batchOutgoingOwnershipTransfers)),
+      m_externalOutgoingOwnershipTransfers(std::exchange(other.m_externalOutgoingOwnershipTransfers, {})),
       m_backbuffer(other.m_backbuffer), m_output(other.m_output), m_compiled(std::exchange(other.m_compiled, false)),
       m_structuralCompileCache(std::move(other.m_structuralCompileCache)),
       m_structuralCacheHits(other.m_structuralCacheHits), m_structuralCacheMisses(other.m_structuralCacheMisses),
@@ -823,6 +826,7 @@ RenderGraph &RenderGraph::operator=(RenderGraph &&other) noexcept
         m_queueOwnershipTransfers = std::move(other.m_queueOwnershipTransfers);
         m_queueOwnershipTransferInfos = std::move(other.m_queueOwnershipTransferInfos);
         m_batchOutgoingOwnershipTransfers = std::move(other.m_batchOutgoingOwnershipTransfers);
+        m_externalOutgoingOwnershipTransfers = std::exchange(other.m_externalOutgoingOwnershipTransfers, {});
         m_backbuffer = other.m_backbuffer;
         m_output = other.m_output;
         m_compiled = std::exchange(other.m_compiled, false);
@@ -938,6 +942,8 @@ void RenderGraph::Reset()
     m_queueOwnershipTransfers.clear();
     m_queueOwnershipTransferInfos.clear();
     m_batchOutgoingOwnershipTransfers.clear();
+    for (auto &transfers : m_externalOutgoingOwnershipTransfers)
+        transfers.clear();
     m_resourceStates.clear();
     m_initialResourceStates.clear();
     m_backbuffer = {};
@@ -963,6 +969,8 @@ void RenderGraph::Destroy()
     m_queueOwnershipTransfers.clear();
     m_queueOwnershipTransferInfos.clear();
     m_batchOutgoingOwnershipTransfers.clear();
+    for (auto &transfers : m_externalOutgoingOwnershipTransfers)
+        transfers.clear();
     m_resourceStates.clear();
     m_initialResourceStates.clear();
     m_context = nullptr;
@@ -1240,12 +1248,74 @@ ResourceHandle RenderGraph::ImportTexture(const std::string &name, rhi::TextureH
     return handle;
 }
 
+RenderGraph::RenderTextureResources
+RenderGraph::ImportRenderTexture(const std::string &name,
+                                 const std::shared_ptr<const rhi::RenderTextureGeneration> &generation)
+{
+    if (!generation || !generation->color || !generation->color->IsValid() ||
+        generation->color->GetTexture().Device() != m_deviceId)
+        throw std::invalid_argument("RenderTexture import requires a live generation from the graph's device");
+    const auto import = [&](const char *suffix, const rhi::TextureResource &image, rhi::SampleCount samples) {
+        // A persistent attachment has one graph identity, even when several
+        // consumers import it under different labels. Return its current SSA
+        // version so their reads depend on writes already declared in this graph.
+        const VkImage nativeImage = m_rhiDevice->Resolve(image.GetTexture());
+        for (uint32_t id = 0; id < m_resources.size(); ++id) {
+            const auto &resource = m_resources[id];
+            if (resource.externalOwner == generation && resource.externalImage == nativeImage) {
+                ResourceHandle existing;
+                existing.scope = m_identity.Current();
+                existing.id = id;
+                existing.version = m_resourceVersions[id];
+                return existing;
+            }
+        }
+        const auto handle =
+            ImportTexture(name + suffix, image.GetTexture(), image.GetView(), rhi::ToVkFormat(image.GetFormat()),
+                          generation->width, generation->height, rhi::ToVkSampleCount(samples));
+        if (!Owns(handle))
+            throw std::runtime_error("RenderTexture attachment could not be imported");
+        m_resources[handle.id].externalOwner = generation;
+        const bool depth = rhi::IsDepthFormat(image.GetFormat());
+        const bool sampledDepth = depth && generation->description.sampledDepth && samples == rhi::SampleCount::One;
+        const auto layout = depth ? (sampledDepth ? rhi::TextureLayout::DepthStencilReadOnly
+                                                  : rhi::TextureLayout::DepthStencilAttachment)
+                                  : (samples == rhi::SampleCount::One ? rhi::TextureLayout::ShaderReadOnly
+                                                                      : rhi::TextureLayout::ColorAttachment);
+        const auto access =
+            depth && !sampledDepth
+                ? rhi::Access::DepthRead | rhi::Access::DepthWrite
+                : (!depth && samples != rhi::SampleCount::One ? rhi::Access::ColorWrite : rhi::Access::ShaderRead);
+        const auto stages = depth && !sampledDepth
+                                ? rhi::PipelineStage::EarlyDepth | rhi::PipelineStage::LateDepth
+                                : (!depth && samples != rhi::SampleCount::One ? rhi::PipelineStage::ColorOutput
+                                                                              : rhi::PipelineStage::FragmentShader);
+        SetResourceInitialState(handle, layout, access, stages);
+        return handle;
+    };
+    RenderTextureResources result;
+    result.color = import(".color", generation->ColorAttachment(), generation->description.samples);
+    if (generation->multisampleColor)
+        result.resolve = import(".resolve", *generation->color, rhi::SampleCount::One);
+    if (generation->depth)
+        result.depth = import(".depth", *generation->depth, generation->description.samples);
+    return result;
+}
+
+void RenderGraph::SetBackbuffer(ResourceHandle color)
+{
+    if (!Owns(color) || m_resources[color.id].type != ResourceType::Texture2D ||
+        rhi::IsDepthFormat(rhi::FromVkFormat(m_resources[color.id].textureDesc.format)))
+        throw std::invalid_argument("Backbuffer must be a color texture owned by this graph");
+    m_backbuffer = color;
+}
+
 bool RenderGraph::UpdateImportedTexture(ResourceHandle handle, VkImage image, VkImageView view)
 {
     if (!Owns(handle) || image == VK_NULL_HANDLE || view == VK_NULL_HANDLE)
         return false;
     auto &resource = m_resources[handle.id];
-    if (!resource.isExternal || resource.type != ResourceType::Texture2D)
+    if (!resource.isExternal || resource.type != ResourceType::Texture2D || resource.externalOwner)
         return false;
     if (resource.externalImage == image && resource.externalView == view)
         return true;
@@ -1260,7 +1330,51 @@ bool RenderGraph::UpdateImportedTexture(ResourceHandle handle, VkImage image, Vk
     }
     resource.externalImage = image;
     resource.externalView = view;
+    RefreshImportedAttachmentViews(handle.id);
     return true;
+}
+
+void RenderGraph::RefreshImportedAttachmentViews(uint32_t resourceId)
+{
+    const auto &resource = m_resources[resourceId];
+    for (const auto &binding : resource.attachmentBindings) {
+        auto &pass = m_passes[binding.passId];
+        switch (binding.kind) {
+        case ResourceData::AttachmentBinding::Kind::Color:
+            pass.cachedRenderingColorAttachments[binding.colorIndex].imageView = resource.externalView;
+            break;
+        case ResourceData::AttachmentBinding::Kind::Resolve:
+            pass.cachedRenderingColorAttachments[binding.colorIndex].resolveImageView = resource.externalView;
+            break;
+        case ResourceData::AttachmentBinding::Kind::Depth:
+            pass.cachedRenderingDepthAttachment.imageView = resource.externalView;
+            break;
+        }
+    }
+}
+
+void RenderGraph::UpdateImportedRenderTextureColor(
+    ResourceHandle handle, const std::shared_ptr<const rhi::RenderTextureGeneration> &generation)
+{
+    if (!Owns(handle) || !generation || generation->description.samples != rhi::SampleCount::One ||
+        generation->color->GetTexture().Device() != m_deviceId)
+        throw std::invalid_argument("Persistent color rebind requires a live single-sample generation on this device");
+    auto &resource = m_resources[handle.id];
+    if (!resource.externalOwner || resource.textureDesc.width != generation->width ||
+        resource.textureDesc.height != generation->height ||
+        resource.textureDesc.format != rhi::ToVkFormat(generation->description.colorFormat) ||
+        resource.textureDesc.samples != VK_SAMPLE_COUNT_1_BIT)
+        throw std::invalid_argument("Persistent color rebind must preserve the compiled attachment contract");
+    if (resource.externalOwner == generation)
+        return;
+    m_rhiDevice->Release(resource.rhiView);
+    m_rhiDevice->Release(resource.rhiTexture);
+    resource.externalOwner = generation;
+    resource.externalImage = m_rhiDevice->Resolve(generation->color->GetTexture());
+    resource.externalView = m_rhiDevice->Resolve(generation->color->GetView());
+    resource.rhiTexture = m_rhiDevice->RegisterTexture(resource.externalImage);
+    resource.rhiView = m_rhiDevice->RegisterTextureView(resource.externalView);
+    RefreshImportedAttachmentViews(handle.id);
 }
 
 ResourceHandle RenderGraph::ImportRendererList(const std::string &name, const RendererList *rendererList)
@@ -1430,6 +1544,15 @@ bool RenderGraph::Compile()
             INXLOG_ERROR("RenderGraph::Compile - Pass '", pass.name, "' belongs to a different device");
             return false;
         }
+        for (const auto &read : pass.reads) {
+            const auto &resource = m_resources[read.handle.id];
+            if (resource.externalOwner && rhi::IsDepthFormat(rhi::FromVkFormat(resource.textureDesc.format)) &&
+                (read.usage & ResourceUsage::ShaderRead) != ResourceUsage::None &&
+                !resource.externalOwner->description.sampledDepth) {
+                INXLOG_ERROR("RenderTexture depth sampling requires sampled_depth=True: ", resource.name);
+                return false;
+            }
+        }
     }
     for (const auto &resource : m_resources) {
         if (resource.ownerDevice != m_deviceId) {
@@ -1476,6 +1599,56 @@ bool RenderGraph::Compile()
     return true;
 }
 
+bool RenderGraph::NeedsPersistentImageInitialization() const
+{
+    return std::any_of(m_resources.begin(), m_resources.end(), [](const ResourceData &resource) {
+        return resource.externalOwner && !resource.externalOwner->graphLayoutsInitialized;
+    });
+}
+
+void RenderGraph::RecordPersistentImageInitialization(VkCommandBuffer commandBuffer)
+{
+    for (const auto &resource : m_resources) {
+        const auto &generation = resource.externalOwner;
+        if (!generation || generation->graphLayoutsInitialized)
+            continue;
+        // Initialize all attachments once, even when this view imports only a
+        // subset. Other views borrow this same allocation and must not discard
+        // it when they bind later or after their own graph has been rebuilt.
+        std::array<VkImageMemoryBarrier, 3> barriers{};
+        uint32_t count = 0;
+        const auto add = [&](const rhi::TextureResource &image, VkImageLayout layout, VkAccessFlags access) {
+            auto &barrier = barriers[count++];
+            barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+            barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            barrier.newLayout = layout;
+            barrier.dstAccessMask = access;
+            barrier.srcQueueFamilyIndex = barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barrier.image = m_rhiDevice->Resolve(image.GetTexture());
+            barrier.subresourceRange.aspectMask = rhi::ToVkImageAspectMask(rhi::ToVkFormat(image.GetFormat()));
+            barrier.subresourceRange.levelCount = barrier.subresourceRange.layerCount = 1;
+        };
+        add(*generation->color, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_SHADER_READ_BIT);
+        if (generation->multisampleColor)
+            add(*generation->multisampleColor, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
+        if (generation->depth) {
+            const bool sampled =
+                generation->description.sampledDepth && generation->description.samples == rhi::SampleCount::One;
+            add(*generation->depth,
+                sampled ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL
+                        : VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                sampled ? VK_ACCESS_SHADER_READ_BIT
+                        : VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT);
+        }
+        vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                             VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                                 VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+                             0, 0, nullptr, 0, nullptr, count, barriers.data());
+        generation->graphLayoutsInitialized = true;
+    }
+}
+
 void RenderGraph::BeginExecution()
 {
     if (!m_compiled) {
@@ -1510,8 +1683,20 @@ bool RenderGraph::RecordSubmissionBatch(uint32_t batchIndex, VkCommandBuffer com
 
 bool RenderGraph::HasExternalQueueOwnershipReleases(rhi::QueueRole sourceQueue) const noexcept
 {
-    return sourceQueue != rhi::QueueRole::Count &&
-           !m_externalOutgoingOwnershipTransfers[static_cast<size_t>(sourceQueue)].empty();
+    if (sourceQueue == rhi::QueueRole::Count)
+        return false;
+    const auto &transfers = m_externalOutgoingOwnershipTransfers[static_cast<size_t>(sourceQueue)];
+    return std::any_of(transfers.begin(), transfers.end(),
+                       [this](uint32_t index) { return NeedsOwnershipRelease(index); });
+}
+
+bool RenderGraph::NeedsOwnershipRelease(uint32_t transferIndex) const noexcept
+{
+    const auto &transfer = m_queueOwnershipTransfers[transferIndex];
+    if (!transfer.fromPreviousExecution)
+        return true;
+    const auto &previous = m_resourceStates[transfer.info.resourceId];
+    return previous.writerPassId == transfer.info.sourcePass && previous.queueFamily == transfer.info.sourceFamily;
 }
 
 bool RenderGraph::RecordExternalQueueOwnershipReleases(rhi::QueueRole sourceQueue, VkCommandBuffer commandBuffer)
@@ -1534,6 +1719,11 @@ void RenderGraph::Execute(VkCommandBuffer commandBuffer, rhi::QueueRole recordin
 
     m_recordingSubmissionBatches = false;
     m_immediateRecordingQueue = recordingQueue == rhi::QueueRole::Count ? rhi::QueueRole::Graphics : recordingQueue;
+    if (NeedsPersistentImageInitialization()) {
+        if (m_immediateRecordingQueue != rhi::QueueRole::Graphics)
+            throw std::logic_error("Persistent images must be initialized on Graphics before queue handoff");
+        RecordPersistentImageInitialization(commandBuffer);
+    }
     PrepareExecutionResourceStates();
 #if INFERNUX_FRAME_PROFILE
     ++s_executeProfile.executeCalls;

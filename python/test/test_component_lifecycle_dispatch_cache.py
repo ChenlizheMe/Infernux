@@ -252,7 +252,7 @@ def test_runtime_phase_dispatch_uses_one_epoch_owned_unbound_table():
         probe._call_late_update(3.0)
 
         dispatch = descriptor.phase_dispatch
-        assert len(dispatch) == 3
+        assert len(dispatch) == 5
         assert dispatch[0] == (_PhaseProbe.update, True)
         assert dispatch[1] == (_PhaseProbe.fixed_update, True)
         assert dispatch[2] == (_PhaseProbe.late_update, True)
@@ -321,7 +321,7 @@ def test_runtime_dispatch_treats_omitted_optional_phases_as_noops():
         probe._call_late_update(3.0)
 
     assert probe.calls == [1.0]
-    assert len(descriptor.phase_invokers) == 3
+    assert len(descriptor.phase_invokers) == 5
 
 
 def test_runtime_dispatch_skips_retained_but_inactive_coroutine_scheduler():

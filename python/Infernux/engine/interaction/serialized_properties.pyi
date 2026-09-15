@@ -1,18 +1,12 @@
 from enum import Enum
 from typing import Any, Callable, Mapping, Optional, Sequence
 from Infernux.engine.undo._base import UndoCommand
+from Infernux.field_schema import FieldSchema as FieldSchema
 
 class PropertyTransactionStatus(str, Enum):
     APPLIED: PropertyTransactionStatus
     NO_CHANGE: PropertyTransactionStatus
     REJECTED: PropertyTransactionStatus
-
-class FieldSchema:
-    property_path: str
-    value_type: str
-    read_only: bool
-    attributes: Mapping[str, Any]
-    def __init__(self, property_path: str, value_type: str, read_only: bool = False, attributes: Mapping[str, Any] = ...) -> None: ...
 
 class SerializedObjectView:
     target_ids: tuple[str, ...]
@@ -77,8 +71,8 @@ class SnapshotPropertyTransaction:
     def commit_or_raise(self, candidate: Any) -> PropertyTransactionStatus: ...
     def clear_or_raise(self) -> PropertyTransactionStatus: ...
 
-def make_attribute_property_transaction(targets: Sequence[Any], attribute: str, *, property_path: str = ..., value_type: str = ..., description: str = ..., read_only: bool = ..., normalize: Callable[[Any], Any] = ..., validate: Callable[[Any], str] = ..., equivalent: Callable[[Any, Any], bool] = ..., publish: Optional[Callable[[], None]] = ..., clear_value: Any = ..., on_rejected: Optional[Callable[[str], None]] = ..., marks_dirty: bool = ...) -> PropertyTransaction: ...
-def make_python_component_property_transaction(components: Sequence[Any], field_name: str, *, value_type: str = ..., description: str = ..., read_only: bool = ..., normalize: Callable[[Any], Any] = ..., validate: Callable[[Any], str] = ..., equivalent: Callable[[Any, Any], bool] = ..., clear_value: Any = ..., on_rejected: Optional[Callable[[str], None]] = ...) -> PropertyTransaction: ...
+def make_attribute_property_transaction(targets: Sequence[Any], attribute: str, *, property_path: str = ..., value_type: str = ..., description: str = ..., read_only: bool = ..., normalize: Callable[[Any], Any] = ..., validate: Callable[[Any], str] = ..., equivalent: Callable[[Any, Any], bool] = ..., publish: Optional[Callable[[], None]] = ..., clear_value: Any = ..., on_rejected: Optional[Callable[[str], None]] = ..., marks_dirty: bool = ..., schema: Optional[FieldSchema] = ..., validate_target: Optional[Callable[[Any, Any], str]] = ...) -> PropertyTransaction: ...
+def make_python_component_property_transaction(components: Sequence[Any], field_name: str, *, description: str = ..., validate: Callable[[Any], str] = ..., equivalent: Callable[[Any, Any], bool] = ..., clear_value: Any = ..., on_rejected: Optional[Callable[[str], None]] = ...) -> PropertyTransaction: ...
 def make_native_document_property_transaction(components: Sequence[Any], field_name: str, *, value_type: str = ..., description: str = ..., normalize: Callable[[Any], Any] = ..., validate: Callable[[Any], str] = ..., equivalent: Callable[[Any, Any], bool] = ..., on_rejected: Optional[Callable[[str], None]] = ...) -> PropertyTransaction: ...
 
 class PropertyDrawerRegistry:

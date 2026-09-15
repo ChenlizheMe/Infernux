@@ -15,7 +15,43 @@ using json = nlohmann::json;
 namespace infernux
 {
 
-INFERNUX_REGISTER_VALIDATED_COMPONENT("Transform", Transform)
+namespace
+{
+SemanticTypeDescriptor DescribeTransform()
+{
+    SemanticTypeDescriptor type;
+    // Use the existing native identity namespace; Transform stays in the
+    // intrinsic scene document slot, not in the attachable component array.
+    type.typeGuid = "native:infernux.Transform";
+    type.readableId = "infernux.component.transform";
+    type.owner = "engine:native";
+    type.origin = "native";
+    type.displayName = "Transform";
+    type.runtimeProfiles = {"editor", "player", "headless"};
+    const auto vector = [](const char *name, const char *serializedName, const char *label, double initial) {
+        return SemanticFieldDescriptor{std::string("Transform.") + name,
+                                       "FieldType.VEC3",
+                                       false,
+                                       {{"field_id", name},
+                                        {"serialized_name", serializedName},
+                                        {"serialized", true},
+                                        {"hidden", false},
+                                        {"nullable", false},
+                                        {"storage_kind", "native_property"},
+                                        {"display_name", label},
+                                        {"default", {initial, initial, initial}}}};
+    };
+    type.fields = {vector("local_position", "position", "Position", 0.0),
+                   vector("local_euler_angles", "rotation", "Rotation", 0.0),
+                   vector("local_scale", "scale", "Scale", 1.0)};
+    type.fields[1].attributes["unit"] = "degrees";
+    return type;
+}
+
+const bool registeredTransform = ComponentFactory::Register(
+    "Transform", [] { return std::make_unique<Transform>(); }, Transform::ValidateSerializedDocument,
+    Transform::GetTypeConstraints(), DescribeTransform);
+} // namespace
 
 Transform::Transform() : m_ecsHandle(TransformECSStore::Instance().Allocate(this))
 {

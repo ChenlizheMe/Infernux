@@ -787,6 +787,11 @@ bool VkDeviceContext::CreateLogicalDevice(const DeviceConfig &config)
     capabilityRequest.dynamicRendering = true;
     capabilityRequest.synchronization2 = true;
     capabilityRequest.submit2 = capabilitySnapshot.supported.submit2.supported;
+    // Enable optional arithmetic once on the engine-owned device. Compute
+    // providers consume the published enabled state, not a second device probe.
+    capabilityRequest.shaderInt16 = capabilitySnapshot.supported.shaderInt16.supported;
+    capabilityRequest.shaderInt64 = capabilitySnapshot.supported.shaderInt64.supported;
+    capabilityRequest.shaderFloat64 = capabilitySnapshot.supported.shaderFloat64.supported;
     if (forceBoundedDescriptors)
         INXLOG_INFO("Descriptor indexing disabled by INFERNUX_FORCE_BOUNDED_DESCRIPTORS; validating bounded "
                     "descriptor fallback");
@@ -797,11 +802,12 @@ bool VkDeviceContext::CreateLogicalDevice(const DeviceConfig &config)
 
     const VkPhysicalDeviceFeatures &supportedFeatures = capabilityProbe.coreFeatures;
 
-    VkPhysicalDeviceFeatures deviceFeatures{};
+    VkPhysicalDeviceFeatures deviceFeatures = featureChain.GetFeatures2().features;
     deviceFeatures.samplerAnisotropy = VK_TRUE;
     deviceFeatures.fillModeNonSolid = supportedFeatures.fillModeNonSolid; // Optional wireframe support
     deviceFeatures.depthBiasClamp = supportedFeatures.depthBiasClamp;     // Optional shadow bias clamping
     deviceFeatures.wideLines = supportedFeatures.wideLines;               // For debug lines (when available)
+    deviceFeatures.sampleRateShading = supportedFeatures.sampleRateShading;
 
     const rhi::DeviceCapabilityState enabledCapabilityState = featureChain.GetEnabledState();
     m_rhiCapabilityState = {};

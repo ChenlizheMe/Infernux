@@ -306,27 +306,24 @@ class ResourceChangeHandler(FileSystemEventHandler):
     def on_moved(self, event):
         if event.is_directory:
             return
-        source_is_document_temp = is_document_store_temporary_path(event.src_path)
-        destination_is_document_temp = is_document_store_temporary_path(event.dest_path)
-        if source_is_document_temp:
-            if destination_is_document_temp or self._should_ignore(event.dest_path):
-                return
-            self._coordinator.submit(
-                AssetFsEventKind.MOVED,
-                event.src_path,
-                destination=event.dest_path,
-                guid_hint=self._asset_database.get_guid_from_path(event.dest_path),
-            )
-            return
         if self._is_meta_sidecar_path(event.src_path) and self._is_meta_sidecar_path(event.dest_path):
             return
-        if self._should_ignore(event.src_path) or self._should_ignore(event.dest_path):
+        if self._should_ignore(event.dest_path):
+            return
+        source_guid = self._asset_database.get_guid_from_path(event.src_path)
+        source_registered = bool(source_guid)
+        # Only a registered source has asset identity to relocate. Editors
+        # may publish via arbitrarily named staging files, including ignored
+        # .tmp files; these writes update/import the destination instead.
+        if source_registered and self._should_ignore(event.src_path):
             return
         self._coordinator.submit(
             AssetFsEventKind.MOVED,
             event.src_path,
             destination=event.dest_path,
-            guid_hint=self._asset_database.get_guid_from_path(event.src_path),
+            guid_hint=(source_guid if source_registered else
+                       self._asset_database.get_guid_from_path(event.dest_path)),
+            source_registered=source_registered,
             debounce_seconds=(
                 0.0
                 if str(event.dest_path or "").lower().endswith(".py")
@@ -1250,6 +1247,16 @@ class ResourceChangeHandler(FileSystemEventHandler):
     def _commit_moved(self, old_path: str, new_path: str) -> None:
         if not os.path.isfile(new_path):
             raise _AssetImportNotReady(f"moved file is not ready: {new_path}")
+        source_guid = self._asset_database.get_guid_from_path(old_path)
+        destination_guid = self._asset_database.get_guid_from_path(new_path)
+        if destination_guid and destination_guid != source_guid:
+            # The filesystem already replaced an existing destination. A
+            # staging file may have lived long enough to be imported, but its
+            # identity must never replace the target's GUID or import type.
+            self._commit_modified(new_path)
+            if source_guid:
+                self._commit_deleted(old_path, guid_hint=source_guid)
+            return
         from Infernux.core.assets import AssetManager
         if not AssetManager.move_asset(
             old_path,
@@ -1259,6 +1266,15 @@ class ResourceChangeHandler(FileSystemEventHandler):
             origin="external",
         ):
             raise RuntimeError(f"asset move failed: {old_path} -> {new_path}")
+        if os.path.splitext(old_path)[1].lower() != os.path.splitext(new_path)[1].lower():
+            # A real move preserves GUID identity, but changing the extension
+            # changes the authoritative importer and resource metadata type.
+            if not AssetManager.reimport_asset(
+                new_path,
+                database=self._asset_database,
+                suppress_watcher_echo=False,
+            ):
+                raise _AssetImportNotReady(f"renamed asset reimport failed: {new_path}")
         if new_path.lower().endswith(".py") and not _is_particle_script_path(new_path):
             if is_project_component_script(
                 new_path,
@@ -1852,6 +1868,14 @@ class ResourcesManager:
 
     def notify_script_catalog_changed(self, file_path: str, event_type: str) -> None:
         """Notify listeners that Python script catalog may have changed."""
+        from Infernux.renderstack.discovery import (
+            invalidate_discovery_cache,
+            script_may_affect_pipeline_catalog,
+        )
+        # The catalog belongs to the project, not to whichever scenes currently
+        # contain a RenderStack. Invalidate once before notifying consumers.
+        if script_may_affect_pipeline_catalog(file_path, event_type):
+            invalidate_discovery_cache()
         for cb in list(self._script_catalog_callbacks):
             try:
                 cb(file_path, event_type)

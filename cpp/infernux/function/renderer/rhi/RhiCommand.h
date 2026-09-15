@@ -164,6 +164,7 @@ class TransferCommandEncoder
         void (*copyBuffer)(void *, BufferHandle, BufferHandle, const BufferCopyRegion &) = nullptr;
         void (*copyTexture)(void *, TextureHandle, TextureHandle, const TextureCopyRegion &) = nullptr;
         void (*resolveTexture)(void *, TextureHandle, TextureHandle, const TextureResolveRegion &) = nullptr;
+        bool (*fillBuffer)(void *, BufferHandle, uint64_t, uint64_t, uint32_t) = nullptr;
     };
 
     constexpr TransferCommandEncoder() noexcept = default;
@@ -181,6 +182,17 @@ class TransferCommandEncoder
     {
         if (IsValid() && m_dispatch->copyBuffer && source.IsValid() && destination.IsValid() && region.byteSize > 0)
             m_dispatch->copyBuffer(m_context, source, destination, region);
+    }
+
+    /// Record a repeated 32-bit pattern, not a byte memset. Destination must
+    /// have TransferDestination usage. Offset and size are explicit multiples
+    /// of four; caller owns transfer-write barriers and completion dependencies.
+    /// Returns false without recording if the encoder, handle or range is invalid.
+    [[nodiscard]] bool FillBuffer(BufferHandle destination, uint64_t offset, uint64_t byteSize,
+                                  uint32_t value = 0) const
+    {
+        return IsValid() && m_dispatch->fillBuffer && destination.IsValid() && byteSize > 0 && offset % 4 == 0 &&
+               byteSize % 4 == 0 && m_dispatch->fillBuffer(m_context, destination, offset, byteSize, value);
     }
 
     void CopyTexture(TextureHandle source, TextureHandle destination, const TextureCopyRegion &region) const

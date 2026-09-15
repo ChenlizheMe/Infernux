@@ -128,39 +128,64 @@ class UIEventProcessor:
             state = _PointerState(pointer_type=pointer.pointer_type)
             self._pointers[pointer_key] = state
 
-        current = pointer.canvas_positions[0] if pointer.canvas_positions else (0.0, 0.0)
-        previous = state.last_canvas_positions[0] if state.last_canvas_positions else current
+        captured = state.press_target
+        if captured is not None:
+            accepts = getattr(captured, "is_effectively_interactable", None)
+            if callable(accepts) and not accepts():
+                current = self._xy(pointer.canvas_positions[0]) if pointer.canvas_positions else (0.0, 0.0)
+                canceled_pointer = UIPointerFrame(
+                    pointer_id=pointer_id,
+                    pointer_type=pointer.pointer_type,
+                    canvas_positions=pointer.canvas_positions,
+                    up=True,
+                    canceled=True,
+                )
+                self._release_pointer(
+                    canceled_pointer, state, current, (0.0, 0.0),
+                    None, None, current, epoch,
+                )
+
+        current = self._xy(pointer.canvas_positions[0]) if pointer.canvas_positions else (0.0, 0.0)
+        previous = self._xy(state.last_canvas_positions[0]) if state.last_canvas_positions else current
         delta = (current[0] - previous[0], current[1] - previous[1])
-        active = (
-            pointer.down
-            or pointer.up
-            or pointer.held
-            or pointer.canceled
-            or pointer.scroll_delta != (0.0, 0.0)
-            or current != previous
-            or state.press_target is not None
-        )
-        if not active:
-            state.last_canvas_positions = pointer.canvas_positions
-            return
+        # A stationary pointer still observes moving/reparented/disabled UI.
+        # Cache resolved hit geometry, not the result of a previous pointer
+        # frame: native Transform changes and layout updates can change hover.
 
         hit_element = None
         hit_canvas = None
         hit_position = current
-        for index in range(len(canvases) - 1, -1, -1):
+        def surface_priority(index):
+            getter = getattr(canvases[index], "input_priority", None)
+            return getter(pointer.canvas_positions[index], index) if callable(getter) else (1, index, 0.0)
+
+        # Priority depends only on the surface and projected depth, not on the
+        # hit. Visit front-to-back so overlapping world quads don't all walk
+        # their component/group hierarchy after the winning target is known.
+        # Python's stable sort preserves the original winner for equal depths.
+        order = (range(len(canvases)) if len(canvases) < 2 else
+                 sorted(range(len(canvases)), key=surface_priority, reverse=True))
+        for index in order:
             canvas = canvases[index]
-            canvas_object = canvas.game_object
-            if canvas_object is not None and not canvas_object.active_in_hierarchy:
-                continue
-            if not getattr(canvas, "enabled", True):
-                continue
             position = pointer.canvas_positions[index]
             candidate = canvas.raycast(position[0], position[1])
             if candidate is not None:
+                # Broad-phase misses do not need another component/owner walk.
+                # Surface eligibility still gates every actual event target.
+                canvas_object = canvas.game_object
+                if canvas_object is not None and not canvas_object.active_in_hierarchy:
+                    continue
+                if not getattr(canvas, "enabled", True):
+                    continue
                 hit_element = candidate
                 hit_canvas = canvas
-                hit_position = position
+                hit_position = self._xy(position)
                 break
+
+        if hit_element is not None:
+            accepts = getattr(hit_element, "is_effectively_interactable", None)
+            if callable(accepts) and not accepts():
+                hit_element = None
 
         if pointer.down or pointer.up or pointer.canceled:
             hit_object = getattr(hit_element, "game_object", None) if hit_element is not None else None
@@ -205,11 +230,22 @@ class UIEventProcessor:
             self._dispatch_pointer_callback(hit_element, "on_pointer_down", event, epoch)
 
         if pointer.held and state.drag_target is not None:
-            dx = current[0] - state.press_position[0]
-            dy = current[1] - state.press_position[1]
+            press_current, press_previous = self._surface_positions(
+                canvases,
+                pointer.canvas_positions,
+                state.last_canvas_positions,
+                state.press_canvas,
+                current,
+            )
+            press_delta = (
+                press_current[0] - press_previous[0],
+                press_current[1] - press_previous[1],
+            )
+            dx = press_current[0] - state.press_position[0]
+            dy = press_current[1] - state.press_position[1]
             distance_squared = dx * dx + dy * dy
             event = self._make_event(
-                pointer, current, delta, state.press_canvas, state.drag_target
+                pointer, press_current, press_delta, state.press_canvas, state.drag_target
             )
             event.press_position = state.press_position
             if not state.is_dragging and distance_squared > _DRAG_THRESHOLD * _DRAG_THRESHOLD:
@@ -225,11 +261,22 @@ class UIEventProcessor:
             self._dispatch_pointer_callback(hit_element, "on_scroll", event, epoch)
 
         if pointer.up or pointer.canceled:
+            release_current, release_previous = self._surface_positions(
+                canvases,
+                pointer.canvas_positions,
+                state.last_canvas_positions,
+                state.press_canvas,
+                current,
+            )
+            release_delta = (
+                release_current[0] - release_previous[0],
+                release_current[1] - release_previous[1],
+            )
             self._release_pointer(
                 pointer,
                 state,
-                current,
-                delta,
+                release_current,
+                release_delta,
                 hit_element,
                 hit_canvas,
                 hit_position,
@@ -244,6 +291,23 @@ class UIEventProcessor:
                 )
                 self._dispatch_pointer_callback(state.hover_target, "on_pointer_exit", event, epoch)
             self._pointers.pop(pointer_key, None)
+
+    @staticmethod
+    def _surface_positions(canvases, current_positions, previous_positions, surface, default):
+        for index, candidate in enumerate(canvases):
+            if candidate is surface:
+                current = UIEventProcessor._xy(current_positions[index])
+                previous = (
+                    UIEventProcessor._xy(previous_positions[index])
+                    if index < len(previous_positions)
+                    else current
+                )
+                return current, previous
+        return default, default
+
+    @staticmethod
+    def _xy(position):
+        return float(position[0]), float(position[1])
 
     def _release_pointer(
         self,
@@ -300,7 +364,7 @@ class UIEventProcessor:
         state = self._pointers.pop(pointer_key)
         pointer_type, pointer_id = pointer_key
         positions = state.last_canvas_positions
-        current = positions[0] if positions else (0.0, 0.0)
+        current = self._xy(positions[0]) if positions else (0.0, 0.0)
         pointer = UIPointerFrame(
             pointer_id=pointer_id,
             pointer_type=pointer_type,
@@ -349,6 +413,9 @@ class UIEventProcessor:
         event = PointerEventData()
         event.position = position
         event.delta = delta
+        event.canvas_size = (
+            canvas.input_logical_size if canvas is not None else (0.0, 0.0)
+        )
         event.pointer_id = int(pointer.pointer_id)
         event.pointer_type = pointer.pointer_type
         event.canceled = bool(pointer.canceled)

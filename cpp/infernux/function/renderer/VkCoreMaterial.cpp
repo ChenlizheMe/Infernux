@@ -16,6 +16,7 @@
 #include "VertexInputFilter.h"
 #include "gui/GPUMaterialPreview.h"
 #include "gui/GPUMeshPreview.h"
+#include "rhi/RhiRenderTexture.h"
 #include "vk/DescriptorBindTrace.h"
 #include "vk/MaterialRenderStateVulkan.h"
 #include "vk/RhiVulkanTypes.h"
@@ -26,6 +27,7 @@
 #include <function/renderer/shader/ShaderProgram.h>
 #include <function/renderer/shader/ShaderReflection.h>
 #include <function/resources/AssetDatabase/AssetDatabase.h>
+#include <function/resources/AssetDependencyGraph.h>
 #include <function/resources/AssetRegistry/AssetRegistry.h>
 #include <function/resources/InxFileLoader/InxShaderLoader.hpp>
 #include <function/resources/InxMaterial/InxMaterial.h>
@@ -614,6 +616,16 @@ void InxVkCoreModular::InitializeMaterialSystem()
             [this](const std::string &textureRef, const std::string &bindingName) -> TextureResolveResult {
                 return ResolveTextureForMaterial(textureRef, bindingName);
             });
+        m_materialPipelineManager.GetDescriptorManager().SetRenderTextureResolver(
+            [this](const std::shared_ptr<rhi::RenderTexture> &texture) {
+                MaterialDescriptorSet::TextureBinding binding;
+                binding.gpuSlot = texture->GetSampledColorSlot();
+                binding.gpuView = binding.gpuSlot->Acquire();
+                auto &device = m_backend.Device().GetRhiDevice();
+                binding.imageView = device.Resolve(binding.gpuView->GetView());
+                binding.sampler = device.Resolve(binding.gpuView->GetSampler());
+                return binding;
+            });
     }
 
     auto defaultMaterial = AssetRegistry::Instance().GetBuiltinMaterial("DefaultLit");
@@ -707,6 +719,7 @@ bool InxVkCoreModular::RefreshPreviewMaterialPipeline(std::shared_ptr<InxMateria
     if (!material) {
         return false;
     }
+    PrepareMaterialTextureAssets(material);
 
     const ShaderStagePair stages{vertShaderName, fragShaderName};
     const auto *artifact = m_shaderCache.FindProgramArtifact(stages);
@@ -923,9 +936,66 @@ void InxVkCoreModular::UpdateLightingState()
 VkBuffer InxVkCoreModular::GetObjectVertexBuffer(uint64_t objectId) const
 {
     auto it = m_perObjectBuffers.find(objectId);
-    if (it != m_perObjectBuffers.end() && it->second.vertexBuffer)
-        return it->second.vertexBuffer->GetBuffer();
+    if (it != m_perObjectBuffers.end())
+        return it->second.GetVertexHandle();
     return VK_NULL_HANDLE;
+}
+
+void InxVkCoreModular::PrepareMaterialTextureAssets(const std::shared_ptr<InxMaterial> &material)
+{
+    if (!material || !material->NeedsTextureAssetResolution())
+        return;
+    auto *database = AssetRegistry::Instance().GetAssetDatabase();
+    std::unordered_map<std::string, std::shared_ptr<rhi::RenderTexture>> textures;
+    std::unordered_set<std::string> dependencies;
+    for (const auto &[name, property] : material->GetAllProperties()) {
+        if (property.type != MaterialPropertyType::Texture2D || material->HasRuntimeTextureOverride(name))
+            continue;
+        const auto &guid = std::get<std::string>(property.value);
+        if (guid.empty() || guid == "white" || guid == "black" || guid == "normal")
+            continue;
+        dependencies.insert(guid); // Missing references still receive restore notifications.
+        const auto metadata = database ? database->GetMetaByGuid(guid) : nullptr;
+        if (metadata && metadata->GetResourceType() == ResourceType::RenderTexture)
+            textures[name] = m_renderTextureAssetLoader(guid);
+    }
+    // All target allocations succeed before changing this material's bindings.
+    material->PublishTextureAssets(std::move(textures));
+    const auto owner = material->GetTextureDependencyOwner();
+    auto &graph = AssetDependencyGraph::Instance();
+    graph.ClearRuntimeDependenciesOf(owner);
+    if (dependencies.empty()) {
+        m_materialTextureOwners.erase(owner);
+    } else {
+        m_materialTextureOwners[owner] = material;
+        for (const auto &guid : dependencies)
+            graph.AddRuntimeDependency(owner, guid);
+    }
+}
+
+bool InxVkCoreModular::InvalidateMaterialTextureAssets(const std::string &owner, const std::string &guid, bool deleted)
+{
+    const auto found = m_materialTextureOwners.find(owner);
+    if (found == m_materialTextureOwners.end())
+        return false;
+    if (auto material = found->second.lock())
+        material->InvalidateTextureAssets(guid, deleted);
+    else {
+        AssetDependencyGraph::Instance().ClearRuntimeDependenciesOf(owner);
+        m_materialTextureOwners.erase(found);
+    }
+    return true;
+}
+
+void InxVkCoreModular::CollectUnusedMaterialTextureOwners()
+{
+    for (auto owner = m_materialTextureOwners.begin(); owner != m_materialTextureOwners.end();) {
+        if (owner->second.expired()) {
+            AssetDependencyGraph::Instance().ClearRuntimeDependenciesOf(owner->first);
+            owner = m_materialTextureOwners.erase(owner);
+        } else
+            ++owner;
+    }
 }
 
 VkBuffer InxVkCoreModular::GetObjectIndexBuffer(uint64_t objectId) const

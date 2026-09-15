@@ -24,6 +24,7 @@ Example:
 """
 
 import os
+from enum import Enum
 from typing import Union, Optional, List
 
 from Infernux.lib import SceneManager as _NativeSceneManager, TagLayerManager
@@ -34,38 +35,33 @@ class GameObjectQuery:
     """
     Static helper methods for Unity-style GameObject queries.
     
-    Operates on the currently active scene.
+    Operates on the shared World formed by every loaded scene.
     """
 
     @staticmethod
     def find(name: str):
-        """Find a GameObject by name in the active scene."""
-        scene = _NativeSceneManager.instance().get_active_scene()
-        return scene.find(name) if scene else None
+        """Find a GameObject by name across loaded scenes."""
+        return _NativeSceneManager.instance().find_runtime_object(name)
 
     @staticmethod
     def find_with_tag(tag: str):
-        """Find the first GameObject with a given tag in the active scene."""
-        scene = _NativeSceneManager.instance().get_active_scene()
-        return scene.find_with_tag(tag) if scene else None
+        """Find the first GameObject with a given tag across loaded scenes."""
+        return _NativeSceneManager.instance().find_runtime_object_with_tag(tag)
 
     @staticmethod
     def find_game_objects_with_tag(tag: str) -> list:
-        """Find all GameObjects with a given tag in the active scene."""
-        scene = _NativeSceneManager.instance().get_active_scene()
-        return scene.find_game_objects_with_tag(tag) if scene else []
+        """Find all GameObjects with a given tag across loaded scenes."""
+        return _NativeSceneManager.instance().find_runtime_objects_with_tag(tag)
 
     @staticmethod
     def find_game_objects_in_layer(layer: int) -> list:
-        """Find all GameObjects in a given layer in the active scene."""
-        scene = _NativeSceneManager.instance().get_active_scene()
-        return scene.find_game_objects_in_layer(layer) if scene else []
+        """Find all GameObjects in a given layer across loaded scenes."""
+        return _NativeSceneManager.instance().find_runtime_objects_in_layer(layer)
 
     @staticmethod
     def find_by_id(object_id: int):
         """Find a GameObject by its unique ID."""
-        scene = _NativeSceneManager.instance().get_active_scene()
-        return scene.find_by_id(object_id) if scene else None
+        return _NativeSceneManager.instance().find_runtime_object_by_id(object_id)
 
 
 class LayerMask:
@@ -107,6 +103,13 @@ class LayerMask:
 # SceneManager — Unity-aligned scene loading & query API
 # ---------------------------------------------------------------------------
 
+class LoadSceneMode(Enum):
+    """Whether a scene replaces the active scene or joins the loaded World."""
+
+    SINGLE = "single"
+    ADDITIVE = "additive"
+
+
 class SceneManager:
     """
     Unity-style scene management API, aligned with
@@ -145,14 +148,26 @@ class SceneManager:
 
     # Pending scene load request — deferred until end-of-frame when in play mode
     _pending_scene_load: Optional[str] = None  # resolved file path
+    _pending_scene_load_mode = LoadSceneMode.SINGLE
     _active_scene_transaction = None
     _active_scene_load_path: Optional[str] = None
+    _active_scene_load_mode = LoadSceneMode.SINGLE
+    _active_scene_target = None
     _active_scene_file_manager = None
     _active_scene_wait_for_ready = False
     _active_scene_hold_for_activation = False
     _scene_load_generation = 0
     _active_scene_load_generation = 0
     _runtime_scene_service = None
+
+    @staticmethod
+    def _coerce_load_mode(mode) -> LoadSceneMode:
+        if isinstance(mode, LoadSceneMode):
+            return mode
+        try:
+            return LoadSceneMode(str(mode).strip().lower())
+        except ValueError as exc:
+            raise ValueError("mode must be LoadSceneMode.SINGLE or LoadSceneMode.ADDITIVE") from exc
 
     @staticmethod
     def install_runtime_service(service) -> None:
@@ -186,35 +201,60 @@ class SceneManager:
 
     @staticmethod
     def get_scene_by_name(name: str):
-        """Find a scene path from the build list by name (Unity: ``GetSceneByName``).
+        """Return a currently loaded scene by name."""
+        return _NativeSceneManager.instance().get_scene(str(name))
 
-        Returns the resolved file path, or ``None``.
-        """
-        target = name.lower()
-        for p in SceneManager._load_build_list():
-            n = os.path.splitext(os.path.basename(p))[0]
-            if n.lower() == target:
-                return p
-        return None
+    @staticmethod
+    def get_scene_by_world_id(world_id: int):
+        """Return a loaded scene by its stable runtime World identity."""
+        return _NativeSceneManager.instance().get_scene_by_world_id(int(world_id))
 
     @staticmethod
     def get_scene_by_build_index(build_index: int):
-        """Return a scene path by build index (Unity: ``GetSceneByBuildIndex``).
-
-        Returns the resolved file path, or ``None``.
-        """
+        """Return the loaded scene corresponding to a build-list entry."""
         scenes = SceneManager._load_build_list()
         if 0 <= build_index < len(scenes):
-            return scenes[build_index]
+            name = os.path.splitext(os.path.basename(scenes[build_index]))[0]
+            return _NativeSceneManager.instance().get_scene(name)
         return None
 
     @staticmethod
     def get_scene_at(index: int):
-        """Return a scene path at a given index (Unity: ``GetSceneAt``).
+        """Return a scene from the current loaded-scene list."""
+        if not isinstance(index, int) or isinstance(index, bool) or index < 0:
+            return None
+        return _NativeSceneManager.instance().get_scene_at(index)
 
-        Currently equivalent to ``get_scene_by_build_index``.
-        """
-        return SceneManager.get_scene_by_build_index(index)
+    @staticmethod
+    def set_active_scene(scene) -> None:
+        """Select the loaded Scene that receives newly authored objects."""
+        from Infernux.engine.scene_manager import SceneFileManager
+
+        scene_files = SceneFileManager.instance()
+        if scene_files is not None and scene_files.document_id_for_scene(scene):
+            if not scene_files.activate_loaded_scene(scene):
+                raise RuntimeError("failed to activate the Scene authoring document")
+            return
+        _NativeSceneManager.instance().set_active_scene(scene)
+
+    @staticmethod
+    def unload_scene(scene) -> None:
+        """Unload one resident Scene without changing the others."""
+        from Infernux.engine.scene_manager import SceneFileManager
+
+        scene_files = SceneFileManager.instance()
+        native = _NativeSceneManager.instance()
+        native.unload_scene(scene)
+        if scene_files is not None:
+            scene_files.unregister_loaded_scene(scene)
+            active = native.get_active_scene()
+            if active is not None and scene_files.document_id_for_scene(active):
+                scene_files.activate_loaded_scene(active)
+
+    @staticmethod
+    def move_game_object_to_scene(game_object, destination) -> None:
+        """Move a root hierarchy to another loaded Scene without cloning it."""
+        _NativeSceneManager.instance().move_game_object_to_scene(game_object, destination)
 
     # ------------------------------------------------------------------
     # Scene loading
@@ -330,20 +370,25 @@ class SceneManager:
         return path
 
     @staticmethod
-    def load_scene(scene: Union[int, str]) -> bool:
+    def load_scene(
+        scene: Union[int, str], mode: LoadSceneMode = LoadSceneMode.SINGLE
+    ) -> bool:
         """Load a scene from the build list.
 
         During play mode the request starts at the next safe frame boundary.
         Use :meth:`wait_for_load_scene` when the scene should begin preparing
         immediately while the current scene keeps running.
         """
+        load_mode = SceneManager._coerce_load_mode(mode)
         path = SceneManager._resolve_load_path(scene)
         if path is None:
             return False
 
         runtime_service = SceneManager._runtime_scene_service
         if runtime_service is not None:
-            return bool(runtime_service.request_load(path))
+            if load_mode is LoadSceneMode.SINGLE:
+                return bool(runtime_service.request_load(path))
+            return bool(runtime_service.request_load(path, mode=load_mode.value))
 
         # --- Defer during play mode to avoid invalidating C++ iterators ---
         if SceneManager._is_in_play_mode():
@@ -351,13 +396,16 @@ class SceneManager:
             if generation is None:
                 return False
             SceneManager._pending_scene_load = path
+            SceneManager._pending_scene_load_mode = load_mode
             return True
 
         # --- Not in play mode: load immediately (editor double-click, etc.) ---
-        return SceneManager._do_load(path)
+        return SceneManager._do_load(path, mode=load_mode)
 
     @staticmethod
-    def wait_for_load_scene(scene: Union[int, str]) -> bool:
+    def wait_for_load_scene(
+        scene: Union[int, str], mode: LoadSceneMode = LoadSceneMode.SINGLE
+    ) -> bool:
         """Prepare a scene in the background and switch when it is ready.
 
         File IO and native document validation begin immediately on the engine
@@ -370,25 +418,30 @@ class SceneManager:
         was accepted. Use :meth:`is_scene_load_pending` to observe completion.
         Outside Play mode it behaves like :meth:`load_scene`.
         """
+        load_mode = SceneManager._coerce_load_mode(mode)
         path = SceneManager._resolve_load_path(scene)
         if path is None:
             return False
 
         runtime_service = SceneManager._runtime_scene_service
         if runtime_service is not None:
-            return bool(runtime_service.request_prepared_load(path))
+            if load_mode is LoadSceneMode.SINGLE:
+                return bool(runtime_service.request_prepared_load(path))
+            return bool(runtime_service.request_prepared_load(path, mode=load_mode.value))
 
         if not SceneManager._is_in_play_mode():
-            return SceneManager._do_load(path)
+            return SceneManager._do_load(path, mode=load_mode)
         generation = SceneManager._begin_scene_load_request()
         if generation is None:
             return False
         return SceneManager._start_runtime_load(
-            path, wait_for_ready=True, generation=generation
+            path, wait_for_ready=True, generation=generation, mode=load_mode
         )
 
     @staticmethod
-    def prepare_scene(scene: Union[int, str]) -> bool:
+    def prepare_scene(
+        scene: Union[int, str], mode: LoadSceneMode = LoadSceneMode.SINGLE
+    ) -> bool:
         """Prepare a scene without replacing the live scene.
 
         Reading, resource preflight, and Python component preflight advance in
@@ -398,17 +451,17 @@ class SceneManager:
         cinematic transitions where the commit must happen under a fully
         opaque frame.
         """
+        load_mode = SceneManager._coerce_load_mode(mode)
         path = SceneManager._resolve_load_path(scene)
         if path is None:
             return False
 
         runtime_service = SceneManager._runtime_scene_service
         if runtime_service is not None:
-            return bool(
-                runtime_service.request_prepared_load(
-                    path, hold_for_activation=True
-                )
-            )
+            kwargs = {"hold_for_activation": True}
+            if load_mode is LoadSceneMode.ADDITIVE:
+                kwargs["mode"] = load_mode.value
+            return bool(runtime_service.request_prepared_load(path, **kwargs))
 
         if not SceneManager._is_in_play_mode():
             return False
@@ -420,6 +473,7 @@ class SceneManager:
             wait_for_ready=True,
             hold_for_activation=True,
             generation=generation,
+            mode=load_mode,
         )
 
     @staticmethod
@@ -463,53 +517,88 @@ class SceneManager:
         return bool(_NativeSceneManager.instance().is_playing())
 
     @staticmethod
-    def _do_load(path: str) -> bool:
+    def _do_load(
+        path: str, *, mode: LoadSceneMode = LoadSceneMode.SINGLE
+    ) -> bool:
         """Perform the actual scene file load (must be called outside C++ iteration)."""
+        load_mode = SceneManager._coerce_load_mode(mode)
         runtime_service = SceneManager._runtime_scene_service
         if runtime_service is not None:
-            return bool(runtime_service.load_initial(path))
+            if load_mode is LoadSceneMode.SINGLE:
+                return bool(runtime_service.load_initial(path))
+            return bool(runtime_service.load_initial(path, mode=load_mode.value))
         # Use the editor SceneFileManager if available (handles Python component
         # restore, etc.), otherwise fall back to raw C++ _NativeSceneManager.
         from Infernux.engine.scene_manager import SceneFileManager
         sfm = SceneFileManager.instance()
-        if sfm:
+        if sfm and load_mode is LoadSceneMode.SINGLE:
             return sfm.open_scene(path)
 
         # Runtime/current-schema path. Python component validation must happen
         # before the native staging graph commits.
         sm = _NativeSceneManager.instance()
         active = sm.get_active_scene()
-        if not active:
-            active = sm.create_scene("Scene")
+        if load_mode is LoadSceneMode.ADDITIVE:
+            target = sm.create_scene(os.path.splitext(os.path.basename(path))[0])
+        else:
+            target = active or sm.create_scene("Scene")
         from Infernux.lib import AssetRegistry
         asset_database = AssetRegistry.instance().get_asset_database()
         from Infernux.engine.scene_document_transaction import SceneDocumentTransaction
         transaction = SceneDocumentTransaction(
-            active,
+            target,
             path=path,
             asset_database=asset_database,
-            clear_registries=True,
-            before_commit=getattr(sm, "prepare_active_scene_replacement", None),
+            clear_registries=load_mode is LoadSceneMode.SINGLE,
+            before_commit=(
+                getattr(sm, "prepare_active_scene_replacement", None)
+                if load_mode is LoadSceneMode.SINGLE
+                else None
+            ),
         )
         loaded = transaction.run_to_completion(raise_on_failure=False)
         if not loaded:
+            if load_mode is LoadSceneMode.ADDITIVE:
+                sm.unload_scene(target)
             Debug.log_warning(f"SceneManager: failed to load {path}: {transaction.error}")
             return False
+        if load_mode is LoadSceneMode.SINGLE:
+            SceneManager._unload_other_scenes(target)
+        elif sfm is not None:
+            sfm.register_loaded_scene(target, path, dirty=False)
         return True
 
     @staticmethod
-    def _create_runtime_load_transaction(path: str):
+    def _unload_other_scenes(kept_scene) -> None:
+        """Finish a successful Single load by retiring every other Scene."""
+        sm = _NativeSceneManager.instance()
+        kept_world = int(kept_scene.world_id) if kept_scene is not None else 0
+        for index in range(int(sm.scene_count) - 1, -1, -1):
+            scene = sm.get_scene_at(index)
+            if scene is not None and int(scene.world_id) != kept_world:
+                sm.unload_scene(scene)
+        if kept_scene is not None:
+            sm.set_active_scene(kept_scene)
+
+    @staticmethod
+    def _create_runtime_load_transaction(
+        path: str, *, mode: LoadSceneMode = LoadSceneMode.SINGLE
+    ):
         """Create a transaction without changing the live scene."""
         from Infernux.engine.scene_manager import SceneFileManager
 
+        load_mode = SceneManager._coerce_load_mode(mode)
         sfm = SceneFileManager.instance()
-        if sfm is not None:
-            return sfm._create_open_scene_transaction(path), sfm
+        if sfm is not None and load_mode is LoadSceneMode.SINGLE:
+            return sfm._create_open_scene_transaction(path), sfm, None
 
         sm = _NativeSceneManager.instance()
-        scene = sm.get_active_scene()
-        if scene is None:
-            scene = sm.create_scene("Scene")
+        if load_mode is LoadSceneMode.ADDITIVE:
+            scene = sm.create_scene(os.path.splitext(os.path.basename(path))[0])
+        else:
+            scene = sm.get_active_scene()
+            if scene is None:
+                scene = sm.create_scene("Scene")
         from Infernux.lib import AssetRegistry
         from Infernux.engine.scene_document_transaction import SceneDocumentTransaction
 
@@ -519,17 +608,25 @@ class SceneManager:
                 scene,
                 path=path,
                 asset_database=asset_database,
-                clear_registries=True,
-                before_commit=getattr(sm, "prepare_active_scene_replacement", None),
+                clear_registries=load_mode is LoadSceneMode.SINGLE,
+                before_commit=(
+                    getattr(sm, "prepare_active_scene_replacement", None)
+                    if load_mode is LoadSceneMode.SINGLE
+                    else None
+                ),
             ),
             None,
+            scene if load_mode is LoadSceneMode.ADDITIVE else None,
         )
 
     @staticmethod
     def _clear_runtime_load_state() -> None:
         SceneManager._pending_scene_load = None
+        SceneManager._pending_scene_load_mode = LoadSceneMode.SINGLE
         SceneManager._active_scene_transaction = None
         SceneManager._active_scene_load_path = None
+        SceneManager._active_scene_load_mode = LoadSceneMode.SINGLE
+        SceneManager._active_scene_target = None
         SceneManager._active_scene_file_manager = None
         SceneManager._active_scene_wait_for_ready = False
         SceneManager._active_scene_hold_for_activation = False
@@ -560,6 +657,7 @@ class SceneManager:
                         "SceneManager: the active scene transaction is already committing."
                     )
                     return None
+                SceneManager._discard_active_additive_target()
             except Exception as exc:
                 Debug.log_error(f"SceneManager: failed to cancel stale scene load: {exc}")
                 return None
@@ -568,28 +666,55 @@ class SceneManager:
         return SceneManager._scene_load_generation
 
     @staticmethod
+    def _discard_active_additive_target() -> None:
+        if SceneManager._active_scene_load_mode is not LoadSceneMode.ADDITIVE:
+            return
+        target = SceneManager._active_scene_target
+        if target is not None:
+            _NativeSceneManager.instance().unload_scene(target)
+        SceneManager._active_scene_target = None
+
+    @staticmethod
     def _start_runtime_load(
         path: str,
         *,
         wait_for_ready: bool,
         hold_for_activation: bool = False,
         generation: Optional[int] = None,
+        mode: LoadSceneMode = LoadSceneMode.SINGLE,
     ) -> bool:
         """Start background preparation now; live-scene mutation happens later."""
         if generation is None:
             generation = SceneManager._scene_load_generation
         if generation != SceneManager._scene_load_generation:
             return False
+        load_mode = SceneManager._coerce_load_mode(mode)
+        target = None
         try:
-            transaction, sfm = SceneManager._create_runtime_load_transaction(path)
+            created = (
+                SceneManager._create_runtime_load_transaction(path)
+                if load_mode is LoadSceneMode.SINGLE
+                else SceneManager._create_runtime_load_transaction(path, mode=load_mode)
+            )
+            if len(created) == 2:
+                transaction, sfm = created
+                target = None
+            else:
+                transaction, sfm, target = created
             if transaction is None:
+                if target is not None:
+                    _NativeSceneManager.instance().unload_scene(target)
                 return False
             transaction.start()
         except Exception as exc:
+            if target is not None:
+                _NativeSceneManager.instance().unload_scene(target)
             Debug.log_error(f"SceneManager: failed to start scene load: {exc}")
             return False
         SceneManager._active_scene_transaction = transaction
         SceneManager._active_scene_load_path = path
+        SceneManager._active_scene_load_mode = load_mode
+        SceneManager._active_scene_target = target
         SceneManager._active_scene_file_manager = sfm
         SceneManager._active_scene_wait_for_ready = bool(wait_for_ready)
         SceneManager._active_scene_hold_for_activation = bool(hold_for_activation)
@@ -613,11 +738,14 @@ class SceneManager:
             path = SceneManager._pending_scene_load
             if path is None:
                 return
+            load_mode = SceneManager._pending_scene_load_mode
             SceneManager._pending_scene_load = None
+            SceneManager._pending_scene_load_mode = LoadSceneMode.SINGLE
             SceneManager._start_runtime_load(
                 path,
                 wait_for_ready=False,
                 generation=SceneManager._scene_load_generation,
+                mode=load_mode,
             )
             return
 
@@ -628,6 +756,7 @@ class SceneManager:
         ):
             if not SceneManager._is_runtime_load_transaction_complete(transaction):
                 transaction.cancel()
+            SceneManager._discard_active_additive_target()
             SceneManager._clear_runtime_load_state()
             return
 
@@ -646,20 +775,31 @@ class SceneManager:
 
         path = SceneManager._active_scene_load_path
         sfm = SceneManager._active_scene_file_manager
+        load_mode = SceneManager._active_scene_load_mode
+        target = SceneManager._active_scene_target
+        succeeded = bool(transaction.succeeded)
+        error = transaction.error
+        if not succeeded:
+            SceneManager._discard_active_additive_target()
         SceneManager._clear_runtime_load_state()
-        if not transaction.succeeded:
-            Debug.log_error(f"SceneManager: runtime scene load failed for {path}: {transaction.error}")
+        if not succeeded:
+            Debug.log_error(f"SceneManager: runtime scene load failed for {path}: {error}")
             return
-        if sfm is not None:
+        if sfm is not None and load_mode is LoadSceneMode.SINGLE:
             sfm._finish_open_scene(path, runtime_load=True)
 
-        from Infernux.timing import Time
-        Time._reset_frame_delta()
-
         sm = _NativeSceneManager.instance()
-        scene = sm.get_active_scene()
-        if scene:
-            sm._start_active_scene_for_play()
+        if load_mode is LoadSceneMode.ADDITIVE:
+            if target is None:
+                raise RuntimeError("additive scene transaction completed without its target Scene")
+            sm._start_scene_for_play(target)
+        else:
+            scene = sm.get_active_scene()
+            SceneManager._unload_other_scenes(scene)
+            from Infernux.timing import Time
+            Time._reset_frame_delta()
+            if scene:
+                sm._start_active_scene_for_play()
 
     @staticmethod
     def is_scene_load_pending() -> bool:
@@ -673,12 +813,17 @@ class SceneManager:
         )
 
     # ------------------------------------------------------------------
-    # Build-list queries
+    # Loaded-scene and Build Settings queries
     # ------------------------------------------------------------------
 
     @staticmethod
     def get_scene_count() -> int:
-        """Return the number of scenes in the build list."""
+        """Return the number of currently loaded scenes."""
+        return int(_NativeSceneManager.instance().scene_count)
+
+    @staticmethod
+    def get_scene_count_in_build_settings() -> int:
+        """Return the number of scenes available through Build Settings."""
         return len(SceneManager._load_build_list())
 
     @staticmethod
@@ -724,6 +869,7 @@ class SceneManager:
 __all__ = [
     "GameObjectQuery",
     "LayerMask",
+    "LoadSceneMode",
     "TagLayerManager",
     "SceneManager",
 ]

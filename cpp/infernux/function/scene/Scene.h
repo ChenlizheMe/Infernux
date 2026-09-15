@@ -277,7 +277,12 @@ class Scene
 
     void SetPlaying(bool playing)
     {
+        const bool wasPlaying = m_isPlaying;
         m_isPlaying = playing;
+        if (!wasPlaying && playing && m_hasStarted) {
+            for (auto &root : m_rootObjects)
+                QueueStartObject(root.get());
+        }
     }
 
     /// @brief Monotonically increasing counter bumped whenever the scene
@@ -323,7 +328,8 @@ class Scene
     ///   5. `m_structureVersion` is bumped only after a successful commit.
     ///
     /// @brief Rebuild the scene from an already parsed current-schema document.
-    bool DeserializeDocument(const nlohmann::json &document);
+    bool DeserializeDocument(const nlohmann::json &document,
+                             std::unordered_map<uint64_t, uint64_t> *objectIdRemap = nullptr);
 
     /// Commit a validated candidate while retaining the current native world.
     /// The returned token must be finalized after cross-language publish or
@@ -484,6 +490,7 @@ class SceneCommitToken final
     SceneCommitToken &operator=(const SceneCommitToken &) = delete;
 
     [[nodiscard]] bool IsActive() const noexcept;
+    [[nodiscard]] const std::unordered_map<uint64_t, uint64_t> &GetObjectIdRemap() const noexcept;
     bool Rollback();
     void Finalize();
 

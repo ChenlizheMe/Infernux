@@ -129,6 +129,7 @@ struct SceneCommitToken::Impl
     bool hasStarted = false;
     uint64_t structureVersion = 0;
     SceneEnvironmentSettings environment;
+    std::unordered_map<uint64_t, uint64_t> objectIdRemap;
 };
 
 namespace
@@ -136,7 +137,7 @@ namespace
 void RestoreSceneComponentRegistries(Scene &scene)
 {
     auto &manager = SceneManager::Instance();
-    manager.ClearComponentRegistries();
+    manager.ClearComponentRegistries(&scene);
     for (GameObject *object : scene.GetAllObjects()) {
         if (!object || !object->IsActiveInHierarchy())
             continue;
@@ -214,6 +215,12 @@ bool SceneCommitToken::IsActive() const noexcept
     return m_impl && m_impl->active;
 }
 
+const std::unordered_map<uint64_t, uint64_t> &SceneCommitToken::GetObjectIdRemap() const noexcept
+{
+    static const std::unordered_map<uint64_t, uint64_t> empty;
+    return m_impl ? m_impl->objectIdRemap : empty;
+}
+
 bool SceneCommitToken::Rollback()
 {
     if (!IsActive())
@@ -222,7 +229,7 @@ bool SceneCommitToken::Rollback()
     Impl &state = *m_impl;
     Scene &scene = *state.scene;
     try {
-        SceneManager::Instance().ClearComponentRegistries();
+        SceneManager::Instance().ClearComponentRegistries(&scene);
         scene.m_mainCamera = nullptr;
         scene.m_rootObjects.clear();
         scene.m_objectsById.clear();
@@ -290,7 +297,7 @@ std::shared_ptr<SceneCommitToken> Scene::CommitDocumentRetainingCurrentWorld(con
         return nullptr;
 
     auto token = std::shared_ptr<SceneCommitToken>(new SceneCommitToken(*this));
-    if (DeserializeDocument(document))
+    if (DeserializeDocument(document, &token->m_impl->objectIdRemap))
         return token;
     if (!token->Rollback())
         INXLOG_ERROR("Scene candidate commit failed and retained world could not be restored");
@@ -648,9 +655,6 @@ std::vector<GameObject *> Scene::FindGameObjectsInLayer(int layer) const
 
 void Scene::Start()
 {
-    if (m_hasStarted)
-        return;
-
     m_isLoaded = true;
     m_hasStarted = true;
 
@@ -1274,6 +1278,38 @@ GameObject *Scene::InstantiateFromDocument(const nlohmann::json &document, GameO
     if (!clone)
         return nullptr;
 
+    std::unordered_map<uint64_t, uint64_t> componentIdRemap;
+    const auto collectRemap = [&](const auto &self, GameObject *object, const json &objectDocument) -> void {
+        const auto &transformDocument = objectDocument.at("transform");
+        if (transformDocument.contains("component_id")) {
+            componentIdRemap.emplace(transformDocument.at("component_id").get<uint64_t>(),
+                                     object->GetTransform()->GetComponentID());
+        }
+        size_t nativeIndex = 0;
+        for (const auto &componentDocument : objectDocument.at("components")) {
+            const DecodedComponentRecord record = DecodeComponentRecord(componentDocument);
+            if (record.kind == ComponentRecordKind::Python)
+                continue;
+            if (nativeIndex >= object->m_components.size())
+                throw std::logic_error("instantiated native component count changed during reference remap");
+            componentIdRemap.emplace(record.componentId, object->m_components[nativeIndex++]->GetComponentID());
+        }
+        const auto &childDocuments = objectDocument.at("children");
+        if (childDocuments.size() != object->m_children.size())
+            throw std::logic_error("instantiated child count changed during reference remap");
+        for (size_t index = 0; index < object->m_children.size(); ++index)
+            self(self, object->m_children[index].get(), childDocuments[index]);
+    };
+    collectRemap(collectRemap, clone.get(), document);
+    const auto applyRemap = [&](const auto &self, GameObject *object) -> void {
+        object->m_transform.RemapComponentReferences(componentIdRemap);
+        for (auto &component : object->m_components)
+            component->RemapComponentReferences(componentIdRemap);
+        for (auto &child : object->m_children)
+            self(self, child.get());
+    };
+    applyRemap(applyRemap, clone.get());
+
     GameObject *ptr = clone.get();
     RegisterObjectSubtree(ptr);
 
@@ -1371,7 +1407,7 @@ std::shared_ptr<InxMaterial> Scene::ResolveSkyboxMaterial() const
     return AssetRegistry::Instance().GetBuiltinMaterial("SkyboxProcedural");
 }
 
-bool Scene::DeserializeDocument(const nlohmann::json &j)
+bool Scene::DeserializeDocument(const nlohmann::json &j, std::unordered_map<uint64_t, uint64_t> *objectIdRemap)
 {
     try {
         using ProfileClock = std::chrono::steady_clock;
@@ -1498,13 +1534,45 @@ bool Scene::DeserializeDocument(const nlohmann::json &j)
         componentsByDocumentId.reserve(totalNativeComponentCount);
         pythonComponentIds.reserve(totalPythonComponentCount);
         staging.m_objectsById.reserve(totalObjectCount);
-        for (RootIdCollection &collection : rootCollections) {
+        for (const RootIdCollection &collection : rootCollections) {
             for (const ObjectIdAssignment &assignment : collection.objects) {
                 if (!objectIds.insert(assignment.documentId).second)
                     throw std::invalid_argument("scene contains a duplicate GameObject id");
-                stagedToDocumentObjectId.emplace(assignment.stagedId, assignment.documentId);
-                assignment.object->m_id = assignment.documentId;
-                staging.m_objectsById.emplace(assignment.documentId, assignment.object);
+            }
+        }
+
+        std::unordered_set<uint64_t> occupiedObjectIds;
+        const auto collectOccupiedObjectIds = [&](const Scene *scene) {
+            if (!scene || scene == this)
+                return;
+            for (GameObject *object : scene->GetAllObjects()) {
+                if (object)
+                    occupiedObjectIds.insert(object->GetID());
+            }
+        };
+        const SceneManager &sceneManager = SceneManager::Instance();
+        for (const auto &loadedScene : sceneManager.GetAllScenes())
+            collectOccupiedObjectIds(loadedScene.get());
+        collectOccupiedObjectIds(sceneManager.GetRuntimePersistentScene());
+
+        std::unordered_set<uint64_t> publishedObjectIds = occupiedObjectIds;
+        std::unordered_map<uint64_t, uint64_t> committedObjectIdRemap;
+        committedObjectIdRemap.reserve(totalObjectCount);
+        for (RootIdCollection &collection : rootCollections) {
+            for (const ObjectIdAssignment &assignment : collection.objects) {
+                uint64_t publishedId = assignment.documentId;
+                if (occupiedObjectIds.find(publishedId) != occupiedObjectIds.end()) {
+                    do {
+                        publishedId = GameObject::GenerateID();
+                    } while (objectIds.find(publishedId) != objectIds.end() ||
+                             publishedObjectIds.find(publishedId) != publishedObjectIds.end());
+                    committedObjectIdRemap.emplace(assignment.documentId, publishedId);
+                }
+                if (!publishedObjectIds.insert(publishedId).second)
+                    throw std::logic_error("scene GameObject publication produced a duplicate id");
+                stagedToDocumentObjectId.emplace(assignment.stagedId, publishedId);
+                assignment.object->m_id = publishedId;
+                staging.m_objectsById.emplace(publishedId, assignment.object);
             }
             for (const auto &[component, componentId] : collection.components) {
                 if (!componentIds.insert(componentId).second)
@@ -1538,10 +1606,8 @@ bool Scene::DeserializeDocument(const nlohmann::json &j)
                 continue;
             GameObject *owner = occupant->GetGameObject();
             Scene *ownerScene = owner ? owner->GetScene() : nullptr;
-            if (ownerScene != this && ownerScene != &staging) {
-                throw std::invalid_argument(
-                    "scene Python component_id collides with a component owned by another live Scene");
-            }
+            if (ownerScene != this && ownerScene != &staging)
+                requiresFreshComponentIds = true;
         }
 
         for (auto &pending : staging.m_pendingPyComponents) {
@@ -1568,8 +1634,16 @@ bool Scene::DeserializeDocument(const nlohmann::json &j)
         // the copied graph is internally consistent and no live registry entry
         // is overwritten.
         if (requiresFreshComponentIds) {
-            for (auto &[component, componentId] : componentIdAssignments)
+            std::unordered_map<uint64_t, uint64_t> nativeComponentIdRemap;
+            nativeComponentIdRemap.reserve(componentIdAssignments.size());
+            for (auto &[component, componentId] : componentIdAssignments) {
+                nativeComponentIdRemap.emplace(componentId, component->GetComponentID());
                 componentId = component->GetComponentID();
+            }
+            for (const auto &[component, componentId] : componentIdAssignments) {
+                (void)componentId;
+                component->RemapComponentReferences(nativeComponentIdRemap);
+            }
 
             // Python components do not have native proxies during staging, so
             // they cannot inherit the fresh IDs allocated to staged native
@@ -1615,7 +1689,7 @@ bool Scene::DeserializeDocument(const nlohmann::json &j)
 
         // Commit starts here. All schema/factory/component validation has completed.
         m_mainCamera = nullptr;
-        SceneManager::Instance().ClearComponentRegistries();
+        SceneManager::Instance().ClearComponentRegistries(this);
         m_rootObjects.clear();
         m_objectsById.clear();
         m_pendingDestroy.clear();
@@ -1630,17 +1704,8 @@ bool Scene::DeserializeDocument(const nlohmann::json &j)
         m_pendingPyComponents = std::move(staging.m_pendingPyComponents);
         for (size_t i = 0; i < componentIdAssignments.size(); ++i) {
             auto &[component, componentId] = componentIdAssignments[i];
-            if (auto *renderer = dynamic_cast<MeshRenderer *>(component)) {
-                auto &graph = AssetDependencyGraph::Instance();
-                graph.ClearRuntimeDependenciesOf(std::to_string(component->m_componentId));
-                const std::string publishedOwner = std::to_string(componentId);
-                if (renderer->GetMeshAssetRef().HasGuid())
-                    graph.AddRuntimeDependency(publishedOwner, renderer->GetMeshAssetRef().GetGuid());
-                for (const auto &reference : renderer->GetMaterialRefs()) {
-                    if (reference.HasGuid())
-                        graph.AddRuntimeDependency(publishedOwner, reference.GetGuid());
-                }
-            }
+            AssetDependencyGraph::Instance().RekeyRuntimeDependencies(component->GetInstanceGuid(),
+                                                                      std::to_string(componentId));
             component->m_componentId = componentId;
             Component::EnsureNextComponentID(componentId);
             auto &node = stagedRegistryNodes[i];
@@ -1657,8 +1722,14 @@ bool Scene::DeserializeDocument(const nlohmann::json &j)
         // Documents preserve GameObject IDs. Advance the process-wide allocator
         // before Awake can create more objects, otherwise a fresh object after
         // loading can overwrite an existing ID in m_objectsById.
+        for (const auto &[documentId, publishedId] : committedObjectIdRemap) {
+            (void)documentId;
+            GameObject::EnsureNextID(publishedId);
+        }
         for (const uint64_t objectId : objectIds)
             GameObject::EnsureNextID(objectId);
+        if (objectIdRemap)
+            *objectIdRemap = std::move(committedObjectIdRemap);
         const auto profileCommitted = ProfileClock::now();
 
         // ── Step 5: native Awake pass. ──
@@ -1753,11 +1824,18 @@ std::vector<Camera *> Scene::GetActiveGameCameras(Camera *editorCam) const
             cameras.push_back(camera);
         }
     };
-    appendSceneCameras(*this);
     const SceneManager &manager = SceneManager::Instance();
-    Scene *persistentScene = manager.GetRuntimePersistentScene();
-    if (this == manager.GetActiveScene() && persistentScene && persistentScene != this)
-        appendSceneCameras(*persistentScene);
+    if (this == manager.GetActiveScene()) {
+        for (const auto &loadedScene : manager.GetAllScenes()) {
+            if (loadedScene)
+                appendSceneCameras(*loadedScene);
+        }
+        Scene *persistentScene = manager.GetRuntimePersistentScene();
+        if (persistentScene)
+            appendSceneCameras(*persistentScene);
+    } else {
+        appendSceneCameras(*this);
+    }
     std::sort(cameras.begin(), cameras.end(), [](const Camera *lhs, const Camera *rhs) {
         if (lhs->GetDepth() != rhs->GetDepth())
             return lhs->GetDepth() < rhs->GetDepth();

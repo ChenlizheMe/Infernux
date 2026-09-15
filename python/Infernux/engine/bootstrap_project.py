@@ -276,6 +276,14 @@ def wire_project_callbacks(bs: EditorBootstrap) -> None:
                 file_ops.create_physic_material,
                 (cur, name, adb),
             ),
+            "data_asset": (
+                "Create Data Asset",
+                file_ops.create_data_asset,
+                (cur, name, variant, adb),
+            ),
+            "render_texture": (
+                "Create Render Texture", file_ops.create_render_texture, (cur, name, adb),
+            ),
             "scene": ("Create Scene", file_ops.create_scene, (cur, name, adb)),
             "animation_clip": (
                 "Create Animation Clip",

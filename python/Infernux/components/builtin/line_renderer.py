@@ -5,6 +5,7 @@ from __future__ import annotations
 from Infernux.components.builtin.mesh_renderer import MeshRenderer
 from Infernux.components.builtin_component import CppProperty
 from Infernux.components.fields import FieldType
+from Infernux.graph.ramp import AnimationCurve, Gradient
 
 
 def _vec4_to_color(value):
@@ -141,7 +142,7 @@ class LineRenderer(MeshRenderer):
     width_curve = CppProperty(
         "width_curve",
         FieldType.ANIMATION_CURVE,
-        default=None,
+        default=AnimationCurve(),
         native_getter=_get_width_curve,
         native_setter=_set_width_curve,
         curve_non_negative=True,
@@ -149,7 +150,7 @@ class LineRenderer(MeshRenderer):
     color_gradient = CppProperty(
         "color_gradient",
         FieldType.GRADIENT,
-        default=None,
+        default=Gradient(),
         native_getter=_get_color_gradient,
         native_setter=_set_color_gradient,
         hdr=True,

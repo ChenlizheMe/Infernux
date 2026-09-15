@@ -1,18 +1,191 @@
 #include <function/resources/AssetRegistry/AssetRegistry.h>
 #include <function/resources/InxMaterial/InxMaterial.h>
 #include <function/resources/InxMesh/InxMesh.h>
+#include <function/resources/InxMesh/MeshArtifact.h>
 #include <function/resources/InxSkinnedMesh/InxSkinnedMesh.h>
 #include <function/resources/InxTexture/InxTexture.h>
 #include <function/resources/PhysicMaterial/PhysicMaterial.h>
+#include <function/scene/MeshRenderer.h>
 
 #include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
+#include <algorithm>
+#include <cmath>
+#include <cstring>
+#include <limits>
+
 namespace py = pybind11;
 
 namespace infernux
 {
+namespace
+{
+py::array_t<float> MeshVec3Array(const std::vector<Vertex> &vertices, const glm::vec3 Vertex::*member)
+{
+    py::array_t<float> result({static_cast<py::ssize_t>(vertices.size()), py::ssize_t{3}});
+    auto output = result.mutable_unchecked<2>();
+    for (py::ssize_t row = 0; row < static_cast<py::ssize_t>(vertices.size()); ++row) {
+        const auto &value = vertices[static_cast<size_t>(row)].*member;
+        output(row, 0) = value.x;
+        output(row, 1) = value.y;
+        output(row, 2) = value.z;
+    }
+    return result;
+}
+
+py::dict MeshVertexData(const InxMesh &mesh)
+{
+    const auto &vertices = mesh.GetVertices();
+    py::dict result;
+    result["positions"] = MeshVec3Array(vertices, &Vertex::pos);
+    result["normals"] = MeshVec3Array(vertices, &Vertex::normal);
+    result["colors"] = MeshVec3Array(vertices, &Vertex::color);
+
+    py::array_t<float> tangents({static_cast<py::ssize_t>(vertices.size()), py::ssize_t{4}});
+    py::array_t<float> uvs({static_cast<py::ssize_t>(vertices.size()), py::ssize_t{2}});
+    auto tangentOutput = tangents.mutable_unchecked<2>();
+    auto uvOutput = uvs.mutable_unchecked<2>();
+    for (py::ssize_t row = 0; row < static_cast<py::ssize_t>(vertices.size()); ++row) {
+        const auto &vertex = vertices[static_cast<size_t>(row)];
+        tangentOutput(row, 0) = vertex.tangent.x;
+        tangentOutput(row, 1) = vertex.tangent.y;
+        tangentOutput(row, 2) = vertex.tangent.z;
+        tangentOutput(row, 3) = vertex.tangent.w;
+        uvOutput(row, 0) = vertex.texCoord.x;
+        uvOutput(row, 1) = vertex.texCoord.y;
+    }
+    result["tangents"] = std::move(tangents);
+    result["uvs"] = std::move(uvs);
+    return result;
+}
+
+void RequireFinite(float value, const char *name)
+{
+    if (!std::isfinite(value))
+        throw py::value_error(std::string(name) + " must contain finite values");
+}
+
+template <size_t Columns, typename Assign>
+void ApplyOptionalRows(const py::object &value, size_t rows, const char *name, Assign assign)
+{
+    if (value.is_none())
+        return;
+    const auto array = value.cast<py::array_t<float, py::array::c_style | py::array::forcecast>>();
+    if (array.ndim() != 2 || array.shape(0) != static_cast<py::ssize_t>(rows) ||
+        array.shape(1) != static_cast<py::ssize_t>(Columns))
+        throw py::value_error(std::string(name) + " must have shape (N, " + std::to_string(Columns) + ")");
+    const auto input = array.unchecked<2>();
+    for (size_t row = 0; row < rows; ++row) {
+        for (size_t column = 0; column < Columns; ++column)
+            RequireFinite(input(static_cast<py::ssize_t>(row), static_cast<py::ssize_t>(column)), name);
+        assign(row, input, static_cast<py::ssize_t>(row));
+    }
+}
+
+std::vector<Vertex> DecodeMeshVertices(const py::array_t<float, py::array::c_style | py::array::forcecast> &positions,
+                                       const py::object &normals, const py::object &uvs, const py::object &tangents,
+                                       const py::object &colors, bool &generatedNormals, bool &generatedTangents)
+{
+    if (positions.ndim() != 2 || positions.shape(1) != 3)
+        throw py::value_error("positions must have shape (N, 3)");
+    const size_t count = static_cast<size_t>(positions.shape(0));
+    std::vector<Vertex> vertices(count);
+    const auto positionData = positions.unchecked<2>();
+    for (size_t row = 0; row < count; ++row) {
+        const auto index = static_cast<py::ssize_t>(row);
+        for (py::ssize_t column = 0; column < 3; ++column)
+            RequireFinite(positionData(index, column), "positions");
+        vertices[row].pos = {positionData(index, 0), positionData(index, 1), positionData(index, 2)};
+    }
+    ApplyOptionalRows<3>(normals, count, "normals", [&](size_t row, const auto &data, py::ssize_t index) {
+        vertices[row].normal = {data(index, 0), data(index, 1), data(index, 2)};
+    });
+    ApplyOptionalRows<2>(uvs, count, "uvs", [&](size_t row, const auto &data, py::ssize_t index) {
+        vertices[row].texCoord = {data(index, 0), data(index, 1)};
+    });
+    ApplyOptionalRows<4>(tangents, count, "tangents", [&](size_t row, const auto &data, py::ssize_t index) {
+        vertices[row].tangent = {data(index, 0), data(index, 1), data(index, 2), data(index, 3)};
+    });
+    ApplyOptionalRows<3>(colors, count, "colors", [&](size_t row, const auto &data, py::ssize_t index) {
+        vertices[row].color = {data(index, 0), data(index, 1), data(index, 2)};
+    });
+    generatedNormals = normals.is_none();
+    generatedTangents = tangents.is_none();
+    return vertices;
+}
+
+std::vector<uint32_t> DecodeMeshIndices(const py::array_t<uint32_t, py::array::c_style | py::array::forcecast> &indices,
+                                        size_t vertexCount)
+{
+    if (indices.ndim() != 1)
+        throw py::value_error("indices must have shape (M,)");
+    if (indices.shape(0) % 3 != 0)
+        throw py::value_error("indices must contain complete triangles");
+    std::vector<uint32_t> result(static_cast<size_t>(indices.shape(0)));
+    const auto input = indices.unchecked<1>();
+    for (size_t index = 0; index < result.size(); ++index) {
+        result[index] = input(static_cast<py::ssize_t>(index));
+        if (result[index] >= vertexCount)
+            throw py::value_error("indices contain a vertex index outside positions");
+    }
+    return result;
+}
+
+std::vector<SubMesh> DecodeSubMeshes(const py::object &descriptions, const std::vector<uint32_t> &indices,
+                                     const std::vector<Vertex> &vertices)
+{
+    const size_t vertexCount = vertices.size();
+    if (descriptions.is_none()) {
+        if (indices.empty())
+            return {};
+        SubMesh whole;
+        whole.indexCount = static_cast<uint32_t>(indices.size());
+        whole.vertexCount = static_cast<uint32_t>(vertexCount);
+        whole.name = "Mesh";
+        whole.boundsMin = glm::vec3(std::numeric_limits<float>::max());
+        whole.boundsMax = glm::vec3(-std::numeric_limits<float>::max());
+        for (uint32_t index : indices) {
+            whole.boundsMin = glm::min(whole.boundsMin, vertices[index].pos);
+            whole.boundsMax = glm::max(whole.boundsMax, vertices[index].pos);
+        }
+        return {std::move(whole)};
+    }
+    std::vector<SubMesh> result;
+    for (const py::handle item : descriptions.cast<py::iterable>()) {
+        if (!py::isinstance<py::dict>(item))
+            throw py::type_error("submeshes must contain dictionaries");
+        const auto description = py::reinterpret_borrow<py::dict>(item);
+        SubMesh subMesh;
+        subMesh.indexStart = description["index_start"].cast<uint32_t>();
+        subMesh.indexCount = description["index_count"].cast<uint32_t>();
+        subMesh.vertexStart = description.contains("vertex_start") ? description["vertex_start"].cast<uint32_t>() : 0;
+        subMesh.vertexCount = description.contains("vertex_count") ? description["vertex_count"].cast<uint32_t>()
+                                                                   : static_cast<uint32_t>(vertexCount);
+        subMesh.materialSlot =
+            description.contains("material_slot") ? description["material_slot"].cast<uint32_t>() : 0;
+        subMesh.nodeGroup = description.contains("node_group") ? description["node_group"].cast<uint32_t>() : 0;
+        subMesh.name = description.contains("name") ? description["name"].cast<std::string>() : "SubMesh";
+        if (subMesh.indexStart > indices.size() || subMesh.indexCount > indices.size() - subMesh.indexStart ||
+            subMesh.indexCount % 3 != 0 || subMesh.vertexStart > vertexCount ||
+            subMesh.vertexCount > vertexCount - subMesh.vertexStart)
+            throw py::value_error("submeshes contain an invalid vertex or triangle range");
+        if (subMesh.indexCount > 0) {
+            subMesh.boundsMin = glm::vec3(std::numeric_limits<float>::max());
+            subMesh.boundsMax = glm::vec3(-std::numeric_limits<float>::max());
+            for (size_t offset = 0; offset < subMesh.indexCount; ++offset) {
+                const auto &position = vertices[indices[subMesh.indexStart + offset]].pos;
+                subMesh.boundsMin = glm::min(subMesh.boundsMin, position);
+                subMesh.boundsMax = glm::max(subMesh.boundsMax, position);
+            }
+        }
+        result.push_back(std::move(subMesh));
+    }
+    return result;
+}
+} // namespace
+
 void RegisterAssetRegistryBindings(py::module_ &m)
 {
 #if defined(INFERNUX_PYBIND_WEB_PLAYER)
@@ -61,6 +234,7 @@ void RegisterAssetRegistryBindings(py::module_ &m)
                                "Material slot names from model file")
         .def_property_readonly("has_skinned_data", &InxMesh::HasSkinnedData,
                                "Whether this Mesh carries immutable skin/animation data")
+        .def_property_readonly("generation", &InxMesh::GetGeneration, "Monotonic immutable geometry generation")
         .def_property_readonly("skinned_bone_count",
                                [](const InxMesh &mesh) {
                                    const auto &skinned = mesh.GetSkinnedData();
@@ -118,6 +292,7 @@ void RegisterAssetRegistryBindings(py::module_ &m)
                 d["vertex_start"] = sub.vertexStart;
                 d["vertex_count"] = sub.vertexCount;
                 d["material_slot"] = sub.materialSlot;
+                d["node_group"] = sub.nodeGroup;
                 d["bounds_min"] = py::make_tuple(sub.boundsMin.x, sub.boundsMin.y, sub.boundsMin.z);
                 d["bounds_max"] = py::make_tuple(sub.boundsMax.x, sub.boundsMax.y, sub.boundsMax.z);
                 return d;
@@ -146,6 +321,20 @@ void RegisterAssetRegistryBindings(py::module_ &m)
                 return result;
             },
             "Internal immutable geometry snapshot for particle CPU sampling")
+        .def("get_vertex_data", &MeshVertexData, "Copy CPU-readable vertex streams into NumPy arrays")
+        .def(
+            "get_index_data",
+            [](const InxMesh &self) {
+                const auto &indices = self.GetIndices();
+                py::array_t<uint32_t> result(indices.size());
+                if (!indices.empty())
+                    std::memcpy(result.mutable_data(), indices.data(), indices.size() * sizeof(uint32_t));
+                return result;
+            },
+            "Copy the triangle index stream into a uint32 NumPy array")
+        .def(
+            "serialize_source", [](const InxMesh &self) { return py::bytes(MeshArtifact::SerializeSource(self)); },
+            "Encode a static .inxmesh source. Does not write or import an asset.")
         .def("__repr__", [](const InxMesh &self) {
             return "<InxMesh '" + self.GetName() + "' " + std::to_string(self.GetVertexCount()) + " verts, " +
                    std::to_string(self.GetSubMeshCount()) + " submesh(es)>";
@@ -252,6 +441,158 @@ void RegisterAssetRegistryBindings(py::module_ &m)
             py::arg("guid"), "Get a cached PhysicMaterial by GUID")
 
         // Mesh convenience wrappers
+        .def("create_runtime_mesh", &AssetRegistry::CreateRuntimeMesh, py::arg("name") = "Mesh",
+             "Create a transient Mesh in the versioned AssetRegistry")
+        .def("copy_mesh", &AssetRegistry::CloneRuntimeMesh, py::arg("guid"), py::arg("name") = "",
+             "Create an independently versioned transient copy of a loaded Mesh")
+        .def("destroy_runtime_mesh", &AssetRegistry::DestroyRuntimeMesh, py::arg("guid"),
+             "Destroy a transient Mesh and invalidate its live renderer references")
+        .def(
+            "set_mesh_data",
+            [](AssetRegistry &self, const std::string &guid,
+               const py::array_t<float, py::array::c_style | py::array::forcecast> &positions,
+               const py::array_t<uint32_t, py::array::c_style | py::array::forcecast> &indices,
+               const py::object &normals, const py::object &uvs, const py::object &tangents, const py::object &colors,
+               const py::object &submeshes, const std::vector<std::string> &materialSlots) {
+                auto current = self.GetAsset<InxMesh>(guid);
+                if (!current)
+                    throw py::value_error("set_mesh_data requires a loaded Mesh GUID");
+                bool generatedNormals = false;
+                bool generatedTangents = false;
+                auto vertices =
+                    DecodeMeshVertices(positions, normals, uvs, tangents, colors, generatedNormals, generatedTangents);
+                auto encodedIndices = DecodeMeshIndices(indices, vertices.size());
+                auto decodedSubMeshes = DecodeSubMeshes(submeshes, encodedIndices, vertices);
+                uint32_t requiredSlots = 0;
+                for (const auto &subMesh : decodedSubMeshes) {
+                    if (subMesh.materialSlot == std::numeric_limits<uint32_t>::max())
+                        throw py::value_error("submesh material slot is out of range");
+                    requiredSlots = std::max(requiredSlots, subMesh.materialSlot + 1);
+                }
+                if (requiredSlots > decodedSubMeshes.size())
+                    throw py::value_error("submesh material slots must be contiguous from zero");
+                std::vector<std::string> slotNames = materialSlots;
+                while (slotNames.size() < requiredSlots)
+                    slotNames.push_back("Material_" + std::to_string(slotNames.size()));
+                if (generatedNormals)
+                    RecalculateMeshNormals(vertices, encodedIndices);
+                if (generatedTangents)
+                    RecalculateMeshTangents(vertices, encodedIndices);
+                InxMesh replacement = *current;
+                replacement.SetData(std::move(vertices), std::move(encodedIndices), std::move(decodedSubMeshes));
+                replacement.SetMaterialSlotNames(std::move(slotNames));
+                replacement.SetMaterialSlotData(std::vector<MaterialSlotData>(replacement.GetMaterialSlotCount()));
+                replacement.SetNodeNames({});
+                replacement.SetSkinnedData(nullptr);
+                self.PublishMesh(guid, std::move(replacement));
+            },
+            py::arg("guid"), py::arg("positions"), py::arg("indices"), py::arg("normals") = py::none(),
+            py::arg("uvs") = py::none(), py::arg("tangents") = py::none(), py::arg("colors") = py::none(),
+            py::arg("submeshes") = py::none(), py::arg("material_slots") = std::vector<std::string>{},
+            "Atomically replace all Mesh geometry and layout; omitted normals/tangents are derived")
+        .def(
+            "update_mesh_vertices",
+            [](AssetRegistry &self, const std::string &guid, size_t first, const py::object &positions,
+               const py::object &normals, const py::object &uvs, const py::object &tangents, const py::object &colors) {
+                auto current = self.GetAsset<InxMesh>(guid);
+                if (!current)
+                    throw py::value_error("update_mesh_vertices requires a loaded Mesh GUID");
+                const py::object values[] = {positions, normals, uvs, tangents, colors};
+                size_t count = 0;
+                bool found = false;
+                for (const auto &value : values) {
+                    if (value.is_none())
+                        continue;
+                    const auto array = value.cast<py::array>();
+                    if (array.ndim() != 2)
+                        throw py::value_error("Mesh vertex streams must be two-dimensional");
+                    if (!found) {
+                        count = static_cast<size_t>(array.shape(0));
+                        found = true;
+                    } else if (array.shape(0) != static_cast<py::ssize_t>(count)) {
+                        throw py::value_error("Mesh vertex streams must have the same row count");
+                    }
+                }
+                if (!found)
+                    throw py::value_error("update_mesh_vertices requires at least one vertex stream");
+                const auto &source = current->GetVertices();
+                if (first > source.size() || count > source.size() - first)
+                    throw py::value_error("Mesh vertex update exceeds the existing vertex range");
+                std::vector<Vertex> vertices(source.begin() + first, source.begin() + first + count);
+                ApplyOptionalRows<3>(positions, count, "positions",
+                                     [&](size_t row, const auto &data, py::ssize_t index) {
+                                         vertices[row].pos = {data(index, 0), data(index, 1), data(index, 2)};
+                                     });
+                ApplyOptionalRows<3>(normals, count, "normals", [&](size_t row, const auto &data, py::ssize_t index) {
+                    vertices[row].normal = {data(index, 0), data(index, 1), data(index, 2)};
+                });
+                ApplyOptionalRows<2>(uvs, count, "uvs", [&](size_t row, const auto &data, py::ssize_t index) {
+                    vertices[row].texCoord = {data(index, 0), data(index, 1)};
+                });
+                ApplyOptionalRows<4>(tangents, count, "tangents", [&](size_t row, const auto &data, py::ssize_t index) {
+                    vertices[row].tangent = {data(index, 0), data(index, 1), data(index, 2), data(index, 3)};
+                });
+                ApplyOptionalRows<3>(colors, count, "colors", [&](size_t row, const auto &data, py::ssize_t index) {
+                    vertices[row].color = {data(index, 0), data(index, 1), data(index, 2)};
+                });
+                InxMesh replacement = *current;
+                replacement.UpdateVertexRange(first, vertices);
+                self.PublishMesh(guid, std::move(replacement));
+            },
+            py::arg("guid"), py::arg("first"), py::arg("positions") = py::none(), py::arg("normals") = py::none(),
+            py::arg("uvs") = py::none(), py::arg("tangents") = py::none(), py::arg("colors") = py::none(),
+            "Atomically replace matching CPU vertex-stream ranges while preserving topology")
+        .def(
+            "recalculate_mesh_normals",
+            [](AssetRegistry &self, const std::string &guid) {
+                auto current = self.GetAsset<InxMesh>(guid);
+                if (!current)
+                    throw py::value_error("normal recalculation requires a loaded Mesh GUID");
+                auto vertices = current->GetVertices();
+                RecalculateMeshNormals(vertices, current->GetIndices());
+                InxMesh replacement = *current;
+                replacement.UpdateVertexRange(0, vertices);
+                self.PublishMesh(guid, std::move(replacement));
+            },
+            py::arg("guid"), "Recalculate and publish all Mesh normals")
+        .def(
+            "recalculate_mesh_tangents",
+            [](AssetRegistry &self, const std::string &guid) {
+                auto current = self.GetAsset<InxMesh>(guid);
+                if (!current)
+                    throw py::value_error("tangent recalculation requires a loaded Mesh GUID");
+                auto vertices = current->GetVertices();
+                RecalculateMeshTangents(vertices, current->GetIndices());
+                InxMesh replacement = *current;
+                replacement.UpdateVertexRange(0, vertices);
+                self.PublishMesh(guid, std::move(replacement));
+            },
+            py::arg("guid"), "Recalculate and publish all Mesh tangents")
+        .def(
+            "update_mesh_positions",
+            [](AssetRegistry &self, const std::string &guid, size_t first,
+               const py::array_t<float, py::array::c_style | py::array::forcecast> &positions,
+               const py::object &normals) {
+                if (positions.ndim() != 2 || positions.shape(1) != 3)
+                    throw py::value_error("positions must have shape (N, 3)");
+                const auto data = positions.unchecked<2>();
+                std::vector<glm::vec3> values(static_cast<size_t>(positions.shape(0)));
+                for (size_t i = 0; i < values.size(); ++i)
+                    values[i] = {data(i, 0), data(i, 1), data(i, 2)};
+                std::optional<std::vector<glm::vec3>> normalValues;
+                if (!normals.is_none()) {
+                    const auto array = normals.cast<py::array_t<float, py::array::c_style | py::array::forcecast>>();
+                    if (array.ndim() != 2 || array.shape(1) != 3 || array.shape(0) != positions.shape(0))
+                        throw py::value_error("normals must have shape (N, 3) and match positions");
+                    const auto normalData = array.unchecked<2>();
+                    normalValues.emplace(values.size());
+                    for (size_t i = 0; i < values.size(); ++i)
+                        (*normalValues)[i] = {normalData(i, 0), normalData(i, 1), normalData(i, 2)};
+                }
+                self.UpdateMeshPositions(guid, first, values, normalValues);
+            },
+            py::arg("guid"), py::arg("first"), py::arg("positions"), py::arg("normals") = py::none(),
+            "Publish positions and optional normals together; preserve topology, without collision recooking.")
         .def(
             "load_mesh",
             [](AssetRegistry &self, const std::string &path) {

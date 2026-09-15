@@ -7,6 +7,7 @@ from typing import Dict, List, Optional, Tuple
 from Infernux.engine.undo._base import UndoCommand
 from Infernux.engine.undo._helpers import (
     _get_active_scene,
+    _get_scene_by_world_id, _find_runtime_object, _scene_world_id,
     _destroy_game_object_immediately,
     _bump_inspector_structure, _notify_gizmos_scene_changed,
     _preserve_ui_world_position, _invalidate_canvas_caches,
@@ -105,6 +106,8 @@ class CreateGameObjectCommand(UndoCommand):
         self._document: Optional[dict] = None
         self._parent_id: Optional[int] = None
         self._sibling_index: int = 0
+        obj = _find_runtime_object(object_id)
+        self._scene_world_id = _scene_world_id(getattr(obj, "scene", None))
         if before_selection is not None and after_selection is not None:
             self.before_selection_snapshot = before_selection
             self.after_selection_snapshot = after_selection
@@ -113,9 +116,9 @@ class CreateGameObjectCommand(UndoCommand):
         pass
 
     def undo(self) -> None:
-        scene = _get_active_scene()
+        obj = _find_runtime_object(self._object_id)
+        scene = getattr(obj, "scene", None) if obj is not None else None
         if scene:
-            obj = scene.find_by_id(self._object_id)
             if obj:
                 destroyed_ids = _object_tree_ids(obj)
                 self._document = _snapshot_object(obj)
@@ -132,8 +135,9 @@ class CreateGameObjectCommand(UndoCommand):
     def redo(self) -> None:
         if self._document is not None:
             from Infernux.engine.undo._recreate import _recreate_game_object_from_document
+            scene = _get_scene_by_world_id(self._scene_world_id)
             restored = _recreate_game_object_from_document(
-                self._document, self._parent_id, self._sibling_index)
+                self._document, self._parent_id, self._sibling_index, scene=scene)
             _validate_recreated_object(restored, self._object_id)
             _bump_inspector_structure()
             _notify_gizmos_scene_changed()
@@ -149,9 +153,10 @@ class DeleteGameObjectCommand(UndoCommand):
         self._parent_id: Optional[int] = None
         self._sibling_index: int = 0
 
-        scene = _get_active_scene()
+        obj = _find_runtime_object(object_id)
+        scene = getattr(obj, "scene", None) if obj is not None else None
+        self._scene_world_id = _scene_world_id(scene)
         if scene:
-            obj = scene.find_by_id(object_id)
             if obj:
                 self._document = _snapshot_object(obj)
                 parent = obj.get_parent()
@@ -160,9 +165,9 @@ class DeleteGameObjectCommand(UndoCommand):
                 self._sibling_index = t.get_sibling_index() if t else 0
 
     def execute(self) -> None:
-        scene = _get_active_scene()
+        obj = _find_runtime_object(self._object_id)
+        scene = getattr(obj, "scene", None) if obj is not None else None
         if scene:
-            obj = scene.find_by_id(self._object_id)
             if obj:
                 destroyed_ids = _object_tree_ids(obj)
                 _destroy_game_object_immediately(scene, obj)
@@ -171,8 +176,9 @@ class DeleteGameObjectCommand(UndoCommand):
     def undo(self) -> None:
         if self._document is not None:
             from Infernux.engine.undo._recreate import _recreate_game_object_from_document
+            scene = _get_scene_by_world_id(self._scene_world_id)
             restored = _recreate_game_object_from_document(
-                self._document, self._parent_id, self._sibling_index)
+                self._document, self._parent_id, self._sibling_index, scene=scene)
             _validate_recreated_object(restored, self._object_id)
             _bump_inspector_structure()
             _notify_gizmos_scene_changed()
@@ -193,14 +199,10 @@ class DeleteGameObjectsCommand(UndoCommand):
         super().__init__(description)
         self._entries: List[dict] = []
 
-        scene = _get_active_scene()
-        if not scene:
-            return
-
         selected_ids = {int(object_id) for object_id in object_ids}
         roots = []
         for object_id in object_ids:
-            obj = scene.find_by_id(int(object_id))
+            obj = _find_runtime_object(int(object_id))
             if obj is None:
                 continue
             parent = obj.get_parent()
@@ -223,24 +225,31 @@ class DeleteGameObjectsCommand(UndoCommand):
             transform = getattr(obj, "transform", None)
             self._entries.append({
                 "object_id": object_id,
+                "scene_world_id": _scene_world_id(getattr(obj, "scene", None)),
                 "document": _snapshot_object(obj),
                 "parent_id": int(parent.id) if parent else None,
                 "sibling_index": int(transform.get_sibling_index()) if transform else 0,
             })
 
     @staticmethod
-    def _entry_order(entry: dict) -> tuple[int, int]:
+    def _entry_order(entry: dict) -> tuple[int, int, int]:
         parent_id = entry["parent_id"]
-        return (-1 if parent_id is None else int(parent_id), int(entry["sibling_index"]))
+        return (
+            int(entry["scene_world_id"]),
+            -1 if parent_id is None else int(parent_id),
+            int(entry["sibling_index"]),
+        )
 
     def execute(self) -> None:
-        scene = _get_active_scene()
-        if not scene:
-            return
         # Destroy from the end of each sibling list so earlier indices do not
         # shift while the transaction is being applied.
         destroyed_ids: set[int] = set()
         for entry in sorted(self._entries, key=self._entry_order, reverse=True):
+            scene = _get_scene_by_world_id(entry["scene_world_id"])
+            if scene is None:
+                raise RuntimeError(
+                    f"delete target Scene is unavailable: {entry['scene_world_id']}"
+                )
             obj = scene.find_by_id(entry["object_id"])
             if obj is not None:
                 destroyed_ids.update(_object_tree_ids(obj))
@@ -252,18 +261,19 @@ class DeleteGameObjectsCommand(UndoCommand):
         restored = []
         try:
             for entry in sorted(self._entries, key=self._entry_order):
+                scene = _get_scene_by_world_id(entry["scene_world_id"])
                 obj = _recreate_game_object_from_document(
-                    entry["document"], entry["parent_id"], entry["sibling_index"])
+                    entry["document"], entry["parent_id"], entry["sibling_index"],
+                    scene=scene)
                 restored.append(
                     _validate_recreated_object(obj, entry["object_id"])
                 )
         except Exception:
-            scene = _get_active_scene()
-            if scene is not None:
-                for obj in reversed(restored):
-                    live = scene.find_by_id(int(obj.id))
-                    if live is not None:
-                        _destroy_game_object_immediately(scene, live)
+            for obj in reversed(restored):
+                live = _find_runtime_object(int(obj.id))
+                scene = getattr(live, "scene", None) if live is not None else None
+                if scene is not None:
+                    _destroy_game_object_immediately(scene, live)
             raise
         if self._entries:
             _bump_inspector_structure()
@@ -284,6 +294,8 @@ class ReparentCommand(UndoCommand):
         self._object_id = object_id
         self._old_parent_id = old_parent_id
         self._new_parent_id = new_parent_id
+        obj = _find_runtime_object(object_id)
+        self._scene_world_id = _scene_world_id(getattr(obj, "scene", None))
 
     def execute(self) -> None:
         self._apply(self._new_parent_id)
@@ -295,7 +307,7 @@ class ReparentCommand(UndoCommand):
         self._apply(self._new_parent_id)
 
     def _apply(self, parent_id: Optional[int]) -> None:
-        scene = _get_active_scene()
+        scene = _get_scene_by_world_id(self._scene_world_id)
         if not scene:
             return
         obj = scene.find_by_id(self._object_id)
@@ -322,6 +334,8 @@ class MoveGameObjectCommand(UndoCommand):
         self._new_parent_id = new_parent_id
         self._old_sibling_index = int(old_sibling_index)
         self._new_sibling_index = int(new_sibling_index)
+        obj = _find_runtime_object(object_id)
+        self._scene_world_id = _scene_world_id(getattr(obj, "scene", None))
 
     def execute(self) -> None:
         self._apply(self._new_parent_id, self._new_sibling_index)
@@ -333,7 +347,7 @@ class MoveGameObjectCommand(UndoCommand):
         self._apply(self._new_parent_id, self._new_sibling_index)
 
     def _apply(self, parent_id: Optional[int], sibling_index: int) -> None:
-        scene = _get_active_scene()
+        scene = _get_scene_by_world_id(self._scene_world_id)
         if not scene:
             return
         obj = scene.find_by_id(self._object_id)
@@ -378,6 +392,13 @@ class SceneHierarchyLayoutCommand(UndoCommand):
         after_ids = self._layout_ids(self._after_layout)
         if before_ids != after_ids:
             raise ValueError("hierarchy layout object sets must match")
+        world_ids = {
+            _scene_world_id(getattr(_find_runtime_object(object_id), "scene", None))
+            for object_id in before_ids
+        }
+        if len(world_ids) != 1 or 0 in world_ids:
+            raise ValueError("hierarchy layout must belong to one loaded Scene")
+        self._scene_world_id = world_ids.pop()
 
     @staticmethod
     def _normalize(layout):
@@ -471,16 +492,15 @@ class SceneHierarchyLayoutCommand(UndoCommand):
             parent = scene.find_by_id(parent_id) if parent_id is not None else None
             _invalidate_canvas_caches(parent)
 
-    @classmethod
-    def _transition(cls, target, rollback) -> None:
-        scene = _get_active_scene()
+    def _transition(self, target, rollback) -> None:
+        scene = _get_scene_by_world_id(self._scene_world_id)
         if scene is None:
-            raise RuntimeError("hierarchy layout requires an active scene")
+            raise RuntimeError("hierarchy layout owning Scene is unavailable")
         try:
-            cls._apply_layout(scene, target)
+            self._apply_layout(scene, target)
         except Exception as original:
             try:
-                cls._apply_layout(scene, rollback)
+                self._apply_layout(scene, rollback)
             except Exception as rollback_error:
                 raise RuntimeError(
                     "hierarchy layout failed and rollback could not restore the tree"

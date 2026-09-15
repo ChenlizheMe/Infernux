@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import py_compile
 import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -56,6 +57,7 @@ from Infernux.plugins.registry import PluginRegistry
         (".inxtex", b"INXTEXTURE"),
         (".inxmesh", b"INXMESHART"),
         (".inxskin", b"INXSKINAR"),
+        (".inxrtex", b"INXRTEX1"),
     ),
 )
 def test_current_binary_artifact_headers_use_their_exact_magic_length(
@@ -438,6 +440,7 @@ RUNTIME_DOCUMENT_AND_AUDIO_SUFFIXES = (
     ".animclip3d",
     ".animfsm",
     ".animtimeline",
+    ".inxdata",
     ".graph",
     ".particlegraph",
     ".json",
@@ -467,6 +470,7 @@ def test_player_audit_runtime_document_suffixes_are_complete():
         ".animclip3d",
         ".animfsm",
         ".animtimeline",
+        ".inxdata",
         ".graph",
     }
     assert expected <= player_package_audit_module.RUNTIME_DOCUMENT_SUFFIXES
@@ -509,9 +513,13 @@ def test_all_runtime_document_and_audio_sources_are_library_only(suffix):
 
 @pytest.mark.parametrize("suffix", RUNTIME_DOCUMENT_AND_AUDIO_SUFFIXES)
 def test_all_runtime_document_and_audio_library_paths_are_compiled_artifacts(suffix):
-    directory = "Audio" if suffix in {".wav", ".ogg", ".mp3", ".flac", ".aiff", ".aif"} else "Document"
+    if suffix == ".inxdata":
+        directory, artifact_suffix = "Data", ".inxasset"
+    else:
+        directory = "Audio" if suffix in {".wav", ".ogg", ".mp3", ".flac", ".aiff", ".aif"} else "Document"
+        artifact_suffix = suffix
     artifact_type = logical_type_for_path(
-        f"Library/Artifacts/{directory}/asset-guid{suffix}"
+        f"Library/Artifacts/{directory}/asset-guid{artifact_suffix}"
     )
     assert payload_kind_for(artifact_type) == "compiled_artifact"
 
@@ -1414,7 +1422,45 @@ def test_nuitka_unicode_build_cache_uses_temporary_ascii_junction(tmp_path):
         nuitka_builder_module._remove_windows_build_alias(alias)
 
     assert not Path(alias).exists()
+    assert not Path(alias).parent.exists()
     assert cache_root.is_dir()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows junction contract")
+def test_nuitka_unicode_temp_build_links_are_private_and_independent(tmp_path, monkeypatch):
+    monkeypatch.setattr(nuitka_builder_module.tempfile, "gettempdir", lambda: str(tmp_path / "用户"))
+    cache = tmp_path / "项目" / "Library" / "Build"
+    aliases = []
+    try:
+        aliases.append(nuitka_builder_module._windows_ascii_build_alias(str(cache)))
+        aliases.append(nuitka_builder_module._windows_ascii_build_alias(str(cache)))
+        assert aliases[0] != aliases[1]
+        for alias in aliases:
+            assert alias.isascii()
+            assert Path(alias).is_junction()
+            assert Path(alias).samefile(cache)
+    finally:
+        for alias in aliases:
+            nuitka_builder_module._remove_windows_build_alias(alias)
+    assert all(not Path(alias).parent.exists() for alias in aliases)
+    assert cache.is_dir()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows junction contract")
+def test_nuitka_failed_build_link_removes_its_temporary_parent(tmp_path, monkeypatch):
+    aliases = []
+
+    def fail(command, **kwargs):
+        aliases.append(command[-2])
+        return subprocess.CompletedProcess(command, 1, stdout="junction rejected")
+
+    monkeypatch.setattr(nuitka_builder_module.subprocess, "run", fail)
+    cache = tmp_path / "项目" / "Library" / "Build"
+    with pytest.raises(RuntimeError, match="junction rejected"):
+        nuitka_builder_module._windows_ascii_build_alias(str(cache))
+    assert len(aliases) == 1
+    assert not Path(aliases[0]).parent.exists()
+    assert cache.is_dir()
 
 
 def test_nuitka_build_artifacts_are_scoped_to_the_requested_cache_root(
@@ -2247,7 +2293,7 @@ def test_runtime_pack_stores_the_environment_used_for_compilation(tmp_path, monk
     monkeypatch.setattr(builder, "_restore_runtime_pack", lambda *args, **kwargs: None)
     monkeypatch.setattr(builder, "_check_nuitka", lambda: environment.__setitem__(0, "compiled-environment"))
     monkeypatch.setattr(builder, "_run_nuitka", lambda *args: str(tmp_path / "compiled.dist"))
-    for method in ("_inject_native_libs", "_embed_utf8_manifest", "_sign_executable"):
+    for method in ("_inject_native_libs", "_embed_utf8_manifest"):
         monkeypatch.setattr(builder, method, lambda *args: None)
     monkeypatch.setattr(builder, "_store_runtime_pack", lambda key, *args, **kwargs: stored.append(key))
 
@@ -3350,6 +3396,74 @@ def test_player_stages_project_shader_as_packed_runtime_glsl(tmp_path):
     assert builder._runtime_artifact_bindings[
         "Library/Artifacts/Blob/shader-guid.frag"
     ]["source_path"] == "Assets/Shaders/Surface.frag"
+
+
+def test_player_stages_font_as_guid_owned_runtime_blob(tmp_path):
+    builder = _make_builder(tmp_path, tmp_path / "build_output")
+    project = Path(builder.project_path)
+    font = project / "Assets" / "Fonts" / "ProjectFont.ttf"
+    font.parent.mkdir(parents=True, exist_ok=True)
+    font.write_bytes(b"project font payload")
+    entry = _asset_index_entry(project, font, "font-guid", "", "Font")
+    builder._cooked_asset_entries = {"font-guid": entry}
+    builder._runtime_artifact_bindings = {}
+    builder._runtime_artifact_source_paths = set()
+    data_dir = tmp_path / "dist" / "Data"
+
+    builder._stage_library_runtime_documents(str(data_dir))
+
+    runtime_path = "Library/Artifacts/Blob/font-guid.ttf"
+    artifact = data_dir / Path(runtime_path)
+    assert artifact.read_bytes() == b"project font payload"
+    assert builder._runtime_artifact_bindings[runtime_path]["source_path"] == (
+        "Assets/Fonts/ProjectFont.ttf"
+    )
+    assert "assets/fonts/projectfont.ttf" in builder._runtime_artifact_source_paths
+
+
+def test_player_cooks_data_asset_to_binary_infernux_artifact(tmp_path):
+    from Infernux.core.data_asset import decode_data_asset_artifact
+
+    builder = _make_builder(tmp_path, tmp_path / "build_output")
+    project = Path(builder.project_path)
+    source = project / "Assets" / "Data" / "Settings.inxdata"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_text(
+        json.dumps(
+            {
+                "$type": "data_asset",
+                "type_id": "infernux.data_asset",
+                "fields": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    entry = _asset_index_entry(
+        project, source, "data-guid", "", "DataAsset"
+    )
+    builder._cooked_asset_entries = {"data-guid": entry}
+    builder._runtime_artifact_bindings = {}
+    builder._runtime_artifact_source_paths = set()
+    data_dir = tmp_path / "dist" / "Data"
+
+    builder._stage_library_runtime_documents(str(data_dir))
+
+    runtime_path = "Library/Artifacts/Data/data-guid.inxasset"
+    artifact = data_dir / Path(runtime_path)
+    assert artifact.read_bytes().startswith(b"INXDATA\0")
+    cooked = decode_data_asset_artifact(artifact.read_bytes())
+    assert cooked == {
+        "$type": "data_asset",
+        "type_id": "infernux.data_asset",
+        "schema_version": 1,
+        "fields": {},
+    }
+    # Cook upgrades the runtime payload without rewriting the authored source.
+    assert "schema_version" not in json.loads(source.read_text(encoding="utf-8"))
+    assert builder._runtime_artifact_bindings[runtime_path]["source_path"] == (
+        "Assets/Data/Settings.inxdata"
+    )
+    assert "assets/data/settings.inxdata" in builder._runtime_artifact_source_paths
 
 
 def test_content_archive_keeps_only_catalog_staged_project_glsl(tmp_path):
@@ -5151,6 +5265,50 @@ def test_player_type_registry_is_derived_from_script_ast_without_execution(tmp_p
     assert records[0]["type_id"].startswith(f"python:{script_guid}:")
 
 
+def test_player_type_registry_cooks_published_component_semantics(tmp_path):
+    from Infernux.components import InxComponent, serialized_field
+    from Infernux.components.component_identity import bind_asset_script_guid
+
+    output_dir = tmp_path / "build_output"
+    script_path = output_dir / "Data" / "Assets" / "Scripts" / "mover.py"
+    script_path.parent.mkdir(parents=True)
+    script_path.write_text(
+        "from Infernux.components import InxComponent, serialized_field\n"
+        "class SemanticMover(InxComponent):\n"
+        "    speed: float = serialized_field(default=3.0, range=(0.0, 8.0))\n",
+        encoding="utf-8",
+    )
+    script_guid = "1234567890abcdef1234567890abcdef"
+
+    class SemanticMover(InxComponent):
+        speed: float = serialized_field(default=3.0, range=(0.0, 8.0))
+
+    SemanticMover.__qualname__ = "SemanticMover"
+    type_guid = bind_asset_script_guid(SemanticMover, script_guid)
+    builder = _make_builder(tmp_path, output_dir)
+    _bind_staged_script_to_asset_index(
+        builder,
+        output_dir,
+        script_path,
+        guid=script_guid,
+    )
+
+    builder._compile_user_scripts(str(output_dir))
+
+    document = json.loads(
+        (output_dir / "Data" / "Library" / "RuntimeTypeRegistry.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    semantic = document["types"][0]["semantic"]
+    assert semantic["type_guid"] == type_guid
+    assert semantic["owner"] == f"script:{script_guid}"
+    assert semantic["runtime_profiles"] == ["player"]
+    assert semantic["fields"][0]["property_path"] == "SemanticMover.speed"
+    assert semantic["fields"][0]["attributes"]["default"] == 3.0
+    assert semantic["fields"][0]["attributes"]["range"] == [0.0, 8.0]
+
+
 def test_payload_manifest_rejects_indexed_asset_outside_build_scene_closure(tmp_path):
     builder = _make_builder(tmp_path, tmp_path / "build_output")
     sources = _write_scene_material_audio_reachability_fixture(
@@ -5266,6 +5424,69 @@ def test_copy_stage_uses_all_indexed_assets_before_content_pack(tmp_path, monkey
     }.intersection({"serialized_runtime_document", "direct_runtime_asset"})
 
 
+@pytest.mark.parametrize("owner", ["Assets/Rendering", "Packages/author/monitor/Runtime"])
+def test_render_texture_cook_ships_guid_binary_description_not_authoring_source(tmp_path, owner):
+    from Infernux.lib import _Infernux as native
+
+    builder = _make_builder(tmp_path, tmp_path / "build_output")
+    project = Path(builder.project_path)
+    source = project / owner / "CameraTarget.rendertexture"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    desc = native._RenderTextureDesc()
+    desc.relative_size = True
+    desc.width_scale = desc.height_scale = 0.5
+    source.write_text(native._render_texture_description_to_json(desc), encoding="utf-8")
+    if owner.startswith("Packages/"):
+        (source.parent.parent / "inx_package.json").write_text(
+            json.dumps({"reference": "author/monitor", "name": "Monitor", "version": "1.0.0"}),
+            encoding="utf-8",
+        )
+        Path(str(source) + ".meta").write_text(json.dumps({
+            "metadata": {"guid": {"type": "string", "value": "e" * 32}}
+        }), encoding="utf-8")
+    scene = project / "Assets" / "Main.scene"
+    guid = "e" * 32
+    artifact_path = f"Library/Artifacts/RenderTexture/{guid}.inxrtex"
+    artifact = project / artifact_path
+    artifact.parent.mkdir(parents=True)
+    source_hash = _fnv1a64(source.read_bytes())
+    payload = native._encode_render_texture_artifact(desc, source_hash)
+    artifact.write_bytes(payload)
+    entry = _asset_index_entry(project, source, guid, artifact_path, "RenderTexture")
+    _write_asset_index(project, [_asset_index_entry(project, scene, "scene-guid", "", "Scene"), entry])
+    final_dir = tmp_path / "dist"
+    builder._copy_game_data(str(final_dir))
+    builder._write_runtime_asset_records(str(final_dir))
+    assert (final_dir / "Data" / artifact_path).read_bytes() == payload
+    _write_player_executable(final_dir)
+    builder._organize_player_layout(str(final_dir))
+    builder._pack_content_archive(str(final_dir))
+    data_root = final_dir / "TestGame_Data"
+    package = data_root / builder._CONTENT_ARCHIVE_FILENAME
+    names = {item["path"] for item in read_manifest(package)["files"]}
+    assert artifact_path in names
+    assert not any(name.endswith(".rendertexture") for name in names)
+    assert not any(name.startswith(("Assets/", "Packages/")) for name in names)
+    cooked = native._decode_render_texture_artifact(read_entry(package, artifact_path))
+    assert cooked.relative_size and cooked.width_scale == 0.5
+    assert artifact_source_hash(artifact) == source_hash
+    assert logical_type_for_path(artifact_path) == "render_texture_artifact"
+    assert payload_kind_for(logical_type_for_path(artifact_path)) == "compiled_artifact"
+
+
+def test_render_texture_missing_artifact_cannot_ship_source_as_blob(tmp_path):
+    builder = _make_builder(tmp_path, tmp_path / "build_output")
+    project = Path(builder.project_path)
+    source = project / "Assets" / "Camera.rendertexture"
+    source.write_text("{}", encoding="utf-8")
+    _write_asset_index(project, [
+        _asset_index_entry(project, project / "Assets" / "Main.scene", "scene-guid", "", "Scene"),
+        _asset_index_entry(project, source, "e" * 32, "", "RenderTexture"),
+    ])
+    with pytest.raises(RuntimeError, match="no compiled artifact path"):
+        builder._copy_game_data(str(tmp_path / "dist"))
+
+
 def test_cooked_document_and_audio_paths_are_compiled_artifacts():
     expected = {
         "Library/Artifacts/Document/scene-guid.scene": "scene_artifact",
@@ -5273,10 +5494,17 @@ def test_cooked_document_and_audio_paths_are_compiled_artifacts():
         "Library/Artifacts/Document/timeline-guid.animtimeline": "animation_timeline_artifact",
         "Library/Artifacts/Audio/audio-guid.wav": "audio_artifact",
         "Library/Artifacts/Blob/blob-guid.bin": "project_runtime_blob_artifact",
+        "Library/Artifacts/Mesh/mesh-guid.inxmesh": "mesh_artifact",
     }
     for runtime_path, logical_type in expected.items():
         assert logical_type_for_path(runtime_path) == logical_type
         assert payload_kind_for(logical_type) == "compiled_artifact"
+
+
+@pytest.mark.parametrize("path", ["Assets/Meshes/slope.inxmesh", "Packages/demo/Meshes/slope.inxmesh"])
+def test_authored_native_mesh_is_not_classified_as_a_cooked_artifact(path):
+    assert logical_type_for_path(path) == "model_source"
+    assert payload_kind_for(logical_type_for_path(path)) != "compiled_artifact"
 
 
 def test_cooked_document_catalog_resolves_author_path_dependency_alias():
@@ -5896,54 +6124,6 @@ def test_payload_manifest_rejects_direct_documents_after_dependency_reads(
     }
 
 
-def test_code_signing_isolates_windows_powershell_modules(tmp_path, monkeypatch):
-    system_root = tmp_path / "Windows"
-    powershell_root = system_root / "System32" / "WindowsPowerShell" / "v1.0"
-    powershell_exe = powershell_root / "powershell.exe"
-    powershell_exe.parent.mkdir(parents=True)
-    powershell_exe.write_bytes(b"")
-    dist_dir = tmp_path / "dist"
-    dist_dir.mkdir()
-    (dist_dir / "Game.exe").write_bytes(b"exe")
-
-    monkeypatch.setenv("SystemRoot", str(system_root))
-    monkeypatch.setenv("PSModulePath", "C:/Program Files/PowerShell/7/Modules")
-    observed: dict = {}
-    internal_messages: list[str] = []
-    warnings: list[str] = []
-
-    def _run(command, **kwargs):
-        observed["command"] = command
-        observed.update(kwargs)
-        return SimpleNamespace(
-            returncode=0,
-            stdout=(
-                "STATUS:UnknownError\n"
-                "MESSAGE:A certificate chain terminated in an untrusted root\n"
-                "SIGNER:AABBCC\n"
-                "CERT:AABBCC\n"
-            ),
-            stderr="",
-        )
-
-    monkeypatch.setattr(nuitka_builder_module.subprocess, "run", _run)
-    monkeypatch.setattr(nuitka_builder_module.Debug, "log_internal", internal_messages.append)
-    monkeypatch.setattr(nuitka_builder_module.Debug, "log_warning", warnings.append)
-    builder = object.__new__(NuitkaBuilder)
-    builder.output_filename = "Game.exe"
-
-    builder._sign_executable(str(dist_dir))
-
-    assert observed["command"][0] == str(powershell_exe)
-    assert "-NoProfile" in observed["command"]
-    assert "-NonInteractive" in observed["command"]
-    assert observed["env"]["PSModulePath"] == str(powershell_root / "Modules")
-    assert "PowerShell/7/Modules" not in observed["env"]["PSModulePath"]
-    assert "Microsoft.PowerShell.Security.psd1" in observed["command"][-1]
-    assert any("local root is not trusted" in message for message in internal_messages)
-    assert warnings == []
-
-
 class TestGameBuilderOutputSafety:
     def test_debug_player_boot_and_manifest_mark_validation_capability(self, tmp_path):
         output_dir = tmp_path / "build_output"
@@ -6405,6 +6585,56 @@ class TestGameBuilderDependencyCollection:
 
 
 class TestGameBuilderAutoParallelExport:
+    @pytest.mark.parametrize("location", ["Assets", "Packages/vendor/compute/runtime"])
+    def test_gpu_kernel_is_cooked_as_player_jit_declaration(
+        self, tmp_path, location, monkeypatch
+    ):
+        from Infernux.compute import Kernel
+        from Infernux._compiler.taichi import frontend
+
+        output = tmp_path / "output"
+        script = output / "Data" / location / "gpu.py"
+        script.parent.mkdir(parents=True)
+        script.write_text(
+            "import infernux as inx\n"
+            "@inx.compute.kernel\n"
+            "def scale(domain, values, factor):\n"
+            "    i = inx.compute.index(domain)\n"
+            "    values[i] = values[i] * factor\n",
+            encoding="utf-8",
+        )
+        builder = _make_builder(tmp_path, output)
+        _bind_staged_script_to_asset_index(
+            builder, output, script, guid="gpu-script-guid"
+        )
+        compile_scripts = builder._compile_user_scripts
+        if location.startswith("Packages/"):
+            registry = output / "Data/ProjectSettings/InxPlugins.json"
+            registry.parent.mkdir(parents=True)
+            registry.write_text(json.dumps({"installed": [{"files": [{
+                "guid": "gpu-script-guid", "path_hint": location + "/gpu.py"
+            }]}]}), encoding="utf-8")
+            compile_scripts = builder._compile_player_plugin_scripts
+
+        compile_scripts(str(output))
+
+        assert not script.exists()
+        assert not (output / "Data/Library/Compute").exists()
+        loader = importlib.machinery.SourcelessFileLoader(
+            "gpu_cooked", str(script.with_suffix(".pyc"))
+        )
+        namespace = {}
+        exec(loader.get_code("gpu_cooked"), namespace)
+        assert isinstance(namespace["scale"], Kernel)
+        monkeypatch.setattr(
+            frontend.inspect,
+            "getsource",
+            lambda _value: (_ for _ in ()).throw(OSError("source is absent")),
+        )
+        assert "def scale(domain, values, factor)" in frontend._function_source(
+            namespace["scale"].function
+        )
+
     def test_compile_user_scripts_propagates_bytecode_failure(self, tmp_path, monkeypatch):
         output_dir = tmp_path / "build_output"
         assets_dir = output_dir / "Data" / "Assets"
@@ -6413,6 +6643,7 @@ class TestGameBuilderAutoParallelExport:
         script_path.write_text("score = 1\n", encoding="utf-8")
 
         builder = _make_builder(tmp_path, output_dir)
+        builder.enable_jit = True
         _bind_staged_script_to_asset_index(
             builder,
             output_dir,
@@ -6437,7 +6668,10 @@ class TestGameBuilderAutoParallelExport:
         assert script_path.is_file()
         assert not (assets_dir / "gameplay.pyc").exists()
 
-    def test_compile_user_scripts_embeds_auto_parallel_without_sidecar(self, tmp_path):
+    @pytest.mark.parametrize("declaration", [
+        "from Infernux import jit\n@jit.compile(cache=True)\n",
+    ])
+    def test_compile_user_scripts_embeds_auto_parallel_without_sidecar(self, tmp_path, declaration):
         output_dir = tmp_path / "build_output"
         assets_dir = output_dir / "Data" / "Assets"
         assets_dir.mkdir(parents=True)
@@ -6446,8 +6680,7 @@ class TestGameBuilderAutoParallelExport:
         stale_sidecar = assets_dir / "stress.autop.pyc"
         stale_sidecar.write_bytes(b"obsolete")
         script_path.write_text(
-            "from Infernux.jit import njit\n"
-            "@njit(cache=True, auto_parallel=True)\n"
+            declaration +
             "def burn(n):\n"
             "    acc = 0\n"
             "    for i in range(n):\n"
@@ -6492,8 +6725,8 @@ class TestGameBuilderAutoParallelExport:
 
         script_path = assets_dir / "plain.py"
         script_path.write_text(
-            "from Infernux.jit import njit\n"
-            "@njit(cache=True)\n"
+            "from Infernux import jit\n"
+            "@jit.compile(cache=True, auto_parallel=False)\n"
             "def burn(n):\n"
             "    acc = 0\n"
             "    for i in range(n):\n"
@@ -6503,6 +6736,7 @@ class TestGameBuilderAutoParallelExport:
         )
 
         builder = _make_builder(tmp_path, output_dir)
+        builder.enable_jit = True
         _bind_staged_script_to_asset_index(
             builder,
             output_dir,
@@ -6521,8 +6755,8 @@ class TestGameBuilderAutoParallelExport:
         assets_dir.mkdir(parents=True)
         script_path = assets_dir / "unsafe.py"
         script_path.write_text(
-            "from Infernux.jit import njit\n"
-            "@njit(auto_parallel=True, parallel_policy='required')\n"
+            "from Infernux import jit\n"
+            "@jit.compile(parallel_policy='required')\n"
             "def prefix(values):\n"
             "    for i in range(1, len(values)):\n"
             "        values[i] = values[i - 1] + 1\n",
@@ -6537,44 +6771,38 @@ class TestGameBuilderAutoParallelExport:
             script_path,
             guid="unsafe-parallel-script-guid",
         )
-        with pytest.raises(RuntimeError, match="auto_parallel compilation rejected"):
+        with pytest.raises(RuntimeError, match="compute compilation rejected"):
             builder._compile_user_scripts(str(output_dir))
 
-    def test_compile_user_scripts_without_jit_keeps_auto_kernel_serial_only(self, tmp_path):
+    def test_compile_user_scripts_without_jit_rejects_cpu_jit(self, tmp_path):
         output_dir = tmp_path / "build_output"
         assets_dir = output_dir / "Data" / "Assets"
         assets_dir.mkdir(parents=True)
-        script_path = assets_dir / "auto.py"
+        script_path = assets_dir / "compute_user.py"
         script_path.write_text(
-            "from Infernux.jit import njit\n"
-            "@njit(auto_parallel=True)\n"
-            "def fill(values):\n"
-            "    for i in range(len(values)):\n"
-            "        values[i] = i\n",
+            'import infernux as inx\n'
+            '@inx.jit.compile\n'
+            'def square(value):\n'
+            '    return value * value\n',
             encoding="utf-8",
         )
-
         builder = _make_builder(tmp_path, output_dir)
         builder.enable_jit = False
         _bind_staged_script_to_asset_index(
-            builder,
-            output_dir,
-            script_path,
-            guid="serial-auto-script-guid",
+            builder, output_dir, script_path, guid="cpu-compute-script-guid",
         )
-        builder._compile_user_scripts(str(output_dir))
-
-        bytecode = (assets_dir / "auto.pyc").read_bytes()
-        assert b"__infernux_jit_manifest__" not in bytecode
-        assert b"__infernux_parallel_" not in bytecode
+        with pytest.raises(RuntimeError, match="CPU JIT requires.*square"):
+            builder._compile_user_scripts(str(output_dir))
+        assert script_path.is_file()
+        assert not script_path.with_suffix(".pyc").exists()
 
     def test_compile_user_scripts_without_jit_rejects_required_policy(self, tmp_path):
         output_dir = tmp_path / "build_output"
         assets_dir = output_dir / "Data" / "Assets"
         assets_dir.mkdir(parents=True)
         (assets_dir / "required.py").write_text(
-            "from Infernux.jit import njit\n"
-            "@njit(auto_parallel=True, parallel_policy='required')\n"
+            "from Infernux import jit\n"
+            "@jit.compile(parallel_policy='required')\n"
             "def fill(values):\n"
             "    for i in range(len(values)):\n"
             "        values[i] = i\n",
@@ -6589,12 +6817,16 @@ class TestGameBuilderAutoParallelExport:
             assets_dir / "required.py",
             guid="required-parallel-script-guid",
         )
-        with pytest.raises(RuntimeError, match="Auto Parallel build option"):
+        with pytest.raises(RuntimeError, match="CPU JIT requires.*fill"):
             builder._compile_user_scripts(str(output_dir))
 
     def test_collect_user_dependencies_detects_public_infernux_jit_api(self, tmp_path, monkeypatch):
         project_root = _make_project(tmp_path)
-        _write_asset_script(project_root, "jit_user.py", "from Infernux.jit import njit\n")
+        _write_asset_script(
+            project_root,
+            "jit_user.py",
+            "from Infernux import jit\n@jit.compile\ndef run(value):\n    return value\n",
+        )
         builder = GameBuilder(str(project_root), str(tmp_path / "build_output"), game_name="TestGame")
         builder.enable_jit = True
 
@@ -6611,9 +6843,9 @@ class TestGameBuilderAutoParallelExport:
 
         assert deps == ["llvmlite", "numba", "numpy"]
 
-    def test_collect_user_dependencies_keeps_public_jit_api_serial_when_disabled(self, tmp_path, monkeypatch):
+    def test_collect_user_dependencies_does_not_stage_cpu_runtime_when_disabled(self, tmp_path, monkeypatch):
         project_root = _make_project(tmp_path)
-        _write_asset_script(project_root, "jit_user.py", "from Infernux.jit import njit\n")
+        _write_asset_script(project_root, "jit_user.py", "from Infernux import jit\n")
         builder = GameBuilder(str(project_root), str(tmp_path / "build_output"), game_name="TestGame")
         builder.enable_jit = False
 
@@ -6634,7 +6866,7 @@ class TestGameBuilderAutoParallelExport:
         builder = GameBuilder(str(project_root), str(tmp_path / "build_output"), game_name="TestGame")
         builder.enable_jit = False
 
-        with pytest.raises(RuntimeError, match="Auto Parallel is disabled"):
+        with pytest.raises(RuntimeError, match="CPU JIT build capability"):
             builder._collect_user_dependencies()
 
 

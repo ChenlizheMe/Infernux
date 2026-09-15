@@ -13,7 +13,7 @@ on:
         type: string
         default: ''
       replace_existing_release:
-        description: Allow recovery publication to an existing release
+        description: Allow recovery publication to an existing unpublished draft
         required: false
         type: boolean
         default: false
@@ -21,6 +21,8 @@ on:
       PYPI_API_TOKEN:
         required: true
       R2_UPLOAD_TOKEN:
+        required: true
+      SIGNPATH_API_TOKEN:
         required: true
   workflow_dispatch:
     inputs:
@@ -34,7 +36,7 @@ on:
         default: ''
         type: string
       replace_existing_release:
-        description: Allow recovery publication to an existing release
+        description: Allow recovery publication to an existing unpublished draft
         required: true
         default: false
         type: boolean
@@ -42,6 +44,7 @@ on:
 permissions:
   actions: read
   contents: write
+  pages: write
 
 jobs:
   publish:
@@ -95,6 +98,11 @@ jobs:
               output.write(f"tag={tag}\n")
           PY
 
+      - name: Require a new published Hub version
+        run: |
+          python -m pip install --disable-pip-version-check 'packaging>=24.0'
+          python scripts/release/build_release_catalog.py --check-version
+
       - name: Download verified desktop distributions
         uses: actions/download-artifact@v4
         with:
@@ -147,6 +155,47 @@ jobs:
           print("Validated", len(expected), "desktop release assets")
           PY
 
+      - name: Upload the Windows release payload for SignPath
+        id: signpath_input
+        uses: actions/upload-artifact@v4
+        with:
+          name: infernux-${{ steps.release.outputs.version }}-signpath-input
+          path: |
+            dist/${{ steps.release.outputs.version }}/InfernuxHubInstaller-${{ steps.release.outputs.version }}-windows-x64.exe
+            dist/${{ steps.release.outputs.version }}/InfernuxHub-${{ steps.release.outputs.version }}-windows-x64-full.zip
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Sign the Windows release payload through SignPath
+        uses: signpath/github-action-submit-signing-request@c92b958760219087e01f8d67a1669ed57afe2627 # v2
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: a6c4508c-c43a-4faf-a209-f8198c94a171
+          project-slug: Infernux
+          signing-policy-slug: release-signing
+          github-artifact-id: ${{ steps.signpath_input.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: dist/${{ steps.release.outputs.version }}/signpath-signed
+
+      - name: Promote the signed Windows release payload
+        env:
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          release_dir="dist/$RELEASE_VERSION"
+          signed_dir="$release_dir/signpath-signed"
+          for name in \
+            "InfernuxHubInstaller-$RELEASE_VERSION-windows-x64.exe" \
+            "InfernuxHub-$RELEASE_VERSION-windows-x64-full.zip"
+          do
+            mapfile -t matches < <(find "$signed_dir" -type f -name "$name")
+            if [ "${#matches[@]}" -ne 1 ]; then
+              echo "Expected exactly one signed $name, found ${#matches[@]}." >&2
+              exit 1
+            fi
+            mv "${matches[0]}" "$release_dir/$name"
+          done
+          rm -rf "$signed_dir"
+
       - name: Create the release when needed
         id: github_release
         env:
@@ -156,22 +205,39 @@ jobs:
           REPLACE_EXISTING: ${{ inputs.replace_existing_release }}
         run: |
           if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            draft="$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)"
+            if [ "$draft" != "true" ]; then
+              echo "Release $RELEASE_TAG is already public; increment project.version for Hub changes." >&2
+              exit 1
+            fi
             if [ "$REPLACE_EXISTING" != "true" ]; then
-              echo "Release $RELEASE_TAG already exists; use the recovery option explicitly." >&2
+              echo "Draft $RELEASE_TAG already exists; use the recovery option explicitly." >&2
               exit 1
             fi
             echo "created=false" >> "$GITHUB_OUTPUT"
-            draft="$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)"
             echo "publish=$draft" >> "$GITHUB_OUTPUT"
           else
             gh release create "$RELEASE_TAG" \
               --repo "$GITHUB_REPOSITORY" \
               --target "$SOURCE_SHA" \
               --title "Infernux ${RELEASE_TAG#v}" \
+              --notes $'Free code signing provided by [SignPath.io](https://signpath.io/), certificate by [SignPath Foundation](https://signpath.org/).\n\nCode signing policy: https://infernux-engine.com/code-signing-policy.html' \
               --generate-notes \
               --draft
             echo "created=true" >> "$GITHUB_OUTPUT"
             echo "publish=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Verify the public signing disclosure
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          notice='Free code signing provided by [SignPath.io](https://signpath.io/), certificate by [SignPath Foundation](https://signpath.org/).'
+          body="$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json body --jq .body)"
+          if ! grep -F -- "$notice" <<< "$body"; then
+            echo "Release $RELEASE_TAG is missing the required SignPath Foundation disclosure." >&2
+            exit 1
           fi
 
       - name: Upload to the GitHub Release
@@ -240,3 +306,12 @@ jobs:
           git add docs/hub-catalog.json docs/release.json
           git commit -m "Publish ${RELEASE_TAG} distribution channels [skip ci]"
           git push origin "HEAD:$SOURCE_BRANCH"
+
+      - name: Deploy and verify the public Hub catalog
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          python scripts/release/deploy_hub_catalog.py
+          --repository "$GITHUB_REPOSITORY"
+          --commit "$(git rev-parse HEAD)"
+          --catalog docs/hub-catalog.json

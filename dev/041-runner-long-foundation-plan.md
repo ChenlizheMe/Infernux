@@ -468,6 +468,9 @@ DataAsset 是暂定公共类型名，表达可独立保存的项目数据，不�
 - [x] 自动宽高、文本测量、裁剪和 hit test 使用同一布局结果；编辑器 zoom 只改变预览，不回写作者尺寸。
 - [x] 增加独立 alpha/interactable/blocks_raycast 子树分组；透明不等于穿透，禁用时取消已捕获交互。
 - [ ] 完成 ProgressBar/Slider、值变化事件与现有多触点拖拽；RawImage 直接引用受管理纹理/RenderTexture，不存跨帧临时 graph handle。
+- [ ] UI 与普通 GameObject 的便捷交互保持 Unity API 边界：Screen UI 与 Canvas-free World UI 使用 `on_pointer_enter/exit/down/up/click`（对应 Unity UI EventSystem/`Button.onClick`），普通带 Collider 的 GameObject 使用 Unity `OnMouse*` 语义的 Python 风格 `on_mouse_enter/over/exit/down/drag/up/up_as_button`，不虚构 MonoBehaviour 的 `OnClick`、`WorldHover` 或 `WorldClick` API；按下/释放必须使用同一命中对象捕获规则。
+- [ ] 为上述公共交互建立性能收口：静态 UI 不逐控件轮询布局/材质/Transform，布局和绘制命令按权威 revision 增量更新；单个控件、共享材质、父 Transform、动态文字和多相机分别测量布局、命中、Python 调度、原生提交与 GPU 时间，禁止以隐藏 UI 或降低帧率目标冒充优化。
+- [ ] 指针便捷 API 与 Raycast 共同优化：保持 Unity `on_mouse_*` 与 UI pointer/click 的可观察顺序不变，建立按视口批量取样、layer/trigger 预过滤、候选排序和 pressed/hover 状态迁移的独立路径；评估将稳定的射线投影、候选收集和命中结果写入下沉到 C++，以及在不改变本帧输入语义时的异步/延迟查询边界。不得通过跳过射线、降低命中精度或把旧命中当 fallback 伪造提速；必须分别记录 Python 调度、原生查询、等待/同步和事件回调成本。
 
 2026-09-14 值控件公共合同：`UIProgressBar` 与 `UISlider` 统一提供 `set_value(value, notify=True)`、`set_value_without_notify(value)` 和 `on_value_changed`；值始终先经过同一套范围裁剪，指针拖拽、脚本设值和静默恢复不再形成不同语义。定向 UI/材质/RenderTexture/世界输入回归 **280 passed / 2 skipped**。该进展不提前勾选整项，RawImage 的受管纹理引用、Inspector/Player 及完整多触点验收仍需继续。
 
@@ -714,8 +717,8 @@ Android/Web 公共音频样本仍需验证；特殊输出能力在矩阵中明�
 
 - [x] 分离 visible/relative/confine/warp；Window/Game View 坐标统一，DPI 正确，warp 不产生虚假大 delta。
 - [x] 失焦、Stop、viewport 销毁恢复可操作光标；Web 无硬件 warp 能力显式表达，不伪造成功。
-- [x] Tween 为项目 Python 库：实际使用的数值/向量/颜色/旋转/布局/alpha、Ease、Sequence 组合、loop 和取消。
-- [x] update/fixed_update、scaled/unscaled、目标 Disable/Destroy 的取消/complete 规则明确，不用闭包保留死对象。
+- [ ] Tween/Sequence 暂不进入 041 交付；待后续取得 DOTween 源码后单独设计，不在当前引擎主线维护第二套动画服务。
+- [ ] UI/业务动画继续使用现有字段和事件语义，暂不依赖 Tween；后续补齐 Unity 风格事件后再评估动画扩展。
 - [ ] 卡牌、胜利反馈、机关动画复用统一字段/UI 事件，不把业务算法搬到内核。
 
 2026-09-10 光标首段：公开 `Input.set_cursor_visible/is_cursor_visible` 与 `set_cursor_confined/is_cursor_confined`，并保留既有 lock API。原生端用一个状态应用函数组合用户 lock、编辑器 Scene 捕获、可见性和 confinement；失焦必定释放相对模式/窗口抓取并显示系统指针，聚焦后恢复逻辑请求。visible/confined 不再被 lock 的临时物理状态覆盖。新增 `Input.warp_cursor(x, y)` 使用逻辑窗口坐标，仅在可见非 relative 模式执行；引擎更新逻辑位置并吞掉 SDL 为 warp 产生的匹配 motion delta，Web/语义宿主明确返回不支持。Game View 坐标/DPI、真实边缘拖拽和跨平台窗口行为仍待后续完成，因此本段不勾选整项。
@@ -723,6 +726,18 @@ Android/Web 公共音频样本仍需验证；特殊输出能力在矩阵中明�
 2026-09-11 光标生命周期收口：Game View 隐藏/禁用时直接撤销 gameplay focus 与 cursor lock；Stop 在停止原生 gameplay 的同一帧执行相同释放，不再等待一个可能不会渲染的 Game View；`InxView::Quit()` 在销毁 SDL window 前依次退出 relative、confinement、隐藏状态并清除 InputManager 的窗口句柄。既有输入回归覆盖独立 visible/relative/confine 状态、Game View 逻辑坐标、屏幕 pixel ratio 与 Web/语义宿主拒绝硬件 warp；warp 产生的匹配 motion 在原生唯一入口被吞掉。集中 Python 回归 `97/97`、输入原生回归 `1/1`、Windows Release CTest `77/77`。可见 `Infernux041Lab` 通过 MCP 完成 Play→Stop，随后由正常窗口关闭消息退出，进程返回 `0` 且无终止期错误。
 
 2026-09-11 Tween/Sequence 主链：新增公开 `inx.Tween`、`inx.Sequence`、Ease、Restart/Yoyo/Incremental loop、scaled/unscaled/fixed 更新以及按 owner/target 取消；属性路径统一覆盖 float、向量、颜色、四元数、Screen UI 布局和 opacity，不接受 getter/setter 闭包。绑定方法使用弱引用，捕获生命周期对象的闭包在配置边界拒绝；Disable/Destroy、Stop、下一次 Play 和 Player shutdown 都取消而不触发尚未发生的 callback，正常完成与取消是两个可观察状态。Tween 作为运行时服务向既有 Python 生命周期调度器声明 Update/FixedUpdate 需求，因而不要求项目伪造空 `update()` 组件；无活动 Tween 时不增加 Time/native 跨越。集中回归 `109/109`。真实可见 `Infernux041Lab` 新增 `07_TweenTimeline`：只有 `start()` 的组件成功驱动球体从 `y=0.75` 到 `y≈2.41`，Game render-target 捕获为 1920×1080；Stop 后作者位置恢复为 `y=0.75`，Console 为 0 warning / 0 error。严格进度更新为 `47/246（19.1%）`。
+
+该历史记录已被 041 当前范围 supersede：Tween/Sequence 及 `07_TweenTimeline` 后续移出主线，等待 DOTween 源码与独立计划；当前 041 不分发或加载 Tween 模块。
+
+2026-09-15 Tween 清理后回归：删除 041Lab 的 `07_TweenTimeline` 测试场景与脚本，并从生命周期、Player、Play Mode 和 UISelectable 移除 Tween 运行时依赖。保留 `01/02/03/06/08/09/10/11/12/13/Start` 共 11 个场景，逐场通过 `headless_project_smoke.py --play-frames 30 --allow-unlisted-scene`；每个结果均为 `status=passed`、`runtime_errors=[]`、无缺失对象或组件。批处理终端同时包含日志前缀，汇总解析器无法直接合并 JSON，但逐场 JSON 输出是通过证据。
+
+RenderTexture 作者入口补齐回归：新增 Project File Manager 创建 `.rendertexture` 资产的契约测试，确认默认二进制资源描述、深度目标和重复命名拒绝；`test_render_texture_asset.py` 当前 `39 passed`。这只证明作者创建入口，不提前勾选 A09 的跨 View、Player 和多平台收口项。
+
+Tween 清理后的 Windows Release 原生回归：`ctest --test-dir out/build/windows-msvc-release -C Release --output-on-failure` 全部 `90/90` 通过（含 RenderTexture、Compute/GPU、Mesh publication、场景驻留和 Vulkan 用例），总耗时 117.62 秒。
+
+Tween 清理后的完整 Python 回归再次通过：`python -m pytest python/test -q` 为 `6354 passed, 12 skipped`，耗时 5 分 32 秒；测试中故意触发的负向 C++ 日志均由断言场景消费，不构成运行时失败。
+
+统一 3D 指针事件合同首段：`InxComponent` 现在提供 Unity 风格的 `OnMouseEnter/Over/Exit/Down/Drag/Up/UpAsButton` 可覆写钩子，不新增 `WorldHover` 或其它组件继承层；生命周期与 UI 定向回归 `165 passed, 1 skipped`。本次只冻结公共 Python 表面，Collider 命中分发、按下对象捕获和场景/Player 实际交互仍保持未完成，不能提前勾选 A06/A15。
 
 验收：拖动物体光标不跳，停止后可操作编辑器；取消 Tween 不执行未发生的后续 callback。
 
@@ -879,6 +894,38 @@ Taichi kernel 编译与 Python 应用脚本发布是不同能力；没有 GPU �
 
 验收：同一个 `.blend` 在 Blender 和 Infernux 中具有可识别的一致层级、局部姿态、pivot、网格分件、基础材质贴图、骨骼与动画；拖入场景后仍能按原结构编辑和挂组件。修改源文件后稳定重导入，已有场景引用、用户组件与 override 不失效；在未安装 Blender 的目标机上，导出游戏只靠 `Content.inxpkg` 中的统一 Infernux 二进制资产得到一致结果，包体不含原始模型文件。
 
+### 2026-09-15 PC Player 与包体复核补记
+
+- 用户已在实际 PC Player 中确认软体恢复运动，原“球停在空中”的阻断解除；该确认不替代双向耦合数量增长与帧时间矩阵的完整验收。
+- 当前 `Infernux041Lab-PC-current` 实测总文件大小为 161,894,947 bytes（154.4 MiB）。`Parallel.inxmod` 为 42,994,368 bytes，保持压缩封装且不在发布目录展开；项目 `Content.inxpkg` 仅 406,976 bytes。没有裸露的 Assets/Library/ProjectSettings 项目目录。
+- 主要剩余体积来自公共运行时：OpenBLAS 20,495,360 bytes、引擎原生模块 12,011,008 bytes、字体 10,801,524 bytes、GPU JIT 原生编译器 9,352,704 bytes。继续优化应针对运行时封装与依赖裁剪，不通过移除 JIT 能力、中文字体或有效项目资产制造虚假的体积下降。当前包体优化仍未收口。
+- 同项目 `release` Player 复建为 161,846,798 bytes，仅比 development 少约 48 KiB；因此调试配置不是主要来源。release 设计上不带开发控制服务，不能使用开发态自动输入 smoke 脚本作为验收入口。
+- 最新 development Player 已重新构建并通过真实窗口 smoke：`01_XPBD_Jelly` 中 `GPUJelly.simulated_seconds=1.30`，`last_gpu_batch_ms=2.258`，球体 Y 位移 `-0.858`，fatal count 为 0，正常退出耗时约 0.20 s。原生 InxPack、PlayerHost、渲染图、计算资源生命周期与 Vulkan 提交回归共 9/9 通过。
+- UI 交互边界已调整：Tween/Sequence 不属于 041，旧的实验字段、测试和运行时钩子已移除；DOTween 风格动画另立后续计划。UI 仍保留 ColorTint 等既有指针状态机，待真实 Editor/Game/Player 视觉验收后再冻结 A06/A15。
+- Headless 边界修复：041Lab 的 `GPUJelly` 在无图形设备时现在只完成 authored mesh/scene 检查并跳过 GPU buffer 创建，不再刷出 `_gpu` 缺失异常；源码 headless Jelly smoke status=passed。重新构建的图形 Player 仍通过 GPU smoke（`simulated_seconds=1.08`、Y 位移 `-0.982`、`last_gpu_batch_ms=2.199`、fatal count=0）。
+- 验收脚本也已固定优先加载当前 checkout 的 `python/` 源码，避免 conda 环境中旧版已安装 wheel 抢先导入；不设置 `PYTHONPATH` 的源码 headless Jelly smoke 仍输出 `status=passed`，并成功加载 RenderStack/GPUJelly/UI 组件。
+- RenderTexture 主链定向回归重新执行：`test_render_texture.py`、`test_render_texture_asset.py`、`test_temporal_history_api.py` 与 `test_render_view_samples.py` 共 **96 passed**；该结果确认持久资源、Camera GUID 引用、View history API 与输出采样合同没有被最近的 headless/hover 改动破坏，但不提前宣称 A09 的离屏 Camera、多平台和正式演示已收口。
+- 原生全量回归首次暴露并修复场景驻留门禁：共享 `RuntimeChangeJournal` 默认历史由 256 收紧到 32 个批次，保留有限延迟消费者窗口并沿用 history-lost 的 full-resync 语义；041Lab 场景循环中此前每轮累积的 `RuntimeDomainChanges/_CommittedBatch` 不再持续增长。最终 Windows Release CTest **90/90 passed**（86.03s），其中 `scene_residency_soak` 单项也稳定通过；Python 运行时日志回归 **50 passed**。
+- 修复后的源码已重新打包为压缩 Windows Player：`041-pc-journal-fix.json` 为 `status=passed`、无 diagnostics、构建耗时 13.60s；真实 `windows_player_smoke` 的 `01_XPBD_Jelly` 运行通过，Jelly Y 位移 `-1.0508`、fatal count=0、正常退出约 0.17s。该证据确认运行时日志修复进入最终 Player，而非仅限测试解释器。
+- 验收脚本新增显式 `--allow-unlisted-scene`，只允许 Editor/headless 通过 `SceneFileManager` 打开未列入 Build Settings 的作者场景，默认仍严格遵循 Build Settings。已用它回归 `12_OutlineOwners.scene`（29 个对象）与 `13_CutoutBodies.scene`（30 个对象）；同时修复 `OutlineGallery` 在 headless 下误建 GPU buffer 的问题，13 场景现在无 `ComputeCapabilityError` 生命周期异常并稳定通过。
+- 批量 headless 回归覆盖 02/03/06/07/08/09/10/11/12/13 共 10 个 041Lab 场景；首次发现 `09_AudioVoiceField` 的 Listening Floor、Listener Marker 与 12 个发声体仍只保存了 inline mesh + 空材质槽，原生场景提交因此拒绝。已为它们补回现有 `LabFloor`/`GalleryGold`/`ContactCubes` GUID 材质引用，保留统一资产主链；10/10 场景现均 `status=passed`，无场景提交错误。
+- 3D Hover/Raycast 主线补充公共 `Physics.raycast_screen(camera, screen_position, viewport_size, ...)`，统一使用 Game View 的 top-left 像素坐标、`Camera.screen_point_to_ray` 与既有物理 Raycast，不创建第二套命中逻辑；Python 物理回归 `47 passed`。该 API 先作为场景 Hover、拾取和交互脚本的共同底座，尚不把普通 3D Hover 视觉事件误报为已完成。
+- 批量 headless 日志审计发现 `02_InteractiveSnow` 与 `11_SelectionStudies` 原先虽然报告 `status=passed`，但 GPU 初始化异常被生命周期层吞掉；已在两个项目消费者中按图形能力边界跳过 headless GPU buffer 创建，保留图形 Editor/Player 路径。新增验收脚本现把 ERROR/ASSERT/EXCEPTION 生命周期日志纳入失败条件；修复后两场景均 `status=passed`、`runtime_errors=0`，相关接受测试 `15 passed`。
+- 在输入层补齐 `Input.game_viewport_size` 及 Editor/Player 的每帧发布，和既有 `game_mouse_position` 使用相同显示像素合同；`Physics.raycast_screen` 因此可直接用于普通 3D Hover/拾取而不猜测渲染目标尺寸。输入、物理、Game View、Player 控制联合回归 `137 passed`。
+- 视口 API 进入真实 Windows Player：`041-pc-hover-raycast.json` 构建 `status=passed`、诊断为空、压缩资源构建耗时 13.23s；同一制品的窗口 Jelly smoke 通过，Y 位移 `-1.0508`、fatal count=0、正常关闭约 0.18s。该结果确认新输入契约没有破坏 Player 的 GPU/物理运行路径。
+- Unity 风格的 3D 鼠标事件不单独引入 `WorldHover` 组件；后续应在统一组件事件分发层按命中 Collider 直接调用 `OnMouseEnter`、`OnMouseOver`、`OnMouseExit`、`OnMouseDown`、`OnMouseDrag`、`OnMouseUp` 与 `OnMouseUpAsButton`。该 API 对齐 Unity MonoBehaviour，不增加额外继承层，也不把视觉效果或 Tween 绑定到引擎核心。
+
+### 2026-09-15 Unity 鼠标回调首个实现
+
+- `InxComponent` 已提供 Unity 对齐语义的 Python 风格、零参数 `on_mouse_enter`、`on_mouse_over`、`on_mouse_exit`、`on_mouse_down`、`on_mouse_drag`、`on_mouse_up`、`on_mouse_up_as_button` 回调；它们是普通可覆盖 Python 方法，不新增 `WorldHover` 组件或继承层。命中详情不作为回调参数，保持 Unity MonoBehaviour 语义。
+- Editor Game View 与 Player 共用 `MouseEventDispatcher`：每帧复用 `Physics.raycast_screen` 的屏幕射线，按 Collider 命中对象维护 hover/pressed 状态，并按 Unity 顺序调用对应的零参数 Python 风格 `on_mouse_*` 方法。无 UI surface 的场景也会继续走 3D 命中路径。
+- 定向回归 `79 passed`；该结果只确认回调顺序、状态迁移和共享查询边界，真实窗口中的视觉反馈、触摸/多指扩展及完整场景验收仍未勾选完成。
+- 041Lab 无图形窗口 headless 回归再次覆盖 `03_WorldSpaceUI`、`09_AudioVoiceField`、`11_SelectionStudies`、`12_OutlineOwners`：四场景均 `status=passed`、`runtime_errors=[]`，对象/组件加载分别为 9/19、23/73、16/38、29/65。该批次只证明脚本域、场景生命周期和组件激活没有被鼠标事件分发改坏，不替代可见窗口输入与多平台验收。
+- Unity API 边界复核后移除普通 GameObject 的非官方 `OnClick()`：Unity 的 MonoBehaviour 官方回调列表包含 `OnMouseEnter/Over/Exit/Down/Drag/Up/UpAsButton`，不包含 `OnClick`；`Button.onClick` 只属于 UI Button。Python 公共面使用零参数 `on_mouse_enter/over/exit/down/drag/up/up_as_button`，只改变命名风格，不改变 Unity 的触发语义。Screen UI 与 World UI 保留现有 pointer 事件和 `UIButton.on_click`。定向回归 `32 passed`，完整 Python 回归基线 **6356 passed / 12 skipped**。
+- UI 输入快照性能首个增量修复：`collect_runtime_ui_input_surfaces` 现在使用 `runtime_canvas_snapshot_token`，Canvas membership/scene epoch 未变化时复用已排序 Canvas 快照，不再每个鼠标帧重复扫描和排序；世界 UI 元素仍按结构版本独立刷新。回归 `test_runtime_screen_ui_submission.py` 为 **24 passed**，并新增测试证明稳定 token 只收集一次。该改动只是静态快照层优化，布局、材质、命中和 GPU 提交的完整性能矩阵仍待完成。
+- 世界 UI 输入批处理与官方 API 回归合并复跑：`65 passed`。这覆盖 Canvas-free 元素投影、遮挡、捕获拖拽、Canvas 快照复用和普通 GameObject `OnMouse*` 顺序；没有引入非 Unity 的 `OnClick` 或第二套 WorldHover 类型。
+- UI 渲染提交端同步使用同一 `runtime_canvas_snapshot_token`：静态场景的 Screen/Camera Canvas 不再在每个 RenderGraph 提交帧重复排序；场景结构或 Canvas membership revision 变化时才重新收集，世界元素仍由独立结构缓存管理。RenderTexture/UI 输入提交回归 **33 passed**，041Lab 世界 UI headless 继续 `passed`。这只是快照/排序层的优化，尚未宣称完整 UI 性能收口。
+
 ## 24. A17：高性能 Raycast 与非凸网格查询
 
 Raycast 是物理世界的正式查询能力，不允许每次调用遍历全部 GameObject、临时拼装形状或重新烘焙 Mesh。主路径复用物理世界已经维护的 broad phase、shape acceleration structure 与稳定对象身份；批量查询共享一次世界快照和调度边界，不通过结果缓存、内容哈希或多套 fallback 掩盖慢路径。
@@ -890,6 +937,7 @@ Raycast 是物理世界的正式查询能力，不允许每次调用遍历全部
 - [ ] 查询与固定步并发边界明确：一帧读取一个已发布物理快照；结果不因容器迭代顺序变化。编辑器 Scene Pick、运行时物理 Raycast 与 MCP 观察共享命中语义，但渲染 Object-ID 拾取不冒充物理表面查询。
 - [ ] 建立 primitive、compound、凸包、静态非凸 Mesh、背面/边缘、缩放层级、layer/trigger、销毁/recook 的正确性矩阵；与现有碰撞接触结果核对空间和法线约定。
 - [ ] 记录 1、100、1,000、10,000 条射线在稀疏/密集场景的 P50/P95、吞吐和主线程时间；同时增加 Collider 数量与三角形数量，证明开销来自加速结构查询而非线性扫描。预算以 Runner Long 实际关卡基线冻结，不能通过减少命中信息或关闭非凸查询达标。
+- [ ] 为鼠标/触摸事件增加专门的 Raycast 查询预算矩阵：1 个视口单射线、静止悬停、拖拽捕获、UI 与 3D 重叠、多个相机以及批量指针输入分别测量；验证事件层不会重复执行同一帧相同射线，也不会在 UI 已命中后无条件扫描全部后方物体。若采用 C++ 批量快照或异步查询，必须验证场景修改、销毁、切场景和 Play/Stop 时的代际边界。
 
 验收：Runner Long 的交互拾取、遮挡检查和批量感知可走同一公共 API；复杂静态场景中的非凸 Mesh 能返回真实三角表面命中，批量查询没有逐条 Python 往返，新增 Collider 时性能不会按全场景线性恶化。
 

@@ -9,8 +9,11 @@ def _restore_scene_manager_runtime_state():
 
     fields = (
         "_pending_scene_load",
+        "_pending_scene_load_mode",
         "_active_scene_transaction",
         "_active_scene_load_path",
+        "_active_scene_load_mode",
+        "_active_scene_target",
         "_active_scene_file_manager",
         "_active_scene_wait_for_ready",
         "_active_scene_hold_for_activation",
@@ -62,6 +65,63 @@ def test_player_runtime_load_is_queued_until_pending_transaction_is_processed(mo
 
     assert SceneManager.load_scene("Main") is True
     assert SceneManager._pending_scene_load == "/project/Scenes/Main.scene"
+
+
+def test_additive_runtime_load_publishes_target_without_switching_active(monkeypatch):
+    import Infernux.scene as scene_api
+    from Infernux.scene import LoadSceneMode, SceneManager
+
+    calls = []
+    active = object()
+    additive = object()
+
+    class Native:
+        @staticmethod
+        def instance():
+            return Native
+
+        @staticmethod
+        def get_active_scene():
+            return active
+
+        @staticmethod
+        def _start_scene_for_play(scene):
+            calls.append(("start_additive", scene))
+
+    class Transaction:
+        succeeded = True
+        error = ""
+
+        def start(self):
+            calls.append("start_transaction")
+
+        def poll(self):
+            calls.append("commit")
+            return True
+
+    monkeypatch.setattr(scene_api, "_NativeSceneManager", Native)
+    monkeypatch.setattr(SceneManager, "_runtime_scene_service", None)
+    monkeypatch.setattr(SceneManager, "_is_in_play_mode", staticmethod(lambda: True))
+    monkeypatch.setattr(
+        SceneManager,
+        "_load_build_list",
+        staticmethod(lambda: ["/project/Scenes/Additive.scene"]),
+    )
+    monkeypatch.setattr("Infernux.scene.os.path.isfile", lambda _path: True)
+    monkeypatch.setattr(
+        SceneManager,
+        "_create_runtime_load_transaction",
+        staticmethod(lambda _path, **_kwargs: (Transaction(), None, additive)),
+    )
+
+    assert SceneManager.load_scene("Additive", LoadSceneMode.ADDITIVE) is True
+    assert SceneManager._pending_scene_load_mode is LoadSceneMode.ADDITIVE
+    SceneManager.process_pending_load()
+    SceneManager.process_pending_load()
+
+    assert calls == ["start_transaction", "commit", ("start_additive", additive)]
+    assert Native.get_active_scene() is active
+    assert SceneManager.is_scene_load_pending() is False
 
 
 def test_wait_for_load_scene_starts_background_read_immediately(monkeypatch):
@@ -224,6 +284,7 @@ def test_untracked_minimal_runtime_transaction_is_not_treated_as_stale(monkeypat
             calls.append("start")
 
     monkeypatch.setattr(scene_api, "_NativeSceneManager", Native)
+    monkeypatch.setattr(SceneManager, "_unload_other_scenes", staticmethod(lambda _scene: None))
     monkeypatch.setattr(SceneManager, "_runtime_scene_service", None)
     monkeypatch.setattr(SceneManager, "_pending_scene_load", None)
     monkeypatch.setattr(SceneManager, "_active_scene_transaction", Transaction())
@@ -366,6 +427,7 @@ def test_prepared_scene_advances_at_most_one_transaction_phase_per_tick(monkeypa
             calls.append("start_scene")
 
     monkeypatch.setattr(scene_api, "_NativeSceneManager", Native)
+    monkeypatch.setattr(SceneManager, "_unload_other_scenes", staticmethod(lambda _scene: None))
     monkeypatch.setattr(SceneManager, "_runtime_scene_service", None)
     monkeypatch.setattr(SceneManager, "_pending_scene_load", None)
     monkeypatch.setattr(SceneManager, "_active_scene_transaction", Transaction())
@@ -455,6 +517,7 @@ def test_pending_scene_transaction_starts_the_new_scene_once(monkeypatch):
     monkeypatch.setattr(SceneManager, "_active_scene_load_path", "/project/Scenes/Main.scene")
     monkeypatch.setattr(SceneManager, "_active_scene_file_manager", None)
     monkeypatch.setattr("Infernux.scene._NativeSceneManager", Native)
+    monkeypatch.setattr(SceneManager, "_unload_other_scenes", staticmethod(lambda _scene: None))
 
     SceneManager.process_pending_load()
     SceneManager.process_pending_load()

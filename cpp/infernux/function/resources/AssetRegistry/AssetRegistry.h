@@ -9,7 +9,9 @@
 #include <cstdint>
 #include <exception>
 #include <functional>
+#include <glm/vec3.hpp>
 #include <memory>
+#include <optional>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -22,6 +24,7 @@ namespace infernux
 
 // Forward declarations — avoid pulling in heavy headers
 class InxMaterial;
+class InxMesh;
 class InxTexture;
 class AssetRegistry;
 struct TextureCpuData;
@@ -209,6 +212,24 @@ class AssetRegistry
     /// Reload an already-loaded asset in-place from disk.
     bool ReloadAsset(const std::string &guid);
 
+    /// Publish position edits to a loaded mesh without importing or recooking.
+    /// Preserves its shared instance and topology; optional normals publish atomically.
+    void UpdateMeshPositions(const std::string &guid, size_t first, const std::vector<glm::vec3> &positions,
+                             const std::optional<std::vector<glm::vec3>> &normals = std::nullopt);
+
+    /// Create a transient Mesh in the same versioned registry used by imported assets.
+    /// Runtime Mesh identities exist for this engine lifetime and are not serialized as project assets.
+    [[nodiscard]] std::shared_ptr<InxMesh> CreateRuntimeMesh(const std::string &name);
+
+    /// Copy a loaded Mesh into an independently versioned transient Mesh.
+    [[nodiscard]] std::shared_ptr<InxMesh> CloneRuntimeMesh(const std::string &guid, const std::string &name);
+
+    /// Destroy a transient Mesh and invalidate every live renderer reference.
+    void DestroyRuntimeMesh(const std::string &guid);
+
+    /// Atomically replace a Mesh payload while preserving its registered identity.
+    void PublishMesh(const std::string &guid, InxMesh replacement);
+
     /// Evict the instance from cache (next Load will re-read from disk).
     void InvalidateAsset(const std::string &guid);
 
@@ -315,6 +336,7 @@ class AssetRegistry
     size_t m_totalCpuBytes = 0;
     size_t m_cpuBudgetBytes = 512ULL * 1024ULL * 1024ULL;
     uint64_t m_cpuEvictionCount = 0;
+    uint64_t m_runtimeMeshSerial = 0;
 };
 
 // =============================================================================

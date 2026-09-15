@@ -169,8 +169,17 @@ int main(int argc, char **argv)
 
     passed &= Expect(infernux::WriteTextFileAtomically(target.u8string(), "first", error), error.c_str());
     passed &= Expect(ReadText(target) == "first", "initial atomic write content mismatch");
+    const auto snapshot = infernux::ReadTextFileSnapshot(target.u8string());
+    passed &= Expect(snapshot.content == "first", "snapshot bytes differ from loaded content");
+    passed &= Expect(snapshot.state == infernux::CaptureAtomicFileState(target.u8string()),
+                     "snapshot identity differs from an unchanged file");
     passed &= Expect(infernux::WriteTextFileAtomically(target.u8string(), "second", error), error.c_str());
     passed &= Expect(ReadText(target) == "second", "replacement atomic write content mismatch");
+    passed &= Expect(snapshot.content == "first", "retained snapshot changed after external replace");
+    passed &= Expect(!infernux::WriteTextFileAtomically(target.u8string(), "stale", error,
+                                                        infernux::AtomicWriteOptions{false, snapshot.state}),
+                     "snapshot from old bytes allowed overwriting a newer document");
+    passed &= Expect(ReadText(target) == "second", "rejected snapshot write changed disk content");
     passed &=
         Expect(infernux::WriteTextFileAtomically(target.u8string(), "third", error, infernux::AtomicWriteOptions{true}),
                error.c_str());

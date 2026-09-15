@@ -27,7 +27,8 @@ struct AudioTrack
     bool isPlaying = false;
     bool isPaused = false;
     bool pauseRequestedByDisable = false;
-    float volume = 1.0f; ///< Per-track volume multiplier (0.0–1.0)
+    float volume = 1.0f;    ///< Per-track volume multiplier (0.0–1.0)
+    double startTime = 0.0; ///< Runtime-only position prepared by a stopped-track seek.
 
     [[nodiscard]] std::shared_ptr<AudioClip> GetClip() const
     {
@@ -62,9 +63,10 @@ struct AudioOneShotVoice
  *
  * Convenience: Play() / Get/SetClip() default to track 0.
  *
- * All-3D approach: every source is spatialised.  For "2D" audio,
- * attach the AudioSource to the same GameObject as the AudioListener
- * (typically the camera).
+ * spatial_blend=0 preserves the decoded stereo channels as 2D audio;
+ * spatial_blend=1 treats them as one point source
+ * with distance attenuation
+ * and stereo panning. Intermediate values blend the two models.
  */
 class AudioSource : public Component
 {
@@ -150,6 +152,11 @@ class AudioSource : public Component
     /// @brief Resume a specific track (default: track 0)
     void UnPause(int trackIndex = 0);
 
+    [[nodiscard]] double GetTrackTime(int trackIndex = 0) const;
+    /// Seek in clip seconds. A stopped track starts here on its next Play;
+    /// Stop resets the position. Live seeks preserve pause and loop state.
+    void SetTrackTime(int trackIndex, double seconds);
+
     /// @brief Stop all tracks
     void StopAll();
 
@@ -164,6 +171,7 @@ class AudioSource : public Component
 
     /// @brief Whether a specific track is paused
     [[nodiscard]] bool IsTrackPaused(int trackIndex) const;
+    [[nodiscard]] bool IsTrackVirtual(int trackIndex) const;
 
     // ========================================================================
     // Track 0 convenience API
@@ -245,6 +253,12 @@ class AudioSource : public Component
 
     /// @brief Set mute state (applies to all tracks)
     void SetMute(bool mute);
+    /// Lower numbers are more important; ties use estimated audibility, then age.
+    void SetPriority(int priority);
+    [[nodiscard]] int GetPriority() const
+    {
+        return m_priority;
+    }
 
     /// @brief Get mute state
     [[nodiscard]] bool GetMute() const
@@ -253,8 +267,15 @@ class AudioSource : public Component
     }
 
     // ========================================================================
-    // 3D spatial properties (all-3D approach)
+    // 2D / 3D spatial properties
     // ========================================================================
+
+    /// @brief Blend between channel-preserving 2D (0) and point-source 3D (1)
+    void SetSpatialBlend(float blend);
+    [[nodiscard]] float GetSpatialBlend() const
+    {
+        return m_spatialBlend;
+    }
 
     /// @brief Minimum distance for volume attenuation
     void SetMinDistance(float dist);
@@ -278,6 +299,10 @@ class AudioSource : public Component
     {
         return static_cast<int>(m_oneShotVoices.size());
     }
+    [[nodiscard]] uint64_t GetRejectedOneShotCount() const
+    {
+        return m_rejectedOneShotCount;
+    }
 
     // ========================================================================
     // Spatial audio (set by AudioEngine::Update)
@@ -300,16 +325,14 @@ class AudioSource : public Component
 
     /// @brief Get all active SDL streams for spatial processing
     [[nodiscard]] std::vector<SDL_AudioStream *> GetActiveStreams() const;
+    [[nodiscard]] bool HasActiveVoices() const;
 
     // ========================================================================
     // Wwise extensibility hooks
     // ========================================================================
 
-    /// @brief Set output bus name (for future Wwise routing)
-    void SetOutputBus(const std::string &busName)
-    {
-        m_outputBus = busName;
-    }
+    /// @brief Set output bus: Master, Music, SFX, Ambience, or UI
+    void SetOutputBus(const std::string &busName);
     [[nodiscard]] const std::string &GetOutputBus() const
     {
         return m_outputBus;
@@ -351,15 +374,18 @@ class AudioSource : public Component
 
     // Source-level properties (shared)
     float m_volume = 1.0f;
+    int m_priority = 128;
     float m_pitch = 1.0f;
     bool m_loop = false;
     bool m_playOnAwake = true;
     bool m_mute = false;
     float m_minDistance = 1.0f;
     float m_maxDistance = 500.0f;
+    float m_spatialBlend = 0.0f;
     int m_oneShotPoolSize = 8;
     std::string m_outputBus = "Master";
     uint64_t m_nextOneShotPlayOrder = 1;
+    uint64_t m_rejectedOneShotCount = 0;
 
     // Spatial computed values (set by AudioEngine::Update each frame)
     float m_spatialGain = 1.0f;

@@ -10,7 +10,49 @@ from Infernux.gizmos.collector import GizmosCollector
 from Infernux.components.builtin import Camera
 from Infernux.components.particle_system import ParticleBoundsMode, ParticleSystem
 from Infernux.lib import Vector3
+import numpy as np
 from Infernux.particle import EmitterShape, EmitterShapeKind
+
+
+def test_numpy_line_batch_captures_inputs_and_preserves_index_offsets():
+    Gizmos._begin_frame()
+    points=np.array([[0,0,0],[1,0,0],[1,1,0]],dtype=np.float32)
+    edges=np.array([[0,1],[1,2]],dtype=np.int32)
+    Gizmos.color=(1,0,0)
+    Gizmos.draw_lines(points,edges)
+    points[:]=99
+    edges[:]=0
+    Gizmos.draw_line((2,2,2),(3,3,3))
+    vertices,count,indices,descriptors,batches=Gizmos._get_packed_data()
+    assert count==5 and batches==1
+    assert list(indices)==[0,1,1,2,3,4]
+    assert list(vertices[:6])==[0,0,0,1,0,0]
+    assert list(descriptors[:2])==[0,6]
+    with pytest.raises(ValueError,match="outside"):
+        Gizmos.draw_lines(points,np.array([[0,3]],dtype=np.uint32))
+    with pytest.raises(TypeError,match="integer"):
+        Gizmos.draw_lines(points,np.zeros((1,2),dtype=np.float32))
+    Gizmos._begin_frame()
+
+
+def test_line_batch_only_splits_when_world_matrix_changes():
+    Gizmos._begin_frame()
+    Gizmos.draw_line((0, 0, 0), (1, 0, 0))
+    Gizmos.draw_line((0, 1, 0), (1, 1, 0))
+    Gizmos.matrix = [
+        1, 0, 0, 0,
+        0, 1, 0, 0,
+        0, 0, 1, 0,
+        3, 0, 0, 1,
+    ]
+    Gizmos.draw_line((0, 2, 0), (1, 2, 0))
+
+    _, _, _, descriptors, batches = Gizmos._get_packed_data()
+
+    assert batches == 2
+    assert list(descriptors[:2]) == [0, 4]
+    assert list(descriptors[18:20]) == [4, 2]
+    Gizmos._begin_frame()
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -211,17 +253,16 @@ class TestParticleEmitterShapes:
 
 
 class TestCameraGizmos:
-    def test_invalid_transform_is_not_suppressed(self):
-        class InvalidTransform:
+    def test_invalid_camera_projection_is_not_suppressed(self):
+        class InvalidCamera:
             @property
-            def position(self):
-                raise RuntimeError("stale transform")
+            def projection_matrix(self):
+                raise RuntimeError("stale camera projection")
 
         component = Camera()
-        component._get_bound_native_component = lambda: object()
-        component._try_get_transform = lambda: InvalidTransform()
+        component._get_bound_native_component = lambda: InvalidCamera()
 
-        with pytest.raises(RuntimeError, match="stale transform"):
+        with pytest.raises(RuntimeError, match="stale camera projection"):
             component.on_draw_gizmos_selected()
 
 
@@ -303,6 +344,12 @@ class TestGizmosCollectorActiveHierarchy:
 
             def clear_component_gizmos(self):
                 pass
+
+            def clear_component_cpu_gizmos(self):
+                pass
+
+            def upload_component_resident_gizmos(self, descriptors):
+                assert descriptors == []
 
             def clear_component_gizmo_icons(self):
                 pass
@@ -395,6 +442,12 @@ class TestGizmosCollectorActiveHierarchy:
 
             def clear_component_gizmos(self):
                 pass
+
+            def clear_component_cpu_gizmos(self):
+                pass
+
+            def upload_component_resident_gizmos(self, descriptors):
+                assert descriptors == []
 
             def clear_component_gizmo_icons(self):
                 pass

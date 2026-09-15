@@ -50,6 +50,42 @@ class UndoCommand(ABC):
             raise ValueError("undo command operation id must not be empty")
         self.operation_id = value
 
+    def scene_world_id(self) -> int:
+        """Return the single loaded Scene this command mutates, if known."""
+        direct = int(getattr(self, "_scene_world_id", 0) or 0)
+        if direct > 0:
+            return direct
+
+        object_ids = []
+        for name in ("_object_id", "_game_object_id"):
+            value = int(getattr(self, name, 0) or 0)
+            if value > 0:
+                object_ids.append(value)
+        for change in getattr(self, "_changes", ()):
+            if change:
+                object_ids.append(int(change[0]))
+        for entry in getattr(self, "_entries", ()):
+            if isinstance(entry, dict):
+                value = int(entry.get("scene_world_id", 0) or 0)
+                if value > 0:
+                    object_ids.append(-value)
+
+        world_ids = set()
+        if object_ids:
+            from Infernux.engine.undo._helpers import _find_runtime_object
+
+            for object_id in object_ids:
+                if object_id < 0:
+                    world_ids.add(-object_id)
+                    continue
+                obj = _find_runtime_object(object_id)
+                world_id = int(getattr(getattr(obj, "scene", None), "world_id", 0) or 0)
+                if world_id > 0:
+                    world_ids.add(world_id)
+        if len(world_ids) == 1:
+            return world_ids.pop()
+        return 0
+
     def can_merge(self, other: UndoCommand) -> bool:
         return False
 
@@ -130,6 +166,14 @@ class CompoundCommand(UndoCommand):
         super().bind_operation_id(operation_id)
         for command in self._commands:
             command.bind_operation_id(self.operation_id)
+
+    def scene_world_id(self) -> int:
+        world_ids = {
+            world_id
+            for command in self._commands
+            if (world_id := command.scene_world_id()) > 0
+        }
+        return world_ids.pop() if len(world_ids) == 1 else 0
 
 
 class LambdaCommand(UndoCommand):

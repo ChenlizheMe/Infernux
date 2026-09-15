@@ -1,0 +1,143 @@
+"""Camera authoring writes must preserve a valid, serializable native state."""
+
+import pytest
+
+from Infernux import lib
+
+
+@pytest.fixture
+def camera(scene):
+    wrapper = scene.create_game_object("CameraContract").add_component("Camera")
+    return wrapper._require_cpp_component()
+
+
+@pytest.mark.parametrize("field,value", [
+    ("field_of_view", 0.0), ("field_of_view", 180.0), ("field_of_view", float("nan")),
+    ("aspect_ratio", 0.0), ("aspect_ratio", -1.0), ("aspect_ratio", float("inf")),
+    ("orthographic_size", 0.0), ("orthographic_size", float("nan")),
+    ("near_clip", 0.0), ("near_clip", 5000.0), ("near_clip", float("nan")),
+    ("far_clip", 0.01), ("far_clip", float("inf")), ("depth", float("nan")),
+    ("projection_mode", lib.CameraProjection(99)),
+    ("clear_flags", lib.CameraClearFlags(99)),
+])
+def test_invalid_native_camera_setter_preserves_complete_document(camera, field, value):
+    before = camera.serialize_document()
+    with pytest.raises(ValueError, match="Camera"):
+        setattr(camera, field, value)
+    assert camera.serialize_document() == before
+
+
+def test_clip_planes_can_move_atomically_past_the_old_far_plane(camera):
+    camera.set_clip_planes(6000.0, 10000.0)
+    assert (camera.near_clip, camera.far_clip) == (6000.0, 10000.0)
+    before = camera.serialize_document()
+    for near, far in [(7000.0, 6500.0), (0.0, 100.0), (1.0, float("nan"))]:
+        with pytest.raises(ValueError, match="Camera"):
+            camera.set_clip_planes(near, far)
+        assert camera.serialize_document() == before
+
+
+def test_tiny_positive_viewport_aspect_keeps_the_existing_floor(camera):
+    camera.aspect_ratio = 0.001
+    assert camera.aspect_ratio == pytest.approx(0.01)
+    assert camera.deserialize_document(camera.serialize_document())
+
+
+def test_document_clip_update_is_atomic_and_depth_invalidates_order(camera, scene):
+    candidate = camera.serialize_document()
+    candidate.update(nearClip=6000.0, farClip=10000.0, depth=7.0)
+    before = camera.serialize_document()
+    version = scene.structure_version
+    camera.validate_document(candidate)
+    assert camera.serialize_document() == before
+    assert scene.structure_version == version
+    assert camera.deserialize_document(candidate)
+    assert (camera.near_clip, camera.far_clip, camera.depth) == (6000.0, 10000.0, 7.0)
+    assert scene.structure_version > version
+    before = camera.serialize_document()
+    invalid = dict(before, nearClip=20000.0, depth=11.0)
+    version = scene.structure_version
+    with pytest.raises(ValueError, match="Camera clip planes"):
+        camera.validate_document(invalid)
+    assert not camera.deserialize_document(invalid)
+    assert camera.serialize_document() == before
+    assert scene.structure_version == version
+
+
+def test_wrapper_atomic_clip_update_keeps_its_native_binding_after_rejection(scene):
+    camera = scene.create_game_object("WrapperClip").add_component("Camera")
+    camera.set_clip_planes(6000.0, 10000.0)
+    with pytest.raises(ValueError):
+        camera.near_clip = 10000.0
+    assert camera.near_clip == 6000.0
+    camera.set_clip_planes(1.0, 50.0)
+    assert (camera.near_clip, camera.far_clip) == (1.0, 50.0)
+
+
+def test_wrapper_culling_mask_writes_the_native_authoritative_field(scene):
+    camera = scene.create_game_object("LayerCamera").add_component("Camera")
+    for mask in (0, 1 << 3, 0xffffffff):
+        camera.culling_mask = mask
+        assert camera.culling_mask == mask
+        assert camera._require_cpp_component().culling_mask == mask
+        assert camera.serialize_document()["cullingMask"] == mask
+    before = camera.serialize_document()
+    with pytest.raises((TypeError, ValueError, OverflowError)):
+        camera.culling_mask = -1
+    assert camera.serialize_document() == before
+
+
+@pytest.mark.parametrize('destroy_owner', [False, True])
+def test_removing_preferred_camera_clears_borrowed_scene_reference(engine, scene, destroy_owner):
+    owner = scene.create_game_object('PreferredCameraOwner')
+    preferred = owner.add_component('Camera')
+    scene.main_camera = preferred
+    remaining = scene.create_game_object('RemainingCamera').add_component('Camera')
+    expected = remaining.component_id
+    assert preferred.component_id in engine.renderer_frame_snapshot['game_camera_ids']
+    if destroy_owner:
+        scene.destroy_game_object(owner)
+        scene.process_pending_destroys()
+    else:
+        assert owner.remove_component(preferred)
+    assert scene.main_camera is None
+    assert scene.effective_game_camera.component_id == expected
+    assert expected in engine.renderer_frame_snapshot['game_camera_ids']
+
+
+def test_multi_camera_edit_preflights_all_targets_before_creating_commands(scene, monkeypatch):
+    from Infernux.components.builtin.camera import Camera
+    from Infernux.engine.ui.inspector_components import _apply_multi_builtin_change
+    from Infernux.engine.undo import SetPropertyCommand, UndoManager
+
+    first = scene.create_game_object("FirstCamera").add_component("Camera")
+    second = scene.create_game_object("SecondCamera").add_component("Camera")
+    first.set_clip_planes(0.01, 100.0)
+    second.set_clip_planes(10.0, 100.0)
+    before = (first.serialize_document(), second.serialize_document())
+    previous = UndoManager._instance
+    manager = UndoManager()
+    try:
+        def forbid_command(*args, **kwargs):
+            pytest.fail("a rejected multi-target edit must not create any write command")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(SetPropertyCommand, "__init__", forbid_command)
+            with pytest.raises(RuntimeError, match="Camera clip planes"):
+                _apply_multi_builtin_change(
+                    (first, second), ("far_clip", "far_clip"), Camera.far_clip.metadata, 5.0,
+                )
+        assert (first.serialize_document(), second.serialize_document()) == before
+        assert not manager.action_journal.applied_entries()
+        _apply_multi_builtin_change(
+            (first, second), ("far_clip", "far_clip"), Camera.far_clip.metadata, 50.0,
+        )
+        assert (first.far_clip, second.far_clip) == (50.0, 50.0)
+        assert len(manager.action_journal.applied_entries()) == 1
+        manager.undo()
+        assert (first.serialize_document(), second.serialize_document()) == before
+        manager.redo()
+        assert (first.far_clip, second.far_clip) == (50.0, 50.0)
+    finally:
+        manager.clear()
+        UndoManager._instance = previous

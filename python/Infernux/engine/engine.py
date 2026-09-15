@@ -302,6 +302,14 @@ class Engine():
                         if undo is not None:
                             undo.process_pending_replay()
                     engine.tick_play_mode(float(delta_time))
+                # Publish the immutable phase plan before SceneManager enters
+                # its native frame. Scene loads may register components from
+                # this callback; preparing here keeps the native work gate and
+                # fixed/update counts coherent for the first simulation step.
+            scheduler = getattr(engine, "_runtime_scheduler", None)
+            prepare_frame = getattr(scheduler, "prepare_frame", None)
+            if callable(prepare_frame):
+                prepare_frame()
                 # A paused Step is intentionally executed outside the
                 # authoring transaction above.  This is the single owner
                 # safe point where the runtime journal may be consumed.

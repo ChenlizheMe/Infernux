@@ -25,7 +25,6 @@ from __future__ import annotations
 from typing import Any, Optional, Tuple
 
 from Infernux.components.builtin_component import BuiltinComponent, CppProperty
-from Infernux.components.fields import FieldType
 from Infernux.components._gizmo_ids import ICON_KIND_CAMERA
 
 
@@ -42,6 +41,31 @@ def _list_to_vec4(v):
     return v
 
 
+def _wrap_target_texture(state):
+    from Infernux.core.render_texture import RenderTexture
+    from Infernux.core.asset_ref import RenderTextureRef
+    guid, native = state
+    if native is None:
+        return RenderTextureRef(guid) if guid else None
+    result = RenderTexture.__new__(RenderTexture)
+    result._native = native
+    return result
+
+
+def _set_target_texture(cpp, value):
+    from Infernux.core.render_texture import RenderTexture
+    from Infernux.core.asset_ref import RenderTextureRef
+    if isinstance(value, RenderTextureRef):
+        resolved = value.resolve()
+        if resolved is None:
+            cpp.target_texture_guid = value.guid
+            return
+        value = resolved
+    if value is not None and not isinstance(value, RenderTexture):
+        raise TypeError("Camera.target_texture requires RenderTexture, RenderTextureRef or None")
+    cpp.target_texture = None if value is None else value._native
+
+
 # Maximum far-plane distance for gizmo visualization (Unity caps ~1000)
 _FAR_CLIP_VISUAL_CAP = 1000.0
 
@@ -54,6 +78,8 @@ class Camera(BuiltinComponent):
 
     Properties delegate to the C++ ``Camera`` via CppProperty.
     Draws a Unity-style frustum wireframe gizmo when selected.
+    ``target_texture`` accepts an imported or runtime RenderTexture with depth.
+    Imported targets persist by GUID; missing assets retain their reference.
     """
 
     _cpp_type_name = "Camera"
@@ -67,101 +93,30 @@ class Camera(BuiltinComponent):
     _gizmo_icon_color = (1.0, 1.0, 1.0)
     _gizmo_icon_kind = ICON_KIND_CAMERA
 
-    # ---- Projection ----
-    projection_mode = CppProperty(
-        "projection_mode",
-        FieldType.ENUM,
-        default=None,
-        enum_type="CameraProjection",
-        enum_labels=["camera.projection.perspective", "camera.projection.orthographic"],
-        display_name_key="camera.projection_mode",
-        tooltip="camera.tooltip.projection_mode",
+    # Native declarations own types, defaults and Inspector metadata.
+    # Visibility callbacks and Python/native value adapters stay outside the catalog.
+    projection_mode = CppProperty.from_native("Camera", "projection_mode")
+    field_of_view = CppProperty.from_native(
+        "Camera", "field_of_view", visible_when=lambda comp: int(comp.projection_mode) == 0,
     )
-    field_of_view = CppProperty(
-        "field_of_view",
-        FieldType.FLOAT,
-        default=60.0,
-        range=(1.0, 179.0),
-        visible_when=lambda comp: int(comp.projection_mode) == 0,
-        display_name_key="camera.field_of_view",
-        tooltip="camera.tooltip.field_of_view",
+    orthographic_size = CppProperty.from_native(
+        "Camera", "orthographic_size", visible_when=lambda comp: int(comp.projection_mode) == 1,
     )
-    orthographic_size = CppProperty(
-        "orthographic_size",
-        FieldType.FLOAT,
-        default=5.0,
-        visible_when=lambda comp: int(comp.projection_mode) == 1,
-        display_name_key="camera.orthographic_size",
-        tooltip="camera.tooltip.orthographic_size",
+    near_clip = CppProperty.from_native("Camera", "near_clip")
+    far_clip = CppProperty.from_native("Camera", "far_clip")
+    depth = CppProperty.from_native("Camera", "depth")
+    culling_mask = CppProperty.from_native("Camera", "culling_mask")
+    clear_flags = CppProperty.from_native("Camera", "clear_flags")
+    background_color = CppProperty.from_native(
+        "Camera", "background_color", visible_when=lambda comp: int(comp.clear_flags) == 1,
+        get_converter=_vec4_to_list, set_converter=_list_to_vec4,
     )
-    # ---- Clipping ----
-    near_clip = CppProperty(
-        "near_clip",
-        FieldType.FLOAT,
-        default=0.01,
-        display_name_key="camera.near_clip",
-        header="camera.section.clipping",
-        tooltip="camera.tooltip.near_clip",
-    )
-    far_clip = CppProperty(
-        "far_clip",
-        FieldType.FLOAT,
-        default=1000.0,
-        display_name_key="camera.far_clip",
-        tooltip="camera.tooltip.far_clip",
-    )
-
-    # ---- Multi-camera ----
-    depth = CppProperty(
-        "depth",
-        FieldType.FLOAT,
-        default=0.0,
-        display_name_key="camera.depth",
-        tooltip="camera.tooltip.depth",
-    )
-
-    # ---- Clear flags & background ----
-    clear_flags = CppProperty(
-        "clear_flags",
-        FieldType.ENUM,
-        default=None,
-        enum_type="CameraClearFlags",
-        enum_labels=[
-            "camera.clear.skybox",
-            "camera.clear.solid_color",
-            "camera.clear.depth_only",
-            "camera.clear.dont_clear",
-        ],
-        display_name_key="camera.clear_flags",
-        header="camera.section.clear",
-        tooltip="camera.tooltip.clear_flags",
-    )
-    background_color = CppProperty(
-        "background_color",
-        FieldType.COLOR,
-        default=None,
-        visible_when=lambda comp: int(comp.clear_flags) == 1,
-        display_name_key="camera.background_color",
-        tooltip="camera.tooltip.background_color",
-        get_converter=_vec4_to_list,
-        set_converter=_list_to_vec4,
-    )
-
-    # ---- Output safety & quantization ----
-    stop_nans = CppProperty(
-        "stop_nans",
-        FieldType.BOOL,
-        default=False,
-        header="camera.section.output",
-        display_name_key="camera.stop_nans",
-        tooltip="camera.tooltip.stop_nans",
-    )
-    dithering = CppProperty(
-        "dithering",
-        FieldType.BOOL,
-        default=False,
-        display_name_key="camera.dithering",
-        tooltip="camera.tooltip.dithering",
+    stop_nans = CppProperty.from_native("Camera", "stop_nans")
+    dithering = CppProperty.from_native("Camera", "dithering")
+    target_texture = CppProperty.from_native(
+        "Camera", "target_texture",
+        native_getter=lambda cpp: (cpp.target_texture_guid, cpp.target_texture),
+        get_converter=_wrap_target_texture, native_setter=_set_target_texture,
     )
 
     # ------------------------------------------------------------------
@@ -175,14 +130,6 @@ class Camera(BuiltinComponent):
         if cpp is not None:
             return cpp.aspect_ratio
         return 1.778
-
-    @property
-    def culling_mask(self) -> int:
-        """Layer culling bitmask — read-only."""
-        cpp = self._cpp_component
-        if cpp is not None:
-            return cpp.culling_mask
-        return 0xFFFFFFFF
 
     @property
     def pixel_width(self) -> int:
@@ -204,10 +151,92 @@ class Camera(BuiltinComponent):
     # Coordinate conversion (delegate methods)
     # ------------------------------------------------------------------
 
+    def set_clip_planes(self, near_clip: float, far_clip: float) -> None:
+        """Set both clipping planes atomically; requires finite 0 < near < far."""
+        self._require_cpp_component().set_clip_planes(near_clip, far_clip)
+
+    @property
+    def projection_matrix(self):
+        """NumPy (4,4) matrix copy, indexed [row, column].
+
+        Engine clip space is left-handed (+Z forward), depth [0,1], with
+        projection Y inverted for top-left pixels. Assignment installs a
+        runtime override; FOV/aspect/clip edits resume after reset. No scene
+        fields are overwritten. Unlike Unity's CPU projection matrix, this
+        is already the engine GPU clip-space convention; do not flip it again.
+        """
+        return self._require_cpp_component().projection_matrix
+
+    @projection_matrix.setter
+    def projection_matrix(self, matrix):
+        self._require_cpp_component().projection_matrix = matrix
+
+    @property
+    def view_matrix(self):
+        """Affine world-to-camera NumPy (4,4) copy (+Z forward).
+
+        Setting it overrides the rendered pose without changing Transform.
+        Call reset_view_matrix() to follow Transform again. Reflection callers
+        also toggle invert_culling relative to their source camera.
+        """
+        return self._require_cpp_component().view_matrix
+
+    @view_matrix.setter
+    def view_matrix(self, matrix):
+        self._require_cpp_component().view_matrix = matrix
+
+    @property
+    def camera_to_world_matrix(self):
+        """Inverse of the effective view, including a runtime override."""
+        return self._require_cpp_component().camera_to_world_matrix
+
+    @property
+    def has_custom_view_matrix(self) -> bool:
+        return self._require_cpp_component().has_custom_view_matrix
+
+    def reset_view_matrix(self) -> None:
+        """Resume Transform-driven viewing; does not change invert_culling."""
+        self._require_cpp_component().reset_view_matrix()
+
+    def reset_history(self) -> None:
+        """Discard accumulated history before this camera's next render.
+
+        Use after a small teleport or a discontinuous change not covered by
+        automatic camera-cut detection. Each view of this camera resets once;
+        other cameras, Transform, projection and saved assets are unchanged.
+        """
+        self._require_cpp_component().reset_history()
+
+    @property
+    def invert_culling(self) -> bool:
+        """Runtime winding inversion for this camera, not light-space shadows."""
+        return self._require_cpp_component().invert_culling
+
+    @invert_culling.setter
+    def invert_culling(self, value: bool) -> None:
+        self._require_cpp_component().invert_culling = value
+
+    @property
+    def has_custom_projection_matrix(self) -> bool:
+        return self._require_cpp_component().has_custom_projection_matrix
+
+    def reset_projection_matrix(self) -> None:
+        """Resume the current authored FOV/orthographic/aspect/clip settings."""
+        self._require_cpp_component().reset_projection_matrix()
+
+    def calculate_oblique_matrix(self, clip_plane):
+        """Return a projection clipped by camera-space (nx,ny,nz,d), without applying it.
+
+        Points on the positive side are retained. Use ``projection_matrix =
+        calculate_oblique_matrix(...)`` to apply; use reset before deriving a
+        fresh plane from authored settings on a later frame.
+        """
+        return self._require_cpp_component().calculate_oblique_matrix(clip_plane)
+
     def screen_to_world_point(
         self, x: float, y: float, depth: float = 0.0
     ) -> Optional[Tuple[float, float, float]]:
-        """Convert screen coordinates (x, y) + depth [0..1] to world position."""
+        """Convert top-left screen pixels and normalized depth [0..1] to world position."""
         cpp = self._cpp_component
         if cpp is not None:
             return cpp.screen_to_world_point(x, y, depth)
@@ -216,23 +245,27 @@ class Camera(BuiltinComponent):
     def world_to_screen_point(
         self, x: float, y: float, z: float
     ) -> Optional[Tuple[float, float]]:
-        """Convert world position to screen coordinates (x, y)."""
+        """Convert world position to top-left screen pixel coordinates (x, y)."""
         cpp = self._cpp_component
         if cpp is not None:
             return cpp.world_to_screen_point(x, y, z)
         return None
 
     def screen_point_to_ray(
-        self, x: float, y: float
+        self, x: float, y: float,
+        viewport_width: Optional[float] = None,
+        viewport_height: Optional[float] = None,
     ) -> Optional[Tuple[Tuple[float, float, float], Tuple[float, float, float]]]:
-        """Build a ray from viewport-relative screen coordinates.
+        """Build a ray from top-left, viewport-relative screen coordinates.
 
         Returns ``((ox, oy, oz), (dx, dy, dz))`` — origin at the near
         plane and a normalised direction vector.
         """
         cpp = self._cpp_component
         if cpp is not None:
-            return cpp.screen_point_to_ray(x, y)
+            return cpp.screen_point_to_ray(
+                x, y, viewport_width, viewport_height
+            )
         return None
 
     # ------------------------------------------------------------------
@@ -270,69 +303,34 @@ class Camera(BuiltinComponent):
 
         if self._get_bound_native_component() is None:
             return
-        transform = self.transform
-
-        # Transform data is required to draw a valid camera frustum.  A stale
-        # native binding is an engine lifecycle error and must reach the gizmo
-        # invocation boundary instead of becoming a per-frame log message.
-        pos = transform.position
-        position = (pos.x, pos.y, pos.z)
-        fwd = transform.forward
-        forward = (fwd.x, fwd.y, fwd.z)
-        u = transform.up
-        up = (u.x, u.y, u.z)
-        r = transform.right
-        right = (r.x, r.y, r.z)
-
-        fov = self.field_of_view
-        aspect = self.aspect_ratio
-        near = self.near_clip
-        far = min(self.far_clip, _FAR_CLIP_VISUAL_CAP)
-
-        from Infernux.lib import CameraProjection
-        is_ortho = (self.projection_mode == CameraProjection.Orthographic)
-        ortho_size = self.orthographic_size if is_ortho else 0.0
-
+        positions, indices = self._frustum_wire_geometry(
+            self.projection_matrix, self.view_matrix, _FAR_CLIP_VISUAL_CAP)
         Gizmos.color = _CAMERA_GIZMO_COLOR
-
-        # ---- Frustum wireframe ----
-        if is_ortho:
-            self._draw_ortho_frustum(position, forward, up, right,
-                                     ortho_size, aspect, near, far)
-        else:
-            Gizmos.draw_frustum(position, fov, aspect, near, far,
-                                forward, up, right)
-
-    # ---- Helper: orthographic frustum ----
+        Gizmos.draw_lines(positions, indices)
 
     @staticmethod
-    def _draw_ortho_frustum(position, forward, up, right,
-                            ortho_size, aspect, near, far):
-        from Infernux.gizmos import Gizmos
+    def _frustum_wire_geometry(projection, view, distance_cap):
+        """Use the rendered projection, including asymmetric/oblique near planes."""
+        import numpy as np
 
-        hh = ortho_size
-        hw = ortho_size * aspect
-
-        def _a(a, b):
-            return (a[0]+b[0], a[1]+b[1], a[2]+b[2])
-        def _s(v, s):
-            return (v[0]*s, v[1]*s, v[2]*s)
-
-        nc = _a(position, _s(forward, near))
-        fc = _a(position, _s(forward, far))
-
-        ntl = _a(_a(nc, _s(up, hh)), _s(right, -hw))
-        ntr = _a(_a(nc, _s(up, hh)), _s(right,  hw))
-        nbr = _a(_a(nc, _s(up,-hh)), _s(right,  hw))
-        nbl = _a(_a(nc, _s(up,-hh)), _s(right, -hw))
-        ftl = _a(_a(fc, _s(up, hh)), _s(right, -hw))
-        ftr = _a(_a(fc, _s(up, hh)), _s(right,  hw))
-        fbr = _a(_a(fc, _s(up,-hh)), _s(right,  hw))
-        fbl = _a(_a(fc, _s(up,-hh)), _s(right, -hw))
-
-        for a, b in [(ntl,ntr),(ntr,nbr),(nbr,nbl),(nbl,ntl),
-                     (ftl,ftr),(ftr,fbr),(fbr,fbl),(fbl,ftl),
-                     (ntl,ftl),(ntr,ftr),(nbr,fbr),(nbl,fbl)]:
-            Gizmos.draw_line(a, b)
+        clip = np.array([[-1, -1, 0, 1], [1, -1, 0, 1],
+                         [1, 1, 0, 1], [-1, 1, 0, 1]], dtype=np.float64)
+        inverse = np.linalg.inv(np.asarray(projection, dtype=np.float64))
+        near_h = clip @ inverse.T
+        near = near_h[:, :3] / near_h[:, 3:4]
+        clip[:, 2] = 1
+        far_h = clip @ inverse.T
+        direction = far_h[:, :3] - near * far_h[:, 3:4]
+        lengths = np.linalg.norm(direction, axis=1, keepdims=True)
+        # Infinite far is legitimate. Limit display length along each ray,
+        # not by scaling the entire orthographic rectangle towards the eye.
+        extent = np.full((4, 1), np.inf)
+        np.divide(lengths, far_h[:, 3:4], out=extent, where=far_h[:, 3:4] > 0)
+        far = near + direction / lengths * np.minimum(extent, distance_cap)
+        points = np.column_stack((np.concatenate((near, far)), np.ones(8)))
+        world = points @ np.linalg.inv(np.asarray(view, dtype=np.float64)).T
+        indices = np.array([0, 1, 1, 2, 2, 3, 3, 0, 4, 5, 5, 6, 6, 7, 7, 4,
+                            0, 4, 1, 5, 2, 6, 3, 7], dtype=np.uint32)
+        return np.ascontiguousarray(world[:, :3] / world[:, 3:4], dtype=np.float32), indices.reshape(-1, 2)
 
 

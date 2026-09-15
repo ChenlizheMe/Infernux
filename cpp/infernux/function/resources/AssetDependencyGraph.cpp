@@ -205,6 +205,23 @@ void AssetDependencyGraph::ClearRuntimeDependenciesOf(const std::string &objectG
     m_runtimeDependencies.erase(forward);
 }
 
+void AssetDependencyGraph::RekeyRuntimeDependencies(const std::string &oldOwner, const std::string &newOwner)
+{
+    if (oldOwner == newOwner)
+        return;
+    std::lock_guard<std::mutex> lock(m_runtimeMutex);
+    auto source = m_runtimeDependencies.extract(oldOwner);
+    if (source.empty())
+        return;
+    auto &destination = m_runtimeDependencies[newOwner];
+    for (const auto &asset : source.mapped()) {
+        destination.insert(asset);
+        auto &dependents = m_runtimeDependents.at(asset);
+        dependents.erase(oldOwner);
+        dependents.insert(newOwner);
+    }
+}
+
 void AssetDependencyGraph::RemoveAsset(const std::string &guid)
 {
     if (guid.empty())
@@ -299,7 +316,7 @@ void AssetDependencyGraph::NotifyEvent(const std::string &guid, ResourceType typ
     std::unordered_set<std::string> dependents;
     const auto snapshot = GetAssetSnapshot();
     const auto asset = snapshot->m_dependents.find(guid);
-    if (asset != snapshot->m_dependents.end())
+    if (event != AssetEvent::RuntimeModified && asset != snapshot->m_dependents.end())
         dependents = asset->second;
 
     std::vector<AssetEventCallback> callbacks;

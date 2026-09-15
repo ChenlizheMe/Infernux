@@ -68,6 +68,21 @@ def _set_native_physic_material(cpp, value) -> None:
     raise TypeError("physic_material must be PhysicMaterial, PhysicMaterialRef, or None")
 
 
+def _native_collider_properties(type_name: str):
+    """Project one concrete collider's shared native declaration."""
+    return (
+        CppProperty.from_native(type_name, "center"),
+        CppProperty.from_native(type_name, "is_trigger"),
+        CppProperty.from_native(
+            type_name,
+            "physic_material",
+            native_getter=lambda cpp: (cpp.physic_material_guid, cpp.physic_material),
+            get_converter=_wrap_physic_material_state,
+            native_setter=_set_native_physic_material,
+        ),
+    )
+
+
 class Collider(BuiltinComponent):
     """Abstract Python base for all collider wrappers (mirrors Unity's Collider).
 
@@ -107,3 +122,11 @@ class Collider(BuiltinComponent):
         get_converter=_wrap_physic_material_state,
         native_setter=_set_native_physic_material,
     )
+
+    def raycast(self, origin, direction, max_distance: float = 1000.0):
+        """Cast a world-space ray against this collider only."""
+        return self._require_cpp_component().raycast(origin, direction, max_distance)
+
+    def closest_point(self, point):
+        """Return the closest world-space point on this collider."""
+        return self._require_cpp_component().closest_point(point)

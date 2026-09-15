@@ -11,7 +11,9 @@
 
 #include "Infernux.h"
 #include "function/renderer/RenderGraphDescription.h"
+#include "function/renderer/RendererSelection.h"
 #include "function/renderer/SceneRenderGraph.h"
+#include "function/renderer/rhi/RhiRenderTexture.h"
 
 #include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
@@ -44,10 +46,21 @@ void RegisterRenderGraphBindings(py::module_ &m)
         .value("NORMAL", ShaderCompileTarget::Normal)
         .value("BASE_COLOR", ShaderCompileTarget::BaseColor);
 
+    py::enum_<rhi::CompareFunction>(m, "DepthCompare", "Depth comparison against a graph attachment")
+        .value("NEVER", rhi::CompareFunction::Never)
+        .value("LESS", rhi::CompareFunction::Less)
+        .value("EQUAL", rhi::CompareFunction::Equal)
+        .value("LESS_EQUAL", rhi::CompareFunction::LessEqual)
+        .value("GREATER", rhi::CompareFunction::Greater)
+        .value("NOT_EQUAL", rhi::CompareFunction::NotEqual)
+        .value("GREATER_EQUAL", rhi::CompareFunction::GreaterEqual)
+        .value("ALWAYS", rhi::CompareFunction::Always);
+
     py::enum_<GraphCommandType>(m, "GraphCommandType", "Backend-neutral command recorded by a graph pass")
         .value("DRAW_RENDERERS", GraphCommandType::DrawRenderers)
         .value("DRAW_SKYBOX", GraphCommandType::DrawSkybox)
         .value("DRAW_SHADOW_CASTERS", GraphCommandType::DrawShadowCasters)
+        .value("DRAW_WORLD_UI", GraphCommandType::DrawWorldUI)
         .value("DRAW_SCREEN_UI", GraphCommandType::DrawScreenUI)
         .value("FULLSCREEN_QUAD", GraphCommandType::FullscreenQuad)
         .value("COPY_TEXTURE", GraphCommandType::CopyTexture)
@@ -81,7 +94,13 @@ void RegisterRenderGraphBindings(py::module_ &m)
     py::enum_<GraphTextureRole>(m, "GraphTextureRole", "Lifetime role of a graph texture")
         .value("TRANSIENT", GraphTextureRole::Transient)
         .value("TEMPORAL_READ", GraphTextureRole::TemporalRead)
-        .value("TEMPORAL_WRITE", GraphTextureRole::TemporalWrite);
+        .value("TEMPORAL_WRITE", GraphTextureRole::TemporalWrite)
+        .value("PERSISTENT", GraphTextureRole::Persistent);
+
+    py::enum_<GraphTextureAttachment>(m, "GraphTextureAttachment")
+        .value("COLOR", GraphTextureAttachment::Color)
+        .value("DEPTH", GraphTextureAttachment::Depth)
+        .value("RESOLVE", GraphTextureAttachment::Resolve);
 
     py::class_<GraphCommandDesc>(m, "GraphCommandDesc", "Typed command in the Python-defined graph IR")
         .def(py::init<>())
@@ -93,9 +112,15 @@ void RegisterRenderGraphBindings(py::module_ &m)
         .def_readwrite("sort_mode", &GraphCommandDesc::sortMode)
         .def_readwrite("pass_tag", &GraphCommandDesc::passTag)
         .def_readwrite("override_material", &GraphCommandDesc::overrideMaterial)
+        .def_readwrite("renderer_selection", &GraphCommandDesc::rendererSelection)
         .def_readwrite("light_index", &GraphCommandDesc::lightIndex)
         .def_readwrite("screen_ui_list", &GraphCommandDesc::screenUIList)
+        .def_readwrite("world_ui_layer_mask", &GraphCommandDesc::worldUILayerMask)
         .def_readwrite("shader_name", &GraphCommandDesc::shaderName)
+        .def_readwrite("depth_test", &GraphCommandDesc::depthTest)
+        .def_readwrite("depth_write", &GraphCommandDesc::depthWrite)
+        .def_readwrite("depth_compare", &GraphCommandDesc::depthCompare)
+        .def_readwrite("alpha_blend", &GraphCommandDesc::alphaBlend)
         .def_readwrite("parameter_block", &GraphCommandDesc::parameterBlock)
         .def_readwrite("push_constants", &GraphCommandDesc::pushConstants)
         .def_readwrite("input_bindings", &GraphCommandDesc::inputBindings)
@@ -124,7 +149,9 @@ void RegisterRenderGraphBindings(py::module_ &m)
                        "Size divisor relative to scene target (>0: actual = scene / divisor)")
         .def_readwrite("samples", &GraphTextureDesc::samples, "Sample count (0=inherit frame MSAA, otherwise 1/2/4/8)")
         .def_readwrite("role", &GraphTextureDesc::role, "Transient, temporal read, or temporal write")
-        .def_readwrite("temporal_key", &GraphTextureDesc::temporalKey, "Stable identity shared by a temporal pair");
+        .def_readwrite("temporal_key", &GraphTextureDesc::temporalKey, "Stable identity shared by a temporal pair")
+        .def_readwrite("render_texture", &GraphTextureDesc::renderTexture, "Persistent RenderTexture owner")
+        .def_readwrite("attachment", &GraphTextureDesc::attachment);
 
     py::class_<GraphBufferDesc>(m, "GraphBufferDesc", "Description of a buffer resource in the graph")
         .def(py::init<>())
@@ -169,6 +196,9 @@ void RegisterRenderGraphBindings(py::module_ &m)
         .def_readwrite("buffers", &RenderGraphDescription::buffers, "All buffer resources")
         .def_readwrite("passes", &RenderGraphDescription::passes, "All passes in declaration order")
         .def_readwrite("output_texture", &RenderGraphDescription::outputTexture, "Name of the final output texture")
+        .def_readwrite("linear_output_texture", &RenderGraphDescription::linearOutputTexture)
+        .def_readwrite("linear_output_pass_count", &RenderGraphDescription::linearOutputPassCount)
+        .def_readwrite("temporal_jitter", &RenderGraphDescription::temporalJitter)
         .def_readwrite("msaa_samples", &RenderGraphDescription::msaaSamples,
                        "MSAA sample count (0=no change, 1=off, 2, 4, 8)");
 

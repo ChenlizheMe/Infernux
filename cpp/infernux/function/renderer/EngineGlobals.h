@@ -6,13 +6,21 @@ namespace infernux
 {
 
 /**
- * @brief Engine-wide per-frame globals exposed to all shaders via set 2.
+ * @brief Engine-owned per-frame parameter domain exposed via set 2.
  *
  * Layout matches globals_ubo.glsl (std140).  Each field is a vec4 for
  * alignment simplicity — UE5-style naming conventions.
  *
+ * This is a fixed ABI populated by the engine. Arbitrary name-based
+ * "set_global" dictionaries are deliberately not
+ * part of the render path;
+ * effect-local values belong to the pass payload and authored shader values
+ * belong to
+ * Material/Renderer set 0.
+ *
  * Total size: 8 × vec4 = 128 bytes (well within vkCmdUpdateBuffer's
- * 65536-byte limit and minUniformBufferOffsetAlignment on all GPUs).
+ * 65536-byte limit
+ * and minUniformBufferOffsetAlignment on all GPUs).
  */
 struct EngineGlobalsUBO
 {

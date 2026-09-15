@@ -53,6 +53,8 @@ class OperationSchema:
     capabilities: tuple[str, ...]
     cost: Mapping[str, object]
     tags: tuple[str, ...] = ()
+    availability: tuple[str, ...] = ("editor",)
+    phase: str = "any"
 
     def __post_init__(self) -> None:
         if not re.fullmatch(
@@ -69,6 +71,14 @@ class OperationSchema:
             raise ValueError("OperationSchema errors must have stable codes")
         if any(not str(item).strip() for item in self.capabilities):
             raise ValueError("OperationSchema capabilities cannot be empty")
+        if not self.availability or any(
+            item not in {"editor", "player"} for item in self.availability
+        ):
+            raise ValueError(
+                "OperationSchema availability must contain editor and/or player"
+            )
+        if not str(self.phase).strip():
+            raise ValueError("OperationSchema phase must not be empty")
 
     def document(self) -> dict[str, object]:
         value = asdict(self)
@@ -129,6 +139,11 @@ class OperationRegistry:
         with self._lock:
             current = self._operations.get(key)
             if current is not None and current.owner != operation.owner:
+                # The engine Host is authoritative. Transport plugins may
+                # project older schemas, but can never shadow or replace the
+                # engine handler and its lifetime.
+                if current.owner == "infernux/engine":
+                    return
                 raise OperationError(
                     "operation.conflict",
                     f"Operation is already owned by {current.owner}: {operation.schema.id}",
@@ -258,7 +273,9 @@ class OperationRegistry:
         payload = dict(arguments or {})
         _validate_arguments(payload, operation.schema.input_schema)
         try:
-            return operation.handler(**payload)
+            result = operation.handler(**payload)
+            _validate_result(result, operation.schema.output_schema)
+            return result
         except OperationError:
             raise
         except TypeError as exc:
@@ -464,6 +481,24 @@ def _validate_arguments(arguments: Mapping[str, object], schema: Mapping[str, ob
                 "operation.invalid_arguments",
                 f"Argument {name} must be {expected_label}",
             )
+
+
+def _validate_result(result: object, schema: Mapping[str, object]) -> None:
+    if schema.get("type") == "object" and not isinstance(result, Mapping):
+        raise OperationError(
+            "operation.invalid_result",
+            f"Operation returned {type(result).__name__}; its schema requires an object",
+        )
+    if not isinstance(result, Mapping):
+        return
+    try:
+        _validate_arguments(result, schema)
+    except OperationError as exc:
+        raise OperationError(
+            "operation.invalid_result",
+            str(exc),
+            details=exc.details,
+        ) from exc
 
 
 __all__ = [

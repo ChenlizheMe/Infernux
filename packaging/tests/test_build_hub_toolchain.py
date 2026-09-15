@@ -84,7 +84,6 @@ def test_installer_publishes_only_its_versioned_file(tmp_path, monkeypatch):
     monkeypatch.setattr(build_hub, "_common_nuitka_command", lambda *a, **kw: ["nuitka"])
     monkeypatch.setattr(build_hub, "_run", compile_installer)
     monkeypatch.setattr(build_hub, "_validate_msvc_reports", lambda *a: [])
-    monkeypatch.setattr(build_hub, "_sign_windows_binary", lambda *a: None)
     monkeypatch.setattr(build_hub, "_validate_windows_pe", lambda *a: None)
     build_hub._build_installer(source, build, stage, release_dir=release, build_env={})
     suffix = ".exe" if sys.platform == "win32" else ""
@@ -150,7 +149,6 @@ def test_hub_build_embeds_the_private_runtime_bundle(
     monkeypatch.setattr(build_hub, "_common_nuitka_command", lambda *args, **kwargs: ["nuitka"])
     monkeypatch.setattr(build_hub, "_project_version", lambda _root: "0.2.9")
     monkeypatch.setattr(build_hub, "_validate_msvc_reports", lambda _root: [])
-    monkeypatch.setattr(build_hub, "_sign_windows_binary", lambda *args: None)
     monkeypatch.setattr(build_hub, "_validate_windows_payload", lambda *args: None)
     monkeypatch.setattr(build_hub, "_write_toolchain_receipt", lambda *args, **kwargs: None)
 
@@ -313,9 +311,7 @@ def test_invalid_windows_file_version_is_rejected():
         build_hub._windows_file_version("preview")
 
 
-def test_unsigned_build_is_explicitly_skipped(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-):
-    monkeypatch.delenv("INFERNUX_SIGN_CERTIFICATE_THUMBPRINT", raising=False)
+def test_official_hub_artifacts_use_the_signpath_project_name():
+    source = Path(build_hub.__file__).read_text(encoding="utf-8")
 
-    assert build_hub._sign_windows_binary(tmp_path / "app.exe", {}) is False
+    assert source.count('product_name="Infernux",') == 2

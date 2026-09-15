@@ -18,10 +18,12 @@ import copy
 import os
 import weakref
 import threading
+from types import MappingProxyType
 from Infernux.debug import Debug
 
 if TYPE_CHECKING:
     from .component import InxComponent
+    from Infernux.field_schema import FieldSchema
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -247,8 +249,15 @@ class FieldMetadata:
     python_type: Optional[Type] = None
     getter: Optional[Callable] = None
     setter: Optional[Callable] = None
+    field_id: Optional[str] = None  # None uses the current declaration name.
 
     def __post_init__(self) -> None:
+        if self.field_id is not None and (
+            not isinstance(self.field_id, str)
+            or not self.field_id
+            or self.field_id != self.field_id.strip()
+        ):
+            raise ValueError("field_id must be a non-empty string without surrounding whitespace")
         requires_asset_type = self.field_type == FieldType.ASSET or (
             self.field_type == FieldType.LIST
             and self.element_type == FieldType.ASSET
@@ -272,13 +281,14 @@ class FieldMetadata:
 
 
 def copy_serialized_field_default(metadata: FieldMetadata) -> Any:
-    """Return an independent default value for one serialized field."""
+    """Copy and normalize the default using the ordinary field-write contract."""
     try:
-        return copy.deepcopy(metadata.default)
+        value = copy.deepcopy(metadata.default)
     except Exception:
         # Native-backed defaults are not always deepcopyable.  Preserve the
         # established initialization behavior for those values.
-        return metadata.default
+        value = metadata.default
+    return normalize_runtime_field_value(value, metadata)
 
 
 class SerializedFieldDescriptor:
@@ -344,16 +354,6 @@ class SerializedFieldDescriptor:
         with self._lock:
             return self._values.get(inst_id, self.metadata.default)
 
-    # FieldTypes that are stored as Ref wrappers with a _cached attribute.
-    _REF_FIELD_TYPES = frozenset({
-        FieldType.MATERIAL,
-        FieldType.TEXTURE,
-        FieldType.SHADER,
-        FieldType.ASSET,
-        FieldType.GAME_OBJECT,
-        FieldType.COMPONENT,
-    })
-
     def __get__(self, instance: Optional['InxComponent'], owner: Type) -> Any:
         if instance is None:
             return self
@@ -366,15 +366,8 @@ class SerializedFieldDescriptor:
         inst_id = id(instance)
         with self._lock:
             value = self._values.get(inst_id, self.metadata.default)
-        # Fast path: for ref-type fields that already have a cached resolved
-        # object, return it directly — skips resolve_runtime_field_value and
-        # the entire _resolve_single_reference dispatch chain.
-        if self.metadata.field_type in self._REF_FIELD_TYPES:
-            if value is None:
-                return None
-            cached = getattr(value, '_cached', None)
-            if cached is not None:
-                return cached
+        # Reference wrappers own their caches and lifetime checks. Bypassing
+        # resolve() here can expose a retired native wrapper after scene reload.
         return resolve_runtime_field_value(value, self.metadata)
     
     def __set__(self, instance: 'InxComponent', value: Any):
@@ -642,6 +635,23 @@ def _ensure_asset_ref(value, asset_type: str):
     from Infernux.core.asset_reference_types import asset_type_registry
 
     descriptor = asset_type_registry.require(token)
+    if descriptor.compatible_types:
+        if value is None:
+            return None
+        from Infernux.core.asset_reference_types import AssetReferenceCodec
+        payload = AssetReferenceCodec.normalize(token, value)
+        if payload["asset_type"] not in descriptor.compatible_types:
+            raise TypeError(f"{token} requires one of {descriptor.compatible_types}")
+        if isinstance(value, AssetRefBase):
+            if get_asset_type_for_ref(value) != payload["asset_type"]:
+                raise TypeError(f"{token} reference kind does not match its asset")
+            return value
+        if not payload["guid"]:
+            raise ValueError(f"{token} requires an imported asset GUID")
+        # AssetManager owns imported resource generations. Do not cache the
+        # assigned wrapper here and bypass deletion/reimport publication.
+        return create_asset_ref(payload["asset_type"], guid=payload["guid"],
+                                path_hint=payload["path_hint"])
     if (
         isinstance(value, AssetRefBase)
         and get_asset_type_for_ref(value) == descriptor.type_id
@@ -687,6 +697,12 @@ def _resolve_single_reference(value: Any, field_type: FieldType) -> Any:
     return value
 
 
+_REFERENCE_FIELD_TYPES = frozenset({
+    FieldType.GAME_OBJECT, FieldType.COMPONENT, FieldType.MATERIAL,
+    FieldType.TEXTURE, FieldType.SHADER, FieldType.ASSET,
+})
+
+
 def resolve_runtime_field_value(value: Any, field_meta_or_type) -> Any:
     if hasattr(field_meta_or_type, 'field_type'):
         field_type = field_meta_or_type.field_type
@@ -695,25 +711,11 @@ def resolve_runtime_field_value(value: Any, field_meta_or_type) -> Any:
         field_type = field_meta_or_type
         element_type = None
 
-    if field_type in {
-        FieldType.GAME_OBJECT,
-        FieldType.COMPONENT,
-        FieldType.MATERIAL,
-        FieldType.TEXTURE,
-        FieldType.SHADER,
-        FieldType.ASSET,
-    }:
+    if field_type in _REFERENCE_FIELD_TYPES:
         return _resolve_single_reference(value, field_type)
 
     if field_type == FieldType.LIST and isinstance(value, list):
-        if element_type in {
-            FieldType.GAME_OBJECT,
-            FieldType.COMPONENT,
-            FieldType.MATERIAL,
-            FieldType.TEXTURE,
-            FieldType.SHADER,
-            FieldType.ASSET,
-        }:
+        if element_type in _REFERENCE_FIELD_TYPES:
             return [_resolve_single_reference(item, element_type) for item in value]
     return value
 
@@ -953,7 +955,7 @@ def get_raw_field_value(component: 'InxComponent', field_name: str) -> Any:
             return desc.get_raw(component)
         if getattr(desc, "_is_cpp_property", False):
             return getattr(component, field_name)
-    fields = getattr(type(component), '_serialized_fields_', {})
+    fields = get_serialized_fields(type(component))
     if field_name in fields and hasattr(component, '__dict__'):
         return component.__dict__.get(field_name, fields[field_name].default)
     return getattr(component, field_name)
@@ -1148,6 +1150,8 @@ def resolve_annotation(annotation) -> Optional['FieldMetadata']:
                     field_type=FieldType.LIST,
                     default=[],
                     element_type=inner_meta.field_type,
+                    element_class=inner_meta.serializable_class,
+                    enum_type=inner_meta.enum_type,
                     component_type=inner_meta.component_type,
                     asset_type=inner_meta.asset_type,
                 )
@@ -1179,9 +1183,14 @@ def resolve_annotation(annotation) -> Optional['FieldMetadata']:
             return FieldMetadata(name="", field_type=_vec_ft, default=_make_vec_default(_vec_ft))
         if simple_name in {
             'GameObject', 'Material', 'Texture', 'TextureRef',
-            'Shader', 'ShaderRef', 'AudioClip', 'AudioClipRef', 'ComponentRef'
+            'Shader', 'ShaderRef', 'AudioClip', 'AudioClipRef', 'ComponentRef', 'RenderTexture'
         }:
             return resolve_annotation(type(simple_name, (), {'__name__': simple_name}))
+
+        from Infernux.core.asset_ref import get_all_asset_type_configs
+        for config in get_all_asset_type_configs().values():
+            if config['ref_class'].__name__ == simple_name:
+                return resolve_annotation(config['ref_class'])
 
         try:
             from .registry import get_type
@@ -1208,6 +1217,8 @@ def resolve_annotation(annotation) -> Optional['FieldMetadata']:
                     field_type=FieldType.LIST,
                     default=[],
                     element_type=inner_meta.field_type,
+                    element_class=inner_meta.serializable_class,
+                    enum_type=inner_meta.enum_type,
                     component_type=inner_meta.component_type,
                     asset_type=inner_meta.asset_type,
                 )
@@ -1262,6 +1273,15 @@ def resolve_annotation(annotation) -> Optional['FieldMetadata']:
     if _vec_ft is not None:
         return FieldMetadata(name="", field_type=_vec_ft, default=_make_vec_default(_vec_ft))
 
+    from .serializable_object import SerializableObject
+    if issubclass(annotation, SerializableObject):
+        return FieldMetadata(
+            name="",
+            field_type=FieldType.SERIALIZABLE_OBJECT,
+            default=annotation(),
+            serializable_class=annotation,
+        )
+
     # ── InxComponent subclass → ComponentRef ──
     try:
         from .component import InxComponent as _IC
@@ -1290,6 +1310,7 @@ def resolve_annotation(annotation) -> Optional['FieldMetadata']:
         'ShaderRef':    (FieldType.SHADER,      '_shader_ref'),
         'AudioClip':    (FieldType.ASSET,       '_audio_ref'),
         'AudioClipRef': (FieldType.ASSET,       '_audio_ref'),
+        'RenderTexture':(FieldType.ASSET,       '_render_texture_ref'),
         'ComponentRef': (FieldType.COMPONENT,   '_comp_ref'),
     }
     entry = _MAP.get(type_name)
@@ -1301,7 +1322,8 @@ def resolve_annotation(annotation) -> Optional['FieldMetadata']:
             field_type=field_type,
             default=default,
             component_type="" if field_type == FieldType.COMPONENT else None,
-            asset_type="AudioClip" if field_type == FieldType.ASSET else None,
+            asset_type=("RenderTexture" if type_name == "RenderTexture" else "AudioClip")
+                if field_type == FieldType.ASSET else None,
         )
 
     try:
@@ -1513,6 +1535,9 @@ def _make_ref_default(type_name: str):
     if type_name == 'Material':
         from .ref_wrappers import MaterialRef
         return MaterialRef()
+    if type_name == 'RenderTexture':
+        from ..core.asset_ref import RenderTextureRef
+        return RenderTextureRef()
     if type_name in ('Texture', 'TextureRef'):
         from ..core.asset_ref import TextureRef
         return TextureRef()
@@ -1531,6 +1556,7 @@ def _make_ref_default(type_name: str):
 def serialized_field(
     default: Any = None,
     *,
+    default_factory: Optional[Callable[[], Any]] = None,
     field_type: Optional[FieldType] = None,
     element_type: Optional[FieldType] = None,
     element_class: Optional[Type] = None,
@@ -1554,12 +1580,16 @@ def serialized_field(
     hdr: bool = False,
     curve_non_negative: bool = False,
     hidden: bool = False,
+    field_id: Optional[str] = None,
 ) -> Any:
     """
     Decorator/descriptor for marking a field as serialized and inspector-visible.
     
     Args:
         default: Default value for the field
+        default_factory: SerializableObject type used to create an independent
+            nested default. User-defined factory functions and constructors
+            with custom ``__init__`` code are rejected at declaration time.
         field_type: Explicit field type (auto-detected if not provided)
         range: (min, max) tuple for numeric sliders / bounded drag
         tooltip: Hover text shown in inspector
@@ -1589,6 +1619,10 @@ def serialized_field(
         curve_non_negative: For ANIMATION_CURVE fields, constrain edited key
             values to be non-negative.
         hidden: Serialize the field without showing it in the Inspector.
+        field_id: Stable type-local identity, independent of the Python name.
+            Omit to use the declaration name. Persisted document keys remain
+            authored names; FormerlySerializedAs declares name migrations,
+            separately from identity-based live reload.
     Returns:
         A descriptor that manages the field value and metadata
     
@@ -1599,6 +1633,23 @@ def serialized_field(
             debug: bool = serialized_field(default=False, header="Debug Options")
             text: str = serialized_field(default="Hi", group="Content")
     """
+    if default_factory is not None:
+        if default is not None:
+            raise ValueError("serialized_field cannot combine default and default_factory")
+        from .serializable_object import SerializableObject
+
+        if not isinstance(default_factory, type) or not issubclass(
+            default_factory, SerializableObject
+        ):
+            raise TypeError(
+                "serialized_field default_factory must be a SerializableObject type"
+            )
+        if default_factory.__init__ is not SerializableObject.__init__:
+            raise TypeError(
+                "serialized_field default_factory cannot execute a custom __init__"
+            )
+        default = default_factory()
+
     # Infer field type if not provided
     if field_type is None and component_type:
         inferred_type = FieldType.COMPONENT
@@ -1653,6 +1704,11 @@ def serialized_field(
     inferred_element_type = element_type
     if inferred_type == FieldType.LIST and inferred_element_type is None:
         inferred_element_type = _infer_list_element_type(default)
+
+    if inferred_type == FieldType.SERIALIZABLE_OBJECT and serializable_class is None and default is not None:
+        serializable_class = type(default)
+    if inferred_type == FieldType.LIST and inferred_element_type == FieldType.SERIALIZABLE_OBJECT and element_class is None:
+        element_class = next((type(item) for item in (default or ()) if item is not None), None)
     
     # Auto-detect enum_type from default
     enum_type = None
@@ -1686,6 +1742,7 @@ def serialized_field(
         curve_non_negative=curve_non_negative,
         asset_type=asset_type,
         hidden=hidden,
+        field_id=field_id,
     )
     
     return SerializedFieldDescriptor(metadata)
@@ -1712,6 +1769,174 @@ def validate_serialized_field_document(
         )
 
 
+def _compile_serialized_fields(cls, *, descriptors: bool = True) -> None:
+    """Compile the shared component/data-object declaration syntax once.
+
+    Runtime storage stays with each owner: component descriptors may use CDS,
+    while data objects store normalized values in their instance dictionary.
+    """
+    # Always create a fresh dict for this class (don't inherit from parent)
+    cls._serialized_fields_ = {}
+
+    # ── Resolve own-class annotations once ──────────────────────────
+    # String annotations (incl. files using ``from __future__ import
+    # annotations``) are evaluated against the defining module's globals
+    # so Annotated[...]/Optional[...] survive. Resolution is per-name —
+    # a single unresolvable forward ref must not poison the others
+    # (deliberately NOT typing.get_type_hints, which walks the whole MRO
+    # and fails wholesale on any base-class forward reference).
+    own_annotations = dict(cls.__dict__.get('__annotations__', {}))
+    resolved_hints: dict = {}
+    if own_annotations:
+        import sys as _sys
+        _module = _sys.modules.get(cls.__module__)
+        _globalns = getattr(_module, '__dict__', {})
+        for _k, _v in own_annotations.items():
+            if isinstance(_v, str):
+                try:
+                    resolved_hints[_k] = eval(_v, _globalns, dict(vars(cls)))  # noqa: S307
+                except Exception:
+                    pass  # Keep raw strings for deferred annotation resolution.
+            else:
+                resolved_hints[_k] = _v
+
+    def _annotation_for(name):
+        return resolved_hints.get(name, own_annotations.get(name))
+
+    # ── Pass 1: attributes with a class-level value ──────────────────
+    for attr_name in list(cls.__dict__):
+        # Raw attribute from class __dict__ (avoids descriptor protocol)
+        attr = cls.__dict__[attr_name]
+        # Private annotations remain runtime-only by default. An explicit
+        # serialized_field(), however, is an authoring declaration; this
+        # is how hidden backing data participates in save and undo while
+        # staying out of the Inspector.
+        if attr_name.startswith('_') and not isinstance(
+            attr, SerializedFieldDescriptor
+        ):
+            continue
+
+        if callable(attr) or isinstance(attr, (property, classmethod, staticmethod)):
+            continue
+        if isinstance(attr, HiddenField):
+            continue
+
+        ann = _annotation_for(attr_name)
+
+        # CppProperty — delegates to a C++ component attribute.
+        if getattr(attr, '_is_cpp_property', False):
+            if hasattr(attr, 'metadata'):
+                attr.metadata.name = attr_name
+                cls._serialized_fields_[attr_name] = attr.metadata
+            continue
+
+        # serialized_field() descriptor — keep it, but fold in any
+        # Annotated[] markers from a coexisting type annotation so
+        # ``speed: Annotated[float, Range(0, 1)] = serialized_field(0.5)``
+        # composes naturally.
+        if isinstance(attr, SerializedFieldDescriptor):
+            if ann is not None:
+                _base, markers = _unwrap_annotation(ann)
+                if markers and _apply_markers(attr.metadata, markers) is None:
+                    # NonSerialized marker wins: drop the field entirely.
+                    delattr(cls, attr_name)
+                    continue
+            cls._serialized_fields_[attr_name] = attr.metadata
+            continue
+
+        if isinstance(attr, FieldMetadata):
+            cls._serialized_fields_[attr_name] = attr
+            continue
+
+        # Annotation present → annotation drives the field type; the
+        # class value becomes the default (Unity-style declaration).
+        metadata = None
+        if ann is not None:
+            metadata = build_field_from_annotation(ann, default=attr)
+            if metadata is NON_SERIALIZED_FIELD:
+                # Explicitly excluded: keep the plain class attribute as-is
+                # (regular Python attr, not serialized, not in Inspector).
+                continue
+
+        # No (usable) annotation → infer from the plain value.
+        if metadata is None:
+            if attr is None:
+                continue  # bare ``x = None`` with no usable annotation
+            from enum import Enum as _Enum
+            field_type = infer_field_type_from_value(attr)
+            metadata = FieldMetadata(
+                name=attr_name,
+                field_type=field_type,
+                default=attr,
+                enum_type=type(attr) if isinstance(attr, _Enum) else None,
+            )
+
+        metadata.name = attr_name
+        descriptor = SerializedFieldDescriptor(metadata)
+        descriptor.__set_name__(cls, attr_name)
+        setattr(cls, attr_name, descriptor)
+        cls._serialized_fields_[attr_name] = metadata
+
+    # ── Pass 2: annotation-only fields (no ``= value``) ─────────────
+    for attr_name in own_annotations:
+        if attr_name in cls.__dict__ or attr_name in cls._serialized_fields_:
+            continue
+        ann = _annotation_for(attr_name)
+
+        if attr_name.startswith('_'):
+            default_value = get_annotation_default(ann)
+            if default_value is not None:
+                hidden = HiddenField(default=default_value)
+                hidden.__set_name__(cls, attr_name)
+                setattr(cls, attr_name, hidden)
+            continue
+
+        metadata = build_field_from_annotation(ann, default=_UNSET)
+        if metadata is NON_SERIALIZED_FIELD:
+            continue
+        if metadata is not None:
+            metadata.name = attr_name
+            descriptor = SerializedFieldDescriptor(metadata)
+            descriptor.__set_name__(cls, attr_name)
+            setattr(cls, attr_name, descriptor)
+            cls._serialized_fields_[attr_name] = metadata
+
+    # Validate the effective MRO, before CDS/type registration. Overrides of
+    # the same Python name are one field; distinct fields cannot share an ID.
+    merged_fields = {}
+    for base in reversed(cls.__mro__):
+        merged_fields.update(base.__dict__.get('_serialized_fields_', {}))
+    identities = {}
+    for name, metadata in merged_fields.items():
+        identity = metadata.field_id if metadata.field_id is not None else name
+        if identity in identities:
+            raise ValueError(
+                f"{cls.__name__}: duplicate field_id '{identity}' for "
+                f"'{identities[identity]}' and '{name}'"
+            )
+        identities[identity] = name
+
+    # Build the whole immutable view before publishing the type or its CDS
+    # storage. Failed fields must not leave a partly compiled public schema.
+    from .field_schema_compiler import compile_field_schema
+
+    schemas = {}
+    for name, metadata in merged_fields.items():
+        declaration = next(base.__dict__[name] for base in cls.__mro__ if name in base.__dict__)
+        if getattr(declaration, '_is_cpp_property', False):
+            # Native fields are owned by the native catalog, not re-inferred
+            # from Python wrapper metadata. Unmigrated wrappers have no schema.
+            if declaration.schema is not None:
+                schemas[name] = declaration.schema
+        else:
+            schemas[name] = compile_field_schema(metadata, f"{cls.__name__}.{name}")
+    cls._field_schemas_ = MappingProxyType(schemas)
+
+    if not descriptors:
+        for name in cls._serialized_fields_:
+            setattr(cls, name, None)
+
+
 _SERIALIZED_FIELDS_CACHE: dict = {}  # component_class -> Dict[str, FieldMetadata]
 
 
@@ -1725,6 +1950,11 @@ def clear_serialized_fields_cache(component_class=None):
         _SERIALIZED_FIELDS_CACHE.pop(component_class, None)
     else:
         _SERIALIZED_FIELDS_CACHE.clear()
+
+
+def get_field_schema(component_class: type, field_name: str) -> 'FieldSchema':
+    """Read the class's prepared immutable view; never compile on a read path."""
+    return component_class.__dict__['_field_schemas_'][field_name]
 
 
 def get_serialized_fields(component_class: Type['InxComponent']) -> Dict[str, FieldMetadata]:

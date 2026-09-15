@@ -39,6 +39,9 @@ class UICanvas(InxUIComponent):
     match_width_or_height: float
     pixel_perfect: bool
     reference_pixels_per_unit: float
+    def set_input_logical_size(self, width: float, height: float) -> None: ...
+    @property
+    def input_logical_size(self) -> tuple[float, float]: ...
 
     def compute_scale(self, screen_w: float, screen_h: float) -> Tuple[float, float, float]:
         """Compute ``(scale_x, scale_y, text_scale)`` for a viewport size.
@@ -64,7 +67,14 @@ class UICanvas(InxUIComponent):
         """Yield all screen-space UI components on child GameObjects (depth-first)."""
         ...
 
-    def raycast(self, canvas_x: float, canvas_y: float, tolerance: float = ...) -> Optional[InxUIScreenComponent]:
+    def raycast(
+        self,
+        canvas_x: float,
+        canvas_y: float,
+        tolerance: float = ...,
+        layout_width: float | None = ...,
+        layout_height: float | None = ...,
+    ) -> Optional[InxUIScreenComponent]:
         """Return the front-most element hit at ``(canvas_x, canvas_y)``, or ``None``.
 
         Iterates children in reverse depth-first order (last drawn = top).
@@ -76,7 +86,14 @@ class UICanvas(InxUIComponent):
         """
         ...
 
-    def raycast_all(self, canvas_x: float, canvas_y: float, tolerance: float = ...) -> List[InxUIScreenComponent]:
+    def raycast_all(
+        self,
+        canvas_x: float,
+        canvas_y: float,
+        tolerance: float = ...,
+        layout_width: float | None = ...,
+        layout_height: float | None = ...,
+    ) -> List[InxUIScreenComponent]:
         """Return all elements hit at the given point, front-to-back order.
 
         Args:

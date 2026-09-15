@@ -189,18 +189,19 @@ def release_engine(project_path: str, engine_log_level=LogLevel.Info):
     _resources.activate_library(project_path)
 
     lock_path, lock_token = _acquire_project_lock(project_path, "editor")
-    process_exit_ready = False
+    bootstrap = None
     try:
         bootstrap = EditorBootstrap(project_path, engine_log_level)
         bootstrap.run()
-        bootstrap.engine._set_process_owned_exit()
 
         bootstrap.engine.set_window_icon(_resources.icon_path)
 
-        # Window title: "Infernux{version} - {project name}", version taken
-        # from the installed package metadata (single source: pyproject.toml).
-        from importlib.metadata import version as _pkg_version
-        _engine_version = _pkg_version("Infernux")
+        # Window title: "Infernux{version} - {project name}".  The source
+        # tree and wheel must use the same authoritative version module;
+        # relying on installed distribution metadata breaks source launches
+        # (notably the visible MCP editor) before the engine can start.
+        from Infernux.version import ENGINE_VERSION
+        _engine_version = ENGINE_VERSION
         _project_name = os.path.basename(resolved_path(project_path))
         bootstrap.engine.set_window_title(f"Infernux{_engine_version} - {_project_name}")
 
@@ -211,24 +212,14 @@ def release_engine(project_path: str, engine_log_level=LogLevel.Info):
 
         bootstrap.engine.show()
         bootstrap.engine.run()
-        process_exit_ready = True
     finally:
-        # A normally-returning standalone Editor is about to terminate this
-        # entire process, so per-plugin unload hooks would only stall the UI.
-        # Initialization/run failures do unwind plugins because the caller may
-        # catch the exception and keep this interpreter alive.
-        if not process_exit_ready:
-            from Infernux.plugins import PluginManager
-
-            manager = PluginManager.instance()
-            if manager is not None:
-                manager.shutdown()
-        _remove_project_lock(lock_path, lock_token)
-
-    # Force-terminate: this is a standalone engine child process.
-    # Non-daemon native threads (C++ / watchdog emitters) may otherwise
-    # keep the process alive forever, leaking thousands of zombie procs.
-    os._exit(0)
+        # Startup failures and interrupted test launches own the same resources
+        # as a normal window close. Never leave their observer/server running.
+        try:
+            if bootstrap is not None and bootstrap.engine is not None:
+                bootstrap.engine.exit()
+        finally:
+            _remove_project_lock(lock_path, lock_token)
 
 
 def _load_player_build_manifest(project_path: str) -> dict[str, object]:

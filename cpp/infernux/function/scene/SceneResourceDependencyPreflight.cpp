@@ -47,6 +47,10 @@ const char *ResourceTypeName(ResourceType type)
         return "RenderEffect";
     case ResourceType::ParticleGraph:
         return "ParticleGraph";
+    case ResourceType::DataAsset:
+        return "DataAsset";
+    case ResourceType::RenderTexture:
+        return "RenderTexture";
     }
     return "Unknown";
 }
@@ -68,6 +72,8 @@ std::optional<ResourceType> ResourceTypeFromName(const std::string &name)
         {"PhysicMaterial", ResourceType::PhysicMaterial},
         {"RenderEffect", ResourceType::RenderEffect},
         {"ParticleGraph", ResourceType::ParticleGraph},
+        {"DataAsset", ResourceType::DataAsset},
+        {"RenderTexture", ResourceType::RenderTexture},
     };
     const auto found = types.find(name);
     return found == types.end() ? std::nullopt : std::optional<ResourceType>(found->second);
@@ -216,6 +222,12 @@ class ResourcePreflight
             return;
         const std::string &type = record.nativeTypeName;
         const nlohmann::json data = BuildNativeComponentDocument(record);
+        if (type == "Camera") {
+            const std::string guid = data.value("targetTextureGuid", std::string{});
+            if (!guid.empty())
+                RequireAsset(guid, ResourceType::RenderTexture, path + ".targetTextureGuid");
+            return;
+        }
         if (type == "BoxCollider" || type == "SphereCollider" || type == "CapsuleCollider" ||
             type == "CylinderCollider" || type == "MeshCollider") {
             const std::string guid = data.at("physic_material_guid").get<std::string>();

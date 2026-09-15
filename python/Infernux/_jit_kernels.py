@@ -3,7 +3,10 @@ Internal JIT bootstrap — DO NOT import directly.
 
 Use the public API instead::
 
-    from Infernux.jit import njit, warmup, JIT_AVAILABLE
+    from Infernux import jit
+
+    @jit.compile
+    def update(values): ...
 """
 
 from __future__ import annotations
@@ -22,6 +25,7 @@ from Infernux.jit_hir import FunctionHIR, analyze_source, hir_fingerprint
 from Infernux.jit_runtime import (
     BoundedLRU,
     DispatchDecision,
+    array_arguments_alias,
     calls_equivalent,
     clone_call_arguments,
     compiler_fingerprint,
@@ -139,24 +143,51 @@ def _is_range_call(node) -> bool:
     )
 
 
-def _is_true_constant(node) -> bool:
-    return isinstance(node, ast.Constant) and node.value is True
+def _expression_name(node) -> str | None:
+    """Return a dotted name for a static decorator expression."""
+    parts = []
+    expression = node
+    while isinstance(expression, ast.Attribute):
+        parts.append(expression.attr)
+        expression = expression.value
+    if not isinstance(expression, ast.Name):
+        return None
+    parts.append(expression.id)
+    return ".".join(reversed(parts))
 
 
-def _is_njit_decorator(node) -> bool:
-    if isinstance(node, ast.Name):
-        return node.id == "njit"
-    if isinstance(node, ast.Attribute):
-        return node.attr == "njit"
-    return False
+def _jit_compile_decorator_names(module_ast) -> set[str]:
+    """Resolve the public ``inx.jit.compile`` CPU decorator aliases."""
+    names = set()
+    for node in module_ast.body:
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name in ("Infernux", "infernux"):
+                    names.add(f"{alias.asname or alias.name}.jit.compile")
+                elif alias.name in ("Infernux.jit", "infernux.jit"):
+                    names.add(f"{alias.asname}.compile" if alias.asname else f"{alias.name}.compile")
+        elif isinstance(node, ast.ImportFrom) and node.level == 0:
+            for alias in node.names:
+                if node.module in ("Infernux", "infernux") and alias.name == "jit":
+                    names.add(f"{alias.asname or alias.name}.compile")
+                elif node.module in ("Infernux.jit", "infernux.jit") and alias.name == "compile":
+                    names.add(alias.asname or alias.name)
+    return names
 
 
-def _decorator_requests_auto_parallel(node) -> bool:
-    if not isinstance(node, ast.Call) or not _is_njit_decorator(node.func):
-        return False
-    for keyword in node.keywords:
-        if keyword.arg == "auto_parallel" and _is_true_constant(keyword.value):
+def _is_jit_compile_decorator(node, compile_names) -> bool:
+    decorator = node.func if isinstance(node, ast.Call) else node
+    return _expression_name(decorator) in compile_names
+
+
+def _decorator_requests_auto_parallel(node, compile_names) -> bool:
+    if _is_jit_compile_decorator(node, compile_names):
+        if not isinstance(node, ast.Call):
             return True
+        for keyword in node.keywords:
+            if keyword.arg == "auto_parallel" and isinstance(keyword.value, ast.Constant):
+                return bool(keyword.value.value)
+        return True
     return False
 
 
@@ -234,16 +265,29 @@ def auto_parallel_declarations(source: str) -> tuple[tuple[str, str], ...]:
     except SyntaxError:
         return ()
     declarations: list[tuple[str, str]] = []
+    compile_names = _jit_compile_decorator_names(module_ast)
     for node in module_ast.body:
         if not isinstance(node, ast.FunctionDef):
             continue
         decorator = next(
-            (item for item in node.decorator_list if _decorator_requests_auto_parallel(item)),
+            (item for item in node.decorator_list
+             if _decorator_requests_auto_parallel(item, compile_names)),
             None,
         )
         if decorator is not None:
             declarations.append((node.name, _parallel_policy_from_decorator(decorator)))
     return tuple(declarations)
+
+
+def cpu_jit_declarations(source: str) -> tuple[str, ...]:
+    """Return public CPU JIT declarations without executing the module."""
+    module_ast = ast.parse(source)
+    compile_names = _jit_compile_decorator_names(module_ast)
+    return tuple(
+        node.name for node in module_ast.body
+        if isinstance(node, ast.FunctionDef)
+        and any(_is_jit_compile_decorator(item, compile_names) for item in node.decorator_list)
+    )
 
 
 def _hir_diagnostic(hir: FunctionHIR) -> str:
@@ -275,6 +319,7 @@ def build_auto_parallel_embedded_source(source: str) -> str | None:
         return None
 
     rewritten_body = []
+    compile_names = _jit_compile_decorator_names(module_ast)
     changed = False
     manifest: dict[str, dict[str, object]] = {}
     for node in module_ast.body:
@@ -283,11 +328,20 @@ def build_auto_parallel_embedded_source(source: str) -> str | None:
                 (
                     item
                     for item in node.decorator_list
-                    if _decorator_requests_auto_parallel(item)
+                    if _decorator_requests_auto_parallel(item, compile_names)
                 ),
                 None,
             )
             if decorator is not None:
+                if not isinstance(decorator, ast.Call):
+                    replacement = ast.copy_location(
+                        ast.Call(func=decorator, args=[], keywords=[]), decorator
+                    )
+                    node.decorator_list = [
+                        replacement if item is decorator else item
+                        for item in node.decorator_list
+                    ]
+                    decorator = replacement
                 hir = analyze_source(source, node.name)
                 rewritten_fn = _rewrite_function_node_for_auto_parallel(
                     node,
@@ -305,7 +359,6 @@ def build_auto_parallel_embedded_source(source: str) -> str | None:
                     rewritten_fn.name = f"__infernux_parallel_{node.name}_{suffix}"
                     fingerprint = hir_fingerprint(hir)
                     rewritten_body.append(rewritten_fn)
-                    assert isinstance(decorator, ast.Call)
                     decorator.keywords.append(
                         ast.keyword(
                             arg="_parallel_impl",
@@ -340,7 +393,7 @@ def build_auto_parallel_embedded_source(source: str) -> str | None:
         return None
 
     import_node = ast.ImportFrom(
-        module="Infernux.jit",
+        module="Infernux._jit_kernels",
         names=[ast.alias(name="prange", asname="__infernux_prange")],
         level=0,
     )
@@ -472,7 +525,13 @@ def _build_auto_parallel_dispatcher(
     decisions = BoundedLRU(64)
 
     def _signature(args, kwargs):
-        return runtime_signature(args, kwargs, thread_count=_numba_thread_count())
+        return (runtime_signature(args, kwargs, thread_count=_numba_thread_count()),
+                array_arguments_alias(args, kwargs))
+
+    def _alias_decision():
+        if parallel_policy == "required":
+            raise ValueError("parallel_policy='required' cannot use potentially aliased array arguments")
+        return DispatchDecision("serial", "serial required: array arguments may alias")
 
     def _static(args, kwargs):
         return static_cost_decision(
@@ -490,7 +549,7 @@ def _build_auto_parallel_dispatcher(
     @functools.wraps(fn)
     def dispatcher(*args, **kwargs):
         key = _signature(args, kwargs)
-        decision = decisions.get(key)
+        decision = _alias_decision() if key[1] else decisions.get(key)
         if decision is None:
             if parallel_policy == "required":
                 decision = DispatchDecision("parallel", "parallel required by policy")
@@ -506,7 +565,21 @@ def _build_auto_parallel_dispatcher(
 
     def _warmup(*args, **kwargs):
         key = _signature(args, kwargs)
+
+        def _prepare_selected(target):
+            # A dispatch decision is not compilation. Execute only on isolated
+            # arguments so the first real interaction does not compile or see
+            # mutations produced by warmup.
+            prepared_args, prepared_kwargs = clone_call_arguments(args, kwargs)
+            target(*prepared_args, **prepared_kwargs)
+
+        if key[1]:
+            decision = _alias_decision()
+            _prepare_selected(serial_compiled)
+            _record(key, decision)
+            return
         if parallel_compiled is serial_compiled:
+            _prepare_selected(serial_compiled)
             reason = diagnostic or "serial retained: no validated parallel variant is available"
             _record(key, DispatchDecision("serial", reason))
             _log_jit(f"[JIT] {fn.__name__}: {reason}")
@@ -514,6 +587,7 @@ def _build_auto_parallel_dispatcher(
         if parallel_policy != "required":
             static = _static(args, kwargs)
             if static.confidence == "high":
+                _prepare_selected(parallel_compiled if static.mode == "parallel" else serial_compiled)
                 _record(key, DispatchDecision(static.mode, static.reason))
                 _log_jit(f"[JIT] {fn.__name__}: {static.reason}")
                 return
@@ -746,26 +820,23 @@ def njit(*args, **kwargs):
 # ── warmup helper ─────────────────────────────────────────────────────
 
 def warmup(fn, *args, **kwargs):
-    """Pre-compile a ``@njit`` function by calling it once.
+    """Prepare a compute kernel before gameplay using representative inputs.
 
-    No-op when Numba is unavailable. Auto-parallel validation uses isolated
-    arguments; ``parallel_policy='required'`` propagates validation failures.
+    The compute dispatcher compiles the selected serial/parallel variant on
+    isolated arguments, including when the static cost model decides its mode.
+    Its preparation errors propagate. Numba remains an internal code-generation
+    backend and is not a public decorator.
 
     Usage::
 
-        @njit(cache=True, fastmath=True)
+        @jit.compile(cache=True)
         def burn(n: int) -> float: ...
 
         warmup(burn, 1)
     """
     custom_warmup = getattr(fn, "_infernux_warmup", None)
     if callable(custom_warmup):
-        try:
-            custom_warmup(*args, **kwargs)
-        except Exception as exc:
-            if getattr(fn, "parallel_policy", "auto") == "required":
-                raise
-            _log_jit(f"[JIT] warmup {getattr(fn, '__name__', '<kernel>')} failed: {exc}")
+        custom_warmup(*args, **kwargs)
         return
 
     if not _HAS_NUMBA or _NUITKA_COMPILED:

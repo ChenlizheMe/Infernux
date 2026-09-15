@@ -119,11 +119,9 @@ class PipelineReloadMixin:
     def _on_script_catalog_changed(self, file_path: str, event_type: str) -> None:
         """ResourcesManager callback for create/delete/move/modify of python scripts."""
         from Infernux.renderstack.discovery import (
-            invalidate_discovery_cache,
             script_may_affect_pipeline_catalog,
         )
         if not script_may_affect_pipeline_catalog(file_path, event_type):
             return
-        invalidate_discovery_cache()
         self._sync_pipeline_catalog()
 

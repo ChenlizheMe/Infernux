@@ -104,6 +104,11 @@ class SceneManager
 
     /// @brief Get a scene by name
     [[nodiscard]] Scene *GetScene(const std::string &name) const;
+    [[nodiscard]] Scene *GetSceneByWorldId(uint64_t worldId) const noexcept;
+    [[nodiscard]] Scene *GetSceneAt(size_t index) const
+    {
+        return index < m_scenes.size() ? m_scenes[index].get() : nullptr;
+    }
 
     /// @brief Get all loaded scenes
     [[nodiscard]] const std::vector<std::unique_ptr<Scene>> &GetAllScenes() const
@@ -233,10 +238,19 @@ class SceneManager
     }
 
     [[nodiscard]] GameObject *FindRuntimeObjectByID(uint64_t id) const;
+    [[nodiscard]] GameObject *FindRuntimeObject(const std::string &name) const;
+    [[nodiscard]] GameObject *FindRuntimeObjectWithTag(const std::string &tag) const;
+    [[nodiscard]] std::vector<GameObject *> FindRuntimeObjectsWithTag(const std::string &tag) const;
+    [[nodiscard]] std::vector<GameObject *> FindRuntimeObjectsInLayer(int layer) const;
+
+    /// Move one root hierarchy between loaded Scenes without cloning or
+    /// replaying lifecycle callbacks. Unity: SceneManager.MoveGameObjectToScene.
+    void MoveGameObjectToScene(GameObject *gameObject, Scene *destination);
 
     [[nodiscard]] bool IsRuntimeScene(const Scene *scene) const noexcept
     {
-        return scene && (scene == m_activeScene || scene == m_runtimePersistentScene.get());
+        return scene && (scene == m_runtimePersistentScene.get() ||
+                         m_loadedSceneSet.find(const_cast<Scene *>(scene)) != m_loadedSceneSet.end());
     }
 
     // ========================================================================
@@ -271,6 +285,10 @@ class SceneManager
     /// rebuild the same transform/physics state that a fresh Play() creates.
     /// This is an engine lifecycle hook, not a gameplay scene-loading API.
     void StartActiveSceneForPlay();
+
+    /// Publish one newly loaded additive Scene into the current play session
+    /// without resetting World time or replaying other resident Scenes.
+    void StartSceneForPlay(Scene *scene);
 
     /// @brief Exit play mode.
     ///
@@ -419,7 +437,7 @@ class SceneManager
     // ========================================================================
 
     /// Clear MeshRenderer registry (called on scene unload / deserialize).
-    void ClearComponentRegistries();
+    void ClearComponentRegistries(Scene *sceneBeingRebuilt = nullptr);
 
     /// Pre-allocate MeshRenderer registry storage for bulk creation.
     void ReserveRendererCapacity(size_t count);
@@ -493,10 +511,9 @@ class SceneManager
     /// Called once at the start of play to fix stale editor-mode positions.
     void ForceAllBodiesToCurrentTransform();
 
-    /// Activate all dynamic (non-kinematic) rigidbodies so they are awake
-    /// when play mode starts.  Jolt bodies default to sleeping and won't
-    /// respond to gravity until explicitly activated.
-    void ActivateAllDynamicBodies();
+    /// Activate dynamic (non-kinematic) rigidbodies in one Scene, or in the
+    /// complete World when scene is null.
+    void ActivateDynamicBodies(Scene *scene = nullptr);
 
     /// Write active Jolt body poses back to their owning Rigidbody transforms.
     void SyncRigidbodiesToTransform();
@@ -512,10 +529,11 @@ class SceneManager
     Scene *EnsureRuntimePersistentScene();
     void FlushPersistentPromotions();
     void ClearRuntimePersistentScene();
-    void RestorePersistentComponentRegistries();
+    void RestoreResidentComponentRegistries(Scene *sceneBeingRebuilt = nullptr);
     void UpdateRuntimeScenePlayingState(bool playing);
 
     std::vector<std::unique_ptr<Scene>> m_scenes;
+    std::unordered_set<Scene *> m_loadedSceneSet;
     Scene *m_activeScene = nullptr;
 
 #if !defined(INFERNUX_RUNTIME_MINIMAL_HOST)

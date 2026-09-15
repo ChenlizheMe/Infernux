@@ -358,6 +358,7 @@ ParticleGpuBillboardRenderer::GetOrCreatePipeline(const MaterialPassPipelineDesc
                                                     : m_fragmentShader;
     pass.ApplyRenderingContract(desc);
     desc.raster.cullMode = rhi::CullMode::None;
+    pass.ApplyRasterContract(desc);
     desc.depth.testEnabled = materialState.depthTestEnabled && pass.depthFormat != rhi::PixelFormat::Undefined;
     desc.depth.writeEnabled =
         materialState.depthWriteEnabled && !pass.depthReadOnly && pass.depthFormat != rhi::PixelFormat::Undefined;

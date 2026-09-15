@@ -18,6 +18,8 @@ enum class AssetEvent
     Deleted,
     Modified,
     Moved,
+    /// In-memory publication: notify runtime users, not source asset imports.
+    RuntimeModified,
 };
 
 using AssetEventCallback =
@@ -79,6 +81,8 @@ class AssetDependencyGraph
     void AddRuntimeDependency(const std::string &objectGuid, const std::string &assetGuid);
     void RemoveRuntimeDependency(const std::string &objectGuid, const std::string &assetGuid);
     void ClearRuntimeDependenciesOf(const std::string &objectGuid);
+    /// Preserve all asset subscriptions when a staged component receives its published ID.
+    void RekeyRuntimeDependencies(const std::string &oldOwner, const std::string &newOwner);
 
     /// Remove dependencies owned by an asset while retaining references to it.
     /// Incoming edges represent serialized missing references and must survive

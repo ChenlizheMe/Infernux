@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import os
+import tempfile
 from typing import Any, Iterable
 
 from Infernux.debug import DebugConsole
+from Infernux.engine.path_utils import resolved_path
 
 from .operations import OperationError
 
@@ -79,10 +82,13 @@ class EditorAutomationHost:
     def project_info(self, project_root: str) -> dict[str, object]:
         from Infernux.engine.play_mode import PlayModeManager
         from Infernux.engine.scene_manager import SceneFileManager
+        from Infernux.engine.interaction import DocumentRegistry
 
         scene_files = SceneFileManager.instance()
         play_mode = PlayModeManager.instance()
         scene = self.active_scene()
+        document = (DocumentRegistry.instance().get(scene_files.document_id)
+                    if scene_files is not None else None)
         return {
             "project_root": str(project_root),
             "active_scene": {
@@ -93,6 +99,9 @@ class EditorAutomationHost:
                 "dirty": bool(getattr(scene_files, "is_dirty", False))
                 if scene_files
                 else False,
+                "document_state": document.state.value if document else "",
+                "loading": bool(scene_files and scene_files.is_loading),
+                "last_load": scene_files.last_scene_load if scene_files else None,
             },
             "play_state": str(
                 getattr(getattr(play_mode, "state", None), "name", "edit")
@@ -231,6 +240,10 @@ class EditorAutomationHost:
             "win": 227,
             "windows": 227,
             "esc": 41,
+            # SDL scancode for Space. Keep the automation vocabulary
+            # explicit because older native name tables did not expose the
+            # literal "space" alias consistently across platforms.
+            "space": 44,
         }
         if isinstance(key, bool):
             raise OperationError(
@@ -266,8 +279,22 @@ class EditorAutomationHost:
 
         return dict(get_gui_semantic_snapshot() or {})
 
-    def request_capture(self, source: str, output_path: str) -> int:
-        return int(self._native_engine().request_capture(str(source), str(output_path)))
+    def request_capture(self, source: str, output_path: str, camera_component_id: int = 0) -> int:
+        return int(self._native_engine().request_capture(str(source), str(output_path), int(camera_component_id)))
+
+    def begin_renderer_performance_window(self) -> int:
+        return int(self._native_engine().begin_renderer_performance_window())
+
+    def renderer_performance_window(self) -> dict[str, object]:
+        native = self._native_engine()
+        result = dict(native.get_renderer_performance_window())
+        result["resources"] = {
+            "resident_mesh_vertex_buffers": int(native.resident_mesh_vertex_buffer_count),
+            "pending_mesh_uploads": int(native.pending_mesh_gpu_upload_count),
+            "submitted_mesh_uploads": int(native.submitted_mesh_gpu_upload_count),
+            "completed_mesh_uploads": int(native.completed_mesh_gpu_upload_count),
+        }
+        return result
 
     def capture_status(self, capture_id: int) -> dict[str, object]:
         return dict(self._native_engine().query_capture(int(capture_id)))
@@ -356,6 +383,29 @@ class EditorAutomationHost:
             or ""
         )
 
+    def save_mesh_copy(self, asset_guid: str, destination: str) -> str:
+        from Infernux.lib import AssetRegistry
+        from Infernux.engine.interaction.action_journal import ActionOrigin
+
+        mesh = AssetRegistry.instance().load_mesh_by_guid(asset_guid)
+        if mesh is None:
+            raise OperationError("asset.not_found", "The source mesh could not be loaded.")
+        return self.interaction_core().project_assets.save_mesh_copy(
+            mesh, destination, origin=ActionOrigin.AUTOMATION,
+        )
+
+    def project_asset_text(self, path: str) -> str:
+        return self.interaction_core().project_assets.read_text(path)
+
+    def set_project_asset_text(self, path: str, content: str) -> str:
+        from Infernux.engine.interaction.action_journal import ActionOrigin
+
+        return self.interaction_core().project_assets.set_text(
+            path,
+            content,
+            origin=ActionOrigin.AUTOMATION,
+        )
+
     def material_document(self, path: str) -> tuple[Any, dict[str, object]]:
         from Infernux.core.material import Material
 
@@ -407,6 +457,78 @@ class EditorAutomationHost:
         refresh = getattr(native, "refresh_material_pipeline", None)
         if callable(refresh):
             refresh(material.native)
+
+    def data_asset_document(self, path: str) -> tuple[Any, dict[str, object]]:
+        from Infernux.core.data_asset import DataAsset
+        from Infernux.engine.interaction import DocumentKey, DocumentKind, DocumentRegistry
+
+        resolved = resolved_path(path)
+        guid = str(self.asset_database().get_guid_from_path(resolved) or "")
+        key = (
+            DocumentKey.asset(DocumentKind.DATA_ASSET, guid)
+            if guid
+            else DocumentKey.resource(DocumentKind.DATA_ASSET, resolved)
+        )
+        document = DocumentRegistry.instance().get_by_key(key)
+        controller = getattr(document, "controller", None)
+        live_asset = getattr(controller, "resource", None)
+        if isinstance(live_asset, DataAsset):
+            return live_asset, dict(live_asset.serialize_document())
+        asset = DataAsset.load(path)
+        return asset, dict(asset.serialize_document())
+
+    def data_asset_schema(self, path: str) -> dict[str, object]:
+        from Infernux.components.fields import get_field_schema, get_serialized_fields
+
+        asset, _document = self.data_asset_document(path)
+        asset_type = type(asset)
+        return {
+            "type_id": str(asset_type.__serialized_type_id__),
+            "schema_version": int(asset_type.__serialized_schema_version__),
+            "fields": [
+                get_field_schema(asset_type, name).to_document()
+                for name in get_serialized_fields(asset_type)
+            ],
+        }
+
+    def publish_data_asset_document(
+        self,
+        path: str,
+        guid: str,
+        document: dict[str, object],
+        *,
+        edit_key: str,
+        description: str,
+    ) -> None:
+        from Infernux.engine.interaction import (
+            ActionOrigin,
+            DocumentKind,
+            ensure_editable_resource_document,
+        )
+
+        asset, _before = self.data_asset_document(path)
+        controller = ensure_editable_resource_document(
+            category="data_asset",
+            document_kind=DocumentKind.DATA_ASSET,
+            file_path=path,
+            resource=asset,
+            guid=guid,
+            title=os.path.basename(path),
+            view_id="automation",
+        )
+        changed = controller.apply_document(
+            document,
+            view_id="automation",
+            edit_key=edit_key,
+            description=description,
+            origin=ActionOrigin.AUTOMATION,
+        )
+        if not changed:
+            raise OperationError(
+                "data_asset.edit_rejected",
+                "DataAsset edit was rejected or unchanged.",
+            )
+        controller.flush_autosave(force=True)
 
     def particle_graph_document(self, path: str) -> tuple[Any, dict[str, object]]:
         from Infernux.particle.asset import ParticleGraphAsset
@@ -544,58 +666,69 @@ class EditorAutomationHost:
         self, object_id: int, component_id: int
     ) -> dict[str, object]:
         """Describe writable component fields using authoritative serializer metadata."""
+        from Infernux.components.builtin_component import BuiltinComponent
         from Infernux.components.fields import get_serialized_fields
 
         value = self.scene_component(object_id, component_id)
         fields: list[dict[str, object]] = []
-        for name, metadata in get_serialized_fields(type(value)).items():
-            enum_type = getattr(metadata, "enum_type", None)
-            if isinstance(enum_type, str):
-                try:
-                    import Infernux.lib as native
+        type_name = str(getattr(value, "type_name", "") or type(value).__name__)
+        if type_name == "Transform" or isinstance(value, BuiltinComponent):
+            from Infernux.field_schema import get_native_field_schemas
 
-                    enum_type = getattr(native, enum_type, None)
-                except (ImportError, AttributeError):
-                    enum_type = None
-            members = getattr(enum_type, "__members__", {}) or {}
-            field_type = getattr(getattr(metadata, "field_type", None), "name", "unknown")
-            entry: dict[str, object] = {
-                "name": str(name),
-                "type": str(field_type).lower(),
-                "readonly": bool(getattr(metadata, "readonly", False)),
-                "hidden": bool(getattr(metadata, "hidden", False)),
-            }
-            value_range = getattr(metadata, "range", None)
-            if value_range is not None:
-                entry["range"] = [float(item) for item in value_range]
-            if members:
-                entry["enum"] = [
-                    {
-                        "name": str(member_name),
-                        "value": int(getattr(member, "value", member)),
-                    }
-                    for member_name, member in members.items()
-                ]
-            fields.append(entry)
-        if not fields:
-            serializer = getattr(value, "serialize_document", None)
-            document = serializer() if callable(serializer) else {}
-            if isinstance(document, dict):
-                fields = [
-                    {
-                        "name": str(name),
-                        "type": self._json_type(field_value),
-                        "readonly": False,
-                        "hidden": False,
-                    }
-                    for name, field_value in document.items()
-                ]
+            for schema in get_native_field_schemas(f"native:infernux.{type_name}"):
+                attributes = schema.to_document()["attributes"]
+                entry: dict[str, object] = {
+                    "name": str(schema.attributes["serialized_name"]),
+                    "type": schema.value_type.rsplit(".", 1)[-1].lower(),
+                    "readonly": bool(schema.read_only),
+                    "hidden": bool(schema.attributes["hidden"]),
+                }
+                if "range" in attributes:
+                    entry["range"] = [float(item) for item in attributes["range"]]
+                if attributes.get("asset_type"):
+                    entry["asset_type"] = attributes["asset_type"]
+                    entry["nullable"] = bool(attributes["nullable"])
+                enum = attributes.get("enum")
+                if enum is not None:
+                    entry["enum"] = [
+                        {"name": str(member["name"]), "value": int(member["value"])}
+                        for member in enum["members"]
+                    ]
+                fields.append(entry)
+        else:
+            for name, metadata in get_serialized_fields(type(value)).items():
+                enum_type = getattr(metadata, "enum_type", None)
+                if isinstance(enum_type, str):
+                    try:
+                        import Infernux.lib as native
+
+                        enum_type = getattr(native, enum_type, None)
+                    except (ImportError, AttributeError):
+                        enum_type = None
+                members = getattr(enum_type, "__members__", {}) or {}
+                field_type = getattr(getattr(metadata, "field_type", None), "name", "unknown")
+                entry = {
+                    "name": str(name),
+                    "type": str(field_type).lower(),
+                    "readonly": bool(getattr(metadata, "readonly", False)),
+                    "hidden": bool(getattr(metadata, "hidden", False)),
+                }
+                value_range = getattr(metadata, "range", None)
+                if value_range is not None:
+                    entry["range"] = [float(item) for item in value_range]
+                if members:
+                    entry["enum"] = [
+                        {
+                            "name": str(member_name),
+                            "value": int(getattr(member, "value", member)),
+                        }
+                        for member_name, member in members.items()
+                    ]
+                fields.append(entry)
         return {
             "object_id": int(object_id),
             "component_id": int(component_id),
-            "component_type": str(
-                getattr(value, "type_name", "") or type(value).__name__
-            ),
+            "component_type": type_name,
             "python_type": f"{type(value).__module__}.{type(value).__qualname__}",
             "fields": fields,
         }
@@ -653,11 +786,64 @@ class EditorAutomationHost:
     def set_scene_component_field(
         self, object_id: int, component_id: int, field: str, value: object
     ):
+        from Infernux.components.builtin_component import BuiltinComponent, CppProperty
+
         target = self.scene_component(object_id, component_id)
-        if not self.interaction_core().components.set_field(target, str(field), value):
+        service = self.interaction_core().components
+        if isinstance(target, BuiltinComponent):
+            # scene_component_schema and serialize_document expose the native
+            # document vocabulary (including integer enums), not wrapper names.
+            # Preserve live setter semantics (e.g. mute must not reload tracks).
+            from Infernux.field_schema import get_native_field_schemas
+
+            schema = next((item for item in get_native_field_schemas(f"native:infernux.{target.type_name}")
+                           if item.attributes["serialized_name"] == str(field)), None)
+            if schema is None or schema.read_only:
+                raise OperationError("scene.edit_rejected", f"Native field {field!r} is not declared writable.")
+            document = target.serialize_document()
+            document[str(field)] = value
+            attribute = str(schema.attributes["field_id"])
+            prop = getattr(type(target), attribute, None)
+            if isinstance(prop, CppProperty) and schema.attributes.get("setter_owns_document_shape", False):
+                # This field's public value is not its native storage shape
+                # (for example a RenderTexture reference versus a GUID string).
+                # The shared property transaction owns normalization/setter use.
+                changed = service.set_field(target, attribute, value)
+            elif isinstance(prop, CppProperty):
+                from Infernux.components.fields import FieldType
+                from Infernux.components.value_codec import VALUE_CODECS
+
+                if prop.schema is None:
+                    # Catalog-backed properties already preflight in their
+                    # shared transaction. Older value adapters still need it here.
+                    target._require_cpp_component().validate_document(document)
+                if schema.value_type == "FieldType.ENUM":
+                    if type(value) is not int:
+                        raise TypeError(f"{schema.property_path} requires an integer enum value")
+                    native_value = prop.metadata.enum_type(value)
+                else:
+                    native_value = VALUE_CODECS.decode(value, FieldType[schema.value_type.removeprefix("FieldType.")],
+                                                       schema.property_path)
+                public_value = prop.get_converter(native_value) if prop.get_converter is not None else native_value
+                changed = service.set_field(target, attribute, public_value)
+            else:
+                changed = service.restore_document(target, document,
+                                                   description=f"Set {target.type_name}.{field}", edit_key=str(field))
+        else:
+            changed = service.set_field(target, str(field), value)
+        if not changed:
             raise OperationError(
                 "scene.edit_rejected", "Component field edit was rejected or unchanged."
             )
+        return target
+
+    def assign_scene_mesh(self, object_id: int, component_id: int, asset_guid: str):
+        from Infernux.engine.interaction.action_journal import ActionOrigin
+
+        target = self.scene_component(object_id, component_id)
+        self.interaction_core().components.assign_mesh_asset(
+            target, asset_guid, origin=ActionOrigin.AUTOMATION,
+        )
         return target
 
     def open_scene(self, path: str) -> bool:
@@ -666,10 +852,67 @@ class EditorAutomationHost:
         manager = SceneFileManager.instance()
         return bool(manager is not None and manager.open_scene(path))
 
-    def save_scene(self) -> str:
+    def loaded_scenes(self) -> dict[str, object]:
+        from Infernux.lib import SceneManager
+
+        manager = SceneManager.instance()
+        active = manager.get_active_scene()
+        scenes = []
+        for index in range(int(manager.scene_count)):
+            scene = manager.get_scene_at(index)
+            if scene is None:
+                continue
+            scenes.append({
+                "index": index,
+                "world_id": int(scene.world_id),
+                "name": str(scene.name),
+                "active": scene is active,
+                "root_count": len(scene.get_root_objects()),
+            })
+        return {
+            "active_world_id": int(active.world_id) if active is not None else 0,
+            "scenes": scenes,
+        }
+
+    def activate_loaded_scene(self, world_id: int) -> dict[str, object]:
         from Infernux.engine.scene_manager import SceneFileManager
 
+        identifier = int(world_id)
         manager = SceneFileManager.instance()
+        if identifier <= 0 or manager is None or not manager.activate_loaded_scene(identifier):
+            raise OperationError(
+                "scene.activate_rejected",
+                "The requested World is not a loaded authoring Scene.",
+            )
+        return self.loaded_scenes()
+
+    def load_additive_scene(self, path: str) -> bool:
+        from Infernux.engine.play_mode import PlayModeManager, PlayModeState
+        from Infernux.scene import LoadSceneMode, SceneManager
+
+        play_mode = PlayModeManager.instance()
+        if play_mode is not None and play_mode.state is not PlayModeState.EDIT:
+            raise OperationError(
+                "scene.additive.edit_mode_required",
+                "Additive scene authoring is only available in Edit Mode.",
+            )
+        return bool(SceneManager._do_load(path, mode=LoadSceneMode.ADDITIVE))
+
+    def save_scene(self) -> str:
+        from Infernux.engine.scene_manager import SceneFileManager
+        from Infernux.engine.interaction import DocumentRegistry, DocumentState
+
+        manager = SceneFileManager.instance()
+        if manager is not None:
+            document = DocumentRegistry.instance().get(manager.document_id)
+            if document is not None and document.state is DocumentState.CONFLICT:
+                raise OperationError(
+                    "scene.save_rejected",
+                    "The scene changed outside the Editor. Resolve the external "
+                    "conflict by reloading, keeping the local draft, or saving a copy.",
+                    details={"document_id": document.document_id,
+                             "document_state": document.state.value},
+                )
         if manager is None or not manager.save_current_scene():
             raise OperationError(
                 "scene.save_rejected", "The active scene could not be saved synchronously."
@@ -695,24 +938,6 @@ class EditorAutomationHost:
             "path": path,
             "discarded_changes": bool(discard_changes),
         }
-
-    @staticmethod
-    def _json_type(value: object) -> str:
-        if value is None:
-            return "null"
-        if isinstance(value, bool):
-            return "boolean"
-        if isinstance(value, int):
-            return "integer"
-        if isinstance(value, float):
-            return "number"
-        if isinstance(value, str):
-            return "string"
-        if isinstance(value, (list, tuple)):
-            return "array"
-        if isinstance(value, dict):
-            return "object"
-        return type(value).__name__
 
     def player_build_targets(self) -> dict[str, object]:
         """List targets currently owned by enabled platform plugins."""
@@ -781,11 +1006,10 @@ class EditorAutomationHost:
         persist_settings: bool = True,
     ) -> dict[str, object]:
         """Build one registered Player target through the shared build service."""
-        from dataclasses import replace
         import json
         import os
-        import tempfile
 
+        from dataclasses import replace
         from Infernux.engine.build import (
             BuildConfiguration,
             BuildProfile,
@@ -1064,6 +1288,10 @@ class EditorAutomationHost:
 
     @staticmethod
     def _runtime_status_value(manager: Any) -> dict[str, object]:
+        from Infernux.engine.deferred_task import DeferredTaskRunner
+
+        runner = DeferredTaskRunner.instance()
+        transition_task = runner.active_task_name
         return {
             "state": str(manager.state.name).lower(),
             "playing": bool(manager.is_playing),
@@ -1073,6 +1301,10 @@ class EditorAutomationHost:
             "total_play_time": float(manager.total_play_time),
             "step_sequence": int(manager.step_sequence),
             "transition_timings_ms": dict(manager.last_transition_timings_ms),
+            "transition_pending": transition_task in {
+                "Enter Play Mode",
+                "Exit Play Mode",
+            },
         }
 
     @staticmethod

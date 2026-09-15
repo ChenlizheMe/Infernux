@@ -43,12 +43,11 @@ class RenderStackPipeline(RenderPipeline):
         super().__init__()
         # The no-RenderStack case has one explicit default graph. It is not a
         # recovery path for a broken authored RenderStack.
-        self._default_desc = None
+        self._default_graphs = {}
         self._default_pipeline = None
-        # Cache for _find_render_stack to avoid O(N) scene scan every frame.
-        self._cached_stack = None
-        self._cached_stack_version: int = -1
-        self._cached_stack_scene_key: tuple[int, str] = (0, "")
+        # One cache entry per loaded Scene. Multi-camera additive rendering may
+        # alternate between scene owners every frame.
+        self._cached_stacks: dict[tuple[int, str], tuple[int, object | None]] = {}
 
     def render(self, context, camera) -> None:
         """Render one engine-owned camera view."""
@@ -67,8 +66,8 @@ class RenderStackPipeline(RenderPipeline):
         """Find the active RenderStack in the current scene.
 
         Lookup order:
-        1. ``RenderStack._active_instance`` singleton fast path
-        2. Cached scan result, invalidated by ``structure_version``
+        1. Per-Scene active RenderStack directory
+        2. Per-Scene cached scan result, invalidated by ``structure_version``
         3. Full scene scan across Python components
         4. ``None`` to select the engine default renderer
         """
@@ -88,16 +87,17 @@ class RenderStackPipeline(RenderPipeline):
         # Fast path: use cached scan result if structure hasn't changed
         scene_key = _scene_cache_key(scene)
         ver = scene.structure_version
-        if scene_key == self._cached_stack_scene_key and ver == self._cached_stack_version:
-            cached = self._cached_stack
+        cached_entry = self._cached_stacks.get(scene_key)
+        if cached_entry is not None and cached_entry[0] == ver:
+            cached = cached_entry[1]
             if cached is not None and not RenderStack._is_effectively_active(
                 cached,
                 scene=scene,
             ):
-                self._cached_stack = None
+                self._cached_stacks[scene_key] = (ver, None)
                 return None
             if cached is not None:
-                RenderStack._active_instance = cached
+                RenderStack.activate_instance(cached, scene)
             return cached
 
         # Slow path: scan scene (only when structure changes)
@@ -115,11 +115,9 @@ class RenderStackPipeline(RenderPipeline):
             if found is not None:
                 break
 
-        self._cached_stack = found
-        self._cached_stack_version = ver
-        self._cached_stack_scene_key = scene_key
+        self._cached_stacks[scene_key] = (ver, found)
         if found is not None:
-            RenderStack._active_instance = found
+            RenderStack.refresh_active_instance(scene)
         return found
 
     def _render_default(self, context, camera) -> None:
@@ -128,7 +126,9 @@ class RenderStackPipeline(RenderPipeline):
         This builds a graph directly from ``DefaultForwardPipeline`` without
         injecting any user passes.
         """
-        if self._default_desc is None:
+        samples = context.output_samples
+        description = self._default_graphs.get(samples)
+        if description is None:
             from Infernux.rendergraph.graph import RenderGraph
             from Infernux.renderstack.default_forward_pipeline import (
                 DefaultForwardPipeline,
@@ -137,23 +137,23 @@ class RenderStackPipeline(RenderPipeline):
             if self._default_pipeline is None:
                 self._default_pipeline = DefaultForwardPipeline()
 
-            graph = RenderGraph("Default Forward")
+            graph = RenderGraph("Default Forward", output_samples=samples)
             # Define topology (DefaultForwardPipeline inserts screen_ui_section)
             self._default_pipeline.define_topology(graph)
             graph.set_output("color")
-            self._default_desc = graph.build()
+            description = self._default_graphs[samples] = graph.build()
             from Infernux.debug import Debug
 
             screen_ui_passes = tuple(
                 render_pass.name
-                for render_pass in self._default_desc.passes
+                for render_pass in description.passes
                 if "ScreenUI" in render_pass.name
             )
             Debug.log(
                 "INFERNUX_RENDER_GRAPH_READY pipeline='Default Forward' "
-                f"passes={len(self._default_desc.passes)} "
+                f"passes={len(description.passes)} "
                 f"screen_ui={','.join(screen_ui_passes) or 'none'}"
             )
 
-        if not context.render_compiled(camera, self._default_desc.source_revision):
-            context.render_with_graph(camera, self._default_desc)
+        if not context.render_compiled(camera, description.source_revision):
+            context.render_with_graph(camera, description)

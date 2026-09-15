@@ -3,11 +3,19 @@
 #include <SDL3/SDL_audio.h>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
 namespace infernux
 {
+
+struct AudioPlaybackPcm
+{
+    std::vector<float> stereoFrames;
+    size_t frameCount = 0;
+    int sampleRate = 0;
+};
 
 /**
  * @brief An audio clip holds decoded PCM audio data in memory.
@@ -111,7 +119,11 @@ class AudioClip
         m_guid = guid;
     }
 
-    [[nodiscard]] size_t GetRuntimeMemoryBytes() const noexcept;
+    [[nodiscard]] size_t GetRuntimeMemoryBytes() const;
+
+    /// Return one immutable stereo float playback image shared by every
+    /// active voice of this clip at the requested output sample rate.
+    [[nodiscard]] std::shared_ptr<const AudioPlaybackPcm> AcquirePlaybackPcm(int sampleRate) const;
 
   private:
     bool m_loaded = false;
@@ -122,6 +134,8 @@ class AudioClip
     SDL_AudioSpec m_spec = {};
     std::vector<uint8_t> m_data; ///< Decoded PCM data (owned copy)
     uint32_t m_dataLength = 0;
+    mutable std::mutex m_playbackMutex;
+    mutable std::shared_ptr<const AudioPlaybackPcm> m_playbackPcm;
 
     /// @brief Read .meta import settings and apply post-load transformations
     void ApplyImportSettings();

@@ -100,6 +100,66 @@ foreach(_source_file IN LISTS _native_files)
     endif()
 endforeach()
 
+# The 041 compute contract ships both JIT toolchains with the engine install:
+# Numba/llvmlite are declared wheel dependencies, while the compiler-only
+# Vulkan frontend is a native payload in this wheel.  Missing either side is a
+# broken distribution, not an optional runtime download.
+file(GLOB _gpu_jit_modules
+    "${_verify_root}/Infernux/_compiler/taichi/_vendor/taichi/_lib/core/taichi_python*.pyd"
+    "${_verify_root}/Infernux/_compiler/taichi/_vendor/taichi/_lib/core/taichi_python*.so"
+    "${_verify_root}/Infernux/_compiler/taichi/_vendor/taichi/_lib/core/taichi_python*.dylib"
+)
+list(LENGTH _gpu_jit_modules _gpu_jit_module_count)
+if(NOT _gpu_jit_module_count EQUAL 1)
+    message(FATAL_ERROR
+        "Wheel must contain exactly one platform GPU JIT compiler module, found ${_gpu_jit_module_count}"
+    )
+endif()
+if(NOT EXISTS "${_verify_root}/Infernux/_compiler/taichi/__init__.py" OR
+   NOT EXISTS "${_verify_root}/Infernux/_compiler/taichi/frontend.py")
+    message(FATAL_ERROR "Wheel is missing the Infernux-owned GPU compiler loader")
+endif()
+# The reused lowering sources are namespaced below Infernux and are not an
+# installable author package. A top-level Taichi package in the wheel would
+# create a second public API and is forbidden.
+if(EXISTS "${_verify_root}/taichi")
+    message(FATAL_ERROR "Wheel must not expose a top-level Taichi package")
+endif()
+set(_retired_private_compiler_directories
+    ad algorithms aot examples graph linalg math profiler sparse tools ui _ti_module)
+foreach(_retired_dir IN LISTS _retired_private_compiler_directories)
+    if(EXISTS "${_verify_root}/Infernux/_compiler/taichi/_vendor/taichi/${_retired_dir}")
+        message(FATAL_ERROR
+            "Wheel restored retired private compiler directory: ${_retired_dir}")
+    endif()
+endforeach()
+foreach(_retired_file experimental.py lang/misc.py types/quant.py _funcs.py _kernels.py)
+    if(EXISTS "${_verify_root}/Infernux/_compiler/taichi/_vendor/taichi/${_retired_file}")
+        message(FATAL_ERROR
+            "Wheel restored retired private compiler file: ${_retired_file}")
+    endif()
+endforeach()
+foreach(_license_name LICENSE NOTICE)
+    if(NOT EXISTS "${_verify_root}/Infernux/_compiler/licenses/taichi/${_license_name}")
+        message(FATAL_ERROR "Wheel is missing the Taichi ${_license_name} attribution")
+    endif()
+endforeach()
+
+file(GLOB _wheel_metadata "${_verify_root}/*.dist-info/METADATA")
+list(LENGTH _wheel_metadata _wheel_metadata_count)
+if(NOT _wheel_metadata_count EQUAL 1)
+    message(FATAL_ERROR "Expected exactly one wheel METADATA file")
+endif()
+list(GET _wheel_metadata 0 _wheel_metadata_file)
+file(READ "${_wheel_metadata_file}" _wheel_metadata_text)
+foreach(_cpu_jit_dependency numba llvmlite)
+    if(NOT _wheel_metadata_text MATCHES "Requires-Dist: ${_cpu_jit_dependency}([^A-Za-z0-9_-]|$)")
+        message(FATAL_ERROR
+            "Wheel metadata does not declare the CPU JIT dependency ${_cpu_jit_dependency}"
+        )
+    endif()
+endforeach()
+
 foreach(_bootstrap_source_file IN LISTS _bootstrap_source_files)
     file(RELATIVE_PATH _bootstrap_relative_path "${_package_root}" "${_bootstrap_source_file}")
     if(NOT EXISTS "${_verify_root}/${_bootstrap_relative_path}")

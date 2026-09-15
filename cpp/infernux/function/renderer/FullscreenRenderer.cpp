@@ -13,7 +13,9 @@ namespace infernux
 bool FullscreenPipelineKey::operator==(const FullscreenPipelineKey &other) const noexcept
 {
     return shaderName == other.shaderName && renderTargetLayout == other.renderTargetLayout &&
-           samples == other.samples && colorFormat == other.colorFormat &&
+           samples == other.samples && colorFormat == other.colorFormat && depthFormat == other.depthFormat &&
+           depth.testEnabled == other.depth.testEnabled && depth.writeEnabled == other.depth.writeEnabled &&
+           depth.compare == other.depth.compare && alphaBlend == other.alphaBlend &&
            inputTextureCount == other.inputTextureCount && depthInputMask == other.depthInputMask &&
            useDynamicRendering == other.useDynamicRendering;
 }
@@ -25,6 +27,11 @@ size_t FullscreenPipelineKeyHash::operator()(const FullscreenPipelineKey &key) c
     combine(rhi::HandleHash<rhi::RenderTargetLayoutTag>{}(key.renderTargetLayout));
     combine(static_cast<size_t>(key.samples));
     combine(static_cast<size_t>(key.colorFormat));
+    combine(static_cast<size_t>(key.depthFormat));
+    combine(key.depth.testEnabled);
+    combine(key.depth.writeEnabled);
+    combine(static_cast<size_t>(key.depth.compare));
+    combine(key.alphaBlend);
     combine(key.inputTextureCount);
     combine(key.depthInputMask);
     combine(key.useDynamicRendering ? 1U : 0U);
@@ -101,6 +108,8 @@ struct FullscreenRenderer::Impl
         desc.samples = key.samples;
         desc.colorTargetCount = 1;
         desc.colorTargets[0].format = key.colorFormat;
+        desc.colorTargets[0].blendEnabled = key.alphaBlend;
+        desc.depth = key.depth;
         desc.bindingLayouts[desc.bindingLayoutCount++] = entry.rhi.inputLayout;
         desc.pushConstantStages = rhi::ShaderStage::Fragment;
         desc.pushConstantBytes = sizeof(FullscreenPushConstants);
@@ -108,6 +117,9 @@ struct FullscreenRenderer::Impl
             desc.renderingSignature.colorFormatCount = 1;
             desc.renderingSignature.colorFormats[0] = key.colorFormat;
             desc.renderingSignature.samples = key.samples;
+            desc.renderingSignature.depthFormat = key.depthFormat;
+            if (rhi::IsStencilFormat(key.depthFormat))
+                desc.renderingSignature.stencilFormat = key.depthFormat;
         }
 
         const auto perViewLayout = host->GetPerViewLayout();
@@ -127,8 +139,9 @@ struct FullscreenRenderer::Impl
         if (globalsLayout.IsValid())
             desc.bindingLayouts[desc.bindingLayoutCount++] = globalsLayout;
 
-        desc.vertexShader = host->AcquireShaderModule("Fullscreen Triangle", rhi::ShaderStage::Vertex);
-        desc.fragmentShader = host->AcquireShaderModule(key.shaderName, rhi::ShaderStage::Fragment);
+        desc.vertexShader = host->AcquireShaderModule("Fullscreen Triangle", rhi::ShaderStage::Vertex, 0);
+        desc.fragmentShader =
+            host->AcquireShaderModule(key.shaderName, rhi::ShaderStage::Fragment, key.inputTextureCount);
         if (!desc.vertexShader.IsValid() || !desc.fragmentShader.IsValid()) {
             host->ReportError("FullscreenRenderer: missing shader modules for '" + key.shaderName + "'");
             device->Release(desc.vertexShader);

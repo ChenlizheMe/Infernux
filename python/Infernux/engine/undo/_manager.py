@@ -312,23 +312,26 @@ class UndoManager:
         )
         return recorded
 
-    def undo(self) -> None:
+    def undo(self, *, defer: bool = False) -> None:
+        """Request replay; GUI callers defer it to the owner-thread safe point."""
         if self._pending_replay is not None:
             return
         entry = self._journal.peek_undo()
         if entry is None:
             return
         self._pending_replay = _PendingReplay("undo", entry)
-        self.process_pending_replay()
+        if not defer:
+            self.process_pending_replay()
 
-    def redo(self) -> None:
+    def redo(self, *, defer: bool = False) -> None:
         if self._pending_replay is not None:
             return
         entry = self._journal.peek_redo()
         if entry is None:
             return
         self._pending_replay = _PendingReplay("redo", entry)
-        self.process_pending_replay()
+        if not defer:
+            self.process_pending_replay()
 
     def process_pending_replay(self) -> ContextRestoreStatus:
         """Advance one Undo/Redo replay after queued editor lifecycle work."""
@@ -619,7 +622,7 @@ class UndoManager:
             self._fire_state_changed()
 
     @staticmethod
-    def _active_scene_revision_target():
+    def _scene_revision_target_for_world(world_id: int = 0):
         try:
             from Infernux.engine.interaction import DocumentRegistry
             from Infernux.engine.scene_manager import SceneFileManager
@@ -628,8 +631,13 @@ class UndoManager:
             if scene_files is None:
                 return None
             registry = DocumentRegistry.instance()
-            document = registry.get(scene_files.document_id)
-            locator = registry.locate(scene_files.document_id)
+            document_id = (
+                scene_files.document_id_for_scene(world_id)
+                if int(world_id or 0) > 0
+                else scene_files.document_id
+            )
+            document = registry.get(document_id)
+            locator = registry.locate(document_id)
             if document is None or locator is None:
                 return None
             return document, locator
@@ -647,7 +655,7 @@ class UndoManager:
                 return None
         except (AttributeError, ImportError, RuntimeError):
             pass
-        target = self._active_scene_revision_target()
+        target = self._scene_revision_target_for_world(cmd.scene_world_id())
         if target is None:
             return None
         document, locator = target

@@ -138,6 +138,7 @@ class HierarchyPanel : public EditorPanel
     uint64_t m_cachedStructureVer = UINT64_MAX;
     size_t m_cachedRawRootCount = 0;
     std::vector<GameObject *> m_cachedRoots;
+    std::vector<Scene *> m_cachedScenes;
     float m_lastRootRefreshTime = 0.0f;
     static constexpr float STALE_ROOT_INTERVAL = 0.12f;
     static constexpr int STALE_ROOT_THRESHOLD = 128;
@@ -160,9 +161,11 @@ class HierarchyPanel : public EditorPanel
     // ── Flat virtual scrolling ───────────────────────────────────────
     struct FlatItem
     {
-        GameObject *obj;
-        int depth;
-        bool hasVisibleChildren;
+        GameObject *obj = nullptr;
+        int depth = 0;
+        bool hasVisibleChildren = false;
+        Scene *scene = nullptr;
+        bool sceneHeader = false;
     };
     std::vector<FlatItem> m_flatItems;
     EditorTreeProjectionModel<uint64_t> m_treeProjection;
@@ -174,6 +177,7 @@ class HierarchyPanel : public EditorPanel
     void BuildFlatListRecurse(GameObject *obj, int depth);
     void BuildFlatListRecurse(GameObject *obj, int depth, std::vector<FlatItem> &items);
     void RenderFlatItem(InxGUIContext *ctx, const FlatItem &item, float baseIndentX, float indentStep);
+    void RenderSceneHeader(InxGUIContext *ctx, Scene *scene);
 
     // ── Pending selection (deferred left-click) ──────────────────────
     uint64_t m_pendingSelectId = 0;

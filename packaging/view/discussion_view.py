@@ -130,8 +130,9 @@ class DiscussionView(QWidget):
         self._feed.setSpacing(8)
         layout.addLayout(self._feed)
         layout.addStretch()
-        self._set_feed_message(tr("Loading community topics..."), "loading")
-        self.refresh()
+        self._set_feed_message(
+            tr("Select Refresh to load public community topics."), "empty"
+        )
 
     def refresh(self) -> None:
         if self._thread is not None and self._thread.isRunning():

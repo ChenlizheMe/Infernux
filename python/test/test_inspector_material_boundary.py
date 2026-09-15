@@ -68,3 +68,34 @@ def test_material_slot_query_failure_reaches_inspector_boundary() -> None:
     with pytest.raises(RuntimeError, match="invalid material binding"):
         _rebuild_material_entries([(Renderer(), 1, (), ())])
 
+
+def test_texture_slot_uses_descriptor_drag_types_including_render_targets(monkeypatch):
+    from types import SimpleNamespace
+    from Infernux.engine.ui import inspector_material
+    from Infernux.engine.ui.igui import IGUI
+    from Infernux.engine.interaction.object_fields import AssetReferenceFieldModel
+
+    monkeypatch.setattr(inspector_material, '_get_asset_database',
+                        lambda: SimpleNamespace(get_path_from_guid=lambda guid: ''))
+    monkeypatch.setattr(inspector_material, 'field_label', lambda *args: None)
+    models = []
+
+    def field(ctx, field_id, display_text, type_hint, **kwargs):
+        models.append(AssetReferenceFieldModel(
+            field_id=field_id, display_text=display_text, type_hint=type_hint, **kwargs))
+
+    monkeypatch.setattr(IGUI, 'asset_reference_field', field)
+    inspector_material._render_texture2d_property(object(), {'guid': ''}, 'texSampler', 'mat', 80)
+    assert 'RENDER_TEXTURE_FILE' in models[0].accept
+    assert 'TEXTURE_FILE' in models[0].accept
+
+
+@pytest.mark.parametrize('extension,resource_type', [('png', 'Texture'), ('rendertexture', 'RenderTexture')])
+def test_sampled_texture_clipboard_preserves_concrete_asset_type(extension, resource_type):
+    from Infernux.core.asset_reference_types import AssetReferenceCodec, asset_type_registry
+
+    encoded = AssetReferenceCodec.encode('Texture.Sampled', {'path_hint': f'Assets/Monitor.{extension}'})
+    payload = AssetReferenceCodec.decode(encoded)
+    assert payload['asset_type'] == resource_type
+    assert not asset_type_registry.require(resource_type).incompatibility(payload)
+

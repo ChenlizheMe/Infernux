@@ -78,6 +78,10 @@ class Infernux
         return m_exitRequested.load(std::memory_order_acquire);
     }
     void Cleanup();
+    [[nodiscard]] std::unique_ptr<rhi::ComputeHost> AcquireComputeHost();
+    [[nodiscard]] std::shared_ptr<rhi::RenderTexture> CreateRenderTexture(const rhi::RenderTextureDesc &description);
+    [[nodiscard]] std::shared_ptr<rhi::RenderTexture> LoadRenderTexture(const std::string &guid);
+    void RequireComputeHostsReleased() const;
 
     void InitHeadless(const std::string &projectPath, const std::string &builtinResourcePath = "");
 
@@ -179,10 +183,10 @@ class Infernux
     /// @brief Set the highlighted gizmo handle. 0=None, 1=X, 2=Y, 3=Z, 4=XY, 5=XZ, 6=YZ.
     void SetEditorToolHighlight(int axis);
 
-    /// @brief Set the active tool mode. 0=None, 1=Translate, 2=Rotate, 3=Scale.
+    /// @brief Set the active tool mode. 0=None, 1=Translate, 2=Rotate, 3=Scale, 4=Rect.
     void SetEditorToolMode(int mode);
 
-    /// @brief Get the active tool mode. 0=None, 1=Translate, 2=Rotate, 3=Scale.
+    /// @brief Get the active tool mode. 0=None, 1=Translate, 2=Rotate, 3=Scale, 4=Rect.
     int GetEditorToolMode() const;
 
     /// @brief Set local coordinate mode for editor tools (gizmo aligns to object rotation).
@@ -589,7 +593,6 @@ class Infernux
 
     // Selection tracking for outline updates
     uint64_t m_selectedObjectId = 0;
-    std::vector<uint64_t> m_cachedOutlineIds; ///< Last set of IDs passed to SetSelectionOutlines
 
     // ImGui ini file path — stored as std::filesystem::path so that
     // wide-char paths (e.g. Chinese usernames) work correctly on Windows.

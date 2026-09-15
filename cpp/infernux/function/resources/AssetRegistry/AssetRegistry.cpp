@@ -3,15 +3,18 @@
 #include <core/log/InxLog.h>
 #include <function/resources/AssetDatabase/AssetDatabase.h>
 #include <function/resources/InxMaterial/InxMaterial.h>
+#include <function/resources/InxMesh/InxMesh.h>
 #include <function/resources/InxTexture/InxTexture.h>
 #include <function/resources/PhysicMaterial/PhysicMaterial.h>
 
 #include <platform/filesystem/InxPath.h>
 
 #include <algorithm>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <type_traits>
 #include <unordered_set>
 
 namespace infernux
@@ -45,6 +48,7 @@ void AssetRegistry::Initialize(std::unique_ptr<AssetDatabase> adb)
     m_totalCpuBytes = 0;
     m_cpuBudgetBytes = 512ULL * 1024ULL * 1024ULL;
     m_cpuEvictionCount = 0;
+    m_runtimeMeshSerial = 0;
     m_initialized = true;
 }
 
@@ -55,6 +59,7 @@ void AssetRegistry::Shutdown()
     m_totalCpuBytes = 0;
     m_accessSerial = 0;
     m_cpuEvictionCount = 0;
+    m_runtimeMeshSerial = 0;
     m_assetMutationGenerations.clear();
     m_assetRuntimeVersions.clear();
     m_assetRuntimeTypes.clear();
@@ -199,6 +204,123 @@ bool AssetRegistry::ReloadAsset(const std::string &guid)
     ++m_assetMutationGenerations[guid];
     (void)TrimCpuBudget();
     return true;
+}
+
+void AssetRegistry::UpdateMeshPositions(const std::string &guid, size_t first, const std::vector<glm::vec3> &positions,
+                                        const std::optional<std::vector<glm::vec3>> &normals)
+{
+    if (!m_initialized || std::this_thread::get_id() != m_ownerThread)
+        throw std::logic_error("Mesh publication requires the initialized registry owner thread");
+    auto entry = m_loadedAssets.find(guid);
+    if (entry == m_loadedAssets.end() || entry->second.type != ResourceType::Mesh)
+        throw std::invalid_argument("Mesh publication requires a loaded mesh GUID");
+    auto mesh = entry->second.payload.Get<InxMesh>();
+    const auto &source = mesh->GetVertices();
+    if (first > source.size() || positions.size() > source.size() - first)
+        throw std::invalid_argument("Mesh position range exceeds vertex count");
+    if (normals && normals->size() != positions.size())
+        throw std::invalid_argument("Mesh normals must match position count");
+    if (positions.empty())
+        return;
+    std::vector<Vertex> vertices(source.begin() + first, source.begin() + first + positions.size());
+    for (size_t i = 0; i < positions.size(); ++i) {
+        if (!std::isfinite(positions[i].x) || !std::isfinite(positions[i].y) || !std::isfinite(positions[i].z))
+            throw std::invalid_argument("Mesh positions must be finite");
+        vertices[i].pos = positions[i];
+        if (normals) {
+            const auto &normal = (*normals)[i];
+            if (!std::isfinite(normal.x) || !std::isfinite(normal.y) || !std::isfinite(normal.z))
+                throw std::invalid_argument("Mesh normals must be finite");
+            vertices[i].normal = normal;
+        }
+    }
+    InxMesh candidate = *mesh;
+    candidate.UpdateVertexRange(first, vertices);
+    PublishMesh(guid, std::move(candidate));
+}
+
+std::shared_ptr<InxMesh> AssetRegistry::CreateRuntimeMesh(const std::string &name)
+{
+    if (!m_initialized || std::this_thread::get_id() != m_ownerThread)
+        throw std::logic_error("Runtime Mesh creation requires the initialized registry owner thread");
+    if (m_runtimeMeshSerial == std::numeric_limits<uint64_t>::max())
+        throw std::overflow_error("Runtime Mesh identity serial overflow");
+
+    const std::string guid = "runtime-mesh:" + std::to_string(++m_runtimeMeshSerial);
+    auto mesh = std::make_shared<InxMesh>(name.empty() ? "Mesh" : name);
+    mesh->SetGuid(guid);
+    RuntimeAssetPayload payload(mesh);
+    const size_t bytes = EstimatePayloadBytes(ResourceType::Mesh, payload);
+    if (bytes > std::numeric_limits<size_t>::max() - m_totalCpuBytes)
+        throw std::overflow_error("Runtime Mesh CPU residency byte total overflow");
+    const uint64_t version = NextRuntimeVersion(guid);
+    m_assetRuntimeTypes[guid] = ResourceType::Mesh;
+    m_loadedAssets.emplace(guid,
+                           AssetEntry{std::move(payload), ResourceType::Mesh, version, bytes, ++m_accessSerial, 0});
+    m_totalCpuBytes += bytes;
+    ++m_assetMutationGenerations[guid];
+    (void)TrimCpuBudget();
+    return mesh;
+}
+
+std::shared_ptr<InxMesh> AssetRegistry::CloneRuntimeMesh(const std::string &guid, const std::string &name)
+{
+    auto source = GetAsset<InxMesh>(guid);
+    if (!source)
+        throw std::invalid_argument("Mesh copy requires a loaded Mesh GUID");
+    auto copy = CreateRuntimeMesh(name.empty() ? source->GetName() + " Copy" : name);
+    const std::string runtimeGuid = copy->GetGuid();
+    InxMesh candidate = *source;
+    candidate.SetGuid(runtimeGuid);
+    candidate.SetFilePath({});
+    candidate.SetName(copy->GetName());
+    PublishMesh(runtimeGuid, std::move(candidate));
+    return copy;
+}
+
+void AssetRegistry::DestroyRuntimeMesh(const std::string &guid)
+{
+    if (!m_initialized || std::this_thread::get_id() != m_ownerThread)
+        throw std::logic_error("Runtime Mesh destruction requires the initialized registry owner thread");
+    if (guid.rfind("runtime-mesh:", 0) != 0)
+        throw std::invalid_argument("Only transient runtime Mesh resources can be destroyed directly");
+    const auto entry = m_loadedAssets.find(guid);
+    if (entry == m_loadedAssets.end() || entry->second.type != ResourceType::Mesh)
+        throw std::invalid_argument("Runtime Mesh destruction requires a live Mesh identity");
+
+    AssetDependencyGraph::Instance().NotifyEvent(guid, ResourceType::Mesh, AssetEvent::Deleted);
+    auto &graph = AssetDependencyGraph::Instance();
+    for (const auto &dependentGuid : graph.GetDependents(guid))
+        graph.RemoveRuntimeDependency(dependentGuid, guid);
+    RemoveEntry(entry);
+    ++m_assetMutationGenerations[guid];
+    graph.RemoveAsset(guid);
+}
+
+void AssetRegistry::PublishMesh(const std::string &guid, InxMesh replacement)
+{
+    if (!m_initialized || std::this_thread::get_id() != m_ownerThread)
+        throw std::logic_error("Mesh publication requires the initialized registry owner thread");
+    auto entry = m_loadedAssets.find(guid);
+    if (entry == m_loadedAssets.end() || entry->second.type != ResourceType::Mesh)
+        throw std::invalid_argument("Mesh publication requires a loaded Mesh GUID");
+    auto mesh = entry->second.payload.Get<InxMesh>();
+    replacement.SetGuid(mesh->GetGuid());
+    replacement.SetFilePath(mesh->GetFilePath());
+    const size_t bytes = replacement.GetRuntimeMemoryBytes();
+    const size_t remainingBytes = m_totalCpuBytes - entry->second.cpuBytes;
+    if (bytes > std::numeric_limits<size_t>::max() - remainingBytes)
+        throw std::overflow_error("Mesh publication CPU residency byte total overflow");
+    const auto version = NextRuntimeVersion(guid);
+    static_assert(std::is_nothrow_move_assignable_v<InxMesh>);
+    *mesh = std::move(replacement);
+    entry->second.cpuBytes = bytes;
+    entry->second.version = version;
+    entry->second.lastAccessSerial = ++m_accessSerial;
+    m_totalCpuBytes = remainingBytes + bytes;
+    ++m_assetMutationGenerations[guid];
+    AssetDependencyGraph::Instance().NotifyEvent(guid, ResourceType::Mesh, AssetEvent::RuntimeModified);
+    (void)TrimCpuBudget();
 }
 
 void AssetRegistry::InvalidateAsset(const std::string &guid)

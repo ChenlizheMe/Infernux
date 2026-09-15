@@ -346,3 +346,33 @@ def test_asset_list_codec_rejects_wrong_element_type():
 
     with pytest.raises(TypeError, match="requires AudioClip"):
         codec.decode(document, metadata, "Probe.clips")
+@pytest.mark.parametrize("enum_name,member_name", [("CameraProjection", "Orthographic"), ("CameraClearFlags", "SolidColor")])
+def test_native_enum_uses_the_shared_enum_document(enum_name, member_name):
+    from Infernux import lib
+    from Infernux.components.fields import FieldMetadata, FieldType
+    from Infernux.components.value_codec import VALUE_CODECS
+
+    enum_type = getattr(lib, enum_name)
+    value = enum_type.__members__[member_name]
+    metadata = FieldMetadata("mode", FieldType.ENUM, value, enum_type=enum_type)
+    document = VALUE_CODECS.encode(value)
+    assert document == {"$type": "enum", "enum_type": enum_name, "name": member_name}
+    assert VALUE_CODECS.decode(document, metadata) == value
+
+
+def test_undeclared_native_enum_value_cannot_be_serialized():
+    from Infernux.lib import CameraProjection
+    from Infernux.components.value_codec import VALUE_CODECS
+
+    with pytest.raises(ValueError, match="unknown.*enum member"):
+        VALUE_CODECS.encode(CameraProjection(99))
+
+
+def test_native_enum_encoding_does_not_depend_on_import_module_name(monkeypatch):
+    from Infernux.lib import CameraProjection
+    from Infernux.components.value_codec import VALUE_CODECS
+
+    monkeypatch.setattr(CameraProjection, "__module__", "_Infernux")
+    assert VALUE_CODECS.encode(CameraProjection.Perspective) == {
+        "$type": "enum", "enum_type": "CameraProjection", "name": "Perspective",
+    }

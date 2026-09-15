@@ -16,7 +16,7 @@ A declarative render graph that defines texture resources and render passes.
 
 | Signature | Description |
 |------|------|
-| `RenderGraph.__init__(name: str = ...) → None` |  |
+| `RenderGraph.__init__(name: str = ..., *, output_samples: int = 0) → None` | A fixed Camera target supplies the output sample contract; zero leaves screen sampling to the pipeline. |
 
 <!-- USER CONTENT START --> constructors
 
@@ -47,7 +47,10 @@ A declarative render graph that defines texture resources and render passes.
 
 | Method | Description |
 |------|------|
-| `set_msaa_samples(samples: int) → None` | Set the MSAA sample count for all render targets. |
+| `set_msaa_samples(samples: int) → int` | Set the screen preference and return effective sampling. Use this value for attachments and resolve topology. |
+| `import_texture(name: str, texture: RenderTexture, *, attachment: str = "color") → TextureHandle` | Import a persistent color, depth or resolve attachment without transferring resource ownership. |
+| `create_temporal_history(name: str, *, format: Format = ..., size: tuple[int, int] \| None = None, size_divisor: int = 0) → tuple[TextureHandle, TextureHandle]` | Create per-view previous/current history handles. The first read after invalidation is zero. |
+| `set_temporal_jitter(enabled: bool = True) → None` | Request camera jitter separately from history allocation. |
 | `create_texture(name: str, format: Format = ..., camera_target: bool = ..., size: Optional[Tuple[int, int]] = ..., size_divisor: int = ..., samples: Optional[int] = ...) → TextureHandle` | Declare a transient texture resource in the render graph. |
 | `get_texture(name: str) → Optional[TextureHandle]` | Get a texture handle by name, or None if not found. |
 | `name_scope(prefix: str) → AbstractContextManager[RenderGraph]` |  |

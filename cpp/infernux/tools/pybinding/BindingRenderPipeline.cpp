@@ -62,6 +62,8 @@ void RegisterRenderPipelineBindings(py::module_ &m)
              "Upload changed graph parameter blocks without rebuilding topology")
         .def_property_readonly("graph_instance_id", &ScriptableRenderContext::GetGraphInstanceId,
                                "Stable native graph identity for revisioned upload caches")
+        .def_property_readonly("output_samples", &ScriptableRenderContext::GetOutputSamples,
+                               "Fixed Camera target samples, or zero for pipeline-owned screen MSAA")
         .def("submit_culling", &ScriptableRenderContext::SubmitCulling, py::arg("culling"),
              "Submit all culling results as full draw calls (filtering done by graph pass callbacks)")
         .def("render_with_graph", &ScriptableRenderContext::RenderWithGraph, py::arg("camera"), py::arg("description"),
@@ -74,18 +76,7 @@ void RegisterRenderPipelineBindings(py::module_ &m)
         .def("execute_command_buffer", &ScriptableRenderContext::ExecuteCommandBuffer, py::arg("cmd"),
              "Execute a deferred CommandBuffer (commands are buffered until submit)")
         .def("get_camera_target", &ScriptableRenderContext::GetCameraTarget, py::arg("camera"),
-             "Get a handle representing the final camera render target")
-        // Global shader parameters (immediate mode)
-        .def(
-            "set_global_texture",
-            [](ScriptableRenderContext &self, const std::string &name, RenderTargetHandle handle) {
-                self.SetGlobalTexture(name, handle);
-            },
-            py::arg("name"), py::arg("handle"), "Set a global texture shader parameter")
-        .def("set_global_float", &ScriptableRenderContext::SetGlobalFloat, py::arg("name"), py::arg("value"),
-             "Set a global float shader parameter")
-        .def("set_global_vector", &ScriptableRenderContext::SetGlobalVector, py::arg("name"), py::arg("x"),
-             py::arg("y"), py::arg("z"), py::arg("w"), "Set a global vec4 shader parameter");
+             "Get a handle representing the final camera render target");
 
     // ---- RenderPipelineCallback (abstract, Python inherits via trampoline) ----
     py::class_<RenderPipelineCallback, PyRenderPipelineCallback, std::shared_ptr<RenderPipelineCallback>>(

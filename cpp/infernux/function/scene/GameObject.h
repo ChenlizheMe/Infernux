@@ -477,6 +477,10 @@ class GameObject
 
     void SetScene(Scene *scene);
 
+    [[nodiscard]] std::unique_ptr<GameObject> CloneGraph(Scene *scene,
+                                                         std::unordered_map<uint64_t, uint64_t> &componentIdRemap,
+                                                         std::vector<Component *> &clonedComponents) const;
+
     Component *AttachComponent(std::unique_ptr<Component> component, bool enforceUserAddable);
     [[nodiscard]] std::vector<std::string> GetAttachmentBlockers(const std::string &constraintTypeId,
                                                                  const std::string &typeName,

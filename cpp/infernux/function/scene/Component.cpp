@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <atomic>
 #include <core/log/InxLog.h>
+#include <function/resources/AssetDependencyGraph.h>
 #include <nlohmann/json.hpp>
 
 using json = nlohmann::json;
@@ -226,6 +227,7 @@ void Component::SetEnabled(bool enabled)
 
 void Component::SetComponentID(uint64_t id)
 {
+    AssetDependencyGraph::Instance().RekeyRuntimeDependencies(GetInstanceGuid(), std::to_string(id));
     // Re-key the registry
     GetInstanceRegistry().erase(m_componentId);
     m_componentId = id;

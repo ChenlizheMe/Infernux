@@ -649,18 +649,12 @@ class BuildSettingsPanel(EditorPanel):
         if new_lto != self._lto:
             self._lto = new_lto
             self._save()
+        # JIT is selected from the target platform and authored script
+        # capabilities by the exporter. It is deliberately not a packaging
+        # checkbox: users should not be able to produce a Player whose
+        # runtime backend contradicts its platform.
         ctx.same_line(0, _metric(ctx, 20.0))
-        new_jit = ctx.checkbox(t("build.enable_jit") + "##enable_jit", self._enable_jit)
-        ctx.record_semantic_item(
-            "checkbox",
-            t("build.enable_jit"),
-            True,
-            "build_settings.enable_jit",
-            bool_value=new_jit,
-        )
-        if new_jit != self._enable_jit:
-            self._enable_jit = new_jit
-            self._save()
+        ctx.label(t("build.enable_jit") + ": automatic")
         if not self._game_name:
             ctx.same_line()
             ctx.push_style_color(ImGuiCol.Text, 0.5, 0.5, 0.5, 1.0)
@@ -1739,9 +1733,9 @@ class BuildSettingsPanel(EditorPanel):
         def _prepare_and_start(catalog):
             try:
                 request = self._make_build_request(catalog, target_id)
+                _start_worker(request)
             except Exception as exc:
                 return _fail_preflight(exc)
-            _start_worker(request)
             return True
 
         # A modal is deliberately presented before catalog work begins.  It

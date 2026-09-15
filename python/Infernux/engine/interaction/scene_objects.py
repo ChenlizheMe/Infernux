@@ -147,15 +147,18 @@ class SceneObjectCommandService:
 
         return SceneManager.instance().get_active_scene()
 
+    @staticmethod
+    def _world_object(object_id: int):
+        from Infernux.lib import SceneManager
+
+        return SceneManager.instance().find_runtime_object_by_id(int(object_id or 0))
+
     def _selected_roots(self, context: CommandContext):
-        scene = self._active_scene()
-        if scene is None:
-            return []
         object_ids = self._context_object_ids(context)
         selected_ids = set(object_ids)
         roots = []
         for object_id in object_ids:
-            obj = scene.find_by_id(object_id)
+            obj = self._world_object(object_id)
             if obj is None:
                 continue
             parent = obj.get_parent()
@@ -682,13 +685,15 @@ class SceneObjectCommandService:
         from Infernux.engine.component_restore import clone_game_object_transactionally
         from Infernux.engine.undo import CreateGameObjectCommand, UndoManager
 
-        scene = self._active_scene()
         manager = UndoManager.instance()
+        source = self._world_object(int(object_id))
+        scene = getattr(source, "scene", None) if source is not None else None
         if scene is None or manager is None or not manager.enabled or manager.is_executing:
             return None
-        source = scene.find_by_id(int(object_id))
-        parent = scene.find_by_id(int(parent_id)) if int(parent_id or 0) else None
+        parent = self._world_object(int(parent_id)) if int(parent_id or 0) else None
         if source is None or (int(parent_id or 0) and parent is None):
+            return None
+        if parent is not None and getattr(parent, "scene", None) is not scene:
             return None
 
         before_selection = self._selection.snapshot
@@ -736,8 +741,7 @@ class SceneObjectCommandService:
             normalized_id = int(object_id)
         except (TypeError, ValueError):
             return False
-        scene = self._active_scene()
-        obj = scene.find_by_id(normalized_id) if scene is not None else None
+        obj = self._world_object(normalized_id)
         value = str(new_name or "").strip()
         if obj is None or not value or obj.name == value:
             return False
@@ -798,8 +802,7 @@ class SceneObjectCommandService:
             normalized_id = int(object_id)
         except (TypeError, ValueError):
             return False
-        scene = self._active_scene()
-        obj = scene.find_by_id(normalized_id) if scene is not None else None
+        obj = self._world_object(normalized_id)
         if obj is None:
             return False
         try:
@@ -827,8 +830,7 @@ class SceneObjectCommandService:
             normalized_id = int(object_id)
         except (TypeError, ValueError):
             return False
-        scene = self._active_scene()
-        obj = scene.find_by_id(normalized_id) if scene is not None else None
+        obj = self._world_object(normalized_id)
         if obj is None:
             return False
         try:
@@ -997,7 +999,6 @@ class SceneObjectCommandService:
         """
         from Infernux.engine.undo import SceneHierarchyLayoutCommand, UndoManager
 
-        scene = self._active_scene()
         manager = UndoManager.instance()
         normalized_ids = []
         for value in object_ids:
@@ -1010,8 +1011,7 @@ class SceneObjectCommandService:
         ids = tuple(normalized_ids)
         operation = str(mode or "").strip().lower()
         if (
-            scene is None
-            or not ids
+            not ids
             or operation not in {"parent", "adjacent", "root"}
             or manager is None
             or not manager.enabled
@@ -1020,9 +1020,17 @@ class SceneObjectCommandService:
             return False
 
         objects = []
+        scene = None
         for object_id in ids:
-            obj = scene.find_by_id(object_id)
+            obj = self._world_object(object_id)
             if obj is None:
+                return False
+            owning_scene = getattr(obj, "scene", None)
+            if owning_scene is None:
+                return False
+            if scene is None:
+                scene = owning_scene
+            elif owning_scene is not scene:
                 return False
             objects.append(obj)
 
@@ -1044,7 +1052,9 @@ class SceneObjectCommandService:
         if not ids:
             return False
 
-        target = scene.find_by_id(int(target_id)) if int(target_id or 0) else None
+        target = self._world_object(int(target_id)) if int(target_id or 0) else None
+        if target is not None and getattr(target, "scene", None) is not scene:
+            return False
         if operation == "parent":
             if target is None or int(target.id) in selected:
                 return False
@@ -1108,9 +1118,9 @@ class SceneObjectCommandService:
         """Move one object within its sibling list through one layout diff."""
         from Infernux.engine.undo import SceneHierarchyLayoutCommand, UndoManager
 
-        scene = self._active_scene()
         manager = UndoManager.instance()
-        obj = scene.find_by_id(int(object_id)) if scene is not None else None
+        obj = self._world_object(int(object_id))
+        scene = getattr(obj, "scene", None) if obj is not None else None
         if obj is None or manager is None or not manager.enabled or manager.is_executing:
             return False
         parent_id = self._parent_id(obj)

@@ -72,6 +72,8 @@ class UpdateController(QObject):
 
     def check(self, *, silent: bool = True):
         if self.thread and self.thread.isRunning():
+            # A manual click joins the startup request and must receive its result.
+            self._silent_check = self._silent_check and silent
             return
         self._silent_check = silent
         self._completion_pending = True

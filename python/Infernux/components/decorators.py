@@ -4,7 +4,7 @@ Component decorators for Infernux.
 Provides Unity-style component attributes:
     - @require_component: Declare dependency on another component type
     - @disallow_multiple: Prevent multiple instances of this component on a GameObject
-    - @execute_in_edit_mode: Allow update() to run in edit mode
+    - @execute_in_edit_mode: Allow update()/late_update() to run in edit mode
 
 Example:
     from Infernux.components import InxComponent
@@ -85,10 +85,11 @@ def disallow_multiple(cls: Type = None) -> Union[Type, Callable]:
 
 def execute_in_edit_mode(cls: Type = None) -> Union[Type, Callable]:
     """
-    Decorator to allow a component's update() to run in edit mode.
+    Decorator to allow a component's update()/late_update() in edit mode.
     
-    By default, update() only runs during play mode. This decorator
-    enables update() to also run in the editor for preview/gizmo purposes.
+    All opted-in updates run before opted-in late updates, using the same
+    frame snapshot and change-publication boundaries as Play. Fixed/physics
+    simulation is not enabled by this decorator.
     
     Example:
         @execute_in_edit_mode

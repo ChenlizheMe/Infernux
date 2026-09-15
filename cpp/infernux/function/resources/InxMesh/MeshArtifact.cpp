@@ -12,6 +12,7 @@ namespace infernux
 namespace
 {
 constexpr std::string_view Magic = "INXMESHART";
+constexpr std::string_view AuthoredSourceIdentity = "infernux.static-mesh.source";
 constexpr uint32_t EndianMarker = 0x01020304U;
 constexpr uint32_t MaximumElementCount = 100'000'000U;
 constexpr uint32_t MaximumStringBytes = 16U * 1024U * 1024U;
@@ -171,6 +172,18 @@ void AppendCount(std::string &out, size_t count)
     AppendU32(out, static_cast<uint32_t>(count));
 }
 } // namespace
+
+std::string MeshArtifact::SerializeSource(const InxMesh &mesh)
+{
+    if (mesh.HasSkinnedData())
+        throw std::invalid_argument("Static mesh source cannot discard skinned mesh data");
+    return Serialize(mesh, AuthoredSourceIdentity);
+}
+
+std::shared_ptr<InxMesh> MeshArtifact::DeserializeSource(std::string_view bytes)
+{
+    return Deserialize(bytes, AuthoredSourceIdentity);
+}
 
 std::string MeshArtifact::Serialize(const InxMesh &mesh, std::string_view sourceContentHash)
 {

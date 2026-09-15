@@ -1,8 +1,6 @@
 #include "SceneDocumentReadTask.h"
 
 #include <core/threading/JobSystem.h>
-#include <filesystem>
-#include <fstream>
 #include <function/scene/ComponentFactory.h>
 #include <function/scene/ComponentRecord.h>
 #include <functional>
@@ -173,22 +171,6 @@ void ValidateSceneDocument(const json &document)
     }
 }
 
-std::string ReadFile(const std::string &path)
-{
-    std::ifstream input(std::filesystem::u8path(path), std::ios::binary);
-    if (!input)
-        throw std::runtime_error("failed to open scene file: " + path);
-    input.seekg(0, std::ios::end);
-    const auto size = input.tellg();
-    if (size < 0)
-        throw std::runtime_error("failed to measure scene file: " + path);
-    std::string bytes(static_cast<size_t>(size), '\0');
-    input.seekg(0, std::ios::beg);
-    if (!bytes.empty() && !input.read(bytes.data(), static_cast<std::streamsize>(bytes.size())))
-        throw std::runtime_error("failed to read complete scene file: " + path);
-    return bytes;
-}
-
 } // namespace
 
 bool SceneDocumentReadTicket::IsComplete() const noexcept
@@ -238,6 +220,14 @@ std::string SceneDocumentReadTicket::GetError() const
     return m_state->error;
 }
 
+std::optional<AtomicFileState> SceneDocumentReadTicket::GetFileState() const
+{
+    if (!m_state)
+        return std::nullopt;
+    std::lock_guard<std::mutex> lock(m_state->mutex);
+    return m_state->fileState;
+}
+
 bool SceneDocumentReadTicket::Cancel()
 {
     if (!m_state)
@@ -250,6 +240,7 @@ bool SceneDocumentReadTicket::Cancel()
     }
     if (status == Status::Ready) {
         m_state->document = json();
+        m_state->fileState.reset();
         m_state->status.store(Status::Cancelled, std::memory_order_release);
         return true;
     }
@@ -284,7 +275,8 @@ SceneDocumentReadTicket ScheduleSceneDocumentRead(const std::string &path)
                 state->status.store(SceneDocumentReadTicket::Status::Cancelled, std::memory_order_release);
                 return;
             }
-            json document = json::parse(ReadFile(path));
+            const auto snapshot = ReadTextFileSnapshot(path);
+            json document = json::parse(snapshot.content);
             ValidateSceneDocument(document);
             std::lock_guard<std::mutex> lock(state->mutex);
             if (state->cancelRequested.load(std::memory_order_acquire)) {
@@ -292,6 +284,7 @@ SceneDocumentReadTicket ScheduleSceneDocumentRead(const std::string &path)
                 return;
             }
             state->document = std::move(document);
+            state->fileState = snapshot.state;
             state->status.store(SceneDocumentReadTicket::Status::Ready, std::memory_order_release);
         } catch (const std::exception &error) {
             std::lock_guard<std::mutex> lock(state->mutex);

@@ -78,6 +78,40 @@ void EnableCompleteBindless(rhi::BindlessCapabilityStatus &status)
 
 int main()
 {
+    vk::VulkanCapabilityProbeData numericProbe;
+    numericProbe.apiVersion = VK_API_VERSION_1_2;
+    numericProbe.coreFeatures.shaderInt16 = VK_TRUE;
+    numericProbe.coreFeatures.shaderInt64 = VK_TRUE;
+    const auto numericSnapshot = vk::VulkanCapabilitySnapshot::FromProbe(numericProbe);
+    assert(numericSnapshot.supported.shaderInt64.supported);
+    assert(!numericSnapshot.supported.shaderInt64.enabled);
+    vk::VulkanDeviceFeatureChain numericChain(numericSnapshot);
+    rhi::DeviceCapabilityRequest numericRequest;
+    numericRequest.shaderInt16 = true;
+    numericRequest.shaderInt64 = true;
+    assert(numericChain.Enable(numericRequest));
+    assert(numericChain.GetFeatures2().features.shaderInt16 == VK_TRUE);
+    assert(numericChain.GetFeatures2().features.shaderInt64 == VK_TRUE);
+    assert(numericChain.GetFeatures2().features.shaderFloat64 == VK_FALSE);
+    assert(rhi::CheckDeviceCapabilities(numericChain.GetEnabledState(), numericRequest).IsSupported());
+    numericRequest.shaderFloat64 = true;
+    assert(!numericChain.Enable(numericRequest));
+    assert(numericChain.GetFailure().capability == rhi::DeviceCapability::ShaderFloat64);
+    assert(numericChain.GetFeatures2().features.shaderInt64 == VK_FALSE);
+    assert(!numericChain.GetEnabledState().shaderInt64.enabled);
+    numericRequest = {};
+    assert(numericChain.Enable(numericRequest));
+    assert(!numericChain.GetEnabledState().shaderInt16.enabled);
+
+    numericProbe.coreFeatures.shaderFloat64 = VK_TRUE;
+    vk::VulkanDeviceFeatureChain fullNumericChain(vk::VulkanCapabilitySnapshot::FromProbe(numericProbe));
+    numericRequest.shaderInt16 = true;
+    numericRequest.shaderInt64 = true;
+    numericRequest.shaderFloat64 = true;
+    assert(fullNumericChain.Enable(numericRequest));
+    assert(fullNumericChain.GetFeatures2().features.shaderFloat64 == VK_TRUE);
+    assert(rhi::CheckDeviceCapabilities(fullNumericChain.GetEnabledState(), numericRequest).IsSupported());
+
     rhi::DeviceCapabilityState noBindlessCapabilities{};
     assert(!vk::VulkanBindlessTextureTable::CanUseShaderABI(noBindlessCapabilities, false));
     assert(!vk::VulkanBindlessTextureTable::CanUseShaderABI(noBindlessCapabilities, true));

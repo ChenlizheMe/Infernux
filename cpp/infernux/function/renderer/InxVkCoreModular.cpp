@@ -28,7 +28,9 @@
 #include <chrono>
 #include <cstring>
 #include <limits>
+#include <stdexcept>
 #include <unordered_set>
+#include <utility>
 
 namespace infernux
 {
@@ -106,7 +108,6 @@ InxVkCoreModular::~InxVkCoreModular()
     if (m_backend.Device().IsValid() && !m_shuttingDown) {
         m_backend.Device().WaitIdle();
     }
-
     // Async preview submissions retain transient buffers and cloned materials.
     // Release those leases while every renderer subsystem and the device are
     // still alive, then destroy both previewers in the controlled order below.
@@ -165,6 +166,7 @@ InxVkCoreModular::~InxVkCoreModular()
     // Explicit destruction in controlled order (avoids double-free from
     // RAII reverse-declaration order when handles are shared across systems).
     m_perObjectBuffers.clear();
+    m_residentVertexBufferCount = 0;
     m_sharedMeshBuffers.clear();
     m_pendingSharedMeshBuffers.clear();
     m_pendingTextureAssetLoads.clear();
@@ -209,6 +211,9 @@ InxVkCoreModular::~InxVkCoreModular()
     m_pipelineManager.ClearTrackedNonPipelineResources();
     m_pipelineManager.Destroy();
 
+    // Native residency entries can outlive their Python ComputeHost leases.
+    // Their buffers retire against this queue, so destroy it after all consumers.
+    m_computeQueue.Destroy();
     m_backend.Presentation().Destroy();
     m_backend.Queues().Destroy();
 
@@ -248,6 +253,13 @@ bool InxVkCoreModular::Init(InxAppMetadata appMetaData, InxAppMetadata rendererM
     m_instance = m_backend.Device().GetInstance();
 
     return true;
+}
+
+rhi::ComputeQueue &InxVkCoreModular::PrepareComputeQueue()
+{
+    if (!m_computeQueue.IsInitialized() && !m_computeQueue.Initialize(m_backend.Device(), m_backend.Queues()))
+        throw std::runtime_error("Failed to prepare host compute queue");
+    return m_computeQueue;
 }
 
 bool InxVkCoreModular::PrepareSurface()
@@ -995,6 +1007,8 @@ bool InxVkCoreModular::RecordFrameCommands(VkCommandBuffer cmdBuf, uint32_t imag
     const auto gpuGuiRegion = m_gpuTimestampQueries.BeginRegion(cmdBuf, "GUI", VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT);
 #endif
     guiGraph.Execute(cmdBuf);
+    if (!RecordPresentationReadback(cmdBuf, imageIndex))
+        return false;
 #if INFERNUX_FRAME_PROFILE
     m_gpuTimestampQueries.EndRegion(cmdBuf, gpuGuiRegion, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
 #endif
@@ -1007,6 +1021,47 @@ bool InxVkCoreModular::RecordFrameCommands(VkCommandBuffer cmdBuf, uint32_t imag
     m_gpuTimestampQueries.EndRegion(cmdBuf, gpuFrameRegion, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
     m_gpuTimestampQueries.FinishFrame(m_currentFrame);
 #endif
+    return true;
+}
+
+void InxVkCoreModular::RequestPresentationReadback()
+{
+    m_presentationReadbackRequested = true;
+}
+
+std::shared_ptr<vk::ImageReadbackTicket> InxVkCoreModular::ConsumePresentationReadback()
+{
+    return std::exchange(m_presentationReadback, {});
+}
+
+std::string InxVkCoreModular::ConsumePresentationReadbackError()
+{
+    return std::exchange(m_presentationReadbackError, {});
+}
+
+bool InxVkCoreModular::RecordPresentationReadback(VkCommandBuffer commandBuffer, uint32_t imageIndex)
+{
+    if (!m_presentationReadbackRequested)
+        return true;
+    m_presentationReadbackRequested = false;
+    m_presentationReadback.reset();
+    m_presentationReadbackError.clear();
+
+    if (!m_backend.Presentation().SupportsTransferSource()) {
+        m_presentationReadbackError = "The Vulkan presentation surface does not support engine-side capture";
+        return true;
+    }
+
+    try {
+        const VkExtent2D extent = m_backend.Presentation().GetExtent();
+        m_presentationReadback = m_resourceManager.RecordFrameImageReadback(
+            commandBuffer, m_backend.Presentation().GetImage(imageIndex), VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+            VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+            extent.width, extent.height, m_backend.Presentation().GetImageFormat(),
+            m_backend.Queues().GetFrameCompletionEpoch(m_currentFrame));
+    } catch (const std::exception &exc) {
+        m_presentationReadbackError = exc.what();
+    }
     return true;
 }
 
@@ -1027,6 +1082,7 @@ void InxVkCoreModular::WaitForCurrentFrame()
 
 void InxVkCoreModular::CollectRetiredGpuResources()
 {
+    m_computeQueue.Collect();
 #if INFERNUX_FRAME_PROFILE
     (void)m_gpuTimestampQueries.CollectCompletedFrame(m_currentFrame);
 #endif
@@ -1038,8 +1094,10 @@ void InxVkCoreModular::CollectRetiredGpuResources()
     (void)m_backend.Device().GetRhiDevice().CollectDescriptorRetirements(completedEpoch);
     (void)m_backend.Device().GetRhiDevice().CollectResourceRetirements(completedEpoch);
     (void)m_deletionQueue.Collect(completedEpoch);
-    if ((m_ensureFrameCounter & 63u) == 0u)
+    if ((m_ensureFrameCounter & 63u) == 0u) {
         CollectUnusedShadowMaterialBindings();
+        CollectUnusedMaterialTextureOwners();
+    }
     if (m_materialPipelineManagerInitialized)
         (void)m_materialPipelineManager.CollectUnusedRenderData();
     (void)m_textureCache.TrimToBudget();

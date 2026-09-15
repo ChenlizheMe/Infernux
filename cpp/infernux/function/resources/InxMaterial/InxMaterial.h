@@ -1,5 +1,7 @@
 #pragma once
 
+#include "MaterialProperty.h"
+
 #include <array>
 #include <core/types/InxFwdType.h>
 #include <core/types/ShaderAssetReference.h>
@@ -28,6 +30,10 @@ class MeshRenderer;
 class ShaderProgram;
 struct MaterialUBOLayout;
 struct ShaderProgramArtifact;
+namespace rhi
+{
+class RenderTexture;
+}
 
 /**
  * @brief Shader stage type for the material system
@@ -234,38 +240,6 @@ struct RenderState
 };
 
 /**
- * @brief Material property types
- */
-enum class MaterialPropertyType
-{
-    Float,
-    Float2,
-    Float3,
-    Float4,
-    Int,
-    Mat4,
-    Texture2D,
-    Color // = 7: vec4 colour, identical storage to Float4
-};
-
-/**
- * @brief A single material property value
- */
-using MaterialPropertyValue = std::variant<float, glm::vec2, glm::vec3, glm::vec4, int, glm::mat4, std::string>;
-
-/**
- * @brief Material property descriptor
- */
-struct MaterialProperty
-{
-    std::string name;
-    MaterialPropertyType type;
-    MaterialPropertyValue value;
-    bool hdr = false;
-    std::optional<std::array<double, 2>> range;
-};
-
-/**
  * @brief InxMaterial - Material definition for rendering
  *
  * A material in Infernux consists of:
@@ -288,7 +262,7 @@ class InxMaterial
     InxMaterial() = default;
     InxMaterial(const std::string &name);
     InxMaterial(const std::string &name, const std::string &shaderName);
-    ~InxMaterial() = default;
+    ~InxMaterial();
 
     // Copying creates a distinct runtime material identity.
     InxMaterial(const InxMaterial &other);
@@ -561,10 +535,31 @@ class InxMaterial
     void SetInt(const std::string &name, int value);
     void SetMatrix(const std::string &name, const glm::mat4 &matrix);
     void SetTextureGuid(const std::string &name, const std::string &textureGuid);
+    /// Runtime sampled output; authored texture GUIDs remain unchanged on disk.
+    void SetRenderTexture(const std::string &name, std::shared_ptr<rhi::RenderTexture> texture);
+    [[nodiscard]] std::shared_ptr<rhi::RenderTexture> GetRenderTexture(const std::string &name) const;
+    [[nodiscard]] const auto &GetRenderTextures() const noexcept
+    {
+        return m_renderTextures;
+    }
+    [[nodiscard]] bool NeedsTextureAssetResolution() const noexcept
+    {
+        return m_textureAssetsPending;
+    }
+    [[nodiscard]] bool HasRuntimeTextureOverride(const std::string &name) const
+    {
+        return m_runtimeTextureOverrides.count(name) != 0;
+    }
+    [[nodiscard]] std::string GetTextureDependencyOwner() const
+    {
+        return "material-textures:" + std::to_string(m_runtimeId);
+    }
+    void PublishTextureAssets(std::unordered_map<std::string, std::shared_ptr<rhi::RenderTexture>> textures);
+    void InvalidateTextureAssets(const std::string &guid, bool deleted);
 
-    /// Validate a Texture asset GUID or builtin white/black/normal token.
+    /// Validate a Texture/RenderTexture asset GUID or builtin white/black/normal token.
     /// Empty input explicitly clears the property; paths and missing assets fail.
-    static std::string RequireTextureGuid(const std::string &textureGuid);
+    static std::string RequireTextureGuid(const std::string &textureGuid, bool allowRenderTexture = false);
     void ClearTexture(const std::string &name);
     bool RemoveProperty(const std::string &name);
 
@@ -614,8 +609,8 @@ class InxMaterial
     {
         if (!m_guid.empty())
             return m_guid;
-        if (!m_filePath.empty())
-            return m_filePath;
+        // A source path is provenance, not identity: separate embedded/runtime
+        // material instances can originate from the same model and slot.
         return "runtime-material:" + std::to_string(m_runtimeId);
     }
 
@@ -806,6 +801,9 @@ class InxMaterial
 
     // Material properties
     std::unordered_map<std::string, MaterialProperty> m_properties;
+    std::unordered_map<std::string, std::shared_ptr<rhi::RenderTexture>> m_renderTextures;
+    std::unordered_set<std::string> m_runtimeTextureOverrides;
+    bool m_textureAssetsPending = true;
     std::vector<std::string> m_shaderPropertyOrder;
 
     // Multi-pass pipeline storage

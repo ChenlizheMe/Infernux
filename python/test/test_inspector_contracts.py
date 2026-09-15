@@ -14,12 +14,99 @@ from Infernux.engine.ui import inspector_support
 from Infernux.engine.ui import inspector_utils
 
 
+def test_generic_native_inspector_uses_declared_schema(scene):
+    from Infernux.engine.ui import inspector_components
+    from Infernux.components.fields import FieldType
+
+    owner = scene.create_game_object("DeclaredInspectorCamera")
+    camera = owner.add_component("Camera")
+
+    fields = inspector_components._declared_native_fields(camera)
+    by_name = {name: (schema, metadata, value) for name, schema, metadata, value in fields}
+
+    assert len(by_name) == 13
+    assert by_name["targetTextureGuid"][1].asset_type == "RenderTexture"
+    assert by_name["targetTextureGuid"][2] is None
+    assert by_name["fov"][0].attributes["range"] == (1.0, 179.0)
+    assert by_name["fov"][1].field_type is FieldType.FLOAT
+    assert by_name["projectionMode"][1].field_type is FieldType.ENUM
+
+
+def test_generic_native_inspector_does_not_infer_document_values():
+    from Infernux.engine.ui import inspector_components
+
+    class UndeclaredNativeProbe:
+        type_name = "UndeclaredNativeProbe"
+
+        @staticmethod
+        def serialize_document():
+            return {"scalar": 2.0, "vector": [1.0, 2.0, 3.0]}
+
+    assert inspector_components._declared_native_fields(UndeclaredNativeProbe()) == []
+
+
 class _FakeSemanticContext:
     def __init__(self):
         self.semantic_items = []
 
     def record_semantic_item(self, kind, label, enabled, semantic_id):
         self.semantic_items.append((kind, label, enabled, semantic_id))
+
+
+def test_mesh_copy_dialog_uses_project_command_and_cancel_has_no_effect(monkeypatch):
+    from Infernux.engine.interaction import EditorInteractionCore
+    from Infernux.engine.ui import _dialogs, _inspector_extra_renderers as extra
+    from Infernux.engine.ui import _inspector_references as references
+
+    calls = []
+    mesh = object()
+    service = SimpleNamespace(
+        project_root="/project",
+        save_mesh_copy=lambda value, path: calls.append((value, path)) or path,
+    )
+    monkeypatch.setattr(EditorInteractionCore, "instance", lambda: SimpleNamespace(project_assets=service))
+    monkeypatch.setattr(references, "ping_asset_in_project", lambda path: calls.append(path))
+    monkeypatch.setattr(_dialogs, "save_file_dialog", lambda **kwargs: None)
+    assert extra._save_mesh_asset_copy(mesh) is None
+    assert calls == []
+
+    def choose(**kwargs):
+        assert kwargs["default_ext"] == "inxmesh"
+        assert Path(kwargs["initial_dir"]) == Path("/project/Assets")
+        return "/project/Assets/copy.inxmesh"
+
+    monkeypatch.setattr(_dialogs, "save_file_dialog", choose)
+    assert extra._save_mesh_asset_copy(mesh) == "/project/Assets/copy.inxmesh"
+    assert calls == [(mesh, "/project/Assets/copy.inxmesh"), "/project/Assets/copy.inxmesh"]
+
+
+@pytest.mark.parametrize("mesh", [None, SimpleNamespace(has_skinned_data=True)])
+def test_mesh_copy_button_does_not_offer_unsupported_sources(mesh):
+    from Infernux.engine.ui import _inspector_extra_renderers as extra
+
+    extra._render_mesh_save_copy(object(), SimpleNamespace(get_mesh_asset=lambda: mesh))
+
+
+def test_mesh_copy_button_dispatches_current_geometry_and_reports_failure(monkeypatch):
+    from Infernux.engine.ui import _inspector_extra_renderers as extra
+
+    mesh = SimpleNamespace(has_skinned_data=False)
+    component = SimpleNamespace(component_id=42, get_mesh_asset=lambda: mesh)
+    calls = []
+    ctx = SimpleNamespace(button=lambda label: calls.append(label) or True)
+    monkeypatch.setattr(extra, "_save_mesh_asset_copy", lambda value: calls.append(value))
+    extra._render_mesh_save_copy(ctx, component)
+    assert calls[-1] is mesh
+    assert calls[0].endswith("##mesh_copy_42")
+
+    def conflict(value):
+        raise FileExistsError("copy.inxmesh already exists")
+
+    monkeypatch.setattr(extra, "_save_mesh_asset_copy", conflict)
+    errors = []
+    monkeypatch.setattr(extra.Debug, "log_error", errors.append)
+    extra._render_mesh_save_copy(ctx, component)
+    assert len(errors) == 1 and "already exists" in errors[0]
 
 
 def test_material_guid_resolution_requires_asset_database(monkeypatch):
@@ -606,22 +693,24 @@ def test_ui_layout_vector_exposes_stable_axis_semantic_base(monkeypatch):
     assert ctx.vector_semantics == ["inspector.object.55.component.203.size"]
 
 
-def test_ui_size_edit_keeps_position_set_after_rect_was_cached():
+def test_ui_size_edit_keeps_position_set_after_rect_was_cached(scene):
     from Infernux.engine.interaction import EditorInteractionCore
     from Infernux.engine.ui.inspector_ui_components import (
         _apply_size_preserve_top_left,
         _apply_visual_position,
     )
-    from Infernux.ui import UIButton
+    from Infernux.ui import UIButton, UICanvas
     from Infernux.ui.inx_ui_screen_component import clear_rect_cache
     from Infernux.engine.undo import UndoManager
 
     previous_manager = UndoManager._instance
     manager = UndoManager()
     core = EditorInteractionCore()
-    canvas = SimpleNamespace(reference_width=1920, reference_height=1080)
-    button = UIButton()
-    button._get_parent_world_rect = lambda width, height: (0.0, 0.0, float(width), float(height))
+    canvas_object = scene.create_game_object('Resize cache Canvas')
+    canvas = canvas_object.add_py_component(UICanvas())
+    button_object = scene.create_game_object('Resize cache Button')
+    button_object.set_parent(canvas_object)
+    button = button_object.add_py_component(UIButton())
     clear_rect_cache(1)
 
     try:
@@ -632,7 +721,8 @@ def test_ui_size_edit_keeps_position_set_after_rect_was_cached():
         _apply_size_preserve_top_left(button, 280.0, 72.0, canvas)
 
         assert button.get_visual_rect(1920, 1080) == (820.0, 620.0, 280.0, 72.0)
-        assert (button.x, button.y) == (820.0, 620.0)
+        position = button_object.transform.local_position
+        assert (position.x, position.y) == (0.0, -116.0)
         assert len(manager.action_journal.applied_entries()) == 2
 
         manager.undo()
@@ -646,6 +736,111 @@ def test_ui_size_edit_keeps_position_set_after_rect_was_cached():
         assert button.get_visual_rect(1920, 1080) == initial_rect
     finally:
         core.shutdown()
+        manager.clear()
+        UndoManager._instance = previous_manager
+
+
+@pytest.mark.parametrize("rotation", [0.0, 37.0, 90.0])
+@pytest.mark.parametrize("world", [False, True])
+def test_ui_resize_undo_restores_geometry_and_transform_together(scene, rotation, world):
+    from Infernux.engine.interaction import EditorInteractionCore
+    from Infernux.engine.ui.inspector_ui_components import _apply_size_preserve_top_left
+    from Infernux.engine.undo import UndoManager
+    from Infernux.lib import Vector3
+    from Infernux.ui import UIButton, UICanvas
+
+    canvas = None
+    owner = scene.create_game_object("Resize target")
+    if not world:
+        root = scene.create_game_object("Resize Canvas")
+        canvas = root.add_py_component(UICanvas())
+        owner.set_parent(root)
+    button = owner.add_py_component(UIButton())
+    owner.transform.local_position = Vector3(30.0, -50.0, 7.0)
+    owner.transform.local_euler_angles = Vector3(0.0, 0.0, rotation)
+
+    def position():
+        value = owner.transform.local_position
+        return value.x, value.y, value.z
+
+    old_position = position()
+    old_size = (button.width, button.height)
+    old_corners = button.get_rotated_corners(1920.0, 1080.0)
+    previous_manager = UndoManager._instance
+    manager = UndoManager()
+    core = EditorInteractionCore()
+    try:
+        _apply_size_preserve_top_left(button, 280.0, 72.0, canvas)
+        new_position = position()
+        assert (button.width, button.height) == (280.0, 72.0)
+        assert len(manager.action_journal.applied_entries()) == 1
+        if world:
+            assert new_position == old_position
+        else:
+            assert button.get_rotated_corners(1920.0, 1080.0)[0] == pytest.approx(
+                old_corners[0], abs=1e-4
+            )
+        assert new_position[2] == 7.0
+        manager.undo()
+        assert position() == old_position
+        assert (button.width, button.height) == old_size
+        for actual, expected in zip(button.get_rotated_corners(1920.0, 1080.0), old_corners):
+            assert actual == pytest.approx(expected)
+        manager.redo()
+        assert position() == new_position
+        assert (button.width, button.height) == (280.0, 72.0)
+    finally:
+        core.shutdown()
+        manager.clear()
+        UndoManager._instance = previous_manager
+
+
+def test_ui_position_and_quarter_turn_edit_the_native_transform(scene):
+    from Infernux.components.value_codec import VALUE_CODECS
+    from Infernux.engine.interaction import EditorInteractionCore
+    from Infernux.engine.ui.inspector_ui_components import (
+        _apply_visual_position,
+        _rotate_component_90,
+    )
+    from Infernux.engine.undo import UndoManager
+    from Infernux.ui import UIButton, UICanvas
+
+    canvas_object = scene.create_game_object("TransformUICanvas")
+    canvas = canvas_object.add_py_component(UICanvas())
+    button_object = scene.create_game_object("TransformUIButton")
+    button_object.set_parent(canvas_object, False)
+    button = button_object.add_py_component(UIButton())
+    canvas.reference_width = 1920.0
+    canvas.reference_height = 1080.0
+
+    previous_manager = UndoManager._instance
+    manager = UndoManager()
+    core = EditorInteractionCore()
+    initial_position = VALUE_CODECS.encode(button_object.transform.local_position)
+    try:
+        _apply_visual_position(button, 820.0, 620.0, canvas)
+        assert button.get_visual_rect(1920.0, 1080.0)[:2] == pytest.approx(
+            (820.0, 620.0)
+        )
+        assert len(manager.action_journal.applied_entries()) == 1
+
+        _rotate_component_90(button)
+        assert VALUE_CODECS.encode(
+            button_object.transform.local_euler_angles
+        )[2] == pytest.approx(90.0)
+        assert len(manager.action_journal.applied_entries()) == 2
+
+        manager.undo()
+        assert VALUE_CODECS.encode(
+            button_object.transform.local_euler_angles
+        )[2] == pytest.approx(0.0)
+        manager.undo()
+        assert VALUE_CODECS.encode(
+            button_object.transform.local_position
+        ) == pytest.approx(initial_position)
+    finally:
+        core.shutdown()
+        manager.clear()
         UndoManager._instance = previous_manager
 
 
@@ -2111,8 +2306,10 @@ def test_only_categories_with_shared_document_contract_are_read_write():
 
     assert read_write == {
         "material",
+        "data_asset",
         "render_effect",
         "physic_material",
+        "render_texture",
         "animclip",
         "animclip3d",
     }

@@ -8,9 +8,11 @@ from .fields import FieldMetadata
 
 
 def get_serializable_type_id(value: type | SerializableObject) -> str: ...
+def get_serializable_schema_version(value: type | SerializableObject) -> int: ...
 def get_serializable_class(type_id: str) -> Optional[Type[SerializableObject]]:
     """Look up a registered SerializableObject subclass by module:qualname."""
     ...
+def get_registered_serializable_types() -> tuple[tuple[str, Type[SerializableObject]], ...]: ...
 
 
 class SerializableObject:
@@ -18,10 +20,13 @@ class SerializableObject:
 
     Subclass this to create custom serializable data types that can be
     used as InxComponent field values (scalars or list elements).
+    Declarations use the component parser, including annotation-only fields,
+    Annotated metadata and explicit private serialized fields.
     """
 
     _serialized_fields_: Dict[str, FieldMetadata]
     __serialized_type_id__: str
+    __serialized_schema_version__: int
 
     def __init__(self, **kwargs: Any) -> None: ...
     def _serialize(self) -> dict: ...

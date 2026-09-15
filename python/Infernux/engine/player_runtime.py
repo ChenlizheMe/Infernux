@@ -46,9 +46,19 @@ class PlayerRuntimeSession:
         self._membership_warmup_frames = 0
 
     def _refresh_execution_membership(self) -> None:
-        refresh = getattr(self._execution_scheduler, "refresh_scene_membership", None)
-        if callable(refresh):
-            refresh()
+        # Defer the registry scan to the scheduler's next safe point.  Calling
+        # the scan synchronously from native scene callbacks opens a runtime
+        # transaction while a frame is active; marking it pending preserves the
+        # single-owner boundary without dropping freshly published components.
+        # The native pre-scene callback may run while a frame transaction is
+        # active.  Only mark the registry scan here; the scheduler consumes it
+        # at its next owner safe point and publishes the immutable phase plan.
+        scheduler = self._execution_scheduler
+        scheduler._registry_scan_pending = True
+        # Advertise that Python work exists immediately.  This only changes
+        # the cheap native gate; the phase counts are published by
+        # ``prepare_frame`` at the next owner safe point.
+        scheduler._sync_native_work_availability()
 
     @property
     def is_playing(self) -> bool:
@@ -171,8 +181,6 @@ class PlayerRuntimeSession:
             Debug.log_warning("Player cannot start without an active scene")
             return False
         Time._reset()
-        from Infernux.tween import clear_tweens
-        clear_tweens()
         self._last_frame_time = time.time()
         from Infernux.lib import _Infernux as native_module
 
@@ -246,8 +254,6 @@ class PlayerRuntimeSession:
 
     def shutdown(self) -> None:
         """Stop runtime callbacks without restoring or saving editor state."""
-        from Infernux.tween import clear_tweens
-        clear_tweens()
         if self._state != "stopped":
             try:
                 from Infernux.lib import SceneManager

@@ -259,6 +259,10 @@ class VulkanRhiDevice final : public rhi::Device
     [[nodiscard]] rhi::GraphicsPipelineHandle CreateGraphicsPipeline(const rhi::GraphicsPipelineDesc &desc) override;
     [[nodiscard]] rhi::ComputePipelineHandle CreateComputePipeline(const rhi::ComputePipelineDesc &desc) override;
     bool WriteBuffer(rhi::BufferHandle handle, uint64_t offset, const void *data, uint64_t byteSize) override;
+    [[nodiscard]] void *MapBuffer(rhi::BufferHandle handle, uint64_t offset, uint64_t byteSize,
+                                  rhi::BufferMapAccess access) override;
+    [[nodiscard]] bool UnmapBuffer(rhi::BufferHandle handle, uint64_t offset, uint64_t byteSize,
+                                   rhi::BufferMapAccess access) override;
     [[nodiscard]] bool ReadBuffer(rhi::BufferHandle handle, uint64_t offset, void *data, uint64_t byteSize) override;
     [[nodiscard]] rhi::RenderTargetLayoutHandle RegisterRenderTargetLayout(VkRenderPass renderPass);
 
@@ -413,6 +417,8 @@ class VulkanRhiDevice final : public rhi::Device
 
     static void CopyBuffer(void *context, rhi::BufferHandle source, rhi::BufferHandle destination,
                            const rhi::BufferCopyRegion &region);
+    static bool FillBuffer(void *context, rhi::BufferHandle destination, uint64_t offset, uint64_t byteSize,
+                           uint32_t value);
     static void CopyTexture(void *context, rhi::TextureHandle source, rhi::TextureHandle destination,
                             const rhi::TextureCopyRegion &region);
     static void ResolveTexture(void *context, rhi::TextureHandle source, rhi::TextureHandle destination,

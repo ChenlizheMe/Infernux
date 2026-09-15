@@ -54,14 +54,16 @@ ImGuiWindowFlags ToolbarPanel::GetWindowFlags() const
     return ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
 }
 
-void ToolbarPanel::PreRender(InxGUIContext * /*ctx*/)
+void ToolbarPanel::PreRender(InxGUIContext *ctx)
 {
-    // Push toolbar spacing vars (5 vars)
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, EditorTheme::TOOLBAR_WIN_PAD);
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, EditorTheme::TOOLBAR_FRAME_PAD);
-    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, EditorTheme::TOOLBAR_ITEM_SPC);
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, EditorTheme::TOOLBAR_FRAME_RND);
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, EditorTheme::TOOLBAR_FRAME_BRD);
+    // These authored overrides replace the already-scaled global style.
+    const float dpi = ctx->GetDpiScale();
+    const auto scaled = [dpi](ImVec2 size) { return ImVec2(size.x * dpi, size.y * dpi); };
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, scaled(EditorTheme::TOOLBAR_WIN_PAD));
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, scaled(EditorTheme::TOOLBAR_FRAME_PAD));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, scaled(EditorTheme::TOOLBAR_ITEM_SPC));
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, EditorTheme::TOOLBAR_FRAME_RND * dpi);
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, EditorTheme::TOOLBAR_FRAME_BRD * dpi);
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -87,6 +89,7 @@ void ToolbarPanel::PostRender(InxGUIContext * /*ctx*/)
 
 void ToolbarPanel::RenderPlayControls(InxGUIContext *ctx, float winW)
 {
+    const float dpi = ctx->GetDpiScale();
     const bool captureSemantics = InxGUISemantics::IsCaptureEnabled();
     PlayState state = getPlayState ? getPlayState() : PlayState::Edit;
     bool isPlaying = (state == PlayState::Playing || state == PlayState::Paused);
@@ -95,10 +98,10 @@ void ToolbarPanel::RenderPlayControls(InxGUIContext *ctx, float winW)
     const bool canTogglePause = canExecuteCommand && canExecuteCommand("play.pause", "");
     const bool canStep = canExecuteCommand && canExecuteCommand("play.step", "");
 
-    float btnW = 160.0f;
+    float btnW = 160.0f * dpi;
     float cx = (winW - btnW) * 0.5f;
-    if (cx < 6.0f)
-        cx = 6.0f;
+    if (cx < 6.0f * dpi)
+        cx = 6.0f * dpi;
     ImGui::SetCursorPosX(cx);
 
     // ── Play / Stop ──────────────────────────────────────────────
@@ -115,7 +118,7 @@ void ToolbarPanel::RenderPlayControls(InxGUIContext *ctx, float winW)
         executeCommand("play.toggle", "toolbar", "");
     ImGui::PopStyleColor(3);
 
-    ImGui::SameLine(0.0f, 2.0f);
+    ImGui::SameLine(0.0f, 2.0f * dpi);
 
     // ── Pause / Resume ───────────────────────────────────────────
     if (!isPlaying)
@@ -133,7 +136,7 @@ void ToolbarPanel::RenderPlayControls(InxGUIContext *ctx, float winW)
         executeCommand("play.pause", "toolbar", "");
     ImGui::PopStyleColor(3);
 
-    ImGui::SameLine(0.0f, 2.0f);
+    ImGui::SameLine(0.0f, 2.0f * dpi);
 
     // ── Step ─────────────────────────────────────────────────────
     if (isPaused)
@@ -151,7 +154,7 @@ void ToolbarPanel::RenderPlayControls(InxGUIContext *ctx, float winW)
 
     // ── Time label while playing ─────────────────────────────────
     if (isPlaying) {
-        ImGui::SameLine(0.0f, 8.0f);
+        ImGui::SameLine(0.0f, 8.0f * dpi);
         std::string tag = isPaused ? T("toolbar.status_paused") : T("toolbar.status_playing");
         std::string timeStr = getPlayTimeStr ? getPlayTimeStr() : "00:00.000";
         ImGui::TextUnformatted((tag + "  " + timeStr).c_str());
@@ -164,10 +167,11 @@ void ToolbarPanel::RenderPlayControls(InxGUIContext *ctx, float winW)
 
 void ToolbarPanel::RenderRightDropdowns(InxGUIContext *ctx, float winW)
 {
+    const float dpi = ctx->GetDpiScale();
     const bool captureSemantics = InxGUISemantics::IsCaptureEnabled();
-    float rightX = winW - 200.0f;
-    if (rightX < 300.0f)
-        rightX = 300.0f;
+    float rightX = winW - 200.0f * dpi;
+    if (rightX < 300.0f * dpi)
+        rightX = 300.0f * dpi;
 
     ImGui::SameLine(rightX);
 
@@ -188,7 +192,7 @@ void ToolbarPanel::RenderRightDropdowns(InxGUIContext *ctx, float winW)
         ctx->EndPopup();
     }
 
-    ImGui::SameLine(0.0f, 4.0f);
+    ImGui::SameLine(0.0f, 4.0f * dpi);
 
     // Camera dropdown
     EditorTheme::PushGhostButtonStyle();
@@ -219,7 +223,7 @@ void ToolbarPanel::PopupGizmos(InxGUIContext *ctx)
         return;
     }
 
-    ImGui::Dummy(ImVec2(200.0f, 0.0f)); // minimum popup width
+    ImGui::Dummy(ImVec2(200.0f * ctx->GetDpiScale(), 0.0f)); // minimum popup width
     ImGui::TextUnformatted(T("toolbar.gizmos_header").c_str());
     ImGui::Separator();
 
@@ -238,17 +242,18 @@ void ToolbarPanel::PopupGizmos(InxGUIContext *ctx)
 
 void ToolbarPanel::PopupCamera(InxGUIContext *ctx)
 {
+    const float dpi = ctx->GetDpiScale();
     // Sync from engine
     if (syncCameraFromEngine)
         m_cameraSettings = syncCameraFromEngine();
 
-    ImGui::Dummy(ImVec2(360.0f, 0.0f)); // minimum popup width
+    ImGui::Dummy(ImVec2(360.0f * dpi, 0.0f)); // minimum popup width
     ImGui::TextUnformatted(T("toolbar.scene_camera").c_str());
     ImGui::Separator();
 
     ImGui::TextUnformatted(T("toolbar.projection_mode").c_str());
-    ImGui::SameLine(145.0f);
-    ImGui::SetNextItemWidth(200.0f);
+    ImGui::SameLine(145.0f * dpi);
+    ImGui::SetNextItemWidth(200.0f * dpi);
     int projection = m_cameraSettings.orthographic ? 1 : 0;
     const std::string perspective = T("toolbar.perspective");
     const std::string orthographic = T("toolbar.orthographic");
@@ -310,13 +315,13 @@ void ToolbarPanel::PopupCamera(InxGUIContext *ctx)
             }
 
             ImGui::TextUnformatted(T(p.key).c_str());
-            ImGui::SameLine(145.0f);
+            ImGui::SameLine(145.0f * dpi);
 
             // Unity-style ranged slider (thin track + grab + numeric input),
             // matching the Game View scale slider. No FrameBg box.
             char sliderId[64];
             snprintf(sliderId, sizeof(sliderId), "##%s_value", p.key);
-            ImGui::SetNextItemWidth(210.0f);
+            ImGui::SetNextItemWidth(210.0f * dpi);
             const CameraSettings valueBefore = m_cameraSettings;
             const float valueBeforeFloat = *p.value;
 
@@ -344,7 +349,7 @@ void ToolbarPanel::PopupCamera(InxGUIContext *ctx)
     renderParams(navigationParams, std::size(navigationParams));
 
     // Reset button
-    ImGui::Dummy(ImVec2(0.0f, 2.0f));
+    ImGui::Dummy(ImVec2(0.0f, 2.0f * dpi));
     if (ImGui::Button(T("toolbar.reset_camera_settings").c_str(), ImVec2(-1.0f, 0.0f))) {
         const CameraSettings resetBefore = m_cameraSettings;
         if (beginCameraEdit)
@@ -362,7 +367,7 @@ void ToolbarPanel::PopupCamera(InxGUIContext *ctx)
         if (endCameraEdit)
             endCameraEdit("reset", m_cameraSettings);
     }
-    ImGui::Dummy(ImVec2(0.0f, 4.0f));
+    ImGui::Dummy(ImVec2(0.0f, 4.0f * dpi));
 }
 
 } // namespace infernux

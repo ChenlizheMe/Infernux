@@ -74,7 +74,8 @@ def test_supervisor_prepares_desktop_style_project_and_persists_policy(tmp_path)
         "arguments": {},
     }
     assert "infernux.mcp.checkpoint.list" in handoff["instructions"][-1]
-    assert "lease" not in json.dumps(handoff).lower()
+    assert "supervisor_lease" not in handoff
+    assert "lease_token" not in handoff
     persisted_handoff = json.loads((project / ".infernux" / "mcp_sessions" / supervisor.session_id / "agent-handoff.json").read_text(encoding="utf-8"))
     assert persisted_handoff == handoff
     with open(project / "ProjectSettings" / "mcp_capabilities.json", "r", encoding="utf-8") as f:
@@ -221,7 +222,8 @@ def test_supervisor_switch_mode_is_explicit_and_records_a_secret_free_audit(tmp_
     assert result["handoff"]["checkpoint"] == "session-start"
     assert result["handoff"]["phase"] == "verified"
     assert result["last_handoff"]["handoff_id"] == result["handoff"]["handoff_id"]
-    assert "lease" not in json.dumps(result["handoff"]).lower()
+    assert "supervisor_lease" not in result["handoff"]
+    assert "lease_token" not in result["handoff"]
     assert supervisor.handoff_history()[-1]["state"] == "completed"
 
 

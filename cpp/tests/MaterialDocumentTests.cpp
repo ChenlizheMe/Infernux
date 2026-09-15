@@ -74,6 +74,34 @@ void VerifyTransactionalFailure()
     assert(material.SerializeDocument() == before);
 }
 
+void VerifyMaterialIdentityIsNotSourceProvenance()
+{
+    InxMaterial first("Embedded", "Lit");
+    InxMaterial second("Embedded", "Lit");
+    const auto firstKey = first.GetMaterialKey();
+    const auto secondKey = second.GetMaterialKey();
+    assert(firstKey != secondKey);
+    first.SetFilePath("Assets/Models/shared.obj::submat:0");
+    second.SetFilePath(first.GetFilePath());
+    assert(first.GetMaterialKey() == firstKey);
+    assert(second.GetMaterialKey() == secondKey);
+    first.SetName("Renamed");
+    first.SetFilePath("Assets/Models/moved.obj::submat:0");
+    assert(first.GetMaterialKey() == firstKey);
+    const InxMaterial copied(first);
+    assert(copied.GetMaterialKey() != firstKey);
+
+    first.SetGuid("shared-material-guid");
+    second.SetGuid("shared-material-guid");
+    assert(first.GetMaterialKey() == "shared-material-guid");
+    assert(first.GetMaterialKey() == second.GetMaterialKey());
+    const auto clone = first.Clone();
+    clone->SetFilePath(first.GetFilePath());
+    clone->SetName(first.GetName());
+    assert(clone->GetMaterialKey() != first.GetMaterialKey());
+    assert(clone->GetMaterialKey() != copied.GetMaterialKey());
+}
+
 void VerifyRenderStateVersioning()
 {
     InxMaterial material("LiveState", "Unlit");
@@ -303,12 +331,47 @@ void VerifySparseMaterialUsesLinkedShaderDefaults()
     assert(material.GetVersion() == synchronizedVersion);
 }
 
+void VerifyColorVectorShaderTransitionsPreserveAuthoredValues()
+{
+    InxMaterial material("AuthoredTint", "Unlit");
+    const glm::vec4 tint(1.0f, 0.55f, 0.12f, 1.0f);
+    material.SetVector4("baseColor", tint);
+    ShaderProgramArtifact artifact;
+    ShaderProgramPropertyBinding binding;
+    binding.name = "baseColor";
+    binding.type = "Color";
+    binding.defaultValue = "[1,1,1,1]";
+    artifact.properties.push_back(binding);
+
+    // Color and Float4 share their numeric representation. Shader semantic
+    // changes must not discard an authored tint on first pipeline creation.
+    for (const auto *type : {"Color", "Float4", "Color"}) {
+        artifact.properties[0].type = type;
+        const auto version = material.GetVersion();
+        assert(material.SynchronizeShaderPropertyDefaults(artifact));
+        assert(material.GetVersion() > version);
+        const auto expected = std::string(type) == "Color" ? infernux::MaterialPropertyType::Color
+                                                           : infernux::MaterialPropertyType::Float4;
+        assert(material.GetProperty("baseColor")->type == expected);
+        assert(std::get<glm::vec4>(material.GetProperty("baseColor")->value) == tint);
+        assert(material.SerializeDocument()["properties"]["baseColor"]["type"] == static_cast<int>(expected));
+        const auto synchronized = material.GetVersion();
+        assert(!material.SynchronizeShaderPropertyDefaults(artifact));
+        assert(material.GetVersion() == synchronized);
+    }
+    // A genuinely incompatible shape still takes the shader's typed default.
+    material.SetFloat("baseColor", 0.25f);
+    assert(material.SynchronizeShaderPropertyDefaults(artifact));
+    assert(std::get<glm::vec4>(material.GetProperty("baseColor")->value) == glm::vec4(1.0f));
+}
+
 } // namespace
 
 int main()
 {
     VerifyRemovedFieldRejection();
     VerifyStableReferencesAndClone();
+    VerifyMaterialIdentityIsNotSourceProvenance();
     VerifyTransactionalFailure();
     VerifyRenderStateVersioning();
     VerifyShaderReferenceVersioning();
@@ -318,6 +381,7 @@ int main()
     VerifyBuiltinSixWaySmokeMaterial();
     VerifyBackendNeutralRenderStateSchema();
     VerifySparseMaterialUsesLinkedShaderDefaults();
+    VerifyColorVectorShaderTransitionsPreserveAuthoredValues();
     std::cout << "Material document tests passed\n";
     return 0;
 }

@@ -77,6 +77,30 @@ def test_all_imported_assets_join_runtime_product_closure(tmp_path):
     assert set(selected) == {"scene", "config", "material", "unused"}
 
 
+def test_selected_package_products_and_dependencies_use_the_project_closure(tmp_path):
+    project = tmp_path / "Project"
+    paths = ("Assets/Main.scene", "Packages/a/runtime/Monitor.rendertexture",
+             "Packages/shared/runtime/Surface.png", "Packages/disabled/runtime/Unused.rendertexture")
+    for relative in paths:
+        path = project / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{}", encoding="utf-8")
+    settings = project / "ProjectSettings"
+    settings.mkdir()
+    (settings / "BuildSettings.json").write_text(json.dumps({"scenes": [paths[0]]}), encoding="utf-8")
+    _write_asset_index(project, [
+        _entry("scene", paths[0]), _entry("monitor", paths[1], ["texture"]),
+        _entry("texture", paths[2]), _entry("disabled", paths[3]),
+    ])
+    builder = GameBuilder(str(project), str(tmp_path / "Build"))
+    entries = load_asset_index(project)
+    assert set(builder._collect_library_asset_entries(entries)) == {"scene"}
+    selected = builder._collect_library_asset_entries(entries, extra_roots=("monitor",))
+    assert set(selected) == {"scene", "monitor", "texture"}
+    with pytest.raises(RuntimeError, match="absent from the current catalog"):
+        builder._collect_library_asset_entries(entries, extra_roots=("missing",))
+
+
 def test_cook_stages_all_imported_assets_but_not_unindexed_sources(tmp_path):
     project = tmp_path / "Project"
     assets = project / "Assets"

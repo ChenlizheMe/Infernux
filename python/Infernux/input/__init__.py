@@ -114,6 +114,11 @@ class _InputMeta(type):
         return (abs_x - vx, abs_y - vy)
 
     @property
+    def game_viewport_size(cls) -> Tuple[float, float]:
+        """Current Game View size in pixels as ``(width, height)``."""
+        return cls._game_viewport_size
+
+    @property
     def mouse_scroll_delta(cls) -> Tuple[float, float]:
         """Scroll delta as ``(x, y)`` this frame (positive y = scroll up)."""
         if not cls._accepts_game_input():
@@ -324,6 +329,8 @@ class Input(metaclass=_InputMeta):
 
     _game_viewport_origin: Tuple[float, float] = (0.0, 0.0)
     """Top-left corner of the game image in absolute window pixels."""
+    _game_viewport_size: Tuple[float, float] = (0.0, 0.0)
+    """Current game image size in viewport pixels."""
 
     mouse_sensitivity: float = 0.1
     """Sensitivity multiplier applied to Mouse X / Mouse Y axes.
@@ -356,6 +363,11 @@ class Input(metaclass=_InputMeta):
         coordinates to viewport-relative ones.
         """
         Input._game_viewport_origin = (x, y)
+
+    @staticmethod
+    def set_game_viewport_size(width: float, height: float) -> None:
+        """Store the current Game View size in pixels."""
+        Input._game_viewport_size = (max(0.0, float(width)), max(0.0, float(height)))
 
     @staticmethod
     def is_game_focused() -> bool:
@@ -649,6 +661,35 @@ class Input(metaclass=_InputMeta):
     def is_cursor_locked() -> bool:
         """Return ``True`` when the cursor is locked."""
         return _NativeInputManager.instance().is_cursor_locked
+
+    @staticmethod
+    def set_cursor_visible(visible: bool) -> None:
+        """Show or hide the cursor without changing relative mouse mode."""
+        _NativeInputManager.instance().set_cursor_visible(visible)
+
+    @staticmethod
+    def is_cursor_visible() -> bool:
+        """Return the requested cursor visibility."""
+        return _NativeInputManager.instance().is_cursor_visible
+
+    @staticmethod
+    def set_cursor_confined(confined: bool) -> None:
+        """Confine or release the visible cursor without locking it."""
+        _NativeInputManager.instance().set_cursor_confined(confined)
+
+    @staticmethod
+    def is_cursor_confined() -> bool:
+        """Return whether visible cursor confinement is requested."""
+        return _NativeInputManager.instance().is_cursor_confined
+
+    @staticmethod
+    def warp_cursor(x: float, y: float) -> bool:
+        """Warp the visible cursor in logical window coordinates.
+
+        Returns ``False`` on hosts without hardware cursor warp, including Web.
+        The warp-generated motion event never contributes to gameplay delta.
+        """
+        return bool(_NativeInputManager.instance().warp_cursor(float(x), float(y)))
 
     @staticmethod
     def reset_input_axes() -> None:

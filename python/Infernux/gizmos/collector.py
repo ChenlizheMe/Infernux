@@ -305,7 +305,12 @@ class GizmosCollector:
             native.upload_component_gizmos(
                 vert_buf, vert_count, idx_buf, desc_buf, desc_count)
         else:
-            native.clear_component_gizmos()
+            native.clear_component_cpu_gizmos()
+
+        # Resident lines retain positions on the GPU. Their compute expansion
+        # has already been recorded in the current Gizmo phase; this call only
+        # publishes stable topology and native buffer identities to rendering.
+        native.upload_component_resident_gizmos(Gizmos._get_resident_data())
 
         # ---- Pack and upload icon data ----
         icon_packed = Gizmos._get_packed_icon_data()

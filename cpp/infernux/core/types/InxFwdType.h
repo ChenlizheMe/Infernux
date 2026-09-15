@@ -18,7 +18,9 @@ enum class ResourceType
     DefaultBinary,
     PhysicMaterial, // Physics surface material (.physicMaterial)
     RenderEffect,   // Reusable render effect or effect group source document
-    ParticleGraph   // GPU particle authoring graph (.particlegraph)
+    ParticleGraph,  // GPU particle authoring graph (.particlegraph)
+    DataAsset,      // Typed, GUID-addressed authored project data (.inxdata)
+    RenderTexture   // GPU target description (.rendertexture), not rendered pixels
 };
 
 } // namespace infernux

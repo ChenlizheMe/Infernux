@@ -37,6 +37,7 @@ _DOCUMENT_TYPES = {
     ".animclip3d": "animation_clip_3d",
     ".animfsm": "animation_fsm",
     ".animtimeline": "animation_timeline",
+    ".inxdata": "data_asset",
 }
 
 # One source of truth for authoring documents that must be cooked into
@@ -44,10 +45,10 @@ _DOCUMENT_TYPES = {
 # separate: GameBuilder may rewrite project-owned absolute paths only in
 # formats whose parser contract is JSON.
 RUNTIME_AUTHORING_DOCUMENT_SUFFIXES = frozenset(_DOCUMENT_TYPES) | frozenset(
-    {".graph", ".particlegraph"}
+    {".graph", ".particlegraph", ".rendertexture"}
 )
 RUNTIME_JSON_DOCUMENT_SUFFIXES = frozenset(_DOCUMENT_TYPES) | frozenset(
-    {".graph", ".particlegraph", ".json"}
+    {".graph", ".particlegraph", ".rendertexture", ".json"}
 )
 _AUDIO_TYPES = {extension: "audio" for extension in AUDIO_EXTENSIONS}
 _DIRECT_TEXTURE_SUFFIXES = {".png", ".jpg", ".jpeg", ".tga", ".bmp", ".hdr", ".exr"}
@@ -56,6 +57,7 @@ _BINARY_ARTIFACT_MAGIC = {
     ".inxtex": b"INXTEXTURE",
     ".inxmesh": b"INXMESHART",
     ".inxskin": b"INXSKINAR",
+    ".inxrtex": b"INXRTEX1",
 }
 _ARTIFACT_SUFFIXES = frozenset(_BINARY_ARTIFACT_MAGIC) | frozenset(
     {".inxparticle", ".inxeffect"}
@@ -84,6 +86,7 @@ _RUNTIME_ARTIFACT_REASON_BY_LOGICAL_TYPE = {
     "animation_clip_3d": "runtime_loader_requires_serialized_document",
     "animation_fsm": "runtime_loader_requires_serialized_document",
     "animation_timeline": "runtime_loader_requires_serialized_document",
+    "data_asset": "runtime_loader_requires_serialized_document",
     "audio": "runtime_audio_backend_requires_encoded_stream",
     "project_runtime_document": "runtime_loader_requires_opaque_project_payload",
     "project_runtime_blob": "runtime_loader_requires_opaque_project_payload",
@@ -399,6 +402,8 @@ def logical_asset_type(entry: dict[str, Any]) -> str:
         return "mesh"
     if suffix == ".particlegraph":
         return "particlegraph"
+    if suffix == ".rendertexture":
+        return "rendertexture"
     return ""
 
 
@@ -433,6 +438,8 @@ def logical_type_for_path(path: str) -> str:
     if lower.startswith("library/artifacts/document/"):
         document_type = _DOCUMENT_TYPES.get(suffix, "project_runtime_document")
         return f"{document_type}_artifact"
+    if lower.startswith("library/artifacts/data/") and suffix == ".inxasset":
+        return "data_asset_artifact"
     if lower.startswith("library/artifacts/audio/"):
         return "audio_artifact"
     if lower.startswith("library/artifacts/blob/"):
@@ -450,11 +457,17 @@ def logical_type_for_path(path: str) -> str:
     if suffix == ".inxparticle":
         return "particle_graph_artifact"
     if suffix == ".inxmesh":
+        if lower.startswith(("assets/", "packages/")):
+            return "model_source"
         return "mesh_artifact"
     if suffix == ".inxskin":
         return "skinned_mesh_artifact"
     if suffix == ".inxtex":
         return "texture_artifact"
+    if suffix == ".inxrtex":
+        return "render_texture_artifact"
+    if suffix == ".rendertexture":
+        return "render_texture_source"
     if suffix == ".inxeffect":
         return "render_effect_artifact"
     if suffix in {".json", ".yaml", ".yml"}:
@@ -480,6 +493,7 @@ def payload_kind_for(logical_type: str) -> str:
         "animation_clip_3d",
         "animation_timeline",
         "animation_fsm",
+        "data_asset",
     }:
         return "serialized_runtime_document"
     if logical_type == "compiled_script":

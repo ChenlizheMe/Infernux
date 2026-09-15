@@ -59,6 +59,7 @@ struct SampledImageInfo
     uint32_t arraySize; // For texture arrays
     VkShaderStageFlags stageFlags;
     VkDescriptorType descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bool multisampled = false;
 };
 
 struct StorageBufferInfo
@@ -168,6 +169,11 @@ class ShaderReflection
         return m_stage;
     }
 
+    [[nodiscard]] bool RequiresSampleRateShading() const noexcept
+    {
+        return m_sampleRateShading;
+    }
+
     /**
      * @brief Get all descriptor set layout bindings
      * @param set The descriptor set index
@@ -185,6 +191,7 @@ class ShaderReflection
     void Clear();
 
   private:
+    bool m_sampleRateShading = false;
     VkShaderStageFlagBits m_stage = VK_SHADER_STAGE_VERTEX_BIT;
 
     std::vector<UniformBufferInfo> m_uniformBuffers;

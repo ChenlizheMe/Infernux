@@ -17,7 +17,8 @@ void RegisterAssetDatabaseBindings(py::module_ &m)
     py::enum_<AssetEvent>(m, "AssetEvent")
         .value("Deleted", AssetEvent::Deleted)
         .value("Modified", AssetEvent::Modified)
-        .value("Moved", AssetEvent::Moved);
+        .value("Moved", AssetEvent::Moved)
+        .value("RuntimeModified", AssetEvent::RuntimeModified);
 
     py::enum_<AssetMutationErrorCode>(m, "AssetMutationErrorCode")
         .value("NONE", AssetMutationErrorCode::None)

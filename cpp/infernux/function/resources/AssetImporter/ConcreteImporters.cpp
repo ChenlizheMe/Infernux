@@ -7,6 +7,7 @@
 #include <function/resources/InxSkinnedMesh/SkinnedMeshArtifact.h>
 #include <function/resources/InxTexture/TextureArtifact.h>
 #include <function/resources/InxTexture/TextureDecoder.h>
+#include <function/resources/RenderTexture/RenderTextureArtifact.h>
 #include <platform/filesystem/InxPath.h>
 
 #include <algorithm>
@@ -40,6 +41,20 @@ void RejectPathOnlyReference(const std::string &guid, const std::string &pathHin
 }
 
 } // namespace
+
+ImportArtifact RenderTextureImporter::Import(const ImportRequest &request) const
+{
+    std::ifstream stream(ToFsPath(request.sourcePath));
+    if (!stream)
+        throw std::runtime_error("Cannot open RenderTexture source: " + request.sourcePath);
+    const auto description = RenderTextureArtifact::ParseDocument(nlohmann::json::parse(stream));
+    ImportArtifact result(request.metadata);
+    result.dependenciesAuthoritative = true;
+    result.runtimeCpuArtifacts.push_back(
+        {ImportArtifact::RuntimeArtifactKind::Primary, ResourceType::RenderTexture,
+         RenderTextureArtifact::Encode(description, request.metadata.GetDataAs<std::string>("content_hash"))});
+    return result;
+}
 
 ImportArtifact TextureImporter::Import(const ImportRequest &request) const
 {
@@ -414,6 +429,71 @@ std::vector<std::string> ParticleGraphImporter::ScanDependencies(const ImportReq
             }
         }
     }
+
+    std::vector<std::string> ordered(dependencies.begin(), dependencies.end());
+    std::sort(ordered.begin(), ordered.end());
+    return ordered;
+}
+
+ImportArtifact DataAssetImporter::Import(const ImportRequest &request) const
+{
+    ImportArtifact artifact(request.metadata);
+    artifact.dependencies = ScanDependencies(request);
+    artifact.dependenciesAuthoritative = true;
+    return artifact;
+}
+
+std::vector<std::string> DataAssetImporter::ScanDependencies(const ImportRequest &request) const
+{
+    nlohmann::json root;
+    try {
+        std::ifstream file(ToFsPath(request.sourcePath));
+        if (!file.is_open())
+            throw std::runtime_error("failed to open data asset document");
+        file >> root;
+    } catch (const std::exception &e) {
+        throw std::runtime_error("DataAssetImporter failed to parse '" + request.sourcePath + "': " + e.what());
+    }
+
+    const bool legacyDocument = root.is_object() && root.size() == 3;
+    const bool versionedDocument = root.is_object() && root.size() == 4 && root.contains("schema_version") &&
+                                   root["schema_version"].is_number_unsigned() &&
+                                   root["schema_version"].get<uint64_t>() > 0;
+    if ((!legacyDocument && !versionedDocument) || root.value("$type", std::string{}) != "data_asset" ||
+        !root.contains("type_id") || !root["type_id"].is_string() ||
+        root["type_id"].get_ref<const std::string &>().empty() || !root.contains("fields") ||
+        !root["fields"].is_object()) {
+        throw std::runtime_error("DataAsset document must contain $type='data_asset', type_id, fields, and an optional "
+                                 "positive schema_version");
+    }
+
+    std::unordered_set<std::string> dependencies;
+    std::function<void(const nlohmann::json &, const std::string &)> scan;
+    scan = [&](const nlohmann::json &value, const std::string &location) {
+        if (value.is_array()) {
+            for (size_t index = 0; index < value.size(); ++index)
+                scan(value[index], location + "[" + std::to_string(index) + "]");
+            return;
+        }
+        if (!value.is_object())
+            return;
+        if (value.value("$type", std::string{}) == "asset_ref") {
+            if (value.size() != 4 || !value.contains("asset_type") || !value["asset_type"].is_string() ||
+                !value.contains("guid") || !value["guid"].is_string() || !value.contains("path_hint") ||
+                !value["path_hint"].is_string()) {
+                throw std::runtime_error(location + " contains a malformed asset reference");
+            }
+            const std::string guid = value["guid"].get<std::string>();
+            const std::string pathHint = value["path_hint"].get<std::string>();
+            RejectPathOnlyReference(guid, pathHint, location);
+            if (!guid.empty())
+                dependencies.insert(guid);
+            return;
+        }
+        for (const auto &[key, child] : value.items())
+            scan(child, location + "." + key);
+    };
+    scan(root["fields"], "data asset fields");
 
     std::vector<std::string> ordered(dependencies.begin(), dependencies.end());
     std::sort(ordered.begin(), ordered.end());

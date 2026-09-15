@@ -4,7 +4,7 @@ from typing import Annotated
 
 import pytest
 
-from Infernux.components import FormerlySerializedAs, InxComponent
+from Infernux.components import FormerlySerializedAs, InxComponent, serialized_field
 from Infernux.components._cds_migration import (
     FieldSchemaMigrationError,
     build_class_schema_migration,
@@ -73,6 +73,53 @@ def test_schema_migration_uses_explicit_previous_name_without_runtime_alias():
     assert values[instance] == {"velocity": pytest.approx(7.5)}
 
 
+def test_stable_id_rename_preserves_value_without_a_runtime_name_alias():
+    target = _component("StableRenameProbe", {"speed": serialized_field(1.0, field_id="movement")})
+    candidate = _component("StableRenameProbe", {"velocity": serialized_field(2.0, field_id="movement")})
+    instance = target()
+    instance.speed = 9.0
+    migration = build_class_schema_migration(target, candidate)
+    assert migration.changed
+    assert migration.removed_fields == ()
+    assert prepare_instance_values(migration, (instance,))[instance] == {"velocity": 9.0}
+    assert not hasattr(candidate(), "speed")
+
+
+def test_changed_id_does_not_reuse_value_just_because_name_matches():
+    target = _component("ChangedIdentityProbe", {"value": serialized_field(1, field_id="old")})
+    candidate = _component("ChangedIdentityProbe", {"value": serialized_field(2, field_id="new")})
+    instance = target()
+    instance.value = 9
+    migration = build_class_schema_migration(target, candidate)
+    assert migration.changed
+    assert migration.removed_fields == ("value",)
+    assert prepare_instance_values(migration, (instance,))[instance] == {"value": 2}
+
+
+def test_making_the_initial_name_id_explicit_does_not_change_storage():
+    target = _component("ExplicitInitialIdentityProbe", {"value": 1})
+    candidate = _component("ExplicitInitialIdentityProbe", {"value": serialized_field(1, field_id="value")})
+    instance = target()
+    instance.value = 9
+    migration = build_class_schema_migration(target, candidate)
+    assert not migration.changed
+    assert prepare_instance_values(migration, (instance,))[instance] == {"value": 9}
+
+
+def test_id_matching_handles_attribute_name_swap_without_swapping_meanings():
+    target = _component("IdentitySwapProbe", {
+        "first": serialized_field(1, field_id="a"), "second": serialized_field(2, field_id="b"),
+    })
+    candidate = _component("IdentitySwapProbe", {
+        "first": serialized_field(10, field_id="b"), "second": serialized_field(20, field_id="a"),
+    })
+    instance = target()
+    instance.first, instance.second = 7, 8
+    migration = build_class_schema_migration(target, candidate)
+    assert migration.changed
+    assert prepare_instance_values(migration, (instance,))[instance] == {"first": 8, "second": 7}
+
+
 def test_schema_migration_allows_int_to_float_widening_only():
     int_type = _component(
         "NumericWidenProbe",
@@ -93,6 +140,24 @@ def test_schema_migration_allows_int_to_float_widening_only():
 
     with pytest.raises(FieldSchemaMigrationError, match="not supported"):
         build_class_schema_migration(float_type, int_type)
+
+
+@pytest.mark.parametrize("field_type", [int, float])
+def test_schema_migration_applies_new_range_without_mutating_live_values(field_type):
+    target = _component("RangeMigration", {
+        "__annotations__": {"value": field_type},
+        "value": serialized_field(default=field_type(2), range=(0, 10)),
+    })
+    candidate = _component("RangeMigration", {
+        "__annotations__": {"value": field_type},
+        "value": serialized_field(default=field_type(2), range=(0, 5)),
+    })
+    instance = target()
+    instance.value = field_type(8)
+    prepared = prepare_instance_values(build_class_schema_migration(target, candidate), (instance,))
+    assert prepared[instance]["value"] == field_type(5)
+    assert type(prepared[instance]["value"]) is field_type
+    assert instance.value == field_type(8)
 
 
 def test_schema_migration_rejects_one_source_claimed_twice():

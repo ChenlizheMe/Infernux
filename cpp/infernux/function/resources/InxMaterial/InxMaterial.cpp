@@ -59,7 +59,10 @@ std::optional<MaterialPropertyType> ShaderMaterialPropertyType(const ShaderProgr
 
 bool MaterialValueMatchesType(const MaterialProperty &property, MaterialPropertyType type)
 {
-    if (property.type != type)
+    const auto isVector4 = [](MaterialPropertyType value) {
+        return value == MaterialPropertyType::Float4 || value == MaterialPropertyType::Color;
+    };
+    if (property.type != type && !(isVector4(property.type) && isVector4(type)))
         return false;
     switch (type) {
     case MaterialPropertyType::Float:
@@ -163,8 +166,9 @@ std::string RestoreTextureGuidReference(const std::string &textureGuid)
     const auto metadata = database->GetMetaByGuid(textureGuid);
     if (!metadata)
         return textureGuid;
-    if (metadata->GetResourceType() != ResourceType::Texture)
-        throw std::invalid_argument("asset GUID is not a Texture: " + textureGuid);
+    if (metadata->GetResourceType() != ResourceType::Texture &&
+        metadata->GetResourceType() != ResourceType::RenderTexture)
+        throw std::invalid_argument("asset GUID is not a Texture or RenderTexture: " + textureGuid);
     return textureGuid;
 }
 
@@ -523,6 +527,11 @@ InxMaterial::InxMaterial(const std::string &name) : m_name(name)
 {
 }
 
+InxMaterial::~InxMaterial()
+{
+    AssetDependencyGraph::Instance().ClearRuntimeDependenciesOf(GetTextureDependencyOwner());
+}
+
 InxMaterial::InxMaterial(const std::string &name, const std::string &shaderName)
     : m_name(name), m_vertexShader{"", shaderName, ""}, m_fragmentShader{"", shaderName, ""}
 {
@@ -562,6 +571,9 @@ InxMaterial &InxMaterial::operator=(const InxMaterial &other)
     m_renderState = other.m_renderState;
     m_renderStateOverrides = other.m_renderStateOverrides;
     m_properties = other.m_properties;
+    m_renderTextures.clear();
+    m_runtimeTextureOverrides.clear();
+    m_textureAssetsPending = true;
     m_shaderPropertyOrder = other.m_shaderPropertyOrder;
 
     // Reset runtime-only GPU state so this instance cannot retain stale handles.
@@ -583,6 +595,10 @@ InxMaterial &InxMaterial::operator=(const InxMaterial &other)
 void InxMaterial::SetPropertyValue(const std::string &name, MaterialPropertyType type, MaterialPropertyValue value)
 {
     const auto existing = m_properties.find(name);
+    if (m_renderTextures.erase(name) ||
+        (existing != m_properties.end() && existing->second.type == MaterialPropertyType::Texture2D))
+        m_textureAssetsPending = true;
+    m_runtimeTextureOverrides.erase(name);
     const bool hdr = existing != m_properties.end() && existing->second.hdr;
     const auto range = existing != m_properties.end() ? existing->second.range : std::nullopt;
     m_properties[name] = MaterialProperty{name, type, std::move(value), hdr, range};
@@ -625,7 +641,7 @@ void InxMaterial::SetMatrix(const std::string &name, const glm::mat4 &matrix)
     SetPropertyValue(name, MaterialPropertyType::Mat4, matrix);
 }
 
-std::string InxMaterial::RequireTextureGuid(const std::string &textureGuid)
+std::string InxMaterial::RequireTextureGuid(const std::string &textureGuid, bool allowRenderTexture)
 {
     if (textureGuid.empty())
         return {};
@@ -637,14 +653,75 @@ std::string InxMaterial::RequireTextureGuid(const std::string &textureGuid)
     const auto metadata = database->GetMetaByGuid(textureGuid);
     if (!metadata)
         throw std::invalid_argument("texture GUID does not exist: " + textureGuid);
-    if (metadata->GetResourceType() != ResourceType::Texture)
-        throw std::invalid_argument("asset GUID is not a Texture: " + textureGuid);
+    if (metadata->GetResourceType() != ResourceType::Texture &&
+        !(allowRenderTexture && metadata->GetResourceType() == ResourceType::RenderTexture))
+        throw std::invalid_argument("asset GUID is not a Texture or RenderTexture: " + textureGuid);
     return textureGuid;
+}
+
+void InxMaterial::SetRenderTexture(const std::string &name, std::shared_ptr<rhi::RenderTexture> texture)
+{
+    if (!texture)
+        throw std::invalid_argument("Material RenderTexture binding requires a resource");
+    const auto property = m_properties.find(name);
+    if (property != m_properties.end() && property->second.type != MaterialPropertyType::Texture2D)
+        throw std::invalid_argument("Material property is not a texture: " + name);
+    if (GetRenderTexture(name) == texture && HasRuntimeTextureOverride(name))
+        return;
+    // Introduce the shader property if necessary, never a fake asset GUID.
+    if (property == m_properties.end())
+        m_properties.emplace(name, MaterialProperty{name, MaterialPropertyType::Texture2D, std::string{}});
+    m_renderTextures[name] = std::move(texture);
+    m_runtimeTextureOverrides.insert(name);
+    m_textureAssetsPending = true;
+    m_propertiesDirty = true;
+    ++m_version;
+}
+
+std::shared_ptr<rhi::RenderTexture> InxMaterial::GetRenderTexture(const std::string &name) const
+{
+    const auto found = m_renderTextures.find(name);
+    return found == m_renderTextures.end() ? nullptr : found->second;
+}
+
+void InxMaterial::PublishTextureAssets(std::unordered_map<std::string, std::shared_ptr<rhi::RenderTexture>> textures)
+{
+    for (const auto &name : m_runtimeTextureOverrides)
+        textures[name] = m_renderTextures.at(name);
+    if (textures != m_renderTextures) {
+        m_renderTextures = std::move(textures);
+        MarkPropertiesDirty();
+        ++m_version;
+    }
+    m_textureAssetsPending = false;
+}
+
+void InxMaterial::InvalidateTextureAssets(const std::string &guid, bool deleted)
+{
+    // Modified assets publish into their existing graphics owner. Keep that
+    // lease until resolution publishes the complete new binding set.
+    if (deleted) {
+        for (const auto &[name, property] : m_properties) {
+            if (property.type == MaterialPropertyType::Texture2D && std::get<std::string>(property.value) == guid &&
+                !HasRuntimeTextureOverride(name))
+                m_renderTextures.erase(name);
+        }
+    }
+    m_textureAssetsPending = true;
+    MarkPropertiesDirty();
+    ++m_version;
 }
 
 void InxMaterial::SetTextureGuid(const std::string &name, const std::string &textureGuid)
 {
-    const std::string validatedGuid = RequireTextureGuid(textureGuid);
+    const std::string validatedGuid = RequireTextureGuid(textureGuid, true);
+    const auto previous = m_properties.find(name);
+    if (previous != m_properties.end() && previous->second.type == MaterialPropertyType::Texture2D &&
+        std::get<std::string>(previous->second.value) == validatedGuid && !HasRuntimeTextureOverride(name))
+        return;
+    const bool hadRuntimeTexture = m_renderTextures.erase(name) != 0;
+    m_runtimeTextureOverrides.erase(name);
+    m_textureAssetsPending = true;
 
     auto it = m_properties.find(name);
     std::string previousGuid;
@@ -655,7 +732,7 @@ void InxMaterial::SetTextureGuid(const std::string &name, const std::string &tex
         range = it->second.range;
         const auto *existing = std::get_if<std::string>(&it->second.value);
         if (existing) {
-            if (*existing == validatedGuid)
+            if (*existing == validatedGuid && !hadRuntimeTexture)
                 return;
             previousGuid = *existing;
         }
@@ -674,6 +751,12 @@ void InxMaterial::SetTextureGuid(const std::string &name, const std::string &tex
 
 void InxMaterial::ClearTexture(const std::string &name)
 {
+    m_runtimeTextureOverrides.erase(name);
+    m_textureAssetsPending = true;
+    if (m_renderTextures.erase(name)) {
+        m_propertiesDirty = true;
+        ++m_version;
+    }
     auto it = m_properties.find(name);
     if (it != m_properties.end() && it->second.type == MaterialPropertyType::Texture2D) {
         const auto *oldGuid = std::get_if<std::string>(&it->second.value);
@@ -692,6 +775,9 @@ void InxMaterial::ClearTexture(const std::string &name)
 
 bool InxMaterial::RemoveProperty(const std::string &name)
 {
+    m_renderTextures.erase(name);
+    m_runtimeTextureOverrides.erase(name);
+    m_textureAssetsPending = true;
     auto it = m_properties.find(name);
     if (it == m_properties.end())
         return false;
@@ -741,6 +827,13 @@ bool InxMaterial::SynchronizeShaderPropertyDefaults(const ShaderProgramArtifact 
                                  binding.hdr, binding.range};
             changed = true;
             continue;
+        }
+
+        // Color is a Float4 with editor semantics, not a different value
+        // shape. Adopt the shader's semantic type without erasing the tint.
+        if (existing->second.type != *expectedType) {
+            existing->second.type = *expectedType;
+            changed = true;
         }
 
         if (existing->second.hdr != binding.hdr) {
@@ -1238,6 +1331,16 @@ bool InxMaterial::ApplyDocument(const nlohmann::json &document)
 
         m_pipelineDirty = true;
         m_propertiesDirty = true;
+        m_textureAssetsPending = true;
+        for (auto it = m_renderTextures.begin(); it != m_renderTextures.end();) {
+            const auto property = m_properties.find(it->first);
+            if (!HasRuntimeTextureOverride(it->first) || property == m_properties.end() ||
+                property->second.type != MaterialPropertyType::Texture2D) {
+                m_runtimeTextureOverrides.erase(it->first);
+                it = m_renderTextures.erase(it);
+            } else
+                ++it;
+        }
         SyncAlphaClipProperty();
 
         return true;
@@ -1604,8 +1707,8 @@ std::shared_ptr<InxMaterial> InxMaterial::Clone() const
     auto clone = std::make_shared<InxMaterial>();
 
     // Deep copy identity (clear GUID & file path — runtime-only instance)
-    // Each clone gets a unique name so GetMaterialKey() returns a unique key,
-    // ensuring separate descriptor sets / UBOs in the renderer.
+    // The constructor allocates an independent runtime identity for descriptor
+    // sets / UBOs; display names and source paths do not define that identity.
     clone->m_name = m_name + " (Instance_" + std::to_string(s_cloneCounter.fetch_add(1)) + ")";
     // clone->m_guid intentionally left empty — no asset identity
     // clone->m_filePath intentionally left empty — not saved to disk
@@ -1623,6 +1726,8 @@ std::shared_ptr<InxMaterial> InxMaterial::Clone() const
     // Deep copy all properties (floats, vecs, colors, texture GUIDs, etc.)
     // Texture references are GUIDs (strings) — shared by value, same as Unity.
     clone->m_properties = m_properties;
+    clone->m_renderTextures = m_renderTextures;
+    clone->m_runtimeTextureOverrides = m_runtimeTextureOverrides;
 
     // GPU-transient state is NOT copied — lazily recreated by the renderer.
     // m_passPipelines[] are already default-initialized (VK_NULL_HANDLE).

@@ -12,7 +12,9 @@
  *   - Descriptor: single combined_image_sampler (font atlas)
  *   - Alpha blending, no depth test, no cull
  *
- * SPIR-V bytecode is identical to Dear ImGui's (MIT licensed).
+ * Screen Overlay encodes linear sampled colors; Camera and World UI stay
+ * linear until the graph's display-encoding
+ * pass.
  */
 
 #include "InxScreenUIRenderer.h"
@@ -23,10 +25,17 @@
 #include <core/log/InxLog.h>
 #include <cstring>
 #include <function/renderer/vk/DescriptorBindTrace.h>
+#include <function/renderer/vk/RhiVulkanTypes.h>
 #include <function/renderer/vk/VkPipelineHelpers.h>
 #include <function/renderer/vk/VkRenderUtils.h>
+#include <function/resources/InxFileLoader/InxShaderLoader.hpp>
+#include <function/scene/GameObject.h>
+#include <glm/gtc/type_ptr.hpp>
 #include <imgui_internal.h> // for ImGui::GetDrawListSharedData()
+#include <numeric>
+#include <stdexcept>
 #include <type_traits>
+#include <utility>
 
 namespace infernux
 {
@@ -37,6 +46,88 @@ constexpr float kTransformRotationEpsilon = 0.001f;
 constexpr float kPi = 3.14159265358979f;
 constexpr const char *kShaderEntryPoint = "main";
 constexpr uint32_t kFontTextureBinding = 0;
+constexpr float kWorldUILogicalPixelsPerUnit = 100.0f;
+
+constexpr const char *kScreenVertexShader = R"glsl(
+#version 450
+layout(location = 0) in vec2 aPosition;
+layout(location = 1) in vec2 aUV;
+layout(location = 2) in vec4 aColor;
+layout(push_constant) uniform ScreenUIConstants { vec2 scale; vec2 translate; } pc;
+layout(location = 0) out vec4 outColor;
+layout(location = 1) out vec2 outUV;
+void main() {
+    outColor = aColor;
+    outUV = aUV;
+    gl_Position = vec4(aPosition * pc.scale + pc.translate, 0, 1);
+}
+)glsl";
+
+constexpr const char *kScreenFragmentShader = R"glsl(
+#version 450
+layout(location = 0) in vec4 inColor;
+layout(location = 1) in vec2 inUV;
+layout(set = 0, binding = 0) uniform sampler2D uiTexture;
+layout(push_constant) uniform ScreenUIConstants { layout(offset = 16) float encodeSample; } pc;
+layout(location = 0) out vec4 outColor;
+void main() {
+    vec4 sampleColor = texture(uiTexture, inUV);
+    if (pc.encodeSample > 0.5) {
+        vec3 rgb = max(sampleColor.rgb, vec3(0));
+        sampleColor.rgb = mix(1.055 * pow(rgb, vec3(1.0 / 2.4)) - 0.055,
+                             12.92 * rgb, lessThanEqual(rgb, vec3(0.0031308)));
+    }
+    outColor = inColor * sampleColor;
+}
+)glsl";
+
+void WorldElementBoundaryCallback(const ImDrawList *, const ImDrawCmd *)
+{
+}
+
+constexpr const char *kWorldVertexShader = R"glsl(
+#version 450
+layout(location = 0) in vec3 aPosition;
+layout(location = 1) in vec2 aUV;
+layout(location = 2) in vec4 aColor;
+layout(location = 3) in vec2 aLocalPosition;
+layout(push_constant) uniform WorldUIConstants {
+    mat4 viewProjection;
+} pc;
+layout(location = 0) out vec4 outColor;
+layout(location = 1) out vec2 outUV;
+layout(location = 2) out vec2 outLocalPosition;
+void main() {
+    outColor = aColor;
+    outUV = aUV;
+    outLocalPosition = aLocalPosition;
+    gl_Position = pc.viewProjection * vec4(aPosition, 1.0);
+}
+)glsl";
+
+constexpr const char *kWorldFragmentShader = R"glsl(
+#version 450
+layout(location = 0) in vec4 inColor;
+layout(location = 1) in vec2 inUV;
+layout(set = 0, binding = 0) uniform sampler2D uiTexture;
+layout(push_constant) uniform WorldUIConstants {
+    mat4 viewProjection;
+} pc;
+layout(location = 0) out vec4 outColor;
+void main() {
+    outColor = inColor * texture(uiTexture, inUV);
+    // World UI participates in the scene depth buffer. Fully transparent
+    // glyph/image texels therefore must not publish depth for their quad.
+    // Keep partially covered antialiased pixels; only empty coverage is cut.
+    if (outColor.a <= 0.0)
+        discard;
+}
+)glsl";
+
+struct WorldUIPushConstants
+{
+    glm::mat4 viewProjection{1.0f};
+};
 
 struct VertexTransform
 {
@@ -74,11 +165,18 @@ ImTextureID ToImTextureID(uint64_t textureId)
     return static_cast<ImTextureID>(textureId);
 }
 
-void ResetDrawListForFrame(ImDrawList &drawList, uint32_t width, uint32_t height)
+void ResetDrawListForFrame(ImDrawList &drawList, uint32_t width, uint32_t height, bool screenBounded = true)
 {
     drawList._ResetForNewFrame();
     drawList.PushTextureID(ImGui::GetIO().Fonts->TexRef.GetTexID());
-    drawList.PushClipRect(ImVec2(0.0f, 0.0f), ImVec2(static_cast<float>(width), static_cast<float>(height)));
+    if (screenBounded) {
+        drawList.PushClipRect(ImVec2(0.0f, 0.0f), ImVec2(static_cast<float>(width), static_cast<float>(height)));
+    } else {
+        // World UI elements are ordinary scene geometry and do not inherit a
+        // world Canvas, viewport, or parent range.
+        constexpr float unbounded = 1.0e20f;
+        drawList.PushClipRect(ImVec2(-unbounded, -unbounded), ImVec2(unbounded, unbounded));
+    }
 }
 
 float NormalizeRotationDegrees(float rotation)
@@ -330,8 +428,9 @@ bool UploadAllocation(VmaAllocator allocator, VmaAllocation allocation, const vo
     }
 
     std::memcpy(mappedData, data, size);
+    const VkResult result = vmaFlushAllocation(allocator, allocation, 0, size);
     vmaUnmapMemory(allocator, allocation);
-    return true;
+    return result == VK_SUCCESS;
 }
 
 VkDeviceSize GrowBufferSize(VkDeviceSize requiredSize)
@@ -396,87 +495,155 @@ bool EnsureHostVisibleBuffer(VmaAllocator allocator, GpuRetirementQueue *deletio
 }
 } // namespace
 
-// ============================================================================
-// ImGui SPIR-V shader bytecode (from imgui_impl_vulkan.cpp, MIT license)
-// ============================================================================
-
-// clang-format off
-
-// backends/vulkan/glsl_shader.vert — compiled with glslangValidator
-static const uint32_t s_vertSpv[] = {
-    0x07230203,0x00010000,0x00080001,0x0000002e,0x00000000,0x00020011,0x00000001,0x0006000b,
-    0x00000001,0x4c534c47,0x6474732e,0x3035342e,0x00000000,0x0003000e,0x00000000,0x00000001,
-    0x000a000f,0x00000000,0x00000004,0x6e69616d,0x00000000,0x0000000b,0x0000000f,0x00000015,
-    0x0000001b,0x0000001c,0x00030003,0x00000002,0x000001c2,0x00040005,0x00000004,0x6e69616d,
-    0x00000000,0x00030005,0x00000009,0x00000000,0x00050006,0x00000009,0x00000000,0x6f6c6f43,
-    0x00000072,0x00040006,0x00000009,0x00000001,0x00005655,0x00030005,0x0000000b,0x0074754f,
-    0x00040005,0x0000000f,0x6c6f4361,0x0000726f,0x00030005,0x00000015,0x00565561,0x00060005,
-    0x00000019,0x505f6c67,0x65567265,0x78657472,0x00000000,0x00060006,0x00000019,0x00000000,
-    0x505f6c67,0x7469736f,0x006e6f69,0x00030005,0x0000001b,0x00000000,0x00040005,0x0000001c,
-    0x736f5061,0x00000000,0x00060005,0x0000001e,0x73755075,0x6e6f4368,0x6e617473,0x00000074,
-    0x00050006,0x0000001e,0x00000000,0x61635375,0x0000656c,0x00060006,0x0000001e,0x00000001,
-    0x61725475,0x616c736e,0x00006574,0x00030005,0x00000020,0x00006370,0x00040047,0x0000000b,
-    0x0000001e,0x00000000,0x00040047,0x0000000f,0x0000001e,0x00000002,0x00040047,0x00000015,
-    0x0000001e,0x00000001,0x00050048,0x00000019,0x00000000,0x0000000b,0x00000000,0x00030047,
-    0x00000019,0x00000002,0x00040047,0x0000001c,0x0000001e,0x00000000,0x00050048,0x0000001e,
-    0x00000000,0x00000023,0x00000000,0x00050048,0x0000001e,0x00000001,0x00000023,0x00000008,
-    0x00030047,0x0000001e,0x00000002,0x00020013,0x00000002,0x00030021,0x00000003,0x00000002,
-    0x00030016,0x00000006,0x00000020,0x00040017,0x00000007,0x00000006,0x00000004,0x00040017,
-    0x00000008,0x00000006,0x00000002,0x0004001e,0x00000009,0x00000007,0x00000008,0x00040020,
-    0x0000000a,0x00000003,0x00000009,0x0004003b,0x0000000a,0x0000000b,0x00000003,0x00040015,
-    0x0000000c,0x00000020,0x00000001,0x0004002b,0x0000000c,0x0000000d,0x00000000,0x00040020,
-    0x0000000e,0x00000001,0x00000007,0x0004003b,0x0000000e,0x0000000f,0x00000001,0x00040020,
-    0x00000011,0x00000003,0x00000007,0x0004002b,0x0000000c,0x00000013,0x00000001,0x00040020,
-    0x00000014,0x00000001,0x00000008,0x0004003b,0x00000014,0x00000015,0x00000001,0x00040020,
-    0x00000017,0x00000003,0x00000008,0x0003001e,0x00000019,0x00000007,0x00040020,0x0000001a,
-    0x00000003,0x00000019,0x0004003b,0x0000001a,0x0000001b,0x00000003,0x0004003b,0x00000014,
-    0x0000001c,0x00000001,0x0004001e,0x0000001e,0x00000008,0x00000008,0x00040020,0x0000001f,
-    0x00000009,0x0000001e,0x0004003b,0x0000001f,0x00000020,0x00000009,0x00040020,0x00000021,
-    0x00000009,0x00000008,0x0004002b,0x00000006,0x00000028,0x00000000,0x0004002b,0x00000006,
-    0x00000029,0x3f800000,0x00050036,0x00000002,0x00000004,0x00000000,0x00000003,0x000200f8,
-    0x00000005,0x0004003d,0x00000007,0x00000010,0x0000000f,0x00050041,0x00000011,0x00000012,
-    0x0000000b,0x0000000d,0x0003003e,0x00000012,0x00000010,0x0004003d,0x00000008,0x00000016,
-    0x00000015,0x00050041,0x00000017,0x00000018,0x0000000b,0x00000013,0x0003003e,0x00000018,
-    0x00000016,0x0004003d,0x00000008,0x0000001d,0x0000001c,0x00050041,0x00000021,0x00000022,
-    0x00000020,0x0000000d,0x0004003d,0x00000008,0x00000023,0x00000022,0x00050085,0x00000008,
-    0x00000024,0x0000001d,0x00000023,0x00050041,0x00000021,0x00000025,0x00000020,0x00000013,
-    0x0004003d,0x00000008,0x00000026,0x00000025,0x00050081,0x00000008,0x00000027,0x00000024,
-    0x00000026,0x00050051,0x00000006,0x0000002a,0x00000027,0x00000000,0x00050051,0x00000006,
-    0x0000002b,0x00000027,0x00000001,0x00070050,0x00000007,0x0000002c,0x0000002a,0x0000002b,
-    0x00000028,0x00000029,0x00050041,0x00000011,0x0000002d,0x0000001b,0x0000000d,0x0003003e,
-    0x0000002d,0x0000002c,0x000100fd,0x00010038
+struct InxScreenUIRenderer::CommandPacket::Data
+{
+    struct List
+    {
+        bool used = false;
+        bool hasVertexOffsets = false;
+        std::vector<ImDrawVert> vertices;
+        std::vector<ImDrawIdx> indices;
+        std::vector<ImDrawCmd> commands;
+        std::vector<HDRColorRange> hdr;
+    };
+    std::array<List, 3> lists;
+    std::vector<WorldElementSpan> worlds;
+    std::vector<ScreenElementSpan> screens;
 };
 
-// backends/vulkan/glsl_shader.frag — compiled with glslangValidator
-static const uint32_t s_fragSpv[] = {
-    0x07230203,0x00010000,0x00080001,0x0000001e,0x00000000,0x00020011,0x00000001,0x0006000b,
-    0x00000001,0x4c534c47,0x6474732e,0x3035342e,0x00000000,0x0003000e,0x00000000,0x00000001,
-    0x0007000f,0x00000004,0x00000004,0x6e69616d,0x00000000,0x00000009,0x0000000d,0x00030010,
-    0x00000004,0x00000007,0x00030003,0x00000002,0x000001c2,0x00040005,0x00000004,0x6e69616d,
-    0x00000000,0x00040005,0x00000009,0x6c6f4366,0x0000726f,0x00030005,0x0000000b,0x00000000,
-    0x00050006,0x0000000b,0x00000000,0x6f6c6f43,0x00000072,0x00040006,0x0000000b,0x00000001,
-    0x00005655,0x00030005,0x0000000d,0x00006e49,0x00050005,0x00000016,0x78655473,0x65727574,
-    0x00000000,0x00040047,0x00000009,0x0000001e,0x00000000,0x00040047,0x0000000d,0x0000001e,
-    0x00000000,0x00040047,0x00000016,0x00000022,0x00000000,0x00040047,0x00000016,0x00000021,
-    0x00000000,0x00020013,0x00000002,0x00030021,0x00000003,0x00000002,0x00030016,0x00000006,
-    0x00000020,0x00040017,0x00000007,0x00000006,0x00000004,0x00040020,0x00000008,0x00000003,
-    0x00000007,0x0004003b,0x00000008,0x00000009,0x00000003,0x00040017,0x0000000a,0x00000006,
-    0x00000002,0x0004001e,0x0000000b,0x00000007,0x0000000a,0x00040020,0x0000000c,0x00000001,
-    0x0000000b,0x0004003b,0x0000000c,0x0000000d,0x00000001,0x00040015,0x0000000e,0x00000020,
-    0x00000001,0x0004002b,0x0000000e,0x0000000f,0x00000000,0x00040020,0x00000010,0x00000001,
-    0x00000007,0x00090019,0x00000013,0x00000006,0x00000001,0x00000000,0x00000000,0x00000000,
-    0x00000001,0x00000000,0x0003001b,0x00000014,0x00000013,0x00040020,0x00000015,0x00000000,
-    0x00000014,0x0004003b,0x00000015,0x00000016,0x00000000,0x0004002b,0x0000000e,0x00000018,
-    0x00000001,0x00040020,0x00000019,0x00000001,0x0000000a,0x00050036,0x00000002,0x00000004,
-    0x00000000,0x00000003,0x000200f8,0x00000005,0x00050041,0x00000010,0x00000011,0x0000000d,
-    0x0000000f,0x0004003d,0x00000007,0x00000012,0x00000011,0x0004003d,0x00000014,0x00000017,
-    0x00000016,0x00050041,0x00000019,0x0000001a,0x0000000d,0x00000018,0x0004003d,0x0000000a,
-    0x0000001b,0x0000001a,0x00050057,0x00000007,0x0000001c,0x00000017,0x0000001b,0x00050085,
-    0x00000007,0x0000001d,0x00000012,0x0000001c,0x0003003e,0x00000009,0x0000001d,0x000100fd,
-    0x00010038
-};
+InxScreenUIRenderer::CommandPacket::CommandPacket() : m_data(std::make_unique<Data>())
+{
+}
+InxScreenUIRenderer::CommandPacket::~CommandPacket() = default;
 
-// clang-format on
+std::array<uint64_t, 3> InxScreenUIRenderer::GetCommandPacketEpoch() const
+{
+    return {textlayout::FontCacheGeneration(), static_cast<uint64_t>(ImGui::GetIO().Fonts->TexRef.GetTexID()),
+            static_cast<uint64_t>(reinterpret_cast<uintptr_t>(ImGui::GetFont()))};
+}
+
+void InxScreenUIRenderer::BeginCommandPacket()
+{
+    if (!m_initialized || m_recordingPacket || m_worldElementStart >= 0)
+        throw std::logic_error("UI packet capture requires an initialized renderer outside another element");
+    m_recordingPacket = std::make_shared<CommandPacket>();
+}
+
+void InxScreenUIRenderer::AbortCommandPacket()
+{
+    m_commandCacheValid = false;
+    m_recordingPacket.reset();
+    m_worldElementStart = -1;
+    m_pendingWorldElement = {};
+}
+
+std::shared_ptr<InxScreenUIRenderer::CommandPacket> InxScreenUIRenderer::EndCommandPacket()
+{
+    if (!m_recordingPacket || m_worldElementStart >= 0)
+        throw std::logic_error("UI packet capture must close all world elements before publication");
+    for (size_t index = 0; index < 3; ++index) {
+        auto &output = m_recordingPacket->m_data->lists[index];
+        if (!output.used)
+            continue;
+        const auto &source = *m_packetDrawLists[index];
+        output.vertices.assign(source.VtxBuffer.begin(), source.VtxBuffer.end());
+        output.indices.assign(source.IdxBuffer.begin(), source.IdxBuffer.end());
+        output.commands.assign(source.CmdBuffer.begin(), source.CmdBuffer.end());
+        while (!output.commands.empty() && !output.commands.back().ElemCount && !output.commands.back().UserCallback)
+            output.commands.pop_back();
+        // Retained commands must not retain pointers into ImGui's atlas data.
+        for (auto &command : output.commands) {
+            command.TexRef = ImTextureRef(command.GetTexID());
+            output.hasVertexOffsets |= command.VtxOffset != 0;
+        }
+        ++m_geometryStats[index].packetCaptures;
+    }
+    return std::exchange(m_recordingPacket, {});
+}
+
+void InxScreenUIRenderer::AppendCommandPackets(const std::vector<std::shared_ptr<CommandPacket>> &packets)
+{
+    if (!m_initialized || m_recordingPacket || m_worldElementStart >= 0)
+        throw std::logic_error("UI packets require an initialized renderer outside element capture");
+    for (const auto &packet : packets) {
+        if (!packet)
+            throw std::invalid_argument("UI command packets must not be null");
+        for (int index = 0; index < 3; ++index) {
+            const auto &source = packet->m_data->lists[index];
+            if (source.vertices.empty())
+                continue;
+            const auto list =
+                index == 0 ? ScreenUIList::Camera : (index == 1 ? ScreenUIList::Overlay : ScreenUIList::World);
+            auto &destination = *GetDrawList(list);
+            const int vertexStart = destination.VtxBuffer.Size;
+            const int indexStart = destination.IdxBuffer.Size;
+            // Keep small adjacent packets in the same 16-bit vertex bucket,
+            // so retaining elements does not turn one texture batch into N draws.
+            const uint64_t indexLimit = uint64_t{1} << (sizeof(ImDrawIdx) * 8);
+            const bool sameBucket =
+                !source.hasVertexOffsets && source.vertices.size() + destination._VtxCurrentIdx < indexLimit;
+            const unsigned int bias = sameBucket ? destination._VtxCurrentIdx : 0;
+            const unsigned int base = sameBucket ? destination._CmdHeader.VtxOffset : vertexStart;
+            destination.VtxBuffer.resize(vertexStart + static_cast<int>(source.vertices.size()));
+            std::memcpy(destination.VtxBuffer.Data + vertexStart, source.vertices.data(),
+                        source.vertices.size() * sizeof(ImDrawVert));
+            destination.IdxBuffer.resize(indexStart + static_cast<int>(source.indices.size()));
+            for (size_t i = 0; i < source.indices.size(); ++i)
+                destination.IdxBuffer.Data[indexStart + i] = static_cast<ImDrawIdx>(source.indices[i] + bias);
+            if (!destination.CmdBuffer.empty() && !destination.CmdBuffer.back().ElemCount &&
+                !destination.CmdBuffer.back().UserCallback)
+                destination.CmdBuffer.pop_back();
+            const int commandStart = destination.CmdBuffer.Size;
+            unsigned int lastBase = base;
+            for (auto command : source.commands) {
+                command.IdxOffset += indexStart;
+                command.VtxOffset += base;
+                lastBase = command.VtxOffset;
+                if (index != 2 && !destination.CmdBuffer.empty()) {
+                    auto &previous = destination.CmdBuffer.back();
+                    if (!previous.UserCallback && !command.UserCallback &&
+                        previous.IdxOffset + previous.ElemCount == command.IdxOffset &&
+                        previous.VtxOffset == command.VtxOffset && previous.GetTexID() == command.GetTexID() &&
+                        std::memcmp(&previous.ClipRect, &command.ClipRect, sizeof(ImVec4)) == 0) {
+                        previous.ElemCount += command.ElemCount;
+                        continue;
+                    }
+                }
+                destination.CmdBuffer.push_back(command);
+            }
+            for (auto range : source.hdr) {
+                range.vertexStart += vertexStart;
+                range.vertexEnd += vertexStart;
+                GetHDRRanges(list).push_back(range);
+            }
+            if (index == 2) {
+                for (auto span : packet->m_data->worlds) {
+                    ResolveWorldPose(span);
+                    span.vertexStart += vertexStart;
+                    span.vertexEnd += vertexStart;
+                    span.commandStart += commandStart;
+                    span.commandEnd += commandStart;
+                    m_worldElementSpans.push_back(span);
+                }
+            } else {
+                for (auto span : packet->m_data->screens) {
+                    if (span.list != list)
+                        continue;
+                    span.vertexStart += vertexStart;
+                    span.vertexEnd += vertexStart;
+                    m_screenElementSpans.push_back(span);
+                }
+            }
+            destination._CmdHeader.VtxOffset = lastBase;
+            destination._VtxCurrentIdx = destination.VtxBuffer.Size - lastBase;
+            destination._VtxWritePtr = destination.VtxBuffer.end();
+            destination._IdxWritePtr = destination.IdxBuffer.end();
+            destination.AddDrawCmd();
+            ++m_geometryRevision[index];
+            ++m_geometryStats[index].packetAppends;
+        }
+    }
+}
 
 // ============================================================================
 // Constructor / Destructor
@@ -494,7 +661,7 @@ InxScreenUIRenderer::~InxScreenUIRenderer()
 // ============================================================================
 
 bool InxScreenUIRenderer::Initialize(VkDevice device, VmaAllocator allocator, VkFormat colorFormat,
-                                     VkSampleCountFlagBits msaaSamples)
+                                     VkFormat depthFormat, VkSampleCountFlagBits msaaSamples, uint32_t frameCount)
 {
     if (m_initialized)
         return true;
@@ -502,9 +669,11 @@ bool InxScreenUIRenderer::Initialize(VkDevice device, VmaAllocator allocator, Vk
     m_device = device;
     m_allocator = allocator;
     m_colorFormat = colorFormat;
+    m_depthFormat = depthFormat;
     m_msaaSamples = msaaSamples;
-    if (!CreatePipeline()) {
-        INXLOG_ERROR("InxScreenUIRenderer: Failed to create pipeline");
+    m_frameBuffers.resize(frameCount);
+    if (!CreatePipeline() || !CreateWorldPipeline()) {
+        INXLOG_ERROR("InxScreenUIRenderer: Failed to create screen/world pipeline");
         return false;
     }
 
@@ -512,6 +681,7 @@ bool InxScreenUIRenderer::Initialize(VkDevice device, VmaAllocator allocator, Vk
     ImDrawListSharedData *sharedData = ImGui::GetDrawListSharedData();
     m_cameraDrawList = IM_NEW(ImDrawList)(sharedData);
     m_overlayDrawList = IM_NEW(ImDrawList)(sharedData);
+    m_worldDrawList = IM_NEW(ImDrawList)(sharedData);
 
     m_initialized = true;
     // INXLOG_INFO("InxScreenUIRenderer initialized (format=", static_cast<int>(colorFormat),
@@ -522,6 +692,12 @@ bool InxScreenUIRenderer::Initialize(VkDevice device, VmaAllocator allocator, Vk
 void InxScreenUIRenderer::Destroy()
 {
     m_commandCacheValid = false;
+    AbortCommandPacket();
+    for (auto &drawList : m_packetDrawLists) {
+        if (drawList)
+            IM_DELETE(drawList);
+        drawList = nullptr;
+    }
     if (m_cameraDrawList) {
         IM_DELETE(m_cameraDrawList);
         m_cameraDrawList = nullptr;
@@ -530,34 +706,57 @@ void InxScreenUIRenderer::Destroy()
         IM_DELETE(m_overlayDrawList);
         m_overlayDrawList = nullptr;
     }
+    if (m_worldDrawList) {
+        IM_DELETE(m_worldDrawList);
+        m_worldDrawList = nullptr;
+    }
 
     if (m_device != VK_NULL_HANDLE) {
-        for (auto &buf : m_listBuffers) {
-            if (buf.vertexBuffer)
-                vmaDestroyBuffer(m_allocator, buf.vertexBuffer, buf.vertexAlloc);
-            if (buf.indexBuffer)
-                vmaDestroyBuffer(m_allocator, buf.indexBuffer, buf.indexAlloc);
-            buf = {};
+        for (auto &frame : m_frameBuffers) {
+            for (auto &buf : frame) {
+                if (buf.vertexBuffer)
+                    vmaDestroyBuffer(m_allocator, buf.vertexBuffer, buf.vertexAlloc);
+                if (buf.indexBuffer)
+                    vmaDestroyBuffer(m_allocator, buf.indexBuffer, buf.indexAlloc);
+            }
         }
         if (m_pipeline)
             vkDestroyPipeline(m_device, m_pipeline, nullptr);
+        for (const auto &variant : m_worldPipelineVariants)
+            vkDestroyPipeline(m_device, variant.second, nullptr);
+        m_worldPipelineVariants.clear();
+        if (m_worldPipeline)
+            vkDestroyPipeline(m_device, m_worldPipeline, nullptr);
         if (m_pipelineLayout)
             vkDestroyPipelineLayout(m_device, m_pipelineLayout, nullptr);
+        if (m_worldPipelineLayout)
+            vkDestroyPipelineLayout(m_device, m_worldPipelineLayout, nullptr);
         if (m_descriptorSetLayout)
             vkDestroyDescriptorSetLayout(m_device, m_descriptorSetLayout, nullptr);
         if (m_vertShader)
             vkDestroyShaderModule(m_device, m_vertShader, nullptr);
+        if (m_worldVertShader)
+            vkDestroyShaderModule(m_device, m_worldVertShader, nullptr);
+        if (m_worldFragShader)
+            vkDestroyShaderModule(m_device, m_worldFragShader, nullptr);
         if (m_fragShader)
             vkDestroyShaderModule(m_device, m_fragShader, nullptr);
     }
 
-    m_listBuffers[0] = {};
-    m_listBuffers[1] = {};
+    m_frameBuffers.clear();
+    m_preparedRevision = {};
+    m_geometryStats = {};
+    m_screenVertices = {};
+    m_worldVertices.clear();
     m_pipeline = VK_NULL_HANDLE;
+    m_worldPipeline = VK_NULL_HANDLE;
     m_pipelineLayout = VK_NULL_HANDLE;
+    m_worldPipelineLayout = VK_NULL_HANDLE;
     m_descriptorSetLayout = VK_NULL_HANDLE;
     m_fontDescriptorSet = VK_NULL_HANDLE;
     m_vertShader = VK_NULL_HANDLE;
+    m_worldVertShader = VK_NULL_HANDLE;
+    m_worldFragShader = VK_NULL_HANDLE;
     m_fragShader = VK_NULL_HANDLE;
     m_device = VK_NULL_HANDLE;
     m_allocator = VK_NULL_HANDLE;
@@ -572,13 +771,24 @@ void InxScreenUIRenderer::BeginFrame(uint32_t width, uint32_t height)
 {
     if (!m_initialized)
         return;
+    if (m_recordingPacket)
+        throw std::logic_error("UI packet capture must finish before beginning a frame");
+    m_cachedWidth = width;
+    m_cachedHeight = height;
 
     m_cameraHDRRanges.clear();
     m_overlayHDRRanges.clear();
+    m_worldHDRRanges.clear();
+    m_worldElementSpans.clear();
+    m_screenElementSpans.clear();
+    m_worldElementStart = -1;
     m_commandCacheValid = false;
 
+    for (auto &revision : m_geometryRevision)
+        ++revision;
     ResetDrawListForFrame(*m_cameraDrawList, width, height);
     ResetDrawListForFrame(*m_overlayDrawList, width, height);
+    ResetDrawListForFrame(*m_worldDrawList, width, height, false);
 }
 
 bool InxScreenUIRenderer::BeginFrameCached(uint32_t width, uint32_t height, uint64_t contentRevision)
@@ -586,26 +796,205 @@ bool InxScreenUIRenderer::BeginFrameCached(uint32_t width, uint32_t height, uint
     if (!m_initialized)
         return false;
 
-    const ImTextureID fontTextureId = ImGui::GetIO().Fonts->TexRef.GetTexID();
+    const auto packetEpoch = GetCommandPacketEpoch();
     if (m_commandCacheValid && m_cachedWidth == width && m_cachedHeight == height &&
-        m_cachedContentRevision == contentRevision && m_cachedFontTextureId == fontTextureId) {
+        m_cachedContentRevision == contentRevision && m_cachedPacketEpoch == packetEpoch) {
         return true;
     }
 
-    m_cameraHDRRanges.clear();
-    m_overlayHDRRanges.clear();
-    ResetDrawListForFrame(*m_cameraDrawList, width, height);
-    ResetDrawListForFrame(*m_overlayDrawList, width, height);
+    BeginFrame(width, height);
     m_cachedWidth = width;
     m_cachedHeight = height;
     m_cachedContentRevision = contentRevision;
-    m_cachedFontTextureId = fontTextureId;
+    m_cachedPacketEpoch = packetEpoch;
     m_commandCacheValid = true;
     return false;
 }
 
+bool UploadAllocationRange(VmaAllocator allocator, VmaAllocation allocation, size_t offset, const void *data,
+                           size_t size)
+{
+    if (size == 0)
+        return true;
+    void *mappedData = nullptr;
+    if (vmaMapMemory(allocator, allocation, &mappedData) != VK_SUCCESS || mappedData == nullptr)
+        return false;
+    std::memcpy(static_cast<std::byte *>(mappedData) + offset, data, size);
+    const VkResult result = vmaFlushAllocation(allocator, allocation, offset, size);
+    vmaUnmapMemory(allocator, allocation);
+    return result == VK_SUCCESS;
+}
+
+VkPipelineDepthStencilStateCreateInfo MakeWorldDepthStencilState()
+{
+    VkPipelineDepthStencilStateCreateInfo depthStencil{};
+    depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+    depthStencil.depthTestEnable = VK_TRUE;
+    depthStencil.depthWriteEnable = VK_FALSE;
+    depthStencil.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+    return depthStencil;
+}
+
+void InxScreenUIRenderer::PushClipRect(ScreenUIList list, float minX, float minY, float maxX, float maxY)
+{
+    if (ImDrawList *drawList = GetDrawList(list))
+        drawList->PushClipRect(ImVec2(minX, minY), ImVec2(maxX, maxY), true);
+}
+
+void InxScreenUIRenderer::PopClipRect(ScreenUIList list)
+{
+    if (ImDrawList *drawList = GetDrawList(list))
+        drawList->PopClipRect();
+}
+
+void InxScreenUIRenderer::BeginWorldElement(const std::array<float, 16> &localToWorld, float pivotX, float pivotY,
+                                            uint32_t layerMask)
+{
+    auto *drawList = GetDrawList(ScreenUIList::World);
+    if (m_worldElementStart >= 0)
+        throw std::logic_error("World UI elements cannot be nested");
+    if (!drawList)
+        throw std::logic_error("World UI renderer is not initialized");
+
+    // Each element is a transparency-sorting unit. Keep a hard command
+    // boundary so one ImDrawCmd can never contain geometry from two world
+    // objects, even when both use the same texture and clip rectangle.
+    if (drawList->CmdBuffer.empty())
+        throw std::logic_error("World UI draw list has no active command");
+    if (drawList->CmdBuffer.back().ElemCount != 0)
+        drawList->AddDrawCmd();
+
+    m_worldElementStart = drawList->VtxBuffer.Size;
+    m_pendingWorldElement.commandStart = drawList->CmdBuffer.Size - 1;
+    std::memcpy(glm::value_ptr(m_pendingWorldElement.localToWorld), localToWorld.data(), sizeof(float) * 16);
+    m_pendingWorldElement.pivotX = pivotX;
+    m_pendingWorldElement.pivotY = pivotY;
+    m_pendingWorldElement.layerMask = layerMask;
+}
+
+void InxScreenUIRenderer::ResolveWorldPose(WorldElementSpan &span)
+{
+    if (!span.transform.IsValid())
+        return; // Explicit-matrix commands do not bind a scene object.
+    auto &store = TransformECSStore::Instance();
+    if (!store.IsValid(span.transform))
+        throw std::runtime_error("World UI packet outlived its Transform; rebuild membership");
+    auto *transform = store.GetOwner(span.transform);
+    span.localToWorld = glm::mat4_cast(transform->GetRotation());
+    span.localToWorld[3] = glm::vec4(transform->GetPosition(), 1.0f);
+    span.layerMask = uint32_t(1) << transform->GetGameObject()->GetLayer();
+}
+
+void InxScreenUIRenderer::BeginWorldObject(GameObject *object, float pivotX, float pivotY)
+{
+    if (!object)
+        throw std::invalid_argument("World UI geometry requires a scene object");
+    BeginWorldElement({1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1}, pivotX, pivotY);
+    m_pendingWorldElement.transform = object->GetTransform()->GetECSHandle();
+    ResolveWorldPose(m_pendingWorldElement);
+}
+
+bool InxScreenUIRenderer::ResolveScreenPose(ScreenElementSpan &span)
+{
+    if (!span.transform.IsValid())
+        return false;
+    auto &store = TransformECSStore::Instance();
+    if (!store.IsValid(span.transform))
+        throw std::runtime_error("Screen UI packet outlived its Transform; rebuild membership");
+    auto *transform = store.GetOwner(span.transform);
+    const auto position = transform->GetPosition();
+    const auto angles = transform->GetEulerAngles();
+    const auto transformScale = transform->GetScale();
+    const glm::vec3 nextDelta{(position.x - span.position.x) * span.scaleX,
+                              -(position.y - span.position.y) * span.scaleY, 0.0f};
+    const float nextDeltaRotation = glm::radians(angles.z - span.rotation);
+    const float nextScaleX = transformScale.x / span.transformScaleX;
+    const float nextScaleY = transformScale.y / span.transformScaleY;
+    const bool changed =
+        glm::length(nextDelta - span.delta) > 1.0e-6f || std::fabs(nextDeltaRotation - span.deltaRotation) > 1.0e-6f ||
+        std::fabs(nextScaleX - span.currentScaleX) > 1.0e-6f || std::fabs(nextScaleY - span.currentScaleY) > 1.0e-6f;
+    span.delta = nextDelta;
+    span.deltaRotation = nextDeltaRotation;
+    span.currentScaleX = nextScaleX;
+    span.currentScaleY = nextScaleY;
+    return changed;
+}
+
+void InxScreenUIRenderer::ApplyScreenPose(const ScreenElementSpan &span, const ImVec2 &source, ImVec2 &target)
+{
+    const float cs = std::cos(span.deltaRotation);
+    const float sn = std::sin(span.deltaRotation);
+    const float x = (source.x - span.pivotX) * span.currentScaleX;
+    const float y = (source.y - span.pivotY) * span.currentScaleY;
+    target = ImVec2(span.pivotX + x * cs - y * sn + span.delta.x, span.pivotY + x * sn + y * cs + span.delta.y);
+}
+
+void InxScreenUIRenderer::BeginScreenObject(GameObject *object, ScreenUIList list, float pivotX, float pivotY,
+                                            float scaleX, float scaleY)
+{
+    if (!object || !m_recordingPacket)
+        throw std::logic_error("Screen UI object binding requires an active packet and scene object");
+    auto *drawList = GetDrawList(list);
+    if (!drawList)
+        throw std::logic_error("Screen UI renderer is not initialized");
+    ScreenElementSpan span;
+    span.vertexStart = drawList->VtxBuffer.Size;
+    span.list = list;
+    span.transform = object->GetTransform()->GetECSHandle();
+    const auto position = object->GetTransform()->GetPosition();
+    span.position = position;
+    span.rotation = object->GetTransform()->GetEulerAngles().z;
+    const auto transformScale = object->GetTransform()->GetScale();
+    span.transformScaleX = transformScale.x;
+    span.transformScaleY = transformScale.y;
+    span.pivotX = pivotX;
+    span.pivotY = pivotY;
+    span.scaleX = scaleX;
+    span.scaleY = scaleY;
+    m_recordingPacket->m_data->screens.push_back(span);
+}
+
+void InxScreenUIRenderer::EndScreenObject()
+{
+    if (!m_recordingPacket || m_recordingPacket->m_data->screens.empty())
+        throw std::logic_error("Screen UI object binding requires BeginScreenObject");
+    auto &span = m_recordingPacket->m_data->screens.back();
+    auto *drawList = GetDrawList(span.list);
+    span.vertexEnd = drawList->VtxBuffer.Size;
+    if (span.vertexEnd == span.vertexStart)
+        m_recordingPacket->m_data->screens.pop_back();
+}
+
+void InxScreenUIRenderer::EndWorldElement()
+{
+    auto *drawList = GetDrawList(ScreenUIList::World);
+    if (m_worldElementStart < 0)
+        throw std::logic_error("EndWorldElement requires a matching BeginWorldElement");
+    m_pendingWorldElement.vertexStart = m_worldElementStart;
+    m_pendingWorldElement.vertexEnd = drawList->VtxBuffer.Size;
+    m_pendingWorldElement.commandEnd = drawList->CmdBuffer.Size;
+    while (m_pendingWorldElement.commandEnd > m_pendingWorldElement.commandStart &&
+           drawList->CmdBuffer[m_pendingWorldElement.commandEnd - 1].ElemCount == 0)
+        --m_pendingWorldElement.commandEnd;
+    if (m_pendingWorldElement.vertexEnd > m_pendingWorldElement.vertexStart) {
+        if (m_pendingWorldElement.commandEnd <= m_pendingWorldElement.commandStart)
+            throw std::logic_error("World UI element produced vertices without a draw command");
+        auto &spans = m_recordingPacket ? m_recordingPacket->m_data->worlds : m_worldElementSpans;
+        spans.push_back(m_pendingWorldElement);
+        // Texture/clip changes may merge an empty ImDrawCmd with the previous
+        // one. A callback command is the explicit, non-mergeable separator
+        // between independently sorted world elements. RenderWorld consumes
+        // only the recorded element command spans, so the marker is never
+        // submitted to Vulkan.
+        drawList->AddCallback(WorldElementBoundaryCallback, nullptr);
+    }
+    m_worldElementStart = -1;
+    m_pendingWorldElement = {};
+}
+
 void InxScreenUIRenderer::AddFilledRect(ScreenUIList list, float minX, float minY, float maxX, float maxY, float r,
-                                        float g, float b, float a, float rounding)
+                                        float g, float b, float a, float rounding, float rotation, bool mirrorH,
+                                        bool mirrorV)
 {
     ImDrawList *dl = GetDrawList(list);
     if (!dl)
@@ -613,7 +1002,9 @@ void InxScreenUIRenderer::AddFilledRect(ScreenUIList list, float minX, float min
     const int vtxStart = dl->VtxBuffer.Size;
     const float hdrScale = ExtractHDRScale(r, g, b);
     ImU32 col = ImGui::ColorConvertFloat4ToU32(ImVec4(r, g, b, a));
+    const VertexTransform transform = MakeVertexTransform(minX, minY, maxX, maxY, rotation, mirrorH, mirrorV);
     dl->AddRectFilled(ImVec2(minX, minY), ImVec2(maxX, maxY), col, rounding);
+    ApplyVertexTransform(*dl, vtxStart, transform);
     TrackHDRColorRange(list, vtxStart, dl->VtxBuffer.Size, hdrScale);
 }
 
@@ -643,22 +1034,27 @@ void InxScreenUIRenderer::AddImage(ScreenUIList list, uint64_t textureId, float 
 void InxScreenUIRenderer::AddText(ScreenUIList list, float minX, float minY, float maxX, float maxY,
                                   const std::string &text, float r, float g, float b, float a, float alignX,
                                   float alignY, float fontSize, float wrapWidth, float rotation, bool mirrorH,
-                                  bool mirrorV, const std::string &fontPath, float lineHeight, float letterSpacing)
+                                  bool mirrorV, const std::string &fontPath, float lineHeight, float letterSpacing,
+                                  bool clip, const std::vector<std::string> &fallbackFontPaths)
 {
     ImDrawList *dl = GetDrawList(list);
     if (!dl || text.empty())
         return;
 
-    const textlayout::TextLayoutResult layout =
-        textlayout::LayoutText({text, fontPath, ResolveFontSize(fontSize), wrapWidth, lineHeight, letterSpacing});
+    const textlayout::TextLayoutResult layout = textlayout::LayoutText(
+        {text, fontPath, ResolveFontSize(fontSize), wrapWidth, lineHeight, letterSpacing, fallbackFontPaths});
 
     const float hdrScale = ExtractHDRScale(r, g, b);
     ImU32 col = ImGui::ColorConvertFloat4ToU32(ImVec4(r, g, b, a));
     const int vtxStart = dl->VtxBuffer.Size;
     const VertexTransform transform = MakeVertexTransform(minX, minY, maxX, maxY, rotation, mirrorH, mirrorV);
+    if (clip)
+        dl->PushClipRect(ImVec2(minX, minY), ImVec2(maxX, maxY), true);
     dl->PushTextureID(ImGui::GetIO().Fonts->TexRef);
     textlayout::RenderTextBox(dl, minX, minY, maxX, maxY, layout, col, alignX, alignY, letterSpacing);
     dl->PopTextureID();
+    if (clip)
+        dl->PopClipRect();
 
     ApplyVertexTransform(*dl, vtxStart, transform);
     TrackHDRColorRange(list, vtxStart, dl->VtxBuffer.Size, hdrScale);
@@ -666,10 +1062,11 @@ void InxScreenUIRenderer::AddText(ScreenUIList list, float minX, float minY, flo
 
 std::pair<float, float> InxScreenUIRenderer::MeasureText(const std::string &text, float fontSize, float wrapWidth,
                                                          const std::string &fontPath, float lineHeight,
-                                                         float letterSpacing) const
+                                                         float letterSpacing,
+                                                         const std::vector<std::string> &fallbackFontPaths) const
 {
-    const textlayout::TextLayoutResult layout =
-        textlayout::LayoutText({text, fontPath, ResolveFontSize(fontSize), wrapWidth, lineHeight, letterSpacing});
+    const textlayout::TextLayoutResult layout = textlayout::LayoutText(
+        {text, fontPath, ResolveFontSize(fontSize), wrapWidth, lineHeight, letterSpacing, fallbackFontPaths});
     return {layout.totalWidth, layout.totalHeight};
 }
 
@@ -681,6 +1078,8 @@ bool InxScreenUIRenderer::HasCommands(ScreenUIList list) const
 
 void InxScreenUIRenderer::TrackHDRColorRange(ScreenUIList list, int vertexStart, int vertexEnd, float rgbScale)
 {
+    if (vertexEnd > vertexStart)
+        ++m_geometryRevision[ListIndex(list)];
     if (rgbScale <= 1.0f || vertexEnd <= vertexStart) {
         return;
     }
@@ -691,21 +1090,53 @@ void InxScreenUIRenderer::TrackHDRColorRange(ScreenUIList list, int vertexStart,
 
 std::vector<InxScreenUIRenderer::HDRColorRange> &InxScreenUIRenderer::GetHDRRanges(ScreenUIList list)
 {
-    return (list == ScreenUIList::Camera) ? m_cameraHDRRanges : m_overlayHDRRanges;
+    if (m_recordingPacket)
+        return m_recordingPacket->m_data->lists[ListIndex(list)].hdr;
+    if (list == ScreenUIList::Camera)
+        return m_cameraHDRRanges;
+    if (list == ScreenUIList::Overlay)
+        return m_overlayHDRRanges;
+    return m_worldHDRRanges;
 }
 
 const std::vector<InxScreenUIRenderer::HDRColorRange> &InxScreenUIRenderer::GetHDRRanges(ScreenUIList list) const
 {
-    return (list == ScreenUIList::Camera) ? m_cameraHDRRanges : m_overlayHDRRanges;
+    if (list == ScreenUIList::Camera)
+        return m_cameraHDRRanges;
+    if (list == ScreenUIList::Overlay)
+        return m_overlayHDRRanges;
+    return m_worldHDRRanges;
 }
 
 // ============================================================================
 // Rendering
 // ============================================================================
 
-void InxScreenUIRenderer::Render(VkCommandBuffer cmdBuf, ScreenUIList list, uint32_t width, uint32_t height)
+bool InxScreenUIRenderer::UploadGeometry(ListBuffers &buf, ScreenUIList list, const void *vertices, size_t vertexBytes)
 {
-    const int listIndex = (list == ScreenUIList::Camera) ? 0 : 1;
+    const int index = ListIndex(list);
+    if (buf.uploadedRevision == m_geometryRevision[index])
+        return true;
+    const auto &indices = GetDrawList(list)->IdxBuffer;
+    const size_t indexBytes = static_cast<size_t>(indices.Size) * sizeof(ImDrawIdx);
+    if (!EnsureBuffers(buf, vertexBytes, indexBytes) ||
+        !UploadAllocation(m_allocator, buf.vertexAlloc, vertices, vertexBytes) ||
+        !UploadAllocation(m_allocator, buf.indexAlloc, indices.Data, indexBytes)) {
+        INXLOG_ERROR("InxScreenUIRenderer: Failed to upload UI geometry");
+        return false;
+    }
+    buf.uploadedRevision = m_geometryRevision[index];
+    ++m_geometryStats[index].uploads;
+    m_geometryStats[index].uploadedBytes += vertexBytes + indexBytes;
+    return true;
+}
+
+void InxScreenUIRenderer::Render(VkCommandBuffer cmdBuf, ScreenUIList list, uint32_t width, uint32_t height,
+                                 uint32_t frameSlot)
+{
+    if (list == ScreenUIList::World)
+        throw std::invalid_argument("World UI requires RenderWorld with the active camera matrix");
+    const int listIndex = ListIndex(list);
     m_lastSubmittedDrawCounts[listIndex] = 0;
     m_lastSubmittedIndexCounts[listIndex] = 0;
     if (!m_initialized || !m_pipeline || width == 0 || height == 0 || !m_enabled)
@@ -721,49 +1152,82 @@ void InxScreenUIRenderer::Render(VkCommandBuffer cmdBuf, ScreenUIList list, uint
         return;
     }
 
-    // ---- Upload vertex/index data ----
-    std::vector<GPUVertex> gpuVertices(static_cast<size_t>(dl->VtxBuffer.Size));
+    auto &gpuVertices = m_screenVertices[listIndex];
+    if (m_preparedRevision[listIndex] != m_geometryRevision[listIndex]) {
+        gpuVertices.resize(static_cast<size_t>(dl->VtxBuffer.Size));
+        auto &localPositions = m_screenLocalPositions[listIndex];
+        localPositions.resize(static_cast<size_t>(dl->VtxBuffer.Size));
 
-    const auto &hdrRanges = GetHDRRanges(list);
-    size_t rangeIndex = 0;
-    for (int i = 0; i < dl->VtxBuffer.Size; ++i) {
-        while (rangeIndex < hdrRanges.size() && i >= hdrRanges[rangeIndex].vertexEnd) {
-            ++rangeIndex;
-        }
-
-        float rgbScale = 1.0f;
-        if (rangeIndex < hdrRanges.size()) {
-            const HDRColorRange &range = hdrRanges[rangeIndex];
-            if (i >= range.vertexStart && i < range.vertexEnd) {
-                rgbScale = range.rgbScale;
+        const auto &hdrRanges = GetHDRRanges(list);
+        size_t rangeIndex = 0;
+        for (int i = 0; i < dl->VtxBuffer.Size; ++i) {
+            while (rangeIndex < hdrRanges.size() && i >= hdrRanges[rangeIndex].vertexEnd) {
+                ++rangeIndex;
             }
+
+            float rgbScale = 1.0f;
+            if (rangeIndex < hdrRanges.size()) {
+                const HDRColorRange &range = hdrRanges[rangeIndex];
+                if (i >= range.vertexStart && i < range.vertexEnd) {
+                    rgbScale = range.rgbScale;
+                }
+            }
+
+            const ImDrawVert &src = dl->VtxBuffer[i];
+            localPositions[static_cast<size_t>(i)] = src.pos;
+            GPUVertex &dst = gpuVertices[static_cast<size_t>(i)];
+            dst.pos = src.pos;
+            dst.uv = src.uv;
+
+            const ImVec4 unpacked = ImGui::ColorConvertU32ToFloat4(src.col);
+            dst.color[0] = unpacked.x * rgbScale;
+            dst.color[1] = unpacked.y * rgbScale;
+            dst.color[2] = unpacked.z * rgbScale;
+            dst.color[3] = unpacked.w;
         }
+        m_preparedRevision[listIndex] = m_geometryRevision[listIndex];
+        ++m_geometryStats[listIndex].preparations;
+    }
 
-        const ImDrawVert &src = dl->VtxBuffer[i];
-        GPUVertex &dst = gpuVertices[static_cast<size_t>(i)];
-        dst.pos = src.pos;
-        dst.uv = src.uv;
-
-        const ImVec4 unpacked = ImGui::ColorConvertU32ToFloat4(src.col);
-        dst.color[0] = unpacked.x * rgbScale;
-        dst.color[1] = unpacked.y * rgbScale;
-        dst.color[2] = unpacked.z * rgbScale;
-        dst.color[3] = unpacked.w;
+    // Pose-only updates stay on the native side. Re-read the immutable local
+    // vertex positions and apply each bound Transform delta without invoking
+    // Python extraction or rebuilding text/image geometry.
+    bool poseDirty = false;
+    int poseMinVertex = static_cast<int>(gpuVertices.size());
+    int poseMaxVertex = 0;
+    for (auto &span : m_screenElementSpans) {
+        if (span.list != list)
+            continue;
+        const bool spanDirty = ResolveScreenPose(span);
+        poseDirty = spanDirty || poseDirty;
+        if (spanDirty) {
+            poseMinVertex = std::min(poseMinVertex, std::max(0, span.vertexStart));
+            poseMaxVertex = std::max(poseMaxVertex, std::min(span.vertexEnd, static_cast<int>(gpuVertices.size())));
+        }
+        const auto &localPositions = m_screenLocalPositions[listIndex];
+        const int end = std::min(span.vertexEnd, static_cast<int>(gpuVertices.size()));
+        for (int i = std::max(0, span.vertexStart); i < end; ++i) {
+            if (i < static_cast<int>(localPositions.size()))
+                ApplyScreenPose(span, localPositions[static_cast<size_t>(i)], gpuVertices[static_cast<size_t>(i)].pos);
+        }
     }
 
     const VkDeviceSize vtxSize = gpuVertices.size() * sizeof(GPUVertex);
-    const VkDeviceSize idxSize = static_cast<VkDeviceSize>(dl->IdxBuffer.Size) * sizeof(ImDrawIdx);
-    const int bufIdx = (list == ScreenUIList::Camera) ? 0 : 1;
-    ListBuffers &buf = m_listBuffers[bufIdx];
-    if (!EnsureBuffers(buf, vtxSize, idxSize)) {
-        INXLOG_ERROR("InxScreenUIRenderer: Failed to resize screen UI upload buffers");
-        return;
+    ListBuffers &buf = m_frameBuffers[frameSlot][listIndex];
+    const bool geometryDirty = buf.uploadedRevision != m_geometryRevision[listIndex];
+    if (poseDirty && !geometryDirty && poseMaxVertex > poseMinVertex) {
+        const size_t firstByte = static_cast<size_t>(poseMinVertex) * sizeof(GPUVertex);
+        const size_t rangeBytes = static_cast<size_t>(poseMaxVertex - poseMinVertex) * sizeof(GPUVertex);
+        if (!UploadAllocationRange(m_allocator, buf.vertexAlloc, firstByte, gpuVertices.data() + poseMinVertex,
+                                   rangeBytes)) {
+            INXLOG_ERROR("InxScreenUIRenderer: Failed to upload screen UI pose range");
+            return;
+        }
+        ++m_geometryStats[listIndex].uploads;
+        m_geometryStats[listIndex].uploadedBytes += rangeBytes;
     }
-    if (!UploadAllocation(m_allocator, buf.vertexAlloc, gpuVertices.data(), static_cast<size_t>(vtxSize)) ||
-        !UploadAllocation(m_allocator, buf.indexAlloc, dl->IdxBuffer.Data, static_cast<size_t>(idxSize))) {
-        INXLOG_ERROR("InxScreenUIRenderer: Failed to upload screen UI draw data");
+    if (!UploadGeometry(buf, list, gpuVertices.data(), static_cast<size_t>(vtxSize)))
         return;
-    }
 
     // ---- Bind pipeline ----
     vkCmdBindPipeline(cmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipeline);
@@ -781,8 +1245,8 @@ void InxScreenUIRenderer::Render(VkCommandBuffer cmdBuf, ScreenUIList list, uint
     // ---- Push constants: ortho projection (scale + translate) ----
     // Maps [0, width] x [0, height] → [-1, 1] x [-1, 1]
     const auto pushConstants = MakeOrthoPushConstants(width, height);
-    vkCmdPushConstants(cmdBuf, m_pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(pushConstants),
-                       pushConstants.data());
+    vkCmdPushConstants(cmdBuf, m_pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                       sizeof(pushConstants), pushConstants.data());
 
     // ---- Bind font atlas descriptor set ----
     {
@@ -812,7 +1276,7 @@ void InxScreenUIRenderer::Render(VkCommandBuffer cmdBuf, ScreenUIList list, uint
     for (int cmdI = 0; cmdI < dl->CmdBuffer.Size; cmdI++) {
         const ImDrawCmd &cmd = dl->CmdBuffer[cmdI];
 
-        if (cmd.UserCallback != nullptr) {
+        if (cmd.UserCallback != nullptr || cmd.ElemCount == 0) {
             // User callbacks are not supported in scene render passes
             continue;
         }
@@ -859,6 +1323,16 @@ void InxScreenUIRenderer::Render(VkCommandBuffer cmdBuf, ScreenUIList list, uint
 
         vkCmdSetScissor(cmdBuf, 0, 1, &scissor);
 
+        // Camera UI is drawn in linear space; Overlay is after display encoding.
+        // Font alpha and display-space uploads must not be gamma transformed.
+        const float encodeSample =
+            list == ScreenUIList::Overlay && m_textureColorSpaceQuery &&
+                    m_textureColorSpaceQuery(static_cast<uint64_t>(reinterpret_cast<uintptr_t>(texDescSet)))
+                ? 1.0f
+                : 0.0f;
+        vkCmdPushConstants(cmdBuf, m_pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                           sizeof(float) * 4, sizeof(encodeSample), &encodeSample);
+
         vkCmdDrawIndexed(cmdBuf, cmd.ElemCount, 1, cmd.IdxOffset, static_cast<int32_t>(cmd.VtxOffset), 0);
         ++submittedDraws;
         submittedIndices += cmd.ElemCount;
@@ -881,9 +1355,13 @@ void InxScreenUIRenderer::Render(VkCommandBuffer cmdBuf, ScreenUIList list, uint
 bool InxScreenUIRenderer::CreatePipeline()
 {
     // ---- Shader modules ----
-    if (!CreateShaderModule(m_device, s_vertSpv, sizeof(s_vertSpv), m_vertShader))
+    InxShaderLoader compiler(false, true, false, true, false, true, false, false, false, false);
+    const auto vertex = compiler.CompileVertexGlsl(kScreenVertexShader, "Infernux/ScreenUI.vert");
+    const auto fragment = compiler.CompileFragmentGlsl(kScreenFragmentShader, "Infernux/ScreenUI.frag");
+    if (!CreateShaderModule(m_device, reinterpret_cast<const uint32_t *>(vertex.data()), vertex.size(), m_vertShader))
         return false;
-    if (!CreateShaderModule(m_device, s_fragSpv, sizeof(s_fragSpv), m_fragShader))
+    if (!CreateShaderModule(m_device, reinterpret_cast<const uint32_t *>(fragment.data()), fragment.size(),
+                            m_fragShader))
         return false;
 
     // ---- Descriptor set layout (identical to ImGui's) ----
@@ -892,8 +1370,9 @@ bool InxScreenUIRenderer::CreatePipeline()
     if (!vkrender::CreateDescriptorSetLayout(m_device, &binding, 1, m_descriptorSetLayout))
         return false;
 
-    // ---- Pipeline layout (identical to ImGui's: 4 floats push constant) ----
-    const VkPushConstantRange pushConstRange = MakeVertexPushConstantRange(sizeof(float) * 4);
+    // Ortho projection plus the sampled texture's display-encoding flag.
+    auto pushConstRange = MakeVertexPushConstantRange(sizeof(float) * 5);
+    pushConstRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
     if (!CreatePipelineLayout(m_device, m_descriptorSetLayout, pushConstRange, m_pipelineLayout))
         return false;
 
@@ -953,6 +1432,117 @@ bool InxScreenUIRenderer::CreatePipeline()
     return vkCreateGraphicsPipelines(m_device, VK_NULL_HANDLE, 1, &pipeInfo, nullptr, &m_pipeline) == VK_SUCCESS;
 }
 
+bool InxScreenUIRenderer::CreateWorldPipeline()
+{
+    if (m_depthFormat == VK_FORMAT_UNDEFINED)
+        return false;
+
+    InxShaderLoader compiler(false, true, false, true, false, true, false, false, false, false);
+    const std::vector<char> shaderBytes = compiler.CompileVertexGlsl(kWorldVertexShader, "Infernux/WorldUI.vert");
+    const std::vector<char> fragmentBytes = compiler.CompileFragmentGlsl(kWorldFragmentShader, "Infernux/WorldUI.frag");
+    if (shaderBytes.size() < sizeof(uint32_t) * 5 || shaderBytes.size() % sizeof(uint32_t) != 0)
+        return false;
+    if (fragmentBytes.size() < sizeof(uint32_t) * 5 || fragmentBytes.size() % sizeof(uint32_t) != 0)
+        return false;
+    if (!CreateShaderModule(m_device, reinterpret_cast<const uint32_t *>(shaderBytes.data()), shaderBytes.size(),
+                            m_worldVertShader))
+        return false;
+    if (!CreateShaderModule(m_device, reinterpret_cast<const uint32_t *>(fragmentBytes.data()), fragmentBytes.size(),
+                            m_worldFragShader))
+        return false;
+
+    VkPushConstantRange pushConstants = MakeVertexPushConstantRange(sizeof(WorldUIPushConstants));
+    pushConstants.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+    if (!CreatePipelineLayout(m_device, m_descriptorSetLayout, pushConstants, m_worldPipelineLayout))
+        return false;
+
+    rhi::GraphicsRenderingSignature target;
+    target.colorFormatCount = 1;
+    target.colorFormats[0] = rhi::FromVkFormat(m_colorFormat);
+    target.depthFormat = rhi::FromVkFormat(m_depthFormat);
+    target.samples = rhi::FromVkSampleCount(m_msaaSamples);
+    return CreateWorldPipeline(target, m_worldPipeline);
+}
+
+bool InxScreenUIRenderer::CreateWorldPipeline(const rhi::GraphicsRenderingSignature &target, VkPipeline &result)
+{
+
+    const std::array<VkPipelineShaderStageCreateInfo, 2> stages = {
+        MakeShaderStageInfo(VK_SHADER_STAGE_VERTEX_BIT, m_worldVertShader),
+        MakeShaderStageInfo(VK_SHADER_STAGE_FRAGMENT_BIT, m_worldFragShader),
+    };
+    VkVertexInputBindingDescription bindingDescription{};
+    bindingDescription.stride = sizeof(WorldGPUVertex);
+    bindingDescription.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+    VkVertexInputAttributeDescription attributes[4]{};
+    attributes[0].location = 0;
+    attributes[0].format = VK_FORMAT_R32G32B32_SFLOAT;
+    attributes[0].offset = offsetof(WorldGPUVertex, pos);
+    attributes[1].location = 1;
+    attributes[1].format = VK_FORMAT_R32G32_SFLOAT;
+    attributes[1].offset = offsetof(WorldGPUVertex, uv);
+    attributes[2].location = 2;
+    attributes[2].format = VK_FORMAT_R32G32B32A32_SFLOAT;
+    attributes[2].offset = offsetof(WorldGPUVertex, color);
+    attributes[3].location = 3;
+    attributes[3].format = VK_FORMAT_R32G32_SFLOAT;
+    attributes[3].offset = offsetof(WorldGPUVertex, localPos);
+
+    const VkPipelineVertexInputStateCreateInfo vertexInput = MakeVertexInputState(bindingDescription, attributes, 4);
+    const VkPipelineInputAssemblyStateCreateInfo inputAssembly = MakeTriangleListInputAssembly();
+    const VkPipelineViewportStateCreateInfo viewport = MakeDynamicViewportState();
+    const VkPipelineRasterizationStateCreateInfo rasterization = MakeRasterizationState();
+    const VkPipelineMultisampleStateCreateInfo multisample = MakeMultisampleState(rhi::ToVkSampleCount(target.samples));
+    const VkPipelineColorBlendAttachmentState blendAttachment = MakeAlphaBlendAttachment();
+    const VkPipelineColorBlendStateCreateInfo blend = MakeColorBlendState(blendAttachment);
+    const VkPipelineDepthStencilStateCreateInfo depth = MakeWorldDepthStencilState();
+    const std::array<VkDynamicState, 2> dynamicStates = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+    const VkPipelineDynamicStateCreateInfo dynamic = MakeDynamicStateInfo(dynamicStates.data(), dynamicStates.size());
+
+    VkPipelineRenderingCreateInfo rendering{};
+    rendering.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+    rendering.colorAttachmentCount = 1;
+    const VkFormat color = rhi::ToVkFormat(target.colorFormats[0]);
+    rendering.pColorAttachmentFormats = &color;
+    rendering.depthAttachmentFormat = rhi::ToVkFormat(target.depthFormat);
+    rendering.stencilAttachmentFormat = rhi::ToVkFormat(target.stencilFormat);
+
+    VkGraphicsPipelineCreateInfo pipeline{};
+    pipeline.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    pipeline.pNext = &rendering;
+    pipeline.stageCount = static_cast<uint32_t>(stages.size());
+    pipeline.pStages = stages.data();
+    pipeline.pVertexInputState = &vertexInput;
+    pipeline.pInputAssemblyState = &inputAssembly;
+    pipeline.pViewportState = &viewport;
+    pipeline.pRasterizationState = &rasterization;
+    pipeline.pMultisampleState = &multisample;
+    pipeline.pDepthStencilState = &depth;
+    pipeline.pColorBlendState = &blend;
+    pipeline.pDynamicState = &dynamic;
+    pipeline.layout = m_worldPipelineLayout;
+    return vkCreateGraphicsPipelines(m_device, VK_NULL_HANDLE, 1, &pipeline, nullptr, &result) == VK_SUCCESS;
+}
+
+VkPipeline InxScreenUIRenderer::GetWorldPipeline(const rhi::GraphicsRenderingSignature &target)
+{
+    if (target.colorFormatCount != 1 || target.depthFormat == rhi::PixelFormat::Undefined)
+        throw std::invalid_argument("World UI needs one color and one depth attachment");
+    if (target.colorFormats[0] == rhi::FromVkFormat(m_colorFormat) &&
+        target.depthFormat == rhi::FromVkFormat(m_depthFormat) && target.stencilFormat == rhi::PixelFormat::Undefined &&
+        target.samples == rhi::FromVkSampleCount(m_msaaSamples))
+        return m_worldPipeline;
+    for (const auto &variant : m_worldPipelineVariants) {
+        if (variant.first == target)
+            return variant.second;
+    }
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    if (!CreateWorldPipeline(target, pipeline))
+        throw std::runtime_error("Failed to create World UI pipeline for the actual target attachments");
+    m_worldPipelineVariants.emplace_back(target, pipeline);
+    return pipeline;
+}
+
 // ============================================================================
 // Buffer Management
 // ============================================================================
@@ -971,12 +1561,221 @@ bool InxScreenUIRenderer::EnsureBuffers(ListBuffers &buf, VkDeviceSize vertexSiz
 
 ImDrawList *InxScreenUIRenderer::GetDrawList(ScreenUIList list)
 {
-    return (list == ScreenUIList::Camera) ? m_cameraDrawList : m_overlayDrawList;
+    if (m_recordingPacket) {
+        const int index = ListIndex(list);
+        auto &output = m_recordingPacket->m_data->lists[index];
+        auto *&drawList = m_packetDrawLists[index];
+        if (!output.used) {
+            if (!drawList)
+                drawList = IM_NEW(ImDrawList)(ImGui::GetDrawListSharedData());
+            ResetDrawListForFrame(*drawList, m_cachedWidth, m_cachedHeight, list != ScreenUIList::World);
+            output.used = true;
+        }
+        return drawList;
+    }
+    if (list == ScreenUIList::Camera)
+        return m_cameraDrawList;
+    if (list == ScreenUIList::Overlay)
+        return m_overlayDrawList;
+    return m_worldDrawList;
+}
+
+void InxScreenUIRenderer::RenderWorld(VkCommandBuffer cmdBuf, uint32_t width, uint32_t height,
+                                      const glm::mat4 &viewProjection, const rhi::GraphicsRenderingSignature &target,
+                                      uint32_t frameSlot, uint32_t cullingMask)
+{
+    constexpr ScreenUIList list = ScreenUIList::World;
+    constexpr int listIndex = 2;
+    m_lastSubmittedDrawCounts[listIndex] = 0;
+    m_lastSubmittedIndexCounts[listIndex] = 0;
+    if (!m_initialized || !m_worldPipeline || width == 0 || height == 0 || !m_enabled)
+        return;
+    if (m_worldElementStart >= 0)
+        throw std::logic_error("World UI element submission was not closed before rendering");
+
+    ImDrawList *drawList = m_worldDrawList;
+    if (!drawList || drawList->VtxBuffer.Size == 0 || drawList->IdxBuffer.Size == 0)
+        return;
+    struct ElementDepth
+    {
+        size_t index;
+        float depth;
+    };
+    std::vector<ElementDepth> elementOrder;
+    elementOrder.reserve(m_worldElementSpans.size());
+    for (size_t index = 0; index < m_worldElementSpans.size(); ++index) {
+        const auto &element = m_worldElementSpans[index];
+        if ((element.layerMask & cullingMask) != 0) {
+            const glm::vec4 clipCenter = viewProjection * element.localToWorld[3];
+            elementOrder.push_back({index, clipCenter.w > 0.0f ? clipCenter.z / clipCenter.w : -1.0f});
+        }
+    }
+    if (elementOrder.empty())
+        return;
+    if (!RefreshFontDescriptorSet(m_fontDescriptorSet))
+        return;
+    auto &vertices = m_worldVertices;
+    if (m_preparedRevision[listIndex] != m_geometryRevision[listIndex]) {
+        if (m_worldElementSpans.empty() || m_worldElementSpans.front().vertexStart != 0 ||
+            m_worldElementSpans.back().vertexEnd != drawList->VtxBuffer.Size) {
+            throw std::logic_error("World UI vertices must belong to one explicit element");
+        }
+        for (size_t index = 1; index < m_worldElementSpans.size(); ++index) {
+            if (m_worldElementSpans[index - 1].vertexEnd != m_worldElementSpans[index].vertexStart)
+                throw std::logic_error("World UI element spans must be contiguous");
+        }
+        vertices.resize(static_cast<size_t>(drawList->VtxBuffer.Size));
+        const auto &hdrRanges = m_worldHDRRanges;
+        size_t hdrIndex = 0;
+        size_t elementIndex = 0;
+        for (int vertexIndex = 0; vertexIndex < drawList->VtxBuffer.Size; ++vertexIndex) {
+            while (hdrIndex < hdrRanges.size() && vertexIndex >= hdrRanges[hdrIndex].vertexEnd)
+                ++hdrIndex;
+            while (elementIndex + 1 < m_worldElementSpans.size() &&
+                   vertexIndex >= m_worldElementSpans[elementIndex].vertexEnd)
+                ++elementIndex;
+
+            float rgbScale = 1.0f;
+            if (hdrIndex < hdrRanges.size() && vertexIndex >= hdrRanges[hdrIndex].vertexStart)
+                rgbScale = hdrRanges[hdrIndex].rgbScale;
+
+            const ImDrawVert &source = drawList->VtxBuffer[vertexIndex];
+            const WorldElementSpan &element = m_worldElementSpans[elementIndex];
+            // UI +X follows Transform +X; UI +Y points down while the world +Y
+            // axis points up. This keeps world UI manipulation identical to
+            // ordinary scene objects without introducing a second pose.
+            const glm::vec4 local((source.pos.x - element.pivotX) / kWorldUILogicalPixelsPerUnit,
+                                  -(source.pos.y - element.pivotY) / kWorldUILogicalPixelsPerUnit, 0.0f, 1.0f);
+            const glm::vec4 world = element.localToWorld * local;
+            WorldGPUVertex &target = vertices[static_cast<size_t>(vertexIndex)];
+            target.pos[0] = world.x;
+            target.pos[1] = world.y;
+            target.pos[2] = world.z;
+            target.uv = source.uv;
+            target.localPos = source.pos;
+            const ImVec4 color = ImGui::ColorConvertU32ToFloat4(source.col);
+            target.color[0] = color.x * rgbScale;
+            target.color[1] = color.y * rgbScale;
+            target.color[2] = color.z * rgbScale;
+            target.color[3] = color.w;
+        }
+        m_preparedRevision[listIndex] = m_geometryRevision[listIndex];
+        ++m_geometryStats[listIndex].preparations;
+    }
+
+    const VkDeviceSize vertexBytes = vertices.size() * sizeof(WorldGPUVertex);
+    ListBuffers &buffers = m_frameBuffers[frameSlot][listIndex];
+    if (!UploadGeometry(buffers, list, vertices.data(), static_cast<size_t>(vertexBytes)))
+        return;
+
+    vkCmdBindPipeline(cmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS, GetWorldPipeline(target));
+    const VkDeviceSize vertexOffset = 0;
+    vkCmdBindVertexBuffers(cmdBuf, 0, 1, &buffers.vertexBuffer, &vertexOffset);
+    vkCmdBindIndexBuffer(cmdBuf, buffers.indexBuffer, 0,
+                         sizeof(ImDrawIdx) == 2 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32);
+    const VkViewport viewport = MakeViewport(width, height);
+    vkCmdSetViewport(cmdBuf, 0, 1, &viewport);
+    const VkRect2D scissor{{0, 0}, {width, height}};
+    vkCmdSetScissor(cmdBuf, 0, 1, &scissor);
+    VkDescriptorSet lastDescriptor = VK_NULL_HANDLE;
+    uint32_t submittedDraws = 0;
+    uint64_t submittedIndices = 0;
+
+    // Every camera owns its own spatial transparency order. The command list
+    // itself is camera-independent and may be replayed by several cameras, so
+    // sorting at Python submission time would be incorrect. Sort elements
+    // back-to-front in this camera's clip space, while preserving the authored
+    // draw order inside each element.
+    std::stable_sort(elementOrder.begin(), elementOrder.end(),
+                     [](const ElementDepth &lhs, const ElementDepth &rhs) { return lhs.depth > rhs.depth; });
+
+    // This matrix belongs to the camera replay, not to individual UI draws.
+    WorldUIPushConstants constants{};
+    constants.viewProjection = viewProjection;
+    vkCmdPushConstants(cmdBuf, m_worldPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                       sizeof(constants), &constants);
+
+    const auto drawCommand = [&](const ImDrawCmd &command) {
+        if (command.ElemCount == 0)
+            return;
+        VkDescriptorSet descriptor = reinterpret_cast<VkDescriptorSet>(static_cast<uintptr_t>(command.GetTexID()));
+        if (descriptor == VK_NULL_HANDLE)
+            return;
+        if (descriptor != m_fontDescriptorSet && m_textureUsageValidator &&
+            !m_textureUsageValidator(static_cast<uint64_t>(reinterpret_cast<uintptr_t>(descriptor))))
+            return;
+        if (descriptor != lastDescriptor) {
+            vkdebug::CmdBindDescriptorSetsTracked("InxScreenUIRenderer.RenderWorld.Set0", cmdBuf,
+                                                  VK_PIPELINE_BIND_POINT_GRAPHICS, m_worldPipelineLayout, 0, 1,
+                                                  &descriptor, 0, nullptr);
+            lastDescriptor = descriptor;
+        }
+        vkCmdDrawIndexed(cmdBuf, command.ElemCount, 1, command.IdxOffset, static_cast<int32_t>(command.VtxOffset), 0);
+        ++submittedDraws;
+        submittedIndices += command.ElemCount;
+    };
+    // Merge only consecutive index ranges after spatial sorting. Texture and
+    // base vertex remain identical; primitive/blend order is preserved. World
+    // UI ignores canvas clips, so ClipRect cannot be a batch boundary here.
+    ImDrawCmd pending{};
+    for (const auto &entry : elementOrder) {
+        const WorldElementSpan &element = m_worldElementSpans[entry.index];
+        if (element.commandStart < 0 || element.commandEnd > drawList->CmdBuffer.Size)
+            throw std::logic_error("World UI element command span is invalid");
+        for (int commandIndex = element.commandStart; commandIndex < element.commandEnd; ++commandIndex) {
+            const auto &command = drawList->CmdBuffer[commandIndex];
+            if (command.UserCallback || !command.ElemCount)
+                continue;
+            if (pending.ElemCount && pending.IdxOffset + pending.ElemCount == command.IdxOffset &&
+                pending.VtxOffset == command.VtxOffset && pending.GetTexID() == command.GetTexID()) {
+                pending.ElemCount += command.ElemCount;
+            } else {
+                drawCommand(pending);
+                pending = command;
+            }
+        }
+    }
+    drawCommand(pending);
+    m_lastSubmittedDrawCounts[listIndex] = submittedDraws;
+    m_lastSubmittedIndexCounts[listIndex] = submittedIndices;
+}
+
+std::vector<std::shared_ptr<rhi::RenderTexture>> InxScreenUIRenderer::GetRenderTextureReads(ScreenUIList list,
+                                                                                            uint32_t cullingMask) const
+{
+    std::vector<std::shared_ptr<rhi::RenderTexture>> reads;
+    const auto *drawList = GetDrawList(list);
+    if (!m_enabled || !drawList || !m_renderTextureResolver)
+        return reads;
+    const auto add = [&](int index) {
+        const auto &command = drawList->CmdBuffer[index];
+        if (!command.ElemCount || command.UserCallback)
+            return;
+        auto texture = m_renderTextureResolver(static_cast<uint64_t>(command.GetTexID()));
+        if (texture && std::find(reads.begin(), reads.end(), texture) == reads.end())
+            reads.push_back(std::move(texture));
+    };
+    if (list == ScreenUIList::World) {
+        for (const auto &element : m_worldElementSpans) {
+            if ((element.layerMask & cullingMask) != 0) {
+                for (int index = element.commandStart; index < element.commandEnd; ++index)
+                    add(index);
+            }
+        }
+    } else {
+        for (int index = 0; index < drawList->CmdBuffer.Size; ++index)
+            add(index);
+    }
+    return reads;
 }
 
 const ImDrawList *InxScreenUIRenderer::GetDrawList(ScreenUIList list) const
 {
-    return (list == ScreenUIList::Camera) ? m_cameraDrawList : m_overlayDrawList;
+    if (list == ScreenUIList::Camera)
+        return m_cameraDrawList;
+    if (list == ScreenUIList::Overlay)
+        return m_overlayDrawList;
+    return m_worldDrawList;
 }
 
 } // namespace infernux

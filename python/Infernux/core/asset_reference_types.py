@@ -105,6 +105,7 @@ class AssetReferenceType:
     aliases: tuple[str, ...] = ()
     allow_structured_reference: bool = False
     virtual_path_markers: tuple[str, ...] = ()
+    compatible_types: tuple[str, ...] = ()
 
     @property
     def patterns(self) -> tuple[str, ...]:
@@ -124,6 +125,7 @@ class AssetReferenceType:
                 self.type_id.casefold(),
                 self.display_name.casefold(),
                 *(str(alias).strip().casefold() for alias in self.aliases),
+                *(value.casefold() for value in self.compatible_types),
             }
             if source_type and source_type.casefold() not in accepted_types:
                 return (
@@ -250,6 +252,29 @@ class AssetReferenceCodec:
             ).strip()
             builtin = str(getattr(value, "builtin", "") or "").strip()
         guid, path_hint = canonical_asset_reference_identity(guid, path_hint)
+        descriptor = asset_type_registry.get(asset_type)
+        if descriptor is not None and descriptor.compatible_types:
+            # A field accepting several resource types is not itself a new
+            # asset type. Clipboard references retain the concrete resource
+            # kind, so a material's sampled image can be pasted into a static
+            # image slot, or its render target into a Camera slot.
+            path = _resolve_guid_path(guid) if guid else path_hint
+            extension = PurePath(path.replace("\\", "/")).suffix.casefold()
+            for type_id in descriptor.compatible_types:
+                member = asset_type_registry.require(type_id)
+                if extension in member.extensions:
+                    asset_type = member.type_id
+                    break
+            else:
+                # Deleted assets still retain their concrete kind in scene
+                # documents. The field union is never a resource identity.
+                from .asset_ref import AssetRefBase, get_asset_type_for_ref
+                declared = (value.get("asset_type", "") if isinstance(value, dict)
+                            else get_asset_type_for_ref(value) if isinstance(value, AssetRefBase)
+                            else type(value).__name__)
+                member = asset_type_registry.get(declared)
+                if member is not None and member.type_id in descriptor.compatible_types:
+                    asset_type = member.type_id
         return {
             "asset_type": str(asset_type or "").strip(),
             "builtin": builtin,
@@ -343,6 +368,7 @@ def _register_builtin(
     aliases: tuple[str, ...] = (),
     structured: bool = False,
     virtual_path_markers: tuple[str, ...] = (),
+    compatible_types: tuple[str, ...] = (),
 ) -> None:
     asset_type_registry.register(
         AssetReferenceType(
@@ -354,6 +380,7 @@ def _register_builtin(
             aliases=aliases,
             allow_structured_reference=structured,
             virtual_path_markers=virtual_path_markers,
+            compatible_types=compatible_types,
         )
     )
 
@@ -366,6 +393,11 @@ _register_builtin(
 _register_builtin(
     "Texture.SDF", "Signed Distance Field", {".inxsdf"},
     ("TEXTURE_GUID", "TEXTURE_FILE"), "sdf", structured=True,
+)
+_register_builtin(
+    "Texture.Sampled", "Sampled Texture", {*IMAGE_EXTENSIONS, ".rendertexture"},
+    ("TEXTURE_GUID", "TEXTURE_FILE", "RENDER_TEXTURE_FILE"), "sampled_tex",
+    structured=True, compatible_types=("Texture", "Texture2D", "RenderTexture"),
 )
 _register_builtin(
     "Texture.VectorField", "Vector Field", {".inxvfield"},
@@ -402,3 +434,5 @@ _register_builtin(
 )
 _register_builtin("AnimationTimeline", "Timeline", ANIMTIMELINE_EXTENSIONS, ("ANIMTIMELINE_FILE",), "atl")
 _register_builtin("TimelineFSM", "TimelineFSM", TIMELINEFSM_EXTENSIONS, ("TIMELINEFSM_FILE",), "tlfsm")
+_register_builtin("DataAsset", "Data Asset", {".inxdata"}, ("DATA_ASSET_FILE",), "data")
+_register_builtin("RenderTexture", "Render Texture", {".rendertexture"}, ("RENDER_TEXTURE_FILE",), "rt")

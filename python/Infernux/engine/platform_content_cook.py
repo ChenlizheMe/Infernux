@@ -131,7 +131,6 @@ def cook_platform_content(
         enable_jit=False,
     )
     builder.freeze_asset_index_entries(catalog_entries)
-
     def report(message: str, fraction: float) -> None:
         request.report(
             "cook",

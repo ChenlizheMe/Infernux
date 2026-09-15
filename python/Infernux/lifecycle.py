@@ -92,6 +92,19 @@ class PreloadContext:
         if self._restart_callback is not None:
             self._restart_callback(str(reason or "Native state cannot be unloaded safely"))
 
+    def own_python_library(self, relative_path: str) -> str:
+        """Declare bundled library sources managed by this preload's lifetime.
+
+        These files remain packaged assets, but are not component scripts and
+        do not participate in component hot reload. Load and release the library
+        in preload/unload; native libraries may require an Editor restart.
+        Ordinary package component scripts must stay outside this directory.
+        """
+        from Infernux.engine.project_context import register_preload_python_library
+        path = self.package_path(relative_path)
+        register_preload_python_library(f"{self.project_root}:{self.script_guid}:{self.type_id}", path)
+        return path
+
 
 class InxPreload(ABC):
     """Opt one script into early import and explicit startup/shutdown hooks."""

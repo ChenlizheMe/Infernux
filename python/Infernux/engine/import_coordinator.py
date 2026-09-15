@@ -101,6 +101,7 @@ class ImportCoordinator:
         guid_hint: str = "",
         observed_at: float | None = None,
         debounce_seconds: float | None = None,
+        source_registered: bool = True,
     ) -> None:
         if not isinstance(kind, AssetFsEventKind):
             raise TypeError("kind must be AssetFsEventKind")
@@ -109,9 +110,13 @@ class ImportCoordinator:
         now = self._clock() if observed_at is None else observed_at
         normalized_path = _absolute_path(path)
         normalized_destination = _absolute_path(destination) if destination else ""
-        if kind is AssetFsEventKind.MOVED and is_document_store_temporary_path(normalized_path):
+        published_source = ""
+        if kind is AssetFsEventKind.MOVED and (
+            not source_registered or is_document_store_temporary_path(normalized_path)
+        ):
             if not normalized_destination or is_document_store_temporary_path(normalized_destination):
                 return
+            published_source = normalized_path
             kind = AssetFsEventKind.MODIFIED
             normalized_path = normalized_destination
             normalized_destination = ""
@@ -129,6 +134,10 @@ class ImportCoordinator:
         if kind is AssetFsEventKind.MOVED and not event.destination:
             raise ValueError("moved event requires a destination")
         with self._lock:
+            if published_source:
+                # Rename publication consumes any queued events for the
+                # staging file; only the destination's content survives.
+                self._pending.pop("asset:" + _path_key(published_source), None)
             self._submit_locked(event, now, debounce_seconds=debounce_seconds)
 
     def _delay_for(
@@ -156,7 +165,10 @@ class ImportCoordinator:
         )
         for key, pending in self._pending.items():
             candidate = pending.event
-            if candidate.kind is opposite and candidate.guid_hint == event.guid_hint:
+            # GUID pairing identifies a move between paths. Same-path events
+            # retain their order: create/delete cancels; delete/create replaces.
+            if (candidate.kind is opposite and candidate.guid_hint == event.guid_hint
+                    and _path_key(candidate.path) != _path_key(event.path)):
                 return key, pending
         return None
 
@@ -178,21 +190,13 @@ class ImportCoordinator:
             del self._pending[pair_key]
             deleted = event if event.kind is AssetFsEventKind.DELETED else pending.event
             created = event if event.kind is AssetFsEventKind.CREATED else pending.event
-            if _path_key(deleted.path) == _path_key(created.path):
-                event = AssetFsEvent(
-                    AssetFsEventKind.MODIFIED,
-                    created.path,
-                    guid_hint=event.guid_hint,
-                    observed_at=max(deleted.observed_at, created.observed_at),
-                )
-            else:
-                event = AssetFsEvent(
-                    AssetFsEventKind.MOVED,
-                    deleted.path,
-                    destination=created.path,
-                    guid_hint=event.guid_hint,
-                    observed_at=max(deleted.observed_at, created.observed_at),
-                )
+            event = AssetFsEvent(
+                AssetFsEventKind.MOVED,
+                deleted.path,
+                destination=created.path,
+                guid_hint=event.guid_hint,
+                observed_at=max(deleted.observed_at, created.observed_at),
+            )
 
         if event.kind is AssetFsEventKind.MOVED:
             source_key = "asset:" + _path_key(event.path)

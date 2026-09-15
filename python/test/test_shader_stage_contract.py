@@ -90,3 +90,17 @@ def test_gizmo_icon_shader_applies_component_vertex_tint():
         encoding="utf-8"
     )
     assert "texColor.rgb * v_Color * material.baseColor.rgb" in source
+
+
+def test_gizmo_vertex_uses_the_draw_list_instance_transform():
+    from pathlib import Path
+
+    shader_root = Path("python/Infernux/resources/shaders")
+    gizmo_vertex = (shader_root / "gizmo.vert").read_text(encoding="utf-8")
+    mesh_vertex = (shader_root / "_templates/vertex_main.glsl").read_text(
+        encoding="utf-8"
+    )
+
+    assert "instanceModels[gl_InstanceIndex]" in gizmo_vertex
+    assert "instanceModels[gl_InstanceIndex]" in mesh_vertex
+    assert "pc.model * vec4(inPosition" not in gizmo_vertex

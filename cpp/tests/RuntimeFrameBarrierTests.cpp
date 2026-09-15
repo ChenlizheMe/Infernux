@@ -29,10 +29,12 @@ int main()
     int endCount = 0;
     manager.SetRuntimeFrameBarrierCallback([&observed](Barrier barrier) { observed.push_back(barrier); });
 
-    // A production barrier is meaningful only while a lifecycle frame is
-    // open. Direct emission outside one must stay a no-op.
+    // Engine-phase notifications are observable even when no script
+    // lifecycle frame is open. Render-facing services use these barriers in
+    // Edit Mode and in scenes without script components.
     manager.EmitRuntimeFrameBarrier(Barrier::TransformToPhysics);
-    assert(observed.empty());
+    assert((observed == std::vector<Barrier>{Barrier::TransformToPhysics}));
+    observed.clear();
 
     manager.CreateScene("RuntimeFrameBarrierTests");
     assert(manager.ConsumeFrameDeltaTime(0.25f) == 0.0f);
@@ -45,15 +47,17 @@ int main()
         [&updateCount](float) { ++updateCount; }, [&lateUpdateCount](float) { ++lateUpdateCount; },
         [&editorUpdateCount](float) { ++editorUpdateCount; }, [&endCount] { ++endCount; });
 
-    // Installing the bridge alone must not add Python crossings to a scene
-    // with no script components. Structural registration enables it later.
+    // Installing the lifecycle bridge alone must not dispatch script phases
+    // in a scene with no script components, while engine barriers remain
+    // authoritative and observable.
     manager.Update(0.0f);
     manager.EmitRuntimeFrameBarrier(Barrier::RenderExtraction);
     manager.EndFrame();
     assert(beginCount == 0);
     assert(editorUpdateCount == 0);
     assert(endCount == 0);
-    assert(observed.empty());
+    assert((observed == std::vector<Barrier>{Barrier::RenderExtraction, Barrier::PendingDestroy}));
+    observed.clear();
 
     manager.SetRuntimeLifecycleWorkAvailable(true);
     // Production begin_frame publishes this immutable summary before the
@@ -106,6 +110,59 @@ int main()
     manager.Stop();
     assert(manager.GetRuntimeFrameCount() == 0);
 
+    // The production accumulator may run zero or multiple fixed steps in one
+    // rendered frame. A long frame is clamped once, time scale changes the
+    // real-time frequency, and paused Step advances exactly one fixed step.
+    observed.clear();
+    beginCount = 0;
+    fixedUpdateCount = 0;
+    updateCount = 0;
+    lateUpdateCount = 0;
+    endCount = 0;
+    manager.SetFixedTimeStep(0.02f);
+    manager.SetMaxFixedDeltaTime(0.05f);
+    manager.SetTimeScale(1.0f);
+    const auto runFrame = [&manager](float deltaTime) {
+        manager.Update(deltaTime);
+        manager.LateUpdate(deltaTime);
+        manager.EndFrame();
+    };
+
+    manager.Play();
+    runFrame(0.01f);
+    assert(fixedUpdateCount == 0);
+    runFrame(0.01f);
+    assert(fixedUpdateCount == 1);
+    runFrame(1.0f);
+    assert(fixedUpdateCount == 3);
+    assert(manager.GetFixedTime() > 0.059 && manager.GetFixedTime() < 0.061);
+    manager.Stop();
+
+    fixedUpdateCount = 0;
+    manager.SetTimeScale(0.0f);
+    manager.Play();
+    runFrame(1.0f);
+    assert(fixedUpdateCount == 0);
+    assert(manager.GetFixedTime() == 0.0);
+
+    manager.SetTimeScale(2.0f);
+    runFrame(0.01f);
+    assert(fixedUpdateCount == 1);
+    assert(manager.GetFixedTime() > 0.019 && manager.GetFixedTime() < 0.021);
+    assert(manager.GetFixedUnscaledTime() > 0.009 && manager.GetFixedUnscaledTime() < 0.011);
+    manager.Pause();
+    runFrame(1.0f);
+    assert(fixedUpdateCount == 1);
+    manager.Step(0.016f);
+    manager.EndFrame();
+    assert(fixedUpdateCount == 2);
+    assert(manager.GetFixedTime() > 0.039 && manager.GetFixedTime() < 0.041);
+    assert(manager.GetFixedUnscaledTime() > 0.019 && manager.GetFixedUnscaledTime() < 0.021);
+    manager.Stop();
+    manager.SetTimeScale(1.0f);
+    manager.SetMaxFixedDeltaTime(1.0f / 3.0f);
+    observed.clear();
+
     // Frame-cache commits retain mutation origin. A physics-authored root pose
     // must not feed the same Rigidbody back into transform-to-physics sync,
     // while descendants still observe their inherited world-space change.
@@ -118,7 +175,7 @@ int main()
     std::vector<Transform *> invalidated;
     transforms.SetInvalidationObserver([&invalidated](Transform *transform) { invalidated.push_back(transform); });
     transforms.SyncSceneWorldMatrices(scene);
-    transforms.BeginFrameCache(scene);
+    transforms.BeginFrameCache();
     transforms.SetCachedWorldPoseFromPhysics(root->GetTransform()->GetECSHandle().index, glm::vec3(1.0f, 2.0f, 3.0f),
                                              glm::quat(1.0f, 0.0f, 0.0f, 0.0f), true);
     const uint64_t revisionBeforePhysicsPose = manager.GetRenderTransformRevision();
@@ -129,7 +186,7 @@ int main()
     assert((invalidated == std::vector<Transform *>{child->GetTransform()}));
 
     invalidated.clear();
-    transforms.BeginFrameCache(scene);
+    transforms.BeginFrameCache();
     root->GetTransform()->SetPosition(glm::vec3(2.0f, 3.0f, 4.0f));
     assert(!transforms.EndFrameCache());
     assert((invalidated == std::vector<Transform *>{root->GetTransform(), child->GetTransform()}));
@@ -138,7 +195,7 @@ int main()
     // BeginFrameCache(). Every frame-cache array must grow in lockstep so the
     // new slot can be written and committed in the same frame.
     invalidated.clear();
-    transforms.BeginFrameCache(scene);
+    transforms.BeginFrameCache();
     GameObject *runtimeCreated = scene->CreateGameObject("CreatedDuringFrameCache");
     runtimeCreated->GetTransform()->SetPosition(glm::vec3(7.0f, 8.0f, 9.0f));
     assert(!transforms.EndFrameCache());
@@ -153,7 +210,7 @@ int main()
 
     manager.ClearRuntimeLifecycleCallbacks();
     manager.EmitRuntimeFrameBarrier(Barrier::SnapshotPublication);
-    assert(observed.size() == 10);
+    assert(observed.empty());
     manager.UnloadAllScenes();
     return 0;
 }

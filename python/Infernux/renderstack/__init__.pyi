@@ -45,6 +45,7 @@ from Infernux.renderstack.chromatic_aberration_effect import ChromaticAberration
 from Infernux.renderstack.film_grain_effect import FilmGrainEffect as FilmGrainEffect
 from Infernux.renderstack.white_balance_effect import WhiteBalanceEffect as WhiteBalanceEffect
 from Infernux.renderstack.sharpen_effect import SharpenEffect as SharpenEffect
+from Infernux.renderstack.temporal_aa_effect import TemporalAAEffect as TemporalAAEffect
 from Infernux.renderstack.render_stack import RenderStack as RenderStack, PassEntry as PassEntry
 from Infernux.renderstack.render_stack_pipeline import RenderStackPipeline as RenderStackPipeline
 from Infernux.renderstack.default_forward_pipeline import DefaultForwardPipeline as DefaultForwardPipeline
@@ -111,6 +112,7 @@ __all__ = [
     "FilmGrainEffect",
     "WhiteBalanceEffect",
     "SharpenEffect",
+    "TemporalAAEffect",
     "discover_pipelines",
     "discover_passes",
     "discovery_import_failures",

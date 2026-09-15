@@ -507,7 +507,9 @@ def _bind_editable_resource_document(
 
     kind_by_category = {
         "material": DocumentKind.MATERIAL,
+        "data_asset": DocumentKind.DATA_ASSET,
         "physic_material": DocumentKind.PHYSIC_MATERIAL,
+        "render_texture": DocumentKind.RENDER_TEXTURE,
         "render_effect": DocumentKind.RENDER_EFFECT,
         "animclip": DocumentKind.ANIMATION_CLIP,
         "animclip3d": DocumentKind.ANIMATION_CLIP,
@@ -730,6 +732,14 @@ def _ensure_categories():
         autosave_debounce=0.35,
     )
 
+    _categories["data_asset"] = AssetCategoryDef(
+        display_name="asset.display_data_asset",
+        access_mode=AssetAccessMode.READ_WRITE_RESOURCE,
+        load_fn=_load_data_asset,
+        custom_body_fn=_render_data_asset_body,
+        autosave_debounce=0.35,
+    )
+
     _categories["render_effect"] = AssetCategoryDef(
         display_name="asset.display_render_effect",
         access_mode=AssetAccessMode.READ_WRITE_RESOURCE,
@@ -744,6 +754,15 @@ def _ensure_categories():
         load_fn=_load_physic_material,
         custom_body_fn=_render_physic_material_body,
         autosave_debounce=0.2,
+    )
+
+    from .render_texture_inspector import load_document, render_body
+    _categories["render_texture"] = AssetCategoryDef(
+        display_name="asset.display_render_texture",
+        access_mode=AssetAccessMode.READ_WRITE_RESOURCE,
+        load_fn=load_document,
+        custom_body_fn=render_body,
+        autosave_debounce=0.35,
     )
 
     # ── Prefab ─────────────────────────────────────────────────────────
@@ -872,6 +891,201 @@ def _load_material(path: str):
         "shader_sync_key": "",
         "_applied_version": native.get_version(),
     }
+
+
+def _load_data_asset(path: str):
+    from Infernux.core.data_asset import DataAsset
+
+    return DataAsset.load(path), {}
+
+
+def _render_data_asset_value(
+    ctx: InxGUIContext,
+    owner,
+    field_name: str,
+    metadata,
+    current_value,
+    label_width: float,
+    widget_path: str,
+):
+    """Render one serialized value and return ``(value, changed)``."""
+    from Infernux.components.fields import FieldType, get_raw_field_value, get_serialized_fields
+    from ._inspector_list_field import (
+        _render_list_field,
+        _render_serializable_asset_reference,
+    )
+    from .inspector_utils import (
+        has_field_changed,
+        pretty_field_name,
+        render_compact_section_header,
+        render_serialized_field,
+    )
+
+    field_type = metadata.field_type
+    label = metadata.display_name_key
+    label = t(label) if label else pretty_field_name(field_name)
+
+    if field_type == FieldType.LIST:
+        selected = current_value
+
+        def _changed(_owner, _name, _old, new_value):
+            nonlocal selected
+            selected = copy.deepcopy(new_value)
+
+        _render_list_field(
+            ctx,
+            owner,
+            widget_path,
+            metadata,
+            current_value,
+            label_width,
+            display_name=label,
+            on_change=_changed,
+        )
+        return selected, selected != current_value
+
+    if field_type in {
+        FieldType.MATERIAL,
+        FieldType.TEXTURE,
+        FieldType.SHADER,
+        FieldType.ASSET,
+    }:
+        selected = _render_serializable_asset_reference(
+            ctx,
+            widget_path,
+            field_name,
+            metadata,
+            current_value,
+            label_width,
+        )
+        return selected, has_field_changed(field_type, current_value, selected)
+
+    if field_type == FieldType.SERIALIZABLE_OBJECT:
+        value_type = (
+            type(current_value)
+            if current_value is not None
+            else metadata.serializable_class
+        )
+        if value_type is None:
+            field_label(ctx, label, label_width)
+            ctx.label(t("inspector.unknown_type"))
+            return current_value, False
+        header = f"{label} ({value_type.__name__})"
+        if not render_compact_section_header(ctx, header, level="secondary"):
+            return current_value, False
+        if current_value is None:
+            if ctx.button(
+                f"{t('asset.data_asset_create_value')}##{widget_path}_create"
+            ):
+                return value_type(), True
+            return current_value, False
+
+        nested = copy.deepcopy(current_value)
+        nested_fields = get_serialized_fields(value_type)
+        nested_width = max_label_w(
+            ctx,
+            [
+                t(meta.display_name_key)
+                if meta.display_name_key
+                else pretty_field_name(name)
+                for name, meta in nested_fields.items()
+                if not meta.hidden
+            ],
+        ) if nested_fields else 0.0
+        changed = False
+        for nested_name, nested_meta in nested_fields.items():
+            if nested_meta.hidden:
+                continue
+            visible_when = nested_meta.visible_when
+            if callable(visible_when) and not bool(visible_when(nested)):
+                continue
+            nested_value = get_raw_field_value(nested, nested_name)
+            edited, field_changed = _render_data_asset_value(
+                ctx,
+                nested,
+                nested_name,
+                nested_meta,
+                nested_value,
+                nested_width,
+                f"{widget_path}_{nested_name}",
+            )
+            if field_changed and not nested_meta.readonly:
+                setattr(nested, nested_name, edited)
+                changed = True
+        return nested if changed else current_value, changed
+
+    edited = render_serialized_field(
+        ctx,
+        f"##{widget_path}",
+        label,
+        metadata,
+        current_value,
+        label_width,
+    )
+    return edited, has_field_changed(field_type, current_value, edited)
+
+
+def _render_data_asset_body(ctx: InxGUIContext, panel, state: _State):
+    del panel
+    from Infernux.components.fields import get_raw_field_value, get_serialized_fields
+    from Infernux.core.data_asset import DataAsset
+    from .inspector_utils import pretty_field_name, render_info_text
+
+    asset = state.settings
+    if not isinstance(asset, DataAsset):
+        ctx.label(t("asset.invalid_data_asset"))
+        return
+    fields = get_serialized_fields(type(asset))
+    visible_fields = [
+        (name, metadata)
+        for name, metadata in fields.items()
+        if not metadata.hidden
+        and (
+            not callable(metadata.visible_when)
+            or bool(metadata.visible_when(asset))
+        )
+    ]
+    label_width = max_label_w(
+        ctx,
+        [
+            t(metadata.display_name_key)
+            if metadata.display_name_key
+            else pretty_field_name(name)
+            for name, metadata in visible_fields
+        ],
+    ) if visible_fields else 0.0
+
+    for field_name, metadata in visible_fields:
+        if metadata.space > 0.0:
+            ctx.dummy(0.0, float(metadata.space))
+        if metadata.header:
+            ctx.label(t(metadata.header) if "." in metadata.header else metadata.header)
+        current_value = get_raw_field_value(asset, field_name)
+        edited, changed = _render_data_asset_value(
+            ctx,
+            asset,
+            field_name,
+            metadata,
+            current_value,
+            label_width,
+            f"data_asset_{field_name}",
+        )
+        if changed and not metadata.readonly:
+            draft = asset.instantiate()
+            setattr(draft, field_name, edited)
+            _apply_editable_resource_document(
+                state,
+                draft.serialize_document(),
+                edit_key=f"data_asset.{field_name}",
+                description=f"Set {field_name}",
+            )
+        if metadata.info_text:
+            render_info_text(
+                ctx,
+                t(metadata.info_text)
+                if "." in metadata.info_text
+                else metadata.info_text,
+            )
 
 
 def _load_render_effect(path: str):

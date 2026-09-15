@@ -9,8 +9,11 @@
 
 #include "ComponentBindingRegistry.h"
 #include "JsonPyBridge.h"
+#include "MatrixPyBridge.h"
 #include "core/log/InxLog.h"
 #include "core/threading/JobSystem.h"
+#include "function/renderer/rhi/RhiComputeBuffer.h"
+#include "function/renderer/rhi/RhiRenderTexture.h"
 #include "function/resources/AssetRegistry/AssetRegistry.h"
 #include "function/resources/InxMaterial/InxMaterial.h"
 #include "function/resources/InxMesh/InxMesh.h"
@@ -37,12 +40,15 @@
 #include "function/scene/SphereCollider.h"
 #include "function/scene/SpriteRenderer.h"
 #include "function/scene/Transform.h"
+#include "function/scene/UITransformDependencies.h"
 #include "function/scene/physics/PhysicsECSStore.h"
 #include <cctype>
+#include <cstring>
 #include <functional>
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
 #include <mutex>
+#include <optional>
 #include <pybind11/functional.h>
 #include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
@@ -82,19 +88,9 @@ class ScenePlayModeSnapshot
             objectIds.add(py::int_(objectId));
 
             const auto componentsIt = object.find("components");
-            bool hasPythonComponent = false;
+            // Component references may target objects with no Python script.
+            // Keep their native identities while extracting only Python data.
             if (componentsIt != object.end() && componentsIt->is_array()) {
-                for (const auto &component : *componentsIt) {
-                    const auto typeIt = component.find("type_id");
-                    if (typeIt != component.end() && typeIt->is_string() &&
-                        typeIt->get_ref<const std::string &>().rfind("python:", 0) == 0) {
-                        hasPythonComponent = true;
-                        break;
-                    }
-                }
-            }
-
-            if (hasPythonComponent) {
                 const auto transformIt = object.find("transform");
                 if (transformIt != object.end() && transformIt->is_object()) {
                     const auto typeIt = transformIt->find("type");
@@ -658,6 +654,14 @@ static GameObject *CreateModelObject(Scene *scene, const std::string &guid, cons
 
 void RegisterSceneBindings(py::module_ &m)
 {
+    py::class_<UITransformDependencies>(m, "_UITransformDependencies")
+        .def(py::init<const std::vector<GameObject *> &, const std::vector<GameObject *> &>(), py::arg("screen"),
+             py::arg("world"))
+        .def("poll", &UITransformDependencies::Poll)
+        .def_property_readonly("changed_entries", &UITransformDependencies::GetChangedEntries)
+        .def("project_world_ray", &UITransformDependencies::ProjectWorldRay, py::arg("origin"), py::arg("direction"),
+             py::arg("layer_mask"));
+
     // ========================================================================
     // PrimitiveType enum
     // ========================================================================
@@ -714,6 +718,12 @@ void RegisterSceneBindings(py::module_ &m)
             "serialize_document",
             [](const Component &component) { return JsonToPython(component.SerializeDocument()); },
             "Serialize component to a Python document")
+        .def(
+            "validate_document",
+            [](const Component &component, py::handle document) {
+                ComponentFactory::ValidateDocument(component.GetTypeName(), PythonToJson(document));
+            },
+            py::arg("document"), "Validate a complete candidate document without modifying the component")
         .def(
             "deserialize_document",
             [](Component &component, py::handle document) {
@@ -968,6 +978,119 @@ void RegisterSceneBindings(py::module_ &m)
         .def(
             "set_material_slot_count", [](MeshRenderer &mr, uint32_t count) { mr.SetMaterialSlotCount(count); },
             py::arg("count"), "Set the number of material slots")
+        .def(
+            "set_parameter",
+            [](MeshRenderer &renderer, const std::string &name, py::object value, uint32_t materialSlot,
+               bool persistent, const std::string &owner) {
+                auto material = renderer.GetEffectiveMaterial(materialSlot);
+                if (!material)
+                    throw py::value_error("set_parameter requires an effective material");
+                const MaterialProperty *property = material->GetProperty(name);
+                if (!property)
+                    throw py::key_error("material shader has no parameter named '" + name + "'");
+
+                MaterialPropertyValue nativeValue;
+                switch (property->type) {
+                case MaterialPropertyType::Float:
+                    if ((!py::isinstance<py::float_>(value) && !py::isinstance<py::int_>(value)) ||
+                        py::isinstance<py::bool_>(value))
+                        throw py::type_error("float renderer parameters require one number");
+                    nativeValue = value.cast<float>();
+                    break;
+                case MaterialPropertyType::Int:
+                    if (!py::isinstance<py::int_>(value) || py::isinstance<py::bool_>(value))
+                        throw py::type_error("int renderer parameters require one integer");
+                    nativeValue = value.cast<int>();
+                    break;
+                case MaterialPropertyType::Float2:
+                case MaterialPropertyType::Float3:
+                case MaterialPropertyType::Float4:
+                case MaterialPropertyType::Color: {
+                    if (!py::isinstance<py::sequence>(value) || py::isinstance<py::str>(value))
+                        throw py::type_error("vector and color renderer parameters require a numeric sequence");
+                    py::sequence sequence = value.cast<py::sequence>();
+                    const size_t expected = property->type == MaterialPropertyType::Float2
+                                                ? 2
+                                                : (property->type == MaterialPropertyType::Float3 ? 3 : 4);
+                    if (static_cast<size_t>(py::len(sequence)) != expected)
+                        throw py::value_error("renderer parameter vector has the wrong number of channels");
+                    if (expected == 2)
+                        nativeValue = glm::vec2(sequence[0].cast<float>(), sequence[1].cast<float>());
+                    else if (expected == 3)
+                        nativeValue =
+                            glm::vec3(sequence[0].cast<float>(), sequence[1].cast<float>(), sequence[2].cast<float>());
+                    else
+                        nativeValue = glm::vec4(sequence[0].cast<float>(), sequence[1].cast<float>(),
+                                                sequence[2].cast<float>(), sequence[3].cast<float>());
+                    break;
+                }
+                case MaterialPropertyType::Mat4: {
+                    nativeValue = binding::Matrix4FromPython(value, "Renderer matrix", true);
+                    break;
+                }
+                case MaterialPropertyType::Texture2D:
+                    if (py::isinstance<py::str>(value))
+                        nativeValue = value.cast<std::string>();
+                    else if (py::hasattr(value, "guid"))
+                        nativeValue = value.attr("guid").cast<std::string>();
+                    else
+                        throw py::type_error("texture renderer parameters require a texture GUID or Texture object");
+                    break;
+                }
+                renderer.SetParameter(materialSlot, name, std::move(nativeValue), persistent, owner);
+            },
+            py::arg("name"), py::arg("value"), py::arg("material_slot") = 0, py::arg("persistent") = false,
+            py::arg("owner") = "script",
+            "Set one shader-reflected parameter on this renderer without mutating its shared material")
+        .def(
+            "get_parameter",
+            [](const MeshRenderer &renderer, const std::string &name, uint32_t materialSlot, bool persistentOnly,
+               const std::string &owner) -> py::object {
+                const MaterialProperty *property = renderer.GetParameter(materialSlot, name, persistentOnly, owner);
+                if (!property)
+                    return py::none();
+                switch (property->type) {
+                case MaterialPropertyType::Float:
+                    return py::float_(std::get<float>(property->value));
+                case MaterialPropertyType::Int:
+                    return py::int_(std::get<int>(property->value));
+                case MaterialPropertyType::Float2: {
+                    const auto value = std::get<glm::vec2>(property->value);
+                    return py::make_tuple(value.x, value.y);
+                }
+                case MaterialPropertyType::Float3: {
+                    const auto value = std::get<glm::vec3>(property->value);
+                    return py::make_tuple(value.x, value.y, value.z);
+                }
+                case MaterialPropertyType::Float4:
+                case MaterialPropertyType::Color: {
+                    const auto value = std::get<glm::vec4>(property->value);
+                    return py::make_tuple(value.x, value.y, value.z, value.w);
+                }
+                case MaterialPropertyType::Mat4: {
+                    const auto value = std::get<glm::mat4>(property->value);
+                    py::tuple result(16);
+                    for (int index = 0; index < 16; ++index)
+                        result[index] = value[index / 4][index % 4];
+                    return result;
+                }
+                case MaterialPropertyType::Texture2D:
+                    return py::str(std::get<std::string>(property->value));
+                }
+                return py::none();
+            },
+            py::arg("name"), py::arg("material_slot") = 0, py::arg("persistent_only") = false, py::arg("owner") = "")
+        .def(
+            "remove_parameter",
+            [](MeshRenderer &renderer, const std::string &name, uint32_t materialSlot, bool persistent,
+               const std::string &owner) { return renderer.RemoveParameter(materialSlot, name, persistent, owner); },
+            py::arg("name"), py::arg("material_slot") = 0, py::arg("persistent") = false, py::arg("owner") = "script")
+        .def(
+            "clear_parameters",
+            [](MeshRenderer &renderer, uint32_t materialSlot, bool persistent, const std::string &owner) {
+                renderer.ClearParameters(materialSlot, persistent, owner);
+            },
+            py::arg("material_slot") = 0, py::arg("persistent") = false, py::arg("owner") = "script")
         .def("serialize", &MeshRenderer::Serialize, "Serialize MeshRenderer to JSON string")
         .def(
             "set_primitive_mesh",
@@ -982,30 +1105,49 @@ void RegisterSceneBindings(py::module_ &m)
         .def(
             "set_inline_mesh_data",
             [](MeshRenderer &mr, const py::array_t<float, py::array::c_style | py::array::forcecast> &positions,
-               const py::array_t<float, py::array::c_style | py::array::forcecast> &normals,
-               const py::array_t<float, py::array::c_style | py::array::forcecast> &uvs,
-               const py::array_t<uint32_t, py::array::c_style | py::array::forcecast> &indices,
-               const std::string &name) {
+               const py::object &normals, const py::array_t<float, py::array::c_style | py::array::forcecast> &uvs,
+               const py::array_t<uint32_t, py::array::c_style | py::array::forcecast> &indices, const std::string &name,
+               const py::object &tangents) {
                 if (positions.ndim() != 2 || positions.shape(1) != 3)
                     throw py::value_error("positions must have shape (N, 3)");
-                if (normals.ndim() != 2 || normals.shape(1) != 3 || normals.shape(0) != positions.shape(0))
-                    throw py::value_error("normals must have shape (N, 3) and match positions");
                 if (uvs.ndim() != 2 || uvs.shape(1) != 2 || uvs.shape(0) != positions.shape(0))
                     throw py::value_error("uvs must have shape (N, 2) and match positions");
                 if (indices.ndim() != 1)
                     throw py::value_error("indices must have shape (M,)");
+                if (normals.is_none() && indices.shape(0) % 3 != 0)
+                    throw py::value_error("Normal generation requires complete triangles");
 
                 const size_t vertexCount = static_cast<size_t>(positions.shape(0));
                 std::vector<Vertex> vertices(vertexCount);
                 const auto positionData = positions.unchecked<2>();
-                const auto normalData = normals.unchecked<2>();
                 const auto uvData = uvs.unchecked<2>();
                 for (size_t i = 0; i < vertexCount; ++i) {
                     auto &vertex = vertices[i];
                     const auto row = static_cast<py::ssize_t>(i);
                     vertex.pos = {positionData(row, 0), positionData(row, 1), positionData(row, 2)};
-                    vertex.normal = {normalData(row, 0), normalData(row, 1), normalData(row, 2)};
+                    vertex.normal = glm::vec3(0.0f);
                     vertex.texCoord = {uvData(row, 0), uvData(row, 1)};
+                }
+                if (!normals.is_none()) {
+                    const auto normalArray =
+                        normals.cast<py::array_t<float, py::array::c_style | py::array::forcecast>>();
+                    if (normalArray.ndim() != 2 || normalArray.shape(1) != 3 ||
+                        normalArray.shape(0) != positions.shape(0))
+                        throw py::value_error("normals must have shape (N, 3) and match positions");
+                    const auto normalData = normalArray.unchecked<2>();
+                    for (py::ssize_t row = 0; row < normalArray.shape(0); ++row)
+                        vertices[row].normal = {normalData(row, 0), normalData(row, 1), normalData(row, 2)};
+                }
+                if (!tangents.is_none()) {
+                    const auto tangentArray =
+                        tangents.cast<py::array_t<float, py::array::c_style | py::array::forcecast>>();
+                    if (tangentArray.ndim() != 2 || tangentArray.shape(1) != 4 ||
+                        tangentArray.shape(0) != positions.shape(0))
+                        throw py::value_error("tangents must have shape (N, 4) and match positions");
+                    const auto tangentData = tangentArray.unchecked<2>();
+                    for (py::ssize_t row = 0; row < tangentArray.shape(0); ++row)
+                        vertices[row].tangent = {tangentData(row, 0), tangentData(row, 1), tangentData(row, 2),
+                                                 tangentData(row, 3)};
                 }
 
                 std::vector<uint32_t> encodedIndices(static_cast<size_t>(indices.shape(0)));
@@ -1017,12 +1159,67 @@ void RegisterSceneBindings(py::module_ &m)
                     encodedIndices[i] = index;
                 }
 
-                mr.SetMesh(std::move(vertices), std::move(encodedIndices));
+                if (normals.is_none())
+                    RecalculateMeshNormals(vertices, encodedIndices);
+                if (tangents.is_none() && encodedIndices.size() % 3 == 0)
+                    RecalculateMeshTangents(vertices, encodedIndices);
+
+                mr.SetProceduralMesh(std::move(vertices), std::move(encodedIndices));
                 mr.SetInlineMeshName(name.empty() ? "Procedural Mesh" : name);
             },
             py::arg("positions"), py::arg("normals"), py::arg("uvs"), py::arg("indices"),
-            py::arg("name") = "Procedural Mesh",
-            "Replace the inline mesh from contiguous NumPy arrays in one native upload")
+            py::arg("name") = "Procedural Mesh", py::arg("tangents") = py::none(),
+            "Copy NumPy geometry; omitted normals/tangents are derived. Does not recook colliders.")
+        .def(
+            "get_vertex_buffer_data",
+            [](const MeshRenderer &mr) {
+                if (!mr.HasInlineMesh())
+                    throw py::value_error("Vertex-buffer data requires an inline mesh");
+                const auto &vertices = mr.GetInlineVertices();
+                constexpr py::ssize_t words = static_cast<py::ssize_t>(sizeof(Vertex) / sizeof(float));
+                static_assert(sizeof(Vertex) % sizeof(float) == 0);
+                py::array_t<float> result({static_cast<py::ssize_t>(vertices.size()), words});
+                if (!vertices.empty())
+                    std::memcpy(result.mutable_data(), vertices.data(), vertices.size() * sizeof(Vertex));
+                return result;
+            },
+            "Return canonical interleaved Vertex bytes as float32 (N, 23) storage")
+        .def(
+            "get_tangents",
+            [](const MeshRenderer &mr) -> py::list {
+                py::list result;
+                if (mr.HasMeshAsset()) {
+                    auto mesh = mr.GetMeshAssetRef().Get();
+                    if (mesh) {
+                        for (const auto &vertex : mesh->GetVertices())
+                            result.append(
+                                py::make_tuple(vertex.tangent.x, vertex.tangent.y, vertex.tangent.z, vertex.tangent.w));
+                    }
+                } else if (mr.HasInlineMesh()) {
+                    for (const auto &vertex : mr.GetInlineVertices())
+                        result.append(
+                            py::make_tuple(vertex.tangent.x, vertex.tangent.y, vertex.tangent.z, vertex.tangent.w));
+                }
+                return result;
+            },
+            "Get all vertex tangents as (x, y, z, handedness) tuples")
+        .def("recalculate_normals", &MeshRenderer::RecalculateInlineNormals,
+             "Rebuild CPU inline normals from the authored triangle topology")
+        .def("recalculate_tangents", &MeshRenderer::RecalculateInlineTangents,
+             "Rebuild CPU inline tangent frames from positions, normals, and UVs")
+        .def("recalculate_bounds", &MeshRenderer::RecalculateInlineBounds,
+             "Rebuild CPU inline local bounds from positions")
+        .def(
+            "set_vertex_buffer",
+            [](MeshRenderer &mr, const std::shared_ptr<rhi::ComputeBuffer> &buffer, const glm::vec3 &boundsMin,
+               const glm::vec3 &boundsMax,
+               bool worldSpace) { mr.SetVertexBuffer(buffer, boundsMin, boundsMax, worldSpace); },
+            py::arg("buffer"), py::arg("bounds_min"), py::arg("bounds_max"), py::arg("world_space") = false,
+            "Bind a resident inx.buffer as the canonical interleaved vertex stream")
+        .def("clear_vertex_buffer", &MeshRenderer::ClearVertexBuffer,
+             "Return rendering to the authored CPU vertex stream")
+        .def_property_readonly("vertex_buffer_capacity", &MeshRenderer::GetVertexBufferCapacity,
+                               "Allocated canonical Vertex slots in the bound resident stream")
         .def(
             "set_mesh_asset_guid",
             [](MeshRenderer &mr, const std::string &guid) {
@@ -1063,6 +1260,8 @@ void RegisterSceneBindings(py::module_ &m)
                 return mr.HasInlineMesh() ? mr.GetInlineIndices().size() : 0;
             },
             "Number of indices in the mesh")
+        .def_property_readonly("inline_mesh_version", &MeshRenderer::GetInlineMeshVersion,
+                               "Monotonic generation of the authored/runtime inline geometry")
         .def(
             "get_positions",
             [](const MeshRenderer &mr) -> py::list {
@@ -1394,6 +1593,11 @@ void RegisterSceneBindings(py::module_ &m)
         .value("Soft", LightShadows::Soft)
         .export_values();
 
+    py::enum_<LightRenderMode>(m, "LightRenderMode")
+        .value("Auto", LightRenderMode::Auto)
+        .value("ForcePixel", LightRenderMode::ForcePixel)
+        .value("ForceVertex", LightRenderMode::ForceVertex);
+
     // ========================================================================
     // Light component binding (Unity-like API)
     // ========================================================================
@@ -1472,6 +1676,10 @@ void RegisterSceneBindings(py::module_ &m)
     // Camera component binding (Unity-like API)
     // ========================================================================
     py::class_<Camera, Component>(m, "Camera")
+        .def_property("target_texture", &Camera::GetTargetTexture, &Camera::SetTargetTexture,
+                      "Shared RenderTexture output owner")
+        .def_property("target_texture_guid", &Camera::GetTargetTextureGuid, &Camera::SetTargetTextureGuid,
+                      "Authored output identity; resolved by the renderer, never by scene decoding")
         // Projection mode
         .def_property("projection_mode", &Camera::GetProjectionMode, &Camera::SetProjectionMode,
                       "Camera projection mode (Perspective or Orthographic)")
@@ -1479,12 +1687,43 @@ void RegisterSceneBindings(py::module_ &m)
         .def_property("field_of_view", &Camera::GetFieldOfView, &Camera::SetFieldOfView,
                       "Field of view in degrees (Perspective mode)")
         .def_property("aspect_ratio", &Camera::GetAspectRatio, &Camera::SetAspectRatio, "Aspect ratio (width/height)")
+        .def_property(
+            "projection_matrix", [](const Camera &c) { return binding::Matrix4ToPython(c.GetProjectionMatrix()); },
+            [](Camera &c, const FloatArray &matrix) {
+                c.SetProjectionMatrix(binding::Matrix4FromPython(matrix, "Camera matrix"));
+            },
+            "Runtime projection as a NumPy (4,4) [row,column] copy; LH, depth [0,1], Y down")
+        .def_property(
+            "view_matrix", [](const Camera &c) { return binding::Matrix4ToPython(c.GetViewMatrix()); },
+            [](Camera &c, const FloatArray &matrix) {
+                c.SetViewMatrix(binding::Matrix4FromPython(matrix, "Camera matrix"));
+            },
+            "Runtime affine world-to-camera matrix copy; +Z forward; independent of Transform until reset")
+        .def_property_readonly("camera_to_world_matrix",
+                               [](const Camera &c) { return binding::Matrix4ToPython(c.GetCameraToWorldMatrix()); })
+        .def_property_readonly("has_custom_view_matrix", &Camera::HasCustomViewMatrix)
+        .def("reset_view_matrix", &Camera::ResetViewMatrix)
+        .def("reset_history", &Camera::ResetHistory,
+             "Discard this camera's accumulated temporal history before its next render; other cameras are unaffected")
+        .def_property("invert_culling", &Camera::GetInvertCulling, &Camera::SetInvertCulling,
+                      "Camera-local winding inversion; does not affect light-space shadows or other cameras")
+        .def_property_readonly("has_custom_projection_matrix", &Camera::HasCustomProjectionMatrix)
+        .def("reset_projection_matrix", &Camera::ResetProjectionMatrix)
+        .def(
+            "calculate_oblique_matrix",
+            [](const Camera &c, const std::array<float, 4> &plane) {
+                return binding::Matrix4ToPython(
+                    c.CalculateObliqueMatrix(glm::vec4(plane[0], plane[1], plane[2], plane[3])));
+            },
+            py::arg("clip_plane"), "Camera-space plane (nx,ny,nz,d), retaining its positive half-space")
         // Orthographic settings
         .def_property("orthographic_size", &Camera::GetOrthographicSize, &Camera::SetOrthographicSize,
                       "Orthographic half-height (Orthographic mode)")
         // Clipping planes
         .def_property("near_clip", &Camera::GetNearClip, &Camera::SetNearClip, "Near clipping plane distance")
         .def_property("far_clip", &Camera::GetFarClip, &Camera::SetFarClip, "Far clipping plane distance")
+        .def("set_clip_planes", &Camera::SetClipPlanes, py::arg("near_clip"), py::arg("far_clip"),
+             "Set a finite 0 < near < far pair atomically")
         // Multi-camera support
         .def_property("depth", &Camera::GetDepth, &Camera::SetDepth,
                       "Rendering order for the Game camera stack; lower depth renders first")
@@ -1516,11 +1755,18 @@ void RegisterSceneBindings(py::module_ &m)
             py::arg("x"), py::arg("y"), py::arg("z"), "Convert world position to screen coordinates (x, y)")
         .def(
             "screen_point_to_ray",
-            [](const Camera &c, float x, float y) -> py::tuple {
-                auto [origin, dir] = c.ScreenPointToRay(glm::vec2(x, y));
+            [](const Camera &c, float x, float y, const std::optional<float> &viewportWidth,
+               const std::optional<float> &viewportHeight) -> py::tuple {
+                const bool hasExplicitViewport = viewportWidth.has_value() || viewportHeight.has_value();
+                if (hasExplicitViewport && (!viewportWidth.has_value() || !viewportHeight.has_value())) {
+                    throw py::value_error("viewport_width and viewport_height must be provided together");
+                }
+                auto [origin, dir] = hasExplicitViewport
+                                         ? c.ScreenPointToRay(glm::vec2(x, y), *viewportWidth, *viewportHeight)
+                                         : c.ScreenPointToRay(glm::vec2(x, y));
                 return py::make_tuple(origin, dir);
             },
-            py::arg("x"), py::arg("y"),
+            py::arg("x"), py::arg("y"), py::arg("viewport_width") = py::none(), py::arg("viewport_height") = py::none(),
             "Build a ray from viewport-relative screen coordinates. "
             "Returns (origin_Vector3, direction_Vector3) — origin at near plane and normalised direction.")
         // Serialization
@@ -2109,25 +2355,20 @@ void RegisterSceneBindings(py::module_ &m)
         // ---- Static query methods (Unity: GameObject.Find, FindWithTag, etc.) ----
         .def_static(
             "find",
-            [](const std::string &name) -> GameObject * {
-                Scene *scene = SceneManager::Instance().GetActiveScene();
-                return scene ? scene->Find(name) : nullptr;
-            },
+            [](const std::string &name) -> GameObject * { return SceneManager::Instance().FindRuntimeObject(name); },
             py::return_value_policy::reference, py::arg("name"),
-            "Find a GameObject by name in the active scene. Unity: GameObject.Find(name)")
+            "Find a GameObject by name across loaded scenes. Unity: GameObject.Find(name)")
         .def_static(
             "find_with_tag",
             [](const std::string &tag) -> GameObject * {
-                Scene *scene = SceneManager::Instance().GetActiveScene();
-                return scene ? scene->FindWithTag(tag) : nullptr;
+                return SceneManager::Instance().FindRuntimeObjectWithTag(tag);
             },
             py::return_value_policy::reference, py::arg("tag"),
             "Find the first GameObject with a given tag. Unity: GameObject.FindWithTag(tag)")
         .def_static(
             "find_game_objects_with_tag",
             [](const std::string &tag) -> std::vector<GameObject *> {
-                Scene *scene = SceneManager::Instance().GetActiveScene();
-                return scene ? scene->FindGameObjectsWithTag(tag) : std::vector<GameObject *>{};
+                return SceneManager::Instance().FindRuntimeObjectsWithTag(tag);
             },
             py::return_value_policy::reference, py::arg("tag"),
             "Find all GameObjects with a given tag. Unity: GameObject.FindGameObjectsWithTag(tag)")
@@ -2163,6 +2404,7 @@ void RegisterSceneBindings(py::module_ &m)
         .def_property_readonly("ran_on_worker", &SceneDocumentReadTicket::RanOnWorker)
         .def_property_readonly("status", &SceneDocumentReadTicket::GetStatusName)
         .def_property_readonly("error", &SceneDocumentReadTicket::GetError)
+        .def_property_readonly("file_state", &SceneDocumentReadTicket::GetFileState)
         .def("cancel", &SceneDocumentReadTicket::Cancel)
         .def(
             "_take_document", [](SceneDocumentReadTicket &ticket) { return JsonToPython(ticket.TakeDocument()); },
@@ -2191,6 +2433,7 @@ void RegisterSceneBindings(py::module_ &m)
     // ========================================================================
     py::class_<SceneCommitToken, std::shared_ptr<SceneCommitToken>>(m, "_SceneCommitToken")
         .def_property_readonly("is_active", &SceneCommitToken::IsActive)
+        .def_property_readonly("object_id_remap", &SceneCommitToken::GetObjectIdRemap)
         .def("rollback", &SceneCommitToken::Rollback)
         .def("finalize", &SceneCommitToken::Finalize);
 
@@ -2444,6 +2687,22 @@ void RegisterSceneBindings(py::module_ &m)
              "Mark an explicit time jump in the active scene for temporal render effects")
         .def("get_scene", &SceneManager::GetScene, py::return_value_policy::reference, py::arg("name"),
              "Get a scene by name")
+        .def("get_scene_by_world_id", &SceneManager::GetSceneByWorldId, py::return_value_policy::reference,
+             py::arg("world_id"), "Get a loaded scene by its stable runtime World identity")
+        .def("get_scene_at", &SceneManager::GetSceneAt, py::return_value_policy::reference, py::arg("index"),
+             "Get a loaded scene by its stable loaded-list index, or None")
+        .def("find_runtime_object", &SceneManager::FindRuntimeObject, py::return_value_policy::reference,
+             py::arg("name"), "Find the first named GameObject across loaded scenes")
+        .def("find_runtime_object_with_tag", &SceneManager::FindRuntimeObjectWithTag,
+             py::return_value_policy::reference, py::arg("tag"),
+             "Find the first tagged GameObject across loaded scenes")
+        .def("find_runtime_objects_with_tag", &SceneManager::FindRuntimeObjectsWithTag,
+             py::return_value_policy::reference, py::arg("tag"), "Find all tagged GameObjects across loaded scenes")
+        .def("find_runtime_objects_in_layer", &SceneManager::FindRuntimeObjectsInLayer,
+             py::return_value_policy::reference, py::arg("layer"),
+             "Find all GameObjects in a layer across loaded scenes")
+        .def("move_game_object_to_scene", &SceneManager::MoveGameObjectToScene, py::arg("game_object"),
+             py::arg("destination"), "Move a root GameObject hierarchy to another loaded Scene")
         .def_property_readonly("scene_count", &SceneManager::GetSceneCount, "Number of currently loaded scenes")
         .def("is_playing", &SceneManager::IsPlaying, "Check if in play mode")
         .def("set_runtime_lifecycle_callbacks", &SceneManager::SetRuntimeLifecycleCallbacks, py::arg("begin_frame"),
@@ -2461,6 +2720,8 @@ void RegisterSceneBindings(py::module_ &m)
         .def("play", &SceneManager::Play, "Enter play mode")
         .def("_start_active_scene_for_play", &SceneManager::StartActiveSceneForPlay,
              "Internal: publish a transactionally loaded Scene into the current play session")
+        .def("_start_scene_for_play", &SceneManager::StartSceneForPlay, py::arg("scene"),
+             "Internal: publish one newly loaded additive Scene without resetting World time")
         .def("stop", &SceneManager::Stop, "Stop play mode")
         .def("pause", &SceneManager::Pause, "Pause play mode")
         .def("is_paused", &SceneManager::IsPaused, "Check if paused")
@@ -2480,7 +2741,9 @@ void RegisterSceneBindings(py::module_ &m)
         .def_property_readonly("fixed_unscaled_time", &SceneManager::GetFixedUnscaledTime,
                                "Real time represented by completed fixed steps")
         .def("step", &SceneManager::Step, py::arg("delta_time") = 0.016f,
-             "Execute one frame while paused (Update + LateUpdate + EndFrame). No-op if not paused.")
+             "Execute exactly one shared fixed-physics bundle plus Update/LateUpdate while paused. "
+             "No-op while Play is running; manual stepping cannot advance a second World beside the "
+             "automatic accumulator.")
         .def("get_last_collider_sync_candidate_count", &SceneManager::GetLastColliderSyncCandidateCount,
              "Number of dirty collider handles considered by the most recent simulation frame")
         .def("get_last_rigidbody_sync_candidate_count", &SceneManager::GetLastRigidbodySyncCandidateCount,

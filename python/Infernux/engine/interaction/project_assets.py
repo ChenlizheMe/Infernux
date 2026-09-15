@@ -151,6 +151,71 @@ class ProjectAssetCommandService:
         self._execute(command, origin)
         return asset_command.result
 
+    def save_mesh_copy(self, mesh: Any, target_path: str, *, origin: ActionOrigin = ActionOrigin.USER) -> str:
+        """Create an independent static mesh asset, with normal Project Undo/Redo."""
+        from Infernux.core.document_store import DocumentStore
+        from Infernux.lib import DocumentFileState, DocumentWriteOptions
+        from Infernux.engine.ui.project_file_ops import _import_new_asset
+
+        self._require_configured()
+        target = self._project_path(target_path)
+        if os.path.splitext(target)[1].lower() != ".inxmesh":
+            raise ValueError("Mesh copies require an .inxmesh target")
+        if not any(is_path_within(target, os.path.join(self._project_root, root)) for root in ("Assets", "Packages")):
+            raise ValueError("Mesh copies must be saved under Assets or Packages")
+        if os.path.exists(target):
+            raise FileExistsError(target)
+        if not os.path.isdir(os.path.dirname(target)):
+            raise FileNotFoundError(os.path.dirname(target))
+        content = mesh.serialize_source()
+        options = DocumentWriteOptions()
+        options.expected_file_state = DocumentFileState()  # Must still be absent at commit.
+
+        def create_copy():
+            # A conditional write failure created no file owned by this command.
+            # Propagate it; do not ask create-command cleanup to delete the target.
+            DocumentStore.instance().write_and_wait(target, content, options)
+            try:
+                _import_new_asset(target, self._asset_database)
+                return True, ""
+            except (OSError, RuntimeError, ValueError) as exc:
+                return False, str(exc)
+
+        return self.create_with_path(os.path.dirname(target), create_copy,
+                                     description="Save Mesh Copy", origin=origin)
+
+    def read_text(self, path: str) -> str:
+        """Read one registered project text asset as UTF-8."""
+        target = self._registered_file(path)
+        with open(target, "r", encoding="utf-8") as stream:
+            return stream.read()
+
+    def set_text(
+        self,
+        path: str,
+        content: str,
+        *,
+        origin: ActionOrigin = ActionOrigin.USER,
+    ) -> str:
+        """Replace one registered UTF-8 asset through global Project history."""
+        from Infernux.engine.undo import ProjectAssetTextCommand
+
+        target = self._registered_file(path)
+        with open(target, "r", encoding="utf-8") as stream:
+            previous = stream.read()
+        value = str(content)
+        if value == previous:
+            return target
+        command = ProjectAssetTextCommand(
+            target,
+            previous,
+            value,
+            asset_database=self._asset_database,
+            on_changed=self._notify_changed,
+        )
+        self._execute(command, origin)
+        return target
+
     def rename(
         self,
         source_path: str,
@@ -568,6 +633,15 @@ class ProjectAssetCommandService:
         path = resolved_path(value)
         if not path or not is_path_within(path, self._project_root, allow_root=allow_root):
             raise ValueError(f"Asset path is outside the project: {value}")
+        return path
+
+    def _registered_file(self, value: str) -> str:
+        self._require_configured()
+        path = self._project_path(value)
+        if not os.path.isfile(path):
+            raise FileNotFoundError(path)
+        if self._asset_database is None or not self._asset_database.get_guid_from_path(path):
+            raise ValueError(f"Text asset is not registered: {path}")
         return path
 
     @staticmethod

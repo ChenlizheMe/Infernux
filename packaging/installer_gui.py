@@ -6,7 +6,7 @@ import shutil
 import subprocess
 import sys
 
-from PySide6.QtCore import QObject, QThread, Signal
+from PySide6.QtCore import QObject, QThread, Signal, Qt
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QApplication,
@@ -206,7 +206,7 @@ class InstallerWindow(QWidget):
         self._worker: InstallWorker | None = None
 
         self.setWindowTitle(tr("Infernux Hub Installer"))
-        self.setFixedSize(600, 320)
+        self.setFixedWidth(600)
 
         icon_path = os.path.join(_resource_dir(), "icon.png")
         if os.path.isfile(icon_path):
@@ -234,6 +234,28 @@ class InstallerWindow(QWidget):
         intro.setMinimumHeight(56)
         intro.setContentsMargins(0, 0, 0, 6)
         root.addWidget(intro)
+
+        changes_title = QLabel(tr("Installation changes"))
+        changes_title.setStyleSheet("font-weight: 600;")
+        root.addWidget(changes_title)
+        changes = QLabel(
+            tr(
+                "The installer adds Infernux Hub application files, an isolated "
+                "Python runtime, an application-menu shortcut, and an uninstall "
+                "entry. Automatic update checks are enabled by default. "
+                "Installing updates requires confirmation."
+            )
+        )
+        changes.setWordWrap(True)
+        root.addWidget(changes)
+        policy = QLabel(
+            '<a href="https://infernux-engine.com/code-signing-policy.html">'
+            + tr("Code signing policy and privacy disclosure")
+            + "</a>"
+        )
+        policy.setTextFormat(Qt.TextFormat.RichText)
+        policy.setOpenExternalLinks(True)
+        root.addWidget(policy)
 
         root.addWidget(QLabel(tr("Install location")))
 
@@ -265,6 +287,7 @@ class InstallerWindow(QWidget):
         self.launch_button.clicked.connect(self._launch_hub)
         button_row.addWidget(self.launch_button)
         root.addLayout(button_row)
+        self.setFixedHeight(max(410, root.totalHeightForWidth(self.width())))
 
     def _browse(self) -> None:
         folder = QFileDialog.getExistingDirectory(self, tr("Select installation directory"), self.path_edit.text())

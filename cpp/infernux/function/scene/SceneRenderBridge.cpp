@@ -70,6 +70,10 @@ DrawCallResult SceneRenderBridge::PrepareAndBuildForCamera(Camera *camera)
         view.cullingMask = camera->GetCullingMask();
         view.cameraId = camera->GetComponentID();
         view.valid = true;
+        const auto cameraToWorld = camera->GetCameraToWorldMatrix();
+        view.position = glm::vec3(cameraToWorld[3]);
+        view.forward = glm::normalize(glm::vec3(cameraToWorld[2]));
+        view.up = glm::normalize(glm::vec3(cameraToWorld[1]));
     }
 
     CameraDrawCallResult cameraResult = renderer.BuildDrawCallsForCamera(view, false);
@@ -91,13 +95,10 @@ CameraDrawCallResult SceneRenderBridge::CullAndBuildForCamera(Camera *camera, bo
         view.cullingMask = camera->GetCullingMask();
         view.cameraId = camera->GetComponentID();
         view.valid = true;
-        if (GameObject *object = camera->GetGameObject()) {
-            if (Transform *transform = object->GetTransform()) {
-                view.position = transform->GetWorldPosition();
-                view.forward = transform->GetWorldForward();
-                view.up = transform->GetWorldUp();
-            }
-        }
+        const auto cameraToWorld = camera->GetCameraToWorldMatrix();
+        view.position = glm::vec3(cameraToWorld[3]);
+        view.forward = glm::normalize(glm::vec3(cameraToWorld[2]));
+        view.up = glm::normalize(glm::vec3(cameraToWorld[1]));
     }
     return m_sceneRenderer.BuildDrawCallsForCamera(view, includeShadowDrawCalls);
 }

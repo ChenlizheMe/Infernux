@@ -381,6 +381,7 @@ void InxView::ProcessEvent()
                .count()));
     const auto windowQueryStart = std::chrono::steady_clock::now();
     SDL_GetWindowSize(m_window, &m_windowWidth, &m_windowHeight);
+    SDL_GetWindowSizeInPixels(m_window, &m_framebufferWidth, &m_framebufferHeight);
     const auto windowQueryEnd = std::chrono::steady_clock::now();
     const auto milliseconds = [](auto begin, auto end) {
         return std::chrono::duration<double, std::milli>(end - begin).count();
@@ -490,7 +491,8 @@ bool InxView::ProcessOneEvent(SDL_Event &event, bool syntheticScreenCoordinates)
     if (event.type == SDL_EVENT_WINDOW_OCCLUDED) {
         m_isMinimized = true;
     }
-    if (event.type == SDL_EVENT_WINDOW_RESIZED || event.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED) {
+    if (event.type == SDL_EVENT_WINDOW_RESIZED || event.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED ||
+        event.type == SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED || event.type == SDL_EVENT_WINDOW_DISPLAY_CHANGED) {
         m_needsImmediateGuiRefresh = true;
     }
     return hadInputEvent;
@@ -731,6 +733,11 @@ void InxView::Quit()
     }
     InputManager::Instance().ShutdownMotionSensors();
     if (m_window) {
+        auto &input = InputManager::Instance();
+        input.SetCursorLocked(false);
+        input.SetCursorConfined(false);
+        input.SetCursorVisible(true);
+        input.SetWindow(nullptr);
         SDL_DestroyWindow(m_window);
         m_window = nullptr;
     }
@@ -935,6 +942,7 @@ void InxView::SDLInit()
             throw std::runtime_error(std::string("Cannot commit the maximized Editor window: ") + SDL_GetError());
         SDL_GetWindowSize(m_window, &m_windowWidth, &m_windowHeight);
     }
+    SDL_GetWindowSizeInPixels(m_window, &m_framebufferWidth, &m_framebufferHeight);
 }
 
 void InxView::CreateSurface(VkInstance *vkInstance, VkSurfaceKHR *vkSurface)

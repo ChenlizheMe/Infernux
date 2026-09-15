@@ -287,6 +287,7 @@ void GameObject::SetParent(GameObject *newParent, bool worldPositionStays)
         return;
 
     bool wasActiveInHierarchy = IsActiveInHierarchy();
+    Scene *previousScene = m_scene;
 
     // Prevent circular reference
     if (newParent) {
@@ -350,6 +351,12 @@ void GameObject::SetParent(GameObject *newParent, bool worldPositionStays)
 
     bool isActiveInHierarchy = IsActiveInHierarchy();
     HandleActiveStateChanged(wasActiveInHierarchy, isActiveInHierarchy);
+    // Child-to-child moves do not pass through Scene's root attach/detach
+    // methods. Publish the new ancestry/order for every hierarchy consumer.
+    if (m_scene)
+        m_scene->BumpStructureVersion();
+    if (previousScene && previousScene != m_scene)
+        previousScene->BumpStructureVersion();
 }
 
 std::vector<std::string> GameObject::GetAttachmentBlockers(const std::string &constraintTypeId,
@@ -631,8 +638,14 @@ Component *GameObject::AddPreparedPythonComponent(std::unique_ptr<Component> com
     Component *ptr = component.get();
     ptr->SetGameObject(this);
     auto *proxy = static_cast<PyComponentProxy *>(ptr);
+    const bool authoredEnabled = proxy->GetPyComponent().attr("enabled").cast<bool>();
     try {
         proxy->RebindPythonMirror();
+        // Rebind invokes the Python mirror hook; publish the authored Python
+        // enabled bit explicitly after that hook so a default native value
+        // cannot suppress Start/Update on the first Player frame.
+        ptr->m_enabled = authoredEnabled;
+        proxy->GetPyComponent().attr("enabled") = py::bool_(authoredEnabled);
     } catch (...) {
         proxy->InvalidatePythonMirrorBinding();
         ptr->SetGameObject(nullptr);
@@ -660,8 +673,29 @@ void GameObject::ActivatePreparedPythonComponent(Component *component)
     if (!m_scene || !IsActiveInHierarchy())
         return;
 
+    // Prepared records carry the authored enabled bit on the Python object.
+    // Reassert it at the lifecycle hand-off so binding hooks cannot leave a
+    // freshly loaded Player component disabled before Awake/Start.
+    auto *proxy = static_cast<PyComponentProxy *>(component);
+    try {
+        std::fprintf(stderr, "[Infernux Player] activate prepared %s enabled=%d py=%d started=%d playing=%d\n",
+                     proxy->GetTypeName(), component->IsEnabled() ? 1 : 0,
+                     proxy->GetPyComponent().attr("enabled").cast<bool>() ? 1 : 0, m_scene->HasStarted() ? 1 : 0,
+                     m_scene->IsPlaying() ? 1 : 0);
+    } catch (...) {
+    }
+    const bool authoredEnabled = proxy->GetPyComponent().attr("enabled").cast<bool>();
+    component->m_enabled = authoredEnabled;
+    proxy->GetPyComponent().attr("enabled") = py::bool_(authoredEnabled);
     component->CallAwake();
-    if (m_scene->IsPlaying() && m_scene->HasStarted() && component->IsEnabled())
+    // Awake/binding hooks must not replace the authored activation state.
+    component->m_enabled = authoredEnabled;
+    proxy->GetPyComponent().attr("enabled") = py::bool_(authoredEnabled);
+    // Async Player scene publication can finish just before the scene's
+    // playing flag is raised.  HasStarted is the lifecycle safe-point that
+    // matters here; gate on it so the newly attached component cannot miss
+    // Start permanently.
+    if (m_scene->HasStarted() && component->IsEnabled())
         m_scene->QueueComponentStart(component);
 }
 
@@ -795,6 +829,7 @@ Component *GameObject::ReplacePythonComponent(Component *current, std::unique_pt
         // Preserve every externally observable native identity and lifecycle
         // bit. SetComponentID publishes the replacement in the registry before
         // the old proxy is destroyed, so handle resolution never has a gap.
+        auto *replacementProxy = static_cast<PyComponentProxy *>(replacement.get());
         replacement->SetGameObject(this);
         replacement->m_enabled = current->m_enabled;
         replacement->m_wasEnabled = current->m_wasEnabled;
@@ -804,7 +839,6 @@ Component *GameObject::ReplacePythonComponent(Component *current, std::unique_pt
         replacement->m_isBeingDestroyed = false;
         replacement->m_executionOrder = current->m_executionOrder;
         replacement->m_lifetimeGeneration = current->m_lifetimeGeneration;
-        auto *replacementProxy = static_cast<PyComponentProxy *>(replacement.get());
         try {
             replacementProxy->RebindPythonMirror();
         } catch (const std::exception &error) {
@@ -1103,6 +1137,7 @@ bool GameObject::DeserializeDocument(const nlohmann::json &j, bool preserveDocum
         std::unordered_set<uint64_t> objectIds;
         std::unordered_set<uint64_t> componentIds;
         std::unordered_map<uint64_t, uint64_t> stagedToCommittedObjectId;
+        std::unordered_map<uint64_t, uint64_t> nativeComponentIdRemap;
         uint64_t rootObjectId = m_id;
         uint64_t rootTransformId = m_transform.GetComponentID();
 
@@ -1135,6 +1170,8 @@ bool GameObject::DeserializeDocument(const nlohmann::json &j, bool preserveDocum
                     : (isRoot ? m_transform.GetComponentID() : object->m_transform.GetComponentID());
             if (!componentIds.insert(committedTransformId).second)
                 throw std::invalid_argument("ObjectGraph contains a duplicate component_id");
+            if (!preserveDocumentIds && transformDocument.contains("component_id"))
+                nativeComponentIdRemap.emplace(transformDocument["component_id"].get<uint64_t>(), committedTransformId);
             if (isRoot)
                 rootTransformId = committedTransformId;
             else
@@ -1158,6 +1195,8 @@ bool GameObject::DeserializeDocument(const nlohmann::json &j, bool preserveDocum
                     preserveDocumentIds ? record.componentId : stagedComponent->GetComponentID();
                 if (!componentIds.insert(componentId).second)
                     throw std::invalid_argument("ObjectGraph contains a duplicate component_id");
+                if (!preserveDocumentIds)
+                    nativeComponentIdRemap.emplace(record.componentId, componentId);
                 componentAssignments.push_back({stagedComponent, componentId});
             }
             if (nativeComponentIndex != object->m_components.size())
@@ -1170,6 +1209,13 @@ bool GameObject::DeserializeDocument(const nlohmann::json &j, bool preserveDocum
                 collectAssignments(object->m_children[index].get(), childDocuments[index], false);
         };
         collectAssignments(stagedRoot.get(), j, true);
+
+        if (!preserveDocumentIds) {
+            for (const auto &[component, componentId] : componentAssignments) {
+                (void)componentId;
+                component->RemapComponentReferences(nativeComponentIdRemap);
+            }
+        }
 
         if (targetScene) {
             for (const uint64_t objectId : objectIds) {
@@ -1303,6 +1349,18 @@ void GameObject::CollectAllDescendants(std::vector<GameObject *> &out) const
 
 std::unique_ptr<GameObject> GameObject::Clone(Scene *scene) const
 {
+    std::unordered_map<uint64_t, uint64_t> componentIdRemap;
+    std::vector<Component *> clonedComponents;
+    auto clone = CloneGraph(scene, componentIdRemap, clonedComponents);
+    for (Component *component : clonedComponents)
+        component->RemapComponentReferences(componentIdRemap);
+    return clone;
+}
+
+std::unique_ptr<GameObject> GameObject::CloneGraph(Scene *scene,
+                                                   std::unordered_map<uint64_t, uint64_t> &componentIdRemap,
+                                                   std::vector<Component *> &clonedComponents) const
+{
     auto obj = std::make_unique<GameObject>(m_name); // fresh ID
     obj->m_scene = scene;
     obj->m_active = m_active;
@@ -1314,6 +1372,8 @@ std::unique_ptr<GameObject> GameObject::Clone(Scene *scene) const
 
     // Clone transform data (ECS store copy, no JSON)
     m_transform.CloneDataTo(obj->m_transform);
+    componentIdRemap.emplace(m_transform.GetComponentID(), obj->m_transform.GetComponentID());
+    clonedComponents.push_back(&obj->m_transform);
 
     // Clone components
     for (size_t componentIndex = 0; componentIndex < m_components.size(); ++componentIndex) {
@@ -1337,6 +1397,8 @@ std::unique_ptr<GameObject> GameObject::Clone(Scene *scene) const
             auto clonedComp = comp->Clone();
             if (clonedComp) {
                 clonedComp->SetGameObject(obj.get());
+                componentIdRemap.emplace(comp->GetComponentID(), clonedComp->GetComponentID());
+                clonedComponents.push_back(clonedComp.get());
                 obj->m_components.push_back(std::move(clonedComp));
             }
         }
@@ -1344,7 +1406,7 @@ std::unique_ptr<GameObject> GameObject::Clone(Scene *scene) const
 
     // Recursively clone children
     for (const auto &child : m_children) {
-        auto clonedChild = child->Clone(scene);
+        auto clonedChild = child->CloneGraph(scene, componentIdRemap, clonedComponents);
         if (clonedChild) {
             obj->AttachChild(std::move(clonedChild));
         }

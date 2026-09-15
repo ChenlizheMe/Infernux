@@ -207,6 +207,11 @@ class VkSwapchainManager
     /// @brief Get image view at index
     [[nodiscard]] VkImageView GetImageView(size_t index) const;
 
+    [[nodiscard]] bool SupportsTransferSource() const noexcept
+    {
+        return (m_generation.imageUsage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) != 0;
+    }
+
     /// @brief Get the image-available semaphore for a renderer-owned frame slot.
     [[nodiscard]] VkSemaphore GetImageAvailableSemaphore(uint32_t frameSlot) const;
 
@@ -222,6 +227,7 @@ class VkSwapchainManager
         std::vector<VkSemaphore> renderFinishedSemaphores;
         VkFormat imageFormat = VK_FORMAT_UNDEFINED;
         VkExtent2D extent{};
+        VkImageUsageFlags imageUsage = 0;
     };
 
     // ========================================================================

@@ -24,7 +24,11 @@ from Infernux.input import Input, KeyCode, TouchPhase
 from Infernux.engine.ui.viewport_utils import capture_viewport_info
 from Infernux.ui.ui_event_data import PointerType
 from Infernux.ui.ui_event_system import UIEventProcessor, UIPointerFrame
-from Infernux.ui.ui_canvas_utils import collect_sorted_runtime_canvases
+from Infernux.engine.runtime_screen_ui import (
+    collect_runtime_ui_input_surfaces,
+    map_runtime_ui_pointer,
+)
+from Infernux.engine.runtime_mouse_events import MouseEventDispatcher
 
 
 def _player_render_scale() -> float:
@@ -51,6 +55,7 @@ class PlayerGUI(InxGUIRenderable):
         self._last_h = 0
         self._render_scale = _player_render_scale()
         self._ui_event_processor = UIEventProcessor()
+        self._mouse_event_dispatcher = MouseEventDispatcher()
         self._last_frame_time = time.time()
         self._control = control_channel
         self._activate_play = activate_play
@@ -109,6 +114,9 @@ class PlayerGUI(InxGUIRenderable):
             return
 
         # ── Normal game mode ──────────────────────────────────────────
+        # Component start() may create Game-relative RenderTextures. Publish
+        # the actual output resolution before activating project lifecycle.
+        self._prepare_game_target(vp_w, vp_h)
         self.begin_play_when_ready()
         visible = ctx.begin_window("##PlayerFullscreen", True, flags)
         if visible:
@@ -183,7 +191,7 @@ class PlayerGUI(InxGUIRenderable):
                 except Exception as exc:
                     Debug.log_suppressed("player_gui.frame_profile", exc)
 
-    def _render_game(self, ctx: InxGUIContext, vp_w: float, vp_h: float):
+    def _prepare_game_target(self, vp_w: float, vp_h: float):
         display_w = max(1, int(vp_w))
         display_h = max(1, int(vp_h))
         target_w = max(1, int(display_w * self._render_scale))
@@ -194,6 +202,12 @@ class PlayerGUI(InxGUIRenderable):
             self._last_w = target_w
             self._last_h = target_h
 
+    def _render_game(self, ctx: InxGUIContext, vp_w: float, vp_h: float):
+        display_w = max(1, int(vp_w))
+        display_h = max(1, int(vp_h))
+        self._prepare_game_target(vp_w, vp_h)
+        target_w, target_h = self._last_w, self._last_h
+
         game_tex = self._engine.get_game_texture_id()
         if game_tex == 0:
             ctx.label("Waiting for camera...")
@@ -202,6 +216,7 @@ class PlayerGUI(InxGUIRenderable):
         ctx.image(game_tex, float(display_w), float(display_h), 0.0, 0.0, 1.0, 1.0)
         vp = capture_viewport_info(ctx)
         Input.set_game_viewport_origin(vp.image_min_x, vp.image_min_y)
+        Input.set_game_viewport_size(float(display_w), float(display_h))
 
         # ESC safety: allow user to unlock cursor even if scripts forgot
         cursor_locked = Input.is_cursor_locked()
@@ -214,6 +229,20 @@ class PlayerGUI(InxGUIRenderable):
         # do not define an ImGui mouse-hover state, so UI dispatch must not be
         # gated by the desktop hover bit.
         self._process_ui_events(display_w, display_h)
+        self._process_mouse_events(display_w, display_h)
+
+    def _process_mouse_events(self, game_w: int, game_h: int) -> None:
+        dispatcher = getattr(self, "_mouse_event_dispatcher", None)
+        if dispatcher is None:
+            return
+        from Infernux.lib import SceneManager
+        scene = SceneManager.instance().get_active_scene()
+        camera = scene.effective_game_camera if scene is not None else None
+        if camera is None:
+            dispatcher.reset()
+            return
+        x, y, _sx, _sy, _held, _down, _up = Input.get_game_mouse_frame_state(0)
+        dispatcher.process(camera, (x, y), (float(game_w), float(game_h)))
 
     def _process_ui_events(self, game_w: int, game_h: int):
         """Convert mouse and every active touch to independent UI pointers."""
@@ -224,33 +253,19 @@ class PlayerGUI(InxGUIRenderable):
             return
 
         persistent_scene = SceneManager.instance().get_runtime_persistent_scene()
-        canvases = collect_sorted_runtime_canvases(
-            scene, persistent_scene, allow_stale_empty=True
-        )
-        if not canvases:
+        surfaces = collect_runtime_ui_input_surfaces(scene, persistent_scene)
+        if not surfaces:
             self._ui_event_processor.reset()
             return
+
+        camera = scene.effective_game_camera
 
         gx, gy, scroll_x, scroll_y, mouse_held, mouse_down, mouse_up = Input.get_game_mouse_frame_state(0)
 
         def canvas_positions(screen_x: float, screen_y: float):
-            positions = []
-            for canvas in canvases:
-                ref_w = float(canvas.reference_width)
-                ref_h = float(canvas.reference_height)
-                if ref_w < 1 or ref_h < 1:
-                    positions.append((0.0, 0.0))
-                    continue
-                scale_x, scale_y, _ = canvas.compute_scale(
-                    float(game_w), float(game_h)
-                )
-                positions.append(
-                    (
-                        screen_x / max(scale_x, 1e-6),
-                        screen_y / max(scale_y, 1e-6),
-                    )
-                )
-            return tuple(positions)
+            return map_runtime_ui_pointer(
+                surfaces, camera, screen_x, screen_y, game_w, game_h
+            )
 
         pointers = [
             UIPointerFrame(
@@ -286,4 +301,4 @@ class PlayerGUI(InxGUIRenderable):
         from Infernux.timing import Time
         dt = Time.unscaled_delta_time
 
-        self._ui_event_processor.process_pointers(canvases, pointers, dt)
+        self._ui_event_processor.process_pointers(surfaces, pointers, dt)

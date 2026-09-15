@@ -21,6 +21,7 @@ struct MaterialPassPipelineDescriptor
     rhi::PixelFormat depthFormat = rhi::PixelFormat::Undefined;
     rhi::SampleCount samples = rhi::SampleCount::One;
     bool depthReadOnly = false;
+    bool invertCulling = false;
     [[nodiscard]] rhi::GraphicsRenderingSignature RenderingSignature() const noexcept
     {
         rhi::GraphicsRenderingSignature signature;
@@ -43,6 +44,14 @@ struct MaterialPassPipelineDescriptor
         descriptor.useDynamicRendering = true;
         descriptor.renderTargetLayout = {};
         descriptor.renderingSignature = RenderingSignature();
+    }
+
+    void ApplyRasterContract(rhi::GraphicsPipelineDesc &descriptor) const noexcept
+    {
+        if (invertCulling)
+            descriptor.raster.frontFace = descriptor.raster.frontFace == rhi::FrontFace::Clockwise
+                                              ? rhi::FrontFace::CounterClockwise
+                                              : rhi::FrontFace::Clockwise;
     }
 
     [[nodiscard]] bool IsValid() const noexcept
@@ -87,7 +96,8 @@ struct MaterialPassPipelineDescriptor
                            const MaterialPassPipelineDescriptor &rhs) noexcept
     {
         return lhs.target == rhs.target && lhs.colorFormats == rhs.colorFormats && lhs.depthFormat == rhs.depthFormat &&
-               lhs.samples == rhs.samples && lhs.depthReadOnly == rhs.depthReadOnly;
+               lhs.samples == rhs.samples && lhs.depthReadOnly == rhs.depthReadOnly &&
+               lhs.invertCulling == rhs.invertCulling;
     }
 
     friend bool operator!=(const MaterialPassPipelineDescriptor &lhs,
@@ -109,6 +119,7 @@ struct MaterialPassPipelineDescriptorHash
         combine(static_cast<size_t>(descriptor.samples));
         combine(static_cast<size_t>(descriptor.depthFormat));
         combine(static_cast<size_t>(descriptor.depthReadOnly));
+        combine(static_cast<size_t>(descriptor.invertCulling));
         combine(descriptor.colorFormats.size());
         for (const rhi::PixelFormat format : descriptor.colorFormats)
             combine(static_cast<size_t>(format));

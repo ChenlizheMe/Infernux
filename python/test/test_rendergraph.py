@@ -6,7 +6,7 @@ import pytest
 import Infernux.lib as native
 
 from Infernux.lib import (
-    CommandBuffer,
+    CommandBuffer, DrawParameterBlock,
     RenderGraphDescription, GraphPassDesc, GraphTextureDesc,
     GraphBufferUsage, GraphCommandType, GraphMaterialFilter,
     GraphTextureRole,
@@ -62,6 +62,32 @@ class TestFormat:
         )
         assert handle.is_valid()
         assert commands.command_count == 1
+
+    def test_shader_parameters_use_explicit_domains_not_noop_global_names(self):
+        commands = CommandBuffer("Explicit parameter domains")
+        assert not hasattr(commands, "set_global_float")
+        assert not hasattr(commands, "set_global_vector")
+        assert not hasattr(commands, "set_global_texture")
+        assert not hasattr(commands, "set_global_matrix")
+        assert not hasattr(native.ScriptableRenderContext, "set_global_float")
+        assert not hasattr(native.ScriptableRenderContext, "set_global_vector")
+        assert not hasattr(native.ScriptableRenderContext, "set_global_texture")
+
+    def test_explicit_draw_parameter_block_is_typed_and_recorded(self):
+        block = DrawParameterBlock()
+        block.set_float("roughness", 0.4)
+        block.set_vector2("wind", (1.0, -0.5))
+        block.set_vector3("axis", (0.0, 1.0, 0.0))
+        block.set_vector4("weights", (1.0, 0.0, 0.0, 0.0))
+        block.set_color("tint", (0.2, 0.4, 0.8, 1.0))
+        block.set_int("variant", 2)
+        block.set_matrix("local", tuple(float(i) for i in range(16)))
+        block.set_texture("albedo", "white")
+        assert block.size == 8
+        assert block.remove("variant")
+        assert block.size == 7
+        block.clear()
+        assert block.size == 0
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -306,17 +332,21 @@ class TestRenderPassBuilder:
     def test_fullscreen_quad_can_bind_dynamic_parameter_block(self):
         graph = _make_graph()
         graph.create_texture("fx", format=Format.RGBA16_SFLOAT)
+        parameters = {"intensity": 0.5, "threshold": 1.0}
         with graph.add_pass("FX") as p:
             p.set_texture("_Src", "color")
             p.write_color("fx")
             p.bind_parameter_block(
                 "slot-1/composite",
-                {"intensity": 0.5, "threshold": 1.0},
+                parameters,
             )
             p.fullscreen_quad("my_shader")
 
+        parameters["intensity"] = 4.0
+
         assert p._parameter_block == "slot-1/composite"
         assert list(p._push_constants) == ["intensity", "threshold"]
+        assert p._push_constants["intensity"] == 0.5
 
     def test_draw_screen_ui_camera(self):
         graph = _make_graph()
@@ -456,6 +486,40 @@ class TestGraphTextures:
         assert textures["taa/read"].temporal_key == "taa"
         assert textures["taa/write"].temporal_key == "taa"
         assert textures["taa/read"].samples == 1
+        assert not description.temporal_jitter
+        graph.set_temporal_jitter()
+        assert graph.build().temporal_jitter
+        graph.set_temporal_jitter(False)
+        assert not graph.build().temporal_jitter
+
+    @pytest.mark.parametrize('options, expected', [
+        ({'size': (37, 23)}, (37, 23, 0)),
+        ({'size_divisor': 2}, (0, 0, 2)),
+    ])
+    def test_temporal_history_dimensions_and_scopes(self, options, expected):
+        graph = RenderGraph("Temporal")
+        with graph.name_scope("feedback"):
+            read, write = graph.create_temporal_history("color", **options)
+        with graph.add_copy_pass("Commit") as commit:
+            commit.copy_texture(read, write)
+            commit.set_side_effect()
+        graph.set_output(read)
+        textures = graph.build().textures
+        assert len(textures) == 2
+        for texture in textures:
+            assert (texture.width, texture.height, texture.size_divisor) == expected
+            assert texture.temporal_key == 'feedback/color'
+        assert read.name == 'feedback/color/read'
+
+    @pytest.mark.parametrize('options', [
+        {'size': (0, 23)}, {'size_divisor': 1}, {'size_divisor': -1},
+        {'size': (37, 23), 'size_divisor': 2},
+    ])
+    def test_invalid_temporal_dimensions_publish_no_partial_pair(self, options):
+        graph = RenderGraph("Temporal")
+        with pytest.raises(ValueError):
+            graph.create_temporal_history('color', **options)
+        assert not graph._textures
 
     def test_temporal_history_rejects_depth_and_duplicate_identity(self):
         graph = RenderGraph("Temporal")
@@ -742,6 +806,31 @@ class TestBuild:
             "dithering": 0.0,
             "stopNaNs": 0.0,
         }
+
+    def test_linear_camera_output_stops_before_display_encoding(self):
+        graph = _make_graph()
+        with graph.add_pass('Opaque') as p:
+            p.write_color('color').draw_renderers()
+        graph.display_encode_section()
+        graph.display_encode_section()
+        graph.set_output('color')
+        desc = graph.build()
+        assert desc.linear_output_texture == 'color'
+        assert desc.linear_output_pass_count == 1
+        assert [p.name for p in desc.passes[:desc.linear_output_pass_count]] == ['Opaque']
+        assert desc.passes[desc.linear_output_pass_count].name == '_DisplayEncode'
+        graph.remove_pass('Opaque')
+        desc = graph.build()
+        assert desc.linear_output_pass_count == 0
+        assert desc.passes[0].name == '_DisplayEncode'
+
+    def test_raw_camera_graph_does_not_invent_a_display_boundary(self):
+        graph = _make_graph()
+        with graph.add_pass('Opaque') as p:
+            p.write_color('color').draw_renderers()
+        desc = graph.build()
+        assert desc.linear_output_texture == ''
+        assert desc.linear_output_pass_count == 0
 
     def test_dynamic_parameter_block_is_emitted_in_command_ir(self):
         graph = _make_graph()

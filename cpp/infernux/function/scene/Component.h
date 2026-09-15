@@ -408,6 +408,13 @@ class Component
     /// @return A new Component (derived type), or nullptr if cloning is not supported.
     [[nodiscard]] virtual std::unique_ptr<Component> Clone() const;
 
+    /// Remap stable references after a native object graph receives fresh
+    /// component IDs (for example Play clones or duplicate scene loads).
+    virtual void RemapComponentReferences(const std::unordered_map<uint64_t, uint64_t> &componentIdRemap)
+    {
+        (void)componentIdRemap;
+    }
+
   protected:
     friend class GameObject;
     friend class Camera;

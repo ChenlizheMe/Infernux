@@ -30,6 +30,7 @@ Usage::
 from __future__ import annotations
 
 import json as _json
+from dataclasses import dataclass, field
 from typing import Dict, Optional, TYPE_CHECKING
 
 from Infernux.components.component import InxComponent
@@ -50,6 +51,19 @@ if TYPE_CHECKING:
 
 from ._render_pipeline_reload import PipelineReloadMixin
 
+@dataclass
+class _ViewGraphState:
+    """One output-sample contract; graph and effect bindings never cross variants."""
+
+    description: object = None
+    last_valid_description: object = None
+    build_failed: bool = False
+    bindings: list = field(default_factory=list)
+    upload_revisions: dict = field(default_factory=dict)
+    errors: tuple[str, ...] = ()
+    artifact_generation: int = 0
+
+
 @disallow_multiple
 @add_component_menu("Rendering/RenderStack")
 class RenderStack(PipelineReloadMixin, InxComponent):
@@ -65,8 +79,13 @@ class RenderStack(PipelineReloadMixin, InxComponent):
 
     _component_category_ = "Rendering"
 
-    # ---- Class-level singleton (scene-global) ----
-    _active_instance: Optional["RenderStack"] = None
+    # One RenderStack is active per loaded Scene. Additive scenes are peers in
+    # one World, so a process-global singleton cannot represent ownership.
+    _active_instances: Dict[int, "RenderStack"] = {}
+
+    @staticmethod
+    def _scene_key(scene) -> int:
+        return int(getattr(scene, "world_id", 0) or 0) if scene is not None else 0
 
     @classmethod
     def instance(cls, scene=None) -> Optional["RenderStack"]:
@@ -84,11 +103,30 @@ class RenderStack(PipelineReloadMixin, InxComponent):
                 scene = _NativeSceneManager.instance().get_active_scene()
             except Exception:
                 scene = None
-        inst = cls._active_instance
+        key = cls._scene_key(scene)
+        if key <= 0:
+            return None
+        inst = cls._active_instances.get(key)
         if inst is not None and not cls._is_effectively_active(inst, scene=scene):
-            cls._active_instance = None
+            cls._active_instances.pop(key, None)
             return None
         return inst
+
+    @classmethod
+    def clear_active_instance(cls, scene=None) -> None:
+        """Forget the active stack for one Scene, or all loaded Scenes."""
+        if scene is None:
+            cls._active_instances.clear()
+            return
+        cls._active_instances.pop(cls._scene_key(scene), None)
+
+    @classmethod
+    def activate_instance(cls, stack: "RenderStack", scene) -> None:
+        """Publish one live stack as the owner of its Scene."""
+        if not cls._is_effectively_active(stack, scene=scene):
+            raise RuntimeError("RenderStack activation requires its live owning Scene")
+        stack._owning_scene = scene
+        cls._active_instances[cls._scene_key(scene)] = stack
 
     @classmethod
     def refresh_active_instance(
@@ -98,7 +136,6 @@ class RenderStack(PipelineReloadMixin, InxComponent):
         exclude: Optional["RenderStack"] = None,
     ) -> Optional["RenderStack"]:
         """Resolve ownership once after a scene graph has been published."""
-        cls._active_instance = None
         if scene is None:
             try:
                 from Infernux.lib import SceneManager as _NativeSceneManager
@@ -107,6 +144,8 @@ class RenderStack(PipelineReloadMixin, InxComponent):
                 return None
         if scene is None or not hasattr(scene, "get_all_objects"):
             return None
+        key = cls._scene_key(scene)
+        cls._active_instances.pop(key, None)
         for obj in scene.get_all_objects() or ():
             if not obj.is_active_in_hierarchy():
                 continue
@@ -116,7 +155,7 @@ class RenderStack(PipelineReloadMixin, InxComponent):
                     and component is not exclude
                     and cls._is_effectively_active(component, scene=scene)
                 ):
-                    cls._active_instance = component
+                    cls.activate_instance(component, scene)
                     component.invalidate_graph()
                     return component
         return None
@@ -130,7 +169,7 @@ class RenderStack(PipelineReloadMixin, InxComponent):
     ) -> bool:
         if stack is None or not stack.is_valid or not stack.enabled:
             return False
-        go = stack.game_object
+        go = stack._try_get_game_object()
         if go is None or not go.is_active_in_hierarchy():
             return False
         if scene is not None and getattr(go, "scene", None) is not scene:
@@ -150,20 +189,34 @@ class RenderStack(PipelineReloadMixin, InxComponent):
     )
     # ---- Runtime state (not serialized) ----
     _pipeline = None  # Optional[RenderPipeline]
-    _graph_desc = None  # cached RenderGraphDescription
+    _graph_states: dict[int, _ViewGraphState] = None
+    _active_graph_state: Optional[_ViewGraphState] = None
+    _output_samples: int = 0
     _resource_bus: Optional[ResourceBus] = None
-    _build_failed: bool = False  # True after a build error; cleared by invalidate_graph()
     _pipeline_module = None  # module object for watchdog hot-reload subscription
     _pipeline_param_store: Dict[str, Dict[str, object]] = None
     _pipeline_catalog_signature: tuple = ()
     _topology_probe_cache = None
     _last_valid_topology_probe = None
     _topology_probe_error: str = ""
-    _last_valid_graph_desc = None
-    _compiled_effect_bindings = None
-    _effect_upload_revisions = None
-    _effect_compile_errors: tuple[str, ...] = ()
-    _effect_artifact_topology_generation = 0
+    _owning_scene = None
+
+    @property
+    def _graph_state(self) -> _ViewGraphState:
+        if self._active_graph_state is None:
+            self._select_graph_state(0)
+        return self._active_graph_state
+
+    def _select_graph_state(self, output_samples: int) -> None:
+        if self._active_graph_state is not None and output_samples == self._output_samples:
+            return
+        if self._graph_states is None:
+            self._graph_states = {}
+        state = self._graph_states.get(output_samples)
+        if state is None:
+            state = self._graph_states[output_samples] = _ViewGraphState()
+        self._output_samples = output_samples
+        self._active_graph_state = state
 
     # ==================================================================
     # Lifecycle
@@ -182,59 +235,60 @@ class RenderStack(PipelineReloadMixin, InxComponent):
             self._pipeline_param_store = {}
         if self.effect_slots is None:
             self.effect_slots = []
-        if self._compiled_effect_bindings is None:
-            self._compiled_effect_bindings = []
-        if self._effect_upload_revisions is None:
-            self._effect_upload_revisions = {}
         self._pipeline_catalog_signature = ()
         self._register_pipeline_catalog_reload()
         self._sync_pipeline_catalog()
 
         # If no active instance (or existing one is stale), self-promote
         # provided this component is enabled.
-        existing = RenderStack.instance()
+        scene = getattr(self.game_object, "scene", None)
+        self._owning_scene = scene
+        existing = RenderStack.instance(scene)
         if existing is not None and existing is not self:
             if RenderStack._is_effectively_active(existing):
                 # Another valid RenderStack is active; stay dormant.
                 # on_enable() will take over when this one is enabled.
                 return
             # Stale — evict it
-            RenderStack._active_instance = None
+            RenderStack.clear_active_instance(scene)
         if RenderStack._is_effectively_active(self):
-            RenderStack._active_instance = self
+            RenderStack.activate_instance(self, scene)
 
     def on_destroy(self) -> None:
         """Dispose pipeline resources and promote another active stack if needed."""
         self._unregister_pipeline_catalog_reload()
-        was_active = (RenderStack._active_instance is self)
+        scene = self._owning_scene
+        key = RenderStack._scene_key(scene)
+        was_active = RenderStack._active_instances.get(key) is self
         if was_active:
-            RenderStack._active_instance = None
+            RenderStack.clear_active_instance(scene)
         if self._pipeline is not None and hasattr(self._pipeline, "dispose"):
             self._pipeline.dispose()
         self._pipeline = None
-        self._graph_desc = None
-        self._last_valid_graph_desc = None
+        self._graph_states = None
+        self._active_graph_state = None
         self._last_valid_topology_probe = None
         self._topology_probe_error = ""
         self._resource_bus = None
-        self._compiled_effect_bindings = []
-        self._effect_upload_revisions = {}
-        self._effect_artifact_topology_generation = 0
         if was_active:
             self._promote_next_stack()
+        self._owning_scene = None
 
     def on_enable(self) -> None:
         """Become the active RenderStack when enabled."""
         if RenderStack._is_effectively_active(self):
-            RenderStack._active_instance = self
+            scene = getattr(self.game_object, "scene", None)
+            self._owning_scene = scene
+            RenderStack.activate_instance(self, scene)
             self.invalidate_graph()
 
     def on_disable(self) -> None:
         """Release active ownership and promote another enabled RenderStack."""
-        if RenderStack._active_instance is self:
-            RenderStack._active_instance = None
+        scene = self._owning_scene or getattr(self.game_object, "scene", None)
+        if RenderStack._active_instances.get(RenderStack._scene_key(scene)) is self:
+            RenderStack.clear_active_instance(scene)
             self._promote_next_stack()
-        self._graph_desc = None
+        self.invalidate_graph()
 
     # ------------------------------------------------------------------
     # Singleton promotion
@@ -244,7 +298,7 @@ class RenderStack(PipelineReloadMixin, InxComponent):
         """Scan the scene for another enabled RenderStack and promote it."""
         try:
             from Infernux.lib import SceneManager as _NativeSceneManager
-            scene = _NativeSceneManager.instance().get_active_scene()
+            scene = self._owning_scene
         except Exception as _exc:
             Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             return
@@ -354,8 +408,11 @@ class RenderStack(PipelineReloadMixin, InxComponent):
         # Register as the active instance so that the fast-path in
         # RenderStackPipeline._find_render_stack works even in edit mode
         # (where awake() is not called).
-        if RenderStack.instance() is None and RenderStack._is_effectively_active(self):
-            RenderStack._active_instance = self
+        game_object = self._try_get_game_object()
+        scene = getattr(game_object, "scene", None) if game_object is not None else None
+        if scene is not None and RenderStack.instance(scene) is None and RenderStack._is_effectively_active(self, scene=scene):
+            self._owning_scene = scene
+            RenderStack.activate_instance(self, scene)
 
         if self._pipeline_param_store is None:
             self._pipeline_param_store = {}
@@ -378,7 +435,7 @@ class RenderStack(PipelineReloadMixin, InxComponent):
         # Deserialization may be repeated on an existing editor component.
         # Recreate the selected pipeline only after its parameter store exists.
         self._pipeline = None
-        self._topology_probe_cache = None
+        self.invalidate_graph()
         self._cached_ips = None
 
     # ==================================================================
@@ -388,9 +445,12 @@ class RenderStack(PipelineReloadMixin, InxComponent):
     @property
     def effect_compile_errors(self) -> tuple[str, ...]:
         """Current non-destructive diagnostics for mounted Effect assets."""
+        errors = tuple(dict.fromkeys(
+            error for state in (self._graph_states or {}).values() for error in state.errors
+        ))
         if self._topology_probe_error:
-            return (*self._effect_compile_errors, self._topology_probe_error)
-        return self._effect_compile_errors
+            return (*errors, self._topology_probe_error)
+        return errors
 
     @property
     def effect_stages(self):
@@ -583,14 +643,15 @@ class RenderStack(PipelineReloadMixin, InxComponent):
 
         This is called automatically after effect or pipeline changes.
         """
-        self._graph_desc = None
-        self._build_failed = False  # allow retry after explicit invalidation
+        for state in (self._graph_states or {}).values():
+            state.description = None
+            state.build_failed = False
         self._topology_probe_cache = None
         # Keep the bindings and upload revisions paired with the last valid
         # graph until a replacement graph has built successfully. A rejected
         # edit must not disable live parameters on the graph still on screen.
 
-    def build_graph(self):  # -> RenderGraphDescription
+    def build_graph(self, *, output_samples: int = 0):  # -> RenderGraphDescription
         """Build the complete RenderGraph.
 
         The pipeline defines topology and EffectStages. Structured EffectSlot
@@ -602,7 +663,8 @@ class RenderStack(PipelineReloadMixin, InxComponent):
         """
         from Infernux.rendergraph.graph import RenderGraph
 
-        graph = RenderGraph("Pipeline+Stack")
+        self._select_graph_state(output_samples)
+        graph = RenderGraph("Pipeline+Stack", output_samples=output_samples)
         self._resource_bus = ResourceBus()
         compiled_effects = []
         effect_errors = []
@@ -700,13 +762,6 @@ class RenderStack(PipelineReloadMixin, InxComponent):
             RenderEffectArtifactRegistry,
         )
 
-        self._effect_artifact_topology_generation = (
-            RenderEffectArtifactRegistry.topology_generation()
-        )
-        self._compiled_effect_bindings = compiled_effects
-        self._effect_compile_errors = tuple(effect_errors)
-        self._effect_upload_revisions = {}
-
         # Ensure before/after_post_process injection points exist WHILE the
         # callback is still active. graph.build() also auto-injects these,
         # but that happens after the callback is detached — effects targeting
@@ -733,6 +788,12 @@ class RenderStack(PipelineReloadMixin, InxComponent):
             graph.set_output(COLOR_TEXTURE)
 
         description = graph.build()
+        # Publish bindings only after the complete candidate topology built.
+        # A failed build must leave the previous artifact's parameters intact.
+        self._graph_state.artifact_generation = RenderEffectArtifactRegistry.topology_generation()
+        self._graph_state.bindings = compiled_effects
+        self._graph_state.errors = tuple(effect_errors)
+        self._graph_state.upload_revisions = {}
         from Infernux.debug import Debug
 
         screen_ui_passes = tuple(
@@ -757,18 +818,20 @@ class RenderStack(PipelineReloadMixin, InxComponent):
             context: The render context provided by the engine.
             camera: The camera to render from.
         """
-        if self._graph_desc is not None:
+        self._select_graph_state(context.output_samples)
+        state = self._graph_state
+        if state.description is not None:
             from Infernux.renderstack.render_effect_compiler import (
                 RenderEffectArtifactRegistry,
             )
 
             if (
                 RenderEffectArtifactRegistry.topology_generation()
-                != self._effect_artifact_topology_generation
+                != state.artifact_generation
             ):
                 self.invalidate_graph()
 
-        if self._graph_desc is not None:
+        if state.description is not None:
             requires_rebuild, updates = self._collect_effect_parameter_updates(context)
             if requires_rebuild:
                 self.invalidate_graph()
@@ -776,7 +839,7 @@ class RenderStack(PipelineReloadMixin, InxComponent):
                 context.update_parameter_blocks(updates)
 
         # Lazy build graph topology (skip if last build failed)
-        if self._graph_desc is None and not self._build_failed:
+        if state.description is None and not state.build_failed:
             context.setup_camera_properties(camera)
             culling = context.cull(camera)
 
@@ -792,9 +855,13 @@ class RenderStack(PipelineReloadMixin, InxComponent):
                 context.submit_culling(culling)
                 return
 
-            previous_graph = self._last_valid_graph_desc
+            previous_graph = state.last_valid_description
+            previous_bindings = (
+                state.bindings, state.upload_revisions,
+                state.errors, state.artifact_generation,
+            )
             try:
-                self._graph_desc = self.build_graph()
+                state.description = self.build_graph(output_samples=self._output_samples)
             except Exception as exc:
                 from Infernux.debug import Debug
 
@@ -803,21 +870,23 @@ class RenderStack(PipelineReloadMixin, InxComponent):
                         f"[RenderStack] Pipeline graph rebuild rejected: {exc}. "
                         "Keeping the last valid graph until parameters change."
                     )
-                    self._graph_desc = previous_graph
-                    self._build_failed = True
+                    state.description = previous_graph
+                    state.build_failed = True
                 else:
-                    self._build_failed = True
+                    state.build_failed = True
                     raise RuntimeError(
                         "RenderStack could not build its selected pipeline graph"
                     ) from exc
 
             try:
-                context.apply_graph(self._graph_desc)
-                self._last_valid_graph_desc = self._graph_desc
+                context.apply_graph(state.description)
+                state.last_valid_description = state.description
             except Exception as exc:
-                self._build_failed = True
-                if previous_graph is None or previous_graph is self._graph_desc:
-                    self._graph_desc = None
+                state.build_failed = True
+                (state.bindings, state.upload_revisions,
+                 state.errors, state.artifact_generation) = previous_bindings
+                if previous_graph is None or previous_graph is state.description:
+                    state.description = None
                     raise RuntimeError(
                         "RenderStack could not apply its selected pipeline graph"
                     ) from exc
@@ -828,57 +897,58 @@ class RenderStack(PipelineReloadMixin, InxComponent):
                     f"[RenderStack] Pipeline graph publication rejected: {exc}. "
                     "Keeping the last valid graph until parameters change."
                 )
-                self._graph_desc = previous_graph
+                state.description = previous_graph
                 context.apply_graph(previous_graph)
 
             context.submit_culling(culling)
-        elif self._graph_desc is not None:
+        elif state.description is not None:
             # Steady state sends only a revision integer. A second camera or a
             # rebuilt native graph falls back to the full description once.
-            if not context.render_compiled(camera, self._graph_desc.source_revision):
-                context.render_with_graph(camera, self._graph_desc)
+            if not context.render_compiled(camera, state.description.source_revision):
+                context.render_with_graph(camera, state.description)
                 # The native graph may have re-recorded its passes from the
                 # description, whose push constants were baked at build time.
                 # Drop this graph's upload cache so any live effect edits made
                 # since then are collected and resent on the next frame.
-                if self._effect_upload_revisions:
+                if state.upload_revisions:
                     graph_id = int(getattr(context, "graph_instance_id", 0) or 0)
                     stale_keys = [
-                        key for key in self._effect_upload_revisions if key[0] == graph_id
+                        key for key in state.upload_revisions if key[0] == graph_id
                     ]
                     for key in stale_keys:
-                        del self._effect_upload_revisions[key]
+                        del state.upload_revisions[key]
 
     def _collect_effect_parameter_updates(self, context):
-        bindings = self._compiled_effect_bindings or ()
+        state = self._graph_state
+        bindings = state.bindings or ()
         if not bindings:
             return False, []
         graph_id = int(getattr(context, "graph_instance_id", 0) or 0)
-        if self._effect_upload_revisions is None:
-            self._effect_upload_revisions = {}
+        if state.upload_revisions is None:
+            state.upload_revisions = {}
         updates = []
         for binding in bindings:
             revision_key = (graph_id, binding.binding_id)
             revision = binding.source.revision
-            if self._effect_upload_revisions.get(revision_key) == revision:
+            if state.upload_revisions.get(revision_key) == revision:
                 continue
             try:
                 requires_rebuild, binding_updates = binding.collect_updates()
             except (TypeError, ValueError) as exc:
                 diagnostic = f"{binding.binding_id}: {exc}"
-                self._effect_compile_errors = tuple(
-                    dict.fromkeys((*self._effect_compile_errors, diagnostic))
+                state.errors = tuple(
+                    dict.fromkeys((*state.errors, diagnostic))
                 )
-                self._effect_upload_revisions[revision_key] = revision
+                state.upload_revisions[revision_key] = revision
                 continue
             if requires_rebuild:
                 return True, []
             updates.extend(binding_updates)
-            self._effect_upload_revisions[revision_key] = revision
+            state.upload_revisions[revision_key] = revision
             diagnostic_prefix = f"{binding.binding_id}: "
-            self._effect_compile_errors = tuple(
+            state.errors = tuple(
                 error
-                for error in self._effect_compile_errors
+                for error in state.errors
                 if not error.startswith(diagnostic_prefix)
             )
         return False, updates

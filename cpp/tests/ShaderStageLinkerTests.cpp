@@ -605,6 +605,46 @@ void surface(out SurfaceData surface)
            std::string::npos);
 
     const std::string shaderRoot = INFERNUX_TEST_SHADER_ROOT;
+    // Data-only replacement materials use current geometry but own a raw
+    // fragment output, not generated surface/shadow outputs.
+    const std::string dataMaskFragment = R"(
+ShaderInfo {
+    Name "Tests/DataMask"
+    ShadingModel Unlit
+    CastShadows Off
+    Capabilities [ForwardOnly, NoDepthPass, NoPicking, NoMotionVectors, NoNormalPass, NoBaseColorPass]
+    Properties {
+        Float ownerId = 1.0
+        Float invalid = 0.0
+        Float flags = 0.0
+    }
+}
+void main() {
+    outColor = vec4(material.ownerId, v_ViewDepth, material.invalid, material.flags);
+}
+)";
+    const auto dataMaskCompilation = compiler.CompileLinkedProgramArtifact(
+        ReadText(shaderRoot + "/standard.vert"), shaderRoot + "/standard.vert", dataMaskFragment, "DataMask.frag");
+    if (!dataMaskCompilation.IsValid()) {
+        for (const auto &error : dataMaskCompilation.errors)
+            std::cerr << error << '\n';
+    }
+    assert(dataMaskCompilation.IsValid());
+    assert(dataMaskCompilation.compiledVariants.size() == 2);
+    assert(dataMaskCompilation.interfaceArtifact.properties.size() == 3);
+    for (const auto &name : {"ownerId", "invalid", "flags"})
+        RequireProperty(dataMaskCompilation.interfaceArtifact, name);
+    const auto dataMaskArtifact = dataMaskCompilation.CreateRuntimeArtifact();
+    assert(dataMaskArtifact.IsValid());
+    assert(dataMaskArtifact.FindVariant(infernux::ShaderCompileTarget::Forward) != nullptr);
+    assert(dataMaskArtifact.FindVariant(infernux::ShaderCompileTarget::ForwardPlus) != nullptr);
+    for (const auto target : {infernux::ShaderCompileTarget::Shadow, infernux::ShaderCompileTarget::Depth,
+                              infernux::ShaderCompileTarget::Picking, infernux::ShaderCompileTarget::Motion,
+                              infernux::ShaderCompileTarget::Normal, infernux::ShaderCompileTarget::BaseColor,
+                              infernux::ShaderCompileTarget::GBuffer}) {
+        assert(!dataMaskCompilation.passPlan.Find(target)->enabled);
+        assert(dataMaskArtifact.FindVariant(target) == nullptr);
+    }
     const auto builtinParticleCompilation = compiler.CompileLinkedProgramArtifact(
         ReadText(shaderRoot + "/particle_sprite.vert"), shaderRoot + "/particle_sprite.vert",
         ReadText(shaderRoot + "/unlit.frag"), shaderRoot + "/unlit.frag");

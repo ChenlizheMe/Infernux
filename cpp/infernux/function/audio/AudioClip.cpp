@@ -24,9 +24,12 @@ extern "C" int stb_vorbis_decode_memory(const unsigned char *mem, int len, int *
 namespace infernux
 {
 
-size_t AudioClip::GetRuntimeMemoryBytes() const noexcept
+size_t AudioClip::GetRuntimeMemoryBytes() const
 {
-    return sizeof(*this) + m_filePath.capacity() + m_name.capacity() + m_guid.capacity() + m_data.capacity();
+    std::lock_guard<std::mutex> lock(m_playbackMutex);
+    const size_t playbackBytes = m_playbackPcm ? m_playbackPcm->stereoFrames.capacity() * sizeof(float) : 0;
+    return sizeof(*this) + m_filePath.capacity() + m_name.capacity() + m_guid.capacity() + m_data.capacity() +
+           playbackBytes;
 }
 
 namespace
@@ -202,7 +205,8 @@ AudioClip::~AudioClip()
 
 AudioClip::AudioClip(AudioClip &&other) noexcept
     : m_loaded(other.m_loaded), m_filePath(std::move(other.m_filePath)), m_name(std::move(other.m_name)),
-      m_spec(other.m_spec), m_data(std::move(other.m_data)), m_dataLength(other.m_dataLength)
+      m_guid(std::move(other.m_guid)), m_spec(other.m_spec), m_data(std::move(other.m_data)),
+      m_dataLength(other.m_dataLength), m_playbackPcm(std::move(other.m_playbackPcm))
 {
     other.m_loaded = false;
     other.m_spec = {};
@@ -216,9 +220,11 @@ AudioClip &AudioClip::operator=(AudioClip &&other) noexcept
         m_loaded = other.m_loaded;
         m_filePath = std::move(other.m_filePath);
         m_name = std::move(other.m_name);
+        m_guid = std::move(other.m_guid);
         m_spec = other.m_spec;
         m_data = std::move(other.m_data);
         m_dataLength = other.m_dataLength;
+        m_playbackPcm = std::move(other.m_playbackPcm);
 
         other.m_loaded = false;
         other.m_spec = {};
@@ -325,11 +331,47 @@ void AudioClip::ConvertToMono()
 
 void AudioClip::Unload()
 {
+    {
+        std::lock_guard<std::mutex> lock(m_playbackMutex);
+        m_playbackPcm.reset();
+    }
     m_data.clear();
     m_data.shrink_to_fit();
     m_spec = {};
     m_dataLength = 0;
     m_loaded = false;
+}
+
+std::shared_ptr<const AudioPlaybackPcm> AudioClip::AcquirePlaybackPcm(int sampleRate) const
+{
+    if (!m_loaded || m_data.empty() || sampleRate <= 0)
+        return nullptr;
+
+    std::lock_guard<std::mutex> lock(m_playbackMutex);
+    if (m_playbackPcm && m_playbackPcm->sampleRate == sampleRate)
+        return m_playbackPcm;
+
+    SDL_AudioSpec playbackSpec = {};
+    playbackSpec.format = SDL_AUDIO_F32;
+    playbackSpec.channels = 2;
+    playbackSpec.freq = sampleRate;
+
+    Uint8 *convertedData = nullptr;
+    int convertedLength = 0;
+    if (!SDL_ConvertAudioSamples(&m_spec, m_data.data(), static_cast<int>(m_data.size()), &playbackSpec, &convertedData,
+                                 &convertedLength)) {
+        INXLOG_ERROR("Failed to prepare audio clip for playback: ", SDL_GetError());
+        return nullptr;
+    }
+
+    auto playback = std::make_shared<AudioPlaybackPcm>();
+    playback->stereoFrames.resize(static_cast<size_t>(convertedLength) / sizeof(float));
+    std::memcpy(playback->stereoFrames.data(), convertedData, static_cast<size_t>(convertedLength));
+    playback->frameCount = playback->stereoFrames.size() / 2;
+    playback->sampleRate = sampleRate;
+    SDL_free(convertedData);
+    m_playbackPcm = playback;
+    return playback;
 }
 
 float AudioClip::GetDuration() const

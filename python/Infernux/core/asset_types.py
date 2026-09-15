@@ -820,6 +820,7 @@ MATERIAL_EXTENSIONS = frozenset({".mat"})
 PHYSIC_MATERIAL_EXTENSIONS = frozenset({".physicmaterial"})
 RENDER_EFFECT_EXTENSIONS = frozenset({".effect", ".effectgroup"})
 PARTICLE_GRAPH_EXTENSIONS = frozenset({".particlegraph"})
+DATA_ASSET_EXTENSIONS = frozenset({".inxdata"})
 
 # Audio extensions supported by AudioImporter
 AUDIO_EXTENSIONS = frozenset({".wav", ".ogg", ".mp3", ".flac"})
@@ -860,10 +861,14 @@ def asset_category_from_extension(ext: str) -> Optional[str]:
         return "material"
     if ext in PHYSIC_MATERIAL_EXTENSIONS:
         return "physic_material"
+    if ext == ".rendertexture":
+        return "render_texture"
     if ext in RENDER_EFFECT_EXTENSIONS:
         return "render_effect"
     if ext in PARTICLE_GRAPH_EXTENSIONS:
         return "particle_graph"
+    if ext in DATA_ASSET_EXTENSIONS:
+        return "data_asset"
     if ext in IMAGE_EXTENSIONS:
         return "texture"
     if ext in SHADER_EXTENSIONS:

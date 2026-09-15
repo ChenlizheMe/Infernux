@@ -2,6 +2,7 @@
 
 PYBIND11_MODULE(_Infernux, module)
 {
+    infernux::RegisterSemanticCatalogBindings(module);
 #if defined(INFERNUX_PYBIND_WEB_PLAYER)
     module.attr("__runtime_profile__") = "web-player";
     infernux::RegisterVector2Bindings(module);

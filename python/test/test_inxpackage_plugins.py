@@ -2805,6 +2805,38 @@ def test_manifestless_local_package_preload_supports_relative_imports(tmp_path):
     assert not (project / "local-package.txt").exists()
 
 
+@pytest.mark.parametrize("fail_preload", [False, True])
+def test_preload_library_ownership_follows_success_and_failure(tmp_path, fail_preload):
+    from Infernux.engine.project_context import is_project_component_script
+
+    project = _project(tmp_path / "project")
+    package = _source(project / "Packages/vendor/compiler", "vendor/compiler")
+    library = package / "runtime/provider"
+    library.mkdir(parents=True)
+    implementation = library / "backend.py"
+    implementation.write_text("from contextlib import contextmanager\n", encoding="utf-8")
+    author = package / "runtime/AuthorComponent.py"
+    author.write_text("", encoding="utf-8")
+    (library / "lifecycle.py").write_text(
+        "from Infernux.lifecycle import InxPreload\n"
+        "class LibraryPreload(InxPreload):\n"
+        "    def preload(self, context):\n"
+        "        context.own_python_library('runtime/provider')\n"
+        + ("        raise RuntimeError('initialization failed')\n" if fail_preload else "")
+        + "    def unload(self): pass\n",
+        encoding="utf-8",
+    )
+    manager = PluginManager.startup(str(project))
+    try:
+        state = next(iter(manager.preloads.states.values()))
+        assert state.loaded is not fail_preload, state.error
+        assert is_project_component_script(str(implementation), str(project)) is fail_preload
+        assert is_project_component_script(str(author), str(project))
+    finally:
+        manager.shutdown()
+    assert is_project_component_script(str(implementation), str(project))
+
+
 def test_package_preloads_with_matching_module_paths_are_isolated(tmp_path):
     project = _project(tmp_path / "project")
     manager = PluginManager(str(project))

@@ -153,7 +153,7 @@ def compile_pipeline_definition(definition: PipelineDefinition, graph, *, pipeli
 
     if not isinstance(definition, PipelineDefinition):
         raise TypeError("pipeline compiler requires a PipelineDefinition")
-    graph.set_msaa_samples(definition.frame.msaa)
+    msaa_samples = graph.set_msaa_samples(definition.frame.msaa)
     color_format = Format.RGBA16_SFLOAT if definition.frame.hdr else Format.RGBA8_UNORM
     camera_color = graph.create_texture("color", format=color_format, camera_target=True)
     scene_scratch = graph.create_texture("_scene_composite", format=color_format)
@@ -202,7 +202,7 @@ def compile_pipeline_definition(definition: PipelineDefinition, graph, *, pipeli
                 opaque_domain.queue.as_tuple() if opaque_domain is not None
                 else (0, 2999)
             ),
-            msaa_samples=definition.frame.msaa,
+            msaa_samples=msaa_samples,
             clear=True,
         )
         motion = geometry_result.sample("motion") if geometry_result.has("motion") else None
@@ -245,7 +245,7 @@ def compile_pipeline_definition(definition: PipelineDefinition, graph, *, pipeli
                 motion_draw,
                 shadow_map,
                 stages,
-                definition.frame.msaa,
+                msaa_samples,
             )
             scene.composite(domain_image.base, label=stable_id)
             pending_scene_overlays.extend(
@@ -270,7 +270,7 @@ def compile_pipeline_definition(definition: PipelineDefinition, graph, *, pipeli
                 graph,
                 scene,
                 color_format,
-                definition.frame.msaa,
+                msaa_samples,
             )
             _flush_route_contributions(scene, pending_scene_overlays)
             continue

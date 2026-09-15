@@ -11,7 +11,6 @@ import json
 import math
 import time as _time
 from dataclasses import replace
-from types import SimpleNamespace
 from Infernux.components.component import InxComponent
 from Infernux.debug import Debug
 from Infernux.lib import InxGUIContext
@@ -48,8 +47,9 @@ from ._inspector_references import (  # noqa: F401
     _apply_reference_drop, _apply_gameobject_or_prefab_drop,
     _apply_builtin_audio_clip_drop,
     _game_object_has_required_component, _create_component_ref_from_go,
-    _picker_scene_gameobjects,
+    _picker_scene_gameobjects, ping_scene_object_in_hierarchy,
     render_asset_reference_field, render_object_field,
+    render_component_reference_field,
 )
 from ._inspector_list_field import (  # noqa: F401
     _make_list_default_element, _infer_list_element_type,
@@ -399,6 +399,16 @@ def _build_builtin_cached_plan(ctx: InxGUIContext, comp, props, lw, skip_fields,
             })
             continue
 
+        if meta.field_type == FieldType.COMPONENT:
+            _flush_batch()
+            ops.append({
+                "kind": "component_reference",
+                "py_name": py_name,
+                "cpp_attr": cpp_attr,
+                "meta": meta,
+            })
+            continue
+
         hdr = meta.header or ""
         spc = meta.space if meta.space and meta.space > 0 else 0.0
         desc = build_scalar_desc(
@@ -544,6 +554,18 @@ def _replay_builtin_cached_plan(ctx: InxGUIContext, comp, plan: dict, cache_entr
             )
             continue
 
+        if kind == "component_reference":
+            current = _get_cached_component_value(
+                cache_entry,
+                False,
+                op["cpp_attr"],
+                lambda _attr=op["cpp_attr"]: getattr(comp, _attr),
+            )
+            _render_builtin_component_reference(
+                ctx, comp, op["py_name"], op["cpp_attr"], op["meta"], current, lw,
+            )
+            continue
+
         if kind == "fallback_scalar":
             if op["header"]:
                 ctx.separator()
@@ -571,6 +593,57 @@ def _replay_builtin_cached_plan(ctx: InxGUIContext, comp, plan: dict, cache_entr
     if edited:
         _invalidate_component_render_cache(cache_entry)
     return edited
+
+
+def _render_builtin_component_reference(
+    ctx: InxGUIContext, comp, field_name: str, cpp_attr: str, metadata,
+    current_value, lw: float,
+) -> None:
+    """Render one live native-component reference through its Python wrapper."""
+    from Infernux.components.fields import FieldType
+
+    component_type = metadata.component_type or "Component"
+    game_object = getattr(current_value, "game_object", None) if current_value is not None else None
+    display = getattr(game_object, "name", "None") if game_object is not None else "None"
+
+    def _assign(reference) -> None:
+        target = reference.resolve() if hasattr(reference, "resolve") else reference
+        if target is not None:
+            _record_builtin_property(comp, cpp_attr, current_value, target, f"Set {field_name}")
+
+    def _pick(game_object) -> None:
+        reference = _create_component_ref_from_go(game_object, component_type)
+        if reference is not None:
+            _assign(reference)
+
+    def _drop(payload) -> None:
+        reference = _create_reference_value_from_payload(
+            FieldType.COMPONENT, payload, component_type,
+        )
+        if reference is not None:
+            _assign(reference)
+
+    field_label(ctx, _serialized_field_label(field_name, metadata), lw)
+    render_component_reference_field(
+        ctx,
+        f"native_component_ref_{field_name}",
+        display,
+        component_type,
+        accept_drag_type="HIERARCHY_GAMEOBJECT",
+        on_drop_callback=_drop,
+        picker_scene_items=lambda filt: _picker_scene_gameobjects(
+            filt, required_component=component_type,
+        ),
+        on_pick=_pick,
+        on_clear=lambda: _record_builtin_property(
+            comp, cpp_attr, current_value, None, f"Clear {field_name}",
+        ),
+        on_ping=(lambda object_id=int(game_object.id): ping_scene_object_in_hierarchy(object_id))
+        if game_object is not None else None,
+        semantic_id=(inspector_component_semantic_id(comp, field_name)
+                     if semantic_capture_enabled(ctx) else ""),
+    )
+    _tooltip_and_info(ctx, metadata)
 
 
 def register_component_renderer(type_name: str, render_fn):
@@ -773,6 +846,11 @@ def _apply_multi_builtin_change(wrapped, token, metadata, new_value):
     py_name, cpp_attr = token
     from Infernux.engine.interaction import make_attribute_property_transaction
 
+    prop = getattr(type(wrapped[0]), py_name, None)
+    declared = {}
+    if getattr(prop, "schema", None) is not None:
+        declared = {"schema": prop.schema, "normalize": prop.normalize_value, "validate_target": prop.validate_value}
+
     transaction = make_attribute_property_transaction(
         tuple(wrapped),
         cpp_attr,
@@ -783,6 +861,7 @@ def _apply_multi_builtin_change(wrapped, token, metadata, new_value):
         equivalent=lambda old, new: not has_field_changed(
             metadata.field_type, old, new
         ),
+        **declared,
     )
     transaction.commit_or_raise(new_value)
 
@@ -795,9 +874,7 @@ def _commit_python_component_field(comps, field_name, metadata, new_value):
     transaction = make_python_component_property_transaction(
         tuple(comps),
         field_name,
-        value_type=str(metadata.field_type),
         description=f"Set {field_name}",
-        read_only=bool(metadata.readonly),
         equivalent=lambda old, new: not has_field_changed(
             metadata.field_type, old, new
         ),
@@ -809,53 +886,57 @@ def _apply_multi_py_change(comps, field_name, metadata, new_value):
     _commit_python_component_field(comps, field_name, metadata, new_value)
 
 
-def _metadata_for_json_value(value):
+def _declared_native_fields(comp):
+    """Return catalog-backed native fields; component values never define schema."""
+    from Infernux.components.builtin_component import BuiltinComponent, CppProperty
     from Infernux.components.fields import FieldType
-    field_type = None
-    current = value
-    if isinstance(value, bool):
-        field_type = FieldType.BOOL
-    elif isinstance(value, int) and not isinstance(value, bool):
-        field_type = FieldType.INT
-    elif isinstance(value, float):
-        field_type = FieldType.FLOAT
-    elif isinstance(value, str):
-        field_type = FieldType.STRING
-    elif isinstance(value, list) and len(value) in (2, 3, 4) and all(isinstance(v, (int, float)) for v in value):
-        if len(value) == 2:
-            from Infernux.lib import Vector2
-            field_type = FieldType.VEC2
-            current = Vector2(float(value[0]), float(value[1]))
-        elif len(value) == 3:
-            from Infernux.lib import Vector3
-            field_type = FieldType.VEC3
-            current = Vector3(float(value[0]), float(value[1]), float(value[2]))
+    from Infernux.components.value_codec import VALUE_CODECS
+    from Infernux.field_schema import get_native_field_schemas
+
+    type_name = str(getattr(comp, "type_name", "") or type(comp).__name__)
+    document = comp.serialize_document()
+    result = []
+    try:
+        schemas = get_native_field_schemas(f"native:infernux.{type_name}")
+    except KeyError:
+        return result
+    for schema in schemas:
+        attributes = schema.attributes
+        if bool(attributes["hidden"]):
+            continue
+        serialized_name = str(attributes["serialized_name"])
+        if serialized_name not in document:
+            raise RuntimeError(
+                f"{schema.property_path}: declared native field is absent from the component document"
+            )
+        prop = CppProperty.from_native(type_name, str(attributes["field_id"]))
+        raw_value = document[serialized_name]
+        if attributes.get("setter_owns_document_shape", False):
+            # GUID-only native storage is projected by the same adapter used
+            # by the ordinary built-in Inspector, not decoded as a Python ref.
+            wrapper_cls = BuiltinComponent._builtin_registry[type_name]
+            wrapped = comp if isinstance(comp, wrapper_cls) else wrapper_cls._get_or_create_wrapper(
+                comp, comp.game_object,
+            )
+            current_value = getattr(wrapped, str(attributes["field_id"]))
+        elif prop.metadata.field_type is FieldType.ENUM:
+            current_value = prop.metadata.enum_type(int(raw_value))
         else:
-            from Infernux.lib import vec4f
-            field_type = FieldType.VEC4
-            current = vec4f(float(value[0]), float(value[1]), float(value[2]), float(value[3]))
-    if field_type is None:
-        return None, value
-    metadata = SimpleNamespace(
-        field_type=field_type,
-        readonly=False,
-        range=None,
-        slider=False,
-        drag_speed=None,
-        multiline=False,
-        enum_type=None,
-        enum_labels=None,
-        tooltip="",
-    )
-    return metadata, current
+            current_value = VALUE_CODECS.decode(raw_value, prop.metadata, schema.property_path)
+        result.append((serialized_name, schema, prop.metadata, current_value))
+    return result
 
 
 def _json_value_from_batch(metadata, new_value):
     from Infernux.components.fields import FieldType
+    from Infernux.components.value_codec import VALUE_CODECS
+    if metadata.field_type is FieldType.ENUM:
+        return int(new_value)
     if metadata.field_type in (FieldType.VEC2, FieldType.VEC3, FieldType.VEC4):
-        count = 2 if metadata.field_type == FieldType.VEC2 else 3 if metadata.field_type == FieldType.VEC3 else 4
-        return [float(new_value[i]) for i in range(count)]
-    return new_value
+        return VALUE_CODECS.encode(new_value)
+    if metadata.field_type is FieldType.COLOR:
+        return VALUE_CODECS.encode(new_value)
+    return VALUE_CODECS.encode(new_value)
 
 
 def _apply_multi_json_change(comps, key, metadata, new_value):
@@ -985,25 +1066,36 @@ def render_multi_component(ctx: InxGUIContext, comps, *, is_native: bool):
         _render_multi_rows(ctx, rows)
         return
 
-    ignore_keys = {"type", "enabled", "component_id"}
     serialized = []
     for comp in comps:
         try:
             serialized.append(comp.serialize_document())
         except Exception:
             serialized.append({})
-    common_keys = [k for k in serialized[0].keys() if k not in ignore_keys]
-    for data in serialized[1:]:
-        common_keys = [k for k in common_keys if k in data and k not in ignore_keys]
+    declared = _declared_native_fields(comps[0])
+    common_keys = [name for name, _schema, _metadata, _value in declared]
+    declared_by_name = {
+        name: (schema, metadata) for name, schema, metadata, _value in declared
+    }
+    for data in serialized:
+        common_keys = [key for key in common_keys if key in data]
     labels = [pretty_field_name(key) for key in common_keys]
     lw = max_label_w(ctx, labels) if labels else 0.0
     descriptors = []
     rows = []
     for key in common_keys:
-        values = [data.get(key) for data in serialized]
+        schema, metadata = declared_by_name[key]
+        values = []
+        for data in serialized:
+            raw_value = data[key]
+            if metadata.field_type.name == "ENUM":
+                values.append(metadata.enum_type(int(raw_value)))
+            else:
+                from Infernux.components.value_codec import VALUE_CODECS
+                values.append(VALUE_CODECS.decode(raw_value, metadata, schema.property_path))
         mixed = not _all_multi_values_equal(values)
-        metadata, current_value = _metadata_for_json_value(values[0])
-        if metadata is None:
+        current_value = values[0]
+        if schema.read_only:
             display = _format_multi_value(values[0]) if not mixed else "--"
             rows.append((pretty_field_name(key), display))
             continue
@@ -1198,61 +1290,24 @@ def _apply_batch_changes_py(py_comp, changes: dict, batch_info: list):
 
 
 def render_cpp_component_generic(ctx: InxGUIContext, comp):
-    """Render generic fields for a native component document."""
+    """Render only fields declared by the native semantic catalog."""
     original_document = comp.serialize_document()
     data = dict(original_document)
-
-    ignore_keys = {"type", "enabled", "component_id"}
     changed = False
-
-    visible_keys = [k for k in data if k not in ignore_keys]
-    lw = max_label_w(ctx, [pretty_field_name(k) for k in visible_keys]) if visible_keys else 0.0
-
-    for key, value in data.items():
-        if key in ignore_keys:
+    declared = _declared_native_fields(comp)
+    if not declared:
+        ctx.label("No declared editable fields")
+        return
+    lw = max_label_w(ctx, [pretty_field_name(name) for name, *_rest in declared])
+    for key, schema, metadata, value in declared:
+        if schema.read_only:
+            ctx.label(f"{pretty_field_name(key)}: {_format_multi_value(value)}")
             continue
-
-        new_value = value
-        if isinstance(value, bool):
-            new_value = render_inspector_checkbox(ctx, pretty_field_name(key), bool(value))
-        elif isinstance(value, int):
-            field_label(ctx, pretty_field_name(key), lw)
-            new_value = int(ctx.drag_int(f"##{key}", int(value), DRAG_SPEED_INT, -1000000, 1000000))
-        elif isinstance(value, float):
-            field_label(ctx, pretty_field_name(key), lw)
-            new_value = float(ctx.drag_float(f"##{key}", float(value), DRAG_SPEED_DEFAULT, -1e6, 1e6))
-        elif isinstance(value, str):
-            field_label(ctx, pretty_field_name(key), lw)
-            new_value = ctx.text_input(f"##{key}", value, 256)
-        elif isinstance(value, list):
-            if len(value) == 2 and all(isinstance(v, (int, float)) for v in value):
-                nx, ny = ctx.vector2(pretty_field_name(key), float(value[0]), float(value[1]), DRAG_SPEED_DEFAULT, lw)
-                new_value = [nx, ny]
-            elif len(value) == 3 and all(isinstance(v, (int, float)) for v in value):
-                nx, ny, nz = ctx.vector3(pretty_field_name(key), float(value[0]), float(value[1]), float(value[2]), DRAG_SPEED_DEFAULT, lw)
-                new_value = [nx, ny, nz]
-            elif len(value) == 4 and all(isinstance(v, (int, float)) for v in value):
-                nx, ny, nz, nw = ctx.vector4(pretty_field_name(key), float(value[0]), float(value[1]), float(value[2]), float(value[3]), DRAG_SPEED_DEFAULT, lw)
-                new_value = [nx, ny, nz, nw]
-            else:
-                ctx.label(f"{pretty_field_name(key)}: {value}")
-        else:
-            ctx.label(f"{key}: {value}")
-
-        # Detect change — use tolerance for floats to avoid phantom edits
-        if isinstance(value, float) and isinstance(new_value, float):
-            value_changed = not _float_close(new_value, value)
-        elif isinstance(value, list) and isinstance(new_value, list):
-            value_changed = any(
-                not _float_close(float(a), float(b))
-                for a, b in zip(new_value, value)
-                if isinstance(a, (int, float)) and isinstance(b, (int, float))
-            ) or (len(new_value) != len(value))
-        else:
-            value_changed = (new_value != value)
-
-        if value_changed:
-            data[key] = new_value
+        new_value = render_serialized_field(
+            ctx, f"##{key}", pretty_field_name(key), metadata, value, lw
+        )
+        if has_field_changed(metadata.field_type, value, new_value):
+            data[key] = _json_value_from_batch(metadata, new_value)
             changed = True
 
     if changed:

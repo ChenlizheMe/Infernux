@@ -335,6 +335,7 @@ class PreloadManager:
     def _refresh_declaration_catalog(self) -> None:
         declarations: dict[str, tuple[_ClassDeclaration, ...]] = {}
         stamps: dict[str, tuple[int, int]] = {}
+        package_files = self._package_file_records() if self.runtime else {}
         for path in self._source_paths():
             key = path_key(path)
             try:
@@ -343,7 +344,10 @@ class PreloadManager:
                 if self._declaration_stamps.get(key) == stamp:
                     declarations[key] = self._declarations_by_path.get(key, ())
                     continue
-                declarations[key] = self._read_path_declarations(path)
+                # _source_paths already applies the filesystem role rules.
+                declarations[key] = self._read_path_declarations(
+                    path, package_files=package_files, role_checked=True
+                )
                 self.failures.pop(key, None)
             except (OSError, SyntaxError, ValueError) as exc:
                 declarations[key] = ()
@@ -359,8 +363,8 @@ class PreloadManager:
             for declaration in values
         ]
 
-    def _package_file_record(self, path: str) -> Mapping[str, object] | None:
-        target = path_key(path)
+    def _package_file_records(self) -> dict[str, Mapping[str, object]]:
+        records: dict[str, Mapping[str, object]] = {}
         for package in self.registry.installed():
             for item in package.get("files", []):
                 if not isinstance(item, Mapping):
@@ -370,25 +374,31 @@ class PreloadManager:
                     if not hint:
                         continue
                     candidate = os.path.join(self.project_root, *hint.split("/"))
-                    if path_key(candidate) == target:
-                        return item
-        return None
+                    records.setdefault(path_key(candidate), item)
+        return records
 
-    def _read_path_declarations(self, path: str) -> tuple[_ClassDeclaration, ...]:
+    def _read_path_declarations(
+        self, path: str, *, package_files: Mapping[str, Mapping[str, object]] | None = None,
+        role_checked: bool = False,
+    ) -> tuple[_ClassDeclaration, ...]:
         reference = self._package_for_path(path)
         owner = self.registry.installed_record(reference) if reference else None
         if owner is not None and not bool(owner.get("enabled", True)):
             return ()
-        if self.runtime and _is_editor_source(path, self.project_root, owner):
+        if self.runtime and not role_checked and _is_editor_source(path, self.project_root, owner):
             return ()
         if not path.casefold().endswith(".pyc"):
             return _read_declarations(path, self.project_root)
-        record = self._package_file_record(path)
+        if package_files is None:
+            package_files = self._package_file_records()
+        record = package_files.get(path_key(path))
         raw_declarations = (
             record.get("preload_declarations", []) if record is not None else []
         )
         if not isinstance(raw_declarations, list):
             raise ValueError("Compiled preload declarations must be a list")
+        if not raw_declarations:
+            return ()
         module = _module_name(path, self.project_root)
         declarations: list[_ClassDeclaration] = []
         for raw in raw_declarations:
@@ -682,7 +692,7 @@ class PreloadManager:
         return ranks
 
     def _load_path(self, path: str, expected_classes: set[str]) -> list[PreloadState]:
-        record = self._package_file_record(path)
+        record = self._package_file_records().get(path_key(path))
         script_guid = (
             str(record.get("guid", "")).strip().casefold()
             if record is not None
@@ -779,6 +789,8 @@ class PreloadManager:
                 state.loaded = True
             except Exception as exc:
                 state.error = f"{type(exc).__name__}: {exc}"
+                from Infernux.engine.project_context import release_preload_python_libraries
+                release_preload_python_libraries(f"{self.project_root}:{identity}")
                 Debug.log_error(
                     f"InxPreload.preload failed [{path}:{preload_type.__qualname__}]: {exc}"
                 )
@@ -828,6 +840,8 @@ class PreloadManager:
                 return False
         state.instance = None
         state.loaded = False
+        from Infernux.engine.project_context import release_preload_python_libraries
+        release_preload_python_libraries(f"{self.project_root}:{state.identity}")
         if state.module_name:
             sys.modules.pop(state.module_name, None)
         module_names = set(state.module_names)

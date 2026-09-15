@@ -1,6 +1,7 @@
 #include "CaptureService.h"
 
 #include "vk/VkResourceManager.h"
+#include <core/types/ColorSpace.h>
 
 #include <algorithm>
 #include <chrono>
@@ -55,7 +56,7 @@ unsigned char DisplayFloatToUnorm8(float value)
     return static_cast<unsigned char>(std::clamp(value, 0.0F, 1.0F) * 255.0F + 0.5F);
 }
 
-std::vector<unsigned char> ConvertToRgba8(const vk::ImageReadbackTicket &ticket)
+std::vector<unsigned char> ConvertToRgba8(const vk::ImageReadbackTicket &ticket, bool linear)
 {
     if (ticket.GetChannelCount() != 4 || ticket.GetWidth() == 0 || ticket.GetHeight() == 0)
         throw std::runtime_error("Capture source must be a non-empty four-channel image");
@@ -64,11 +65,23 @@ std::vector<unsigned char> ConvertToRgba8(const vk::ImageReadbackTicket &ticket)
     const auto &raw = ticket.GetData();
     std::vector<unsigned char> pixels(pixelCount * 4U);
     const std::string &elementType = ticket.GetElementType();
+    const auto encode = [linear](float value) {
+        return DisplayFloatToUnorm8(linear ? inx::color::LinearToSrgb(value) : value);
+    };
 
     if (elementType == "uint8") {
         if (raw.size() != pixels.size())
             throw std::runtime_error("Capture readback byte size does not match RGBA8 dimensions");
         std::copy(raw.begin(), raw.end(), pixels.begin());
+        if (ticket.IsBgra()) {
+            for (size_t i = 0; i < pixelCount; ++i)
+                std::swap(pixels[i * 4U + 0U], pixels[i * 4U + 2U]);
+        }
+        if (linear) {
+            for (size_t i = 0; i < pixelCount; ++i)
+                for (size_t channel = 0; channel < 3; ++channel)
+                    pixels[i * 4U + channel] = encode(pixels[i * 4U + channel] / 255.0f);
+        }
         return pixels;
     }
 
@@ -77,9 +90,9 @@ std::vector<unsigned char> ConvertToRgba8(const vk::ImageReadbackTicket &ticket)
             throw std::runtime_error("Capture readback byte size does not match RGBA16F dimensions");
         const auto *source = reinterpret_cast<const uint16_t *>(raw.data());
         for (size_t i = 0; i < pixelCount; ++i) {
-            pixels[i * 4U + 0U] = DisplayFloatToUnorm8(HalfToFloat(source[i * 4U + 0U]));
-            pixels[i * 4U + 1U] = DisplayFloatToUnorm8(HalfToFloat(source[i * 4U + 1U]));
-            pixels[i * 4U + 2U] = DisplayFloatToUnorm8(HalfToFloat(source[i * 4U + 2U]));
+            pixels[i * 4U + 0U] = encode(HalfToFloat(source[i * 4U + 0U]));
+            pixels[i * 4U + 1U] = encode(HalfToFloat(source[i * 4U + 1U]));
+            pixels[i * 4U + 2U] = encode(HalfToFloat(source[i * 4U + 2U]));
             pixels[i * 4U + 3U] =
                 static_cast<unsigned char>(std::clamp(HalfToFloat(source[i * 4U + 3U]), 0.0F, 1.0F) * 255.0F + 0.5F);
         }
@@ -91,9 +104,9 @@ std::vector<unsigned char> ConvertToRgba8(const vk::ImageReadbackTicket &ticket)
             throw std::runtime_error("Capture readback byte size does not match RGBA32F dimensions");
         const auto *source = reinterpret_cast<const float *>(raw.data());
         for (size_t i = 0; i < pixelCount; ++i) {
-            pixels[i * 4U + 0U] = DisplayFloatToUnorm8(source[i * 4U + 0U]);
-            pixels[i * 4U + 1U] = DisplayFloatToUnorm8(source[i * 4U + 1U]);
-            pixels[i * 4U + 2U] = DisplayFloatToUnorm8(source[i * 4U + 2U]);
+            pixels[i * 4U + 0U] = encode(source[i * 4U + 0U]);
+            pixels[i * 4U + 1U] = encode(source[i * 4U + 1U]);
+            pixels[i * 4U + 2U] = encode(source[i * 4U + 2U]);
             pixels[i * 4U + 3U] =
                 static_cast<unsigned char>(std::clamp(source[i * 4U + 3U], 0.0F, 1.0F) * 255.0F + 0.5F);
         }
@@ -110,10 +123,11 @@ void AppendPngBytes(void *context, void *data, int size)
     bytes.insert(bytes.end(), begin, begin + size);
 }
 
-EncodeResult EncodePng(const std::shared_ptr<vk::ImageReadbackTicket> &ticket, const std::string &outputPath)
+EncodeResult EncodePng(const std::shared_ptr<vk::ImageReadbackTicket> &ticket, const std::string &outputPath,
+                       bool linear)
 {
     try {
-        const auto pixels = ConvertToRgba8(*ticket);
+        const auto pixels = ConvertToRgba8(*ticket, linear);
         std::vector<unsigned char> encoded;
         if (stbi_write_png_to_func(AppendPngBytes, &encoded, static_cast<int>(ticket->GetWidth()),
                                    static_cast<int>(ticket->GetHeight()), 4, pixels.data(),
@@ -160,7 +174,17 @@ struct CaptureService::Impl
 
 const char *CaptureSourceName(CaptureSource source) noexcept
 {
-    return source == CaptureSource::Scene ? "scene" : "game";
+    switch (source) {
+    case CaptureSource::Scene:
+        return "scene";
+    case CaptureSource::Game:
+        return "game";
+    case CaptureSource::Editor:
+        return "editor";
+    case CaptureSource::Camera:
+        return "camera";
+    }
+    return "game";
 }
 
 const char *CaptureStatusName(CaptureStatus status) noexcept
@@ -313,7 +337,10 @@ void CaptureService::Poll()
                 record.snapshot.status = CaptureStatus::PendingEncode;
                 const auto ticket = record.ticket;
                 const auto path = record.snapshot.outputPath;
-                record.encoder = std::async(std::launch::async, [ticket, path]() { return EncodePng(ticket, path); });
+                const bool linear = record.snapshot.source == CaptureSource::Camera &&
+                                    !rhi::IsSrgbFormat(record.snapshot.view.colorFormat);
+                record.encoder = std::async(std::launch::async,
+                                            [ticket, path, linear]() { return EncodePng(ticket, path, linear); });
             } else if (status == vk::ImageReadbackStatus::Cancelled) {
                 record.snapshot.status = CaptureStatus::Cancelled;
             } else {

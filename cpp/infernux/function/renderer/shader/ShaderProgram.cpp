@@ -514,7 +514,7 @@ bool ShaderProgram::CreateDescriptorSetLayouts()
 
         std::vector<VkDescriptorBindingFlags> bindingFlags;
         VkDescriptorSetLayoutBindingFlagsCreateInfo bindingFlagsInfo{};
-        if (enableUpdateAfterBind && setIndex == 0) {
+        if (enableUpdateAfterBind && setIndex == MaterialDescriptorSet) {
             bindingFlags.assign(bindings.size(), VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT |
                                                      VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT);
             bindingFlagsInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
@@ -545,7 +545,7 @@ bool ShaderProgram::CreateDescriptorSetLayouts()
             INXLOG_ERROR("Failed to create empty descriptor set layout");
             return false;
         }
-        m_descriptorSetLayouts[0] = layout;
+        m_descriptorSetLayouts[MaterialDescriptorSet] = layout;
     }
 
     return true;
@@ -554,10 +554,10 @@ bool ShaderProgram::CreateDescriptorSetLayouts()
 bool ShaderProgram::CreatePipelineLayout()
 {
     if (m_variantKey.target != ShaderCompileTarget::Shadow && s_perViewDescSetLayout != VK_NULL_HANDLE) {
-        auto it = m_descriptorSetLayouts.find(1);
+        auto it = m_descriptorSetLayouts.find(ViewDescriptorSet);
         if (it != m_descriptorSetLayouts.end() && it->second != s_perViewDescSetLayout)
             vkDestroyDescriptorSetLayout(m_device, it->second, nullptr);
-        m_descriptorSetLayouts[1] = s_perViewDescSetLayout;
+        m_descriptorSetLayouts[ViewDescriptorSet] = s_perViewDescSetLayout;
     }
 
     // If a globals descriptor set layout was registered, ensure set 2 exists
@@ -565,11 +565,11 @@ bool ShaderProgram::CreatePipelineLayout()
     // canonical engine layout so descriptor set compatibility is guaranteed.
     if (m_variantKey.target != ShaderCompileTarget::Shadow && s_globalsDescSetLayout != VK_NULL_HANDLE) {
         // If reflection already created a set 2, destroy it — we use the shared one
-        auto it = m_descriptorSetLayouts.find(2);
+        auto it = m_descriptorSetLayouts.find(EngineDescriptorSet);
         if (it != m_descriptorSetLayouts.end() && it->second != s_globalsDescSetLayout) {
             vkDestroyDescriptorSetLayout(m_device, it->second, nullptr);
         }
-        m_descriptorSetLayouts[2] = s_globalsDescSetLayout;
+        m_descriptorSetLayouts[EngineDescriptorSet] = s_globalsDescSetLayout;
     }
 
     if (m_usesBindlessTextureABI) {

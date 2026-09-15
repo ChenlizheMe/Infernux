@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from Infernux.engine.interaction import (
     DocumentActionResult,
     DocumentActionStatus,
@@ -251,7 +253,8 @@ def test_non_scene_conflict_never_opens_the_external_change_dialog():
     assert service.active is None
 
 
-def test_stale_conflict_revision_cannot_resolve_a_new_external_change(tmp_path):
+@pytest.mark.parametrize("choice", ["keep_local", "reload", "save_copy"])
+def test_stale_conflict_revision_cannot_resolve_a_new_external_change(tmp_path, choice):
     registry = DocumentRegistry()
     path = tmp_path / "Smoke.particlegraph"
     path.write_text("baseline", encoding="utf-8")
@@ -266,10 +269,74 @@ def test_stale_conflict_revision_cannot_resolve_a_new_external_change(tmp_path):
 
     path.write_text("external-change", encoding="utf-8")
     registry.publish_external_resource_change(document.resource_path)
-    result = service.keep_local(conflict.conflict_id)
+    result = getattr(service, choice)(conflict.conflict_id)
 
     assert result.status is DocumentActionStatus.REJECTED
     assert document.state is DocumentState.CONFLICT
+    assert service.error == result.message
+    assert service.active.external_revision == document.external_revision
+    assert service.active.conflict_id != conflict.conflict_id
+    assert _controller.reload_calls == 0
+    assert _controller.pending_save is None
+    assert service.keep_local(service.active.conflict_id).accepted
+    assert document.state is DocumentState.READY
+    assert document.is_dirty
+
+
+@pytest.mark.parametrize("status", [DocumentActionStatus.FAILED, DocumentActionStatus.REJECTED])
+def test_failed_save_copy_releases_ticket_and_keep_local_remains_available(status):
+    registry = DocumentRegistry()
+    document, controller = _conflicted_document(registry)
+    service = ExternalDocumentConflictService(registry)
+    service.poll()
+    controller.save = lambda **_kwargs: DocumentActionResult(
+        status, "save did not complete"
+    )
+
+    result = service.save_copy(service.active.conflict_id)
+
+    assert result.status is status
+    assert service.error == "save did not complete"
+    assert registry.active_save_ticket(document.document_id) is None
+    assert document.state is DocumentState.CONFLICT
+    assert service.keep_local(service.active.conflict_id).accepted
+    assert document.is_dirty
+
+
+@pytest.mark.parametrize("cancelled", [False, True])
+def test_pending_save_copy_failure_preserves_original_conflict(cancelled):
+    registry = DocumentRegistry()
+    document, controller = _conflicted_document(registry)
+    service = ExternalDocumentConflictService(registry)
+    service.poll()
+    assert service.save_copy(service.active.conflict_id).status is DocumentActionStatus.PENDING
+    registry.complete_save(controller.pending_save.ticket_id, success=False, cancelled=cancelled)
+    controller.pending_save = None
+
+    service.poll()
+
+    assert registry.active_save_ticket(document.document_id) is None
+    assert document.state is DocumentState.CONFLICT
+    assert service.is_active
+    assert service.error == "save_copy_failed"
+    assert service.keep_local(service.active.conflict_id).accepted
+
+
+def test_save_copy_exception_releases_ticket_and_preserves_conflict():
+    registry = DocumentRegistry()
+    document, controller = _conflicted_document(registry)
+    service = ExternalDocumentConflictService(registry)
+    service.poll()
+
+    def fail(**_kwargs):
+        raise OSError("disk is full")
+
+    controller.save = fail
+    assert service.save_copy(service.active.conflict_id).status is DocumentActionStatus.FAILED
+    assert registry.active_save_ticket(document.document_id) is None
+    assert document.state is DocumentState.CONFLICT
+    assert service.error == "disk is full"
+    assert service.keep_local(service.active.conflict_id).accepted
 
 
 class _ConflictModalContext:

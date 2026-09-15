@@ -1250,6 +1250,11 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
                 result << "layout(set = 0, binding = " << binding << ") uniform sampler2D " << resource.name << ";\n";
             else if (resource.type == "Texture2DUInt")
                 result << "layout(set = 0, binding = " << binding << ") uniform usampler2D " << resource.name << ";\n";
+            else if (resource.type == "Texture2DMS")
+                result << "layout(set = 0, binding = " << binding << ") uniform sampler2DMS " << resource.name << ";\n";
+            else if (resource.type == "Texture2DMSUInt")
+                result << "layout(set = 0, binding = " << binding << ") uniform usampler2DMS " << resource.name
+                       << ";\n";
         }
     }
 

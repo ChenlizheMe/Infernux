@@ -9,14 +9,16 @@ namespace infernux
 /**
  * @brief AudioListener component — represents the "ears" in the scene.
  *
- * Only one AudioListener should be active at a time (typically on the
- * main camera).  The listener's Transform position is used for 3D
+ * Only one AudioListener is active in the shared World at a time (typically
+ * on the main camera). The listener's
+ * Transform position is used for 3D
  * spatialization of all AudioSources.
  *
  * Unity API alignment:
  * - AudioListener is a component attached to a GameObject
- * - Only one active listener per scene
- * - Position/orientation from the Transform drives 3D audio
+ * - Only one active listener across all resident scenes in the World
+ * - Position/orientation from the Transform
+ * drives 3D audio
  *
  * Wwise extensibility:
  * - gameObjectId() → owning GameObject ID for Wwise listener registration

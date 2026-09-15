@@ -15,6 +15,8 @@ from enum import Enum
 from pathlib import Path, PurePosixPath
 from typing import Callable
 
+from packaging.version import Version
+
 from hub_utils import get_app_dir, is_frozen
 from hub_release import (
     MANIFEST_SCHEMA,
@@ -28,6 +30,9 @@ from style import StyleManager
 
 
 HUB_CATALOG_URL = "https://infernux-engine.com/hub-catalog.json"
+HUB_CATALOG_FALLBACK_URL = (
+    "https://raw.githubusercontent.com/ChenlizheMe/Infernux/master/docs/hub-catalog.json"
+)
 HUB_CATALOG_SCHEMA = "infernux.hub_catalog"
 _VERSION_PATTERN = re.compile(r"^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$")
 
@@ -64,9 +69,12 @@ class HubUpdateCheck:
     detail: str = ""
 
 
-def _version_key(value: str) -> tuple[int, int, int]:
-    match = re.match(r"^(\d+)\.(\d+)\.(\d+)", value)
-    return tuple(map(int, match.groups())) if match else (0, 0, 0)
+def _version_key(value: str) -> Version:
+    if not _VERSION_PATTERN.fullmatch(value):
+        raise ValueError(f"Invalid Infernux Hub version: {value!r}")
+    # Build metadata identifies packaging, not a newer application release.
+    # Published Hub changes must increment project.version.
+    return Version(value.split("+", 1)[0])
 
 
 def current_hub_version() -> str:
@@ -86,29 +94,29 @@ def current_hub_version() -> str:
         if len(version_lines) != 1:
             raise ValueError("pyproject.toml must declare exactly one Hub version")
         version = version_lines[0]
-    if not _VERSION_PATTERN.fullmatch(version):
-        raise ValueError(f"Invalid Infernux Hub version: {version!r}")
+    _version_key(version)
     return version
 
 
 def _request_bytes(url: str, fallback_url: str = "") -> bytes:
-    for candidate in (url, fallback_url):
-        if not candidate:
-            continue
+    candidates = tuple(dict.fromkeys(value for value in (url, fallback_url) if value))
+    if not candidates:
+        raise OSError("No Hub download URL was provided")
+    for index, candidate in enumerate(candidates):
         request = urllib.request.Request(
             candidate,
             headers={
                 "Accept": "application/json",
                 "User-Agent": "InfernuxHub-Updater",
+                "Cache-Control": "no-cache",
             },
         )
         try:
             with urllib.request.urlopen(request, timeout=15) as response:
                 return response.read()
         except OSError:
-            if candidate == fallback_url:
+            if index == len(candidates) - 1:
                 raise
-    raise OSError("No Hub download URL was provided")
 
 
 def _catalog_release(document: object) -> dict[str, object]:
@@ -155,6 +163,8 @@ def _catalog_release(document: object) -> dict[str, object]:
         or not isinstance(release["platforms"], dict)
     ):
         raise ValueError("Stable Hub release platforms must be an object")
+    _version_key(stable)
+    _version_key(release["minimum_updatable_version"])
     return release
 
 
@@ -164,8 +174,11 @@ def check_for_update(
     platform_id: str | None = None,
 ) -> HubUpdateCheck:
     current = current_version or current_hub_version()
+    current_key = _version_key(current)
     try:
-        catalog_bytes = _request_bytes(HUB_CATALOG_URL)
+        # These are two transports of the same published catalog. A malformed
+        # or current catalog is authoritative; only network failure tries its mirror.
+        catalog_bytes = _request_bytes(HUB_CATALOG_URL, HUB_CATALOG_FALLBACK_URL)
     except OSError as exc:
         return HubUpdateCheck(
             HubUpdateStatus.NETWORK_UNAVAILABLE,
@@ -182,8 +195,11 @@ def check_for_update(
         )
     target = str(release["version"])
     if release["published_at"] is None:
-        return HubUpdateCheck(HubUpdateStatus.UP_TO_DATE, current)
-    if _version_key(target) <= _version_key(current):
+        return HubUpdateCheck(
+            HubUpdateStatus.CATALOG_INVALID, current, target,
+            detail=f"Stable Hub release {target} is not published",
+        )
+    if _version_key(target) <= current_key:
         return HubUpdateCheck(HubUpdateStatus.UP_TO_DATE, current, target)
     target_platform = platform_id or host_platform_id()
     platform_release = release["platforms"].get(target_platform)
@@ -208,7 +224,7 @@ def check_for_update(
     installer_asset = platform_release["installer"]
     if (
         not isinstance(installer_asset, dict)
-        or set(installer_asset) != {"name", "url", "fallback_url"}
+        or set(installer_asset) - {"fallback_url"} != {"name", "url"}
         or not isinstance(installer_asset.get("url"), str)
         or not installer_asset["url"]
     ):
@@ -219,7 +235,7 @@ def check_for_update(
             detail=f"Hub release catalog has an invalid {target_platform} installer",
         )
     minimum = str(release["minimum_updatable_version"])
-    if _version_key(current) < _version_key(minimum):
+    if current_key < _version_key(minimum):
         return HubUpdateCheck(
             HubUpdateStatus.UNSUPPORTED_CURRENT_VERSION,
             current,
@@ -232,14 +248,14 @@ def check_for_update(
     if (
         installer_asset.get("name") != installer_name
         or not isinstance(update_asset, dict)
-        or set(update_asset) != {"name", "url", "fallback_url", "size"}
+        or set(update_asset) - {"fallback_url"} != {"name", "url", "size"}
         or update_asset.get("name") != full_name
         or not isinstance(update_asset.get("url"), str)
         or not update_asset["url"]
         or not isinstance(update_asset.get("size"), int)
         or update_asset["size"] <= 0
         or not isinstance(manifest_asset, dict)
-        or set(manifest_asset) != {"name", "url", "fallback_url"}
+        or set(manifest_asset) - {"fallback_url"} != {"name", "url"}
         or manifest_asset.get("name") != manifest_name
         or not isinstance(manifest_asset.get("url"), str)
         or not manifest_asset["url"]
@@ -256,10 +272,10 @@ def check_for_update(
         release_url=str(release["release_url"]),
         asset_name=full_name,
         asset_url=update_asset["url"],
-        asset_fallback_url=update_asset["fallback_url"],
+        asset_fallback_url=update_asset.get("fallback_url", ""),
         size=update_asset["size"],
         manifest_url=manifest_asset["url"],
-        manifest_fallback_url=manifest_asset["fallback_url"],
+        manifest_fallback_url=manifest_asset.get("fallback_url", ""),
         platform=target_platform,
     )
     return HubUpdateCheck(
@@ -286,12 +302,13 @@ def _download(
     progress: Callable[[int, int], None] | None = None,
 ) -> None:
     received = 0
-    for url in (update.asset_url, update.asset_fallback_url):
-        if not url:
-            continue
+    urls = tuple(dict.fromkeys(url for url in (update.asset_url, update.asset_fallback_url) if url))
+    if not urls:
+        raise OSError("No Hub download URL was provided")
+    for index, url in enumerate(urls):
         request = urllib.request.Request(url, headers={"User-Agent": "InfernuxHub-Updater"})
         try:
-            with urllib.request.urlopen(request) as response, destination.open("wb") as stream:
+            with urllib.request.urlopen(request, timeout=60) as response, destination.open("wb") as stream:
                 total = int(response.headers.get("Content-Length", update.size or 0))
                 while True:
                     chunk = response.read(1024 * 512)
@@ -305,7 +322,7 @@ def _download(
         except OSError:
             destination.unlink(missing_ok=True)
             received = 0
-            if url == update.asset_fallback_url:
+            if index == len(urls) - 1:
                 raise
     if update.size and received != update.size:
         destination.unlink(missing_ok=True)

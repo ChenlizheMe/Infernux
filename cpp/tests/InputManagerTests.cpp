@@ -50,6 +50,20 @@ int main()
     auto &input = InputManager::Instance();
     input.ResetAll();
 
+    input.SetCursorVisible(false);
+    assert(!input.IsCursorVisible());
+    input.SetCursorConfined(true);
+    assert(input.IsCursorConfined());
+    input.SetCursorLocked(true);
+    assert(input.IsCursorLocked());
+    input.SetCursorLocked(false);
+    input.SetCursorConfined(false);
+    input.SetCursorVisible(true);
+    assert(!input.IsCursorLocked());
+    assert(!input.IsCursorConfined());
+    assert(input.IsCursorVisible());
+    assert(!input.WarpCursor(10.0f, 20.0f));
+
     const uint64_t previousFrame = input.GetFrameIndex();
     input.BeginFrame();
     assert(input.GetFrameIndex() == previousFrame + 1);

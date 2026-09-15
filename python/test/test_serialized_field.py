@@ -361,14 +361,9 @@ class TestAnnotationOnlyDeclarations:
 
 class TestStrictSerializationFailures:
     def test_unsupported_field_value_raises_with_field_path(self):
-        class UnsupportedField(InxComponent):
-            payload = serialized_field(default=None, field_type=FieldType.UNKNOWN)
-
-        component = UnsupportedField()
-        component.payload = object()
-
-        with pytest.raises(TypeError, match=r"UnsupportedField\.payload"):
-            component._serialize_fields()
+        with pytest.raises(ValueError, match=r"UnsupportedField\.payload.*UNKNOWN"):
+            class UnsupportedField(InxComponent):
+                payload = serialized_field(default=None, field_type=FieldType.UNKNOWN)
 
     def test_non_finite_vector_falls_back_to_field_default(self):
         from Infernux.math import Vector3

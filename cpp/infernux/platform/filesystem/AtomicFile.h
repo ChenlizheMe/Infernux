@@ -32,6 +32,16 @@ struct AtomicWriteOptions
 /// are represented explicitly; inspection failures throw with path context.
 AtomicFileState CaptureAtomicFileState(const std::string &path);
 
+struct AtomicTextFileSnapshot
+{
+    std::string content;
+    AtomicFileState state;
+};
+
+/// Read once and retain the conditional-write identity of those exact bytes.
+/// Parsing/publishing consumers must not replace it with a later disk capture.
+AtomicTextFileSnapshot ReadTextFileSnapshot(const std::string &path);
+
 /// Write UTF-8 text through a unique same-directory temporary file and atomically replace the target.
 /// When createBackup is enabled and the target exists, the previous complete target is first
 /// durably published as `<target>.bak`.

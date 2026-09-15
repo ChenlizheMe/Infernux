@@ -14,10 +14,34 @@ from Infernux.components.script_loader import (
 )
 import Infernux.components.script_loader as script_loader
 from Infernux.components import InxComponent
+from Infernux.components.fields import get_serialized_fields
 from Infernux.components.component_identity import bind_asset_script_guid
 from Infernux.components.registry import get_type, get_type_by_identity
 from Infernux.engine.component_restore import create_component_instance
 from Infernux.engine.project_context import get_project_root, set_project_root
+
+
+def test_module_retirement_preserves_schema_for_surviving_data_asset():
+    module_name = "retired_data_asset_schema_probe"
+    module = types.ModuleType(module_name)
+    module.__file__ = __file__
+    exec(
+        "from Infernux import DataAsset, serialized_field\n"
+        "class RetiredConfig(DataAsset):\n"
+        "    __serialized_type_id__ = 'test.retired_data_asset_schema_probe'\n"
+        "    speed = serialized_field(7.5)\n",
+        module.__dict__,
+    )
+    sys.modules[module_name] = module
+    asset_type = module.RetiredConfig
+    asset = asset_type()
+    try:
+        script_loader._clear_loaded_script_modules([module_name])
+
+        assert tuple(get_serialized_fields(asset_type)) == ("speed",)
+        assert asset.serialize_document()["fields"] == {"speed": 7.5}
+    finally:
+        sys.modules.pop(module_name, None)
 
 
 def test_script_loader_falls_back_to_sole_class_after_rename(tmp_path):

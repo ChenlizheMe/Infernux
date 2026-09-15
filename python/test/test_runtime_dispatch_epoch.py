@@ -212,7 +212,7 @@ def test_direct_lifecycle_entry_requires_a_published_epoch_descriptor():
         probe._call_fixed_update(0.1)
         probe._call_late_update(0.1)
         descriptor = current_runtime_epoch().require_descriptor(DirectEntryProbe)
-        assert len(descriptor.phase_invokers) == 3
+        assert len(descriptor.phase_invokers) == 5
         assert probe.calls == ["update", "fixed", "late"]
         assert "_runtime_phase_dispatch" not in DirectEntryProbe.__dict__
         assert "_runtime_phase_invokers" not in DirectEntryProbe.__dict__

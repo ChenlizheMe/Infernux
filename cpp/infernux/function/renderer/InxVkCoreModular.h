@@ -45,8 +45,10 @@
 #include "VkShaderCache.h"
 #include "VkTextureCache.h"
 #include "rhi/GpuRetirementQueue.h"
+#include "rhi/RhiComputeBuffer.h"
 #include "vk/VkCore.h"
 #include "vk/VulkanBindlessTextureTable.h"
+#include "vk/VulkanComputeQueue.h"
 #include "vk/VulkanFrameSubmission.h"
 #include "vk/VulkanSubmissionExecutor.h"
 #if INFERNUX_FRAME_PROFILE
@@ -84,6 +86,9 @@ struct FrameSubmissionTelemetry
     uint32_t transferBatchCount = 0;
     uint32_t crossQueueDependencyCount = 0;
     uint32_t unorderedComputeGraphicsPairCount = 0;
+    uint64_t residentComputeWriteSerial = 0;
+    uint64_t latestBackgroundComputeSerial = 0;
+    bool residentComputeWaitPending = false;
 };
 
 class AssetLoadTicket;
@@ -247,6 +252,9 @@ class InxVkCoreModular
      */
     void InvalidateTextureCache(const std::string &textureIdentifier);
 
+    /// Retire every resident generation of one Mesh asset identity.
+    void InvalidateMeshCache(const std::string &meshGuid);
+
     /**
      * @brief Remove pipeline render data for a specific material
      *
@@ -298,7 +306,8 @@ class InxVkCoreModular
                            const glm::mat4 &viewMatrix, int queueMin, int queueMax, const std::string &sortMode = "",
                            const std::string &overrideMaterial = "", const std::string &passTag = "",
                            const MaterialPassPipelineDescriptor *pipelineDescriptor = nullptr,
-                           GraphMaterialFilter materialFilter = GraphMaterialFilter::All);
+                           GraphMaterialFilter materialFilter = GraphMaterialFilter::All,
+                           const RendererSelection *selection = nullptr);
 
     /**
      * @brief Draw shadow casters into a depth-only shadow map.
@@ -390,12 +399,21 @@ class InxVkCoreModular
 
     /// @brief Ensure a material has its own UBO buffer allocated (stub)
     void EnsureMaterialUBO(std::shared_ptr<InxMaterial> material);
+    void SetRenderTextureAssetLoader(std::function<std::shared_ptr<rhi::RenderTexture>(const std::string &)> loader)
+    {
+        m_renderTextureAssetLoader = std::move(loader);
+    }
+    void PrepareMaterialTextureAssets(const std::shared_ptr<InxMaterial> &material);
+    bool InvalidateMaterialTextureAssets(const std::string &owner, const std::string &guid, bool deleted);
 
     /// @brief Ensure per-object GPU buffers exist and match the given mesh data.
     /// Creates new buffers or recreates if vertex/index count changed.
     void EnsureObjectBuffers(uint64_t objectId, const std::vector<Vertex> &vertices,
                              const std::vector<uint32_t> &indices, bool forceUpdate, const std::string &assetGuid,
                              uint64_t runtimeVersion);
+    /// Replace only an object's vertex stream with canonical resident compute
+    /// storage. The ordinary mesh cache keeps topology/index ownership.
+    void BindObjectVertexBuffer(uint64_t objectId, const std::shared_ptr<rhi::ComputeBuffer> &buffer);
 
     /// @brief Advance the frame counter for EnsureObjectBuffers dedup.
     /// Call once per frame before any Render calls.
@@ -461,6 +479,10 @@ class InxVkCoreModular
     [[nodiscard]] uint64_t GetSubmittedMeshUploadCount() const noexcept
     {
         return m_submittedMeshUploadCount;
+    }
+    [[nodiscard]] size_t GetResidentMeshVertexBufferCount() const noexcept
+    {
+        return m_residentVertexBufferCount;
     }
     [[nodiscard]] uint64_t GetCompletedMeshUploadCount() const noexcept
     {
@@ -695,6 +717,10 @@ class InxVkCoreModular
         return m_backend.Device().GetCapabilities();
     }
 
+    /// Explicit preparation by runtime services (for example plugin preload).
+    /// CPU-only projects do not allocate background compute command pools.
+    [[nodiscard]] rhi::ComputeQueue &PrepareComputeQueue();
+
     [[nodiscard]] vk::VulkanBackendContext &GetBackendContext() noexcept
     {
         return m_backend;
@@ -823,6 +849,13 @@ class InxVkCoreModular
     {
         return m_backend.Presentation().GetExtent();
     }
+    [[nodiscard]] const rhi::RenderViewContext &GetPresentationViewContext() const noexcept
+    {
+        return m_presentationView;
+    }
+    void RequestPresentationReadback();
+    [[nodiscard]] std::shared_ptr<vk::ImageReadbackTicket> ConsumePresentationReadback();
+    [[nodiscard]] std::string ConsumePresentationReadbackError();
 
     // ========================================================================
     // Scene Render Target / Editor Integration
@@ -1080,6 +1113,7 @@ class InxVkCoreModular
     [[nodiscard]] bool EnsureGuiRenderGraph(uint32_t imageIndex);
     void DestroyGuiRenderGraphs();
     [[nodiscard]] bool RecordFrameCommands(VkCommandBuffer commandBuffer, uint32_t imageIndex);
+    [[nodiscard]] bool RecordPresentationReadback(VkCommandBuffer commandBuffer, uint32_t imageIndex);
 
     /// @brief Create a raw Vulkan buffer via VMA
     void CreateBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties, VkBuffer &buffer,
@@ -1097,6 +1131,7 @@ class InxVkCoreModular
     vk::RenderGraph m_renderGraph;
     vk::VulkanFrameSubmission m_frameSubmission;
     vk::VulkanSubmissionExecutor m_submissionExecutor;
+    vk::VulkanComputeQueue m_computeQueue;
     FrameSubmissionTelemetry m_frameSubmissionTelemetry;
     std::vector<std::unique_ptr<vk::RenderGraph>> m_additionalGuiRenderGraphs;
     std::vector<bool> m_guiRenderGraphReady;
@@ -1118,6 +1153,9 @@ class InxVkCoreModular
     uint32_t m_maxFramesInFlight;
     uint32_t m_currentFrame = 0;
     bool m_framebufferResized = false;
+    bool m_presentationReadbackRequested = false;
+    std::shared_ptr<vk::ImageReadbackTicket> m_presentationReadback;
+    std::string m_presentationReadbackError;
 
     // DrawFrame sub-timing accumulators
     // [0] Acquire  [1] Record(total)  [2] Submit  [3] Present
@@ -1294,6 +1332,9 @@ class InxVkCoreModular
     std::unordered_map<std::string, std::shared_ptr<AssetLoadTicket>> m_pendingTextureAssetLoads;
     std::unordered_map<std::string, std::shared_ptr<TextureUploadStagingTicket>> m_pendingTextureStagingLoads;
     std::unordered_map<std::string, PendingTextureGpuUpload> m_pendingTextureGpuUploads;
+    std::function<std::shared_ptr<rhi::RenderTexture>(const std::string &)> m_renderTextureAssetLoader;
+    std::unordered_map<std::string, std::weak_ptr<InxMaterial>> m_materialTextureOwners;
+    void CollectUnusedMaterialTextureOwners();
     uint64_t m_submittedTextureUploadCount = 0;
     uint64_t m_completedTextureUploadCount = 0;
     uint64_t m_asyncTextureUploadCount = 0;
@@ -1320,15 +1361,15 @@ class InxVkCoreModular
     struct SharedMeshKey
     {
         std::string assetGuid;
+        uint64_t dynamicObjectId = 0;
         uint64_t runtimeVersion = 0;
-        size_t contentHash = 0;
         size_t vertexCount = 0;
         size_t indexCount = 0;
 
         bool operator==(const SharedMeshKey &other) const noexcept
         {
-            return assetGuid == other.assetGuid && runtimeVersion == other.runtimeVersion &&
-                   contentHash == other.contentHash && vertexCount == other.vertexCount &&
+            return assetGuid == other.assetGuid && dynamicObjectId == other.dynamicObjectId &&
+                   runtimeVersion == other.runtimeVersion && vertexCount == other.vertexCount &&
                    indexCount == other.indexCount;
         }
     };
@@ -1338,35 +1379,16 @@ class InxVkCoreModular
         size_t operator()(const SharedMeshKey &key) const noexcept
         {
             size_t h = std::hash<std::string>{}(key.assetGuid);
+            h ^= std::hash<uint64_t>{}(key.dynamicObjectId) + 0x9e3779b9 + (h << 6) + (h >> 2);
             h ^= std::hash<uint64_t>{}(key.runtimeVersion) + 0x9e3779b9 + (h << 6) + (h >> 2);
-            h ^= key.contentHash + 0x9e3779b9 + (h << 6) + (h >> 2);
             h ^= std::hash<size_t>{}(key.vertexCount) + 0x9e3779b9 + (h << 6) + (h >> 2);
             h ^= std::hash<size_t>{}(key.indexCount) + 0x9e3779b9 + (h << 6) + (h >> 2);
             return h;
         }
     };
 
-    /// @brief FNV-1a content hash for mesh data deduplication.
-    static size_t HashMeshContent(const void *vertexData, size_t vertexBytes, const void *indexData, size_t indexBytes)
-    {
-        // FNV-1a 64-bit
-        constexpr size_t fnvOffset = 14695981039346656037ULL;
-        constexpr size_t fnvPrime = 1099511628211ULL;
-        size_t hash = fnvOffset;
-        const auto *bytes = static_cast<const uint8_t *>(vertexData);
-        for (size_t i = 0; i < vertexBytes; ++i) {
-            hash ^= bytes[i];
-            hash *= fnvPrime;
-        }
-        bytes = static_cast<const uint8_t *>(indexData);
-        for (size_t i = 0; i < indexBytes; ++i) {
-            hash ^= bytes[i];
-            hash *= fnvPrime;
-        }
-        return hash;
-    }
-
     void PumpPendingMeshUploads();
+    void RetireUnusedRuntimeMeshBuffers();
     void PumpPendingTextureLoads();
     [[nodiscard]] std::vector<GpuAssetResidencyRecord> GetAssetTextureGpuResidency() const
     {
@@ -1404,17 +1426,30 @@ class InxVkCoreModular
     {
         std::shared_ptr<vk::VkBufferHandle> vertexBuffer;
         std::shared_ptr<vk::VkBufferHandle> indexBuffer;
+        std::shared_ptr<rhi::ComputeBuffer> residentVertexBuffer;
+        VkBuffer residentVertexHandle = VK_NULL_HANDLE;
         size_t vertexCount = 0;
         size_t indexCount = 0;
         SharedMeshKey sharedKey;
         const void *lastVertexPtr = nullptr; // fast-path: skip hash if pointer unchanged
         const void *lastIndexPtr = nullptr;
         uint64_t ensuredOnFrame = 0; // frame-stamp: skip duplicate EnsureObjectBuffers per frame
+
+        [[nodiscard]] bool HasVertexBuffer() const noexcept
+        {
+            return residentVertexHandle != VK_NULL_HANDLE || static_cast<bool>(vertexBuffer);
+        }
+        [[nodiscard]] VkBuffer GetVertexHandle() const noexcept
+        {
+            return residentVertexHandle != VK_NULL_HANDLE ? residentVertexHandle
+                                                          : (vertexBuffer ? vertexBuffer->GetBuffer() : VK_NULL_HANDLE);
+        }
     };
 
     /// @brief Map from objectId → persistent GPU buffers.
     /// Objects with identical mesh storage share the same GPU buffers.
     std::unordered_map<uint64_t, PerObjectBuffers> m_perObjectBuffers;
+    size_t m_residentVertexBufferCount = 0;
     // Invalidates metadata snapshots whenever an object binding is inserted,
     // replaced, or erased. Revision mismatch takes the safe lookup path.
     uint64_t m_objectBufferRevision = 1;
@@ -1487,6 +1522,18 @@ class InxVkCoreModular
         std::shared_ptr<vk::VkBufferHandle> vertexBuffer;
         std::shared_ptr<vk::VkBufferHandle> indexBuffer;
         size_t indexCapacity = 0;
+        std::shared_ptr<rhi::ComputeBuffer> residentVertexBuffer;
+        VkBuffer residentVertexHandle = VK_NULL_HANDLE;
+
+        [[nodiscard]] bool HasVertexBuffer() const noexcept
+        {
+            return residentVertexHandle != VK_NULL_HANDLE || static_cast<bool>(vertexBuffer);
+        }
+        [[nodiscard]] VkBuffer GetVertexHandle() const noexcept
+        {
+            return residentVertexHandle != VK_NULL_HANDLE ? residentVertexHandle
+                                                          : (vertexBuffer ? vertexBuffer->GetBuffer() : VK_NULL_HANDLE);
+        }
     };
     const std::vector<DrawCall> *m_drawListMetadataSource = nullptr;
     const std::vector<DrawCall> *m_shadowListMetadataSource = nullptr;
@@ -1527,6 +1574,12 @@ class InxVkCoreModular
         // draw the complete previous range instead of dropping the object for
         // a frame, which flickers moving LineRenderer trails.
         uint32_t indexCountClamp = 0;
+        const std::shared_ptr<const RendererParameterBlock> *parameters = nullptr;
+
+        const RendererParameterBlock *ParameterIdentity() const noexcept
+        {
+            return parameters ? parameters->get() : nullptr;
+        }
     };
     std::vector<SortableDrawCall> m_eligibleScratch;
 

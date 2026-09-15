@@ -1,5 +1,6 @@
 """Public ShaderInfo operations exercise the real asset/renderer boundary."""
 from types import SimpleNamespace
+from pathlib import Path
 
 import pytest
 
@@ -10,14 +11,16 @@ from Infernux.lib import AssetRegistry
 
 
 @pytest.fixture
-def shader_assets(engine, monkeypatch, tmp_path):
+def shader_assets(engine, monkeypatch):
     monkeypatch.setattr(AssetManager, "_engine", engine)
     monkeypatch.setattr(AssetManager, "_asset_database", engine.get_asset_database())
     monkeypatch.setattr(AssetManager, "_registry", AssetRegistry.instance())
     paths = []
+    asset_root = Path(AssetManager.require_asset_database().assets_root)
+    asset_root.mkdir(parents=True, exist_ok=True)
 
     def create(name, stage="fragment", filename=None):
-        path = tmp_path / (filename or (name + (".frag" if stage == "fragment" else ".vert")))
+        path = asset_root / (filename or (name + (".frag" if stage == "fragment" else ".vert")))
         if stage == "fragment":
             source = (f'#version 450\nShaderInfo {{ Name "{name}" Hidden On '
                       'Capabilities [Fullscreen] Outputs { Float4 outColor } }\n'

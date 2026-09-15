@@ -56,9 +56,20 @@ class UIButton(UISelectable):
         default="", tooltip="Optional font asset path",
         group="Content",
     )
+    fallback_font_paths: list = list_field(
+        element_type=FieldType.STRING,
+        tooltip="Ordered fallback font asset paths",
+        group="Content",
+    )
     label_color: list = serialized_field(
         default=[1.0, 1.0, 1.0, 1.0], field_type=FieldType.COLOR,
         hdr=True, tooltip="Label text colour", group="Content",
+    )
+    text_material = serialized_field(
+        default=None,
+        field_type=FieldType.MATERIAL,
+        tooltip="Material used by the button label; empty uses the engine UI text material",
+        group="Content",
     )
     text_align_h: TextAlignH = serialized_field(
         default=TextAlignH.Center,
@@ -88,6 +99,15 @@ class UIButton(UISelectable):
         default=[0.922, 0.341, 0.341, 1.0], field_type=FieldType.COLOR,
         hdr=True, tooltip="Background fill colour (RGBA)", group="Fill",
     )
+
+    @property
+    def background_material(self):
+        """The inherited UI material slot used by the button background."""
+        return self.material
+
+    @background_material.setter
+    def background_material(self, value) -> None:
+        self.material = value
 
     # ── Events ──
     on_click_entries: list = list_field(

@@ -37,6 +37,21 @@ class _Database:
         self.settings[key] = value
 
 
+@pytest.mark.parametrize("saved, expected", [(None, True), ("enabled", True), ("disabled", False)])
+def test_automatic_update_checks_default_on_and_preserve_the_user_choice(saved, expected):
+    database = _Database()
+    if saved is not None:
+        database.settings["automatic_update_checks"] = saved
+    view = settings_view.SettingsView(database)
+
+    assert view.automatic_update_toggle.isChecked() is expected
+    assert database.settings.get("automatic_update_checks") == saved
+    view.automatic_update_toggle.stateChanged.emit(1)
+    assert database.settings["automatic_update_checks"] == "enabled"
+    view.automatic_update_toggle.stateChanged.emit(0)
+    assert database.settings["automatic_update_checks"] == "disabled"
+
+
 def test_settings_show_the_shared_plugin_library_and_cleanup_capacity(
     tmp_path, monkeypatch
 ):

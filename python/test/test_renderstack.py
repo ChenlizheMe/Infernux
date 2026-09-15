@@ -79,6 +79,38 @@ def test_pipeline_catalog_change_filter_accepts_pipeline_source(tmp_path):
     assert script_may_affect_pipeline_catalog(str(pipeline), "created")
 
 
+def test_project_catalog_invalidates_without_a_renderstack(tmp_path, monkeypatch):
+    import Infernux.renderstack.discovery as discovery
+    from Infernux.engine.resources_manager import ResourcesManager
+
+    pipeline = tmp_path / "NewPipeline.py"
+    pipeline.write_text("class NewPipeline(RenderPipeline):\n    pass\n", encoding="utf-8")
+    cached = {"Previously discovered": object}
+    monkeypatch.setattr(discovery, "_pipeline_cache", cached)
+    manager = ResourcesManager.__new__(ResourcesManager)
+    manager._script_catalog_callbacks = []
+    manager.notify_script_catalog_changed(str(pipeline), "created")
+    assert discovery._pipeline_cache is None
+
+
+def test_catalog_is_invalidated_before_consumers_but_not_for_gameplay(tmp_path, monkeypatch):
+    import Infernux.renderstack.discovery as discovery
+    from Infernux.engine.resources_manager import ResourcesManager
+
+    source = tmp_path / "Edited.py"
+    source.write_text("class Player(InxComponent):\n    pass\n", encoding="utf-8")
+    cached = {"Previously discovered": object}
+    monkeypatch.setattr(discovery, "_pipeline_cache", cached)
+    observed = []
+    manager = ResourcesManager.__new__(ResourcesManager)
+    manager._script_catalog_callbacks = [lambda *_: observed.append(discovery._pipeline_cache)]
+    manager.notify_script_catalog_changed(str(source), "modified")
+    assert observed == [cached] and discovery._pipeline_cache is cached
+    source.write_text("class Pipeline(RenderPipeline):\n    pass\n", encoding="utf-8")
+    manager.notify_script_catalog_changed(str(source), "modified")
+    assert observed[-1] is None
+
+
 def test_pipeline_discovery_finds_indirect_project_subclass(tmp_path):
     from Infernux.engine.project_context import get_project_root, set_project_root
     from Infernux.renderstack.discovery import discover_pipelines, invalidate_discovery_cache

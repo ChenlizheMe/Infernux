@@ -1,5 +1,7 @@
 # Global build policy and host toolchain discovery.
 
+option(INFERNUX_BUILD_TESTS "Build Infernux native regression tests" ON)
+
 if(MSVC)
     # Limit /MP globally, including third-party projects. CMake maps /MP to
     # MultiProcessorCompilation and the actual worker cap comes from this

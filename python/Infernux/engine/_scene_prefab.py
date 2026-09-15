@@ -89,7 +89,7 @@ class ScenePrefabMixin:
         # Clear the RenderStack singleton before the swap — matches the
         # pattern in _do_open_scene / _do_new_scene to avoid stale refs.
         from Infernux.renderstack.render_stack import RenderStack
-        RenderStack._active_instance = None
+        RenderStack.clear_active_instance(scene)
 
         self._prepare_native_scene_swap()
 
@@ -273,7 +273,7 @@ class ScenePrefabMixin:
         # Clear the RenderStack singleton before the swap — matches the
         # pattern in _do_open_scene / _do_new_scene to avoid stale refs.
         from Infernux.renderstack.render_stack import RenderStack
-        RenderStack._active_instance = None
+        RenderStack.clear_active_instance(scene)
 
         self._prepare_native_scene_swap()
 

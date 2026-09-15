@@ -89,6 +89,7 @@ const rootPages = [
     "roadmap.html",
     "community.html",
     "download.html",
+    "code-signing-policy.html",
     "404.html",
 ];
 for (const page of rootPages) {
@@ -191,6 +192,34 @@ if (/SHA-?256|checksum|校验码|publisher signature|data-pwa-install|pwa-instal
     fail("download.html: verification or documentation-app installation clutter was restored");
 }
 if (/<details class="advanced-download"\s+open/i.test(download)) fail("download.html: advanced WHL downloads must remain collapsed by default");
+
+const signingPolicy = await readFile(path.join(docsRoot, "code-signing-policy.html"), "utf8");
+for (const contract of [
+    "Code signing policy",
+    "Free code signing provided by",
+    "SignPath.io",
+    "certificate by",
+    "SignPath Foundation",
+    "Committers and reviewers",
+    "Approvers",
+    "Network and privacy disclosure",
+    'data-page-language="en"',
+    'data-page-language="zh"',
+    "js/bilingual-page.js",
+]) {
+    if (!signingPolicy.includes(contract)) fail(`code-signing-policy.html: missing '${contract}'`);
+}
+for (const [page, html] of [["index.html", homepage], ["download.html", download]]) {
+    if (!html.includes("code-signing-policy.html")) fail(`${page}: missing the Code signing policy link`);
+}
+const releasePath = ".github/workflows/publish-desktop-release.yml";
+const releaseDefinition = await readFile(path.resolve(releasePath), "utf8");
+for (const contract of [
+    "https://infernux-engine.com/code-signing-policy.html",
+    "Free code signing provided by [SignPath.io](https://signpath.io/), certificate by [SignPath Foundation](https://signpath.org/).",
+]) {
+    if (!releaseDefinition.includes(contract)) fail(`${releasePath}: release notes are missing '${contract}'`);
+}
 
 for (const language of ["en", "zh"]) {
     for (const section of ["learn", "manual", "architecture"]) {

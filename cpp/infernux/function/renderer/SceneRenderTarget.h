@@ -3,7 +3,7 @@
 #include "rhi/RhiSubmission.h"
 
 #include <cstdint>
-#include <vk_mem_alloc.h>
+#include <memory>
 #include <vulkan/vulkan.h>
 
 namespace infernux
@@ -11,6 +11,10 @@ namespace infernux
 
 class InxVkCoreModular;
 class GpuRetirementQueue;
+namespace rhi
+{
+struct RenderTextureGeneration;
+}
 
 /**
  * @brief Manages an offscreen render target for scene rendering.
@@ -32,6 +36,10 @@ class SceneRenderTarget
     /// @param height Height of the render target
     /// @return true if successful
     bool Initialize(uint32_t width, uint32_t height);
+
+    /// Adopt an existing allocation for an offscreen camera. No copy, second
+    /// allocation, ImGui descriptor or editor outline target is created.
+    void BindAttachments(std::shared_ptr<const rhi::RenderTextureGeneration> attachments);
 
     /// @brief Get the ImGui texture ID for displaying this render target
     /// @return Texture ID (VkDescriptorSet) or 0 if not ready
@@ -129,14 +137,12 @@ class SceneRenderTarget
     ///
     /// The scene target is HDR so emissive/light contributions > 1.0 can
     /// survive until bloom / post-process passes.
-    VkFormat GetColorFormat() const
-    {
-        return VK_FORMAT_R16G16B16A16_SFLOAT;
-    }
+    VkFormat GetColorFormat() const;
 
     /// @brief Get depth format
     VkFormat GetDepthFormat() const;
 
+    /// Attachment texel payload; driver allocation padding is excluded.
     [[nodiscard]] uint64_t GetResidentBytes() const;
     [[nodiscard]] uint64_t GetMsaaColorResidentBytes() const;
 
@@ -173,15 +179,17 @@ class SceneRenderTarget
     void RetireResourcesAfter(GpuRetirementQueue &retirementQueue, rhi::SubmissionSerial retirementSerial);
 
   private:
-    void CreateColorAttachment();
-    void CreateMsaaColorAttachment();
-    void CreateDepthAttachment();
-    void CreateOutlineMaskAttachment();
+    void InitializeAttachmentLayouts();
     void CreateImGuiDescriptor();
     void CleanupResources();
+    void ClearBorrowedHandles();
     [[nodiscard]] bool HasOwnedResources() const noexcept;
 
     InxVkCoreModular *m_vkCore = nullptr;
+    // RHI generations own images/views/samplers. Raw Vulkan handles below are
+    // borrowed only for the current SceneRenderGraph and ImGui integration.
+    std::shared_ptr<const rhi::RenderTextureGeneration> m_attachments;
+    std::shared_ptr<const rhi::RenderTextureGeneration> m_outlineAttachments;
 
     uint32_t m_width = 0;
     uint32_t m_height = 0;
@@ -190,22 +198,18 @@ class SceneRenderTarget
 
     // Color attachment (1x resolve target, sampled by ImGui)
     VkImage m_colorImage = VK_NULL_HANDLE;
-    VmaAllocation m_colorAllocation = VK_NULL_HANDLE;
     VkImageView m_colorImageView = VK_NULL_HANDLE;
 
     // MSAA color attachment (2x/4x/8x; absent at 1x)
     VkImage m_msaaColorImage = VK_NULL_HANDLE;
-    VmaAllocation m_msaaColorAllocation = VK_NULL_HANDLE;
     VkImageView m_msaaColorImageView = VK_NULL_HANDLE;
 
     // Depth attachment (sample count matches the active color target)
     VkImage m_depthImage = VK_NULL_HANDLE;
-    VmaAllocation m_depthAllocation = VK_NULL_HANDLE;
     VkImageView m_depthImageView = VK_NULL_HANDLE;
 
     // Outline mask attachment (for screen-space edge detection)
     VkImage m_outlineMaskImage = VK_NULL_HANDLE;
-    VmaAllocation m_outlineMaskAllocation = VK_NULL_HANDLE;
     VkImageView m_outlineMaskImageView = VK_NULL_HANDLE;
     VkSampler m_outlineMaskSampler = VK_NULL_HANDLE;
 

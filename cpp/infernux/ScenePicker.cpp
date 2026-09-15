@@ -141,6 +141,69 @@ static uint64_t TestGizmoAxes(const glm::vec3 &rayOrigin, const glm::vec3 &rayDi
 {
     EditorTools::ToolMode toolMode = tools->GetToolMode();
     glm::vec3 objPos = selTransform->GetPosition();
+
+    if (toolMode == EditorTools::ToolMode::Rect) {
+        GameObject *object = selTransform->GetGameObject();
+        const auto frame = tools->ResolveRectFrame(object, camera->GetTransform()->GetPosition());
+        if (!frame.valid)
+            return 0;
+        const glm::vec3 &center = frame.center;
+        const glm::vec3 &axisX = frame.axisU;
+        const glm::vec3 &axisY = frame.axisV;
+        const float halfWidth = frame.halfU;
+        const float halfHeight = frame.halfV;
+
+        const glm::vec3 normal = glm::normalize(glm::cross(axisX, axisY));
+        const float denominator = glm::dot(rayDirection, normal);
+        if (std::abs(denominator) < kEpsilon)
+            return 0;
+        const float planeT = glm::dot(center - rayOrigin, normal) / denominator;
+        if (planeT < 0.0f)
+            return 0;
+        const glm::vec3 relative = rayOrigin + rayDirection * planeT - center;
+        const float u = glm::dot(relative, axisX);
+        const float v = glm::dot(relative, axisY);
+        const float distance = glm::length(rayOrigin - center);
+        const float worldPerPixel =
+            (2.0f * distance * std::tan(glm::radians(camera->GetFieldOfView()) * 0.5f)) / viewportHeight;
+        const float threshold = std::max(9.0f * worldPerPixel, 0.008f);
+
+        struct RectCandidate
+        {
+            float u;
+            float v;
+            uint64_t id;
+        };
+        const RectCandidate corners[4] = {
+            {-halfWidth, -halfHeight, EditorTools::RECT_BOTTOM_LEFT_ID},
+            {halfWidth, -halfHeight, EditorTools::RECT_BOTTOM_RIGHT_ID},
+            {-halfWidth, halfHeight, EditorTools::RECT_TOP_LEFT_ID},
+            {halfWidth, halfHeight, EditorTools::RECT_TOP_RIGHT_ID},
+        };
+        float best = threshold * 1.35f;
+        uint64_t picked = 0;
+        for (const auto &corner : corners) {
+            const float d = glm::length(glm::vec2(u - corner.u, v - corner.v));
+            if (d < best) {
+                best = d;
+                picked = corner.id;
+            }
+        }
+        if (picked != 0)
+            return picked;
+        if (std::abs(u + halfWidth) <= threshold && std::abs(v) <= halfHeight + threshold)
+            return EditorTools::RECT_LEFT_ID;
+        if (std::abs(u - halfWidth) <= threshold && std::abs(v) <= halfHeight + threshold)
+            return EditorTools::RECT_RIGHT_ID;
+        if (std::abs(v + halfHeight) <= threshold && std::abs(u) <= halfWidth + threshold)
+            return EditorTools::RECT_BOTTOM_ID;
+        if (std::abs(v - halfHeight) <= threshold && std::abs(u) <= halfWidth + threshold)
+            return EditorTools::RECT_TOP_ID;
+        if (std::abs(u) < halfWidth && std::abs(v) < halfHeight)
+            return EditorTools::RECT_CENTER_ID;
+        return 0;
+    }
+
     float camDist = glm::length(rayOrigin - objPos);
     float scale = camDist * 0.15f * tools->GetHandleSize();
     if (scale < 0.01f)
@@ -263,8 +326,8 @@ static uint64_t TestGizmoAxes(const glm::vec3 &rayOrigin, const glm::vec3 &rayDi
             }
         }
 
-        // Plane handles are Translate-only; Scale uses axes + center cube.
-        if (toolMode == EditorTools::ToolMode::Translate) {
+        // Translate and Scale share the three two-axis plane handles.
+        if (toolMode == EditorTools::ToolMode::Translate || toolMode == EditorTools::ToolMode::Scale) {
             struct PlaneCandidate
             {
                 glm::vec3 axisU;
@@ -537,6 +600,33 @@ void Infernux::SetEditorToolHighlight(int axis)
     case 7:
         ha = EditorTools::HandleAxis::Center;
         break;
+    case 8:
+        ha = EditorTools::HandleAxis::RectLeft;
+        break;
+    case 9:
+        ha = EditorTools::HandleAxis::RectRight;
+        break;
+    case 10:
+        ha = EditorTools::HandleAxis::RectBottom;
+        break;
+    case 11:
+        ha = EditorTools::HandleAxis::RectTop;
+        break;
+    case 12:
+        ha = EditorTools::HandleAxis::RectBottomLeft;
+        break;
+    case 13:
+        ha = EditorTools::HandleAxis::RectBottomRight;
+        break;
+    case 14:
+        ha = EditorTools::HandleAxis::RectTopLeft;
+        break;
+    case 15:
+        ha = EditorTools::HandleAxis::RectTopRight;
+        break;
+    case 16:
+        ha = EditorTools::HandleAxis::RectCenter;
+        break;
     default:
         ha = EditorTools::HandleAxis::None;
         break;
@@ -563,11 +653,17 @@ void Infernux::SetEditorToolMode(int mode)
     case 3:
         tm = EditorTools::ToolMode::Scale;
         break;
+    case 4:
+        tm = EditorTools::ToolMode::Rect;
+        break;
     default:
         tm = EditorTools::ToolMode::None;
         break;
     }
     tools->SetToolMode(tm);
+    // Switching into Rect changes how selection is presented even though the
+    // selected object itself is unchanged.
+    m_renderer->RequestFullSpeedFrame();
 }
 
 int Infernux::GetEditorToolMode() const
@@ -585,6 +681,8 @@ int Infernux::GetEditorToolMode() const
         return 2;
     case EditorTools::ToolMode::Scale:
         return 3;
+    case EditorTools::ToolMode::Rect:
+        return 4;
     default:
         return 0;
     }

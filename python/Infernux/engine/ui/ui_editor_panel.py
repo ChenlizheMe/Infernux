@@ -475,70 +475,20 @@ class UIEditorPanel(UIEditorCanvasOps, UIEditorGeometryMixin, UIEditorAlignmentM
     # ------------------------------------------------------------------
 
     def _sync_text_layout(self, ctx: InxGUIContext, text_comp):
-        text = getattr(text_comp, "text", "")
-        font_size = max(
-            1.0,
-            float(getattr(text_comp, "font_size", Theme.UI_DEFAULT_FONT_SIZE)),
-        )
-        wrap_width = float(text_comp.get_editor_wrap_width()) if hasattr(text_comp, "get_editor_wrap_width") else (
-            float(text_comp.get_wrap_width()) if hasattr(text_comp, "get_wrap_width") else 0.0
-        )
-        font_path = str(getattr(text_comp, "font_path", "") or "")
-        line_height = float(getattr(text_comp, "line_height", 1.2))
-        letter_spacing = float(getattr(text_comp, "letter_spacing", 0.0))
-        pad_x, pad_y = getattr(text_comp, "get_auto_size_padding", lambda: (0.0, 0.0))()
-        if wrap_width > 0.0:
-            measured_w, measured_h = ctx.calc_text_size_wrapped(
-                text, font_size, wrap_width, font_path, line_height, letter_spacing
+        from Infernux.ui.ui_render_dispatch import resolve_text_layout
+
+        def measure(text, font_size, wrap_width, font_path, line_height, letter_spacing, fallback_font_paths=()):
+            if wrap_width > 0.0:
+                return ctx.calc_text_size_wrapped(
+                    text, font_size, wrap_width, font_path, line_height, letter_spacing,
+                    fallback_font_paths,
+                )
+            return ctx.calc_text_size(
+                text, font_size, font_path, line_height, letter_spacing,
+                fallback_font_paths,
             )
-        else:
-            measured_w, measured_h = ctx.calc_text_size(text, font_size, font_path, line_height, letter_spacing)
 
-        _TOL = 0.5  # Skip writes when measured size is close enough (sub-pixel)
-
-        _, canvas = self._get_focused_canvas()
-        if canvas is None:
-            if getattr(text_comp, "is_auto_width", lambda: False)():
-                target_w = max(1.0, float(measured_w) + float(pad_x))
-                if abs(float(text_comp.width) - target_w) > _TOL:
-                    text_comp.width = target_w
-            elif getattr(text_comp, "is_auto_height", lambda: False)():
-                target_h = max(1.0, float(measured_h) + float(pad_y))
-                if abs(float(text_comp.height) - target_h) > _TOL:
-                    text_comp.height = target_h
-            return
-
-        # While the user is actively dragging or resizing, only adjust the
-        # auto-sized dimension (width or height) without touching x/y.
-        # set_size_preserve_corner rewrites x/y which fights the drag.
-        _interacting = (self._dragging or self._resizing)
-
-        if getattr(text_comp, "is_auto_width", lambda: False)():
-            target_w = max(1.0, float(measured_w) + float(pad_x))
-            if abs(float(text_comp.width) - target_w) > _TOL:
-                if _interacting:
-                    text_comp.width = target_w
-                else:
-                    text_comp.set_size_preserve_corner(
-                        target_w,
-                        float(text_comp.height),
-                        float(canvas.reference_width),
-                        float(canvas.reference_height),
-                        "top_left",
-                    )
-        elif getattr(text_comp, "is_auto_height", lambda: False)():
-            target_h = max(1.0, float(measured_h) + float(pad_y))
-            if abs(float(text_comp.height) - target_h) > _TOL:
-                if _interacting:
-                    text_comp.height = target_h
-                else:
-                    text_comp.set_size_preserve_corner(
-                        float(text_comp.width),
-                        target_h,
-                        float(canvas.reference_width),
-                        float(canvas.reference_height),
-                        "top_left",
-                    )
+        return resolve_text_layout(text_comp, measure, 1.0)
 
     # ------------------------------------------------------------------
     # EditorPanel hooks
@@ -607,6 +557,16 @@ class UIEditorPanel(UIEditorCanvasOps, UIEditorGeometryMixin, UIEditorAlignmentM
         )
         if ctx.is_item_hovered():
             ctx.set_tooltip(t("ui_editor.tooltip_canvas"))
+
+        ctx.same_line(0, _GAP)
+        ctx.button(
+            "Frame",
+            lambda: self._create_frame_element(canvas_go),
+            width=_metric(ctx, 62.0),
+            height=_ICO_SZ + _metric(ctx, 8.0),
+        )
+        if ctx.is_item_hovered():
+            ctx.set_tooltip(t("ui_editor.tooltip_frame"))
 
         ctx.same_line(0, _GAP)
         tid_text = EditorIcons.get(native, Theme.ICON_IMG_UI_TEXT)
@@ -866,6 +826,10 @@ class UIEditorPanel(UIEditorCanvasOps, UIEditorGeometryMixin, UIEditorAlignmentM
             ref_w = float(canvas.reference_width)
             ref_h = float(canvas.reference_height)
 
+            for element in canvas.iter_ui_elements():
+                if isinstance(element, UIText):
+                    self._sync_text_layout(ctx, element)
+
             go_active = canvas_go.active_in_hierarchy
             canvas_enabled = getattr(canvas, 'enabled', True)
             is_active = go_active and canvas_enabled
@@ -956,14 +920,18 @@ class UIEditorPanel(UIEditorCanvasOps, UIEditorGeometryMixin, UIEditorAlignmentM
                     and (is_focused or not self._focused_canvas_id)):
                 cmx, cmy = self._screen_to_canvas(inp.mouse_x, inp.mouse_y, origin_x, origin_y)
                 if 0.0 <= cmx <= ref_w and 0.0 <= cmy <= ref_h:
-                    _all = canvas.raycast_all(cmx, cmy, pick_tol)
+                    _all = canvas.raycast_all(
+                        cmx, cmy, pick_tol, ref_w, ref_h,
+                    )
                     if _all:
                         hovered_all = _all
                         hovered_elem = _all[0]
 
         if is_focused and is_active and not hovered_elem:
             cmx, cmy = self._screen_to_canvas(inp.mouse_x, inp.mouse_y, origin_x, origin_y)
-            _all = canvas.raycast_all(cmx, cmy, pick_tol)
+            _all = canvas.raycast_all(
+                cmx, cmy, pick_tol, ref_w, ref_h,
+            )
             if _all:
                 hovered_all = _all
                 hovered_elem = _all[0]
@@ -981,9 +949,6 @@ class UIEditorPanel(UIEditorCanvasOps, UIEditorGeometryMixin, UIEditorAlignmentM
         selected_element = self._selected_element_comp
         selected_object_id = self._element_object_id(selected_element)
         hovered_object_id = self._element_object_id(hovered_elem)
-        for elem in elements:
-            if isinstance(elem, UIText):
-                self._sync_text_layout(ctx, elem)
         clear_rect_cache(_pc())
 
         for elem in elements:
@@ -1022,14 +987,24 @@ class UIEditorPanel(UIEditorCanvasOps, UIEditorGeometryMixin, UIEditorAlignmentM
                 ctx.draw_rect(cx0, cy0, cx1, cy1,
                               *Theme.UI_EDITOR_ELEMENT_SELECT[:3], 0.6, 1.0, 0.0)
 
-            if not _ui_dispatch(
-                elem, "editor",
-                ctx=ctx,
-                base_sx=base_sx, base_sy=base_sy,
-                base_sw=base_sw, base_sh=base_sh,
-                zoom=self._zoom,
-                get_tex_id=_get_tid,
-            ):
+            clip = elem.get_effective_clip_rect(ref_w, ref_h)
+            if clip is not None:
+                clip_min = self._canvas_to_screen(clip[0], clip[1], origin_x, origin_y)
+                clip_max = self._canvas_to_screen(clip[2], clip[3], origin_x, origin_y)
+                ctx.push_draw_list_clip_rect(*clip_min, *clip_max, True)
+            try:
+                rendered = _ui_dispatch(
+                    elem, "editor",
+                    ctx=ctx,
+                    base_sx=base_sx, base_sy=base_sy,
+                    base_sw=base_sw, base_sh=base_sh,
+                    zoom=self._zoom,
+                    get_tex_id=_get_tid,
+                )
+            finally:
+                if clip is not None:
+                    ctx.pop_draw_list_clip_rect()
+            if not rendered:
                 tx = max(s_x + _metric(ctx, 2.0), area_min_x)
                 ty = max(s_y + _metric(ctx, 2.0), area_min_y)
                 if tx < area_max_x and ty < area_max_y:
@@ -1048,7 +1023,11 @@ class UIEditorPanel(UIEditorCanvasOps, UIEditorGeometryMixin, UIEditorAlignmentM
             foc_ox = area_min_x + pp[0] * self._zoom
             foc_oy = area_min_y + pp[1] * self._zoom
             cmx, cmy = self._screen_to_canvas(inp.mouse_x, inp.mouse_y, foc_ox, foc_oy)
-            _all = cv.raycast_all(cmx, cmy, pick_tol)
+            ref_w = float(cv.reference_width)
+            ref_h = float(cv.reference_height)
+            _all = cv.raycast_all(
+                cmx, cmy, pick_tol, ref_w, ref_h,
+            )
             if _all:
                 hovered_all = _all
                 hovered_elem = _all[0]
@@ -1135,7 +1114,7 @@ class UIEditorPanel(UIEditorCanvasOps, UIEditorGeometryMixin, UIEditorAlignmentM
                 self._resize_handle_idx = -1
                 return
             self._resize_start_rect = sel.get_rect(foc_ref_w, foc_ref_h)
-            self._resize_start_rotation = float(getattr(sel, 'rotation', 0.0))
+            self._resize_start_rotation = float(sel.get_layout_rotation())
             self._resize_start_corners = sel.get_rotated_corners(foc_ref_w, foc_ref_h)
         elif clicked_kind == "rotate" and self._selected_element_comp is not None:
             sel = self._selected_element_comp
@@ -1150,7 +1129,7 @@ class UIEditorPanel(UIEditorCanvasOps, UIEditorGeometryMixin, UIEditorAlignmentM
             self._rotate_center_sy = center_y
             self._rotate_start_angle = math.degrees(
                 math.atan2(inp.mouse_y - center_y, inp.mouse_x - center_x))
-            self._rotate_start_rotation = float(getattr(sel, 'rotation', 0.0))
+            self._rotate_start_rotation = float(sel.get_layout_rotation())
         elif clicked_kind == "inside" and self._selected_element_comp is not None:
             sel = self._selected_element_comp
             if not self._begin_element_manipulation("drag", sel):
@@ -1334,19 +1313,72 @@ class UIEditorPanel(UIEditorCanvasOps, UIEditorGeometryMixin, UIEditorAlignmentM
 
     @staticmethod
     def _element_manipulation_snapshot(kind: str, elem) -> dict:
+        try_get_game_object = getattr(elem, "_try_get_game_object", None)
+        game_object = try_get_game_object() if callable(try_get_game_object) else None
+        if game_object is None and not callable(try_get_game_object):
+            game_object = getattr(elem, "game_object", None)
+        transform = getattr(game_object, "transform", None)
+        if transform is not None:
+            if kind == "drag":
+                fields = ()
+                transform_fields = ("local_position",)
+            elif kind == "rotate":
+                fields = ()
+                transform_fields = ("local_euler_angles",)
+            elif kind == "resize":
+                fields = (
+                    "resize_mode", "width", "height",
+                    "width_sizing", "height_sizing",
+                )
+                transform_fields = ("local_position",)
+            else:
+                raise ValueError(f"unsupported UI element manipulation '{kind}'")
+            snapshot = {
+                f"component.{field}": getattr(elem, field)
+                for field in fields
+                if hasattr(elem, field)
+            }
+            for field in transform_fields:
+                value = getattr(transform, field)
+                snapshot[f"transform.{field}"] = (
+                    float(value.x), float(value.y), float(value.z)
+                )
+            return snapshot
+
         if kind == "drag":
             fields = ("x", "y")
         elif kind == "rotate":
             fields = ("rotation",)
         elif kind == "resize":
-            fields = ("resize_mode", "x", "y", "width", "height")
+            fields = (
+                "resize_mode", "x", "y", "width", "height",
+                "width_sizing", "height_sizing",
+            )
         else:
             raise ValueError(f"unsupported UI element manipulation '{kind}'")
         return {
-            field: getattr(elem, field)
+            f"component.{field}": getattr(elem, field)
             for field in fields
             if hasattr(elem, field)
         }
+
+    @staticmethod
+    def _element_manipulation_property(elem, key: str, value):
+        owner, field = str(key).split(".", 1)
+        if owner == "component":
+            return elem, field, value
+        if owner != "transform":
+            raise ValueError(f"unsupported UI manipulation owner '{owner}'")
+        from Infernux.lib import Vector3
+
+        try_get_game_object = getattr(elem, "_try_get_game_object", None)
+        game_object = try_get_game_object() if callable(try_get_game_object) else None
+        if game_object is None and not callable(try_get_game_object):
+            game_object = getattr(elem, "game_object", None)
+        if game_object is None:
+            raise RuntimeError("transform-backed UI manipulation lost its GameObject")
+        transform = game_object.transform
+        return transform, field, Vector3(*value)
 
     @staticmethod
     def _element_manipulation_description(kind: str) -> str:
@@ -1368,8 +1400,11 @@ class UIEditorPanel(UIEditorCanvasOps, UIEditorGeometryMixin, UIEditorAlignmentM
     def _restore_element_manipulation(self, commands, elem, state: dict) -> None:
         scope = commands.suppress_replay() if commands.can_record() else _nullcontext()
         with scope:
-            for field, value in state.items():
-                setattr(elem, field, value)
+            for key, value in state.items():
+                target, field, decoded = self._element_manipulation_property(
+                    elem, key, value
+                )
+                setattr(target, field, decoded)
 
     def _begin_element_manipulation(self, kind: str, elem) -> bool:
         from Infernux.engine.interaction import EditorInteractionCore
@@ -1394,11 +1429,19 @@ class UIEditorPanel(UIEditorCanvasOps, UIEditorGeometryMixin, UIEditorAlignmentM
             current = self._element_manipulation_snapshot(kind, elem)
             if not commands_service.can_record():
                 return False
-            changes = [
-                (elem, field, old_value, current[field], f"Set {field}")
-                for field, old_value in session.initial_value.items()
-                if field in current and old_value != current[field]
-            ]
+            changes = []
+            for property_key, old_value in session.initial_value.items():
+                if property_key not in current or old_value == current[property_key]:
+                    continue
+                target, field, decoded_old = self._element_manipulation_property(
+                    elem, property_key, old_value
+                )
+                _target, _field, decoded_new = self._element_manipulation_property(
+                    elem, property_key, current[property_key]
+                )
+                changes.append(
+                    (target, field, decoded_old, decoded_new, description)
+                )
             # Input capture is transient gesture state. It must never be stored
             # in the command's replayable after-context.
             self._release_element_manipulation_ownership(key)

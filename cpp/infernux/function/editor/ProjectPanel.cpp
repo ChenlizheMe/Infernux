@@ -300,6 +300,7 @@ const std::unordered_map<std::string, std::string> &ProjectPanel::GetIconMap()
             {".animtimeline", "timeline"},
             {".timelinefsm", "timeline_fsm"},
             {".particlegraph", "particle_graph"},
+            {".inxdata", "file"},
             {".effect", "render_effect"},
             {".effectgroup", "render_effect_group"},
             {".prefab", "prefab"},
@@ -337,6 +338,8 @@ const std::unordered_map<std::string, ProjectPanel::DragDropInfo> &ProjectPanel:
             {".animclip3d", {"ANIMCLIP3D_FILE", "3D AnimClip"}},
             {".animfsm", {"ANIMFSM_FILE", "AnimFSM"}},
             {".particlegraph", {"PARTICLE_GRAPH_FILE", "Particle Graph"}},
+            {".inxdata", {"DATA_ASSET_FILE", "Data Asset"}},
+            {".rendertexture", {"RENDER_TEXTURE_FILE", "Render Texture"}},
             {".effect", {"RENDER_EFFECT_FILE", "Render Effect"}},
             // Effect assets and groups occupy the same RenderStack slot type.
             {".effectgroup", {"RENDER_EFFECT_FILE", "Render Effect Group"}},

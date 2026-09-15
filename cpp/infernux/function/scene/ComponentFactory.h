@@ -1,5 +1,6 @@
 #pragma once
 
+#include <core/reflection/SemanticTypeRegistry.h>
 #include <functional>
 #include <memory>
 #include <nlohmann/json.hpp>
@@ -16,11 +17,15 @@ class ComponentFactory
   public:
     using Creator = std::function<std::unique_ptr<Component>()>;
     using DocumentValidator = std::function<void(const nlohmann::json &)>;
+    using SemanticDeclaration = std::function<SemanticTypeDescriptor()>;
 
     /// @brief Register a component creator by type name
     /// @return true if registered, false if already exists
     static bool Register(const std::string &typeName, Creator creator, DocumentValidator validator,
-                         ComponentTypeConstraints constraints);
+                         ComponentTypeConstraints constraints, SemanticDeclaration declaration = {});
+
+    /// Publish the engine-native declarations after static factory registration.
+    static void PublishSemanticTypes();
 
     /// @brief Create a component by type name
     /// @return unique_ptr to component or nullptr if not registered

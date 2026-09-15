@@ -4,10 +4,15 @@
 #include "Transform.h"
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
+#include <optional>
 #include <utility>
 
 namespace infernux
 {
+namespace rhi
+{
+class RenderTexture;
+}
 
 /**
  * @brief Camera projection mode
@@ -41,7 +46,7 @@ class Camera : public Component
 {
   public:
     Camera() = default;
-    ~Camera() override = default;
+    ~Camera() override;
 
     [[nodiscard]] const char *GetTypeName() const override
     {
@@ -65,43 +70,27 @@ class Camera : public Component
     {
         return m_projectionMode;
     }
-    void SetProjectionMode(CameraProjection mode)
-    {
-        m_projectionMode = mode;
-        m_projectionDirty = true;
-    }
+    void SetProjectionMode(CameraProjection mode);
 
     // Perspective settings
     [[nodiscard]] float GetFieldOfView() const
     {
         return m_fov;
     }
-    void SetFieldOfView(float fov)
-    {
-        m_fov = fov;
-        m_projectionDirty = true;
-    }
+    void SetFieldOfView(float fov);
 
     [[nodiscard]] float GetAspectRatio() const
     {
         return m_aspectRatio;
     }
-    void SetAspectRatio(float aspect)
-    {
-        m_aspectRatio = (aspect < 0.01f) ? 0.01f : aspect;
-        m_projectionDirty = true;
-    }
+    void SetAspectRatio(float aspect);
 
     // Orthographic settings
     [[nodiscard]] float GetOrthographicSize() const
     {
         return m_orthoSize;
     }
-    void SetOrthographicSize(float size)
-    {
-        m_orthoSize = size;
-        m_projectionDirty = true;
-    }
+    void SetOrthographicSize(float size);
 
     // Clipping planes
     [[nodiscard]] float GetNearClip() const
@@ -110,8 +99,7 @@ class Camera : public Component
     }
     void SetNearClip(float nearClip)
     {
-        m_nearClip = nearClip;
-        m_projectionDirty = true;
+        SetClipPlanes(nearClip, m_farClip);
     }
 
     [[nodiscard]] float GetFarClip() const
@@ -120,9 +108,9 @@ class Camera : public Component
     }
     void SetFarClip(float farClip)
     {
-        m_farClip = farClip;
-        m_projectionDirty = true;
+        SetClipPlanes(m_nearClip, farClip);
     }
+    void SetClipPlanes(float nearClip, float farClip);
 
     // ========================================================================
     // Multi-camera support (depth ordering, layer culling)
@@ -145,6 +133,24 @@ class Camera : public Component
         m_cullingMask = mask;
     }
 
+    /// Imported outputs persist by GUID; anonymous runtime allocations do not.
+    /// An unresolved authored target is not a request for screen output.
+    [[nodiscard]] const std::shared_ptr<rhi::RenderTexture> &GetTargetTexture() const
+    {
+        return m_targetTexture;
+    }
+    void SetTargetTexture(std::shared_ptr<rhi::RenderTexture> target);
+    [[nodiscard]] const std::string &GetTargetTextureGuid() const
+    {
+        return m_targetTextureGuid;
+    }
+    void SetTargetTextureGuid(const std::string &guid);
+    [[nodiscard]] bool HasTargetTexture() const
+    {
+        return m_targetTexture || !m_targetTextureGuid.empty();
+    }
+    void OnTargetTextureAssetChanged(bool deleted);
+
     // ========================================================================
     // Clear flags & background color
     // ========================================================================
@@ -153,19 +159,13 @@ class Camera : public Component
     {
         return m_clearFlags;
     }
-    void SetClearFlags(CameraClearFlags flags)
-    {
-        m_clearFlags = flags;
-    }
+    void SetClearFlags(CameraClearFlags flags);
 
     [[nodiscard]] glm::vec4 GetBackgroundColor() const
     {
         return m_backgroundColor;
     }
-    void SetBackgroundColor(const glm::vec4 &color)
-    {
-        m_backgroundColor = color;
-    }
+    void SetBackgroundColor(const glm::vec4 &color);
 
     [[nodiscard]] bool GetDithering() const
     {
@@ -209,9 +209,48 @@ class Camera : public Component
 
     /// @brief Get view matrix (inverse of camera transform)
     [[nodiscard]] glm::mat4 GetViewMatrix() const;
+    /// Runtime affine world-to-camera override. Does not edit the Transform.
+    void SetViewMatrix(const glm::mat4 &view);
+    void ResetViewMatrix();
+    /// Invalidate accumulated history on the next render of each view of this camera.
+    /// Runtime-only: independent of pose, projection and the saved scene document.
+    void ResetHistory()
+    {
+        ++m_temporalHistoryRevision;
+    }
+    [[nodiscard]] uint64_t GetTemporalHistoryRevision() const
+    {
+        return m_temporalHistoryRevision;
+    }
+    [[nodiscard]] bool HasCustomViewMatrix() const
+    {
+        return m_viewOverride.has_value();
+    }
+    [[nodiscard]] glm::mat4 GetCameraToWorldMatrix() const;
+    /// Camera-local raster state, independent of light-space shadow passes.
+    /// A reflection consumer toggles this when reflecting its source view.
+    [[nodiscard]] bool GetInvertCulling() const
+    {
+        return m_invertCulling;
+    }
+    void SetInvertCulling(bool invert)
+    {
+        m_invertCulling = invert;
+    }
 
     /// @brief Get projection matrix
     [[nodiscard]] glm::mat4 GetProjectionMatrix() const;
+    /// Runtime override in engine clip space: left-handed, depth [0,1], Y down.
+    /// Authoring FOV/clip/aspect settings resume when the override is reset.
+    void SetProjectionMatrix(const glm::mat4 &projection);
+    void ResetProjectionMatrix();
+    [[nodiscard]] bool HasCustomProjectionMatrix() const
+    {
+        return m_projectionOverride.has_value();
+    }
+    /// Return, without applying, a projection whose near plane is clipPlane in
+    /// camera space. The positive half-space is retained.
+    [[nodiscard]] glm::mat4 CalculateObliqueMatrix(const glm::vec4 &clipPlane) const;
 
     /// @brief Get view-projection matrix
     [[nodiscard]] glm::mat4 GetViewProjectionMatrix() const
@@ -239,7 +278,11 @@ class Camera : public Component
                                                                    float viewportHeight) const;
 
   private:
+    void AssignTargetTexture(std::shared_ptr<rhi::RenderTexture> target, const std::string &guid);
+    void InvalidateOutput();
     void UpdateProjectionMatrix() const;
+    [[nodiscard]] glm::mat4 BuildProjectionMatrix(float aspect) const;
+    [[nodiscard]] const glm::dmat4 &GetInverseRayProjection(float aspect) const;
 
     CameraProjection m_projectionMode = CameraProjection::Perspective;
 
@@ -259,6 +302,8 @@ class Camera : public Component
 
     // Layer culling mask (all layers by default)
     uint32_t m_cullingMask = 0xFFFFFFFF;
+    std::shared_ptr<rhi::RenderTexture> m_targetTexture;
+    std::string m_targetTextureGuid;
 
     // Clear flags
     CameraClearFlags m_clearFlags = CameraClearFlags::Skybox;
@@ -273,6 +318,14 @@ class Camera : public Component
     // Cached projection matrix
     mutable glm::mat4 m_cachedProjection{1.0f};
     mutable bool m_projectionDirty = true;
+    std::optional<glm::mat4> m_projectionOverride;
+    std::optional<glm::mat4> m_viewOverride;
+    glm::mat4 m_cameraToWorldOverride{1.0f};
+    bool m_invertCulling = false;
+    uint64_t m_temporalHistoryRevision = 0;
+    mutable glm::dmat4 m_inverseRayProjection{1.0};
+    mutable float m_rayProjectionAspect = 0.0f;
+    mutable bool m_inverseRayProjectionDirty = true;
 };
 
 } // namespace infernux

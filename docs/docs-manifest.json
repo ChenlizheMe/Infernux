@@ -23,6 +23,7 @@
     "release": "/release.json",
     "release_notes": "/release-notes.json",
     "sitemap": "/sitemap.xml",
+    "code_signing_policy": "/code-signing-policy.html",
     "community": "https://infernux-engine.discourse.group/"
   },
   "documentation_layers": {

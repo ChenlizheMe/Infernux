@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 
 def test_component_add_resolves_engine_python_and_native_targets(monkeypatch):
     import Infernux.components.registry as component_registry
@@ -275,3 +277,187 @@ def test_light_cpp_properties_are_not_python_document_fields():
     assert ComponentCommandService._is_python_serialized_field(light, "intensity") is False
     assert ComponentCommandService._is_python_serialized_field(light, "range") is False
     assert ComponentCommandService._is_python_serialized_field(light, "enabled") is False
+
+
+def test_transform_serialized_fields_edit_local_pose_and_undo(scene):
+    from Infernux.components.value_codec import VALUE_CODECS
+    from Infernux.engine.interaction import ComponentCommandService
+    from Infernux.engine.undo import UndoManager
+    from Infernux.math import Vector3
+
+    parent = scene.create_game_object("TransformSchemaParent")
+    child = scene.create_game_object("TransformSchemaChild")
+    parent.transform.local_position = Vector3(10.0, 0.0, 0.0)
+    child.set_parent(parent, False)
+
+    previous_manager = UndoManager._instance
+    manager = UndoManager()
+    service = ComponentCommandService()
+    try:
+        assert service.set_field(child.transform, "position", [2.0, 3.0, 4.0])
+        assert VALUE_CODECS.encode(child.transform.local_position) == pytest.approx(
+            [2.0, 3.0, 4.0]
+        )
+        assert VALUE_CODECS.encode(child.transform.position) == pytest.approx(
+            [12.0, 3.0, 4.0]
+        )
+
+        assert service.set_field(child.transform, "scale", [2.0, 3.0, 4.0])
+        assert VALUE_CODECS.encode(child.transform.local_scale) == pytest.approx(
+            [2.0, 3.0, 4.0]
+        )
+        assert len(manager.action_journal.applied_entries()) == 2
+
+        manager.undo()
+        assert VALUE_CODECS.encode(child.transform.local_scale) == pytest.approx(
+            [1.0, 1.0, 1.0]
+        )
+        manager.undo()
+        assert VALUE_CODECS.encode(child.transform.local_position) == pytest.approx(
+            [0.0, 0.0, 0.0]
+        )
+        manager.redo()
+        assert VALUE_CODECS.encode(child.transform.local_position) == pytest.approx(
+            [2.0, 3.0, 4.0]
+        )
+
+        with pytest.raises(ValueError, match="not declared writable"):
+            service.set_field(child.transform, "component_id", 12)
+    finally:
+        service.shutdown()
+        manager.clear()
+        UndoManager._instance = previous_manager
+
+
+def test_transform_automation_schema_exposes_only_authoritative_fields(scene, monkeypatch):
+    from Infernux.host import EditorAutomationHost
+
+    owner = scene.create_game_object("TransformAutomationSchema")
+    host = EditorAutomationHost()
+    monkeypatch.setattr(host, "scene_component", lambda *_args: owner.transform)
+
+    schema = host.scene_component_schema(owner.id, owner.transform.component_id)
+
+    assert schema["component_type"] == "Transform"
+    assert schema["fields"] == [
+        {"name": "position", "type": "vec3", "readonly": False, "hidden": False},
+        {"name": "rotation", "type": "vec3", "readonly": False, "hidden": False},
+        {"name": "scale", "type": "vec3", "readonly": False, "hidden": False},
+    ]
+
+
+def test_native_automation_schema_projects_catalog_metadata(scene, monkeypatch):
+    from Infernux.components.builtin.camera import Camera
+    from Infernux.host import EditorAutomationHost
+
+    owner = scene.create_game_object("CameraAutomationSchema")
+    native_camera = owner.add_component("Camera")
+    camera = Camera._get_or_create_wrapper(native_camera, owner)
+    host = EditorAutomationHost()
+    monkeypatch.setattr(host, "scene_component", lambda *_args: camera)
+
+    schema = host.scene_component_schema(owner.id, camera.component_id)
+    fields = {field["name"]: field for field in schema["fields"]}
+
+    assert len(fields) == 13
+    assert fields["targetTextureGuid"]["type"] == "asset"
+    assert fields["targetTextureGuid"]["asset_type"] == "RenderTexture"
+    assert fields["targetTextureGuid"]["nullable"] is True
+    assert fields["fov"]["range"] == [1.0, 179.0]
+    assert fields["projectionMode"]["enum"] == [
+        {"name": "Perspective", "value": 0},
+        {"name": "Orthographic", "value": 1},
+    ]
+
+
+def test_light_automation_schema_uses_native_serialized_names(scene, monkeypatch):
+    from Infernux.components.builtin.light import Light
+    from Infernux.host import EditorAutomationHost
+
+    owner = scene.create_game_object("LightAutomationSchema")
+    native_light = owner.add_component("Light")
+    light = Light._get_or_create_wrapper(native_light, owner)
+    host = EditorAutomationHost()
+    monkeypatch.setattr(host, "scene_component", lambda *_args: light)
+
+    schema = host.scene_component_schema(owner.id, light.component_id)
+    fields = {field["name"]: field for field in schema["fields"]}
+
+    assert len(fields) == 15
+    assert fields["lightType"]["enum"][0] == {"name": "Directional", "value": 0}
+    assert fields["intensity"]["range"] == [0.0, 10.0]
+    assert fields["color"]["type"] == "vec3"
+    assert fields["influenceDomains"]["type"] == "int"
+
+
+def test_automation_schema_does_not_infer_undeclared_json_fields(monkeypatch):
+    from Infernux.host import EditorAutomationHost
+
+    class SerializeOnlyProbe:
+        component_id = 41
+
+        @staticmethod
+        def serialize_document():
+            return {"guessed": 12, "also_guessed": [1.0, 2.0, 3.0]}
+
+    host = EditorAutomationHost()
+    monkeypatch.setattr(host, "scene_component", lambda *_args: SerializeOnlyProbe())
+
+    schema = host.scene_component_schema(7, 41)
+
+    assert schema["fields"] == []
+
+
+@pytest.mark.parametrize('type_name,field,value', [
+    ('Camera', 'clearFlags', 1),
+    ('Camera', 'backgroundColor', [1.0, 0.25, 0.5, 1.0]),
+    ('Camera', 'fov', 73.0),
+    ('Light', 'lightType', 1),
+    ('Light', 'color', [0.2, 0.4, 0.8]),
+    ('AudioSource', 'mute', True),
+    ('AudioSource', 'track_count', 3),
+])
+def test_native_automation_edits_its_advertised_document_field(scene, monkeypatch, type_name, field, value):
+    from types import SimpleNamespace
+    from Infernux.components.builtin_component import BuiltinComponent
+    from Infernux.engine.interaction import ComponentCommandService
+    from Infernux.engine.undo import UndoManager
+    from Infernux.host import EditorAutomationHost
+
+    owner = scene.create_game_object('NativeSchemaEdit')
+    native = owner.add_component(type_name)
+    component = BuiltinComponent._get_or_create_wrapper(native, owner)
+    host = EditorAutomationHost()
+    service = ComponentCommandService()
+    previous_manager = UndoManager._instance
+    manager = UndoManager()
+    monkeypatch.setattr(host, 'scene_component', lambda *_: component)
+    monkeypatch.setattr(host, 'interaction_core', lambda: SimpleNamespace(components=service))
+    # Bound field edits must use setters, not reload the whole component (which
+    # would restart an AudioSource's tracks merely to change mute or volume).
+    if field in ('mute', 'track_count'):
+        monkeypatch.setattr(service, 'restore_document', lambda *_a, **_k: pytest.fail('field reloaded component'))
+    before = native.serialize_document()
+    try:
+        assert field in {f['name'] for f in host.scene_component_schema(owner.id, component.component_id)['fields']}
+        host.set_scene_component_field(owner.id, component.component_id, field, value)
+        assert native.serialize_document()[field] == pytest.approx(value)
+        assert len(manager.action_journal.applied_entries()) == 1
+        if type_name == 'Camera':
+            stable = native.serialize_document()
+            for bad_field, bad_value in [('farClip', -1.0), ('clearFlags', 999), ('clearFlags', True)]:
+                with pytest.raises((ValueError, TypeError, RuntimeError)):
+                    host.set_scene_component_field(owner.id, component.component_id, bad_field, bad_value)
+                assert native.serialize_document() == stable
+                assert len(manager.action_journal.applied_entries()) == 1
+        manager.undo()
+        assert native.serialize_document() == before
+        manager.redo()
+        assert native.serialize_document()[field] == pytest.approx(value)
+        with pytest.raises(Exception, match='not declared writable'):
+            host.set_scene_component_field(owner.id, component.component_id, 'made_up_field', 5)
+        assert len(manager.action_journal.applied_entries()) == 1
+    finally:
+        service.shutdown()
+        manager.clear()
+        UndoManager._instance = previous_manager

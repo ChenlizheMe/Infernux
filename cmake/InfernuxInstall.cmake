@@ -234,11 +234,13 @@ install(
     LIBRARY DESTINATION "python/Infernux/lib"
         COMPONENT ${INFERNUX_PYTHON_INSTALL_COMPONENT}
 )
-install(
-    FILES "${PYTHON_TARGET_DIR}/PlayerNativeContract.json"
-    DESTINATION "python/Infernux/lib"
-    COMPONENT ${INFERNUX_PYTHON_INSTALL_COMPONENT}
-)
+if(INFERNUX_RUNTIME_STATIC)
+    install(
+        FILES "${PYTHON_TARGET_DIR}/PlayerNativeContract.json"
+        DESTINATION "python/Infernux/lib"
+        COMPONENT ${INFERNUX_PYTHON_INSTALL_COMPONENT}
+    )
+endif()
 
 install(
     TARGETS assimp SDL3-shared Jolt
@@ -253,6 +255,14 @@ install(
     DESTINATION "python/Infernux/lib"
     COMPONENT ${INFERNUX_PYTHON_INSTALL_COMPONENT}
 )
+
+if(TARGET infernux_gpu_jit_compiler)
+    install(
+        DIRECTORY "${INFERNUX_GPU_JIT_INSTALL_ROOT}/Infernux/_compiler/"
+        DESTINATION "python/Infernux/_compiler"
+        COMPONENT ${INFERNUX_PYTHON_INSTALL_COMPONENT}
+    )
+endif()
 
 install(
     FILES

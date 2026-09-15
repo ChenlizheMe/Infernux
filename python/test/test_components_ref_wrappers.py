@@ -2,6 +2,7 @@
 
 import copy
 import json
+import pytest
 
 from Infernux.components.component import InxComponent
 from Infernux.components.ref_wrappers import (
@@ -13,6 +14,51 @@ from Infernux.components.ref_wrappers import (
 )
 from Infernux.components import ref_wrappers
 from Infernux.lib import GameObject
+
+
+def test_component_ref_rebinds_invalidated_wrapper_when_native_identity_survives(scene):
+    from Infernux.components.builtin_component import BuiltinComponent
+
+    obj = scene.create_game_object('ReferencedCamera')
+    obj.add_component('Camera')
+    ref = ComponentRef(go_id=obj.id, component_type='Camera')
+    old = ref.resolve()
+    handle = ref._cached_handle
+    assert old.is_valid
+    BuiltinComponent._clear_cache()
+    assert old._is_destroyed
+    assert scene.resolve_component(handle) is not None
+    fresh = ref.resolve()
+    assert fresh is not old
+    assert fresh.is_valid
+    assert fresh.camera_to_world_matrix.shape == (4, 4)
+
+
+def test_retiring_scene_reference_scope_keeps_other_worlds_and_restores_after_error(scene):
+    from Infernux.lib import SceneManager
+
+    manager = SceneManager.instance()
+    other = manager.create_scene('ReferenceScopeAdditive')
+    obj = scene.create_game_object('RetiringTarget')
+    obj.add_component('Camera')
+    resident = other.create_game_object('ResidentTarget')
+    resident.add_component('Camera')
+    object_ref = GameObjectRef(obj)
+    component_ref = ComponentRef(go_id=obj.id, component_type='Camera')
+    resident_ref = ComponentRef(go_id=resident.id, component_type='Camera')
+    assert component_ref.resolve().is_valid
+    try:
+        with pytest.raises(RuntimeError, match='cleanup failed'):
+            with ref_wrappers.retiring_scene_references(scene.world_id):
+                assert object_ref.resolve() is None
+                assert component_ref.resolve() is None
+                assert ComponentRef(go_id=obj.id, component_type='Camera').resolve() is None
+                assert resident_ref.resolve().is_valid
+                raise RuntimeError('cleanup failed')
+        assert object_ref.resolve() is obj
+        assert component_ref.resolve().is_valid
+    finally:
+        manager.unload_scene(other)
 
 
 # ══════════════════════════════════════════════════════════════════════

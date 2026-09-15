@@ -407,6 +407,263 @@ def test_schema_reload_preserves_live_cds_values_and_uses_new_field_default(
     assert component.new_tuning == 7.5
 
 
+@pytest.mark.parametrize("rollback", [False, True])
+@pytest.mark.parametrize("existing_layout", [False, True])
+def test_inherited_field_schema_reload_keeps_declarations_and_native_values(
+    component_script, monkeypatch, rollback, existing_layout,
+):
+    from Infernux.batch import batch_read
+    from Infernux import lib
+    from Infernux.components._cds_bridge import get_class_info, publish_class
+    from Infernux.components._component_registration import candidate_component_registration_scope
+
+    base_path, (base_type,) = component_script(
+        "InheritedStorageBase.py",
+        """
+        from Infernux.components import InxComponent
+        class InheritedStorageBase(InxComponent):
+            speed: float = 2.0
+        """,
+        "inherited-storage-base-guid",
+    )
+    base_module = get_script_module_name(str(base_path))
+    source = (
+        f"from {base_module} import InheritedStorageBase\n"
+        "class InheritedStorageChild(InheritedStorageBase):\n"
+        "    count: int = 3\n"
+    )
+    guid = f"inherited-storage-child-{rollback}-{existing_layout}-guid"
+    path, (child_type,) = component_script("InheritedStorageChild.py", source, guid)
+    parent, child = base_type(), child_type()
+    parent.speed, child.speed = 11.0, 23.0
+    child._script_guid = guid
+    previous_layout = previous_slot = None
+    if existing_layout:
+        # An earlier owner can still hold this layout in the same process.
+        # A new migration must not write candidate values into its live slots.
+        with candidate_component_registration_scope():
+            known_type = type(child_type.__name__, (base_type,), {
+                "__module__": child_type.__module__,
+                "__annotations__": {"count": int, "tuning": float},
+                "count": 3, "tuning": 7.5,
+            })
+        bind_asset_script_guid(known_type, guid, register=False)
+        previous_layout = publish_class(known_type)
+        previous_slot = lib._cds_alloc(previous_layout)
+        previous_field = known_type.speed._cds_field_id
+        lib._cds_set(previous_layout, previous_field, previous_slot, 0, 71.0)
+    manager = _play_manager(monkeypatch, path, guid, (child,))
+    candidate = (source + "    tuning: float = 7.5\n").encode("utf-8")
+    path.write_bytes(candidate)
+    batch = None
+    closed = False
+    try:
+        batch = manager.prepare_script_reload_batch((
+            ScriptReloadBatchInput(str(path), guid, candidate),
+        ))
+        assert child.speed == batch_read([child], "speed")[0] == 23.0
+        outcome = manager.commit_script_reload_batch(batch)
+        assert outcome.success
+        assert child.speed == batch_read([child], "speed")[0] == 23.0
+        assert child.tuning == 7.5
+        assert parent.speed == batch_read([parent], "speed")[0] == 11.0
+        assert set(child_type._serialized_fields_) == {"count", "tuning"}
+        assert set(get_class_info(child_type)[1]) == {"speed", "count", "tuning"}
+        if existing_layout:
+            assert child._cds_class_id != previous_layout
+            assert lib._cds_get(previous_layout, previous_field, previous_slot, 0) == 71.0
+        if rollback:
+            manager.rollback_script_reload_batch(batch)
+            closed = True
+            assert set(child_type._serialized_fields_) == {"count"}
+            assert not hasattr(child, "tuning")
+        else:
+            manager.finalize_script_reload_batch(batch)
+            closed = True
+        assert child.speed == batch_read([child], "speed")[0] == 23.0
+        assert parent.speed == batch_read([parent], "speed")[0] == 11.0
+        if existing_layout:
+            assert lib._cds_get(previous_layout, previous_field, previous_slot, 0) == 71.0
+    finally:
+        if batch is not None and not closed:
+            manager.rollback_script_reload_batch(batch)
+        parent._call_on_destroy()
+        child._call_on_destroy()
+        if previous_slot is not None:
+            lib._cds_free(previous_layout, previous_slot)
+
+
+@pytest.mark.parametrize("rollback", [False, True])
+def test_stable_field_id_rename_reloads_native_slots_and_can_rollback(
+    component_script, monkeypatch, rollback,
+):
+    from Infernux import lib
+    from Infernux.batch import batch_read
+    from Infernux.components.fields import get_field_schema
+    from Infernux.engine.runtime_dispatch import current_runtime_epoch, ensure_runtime_dispatch_types
+
+    source = (
+        "from Infernux.components import InxComponent, serialized_field\n"
+        "class IdentityReload(InxComponent):\n"
+        "    speed = serialized_field(2.0, field_id='movement')\n"
+    )
+    guid = f"identity-reload-{rollback}-guid"
+    path, (component_type,) = component_script("IdentityReload.py", source, guid)
+    component = component_type()
+    component._script_guid = guid
+    component.speed = 8.0
+    original_schema = get_field_schema(component_type, "speed")
+    original_id, original_slot = component._cds_class_id, component._cds_slot
+    field_index = component_type.speed._cds_field_id
+    manager = _play_manager(monkeypatch, path, guid, (component,))
+    ensure_runtime_dispatch_types((component_type,))
+    previous_epoch = current_runtime_epoch()
+    candidate = source.replace("speed =", "velocity =").encode("utf-8")
+    path.write_bytes(candidate)
+    batch = None
+    closed = False
+    try:
+        batch = manager.prepare_script_reload_batch((
+            ScriptReloadBatchInput(str(path), guid, candidate),
+        ))
+        assert component.speed == 8.0
+        assert not hasattr(component_type, "velocity")
+        outcome = manager.commit_script_reload_batch(batch)
+        assert outcome.success, outcome.error
+        assert component.velocity == batch_read([component], "velocity")[0] == 8.0
+        assert not hasattr(component_type, "speed")
+        assert get_field_schema(component_type, "velocity").attributes["field_id"] == "movement"
+        assert original_schema.property_path.endswith(".speed")
+        assert previous_epoch.descriptor_for(component_type) is not None
+        assert lib._cds_get(original_id, field_index, original_slot, 0) == 8.0
+        if rollback:
+            manager.rollback_script_reload_batch(batch)
+            closed = True
+            assert component._cds_class_id == original_id
+            assert component._cds_slot == original_slot
+            assert component.speed == batch_read([component], "speed")[0] == 8.0
+            assert not hasattr(component_type, "velocity")
+            assert get_field_schema(component_type, "speed").attributes["field_id"] == "movement"
+        else:
+            manager.finalize_script_reload_batch(batch)
+            closed = True
+            component.velocity = 9.0
+            assert batch_read([component], "velocity")[0] == 9.0
+            assert lib._cds_get(original_id, field_index, original_slot, 0) == 8.0
+    finally:
+        if batch is not None and not closed:
+            manager.rollback_script_reload_batch(batch)
+        component._call_on_destroy()
+
+
+@pytest.mark.parametrize("rollback", [False, True])
+def test_range_reload_publishes_normalized_native_values_atomically(
+    component_script, monkeypatch, rollback,
+):
+    from Infernux import lib
+    from Infernux.batch import batch_read
+    from Infernux.components.fields import get_field_schema
+    from Infernux.engine.runtime_dispatch import current_runtime_epoch, ensure_runtime_dispatch_types
+
+    source = (
+        "from Infernux.components import InxComponent, serialized_field\n"
+        "class RangeReload(InxComponent):\n"
+        "    value: float = serialized_field(default=2.0, range=(0.0, 10.0))\n"
+    )
+    guid = f"range-reload-{rollback}-guid"
+    path, (component_type,) = component_script("RangeReload.py", source, guid)
+    component = component_type()
+    component._script_guid = guid
+    component.value = 8.0
+    original_schema = get_field_schema(component_type, "value")
+    assert original_schema.attributes["range"] == (0.0, 10.0)
+    original_id, original_slot = component._cds_class_id, component._cds_slot
+    field_id = component_type.value._cds_field_id
+    manager = _play_manager(monkeypatch, path, guid, (component,))
+    ensure_runtime_dispatch_types((component_type,))
+    previous_epoch = current_runtime_epoch()
+    assert previous_epoch.descriptor_for(component_type) is not None
+    candidate = source.replace("10.0", "5.0").encode("utf-8")
+    path.write_bytes(candidate)
+    batch = None
+    closed = False
+    try:
+        batch = manager.prepare_script_reload_batch((
+            ScriptReloadBatchInput(str(path), guid, candidate),
+        ))
+        assert component.value == 8.0
+        outcome = manager.commit_script_reload_batch(batch)
+        assert outcome.success, outcome.error
+        assert component.value == batch_read([component], "value")[0] == 5.0
+        assert get_field_schema(component_type, "value").attributes["range"] == (0.0, 5.0)
+        assert original_schema.attributes["range"] == (0.0, 10.0)
+        assert component._cds_class_id != original_id
+        assert lib._cds_get(original_id, field_id, original_slot, 0) == 8.0
+        if rollback:
+            manager.rollback_script_reload_batch(batch)
+            closed = True
+            assert component._cds_class_id == original_id
+            assert component._cds_slot == original_slot
+            assert component.value == batch_read([component], "value")[0] == 8.0
+            assert get_field_schema(component_type, "value").attributes["range"] == (0.0, 10.0)
+        else:
+            manager.finalize_script_reload_batch(batch)
+            closed = True
+            # Even an unchanged numeric shape gets a private generation when
+            # its constraints change. The previous epoch still owns its data.
+            assert previous_epoch.descriptor_for(component_type) is not None
+            assert lib._cds_get(original_id, field_id, original_slot, 0) == 8.0
+            component.value = 9.0
+            assert component.value == batch_read([component], "value")[0] == 5.0
+    finally:
+        if batch is not None and not closed:
+            manager.rollback_script_reload_batch(batch)
+        component._call_on_destroy()
+
+
+def test_repeated_schema_edits_can_return_to_an_earlier_numeric_layout(
+    component_script, monkeypatch,
+):
+    from Infernux.batch import batch_read
+
+    source = (
+        "from Infernux.components import InxComponent\n"
+        "class RepeatedLayout(InxComponent):\n"
+        "    value: float = 2.0\n"
+    )
+    guid = "repeated-live-layout-guid"
+    path, (component_type,) = component_script("RepeatedLayout.py", source, guid)
+    component = component_type()
+    component._script_guid = guid
+    component.value = 19.0
+    manager = _play_manager(monkeypatch, path, guid, (component,))
+    try:
+        for index in range(8):
+            expanded = index % 2 == 0
+            candidate = (source + ("    extra: int = 5\n" if expanded else "")).encode("utf-8")
+            path.write_bytes(candidate)
+            batch = manager.prepare_script_reload_batch((
+                ScriptReloadBatchInput(str(path), guid, candidate),
+            ))
+            closed = False
+            try:
+                outcome = manager.commit_script_reload_batch(batch)
+                assert outcome.success, outcome.error
+                assert type(component) is component_type
+                assert component.value == batch_read([component], "value")[0] == 19.0 + index
+                assert hasattr(component, "extra") == expanded
+                if expanded:
+                    assert component.extra == 5
+                manager.finalize_script_reload_batch(batch)
+                closed = True
+            finally:
+                if not closed:
+                    manager.rollback_script_reload_batch(batch)
+            component.value += 1.0
+    finally:
+        component._call_on_destroy()
+
+
 def test_schema_reload_preserves_live_python_descriptor_values_without_cds(
     component_script,
     monkeypatch,

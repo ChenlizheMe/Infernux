@@ -306,11 +306,18 @@ class PrimitiveMeshes
             std::array<float, 3> u{};
             std::array<float, 3> v{};
             std::array<bool, 3> seamShifted{};
+            std::array<bool, 3> pole{};
             for (size_t corner = 0; corner < 3; ++corner) {
                 const glm::vec3 normal = glm::normalize(positions[face[corner]]);
                 u[corner] = std::atan2(normal.z, normal.x) / (2.0f * PI) + 0.5f;
                 v[corner] = std::acos(std::clamp(normal.y, -1.0f, 1.0f)) / PI;
+                pole[corner] = normal.x * normal.x + normal.z * normal.z < 1.0e-12f;
             }
+            // Longitude is undefined at a pole. Choose the triangle's UV
+            // interval first, then give its pole a face-local midpoint.
+            for (size_t corner = 0; corner < 3; ++corner)
+                if (pole[corner])
+                    u[corner] = u[(corner + 1) % 3];
             if (*std::max_element(u.begin(), u.end()) - *std::min_element(u.begin(), u.end()) > 0.5f) {
                 for (size_t corner = 0; corner < 3; ++corner) {
                     if (u[corner] < 0.5f) {
@@ -320,9 +327,15 @@ class PrimitiveMeshes
                 }
             }
 
+            for (size_t corner = 0; corner < 3; ++corner)
+                if (pole[corner])
+                    u[corner] = (u[(corner + 1) % 3] + u[(corner + 2) % 3]) * 0.5f;
+
             for (size_t corner = 0; corner < 3; ++corner) {
                 const uint32_t sourceIndex = face[corner];
-                const uint64_t cacheKey = (static_cast<uint64_t>(sourceIndex) << 1U) | (seamShifted[corner] ? 1U : 0U);
+                const uint64_t cacheKey =
+                    pole[corner] ? (uint64_t{1} << 63U) | static_cast<uint64_t>(mesh.indices.size())
+                                 : (static_cast<uint64_t>(sourceIndex) << 1U) | (seamShifted[corner] ? 1U : 0U);
                 auto existing = renderVertexCache.find(cacheKey);
                 if (existing == renderVertexCache.end()) {
                     const glm::vec3 normal = glm::normalize(positions[sourceIndex]);

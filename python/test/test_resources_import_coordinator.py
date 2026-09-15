@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import os
 import threading
 import time
 import types
@@ -286,6 +287,26 @@ def test_stale_meta_deleted_event_after_asset_delete_is_ignored(monkeypatch, tmp
     assert database.mutations == []
 
 
+def test_deleted_new_asset_does_not_retry_importing_its_absent_file(monkeypatch, tmp_path):
+    database = _AssetDatabaseProbe()
+    handler = ResourceChangeHandler(_EngineProbe(database))
+    asset_calls = []
+    errors = []
+    _patch_asset_manager(monkeypatch, asset_calls)
+    monkeypatch.setattr(Debug, "log_error", lambda message: errors.append(message))
+    path = str(tmp_path / "NewTarget.rendertexture")
+    # The Project commands already committed creation and deletion. Both
+    # watcher notifications can carry that same imported identity.
+    handler._coordinator.submit(AssetFsEventKind.CREATED, path, guid_hint="target-guid")
+    handler._coordinator.submit(AssetFsEventKind.MODIFIED, path)
+    handler._coordinator.submit(AssetFsEventKind.DELETED, path, guid_hint="target-guid")
+    assert handler.process_pending_reloads(force=True) == 0
+    assert handler.pending_count == 0
+    assert database.mutations == []
+    assert asset_calls == []
+    assert errors == []
+
+
 def test_stale_meta_deleted_event_after_atomic_replace_is_ignored(monkeypatch, tmp_path):
     database = _AssetDatabaseProbe()
     handler = ResourceChangeHandler(_EngineProbe(database))
@@ -473,6 +494,99 @@ def test_first_scene_save_as_imports_active_unregistered_target(monkeypatch, tmp
     assert [entry[0] for entry in asset_calls] == ["asset-created"]
 
 
+@pytest.mark.parametrize("staging_name", ["TankBattle.py.tmp.47892.966d5eeabe93", ".editor-save", "draft.tmp"])
+@pytest.mark.parametrize("registered", [False, True])
+def test_external_atomic_script_publication_registers_destination_content(
+    monkeypatch, tmp_path, staging_name, registered,
+):
+    database = _AssetDatabaseProbe()
+    engine = _EngineProbe(database)
+    handler = ResourceChangeHandler(engine)
+    asset_calls = []
+    _patch_asset_manager(monkeypatch, asset_calls)
+    target = tmp_path / "TankBattle.py"
+    staging = tmp_path / staging_name
+    target.write_text("class TankBattle: pass", encoding="utf-8")
+    if registered:
+        database.guid_by_path[str(target)] = "stable-guid"
+    checked = []
+    handler._dependency_graph = SimpleNamespace(project_root=str(tmp_path))
+    monkeypatch.setattr("Infernux.engine.resources_manager.is_project_component_script", lambda *_args: True)
+    monkeypatch.setattr(handler, "_check_script", lambda path, **_kwargs: checked.append(path))
+
+    handler.on_created(_event(staging))
+    handler.on_modified(_event(staging))
+    handler.on_moved(_event(staging, destination=target))
+
+    assert engine.editor_wakes > 0
+    assert handler.process_pending_reloads(force=True) == 1
+    assert [entry[0] for entry in database.mutations] == ["modified" if registered else "import"]
+    assert checked == [str(target.resolve())]
+    if registered:
+        assert database.guid_by_path[str(target)] == "stable-guid"
+
+
+@pytest.mark.parametrize("staging_name", ["TankBattle.py.tmp.47892.966d5eeabe93", ".editor-save"])
+@pytest.mark.parametrize("destination_exists", [False, True])
+def test_already_imported_staging_file_cannot_replace_target_script_identity(
+    engine, tmp_path, staging_name, destination_exists,
+):
+    from Infernux.components.registry import get_component_registrations, unregister_component_script
+    from Infernux.components.script_loader import retire_script_module
+    from Infernux.lib import ResourceType
+
+    scripts = tmp_path / "Assets" / "Scripts"
+    scripts.mkdir(parents=True)
+    target = scripts / "TankBattle.py"
+    staging = scripts / staging_name
+    source = "from Infernux import InxComponent\nclass AtomicPublicationTank(InxComponent):\n    marker = 1\n"
+    database = engine.get_asset_database()
+    handler = ResourceChangeHandler(_EngineProbe(database), project_path=str(tmp_path))
+    try:
+        target_guid = ""
+        if destination_exists:
+            target.write_text(source, encoding="utf-8")
+            handler.on_created(_event(target))
+            handler.process_pending_reloads(force=True)
+            _run_script_publication_owner(handler)
+            target_guid = database.get_guid_from_path(str(target))
+        before = [entry for entry in get_component_registrations(project_root=str(tmp_path))
+                  if entry.project_script]
+        assert len(before) == int(destination_exists)
+        staging.write_text(source.replace("marker = 1", "marker = 2"), encoding="utf-8")
+        handler.on_created(_event(staging))
+        handler.process_pending_reloads(force=True)
+        staging_guid = database.get_guid_from_path(str(staging))
+        assert staging_guid and staging_guid != target_guid
+
+        os.replace(staging, target)
+        handler.on_moved(_event(staging, destination=target))
+        handler.process_pending_reloads(force=True)
+        _run_script_publication_owner(handler)
+
+        assert database.get_guid_from_path(str(target)) == (target_guid or staging_guid)
+        assert database.get_meta_by_path(str(target)).get_resource_type() == ResourceType.Script
+        assert not database.get_guid_from_path(str(staging))
+        assert not Path(str(staging) + ".meta").exists()
+        after = [entry for entry in get_component_registrations(project_root=str(tmp_path))
+                 if entry.project_script]
+        assert len(after) == 1
+        if destination_exists:
+            assert after[0].script_path == before[0].script_path
+            assert after[0].type_name == before[0].type_name
+        else:
+            assert Path(after[0].script_path) == target
+            assert after[0].type_name == "AtomicPublicationTank"
+        published = handler._script_change_collector.journal.last_known_good(str(target))
+        assert published is not None
+        assert b"marker = 2" in published.source
+    finally:
+        unregister_component_script(str(target))
+        retire_script_module(str(target))
+        database.delete_asset(str(target))
+        database.delete_asset(str(staging))
+
+
 def test_active_registered_scene_external_edit_is_reimported(monkeypatch, tmp_path):
     database = _AssetDatabaseProbe()
     handler = ResourceChangeHandler(_EngineProbe(database))
@@ -601,6 +715,59 @@ def test_dirty_scene_still_blocks_external_reimport_for_user_arbitration(
     assert asset_calls == []
     assert document.state is DocumentState.CONFLICT
     assert document.is_dirty
+
+
+@pytest.mark.parametrize("kind", ["scene", "render_effect"])
+def test_failed_external_import_retries_without_acknowledging_unpublished_bytes(
+    monkeypatch, tmp_path, kind,
+):
+    from Infernux.engine.interaction import DocumentKind, DocumentRegistry, DocumentState
+    import json
+
+    database = _AssetDatabaseProbe()
+    handler = ResourceChangeHandler(_EngineProbe(database))
+    _patch_asset_manager(monkeypatch, [])
+    path = tmp_path / ("Retry.scene" if kind == "scene" else "Retry.effect")
+    content = {"$schema": "infernux.render_effect", "feature_type": "infernux.post.bloom",
+               "parameters": {}, "dependencies": []}
+    path.write_text(json.dumps(content), encoding="utf-8")
+    database.guid_by_path[str(path)] = "retry-guid"
+    reloads = []
+    registry = DocumentRegistry.instance()
+    document = registry.create(
+        DocumentKind(kind), "Retry", resource_path=str(path),
+        controller=SimpleNamespace(reload_from_resource=lambda **_kwargs: reloads.append(True)),
+    )
+    loaded_baseline = document.durable_file_state
+    attempts = []
+    reimport = AssetManager.reimport_asset
+
+    def fail_first_import(asset_path, **kwargs):
+        attempts.append(asset_path)
+        if len(attempts) == 1:
+            raise _AssetImportNotReady("source is temporarily unavailable")
+        return reimport(asset_path, **kwargs)
+
+    monkeypatch.setattr(AssetManager, "reimport_asset", fail_first_import)
+    path.write_text(json.dumps(content, indent=2), encoding="utf-8")
+    handler.on_modified(_event(path))
+    assert handler.process_pending_reloads(force=True) == 1
+    assert handler.pending_count == 1
+    assert document.durable_file_state is loaded_baseline
+    assert document.external_file_state is not None
+    assert document.state is DocumentState.CONFLICT
+    assert not reloads
+    external_revision = document.external_revision
+
+    assert handler.process_pending_reloads(force=True) == 1
+
+    assert len(attempts) == 2
+    assert reloads == [True]
+    assert handler.pending_count == 0
+    assert document.state is DocumentState.READY
+    assert document.external_file_state is None
+    assert document.external_revision == external_revision
+    assert registry.durable_resource_content_changed(str(path)) is False
 
 
 def test_document_store_atomic_replace_does_not_delete_republished_target(monkeypatch, tmp_path):

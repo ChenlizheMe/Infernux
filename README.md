@@ -22,7 +22,8 @@
   <a href="https://infernux-engine.com/">Website</a> ·
   <a href="https://infernux-engine.com/wiki.html">Documentation</a> ·
   <a href="https://infernux-engine.discourse.group/">Forum</a> ·
-  <a href="https://github.com/ChenlizheMe/Infernux/releases">Releases</a>
+  <a href="https://github.com/ChenlizheMe/Infernux/releases">Releases</a> ·
+  <a href="CODE_SIGNING_POLICY.md">Code signing policy</a>
 </p>
 
 <p align="center">
@@ -131,6 +132,17 @@ cmake --build --preset windows-msvc-wheel
 python packaging/launcher.py
 ```
 
+The Visual Studio generator is multi-config. If you build a target directly
+instead of using a build preset, always select the same configuration explicitly:
+
+```powershell
+cmake --build out/build/windows-msvc-release --config Release --target stage_python_package
+cmake --build out/build/windows-msvc-release --config Release --target package_python
+```
+
+Omitting `--config Release` selects the generator default (normally `Debug`)
+and can mix Debug runtime libraries with the Release Vulkan/native artifacts.
+
 On Ubuntu or Debian, install the native dependencies once, then configure the
 repository. The setup script initializes submodules and creates the Python 3.13
 Conda environment from `environment.yml`. If an older `infernux` environment
@@ -173,6 +185,10 @@ ctest --preset windows-msvc-dev --output-on-failure
   url     = {https://github.com/ChenlizheMe/Infernux}
 }
 ```
+
+## Code signing policy
+
+Free code signing provided by [SignPath.io](https://signpath.io/), certificate by [SignPath Foundation](https://signpath.org/). Team roles, signed-artifact boundaries, network behavior, and removal instructions are documented in the [Infernux code signing policy](CODE_SIGNING_POLICY.md).
 
 ## License
 

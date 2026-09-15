@@ -12,6 +12,7 @@ from Infernux.jit_hir import (
     EffectKind,
     HIRParseError,
     ValueType,
+    analyze_buffer_aliases,
     analyze_function,
     build_hir,
     hir_fingerprint,
@@ -24,11 +25,109 @@ def _loop(source: str):
     return hir, hir.loops[0]
 
 
+@pytest.mark.parametrize("read,expected", [("i, 1", False), ("i-1, 0", True)])
+def test_multidimensional_row_access_dependence(read, expected):
+    hir = build_hir(f"def kernel(x,n):\n    for i in range(1,n):\n        x[i,0] = x[{read}] + 1\n        x[i,1] = 2\n")
+    hazards = {DiagnosticCode.LOOP_CARRIED_READ, DiagnosticCode.LOOP_CARRIED_WRITE}
+    assert any(item.code in hazards for item in hir.diagnostics) is expected
+    # Tuple-index lowering is not yet part of the minimal CPU HIR.
+    assert not hir.eligible_loops
+
+
+@pytest.mark.parametrize("body,expected", [
+    ("first[i] = second[i - 1] + 1", DiagnosticCode.LOOP_CARRIED_READ),
+    ("first[i] = 1\n        second[i + 1] = 2", DiagnosticCode.LOOP_CARRIED_WRITE),
+    ("first[i] += 1\n        second[i] += 2", None),
+    ("first[2 * i] = 1\n        second[2 * i + 1] = 2", None),
+    ("output[i] = first[i - 1] + second[i + 1]", None),
+])
+def test_actual_equal_layout_aliases_share_the_symbolic_dependence_rules(body, expected):
+    hir = build_hir(f"def kernel(first, second, output, n):\n    for i in range(1, n):\n        {body}\n")
+    assert analyze_buffer_aliases(hir, ()) == ()
+    diagnostics = analyze_buffer_aliases(hir, (("first", "second"),))
+    if expected is None:
+        assert diagnostics == ()
+    else:
+        assert diagnostics[0].code == expected
+        assert diagnostics[0].location.line >= 3
+
+
+def test_nested_aliases_are_not_proven_by_missing_hir_accesses():
+    hir = build_hir("""def kernel(first, second):
+    for i in range(first.shape[0]):
+        for j in range(3):
+            first[i] += second[j]
+""")
+    diagnostics = analyze_buffer_aliases(hir, (("first", "second"),))
+    assert diagnostics[0].code == DiagnosticCode.ALIAS_RISK
+    assert "not proven" in diagnostics[0].message
+
+
+def test_alias_residue_proof_does_not_require_affine_trip_count():
+    hir = build_hir("""def kernel(first, second):
+    for i in range(first.shape[0] // 2):
+        first[2 * i] = 5
+        second[2 * i + 1] = 9
+""")
+    assert any(item.code == DiagnosticCode.UNSUPPORTED_RANGE for item in hir.diagnostics)
+    assert analyze_buffer_aliases(hir, (("first", "second"),)) == ()
+
+
+def test_unresolved_local_array_binding_is_not_mistaken_for_independent_storage():
+    hir = build_hir("""def kernel(first, second):
+    view = first
+    for i in range(1, first.shape[0]):
+        view[i] = second[i - 1] + 1
+""")
+    diagnostics = analyze_buffer_aliases(hir, (("first", "second"),))
+    assert diagnostics[0].code == DiagnosticCode.ALIAS_RISK
+    assert "indirect binding" in diagnostics[0].message
+
+
 def _codes(loop):
     return {diagnostic.code for diagnostic in loop.diagnostics}
 
 
 class TestSafeCorpus:
+    def test_even_and_odd_writes_do_not_conflict(self):
+        _, loop = _loop('''
+def fill(values, n):
+    for i in range(n):
+        values[2 * i] = 1
+        values[2 * i + 1] = 2
+''')
+        assert loop.parallel_eligible
+
+    def test_same_shifted_element_read_write_is_independent(self):
+        _, loop = _loop('''
+def update(values, n):
+    for i in range(n - 1):
+        values[i + 1] = values[i + 1] + 1
+''')
+        assert loop.parallel_eligible
+
+    def test_reduction_feedback_is_not_a_parallel_reduction(self):
+        _, loop = _loop('''
+def scan(values, output):
+    total = 0
+    for i in range(len(values)):
+        total += values[i]
+        output[i] = total
+    return total
+''')
+        assert not loop.parallel_eligible
+        assert DiagnosticCode.REDUCTION_FEEDBACK in _codes(loop)
+
+    def test_different_writes_to_one_buffer_are_not_independent(self):
+        _, loop = _loop('''
+def overwrite(values, n):
+    for i in range(n - 1):
+        values[i] = 1
+        values[i + 1] = 2
+''')
+        assert not loop.parallel_eligible
+        assert DiagnosticCode.LOOP_CARRIED_WRITE in _codes(loop)
+
     def test_direct_elementwise_write_and_pure_math(self):
         hir, loop = _loop(
             """

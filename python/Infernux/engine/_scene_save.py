@@ -136,6 +136,24 @@ class SceneSaveMixin:
                     "prefab Save As is not supported in Prefab Mode",
                 )
             return self._save_prefab(ticket_id=ticket.ticket_id)
+        binding = self._binding_for_document(document.document_id)
+        if binding is not None and document.document_id != self.document_id:
+            if save_as or not binding.resource_path:
+                self._pending_save_ticket_id = ticket.ticket_id
+                self._pending_save_document_id = document.document_id
+                if self._show_save_as_dialog(document_id=document.document_id):
+                    return DocumentActionResult(DocumentActionStatus.PENDING)
+                self._pending_save_ticket_id = ""
+                self._pending_save_document_id = ""
+                return DocumentActionResult(
+                    DocumentActionStatus.REJECTED,
+                    "no project root is available",
+                )
+            return self._do_save(
+                binding.resource_path,
+                ticket_id=ticket.ticket_id,
+                document_id=document.document_id,
+            )
         if document.document_id != self.document_id:
             if document.document_id != self._previous_scene_document_id:
                 return DocumentActionResult(
@@ -188,17 +206,22 @@ class SceneSaveMixin:
                 "cannot save a scene while in Play mode",
             )
         document = DocumentRegistry.instance().get(ticket.document_id)
-        if document is None or document.document_id != self.document_id:
+        binding = self._binding_for_document(ticket.document_id)
+        if document is None or binding is None:
             return DocumentActionResult(
                 DocumentActionStatus.REJECTED,
-                "the scene document is not active",
+                "the scene document is not resident",
             )
         if document.kind is not DocumentKind.SCENE:
             return DocumentActionResult(
                 DocumentActionStatus.REJECTED,
                 "explicit resource save only supports Scene documents",
             )
-        return self._do_save(resource_path, ticket_id=ticket.ticket_id)
+        return self._do_save(
+            resource_path,
+            ticket_id=ticket.ticket_id,
+            document_id=document.document_id,
+        )
 
     def discard(self, *, document_id: str) -> bool:
         from Infernux.engine.interaction import DocumentKind, DocumentRegistry
@@ -321,7 +344,13 @@ class SceneSaveMixin:
             save_as=True,
         ).accepted
 
-    def _do_save(self, path: str, *, ticket_id: str = "") -> bool:
+    def _do_save(
+        self,
+        path: str,
+        *,
+        ticket_id: str = "",
+        document_id: str = "",
+    ) -> bool:
         """Actually write the scene to *path*."""
         from Infernux.engine.ui.engine_status import EngineStatus
         target_path = str(path or "")
@@ -334,7 +363,9 @@ class SceneSaveMixin:
         )
 
         registry = DocumentRegistry.instance()
-        document = registry.get(self.document_id)
+        target_document_id = str(document_id or self.document_id)
+        binding = self._binding_for_document(target_document_id)
+        document = registry.get(target_document_id)
         if document is None:
             Debug.log_error("Scene save requires a bound editor document.")
             return False
@@ -345,14 +376,20 @@ class SceneSaveMixin:
                 document.document_id,
                 save_as=not current or not same_path(target, current),
             ).ticket_id
-        ok = self._do_save_inner(target_path, ticket_id=active_ticket_id)
+        scene = binding.scene if binding is not None else None
+        ok = self._do_save_inner(
+            target_path,
+            ticket_id=active_ticket_id,
+            scene=scene,
+            document_id=target_document_id,
+        )
         if ok:
             normalized = resolved_path(target_path)
             current_token = None
             try:
                 from Infernux.lib import SceneManager
 
-                scene = SceneManager.instance().get_active_scene()
+                scene = binding.scene if binding is not None else SceneManager.instance().get_active_scene()
                 if scene is not None:
                     current_token = document_content_token(json.loads(scene.serialize()))
             except (TypeError, ValueError, json.JSONDecodeError) as exc:
@@ -372,6 +409,10 @@ class SceneSaveMixin:
             )
             self._pending_save_ticket_id = ""
             self._pending_save_document_id = ""
+            if binding is not None:
+                binding.resource_path = normalized
+                if binding.document_id == self.document_id:
+                    self._current_scene_path = normalized
             EngineStatus.flash("保存完成 Saved", 1.0, duration=1.5)
         else:
             registry.complete_save(
@@ -385,7 +426,14 @@ class SceneSaveMixin:
             EngineStatus.flash("保存失败 Save Failed", 0.0, duration=2.0)
         return ok
 
-    def _do_save_inner(self, path: str, *, ticket_id: str = "") -> bool:
+    def _do_save_inner(
+        self,
+        path: str,
+        *,
+        ticket_id: str = "",
+        scene=None,
+        document_id: str = "",
+    ) -> bool:
         """Internal save implementation.
 
         Serializes the scene on the main thread, then durably replaces the file
@@ -402,7 +450,7 @@ class SceneSaveMixin:
 
         from Infernux.lib import SceneManager
         sm = SceneManager.instance()
-        scene = sm.get_active_scene()
+        scene = scene or sm.get_active_scene()
         if not scene:
             Debug.log_warning("No active scene to save.")
             return False
@@ -486,7 +534,7 @@ class SceneSaveMixin:
                     if ticket_id and registry.get_save_ticket(ticket_id) is not None
                     else 0
                 ),
-                document_id=self.document_id,
+                document_id=str(document_id or self.document_id),
             )
         except (OSError, RuntimeError) as exc:
             scene.name = previous_scene_name
@@ -494,7 +542,12 @@ class SceneSaveMixin:
             Debug.log_error(f"Failed to write scene file: {exc}")
             return False
 
-        self._current_scene_path = abs_path
+        target_document_id = str(document_id or self.document_id)
+        binding = self._binding_for_document(target_document_id)
+        if binding is not None:
+            binding.resource_path = abs_path
+        if target_document_id == self.document_id:
+            self._current_scene_path = abs_path
 
         # Scene persistence and AssetDatabase publication form one authoring
         # transaction.  Waiting for the file watcher left an existing scene's
@@ -523,9 +576,9 @@ class SceneSaveMixin:
                 Debug.log_warning(f"Scene saved but asset publication is pending: {exc}")
 
         # Persist editor camera state for this scene
-        self._save_camera_state(self._current_scene_path)
-
-        self._remember_last_scene(self._current_scene_path)
+        if target_document_id == self.document_id:
+            self._save_camera_state(abs_path)
+            self._remember_last_scene(abs_path)
         return True
 
     def _default_scene_save_path(self) -> Optional[str]:
@@ -744,7 +797,15 @@ class SceneSaveMixin:
                 ticket_id=self._pending_save_ticket_id,
             )
         else:
-            saved = self._do_save(path)
+            saved = self._do_save(
+                path,
+                ticket_id=self._pending_save_ticket_id,
+                document_id=(
+                    target_document.document_id
+                    if target_document is not None
+                    else self.document_id
+                ),
+            )
         if not saved:
             self._save_as_error = "The scene could not be saved. Check the Console for details."
             return False

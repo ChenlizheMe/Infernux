@@ -91,3 +91,39 @@ class UITransitionType(IntEnum):
     """Trigger an animator state (future)."""
     None_ = 3
     """No visual feedback."""
+
+
+class UILayoutDirection(IntEnum):
+    None_ = 0
+    Horizontal = 1
+    Vertical = 2
+
+
+class UILayoutSizing(IntEnum):
+    Fixed = 0
+    Hug = 1
+    Fill = 2
+
+
+class UILayoutPosition(IntEnum):
+    Flow = 0
+    Absolute = 1
+
+
+class UILayoutAlign(IntEnum):
+    Start = 0
+    Center = 1
+    End = 2
+    Stretch = 3
+
+class UILayoutJustify(IntEnum):
+    Start = 0
+    Center = 1
+    End = 2
+    SpaceBetween = 3
+
+class UIFillDirection(IntEnum):
+    LeftToRight = 0
+    RightToLeft = 1
+    BottomToTop = 2
+    TopToBottom = 3

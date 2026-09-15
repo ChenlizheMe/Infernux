@@ -71,3 +71,47 @@ class UITransitionType(IntEnum):
     SpriteSwap = 1     # Swap the target image sprite (future)
     Animation = 2      # Trigger an animator state (future)
     None_ = 3          # No visual feedback
+
+
+class UILayoutDirection(IntEnum):
+    """Primary axis used by a Figma-style UIFrame."""
+    None_ = 0
+    Horizontal = 1
+    Vertical = 2
+
+
+class UILayoutSizing(IntEnum):
+    """How an element obtains its size inside an auto-layout frame."""
+    Fixed = 0
+    Hug = 1
+    Fill = 2
+
+
+class UILayoutPosition(IntEnum):
+    """Whether a child participates in its parent's auto layout."""
+    Flow = 0
+    Absolute = 1
+
+
+class UILayoutAlign(IntEnum):
+    """Cross-axis alignment inside an auto-layout frame."""
+    Start = 0
+    Center = 1
+    End = 2
+    Stretch = 3
+
+
+class UILayoutJustify(IntEnum):
+    """Distribution of flow children along an auto-layout frame's main axis."""
+    Start = 0
+    Center = 1
+    End = 2
+    SpaceBetween = 3
+
+
+class UIFillDirection(IntEnum):
+    """Direction in which progress and slider values fill their rectangle."""
+    LeftToRight = 0
+    RightToLeft = 1
+    BottomToTop = 2
+    TopToBottom = 3

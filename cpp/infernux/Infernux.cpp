@@ -7,6 +7,7 @@
  */
 
 #include "Infernux.h"
+#include <function/renderer/rhi/RhiComputeHost.h>
 // Explicit includes for types now only forward-declared in InxRenderer.h
 #include <algorithm>
 #include <array>
@@ -41,10 +42,12 @@
 #include <function/resources/InxTexture/InxTexture.h>
 #include <function/resources/InxTexture/TextureLoader.h>
 #include <function/resources/PhysicMaterial/PhysicMaterialLoader.h>
+#include <function/resources/RenderTexture/RenderTextureLoader.h>
 #include <function/resources/ShaderAsset/ShaderAsset.h>
 #include <function/resources/ShaderAsset/ShaderLoader.h>
 #include <function/scene/Collider.h>
 #include <function/scene/Component.h>
+#include <function/scene/ComponentFactory.h>
 #include <function/scene/MeshRenderer.h>
 #include <function/scene/PrimitiveMeshes.h>
 #include <function/scene/physics/PhysicsWorld.h>
@@ -64,9 +67,6 @@
 #include <core/config/InxPlatform.h>
 #include <core/threading/JobSystem.h>
 #include <function/scene/TransformECSStore.h>
-#ifdef INX_PLATFORM_WINDOWS
-#include <ShlObj.h> // SHGetFolderPathW for Documents path
-#endif
 
 namespace infernux
 {
@@ -912,6 +912,7 @@ bool Infernux::TryCommitLinkedShaderPrograms(const std::shared_ptr<LinkedShaderP
 
 Infernux::Infernux(std::string dllPath, RuntimeMode mode) : m_runtimeMode(mode), m_isCleanedUp(false)
 {
+    ComponentFactory::PublishSemanticTypes();
     (void)dllPath;
     INXLOG_DEBUG("Create Infernux.");
     m_assetDatabase = std::make_unique<AssetDatabase>();
@@ -1045,7 +1046,7 @@ void Infernux::Tick(float deltaTime)
     if (m_preSceneUpdateCallback)
         m_preSceneUpdateCallback(deltaTime);
     const float sceneDeltaTime = sceneManager.ConsumeFrameDeltaTime(deltaTime);
-    TransformECSStore::Instance().BeginFrameCache(sceneManager.GetActiveScene());
+    TransformECSStore::Instance().BeginFrameCache();
     sceneManager.Update(sceneDeltaTime);
     sceneManager.LateUpdate(sceneDeltaTime);
     // Mirror the graphical DrawFrame simulation segment exactly (see
@@ -1057,8 +1058,6 @@ void Infernux::Tick(float deltaTime)
     // SnapshotPublication) stay renderer-owned by design.
     if (TransformECSStore::Instance().EndFrameCache())
         sceneManager.PublishPhysicsTransformsToRenderer();
-    if (Scene *activeScene = sceneManager.GetActiveScene())
-        TransformECSStore::Instance().SyncSceneWorldMatrices(activeScene);
     sceneManager.PublishAuthoredTransformsToPhysics();
     sceneManager.EmitRuntimeFrameBarrier(SceneManager::RuntimeFrameBarrier::FinalTransformResolve);
     sceneManager.EmitRuntimeFrameBarrier(SceneManager::RuntimeFrameBarrier::AnimationTimeline);
@@ -1092,10 +1091,39 @@ void Infernux::Exit()
     m_runCv.notify_all();
 }
 
+std::unique_ptr<rhi::ComputeHost> Infernux::AcquireComputeHost()
+{
+    if (!m_isInitialized || m_isCleaningUp || m_isCleanedUp || !m_renderer)
+        throw std::runtime_error("Compute plugins require an initialized graphical engine");
+    return m_renderer->AcquireComputeHost();
+}
+
+std::shared_ptr<rhi::RenderTexture> Infernux::CreateRenderTexture(const rhi::RenderTextureDesc &description)
+{
+    if (!m_isInitialized || m_isCleaningUp || m_isCleanedUp || !m_renderer)
+        throw std::runtime_error("RenderTexture requires an initialized graphical engine");
+    return m_renderer->CreateRenderTexture(description);
+}
+
+void Infernux::RequireComputeHostsReleased() const
+{
+    if (m_renderer && m_renderer->HasComputeHostLeases())
+        throw std::runtime_error("Release compute plugin runtimes before cleaning up the engine");
+}
+
+std::shared_ptr<rhi::RenderTexture> Infernux::LoadRenderTexture(const std::string &guid)
+{
+    if (!m_isInitialized || m_isCleaningUp || m_isCleanedUp || !m_renderer)
+        throw std::runtime_error("RenderTexture requires an initialized graphical engine");
+    return m_renderer->LoadRenderTexture(guid);
+}
+
 void Infernux::Cleanup()
 {
     if (m_isCleanedUp)
         return;
+
+    RequireComputeHostsReleased();
 
     m_isCleaningUp = true;
     m_preSceneUpdateCallback = nullptr;
@@ -3039,6 +3067,14 @@ void Infernux::InitRenderer(int width, int height, const std::string &projectPat
                                 std::make_unique<InxDefaultTextLoader>(ResourceType::RenderEffect));
         registry.RegisterLoader(ResourceType::ParticleGraph,
                                 std::make_unique<InxDefaultTextLoader>(ResourceType::ParticleGraph));
+        registry.RegisterLoader(ResourceType::DataAsset,
+                                std::make_unique<InxDefaultTextLoader>(ResourceType::DataAsset));
+        registry.RegisterLoader(ResourceType::RenderTexture,
+                                std::make_unique<RenderTextureLoader>(
+                                    [this](const std::string &guid, const rhi::RenderTextureDesc &description) {
+                                        if (m_renderer)
+                                            m_renderer->ReconfigureImportedRenderTexture(guid, description);
+                                    }));
         registry.RegisterLoader(ResourceType::DefaultBinary, std::make_unique<InxDefaultBinaryLoader>());
 
         // Populate AssetDatabase's meta-loader table from registered loaders
@@ -3151,6 +3187,21 @@ void Infernux::InitRenderer(int width, int height, const std::string &projectPat
         // ── Register unified asset event callbacks ──────────────────
         auto &graph = AssetDependencyGraph::Instance();
 
+        graph.RegisterCallback(ResourceType::RenderTexture, [this](const std::string &dependentGuid,
+                                                                   const std::string &guid, AssetEvent event) {
+            if (m_renderer &&
+                m_renderer->InvalidateMaterialTextureAssets(dependentGuid, guid, event == AssetEvent::Deleted))
+                return;
+            uint64_t id = 0;
+            const auto [end, error] =
+                std::from_chars(dependentGuid.data(), dependentGuid.data() + dependentGuid.size(), id);
+            if (error != std::errc{} || end != dependentGuid.data() + dependentGuid.size())
+                return;
+            auto *camera = dynamic_cast<Camera *>(Component::FindByComponentId(id));
+            if (camera && camera->GetTargetTextureGuid() == guid)
+                camera->OnTargetTextureAssetChanged(event == AssetEvent::Deleted);
+        });
+
         auto resolveMaterial = [](const std::string &matGuid) -> std::shared_ptr<InxMaterial> {
             auto mat = AssetRegistry::Instance().GetAsset<InxMaterial>(matGuid);
             if (mat)
@@ -3167,32 +3218,45 @@ void Infernux::InitRenderer(int width, int height, const std::string &projectPat
         graph.RegisterCallback(
             ResourceType::Texture,
             [this, resolveMaterial](const std::string &dependentGuid, const std::string &texGuid, AssetEvent event) {
-                auto mat = resolveMaterial(dependentGuid);
-                if (!mat)
+                if (m_renderer &&
+                    m_renderer->InvalidateMaterialTextureAssets(dependentGuid, texGuid, event == AssetEvent::Deleted))
                     return;
-
-                if (event == AssetEvent::Deleted) {
-                    for (const auto &[propName, prop] : mat->GetAllProperties()) {
-                        if (prop.type != MaterialPropertyType::Texture2D)
-                            continue;
-                        const auto *val = std::get_if<std::string>(&prop.value);
-                        if (!val || *val != texGuid)
-                            continue;
-                        INXLOG_INFO("AssetGraph: texture '", propName, "' is missing for material '", mat->GetName(),
-                                    "'; preserving its GUID");
+                auto mat = resolveMaterial(dependentGuid);
+                if (mat) {
+                    if (event == AssetEvent::Deleted) {
+                        for (const auto &[propName, prop] : mat->GetAllProperties()) {
+                            if (prop.type != MaterialPropertyType::Texture2D)
+                                continue;
+                            const auto *val = std::get_if<std::string>(&prop.value);
+                            if (!val || *val != texGuid)
+                                continue;
+                            INXLOG_INFO("AssetGraph: texture '", propName, "' is missing for material '",
+                                        mat->GetName(), "'; preserving its GUID");
+                        }
                     }
+
+                    if (event == AssetEvent::Deleted || event == AssetEvent::Modified) {
+                        mat->MarkPropertiesDirty();
+                        if (auto *database = AssetRegistry::Instance().GetAssetDatabase()) {
+                            const std::string materialPath = database->GetPathFromGuid(dependentGuid);
+                            if (!materialPath.empty())
+                                InvalidateMaterialPreviewTask(std::string("mat|") + materialPath);
+                        }
+                        INXLOG_INFO("AssetGraph: queued descriptor refresh for material '", mat->GetMaterialKey(),
+                                    "' (texture changed)");
+                    }
+                    return;
                 }
 
-                if (event == AssetEvent::Deleted || event == AssetEvent::Modified) {
-                    mat->MarkPropertiesDirty();
-                    if (auto *database = AssetRegistry::Instance().GetAssetDatabase()) {
-                        const std::string materialPath = database->GetPathFromGuid(dependentGuid);
-                        if (!materialPath.empty())
-                            InvalidateMaterialPreviewTask(std::string("mat|") + materialPath);
-                    }
-                    INXLOG_INFO("AssetGraph: queued descriptor refresh for material '", mat->GetMaterialKey(),
-                                "' (texture changed)");
-                }
+                uint64_t componentId = 0;
+                const char *begin = dependentGuid.data();
+                const char *end = begin + dependentGuid.size();
+                const auto [parsedEnd, error] = std::from_chars(begin, end, componentId);
+                if (error != std::errc{} || parsedEnd != end)
+                    return;
+                auto *renderer = dynamic_cast<MeshRenderer *>(Component::FindByComponentId(componentId));
+                if (renderer)
+                    renderer->OnParameterTextureAssetEvent(texGuid, event);
             });
 
         graph.RegisterCallback(
@@ -3215,23 +3279,26 @@ void Infernux::InitRenderer(int width, int height, const std::string &projectPat
                 INXLOG_INFO("AssetGraph: refreshed MeshRenderer material reference without changing GUID");
             });
 
-        graph.RegisterCallback(ResourceType::Mesh, [](const std::string &dependentGuid,
-                                                      const std::string & /*meshGuid*/, AssetEvent event) {
-            uint64_t compId = 0;
-            try {
-                compId = std::stoull(dependentGuid);
-            } catch (...) {
-                return;
-            }
-            auto *comp = Component::FindByComponentId(compId);
-            if (!comp)
-                return;
-            auto *mr = dynamic_cast<MeshRenderer *>(comp);
-            if (!mr)
-                return;
-            mr->OnMeshAssetEvent(event);
-            INXLOG_INFO("AssetGraph: refreshed MeshRenderer mesh state");
-        });
+        graph.RegisterCallback(ResourceType::Mesh,
+                               [this](const std::string &dependentGuid, const std::string &meshGuid, AssetEvent event) {
+                                   uint64_t compId = 0;
+                                   try {
+                                       compId = std::stoull(dependentGuid);
+                                   } catch (...) {
+                                       return;
+                                   }
+                                   auto *comp = Component::FindByComponentId(compId);
+                                   if (!comp)
+                                       return;
+                                   auto *mr = dynamic_cast<MeshRenderer *>(comp);
+                                   if (!mr)
+                                       return;
+                                   mr->OnMeshAssetEvent(event);
+                                   if (event == AssetEvent::Deleted && m_renderer)
+                                       m_renderer->InvalidateMeshCache(meshGuid);
+                                   if (event != AssetEvent::RuntimeModified)
+                                       INXLOG_INFO("AssetGraph: refreshed MeshRenderer mesh state");
+                               });
 
         graph.RegisterCallback(
             ResourceType::Audio, [](const std::string &dependentGuid, const std::string &audioGuid, AssetEvent event) {
@@ -3270,31 +3337,14 @@ void Infernux::InitRenderer(int width, int height, const std::string &projectPat
     if (!m_renderer->PumpStartupEvents())
         throw std::runtime_error("Startup cancelled");
 
-    // Set ImGui ini file path to user's Documents folder for per-project
-    // layout persistence (keeps project directory clean / not in VCS).
-    // We use std::filesystem::path throughout (wide-char on Windows) so
-    // paths with non-ASCII characters (e.g. Chinese usernames) work.
+    // Editor layout is project-local machine state. Keep this native path in
+    // exact agreement with engine.user_data.get_project_editor_layout_root;
+    // Player processes do not own or persist editor docking state.
     phaseBegin = StartupClock::now();
-    {
-        std::filesystem::path layoutDir;
-#ifdef INX_PLATFORM_WINDOWS
-        wchar_t docsPath[MAX_PATH] = {};
-        if (SHGetFolderPathW(nullptr, CSIDL_PERSONAL, nullptr, SHGFP_TYPE_CURRENT, docsPath) == S_OK) {
-            std::filesystem::path projFs = ToFsPath(projectPath);
-            std::filesystem::path projectNameFs = projFs.filename();
-            layoutDir = std::filesystem::path(docsPath) / L"Infernux" / projectNameFs;
-        }
-#else
-        const char *home = std::getenv("HOME");
-        if (home) {
-            std::filesystem::path projFs = ToFsPath(projectPath);
-            std::filesystem::path projectNameFs = projFs.filename();
-            layoutDir = std::filesystem::path(home) / ".config" / "Infernux" / projectNameFs;
-        }
-#endif
-        if (layoutDir.empty()) {
-            layoutDir = ToFsPath(projectPath);
-        }
+    const char *playerModeFlag = std::getenv("_INFERNUX_PLAYER_MODE");
+    const bool playerMode = playerModeFlag != nullptr && playerModeFlag[0] == '1' && playerModeFlag[1] == '\0';
+    if (!playerMode) {
+        const std::filesystem::path layoutDir = ToFsPath(JoinPath({projectPath, "Cache", "Editor", "Layout"}));
         std::filesystem::create_directories(layoutDir);
         m_imguiIniPath = layoutDir / "imgui.ini";
         m_imguiLayoutMetadataPath = layoutDir / "imgui-layout.json";
@@ -3365,6 +3415,8 @@ void Infernux::InitHeadless(const std::string &projectPath, const std::string &b
                             std::make_unique<InxDefaultTextLoader>(ResourceType::RenderEffect));
     registry.RegisterLoader(ResourceType::ParticleGraph,
                             std::make_unique<InxDefaultTextLoader>(ResourceType::ParticleGraph));
+    registry.RegisterLoader(ResourceType::DataAsset, std::make_unique<InxDefaultTextLoader>(ResourceType::DataAsset));
+    registry.RegisterLoader(ResourceType::RenderTexture, std::make_unique<RenderTextureLoader>());
     registry.RegisterLoader(ResourceType::DefaultBinary, std::make_unique<InxDefaultBinaryLoader>());
     registry.PopulateAssetDatabaseLoaders();
     if (!builtinResourcePath.empty()) {
@@ -3403,70 +3455,6 @@ void Infernux::InitHeadless(const std::string &projectPath, const std::string &b
 
     m_isInitialized = true;
     INXLOG_INFO("Headless runtime initialized without renderer, window, GUI, or audio device.");
-}
-
-// ----------------------------------
-// Mesh geometry extraction helper (shared by SetSelectionOutline / SetSelectionOutlines)
-// ----------------------------------
-
-static bool ExtractMeshGeometry(MeshRenderer *renderer, std::vector<glm::vec3> &positions,
-                                std::vector<glm::vec3> &normals, std::vector<uint32_t> &indices)
-{
-    positions.clear();
-    normals.clear();
-    indices.clear();
-
-    if (renderer->HasInlineMesh()) {
-        const auto &verts = renderer->GetInlineVertices();
-        positions.reserve(verts.size());
-        normals.reserve(verts.size());
-        for (const auto &v : verts) {
-            positions.push_back(v.pos);
-            normals.push_back(v.normal);
-        }
-        indices = renderer->GetInlineIndices();
-    } else if (renderer->HasMeshAsset()) {
-        auto mesh = renderer->GetMeshAssetRef().Get();
-        if (!mesh || mesh->GetVertices().empty() || mesh->GetIndices().empty())
-            return false;
-
-        const auto &meshVertices = mesh->GetVertices();
-        const auto &meshIndices = mesh->GetIndices();
-        int32_t nodeGroup = renderer->GetNodeGroup();
-
-        if (nodeGroup >= 0) {
-            std::unordered_map<uint32_t, uint32_t> vertexRemap;
-            for (const auto &sub : mesh->GetSubMeshes()) {
-                if (static_cast<int32_t>(sub.nodeGroup) != nodeGroup)
-                    continue;
-                for (uint32_t i = 0; i < sub.indexCount; ++i) {
-                    uint32_t origIdx = meshIndices[sub.indexStart + i];
-                    auto it = vertexRemap.find(origIdx);
-                    if (it == vertexRemap.end()) {
-                        uint32_t newIdx = static_cast<uint32_t>(positions.size());
-                        vertexRemap[origIdx] = newIdx;
-                        positions.push_back(meshVertices[origIdx].pos);
-                        normals.push_back(meshVertices[origIdx].normal);
-                        indices.push_back(newIdx);
-                    } else {
-                        indices.push_back(it->second);
-                    }
-                }
-            }
-        } else {
-            positions.reserve(meshVertices.size());
-            normals.reserve(meshVertices.size());
-            for (const auto &v : meshVertices) {
-                positions.push_back(v.pos);
-                normals.push_back(v.normal);
-            }
-            indices = meshIndices;
-        }
-    } else {
-        return false;
-    }
-
-    return !positions.empty() && !indices.empty();
 }
 
 static void CollectOutlineSubtreeIds(GameObject *obj, std::vector<uint64_t> &outIds, std::unordered_set<uint64_t> &seen)
@@ -3511,10 +3499,8 @@ void Infernux::ClearSelectionOutline()
     if (m_isCleanedUp || !m_renderer) {
         return;
     }
-    m_cachedOutlineIds.clear();
     m_selectedObjectId = 0;
-    m_renderer->SetSelectedObjectId(0);
-    m_renderer->GetEditorGizmos().ClearSelectionOutline();
+    m_renderer->SetSelectionState(0, {});
 }
 
 void Infernux::SetSelectionOutlines(const std::vector<uint64_t> &objectIds)
@@ -3523,22 +3509,16 @@ void Infernux::SetSelectionOutlines(const std::vector<uint64_t> &objectIds)
         return;
     }
 
-    auto &gizmos = m_renderer->GetEditorGizmos();
-
     if (objectIds.empty()) {
-        m_cachedOutlineIds.clear();
         m_selectedObjectId = 0;
         m_renderer->SetSelectionState(0, {});
-        gizmos.ClearSelectionOutline();
         return;
     }
 
     Scene *scene = SceneManager::Instance().GetActiveScene();
     if (!scene) {
-        m_cachedOutlineIds.clear();
         m_selectedObjectId = 0;
         m_renderer->SetSelectionState(0, {});
-        gizmos.ClearSelectionOutline();
         return;
     }
 
@@ -3546,52 +3526,6 @@ void Infernux::SetSelectionOutlines(const std::vector<uint64_t> &objectIds)
     const uint64_t primaryObjectId = objectIds.empty() ? 0 : objectIds.back();
     m_selectedObjectId = primaryObjectId;
     m_renderer->SetSelectionState(primaryObjectId, expandedIds);
-    if (expandedIds == m_cachedOutlineIds) {
-        return;
-    }
-    m_cachedOutlineIds = expandedIds;
-
-    std::vector<glm::vec3> mergedPositions;
-    std::vector<glm::vec3> mergedNormals;
-    std::vector<uint32_t> mergedIndices;
-
-    for (uint64_t objId : expandedIds) {
-        GameObject *obj = scene->FindByID(objId);
-        if (!obj || !obj->IsActiveInHierarchy())
-            continue;
-
-        MeshRenderer *renderer = obj->GetComponent<MeshRenderer>();
-        if (!renderer || !renderer->IsEnabled())
-            continue;
-
-        std::vector<glm::vec3> positions;
-        std::vector<glm::vec3> normals;
-        std::vector<uint32_t> indices;
-
-        if (!ExtractMeshGeometry(renderer, positions, normals, indices))
-            continue;
-
-        glm::mat4 worldMatrix = obj->GetTransform()->GetWorldMatrix();
-        glm::mat3 normalMatrix = glm::transpose(glm::inverse(glm::mat3(worldMatrix)));
-
-        uint32_t baseIndex = static_cast<uint32_t>(mergedPositions.size());
-        for (size_t i = 0; i < positions.size(); ++i) {
-            glm::vec4 wp = worldMatrix * glm::vec4(positions[i], 1.0f);
-            mergedPositions.push_back(glm::vec3(wp));
-            glm::vec3 wn = glm::normalize(normalMatrix * normals[i]);
-            mergedNormals.push_back(wn);
-        }
-        for (uint32_t idx : indices) {
-            mergedIndices.push_back(idx + baseIndex);
-        }
-    }
-
-    if (mergedPositions.empty() || mergedIndices.empty()) {
-        gizmos.ClearSelectionOutline();
-        return;
-    }
-
-    gizmos.SetSelectionOutline(mergedPositions, mergedNormals, mergedIndices, glm::mat4(1.0f));
 }
 
 // ----------------------------------
@@ -4473,6 +4407,10 @@ void Infernux::LoadImGuiLayout()
     }
 
     const float storedScale = metadata["display_scale"].get<float>();
+    // This legacy metadata key stores the authored-to-window layout multiplier.
+    // Correcting Retina's old double scaling changes it (e.g. 2 -> 1), so those
+    // layouts are rejected below. Windows pixel density is 1 and its existing
+    // correctly scaled user layouts remain compatible.
     if (!std::isfinite(storedScale) || storedScale <= 0.0f) {
         INXLOG_WARN("Ignoring ImGui layout with an invalid display scale");
         return;
@@ -4506,7 +4444,7 @@ void Infernux::LoadImGuiLayout()
 void Infernux::SaveImGuiLayout()
 {
     if (m_imguiIniPath.empty() || m_imguiLayoutMetadataPath.empty())
-        throw std::logic_error("Cannot save ImGui layout before layout storage is initialized");
+        return;
     size_t dataSize = 0;
     const char *data = ImGui::SaveIniSettingsToMemory(&dataSize);
     if (!data || dataSize == 0)

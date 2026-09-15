@@ -66,11 +66,21 @@ def project_asset_commands(tmp_path, monkeypatch):
         "import_asset",
         staticmethod(lambda _path, database=None: True),
     )
+    monkeypatch.setattr(
+        AssetManager,
+        "reimport_asset",
+        staticmethod(lambda _path, database=None: True),
+    )
+
+    class _Database:
+        @staticmethod
+        def get_guid_from_path(path):
+            return "registered-guid" if os.path.isfile(path) else ""
 
     journal = EditorActionJournal()
     manager = UndoManager(journal)
     service = ProjectAssetCommandService(SelectionService())
-    service.configure(str(tmp_path), None)
+    service.configure(str(tmp_path), _Database())
     try:
         yield service, manager, journal, assets
     finally:
@@ -98,6 +108,30 @@ def test_project_asset_service_records_automation_rename_once(project_asset_comm
     manager.undo()
     assert source.read_text(encoding="utf-8") == "content"
     assert not (assets / "After.txt").exists()
+
+
+def test_project_asset_service_reads_and_replaces_registered_text_with_undo(
+    project_asset_commands,
+):
+    service, manager, journal, assets = project_asset_commands
+    source = assets / "Authored.py"
+    source.write_text("value = 1\n", encoding="utf-8")
+
+    assert service.read_text(str(source)) == "value = 1\n"
+    assert service.set_text(
+        str(source),
+        "value = 2\n",
+        origin=ActionOrigin.AUTOMATION,
+    ) == str(source.resolve())
+    assert source.read_text(encoding="utf-8") == "value = 2\n"
+    assert len(journal.applied_entries()) == 1
+    assert journal.applied_entries()[0].origin is ActionOrigin.AUTOMATION
+
+    manager.undo()
+    assert source.read_text(encoding="utf-8") == "value = 1\n"
+
+    manager.redo()
+    assert source.read_text(encoding="utf-8") == "value = 2\n"
 
 
 @pytest.mark.parametrize("is_directory", (False, True))

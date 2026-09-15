@@ -3,17 +3,20 @@
 from __future__ import annotations
 
 from Infernux.ui.inx_ui_screen_component import InxUIScreenComponent
+from Infernux.core.render_texture import RenderTexture
+from Infernux.core.texture import Texture
 
 
 class UIImage(InxUIScreenComponent):
-    """Screen-space image element rendered from a texture asset.
+    """Screen or world image using a texture asset or live camera output.
 
     Inherits ``x``, ``y``, ``width``, ``height``, ``opacity``,
     ``corner_radius``, ``rotation``, ``mirror_x``, ``mirror_y``
     from ``InxUIScreenComponent``.
 
     Attributes:
-        texture_path: Path to texture asset (drag from Project panel).
+        texture: Imported Texture/RenderTexture, or a runtime RenderTexture override.
+        texture_path: Legacy authoring shorthand; saves the texture GUID.
         color: Tint color as ``[R, G, B, A]`` (0–1 each).
 
     Example::
@@ -24,4 +27,9 @@ class UIImage(InxUIScreenComponent):
     """
 
     texture_path: str
+    texture: Texture | RenderTexture | None
     color: list
+
+# Unity-compatible public name. It intentionally aliases UIImage so both
+# names share the same serialized type, renderer, and managed texture path.
+UIRawImage = UIImage

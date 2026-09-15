@@ -25,6 +25,15 @@ from Infernux.lib._Infernux import (
     GIZMO_XZ_PLANE_ID,
     GIZMO_YZ_PLANE_ID,
     GIZMO_CENTER_ID,
+    GIZMO_RECT_LEFT_ID,
+    GIZMO_RECT_RIGHT_ID,
+    GIZMO_RECT_BOTTOM_ID,
+    GIZMO_RECT_TOP_ID,
+    GIZMO_RECT_BOTTOM_LEFT_ID,
+    GIZMO_RECT_BOTTOM_RIGHT_ID,
+    GIZMO_RECT_TOP_LEFT_ID,
+    GIZMO_RECT_TOP_RIGHT_ID,
+    GIZMO_RECT_CENTER_ID,
 )
 
 _GIZMO_IDS = {
@@ -35,16 +44,31 @@ _GIZMO_IDS = {
     GIZMO_XZ_PLANE_ID: 5,
     GIZMO_YZ_PLANE_ID: 6,
     GIZMO_CENTER_ID: 7,
+    GIZMO_RECT_LEFT_ID: 8,
+    GIZMO_RECT_RIGHT_ID: 9,
+    GIZMO_RECT_BOTTOM_ID: 10,
+    GIZMO_RECT_TOP_ID: 11,
+    GIZMO_RECT_BOTTOM_LEFT_ID: 12,
+    GIZMO_RECT_BOTTOM_RIGHT_ID: 13,
+    GIZMO_RECT_TOP_LEFT_ID: 14,
+    GIZMO_RECT_TOP_RIGHT_ID: 15,
+    GIZMO_RECT_CENTER_ID: 16,
 }
 _AXIS_DIRS = {1: (1.0, 0.0, 0.0), 2: (0.0, 1.0, 0.0), 3: (0.0, 0.0, 1.0)}
 _PLANE_AXIS_PAIRS = {4: (1, 2), 5: (1, 3), 6: (2, 3)}
 GIZMO_CENTER_HANDLE = 7
+_RECT_HANDLE_SIGNS = {
+    8: (-1, 0), 9: (1, 0), 10: (0, -1), 11: (0, 1),
+    12: (-1, -1), 13: (1, -1), 14: (-1, 1), 15: (1, 1),
+    16: (0, 0),
+}
 
 # Tool mode constants — must match C++ EditorTools::ToolMode
 TOOL_NONE = 0
 TOOL_TRANSLATE = 1
 TOOL_ROTATE = 2
 TOOL_SCALE = 3
+TOOL_RECT = 4
 
 # Unity-style snap increments used while Ctrl is held during gizmo drags.
 TRANSLATE_SNAP_STEP = 1.0
@@ -90,6 +114,7 @@ class SceneViewPanel(
     KEY_Q = _keys.KEY_Q
     KEY_E = _keys.KEY_E
     KEY_R = _keys.KEY_R
+    KEY_T = _keys.KEY_T
     KEY_LEFT_SHIFT = _keys.KEY_LEFT_SHIFT
     KEY_RIGHT_SHIFT = _keys.KEY_RIGHT_SHIFT
     
@@ -132,6 +157,9 @@ class SceneViewPanel(
         self._gizmo_drag_start_euler = (0.0, 0.0, 0.0)  # object euler at grab (rotate)
         self._gizmo_drag_start_rotation = None  # object world rotation quat at grab
         self._gizmo_drag_start_scale = (1.0, 1.0, 1.0)  # object local_scale at grab (scale)
+        self._gizmo_rect_center = (0.0, 0.0, 0.0)
+        self._gizmo_rect_half_size = (0.5, 0.5)
+        self._gizmo_rect_axis_indices = (0, 1)
         self._gizmo_drag_start_screen = (0.0, 0.0) # screen pos at grab (rotate)
         self._gizmo_drag_obj_id = 0        # object being dragged
         self._gizmo_drag_items = {}        # object_id -> start transform snapshot for multi-edit
@@ -355,6 +383,10 @@ class SceneViewPanel(
     def on_render_content(self, ctx: InxGUIContext):
         delta_time = getattr(self, '_delta_time', 0.016)
         _play_border_clr = getattr(self, '_play_border_clr', None)
+
+        # Component-authored visual bounds (notably world UI) must reach the
+        # same native frame consumed by Rect drawing, picking, and dragging.
+        self._sync_editor_rect_frame_override()
 
         # Get content region for scene viewport
         avail_width = ctx.get_content_region_avail_width()

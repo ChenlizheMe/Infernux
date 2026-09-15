@@ -127,7 +127,8 @@ class DefaultDeferredPipeline(RenderPipeline):
             → Transparent (forward) → after_transparent
         """
         # Deferred pipeline does not support MSAA on GBuffer
-        graph.set_msaa_samples(1)
+        if graph.set_msaa_samples(1) != 1:
+            raise ValueError("Default Deferred requires a single-sample Camera target")
 
         shadow_res = effective_shadow_resolution(self.shadow_resolution)
 

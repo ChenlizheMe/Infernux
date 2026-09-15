@@ -92,6 +92,7 @@ class _AssetDatabase:
 class _Canvas:
     game_object = None
     enabled = True
+    input_logical_size = (1920, 1080)
 
     def __init__(self, target):
         self.target = target
@@ -294,7 +295,14 @@ def test_cross_file_play_pause_step_reload_keeps_identity_and_switches_epoch(
     assert old_coroutine.is_stale_epoch
 
     assert manager.pause() is True
-    manager.step_frame()
+    assert manager.step_frame() is True
+    assert manager.step_sequence == 0
+    assert scene_manager.calls == ["pause"]
+    # Mirror Engine's pre-scene safe point after the authoring transaction.
+    # This adapter has no native frame loop to drain the queued step for it.
+    assert manager.process_pending_step() is True
+    assert manager.step_sequence == 1
+    assert manager.process_pending_step() is False
     assert manager.resume() is True
     assert scene_manager.calls == ["pause", "step", "play"]
 

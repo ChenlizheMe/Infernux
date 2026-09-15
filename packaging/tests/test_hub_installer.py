@@ -26,6 +26,34 @@ def _make_payload(path: Path, executable: bytes = b"new hub executable") -> Path
     return path
 
 
+def test_installer_discloses_system_changes_and_policy_link():
+    source = Path(installer_gui.__file__).read_text(encoding="utf-8")
+
+    assert "Automatic update checks are enabled by default." in source
+    assert "Installing updates requires confirmation." in source
+    assert "https://infernux-engine.com/code-signing-policy.html" in source
+
+
+@pytest.mark.parametrize("language", ["en", "zh"])
+def test_installer_disclosure_fits_the_window(language):
+    from PySide6.QtWidgets import QApplication, QLabel
+    from i18n import configure_language, language_mode
+
+    app = QApplication.instance() or QApplication([])
+    previous = language_mode()
+    configure_language(language)
+    window = installer_gui.InstallerWindow()
+    try:
+        window.show()
+        app.processEvents()
+        for label in window.findChildren(QLabel):
+            if label.wordWrap() and label.hasHeightForWidth():
+                assert label.height() >= label.heightForWidth(label.width()), label.text()
+    finally:
+        window.close()
+        configure_language(previous)
+
+
 def test_linux_application_default_is_separate_from_user_data(monkeypatch, tmp_path):
     monkeypatch.setattr(installer_gui.sys, "platform", "linux")
     monkeypatch.setattr(

@@ -3,9 +3,49 @@ from __future__ import annotations
 from typing import Any, List, Optional, Tuple, Union
 
 from Infernux.components.builtin_component import BuiltinComponent
+from Infernux.core.render_texture import RenderTexture
+from Infernux.core.asset_ref import RenderTextureRef
+import numpy as np
+from numpy.typing import NDArray, ArrayLike
 
 class Camera(BuiltinComponent):
     """A Camera component that renders a view of the scene."""
+
+    @property
+    def target_texture(self) -> RenderTexture | RenderTextureRef | None:
+        """Output owner, unresolved asset reference, or None for the screen.
+
+        Imported targets persist by GUID. Anonymous runtime targets do not.
+        Requires depth; resolution and MSAA belong to the target asset.
+        """
+        ...
+    @target_texture.setter
+    def target_texture(self, value: RenderTexture | RenderTextureRef | None) -> None: ...
+    def set_clip_planes(self, near_clip: float, far_clip: float) -> None: ...
+    @property
+    def projection_matrix(self) -> NDArray[np.float32]: ...
+    @projection_matrix.setter
+    def projection_matrix(self, value: ArrayLike) -> None: ...
+    @property
+    def view_matrix(self) -> NDArray[np.float32]: ...
+    @view_matrix.setter
+    def view_matrix(self, value: ArrayLike) -> None: ...
+    @property
+    def camera_to_world_matrix(self) -> NDArray[np.float32]: ...
+    @property
+    def has_custom_view_matrix(self) -> bool: ...
+    def reset_view_matrix(self) -> None: ...
+    def reset_history(self) -> None:
+        """Discard this camera's accumulated history before its next render."""
+        ...
+    @property
+    def invert_culling(self) -> bool: ...
+    @invert_culling.setter
+    def invert_culling(self, value: bool) -> None: ...
+    @property
+    def has_custom_projection_matrix(self) -> bool: ...
+    def reset_projection_matrix(self) -> None: ...
+    def calculate_oblique_matrix(self, clip_plane: ArrayLike) -> NDArray[np.float32]: ...
 
     _cpp_type_name: str
     _component_category_: str
@@ -65,6 +105,8 @@ class Camera(BuiltinComponent):
     def culling_mask(self) -> int:
         """The layer mask used for culling objects."""
         ...
+    @culling_mask.setter
+    def culling_mask(self, value: int) -> None: ...
 
     @property
     def clear_flags(self) -> int:
@@ -118,7 +160,9 @@ class Camera(BuiltinComponent):
         """Convert a world-space point to screen coordinates."""
         ...
     def screen_point_to_ray(
-        self, x: float, y: float
+        self, x: float, y: float,
+        viewport_width: Optional[float] = ...,
+        viewport_height: Optional[float] = ...,
     ) -> Optional[Tuple[Tuple[float, float, float], Tuple[float, float, float]]]:
         """Cast a ray from a screen-space point into the scene."""
         ...

@@ -9,6 +9,7 @@
 
 #include "MeshLoader.h"
 #include "InxMesh.h"
+#include "MeshArtifact.h"
 
 #include <core/config/MathConstants.h>
 #include <core/log/InxLog.h>
@@ -397,6 +398,18 @@ MeshSourceImportResult MeshLoader::ImportSourceDetailed(const std::string &fileP
         ext = ext.substr(1);
     std::transform(ext.begin(), ext.end(), ext.begin(),
                    [](unsigned char character) { return static_cast<char>(std::tolower(character)); });
+
+    if (ext == "inxmesh") {
+        MeshSourceImportResult result;
+        result.mesh = MeshArtifact::DeserializeSource(std::string_view(fileData.data(), fileData.size()));
+        result.mesh->SetGuid(guid);
+        result.mesh->SetFilePath(filePath);
+        result.meshCount = result.mesh->GetSubMeshCount();
+        result.vertexCount = result.mesh->GetVertexCount();
+        result.indexCount = result.mesh->GetIndexCount();
+        result.materialSlots = result.mesh->GetMaterialSlotNames();
+        return result;
+    }
 
     Assimp::Importer importer;
     const aiScene *scene = importer.ReadFileFromMemory(fileData.data(), fileData.size(), flags, ext.c_str());

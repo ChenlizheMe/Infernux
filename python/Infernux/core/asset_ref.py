@@ -186,6 +186,21 @@ class TextureRef(AssetRefBase):
         return AssetManager.load_by_guid(self._guid, asset_type=Texture)
 
 
+class RenderTextureRef(AssetRefBase):
+    """Persistent reference to one shared RenderTexture, not its pixel contents."""
+
+    def resolve(self):
+        # AssetManager owns reference invalidation; the native owner already
+        # provides sharing. A second cache here would hide deletion/Undo.
+        return self._do_resolve() if self._guid else None
+
+    def _do_resolve(self):
+        from Infernux.core.assets import AssetManager
+        from Infernux.core.render_texture import RenderTexture
+
+        return AssetManager.load_by_guid(self._guid, asset_type=RenderTexture)
+
+
 class ShaderRef(AssetRefBase):
     """Reference to a Shader asset (resolves to ShaderAssetInfo)."""
 
@@ -202,6 +217,24 @@ class AudioClipRef(AssetRefBase):
         from Infernux.core.assets import AssetManager
         from Infernux.core.audio_clip import AudioClip
         return AssetManager.load_by_guid(self._guid, asset_type=AudioClip)
+
+
+class DataAssetRef(AssetRefBase):
+    """GUID reference to one shared typed DataAsset."""
+
+    def resolve(self):
+        # DataAsset identity is owned by AssetManager's current author/Play
+        # cache domain. A reference-local cache could retain an author object
+        # across Enter Play or a gameplay clone across Stop.
+        if not self._guid:
+            return None
+        return self._do_resolve()
+
+    def _do_resolve(self):
+        from Infernux.core.assets import AssetManager
+        from Infernux.core.data_asset import DataAsset
+
+        return AssetManager.load_by_guid(self._guid, asset_type=DataAsset)
 
 
 class PhysicMaterialRef(AssetRefBase):
@@ -378,12 +411,14 @@ def _ensure_ref_classes():
     _ASSET_REF_CLASSES.update({
         "Material": MaterialRef,
         "Texture": TextureRef,
+        "RenderTexture": RenderTextureRef,
         "Shader": ShaderRef,
         "AudioClip": AudioClipRef,
         "PhysicMaterial": PhysicMaterialRef,
         "AnimStateMachine": AnimStateMachineRef,
         "ParticleGraph": ParticleGraphRef,
         "RenderEffect": RenderEffectRef,
+        "DataAsset": DataAssetRef,
         "AnimationClip": AnimationClipRef,
         "AnimationClip3D": AnimationClip3DRef,
         "AnimationTimeline": AnimationTimelineRef,
@@ -457,6 +492,14 @@ def create_asset_ref(
 
     _ensure_ref_classes()
     descriptor = asset_type_registry.require(asset_type)
+    if descriptor.compatible_types:
+        from .asset_reference_types import AssetReferenceCodec
+        payload = AssetReferenceCodec.normalize(
+            descriptor.type_id, {"guid": guid, "path_hint": path_hint}
+        )
+        if payload["asset_type"] not in descriptor.compatible_types:
+            raise ValueError(f"{asset_type} requires a concrete asset type")
+        descriptor = asset_type_registry.require(payload["asset_type"])
     ref_class = _ASSET_REF_CLASSES.get(descriptor.type_id)
     if ref_class is None:
         return GenericAssetRef(

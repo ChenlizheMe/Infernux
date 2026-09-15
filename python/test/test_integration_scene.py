@@ -182,6 +182,23 @@ class _ObjectGraphRefsComponent(InxComponent):
     target_component = serialized_field(default=None, field_type=FieldType.COMPONENT)
 
 
+class _CameraCleanupSceneComponent(InxComponent):
+    target_component = serialized_field(default=None, field_type=FieldType.COMPONENT)
+    _cleanup_results = []
+
+    def on_disable(self):
+        camera = self.target_component
+        if camera is None:
+            type(self)._cleanup_results.append('missing')
+            return
+        try:
+            camera.reset_view_matrix()
+        except ReferenceError as exc:
+            type(self)._cleanup_results.append(str(exc))
+        else:
+            type(self)._cleanup_results.append('valid')
+
+
 class _CloneSettings(SerializableObject):
     gain: float = 1.0
     label: str = "default"
@@ -219,6 +236,226 @@ class TestSceneLifecycle:
     def test_scene_starts_empty(self, scene):
         assert len(scene.get_root_objects()) == 0
         assert len(scene.get_all_objects()) == 0
+
+    def test_public_loaded_scene_directory_is_distinct_from_build_list(self, scene, monkeypatch):
+        from Infernux.scene import SceneManager as PublicSceneManager
+
+        native = SceneManager.instance()
+        loaded_before = native.scene_count
+        additive = native.create_scene("AdditiveDirectory")
+        try:
+            monkeypatch.setattr(
+                PublicSceneManager,
+                "_load_build_list",
+                staticmethod(lambda: ["/project/pytest_scene.scene", "/project/AdditiveDirectory.scene", "/project/Unused.scene"]),
+            )
+            assert PublicSceneManager.get_scene_count() == loaded_before + 1
+            assert PublicSceneManager.get_scene_count_in_build_settings() == 3
+            assert any(
+                PublicSceneManager.get_scene_at(index) is scene
+                for index in range(PublicSceneManager.get_scene_count())
+            )
+            assert PublicSceneManager.get_scene_at(loaded_before) is additive
+            assert PublicSceneManager.get_scene_at(loaded_before + 1) is None
+            assert PublicSceneManager.get_scene_by_name("AdditiveDirectory") is additive
+            assert PublicSceneManager.get_scene_by_build_index(1) is additive
+
+            PublicSceneManager.set_active_scene(additive)
+            assert PublicSceneManager.get_active_scene() is additive
+        finally:
+            native.set_active_scene(scene)
+            native.unload_scene(additive)
+
+    def test_additive_transaction_remaps_object_component_and_python_references(
+        self, scene, tmp_path, monkeypatch
+    ):
+        from Infernux.scene import LoadSceneMode, SceneManager as PublicSceneManager
+
+        native = SceneManager.instance()
+        source_root = scene.create_game_object("AdditiveIdentityRoot")
+        source_child = scene.create_game_object("AdditiveIdentityChild")
+        source_child.set_parent(source_root)
+        source_marker = source_child.add_py_component(_StrictSceneComponent())
+        source_refs = _ObjectGraphRefsComponent()
+        source_refs.target_object = GameObjectRef(source_child)
+        source_refs.target_component = ComponentRef(
+            go_id=source_child.id,
+            component_type="_StrictSceneComponent",
+        )
+        source_root.add_py_component(source_refs)
+        source_document = json.loads(json.dumps(scene.serialize_document()))
+        source_document["name"] = "AdditiveIdentityCopy"
+        scene_path = tmp_path / "AdditiveIdentityCopy.scene"
+        scene_path.write_text(json.dumps(source_document), encoding="utf-8")
+        loaded_before = native.scene_count
+        monkeypatch.setattr(PublicSceneManager, "_runtime_scene_service", None)
+        monkeypatch.setattr(PublicSceneManager, "_is_in_play_mode", staticmethod(lambda: False))
+        monkeypatch.setattr(
+            PublicSceneManager,
+            "_load_build_list",
+            staticmethod(lambda: [str(scene_path)]),
+        )
+
+        additive = None
+        try:
+            assert PublicSceneManager.load_scene(
+                "AdditiveIdentityCopy", LoadSceneMode.ADDITIVE
+            ) is True
+            assert native.get_active_scene() is scene
+            assert native.scene_count == loaded_before + 1
+            additive = native.get_scene_at(loaded_before)
+
+            copied_root = additive.find("AdditiveIdentityRoot")
+            copied_child = additive.find("AdditiveIdentityChild")
+            copied_marker = copied_child.get_py_component(_StrictSceneComponent)
+            copied_refs = copied_root.get_py_component(_ObjectGraphRefsComponent)
+            assert copied_root.id != source_root.id
+            assert copied_child.id != source_child.id
+            assert copied_marker.component_id != source_marker.component_id
+            assert copied_refs.target_object is copied_child, (
+                source_document["objects"][0]["components"],
+                copied_refs._serialize_fields_document(),
+            )
+            assert copied_refs.target_component is copied_marker, copied_refs._serialize_fields_document()
+            assert scene.find_by_id(source_root.id) is source_root
+            assert scene.find_by_id(source_child.id) is source_child
+
+            cross_scene_ref = _ObjectRefSceneComponent()
+            cross_scene_ref.target = GameObjectRef(copied_child)
+            source_root.add_py_component(cross_scene_ref)
+            native.unload_scene(additive)
+            additive = None
+            assert cross_scene_ref.target is None
+            assert scene.find_by_id(source_root.id) is source_root
+            assert source_root.get_py_component(_ObjectRefSceneComponent) is cross_scene_ref
+        finally:
+            if additive is not None:
+                native.unload_scene(additive)
+
+    def test_player_service_additive_loads_cataloged_scene_into_running_world(
+        self, scene, tmp_path
+    ):
+        from Infernux.engine.player_scene import PlayerSceneService
+        from Infernux.engine.player_service_graph import PlayerRuntimeAssetCatalog
+
+        manager = SceneManager.instance()
+        source = scene.create_game_object("PlayerWorldSource")
+        document = json.loads(json.dumps(scene.serialize_document()))
+        document["name"] = "PlayerCatalogAdditive"
+        document["objects"][0]["name"] = "PlayerWorldAdditive"
+
+        cooked_path = tmp_path / "Content" / "PlayerCatalogAdditive.scene"
+        cooked_path.parent.mkdir(parents=True)
+        cooked_path.write_text(json.dumps(document), encoding="utf-8")
+        artifact_id = "content:scene-player-additive"
+        catalog = PlayerRuntimeAssetCatalog.from_documents(
+            str(tmp_path),
+            {
+                "artifacts": [
+                    {
+                        "runtime_artifact_id": artifact_id,
+                        "runtime_path": "Content/PlayerCatalogAdditive.scene",
+                        "package": "Game_Data/Content.inxpkg",
+                        "logical_type": "scene",
+                        "asset_guid": "player-additive-scene-guid",
+                        "dependencies": [],
+                    }
+                ]
+            },
+            {
+                "entries": [
+                    {
+                        "guid": "player-additive-scene-guid",
+                        "runtime_path": "Assets/Scenes/PlayerCatalogAdditive.scene",
+                        "primary_runtime_artifact_id": artifact_id,
+                        "runtime_artifact_ids": [artifact_id],
+                        "dependencies": [],
+                    }
+                ]
+            },
+        )
+        service = PlayerSceneService()
+        service.bind_runtime_catalog(catalog)
+        baseline_worlds = {
+            int(manager.get_scene_at(index).world_id)
+            for index in range(int(manager.scene_count))
+        }
+        additive = None
+        manager.play()
+        try:
+            assert service.request_prepared_load(
+                "Assets/Scenes/PlayerCatalogAdditive.scene",
+                mode="additive",
+            ) is True
+            deadline = time.monotonic() + 3.0
+            while service.is_load_pending and time.monotonic() < deadline:
+                service.process_pending_load()
+                time.sleep(0.001)
+            assert service.is_load_pending is False, service.last_error
+            assert service.last_error == ""
+            assert manager.get_active_scene() is scene
+            assert scene.find("PlayerWorldSource") is source
+
+            additive = next(
+                manager.get_scene_at(index)
+                for index in range(int(manager.scene_count))
+                if int(manager.get_scene_at(index).world_id) not in baseline_worlds
+            )
+            assert additive.name == "PlayerCatalogAdditive"
+            assert additive.find("PlayerWorldAdditive") is not None
+        finally:
+            service.cancel_pending_load()
+            if manager.is_playing():
+                manager.stop()
+            if additive is not None:
+                manager.unload_scene(additive)
+
+    def test_world_queries_and_root_scene_move_preserve_identity(self, scene):
+        from Infernux.scene import GameObjectQuery, SceneManager as PublicSceneManager
+
+        manager = SceneManager.instance()
+        active_match = scene.create_game_object("SharedQueryName")
+        active_match.tag = "WorldQueryTag"
+        destination = manager.create_scene("MoveDestination")
+        moved_root = scene.create_game_object("MovedAcrossScenes")
+        moved_root.tag = "WorldQueryTag"
+        moved_root.layer = 7
+        moved_child = scene.create_game_object("MovedChild")
+        moved_child.set_parent(moved_root)
+        marker = moved_root.add_py_component(_StrictSceneComponent())
+        original_id = moved_root.id
+        original_component_id = marker.component_id
+        original_handle = moved_root.handle
+        try:
+            assert GameObjectQuery.find("SharedQueryName") is active_match
+            assert GameObjectQuery.find("MovedAcrossScenes") is moved_root
+            assert GameObject.find("MovedAcrossScenes") is moved_root
+            assert {
+                obj.id for obj in GameObjectQuery.find_game_objects_with_tag("WorldQueryTag")
+            } == {active_match.id, moved_root.id}
+            assert GameObjectQuery.find_game_objects_in_layer(7) == [moved_root]
+
+            PublicSceneManager.move_game_object_to_scene(moved_root, destination)
+            assert manager.get_active_scene() is scene
+            assert scene.find_by_id(original_id) is None
+            assert destination.find_by_id(original_id) is moved_root
+            assert moved_root.handle.world_id == destination.world_id
+            assert moved_root.handle != original_handle
+            assert moved_root.get_py_component(_StrictSceneComponent) is marker
+            assert marker.component_id == original_component_id
+            assert GameObjectQuery.find_by_id(original_id) is moved_root
+
+            with pytest.raises(ValueError, match="root GameObject"):
+                PublicSceneManager.move_game_object_to_scene(moved_child, scene)
+
+            PublicSceneManager.move_game_object_to_scene(moved_root, scene)
+            assert scene.find_by_id(original_id) is moved_root
+            assert destination.find_by_id(original_id) is None
+            assert moved_root.get_py_component(_StrictSceneComponent) is marker
+        finally:
+            if moved_root.scene is destination:
+                PublicSceneManager.move_game_object_to_scene(moved_root, scene)
+            manager.unload_scene(destination)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1967,6 +2204,290 @@ class TestInstantiate:
         assert restored.settings.gain == pytest.approx(7.5)
         assert restored.settings.label == "restored"
 
+    def test_structural_undo_keeps_additive_scene_ownership_after_active_scene_switch(
+        self, scene, editor_history
+    ):
+        from Infernux.engine.undo import (
+            CreateGameObjectCommand,
+            DeleteGameObjectCommand,
+        )
+
+        manager = SceneManager.instance()
+        additive = manager.create_scene("UndoAdditiveOwner")
+        source_marker = scene.create_game_object("UndoSourceMarker")
+        try:
+            manager.set_active_scene(additive)
+            created = additive.create_game_object("UndoAdditiveObject")
+            object_id = int(created.id)
+            editor_history.record(
+                CreateGameObjectCommand(object_id, "Create additive object")
+            )
+
+            manager.set_active_scene(scene)
+            editor_history.undo()
+            assert additive.find_by_id(object_id) is None
+            assert scene.find_by_id(source_marker.id) is source_marker
+
+            editor_history.redo()
+            assert additive.find_by_id(object_id) is not None
+            assert scene.find_by_id(object_id) is None
+
+            assert editor_history.execute(
+                DeleteGameObjectCommand(object_id, "Delete additive object")
+            )
+            assert additive.find_by_id(object_id) is None
+            editor_history.undo()
+            assert additive.find_by_id(object_id) is not None
+            assert manager.get_active_scene() is scene
+        finally:
+            manager.set_active_scene(scene)
+            manager.unload_scene(additive)
+
+    def test_scene_object_edits_resolve_additive_target_after_active_scene_switch(
+        self, scene, editor_history
+    ):
+        from Infernux.engine.interaction import (
+            ClipboardService,
+            SceneObjectCommandService,
+            SelectionService,
+        )
+
+        manager = SceneManager.instance()
+        additive = manager.create_scene("EditAdditiveOwner")
+        target = additive.create_game_object("EditAdditiveTarget")
+        parent = additive.create_game_object("EditAdditiveParent")
+        target_id = int(target.id)
+        commands = SceneObjectCommandService(SelectionService(), ClipboardService())
+        try:
+            manager.set_active_scene(scene)
+            assert commands.rename(target_id, "RenamedAcrossScenes") is True
+            assert additive.find_by_id(target_id).name == "RenamedAcrossScenes"
+
+            assert commands.set_transforms(
+                [target_id],
+                [{
+                    "position": [4.0, 5.0, 6.0],
+                    "rotation": [0.0, 0.0, 0.0],
+                    "scale": [1.0, 2.0, 3.0],
+                }],
+            ) is True
+            edited = additive.find_by_id(target_id)
+            assert edited.transform.position.to_tuple() == pytest.approx((4.0, 5.0, 6.0))
+            assert edited.transform.local_scale.to_tuple() == pytest.approx((1.0, 2.0, 3.0))
+
+            editor_history.undo()
+            restored = additive.find_by_id(target_id)
+            assert restored.transform.position.to_tuple() == pytest.approx((0.0, 0.0, 0.0))
+            assert restored.transform.local_scale.to_tuple() == pytest.approx((1.0, 1.0, 1.0))
+            editor_history.undo()
+            assert additive.find_by_id(target_id).name == "EditAdditiveTarget"
+
+            assert commands.move_hierarchy(
+                [target_id], "parent", int(parent.id)
+            ) is True
+            assert additive.find_by_id(target_id).get_parent() is parent
+            editor_history.undo()
+            assert additive.find_by_id(target_id).get_parent() is None
+            assert manager.get_active_scene() is scene
+        finally:
+            manager.set_active_scene(scene)
+            manager.unload_scene(additive)
+
+    def test_additive_scene_document_owns_dirty_revision_and_save_target(
+        self,
+        scene,
+        tmp_path,
+        monkeypatch,
+    ):
+        from Infernux.engine.interaction import DocumentActionStatus, DocumentRegistry
+        from Infernux.engine.project_context import get_project_root, set_project_root
+        from Infernux.engine.undo import SetPropertyCommand, UndoManager
+
+        previous_root = get_project_root()
+        previous_manager = SceneFileManager._instance
+        previous_undo = UndoManager._instance
+        project_root = tmp_path / "Project"
+        assets = project_root / "Assets"
+        assets.mkdir(parents=True)
+        primary_path = assets / "Primary.scene"
+        additive_path = assets / "Additive.scene"
+        native = SceneManager.instance()
+        additive = native.create_scene("Additive")
+        additive_object = additive.create_game_object("AdditiveObject")
+
+        try:
+            set_project_root(str(project_root))
+            manager = SceneFileManager()
+            monkeypatch.setattr(manager, "_save_camera_state", lambda _path: None)
+            monkeypatch.setattr(manager, "_remember_last_scene", lambda _path: None)
+            manager._current_scene_path = str(primary_path)
+            manager._replace_scene_document(
+                kind="scene",
+                resource_path=str(primary_path),
+                title="Primary",
+                dirty=False,
+            )
+            primary_document_id = manager.document_id
+            additive_document_id = manager.register_loaded_scene(
+                additive,
+                str(additive_path),
+            )
+            assert additive_document_id != primary_document_id
+
+            assert manager.activate_loaded_scene(additive)
+            undo = UndoManager()
+            assert undo.execute(
+                SetPropertyCommand(
+                    additive_object,
+                    "name",
+                    "AdditiveObject",
+                    "EditedAdditiveObject",
+                )
+            )
+
+            registry = DocumentRegistry.instance()
+            assert registry.require(additive_document_id).is_dirty
+            assert not registry.require(primary_document_id).is_dirty
+
+            assert manager.activate_loaded_scene(scene)
+            result = registry.request_save(additive_document_id)
+            assert result.status is DocumentActionStatus.APPLIED
+            saved = json.loads(additive_path.read_text(encoding="utf-8"))
+            assert saved["name"] == "Additive"
+            assert [entry["name"] for entry in saved["objects"]] == [
+                "EditedAdditiveObject"
+            ]
+            assert native.get_active_scene() is scene
+
+            undo.undo()
+            assert additive_object.name == "AdditiveObject"
+            assert native.get_active_scene() is scene
+        finally:
+            native.set_active_scene(scene)
+            native.unload_scene(additive)
+            SceneFileManager._instance = previous_manager
+            UndoManager._instance = previous_undo
+            set_project_root(previous_root)
+
+    def test_single_scene_open_resolves_every_dirty_resident_scene_document(
+        self, scene, tmp_path, monkeypatch
+    ):
+        from Infernux.engine.interaction import DocumentRegistry
+        from Infernux.engine.project_context import get_project_root, set_project_root
+        from Infernux.engine.ui.dirty_panel_confirmation import (
+            DirtyPanelConfirmationCoordinator,
+        )
+
+        previous_root = get_project_root()
+        previous_manager = SceneFileManager._instance
+        project_root = tmp_path / "Project"
+        assets = project_root / "Assets"
+        assets.mkdir(parents=True)
+        primary_path = assets / "Primary.scene"
+        additive_path = assets / "Additive.scene"
+        replacement_path = assets / "Replacement.scene"
+        additive = SceneManager.instance().create_scene("DirtyAdditive")
+
+        class _Confirmation:
+            document_ids = ()
+
+            def request_documents_replace(
+                self, document_ids, on_complete, on_cancel=None, **_kwargs
+            ):
+                del on_complete, on_cancel
+                self.document_ids = tuple(document_ids)
+                return True
+
+        confirmation = _Confirmation()
+        try:
+            set_project_root(str(project_root))
+            manager = SceneFileManager()
+            monkeypatch.setattr(manager, "_save_camera_state", lambda _path: None)
+            manager._current_scene_path = str(primary_path)
+            manager._replace_scene_document(
+                kind="scene",
+                resource_path=str(primary_path),
+                title="Primary",
+                dirty=False,
+            )
+            primary_document_id = manager.document_id
+            additive_document_id = manager.register_loaded_scene(
+                additive,
+                str(additive_path),
+            )
+            registry = DocumentRegistry.instance()
+            registry.mark_changed(primary_document_id)
+            registry.mark_changed(additive_document_id)
+            monkeypatch.setattr(
+                DirtyPanelConfirmationCoordinator,
+                "instance",
+                classmethod(lambda _cls: confirmation),
+            )
+
+            assert manager._continue_open_scene(str(replacement_path)) is False
+            assert confirmation.document_ids == (
+                primary_document_id,
+                additive_document_id,
+            )
+            assert manager._deferred_load_path is None
+        finally:
+            native = SceneManager.instance()
+            native.set_active_scene(scene)
+            native.unload_scene(additive)
+            SceneFileManager._instance = previous_manager
+            set_project_root(previous_root)
+
+    def test_single_scene_commit_unloads_every_other_resident_scene(
+        self, scene, tmp_path, monkeypatch
+    ):
+        from Infernux.engine.project_context import get_project_root, set_project_root
+
+        previous_root = get_project_root()
+        previous_manager = SceneFileManager._instance
+        project_root = tmp_path / "Project"
+        assets = project_root / "Assets"
+        assets.mkdir(parents=True)
+        primary_path = assets / "Primary.scene"
+        additive_path = assets / "Additive.scene"
+        replacement_path = assets / "Replacement.scene"
+        replacement_path.write_text(
+            json.dumps({"name": "Replacement", "isPlaying": False, "objects": []}),
+            encoding="utf-8",
+        )
+        native = SceneManager.instance()
+        additive = native.create_scene("RetiredBySingle")
+
+        try:
+            set_project_root(str(project_root))
+            manager = SceneFileManager()
+            monkeypatch.setattr(manager, "_prepare_native_scene_swap", lambda: None)
+            monkeypatch.setattr(manager, "_restore_camera_state", lambda _path: None)
+            monkeypatch.setattr(manager, "_remember_last_scene", lambda _path: None)
+            monkeypatch.setattr(manager, "sync_all_prefab_instances", lambda _scene: None)
+            manager._current_scene_path = str(primary_path)
+            manager._replace_scene_document(
+                kind="scene",
+                resource_path=str(primary_path),
+                title="Primary",
+                dirty=False,
+            )
+            additive_document_id = manager.register_loaded_scene(
+                additive,
+                str(additive_path),
+            )
+            additive_world_id = int(additive.world_id)
+
+            assert manager._do_open_scene(str(replacement_path)) is True
+
+            assert native.scene_count == 1
+            assert native.get_active_scene() is scene
+            assert native.get_scene_by_world_id(additive_world_id) is None
+            assert manager.scene_for_document(additive_document_id) is None
+            assert manager.current_scene_path == str(replacement_path.resolve())
+        finally:
+            SceneFileManager._instance = previous_manager
+            set_project_root(previous_root)
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Scene serialization
@@ -3141,6 +3662,46 @@ class TestSceneSerialization:
         assert prepared.components[0].type_name == "_RequiresRigidbodyComponent"
         prepared.discard()
 
+    @pytest.mark.parametrize('pre_resolve', [False, True])
+    def test_scene_replacement_camera_reference_is_null_during_retired_disable(self, scene, pre_resolve):
+        camera_object = scene.create_game_object('RetiredCamera')
+        camera_object.add_component('Camera')
+        owner = scene.create_game_object('CameraCleanupOwner')
+        probe = owner.add_py_component(_CameraCleanupSceneComponent())
+        probe.target_component = ComponentRef(go_id=camera_object.id, component_type='Camera')
+        if pre_resolve:
+            assert probe.target_component.is_valid
+        _CameraCleanupSceneComponent._cleanup_results = []
+        document = scene.serialize_document()
+
+        assert deserialize_scene_document_transactionally(scene, document)
+        assert _CameraCleanupSceneComponent._cleanup_results == ['missing']
+        restored = scene.find('CameraCleanupOwner').get_py_component(_CameraCleanupSceneComponent)
+        assert restored.target_component.is_valid
+
+    @pytest.mark.parametrize("native_type", ["Camera", "Light", "Rigidbody", "Transform"])
+    @pytest.mark.parametrize("nested", [False, True])
+    def test_play_snapshot_preserves_references_to_native_only_objects(self, scene, native_type, nested):
+        owner = scene.create_game_object("ReferenceOwner")
+        target = scene.create_game_object("NativeOnlyTarget")
+        if nested:
+            target.set_parent(scene.create_game_object("NativeOnlyParent"))
+        if native_type != "Transform":
+            target.add_component(native_type)
+        refs = owner.add_py_component(_ObjectGraphRefsComponent())
+        refs.target_component = ComponentRef(go_id=target.id, component_type=native_type)
+        snapshot = scene._capture_play_mode_snapshot()
+        object_ids, native_types, _ = snapshot._python_component_records()
+        assert target.id in object_ids
+        assert (target.id, native_type) in native_types
+
+        assert replace_scene_python_components_for_play(scene, snapshot)
+        restored = owner.get_py_component(_ObjectGraphRefsComponent)
+        assert restored is not refs
+        assert restored.target_component is not None
+        assert restored.target_component.game_object.id == target.id
+        assert scene.find_by_id(target.id) is target
+
     def test_python_preflight_rejects_duplicate_disallow_multiple_component(self, scene):
         owner = scene.create_game_object("StrictDisallowMultiple")
         owner.add_py_component(_SingleInstanceSceneComponent())
@@ -3277,6 +3838,178 @@ class TestSceneSerialization:
         assert _PlayLifecycleResetComponent.destroy_calls == 1
         assert _PlayLifecycleResetComponent.active_instance is play_component
 
+    def test_play_mode_isolates_and_restores_every_resident_scene(
+        self, scene, tmp_path, monkeypatch
+    ):
+        from Infernux.engine.interaction import DocumentRegistry
+        from Infernux.engine.play_mode import PlayModeManager
+        from Infernux.engine.project_context import get_project_root, set_project_root
+
+        previous_root = get_project_root()
+        previous_scene_files = SceneFileManager._instance
+        project_root = tmp_path / "Project"
+        assets = project_root / "Assets"
+        assets.mkdir(parents=True)
+        primary_path = assets / "Primary.scene"
+        additive_path = assets / "Additive.scene"
+        native = SceneManager.instance()
+        additive = native.create_scene("AdditivePlayIsolation")
+
+        try:
+            set_project_root(str(project_root))
+            scene_files = SceneFileManager()
+            monkeypatch.setattr(scene_files, "_restore_camera_state", lambda _path: None)
+            monkeypatch.setattr(scene_files, "_remember_last_scene", lambda _path: None)
+            scene_files._current_scene_path = str(primary_path)
+            scene_files._replace_scene_document(
+                kind="scene",
+                resource_path=str(primary_path),
+                title="Primary",
+                dirty=False,
+            )
+            primary_document_id = scene_files.document_id
+            additive_document_id = scene_files.register_loaded_scene(
+                additive,
+                str(additive_path),
+            )
+
+            primary_object = scene.create_game_object("PrimaryPlayObject")
+            additive_object = additive.create_game_object("AdditivePlayObject")
+            primary_edit = primary_object.add_py_component(_StrictSceneComponent())
+            additive_edit = additive_object.add_py_component(_StrictSceneComponent())
+            primary_edit.value = 11
+            additive_edit.value = 22
+
+            registry = DocumentRegistry.instance()
+            registry.mark_changed(primary_document_id)
+            registry.mark_changed(additive_document_id)
+            primary_revision = registry.require(primary_document_id).revision
+            additive_revision = registry.require(additive_document_id).revision
+            assert scene_files.activate_loaded_scene(additive)
+
+            play = PlayModeManager()
+            play._save_scene_state()
+            assert {scene, additive}.issubset(
+                {item.scene for item in play._scene_backups}
+            )
+            assert next(item for item in play._scene_backups if item.was_active).scene is additive
+
+            assert play._prepare_loaded_scenes_for_play()
+            primary_play = primary_object.get_py_component(_StrictSceneComponent)
+            additive_play = additive_object.get_py_component(_StrictSceneComponent)
+            assert primary_play is not primary_edit
+            assert additive_play is not additive_edit
+            primary_object.name = "PrimaryRuntimeMutation"
+            additive_object.name = "AdditiveRuntimeMutation"
+            primary_play.value = 101
+            additive_play.value = 202
+
+            assert play._restore_loaded_scenes_after_play()
+            restored_primary = scene.find("PrimaryPlayObject")
+            restored_additive = additive.find("AdditivePlayObject")
+            assert restored_primary is not None
+            assert restored_additive is not None
+            assert restored_primary.get_py_component(_StrictSceneComponent).value == 11
+            assert restored_additive.get_py_component(_StrictSceneComponent).value == 22
+            assert native.get_active_scene() is additive
+            assert scene_files.document_id == additive_document_id
+            assert registry.require(primary_document_id).revision == primary_revision
+            assert registry.require(additive_document_id).revision == additive_revision
+        finally:
+            native.set_active_scene(scene)
+            native.unload_scene(additive)
+            SceneFileManager._instance = previous_scene_files
+            set_project_root(previous_root)
+
+    def test_stop_recreates_authored_scene_set_after_runtime_single_replacement(
+        self, scene, tmp_path, monkeypatch
+    ):
+        from Infernux.engine.interaction import DocumentRegistry
+        from Infernux.engine.play_mode import PlayModeManager
+        from Infernux.engine.project_context import get_project_root, set_project_root
+
+        previous_root = get_project_root()
+        previous_scene_files = SceneFileManager._instance
+        project_root = tmp_path / "Project"
+        assets = project_root / "Assets"
+        assets.mkdir(parents=True)
+        primary_path = assets / "Primary.scene"
+        additive_path = assets / "Additive.scene"
+        native = SceneManager.instance()
+        additive = native.create_scene("AuthoredAdditive")
+
+        try:
+            set_project_root(str(project_root))
+            scene_files = SceneFileManager()
+            monkeypatch.setattr(scene_files, "_restore_camera_state", lambda _path: None)
+            monkeypatch.setattr(scene_files, "_remember_last_scene", lambda _path: None)
+            scene_files._current_scene_path = str(primary_path)
+            scene_files._replace_scene_document(
+                kind="scene",
+                resource_path=str(primary_path),
+                title="Primary",
+                dirty=False,
+            )
+            primary_document_id = scene_files.document_id
+            additive_document_id = scene_files.register_loaded_scene(
+                additive,
+                str(additive_path),
+            )
+            primary_object = scene.create_game_object("PrimaryBeforePlay")
+            additive_object = additive.create_game_object("AdditiveBeforePlay")
+            primary_object.add_py_component(_StrictSceneComponent()).value = 31
+            additive_object.add_py_component(_StrictSceneComponent()).value = 47
+            assert scene_files.activate_loaded_scene(scene)
+
+            registry = DocumentRegistry.instance()
+            registry.mark_changed(primary_document_id)
+            registry.mark_changed(additive_document_id)
+            revisions = {
+                primary_document_id: registry.require(primary_document_id).revision,
+                additive_document_id: registry.require(additive_document_id).revision,
+            }
+
+            play = PlayModeManager()
+            play._save_scene_state()
+            assert play._prepare_loaded_scenes_for_play()
+            additive_world_id = int(additive.world_id)
+
+            # A Play-time Single load retains the active native Scene and
+            # destroys every additive Scene. A later Additive load may also
+            # leave runtime-only worlds resident at the Stop boundary.
+            native.unload_scene(additive)
+            runtime_only = native.create_scene("RuntimeOnly")
+            runtime_only.create_game_object("MustDisappearOnStop")
+            runtime_only_world_id = int(runtime_only.world_id)
+
+            assert play._restore_loaded_scenes_after_play()
+
+            restored_additive = scene_files.scene_for_document(additive_document_id)
+            assert restored_additive is not None
+            assert int(restored_additive.world_id) != additive_world_id
+            assert restored_additive.find("AdditiveBeforePlay") is not None
+            assert (
+                restored_additive.find("AdditiveBeforePlay")
+                .get_py_component(_StrictSceneComponent)
+                .value
+                == 47
+            )
+            assert scene.find("PrimaryBeforePlay") is not None
+            assert native.get_scene_by_world_id(runtime_only_world_id) is None
+            assert native.get_active_scene() is scene
+            assert scene_files.document_id == primary_document_id
+            assert scene_files.document_id_for_scene(restored_additive) == additive_document_id
+            for document_id, revision in revisions.items():
+                assert registry.require(document_id).revision == revision
+        finally:
+            native.set_active_scene(scene)
+            for index in range(int(native.scene_count) - 1, -1, -1):
+                candidate = native.get_scene_at(index)
+                if candidate is not None and candidate is not scene:
+                    native.unload_scene(candidate)
+            SceneFileManager._instance = previous_scene_files
+            set_project_root(previous_root)
+
     def test_python_component_replacement_rejects_new_registry_constraints(self, scene):
         class ReloadSource(InxComponent):
             pass
@@ -3355,7 +4088,7 @@ class TestSceneSerialization:
         assert not hasattr(pending[0], "fields_json")
         scene.take_pending_py_components()
 
-    def test_scene_restore_rejects_python_component_id_owned_by_another_scene(self, scene):
+    def test_scene_restore_remaps_python_component_id_owned_by_another_scene(self, scene):
         source = scene.create_game_object("LiveSourceSceneObject")
         source_component = _StrictSceneComponent()
         source.add_py_component(source_component)
@@ -3363,12 +4096,16 @@ class TestSceneSerialization:
         manager = SceneManager.instance()
         target = manager.create_scene("PythonIdCollisionTarget")
         target.create_game_object("TargetState")
-        original_target_document = target.serialize_document()
+        try:
+            assert deserialize_scene_document_transactionally(target, document) is True
 
-        assert deserialize_scene_document_transactionally(target, document) is False
-
-        assert target.serialize_document() == original_target_document
-        assert source.get_py_component(_StrictSceneComponent) is source_component
+            restored = target.find("LiveSourceSceneObject")
+            restored_component = restored.get_py_component(_StrictSceneComponent)
+            assert restored.id != source.id
+            assert restored_component.component_id != source_component.component_id
+            assert source.get_py_component(_StrictSceneComponent) is source_component
+        finally:
+            manager.unload_scene(target)
 
     def test_scene_preflight_rejects_duplicate_python_component_id(self, scene):
         first = scene.create_game_object("FirstPythonId")

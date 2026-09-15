@@ -415,6 +415,7 @@ def test_bootstrap_registers_menu_and_shortcut_entries_against_same_commands():
     assert registry.is_checked("window.open", window_context)
     assert calls == ["save", "new", ("open", "console")]
     assert registry.get("file.save").default_shortcut == "Ctrl+S"
+    assert registry.get("scene.tool.rect").default_shortcut == "T"
 
 
 def test_window_toggle_uses_the_user_navigation_path_for_opening():
@@ -2189,10 +2190,17 @@ def test_scene_tool_shortcuts_share_commands_and_respect_camera_capture():
         assert bootstrap.scene_view._gizmo_tool_mode == 1
         assert manager.undo_description == "Select Move Tool"
 
+        rect = core.shortcuts.route(ShortcutEvent(KeyChord.parse("T")))
+        assert rect.status is ShortcutRouteStatus.EXECUTED
+        assert bootstrap.scene_view._gizmo_tool_mode == 4
+        assert manager.undo_description == "Select Rect Tool"
+
         selected = core.shortcuts.route(ShortcutEvent(KeyChord.parse("Q")))
         assert selected.status is ShortcutRouteStatus.EXECUTED
         assert bootstrap.scene_view._gizmo_tool_mode == 0
 
+        manager.undo()
+        assert bootstrap.scene_view._gizmo_tool_mode == 4
         manager.undo()
         assert bootstrap.scene_view._gizmo_tool_mode == 1
     finally:

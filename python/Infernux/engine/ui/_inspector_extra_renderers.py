@@ -730,12 +730,9 @@ def _assign_model_mesh(comp, payload) -> None:
         Debug.log_warning(f"Mesh assignment failed: model is not registered ({path or payload})")
         return
 
-    old_document = comp.serialize_document()
-    if getattr(comp, 'type_name', '') == 'SkinnedMeshRenderer' and hasattr(comp, 'set_source_model_guid'):
-        comp.set_source_model_guid(guid)
-    elif hasattr(comp, 'set_mesh_asset_guid'):
-        comp.set_mesh_asset_guid(guid)
-    _record_mesh_renderer_change(comp, old_document, "Set Mesh")
+    from Infernux.engine.interaction import ComponentCommandService
+
+    ComponentCommandService.require().assign_mesh_asset(comp, guid)
 
 
 def _clear_mesh(comp) -> None:
@@ -817,6 +814,43 @@ def _clear_material_slot(comp, slot_idx: int) -> None:
     _record_material_slot(comp, slot_idx, old_guid, "", f"Clear Material Slot {slot_idx}")
 
 
+def _save_mesh_asset_copy(mesh):
+    """Save geometry only; the renderer continues referencing its original asset."""
+    from Infernux.engine.interaction import EditorInteractionCore
+    from ._dialogs import save_file_dialog
+    from ._inspector_references import ping_asset_in_project
+
+    core = EditorInteractionCore.instance()
+    if core is None:
+        raise RuntimeError("Mesh authoring requires an active editor interaction core")
+    service = core.project_assets
+    destination = save_file_dialog(
+        title=t("inspector.mesh_save_copy"),
+        win32_filter="Infernux Mesh (*.inxmesh)\0*.inxmesh\0\0",
+        initial_dir=os.path.join(service.project_root, "Assets"),
+        default_filename="MeshCopy.inxmesh",
+        default_ext="inxmesh",
+        tk_filetypes=[("Infernux Mesh", "*.inxmesh")],
+    )
+    if not destination:
+        return None
+    saved = service.save_mesh_copy(mesh, destination)
+    ping_asset_in_project(saved)
+    return saved
+
+
+def _render_mesh_save_copy(ctx: InxGUIContext, comp):
+    # The static source format cannot preserve a model's skeletal companion.
+    mesh = comp.get_mesh_asset()
+    if mesh is None or mesh.has_skinned_data:
+        return
+    if ctx.button(f"{t('inspector.mesh_save_copy')}##mesh_copy_{comp.component_id}"):
+        try:
+            _save_mesh_asset_copy(mesh)
+        except (OSError, RuntimeError, ValueError) as exc:
+            Debug.log_error(f"{t('inspector.mesh_save_copy')}: {exc}")
+
+
 def _render_mesh_renderer_materials(ctx: InxGUIContext, comp):
     """Render material slot fields after MeshRenderer CppProperty fields."""
     from Infernux.components.builtin_component import BuiltinComponent
@@ -837,6 +871,7 @@ def _render_mesh_renderer_materials(ctx: InxGUIContext, comp):
 
     mesh_field_id = f"mesh_field_{getattr(comp, 'component_id', id(comp))}"
     mesh_display = _mesh_display_name(comp)
+    _render_mesh_save_copy(ctx, comp)
 
     # Material slots
     mat_count = getattr(comp, 'material_count', 0) or 1

@@ -56,5 +56,10 @@ def make_asset_ref(asset_type: str, guid: str, path_hint: str = "") -> dict:
     )
 
 
-def make_serializable_object(type_id: str, fields: dict) -> dict:
-    return make_document(SERIALIZABLE_OBJECT, type_id=type_id, fields=fields)
+def make_serializable_object(type_id: str, fields: dict, schema_version: int = 1) -> dict:
+    return make_document(
+        SERIALIZABLE_OBJECT,
+        type_id=type_id,
+        schema_version=schema_version,
+        fields=fields,
+    )

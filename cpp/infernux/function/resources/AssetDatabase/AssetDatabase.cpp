@@ -7,6 +7,7 @@
 #include <function/resources/InxMesh/MeshArtifact.h>
 #include <function/resources/InxSkinnedMesh/SkinnedMeshArtifact.h>
 #include <function/resources/InxTexture/TextureArtifact.h>
+#include <function/resources/RenderTexture/RenderTextureArtifact.h>
 
 #include <core/log/InxLog.h>
 #include <platform/filesystem/DocumentStore.h>
@@ -74,7 +75,8 @@ std::string
 RuntimeArtifactRelativePath(const std::string &guid, ResourceType type,
                             ImportArtifact::RuntimeArtifactKind kind = ImportArtifact::RuntimeArtifactKind::Primary)
 {
-    if (type != ResourceType::Mesh && type != ResourceType::Texture && type != ResourceType::ParticleGraph)
+    if (type != ResourceType::Mesh && type != ResourceType::Texture && type != ResourceType::ParticleGraph &&
+        type != ResourceType::RenderTexture)
         return {};
     if (guid.empty() || !std::all_of(guid.begin(), guid.end(), [](unsigned char character) {
             return std::isalnum(character) != 0 || character == '-' || character == '_';
@@ -93,12 +95,14 @@ RuntimeArtifactRelativePath(const std::string &guid, ResourceType type,
         return "Library/Artifacts/Texture/" + guid + ".inxtex";
     if (type == ResourceType::ParticleGraph)
         return "Library/Artifacts/Particle/" + guid + ".inxparticle";
+    if (type == ResourceType::RenderTexture)
+        return "Library/Artifacts/RenderTexture/" + guid + ".inxrtex";
     return {};
 }
 
 bool RequiresRuntimeCpuArtifact(ResourceType type)
 {
-    return type == ResourceType::Mesh || type == ResourceType::Texture;
+    return type == ResourceType::Mesh || type == ResourceType::Texture || type == ResourceType::RenderTexture;
 }
 
 bool HasCurrentRuntimeArtifactHeader(const std::filesystem::path &path, ResourceType type,
@@ -110,6 +114,8 @@ bool HasCurrentRuntimeArtifactHeader(const std::filesystem::path &path, Resource
     char buffer[32]{};
     stream.read(buffer, sizeof(buffer));
     const std::string_view header(buffer, static_cast<size_t>(stream.gcount()));
+    if (type == ResourceType::RenderTexture)
+        return kind == ImportArtifact::RuntimeArtifactKind::Primary && RenderTextureArtifact::HasCurrentHeader(header);
     if (type == ResourceType::Texture)
         return kind == ImportArtifact::RuntimeArtifactKind::Primary && TextureArtifact::HasCurrentHeader(header);
     if (type == ResourceType::Mesh)
@@ -570,6 +576,8 @@ void AssetDatabase::Initialize(const std::string &projectRoot)
     m_importerRegistry.Register(std::make_unique<PhysicMaterialImporter>());
     m_importerRegistry.Register(std::make_unique<RenderEffectImporter>());
     m_importerRegistry.Register(std::make_unique<ParticleGraphImporter>());
+    m_importerRegistry.Register(std::make_unique<DataAssetImporter>());
+    m_importerRegistry.Register(std::make_unique<RenderTextureImporter>());
     m_importerRegistry.Register(std::make_unique<ScriptImporter>());
     m_importerRegistry.Register(std::make_unique<AudioImporter>());
     m_importerRegistry.Register(std::make_unique<ModelImporter>());
@@ -2713,6 +2721,12 @@ ResourceType AssetDatabase::GetResourcesType(const std::string &extensionName) c
     }
     if (ext == ".particlegraph") {
         return ResourceType::ParticleGraph;
+    }
+    if (ext == ".inxdata") {
+        return ResourceType::DataAsset;
+    }
+    if (ext == ".rendertexture") {
+        return ResourceType::RenderTexture;
     }
     if (ext == ".meta") {
         return ResourceType::Meta;

@@ -17,8 +17,58 @@ using json = nlohmann::json;
 namespace infernux
 {
 
-// Register AudioSource with ComponentFactory so it can be created by type name
-INFERNUX_REGISTER_VALIDATED_COMPONENT("AudioSource", AudioSource)
+namespace
+{
+SemanticTypeDescriptor DescribeAudioSource()
+{
+    SemanticTypeDescriptor type;
+    type.typeGuid = "native:infernux.AudioSource";
+    type.readableId = "infernux.component.audio-source";
+    type.owner = "engine:native";
+    type.origin = "native";
+    type.displayName = "Audio Source";
+    type.runtimeProfiles = {"editor", "player", "headless"};
+    const auto add = [&](const char *name, const char *kind, json initial) -> json & {
+        type.fields.push_back({std::string("AudioSource.") + name,
+                               std::string("FieldType.") + kind,
+                               false,
+                               {{"field_id", name},
+                                {"serialized_name", name},
+                                {"serialized", true},
+                                {"hidden", false},
+                                {"nullable", false},
+                                {"storage_kind", "native_property"},
+                                {"display_name_key", std::string("audio_source.") + name},
+                                {"tooltip", std::string("audio_source.tooltip.") + name},
+                                {"default", std::move(initial)}}});
+        return type.fields.back().attributes;
+    };
+
+    auto &trackCount = add("track_count", "INT", 1);
+    trackCount["range"] = {1, 16};
+    // The setter resizes the coupled tracks document atomically. A generic
+    // preflight must not patch track_count while leaving the old array shape.
+    trackCount["setter_owns_document_shape"] = true;
+    add("volume", "FLOAT", 1.0)["range"] = {0.0, 1.0};
+    add("priority", "INT", 128)["range"] = {0, 255};
+    add("pitch", "FLOAT", 1.0)["range"] = {0.1, 3.0};
+    add("mute", "BOOL", false);
+    add("loop", "BOOL", false);
+    add("play_on_awake", "BOOL", true);
+    add("spatial_blend", "FLOAT", 0.0)["range"] = {0.0, 1.0};
+    type.fields.back().attributes["header"] = "audio_source.section.spatial";
+    add("min_distance", "FLOAT", 1.0)["range"] = {0.001, 500.0};
+    add("max_distance", "FLOAT", 500.0)["range"] = {0.001, 10000.0};
+    add("output_bus", "STRING", "Master")["header"] = "audio_source.section.routing";
+    auto &pool = add("one_shot_pool_size", "INT", 8);
+    pool["hidden"] = true;
+    return type;
+}
+
+const bool registeredAudioSource = ComponentFactory::Register(
+    "AudioSource", [] { return std::make_unique<AudioSource>(); }, AudioSource::ValidateSerializedDocument,
+    AudioSource::GetTypeConstraints(), DescribeAudioSource);
+} // namespace
 
 AudioSource::AudioSource()
 {
@@ -81,8 +131,8 @@ void AudioSource::OnDisable()
     // Pause all playing tracks when component is disabled
     for (int i = 0; i < static_cast<int>(m_tracks.size()); ++i) {
         if (m_tracks[i].isPlaying && !m_tracks[i].isPaused) {
-            m_tracks[i].pauseRequestedByDisable = true;
             Pause(i);
+            m_tracks[i].pauseRequestedByDisable = true;
         }
     }
 
@@ -137,10 +187,12 @@ nlohmann::json AudioSource::SerializeDocument() const
 {
     json j = Component::SerializeDocument();
     j["volume"] = m_volume;
+    j["priority"] = m_priority;
     j["pitch"] = m_pitch;
     j["loop"] = m_loop;
     j["play_on_awake"] = m_playOnAwake;
     j["mute"] = m_mute;
+    j["spatial_blend"] = m_spatialBlend;
     j["min_distance"] = m_minDistance;
     j["max_distance"] = m_maxDistance;
     j["one_shot_pool_size"] = m_oneShotPoolSize;
@@ -166,24 +218,34 @@ void AudioSource::ValidateSerializedDocument(const nlohmann::json &j)
     using namespace component_document_validation;
     ValidateComponentDocument(j, "AudioSource",
                               {"volume", "pitch", "loop", "play_on_awake", "mute", "min_distance", "max_distance",
-                               "one_shot_pool_size", "output_bus", "track_count", "tracks"});
+                               "one_shot_pool_size", "output_bus", "track_count", "tracks"},
+                              {"spatial_blend", "priority"});
+    if (j.contains("priority")) {
+        const int priority = RequireInteger(j, "priority", "AudioSource");
+        if (priority < 0 || priority > 255)
+            throw std::invalid_argument("AudioSource.priority must be in [0, 255]");
+    }
     const float volume = RequireFiniteFloat(j, "volume", "AudioSource");
     const float pitch = RequireFiniteFloat(j, "pitch", "AudioSource");
     RequireBoolean(j, "loop", "AudioSource");
     RequireBoolean(j, "play_on_awake", "AudioSource");
     RequireBoolean(j, "mute", "AudioSource");
+    const float spatialBlend =
+        j.contains("spatial_blend") ? RequireFiniteFloat(j, "spatial_blend", "AudioSource") : 1.0f;
     const float minDistance = RequireFiniteFloat(j, "min_distance", "AudioSource");
     const float maxDistance = RequireFiniteFloat(j, "max_distance", "AudioSource");
     const int poolSize = RequireInteger(j, "one_shot_pool_size", "AudioSource");
-    RequireString(j, "output_bus", "AudioSource");
+    const std::string &outputBus = RequireString(j, "output_bus", "AudioSource");
     const int trackCount = RequireInteger(j, "track_count", "AudioSource");
     const auto &tracks = j["tracks"];
-    if (!tracks.is_array() || trackCount < 1 || tracks.size() != static_cast<size_t>(trackCount))
-        throw std::invalid_argument("AudioSource.tracks must match positive track_count");
-    if (volume < 0.0f || volume > 1.0f || pitch < 0.1f || pitch > 3.0f)
-        throw std::invalid_argument("AudioSource volume or pitch is out of range");
+    if (!tracks.is_array() || trackCount < 1 || trackCount > 16 || tracks.size() != static_cast<size_t>(trackCount))
+        throw std::invalid_argument("AudioSource.tracks must match track_count in [1, 16]");
+    if (volume < 0.0f || volume > 1.0f || pitch < 0.1f || pitch > 3.0f || spatialBlend < 0.0f || spatialBlend > 1.0f)
+        throw std::invalid_argument("AudioSource volume, pitch, or spatial_blend is out of range");
     if (minDistance <= 0.0f || maxDistance < minDistance || poolSize < 1)
         throw std::invalid_argument("AudioSource distance or pool settings are invalid");
+    if (!AudioEngine::IsValidBusName(outputBus))
+        throw std::invalid_argument("AudioSource.output_bus is not a supported bus");
 
     for (size_t index = 0; index < tracks.size(); ++index) {
         const auto &track = tracks[index];
@@ -227,14 +289,16 @@ bool AudioSource::DeserializeDocument(const nlohmann::json &j)
             return false;
 
         m_volume = j["volume"].get<float>();
+        m_priority = j.value("priority", 128);
         m_pitch = j["pitch"].get<float>();
         m_loop = j["loop"].get<bool>();
         m_playOnAwake = j["play_on_awake"].get<bool>();
         m_mute = j["mute"].get<bool>();
+        m_spatialBlend = j.value("spatial_blend", 1.0f);
         m_minDistance = j["min_distance"].get<float>();
         m_maxDistance = j["max_distance"].get<float>();
         m_oneShotPoolSize = j["one_shot_pool_size"].get<int>();
-        m_outputBus = j["output_bus"].get<std::string>();
+        SetOutputBus(j["output_bus"].get<std::string>());
 
         // Deserialize tracks
         const int trackCount = j["track_count"].get<int>();
@@ -250,6 +314,7 @@ bool AudioSource::DeserializeDocument(const nlohmann::json &j)
 
         SetVolume(m_volume);
         SetPitch(m_pitch);
+        SetSpatialBlend(m_spatialBlend);
         SetMinDistance(m_minDistance);
         SetMaxDistance(m_maxDistance);
         SetOneShotPoolSize(m_oneShotPoolSize);
@@ -270,9 +335,11 @@ bool AudioSource::DeserializeDocument(const nlohmann::json &j)
 
 void AudioSource::SetTrackCount(int count)
 {
-    if (count < 1) {
-        INXLOG_WARN("AudioSource::SetTrackCount: track_count must be >= 1. Clamping ", count, " to 1.");
-        count = 1;
+    const int clamped = std::clamp(count, 1, 16);
+    if (count != clamped) {
+        INXLOG_WARN("AudioSource::SetTrackCount: track_count must be in [1, 16]. Clamping ", count, " to ", clamped,
+                    ".");
+        count = clamped;
     }
     int oldCount = static_cast<int>(m_tracks.size());
 
@@ -334,6 +401,7 @@ void AudioSource::AssignTrackClipReference(int trackIndex, const std::string &gu
     auto &track = m_tracks[trackIndex];
     if (track.isPlaying)
         StopVoice(trackIndex);
+    track.startTime = 0.0;
 
     auto &graph = AssetDependencyGraph::Instance();
     const std::string oldGuid = track.clipAsset.GetGuid();
@@ -412,8 +480,10 @@ void AudioSource::Play(int trackIndex)
         return;
     }
 
+    const double startTime = track.isPlaying ? 0.0 : track.startTime;
     // Stop any existing playback on this track
     StopVoice(trackIndex);
+    track.startTime = startTime;
 
     // Start new voice
     StartVoice(trackIndex);
@@ -447,9 +517,9 @@ void AudioSource::UnPause(int trackIndex)
     }
     auto &track = m_tracks[trackIndex];
     if (track.isPlaying && track.isPaused && track.stream) {
+        AudioEngine::Instance().SetVoicePaused(track.stream, false);
         track.pauseRequestedByDisable = false;
         track.isPaused = false;
-        AudioEngine::Instance().SetVoicePaused(track.stream, false);
         ApplyTrackGain(trackIndex);
     }
 }
@@ -460,6 +530,32 @@ void AudioSource::StopAll()
         StopVoice(i);
     }
     StopOneShots();
+}
+
+double AudioSource::GetTrackTime(int trackIndex) const
+{
+    if (trackIndex < 0 || trackIndex >= static_cast<int>(m_tracks.size()))
+        throw std::out_of_range("Audio track index out of range");
+    const auto &track = m_tracks[trackIndex];
+    return track.stream ? AudioEngine::Instance().GetVoiceTime(track.stream) : track.startTime;
+}
+
+void AudioSource::SetTrackTime(int trackIndex, double seconds)
+{
+    if (trackIndex < 0 || trackIndex >= static_cast<int>(m_tracks.size()))
+        throw std::out_of_range("Audio track index out of range");
+    if (!std::isfinite(seconds) || seconds < 0.0)
+        throw std::invalid_argument("Audio time must be finite and non-negative");
+    auto &track = m_tracks[trackIndex];
+    const auto clip = track.GetClip();
+    if (!clip || !clip->IsLoaded())
+        throw std::runtime_error("Cannot seek an audio track without a loaded clip");
+    const double duration = static_cast<double>(clip->GetSampleCount()) / clip->GetSampleRate();
+    if (seconds > duration)
+        throw std::out_of_range("Audio time exceeds clip duration");
+    track.startTime = seconds;
+    if (track.stream)
+        AudioEngine::Instance().SetVoiceTime(track.stream, seconds);
 }
 
 void AudioSource::PlayOneShot(std::shared_ptr<AudioClip> clip, float volumeScale)
@@ -475,32 +571,34 @@ void AudioSource::PlayOneShot(std::shared_ptr<AudioClip> clip, float volumeScale
                      clampedVolumeScale, ".");
     }
 
-    if (m_oneShotVoices.empty()) {
-        SetOneShotPoolSize(m_oneShotPoolSize);
-    }
-
     int selectedVoice = -1;
     uint64_t oldestPlayOrder = std::numeric_limits<uint64_t>::max();
+    float quietest = std::numeric_limits<float>::infinity();
+    bool available = false;
     for (int i = 0; i < static_cast<int>(m_oneShotVoices.size()); ++i) {
         const auto &voice = m_oneShotVoices[i];
-        if (!voice.stream) {
+        if (!voice.stream || AudioEngine::Instance().HasVoiceFinished(voice.stream)) {
             selectedVoice = i;
+            available = true;
             break;
         }
 
-        if (voice.playOrder < oldestPlayOrder) {
+        if (voice.volumeScale < quietest || (voice.volumeScale == quietest && voice.playOrder < oldestPlayOrder)) {
+            quietest = voice.volumeScale;
             oldestPlayOrder = voice.playOrder;
             selectedVoice = i;
         }
     }
 
-    if (selectedVoice < 0) {
-        INXLOG_WARN("AudioSource::PlayOneShot: one-shot pool is empty after allocation attempt.");
+    // The pool always has at least one slot. Capacity pressure is normal:
+    // reject a quieter incoming shot, otherwise replace the quietest (oldest
+    // for ties). Across sources, physical scheduling also respects priority.
+    if (!available && clampedVolumeScale < quietest) {
+        ++m_rejectedOneShotCount;
         return;
     }
 
     if (m_oneShotVoices[selectedVoice].stream) {
-        INXLOG_WARN("AudioSource::PlayOneShot: one-shot pool exhausted. Reusing the oldest pooled voice.");
         StopOneShotVoice(selectedVoice);
     }
 
@@ -530,6 +628,12 @@ bool AudioSource::IsTrackPaused(int trackIndex) const
     return m_tracks[trackIndex].isPaused;
 }
 
+bool AudioSource::IsTrackVirtual(int trackIndex) const
+{
+    return trackIndex >= 0 && trackIndex < static_cast<int>(m_tracks.size()) && m_tracks[trackIndex].stream &&
+           AudioEngine::Instance().IsVoiceVirtual(m_tracks[trackIndex].stream);
+}
+
 // ============================================================================
 // Source-level properties
 // ============================================================================
@@ -557,6 +661,28 @@ void AudioSource::SetPitch(float pitch)
 void AudioSource::SetMute(bool mute)
 {
     m_mute = mute;
+    ApplyAllTrackGains();
+}
+
+void AudioSource::SetPriority(int priority)
+{
+    if (priority < 0 || priority > 255)
+        throw std::invalid_argument("AudioSource.priority must be in [0, 255]");
+    m_priority = priority;
+    ApplyAllTrackGains();
+}
+
+void AudioSource::SetSpatialBlend(float blend)
+{
+    m_spatialBlend = std::clamp(blend, 0.0f, 1.0f);
+    ApplyAllTrackGains();
+}
+
+void AudioSource::SetOutputBus(const std::string &busName)
+{
+    if (!AudioEngine::IsValidBusName(busName))
+        throw std::invalid_argument("Unknown AudioSource output bus '" + busName + "'");
+    m_outputBus = busName;
     ApplyAllTrackGains();
 }
 
@@ -639,6 +765,13 @@ void AudioSource::ApplyAllTrackGains()
     }
 }
 
+bool AudioSource::HasActiveVoices() const
+{
+    return std::any_of(m_tracks.begin(), m_tracks.end(), [](const AudioTrack &track) { return track.stream; }) ||
+           std::any_of(m_oneShotVoices.begin(), m_oneShotVoices.end(),
+                       [](const AudioOneShotVoice &voice) { return voice.stream; });
+}
+
 void AudioSource::ApplyTrackGain(int trackIndex)
 {
     if (trackIndex < 0 || trackIndex >= static_cast<int>(m_tracks.size())) {
@@ -649,12 +782,14 @@ void AudioSource::ApplyTrackGain(int trackIndex)
         return;
     }
     if (track.isPaused) {
-        AudioEngine::Instance().UpdateVoiceMix(track.stream, 0.0f, m_pan, m_pitch, m_loop);
+        AudioEngine::Instance().UpdateVoiceMix(track.stream, 0.0f, m_spatialGain, m_pan, m_spatialBlend, m_pitch,
+                                               m_loop, m_outputBus, m_priority);
         return;
     }
 
-    float gain = m_mute ? 0.0f : (m_volume * track.volume * m_spatialGain);
-    AudioEngine::Instance().UpdateVoiceMix(track.stream, gain, m_pan, m_pitch, m_loop);
+    const float gain = m_mute ? 0.0f : (m_volume * track.volume);
+    AudioEngine::Instance().UpdateVoiceMix(track.stream, gain, m_spatialGain, m_pan, m_spatialBlend, m_pitch, m_loop,
+                                           m_outputBus, m_priority);
 }
 
 void AudioSource::ApplyOneShotGain(int voiceIndex)
@@ -669,12 +804,14 @@ void AudioSource::ApplyOneShotGain(int voiceIndex)
     }
 
     if (voice.isPaused) {
-        AudioEngine::Instance().UpdateVoiceMix(voice.stream, 0.0f, m_pan, m_pitch, false);
+        AudioEngine::Instance().UpdateVoiceMix(voice.stream, 0.0f, m_spatialGain, m_pan, m_spatialBlend, m_pitch, false,
+                                               m_outputBus, m_priority);
         return;
     }
 
-    const float gain = m_mute ? 0.0f : (m_volume * voice.volumeScale * m_spatialGain);
-    AudioEngine::Instance().UpdateVoiceMix(voice.stream, gain, m_pan, m_pitch, false);
+    const float gain = m_mute ? 0.0f : (m_volume * voice.volumeScale);
+    AudioEngine::Instance().UpdateVoiceMix(voice.stream, gain, m_spatialGain, m_pan, m_spatialBlend, m_pitch, false,
+                                           m_outputBus, m_priority);
 }
 
 // ============================================================================
@@ -691,7 +828,7 @@ void AudioSource::StartVoice(int trackIndex)
 
     auto &track = m_tracks[trackIndex];
     const auto clip = track.GetClip();
-    track.stream = engine.CreateVoice(this, clip.get());
+    track.stream = engine.CreateVoice(this, clip.get(), track.startTime);
     if (!track.stream) {
         INXLOG_ERROR("AudioSource::StartVoice: failed to create voice for track ", trackIndex);
         return;
@@ -700,8 +837,8 @@ void AudioSource::StartVoice(int trackIndex)
     track.isPlaying = true;
     track.isPaused = false;
     track.pauseRequestedByDisable = false;
-    AudioEngine::Instance().SetVoicePaused(track.stream, false);
     ApplyTrackGain(trackIndex);
+    AudioEngine::Instance().SetVoicePaused(track.stream, false);
 }
 
 void AudioSource::StopVoice(int trackIndex)
@@ -719,6 +856,7 @@ void AudioSource::StopVoice(int trackIndex)
     track.isPlaying = false;
     track.isPaused = false;
     track.pauseRequestedByDisable = false;
+    track.startTime = 0.0;
 }
 
 void AudioSource::StartOneShotVoice(int voiceIndex, std::shared_ptr<AudioClip> clip, float volumeScale)
@@ -748,8 +886,8 @@ void AudioSource::StartOneShotVoice(int voiceIndex, std::shared_ptr<AudioClip> c
 
     voice.isPaused = false;
     voice.pauseRequestedByDisable = false;
-    engine.SetVoicePaused(voice.stream, false);
     ApplyOneShotGain(voiceIndex);
+    engine.SetVoicePaused(voice.stream, false);
 }
 
 void AudioSource::StopOneShotVoice(int voiceIndex)
@@ -785,6 +923,7 @@ void AudioSource::NotifyAudioEngineShutdown()
         track.isPlaying = false;
         track.isPaused = false;
         track.pauseRequestedByDisable = false;
+        track.startTime = 0.0;
     }
 
     for (auto &voice : m_oneShotVoices) {

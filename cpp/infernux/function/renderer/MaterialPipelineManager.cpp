@@ -700,6 +700,10 @@ VkPipeline MaterialPipelineManager::CreatePipelineWithProgram(const ShaderProgra
     }
 
     RenderState effectiveState = renderState;
+    if (pipelineDesc.invertCulling)
+        effectiveState.frontFace = effectiveState.frontFace == MaterialFrontFace::Clockwise
+                                       ? MaterialFrontFace::CounterClockwise
+                                       : MaterialFrontFace::Clockwise;
     if (pipelineDesc.target != ShaderCompileTarget::Forward &&
         pipelineDesc.target != ShaderCompileTarget::ForwardPlus) {
         effectiveState.blendEnable = false;

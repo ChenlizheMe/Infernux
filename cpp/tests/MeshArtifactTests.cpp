@@ -1,5 +1,6 @@
 #include <function/resources/InxMesh/InxMesh.h>
 #include <function/resources/InxMesh/MeshArtifact.h>
+#include <function/resources/InxSkinnedMesh/InxSkinnedMesh.h>
 #include <function/scene/PrimitiveMeshes.h>
 
 #include <algorithm>
@@ -29,6 +30,75 @@ bool NearlyEqual(float left, float right)
 
 int main()
 {
+    std::shared_ptr<const infernux::MeshGeometry> retainedGeometry;
+    {
+        infernux::InxMesh mesh("mutable identity");
+        infernux::Vertex oldVertex{};
+        oldVertex.pos = {1.0f, 2.0f, 3.0f};
+        infernux::SubMesh oldSubMesh;
+        oldSubMesh.name = "old";
+        mesh.SetData({oldVertex}, {0, 0, 0}, {oldSubMesh});
+        retainedGeometry = mesh.GetGeometrySnapshot();
+        infernux::InxMesh copy = mesh;
+        oldVertex.pos = {9.0f, 8.0f, 7.0f};
+        mesh.SetData({oldVertex}, {0}, {});
+        assert(mesh.GetGeometrySnapshot() != retainedGeometry);
+        assert(mesh.GetVertices().front().pos == oldVertex.pos);
+        assert(mesh.GetBoundsMin() == oldVertex.pos);
+        assert(copy.GetGeometrySnapshot() == retainedGeometry);
+        assert(copy.GetVertices().front().pos == glm::vec3(1.0f, 2.0f, 3.0f));
+        assert(retainedGeometry->indices.size() == 3);
+        assert(retainedGeometry->subMeshes.front().name == "old");
+        assert(retainedGeometry->boundsMax == glm::vec3(1.0f, 2.0f, 3.0f));
+        mesh.SetData({}, {}, {});
+        assert(mesh.GetVertices().empty());
+        assert(mesh.GetBoundsMin() == glm::vec3(0.0f));
+        assert(mesh.GetGeneration() == 3);
+    }
+    assert(retainedGeometry->vertices.front().pos.x == 1.0f);
+    const std::weak_ptr<const infernux::MeshGeometry> retired = retainedGeometry;
+    retainedGeometry.reset();
+    assert(retired.expired());
+
+    {
+        infernux::InxMesh mesh("range update");
+        std::vector<infernux::Vertex> vertices(6);
+        for (size_t index = 0; index < vertices.size(); ++index)
+            vertices[index].pos = glm::vec3(static_cast<float>(index));
+        infernux::SubMesh left, right;
+        left.vertexCount = 3;
+        left.indexCount = 3;
+        left.name = "left";
+        right.vertexStart = 3;
+        right.vertexCount = 3;
+        right.indexStart = 3;
+        right.indexCount = 3;
+        right.materialSlot = 1;
+        mesh.SetData(vertices, {0, 1, 2, 3, 4, 5}, {left, right});
+        const auto before = mesh.GetGeometrySnapshot();
+        auto replacement = vertices[1];
+        replacement.pos = {-2.0f, 8.0f, 1.0f};
+        replacement.normal = {1.0f, 0.0f, 0.0f};
+        mesh.UpdateVertexRange(1, {replacement});
+        assert(mesh.GetGeneration() == 2);
+        assert(before->vertices[1].pos == glm::vec3(1.0f));
+        assert(mesh.GetVertices()[1].normal == replacement.normal);
+        assert(mesh.GetVertices()[0].pos == vertices[0].pos);
+        assert(mesh.GetVertices()[5].pos == vertices[5].pos);
+        assert(mesh.GetIndices() == before->indices);
+        assert(mesh.GetBoundsMin() == glm::vec3(-2.0f, 0.0f, 0.0f));
+        assert(mesh.GetBoundsMax() == glm::vec3(5.0f, 8.0f, 5.0f));
+        assert(mesh.GetSubMesh(0).boundsMax == glm::vec3(2.0f, 8.0f, 2.0f));
+        assert(mesh.GetSubMesh(1).boundsMin == glm::vec3(3.0f));
+        assert(mesh.GetSubMesh(1).materialSlot == 1);
+        const auto updated = mesh.GetGeometrySnapshot();
+        RequireInvalid([&] { mesh.UpdateVertexRange(6, {replacement}); });
+        RequireInvalid([&] { mesh.UpdateVertexRange(size_t(-1), {}); });
+        mesh.UpdateVertexRange(6, {});
+        assert(mesh.GetGeometrySnapshot() == updated);
+        assert(mesh.GetGeneration() == 2);
+    }
+
     const infernux::Vertex defaultVertex{};
     assert(defaultVertex.pos == glm::vec3(0.0f));
     assert(defaultVertex.normal == glm::vec3(0.0f, 1.0f, 0.0f));
@@ -104,6 +174,26 @@ int main()
     RequireInvalid([&] { (void)infernux::MeshArtifact::Deserialize(corrupted, SourceHash); });
     RequireInvalid([&] { (void)infernux::MeshArtifact::Deserialize(bytes.substr(0, bytes.size() - 1), SourceHash); });
     RequireInvalid([&] { (void)infernux::MeshArtifact::Serialize(source, {}); });
+
+    source.SetGuid("original-model-guid");
+    source.SetFilePath("Assets/original.obj");
+    const auto authoredBytes = infernux::MeshArtifact::SerializeSource(source);
+    auto authored = infernux::MeshArtifact::DeserializeSource(authoredBytes);
+    assert(authored->GetGuid().empty());
+    assert(authored->GetFilePath().empty());
+    assert(authored->GetVertices().front().normal == vertex.normal);
+    assert(authored->GetVertices().front().tangent == vertex.tangent);
+    assert(authored->GetVertices().front().texCoord == vertex.texCoord);
+    assert(authored->GetIndices() == source.GetIndices());
+    assert(authored->GetMaterialSlotNames() == source.GetMaterialSlotNames());
+    assert(infernux::MeshArtifact::SerializeSource(*authored) == authoredBytes);
+    RequireInvalid([&] { (void)infernux::MeshArtifact::DeserializeSource(bytes); });
+    RequireInvalid([&] { (void)infernux::MeshArtifact::Deserialize(authoredBytes, SourceHash); });
+    auto skinned = std::make_shared<infernux::InxSkinnedMesh>();
+    skinned->baseVertices = source.GetVertices();
+    skinned->indices = source.GetIndices();
+    source.SetSkinnedData(skinned);
+    RequireInvalid([&] { (void)infernux::MeshArtifact::SerializeSource(source); });
 
     std::cout << "Mesh artifact tests passed\n";
     return 0;

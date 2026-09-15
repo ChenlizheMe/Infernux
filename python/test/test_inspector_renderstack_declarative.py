@@ -312,18 +312,18 @@ def test_pipeline_parameter_change_is_mirrored_into_serialized_stack_state(actio
     pipeline = control.target()
 
     old_value = pipeline.msaa_samples
-    stack._graph_desc = object()
+    stack._graph_state.description = object()
     control.on_change(pipeline, "msaa_samples", old_value, MSAASamples.X2)
 
     assert '"msaa_samples": {"__enum_name__": "X2"}' in stack.pipeline_params_json
-    assert stack._graph_desc is None
+    assert stack._graph_state.description is None
     assert stack.build_graph().msaa_samples == 2
 
-    stack._graph_desc = object()
+    stack._graph_state.description = object()
     old_value = pipeline.msaa_samples
     control.on_change(pipeline, "msaa_samples", old_value, MSAASamples.X8)
 
-    assert stack._graph_desc is None
+    assert stack._graph_state.description is None
     assert stack.build_graph().msaa_samples == 8
 
 
@@ -478,15 +478,16 @@ def test_broken_initial_topology_probe_raises_without_fabricating_a_model(monkey
 def test_rejected_graph_rebuild_keeps_rendering_the_last_valid_graph(monkeypatch):
     stack = RenderStack()
     previous_graph = object()
-    stack._last_valid_graph_desc = previous_graph
-    stack._graph_desc = None
+    stack._graph_state.last_valid_description = previous_graph
+    stack._graph_state.description = None
     monkeypatch.setattr(
         stack,
         "build_graph",
-        lambda: (_ for _ in ()).throw(ValueError("invalid graph edit")),
+        lambda **_kwargs: (_ for _ in ()).throw(ValueError("invalid graph edit")),
     )
 
     class Context:
+        output_samples = 0
         def __init__(self):
             self.applied = []
             self.submitted = []
@@ -506,8 +507,8 @@ def test_rejected_graph_rebuild_keeps_rendering_the_last_valid_graph(monkeypatch
     context = Context()
     stack.render(context, object())
 
-    assert stack._graph_desc is previous_graph
-    assert stack._build_failed is True
+    assert stack._graph_state.description is previous_graph
+    assert stack._graph_state.build_failed is True
     assert context.applied == [previous_graph]
     assert context.submitted == ["culling"]
 
@@ -516,17 +517,18 @@ def test_initial_graph_build_failure_is_not_replaced_by_another_pipeline(monkeyp
     from Infernux.core.assets import AssetManager
 
     stack = RenderStack()
-    stack._graph_desc = None
-    stack._last_valid_graph_desc = None
-    stack._build_failed = False
+    stack._graph_state.description = None
+    stack._graph_state.last_valid_description = None
+    stack._graph_state.build_failed = False
     monkeypatch.setattr(AssetManager, "refresh_pending", staticmethod(lambda: False))
     monkeypatch.setattr(
         stack,
         "build_graph",
-        lambda: (_ for _ in ()).throw(ValueError("invalid initial graph")),
+        lambda **_kwargs: (_ for _ in ()).throw(ValueError("invalid initial graph")),
     )
 
     class Context:
+        output_samples = 0
         def setup_camera_properties(self, _camera):
             pass
 
@@ -540,9 +542,9 @@ def test_initial_graph_build_failure_is_not_replaced_by_another_pipeline(monkeyp
         stack.render(Context(), object())
 
     assert isinstance(error.value.__cause__, ValueError)
-    assert stack._graph_desc is None
-    assert stack._last_valid_graph_desc is None
-    assert stack._build_failed is True
+    assert stack._graph_state.description is None
+    assert stack._graph_state.last_valid_description is None
+    assert stack._graph_state.build_failed is True
 
 
 def test_graph_publication_failure_restores_only_the_last_valid_graph(monkeypatch):
@@ -551,13 +553,14 @@ def test_graph_publication_failure_restores_only_the_last_valid_graph(monkeypatc
     stack = RenderStack()
     previous_graph = object()
     candidate_graph = object()
-    stack._graph_desc = None
-    stack._last_valid_graph_desc = previous_graph
-    stack._build_failed = False
+    stack._graph_state.description = None
+    stack._graph_state.last_valid_description = previous_graph
+    stack._graph_state.build_failed = False
     monkeypatch.setattr(AssetManager, "refresh_pending", staticmethod(lambda: False))
-    monkeypatch.setattr(stack, "build_graph", lambda: candidate_graph)
+    monkeypatch.setattr(stack, "build_graph", lambda **_kwargs: candidate_graph)
 
     class Context:
+        output_samples = 0
         def __init__(self):
             self.applied = []
             self.submitted = []
@@ -581,9 +584,9 @@ def test_graph_publication_failure_restores_only_the_last_valid_graph(monkeypatc
 
     assert context.applied == [candidate_graph, previous_graph]
     assert context.submitted == ["culling"]
-    assert stack._graph_desc is previous_graph
-    assert stack._last_valid_graph_desc is previous_graph
-    assert stack._build_failed is True
+    assert stack._graph_state.description is previous_graph
+    assert stack._graph_state.last_valid_description is previous_graph
+    assert stack._graph_state.build_failed is True
 
 
 def test_initial_graph_publication_failure_is_not_replaced(monkeypatch):
@@ -591,13 +594,14 @@ def test_initial_graph_publication_failure_is_not_replaced(monkeypatch):
 
     stack = RenderStack()
     candidate_graph = object()
-    stack._graph_desc = None
-    stack._last_valid_graph_desc = None
-    stack._build_failed = False
+    stack._graph_state.description = None
+    stack._graph_state.last_valid_description = None
+    stack._graph_state.build_failed = False
     monkeypatch.setattr(AssetManager, "refresh_pending", staticmethod(lambda: False))
-    monkeypatch.setattr(stack, "build_graph", lambda: candidate_graph)
+    monkeypatch.setattr(stack, "build_graph", lambda **_kwargs: candidate_graph)
 
     class Context:
+        output_samples = 0
         def setup_camera_properties(self, _camera):
             pass
 
@@ -611,9 +615,9 @@ def test_initial_graph_publication_failure_is_not_replaced(monkeypatch):
         stack.render(Context(), object())
 
     assert isinstance(error.value.__cause__, ValueError)
-    assert stack._graph_desc is None
-    assert stack._last_valid_graph_desc is None
-    assert stack._build_failed is True
+    assert stack._graph_state.description is None
+    assert stack._graph_state.last_valid_description is None
+    assert stack._graph_state.build_failed is True
 
 
 def test_initial_graph_build_waits_for_asset_refresh_commit(monkeypatch):
@@ -626,9 +630,10 @@ def test_initial_graph_build_waits_for_asset_refresh_commit(monkeypatch):
         "refresh_pending",
         staticmethod(lambda: True),
     )
-    monkeypatch.setattr(stack, "build_graph", lambda: build_calls.append(True))
+    monkeypatch.setattr(stack, "build_graph", lambda **_kwargs: build_calls.append(True))
 
     class Context:
+        output_samples = 0
         def __init__(self):
             self.submitted = []
 
@@ -645,8 +650,8 @@ def test_initial_graph_build_waits_for_asset_refresh_commit(monkeypatch):
     stack.render(context, object())
 
     assert build_calls == []
-    assert stack._graph_desc is None
-    assert stack._build_failed is False
+    assert stack._graph_state.description is None
+    assert stack._graph_state.build_failed is False
     assert context.submitted == ["startup-culling"]
 
 
@@ -654,6 +659,7 @@ def test_declarative_lists_scope_nested_widget_ids_by_control_key(monkeypatch):
     rendered_scopes = []
 
     class Context:
+        output_samples = 0
         def __init__(self):
             self.ids = []
 

@@ -150,6 +150,16 @@ void RegisterInputBindings(py::module_ &m)
              "Lock/unlock cursor (hides cursor and captures relative mouse movement)")
         .def_property_readonly("is_cursor_locked", &InputManager::IsCursorLocked,
                                "True when cursor is locked (relative mouse mode)")
+        .def("set_cursor_visible", &InputManager::SetCursorVisible, py::arg("visible"),
+             "Show or hide the cursor independently from relative mouse mode")
+        .def_property_readonly("is_cursor_visible", &InputManager::IsCursorVisible,
+                               "Requested cursor visibility when relative mouse mode is inactive")
+        .def("set_cursor_confined", &InputManager::SetCursorConfined, py::arg("confined"),
+             "Confine or release the visible cursor without enabling relative mouse mode")
+        .def_property_readonly("is_cursor_confined", &InputManager::IsCursorConfined,
+                               "True when visible cursor confinement is requested")
+        .def("warp_cursor", &InputManager::WarpCursor, py::arg("x"), py::arg("y"),
+             "Warp the visible cursor in logical window coordinates; false when unsupported")
         .def("set_editor_mouse_capture", &InputManager::SetEditorMouseCapture, py::arg("captured"),
              "Enable or disable editor-only Scene view mouse capture without marking gameplay cursor lock")
         .def("consume_editor_mouse_delta", &InputManager::ConsumeEditorMouseDelta,

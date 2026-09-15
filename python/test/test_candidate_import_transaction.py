@@ -4,6 +4,7 @@ import dataclasses
 import importlib.util
 import os
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -39,6 +40,159 @@ def _broker(assets: Path, name: str, source: str) -> CandidateImportTransaction:
     broker = CandidateImportTransaction()
     broker.register(name, str(path), source=source)
     return broker
+
+
+def test_serializable_candidate_is_private_until_module_commit(candidate_project):
+    from Infernux.components.serializable_object import get_serializable_class
+
+    broker = _broker(candidate_project, "candidate_data", (
+        "from Infernux.components import SerializableObject, serialized_field\n"
+        "class Rules(SerializableObject):\n"
+        "    score: int = serialized_field(default=17)\n"
+        "VALUE = Rules._deserialize(Rules()._serialize())\n"
+    ))
+    identity = "candidate_data:Rules"
+    try:
+        module = broker.load("candidate_data")
+        assert type(module.VALUE) is module.Rules
+        assert module.VALUE.score == 17
+        assert get_serializable_class(identity) is None
+        broker.commit()
+        assert get_serializable_class(identity) is sys.modules["candidate_data"].Rules
+    finally:
+        broker.rollback()
+    assert get_serializable_class(identity) is None
+
+
+def test_serializable_failed_candidate_keeps_live_type(candidate_project):
+    from Infernux.components.serializable_object import get_serializable_class
+
+    source = (
+        "from Infernux.components import SerializableObject, serialized_field\n"
+        "class Rules(SerializableObject):\n"
+        "    score: int = serialized_field(default=17)\n"
+    )
+    live = _broker(candidate_project, "failed_data", source)
+    candidate = None
+    try:
+        live_module = live.load("failed_data")
+        live.commit()
+        candidate = _broker(candidate_project, "failed_data", source.replace("17", "29")
+                            + "raise RuntimeError('invalid candidate')\n")
+        with pytest.raises(RuntimeError, match="invalid candidate"):
+            candidate.load("failed_data")
+        assert get_serializable_class("failed_data:Rules") is live_module.Rules
+        assert sys.modules["failed_data"] is live_module
+    finally:
+        if candidate is not None:
+            candidate.rollback()
+        live.rollback()
+
+
+def test_serializable_replacement_retires_removed_types_and_can_rollback(candidate_project):
+    from Infernux.components.serializable_object import get_serializable_class
+
+    source = (
+        "from Infernux.components import SerializableObject\n"
+        "class Rules(SerializableObject):\n"
+        "    score: int = 17\n"
+        "class Removed(SerializableObject):\n"
+        "    pass\n"
+    )
+    live = _broker(candidate_project, "replaced_data", source)
+    candidate = None
+    try:
+        live_module = live.load("replaced_data")
+        live.commit()
+        candidate = _broker(candidate_project, "replaced_data", source.replace("17", "29")
+                            .split("class Removed")[0])
+        module = candidate.load("replaced_data")
+        assert get_serializable_class("replaced_data:Rules") is live_module.Rules
+        assert get_serializable_class("replaced_data:Removed") is live_module.Removed
+        candidate.commit()
+        assert get_serializable_class("replaced_data:Rules") is module.Rules
+        assert get_serializable_class("replaced_data:Removed") is None
+        candidate.rollback()
+        assert get_serializable_class("replaced_data:Rules") is live_module.Rules
+        assert get_serializable_class("replaced_data:Removed") is live_module.Removed
+    finally:
+        if candidate is not None:
+            candidate.rollback()
+        live.rollback()
+
+
+def test_serializable_helper_defaults_use_private_candidate_types(candidate_project):
+    from Infernux.components.serializable_object import get_serializable_class
+
+    source = (
+        "from Infernux.components import SerializableObject, serialized_field\n"
+        "from data_helper import Stats\n"
+        "class Rules(SerializableObject):\n"
+        "    stats: Stats = serialized_field(default=Stats())\n"
+        "VALUE = Rules._deserialize(Rules()._serialize())\n"
+    )
+    helper = candidate_project / "data_helper.py"
+    helper.write_text(
+        "from Infernux.components import SerializableObject\n"
+        "class Stats(SerializableObject):\n"
+        "    hp: int = 100\n", encoding="utf-8",
+    )
+    broker = _broker(candidate_project, "data_consumer", source)
+    broker.register("data_helper", str(helper))
+    try:
+        module = broker.load("data_consumer")
+        stats = broker.module_for("data_helper").Stats
+        assert type(module.VALUE.stats) is stats
+        assert get_serializable_class("data_helper:Stats") is None
+        assert get_serializable_class("data_consumer:Rules") is None
+        broker.commit()
+        assert get_serializable_class("data_helper:Stats") is stats
+        assert get_serializable_class("data_consumer:Rules") is module.Rules
+    finally:
+        broker.rollback()
+
+
+def test_serializable_candidate_cannot_claim_another_modules_identity(candidate_project):
+    from Infernux.components.serializable_object import get_serializable_class
+
+    source = (
+        "from Infernux.components import SerializableObject\n"
+        "class Rules(SerializableObject):\n"
+        "    __serialized_type_id__ = 'tests:owned-rules'\n"
+    )
+    owner = _broker(candidate_project, "data_owner", source)
+    intruder = _broker(candidate_project, "data_intruder", source)
+    try:
+        live = owner.load("data_owner")
+        owner.commit()
+        intruder.load("data_intruder")
+        with pytest.raises(ValueError, match="owned by module 'data_owner'"):
+            intruder.commit()
+        assert get_serializable_class("tests:owned-rules") is live.Rules
+        assert "data_intruder" not in sys.modules
+    finally:
+        intruder.rollback()
+        owner.rollback()
+
+
+def test_serializable_rollback_preserves_unrelated_publication(candidate_project):
+    from Infernux.components.serializable_object import get_serializable_class
+
+    source = "from Infernux.components import SerializableObject\nclass Rules(SerializableObject): pass\n"
+    first = _broker(candidate_project, "first_data_owner", source)
+    second = _broker(candidate_project, "second_data_owner", source)
+    try:
+        first.load("first_data_owner")
+        other = second.load("second_data_owner")
+        first.commit()
+        second.commit()
+        first.rollback()
+        assert get_serializable_class("first_data_owner:Rules") is None
+        assert get_serializable_class("second_data_owner:Rules") is other.Rules
+        assert sys.modules["second_data_owner"] is other
+    finally:
+        second.rollback()
+        first.rollback()
 
 
 def test_os_is_a_trusted_stdlib_import(candidate_project):
@@ -378,6 +532,107 @@ def test_namespace_package_can_load_a_private_child(candidate_project):
     broker.rollback()
 
 
+def test_namespace_creation_uses_stable_live_module_snapshot(candidate_project, monkeypatch):
+    member = candidate_project / "snapshot_member.py"
+    member.write_text("VALUE = 1\n", encoding="utf-8")
+    broker = CandidateImportTransaction()
+    broker.register("snapshot_package.member", str(member))
+    live_name = "snapshot_package.live"
+    mutation_name = "snapshot_package.import_side_effect"
+    sys.modules[live_name] = types.ModuleType(live_name)
+
+    def mutate_module_table(name):
+        if name == live_name:
+            sys.modules[mutation_name] = types.ModuleType(mutation_name)
+        return None
+
+    monkeypatch.setattr(broker, "_reuse_project_lkg", mutate_module_table)
+    try:
+        namespace = broker.load("snapshot_package")
+        assert namespace.__name__ == "snapshot_package"
+        assert mutation_name in sys.modules
+    finally:
+        broker.rollback()
+        sys.modules.pop(live_name, None)
+        sys.modules.pop(mutation_name, None)
+
+
+def test_relative_fromlist_attaches_preloaded_helper_to_private_package(
+    candidate_project,
+):
+    package = candidate_project / "Scripts"
+    package.mkdir()
+    root = package / "component.py"
+    helper_path = package / "helper.py"
+    root.write_text(
+        "from .helper import VALUE\n"
+        "from . import helper\n"
+        "RESULT = (VALUE, helper.VALUE)\n",
+        encoding="utf-8",
+    )
+    helper_path.write_text("VALUE = 'lkg-helper'\n", encoding="utf-8")
+
+    namespace = type(sys)("Scripts")
+    namespace.__path__ = [str(package)]
+    namespace.__file__ = str(package / "__init__.py")
+    helper = type(sys)("Scripts.helper")
+    helper.__file__ = str(helper_path)
+    helper.VALUE = "lkg-helper"
+    previous_namespace = sys.modules.get("Scripts")
+    previous_helper = sys.modules.get("Scripts.helper")
+    sys.modules["Scripts"] = namespace
+    sys.modules["Scripts.helper"] = helper
+    try:
+        broker = CandidateImportTransaction()
+        broker.register("Scripts.component", str(root))
+
+        module = broker.load("Scripts.component")
+
+        assert module.RESULT == ("lkg-helper", "lkg-helper")
+        private_namespace = broker.module_for("Scripts")
+        assert private_namespace is not None
+        assert private_namespace is not namespace
+        assert private_namespace.helper is helper
+        assert not hasattr(namespace, "helper")
+        broker.rollback()
+    finally:
+        if previous_namespace is None:
+            sys.modules.pop("Scripts", None)
+        else:
+            sys.modules["Scripts"] = previous_namespace
+        if previous_helper is None:
+            sys.modules.pop("Scripts.helper", None)
+        else:
+            sys.modules["Scripts.helper"] = previous_helper
+
+
+def test_relative_fromlist_attaches_candidate_loaded_before_namespace(
+    candidate_project,
+):
+    package = candidate_project / "Scripts"
+    package.mkdir()
+    root = package / "component.py"
+    helper = package / "helper.py"
+    root.write_text(
+        "from .helper import VALUE\n"
+        "from . import helper\n"
+        "RESULT = (VALUE, helper.VALUE)\n",
+        encoding="utf-8",
+    )
+    helper.write_text("VALUE = 'candidate-helper'\n", encoding="utf-8")
+    broker = CandidateImportTransaction()
+    broker.register("Scripts.component", str(root))
+    broker.register("Scripts.helper", str(helper))
+
+    module = broker.load("Scripts.component")
+
+    assert module.RESULT == ("candidate-helper", "candidate-helper")
+    private_namespace = broker.module_for("Scripts")
+    assert private_namespace is not None
+    assert private_namespace.helper is broker.module_for("Scripts.helper")
+    broker.rollback()
+
+
 def test_unregistered_preloaded_project_helper_is_reused_without_republication(candidate_project):
     helper_path = candidate_project / "preloaded_helper.py"
     helper_path.write_text("VALUE = 'lkg'\n", encoding="utf-8")
@@ -527,8 +782,8 @@ def test_public_jit_module_is_lazily_admitted_for_declaration_decorators(
     candidate_project,
 ):
     source = (
-        "from Infernux.jit import njit\n"
-        "@njit(auto_parallel=True)\n"
+        "from Infernux import jit\n"
+        "@jit.compile\n"
         "def scale(values):\n"
         "    for index in range(len(values)):\n"
         "        values[index] *= 2\n"

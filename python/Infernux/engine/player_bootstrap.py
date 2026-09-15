@@ -115,7 +115,7 @@ class PlayerBootstrap:
         # non-playing scene (notably GPU compute/soft-body components).
         # Splash-backed products intentionally keep their deferred activation
         # contract and are started by PlayerGUI after the splash completes.
-        if self.runtime_session is not None and not self.splash_items:
+        if getattr(self, "runtime_session", None) is not None and not getattr(self, "splash_items", ()):
             phase("activate runtime scene", self._enter_play_mode)
             self._pump_startup_events()
         _plog(

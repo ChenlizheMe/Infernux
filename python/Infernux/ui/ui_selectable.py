@@ -108,7 +108,7 @@ class UISelectable(InxUIScreenComponent):
         else:
             self._current_state = SelectionState.Normal
         if self._current_state != old_state:
-            mark_runtime_ui_dirty()
+            mark_runtime_ui_dirty(self)
 
     # ------------------------------------------------------------------
     # Pointer hooks — override in further subclasses, call super()

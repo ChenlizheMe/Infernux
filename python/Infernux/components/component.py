@@ -135,138 +135,12 @@ class InxComponent(ComponentNativeMixin, ComponentLifecycleMixin, ComponentPhysi
                 f"Use awake() for one-time setup or start() for deferred init."
             )
         
-        # Always create a fresh dict for this class (don't inherit from parent)
-        cls._serialized_fields_ = {}
+        from .fields import _compile_serialized_fields
 
-        from .fields import (
-            FieldMetadata, HiddenField, SerializedFieldDescriptor,
-            build_field_from_annotation, get_annotation_default,
-            infer_field_type_from_value, _UNSET, _unwrap_annotation,
-            _apply_markers, NON_SERIALIZED_FIELD,
-        )
+        _compile_serialized_fields(cls)
 
-        # ── Resolve own-class annotations once ──────────────────────────
-        # String annotations (incl. files using ``from __future__ import
-        # annotations``) are evaluated against the defining module's globals
-        # so Annotated[...]/Optional[...] survive. Resolution is per-name —
-        # a single unresolvable forward ref must not poison the others
-        # (deliberately NOT typing.get_type_hints, which walks the whole MRO
-        # and fails wholesale on any base-class forward reference).
-        own_annotations = dict(cls.__dict__.get('__annotations__', {}))
-        resolved_hints: dict = {}
-        if own_annotations:
-            import sys as _sys
-            _module = _sys.modules.get(cls.__module__)
-            _globalns = getattr(_module, '__dict__', {})
-            for _k, _v in own_annotations.items():
-                if isinstance(_v, str):
-                    try:
-                        resolved_hints[_k] = eval(_v, _globalns, dict(vars(cls)))  # noqa: S307
-                    except Exception:
-                        pass  # Keep raw strings for deferred annotation resolution.
-                else:
-                    resolved_hints[_k] = _v
-
-        def _annotation_for(name):
-            return resolved_hints.get(name, own_annotations.get(name))
-
-        # ── Pass 1: attributes with a class-level value ──────────────────
-        for attr_name in list(cls.__dict__):
-            # Raw attribute from class __dict__ (avoids descriptor protocol)
-            attr = cls.__dict__[attr_name]
-            # Private annotations remain runtime-only by default. An explicit
-            # serialized_field(), however, is an authoring declaration; this
-            # is how hidden backing data participates in save and undo while
-            # staying out of the Inspector.
-            if attr_name.startswith('_') and not isinstance(
-                attr, SerializedFieldDescriptor
-            ):
-                continue
-
-            if callable(attr) or isinstance(attr, (property, classmethod, staticmethod)):
-                continue
-            if isinstance(attr, HiddenField):
-                continue
-
-            ann = _annotation_for(attr_name)
-
-            # CppProperty — delegates to a C++ component attribute.
-            if getattr(attr, '_is_cpp_property', False):
-                if hasattr(attr, 'metadata'):
-                    attr.metadata.name = attr_name
-                    cls._serialized_fields_[attr_name] = attr.metadata
-                continue
-
-            # serialized_field() descriptor — keep it, but fold in any
-            # Annotated[] markers from a coexisting type annotation so
-            # ``speed: Annotated[float, Range(0, 1)] = serialized_field(0.5)``
-            # composes naturally.
-            if isinstance(attr, SerializedFieldDescriptor):
-                if ann is not None:
-                    _base, markers = _unwrap_annotation(ann)
-                    if markers and _apply_markers(attr.metadata, markers) is None:
-                        # NonSerialized marker wins: drop the field entirely.
-                        delattr(cls, attr_name)
-                        continue
-                cls._serialized_fields_[attr_name] = attr.metadata
-                continue
-
-            if isinstance(attr, FieldMetadata):
-                cls._serialized_fields_[attr_name] = attr
-                continue
-
-            # Annotation present → annotation drives the field type; the
-            # class value becomes the default (Unity-style declaration).
-            metadata = None
-            if ann is not None:
-                metadata = build_field_from_annotation(ann, default=attr)
-                if metadata is NON_SERIALIZED_FIELD:
-                    # Explicitly excluded: keep the plain class attribute as-is
-                    # (regular Python attr, not serialized, not in Inspector).
-                    continue
-
-            # No (usable) annotation → infer from the plain value.
-            if metadata is None:
-                if attr is None:
-                    continue  # bare ``x = None`` with no usable annotation
-                from enum import Enum as _Enum
-                field_type = infer_field_type_from_value(attr)
-                metadata = FieldMetadata(
-                    name=attr_name,
-                    field_type=field_type,
-                    default=attr,
-                    enum_type=type(attr) if isinstance(attr, _Enum) else None,
-                )
-
-            metadata.name = attr_name
-            descriptor = SerializedFieldDescriptor(metadata)
-            descriptor.__set_name__(cls, attr_name)
-            setattr(cls, attr_name, descriptor)
-            cls._serialized_fields_[attr_name] = metadata
-
-        # ── Pass 2: annotation-only fields (no ``= value``) ─────────────
-        for attr_name in own_annotations:
-            if attr_name in cls.__dict__ or attr_name in cls._serialized_fields_:
-                continue
-            ann = _annotation_for(attr_name)
-
-            if attr_name.startswith('_'):
-                default_value = get_annotation_default(ann)
-                if default_value is not None:
-                    hidden = HiddenField(default=default_value)
-                    hidden.__set_name__(cls, attr_name)
-                    setattr(cls, attr_name, hidden)
-                continue
-
-            metadata = build_field_from_annotation(ann, default=_UNSET)
-            if metadata is NON_SERIALIZED_FIELD:
-                continue
-            if metadata is not None:
-                metadata.name = attr_name
-                descriptor = SerializedFieldDescriptor(metadata)
-                descriptor.__set_name__(cls, attr_name)
-                setattr(cls, attr_name, descriptor)
-                cls._serialized_fields_[attr_name] = metadata
+        from ._cds_bridge import prepare_numeric_descriptors
+        prepare_numeric_descriptors(cls)
 
         from ._component_registration import record_candidate_component_definition
 
@@ -534,6 +408,25 @@ class InxComponent(ComponentNativeMixin, ComponentLifecycleMixin, ComponentPhysi
         pass
 
     @_default_lifecycle_method
+    def physics_pre_step(self, fixed_delta_time: float):
+        """Called after Collider input is synchronized and before Jolt steps.
+
+        Use this boundary for batched custom-solver work and impulses that must
+        affect the current fixed step. It uses the same immutable lifecycle
+        snapshot as ``fixed_update``.
+        """
+        pass
+
+    @_default_lifecycle_method
+    def physics_post_step(self, fixed_delta_time: float):
+        """Called after Jolt results and Rigidbody transforms are published.
+
+        Use this boundary to consume solved poses or schedule work for the next
+        fixed step. Do not start a second physics loop from this callback.
+        """
+        pass
+
+    @_default_lifecycle_method
     def late_update(self, delta_time: float):
         """
         Called every frame after all update() calls.
@@ -543,6 +436,38 @@ class InxComponent(ComponentNativeMixin, ComponentLifecycleMixin, ComponentPhysi
             delta_time: Time in seconds since last frame
         """
         pass
+
+    # Unity-compatible 3D pointer hooks. The runtime event layer can invoke
+    # these on the component attached to a hit Collider; no extra interaction
+    # component is required.
+    @_default_lifecycle_method
+    def on_mouse_enter(self):
+        pass
+
+    @_default_lifecycle_method
+    def on_mouse_over(self):
+        pass
+
+    @_default_lifecycle_method
+    def on_mouse_exit(self):
+        pass
+
+    @_default_lifecycle_method
+    def on_mouse_down(self):
+        pass
+
+    @_default_lifecycle_method
+    def on_mouse_drag(self):
+        pass
+
+    @_default_lifecycle_method
+    def on_mouse_up(self):
+        pass
+
+    @_default_lifecycle_method
+    def on_mouse_up_as_button(self):
+        pass
+
     
     def destroy(self):
         """Remove this component from its owning GameObject (Unity-style).

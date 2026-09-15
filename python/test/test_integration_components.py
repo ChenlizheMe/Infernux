@@ -1068,7 +1068,10 @@ class TestComponentLifecycle:
         sm.step(1.0 / 60.0)
 
         counters = runtime_scheduler.profiler_snapshot()
-        assert counters["native_phase_dispatches"] == 1
+        # One native fixed step enters the shared frame through the fixed,
+        # physics_pre, and physics_post contracts.  Only the authored update
+        # phase has an invoker in this probe, so phase_dispatches remains one.
+        assert counters["native_phase_dispatches"] == 3
         assert counters["phase_dispatches"] == 1
         assert component.last_delta_time == pytest.approx(1.0 / 60.0)
 
@@ -1200,7 +1203,7 @@ class TestComponentLifecycle:
         go.add_component(RenderStack)
         go.active = False
 
-        RenderStack._active_instance = None
+        RenderStack.clear_active_instance(scene)
 
 
         class _Context:
@@ -1223,11 +1226,11 @@ class TestComponentLifecycle:
         ctx.scene = scene
         pipeline = RenderStackPipeline()
 
-        RenderStack._active_instance = None
+        RenderStack.clear_active_instance(scene)
         assert pipeline._find_render_stack(ctx) is stack
         assert RenderStack.instance() is stack
 
-        RenderStack._active_instance = None
+        RenderStack.clear_active_instance(scene)
         assert pipeline._find_render_stack(ctx) is stack
         assert RenderStack.instance() is stack
 
@@ -1251,7 +1254,7 @@ class TestComponentLifecycle:
         # Retained scene transactions can leave the old component completely
         # live for a short period.  Scene ownership, not liveness, decides
         # which graph is allowed to render.
-        RenderStack._active_instance = previous_stack
+        RenderStack.clear_active_instance(next_scene)
         assert previous_stack.is_valid
         assert previous_owner.is_active_in_hierarchy()
         assert pipeline._find_render_stack(ctx) is next_stack
@@ -1259,6 +1262,26 @@ class TestComponentLifecycle:
 
         manager.set_active_scene(scene)
         manager.unload_scene(next_scene)
+
+    def test_renderstack_pipeline_keeps_independent_additive_scene_owners(self, scene):
+        first_stack = scene.create_game_object("FirstSceneRenderStack").add_component(RenderStack)
+        manager = SceneManager.instance()
+        second_scene = manager.create_scene("renderstack_additive_scene")
+        second_stack = second_scene.create_game_object("SecondSceneRenderStack").add_component(RenderStack)
+
+        class _Context:
+            def __init__(self, owner_scene):
+                self.scene = owner_scene
+
+        pipeline = RenderStackPipeline()
+        try:
+            assert pipeline._find_render_stack(_Context(scene)) is first_stack
+            assert pipeline._find_render_stack(_Context(second_scene)) is second_stack
+            assert pipeline._find_render_stack(_Context(scene)) is first_stack
+            assert RenderStack.instance(scene) is first_stack
+            assert RenderStack.instance(second_scene) is second_stack
+        finally:
+            manager.unload_scene(second_scene)
 
     def test_renderstack_active_instance_survives_play_mode_document_rebuild(self, scene):
         from Infernux.engine.play_mode import PlayModeManager
@@ -1638,6 +1661,18 @@ class TestCamera:
         assert cam.dithering is True
         assert cam.stop_nans is True
 
+    def test_camera_ray_accepts_one_authoritative_viewport_size(self, scene):
+        go = scene.create_game_object("Ray Camera")
+        cam = go.add_component("Camera")
+
+        origin, direction = cam.screen_point_to_ray(400.0, 300.0, 800.0, 600.0)
+
+        expected_origin = go.transform.position + go.transform.forward * cam.near_clip
+        assert tuple(origin) == pytest.approx(tuple(expected_origin))
+        assert tuple(direction) == pytest.approx(tuple(go.transform.forward))
+        with pytest.raises(ValueError, match="provided together"):
+            cam.screen_point_to_ray(400.0, 300.0, 800.0)
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Light
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1929,6 +1964,176 @@ class TestComponentSerialization:
             "missing-audio-resource-guid"
         )
         assert component.get_track_clip(0) is None
+
+    def test_audio_source_spatial_blend_round_trips_and_migrates_legacy_documents(self, scene):
+        owner = scene.create_game_object("SpatialAudio")
+        component = owner.add_component("AudioSource")
+
+        component.spatial_blend = 0.25
+        document = component.serialize_document()
+        assert document["spatial_blend"] == pytest.approx(0.25)
+
+        legacy_document = dict(document)
+        legacy_document.pop("spatial_blend")
+        assert component.deserialize_document(legacy_document) is True
+        assert component.spatial_blend == pytest.approx(1.0)
+        assert component.serialize_document()["spatial_blend"] == pytest.approx(1.0)
+
+    def test_audio_source_uses_fixed_named_bus_contract(self, scene):
+        from Infernux.lib import AudioEngine
+
+        owner = scene.create_game_object("BusAudio")
+        component = owner.add_component("AudioSource")
+        component.output_bus = "Music"
+        assert component.serialize_document()["output_bus"] == "Music"
+
+        with pytest.raises(ValueError, match="Unknown AudioSource output bus"):
+            component.output_bus = "Dialogue"
+        assert component.output_bus == "Music"
+
+        engine = AudioEngine.instance()
+        try:
+            engine.set_bus_volume("Music", 0.35)
+            engine.set_bus_muted("Music", True)
+            assert engine.get_bus_volume("Music") == pytest.approx(0.35)
+            assert engine.get_bus_muted("Music") is True
+            with pytest.raises(ValueError, match="Unknown audio bus"):
+                engine.get_bus_volume("Dialogue")
+        finally:
+            engine.set_bus_muted("Music", False)
+            engine.set_bus_volume("Music", 1.0)
+
+    def test_audio_priority_round_trip_and_runtime_budget(self, scene):
+        from Infernux.lib import AudioEngine
+        from Infernux.components.builtin.audio_source import AudioSource
+
+        owner = scene.create_game_object("PriorityAudio")
+        native = owner.add_component("AudioSource")
+        source = AudioSource._get_or_create_wrapper(native, owner)
+        assert source.priority == 128
+        source.priority = 16
+        assert native.serialize_document()["priority"] == 16
+        document = native.serialize_document()
+        document.pop("priority")
+        assert native.deserialize_document(document)
+        assert source.priority == 128
+        for invalid in (-1, 256):
+            with pytest.raises(ValueError, match="priority"):
+                source.priority = invalid
+        assert source.is_track_virtual() is False
+        assert source.rejected_one_shot_count == 0
+        audio = AudioEngine.instance()
+        previous = audio.max_real_voices
+        try:
+            audio.max_real_voices = 2
+            assert audio.max_real_voices == 2
+            assert audio.real_voice_count <= 2
+            with pytest.raises(ValueError, match="positive"):
+                audio.max_real_voices = 0
+            assert audio.max_real_voices == 2
+        finally:
+            audio.max_real_voices = previous
+
+    def test_audio_track_seek_is_runtime_state_and_uses_clip_seconds(self, scene, tmp_path):
+        import wave
+        from Infernux.lib import AudioClip
+        from Infernux.components.builtin.audio_source import AudioSource
+
+        clip_path = tmp_path / "seek.wav"
+        with wave.open(str(clip_path), "wb") as output:
+            output.setnchannels(1)
+            output.setsampwidth(2)
+            output.setframerate(22050)
+            output.writeframes(bytes(22050 * 2 * 2))
+        clip = AudioClip()
+        assert clip.load_from_file(str(clip_path))
+        owner = scene.create_game_object("SeekableAudio")
+        native = owner.add_component("AudioSource")
+        source = AudioSource._get_or_create_wrapper(native, owner)
+        source.track_count = 2
+        source.set_track_clip(0, clip)
+        source.set_track_clip(1, clip)
+        authored = native.serialize_document()
+
+        source.set_track_time(0, 1.25)
+        source.set_track_time(1, 0.5)
+        assert source.get_track_time() == pytest.approx(1.25)
+        assert source.get_track_time(1) == pytest.approx(0.5)
+        assert source.is_track_playing(0) is False
+        assert native.serialize_document() == authored
+        with pytest.raises(IndexError, match="track index"):
+            source.set_track_time(2, 0.0)
+        with pytest.raises(ValueError, match="finite"):
+            source.set_track_time(0, float("nan"))
+        with pytest.raises(IndexError, match="duration"):
+            source.set_track_time(0, 2.1)
+        assert source.get_track_time() == pytest.approx(1.25)
+        source.stop()
+        assert source.get_track_time() == 0.0
+        source.set_track_clip(1, None)
+        assert source.get_track_time(1) == 0.0
+        with pytest.raises(RuntimeError, match="loaded clip"):
+            source.set_track_time(1, 0.0)
+
+    def test_audio_bus_fade_uses_device_time_and_direct_write_cancels_it(self, engine, scene):
+        import time
+        from Infernux.lib import AudioEngine
+
+        audio = AudioEngine.instance()
+        if not audio.is_initialized:
+            audio.initialize()
+        if not audio.is_initialized:
+            pytest.skip("No audio output device; dummy-device native regression covers this contract")
+
+        def wait_for_fade():
+            deadline = time.monotonic() + 2.0
+            while audio.is_bus_fading("Music") and time.monotonic() < deadline:
+                time.sleep(0.005)
+            assert not audio.is_bus_fading("Music")
+
+        try:
+            audio.pause_all()
+            audio.set_bus_volume("Music", 1.0)
+            audio.fade_bus_volume("Music", 0.0, 0.1)
+            assert audio.is_bus_fading("Music") is True
+            frozen = audio.output_time
+            engine.tick(1.0)
+            assert audio.output_time == frozen
+            assert audio.get_bus_volume("Music") == 1.0
+            audio.resume_all()
+            # No scene tick: even a silent device completes automation.
+            wait_for_fade()
+            assert audio.get_bus_volume("Music") == 0.0
+            assert audio.output_time > frozen
+            assert audio.output_peak >= 0.0
+            assert audio.saturated_sample_count >= 0
+
+            audio.fade_bus_volume("Music", 1.0, 0.1)
+            audio.set_bus_muted("Music", True)
+            wait_for_fade()
+            assert audio.get_bus_volume("Music") == 1.0
+
+            audio.fade_bus_volume("Music", 0.0, 1.0)
+            audio.cancel_bus_fade("Music")
+            cancelled = audio.get_bus_volume("Music")
+            time.sleep(0.05)
+            assert audio.get_bus_volume("Music") == cancelled
+            assert audio.is_bus_fading("Music") is False
+
+            audio.fade_bus_volume("Music", 0.0, 1.0)
+            audio.set_bus_volume("Music", 0.25)
+            assert audio.get_bus_volume("Music") == pytest.approx(0.25)
+            assert audio.is_bus_fading("Music") is False
+
+            with pytest.raises(ValueError, match="positive and finite"):
+                audio.fade_bus_volume("Music", 0.5, 0.0)
+            with pytest.raises(ValueError, match="Unknown audio bus"):
+                audio.fade_bus_volume("Dialogue", 0.5, 1.0)
+        finally:
+            audio.resume_all()
+            audio.cancel_bus_fade("Music")
+            audio.set_bus_muted("Music", False)
+            audio.set_bus_volume("Music", 1.0)
 
     @pytest.mark.parametrize("resource_kind", ["mesh", "material"])
     def test_missing_renderer_resource_preserves_its_guid(self, scene, resource_kind):

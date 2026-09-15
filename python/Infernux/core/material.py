@@ -534,6 +534,15 @@ class Material:
         self._native.set_texture_guid(name, texture_guid)
         self._auto_save()
 
+    def set_matrix(self, name: str, value):
+        """Set a matrix from a NumPy (4,4) array indexed [row, column].
+
+        Camera matrices can be passed directly, with no transpose or flatten.
+        A legacy flat 16-number sequence remains column-major.
+        """
+        self._native.set_matrix(name, value)
+        self._auto_save()
+
     def set_param(self, name: str, value):
         """Set a non-texture material property using type/shape dispatch.
 
@@ -546,13 +555,22 @@ class Material:
         self._auto_save()
 
     def set_texture(self, name: str, value):
-        """Set a texture property from a GUID, builtin token, texture object, or None.
+        """Bind a RenderTexture, texture asset, builtin token, or None.
 
         Supported values:
             - ``None``: clears the texture
             - texture asset GUID string or builtin texture token
             - object with a non-empty ``guid``
+            - imported ``RenderTexture``: saved by GUID like a texture asset
+            - runtime-created ``RenderTexture``: unsaved override of the asset slot
         """
+        from .render_texture import RenderTexture
+        if isinstance(value, RenderTexture):
+            if value.guid:
+                self.set_texture_guid(name, value.guid)
+            else:
+                self._native._set_render_texture(name, value._native)
+            return
         self._native.set_texture(name, value)
         self._auto_save()
 

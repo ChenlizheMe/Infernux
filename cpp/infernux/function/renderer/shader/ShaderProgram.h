@@ -63,6 +63,11 @@ struct MaterialUBOLayout
 class ShaderProgram
 {
   public:
+    // Authoritative graphics parameter domains. They are separate ABI
+    // spaces, not similarly named dictionaries with fallback precedence.
+    static constexpr uint32_t MaterialDescriptorSet = 0;
+    static constexpr uint32_t ViewDescriptorSet = 1;
+    static constexpr uint32_t EngineDescriptorSet = 2;
     static constexpr uint32_t BindlessTextureSet = 3;
     static constexpr uint32_t BindlessTextureBinding = 0;
     static constexpr uint32_t MaterialTextureIndexBinding = 15;

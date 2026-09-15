@@ -1,5 +1,6 @@
 #pragma once
 
+#include "CommandBuffer.h"
 #include "InxRenderStruct.h"
 #include "ProfileConfig.h"
 #include "RenderGraphDescription.h"
@@ -25,10 +26,7 @@ class EditorGizmos;
 class EditorTools;
 class GizmosDrawCallBuffer;
 class InxMaterial;
-class CommandBuffer;
 class TransientResourcePool;
-struct RenderTargetHandle;
-enum class RenderCommandType : uint8_t;
 
 // ============================================================================
 // CullingResults
@@ -167,6 +165,9 @@ class ScriptableRenderContext
         return reinterpret_cast<uintptr_t>(m_graph);
     }
 
+    /// Fixed Camera target samples, or zero when the pipeline owns screen MSAA.
+    [[nodiscard]] int GetOutputSamples() const noexcept;
+
     /// @brief Submit all culling results as full draw calls + execute graph.
     /// Replaces the DrawRenderers() + DrawSkybox() + Submit() combo.
     /// DrawCall filtering is done by RenderGraph pass callbacks.
@@ -210,14 +211,6 @@ class ScriptableRenderContext
     RenderTargetHandle GetCameraTarget(Camera *camera) const;
 
     // ====================================================================
-    // Global shader parameters (immediate mode)
-    // ====================================================================
-
-    void SetGlobalTexture(const std::string &name, RenderTargetHandle handle);
-    void SetGlobalFloat(const std::string &name, float value);
-    void SetGlobalVector(const std::string &name, float x, float y, float z, float w);
-
-    // ====================================================================
     // Scene access (RenderStack integration)
     // ====================================================================
 
@@ -245,23 +238,6 @@ class ScriptableRenderContext
         return m_transientPool;
     }
 
-    // ====================================================================
-    // Global parameter accessors for CommandBuffer execution
-    // ====================================================================
-
-    [[nodiscard]] const std::unordered_map<std::string, float> &GetGlobalFloats() const
-    {
-        return m_globalFloats;
-    }
-    [[nodiscard]] const std::unordered_map<std::string, std::array<float, 4>> &GetGlobalVectors() const
-    {
-        return m_globalVectors;
-    }
-    [[nodiscard]] const std::unordered_map<std::string, uint32_t> &GetGlobalTextures() const
-    {
-        return m_globalTextures;
-    }
-
   private:
     InxVkCoreModular *m_vkCore;
     SceneRenderGraph *m_graph;
@@ -280,18 +256,15 @@ class ScriptableRenderContext
 
     // Deferred CommandBuffer execution state
     TransientResourcePool *m_transientPool = nullptr;
-    std::vector<CommandBuffer *> m_pendingCommandBuffers;
-
-    // Global shader parameter state
-    std::unordered_map<std::string, float> m_globalFloats;
-    std::unordered_map<std::string, std::array<float, 4>> m_globalVectors;
-    std::unordered_map<std::string, uint32_t> m_globalTextures; // name → RT handle
+    // ExecuteCommandBuffer captures commands immediately; the Python/local
+    // CommandBuffer may be cleared or destroyed before this context submits.
+    std::vector<RenderCommand> m_pendingCommands;
 
     // Handle → pool slot mapping for transient RT resolution
     std::unordered_map<uint32_t, uint32_t> m_handleToSlotMap; // RenderTargetHandle.id → pool slot
 
     /// @brief Process all pending CommandBuffers' commands (RT management, globals).
-    void ProcessPendingCommandBuffers();
+    RenderDomainMask ProcessPendingCommandBuffers();
 };
 
 // ============================================================================
@@ -304,7 +277,14 @@ class ScriptableRenderContext
  * Python classes override Render() via pybind11 trampoline.
  * The engine calls Render() once for one camera with a dedicated
  * ScriptableRenderContext. Multi-camera rendering is owned by the renderer:
- * every camera receives a separate context and RenderView state.
+ * every camera receives a separate context and RenderView state. Shader data
+ * has four explicit domains:
+ * Material/Renderer set 0; this RenderView's set 1,
+ * which receives the selected World's environment snapshot; engine
+ * frame and
+ * instance state in set 2; and pass-local push payloads. There is no global
+ * name dictionary or
+ * cross-domain fallback order.
  */
 class RenderPipelineCallback
 {

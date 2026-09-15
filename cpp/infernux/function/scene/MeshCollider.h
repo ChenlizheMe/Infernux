@@ -91,12 +91,17 @@ class MeshCollider : public Collider
     }
 
   private:
+    void CaptureMeshGeometry() const;
     bool CollectMeshGeometry(std::vector<glm::vec3> &outVertices, std::vector<uint32_t> &outIndices) const;
     void CompleteCooking(uint64_t hashA, uint64_t hashB, size_t vertexCount, size_t indexCount, bool convex,
                          uint64_t revision, const std::string &error);
     void InvalidatePendingCooking() const;
 
     bool m_convex = false;
+    // Unscaled source selected at initialization or an explicit recook.
+    mutable bool m_hasGeometrySnapshot = false;
+    mutable std::vector<glm::vec3> m_sourceVertices;
+    mutable std::vector<uint32_t> m_sourceIndices;
     mutable std::vector<glm::vec3> m_convexHullPositions;
     mutable std::vector<uint32_t> m_convexHullEdges;
     mutable std::vector<glm::vec3> m_collisionPositions;

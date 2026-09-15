@@ -26,6 +26,9 @@ add_custom_target(stage_python_package
     COMMENT "Assembling the Python wheel source tree after native and official plugin builds"
     VERBATIM
 )
+if(TARGET infernux_gpu_jit_compiler)
+    add_dependencies(stage_python_package infernux_gpu_jit_compiler)
+endif()
 if(TARGET InfernuxPlayerHost)
     add_dependencies(stage_python_package InfernuxPlayerHost)
 endif()

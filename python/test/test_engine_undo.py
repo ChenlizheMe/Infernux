@@ -115,6 +115,19 @@ def _patch_undo_modules(monkeypatch, attr: str, value):
             monkeypatch.setattr(mod, attr, value)
 
 
+def _patch_world_undo(monkeypatch, scene):
+    """Bind undo fixtures to the same World-wide lookup used by the engine."""
+    def _find(object_id):
+        obj = scene.find_by_id(object_id) if scene is not None else None
+        if obj is not None and getattr(obj, "scene", None) is None:
+            obj.scene = scene
+        return obj
+
+    _patch_undo_modules(monkeypatch, "_get_active_scene", lambda: scene)
+    _patch_undo_modules(monkeypatch, "_find_runtime_object", _find)
+    _patch_undo_modules(monkeypatch, "_get_scene_by_world_id", lambda _world_id: scene)
+
+
 @contextmanager
 def _override_recreate_game_object(fn):
     orig_root = _undo_mod._recreate_game_object_from_document
@@ -306,7 +319,7 @@ class TestSetPropertyCommand:
                 return live if object_id == 7 else None
 
         cmd = SetPropertyCommand(stale, "active", True, False)
-        _patch_undo_modules(monkeypatch, "_get_active_scene", lambda: _Scene())
+        _patch_world_undo(monkeypatch, _Scene())
 
         cmd.execute()
         assert live.active is False
@@ -343,7 +356,7 @@ class TestSetPropertyCommand:
             def find_by_id(self, oid):
                 return fake_obj if oid == 7 else None
 
-        _patch_undo_modules(monkeypatch, "_get_active_scene", lambda: _FakeScene())
+        _patch_world_undo(monkeypatch, _FakeScene())
 
         resolve = getattr(_undo_mod_ref, "_resolve_live_ref")
         result = resolve("stale_ref", 7, "_PyComp")
@@ -916,6 +929,39 @@ class TestRenderStackFieldCommand:
 # ══════════════════════════════════════════════════════════════════════
 
 class TestUndoManager:
+    def test_deferred_replay_does_not_restore_context_inside_ui_callback(
+        self, _reset_undo_manager, runtime_scheduler,
+    ):
+        from Infernux.engine.runtime_dispatch import assert_runtime_dispatch_safe_point
+
+        mgr = _reset_undo_manager
+        restored = []
+
+        def restore_context(context, phase):
+            assert_runtime_dispatch_safe_point()
+            restored.append(phase)
+
+        mgr.set_context_hooks(lambda: EditorContextSnapshot(), restore_context)
+        obj = _Obj()
+        mgr.execute(SetPropertyCommand(obj, "x", 0, 10))
+        runtime_scheduler.begin_native_frame()
+        try:
+            mgr.undo(defer=True)
+            assert obj.x == 10
+            assert mgr.is_replay_pending and not restored
+            assert not mgr.can_undo and not mgr.can_redo
+        finally:
+            runtime_scheduler.end_native_frame()
+        mgr.process_pending_replay()
+        assert obj.x == 0 and not mgr.is_replay_pending
+        assert restored
+        restored.clear()
+        mgr.redo(defer=True)
+        assert obj.x == 0 and mgr.is_replay_pending and not restored
+        mgr.process_pending_replay()
+        assert obj.x == 10 and not mgr.is_replay_pending
+        assert restored
+
     def test_execute_then_undo(self, _reset_undo_manager):
         mgr = _reset_undo_manager
         obj = _Obj()
@@ -1362,7 +1408,7 @@ class TestStructuralCommandSelectionContext:
                 return self.object if self.object and object_id == 42 else None
 
         scene = _Scene()
-        monkeypatch.setattr(_structural_mod, "_get_active_scene", lambda: scene)
+        _patch_world_undo(monkeypatch, scene)
         monkeypatch.setattr(_structural_mod, "_snapshot_object", lambda _obj: {"id": 42})
         monkeypatch.setattr(
             _structural_mod,
@@ -1436,7 +1482,7 @@ class TestStructuralCommandSelectionContext:
                 return self.object if self.object and object_id == 42 else None
 
         scene = _Scene()
-        monkeypatch.setattr(_structural_mod, "_get_active_scene", lambda: scene)
+        _patch_world_undo(monkeypatch, scene)
         monkeypatch.setattr(_structural_mod, "_snapshot_object", lambda _obj: {"id": 42})
         monkeypatch.setattr(
             _structural_mod,
@@ -1491,7 +1537,7 @@ class TestStructuralCommandSelectionContext:
             def find_by_id(object_id):
                 return _Object() if object_id == 99 else None
 
-        monkeypatch.setattr(_structural_mod, "_get_active_scene", lambda: _Scene())
+        _patch_world_undo(monkeypatch, _Scene())
         monkeypatch.setattr(_structural_mod, "_snapshot_object", lambda _obj: {"id": 99})
         monkeypatch.setattr(
             _structural_mod,
@@ -1529,7 +1575,7 @@ class TestStructuralCommandSelectionContext:
             def find_by_id(object_id):
                 return _Object() if object_id == 42 else None
 
-        monkeypatch.setattr(_structural_mod, "_get_active_scene", lambda: _Scene())
+        _patch_world_undo(monkeypatch, _Scene())
         monkeypatch.setattr(_structural_mod, "_snapshot_object", lambda _obj: {"id": 42})
         monkeypatch.setattr(
             _structural_mod,
@@ -1577,7 +1623,7 @@ class TestDeleteGameObjectsCommand:
         destroyed = []
         restored = []
 
-        monkeypatch.setattr(_structural_mod, "_get_active_scene", lambda: scene)
+        _patch_world_undo(monkeypatch, scene)
         monkeypatch.setattr(_structural_mod, "_snapshot_object", lambda obj: {"id": obj.id})
         monkeypatch.setattr(
             _structural_mod,
@@ -1593,7 +1639,8 @@ class TestDeleteGameObjectsCommand:
         command.execute()
         assert destroyed == [20, 10]
 
-        def restore_object(document, parent_id, sibling_index):
+        def restore_object(document, parent_id, sibling_index, *, scene=None):
+            assert scene is not None
             restored.append((document["id"], parent_id, sibling_index))
             return self._Object(document["id"], sibling_index)
 
@@ -1700,7 +1747,7 @@ class TestImmediateDestroyHelpers:
         fake_obj = _FakeObject(42)
         fake_scene = _FakeScene(fake_obj)
         calls = []
-        _patch_undo_modules(monkeypatch, "_get_active_scene", lambda: fake_scene)
+        _patch_world_undo(monkeypatch, fake_scene)
         _patch_undo_modules(
             monkeypatch,
             "_destroy_game_object_immediately",

@@ -23,7 +23,25 @@
 namespace infernux
 {
 
-INFERNUX_REGISTER_VALIDATED_COMPONENT("CapsuleCollider", CapsuleCollider)
+namespace
+{
+SemanticTypeDescriptor DescribeCapsuleCollider()
+{
+    auto type =
+        Collider::DescribeSemanticType("CapsuleCollider", "infernux.component.capsule-collider", "Capsule Collider");
+    Collider::AddSemanticField(type, "radius", "FLOAT", 0.5, "capsule_collider.radius",
+                               "capsule_collider.tooltip.radius")["minimum"] = 0.001;
+    Collider::AddSemanticField(type, "height", "FLOAT", 2.0, "capsule_collider.height",
+                               "capsule_collider.tooltip.height")["minimum"] = 0.001;
+    Collider::AddSemanticField(type, "direction", "INT", 1, "collider.direction",
+                               "capsule_collider.tooltip.direction")["range"] = {0, 2};
+    return type;
+}
+
+const bool registeredCapsuleCollider = ComponentFactory::Register(
+    "CapsuleCollider", [] { return std::make_unique<CapsuleCollider>(); }, CapsuleCollider::ValidateSerializedDocument,
+    CapsuleCollider::GetTypeConstraints(), DescribeCapsuleCollider);
+} // namespace
 
 void CapsuleCollider::SetRadius(float radius)
 {

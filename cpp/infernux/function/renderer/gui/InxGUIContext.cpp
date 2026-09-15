@@ -277,7 +277,8 @@ bool DrawUnityRangedFloat(const char *baseId, float *value, float min, float max
     return changed;
 }
 
-bool DrawUnityRangedInt(const char *baseId, int *value, int min, int max, float dpi)
+template <typename Integer>
+bool DrawUnityRangedInt(const char *baseId, Integer *value, Integer min, Integer max, float dpi)
 {
     const ImGuiStyle &style = ImGui::GetStyle();
     const float spacing = style.ItemInnerSpacing.x;
@@ -287,10 +288,11 @@ bool DrawUnityRangedInt(const char *baseId, int *value, int min, int max, float 
 
     ImGui::PushID(baseId);
     ImGui::SetNextItemWidth(sliderW);
-    bool changed = DrawInspectorSliderScalar("##slider", ImGuiDataType_S32, value, &min, &max, dpi);
+    constexpr auto dataType = sizeof(Integer) == 8 ? ImGuiDataType_S64 : ImGuiDataType_S32;
+    bool changed = DrawInspectorSliderScalar("##slider", dataType, value, &min, &max, dpi);
     ImGui::SameLine(0.0f, spacing);
     ImGui::SetNextItemWidth(inputW);
-    if (ImGui::InputInt("##input", value, 0, 0))
+    if (ImGui::InputScalar("##input", dataType, value))
         changed = true;
     *value = std::clamp(*value, min, max);
     ImGui::PopID();
@@ -2267,7 +2269,8 @@ void InxGUIContext::DrawTextRotated90Aligned(float minX, float minY, float maxX,
 void InxGUIContext::DrawTextExAligned(float minX, float minY, float maxX, float maxY, const std::string &text, float r,
                                       float g, float b, float a, float alignX, float alignY, float fontSize,
                                       float wrapWidth, float rotation, bool mirrorH, bool mirrorV, bool clip,
-                                      const std::string &fontPath, float lineHeight, float letterSpacing)
+                                      const std::string &fontPath, float lineHeight, float letterSpacing,
+                                      const std::vector<std::string> &fallbackFontPaths)
 {
     // Normalise rotation to [0, 360)
     rotation = std::fmod(rotation, 360.0f);
@@ -2281,8 +2284,8 @@ void InxGUIContext::DrawTextExAligned(float minX, float minY, float maxX, float 
     if (!drawList || text.empty())
         return;
 
-    const textlayout::TextLayoutResult layout =
-        textlayout::LayoutText({text, fontPath, ResolveFontSize(fontSize), wrapWidth, lineHeight, letterSpacing});
+    const textlayout::TextLayoutResult layout = textlayout::LayoutText(
+        {text, fontPath, ResolveFontSize(fontSize), wrapWidth, lineHeight, letterSpacing, fallbackFontPaths});
     const ImVec2 textSize(layout.totalWidth, layout.totalHeight);
 
     if (std::fabs(rotation) < 0.001f && !mirrorH && !mirrorV) {
@@ -2334,19 +2337,21 @@ void InxGUIContext::DrawTextExAligned(float minX, float minY, float maxX, float 
 }
 
 std::pair<float, float> InxGUIContext::CalcTextSizeA(const std::string &text, float fontSize,
-                                                     const std::string &fontPath, float lineHeight, float letterSpacing)
+                                                     const std::string &fontPath, float lineHeight, float letterSpacing,
+                                                     const std::vector<std::string> &fallbackFontPaths)
 {
-    const textlayout::TextLayoutResult layout =
-        textlayout::LayoutText({text, fontPath, ResolveFontSize(fontSize), 0.0f, lineHeight, letterSpacing});
+    const textlayout::TextLayoutResult layout = textlayout::LayoutText(
+        {text, fontPath, ResolveFontSize(fontSize), 0.0f, lineHeight, letterSpacing, fallbackFontPaths});
     return {layout.totalWidth, layout.totalHeight};
 }
 
 std::pair<float, float> InxGUIContext::CalcTextSizeWrappedA(const std::string &text, float fontSize, float wrapWidth,
                                                             const std::string &fontPath, float lineHeight,
-                                                            float letterSpacing)
+                                                            float letterSpacing,
+                                                            const std::vector<std::string> &fallbackFontPaths)
 {
-    const textlayout::TextLayoutResult layout =
-        textlayout::LayoutText({text, fontPath, ResolveFontSize(fontSize), wrapWidth, lineHeight, letterSpacing});
+    const textlayout::TextLayoutResult layout = textlayout::LayoutText(
+        {text, fontPath, ResolveFontSize(fontSize), wrapWidth, lineHeight, letterSpacing, fallbackFontPaths});
     return {layout.totalWidth, layout.totalHeight};
 }
 
@@ -2452,14 +2457,16 @@ std::vector<PropertyChange> InxGUIContext::RenderPropertyBatch(const std::vector
         }
         case PropertyDesc::Int: {
             doLabel(d.label);
-            int val = d.iVal;
-            int orig = val;
+            int64_t val = d.iVal;
+            const int64_t orig = val;
             CompensateWarp();
             if (d.slider && d.hasRange) {
                 DrawUnityRangedInt(d.widgetId.c_str(), &val, d.intRangeMin, d.intRangeMax, GetDpiScale());
             } else {
                 const ImGuiSliderFlags flags = d.hasRange ? ImGuiSliderFlags_AlwaysClamp : ImGuiSliderFlags_None;
-                ImGui::DragInt(d.widgetId.c_str(), &val, d.speed, d.intRangeMin, d.intRangeMax, "%d", flags);
+                ImGui::DragScalar(d.widgetId.c_str(), ImGuiDataType_S64, &val, d.speed,
+                                  d.hasRange ? &d.intRangeMin : nullptr, d.hasRange ? &d.intRangeMax : nullptr, nullptr,
+                                  flags);
             }
             if (captureSemantics)
                 RecordSemanticItem(d.slider ? "int_slider" : "drag_int", d.label, true, semanticId, std::nullopt,
@@ -2591,7 +2598,7 @@ std::vector<PropertyChange> InxGUIContext::RenderPropertyBatch(const std::vector
         }
         case PropertyDesc::Enum: {
             doLabel(d.label);
-            int idx = d.iVal;
+            int idx = static_cast<int>(d.iVal);
             int orig = idx;
             Combo(d.widgetId, &idx, d.enumNames);
             if (captureSemantics)

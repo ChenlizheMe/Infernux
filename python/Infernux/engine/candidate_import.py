@@ -58,7 +58,7 @@ _TRUSTED_MODULE_PREFIXES = frozenset(
 # These public engine modules are safe to materialize on first candidate use.
 # Keep this list deliberately narrow: general ``Infernux.*`` imports must not
 # turn candidate loading into an uncontrolled engine-module import mechanism.
-_LAZY_TRUSTED_MODULES = frozenset({"Infernux.jit", "infernux", "__future__"})
+_LAZY_TRUSTED_MODULES = frozenset({"Infernux.jit", "Infernux.compute", "infernux", "__future__"})
 
 
 def _is_trusted_module(name: str) -> bool:
@@ -96,6 +96,8 @@ class CandidateImportTransaction:
         self._parent_before: list[tuple[types.ModuleType, str, bool, object]] = []
         self._parent_before_keys: set[tuple[int, str]] = set()
         self._before: dict[str, object] = {}
+        self._serializable_types: dict[str, type] = {}
+        self._serializable_before: dict[str, type | None] = {}
         self._committed = False
         self._rolled_back = False
 
@@ -186,9 +188,13 @@ class CandidateImportTransaction:
             for child_name, spec in self._specs.items()
             if child_name.startswith(name + ".") and spec.file_path
         ]
+        # Imports performed while validating a live child can publish another
+        # module.  Namespace assembly needs one deterministic view of the
+        # interpreter table for the whole transaction step.
+        live_modules = tuple(sys.modules.items())
         child_paths.extend(
             os.path.dirname(resolved_path(getattr(module, "__file__", "")))
-            for child_name, module in sys.modules.items()
+            for child_name, module in live_modules
             if child_name.startswith(name + ".")
             and self._reuse_project_lkg(child_name) is not None
             and getattr(module, "__file__", "")
@@ -379,9 +385,7 @@ class CandidateImportTransaction:
                 with tokenize.open(spec.file_path) as source_file:
                     source = source_file.read()
                 code = compile(source, spec.file_path, "exec", dont_inherit=True)
-            if code is not None:
-                exec(code, module.__dict__)
-            else:
+            if code is None:
                 loader = import_spec.loader
                 get_code = getattr(loader, "get_code", None)
                 if not callable(get_code):
@@ -391,9 +395,16 @@ class CandidateImportTransaction:
                 loaded_code = get_code(spec.name)
                 if loaded_code is None:
                     raise CandidateImportError(f"candidate loader returned no code: {spec.file_path}")
-                exec(loaded_code, module.__dict__)
+                code = loaded_code
+            from Infernux.components.serializable_object import _candidate_serializable_scope
+
+            with _candidate_serializable_scope(self._serializable_types, spec.name):
+                exec(code, module.__dict__)
         except Exception:
             self._modules.pop(spec.name, None)
+            for identity, cls in tuple(self._serializable_types.items()):
+                if cls.__module__ == spec.name:
+                    del self._serializable_types[identity]
             raise
         self._attach_child(spec.name, module)
         return module
@@ -413,12 +424,22 @@ class CandidateImportTransaction:
     def _try_load_child(self, parent_name: str, child_name: str) -> None:
         child = f"{parent_name}.{child_name}"
         if child in self._modules:
+            # The child may have been loaded before its namespace package was
+            # materialized (for example ``from .helper import VALUE`` followed
+            # by ``from . import helper``).  Attach it now to the private parent.
+            self._attach_child(child, self._modules[child])
             return
         child_spec = self._specs.get(child)
         if child_spec is not None:
             self.load(child)
             return
-        if self._reuse_project_lkg(child) is not None:
+        lkg = self._reuse_project_lkg(child)
+        if lkg is not None:
+            # A preloaded helper can be reused without republishing it, but a
+            # later ``from . import helper`` still needs that child on this
+            # transaction's private package view.  Never attach it to the live
+            # project namespace before commit.
+            self._attach_child(child, lkg)
             return
 
     def _builtins_for(self, module: types.ModuleType) -> dict[str, object]:
@@ -476,6 +497,11 @@ class CandidateImportTransaction:
                 name for name in self._modules if name not in self._overlay_names
             )
             published_set = set(published_names)
+            from Infernux.components.serializable_object import _publish_serializable_types
+
+            self._serializable_before = _publish_serializable_types(
+                self._serializable_types, published_set,
+            )
             for name in published_names:
                 module = self._modules[name]
                 self._before.setdefault(name, sys.modules.get(name, _MODULE_ABSENT))
@@ -523,6 +549,11 @@ class CandidateImportTransaction:
                 sys.modules.pop(name, None)
             else:
                 sys.modules[name] = previous
+        from Infernux.components.serializable_object import _restore_serializable_types
+
+        _restore_serializable_types(self._serializable_before)
+        self._serializable_types.clear()
+        self._serializable_before.clear()
         self._modules.clear()
         self._overlay_names.clear()
         self._parent_before.clear()

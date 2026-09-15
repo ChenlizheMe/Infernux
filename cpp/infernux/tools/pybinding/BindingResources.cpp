@@ -1,4 +1,6 @@
 #include "JsonPyBridge.h"
+#include "MatrixPyBridge.h"
+#include <function/renderer/rhi/RhiRenderTexture.h>
 #include <function/resources/AssetDatabase/AssetDatabase.h>
 #include <function/resources/AssetRegistry/AssetRegistry.h>
 #include <function/resources/InxFileLoader/InxTextureLoader.hpp>
@@ -230,6 +232,8 @@ void RegisterResourceBindings(py::module_ &m)
         .value("PhysicMaterial", ResourceType::PhysicMaterial)
         .value("RenderEffect", ResourceType::RenderEffect)
         .value("ParticleGraph", ResourceType::ParticleGraph)
+        .value("DataAsset", ResourceType::DataAsset)
+        .value("RenderTexture", ResourceType::RenderTexture)
         .export_values();
 
     // InxResourceMeta - resource metadata
@@ -475,13 +479,23 @@ void RegisterResourceBindings(py::module_ &m)
             },
             py::arg("name"), "Set a color property: set_color(name, r, g, b[, a]) or set_color(name, (r,g,b,a))")
         .def("set_int", &InxMaterial::SetInt, py::arg("name"), py::arg("value"), "Set an int property")
-        .def("set_matrix", &InxMaterial::SetMatrix, py::arg("name"), py::arg("value"), "Set a mat4 property")
+        .def(
+            "set_matrix",
+            [](InxMaterial &mat, const std::string &name, py::handle value) {
+                mat.SetMatrix(name, binding::Matrix4FromPython(value, "Material matrix", true));
+            },
+            py::arg("name"), py::arg("value"), "Set a mat4 from a [row, column] array")
         .def("set_texture_guid", &InxMaterial::SetTextureGuid, py::arg("name"), py::arg("texture_guid"),
              "Set a texture property by GUID")
         .def(
             "set_param",
             [](InxMaterial &mat, const std::string &name, py::object value) {
                 const MaterialProperty *prop = mat.GetProperty(name);
+
+                if ((prop && prop->type == MaterialPropertyType::Mat4) || py::isinstance<py::array>(value)) {
+                    mat.SetMatrix(name, binding::Matrix4FromPython(value, "Material matrix", true));
+                    return;
+                }
 
                 if (py::isinstance<py::bool_>(value)) {
                     mat.SetInt(name, value.cast<bool>() ? 1 : 0);
@@ -526,11 +540,7 @@ void RegisterResourceBindings(py::module_ &m)
                         return;
                     }
                     if (len == 16) {
-                        glm::mat4 m(1.0f);
-                        for (int i = 0; i < 16; ++i) {
-                            m[i / 4][i % 4] = seq[i].cast<float>();
-                        }
-                        mat.SetMatrix(name, m);
+                        mat.SetMatrix(name, binding::Matrix4FromPython(value, "Material matrix", true));
                         return;
                     }
                 }
@@ -541,6 +551,9 @@ void RegisterResourceBindings(py::module_ &m)
             py::arg("name"), py::arg("value"), "Set a non-texture material property using value-shape/type dispatch")
         .def("clear_texture", &InxMaterial::ClearTexture, py::arg("name"),
              "Clear a texture property (remove texture reference)")
+        .def("_set_render_texture", &InxMaterial::SetRenderTexture, py::arg("name"), py::arg("texture"))
+        .def("_get_render_texture", &InxMaterial::GetRenderTexture, py::arg("name"))
+        .def_property_readonly("_texture_assets_pending", &InxMaterial::NeedsTextureAssetResolution)
         .def("remove_property", &InxMaterial::RemoveProperty, py::arg("name"),
              "Remove a material property and its asset dependency")
         .def(

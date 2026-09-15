@@ -23,5 +23,6 @@ void RegisterInputBindings(pybind11::module_ &module);
 void RegisterPhysicsBindings(pybind11::module_ &module);
 void RegisterAudioBindings(pybind11::module_ &module);
 void RegisterBatchBindings(pybind11::module_ &module);
+void RegisterSemanticCatalogBindings(pybind11::module_ &module);
 
 } // namespace infernux

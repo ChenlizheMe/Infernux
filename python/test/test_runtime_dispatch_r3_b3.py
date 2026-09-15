@@ -94,6 +94,7 @@ class _PointerProbe(InxComponent):
 class _Canvas:
     game_object = None
     enabled = True
+    input_logical_size = (100.0, 100.0)
 
     def __init__(self, target) -> None:
         self.target = target
@@ -213,6 +214,7 @@ def test_ui_process_keeps_simultaneous_touch_transactions_independent():
     class SplitCanvas:
         game_object = None
         enabled = True
+        input_logical_size = (100.0, 100.0)
 
         @staticmethod
         def raycast(x, _y):
@@ -283,3 +285,81 @@ def test_ui_touch_cancel_releases_capture_without_click():
     finally:
         publication.rollback()
         _PointerProbe.on_pointer_up = old_up
+
+
+def test_ui_group_interactable_change_cancels_active_capture():
+    target = _make_pointer_target()
+    target.accepts_interaction = True
+    target.is_effectively_interactable = lambda: target.accepts_interaction
+    canceled = []
+    old_up = _PointerProbe.on_pointer_up
+
+    def capture_cancel(self, event) -> None:
+        self.events.append("up")
+        canceled.append(event.canceled)
+
+    _PointerProbe.on_pointer_up = capture_cancel
+    publication = publish_runtime_dispatch_epoch((_PointerProbe,))
+    publication.commit()
+    try:
+        processor = UIEventProcessor()
+        canvas = _Canvas(target)
+        processor.process(
+            [canvas], [(0.0, 0.0)], True, False, True, (0.0, 0.0), 0.016
+        )
+        target.accepts_interaction = False
+        processor.process(
+            [canvas], [(1.0, 0.0)], False, False, True, (0.0, 0.0), 0.016
+        )
+
+        assert target.events == ["enter", "down", "up", "exit"]
+        assert canceled == [True]
+    finally:
+        publication.rollback()
+        _PointerProbe.on_pointer_up = old_up
+
+
+def test_ui_process_prefers_screen_canvas_over_world_element():
+    world_target = _make_pointer_target()
+    screen_target = _make_pointer_target()
+    world = _Canvas(world_target)
+    world.input_priority = lambda position, _order: (0, 0, -position[2])
+    screen = _Canvas(screen_target)
+    publication = publish_runtime_dispatch_epoch((_PointerProbe,))
+    publication.commit()
+    try:
+        processor = UIEventProcessor()
+        processor.process_pointers(
+            (world, screen),
+            (UIPointerFrame(-1, PointerType.Mouse, ((20.0, 10.0, 2.0), (20.0, 10.0)), down=True),),
+            0.016,
+        )
+
+        assert world_target.events == []
+        assert screen_target.events == ["enter", "down"]
+    finally:
+        publication.rollback()
+
+
+def test_ui_drag_uses_the_captured_world_element_coordinates():
+    target = _make_pointer_target()
+    world = _Canvas(target)
+    world.input_priority = lambda position, _order: (0, 0, -position[2])
+    publication = publish_runtime_dispatch_epoch((_PointerProbe,))
+    publication.commit()
+    try:
+        processor = UIEventProcessor()
+        processor.process_pointers(
+            (world,),
+            (UIPointerFrame(-1, PointerType.Mouse, ((10.0, 10.0, 2.0),), down=True, held=True),),
+            0.016,
+        )
+        processor.process_pointers(
+            (world,),
+            (UIPointerFrame(-1, PointerType.Mouse, ((20.0, 10.0, 1.8),), held=True),),
+            0.016,
+        )
+
+        assert target.events == ["enter", "down", "begin_drag"]
+    finally:
+        publication.rollback()

@@ -3,10 +3,75 @@
 #include "../rhi/RhiDescriptors.h"
 #include "../rhi/RhiUpload.h"
 
+#include <utility>
 #include <vulkan/vulkan.h>
 
 namespace infernux::rhi
 {
+
+/// Graph masks retain an empty stage set; semaphore waits explicitly request
+/// AllCommands for an unspecified wait stage (Vulkan requires a nonzero mask).
+[[nodiscard]] inline VkPipelineStageFlags ToVkPipelineStages(PipelineStage stages,
+                                                             VkPipelineStageFlags emptyStages = 0) noexcept
+{
+    VkPipelineStageFlags result = 0;
+    const auto has = [&](PipelineStage bit) { return (stages & bit) != PipelineStage::None; };
+    if (has(PipelineStage::Top))
+        result |= VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+    if (has(PipelineStage::DrawIndirect))
+        result |= VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT;
+    if (has(PipelineStage::VertexInput))
+        result |= VK_PIPELINE_STAGE_VERTEX_INPUT_BIT;
+    if (has(PipelineStage::VertexShader))
+        result |= VK_PIPELINE_STAGE_VERTEX_SHADER_BIT;
+    if (has(PipelineStage::FragmentShader))
+        result |= VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+    if (has(PipelineStage::EarlyDepth))
+        result |= VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+    if (has(PipelineStage::LateDepth))
+        result |= VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+    if (has(PipelineStage::ColorOutput))
+        result |= VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    if (has(PipelineStage::ComputeShader))
+        result |= VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+    if (has(PipelineStage::Transfer))
+        result |= VK_PIPELINE_STAGE_TRANSFER_BIT;
+    if (has(PipelineStage::Bottom))
+        result |= VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
+    if (has(PipelineStage::Host))
+        result |= VK_PIPELINE_STAGE_HOST_BIT;
+    if (has(PipelineStage::AllGraphics))
+        result |= VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT;
+    if (has(PipelineStage::AllCommands))
+        result |= VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+    return result != 0 ? result : emptyStages;
+}
+
+[[nodiscard]] inline VkAccessFlags ToVkAccessFlags(Access access) noexcept
+{
+    constexpr std::pair<Access, VkAccessFlags> mapping[] = {
+        {Access::IndirectRead, VK_ACCESS_INDIRECT_COMMAND_READ_BIT},
+        {Access::IndexRead, VK_ACCESS_INDEX_READ_BIT},
+        {Access::VertexRead, VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT},
+        {Access::UniformRead, VK_ACCESS_UNIFORM_READ_BIT},
+        {Access::ShaderRead, VK_ACCESS_SHADER_READ_BIT},
+        {Access::ShaderWrite, VK_ACCESS_SHADER_WRITE_BIT},
+        {Access::ColorRead, VK_ACCESS_COLOR_ATTACHMENT_READ_BIT},
+        {Access::ColorWrite, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT},
+        {Access::DepthRead, VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT},
+        {Access::DepthWrite, VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT},
+        {Access::TransferRead, VK_ACCESS_TRANSFER_READ_BIT},
+        {Access::TransferWrite, VK_ACCESS_TRANSFER_WRITE_BIT},
+        {Access::HostRead, VK_ACCESS_HOST_READ_BIT},
+        {Access::HostWrite, VK_ACCESS_HOST_WRITE_BIT},
+        {Access::MemoryRead, VK_ACCESS_MEMORY_READ_BIT},
+        {Access::MemoryWrite, VK_ACCESS_MEMORY_WRITE_BIT}};
+    VkAccessFlags result = 0;
+    for (const auto &entry : mapping)
+        if (HasAny(access, entry.first))
+            result |= entry.second;
+    return result;
+}
 
 struct DynamicRenderingCommands final
 {

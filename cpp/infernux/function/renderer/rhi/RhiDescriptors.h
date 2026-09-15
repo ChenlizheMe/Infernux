@@ -159,6 +159,13 @@ enum class BufferMemory : uint8_t
     Readback,
 };
 
+enum class BufferMapAccess : uint8_t
+{
+    Read,
+    Write,
+    ReadWrite,
+};
+
 enum class QueueAccessFlags : uint8_t
 {
     None = 0,

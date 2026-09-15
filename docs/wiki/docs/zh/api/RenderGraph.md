@@ -16,7 +16,7 @@
 
 | 签名 | 描述 |
 |------|------|
-| `RenderGraph.__init__(name: str = ...) → None` |  |
+| `RenderGraph.__init__(name: str = ..., *, output_samples: int = 0) → None` | 固定 Camera 目标提供输出采样配置；0 表示由管线决定屏幕采样。 |
 
 <!-- USER CONTENT START --> constructors
 
@@ -47,7 +47,10 @@
 
 | 方法 | 描述 |
 |------|------|
-| `set_msaa_samples(samples: int) → None` | Set the MSAA sample count for all render targets. |
+| `set_msaa_samples(samples: int) → int` | 设置屏幕采样偏好并返回实际采样数；附件及 Resolve 拓扑使用该返回值。 |
+| `import_texture(name: str, texture: RenderTexture, *, attachment: str = "color") → TextureHandle` | 导入持久颜色、深度或 Resolve 附件，不转移资源所有权。 |
+| `create_temporal_history(name: str, *, format: Format = ..., size: tuple[int, int] \| None = None, size_divisor: int = 0) → tuple[TextureHandle, TextureHandle]` | 创建每个 View 独立的历史读写 Handle；失效后的首次读取为零。 |
+| `set_temporal_jitter(enabled: bool = True) → None` | 独立请求相机抖动；历史分配本身不启用抖动。 |
 | `create_texture(name: str, format: Format = ..., camera_target: bool = ..., size: Optional[Tuple[int, int]] = ..., size_divisor: int = ..., samples: Optional[int] = ...) → TextureHandle` | 创建临时纹理。 |
 | `get_texture(name: str) → Optional[TextureHandle]` | Get a texture handle by name, or None if not found. |
 | `name_scope(prefix: str) → AbstractContextManager[RenderGraph]` |  |

@@ -35,6 +35,18 @@ class _RenderActivationEngine(_Engine):
         self.game_camera_enabled.append(bool(enabled))
 
 
+def test_game_output_preparation_uses_saved_render_pixels_before_visibility(monkeypatch):
+    engine = _Engine()
+    panel = GameViewPanel(engine=engine)
+    monkeypatch.setattr(panel, '_load_resolution_settings', lambda: None)
+    panel._selected_resolution_idx = len(panel._RESOLUTION_PRESETS) - 1
+    panel._custom_width, panel._custom_height = 641, 401
+    panel._display_scale = 0.2
+    panel.prepare_render_target()
+    assert engine.resizes == [(641, 401)]
+    assert (panel._last_game_width, panel._last_game_height) == (641, 401)
+
+
 class _Context:
     def __init__(self, *, window_hovered: bool = True, mouse_clicked: bool = False) -> None:
         self.semantic_items: list[tuple[str, str, bool, str]] = []
@@ -285,6 +297,24 @@ def test_hidden_game_view_disables_rendering_without_runtime_acceptance(monkeypa
 
     assert engine.game_camera_enabled == [False]
     assert panel._game_camera_was_enabled is False
+
+
+def test_disabling_game_view_releases_game_focus_and_cursor(monkeypatch):
+    import Infernux.engine.ui.game_view_panel as module
+
+    focus_calls: list[bool] = []
+    lock_calls: list[bool] = []
+    monkeypatch.setattr(module.Input, "set_game_focused", focus_calls.append)
+    monkeypatch.setattr(module.Input, "set_cursor_locked", lock_calls.append)
+
+    engine = _RenderActivationEngine()
+    panel = GameViewPanel(engine=engine)
+    panel._game_camera_was_enabled = True
+    panel._set_game_render_active(False)
+
+    assert focus_calls == [False]
+    assert lock_calls == [False]
+    assert engine.game_camera_enabled == [False]
 
 
 def test_game_texture_handle_is_retained_across_unrelated_scene_revisions(monkeypatch):

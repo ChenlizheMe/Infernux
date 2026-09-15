@@ -179,8 +179,9 @@ JPH::Shape *CreateShapeFromCookedGeometry(const CookedGeometry &geometry, bool c
         settings.mIndexedTriangles.reserve(static_cast<int>(geometry.indices.size() / 3));
         for (size_t index = 0; index + 2 < geometry.indices.size(); index += 3) {
             settings.mIndexedTriangles.emplace_back(geometry.indices[index], geometry.indices[index + 1],
-                                                    geometry.indices[index + 2]);
+                                                    geometry.indices[index + 2], 0, static_cast<uint32_t>(index / 3));
         }
+        settings.mPerTriangleUserData = true;
         settings.SetEmbedded();
         const auto result = settings.Create();
         return finish(result);
@@ -436,7 +437,19 @@ static std::shared_ptr<const CookedGeometry> CookGeometry(std::vector<glm::vec3>
     return cooked;
 }
 
-INFERNUX_REGISTER_VALIDATED_COMPONENT("MeshCollider", MeshCollider)
+namespace
+{
+SemanticTypeDescriptor DescribeMeshCollider()
+{
+    auto type = Collider::DescribeSemanticType("MeshCollider", "infernux.component.mesh-collider", "Mesh Collider");
+    Collider::AddSemanticField(type, "convex", "BOOL", false, "mesh_collider.convex", "mesh_collider.tooltip.convex");
+    return type;
+}
+
+const bool registeredMeshCollider = ComponentFactory::Register(
+    "MeshCollider", [] { return std::make_unique<MeshCollider>(); }, MeshCollider::ValidateSerializedDocument,
+    MeshCollider::GetTypeConstraints(), DescribeMeshCollider);
+} // namespace
 
 void MeshCollider::Awake()
 {
@@ -469,6 +482,7 @@ void MeshCollider::SetConvex(bool convex)
 
 void MeshCollider::OnMeshGeometryChanged()
 {
+    CaptureMeshGeometry();
     InvalidatePendingCooking();
     RebuildShape();
 }
@@ -486,6 +500,12 @@ void MeshCollider::AutoFitToMesh()
     DataMut().center = glm::vec3(0.0f);
 }
 
+void MeshCollider::CaptureMeshGeometry() const
+{
+    CollectMeshGeometry(m_sourceVertices, m_sourceIndices);
+    m_hasGeometrySnapshot = true;
+}
+
 bool MeshCollider::CollectMeshGeometry(std::vector<glm::vec3> &outVertices, std::vector<uint32_t> &outIndices) const
 {
     outVertices.clear();
@@ -497,15 +517,10 @@ bool MeshCollider::CollectMeshGeometry(std::vector<glm::vec3> &outVertices, std:
     }
 
     auto *mr = go->GetComponent<MeshRenderer>();
-    glm::vec3 scale(1.0f);
-    if (auto *tf = go->GetTransform()) {
-        scale = tf->GetWorldScale();
-    }
-
     if (mr && mr->HasInlineMesh() && !mr->GetInlineVertices().empty() && mr->GetInlineIndices().size() >= 3) {
         outVertices.reserve(mr->GetInlineVertices().size());
         for (const auto &vertex : mr->GetInlineVertices()) {
-            outVertices.emplace_back(vertex.pos.x * scale.x, vertex.pos.y * scale.y, vertex.pos.z * scale.z);
+            outVertices.push_back(vertex.pos);
         }
         outIndices = mr->GetInlineIndices();
         return true;
@@ -517,7 +532,7 @@ bool MeshCollider::CollectMeshGeometry(std::vector<glm::vec3> &outVertices, std:
         if (mesh && !mesh->GetVertices().empty() && mesh->GetIndices().size() >= 3) {
             outVertices.reserve(mesh->GetVertices().size());
             for (const auto &vertex : mesh->GetVertices()) {
-                outVertices.emplace_back(vertex.pos.x * scale.x, vertex.pos.y * scale.y, vertex.pos.z * scale.z);
+                outVertices.push_back(vertex.pos);
             }
             outIndices = mesh->GetIndices();
             return true;
@@ -530,9 +545,18 @@ bool MeshCollider::CollectMeshGeometry(std::vector<glm::vec3> &outVertices, std:
 void *MeshCollider::CreateJoltShapeRaw() const
 {
     m_shapeError.clear();
-    std::vector<glm::vec3> vertices;
-    std::vector<uint32_t> indices;
-    if (!CollectMeshGeometry(vertices, indices) || vertices.empty()) {
+    if (!m_hasGeometrySnapshot)
+        CaptureMeshGeometry();
+    std::vector<glm::vec3> vertices = m_sourceVertices;
+    std::vector<uint32_t> indices = m_sourceIndices;
+    glm::vec3 worldScale(1.0f);
+    if (auto *go = GetGameObject()) {
+        if (auto *transform = go->GetTransform())
+            worldScale = transform->GetWorldScale();
+    }
+    for (auto &vertex : vertices)
+        vertex *= worldScale;
+    if (vertices.empty()) {
         InvalidatePendingCooking();
         m_shapeError = "MeshCollider requires a MeshRenderer with valid mesh geometry";
         return nullptr;
@@ -567,11 +591,6 @@ void *MeshCollider::CreateJoltShapeRaw() const
     }
     const CookingCacheKey cookingKey = HashGeometry(vertices, indices, useConvex);
     auto cookedGeometry = FindCookedGeometry(cookingKey);
-    glm::vec3 worldScale(1.0f);
-    if (auto *go = GetGameObject()) {
-        if (auto *transform = go->GetTransform())
-            worldScale = transform->GetWorldScale();
-    }
 
     if (!cookedGeometry && !JobSystem::IsAvailable()) {
         ++g_cookingCacheMisses;
@@ -755,6 +774,9 @@ std::unique_ptr<Component> MeshCollider::Clone() const
     auto clone = std::make_unique<MeshCollider>();
     CloneBaseColliderData(*clone);
     clone->m_convex = m_convex;
+    clone->m_hasGeometrySnapshot = m_hasGeometrySnapshot;
+    clone->m_sourceVertices = m_sourceVertices;
+    clone->m_sourceIndices = m_sourceIndices;
     clone->m_convexHullPositions = m_convexHullPositions;
     clone->m_convexHullEdges = m_convexHullEdges;
     clone->m_shapeError = m_shapeError;

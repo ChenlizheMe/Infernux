@@ -709,7 +709,7 @@ def test_unsaved_scene_user_save_uses_native_dialog(tmp_path, monkeypatch):
     manager = _scene_manager()
     try:
         manager._current_scene_path = None
-        manager._do_save = lambda path: saved.append(path) or True
+        manager._do_save = lambda path, **_kwargs: saved.append(path) or True
         manager._show_save_as_dialog()
 
         assert manager._save_as_popup_open is False

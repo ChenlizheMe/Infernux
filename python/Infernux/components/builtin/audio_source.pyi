@@ -13,11 +13,14 @@ class AudioSource(BuiltinComponent):
     then call ``play(index)``. ``play_on_awake`` only auto-plays track 0.
 
     For transient SFX, prefer ``play_one_shot(clip, volume_scale)`` rather than
-    creating temporary AudioSource objects. Sources are spatialized; for "2D"
-    audio, place the AudioSource on/near the AudioListener's GameObject.
+    creating temporary AudioSource objects. Set ``spatial_blend`` to 0 for
+    channel-preserving 2D audio and to 1 for a point-source 3D signal.
     """
 
     _cpp_type_name: str
+    priority: int
+    @property
+    def rejected_one_shot_count(self) -> int: ...
     _component_category_: str
 
     # ---- CppProperty fields as properties ----
@@ -65,6 +68,13 @@ class AudioSource(BuiltinComponent):
     def play_on_awake(self, value: bool) -> None: ...
 
     @property
+    def spatial_blend(self) -> float:
+        """Blend between stereo 2D (0) and point-source 3D (1)."""
+        ...
+    @spatial_blend.setter
+    def spatial_blend(self, value: float) -> None: ...
+
+    @property
     def min_distance(self) -> float:
         """Distance where 3D attenuation begins."""
         ...
@@ -87,7 +97,7 @@ class AudioSource(BuiltinComponent):
 
     @property
     def output_bus(self) -> str:
-        """Output mixer/audio bus name. Currently script-only, not inspector field."""
+        """Output bus: Master, Music, SFX, Ambience, or UI."""
         ...
     @output_bus.setter
     def output_bus(self, value: str) -> None: ...
@@ -121,6 +131,16 @@ class AudioSource(BuiltinComponent):
     def get_track_volume(self, track_index: int) -> float:
         """Return the volume of the specified track."""
         ...
+    def get_track_time(self, track_index: int = 0) -> float:
+        """Clip seconds of the next mixed sample; output buffering can lag."""
+        ...
+    def set_track_time(self, track_index: int, seconds: float) -> None:
+        """Seek within the loaded clip, preserving playing/paused state.
+
+        A stopped track starts here on its next play. Stop resets to zero.
+        This runtime cursor is not serialized into authoring assets.
+        """
+        ...
 
     # ---- Playback control ----
 
@@ -150,6 +170,9 @@ class AudioSource(BuiltinComponent):
         ...
     def is_track_paused(self, track_index: int) -> bool:
         """Return whether the specified track is currently paused."""
+        ...
+    def is_track_virtual(self, track_index: int = 0) -> bool:
+        """Playback advances without occupying a physical mixing voice."""
         ...
 
     @property

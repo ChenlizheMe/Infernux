@@ -40,11 +40,15 @@ class VulkanQueueManager
     bool Initialize(const VkDeviceContext &context, uint32_t graphicsFrameSlots);
     void Destroy() noexcept;
 
-    [[nodiscard]] rhi::SubmissionTicket Reserve(rhi::QueueRole role);
+    /// Reserve consecutive serials atomically; returns the first ticket.
+    [[nodiscard]] rhi::SubmissionTicket Reserve(rhi::QueueRole role, uint32_t count = 1);
     /// Serializes host access to VkQueue and preserves reservation order.
     /// A failed Vulkan submit consumes the reservation without advancing GPU completion.
     [[nodiscard]] VkResult SubmitReserved(rhi::SubmissionTicket ticket, const VkSubmitInfo &submitInfo,
                                           VkFence fence) noexcept;
+    /// Submit one contiguous reserved range without changing its batch synchronization.
+    [[nodiscard]] VkResult SubmitReserved(rhi::SubmissionTicket firstTicket, const VkSubmitInfo *submits,
+                                          uint32_t count, VkFence fence) noexcept;
     /// Consumes a reservation that will never reach Vulkan, preserving the
     /// submission order without claiming that any GPU work completed.
     bool CancelReservation(rhi::SubmissionTicket ticket) noexcept;

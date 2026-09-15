@@ -131,6 +131,8 @@ class RenderPipeline(SerializedFieldCollectorMixin, RenderPipelineCallback):
     def __init__(self):
         super().__init__()
         self._render_stack = None
+        self._standalone_graphs = {}
+        self._standalone_desc = None
         # Initialize serialized fields with defaults
         from Infernux.components.fields import get_serialized_fields
         for field_name, meta in get_serialized_fields(self.__class__).items():
@@ -311,13 +313,14 @@ class RenderPipeline(SerializedFieldCollectorMixin, RenderPipelineCallback):
         """
         from Infernux.rendergraph.graph import RenderGraph
 
-        if not hasattr(self, '_standalone_desc') or self._standalone_desc is None:
-            g = RenderGraph(self.name)
-            self.define_topology(g)
-            self._standalone_desc = g.build()
-
         if not self.should_render_camera(camera):
             return
+        samples = context.output_samples
+        self._standalone_desc = self._standalone_graphs.get(samples)
+        if self._standalone_desc is None:
+            g = RenderGraph(self.name, output_samples=samples)
+            self.define_topology(g)
+            self._standalone_desc = self._standalone_graphs[samples] = g.build()
         context.setup_camera_properties(camera)
         culling = context.cull(camera)
         self.render_camera(context, camera, culling)
@@ -353,8 +356,8 @@ class RenderPipeline(SerializedFieldCollectorMixin, RenderPipelineCallback):
 
     def dispose(self):
         """Override to release resources when the pipeline is replaced."""
-        if hasattr(self, '_standalone_desc'):
-            self._standalone_desc = None
+        self._standalone_desc = None
+        self._standalone_graphs.clear()
 
     # ==================================================================
     # RenderStack integration

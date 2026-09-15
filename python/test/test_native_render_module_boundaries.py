@@ -16,6 +16,25 @@ def _native_sources(directory: Path) -> list[Path]:
     return sorted((*directory.rglob("*.h"), *directory.rglob("*.cpp")))
 
 
+def test_deferred_owner_tasks_survive_skipped_presentation_frames() -> None:
+    """Owner maintenance is not conditional on a presentable swapchain."""
+    source = (RENDERER / "InxRenderer.cpp").read_text(encoding="utf-8")
+    draw = _function_body(source, "void InxRenderer::DrawFrame()")
+    assert draw.count("m_postDrawCallback();") == 1
+    for condition in (
+        "if (m_view->NeedsSurfaceRecreation() && !m_view->IsApplicationInBackground())",
+        "if (m_view->IsMinimized())",
+        "if (CheckAndApplyMsaaRequest(false,",
+        "if (CheckAndApplyMsaaRequest(true,",
+    ):
+        branch = _function_body(draw, condition)
+        assert branch.index("runDeferredTasks();") < branch.index("return;")
+        if "CheckAndApplyMsaaRequest" in condition:
+            assert branch.index("sceneManager.EndFrame();") < branch.index("runDeferredTasks();")
+    # Four skipped-draw paths plus the ordinary, completed submission path.
+    assert draw.count("runDeferredTasks();") == 5
+
+
 def _function_body(source: str, signature: str) -> str:
     """Return one C++ function body, including nested lambda/class braces."""
 
@@ -480,12 +499,19 @@ def test_scene_render_target_depth_is_sampleable_across_pipeline_switches() -> N
     device_header = (VULKAN_BACKEND / "VkDeviceContext.h").read_text(encoding="utf-8")
     device_source = (VULKAN_BACKEND / "VkDeviceContext.cpp").read_text(encoding="utf-8")
 
-    create_depth = _function_body(
-        target_source, "void SceneRenderTarget::CreateDepthAttachment"
+    initialize = _function_body(
+        target_source, "bool SceneRenderTarget::Initialize"
     )
-    assert "FindSampledDepthFormat" in create_depth
-    assert "VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT" in create_depth
-    assert "VK_IMAGE_USAGE_SAMPLED_BIT" in create_depth
+    assert "FindSampledDepthFormat" in initialize
+    assert "description.sampledDepth = true" in initialize
+    assert "rhi::RenderTexture(device, identity, description).Acquire()" in initialize
+    texture_source = (RENDERER / "rhi" / "RhiRenderTexture.cpp").read_text(encoding="utf-8")
+    allocate = _function_body(texture_source, "RenderTexture::PrepareGeneration(")
+    assert "auto depthFeatures = FormatFeature::DepthStencilAttachment" in allocate
+    assert "depthFeatures |= FormatFeature::Sampled" in allocate
+    assert "image.usage = TextureUsageFlags::DepthStencilAttachment" in allocate
+    assert "if (description.sampledDepth)" in allocate
+    assert "image.usage = image.usage | TextureUsageFlags::Sampled" in allocate
 
     assert "FindSampledDepthFormat() const" in device_header
     sampled_format = _function_body(
@@ -602,6 +628,18 @@ def test_runtime_screen_ui_uses_dynamic_rendering_with_msaa_resolve() -> None:
     assert "CreateVulkanRenderPasses" not in graph_compile
     assert "attachment.resolveImageView" in graph_compile
     assert "VK_RESOLVE_MODE_AVERAGE_BIT" in graph_compile
+
+
+def test_world_ui_empty_texture_coverage_cannot_write_depth() -> None:
+    screen_ui = (RENDERER / "gui" / "InxScreenUIRenderer.cpp").read_text(encoding="utf-8")
+
+    world_fragment = screen_ui.split('constexpr const char *kWorldFragmentShader', 1)[1]
+    world_fragment = world_fragment.split(')glsl";', 1)[0]
+    assert "outColor = inColor * texture(uiTexture, inUV);" in world_fragment
+    assert "if (outColor.a <= 0.0)" in world_fragment
+    assert world_fragment.index("outColor = inColor * texture(uiTexture, inUV);") < world_fragment.index(
+        "if (outColor.a <= 0.0)"
+    )
 
 
 def test_per_view_descriptor_publication_only_waits_for_its_frame_slot() -> None:
@@ -828,8 +866,13 @@ def test_msaa_retirement_helpers_defer_destruction_without_idle_waits() -> None:
     assert "retirementSerial" in retire_target
 
     assert retire_target.index("RetireAfter(retirementSerial") < retire_target.index(
-        "m_imguiDescriptorSet = VK_NULL_HANDLE"
+        "ClearBorrowedHandles()"
     )
+    assert "attachments = std::move(m_attachments)" in retire_target
+    assert "outline = std::move(m_outlineAttachments)" in retire_target
+    clear = _function_body(target_source, "void SceneRenderTarget::ClearBorrowedHandles")
+    assert "m_imguiDescriptorSet = VK_NULL_HANDLE" in clear
+    assert "RemoveTexture" not in clear and "Destroy" not in clear
     assert "if (waitForIdle && !m_core->IsShuttingDown())" in cleanup_outline
     assert "WaitIdle" in cleanup_outline
 
@@ -1044,8 +1087,13 @@ def test_game_camera_stack_owns_one_render_graph_per_camera() -> None:
     assert "m_gameRenderGraphs" in header
     assert "EnsureGameRenderGraph(class Camera *camera)" in header
     assert "for (Camera *gameCam : FindGameCamerasCached())" in source
-    assert "appendView(graph, false, gameView, cameraDependency, &cameraFinal)" in source
-    assert "cameraDependency = cameraFinal" in source
+    assert "m_gameRenderGraphs.find(cameraId)" in source
+    assert "m_gameRenderGraphs.emplace(cameraId, std::move(graph))" in source
+    assert "for (const auto index : m_viewSchedule.order)" in source
+    assert "for (const auto producer : m_viewSchedule.predecessors[index])" in source
+    assert "dependencies.push_back(viewFinals[producer])" in source
+    assert "appendView(view.graph, view.scene, view.graph->GetCachedView(), dependencies, &viewFinals[index])" in source
+    assert "RenderViewSchedule::Build(accesses)" in source
 
 
 def test_render_graph_rebuild_preserves_compatible_material_pipelines() -> None:

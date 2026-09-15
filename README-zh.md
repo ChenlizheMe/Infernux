@@ -22,7 +22,8 @@
   <a href="https://infernux-engine.com/">官网</a> ·
   <a href="https://infernux-engine.com/wiki.html">文档</a> ·
   <a href="https://infernux-engine.discourse.group/">论坛</a> ·
-  <a href="https://github.com/ChenlizheMe/Infernux/releases">Release</a>
+  <a href="https://github.com/ChenlizheMe/Infernux/releases">Release</a> ·
+  <a href="CODE_SIGNING_POLICY-zh.md">代码签名策略</a>
 </p>
 
 <p align="center">
@@ -168,6 +169,10 @@ ctest --preset windows-msvc-dev --output-on-failure
   url     = {https://github.com/ChenlizheMe/Infernux}
 }
 ```
+
+## 代码签名策略（Code signing policy）
+
+Free code signing provided by [SignPath.io](https://signpath.io/), certificate by [SignPath Foundation](https://signpath.org/). 团队职责、签名制品边界、联网行为和卸载方式见 [Infernux 代码签名策略](CODE_SIGNING_POLICY-zh.md)。
 
 ## 许可证
 

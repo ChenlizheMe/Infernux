@@ -243,7 +243,11 @@ def test_engine_component_catalog_is_explicit_and_complete():
         "TimelineAction",
         "UIButton",
         "UICanvas",
+        "UIFrame",
+        "UIGroup",
         "UIImage",
+        "UIProgressBar",
+        "UISlider",
         "UIText",
     }
 

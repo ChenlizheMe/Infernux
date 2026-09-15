@@ -16,6 +16,7 @@ add_executable(InfernuxPlayerHost
 if(WIN32)
     target_sources(InfernuxPlayerHost PRIVATE
         cpp/infernux/tools/launcher/InfernuxPlayerLauncher.rc
+        cpp/infernux/tools/launcher/InfernuxPlayerLauncher.manifest
     )
     set_target_properties(InfernuxPlayerHost PROPERTIES WIN32_EXECUTABLE TRUE)
 endif()

@@ -72,6 +72,10 @@ ComposedSubmissionRange SubmissionPlanComposer::Append(const SubmissionPlan &sou
 
         if (!hasInternalPredecessor[index]) {
             dependencies.insert(dependencies.end(), externalDependencies.begin(), externalDependencies.end());
+            // These dependencies precede the whole graph (including ownership
+            // acquires and initial image transitions), not just shader work.
+            if (!externalDependencies.empty())
+                waitStages = PipelineStage::AllCommands;
             result.roots.push_back(result.workItems[index]);
         }
         if (waitStages == PipelineStage::None)

@@ -16,8 +16,7 @@ Example::
 from __future__ import annotations
 
 from Infernux.components.builtin_component import CppProperty
-from Infernux.components.fields import FieldType
-from Infernux.components.builtin.collider import Collider
+from Infernux.components.builtin.collider import Collider, _native_collider_properties
 from Infernux.math.coerce import quat_rotate
 
 
@@ -26,13 +25,8 @@ class SphereCollider(Collider):
 
     _cpp_type_name = "SphereCollider"
 
-    # ---- Sphere-specific properties ----
-    radius = CppProperty(
-        "radius",
-        FieldType.FLOAT,
-        default=0.5,
-        tooltip="Radius of the sphere collider",
-    )
+    center, is_trigger, physic_material = _native_collider_properties(_cpp_type_name)
+    radius = CppProperty.from_native(_cpp_type_name, "radius")
 
     # ------------------------------------------------------------------
     # Gizmos — green wireframe sphere

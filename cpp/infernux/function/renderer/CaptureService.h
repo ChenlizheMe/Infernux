@@ -16,6 +16,8 @@ enum class CaptureSource
 {
     Scene,
     Game,
+    Editor,
+    Camera,
 };
 
 enum class CaptureStatus

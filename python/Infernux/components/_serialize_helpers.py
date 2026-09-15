@@ -137,7 +137,10 @@ def make_null_ref(field_type, field_meta=None) -> Any:
             raise ValueError("ASSET fields require an explicit asset_type")
         from Infernux.core.asset_reference_types import asset_type_registry
 
-        asset_type = asset_type_registry.require(asset_type).type_id
+        descriptor = asset_type_registry.require(asset_type)
+        if descriptor.compatible_types:
+            return None
+        asset_type = descriptor.type_id
         from Infernux.core.asset_ref import create_asset_ref
 
         return create_asset_ref(asset_type)

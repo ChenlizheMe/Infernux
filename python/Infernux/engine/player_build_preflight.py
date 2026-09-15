@@ -29,6 +29,13 @@ def publish_player_asset_catalog(project_root: str, asset_database: Any) -> dict
 
     AssetManager.flush_all_asset_writes()
     discover_effect_features()
+    # A headless/editor worker can arrive here while the initial scan is still
+    # pending. Commit that owner-side scan before requesting the build refresh;
+    # AssetDatabase intentionally rejects overlapping refresh transactions.
+    if bool(getattr(asset_database, "refresh_pending", False)):
+        complete = getattr(asset_database, "complete_pending_refresh", None)
+        if callable(complete):
+            complete()
     asset_database.refresh()
 
     from Infernux.particle.artifact import ParticleArtifactRegistry

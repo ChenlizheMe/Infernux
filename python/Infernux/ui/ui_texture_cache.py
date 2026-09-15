@@ -51,8 +51,19 @@ class UITextureCache:
 
     # ── public API ───────────────────────────────────────────────────
 
-    def get(self, engine, tex_path: str) -> int:
-        """Return the ImGui texture ID for *tex_path*, loading if needed."""
+    def get(self, engine, tex_path) -> int:
+        """Resolve an asset path or publish a live RenderTexture GPU descriptor."""
+        from Infernux.core.render_texture import RenderTexture
+        from Infernux.core.asset_ref import TextureRef
+        from Infernux.core import AssetManager
+        from Infernux.lib import _Infernux
+        if isinstance(tex_path, TextureRef):
+            # The hint is for authoring only. Imported/cooked identity is GUID.
+            tex_path = AssetManager._get_path_from_guid(tex_path.guid) if tex_path.guid else ""
+        if isinstance(tex_path, RenderTexture):
+            tex_path = tex_path._native
+        if isinstance(tex_path, _Infernux._RenderTexture):
+            return int(engine.get_native_engine()._get_render_texture_ui_texture_id(tex_path))
         if not tex_path:
             return 0
         key = self._resolve_key(tex_path)

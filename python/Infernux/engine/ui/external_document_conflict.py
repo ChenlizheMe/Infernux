@@ -251,6 +251,13 @@ class ExternalDocumentConflictCoordinator:
             return ""
         if error == "save_copy_failed":
             return t("editor.external_conflict.save_copy_failed")
+        if error == "the external conflict changed before it was resolved":
+            return t("editor.external_conflict.changed")
+        if error in {
+            "the external conflict cannot be resolved while a save is pending",
+            "the external conflict cannot reload while a save is pending",
+        }:
+            return t("editor.external_conflict.save_pending")
         return error
 
     @staticmethod

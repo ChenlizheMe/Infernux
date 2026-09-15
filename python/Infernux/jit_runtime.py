@@ -23,7 +23,6 @@ from typing import Any, Generic, Iterator, MutableMapping, TypeVar
 _K = TypeVar("_K")
 _V = TypeVar("_V")
 
-
 class BoundedLRU(Generic[_K, _V]):
     """Small LRU used for compiled dispatchers and per-signature decisions."""
 
@@ -311,27 +310,80 @@ def static_cost_decision(
     return StaticCostDecision(mode, confidence, work_units, reason)
 
 
+def array_arguments_alias(args: tuple[Any, ...], kwargs: dict[str, Any]) -> bool:
+    """Runtime array overlap invalidates an independent-buffer parallel proof."""
+    import numpy as np
+
+    arrays = [value for value in (*args, *kwargs.values()) if isinstance(value, np.ndarray)]
+    return any(np.may_share_memory(left, right)
+               for index, left in enumerate(arrays) for right in arrays[index + 1:])
+
+
 def clone_call_arguments(args: tuple[Any, ...], kwargs: dict[str, Any]) -> tuple[tuple[Any, ...], dict[str, Any]]:
-    """Clone common Numba values so validation never mutates live game state."""
+    """Isolate preparation data, preserving shared identities and ndarray views."""
+    import numpy as np
+
+    memo: dict[int, Any] = {}
+    array_roots: dict[int, Any] = {}
 
     def clone(value: Any) -> Any:
         if value is None or isinstance(value, (bool, int, float, complex, str, bytes)):
             return value
+        identity = id(value)
+        if identity in memo:
+            return memo[identity]
+        if isinstance(value, np.ndarray):
+            if value.dtype.hasobject:
+                raise TypeError("cannot isolate object-array contents for compute preparation")
+            root = value
+            while isinstance(root.base, np.ndarray):
+                root = root.base
+            if id(root) not in array_roots:
+                if any(np.may_share_memory(root, other) for other in array_roots.values()):
+                    raise TypeError("cannot isolate overlapping arrays with independent storage owners")
+                array_roots[id(root)] = root
+            if root is value:
+                copied = value.copy(order="K")
+            else:
+                if not (root.flags.c_contiguous or root.flags.f_contiguous):
+                    raise TypeError("cannot isolate ndarray views of a non-contiguous storage owner")
+                copied = np.ndarray(
+                    value.shape, dtype=value.dtype, buffer=clone(root),
+                    offset=value.ctypes.data - root.ctypes.data, strides=value.strides,
+                )
+            copied.flags.writeable = value.flags.writeable
+            memo[identity] = copied
+            return copied
         if isinstance(value, tuple):
-            return tuple(clone(item) for item in value)
+            copied = tuple(clone(item) for item in value)
+            memo[identity] = copied
+            return copied
         if isinstance(value, list):
-            return [clone(item) for item in value]
+            copied = []
+            memo[identity] = copied
+            copied.extend(clone(item) for item in value)
+            return copied
         if isinstance(value, dict):
-            return {clone(key): clone(item) for key, item in value.items()}
+            copied = {}
+            memo[identity] = copied
+            copied.update((clone(key), clone(item)) for key, item in value.items())
+            return copied
         copier = getattr(value, "copy", None)
         if callable(copier):
             copied = copier()
             if copied is value:
                 raise TypeError(f"cannot isolate mutable argument {type(value).__qualname__}")
+            memo[identity] = copied
             return copied
         raise TypeError(f"cannot isolate argument {type(value).__qualname__}")
 
-    return tuple(clone(value) for value in args), {name: clone(value) for name, value in kwargs.items()}
+    try:
+        return tuple(clone(value) for value in args), {name: clone(value) for name, value in kwargs.items()}
+    finally:
+        # The recursive closure can await cyclic GC. It must not keep original
+        # sample arrays or returned clones alive past this preparation call.
+        array_roots.clear()
+        memo.clear()
 
 
 def values_equivalent(left: Any, right: Any, *, rtol: float = 1e-6, atol: float = 1e-8) -> bool:

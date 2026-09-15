@@ -1,5 +1,6 @@
 #pragma once
 
+#include "RendererParameterBlock.h"
 #include "rhi/GpuRetirementQueue.h"
 #include "rhi/RhiTexture.h"
 #include "shader/ShaderProgram.h"
@@ -58,6 +59,7 @@ class MaterialUBO
      * @param material The material containing property values
      */
     void Update(const InxMaterial &material);
+    void Apply(const RendererParameterBlock &parameters);
 
     /**
      * @brief Update a specific property in the UBO
@@ -225,6 +227,11 @@ class MaterialDescriptorManager
     {
         m_textureResolver = std::move(resolver);
     }
+    void SetRenderTextureResolver(
+        std::function<MaterialDescriptorSet::TextureBinding(const std::shared_ptr<rhi::RenderTexture> &)> resolver)
+    {
+        m_renderTextureResolver = std::move(resolver);
+    }
 
     void SetBindlessTextureResolver(BindlessTextureResolver resolver)
     {
@@ -243,6 +250,8 @@ class MaterialDescriptorManager
 
     [[nodiscard]] const std::vector<rhi::ResourceIndex> *
     GetBindlessTextureIndices(const std::string &materialName) const noexcept;
+    [[nodiscard]] const std::vector<rhi::ResourceIndex> *
+    GetBindlessTextureIndices(VkDescriptorSet descriptorSet) const noexcept;
 
     /**
      * @brief Get or create descriptor set for a material
@@ -251,6 +260,9 @@ class MaterialDescriptorManager
      * @return Pointer to descriptor set info, or nullptr on failure
      */
     MaterialDescriptorSet *GetOrCreateDescriptorSet(const InxMaterial &material, const ShaderProgram &program);
+    MaterialDescriptorSet *
+    GetOrCreateRendererDescriptorSet(const InxMaterial &material, const ShaderProgram &program,
+                                     const std::shared_ptr<const RendererParameterBlock> &parameters);
 
     /**
      * @brief Update descriptor set with new material values
@@ -363,6 +375,13 @@ class MaterialDescriptorManager
     vk::VkDescriptorManager *m_descriptorManager = nullptr;
 
     std::unordered_map<std::string, std::unique_ptr<MaterialDescriptorSet>> m_descriptorSets;
+    struct RendererDescriptorEntry
+    {
+        std::weak_ptr<const RendererParameterBlock> parameters;
+        VkDescriptorSetLayout layout = VK_NULL_HANDLE;
+        std::unique_ptr<MaterialDescriptorSet> descriptor;
+    };
+    std::unordered_map<std::string, RendererDescriptorEntry> m_rendererDescriptorSets;
     std::shared_ptr<std::atomic_size_t> m_pendingDescriptorSetReleases = std::make_shared<std::atomic_size_t>(0);
 
     /// Tracks currently active descriptor sets referenced by m_descriptorSets.
@@ -411,6 +430,10 @@ class MaterialDescriptorManager
   private:
     // Texture resolver callback (set via SetTextureResolver)
     TextureResolver m_textureResolver;
+    std::function<MaterialDescriptorSet::TextureBinding(const std::shared_ptr<rhi::RenderTexture> &)>
+        m_renderTextureResolver;
+    TextureResolveStatus ResolveRenderTextureBinding(const std::shared_ptr<rhi::RenderTexture> &texture,
+                                                     MaterialDescriptorSet::TextureBinding &binding) const;
     BindlessTextureResolver m_bindlessTextureResolver;
 
     // Optional submission-serial queue for descriptor-owned resource cleanup.

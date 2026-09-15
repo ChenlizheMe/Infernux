@@ -18,7 +18,7 @@ from .editor_icons import EditorIcons
 from .dpi import editor_dpi_scale
 
 # Tool mode constants — imported from scene_view_panel
-from .scene_view_panel import TOOL_NONE, TOOL_TRANSLATE, TOOL_ROTATE, TOOL_SCALE
+from .scene_view_panel import TOOL_NONE, TOOL_TRANSLATE, TOOL_ROTATE, TOOL_SCALE, TOOL_RECT
 
 # Gizmo handle IDs — must match C++ EditorTools constants
 from Infernux.debug import Debug
@@ -670,6 +670,7 @@ class SceneViewOverlaysMixin:
             TOOL_TRANSLATE: "tool_move",
             TOOL_ROTATE:    "tool_rotate",
             TOOL_SCALE:     "tool_scale",
+            TOOL_RECT:      "tool_rect",
         }
         all_ready = True
         for mode, name in _ICON_MAP.items():
@@ -690,6 +691,7 @@ class SceneViewOverlaysMixin:
             (TOOL_TRANSLATE, t("scene_view.tool_move"),   "##tool_move", "scene.tool.move"),
             (TOOL_ROTATE,    t("scene_view.tool_rotate"), "##tool_rotate", "scene.tool.rotate"),
             (TOOL_SCALE,     t("scene_view.tool_scale"),  "##tool_scale", "scene.tool.scale"),
+            (TOOL_RECT,      t("scene_view.tool_rect"),   "##tool_rect", "scene.tool.rect"),
         ]
         pad = tuple(value * dpi for value in Theme.SCENE_GIZMO_TOOL_BTN_PAD)
         icon_size = max(combo_h - pad[1] * 2, 8.0 * dpi)

@@ -4,6 +4,7 @@
 #include <core/config/MathConstants.h>
 #include <core/log/InxLog.h>
 #include <cstring>
+#include <function/renderer/rhi/RhiComputeBuffer.h>
 #include <function/resources/InxMaterial/InxMaterial.h>
 #include <glm/glm.hpp>
 #include <unordered_set>
@@ -24,11 +25,74 @@ void GizmosDrawCallBuffer::SetData(std::vector<Vertex> vertices, std::vector<uin
     m_slicesDirty = true;
 }
 
+void GizmosDrawCallBuffer::SetResidentData(std::vector<ResidentDrawDescriptor> descriptors)
+{
+    std::unordered_set<uint64_t> active;
+    active.reserve(descriptors.size());
+    m_residentOrder.clear();
+    m_residentOrder.reserve(descriptors.size());
+
+    for (auto &descriptor : descriptors) {
+        if (descriptor.identity == 0 || descriptor.vertexCount == 0 || !descriptor.vertexBuffer)
+            throw std::invalid_argument("Resident Gizmo draw requires identity, vertices, and a GPU buffer");
+        if (descriptor.vertexBuffer->GetByteSize() != static_cast<uint64_t>(descriptor.vertexCount) * sizeof(Vertex))
+            throw std::invalid_argument("Resident Gizmo vertex buffer does not use the canonical Vertex layout");
+        if (!active.insert(descriptor.identity).second)
+            throw std::invalid_argument("Resident Gizmo identities must be unique within a frame");
+
+        auto found = m_residentDraws.find(descriptor.identity);
+        if (found == m_residentDraws.end()) {
+            if (descriptor.indices.empty())
+                throw std::invalid_argument("A new resident Gizmo draw requires immutable line topology");
+            if (*std::max_element(descriptor.indices.begin(), descriptor.indices.end()) >= descriptor.vertexCount)
+                throw std::out_of_range("Resident Gizmo line index is outside the vertex buffer");
+            ResidentDraw draw;
+            draw.vertexBuffer = std::move(descriptor.vertexBuffer);
+            draw.topologyVertices.resize(descriptor.vertexCount);
+            draw.indices = std::move(descriptor.indices);
+            std::memcpy(&draw.worldMatrix, descriptor.worldMatrix, sizeof(descriptor.worldMatrix));
+            found = m_residentDraws.emplace(descriptor.identity, std::move(draw)).first;
+        } else {
+            if (found->second.topologyVertices.size() != descriptor.vertexCount)
+                throw std::logic_error("Resident Gizmo topology changed without a new identity");
+            found->second.vertexBuffer = std::move(descriptor.vertexBuffer);
+            std::memcpy(&found->second.worldMatrix, descriptor.worldMatrix, sizeof(descriptor.worldMatrix));
+        }
+        m_residentOrder.push_back(descriptor.identity);
+    }
+
+    for (auto it = m_residentDraws.begin(); it != m_residentDraws.end();) {
+        if (active.find(it->first) == active.end())
+            it = m_residentDraws.erase(it);
+        else
+            ++it;
+    }
+}
+
+bool GizmosDrawCallBuffer::HasResidentTopology(uint64_t identity, uint32_t vertexCount) const
+{
+    const auto found = m_residentDraws.find(identity);
+    return found != m_residentDraws.end() && found->second.topologyVertices.size() == vertexCount;
+}
+
 // ============================================================================
 // Clear
 // ============================================================================
 
 void GizmosDrawCallBuffer::Clear()
+{
+    ClearCpuData();
+
+    m_residentDraws.clear();
+    m_residentOrder.clear();
+
+    m_iconEntries.clear();
+    m_iconSlicedVertices.clear();
+    m_iconSlicedIndices.clear();
+    m_iconSlicesDirty = true;
+}
+
+void GizmosDrawCallBuffer::ClearCpuData()
 {
     m_vertices.clear();
     m_indices.clear();
@@ -36,11 +100,6 @@ void GizmosDrawCallBuffer::Clear()
     m_slicedVertices.clear();
     m_slicedIndices.clear();
     m_slicesDirty = true;
-
-    m_iconEntries.clear();
-    m_iconSlicedVertices.clear();
-    m_iconSlicedIndices.clear();
-    m_iconSlicesDirty = true;
 }
 
 // ============================================================================
@@ -49,7 +108,7 @@ void GizmosDrawCallBuffer::Clear()
 
 bool GizmosDrawCallBuffer::HasData() const
 {
-    return !m_descriptors.empty();
+    return !m_descriptors.empty() || !m_residentOrder.empty();
 }
 
 // ============================================================================
@@ -115,12 +174,12 @@ void GizmosDrawCallBuffer::RebuildSlices() const
 DrawCallResult GizmosDrawCallBuffer::GetDrawCalls(std::shared_ptr<InxMaterial> gizmoMaterial) const
 {
     DrawCallResult result;
-    if (m_descriptors.empty())
+    if (m_descriptors.empty() && m_residentOrder.empty())
         return result;
 
     RebuildSlices();
 
-    result.drawCalls.reserve(m_descriptors.size());
+    result.drawCalls.reserve(m_descriptors.size() + m_residentOrder.size());
 
     for (size_t i = 0; i < m_descriptors.size(); ++i) {
         const auto &desc = m_descriptors[i];
@@ -142,6 +201,24 @@ DrawCallResult GizmosDrawCallBuffer::GetDrawCalls(std::shared_ptr<InxMaterial> g
         dc.meshIndices = &m_slicedIndices[i];
         dc.forceBufferUpdate = true; // Immediate-mode: data changes every frame
 
+        result.drawCalls.push_back(dc);
+    }
+
+    for (const uint64_t identity : m_residentOrder) {
+        const auto found = m_residentDraws.find(identity);
+        if (found == m_residentDraws.end())
+            continue;
+        const ResidentDraw &draw = found->second;
+        DrawCall dc;
+        dc.indexStart = 0;
+        dc.indexCount = static_cast<uint32_t>(draw.indices.size());
+        dc.worldMatrix = draw.worldMatrix;
+        dc.material = gizmoMaterial;
+        dc.objectId = OBJECT_ID_PREFIX | (identity & 0x00000000FFFFFFFFULL);
+        dc.identity = RenderProxyHandle::Synthetic(RenderDomain::ComponentGizmo, dc.objectId).MakeDrawIdentity();
+        dc.meshVertices = &draw.topologyVertices;
+        dc.meshIndices = &draw.indices;
+        dc.meshVertexBuffer = draw.vertexBuffer;
         result.drawCalls.push_back(dc);
     }
 

@@ -239,6 +239,31 @@ def test_player_gui_starts_play_immediately_without_project_splash():
     assert activated == [True]
 
 
+def test_player_prepares_render_pixels_before_project_start(monkeypatch):
+    from types import SimpleNamespace
+
+    events = []
+    session = SimpleNamespace(is_playing=False, activate=lambda: events.append('start') or True)
+    player = _player_gui_for_play_gate(session)
+    player._last_w = player._last_h = 0
+    player._render_scale = 0.5
+    player._engine.resize_game_render_target = lambda w, h: events.append(('resize', w, h))
+    player._tick = lambda ctx: None
+    player._render_game = lambda ctx, w, h: events.append('draw')
+    noop = lambda *args: None
+    ctx = SimpleNamespace(
+        get_main_viewport_bounds=lambda: (0, 0, 1282, 722),
+        set_next_window_pos=noop, set_next_window_size=noop,
+        push_style_var_vec2=noop, push_style_var_float=noop,
+        begin_window=lambda *args: True, end_window=noop, pop_style_var=noop,
+    )
+    player.on_render(ctx)
+    assert events == [('resize', 641, 361), 'start', 'draw']
+    events.clear()
+    player.on_render(ctx)
+    assert events == ['draw']
+
+
 def test_player_control_observation_is_token_authenticated(tmp_path, monkeypatch):
     request, response, channel = _configure(tmp_path, monkeypatch)
     engine = _Engine()

@@ -79,6 +79,8 @@ void EditorShortcutInput::OnRender(InxGUIContext *ctx)
             dispatch("E");
         if (pressedOnce(ImGuiKey_R))
             dispatch("R");
+        if (pressedOnce(ImGuiKey_T))
+            dispatch("T");
         if (pressedOnce(ImGuiKey_LeftArrow))
             dispatch("Left");
         if (pressedOnce(ImGuiKey_RightArrow))

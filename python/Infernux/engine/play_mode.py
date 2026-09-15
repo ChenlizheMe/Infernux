@@ -718,8 +718,6 @@ class PlayModeManager(PlayModeSerializationMixin):
             self._step_sequence = 0
             from Infernux.timing import Time
             Time._reset()
-            from Infernux.tween import clear_tweens
-            clear_tweens()
             # Enter retains the native world. Its wrappers remain valid, including
             # references held by edit callbacks while preparing the new domain.
             # Stop clears bindings when it actually replaces native components.
@@ -825,8 +823,6 @@ class PlayModeManager(PlayModeSerializationMixin):
         scene_manager = self._get_scene_manager()
         if scene_manager:
             scene_manager.stop()
-        from Infernux.tween import clear_tweens
-        clear_tweens()
 
         # Stop owns the editor cursor boundary even when the Game View is
         # hidden and therefore cannot run its normal per-frame input route.

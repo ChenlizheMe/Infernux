@@ -371,6 +371,10 @@ def test_render_target_capture_uses_engine_and_stays_under_persistent_data(
     }
     assert Application.cancel_render_target_capture(capture_id) is True
 
+    editor_output = tmp_path / "Logs" / "editor.png"
+    assert Application.request_render_target_capture("editor", str(editor_output)) == 41
+    assert engine.capture_requests[-1] == ("editor", str(editor_output.resolve()))
+
     with pytest.raises(ValueError, match="persistent_data_path"):
         Application.request_render_target_capture("game", str(tmp_path.parent / "escape.png"))
 

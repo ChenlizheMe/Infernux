@@ -50,7 +50,7 @@ double Milliseconds(Clock::time_point start)
 
 void TestResourceTypeMetadataRoundTrip()
 {
-    const std::array<std::pair<ResourceType, const char *>, 12> cases = {{
+    const std::pair<ResourceType, const char *> cases[] = {
         {ResourceType::Meta, "Meta"},
         {ResourceType::Shader, "Shader"},
         {ResourceType::Texture, "Texture"},
@@ -63,7 +63,9 @@ void TestResourceTypeMetadataRoundTrip()
         {ResourceType::PhysicMaterial, "PhysicMaterial"},
         {ResourceType::RenderEffect, "RenderEffect"},
         {ResourceType::ParticleGraph, "ParticleGraph"},
-    }};
+        {ResourceType::DataAsset, "DataAsset"},
+        {ResourceType::RenderTexture, "RenderTexture"},
+    };
 
     for (const auto &[type, name] : cases) {
         infernux::InxResourceMeta metadata;

@@ -201,6 +201,7 @@ def test_official_mcp_default_install_uninstall_reinstalls_on_restart(
     if os.environ.get("INFERNUX_MCP_NATIVE_TEST_CHILD") != "1":
         environment = os.environ.copy()
         environment["INFERNUX_MCP_NATIVE_TEST_CHILD"] = "1"
+        child_basetemp = tmp_path / "child-basetemp"
         result = subprocess.run(
             [
                 sys.executable,
@@ -208,6 +209,8 @@ def test_official_mcp_default_install_uninstall_reinstalls_on_restart(
                 "pytest",
                 f"{Path(__file__).resolve()}::{test_official_mcp_default_install_uninstall_reinstalls_on_restart.__name__}",
                 "-q",
+                "--basetemp",
+                str(child_basetemp),
             ],
             cwd=repository,
             env=environment,
@@ -433,7 +436,7 @@ def test_official_mcp_default_install_uninstall_reinstalls_on_restart(
         for item in authoring_result["data"]["operations"]
     )
     assert capabilities_result["ok"] is True
-    assert capabilities_result["data"]["operation_count"] == 82
+    assert capabilities_result["data"]["operation_count"] == 98
 
     manager.uninstall("infernux/mcp")
     assert manager.registry.installed() == ()

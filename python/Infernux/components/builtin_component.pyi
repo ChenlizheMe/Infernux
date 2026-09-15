@@ -7,6 +7,7 @@ from typing import Any, Dict, Optional, Tuple, Type
 
 from .fields import FieldMetadata, FieldType
 from .component import InxComponent
+from Infernux.field_schema import FieldSchema
 
 
 class CppProperty:
@@ -19,10 +20,16 @@ class CppProperty:
     _is_cpp_property: bool
     cpp_attr: str
     metadata: FieldMetadata
+    schema: Optional[FieldSchema]
     get_converter: Any
     set_converter: Any
     native_getter: Any
     native_setter: Any
+
+    @classmethod
+    def from_native(cls, type_name: str, field_id: str, *, visible_when: Any = ..., get_converter: Any = ..., set_converter: Any = ...) -> CppProperty: ...
+    def normalize_value(self, candidate: Any) -> Any: ...
+    def validate_value(self, instance: Any, value: Any) -> str: ...
 
     def __init__(
         self,

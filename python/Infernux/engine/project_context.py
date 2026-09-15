@@ -223,6 +223,23 @@ def _package_role_root(package_root: str, role: str) -> str:
     return resolved_path(os.path.join(package_root, role))
 
 
+_preload_python_libraries: dict[str, tuple[str, ...]] = {}
+
+
+def register_preload_python_library(owner: str, path: str) -> None:
+    """Source owned by a preload lifetime, not a component reload transaction."""
+    root = resolved_path(path)
+    if not os.path.isdir(root):
+        raise ValueError("A preload Python library must be an existing directory")
+    roots = _preload_python_libraries.get(owner, ())
+    if root not in roots:
+        _preload_python_libraries[owner] = (*roots, root)
+
+
+def release_preload_python_libraries(owner: str) -> None:
+    _preload_python_libraries.pop(owner, None)
+
+
 def is_project_component_script(
     path: str,
     project_root: Optional[str] = None,
@@ -234,6 +251,9 @@ def is_project_component_script(
         return False
     root = resolved_path(project_root or _project_root)
     candidate = resolved_path(path)
+    if any(is_path_within(candidate, library, allow_root=False)
+           for libraries in _preload_python_libraries.values() for library in libraries):
+        return False
     if is_path_within(candidate, roots[0], allow_root=False):
         return True
     package_root, role, _ = _package_script_layout(candidate, project_root)

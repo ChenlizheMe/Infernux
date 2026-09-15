@@ -33,7 +33,10 @@ from Infernux.engine.undo import (
     UndoManager,
 )
 from Infernux.math import Vector3
-from Infernux.engine.component_restore import serialize_game_object_document_authoritatively
+from Infernux.engine.component_restore import (
+    clone_game_object_transactionally,
+    serialize_game_object_document_authoritatively,
+)
 
 
 class _PrefabTargetComponent(InxComponent):
@@ -219,6 +222,50 @@ def test_prefab_save_is_strict_typed_and_atomic(scene, tmp_path):
     assert instance is not None
     assert instance.id != root.id
     assert instance.get_child(0).id != child.id
+
+
+def test_canvas_free_world_ui_uses_normal_clone_save_and_prefab_lifecycle(scene, tmp_path):
+    from Infernux.ui import UIButton, UICanvas, UIFrame
+
+    root = scene.create_game_object("WorldPanel")
+    root.transform.position = Vector3(2.0, 3.0, 4.0)
+    frame = UIFrame()
+    frame.width = 640.0
+    frame.height = 360.0
+    frame.clip_content = True
+    root.add_py_component(frame)
+    assert "world_pixels_per_unit" not in frame._serialize_fields_document()
+
+    child = scene.create_game_object("WorldButton")
+    child.set_parent(root)
+    button = UIButton()
+    button.x = 120.0
+    button.y = 214.0
+    button.width = 400.0
+    button.height = 82.0
+    button.label = "INTERACT WITH THE WORLD"
+    child.add_py_component(button)
+
+    clone = clone_game_object_transactionally(scene, root)
+    assert clone is not None
+    assert clone.get_py_component(UICanvas) is None
+    clone_frame = clone.get_py_component(UIFrame)
+    clone_button = clone.get_child(0).get_py_component(UIButton)
+    assert (clone_frame.width, clone_frame.height) == (640.0, 360.0)
+    assert clone_button.label == "INTERACT WITH THE WORLD"
+    assert [clone.transform.position[index] for index in range(3)] == pytest.approx([2.0, 3.0, 4.0])
+
+    path = tmp_path / "world_ui.prefab"
+    assert save_prefab(root, str(path)) is True
+    envelope = json.loads(path.read_text(encoding="utf-8"))
+    assert "source_canvas_name" not in envelope
+    instance = instantiate_prefab(file_path=str(path), scene=scene)
+    assert instance is not None
+    assert instance.get_py_component(UICanvas) is None
+    instance_frame = instance.get_py_component(UIFrame)
+    instance_button = instance.get_child(0).get_py_component(UIButton)
+    assert (instance_frame.width, instance_frame.height) == (640.0, 360.0)
+    assert instance_button.label == "INTERACT WITH THE WORLD"
 
 
 def test_prefab_remaps_internal_python_references(scene, tmp_path):

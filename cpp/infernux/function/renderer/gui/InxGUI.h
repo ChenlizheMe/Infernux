@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../GpuResidency.h"
+#include "../rhi/RhiRenderTexture.h"
 
 #include "InxVkCoreModular.h"
 #include "gui/EditorGuiFrameScheduler.h"
@@ -92,6 +93,8 @@ class InxGUI
     /// uploading a second CPU-authored preview texture.
     uint64_t PublishTextureViewForImGui(const std::string &name, std::shared_ptr<const rhi::TextureGpuView> texture,
                                         bool pinned = false);
+    uint64_t PublishRenderTextureForImGui(const std::shared_ptr<rhi::RenderTexture> &texture);
+    std::shared_ptr<rhi::RenderTexture> ResolveImGuiRenderTexture(uint64_t textureId) const;
 
     /// Invalidate queued uploads for a name without removing its currently
     /// published texture. Completed stale tickets are discarded by generation.
@@ -113,6 +116,7 @@ class InxGUI
     /// @brief Validate and mark a descriptor-backed ImGui texture as used by cached native UI commands.
     /// @return false when the descriptor is no longer owned by the live texture registry.
     bool TouchImGuiTextureId(uint64_t textureId);
+    bool ImGuiTextureNeedsDisplayEncoding(uint64_t textureId) const;
     /// Return whether the current ImDrawData publication still contains a
     /// draw command that samples @p textureId. Render-target generations use
     /// this to keep old image resources alive until every visible panel has
@@ -183,6 +187,7 @@ class InxGUI
         bool pinned = false;
         bool requiresDisplayEncoding = false;
         std::shared_ptr<const rhi::TextureGpuView> externalView;
+        std::weak_ptr<rhi::RenderTexture> renderTexture;
     };
 
     struct DeferredTextureRelease

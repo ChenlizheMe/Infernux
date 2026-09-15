@@ -10,11 +10,14 @@ from typing import Any, Optional
 RUNTIME_TYPE_REGISTRY_SCHEMA = "infernux.runtime_type_registry"
 _runtime_types: dict[str, dict[str, Any]] = {}
 _runtime_registry_installed = False
+_runtime_semantic_owners: set[str] = set()
 _RUNTIME_LIFECYCLE_METHODS = frozenset(
     {
         "awake",
         "start",
         "fixed_update",
+        "physics_pre_step",
+        "physics_post_step",
         "update",
         "late_update",
         "on_enable",
@@ -31,6 +34,8 @@ _RUNTIME_LIFECYCLE_METHODS = frozenset(
 
 
 def install_runtime_type_registry(path: str) -> int:
+    global _runtime_types, _runtime_registry_installed, _runtime_semantic_owners
+
     with open(path, "r", encoding="utf-8") as stream:
         document = json.load(stream)
     if (
@@ -44,10 +49,18 @@ def install_runtime_type_registry(path: str) -> int:
         raise RuntimeError("Player runtime type registry has no type list")
 
     prepared: dict[str, dict[str, Any]] = {}
+    semantic_types: dict[str, list[dict[str, Any]]] = {}
     for entry in entries:
         if not isinstance(entry, dict):
             raise RuntimeError("Player runtime type registry contains a malformed entry")
-        required = ("script_guid", "type_guid", "module", "qualname", "runtime_path")
+        required = (
+            "script_guid",
+            "type_guid",
+            "type_id",
+            "module",
+            "qualname",
+            "runtime_path",
+        )
         if any(not isinstance(entry.get(key), str) or not entry[key] for key in required):
             raise RuntimeError("Player runtime type registry entry has incomplete identity")
         phases = entry.get("lifecycle", [])
@@ -62,11 +75,33 @@ def install_runtime_type_registry(path: str) -> int:
         type_guid = entry["type_guid"]
         if type_guid in prepared:
             raise RuntimeError(f"Duplicate Player runtime component type: {type_guid}")
+        semantic = entry.get("semantic")
+        if not isinstance(semantic, dict):
+            raise RuntimeError("Player runtime component has no cooked semantic descriptor")
+        if semantic.get("type_guid") != type_guid:
+            raise RuntimeError("Player runtime component semantic identity disagrees with its record")
+        if semantic.get("readable_id") != entry["type_id"]:
+            raise RuntimeError("Player runtime component semantic readable ID is invalid")
+        owner = semantic.get("owner")
+        if not isinstance(owner, str) or owner != f"script:{entry['script_guid']}":
+            raise RuntimeError("Player runtime component semantic owner is invalid")
+        if semantic.get("origin") != "python" or semantic.get("lifecycle") != phases:
+            raise RuntimeError("Player runtime component semantic contract disagrees with its record")
+        semantic_types.setdefault(owner, []).append(semantic)
         prepared[type_guid] = dict(entry, lifecycle=tuple(sorted(set(phases))))
 
-    global _runtime_types, _runtime_registry_installed
+    from Infernux.lib import _Infernux as native
+
+    edits = [
+        {"owner": owner, "types": semantic_types.get(owner, [])}
+        for owner in sorted(_runtime_semantic_owners | set(semantic_types))
+    ]
+    if edits:
+        native._semantic_catalog_prepare(edits).publish()
+
     _runtime_types = prepared
     _runtime_registry_installed = True
+    _runtime_semantic_owners = set(semantic_types)
     return len(prepared)
 
 
@@ -125,9 +160,19 @@ def bind_runtime_lifecycle_contract(component_type: type, record: Optional[dict[
 
 
 def clear_runtime_type_registry() -> None:
-    global _runtime_types, _runtime_registry_installed
+    global _runtime_types, _runtime_registry_installed, _runtime_semantic_owners
+    if _runtime_semantic_owners:
+        from Infernux.lib import _Infernux as native
+
+        native._semantic_catalog_prepare(
+            [
+                {"owner": owner, "types": []}
+                for owner in sorted(_runtime_semantic_owners)
+            ]
+        ).publish()
     _runtime_types = {}
     _runtime_registry_installed = False
+    _runtime_semantic_owners = set()
 
 
 __all__ = [

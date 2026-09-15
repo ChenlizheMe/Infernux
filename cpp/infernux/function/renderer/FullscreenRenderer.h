@@ -28,8 +28,8 @@ class FullscreenRendererHost
     /// Return a module registration owned by the caller. The renderer releases
     /// it after pipeline creation; the concrete backend decides whether the
     /// underlying shader object is shared or newly created.
-    [[nodiscard]] virtual rhi::ShaderModuleHandle AcquireShaderModule(const std::string &name,
-                                                                      rhi::ShaderStage stage) = 0;
+    [[nodiscard]] virtual rhi::ShaderModuleHandle AcquireShaderModule(const std::string &name, rhi::ShaderStage stage,
+                                                                      uint32_t inputTextureCount) = 0;
     [[nodiscard]] virtual rhi::BindingLayoutHandle GetPerViewLayout() const noexcept = 0;
     [[nodiscard]] virtual rhi::BindingLayoutHandle GetGlobalsLayout() const noexcept = 0;
     [[nodiscard]] virtual rhi::BindGroupHandle GetCurrentGlobalsGroup() = 0;
@@ -54,6 +54,9 @@ struct FullscreenPipelineKey
     rhi::RenderTargetLayoutHandle renderTargetLayout;
     rhi::SampleCount samples = rhi::SampleCount::One;
     rhi::PixelFormat colorFormat = rhi::PixelFormat::RGBA8UNorm;
+    rhi::PixelFormat depthFormat = rhi::PixelFormat::Undefined;
+    rhi::DepthState depth;
+    bool alphaBlend = false;
     uint32_t inputTextureCount = 0;
     uint32_t depthInputMask = 0;
     bool useDynamicRendering = false;

@@ -116,7 +116,7 @@ MATERIAL_TEMPLATE = '''{{
   }},
   "properties": {{
     "baseColor": {{
-      "type": 3,
+      "type": 7,
       "value": [1.0, 1.0, 1.0, 1.0]
     }}
   }}
@@ -922,6 +922,62 @@ def create_physic_material(current_path: str, material_name: str, asset_database
         guid = _import_new_asset(file_path, asset_database)
         if not guid:
             return False, f"AssetDatabase failed to import '{file_name}'"
+    return True, ""
+
+
+def create_render_texture(current_path: str, asset_name: str, asset_database=None):
+    """Create an imported target description without allocating a GPU target."""
+    from Infernux.lib import _Infernux
+
+    if not current_path or not asset_name.strip():
+        return False, "RenderTexture name cannot be empty"
+    extension = ".rendertexture"
+    name = asset_name.strip()
+    if name.casefold().endswith(extension):
+        name = name[:-len(extension)]
+    if not name:
+        return False, "RenderTexture name cannot be empty"
+    path = os.path.join(current_path, name + extension)
+    if os.path.exists(path):
+        return False, f"'{name + extension}' already exists"
+    description = _Infernux._RenderTextureDesc()
+    # Project assets are ready for Camera assignment; compute-only targets may
+    # explicitly disable depth in the Inspector. Low-level defaults stay color-only.
+    description.depth_format = _Infernux.PixelFormat.D32_SFLOAT
+    content = _Infernux._render_texture_description_to_json(description)
+    written, error = _write_new_text_asset(path, content)
+    if not written:
+        return False, error
+    if asset_database is not None and not _import_new_asset(path, asset_database):
+        return False, f"AssetDatabase failed to import '{name + extension}'"
+    return True, ""
+
+
+def create_data_asset(current_path: str, asset_name: str, type_id: str, asset_database=None):
+    """Create one typed ``.inxdata`` asset from its published DataAsset class."""
+    if not current_path or not asset_name:
+        return False, "Invalid DataAsset name"
+    asset_name = asset_name.strip()
+    if not asset_name:
+        return False, "DataAsset name cannot be empty"
+    if asset_name.lower().endswith(".inxdata"):
+        asset_name = asset_name[:-len(".inxdata")]
+
+    from Infernux.components.serializable_object import get_serializable_class
+    from Infernux.core.data_asset import DataAsset
+
+    asset_type = get_serializable_class(str(type_id or "").strip())
+    if asset_type is None or asset_type is DataAsset or not issubclass(asset_type, DataAsset):
+        return False, f"Unknown DataAsset type: {type_id}"
+
+    file_name = asset_name + ".inxdata"
+    file_path = os.path.join(current_path, file_name)
+    if os.path.exists(file_path):
+        return False, f"'{file_name}' already exists"
+    try:
+        asset_type().save_to(file_path, database=asset_database)
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        return False, str(exc)
     return True, ""
 
 

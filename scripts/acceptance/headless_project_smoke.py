@@ -6,12 +6,22 @@ import argparse
 from dataclasses import dataclass
 import json
 import os
+from pathlib import Path
 import sys
 import time
 from typing import Any
 
+# Keep acceptance runs coupled to the checkout under test.  Without this,
+# running the script from a conda environment can silently import an older
+# installed wheel and produce misleading smoke results.
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_SOURCE_PYTHON = _REPO_ROOT / "python"
+if _SOURCE_PYTHON.is_dir():
+    sys.path.insert(0, str(_SOURCE_PYTHON))
+
 import infernux as inx
 from Infernux import run_headless
+from Infernux.debug import DebugConsole, LogType
 from Infernux.engine.path_utils import resolved_path, same_path
 from Infernux.engine.scene_manager import SceneFileManager
 from Infernux.lib import SceneManager as NativeSceneManager
@@ -129,6 +139,11 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--play-frames", type=int, default=120)
     parser.add_argument("--fixed-delta", type=float, default=1.0 / 60.0)
     parser.add_argument("--load-timeout-frames", type=int, default=600)
+    parser.add_argument(
+        "--allow-unlisted-scene",
+        action="store_true",
+        help="Load an authoring scene by path through SceneFileManager even when it is not in Build Settings",
+    )
     parser.add_argument("--require-object", action="append", default=[])
     parser.add_argument("--require-component", action="append", default=[])
     parser.add_argument(
@@ -161,11 +176,27 @@ def main() -> int:
 
     tracked_names = list(dict.fromkeys(str(name) for name in args.track_object))
     state = _State(trajectory=[])
+    runtime_errors: list[dict[str, Any]] = []
+
+    def capture_error(entry):
+        if entry.log_type in (LogType.ERROR, LogType.EXCEPTION, LogType.ASSERT):
+            runtime_errors.append({
+                "type": entry.log_type.name,
+                "message": entry.message,
+                "stack_trace": entry.stack_trace,
+            })
 
     def update(_engine: Any, _frame: int) -> bool:
+        if runtime_errors:
+            return False
         if not state.requested:
             state.requested = True
-            if not SceneManager.load_scene(scene_relative):
+            if args.allow_unlisted_scene:
+                manager = SceneFileManager.instance()
+                requested = bool(manager is not None and manager.open_scene(scene_path))
+            else:
+                requested = SceneManager.load_scene(scene_relative)
+            if not requested:
                 state.error = f"failed to request scene load: {scene_relative}"
                 return False
 
@@ -235,16 +266,22 @@ def main() -> int:
         state.renderer_materials = _capture_renderer_materials(objects)
         return False
 
-    run_headless(
-        project,
-        update,
-        fixed_delta=args.fixed_delta,
-        max_frames=args.load_timeout_frames + args.play_frames,
-    )
-    if state.error:
-        raise RuntimeError(state.error)
+    console = DebugConsole.instance()
+    console.add_listener(capture_error)
+    try:
+        run_headless(
+            project,
+            update,
+            fixed_delta=args.fixed_delta,
+            max_frames=args.load_timeout_frames + args.play_frames,
+        )
+    except Exception as exc:
+        state.error = f"{type(exc).__name__}: {exc}"
+    finally:
+        console.remove_listener(capture_error)
     if not state.active or state.played_frames < args.play_frames:
-        raise RuntimeError("headless project smoke ended before the requested play interval")
+        if not state.error:
+            state.error = "headless project smoke ended before the requested play interval"
 
     object_names = state.object_names or []
     component_names = state.component_names or []
@@ -254,7 +291,10 @@ def main() -> int:
     missing_components = sorted(set(args.require_component).difference(component_names))
     result = {
         "schema": "infernux.headless_project_smoke",
-        "status": "passed" if not missing_objects and not missing_components else "failed",
+        "status": "failed" if state.error or runtime_errors or missing_objects or missing_components else "passed",
+        "scope": "headless_scene_lifecycle",
+        "error": state.error,
+        "runtime_errors": runtime_errors,
         "project": project,
         "scene": scene_relative,
         "fixed_delta": args.fixed_delta,

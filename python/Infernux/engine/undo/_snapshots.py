@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from Infernux.debug import Debug
-from Infernux.engine.undo._helpers import _get_active_scene
+from Infernux.engine.undo._helpers import _find_runtime_object
 
 
 # -- Live-object resolvers --
@@ -13,10 +13,7 @@ from Infernux.engine.undo._helpers import _get_active_scene
 def _get_live_game_object(game_object_id: int):
     if not game_object_id:
         return None
-    scene = _get_active_scene()
-    if not scene:
-        return None
-    return scene.find_by_id(game_object_id)
+    return _find_runtime_object(game_object_id)
 
 
 def _get_live_transform(game_object_id: int):

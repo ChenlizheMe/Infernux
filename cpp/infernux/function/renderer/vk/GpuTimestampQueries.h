@@ -1,9 +1,5 @@
 #pragma once
 
-#include <function/renderer/ProfileConfig.h>
-
-#if INFERNUX_FRAME_PROFILE
-
 #include <function/renderer/rhi/RhiQuery.h>
 
 #include <array>
@@ -30,7 +26,8 @@ class GpuTimestampQueries
     GpuTimestampQueries &operator=(GpuTimestampQueries &&) = delete;
 
     bool Initialize(const VkDeviceContext &context, uint32_t framesInFlight,
-                    uint32_t maxRegionsPerFrame = rhi::kGpuTimestampMaxRegions);
+                    uint32_t maxRegionsPerFrame = rhi::kGpuTimestampMaxRegions,
+                    uint32_t queueFamily = VK_QUEUE_FAMILY_IGNORED);
     void Destroy() noexcept;
 
     void BeginFrame(VkCommandBuffer commandBuffer, uint32_t frameIndex);
@@ -89,5 +86,3 @@ class GpuTimestampQueries
 };
 
 } // namespace infernux::vk
-
-#endif

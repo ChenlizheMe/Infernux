@@ -24,7 +24,6 @@ from Infernux.engine.build import (
 )
 from Infernux.engine.build_cancellation import BuildCancelled
 
-
 def _target(identifier: str = "fixture-x64") -> BuildTarget:
     return BuildTarget(
         BuildTargetId(identifier),

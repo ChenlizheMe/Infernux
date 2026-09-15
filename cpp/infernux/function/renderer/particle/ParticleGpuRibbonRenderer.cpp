@@ -648,6 +648,7 @@ rhi::GraphicsPipelineHandle ParticleGpuRibbonRenderer::GetOrCreatePipeline(const
                                    : (usesForwardPlusLighting ? m_forwardPlusFragmentShader : m_fragmentShader);
     pass.ApplyRenderingContract(desc);
     desc.raster.cullMode = rhi::CullMode::None;
+    pass.ApplyRasterContract(desc);
     desc.depth.testEnabled = state.depthTestEnabled && pass.depthFormat != rhi::PixelFormat::Undefined;
     desc.depth.writeEnabled =
         state.depthWriteEnabled && !pass.depthReadOnly && pass.depthFormat != rhi::PixelFormat::Undefined;

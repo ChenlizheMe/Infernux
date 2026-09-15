@@ -57,7 +57,7 @@ class RenderStack(InxComponent):
     def invalidate_graph(self) -> None:
         """Mark the render graph as dirty, triggering a rebuild."""
         ...
-    def build_graph(self) -> Any:
+    def build_graph(self, *, output_samples: int = 0) -> Any:
         """Build and return the render graph description."""
         ...
     def render(self, context: Any, camera: Any) -> None:

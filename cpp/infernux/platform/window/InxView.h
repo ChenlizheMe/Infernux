@@ -222,6 +222,8 @@ class InxView
 
     int m_windowWidth = 0;
     int m_windowHeight = 0;
+    int m_framebufferWidth = 0;
+    int m_framebufferHeight = 0;
 
     SDL_Window *m_window = nullptr;
 

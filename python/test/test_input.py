@@ -57,6 +57,10 @@ class TestFocusGating:
         Input.set_game_viewport_origin(100.0, 200.0)
         assert Input._game_viewport_origin == (100.0, 200.0)
 
+    def test_set_game_viewport_size(self):
+        Input.set_game_viewport_size(640.0, 360.0)
+        assert Input.game_viewport_size == (640.0, 360.0)
+
     def test_automation_scope_routes_game_input_without_claiming_editor_focus(self):
         Input.set_game_focused(False)
 
@@ -169,6 +173,26 @@ class TestMouseQueries:
     def test_mouse_position_type(self):
         pos = Input.mouse_position
         assert isinstance(pos, tuple) and len(pos) == 2
+
+
+class TestCursorState:
+    def test_visibility_confinement_and_lock_are_independent(self):
+        Input.set_cursor_visible(False)
+        Input.set_cursor_confined(True)
+        Input.set_cursor_locked(True)
+        try:
+            assert Input.is_cursor_visible() is False
+            assert Input.is_cursor_confined() is True
+            assert Input.is_cursor_locked() is True
+
+            Input.set_cursor_locked(False)
+            assert Input.is_cursor_visible() is False
+            assert Input.is_cursor_confined() is True
+            assert Input.warp_cursor(10.0, 20.0) is False
+        finally:
+            Input.set_cursor_locked(False)
+            Input.set_cursor_confined(False)
+            Input.set_cursor_visible(True)
 
 
 # ═══════════════════════════════════════════════════════════════════════════

@@ -3,6 +3,8 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional, Tuple, overload
 
 from Infernux.components.builtin_component import BuiltinComponent
+from Infernux.compute import Buffer
+from Infernux.core.mesh import Mesh
 
 class MeshRenderer(BuiltinComponent):
     """Renders a mesh with assigned materials."""
@@ -69,6 +71,32 @@ class MeshRenderer(BuiltinComponent):
     def set_material_slot_count(self, count: int) -> None:
         """Set the number of material slots on this renderer."""
         ...
+    def set_parameter(
+        self,
+        name: str,
+        value: Any,
+        *,
+        material_slot: int = ...,
+        persistent: bool = ...,
+        owner: str = ...,
+    ) -> None: ...
+    def get_parameter(
+        self,
+        name: str,
+        *,
+        material_slot: int = ...,
+        persistent_only: bool = ...,
+        owner: str = ...,
+    ) -> Any: ...
+    def remove_parameter(
+        self,
+        name: str,
+        *,
+        material_slot: int = ...,
+        persistent: bool = ...,
+        owner: str = ...,
+    ) -> bool: ...
+    def clear_parameters(self, *, material_slot: int = ..., persistent: bool = ..., owner: str = ...) -> None: ...
 
     # ---- Mesh data access ----
 
@@ -92,6 +120,14 @@ class MeshRenderer(BuiltinComponent):
     def get_mesh_asset(self) -> Any:
         """Return the InxMesh asset object, or None."""
         ...
+    @property
+    def mesh(self) -> Optional[Mesh]: ...
+    @mesh.setter
+    def mesh(self, value: Optional[Mesh]) -> None: ...
+    @property
+    def shared_mesh(self) -> Optional[Mesh]: ...
+    @shared_mesh.setter
+    def shared_mesh(self, value: Optional[Mesh]) -> None: ...
     def get_material_slot_names(self) -> List[str]:
         """Return material slot names from the model file."""
         ...
@@ -107,6 +143,8 @@ class MeshRenderer(BuiltinComponent):
     def index_count(self) -> int:
         """The number of indices in the mesh."""
         ...
+    @property
+    def inline_mesh_version(self) -> int: ...
 
     def get_positions(self) -> List[Tuple[float, float, float]]:
         """Return the list of vertex positions."""
@@ -114,12 +152,32 @@ class MeshRenderer(BuiltinComponent):
     def get_normals(self) -> List[Tuple[float, float, float]]:
         """Return the list of vertex normals."""
         ...
+    def get_tangents(self) -> List[Tuple[float, float, float, float]]:
+        """Return tangent direction and handedness for every vertex."""
+        ...
     def get_uvs(self) -> List[Tuple[float, float]]:
         """Return the list of UV coordinates."""
         ...
     def get_indices(self) -> List[int]:
         """Return the list of triangle indices."""
         ...
+    def set_inline_mesh_data(self, positions: Any, normals: Any, uvs: Any, indices: Any, name: str = "Inline Mesh", tangents: Any = None) -> None:
+        """Copy NumPy geometry; omitted normals/tangents are derived. No collision recook."""
+        ...
+    def recalculate_normals(self) -> None: ...
+    def recalculate_tangents(self) -> None: ...
+    def recalculate_bounds(self) -> None: ...
+    def create_vertex_buffer(self, *, device: str = "gpu", auto_normals: bool = True, auto_tangents: bool = True, capacity: int | None = None) -> Buffer:
+        """Create resident vertex storage with automatic GPU normal/tangent rebuilding."""
+        ...
+    def set_vertex_buffer(self, value: Buffer, bounds_min: Any, bounds_max: Any, *, space: str = ...) -> None:
+        """Render directly from resident vertex storage in explicit local or world space."""
+        ...
+    def clear_vertex_buffer(self) -> None:
+        """Return rendering to the authored CPU vertex stream."""
+        ...
+    @property
+    def vertex_buffer_capacity(self) -> int: ...
     def set_primitive_mesh(self, primitive_type: Any) -> None:
         """Assign one of the built-in primitive meshes."""
         ...

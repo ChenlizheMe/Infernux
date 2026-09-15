@@ -234,6 +234,47 @@ int main()
     assert(reusedIds.at(reusedClass) == oldLayout);
     store.FinalizeSchemaTransaction(reuseTransaction);
 
+    // Re-publishing a known layout stages a separate storage generation.
+    // Its name continues to resolve to the old storage through prepare/seal.
+    store.Clear();
+    const auto existingLayout = store.RegisterClass("tests:ExistingLayout@same");
+    const auto existingField = store.RegisterField(existingLayout, "value", ComponentDataStore::DataType::Float64);
+    const auto existingSlot = store.AllocateSlot(existingLayout);
+    store.SetFloat(existingLayout, existingField, existingSlot, 12.0);
+    for (const bool finalize : {false, true}) {
+        const auto transaction = store.BeginSchemaTransaction();
+        const auto candidate = store.PrepareClass(transaction, "tests:ExistingLayout@same");
+        const auto field = store.PrepareField(transaction, candidate, "value", ComponentDataStore::DataType::Float64);
+        const auto slot = store.AllocatePreparedSlot(transaction, candidate);
+        store.SetPreparedFloat(transaction, candidate, field, slot, 34.0);
+        const auto replacementId = store.SealSchemaTransaction(transaction).at(candidate);
+        assert(replacementId != existingLayout);
+        assert(store.GetClassId("tests:ExistingLayout@same") == existingLayout);
+        assert(store.GetFloat(existingLayout, existingField, existingSlot) == 12.0);
+        assert(store.GetClassAliveCount(existingLayout) == 1);
+        store.CommitSchemaTransaction(transaction);
+        assert(store.GetClassId("tests:ExistingLayout@same") == replacementId);
+        assert(store.GetPublishedClassCount() == 1);
+        assert(store.GetFloat(replacementId, field, slot) == 34.0);
+        assert(store.GetFloat(existingLayout, existingField, existingSlot) == 12.0);
+        if (finalize) {
+            store.FinalizeSchemaTransaction(transaction);
+            assert(store.GetClassId("tests:ExistingLayout@same") == replacementId);
+            assert(store.GetFloat(existingLayout, existingField, existingSlot) == 12.0);
+            ExpectFailure([&] { store.AllocateSlot(existingLayout); });
+            store.ReleaseSlot(existingLayout, existingSlot);
+            store.ReleaseSlot(replacementId, slot);
+        } else {
+            const bool rolledBack = store.RollbackSchemaTransaction(transaction);
+            assert(rolledBack);
+            assert(store.GetClassId("tests:ExistingLayout@same") == existingLayout);
+            assert(store.GetPublishedClassCount() == 1);
+            assert(store.GetFloat(existingLayout, existingField, existingSlot) == 12.0);
+            const auto extra = store.AllocateSlot(existingLayout);
+            store.ReleaseSlot(existingLayout, extra);
+        }
+    }
+
     store.Clear();
     constexpr size_t benchmarkCount = 100000;
     const auto benchmarkStart = std::chrono::steady_clock::now();

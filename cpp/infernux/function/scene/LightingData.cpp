@@ -367,13 +367,11 @@ void SceneLightCollector::ComputeShadowVP(Scene *scene, const glm::vec3 &cameraP
         shadowCamera.aspect = std::max(camera->GetAspectRatio(), 0.01f);
         shadowCamera.orthographic = camera->GetProjectionMode() == CameraProjection::Orthographic;
         shadowCamera.orthographicHalfHeight = std::max(camera->GetOrthographicSize(), 0.01f);
-        if (camera->GetGameObject() && camera->GetGameObject()->GetTransform()) {
-            const Transform *transform = camera->GetGameObject()->GetTransform();
-            shadowCamera.position = transform->GetWorldPosition();
-            shadowCamera.forward = glm::normalize(transform->GetWorldForward());
-            shadowCamera.right = glm::normalize(transform->GetWorldRight());
-            shadowCamera.up = glm::normalize(transform->GetWorldUp());
-        }
+        const auto cameraToWorld = camera->GetCameraToWorldMatrix();
+        shadowCamera.position = glm::vec3(cameraToWorld[3]);
+        shadowCamera.forward = glm::normalize(glm::vec3(cameraToWorld[2]));
+        shadowCamera.right = glm::normalize(glm::vec3(cameraToWorld[0]));
+        shadowCamera.up = glm::normalize(glm::vec3(cameraToWorld[1]));
     }
 
     // Cascades must cover exactly what the camera renders. Unproject the real

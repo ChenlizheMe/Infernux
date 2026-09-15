@@ -9,6 +9,117 @@ from Infernux.components.serializable_object import (
 from Infernux.components.fields import serialized_field, FieldType
 from Infernux.components.value_document import make_serializable_object
 import pytest
+from typing import Annotated
+from Infernux.components import InxComponent
+from Infernux.components.fields import (
+    Range, Tooltip, HideInInspector, NonSerialized, FormerlySerializedAs,
+    get_serialized_fields,
+)
+
+
+@pytest.mark.parametrize("base", [InxComponent, SerializableObject])
+def test_component_and_data_object_share_declaration_semantics(base):
+    class Declaration(base):
+        count: int
+        ratio: float = 1
+        speed: Annotated[float, Range(0, 10), Tooltip("speed")] = 2.0
+        hidden: Annotated[int, HideInInspector] = 3
+        transient: Annotated[int, NonSerialized] = 4
+        _backing = serialized_field(5, hidden=True)
+
+    fields = get_serialized_fields(Declaration)
+    assert set(fields) == {"count", "ratio", "speed", "hidden", "_backing"}
+    assert fields["count"].default == 0
+    assert fields["ratio"].field_type == FieldType.FLOAT
+    assert type(fields["ratio"].default) is float
+    assert fields["speed"].range == (0, 10)
+    assert fields["speed"].tooltip == "speed"
+    assert fields["hidden"].hidden
+    assert fields["_backing"].hidden
+
+
+def test_inherited_data_field_uses_the_same_runtime_constraint():
+    class Base(SerializableObject):
+        speed = serialized_field(2.0, range=(0, 10))
+
+    class Derived(Base):
+        label = "child"
+
+    value = Derived(speed=20.0)
+    assert value.speed == 10.0
+    value.speed = -20.0
+    assert value.speed == 0.0
+    restored = SerializableObject._deserialize(value._serialize())
+    assert type(restored) is Derived and restored.speed == 0.0
+
+
+def test_failed_data_declaration_does_not_replace_registered_type():
+    class Valid(SerializableObject):
+        __serialized_type_id__ = "tests:declaration-publication"
+        value = 1
+
+    with pytest.raises(ValueError, match="non-empty field name"):
+        class Invalid(SerializableObject):
+            __serialized_type_id__ = "tests:declaration-publication"
+            value: Annotated[int, FormerlySerializedAs("")] = 2
+
+    assert get_serializable_class("tests:declaration-publication") is Valid
+
+
+def test_inherited_reference_serializes_raw_identity_not_resolved_object():
+    import copy
+    from Infernux.components.ref_wrappers import GameObjectRef
+    from Infernux.components.fields import get_raw_field_value
+
+    class Base(SerializableObject):
+        target: GameObjectRef
+        _target = serialized_field(None, field_type=FieldType.GAME_OBJECT, hidden=True)
+
+    class Derived(Base):
+        label = "reference owner"
+
+    original = Derived(target=GameObjectRef(persistent_id=42),
+                       _target=GameObjectRef(persistent_id=43))
+    document = original._serialize()
+    for value in (copy.deepcopy(original), SerializableObject._deserialize(document)):
+        assert get_raw_field_value(value, "target").persistent_id == 42
+        assert get_raw_field_value(value, "_target").persistent_id == 43
+        assert value._serialize() == document
+
+
+def test_data_annotations_cover_nested_lists_enums_and_string_annotations():
+    from enum import Enum
+
+    class Mode(Enum):
+        idle = 0
+        moving = 1
+
+    class Composite(SerializableObject):
+        stats: Stats
+        members: list[Stats]
+        mode: Mode = Mode.moving
+
+    first, second = Composite(), Composite()
+    fields = get_serialized_fields(Composite)
+    assert fields["stats"].serializable_class is Stats
+    assert fields["members"].element_class is Stats
+    assert fields["mode"].enum_type is Mode
+    first.stats.hp = 7
+    first.members.append(Stats(hp=3))
+    assert second.stats.hp == 100 and second.members == []
+    restored = SerializableObject._deserialize(first._serialize())
+    assert restored.stats.hp == 7 and restored.members[0].hp == 3
+    assert restored.mode is Mode.moving
+
+    resolved = type("StringAnnotationData", (SerializableObject,), {
+        "__module__": __name__,
+        "__annotations__": {"stats": "Stats", "values": "list[int]",
+                            "hidden": "Annotated[int, HideInInspector]"},
+    })
+    fields = get_serialized_fields(resolved)
+    assert fields["stats"].serializable_class is Stats
+    assert fields["values"].element_type == FieldType.INT
+    assert fields["hidden"].hidden
 
 
 # ── Test data classes ──
@@ -90,6 +201,7 @@ class TestSerialization:
         data = s._serialize()
         assert data["$type"] == "serializable_object"
         assert data["type_id"] == get_serializable_type_id(Stats)
+        assert data["schema_version"] == 1
         assert data["fields"]["hp"] == 100
 
     def test_deserialize_restores_values(self):
@@ -130,12 +242,9 @@ class TestSerialization:
             SerializableObject._deserialize(data)
 
     def test_unsupported_nested_value_is_rejected(self):
-        class Unsupported(SerializableObject):
-            payload = serialized_field(default=None, field_type=FieldType.UNKNOWN)
-
-        value = Unsupported(payload=object())
-        with pytest.raises(TypeError, match=r"Unsupported\.payload.*unsupported serialized value"):
-            value._serialize()
+        with pytest.raises(ValueError, match=r"Unsupported\.payload.*UNKNOWN"):
+            class Unsupported(SerializableObject):
+                payload = serialized_field(default=None, field_type=FieldType.UNKNOWN)
 
     @pytest.mark.parametrize(
         "mutate, error",

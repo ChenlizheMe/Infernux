@@ -67,6 +67,7 @@ class _BufferedSingleCameraPipeline(RenderPipeline):
 
 
 class _SingleCameraContext:
+    output_samples = 0
     def __init__(self):
         self.calls = []
         self.current_revision = 0
@@ -972,7 +973,7 @@ def test_render_stack_batches_only_changed_effect_parameters_without_rebuild():
     )
     stack = RenderStack()
     stack.add_effect_slot("final", RenderEffectRef(effect=effect))
-    stack._graph_desc = stack.build_graph()
+    stack._graph_state.description = stack.build_graph()
 
     class Context:
         graph_instance_id = 17
@@ -1044,7 +1045,7 @@ def test_motion_blur_parameters_update_without_graph_rebuild():
     )
     stack = RenderStack()
     stack.add_effect_slot("final", RenderEffectRef(effect=effect))
-    stack._graph_desc = stack.build_graph()
+    stack._graph_state.description = stack.build_graph()
 
     class Context:
         graph_instance_id = 29
@@ -1092,6 +1093,7 @@ def test_temporal_aa_consumes_motion_and_commits_typed_history():
     history_write = textures[commit.commands[0].destination_resource]
 
     assert command.shader_name == "Temporal Anti-Aliasing"
+    assert description.temporal_jitter is True
     assert bindings["_MotionTex"] == "_result/opaque/motion"
     assert bindings["_DepthTex"] == "depth"
     assert history_read.temporal_key == history_write.temporal_key
@@ -1116,7 +1118,7 @@ def test_render_stack_rebuilds_when_effect_topology_parameter_changes():
     )
     stack = RenderStack()
     stack.add_effect_slot("final", RenderEffectRef(effect=effect))
-    stack._graph_desc = stack.build_graph()
+    stack._graph_state.description = stack.build_graph()
 
     class Context:
         graph_instance_id = 23
@@ -1310,7 +1312,7 @@ def test_effect_group_parameter_publication_reaches_compiled_render_stack(tmp_pa
         "final",
         RenderEffectRef(path_hint=str(group_path)),
     )
-    stack._graph_desc = stack.build_graph()
+    stack._graph_state.description = stack.build_graph()
 
     class Context:
         graph_instance_id = 41
@@ -1372,7 +1374,7 @@ def test_pixelation_group_parameter_publication_reaches_compiled_render_stack(tm
 
     stack = RenderStack()
     stack.add_effect_slot("final", RenderEffectRef(path_hint=str(group_path)))
-    stack._graph_desc = stack.build_graph()
+    stack._graph_state.description = stack.build_graph()
 
     class Context:
         graph_instance_id = 42

@@ -104,6 +104,11 @@ class AssetManager:
     # Weak-ref cache: guid → weakref to loaded Python wrapper
     _cache: Dict[str, weakref.ref] = {}
 
+    # DataAsset values resolved by gameplay live in a separate strong cache.
+    # The cache exists only between the Play enter/exit boundaries, so runtime
+    # mutation cannot leak into the authored asset object.
+    _play_data_asset_cache: Optional[Dict[str, Any]] = None
+
     # Strong-ref cache for textures: guid → Texture
     # Textures are expensive to reload from disk, so keep them alive.
     _texture_cache: Dict[str, Any] = {}
@@ -193,6 +198,7 @@ class AssetManager:
         if engine is not None and cls._engine is not engine:
             return
         cls._cache.clear()
+        cls._play_data_asset_cache = None
         cls._texture_cache.clear()
         with cls._pending_gpu_texture_reloads_lock:
             cls._pending_gpu_texture_reloads.clear()
@@ -341,6 +347,18 @@ class AssetManager:
         """Clear all cached assets."""
         cls._cache.clear()
         cls._texture_cache.clear()
+        if cls._play_data_asset_cache is not None:
+            cls._play_data_asset_cache.clear()
+
+    @classmethod
+    def _begin_play_data_asset_isolation(cls) -> None:
+        if cls._play_data_asset_cache is not None:
+            raise RuntimeError("DataAsset Play isolation is already active")
+        cls._play_data_asset_cache = {}
+
+    @classmethod
+    def _end_play_data_asset_isolation(cls) -> None:
+        cls._play_data_asset_cache = None
 
     # ======================================================================
     # Unified execution APIs (Inspector-facing)
@@ -367,8 +385,10 @@ class AssetManager:
         cls.register_import_strategy("audio", write_audio_import_settings)
         cls.register_import_strategy("mesh", write_mesh_import_settings)
         cls.register_save_strategy("material", cls._save_material_resource)
+        cls.register_save_strategy("data_asset", lambda resource: resource.save() is not False)
         cls.register_save_strategy("render_effect", cls._save_render_effect_resource)
         cls.register_save_strategy("physic_material", lambda resource: resource.save() is not False)
+        cls.register_save_strategy("render_texture", lambda resource: resource.save() is not False)
         cls.register_save_strategy("animclip", cls._save_animclip_resource)
         cls.register_save_strategy("animclip3d", cls._save_animclip3d_resource)
         cls.register_save_strategy("animfsm", cls._save_animfsm_resource)
@@ -1693,6 +1713,11 @@ class AssetManager:
 
     @classmethod
     def _get_cached(cls, guid: str) -> Optional[Any]:
+        play_cache = cls._play_data_asset_cache
+        if play_cache is not None:
+            isolated = play_cache.get(guid)
+            if isolated is not None:
+                return isolated
         # Strong texture cache (never GC'd until explicit invalidation)
         tex = cls._texture_cache.get(guid)
         if tex is not None:
@@ -1701,6 +1726,13 @@ class AssetManager:
         if ref is not None:
             obj = ref()
             if obj is not None:
+                if play_cache is not None:
+                    from Infernux.core.data_asset import DataAsset
+
+                    if isinstance(obj, DataAsset):
+                        isolated = obj._clone_for_play()
+                        play_cache[guid] = isolated
+                        return isolated
                 return obj
             # Dead reference — clean up
             del cls._cache[guid]
@@ -1708,6 +1740,14 @@ class AssetManager:
 
     @classmethod
     def _put_cache(cls, guid: str, asset) -> None:
+        play_cache = cls._play_data_asset_cache
+        if play_cache is not None:
+            from Infernux.core.data_asset import DataAsset
+
+            if isinstance(asset, DataAsset):
+                asset._mark_play_isolated()
+                play_cache[guid] = asset
+                return
         if isinstance(asset, Texture):
             cls._texture_cache[guid] = asset
         try:
@@ -1742,11 +1782,20 @@ class AssetManager:
         if ext in PARTICLE_GRAPH_EXTENSIONS:
             from Infernux.particle.asset import ParticleGraphAsset
             return ParticleGraphAsset
+        if ext == ".inxdata":
+            from Infernux.core.data_asset import DataAsset
+            return DataAsset
+        if ext == ".rendertexture":
+            from Infernux.core.render_texture import RenderTexture
+            return RenderTexture
         return None
 
     @classmethod
     def _load_by_type(cls, path: str, asset_type: Optional[Type]) -> Optional[Any]:
         """Load an asset given its path and resolved type."""
+        from Infernux.core.render_texture import RenderTexture
+        if asset_type is RenderTexture:
+            return RenderTexture.load(path)
         if asset_type is Material or (asset_type is None and path.endswith(".mat")):
             return Material.load(path)
         if asset_type is Texture:
@@ -1808,6 +1857,11 @@ class AssetManager:
                 return ParticleGraphAsset.load(path)
             except (OSError, RuntimeError, TypeError, ValueError):
                 return None
+        from Infernux.core.data_asset import DataAsset
+        if asset_type is DataAsset or (
+            asset_type is None and path.lower().endswith(".inxdata")
+        ):
+            return DataAsset.load(path)
         return None
 
     @classmethod

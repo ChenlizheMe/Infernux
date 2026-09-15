@@ -1,4 +1,5 @@
 #include "InxGUISemantics.h"
+#include "InxGUIContext.h"
 
 #include <imgui.h>
 #include <imgui_internal.h>
@@ -411,6 +412,15 @@ void InxGUISemantics::EndFrame()
 
     if (context) {
         const ImGuiIO &io = ImGui::GetIO();
+        const ImGuiViewport *viewport = ImGui::GetMainViewport();
+        g_workingSnapshot.desktopCoordinates = (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) != 0;
+        g_workingSnapshot.displayX = viewport->Pos.x;
+        g_workingSnapshot.displayY = viewport->Pos.y;
+        g_workingSnapshot.displayWidth = io.DisplaySize.x;
+        g_workingSnapshot.displayHeight = io.DisplaySize.y;
+        g_workingSnapshot.framebufferScaleX = io.DisplayFramebufferScale.x;
+        g_workingSnapshot.framebufferScaleY = io.DisplayFramebufferScale.y;
+        g_workingSnapshot.uiScale = InxGUIContext::s_dpiScale;
         g_workingSnapshot.mouseX = io.MousePos.x;
         g_workingSnapshot.mouseY = io.MousePos.y;
         g_workingSnapshot.wantsTextInput = io.WantTextInput;

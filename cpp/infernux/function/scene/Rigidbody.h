@@ -16,6 +16,7 @@
 
 namespace infernux
 {
+struct PhysicsBodyMotionState;
 
 /**
  * @brief Unity-style ForceMode for AddForce / AddTorque.
@@ -222,6 +223,7 @@ class Rigidbody : public Component
 
     /// @brief World-space center of mass (Unity: Rigidbody.worldCenterOfMass).
     [[nodiscard]] glm::vec3 GetWorldCenterOfMass() const;
+    [[nodiscard]] PhysicsBodyMotionState GetMotionState() const;
 
     /// @brief World-space position of the rigidbody (Unity: Rigidbody.position).
     [[nodiscard]] glm::vec3 GetPosition() const;

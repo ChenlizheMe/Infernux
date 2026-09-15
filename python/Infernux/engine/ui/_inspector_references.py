@@ -421,11 +421,11 @@ def _create_asset_ref_from_payload(metadata, payload):
         raise ValueError("ASSET reference payload requires an explicit asset_type")
     guid, file_path = _resolve_guid_and_path(payload)
     from Infernux.core.asset_ref import create_asset_ref
-    from Infernux.core.asset_reference_types import asset_type_registry
+    from Infernux.core.asset_reference_types import AssetReferenceCodec
 
-    descriptor = asset_type_registry.require(asset_type)
+    concrete = AssetReferenceCodec.normalize(asset_type, payload)["asset_type"]
     return create_asset_ref(
-        descriptor.type_id,
+        concrete,
         guid=guid,
         path_hint=_portable_asset_path_hint(file_path),
     )
@@ -433,7 +433,7 @@ def _create_asset_ref_from_payload(metadata, payload):
 
 def _render_asset_reference_field(
     ctx, comp, field_name, metadata, current_value, field_type, lw,
-    *, builtin_attr=None,
+    *, builtin_attr=None, label_override=None,
 ):
     """Render a MATERIAL / TEXTURE / SHADER / ASSET reference field."""
     from Infernux.components.fields import FieldType as _FT
@@ -474,22 +474,30 @@ def _render_asset_reference_field(
             asset_type, left
         ) == AssetReferenceCodec.normalize(asset_type, right)
 
-    validate_callback = getattr(comp, "_call_on_validate", None)
-    transaction = make_attribute_property_transaction(
-        (comp,),
-        attr_name,
-        property_path=f"{type(comp).__name__}.{attr_name}",
-        value_type=asset_type,
-        description=f"Set {field_name}",
-        read_only=bool(getattr(metadata, "readonly", False)),
-        normalize=_normalize_reference,
-        equivalent=_same_reference,
-        publish=(validate_callback if callable(validate_callback) else None),
-        clear_value=None,
-    )
+    from Infernux.components.fields import SerializedFieldDescriptor
+    if isinstance(getattr(type(comp), attr_name, None), SerializedFieldDescriptor):
+        from Infernux.engine.interaction import make_python_component_property_transaction
+        # Authoring edits operate on the saved reference, never an eagerly
+        # resolved GPU owner or a transient override. This also clears missing
+        # references and keeps scene Undo on the normal document transaction.
+        transaction = make_python_component_property_transaction(
+            (comp,), attr_name, description=f"Set {field_name}",
+            decode_input=_normalize_reference, equivalent=_same_reference,
+        )
+    else:
+        validate_callback = getattr(comp, "_call_on_validate", None)
+        transaction = make_attribute_property_transaction(
+            (comp,), attr_name,
+            property_path=f"{type(comp).__name__}.{attr_name}",
+            value_type=asset_type, description=f"Set {field_name}",
+            read_only=bool(getattr(metadata, "readonly", False)),
+            normalize=_normalize_reference, equivalent=_same_reference,
+            publish=(validate_callback if callable(validate_callback) else None),
+            clear_value=None,
+        )
 
     label_key = str(getattr(metadata, "display_name_key", "") or "")
-    label = t(label_key) if label_key else pretty_field_name(field_name)
+    label = label_override or (t(label_key) if label_key else pretty_field_name(field_name))
     if label == label_key:
         label = pretty_field_name(field_name)
     field_label(ctx, label, lw)
@@ -501,7 +509,6 @@ def _render_asset_reference_field(
 
     render_asset_reference_field(
         ctx, f"{prefix}_ref_{field_name}", display, type_hint,
-        accept_drag_type=drag_type,
         on_ping=_on_ping if current_value is not None and display != "None" else None,
         ping_path=_resolve_asset_disk_path(current_value),
         has_value=current_value is not None and display != "None",
@@ -717,11 +724,13 @@ def _picker_scene_gameobjects(filter_text: str, required_component: str = None):
     return items
 
 
-def _project_texture_guid_and_path(payload) -> tuple[str, str]:
+def _project_texture_guid_and_path(payload, *, allow_render_texture: bool = False) -> tuple[str, str]:
     """Resolve a picker/drop payload to a project-owned texture GUID and path."""
     import os
     from Infernux.core.asset_types import IMAGE_EXTENSIONS
     from Infernux.core.assets import AssetManager
+
+    extensions = IMAGE_EXTENSIONS | {'.rendertexture'} if allow_render_texture else IMAGE_EXTENSIONS
 
     supplied_guid = ""
     supplied_path = ""
@@ -730,7 +739,7 @@ def _project_texture_guid_and_path(payload) -> tuple[str, str]:
         supplied_path = str(payload.get("path_hint", "") or "").strip()
     else:
         token = str(payload or "").strip()
-        if os.path.splitext(token)[1].lower() in IMAGE_EXTENSIONS:
+        if os.path.splitext(token)[1].lower() in extensions:
             supplied_path = token
         else:
             supplied_guid = token
@@ -748,7 +757,7 @@ def _project_texture_guid_and_path(payload) -> tuple[str, str]:
     extension = os.path.splitext(path)[1].lower()
     if (
         not path
-        or extension not in IMAGE_EXTENSIONS
+        or extension not in extensions
         or extension.startswith(".inx")
         or not _is_project_asset_path(path)
     ):
@@ -905,6 +914,7 @@ def open_asset_reference(file_path: str) -> bool:
         ".animclip2d": DocumentKind.ANIMATION_CLIP,
         ".mat": DocumentKind.MATERIAL,
         ".physicmaterial": DocumentKind.PHYSIC_MATERIAL,
+        ".rendertexture": DocumentKind.RENDER_TEXTURE,
         ".effect": DocumentKind.RENDER_EFFECT,
         ".effectgroup": DocumentKind.RENDER_EFFECT,
     }
@@ -947,6 +957,23 @@ def render_object_field(ctx: InxGUIContext, field_id: str, display_text: str,
         ping_path=ping_path,
         has_value=has_value,
         semantic_id=semantic_id,
+    )
+
+
+def render_component_reference_field(
+    ctx: InxGUIContext,
+    field_id: str,
+    display_text: str,
+    component_type: str,
+    **kwargs,
+) -> bool:
+    """Render a scene-component reference through the shared object picker."""
+    return render_object_field(
+        ctx,
+        field_id,
+        display_text,
+        component_type,
+        **kwargs,
     )
 
 

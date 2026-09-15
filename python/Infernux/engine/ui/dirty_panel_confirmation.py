@@ -160,20 +160,48 @@ class DirtyPanelConfirmationCoordinator:
     ) -> bool:
         """Resolve one dirty document before replacing its in-memory content."""
         identifier = str(document_id or "").strip()
-        if not identifier or self.is_active:
+        if not identifier:
+            return False
+        return self.request_documents_replace(
+            (identifier,),
+            on_complete,
+            on_cancel,
+            owner_id=owner_id,
+        )
+
+    def request_documents_replace(
+        self,
+        document_ids: tuple[str, ...],
+        on_complete: Callable[[], None],
+        on_cancel: Optional[Callable[[], None]] = None,
+        *,
+        owner_id: str = "",
+    ) -> bool:
+        """Resolve the authored documents retired by one replacement."""
+        identifiers = tuple(
+            dict.fromkeys(
+                str(document_id or "").strip()
+                for document_id in document_ids
+                if str(document_id or "").strip()
+            )
+        )
+        if not identifiers or self.is_active:
             return False
         owner = str(owner_id or "").strip()
         if not owner:
             from Infernux.engine.interaction import DocumentRegistry
 
-            document = DocumentRegistry.instance().get(identifier)
-            if document is not None and document.view_ids:
-                owner = sorted(document.view_ids)[0]
+            registry = DocumentRegistry.instance()
+            for identifier in identifiers:
+                document = registry.get(identifier)
+                if document is not None and document.view_ids:
+                    owner = sorted(document.view_ids)[0]
+                    break
         return self._request(
             "replace",
             CloseIntent(
                 CloseIntentKind.REPLACE_DOCUMENT,
-                document_ids=(identifier,),
+                document_ids=identifiers,
             ),
             on_complete,
             on_cancel,

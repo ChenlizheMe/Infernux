@@ -10,6 +10,7 @@ import tempfile
 from pathlib import Path
 
 from Infernux.engine.path_utils import resolved_path
+from Infernux.engine.filesystem import replace_path
 from Infernux.engine.player_package_native import (
     ASSET_CATALOG_ARCHIVE_FILENAME,
     ASSET_CATALOG_ENTRY_PATH,
@@ -161,7 +162,7 @@ def _content_cache(data_root: Path, cache_root: Path) -> Path:
         ready_path.write_text(expected_hash + "\n", encoding="ascii", newline="\n")
         if destination.exists():
             shutil.rmtree(destination)
-        os.replace(temporary, destination)
+        replace_path(temporary, destination)
     finally:
         if temporary.exists():
             shutil.rmtree(temporary, ignore_errors=True)
@@ -224,7 +225,7 @@ def prepare_platform_player(package_root: str, cache_root: str) -> str:
     if not target_manifest.is_file() or target_manifest.read_bytes() != payload:
         temporary = target_manifest.with_name(target_manifest.name + ".tmp")
         temporary.write_bytes(payload)
-        os.replace(temporary, target_manifest)
+        replace_path(temporary, target_manifest)
 
     os.environ["_INFERNUX_PLAYER_MODE"] = "1"
     os.environ["_INFERNUX_PLAYER_DATA_ROOT"] = str(package)

@@ -16,6 +16,13 @@ from pathlib import Path
 
 import pytest
 
+# Acceptance helpers live in the repository's scripts package.  Pytest may
+# choose ``python/test`` as the import root, so make the repository root
+# explicit instead of relying on the caller's working directory.
+_REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPOSITORY_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPOSITORY_ROOT))
+
 # MCP is a real external InxPackage in 0.3.7. Unit tests import its source
 # checkout explicitly; production discovers the same code only after package
 # installation adds Packages/<reference>/editor to the preload import path.
@@ -37,11 +44,13 @@ from Infernux.lib import (
     Vector3,
     Physics,
     InputManager,
+    NativeRuntimeFrameBarrier,
     lib_dir,
 )
 from Infernux.resources import resources_path
 from Infernux.input import Input
 from Infernux.components._component_lifecycle import RuntimeExecutionScheduler
+from Infernux.engine.runtime_change_journal import RuntimeFrameBarrier
 
 
 @pytest.fixture(autouse=True)
@@ -151,26 +160,82 @@ def _install_runtime_scheduler_bridge(runtime_scheduler):
         runtime_scheduler.execute_native_editor_update,
         runtime_scheduler.end_native_frame,
     )
+    barrier_map = {
+        NativeRuntimeFrameBarrier.TRANSFORM_TO_PHYSICS:
+            RuntimeFrameBarrier.TRANSFORM_TO_PHYSICS,
+        NativeRuntimeFrameBarrier.PHYSICS_SIMULATION:
+            RuntimeFrameBarrier.PHYSICS_SIMULATION,
+        NativeRuntimeFrameBarrier.PHYSICS_TO_TRANSFORM:
+            RuntimeFrameBarrier.PHYSICS_TO_TRANSFORM,
+        NativeRuntimeFrameBarrier.TRANSFORM_RESOLVE:
+            RuntimeFrameBarrier.TRANSFORM_RESOLVE,
+        NativeRuntimeFrameBarrier.FINAL_TRANSFORM_RESOLVE:
+            RuntimeFrameBarrier.FINAL_TRANSFORM_RESOLVE,
+        NativeRuntimeFrameBarrier.ANIMATION_TIMELINE:
+            RuntimeFrameBarrier.ANIMATION_TIMELINE,
+        NativeRuntimeFrameBarrier.RENDER_EXTRACTION:
+            RuntimeFrameBarrier.RENDER_EXTRACTION,
+        NativeRuntimeFrameBarrier.RENDER_GRAPH:
+            RuntimeFrameBarrier.RENDER_GRAPH,
+        NativeRuntimeFrameBarrier.SNAPSHOT_PUBLICATION:
+            RuntimeFrameBarrier.SNAPSHOT_PUBLICATION,
+        NativeRuntimeFrameBarrier.PENDING_DESTROY:
+            RuntimeFrameBarrier.PENDING_DESTROY,
+    }
+
+    def consume_barrier(native_barrier):
+        barrier = barrier_map[native_barrier]
+        changes = runtime_scheduler.consume_native_barrier(barrier)
+        if changes is not None and barrier == RuntimeFrameBarrier.TRANSFORM_TO_PHYSICS:
+            runtime_scheduler.execute_native_phase(
+                "physics_pre_step", manager.get_fixed_time_step()
+            )
+        elif changes is not None and barrier == RuntimeFrameBarrier.PHYSICS_TO_TRANSFORM:
+            runtime_scheduler.execute_native_phase(
+                "physics_post_step", manager.get_fixed_time_step()
+            )
+
+    manager.set_runtime_frame_barrier_callback(consume_barrier)
     runtime_scheduler.bind_native_bridge(manager)
     yield runtime_scheduler
 
 
 @pytest.fixture()
 def scene(engine):
-    """Create a disposable Scene and make it active.  Cleaned up after each test."""
+    """Create a disposable World fixture and unload every Scene it creates."""
     sm = SceneManager.instance()
+    baseline_scenes = tuple(
+        sm.get_scene_at(index) for index in range(int(sm.scene_count))
+    )
+    baseline_world_ids = {
+        int(loaded.world_id) for loaded in baseline_scenes if loaded is not None
+    }
+    baseline_active = sm.get_active_scene()
+    baseline_active_world_id = (
+        int(baseline_active.world_id) if baseline_active is not None else 0
+    )
     sc = sm.create_scene("pytest_scene")
     sm.set_active_scene(sc)
     yield sc
     # Ensure play mode is stopped (no-op if already stopped)
     if sm.is_playing():
         sm.stop()
-    # Unload the scene so Jolt physics bodies are destroyed before the next
-    # test creates a new scene.  Without this, stale bodies from previous
-    # tests remain in the PhysicsWorld and cause access violations when
-    # DispatchContactEvents / ForceAllBodiesToCurrentTransform dereference
-    # Collider pointers that belong to the old (inactive) scene.
-    sm.unload_scene(sc)
+    # Additive Scenes are peers in one physics World. Tests using this fixture
+    # own every Scene created after entry, including extra round-trip Scenes.
+    # Preserve the engine's initial Scene and any explicit outer fixture.
+    for index in range(int(sm.scene_count) - 1, -1, -1):
+        loaded = sm.get_scene_at(index)
+        if loaded is not None and int(loaded.world_id) not in baseline_world_ids:
+            sm.unload_scene(loaded)
+    remaining = {
+        int(sm.get_scene_at(index).world_id): sm.get_scene_at(index)
+        for index in range(int(sm.scene_count))
+    }
+    if baseline_active_world_id in remaining:
+        sm.set_active_scene(remaining[baseline_active_world_id])
+    # A single-scene commit is allowed to retire a pre-existing Scene. No Scene
+    # created by this fixture may survive, regardless of that operation.
+    assert set(remaining) <= baseline_world_ids
 
 
 # ── per-test C++ rigidbody via scene ─────────────────────────────────────

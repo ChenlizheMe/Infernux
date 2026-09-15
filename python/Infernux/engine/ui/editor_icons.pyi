@@ -17,7 +17,7 @@ class EditorIcons:
 
         Available names: ``plus``, ``minus``, ``remove``, ``picker``,
         ``warning``, ``error``, ``ui_text``, ``ui_image``, ``ui_button``,
-        ``tool_none``, ``tool_move``, ``tool_rotate``, ``tool_scale``.
+        ``tool_none``, ``tool_move``, ``tool_rotate``, ``tool_scale``, ``tool_rect``.
 
         Args:
             native_engine: The C++ native engine instance.

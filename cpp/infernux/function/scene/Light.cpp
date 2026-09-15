@@ -13,8 +13,72 @@ using json = nlohmann::json;
 namespace infernux
 {
 
-// Register Light component with factory
-INFERNUX_REGISTER_VALIDATED_COMPONENT("Light", Light)
+namespace
+{
+SemanticTypeDescriptor DescribeLight()
+{
+    SemanticTypeDescriptor type;
+    type.typeGuid = "native:infernux.Light";
+    type.readableId = "infernux.component.light";
+    type.owner = "engine:native";
+    type.origin = "native";
+    type.displayName = "Light";
+    type.runtimeProfiles = {"editor", "player", "headless"};
+    const auto add = [&](const char *name, const char *stored, const char *kind, json initial) -> json & {
+        type.fields.push_back({std::string("Light.") + name,
+                               std::string("FieldType.") + kind,
+                               false,
+                               {{"field_id", name},
+                                {"serialized_name", stored},
+                                {"serialized", true},
+                                {"hidden", false},
+                                {"nullable", false},
+                                {"storage_kind", "native_property"},
+                                {"display_name_key", std::string("light.") + name},
+                                {"tooltip", std::string("light.tooltip.") + name},
+                                {"default", std::move(initial)}}});
+        return type.fields.back().attributes;
+    };
+    const auto enumeration = [&](const char *name, const char *stored, const char *enumName,
+                                 std::initializer_list<const char *> names, std::initializer_list<const char *> labels,
+                                 const char *initial) {
+        json members = json::array();
+        size_t value = 0;
+        for (const char *member : names)
+            members.push_back({{"name", member}, {"value", value++}});
+        auto &attributes = add(name, stored, "ENUM", {{"$type", "enum"}, {"enum_type", enumName}, {"name", initial}});
+        attributes["enum"] = {{"type_id", std::string("native:infernux.") + enumName},
+                              {"members", std::move(members)},
+                              {"labels", labels}};
+    };
+
+    enumeration("light_type", "lightType", "LightType", {"Directional", "Point", "Spot", "Area"},
+                {"light.type.directional", "light.type.point", "light.type.spot", "light.type.area"}, "Directional");
+    add("color", "color", "VEC3", {1.0, 1.0, 1.0})["header"] = "light.section.appearance";
+    add("intensity", "intensity", "FLOAT", 1.0)["range"] = {0.0, 10.0};
+    add("range", "range", "FLOAT", 10.0)["range"] = {0.1, 100.0};
+    add("spot_angle", "spotAngle", "FLOAT", 30.0)["range"] = {1.0, 179.0};
+    add("outer_spot_angle", "outerSpotAngle", "FLOAT", 45.0)["range"] = {1.0, 179.0};
+    add("area_size", "areaSize", "VEC2", {1.6, 1.0});
+    add("area_two_sided", "areaTwoSided", "BOOL", false);
+    enumeration("shadows", "shadows", "LightShadows", {"NoShadows", "Hard", "Soft"},
+                {"light.shadows.none", "light.shadows.hard", "light.shadows.soft"}, "Hard");
+    type.fields.back().attributes["header"] = "light.section.shadows";
+    add("shadow_strength", "shadowStrength", "FLOAT", 1.0)["range"] = {0.0, 1.0};
+    add("shadow_softness", "shadowSoftness", "FLOAT", 1.5)["range"] = {0.25, 8.0};
+    enumeration("render_mode", "renderMode", "LightRenderMode", {"Auto", "ForcePixel", "ForceVertex"},
+                {"light.render.auto", "light.render.force_pixel", "light.render.force_vertex"}, "Auto");
+    type.fields.back().attributes["header"] = "light.section.rendering";
+    add("culling_mask", "cullingMask", "INT", 0xffffffffu);
+    add("influence_domains", "influenceDomains", "INT", AllLightInfluenceDomains);
+    add("baked", "baked", "BOOL", false)["header"] = "light.section.baking";
+    return type;
+}
+
+const bool registeredLight = ComponentFactory::Register(
+    "Light", [] { return std::make_unique<Light>(); }, Light::ValidateSerializedDocument, Light::GetTypeConstraints(),
+    DescribeLight);
+} // namespace
 
 Light::~Light()
 {

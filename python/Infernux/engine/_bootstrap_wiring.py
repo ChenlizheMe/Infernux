@@ -87,14 +87,14 @@ class BootstrapWiringMixin:
             manager = UndoManager.instance()
             if not manager or not manager.can_undo:
                 return False
-            manager.undo()
+            manager.undo(defer=True)
             return True
 
         def _redo(_context):
             manager = UndoManager.instance()
             if not manager or not manager.can_redo:
                 return False
-            manager.redo()
+            manager.redo(defer=True)
             return True
 
         def _toggle_play(_context):
@@ -1181,6 +1181,17 @@ class BootstrapWiringMixin:
                 ),
             ),
             EditorCommand(
+                "scene.set_active",
+                lambda context: _invoke_target_panel_command(
+                    context, "hierarchy", "scene.set_active"
+                ),
+                display_name="Set Active Scene",
+                category="Scene",
+                can_execute=lambda context: _can_target_panel_command(
+                    context, "hierarchy", "scene.set_active"
+                ),
+            ),
+            EditorCommand(
                 "scene.tool.select",
                 lambda context: _invoke_panel_command(
                     context, "scene.tool.select"
@@ -1313,6 +1324,18 @@ class BootstrapWiringMixin:
                     context, "scene.tool.scale"
                 ),
                 default_shortcut="R",
+            ),
+            EditorCommand(
+                "scene.tool.rect",
+                lambda context: _invoke_panel_command(
+                    context, "scene.tool.rect"
+                ),
+                display_name="Rect Tool",
+                category="Scene",
+                can_execute=lambda context: _can_panel_command(
+                    context, "scene.tool.rect"
+                ),
+                default_shortcut="T",
             ),
             EditorCommand(
                 "scene.align_to_camera",

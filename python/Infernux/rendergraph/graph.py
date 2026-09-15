@@ -25,10 +25,11 @@ from __future__ import annotations
 import warnings
 from contextlib import contextmanager
 from itertools import count
+from operator import index
 from typing import Mapping, Optional, Tuple, List, Dict
+from .renderer_selection import RendererSelection
 
-# Try to import the native types. If unavailable, we define stubs so the
-# Python-side graph can still be built and tested without a running engine.
+# Graph descriptions use the same native schema in tests, Editor and Player.
 from Infernux.lib import (
     RenderGraphDescription,
     GraphPassDesc,
@@ -42,10 +43,11 @@ from Infernux.lib import (
     GraphBufferAccessType,
     GraphTextureDesc,
     GraphTextureRole,
+    GraphTextureAttachment,
     MaterialPassType,
     PixelFormat,
+    DepthCompare,
 )
-_HAS_NATIVE = True
 _SOURCE_REVISION_COUNTER = count(1)
 
 
@@ -80,6 +82,8 @@ class TextureHandle:
         self.samples = samples  # 0 inherits the graph's frame MSAA setting
         self.temporal_role = temporal_role
         self.temporal_key = temporal_key
+        self.render_texture = None
+        self.attachment = GraphTextureAttachment.COLOR
 
     @property
     def is_depth(self) -> bool:
@@ -157,10 +161,15 @@ class RenderPassBuilder:
         self._sort_mode = "none"
         self._pass_tag = ""
         self._override_material = ""
+        self._renderer_selection = None
         self._input_bindings: Dict[str, str] = {}  # sampler -> texture_name
         self._light_index = 0
         self._screen_ui_list = 0
+        self._world_ui_layer_mask = 0xffffffff
         self._shader_name: str = ""
+        self._depth_test: Optional[DepthCompare] = None
+        self._depth_write = False
+        self._alpha_blend = False
         self._parameter_block: str = ""
         self._push_constants: Dict[str, float] = {}
         self._source_resource = ""
@@ -287,6 +296,14 @@ class RenderPassBuilder:
     ) -> "RenderPassBuilder":
         """Bind a graph texture to a shader sampler.
 
+        Fullscreen shaders declare ``Texture2DMS`` (or ``Texture2DMSUInt``)
+        in ShaderInfo Resources to read individual MSAA samples with
+        ``texelFetch``. These inputs retain the multisampled color/depth image;
+        ordinary ``Texture2D`` inputs receive resolved data. A multisampled
+        input cannot bind a single-sample texture. Use the effective count
+        returned by ``set_msaa_samples`` when selecting a shader for a Camera
+        with a fixed RenderTexture target. Categorical IDs must not be averaged.
+
         Args:
             sampler_name: Sampler name in the shader
                           (e.g. ``"shadowMap"``).
@@ -342,6 +359,7 @@ class RenderPassBuilder:
         override_material: str = "",
         material_pass: str = "forward",
         material_filter: str = "all",
+        renderer_selection: RendererSelection | None = None,
     ) -> "RenderPassBuilder":
         """Configure this pass to draw scene renderers.
 
@@ -360,7 +378,16 @@ class RenderPassBuilder:
             material_filter: Select all materials, only Deferred-compatible
                              materials, or only models that declare
                              ``Unsupported [Deferred]``.
+            renderer_selection: Explicit Renderer/submesh selection with its
+                own material and captured parameters. Intersects camera
+                visibility and source queue/tag filters. Cannot be combined
+                with ``override_material``.
         """
+        if renderer_selection is not None:
+            if not isinstance(renderer_selection, RendererSelection):
+                raise TypeError("renderer_selection must be a RendererSelection")
+            if override_material:
+                raise ValueError("renderer_selection already supplies its material")
         normalized_pass = str(material_pass).strip().lower()
         if normalized_pass not in {
             "forward",
@@ -383,6 +410,7 @@ class RenderPassBuilder:
         self._sort_mode = sort_mode
         self._pass_tag = pass_tag
         self._override_material = override_material
+        self._renderer_selection = renderer_selection
         return self
 
     def draw_skybox(self) -> "RenderPassBuilder":
@@ -441,6 +469,22 @@ class RenderPassBuilder:
         self._screen_ui_list = value
         return self
 
+    def draw_world_ui(self, *, layer_mask: int = 0xffffffff) -> "RenderPassBuilder":
+        """Draw world UI on the selected GameObject layers.
+
+        The unsigned 32-bit mask is intersected with the Camera's culling mask.
+        UI keeps its normal depth test against this pass's depth attachment.
+        Disjoint masks can place ordinary UI and late labels in separate passes.
+        """
+        if isinstance(layer_mask, bool):
+            raise TypeError("layer_mask must be an unsigned 32-bit integer")
+        mask = index(layer_mask)
+        if not 0 <= mask <= 0xffffffff:
+            raise ValueError("layer_mask must be an unsigned 32-bit integer")
+        self._action = "draw_world_ui"
+        self._world_ui_layer_mask = mask
+        return self
+
     def set_param(
         self,
         name: str,
@@ -494,20 +538,40 @@ class RenderPassBuilder:
     def fullscreen_quad(
         self,
         shader: str,
+        *,
+        depth_test: Optional[DepthCompare] = None,
+        depth_write: bool = False,
+        alpha_blend: bool = False,
     ) -> "RenderPassBuilder":
         """Configure this pass to draw a fullscreen triangle with a named shader.
 
         The vertex shader is always ``fullscreen_triangle``; the fragment
         shader is looked up by its matching ``ShaderInfo Name``.
 
-        Use ``set_param()`` to pass push constants and ``set_input()``
+        Use ``set_param()`` to pass push constants and ``set_texture()``
         to bind input textures before calling this method.
 
         Args:
             shader: Fragment shader id (e.g. ``"Bloom Prefilter"``).
+            depth_test: Comparison against ``write_depth()``; None disables it.
+            depth_write: Write shader/fixed fragment depth. Requires depth_test;
+                use DepthCompare.ALWAYS for unconditional writes.
+            alpha_blend: Straight-alpha source-over blending. Blending and
+                depth-tested passes load previous color unless set_clear() is
+                explicit. A new transient attachment must first be cleared.
+
+        Sampled scene depth must be a separate resource from the attachment;
+        copy it first if this pass also updates the scene depth.
         """
+        if depth_test is not None and not isinstance(depth_test, DepthCompare):
+            raise TypeError("depth_test must be a DepthCompare or None")
+        if depth_write and depth_test is None:
+            raise ValueError("depth_write requires depth_test (use DepthCompare.ALWAYS)")
         self._action = "fullscreen_quad"
         self._shader_name = shader
+        self._depth_test = depth_test
+        self._depth_write = bool(depth_write)
+        self._alpha_blend = bool(alpha_blend)
         return self
 
     def copy_texture(self, source, destination) -> "RenderPassBuilder":
@@ -588,13 +652,18 @@ class RenderGraph:
         desc = graph.build()
     """
 
-    def __init__(self, name: str = "RenderGraph"):
+    def __init__(self, name: str = "RenderGraph", *, output_samples: int = 0):
+        if output_samples not in (0, 1, 2, 4, 8):
+            raise ValueError("output_samples must be 0, 1, 2, 4, or 8")
+        self._output_samples = output_samples
         self._name = name
         self._textures: List[TextureHandle] = []
         self._buffers: List[BufferHandle] = []
         self._passes: List[RenderPassBuilder] = []
         self._output: Optional[str] = None
-        self._msaa_samples: int = 0  # 0 = no preference (keep current)
+        self._linear_output: Optional[str] = None
+        self._msaa_samples: int = output_samples  # 0 = pipeline-owned screen MSAA
+        self._temporal_jitter = False
         # Topology auto-recording
         self._topology: List[Tuple[str, str]] = []
         self._injection_points_list: List = []  # List[InjectionPoint]
@@ -616,15 +685,22 @@ class RenderGraph:
     def name(self) -> str:
         return self._name
 
-    def set_msaa_samples(self, samples: int) -> None:
+    def set_temporal_jitter(self, enabled: bool = True) -> None:
+        """Request per-view camera jitter (for TAA), not implicit in history allocation."""
+        self._temporal_jitter = bool(enabled)
+
+    def set_msaa_samples(self, samples: int) -> int:
         """Set MSAA sample count for this graph (1=off, 2, 4, 8).
 
-        The setting is applied to the engine before the graph executes.
-        Use 0 to leave the current MSAA setting unchanged.
+        Return the effective sample count used to construct attachments and
+        resolve passes. A fixed Camera target overrides the pipeline's screen
+        preference. Use the returned value for topology dependent on MSAA;
+        authored pipeline parameters are never modified per camera.
         """
         if samples not in (0, 1, 2, 4, 8):
             raise ValueError(f"Invalid MSAA sample count: {samples}. Must be 0, 1, 2, 4, or 8.")
-        self._msaa_samples = samples
+        self._msaa_samples = self._output_samples or samples
+        return self._msaa_samples
 
     @property
     def pass_count(self) -> int:
@@ -936,41 +1012,86 @@ class RenderGraph:
         self._textures.append(handle)
         return handle
 
+    def import_texture(self, name: str, texture, *, attachment: str = "color") -> TextureHandle:
+        """Import an attachment of a persistent RenderTexture into this graph.
+
+        ``color`` is the raster attachment; with MSAA, write it together with
+        ``resolve`` using ``write_resolve`` and sample the resolve handle.
+        ``depth`` uses the target's depth format and raster sample count.
+        At one sample, color and resolve are the same graph identity.
+        The first producer must initialize the attachment each execution.
+        Input-only imports depend on this frame's active Camera/graph producer;
+        the renderer orders views by resource dependencies, not old pixels.
+        Missing producers and feedback cycles are rejected. Historical reads
+        remain a separate, explicitly declared temporal-resource contract.
+        Resize is observed without re-authoring the pipeline.
+        """
+        from Infernux.core.render_texture import RenderTexture
+
+        if not isinstance(texture, RenderTexture):
+            raise TypeError("import_texture requires an Infernux RenderTexture")
+        if not texture.is_valid:
+            raise ValueError("Cannot import a RenderTexture whose device has been destroyed")
+        attachments = {"color": GraphTextureAttachment.COLOR, "depth": GraphTextureAttachment.DEPTH,
+                       "resolve": GraphTextureAttachment.RESOLVE}
+        if attachment not in attachments:
+            raise ValueError("RenderTexture attachment must be 'color', 'depth', or 'resolve'")
+        if attachment == "depth" and texture.depth_format == PixelFormat.UNDEFINED:
+            raise ValueError("RenderTexture has no depth attachment")
+        if attachment == "resolve" and texture.samples == 1:
+            attachment = "color"
+        selected = attachments[attachment]
+        resource_name = self._scoped_name(name)
+        occupied = self._find_texture_exact(resource_name) or self._find_buffer_exact(resource_name)
+        if occupied is not None and (getattr(occupied, "render_texture", None) is not texture or
+                                     occupied.attachment != selected):
+            raise ValueError(f"Resource '{resource_name}' already exists in graph '{self._name}'")
+        for existing in self._textures:
+            if existing.render_texture is texture and existing.attachment == selected:
+                return existing
+        format = texture.depth_format if attachment == "depth" else texture.format
+        samples = 1 if attachment == "resolve" else texture.samples
+        handle = TextureHandle(resource_name, format, size=(texture.width, texture.height), samples=samples,
+                               temporal_role=GraphTextureRole.PERSISTENT)
+        handle.render_texture = texture
+        handle.attachment = selected
+        self._textures.append(handle)
+        return handle
+
     def create_temporal_history(
         self,
         name: str,
         *,
         format: Format = Format.RGBA16_SFLOAT,
+        size: Optional[Tuple[int, int]] = None,
+        size_divisor: int = 0,
     ) -> Tuple[TextureHandle, TextureHandle]:
         """Create a per-view, single-sample history read/write pair.
 
         The native renderer owns and ping-pongs both images. They survive
         ordinary graph execution but are invalidated by view/target changes.
+        The first read after invalidation is zero. Write the output every
+        execution; raster and copy writes are supported. Camera jitter is a
+        separate explicit request via set_temporal_jitter().
         """
         if format.is_depth:
             raise ValueError("temporal history must use a color format")
-        base = self._scoped_name(str(name or "").strip())
-        if not base:
+        local_name = str(name or "").strip()
+        if not local_name:
             raise ValueError("temporal history name cannot be empty")
+        base = self._scoped_name(local_name)
         read_name = f"{base}/read"
         write_name = f"{base}/write"
-        if self._find_texture_exact(read_name) or self._find_texture_exact(write_name):
+        if any(self._find_texture_exact(n) is not None or self._find_buffer_exact(n) is not None
+               for n in (read_name, write_name)):
             raise ValueError(f"Temporal history '{base}' already exists")
-        read = TextureHandle(
-            read_name,
-            format,
-            samples=1,
-            temporal_role=GraphTextureRole.TEMPORAL_READ,
-            temporal_key=base,
-        )
-        write = TextureHandle(
-            write_name,
-            format,
-            samples=1,
-            temporal_role=GraphTextureRole.TEMPORAL_WRITE,
-            temporal_key=base,
-        )
-        self._textures.extend((read, write))
+        read = self.create_texture(f"{local_name}/read", format=format, size=size,
+                                   size_divisor=size_divisor, samples=1)
+        write = self.create_texture(f"{local_name}/write", format=format, size=size,
+                                    size_divisor=size_divisor, samples=1)
+        read.temporal_role = GraphTextureRole.TEMPORAL_READ
+        write.temporal_role = GraphTextureRole.TEMPORAL_WRITE
+        read.temporal_key = write.temporal_key = base
         return read, write
 
     def get_texture(self, name: str) -> Optional[TextureHandle]:
@@ -1121,9 +1242,15 @@ class RenderGraph:
 
     # ---- Convenience: Camera UI + post-process + Screen UI sections ----
 
-    def camera_ui_section(self, *, resources: "set | None" = None) -> None:
+    def camera_ui_section(self, *, resources: "set | None" = None,
+                          world_ui_layer_mask: int = 0xffffffff) -> None:
         """Draw Camera UI and expose the composite immediately afterwards."""
         res = resources or {"color"}
+        if not self.has_pass("_WorldUI"):
+            with self.add_pass("_WorldUI") as p:
+                p.write_color("color")
+                p.write_depth("depth")
+                p.draw_world_ui(layer_mask=world_ui_layer_mask)
         if not self.has_pass("_ScreenUI_Camera"):
             with self.add_pass("_ScreenUI_Camera") as p:
                 p.write_color("color")
@@ -1159,11 +1286,13 @@ class RenderGraph:
                 capabilities={"fullscreen", "display_space"},
             )
 
-    def screen_ui_section(self, *, resources: "set | None" = None) -> None:
+    def screen_ui_section(self, *, resources: "set | None" = None,
+                          world_ui_layer_mask: int = 0xffffffff) -> None:
         """Insert the canonical Camera UI, post-process and Screen UI tail.
 
         This is a convenience shortcut that emits::
 
+            _WorldUI                  (draw_world_ui, layer-filtered)
             _ScreenUI_Camera          (draw_screen_ui list="camera")
             after_camera_ui           (effect stage)
             before_post_process       (legacy injection point)
@@ -1184,10 +1313,13 @@ class RenderGraph:
         Args:
             resources: Resource set advertised to injection points.
                        Defaults to ``{"color"}``.
+            world_ui_layer_mask: GameObject layers drawn by the inserted World
+                                 UI pass. Defaults to all layers. Predeclared
+                                 passes retain their own masks.
         """
         res = resources or {"color"}
 
-        self.camera_ui_section(resources=res)
+        self.camera_ui_section(resources=res, world_ui_layer_mask=world_ui_layer_mask)
 
         if not self.has_injection_point("before_post_process"):
             self.injection_point("before_post_process", resources=res)
@@ -1219,6 +1351,7 @@ class RenderGraph:
         if self.has_pass("_DisplayEncode"):
             return
 
+        self._linear_output = self.get_texture("color").name
         self.create_texture("_display_encode", format=Format.RGBA16_SFLOAT)
         with self.add_pass("_DisplayEncode") as p:
             p.set_texture("_SourceTex", "color")
@@ -1356,6 +1489,7 @@ class RenderGraph:
                     f"Texture '{tex.name}' size_divisor=1 has no effect; use 0 or >1"
                 )
 
+        produced = set()
         for p in self._passes:
             if p._name in pass_names:
                 raise ValueError(
@@ -1363,6 +1497,22 @@ class RenderGraph:
                 )
             pass_names.add(p._name)
             self._validate_pass(p, texture_map, buffer_map)
+            if p._action == "fullscreen_quad":
+                loads = []
+                if (p._alpha_blend or p._depth_test is not None) and p._clear_color is None:
+                    loads.extend(p._write_colors.values())
+                if p._write_depth is not None and p._clear_depth is None:
+                    loads.append(p._write_depth)
+                for name in loads:
+                    if name not in produced and texture_map[name].temporal_role != GraphTextureRole.PERSISTENT:
+                        raise ValueError(f"Fullscreen pass '{p._name}' must clear or load an earlier output: {name}")
+            produced.update(p._write_colors.values())
+            if p._write_depth is not None:
+                produced.add(p._write_depth)
+            if p._resolve_color is not None:
+                produced.add(p._resolve_color)
+            if p._action == "copy_texture":
+                produced.add(p._destination_resource)
 
         if self._output is not None and self._output not in texture_map:
             raise ValueError(
@@ -1377,7 +1527,7 @@ class RenderGraph:
     ) -> None:
         raster_actions = {
             "none", "draw_renderers", "draw_skybox", "custom",
-            "draw_shadow_casters", "draw_screen_ui", "fullscreen_quad",
+            "draw_shadow_casters", "draw_world_ui", "draw_screen_ui", "fullscreen_quad",
         }
         allowed_actions = {
             "raster": raster_actions,
@@ -1406,6 +1556,16 @@ class RenderGraph:
             raise ValueError(
                 f"Pass '{p._name}' clears depth but has no depth output"
             )
+
+        if p._action == "fullscreen_quad":
+            if sorted(p._write_colors) != [0]:
+                raise ValueError(f"Fullscreen pass '{p._name}' requires one color output at slot 0")
+            if p._depth_test is not None and p._write_depth is None:
+                raise ValueError(f"Fullscreen pass '{p._name}' requires a depth output for depth_test")
+            if p._write_depth is not None and (p._write_depth in p._reads or p._write_depth in p._input_bindings.values()):
+                raise ValueError(f"Fullscreen pass '{p._name}' cannot sample its attached depth; copy it first")
+        elif p._depth_test is not None or p._depth_write or p._alpha_blend:
+            raise ValueError(f"Pass '{p._name}' uses fullscreen state with another draw action")
 
         if p._action == "draw_renderers":
             slots = sorted(p._write_colors)
@@ -1562,7 +1722,7 @@ class RenderGraph:
                 )
             if resolve.is_depth or resolve.is_camera_target:
                 raise ValueError(
-                    f"Pass '{p._name}' resolve target must be a transient color texture"
+                    f"Pass '{p._name}' resolve target must be a non-camera color texture"
                 )
             if sorted(p._write_colors) != [0]:
                 raise ValueError(
@@ -1649,10 +1809,7 @@ class RenderGraph:
                 "Call graph.set_output(texture)."
             )
 
-        if _HAS_NATIVE:
-            return self._build_native()
-        else:
-            return self._build_dict()
+        return self._build_native()
 
     def _build_native(self):
         """Build using native C++ types."""
@@ -1677,6 +1834,10 @@ class RenderGraph:
             td.samples = tex.samples
             td.role = tex.temporal_role
             td.temporal_key = tex.temporal_key
+            if tex.render_texture is not None:
+                td.render_texture = tex.render_texture._native
+                td.attachment = tex.attachment
+                td.width, td.height = tex.render_texture.width, tex.render_texture.height
             tex_list.append(td)
         desc.textures = tex_list
 
@@ -1694,6 +1855,7 @@ class RenderGraph:
             "draw_renderers": GraphCommandType.DRAW_RENDERERS,
             "draw_skybox": GraphCommandType.DRAW_SKYBOX,
             "draw_shadow_casters": GraphCommandType.DRAW_SHADOW_CASTERS,
+            "draw_world_ui": GraphCommandType.DRAW_WORLD_UI,
             "draw_screen_ui": GraphCommandType.DRAW_SCREEN_UI,
             "fullscreen_quad": GraphCommandType.FULLSCREEN_QUAD,
             "copy_texture": GraphCommandType.COPY_TEXTURE,
@@ -1774,10 +1936,18 @@ class RenderGraph:
                 command.sort_mode = p._sort_mode
                 command.pass_tag = p._pass_tag
                 command.override_material = p._override_material
+                if p._renderer_selection is not None:
+                    command.renderer_selection = p._renderer_selection._native
                 command.input_bindings = list(p._input_bindings.items())
                 command.light_index = p._light_index
                 command.screen_ui_list = p._screen_ui_list
+                if p._action == "draw_world_ui":
+                    command.world_ui_layer_mask = p._world_ui_layer_mask
                 command.shader_name = p._shader_name
+                command.depth_test = p._depth_test is not None
+                command.depth_write = p._depth_write
+                command.depth_compare = p._depth_test if p._depth_test is not None else DepthCompare.ALWAYS
+                command.alpha_blend = p._alpha_blend
                 command.parameter_block = p._parameter_block
                 command.push_constants = list(p._push_constants.items())
                 command.source_resource = p._source_resource
@@ -1789,66 +1959,15 @@ class RenderGraph:
         desc.passes = pass_list
 
         desc.output_texture = self._output
+        # RenderStack can remove/re-append passes while composing effects.
+        # Resolve the boundary from the finished topology, not an earlier size.
+        boundary = next((i for i, p in enumerate(self._passes)
+                         if p._name == "_DisplayEncode"), None)
+        desc.linear_output_texture = (self._linear_output or "") if boundary is not None else ""
+        desc.linear_output_pass_count = boundary if boundary is not None else 0
         desc.msaa_samples = self._msaa_samples
+        desc.temporal_jitter = self._temporal_jitter
         return desc
-
-    def _build_dict(self):
-        """Build as a dictionary (for testing without native module)."""
-        return {
-            "name": self._name,
-            "source_revision": next(_SOURCE_REVISION_COUNTER),
-            "textures": [
-                {
-                    "name": tex.name,
-                    "format": int(tex.format),
-                    "is_backbuffer": tex.is_camera_target,
-                    "is_depth": tex.is_depth,
-                    "size": tex.size,
-                    "size_divisor": tex.size_divisor,
-                    "samples": tex.samples,
-                    "role": int(tex.temporal_role),
-                    "temporal_key": tex.temporal_key,
-                }
-                for tex in self._textures
-            ],
-            "buffers": [
-                {
-                    "name": buffer.name,
-                    "byte_size": buffer.byte_size,
-                    "usage": buffer.usage,
-                }
-                for buffer in self._buffers
-            ],
-            "passes": [
-                {
-                    "name": p._name,
-                    "type": p._pass_type,
-                    "reads": list(p._reads),
-                    "buffer_accesses": list(p._buffer_accesses),
-                    "write_colors": dict(p._write_colors),
-                    "write_depth": p._write_depth or "",
-                    "resolve_color": p._resolve_color or "",
-                    "clear_color": p._clear_color,
-                    "clear_depth": p._clear_depth,
-                    "action": p._action,
-                    "material_pass": p._material_pass,
-                    "material_filter": p._material_filter,
-                    "queue_min": p._queue_min,
-                    "queue_max": p._queue_max,
-                    "sort_mode": p._sort_mode,
-                    "input_bindings": dict(p._input_bindings),
-                    "parameter_block": p._parameter_block,
-                    "push_constants": list(p._push_constants.items()),
-                    "source_resource": p._source_resource,
-                    "destination_resource": p._destination_resource,
-                    "copy_bytes": p._copy_bytes,
-                    "side_effect": p._side_effect,
-                }
-                for p in self._passes
-            ],
-            "output_texture": self._output,
-            "msaa_samples": self._msaa_samples,
-        }
 
     # ---- Debug ----
 

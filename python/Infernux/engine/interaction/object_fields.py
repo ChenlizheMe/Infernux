@@ -344,6 +344,14 @@ class AssetReferenceFieldModel(ObjectReferenceFieldModel):
             transaction_type = str(
                 getattr(self.transaction, "value_type", "") or ""
             ).strip()
+            if transaction_type == "FieldType.ASSET":
+                transaction_type = str(self.transaction.handle.schema.attributes["asset_type"])
+            else:
+                transaction_type = {
+                    "FieldType.MATERIAL": "Material",
+                    "FieldType.TEXTURE": "Texture",
+                    "FieldType.SHADER": "Shader",
+                }.get(transaction_type, transaction_type)
             if transaction_type.casefold() not in {
                 descriptor.type_id.casefold(),
                 "asset_reference",

@@ -12,6 +12,22 @@ def _get_active_scene():
     return SceneManager.instance().get_active_scene()
 
 
+def _get_scene_by_world_id(world_id: int):
+    from Infernux.lib import SceneManager
+
+    return SceneManager.instance().get_scene_by_world_id(int(world_id or 0))
+
+
+def _find_runtime_object(object_id: int):
+    from Infernux.lib import SceneManager
+
+    return SceneManager.instance().find_runtime_object_by_id(int(object_id or 0))
+
+
+def _scene_world_id(scene) -> int:
+    return int(getattr(scene, "world_id", 0) or 0) if scene is not None else 0
+
+
 def _safe_attr(target: Any, name: str, default=None):
     try:
         return getattr(target, name, default)
@@ -53,10 +69,7 @@ def _resolve_target(stored_ref: Any, game_object_id: int,
                     comp_type_name: str) -> Any:
     if not game_object_id or not comp_type_name:
         return stored_ref
-    scene = _get_active_scene()
-    if not scene:
-        return None
-    obj = scene.find_by_id(game_object_id)
+    obj = _find_runtime_object(game_object_id)
     if obj is None:
         return None
     if comp_type_name == "GameObject":
@@ -128,12 +141,12 @@ def _bump_inspector_values(snapshot_baseline: int | None = None):
 
 
 def _require_scene_object(object_id: int, label: str):
-    scene = _get_active_scene()
-    if not scene:
-        raise RuntimeError(f"[Undo] {label}: no scene")
-    obj = scene.find_by_id(object_id)
+    obj = _find_runtime_object(object_id)
     if not obj:
         raise RuntimeError(f"[Undo] {label}: object {object_id} not found")
+    scene = getattr(obj, "scene", None)
+    if scene is None:
+        raise RuntimeError(f"[Undo] {label}: object {object_id} has no owning scene")
     return scene, obj
 
 

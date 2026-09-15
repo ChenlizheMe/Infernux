@@ -42,9 +42,11 @@ class RuntimeChangeDomain(str, Enum):
 class RuntimeFrameBarrier(str, Enum):
     SAFE_POINT = "safe_point"
     FIXED_SCRIPT = "fixed_script"
+    PHYSICS_PRE_SCRIPT = "physics_pre_script"
     TRANSFORM_TO_PHYSICS = "transform_to_physics"
     PHYSICS_SIMULATION = "physics_simulation"
     PHYSICS_TO_TRANSFORM = "physics_to_transform"
+    PHYSICS_POST_SCRIPT = "physics_post_script"
     TRANSFORM_RESOLVE = "transform_resolve"
     UPDATE_SCRIPT = "update_script"
     LATE_SCRIPT = "late_script"
@@ -144,7 +146,7 @@ def _all_domains() -> frozenset[RuntimeChangeDomain]:
 class RuntimeChangeJournal:
     """Coalescing typed revision stream with independent consumer cursors."""
 
-    def __init__(self, *, history_limit: int = 256) -> None:
+    def __init__(self, *, history_limit: int = 32) -> None:
         if int(history_limit) < 2:
             raise ValueError("runtime change history_limit must be at least 2")
         self._lock = threading.RLock()

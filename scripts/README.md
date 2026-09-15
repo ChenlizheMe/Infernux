@@ -11,7 +11,7 @@ runtime code stays in `cpp/` and `python/`; Hub application code stays in
 | `build/` | Build wrappers needed by a specific host toolchain | `cmake_build.py` |
 | `docs/` | Maintainer entry points that orchestrate documentation tools | `update_api_docs.bat` |
 | `maintenance/` | Safe local workspace housekeeping | `clean_workspace.ps1` |
-| `release/` | Hub, installer, wheel, and GitHub Release orchestration | `release_hub.bat` |
+| `release/` | Local Hub, installer, and wheel builds; official publication runs in GitHub Actions | `release_hub.bat` |
 | `setup/` | Clone bootstrap and the supported Python 3.13 Conda environment | `configure_development.ps1` / `configure_development.sh` |
 
 Run every command from the repository root. The entry points resolve the root

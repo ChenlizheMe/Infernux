@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Tuple
+from typing import Callable, Tuple
 
 from Infernux.ui.inx_ui_screen_component import InxUIScreenComponent
 from Infernux.ui.enums import TextAlignH, TextAlignV, TextOverflow, TextResizeMode
@@ -35,6 +35,7 @@ class UIText(InxUIScreenComponent):
 
     text: str
     font_path: str
+    fallback_font_paths: list[str]
     font_size: float
     line_height: float
     letter_spacing: float
@@ -60,16 +61,16 @@ class UIText(InxUIScreenComponent):
         """Return the wrap width for text layout (0 = no wrap)."""
         ...
 
-    def get_layout_tolerance(self) -> float:
-        """Return the layout tolerance for auto-sizing decisions."""
+    def resolve_text_layout(
+        self,
+        measure_text: Callable[[str, float, float, str, float, float], Tuple[float, float]],
+        scale: float = ...,
+    ) -> bool:
+        """Resolve the transient intrinsic size in logical canvas pixels."""
         ...
 
-    def get_editor_wrap_width(self) -> float:
-        """Return the wrap width used by the editor preview."""
-        ...
-
-    def get_auto_size_padding(self) -> Tuple[float, float]:
-        """Return ``(horizontal_padding, vertical_padding)`` for auto-sizing."""
+    def get_resolved_size(self) -> Tuple[float, float]:
+        """Return the effective box shared by layout, drawing, and input."""
         ...
 
     def is_width_editable(self) -> bool:

@@ -2,7 +2,11 @@
 
 > 2026-09-13 追加：已删除活动路径中的旧设备传输/命令实现、device API 构建目标和 LLVM 分派器；137 个实际编译单元的依赖记录只保留架构/能力描述，无旧设备或 LLVM 运行时头文件。最终 88/88 原生、126 项 Compute/CPU JIT 定向测试通过；编译器子仓库的私有安装目录 CI 已修正并在本机实测。源码外部的未用后端、共享 IR、正式 ABI 与多平台交付仍未完成，因此 B05 和总勾选数不变。详细证据见执行记录。
 
-> 2026-09-13 复核：本附录 **36/76**，主计划 **103/256**，合计 **139/332（41.9%）**，剩余 **193 项**。GPU 编译上下文直接使用 SPIR-V 编译器，产物只含 SPIR-V/元数据；移除单实现继承层、TIC 输出/重复序列化及相关哈希路径，保留引擎 .inxgpu 缓存。Compute 资源持有同一 Device/Queue 服务，修复宿主 wrapper 先释放导致的悬空与退出顺序；新增独立上下文、IR/layout 和生命周期合同回归。最终原生 **88/88**（16 项 Vulkan）、Python **6199 通过 / 11 跳过**；更新 MCP 后的 041Lab 雪面、早期软体和 RenderTexture 可见消费回归通过，正常退出日志干净。完整原生依赖/类型工厂、编译服务/ABI、刚软体数量阶梯性能和多平台交付仍未收口，B05 不勾选。下方早期段落仅作历史证据。
+> 2026-09-13 复核：本附录 **37/76**，主计划 **104/257**，合计 **141/333（42.3%）**，剩余 **192 项**。GPU 编译上下文直接使用 SPIR-V 编译器，产物只含 SPIR-V/元数据；移除单实现继承层、TIC 输出/重复序列化及相关哈希路径，保留引擎 .inxgpu 缓存。Compute 资源持有同一 Device/Queue 服务，修复宿主 wrapper 先释放导致的悬空与退出顺序；新增独立上下文、IR/layout 和生命周期合同回归。最终原生 **88/88**（16 项 Vulkan）、Python **6199 通过 / 11 跳过**；更新 MCP 后的 041Lab 雪面、早期软体和 RenderTexture 可见消费回归通过，正常退出日志干净。完整原生依赖/类型工厂、编译服务/ABI、刚软体数量阶梯性能和多平台交付仍未收口，B05 不勾选。下方早期段落仅作历史证据。
+
+> 2026-09-15 Player 验证：Windows source-less Player 已实际运行 GPUJelly，`fixed_update` 累计 **1.12s**，GPU 批处理约 **2.18ms**；修复了内置 GPU kernel 源码元数据和 `.pyc` vendor loader。`test_compute.py`、`test_game_builder.py`、生命周期调度和 Player service graph 合计 **358 passed / 1 skipped**。这些是新增验收证据，尚未把跨平台、DataAsset 和旧 Taichi 迁移条目标为完成。
+
+> 2026-09-15 回归修复：Python 组件热替换现在继承原组件的 `enabled` 状态；PlayerBootstrap 对轻量宿主缺失的可选启动属性使用确定默认值；路径架构仍统一经 `path_utils`。组件替换、PlayerBootstrap、构建设置和路径架构专项合计 **61 passed**，全量回归已推进至 **4327 passed / 6 skipped** 后进入下一处独立问题。
 
 修订：2026-09-09，依据最新用户讨论。状态：实施已恢复。Windows 主仓已能构建并审计内置 GPU JIT wheel 载荷；`inx.buffer` 已完成 Windows Vulkan 全量/区间 set/get、按需 staging、有序异步上传和同一引擎共享 ComputeHost。公开的 `@inx.compute.kernel`、`inx.compute.index`、`inx.compute.launch` 已贯通无设备编译、SPIR-V 元数据和 Infernux RHI 执行，标量、vector3、多维/间接索引与多 Buffer 真实 Vulkan 数值回归通过；引擎 lifecycle 自动记录一阶段内的上传/launch，并把参数更新和 kernel tasks 合入尽可能少的 queue submission。Jolt 刚体状态/BoxCollider SoA 可由 C++ 一次异步提交直写多块 GPU buffer；线性/角冲量两块 GPU buffer 可一次回读等待后直接反馈 Jolt，不经过 Python/NumPy。编译仍暂时借用上游 `Program`/ndarray 注解作为私有 lowering 壳；Program、field/SNode/ndarray 源码闭包及原生运行时尚未完全删除。`@inx.jit.compile` 已成为 CPU 新入口并可直接原地消费 CPU buffer。动态 Mesh 发布已删除逐帧全内容哈希，改用资产 GUID 代际或运行时对象代际；Jolt 已有空间宽相刚体候选查询。GPU Mesh 直连、刚软体完整交互、Linux、Player 和编译器深裁仍未完成。
 

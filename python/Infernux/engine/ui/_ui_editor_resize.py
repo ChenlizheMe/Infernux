@@ -19,7 +19,7 @@ from typing import Optional
 from Infernux.lib import InxGUIContext
 from Infernux.engine.i18n import t
 from Infernux.engine.project_context import get_project_root
-from Infernux.ui.enums import TextResizeMode
+from .ui_rect_manipulation import prepare_layout_resize
 from Infernux.ui.inx_ui_screen_component import clear_rect_cache
 from Infernux.ui.ui_texture_cache import get_shared_cache as _get_tex_cache
 from Infernux.ui.ui_render_dispatch import dispatch as _ui_dispatch
@@ -41,9 +41,7 @@ class UIEditorResizeMixin:
     def _prepare_resize_element(self, elem):
         if elem is None:
             return
-        if hasattr(elem, "resize_mode"):
-            if getattr(elem, "resize_mode", None) != TextResizeMode.FixedSize:
-                elem.resize_mode = TextResizeMode.FixedSize
+        prepare_layout_resize(elem)
 
     def _apply_rotation_drag(self, inp):
         elem = self._selected_element_comp
@@ -51,7 +49,9 @@ class UIEditorResizeMixin:
             return
         angle = math.degrees(math.atan2(inp.mouse_y - self._rotate_center_sy,
                                         inp.mouse_x - self._rotate_center_sx))
-        elem.rotation = float(self._rotate_start_rotation + (angle - self._rotate_start_angle))
+        elem.set_layout_rotation(
+            float(self._rotate_start_rotation + (angle - self._rotate_start_angle))
+        )
 
     def _apply_resize(self, inp):
         """Update element rect based on current resize handle drag.
@@ -129,11 +129,9 @@ class UIEditorResizeMixin:
         off_x, off_y = elem._rotated_corner_offset(new_w, new_h, fixed_idx)
         new_rx = fixed_cx - off_x
         new_ry = fixed_cy - off_y
-        anchor_x, anchor_y = elem._anchor_origin(cw, ch)
-        elem.x = new_rx - anchor_x
-        elem.y = new_ry - anchor_y
         elem.width = new_w
         elem.height = new_h
+        elem._set_layout_rect_origin(new_rx, new_ry, cw, ch)
 
     def _apply_drag_suppressed(self, vis_x, vis_y, ref_w, ref_h):
         """Apply drag inside the core-owned continuous edit session."""

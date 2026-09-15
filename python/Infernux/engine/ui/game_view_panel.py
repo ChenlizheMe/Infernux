@@ -32,6 +32,7 @@ from Infernux.ui.ui_texture_cache import get_shared_cache as _get_tex_cache
 from Infernux.ui.ui_render_dispatch import dispatch as _ui_dispatch
 from Infernux.ui.ui_event_system import UIEventProcessor
 from Infernux.ui.ui_button import UIButton
+from Infernux.engine.runtime_mouse_events import MouseEventDispatcher
 from Infernux.ui.inx_ui_screen_component import clear_rect_cache
 from .game_input_policy import should_process_game_ui_events, should_route_game_input
 from .runtime_canvas_snapshot import (
@@ -122,6 +123,7 @@ class GameViewPanel(EditorPanel):
 
         # UI event processor — dispatches pointer events to UI elements
         self._ui_event_processor = UIEventProcessor()
+        self._mouse_event_dispatcher = MouseEventDispatcher()
 
         # Game resolution selection (Unity-like)
         self._selected_resolution_idx = 0
@@ -153,6 +155,7 @@ class GameViewPanel(EditorPanel):
         active = bool(active)
         if not active:
             Input.set_game_focused(False)
+            Input.set_cursor_locked(False)
 
         if not self._engine:
             if not active:
@@ -331,6 +334,14 @@ class GameViewPanel(EditorPanel):
         if self._selected_resolution_idx == len(self._RESOLUTION_PRESETS) - 1:
             return max(64, int(self._custom_width)), max(64, int(self._custom_height))
         return int(w), int(h)
+
+    def prepare_render_target(self):
+        """Publish Game pixels before scene lifecycle, even when this tab is hidden."""
+        self._load_resolution_settings()
+        width, height = self._current_target_resolution()
+        self._engine.resize_game_render_target(width, height)
+        self._last_game_width, self._last_game_height = width, height
+        self._game_texture_refresh_required = True
 
     def _fit_scale(self):
         """Toggle Fit mode on."""
@@ -771,7 +782,7 @@ class GameViewPanel(EditorPanel):
             panel_focused=panel_focused,
             cursor_locked=cursor_locked,
         ):
-            self._process_ui_events(target_w, target_h, canvases=canvases)
+            self._process_ui_events(target_w, target_h)
         else:
             self._ui_event_processor.reset()
 
@@ -847,6 +858,7 @@ class GameViewPanel(EditorPanel):
                 viewport_pressed = bool(ctx.is_mouse_button_clicked(0))
                 viewport_clicked = viewport_hovered and (viewport_clicked or viewport_pressed)
                 Input.set_game_viewport_origin(vp.image_min_x, vp.image_min_y)
+                Input.set_game_viewport_size(float(draw_w), float(draw_h))
 
                 self._render_screen_ui(ctx, vp.image_min_x, vp.image_min_y,
                                        float(draw_w), float(draw_h),
@@ -857,6 +869,7 @@ class GameViewPanel(EditorPanel):
 
             else:
                 Input.set_game_viewport_origin(0.0, 0.0)
+                Input.set_game_viewport_size(0.0, 0.0)
                 ctx.label("")
                 ctx.label("  " + t("game_view.no_camera"))
                 ctx.label("  " + t("game_view.no_camera_detail"))
@@ -1003,21 +1016,26 @@ class GameViewPanel(EditorPanel):
 
     def _process_ui_events(self, game_w: int, game_h: int, canvases=None):
         """Convert Input mouse state to per-canvas pointer events."""
-        if canvases is None:
-            from Infernux.lib import SceneManager
-            scene_manager = SceneManager.instance()
-            scene = scene_manager.get_active_scene()
-            if scene is None:
-                return
-            get_persistent_scene = getattr(
-                scene_manager, "get_runtime_persistent_scene", None
-            )
-            canvases = collect_sorted_runtime_canvas_snapshot(
-                scene,
-                get_persistent_scene() if callable(get_persistent_scene) else None,
-            )
-        if not canvases:
+        from Infernux.lib import SceneManager
+        scene_manager = SceneManager.instance()
+        scene = scene_manager.get_active_scene()
+        if scene is None:
             return
+        get_persistent_scene = getattr(
+            scene_manager, "get_runtime_persistent_scene", None
+        )
+        persistent_scene = (
+            get_persistent_scene() if callable(get_persistent_scene) else None
+        )
+        from Infernux.engine.runtime_screen_ui import (
+            collect_runtime_ui_input_surfaces,
+        )
+        surfaces = collect_runtime_ui_input_surfaces(scene, persistent_scene)
+        if not surfaces:
+            # 3D mouse callbacks must still run in scenes without any UI
+            # surface. Reset only the UI path and continue to the shared
+            # collider raycast below.
+            self._ui_event_processor.reset()
 
         # Mouse position in viewport pixels (relative to game image top-left)
         vp_x, vp_y, scroll_x, scroll_y, mouse_held, mouse_down, mouse_up = Input.get_game_mouse_frame_state(0)
@@ -1029,18 +1047,11 @@ class GameViewPanel(EditorPanel):
         game_px = vp_x / display_scale
         game_py = vp_y / display_scale
 
-        # Build per-canvas positions in design (canvas) pixels
-        canvas_positions = []
-        for canvas in canvases:
-            ref_w = float(canvas.reference_width)
-            ref_h = float(canvas.reference_height)
-            if ref_w < 1 or ref_h < 1:
-                canvas_positions.append((0.0, 0.0))
-                continue
-            scale_x, scale_y, _ = canvas.compute_scale(float(game_w), float(game_h))
-            cx = game_px / max(scale_x, 1e-6)
-            cy = game_py / max(scale_y, 1e-6)
-            canvas_positions.append((cx, cy))
+        camera = scene.effective_game_camera if scene is not None else None
+        from Infernux.engine.runtime_screen_ui import map_runtime_ui_pointer
+        canvas_positions = map_runtime_ui_pointer(
+            surfaces, camera, game_px, game_py, game_w, game_h
+        )
 
         scroll = (scroll_x, scroll_y)
 
@@ -1048,7 +1059,23 @@ class GameViewPanel(EditorPanel):
         dt = Time.unscaled_delta_time
 
         self._ui_event_processor.process(
-            canvases, canvas_positions,
+            surfaces, canvas_positions,
             mouse_down, mouse_up, mouse_held,
             scroll, dt,
+        )
+        # Scene mouse callbacks are a separate 3D hit path. UI dispatch above
+        # remains authoritative for screen/world UI and does not consume the
+        # Collider raycast.
+        dispatcher = getattr(self, "_mouse_event_dispatcher", None)
+        if dispatcher is None:
+            return
+        if not should_route_game_input(
+            is_playing=self.__is_playing,
+            panel_focused=self._was_focused,
+            cursor_locked=Input.is_cursor_locked(),
+        ):
+            dispatcher.reset()
+            return
+        dispatcher.process(
+            camera, (game_px, game_py), (float(game_w), float(game_h))
         )

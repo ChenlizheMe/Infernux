@@ -93,6 +93,9 @@ bool ShaderReflection::Reflect(const std::vector<uint32_t> &spirvCode, VkShaderS
 
     try {
         spirv_cross::Compiler compiler(spirvCode);
+        const auto &capabilities = compiler.get_declared_capabilities();
+        m_sampleRateShading =
+            std::find(capabilities.begin(), capabilities.end(), spv::CapabilitySampleRateShading) != capabilities.end();
 
         // Get all shader resources
         spirv_cross::ShaderResources resources = compiler.get_shader_resources();
@@ -174,6 +177,7 @@ bool ShaderReflection::Reflect(const std::vector<uint32_t> &spirvCode, VkShaderS
 
             const auto &type = compiler.get_type(image.type_id);
             info.arraySize = type.array.empty() ? 1 : type.array[0];
+            info.multisampled = type.image.ms;
 
             m_sampledImages.push_back(info);
         }
@@ -202,6 +206,7 @@ bool ShaderReflection::Reflect(const std::vector<uint32_t> &spirvCode, VkShaderS
 
             const auto &type = compiler.get_type(image.type_id);
             info.arraySize = type.array.empty() ? 1 : type.array[0];
+            info.multisampled = type.image.ms;
 
             m_sampledImages.push_back(info);
         }
@@ -384,6 +389,7 @@ std::vector<uint32_t> ShaderReflection::GetUsedDescriptorSets() const
 
 void ShaderReflection::Clear()
 {
+    m_sampleRateShading = false;
     m_uniformBuffers.clear();
     m_sampledImages.clear();
     m_storageBuffers.clear();

@@ -184,6 +184,43 @@ class ParticleGraphImporter final : public AssetImporter
 };
 
 // ==========================================================================
+// DataAssetImporter
+// ==========================================================================
+
+class RenderTextureImporter final : public AssetImporter
+{
+  public:
+    [[nodiscard]] ResourceType GetResourceType() const override
+    {
+        return ResourceType::RenderTexture;
+    }
+    [[nodiscard]] std::vector<std::string> GetSupportedExtensions() const override
+    {
+        return {".rendertexture"};
+    }
+    [[nodiscard]] ImportArtifact Import(const ImportRequest &request) const override;
+};
+
+class DataAssetImporter final : public AssetImporter
+{
+  public:
+    [[nodiscard]] ResourceType GetResourceType() const override
+    {
+        return ResourceType::DataAsset;
+    }
+
+    [[nodiscard]] std::vector<std::string> GetSupportedExtensions() const override
+    {
+        return {".inxdata"};
+    }
+
+    [[nodiscard]] ImportArtifact Import(const ImportRequest &request) const override;
+
+  private:
+    [[nodiscard]] std::vector<std::string> ScanDependencies(const ImportRequest &request) const;
+};
+
+// ==========================================================================
 // ScriptImporter
 // ==========================================================================
 

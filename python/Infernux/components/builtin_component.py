@@ -99,6 +99,7 @@ class CppProperty:
         slider: bool = False,
     ):
         self.cpp_attr = cpp_attr
+        self.schema = None
         self.get_converter = get_converter
         self.set_converter = set_converter
         self.native_getter = native_getter
@@ -122,6 +123,80 @@ class CppProperty:
             curve_non_negative=curve_non_negative,
             slider=slider,
         )
+
+    @classmethod
+    def from_native(cls, type_name: str, field_id: str, *, visible_when=None,
+                    get_converter=None, set_converter=None,
+                    native_getter=None, native_setter=None) -> CppProperty:
+        """Project a native declaration into the existing Inspector descriptor."""
+        from Infernux.field_schema import get_native_field_schema
+        from Infernux.lib import _Infernux
+        from .value_codec import VALUE_CODECS
+
+        schema = get_native_field_schema(f"native:infernux.{type_name}", field_id)
+        attributes = schema.to_document()["attributes"]
+        enum = attributes.get("enum")
+        enum_type = None
+        if enum is not None:
+            prefix = "native:infernux."
+            if not enum["type_id"].startswith(prefix):
+                raise ValueError("native property enum requires an engine-native identity")
+            enum_type = getattr(_Infernux, enum["type_id"][len(prefix):])
+        result = cls(
+            field_id, FieldType[schema.value_type.removeprefix("FieldType.")], readonly=schema.read_only,
+            tooltip=attributes.get("tooltip", ""), header=attributes.get("header", ""),
+            range=tuple(attributes["range"]) if "range" in attributes else None, enum_type=enum_type,
+            enum_labels=enum["labels"] if enum is not None else None,
+            display_name_key=attributes.get("display_name_key", ""),
+            element_type=(FieldType[attributes["element_type"].removeprefix("FieldType.")]
+                          if attributes.get("element_type") else None),
+            asset_type=attributes.get("asset_type"),
+            visible_when=visible_when, get_converter=get_converter, set_converter=set_converter,
+            native_getter=native_getter, native_setter=native_setter,
+            slider=bool(attributes.get("slider", False)),
+        )
+        result.metadata.hidden = bool(attributes.get("hidden", False))
+        result.metadata.former_names = tuple(attributes.get("former_names", ()))
+        result.metadata.default = VALUE_CODECS.decode(attributes["default"], result.metadata, schema.property_path)
+        result.schema = schema
+        return result
+
+    def normalize_value(self, candidate: Any) -> Any:
+        """Normalize a canonical property using the shared field value rules."""
+        from .fields import normalize_runtime_field_value
+        from .value_codec import VALUE_CODECS
+
+        if self.metadata.field_type is FieldType.COMPONENT:
+            if candidate is None:
+                return None
+            from .ref_wrappers import ComponentRef
+            if isinstance(candidate, ComponentRef):
+                candidate = candidate.resolve()
+                if candidate is None:
+                    raise ValueError(f"{self.schema.property_path}: component reference is unresolved")
+            return candidate
+        encoded = VALUE_CODECS.encode(candidate, self.schema.property_path)
+        decoded = VALUE_CODECS.decode(encoded, self.metadata, self.schema.property_path)
+        return normalize_runtime_field_value(decoded, self.metadata)
+
+    def validate_value(self, instance: Any, value: Any) -> str:
+        """Preflight this candidate against the target's complete native document."""
+        from .value_codec import VALUE_CODECS
+
+        cpp = instance._require_cpp_component()
+        if bool(self.schema.attributes.get("setter_owns_document_shape", False)):
+            return ""
+        document = cpp.serialize_document()
+        if self.metadata.field_type is FieldType.ENUM:
+            encoded = int(value)
+        elif self.metadata.field_type is FieldType.COMPONENT:
+            native = self.set_converter(value) if self.set_converter is not None else value
+            encoded = 0 if native is None else int(native.component_id)
+        else:
+            encoded = VALUE_CODECS.encode(value)
+        document[self.schema.attributes["serialized_name"]] = encoded
+        cpp.validate_document(document)
+        return ""
 
     # Called by Python when the class body is processed.
     def __set_name__(self, owner: type, name: str):

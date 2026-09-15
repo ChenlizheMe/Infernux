@@ -5,12 +5,17 @@
 #include <glm/glm.hpp>
 #include <memory>
 #include <mutex>
+#include <unordered_map>
 #include <vector>
 
 namespace infernux
 {
 
 class InxMaterial;
+namespace rhi
+{
+class ComputeBuffer;
+}
 
 /**
  * @brief Buffer that receives packed gizmo geometry from Python and produces DrawCalls.
@@ -97,6 +102,24 @@ class GizmosDrawCallBuffer
     };
 
     /**
+     * @brief A line draw whose canonical Vertex stream stays GPU resident.
+     *
+     * The scripting layer
+     * supplies immutable line topology and a stable
+     * identity.  Later frames update only the borrowed resident
+     * vertex buffer
+     * and transform; no vertex readback or repeated mesh upload is involved.
+     */
+    struct ResidentDrawDescriptor
+    {
+        uint64_t identity = 0;
+        uint32_t vertexCount = 0;
+        std::shared_ptr<rhi::ComputeBuffer> vertexBuffer;
+        std::vector<uint32_t> indices;
+        float worldMatrix[16]{};
+    };
+
+    /**
      * @brief An icon entry for billboard rendering at a world position.
      *
      * Icons are rendered as camera-facing diamond quads (TRIANGLE_LIST).
@@ -123,10 +146,20 @@ class GizmosDrawCallBuffer
      */
     void SetData(std::vector<Vertex> vertices, std::vector<uint32_t> indices, std::vector<DrawDescriptor> descriptors);
 
+    /// Replace the active GPU-resident line draws for this frame. Topology is
+    /// retained by stable identity while the draw remains active.
+    void SetResidentData(std::vector<ResidentDrawDescriptor> descriptors);
+
+    [[nodiscard]] bool HasResidentTopology(uint64_t identity, uint32_t vertexCount) const;
+
     /**
      * @brief Clear all buffered data (e.g. when no gizmos to draw).
      */
     void Clear();
+
+    /// Clear only CPU immediate-mode line data while retaining active
+    /// resident line identities.
+    void ClearCpuData();
 
     /**
      * @brief Check if buffer has any data to draw.
@@ -210,6 +243,16 @@ class GizmosDrawCallBuffer
     mutable std::vector<std::vector<Vertex>> m_slicedVertices;
     mutable std::vector<std::vector<uint32_t>> m_slicedIndices;
     mutable bool m_slicesDirty = true;
+
+    struct ResidentDraw
+    {
+        std::shared_ptr<rhi::ComputeBuffer> vertexBuffer;
+        std::vector<Vertex> topologyVertices;
+        std::vector<uint32_t> indices;
+        glm::mat4 worldMatrix{1.0f};
+    };
+    std::unordered_map<uint64_t, ResidentDraw> m_residentDraws;
+    std::vector<uint64_t> m_residentOrder;
 
     /// @brief Rebuild per-descriptor vertex/index slices from the packed arrays.
     void RebuildSlices() const;

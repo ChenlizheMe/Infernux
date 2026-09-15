@@ -185,7 +185,7 @@ def execute_host_player_build(
             request.profile.configuration is BuildConfiguration.DEVELOPMENT
         ),
         lto=bool(settings["lto"]),
-        enable_jit=bool(settings["enable_jit"]),
+        enable_jit=HOST_PLAYER_CAPABILITIES.numba,
         player_runtime_root=player_runtime_root,
     )
     builder.freeze_asset_index_entries(catalog_entries)

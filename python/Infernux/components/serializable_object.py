@@ -23,6 +23,8 @@ Example::
 from __future__ import annotations
 
 import copy
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any, Dict, Optional, Type, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -30,6 +32,55 @@ if TYPE_CHECKING:
 
 # Global registry: module:qualname → class. Populated by __init_subclass__.
 _SERIALIZABLE_REGISTRY: Dict[str, Type["SerializableObject"]] = {}
+
+# The importer owns this temporary write set, just like its private modules.
+# Ordinary consumers continue to read the single published registry.
+_CANDIDATE_TYPES: ContextVar[tuple[dict[str, type], str] | None] = ContextVar(
+    "infernux_candidate_serializable_types", default=None
+)
+
+
+@contextmanager
+def _candidate_serializable_scope(types: dict[str, type], module_name: str):
+    token = _CANDIDATE_TYPES.set((types, module_name))
+    try:
+        yield
+    finally:
+        _CANDIDATE_TYPES.reset(token)
+
+
+def _publish_serializable_types(
+    types: dict[str, type], module_names: set[str],
+) -> dict[str, type | None]:
+    """Replace the published modules' data types; return their exact before-image."""
+    published = {
+        identity: cls for identity, cls in types.items()
+        if cls.__module__ in module_names
+    }
+    for identity in published:
+        previous = _SERIALIZABLE_REGISTRY.get(identity)
+        if previous is not None and previous.__module__ not in module_names:
+            raise ValueError(
+                f"serialized type ID {identity!r} is owned by module {previous.__module__!r}"
+            )
+    before = {
+        identity: cls for identity, cls in _SERIALIZABLE_REGISTRY.items()
+        if cls.__module__ in module_names
+    }
+    for identity in published:
+        before.setdefault(identity, _SERIALIZABLE_REGISTRY.get(identity))
+    for identity in before:
+        _SERIALIZABLE_REGISTRY.pop(identity, None)
+    _SERIALIZABLE_REGISTRY.update(published)
+    return before
+
+
+def _restore_serializable_types(before: dict[str, type | None]) -> None:
+    for identity, cls in before.items():
+        if cls is None:
+            _SERIALIZABLE_REGISTRY.pop(identity, None)
+        else:
+            _SERIALIZABLE_REGISTRY[identity] = cls
 
 
 def get_serializable_type_id(value: type | "SerializableObject") -> str:
@@ -43,9 +94,26 @@ def get_serializable_type_id(value: type | "SerializableObject") -> str:
     return f"{value_type.__module__}:{value_type.__qualname__}"
 
 
+def get_serializable_schema_version(value: type | "SerializableObject") -> int:
+    """Return the positive authored schema version for one data type."""
+    value_type = value if isinstance(value, type) else type(value)
+    version = getattr(value_type, "__serialized_schema_version__", 1)
+    if type(version) is not int or version < 1:
+        raise TypeError("__serialized_schema_version__ must be a positive integer")
+    return version
+
+
 def get_serializable_class(type_id: str) -> Optional[Type["SerializableObject"]]:
     """Look up a registered SerializableObject subclass by module:qualname."""
+    candidate = _CANDIDATE_TYPES.get()
+    if candidate is not None and type_id in candidate[0]:
+        return candidate[0][type_id]
     return _SERIALIZABLE_REGISTRY.get(type_id)
+
+
+def get_registered_serializable_types() -> tuple[tuple[str, Type["SerializableObject"]], ...]:
+    """Return the published type catalog in stable identity order."""
+    return tuple(sorted(_SERIALIZABLE_REGISTRY.items(), key=lambda item: item[0]))
 
 
 class SerializableObject:
@@ -63,6 +131,7 @@ class SerializableObject:
 
     _serialized_fields_: Dict[str, "FieldMetadata"] = {}
     __serialized_type_id__ = ""
+    __serialized_schema_version__ = 1
 
     # ------------------------------------------------------------------
     # Metaclass-style auto-registration
@@ -71,79 +140,34 @@ class SerializableObject:
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
 
-        cls._serialized_fields_ = {}
         current_type_id = get_serializable_type_id(cls)
         if not isinstance(current_type_id, str) or not current_type_id:
             raise ValueError("serialized type ID must be a non-empty string")
-        # Last definition wins so editor script hot-reload can replace a class.
-        _SERIALIZABLE_REGISTRY[current_type_id] = cls
+        get_serializable_schema_version(cls)
+        from .fields import _compile_serialized_fields
 
-        own_annotations = cls.__dict__.get('__annotations__', {})
-
-        from .fields import (
-            FieldMetadata,
-            SerializedFieldDescriptor,
-            infer_field_type_from_value,
-            resolve_annotation,
-            HiddenField,
-        )
-
-        for attr_name in list(cls.__dict__):
-            if attr_name.startswith("_"):
-                continue
-
-            attr = cls.__dict__[attr_name]
-
-            if callable(attr) or isinstance(attr, (property, classmethod, staticmethod)):
-                continue
-
-            if isinstance(attr, HiddenField):
-                continue
-
-            if isinstance(attr, SerializedFieldDescriptor):
-                meta = attr.metadata
-                meta.name = attr_name
-                cls._serialized_fields_[attr_name] = meta
-                # Replace the heavy descriptor with None; __init__ will set
-                # plain instance attributes from defaults.
-                setattr(cls, attr_name, None)
-
-            elif isinstance(attr, FieldMetadata):
-                attr.name = attr_name
-                cls._serialized_fields_[attr_name] = attr
-                setattr(cls, attr_name, None)
-
-            elif attr is None:
-                ann = own_annotations.get(attr_name)
-                if ann is not None:
-                    meta = resolve_annotation(ann)
-                    if meta is not None:
-                        meta.name = attr_name
-                        cls._serialized_fields_[attr_name] = meta
-                        setattr(cls, attr_name, None)
-
-            else:
-                from enum import Enum as _Enum
-
-                field_type = infer_field_type_from_value(attr)
-                enum_type = type(attr) if isinstance(attr, _Enum) else None
-                meta = FieldMetadata(
-                    name=attr_name,
-                    field_type=field_type,
-                    default=attr,
-                    enum_type=enum_type,
-                )
-                cls._serialized_fields_[attr_name] = meta
-                # Leave the class attribute as-is (plain default value)
+        _compile_serialized_fields(cls, descriptors=False)
+        candidate = _CANDIDATE_TYPES.get()
+        if candidate is not None and cls.__module__ == candidate[1]:
+            types = candidate[0]
+            previous = types.get(current_type_id)
+            if previous is not None and previous.__module__ != cls.__module__:
+                raise ValueError(f"duplicate candidate serialized type ID {current_type_id!r}")
+            types[current_type_id] = cls
+        else:
+            # Trusted engine modules materialized during a candidate import
+            # still own their ordinary declarations, not the project transaction.
+            _SERIALIZABLE_REGISTRY[current_type_id] = cls
 
     # ------------------------------------------------------------------
     # Construction
     # ------------------------------------------------------------------
 
     def __getattribute__(self, name: str):
-        if not name.startswith("_"):
+        if not name.startswith("__"):
+            from .fields import get_serialized_fields
             cls = object.__getattribute__(self, "__class__")
-            fields = getattr(cls, "_serialized_fields_", {})
+            fields = get_serialized_fields(cls)
             meta = fields.get(name)
             if meta is not None:
                 from .fields import resolve_runtime_field_value
@@ -153,8 +177,9 @@ class SerializableObject:
         return object.__getattribute__(self, name)
 
     def __setattr__(self, name: str, value):
+        from .fields import get_serialized_fields
         cls = type(self)
-        fields = getattr(cls, "_serialized_fields_", {})
+        fields = get_serialized_fields(cls)
         meta = fields.get(name)
         if meta is not None:
             from .fields import normalize_runtime_field_value
@@ -162,17 +187,14 @@ class SerializableObject:
         object.__setattr__(self, name, value)
 
     def __init__(self, **kwargs):
-        from .fields import get_serialized_fields
+        from .fields import copy_serialized_field_default, get_serialized_fields
 
         fields = get_serialized_fields(self.__class__)
         for name, meta in fields.items():
             if name in kwargs:
                 setattr(self, name, kwargs[name])
             else:
-                try:
-                    setattr(self, name, copy.deepcopy(meta.default))
-                except Exception:
-                    setattr(self, name, meta.default)
+                setattr(self, name, copy_serialized_field_default(meta))
 
     # ------------------------------------------------------------------
     # Serialization helpers (used by InxComponent._serialize_value)
@@ -191,23 +213,34 @@ class SerializableObject:
                 value, f"{get_serializable_type_id(self)}.{name}"
             )
         from .value_document import make_serializable_object
-        return make_serializable_object(get_serializable_type_id(self), fields_document)
+        return make_serializable_object(
+            get_serializable_type_id(self),
+            fields_document,
+            get_serializable_schema_version(self),
+        )
 
     @classmethod
-    def _validate_document(cls, data: dict, path: str = "SerializableObject"):
-        """Validate a complete object graph without constructing an instance."""
-        from .fields import get_serialized_fields
+    def _prepare_document(cls, data: dict, path: str = "SerializableObject"):
+        """Validate identity and migrate one document to the current schema.
+
+        Documents written before schema versions existed are version zero.
+        Migration is declarative: current names and ``FormerlySerializedAs``
+        entries are the only accepted sources. The returned document has only
+        current names, so compatibility aliases do not leak into runtime.
+        """
+        from .fields import copy_serialized_field_default, get_serialized_fields
+        from .value_document import TYPE_KEY, SERIALIZABLE_OBJECT
 
         if not isinstance(data, dict):
             raise TypeError(f"{path}: SerializableObject document must be an object")
-        from .value_document import TYPE_KEY, SERIALIZABLE_OBJECT
-        expected_keys = {TYPE_KEY, "type_id", "fields"}
-        if set(data) != expected_keys or data.get(TYPE_KEY) != SERIALIZABLE_OBJECT:
+        legacy_keys = {TYPE_KEY, "type_id", "fields"}
+        current_keys = legacy_keys | {"schema_version"}
+        if set(data) not in (legacy_keys, current_keys) or data.get(TYPE_KEY) != SERIALIZABLE_OBJECT:
             raise ValueError(f"{path}: invalid SerializableObject typed document")
         type_id = data.get("type_id")
         if not isinstance(type_id, str) or not type_id:
             raise ValueError(f"{path}: SerializableObject document requires type_id")
-        actual_cls = _SERIALIZABLE_REGISTRY.get(type_id)
+        actual_cls = get_serializable_class(type_id)
         if actual_cls is None:
             raise ValueError(f"{path}: unknown SerializableObject type_id {type_id!r}")
 
@@ -215,21 +248,70 @@ class SerializableObject:
         fields_document = data.get("fields")
         if not isinstance(fields_document, dict):
             raise TypeError(f"{path}: SerializableObject fields must be an object")
+        source_version = data.get("schema_version", 0)
+        if type(source_version) is not int or (
+            "schema_version" in data and source_version < 1
+        ):
+            raise TypeError(f"{path}: schema_version must be a positive integer")
+        target_version = get_serializable_schema_version(actual_cls)
+        if source_version > target_version:
+            raise ValueError(
+                f"{path}: schema version {source_version} is newer than supported version {target_version}"
+            )
+
+        if source_version == target_version:
+            migrated_fields = dict(fields_document)
+        else:
+            from .value_codec import VALUE_CODECS
+
+            migrated_fields = {}
+            for name, metadata in fields.items():
+                candidates = [
+                    candidate
+                    for candidate in (name, *metadata.former_names)
+                    if candidate in fields_document
+                ]
+                if len(candidates) > 1:
+                    raise ValueError(
+                        f"{path}.{name}: multiple serialized migration sources {candidates}"
+                    )
+                if candidates:
+                    migrated_fields[name] = fields_document[candidates[0]]
+                else:
+                    migrated_fields[name] = VALUE_CODECS.encode(
+                        copy_serialized_field_default(metadata),
+                        f"{path}.{name}.default",
+                    )
 
         from .fields import validate_serialized_field_document
-        validate_serialized_field_document(fields_document, fields, owner_name=type_id)
+        validate_serialized_field_document(migrated_fields, fields, owner_name=type_id)
 
         from .value_codec import VALUE_CODECS
         for name, meta in fields.items():
-            VALUE_CODECS.validate(fields_document[name], meta, f"{path}.{name}")
+            VALUE_CODECS.validate(migrated_fields[name], meta, f"{path}.{name}")
+        return (
+            actual_cls,
+            fields,
+            {
+                TYPE_KEY: SERIALIZABLE_OBJECT,
+                "type_id": type_id,
+                "schema_version": target_version,
+                "fields": migrated_fields,
+            },
+        )
+
+    @classmethod
+    def _validate_document(cls, data: dict, path: str = "SerializableObject"):
+        """Validate a complete object graph without constructing an instance."""
+        actual_cls, fields, _document = cls._prepare_document(data, path)
         return actual_cls, fields
 
     @classmethod
     def _deserialize(cls, data: dict) -> "SerializableObject":
         """Validate, decode, and construct one current-schema object."""
-        actual_cls, fields = cls._validate_document(data)
+        actual_cls, fields, document = cls._prepare_document(data)
 
-        fields_document = data["fields"]
+        fields_document = document["fields"]
         decoded = {
             name: _deserialize_so_value(
                 fields_document[name],

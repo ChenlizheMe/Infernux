@@ -2,39 +2,19 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 import copy
 from typing import Any, Callable, Mapping, Optional, Sequence
 
 from Infernux.engine.undo._base import CompoundCommand, UndoCommand
+from Infernux.field_schema import FieldSchema
 
 
 class PropertyTransactionStatus(str, Enum):
     APPLIED = "applied"
     NO_CHANGE = "no_change"
     REJECTED = "rejected"
-
-
-@dataclass(frozen=True, slots=True)
-class FieldSchema:
-    """Static structure for one serialized property."""
-
-    property_path: str
-    value_type: str
-    read_only: bool = False
-    attributes: Mapping[str, Any] = field(default_factory=dict)
-
-    def __post_init__(self) -> None:
-        path = str(self.property_path or "").strip()
-        value_type = str(self.value_type or "").strip()
-        if not path:
-            raise ValueError("serialized property path must not be empty")
-        if not value_type:
-            raise ValueError("serialized property type must not be empty")
-        object.__setattr__(self, "property_path", path)
-        object.__setattr__(self, "value_type", value_type)
-        object.__setattr__(self, "attributes", dict(self.attributes))
 
 
 @dataclass(frozen=True, slots=True)
@@ -577,6 +557,8 @@ def make_attribute_property_transaction(
     clear_value: Any = None,
     on_rejected: Optional[Callable[[str], None]] = None,
     marks_dirty: bool = True,
+    schema: Optional[FieldSchema] = None,
+    validate_target: Optional[Callable[[Any, Any], str]] = None,
 ) -> PropertyTransaction:
     """Create the authoritative transaction for one attribute on N targets."""
     edited_targets = tuple(targets)
@@ -599,7 +581,10 @@ def make_attribute_property_transaction(
                 )
             ),
             normalize=normalize,
-            validate=validate,
+            validate=(
+                (lambda value, target=target: validate(value) or validate_target(target, value))
+                if validate_target is not None else validate
+            ),
             equivalent=equivalent,
         )
         for target, target_id in zip(edited_targets, ids)
@@ -607,7 +592,7 @@ def make_attribute_property_transaction(
     path = str(property_path or "").strip() or f"{type(edited_targets[0]).__name__}.{attr}"
     return PropertyTransaction(
         SerializedPropertyHandle(
-            FieldSchema(path, str(value_type or "Any"), read_only=read_only),
+            schema if schema is not None else FieldSchema(path, str(value_type or "Any"), read_only=read_only),
             SerializedObjectView(ids),
             bindings,
             publish=_compose_field_publisher(edited_targets, attr, publish),
@@ -623,16 +608,19 @@ def make_python_component_property_transaction(
     components: Sequence[Any],
     field_name: str,
     *,
-    value_type: str = "Any",
     description: str = "",
-    read_only: bool = False,
-    normalize: PropertyNormalizer = lambda value: value,
     validate: PropertyValidator = lambda _value: "",
     equivalent: PropertyComparator = lambda left, right: left == right,
     clear_value: Any = None,
     on_rejected: Optional[Callable[[str], None]] = None,
+    decode_input: PropertyNormalizer = lambda value: value,
 ) -> PropertyTransaction:
-    """Create one atomic typed-document edit for Python component fields."""
+    """Edit declared Python fields through their metadata and common codec.
+
+    Type, read-only state and input normalization belong to the declaration,
+    not to the Inspector or an automation caller. ``validate`` may add a
+    domain restriction but cannot bypass the field's value contract.
+    """
     edited_components = tuple(components)
     field = str(field_name or "").strip()
     if not edited_components:
@@ -641,41 +629,42 @@ def make_python_component_property_transaction(
         raise ValueError("Python component property transaction requires a field")
 
     from Infernux.components.value_codec import VALUE_CODECS
+    from Infernux.components.fields import (
+        coerce_serialized_field_input,
+        get_field_schema,
+        get_raw_field_value,
+        get_serialized_fields,
+        normalize_runtime_field_value,
+    )
     from Infernux.engine.undo import PythonComponentDocumentCommand
 
+    metadata = tuple(
+        get_serialized_fields(type(component))[field]
+        for component in edited_components
+    )
+    from dataclasses import replace
+
+    schema = get_field_schema(type(edited_components[0]), field)
+    if any(item.readonly for item in metadata) != schema.read_only:
+        schema = replace(schema, read_only=True)
     ids = tuple(_serialized_target_id(comp) for comp in edited_components)
     bindings = []
-    for component, target_id in zip(edited_components, ids):
+    for component, target_id, field_metadata in zip(edited_components, ids, metadata):
         serializer = getattr(component, "_serialize_fields_document", None)
         if not callable(serializer):
             raise TypeError(
                 f"{type(component).__name__} does not expose a serialized document"
             )
-        try:
-            from Infernux.components.fields import get_serialized_fields
 
-            field_metadata = get_serialized_fields(type(component)).get(field)
-        except Exception:
-            field_metadata = None
-
-        def _validate_candidate(
+        def _normalize_candidate(
             candidate,
             component=component,
             field_metadata=field_metadata,
         ):
-            message = str(validate(candidate) or "")
-            if message:
-                return message
-            encoded = VALUE_CODECS.encode(
-                candidate, f"{type(component).__name__}.{field}"
+            value = coerce_serialized_field_input(
+                decode_input(candidate), field_metadata, f"{type(component).__name__}.{field}"
             )
-            if field_metadata is not None:
-                VALUE_CODECS.validate(
-                    encoded,
-                    field_metadata,
-                    f"{type(component).__name__}.{field}",
-                )
-            return ""
+            return normalize_runtime_field_value(value, field_metadata)
 
         def _command_factory(old, new, text, component=component):
             old_document = component._serialize_fields_document()
@@ -694,10 +683,10 @@ def make_python_component_property_transaction(
         bindings.append(
             SerializedPropertyBinding(
                 target_id=target_id,
-                read=lambda component=component: getattr(component, field),
+                read=lambda component=component: get_raw_field_value(component, field),
                 command_factory=_command_factory,
-                normalize=normalize,
-                validate=_validate_candidate,
+                normalize=_normalize_candidate,
+                validate=validate,
                 equivalent=equivalent,
             )
         )
@@ -711,11 +700,7 @@ def make_python_component_property_transaction(
 
     return PropertyTransaction(
         SerializedPropertyHandle(
-            FieldSchema(
-                f"{type(edited_components[0]).__name__}.{field}",
-                str(value_type or "Any"),
-                read_only=read_only,
-            ),
+            schema,
             SerializedObjectView(ids),
             tuple(bindings),
             publish=_publish,

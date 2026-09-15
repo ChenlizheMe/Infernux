@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Iterable, Mapping, Optional
 
-RUNTIME_PHASE_NAMES: tuple[str, str, str]
+RUNTIME_PHASE_NAMES: tuple[str, ...]
 
 class RuntimeMethodDescriptor:
     name: str

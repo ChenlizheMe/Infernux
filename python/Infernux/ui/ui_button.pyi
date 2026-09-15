@@ -9,6 +9,7 @@ from Infernux.ui.ui_selectable import UISelectable
 from Infernux.ui.ui_event import UIEvent
 from Infernux.ui.ui_event_entry import UIEventEntry
 from Infernux.ui.ui_event_data import PointerEventData
+from Infernux.core.material import Material
 
 
 class UIButton(UISelectable):
@@ -47,13 +48,16 @@ class UIButton(UISelectable):
     label: str
     font_size: float
     font_path: str
+    fallback_font_paths: list[str]
     label_color: list
+    text_material: Material | None
     text_align_h: TextAlignH
     text_align_v: TextAlignV
     line_height: float
     letter_spacing: float
     texture_path: str
     background_color: list
+    background_material: Material | None
     on_click_entries: List[UIEventEntry]
 
     def awake(self) -> None: ...

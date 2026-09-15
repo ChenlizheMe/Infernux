@@ -12,7 +12,7 @@ on:
         type: boolean
         default: false
       replace_existing_release:
-        description: Allow publication to an existing release tag
+        description: Allow recovery publication to an existing unpublished draft
         required: false
         type: boolean
         default: false
@@ -20,6 +20,8 @@ on:
       PYPI_API_TOKEN:
         required: false
       R2_UPLOAD_TOKEN:
+        required: false
+      SIGNPATH_API_TOKEN:
         required: false
   workflow_dispatch:
     inputs:
@@ -29,7 +31,7 @@ on:
         type: boolean
         default: false
       replace_existing_release:
-        description: Allow publication to an existing release tag
+        description: Allow recovery publication to an existing unpublished draft
         required: true
         type: boolean
         default: false
@@ -328,6 +330,7 @@ jobs:
     permissions:
       actions: read
       contents: write
+      pages: write
     uses: ./.github/workflows/publish-desktop-release.yml
     with:
       run_id: ${{ github.run_id }}

@@ -111,13 +111,13 @@ PLAYER_FORBIDDEN_RUNTIME_MODULES = forbidden_player_service_modules() | frozense
         "Infernux/engine/deferred_task.pyc",
         "Infernux/engine/scene_document_transaction.pyc",
         "Infernux/engine/scene_manager.pyc",
+        "Infernux/gizmos/collector.pyc",
     }
 )
 PLAYER_FORBIDDEN_RUNTIME_PREFIXES = frozenset(
     {
         "Infernux/engine/interaction/",
         "Infernux/engine/undo/",
-        "Infernux/gizmos/",
     }
 )
 
@@ -176,6 +176,16 @@ _PE_SIGNATURE = b"PE\0\0"
 _PE_MACHINES = frozenset({0x014C, 0x8664, 0xAA64})
 _IMAGE_FILE_EXECUTABLE_IMAGE = 0x0002
 _IMAGE_FILE_DLL = 0x2000
+
+
+def _is_format_marker_group(paths) -> bool:
+    """Package-local format/type declarations are not duplicated game payloads."""
+    entries = [path.split("::", 1)[-1] for path in paths]
+    return all(
+        entry.endswith("/py.typed")
+        or (entry.startswith("Library/Compute/") and entry.rsplit("/", 1)[-1] in {"__content__", "__version__"})
+        for entry in entries
+    )
 
 
 def _sha256(path: Path) -> str:
@@ -783,6 +793,7 @@ def audit_player_package(
         for paths in hashes.values()
         if len(paths) > 1
         and not _is_required_bootstrap_duplicate(paths)
+        and not _is_format_marker_group(paths)
         and not _is_linux_soname_alias_group(paths)
         and not _is_logically_distinct_asset_payload(paths, data_relative)
     )
@@ -913,6 +924,14 @@ def audit_player_package(
     if parallel_present != runtime_features.parallel:
         runtime_payload_gap.append(
             "Parallel.inxmod presence disagrees with RuntimeManifest features"
+        )
+    # Parallel is a sealed, lazily materialized module.  An expanded module
+    # tree defeats the Player package boundary and can add tens of megabytes
+    # to every delivery, so reject it at the final-layout audit boundary.
+    expanded_parallel = data_root / "Modules" / "Parallel"
+    if expanded_parallel.exists():
+        runtime_payload_gap.append(
+            "expanded Modules/Parallel runtime is forbidden; ship Parallel.inxmod"
         )
     runtime_payload_gap.extend(runtime_contract_gaps)
     bootstrap_prefix = f"{data_relative}/Bootstrap.inxrt::"

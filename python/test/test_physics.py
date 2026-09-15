@@ -79,6 +79,31 @@ class TestPhysicsRaycast:
             (99999, 99999, 99999), (0, 1, 0), 1.0)
         assert result is None
 
+    def test_raycast_screen_shares_camera_and_physics_contract(self, monkeypatch):
+        class Camera:
+            def screen_point_to_ray(self, x, y, width, height):
+                assert (x, y, width, height) == pytest.approx((10.0, 20.0, 640.0, 360.0))
+                return ((1.0, 2.0, 3.0), (0.0, 0.0, -1.0))
+
+        seen = {}
+
+        def fake_raycast(origin, direction, max_distance, layer_mask, query_triggers):
+            seen.update(origin=origin, direction=direction, max_distance=max_distance,
+                        layer_mask=layer_mask, query_triggers=query_triggers)
+            return "hit"
+
+        monkeypatch.setattr(physics_module.Physics, "raycast", staticmethod(fake_raycast))
+        result = physics_module.Physics.raycast_screen(
+            Camera(), (10, 20), (640, 360), max_distance=42.0, layer_mask=7, query_triggers=False)
+        assert result == "hit"
+        assert seen == {
+            "origin": (1.0, 2.0, 3.0),
+            "direction": (0.0, 0.0, -1.0),
+            "max_distance": 42.0,
+            "layer_mask": 7,
+            "query_triggers": False,
+        }
+
     def test_raycast_all_returns_list(self):
         # Fire a ray far from any test geometry
         result = physics_module.Physics.raycast_all(

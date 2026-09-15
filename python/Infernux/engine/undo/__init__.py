@@ -63,6 +63,7 @@ from Infernux.engine.undo._asset_commands import (
     ProjectAssetMoveBatchCommand,
     ProjectAssetPasteCommand,
     ProjectAssetRenameCommand,
+    ProjectAssetTextCommand,
 )
 
 from Infernux.engine.undo._timeline_commands import (
@@ -130,6 +131,7 @@ __all__ = [
     "GlobalContextCommand", "GlobalFocusCommand", "GlobalSelectionCommand", "PrefabModeCommand", "PrefabApplyOverridesCommand", "PrefabUnpackCommand",
     "PrefabRevertCommand",
     "ProjectAssetCreateCommand", "ProjectPrefabCreateCommand", "ProjectAssetRenameCommand",
+    "ProjectAssetTextCommand",
     "ImportSettingsDraftCommand",
     "ProjectAssetDeleteCommand",
     "ProjectAssetCopyCommand",

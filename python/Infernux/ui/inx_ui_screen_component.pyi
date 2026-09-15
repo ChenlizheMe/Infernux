@@ -5,8 +5,9 @@ from __future__ import annotations
 from typing import List, Optional, Tuple
 
 from Infernux.ui.inx_ui_component import InxUIComponent
-from Infernux.ui.enums import ScreenAlignH, ScreenAlignV
+from Infernux.ui.enums import ScreenAlignH, ScreenAlignV, UILayoutPosition, UILayoutSizing
 from Infernux.ui.ui_event_data import PointerEventData
+from Infernux.core.material import Material
 
 
 def clear_rect_cache(frame_id: object = ...) -> None:
@@ -48,13 +49,37 @@ class InxUIScreenComponent(InxUIComponent):
     width: float
     height: float
     lock_aspect_ratio: bool
+    layout_position: UILayoutPosition
+    width_sizing: UILayoutSizing
+    height_sizing: UILayoutSizing
+    min_width: float
+    min_height: float
+    max_width: float
+    max_height: float
+    layout_weight: float
     opacity: float
     corner_radius: float
+    material: Material | None
     raycast_target: bool
+
+    def get_canvas(self): ...
+    def is_world_space(self) -> bool: ...
+    def world_ui_matrix(self) -> list[float]: ...
+
+    def get_effective_group_state(self) -> tuple[float, bool, bool]: ...
+    def is_effectively_interactable(self) -> bool: ...
+    def effectively_blocks_raycast(self) -> bool: ...
+    def get_effective_clip_rect(
+        self, canvas_width: float, canvas_height: float,
+    ) -> tuple[float, float, float, float] | None: ...
 
     # ------------------------------------------------------------------
     # Rect computation
     # ------------------------------------------------------------------
+
+    def get_resolved_size(self) -> tuple[float, float]:
+        """Effective local dimensions, including derived text sizing."""
+        ...
 
     def get_rect(
         self, canvas_width: Optional[float] = ..., canvas_height: Optional[float] = ...,

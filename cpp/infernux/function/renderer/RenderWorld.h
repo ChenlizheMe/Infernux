@@ -31,6 +31,7 @@ struct RenderProxyStructuralData
 struct RenderProxyFrameData
 {
     glm::mat4 worldMatrix{1.0f};
+    glm::mat4 boundsWorldMatrix{1.0f};
     AABB worldBounds;
     bool visible = true;
 };

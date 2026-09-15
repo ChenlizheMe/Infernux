@@ -4,6 +4,7 @@
 #define GLM_FORCE_DEPTH_ZERO_TO_ONE
 #endif
 
+#include "RendererParameterBlock.h"
 #include <array>
 #include <memory>
 #include <string>
@@ -23,6 +24,10 @@ namespace infernux
 #endif
 
 class InxMaterial;
+namespace rhi
+{
+class ComputeBuffer;
+}
 
 /**
  * @brief Vertex structure for mesh rendering.
@@ -121,14 +126,19 @@ struct DrawCall
     int32_t vertexStart = 0;               // Base vertex offset (for submesh rendering)
     glm::mat4 worldMatrix{1.0f};           // Object's world transform matrix
     std::shared_ptr<InxMaterial> material; // Owns the material for the lifetime of cached/render-thread draw calls
-    uint64_t objectId = 0;                 // Compatibility key for buffer lookup and picking
-    uint64_t pickingObjectId = 0;          // Optional scene owner exposed by picking passes
-    uint32_t layerMask = 1u;               // Owning GameObject layer bit for per-light culling masks
-    RenderDrawIdentity identity;           // Stable source identity across scene/component lifetimes
-    bool frustumVisible = true;            // Whether object passed main-camera frustum culling
-    bool castsShadows = true;              // Whether the source renderer participates in shadow passes
-    bool isStatic = false;                 // Standard GameObject static contract; skinned renderers remain dynamic
-    AABB worldBounds;                      // World-space bounding box for shadow cascade culling
+    // Immutable per-renderer values layered over material defaults. This is
+    // parameter state only; shader and fixed-function pipeline state remain
+    // owned by the material.
+    std::shared_ptr<const RendererParameterBlock> parameterBlock;
+    uint32_t materialSlot = 0;
+    uint64_t objectId = 0;        // Compatibility key for buffer lookup and picking
+    uint64_t pickingObjectId = 0; // Optional scene owner exposed by picking passes
+    uint32_t layerMask = 1u;      // Owning GameObject layer bit for per-light culling masks
+    RenderDrawIdentity identity;  // Stable source identity across scene/component lifetimes
+    bool frustumVisible = true;   // Whether object passed main-camera frustum culling
+    bool castsShadows = true;     // Whether the source renderer participates in shadow passes
+    bool isStatic = false;        // Standard GameObject static contract; skinned renderers remain dynamic
+    AABB worldBounds;             // World-space bounding box for shadow cascade culling
 
     // Per-object mesh data pointers
     // Non-owning references to MeshRenderer's persistent vertex/index data.
@@ -139,6 +149,10 @@ struct DrawCall
     // RenderWorld snapshots. Asset meshes retain their asset generation;
     // inline meshes retain an extraction-owned snapshot.
     std::shared_ptr<const void> meshDataOwner;
+    // Optional resident vertex stream. Its bytes use the canonical Vertex
+    // layout, so compute and graphics consume one allocation without a
+    // GPU->CPU->GPU publication loop. Indices remain owned by the source mesh.
+    std::shared_ptr<rhi::ComputeBuffer> meshVertexBuffer;
     std::string meshAssetGuid;
     uint64_t meshRuntimeVersion = 0;
 

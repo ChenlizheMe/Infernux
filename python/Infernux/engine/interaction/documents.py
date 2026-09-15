@@ -55,7 +55,9 @@ class DocumentKind(str, Enum):
     SCENE = "scene"
     PREFAB = "prefab"
     MATERIAL = "material"
+    DATA_ASSET = "data_asset"
     PHYSIC_MATERIAL = "physic_material"
+    RENDER_TEXTURE = "render_texture"
     RENDER_EFFECT = "render_effect"
     ANIMATION_CLIP = "animation_clip"
     ANIMATION_FSM = "animation_fsm"
@@ -167,6 +169,7 @@ class SaveTicketStatus(str, Enum):
 class DocumentActionResult:
     status: DocumentActionStatus
     message: str = ""
+    durable_file_state: Any = field(default=None, repr=False, compare=False)
 
     @property
     def accepted(self) -> bool:
@@ -192,6 +195,7 @@ class SaveTicket:
     publication_bookkeeping_revision: Optional[int] = None
     status: SaveTicketStatus = SaveTicketStatus.PENDING
     message: str = ""
+    was_conflicted: bool = False
 
     @property
     def is_pending(self) -> bool:
@@ -244,6 +248,9 @@ class EditorDocument:
     imported_disk_revision: int = 0
     preview_dependency_revision: int = 0
     durable_file_state: Any = field(default=None, repr=False)
+    # Observation being arbitrated is distinct from the loaded/CAS baseline.
+    # Failed imports must not acknowledge bytes that never became live.
+    external_file_state: Any = field(default=None, repr=False)
     state: DocumentState = DocumentState.READY
     capabilities: DocumentCapability = DocumentCapability.NONE
     view_ids: set[str] = field(default_factory=set)
@@ -743,6 +750,8 @@ class DocumentRegistry:
                 current_revision: frozenset(initial_dirty_views)
             },
         )
+        if initial_state is DocumentState.CONFLICT:
+            document.external_file_state = document.durable_file_state
         self._documents[identifier] = document
         self._document_ids_by_key[document_key] = identifier
         self._document_ids_by_stable_id[logical_id] = identifier
@@ -1494,7 +1503,7 @@ class DocumentRegistry:
         self._touch()
         return target
 
-    def establish_loaded_baseline(self, document_id: str) -> int:
+    def establish_loaded_baseline(self, document_id: str, *, durable_file_state=None) -> int:
         """Publish content loaded from an authoritative persisted source.
 
         Loading/reloading is not a save operation.  It replaces the in-memory
@@ -1517,6 +1526,19 @@ class DocumentRegistry:
         document.dirty_view_ids.clear()
         document._dirty_view_ids_by_revision[revision] = frozenset()
         document.state = DocumentState.READY
+        document.external_file_state = None
+        if durable_file_state is not None:
+            document.durable_file_state = durable_file_state
+            try:
+                observed = _capture_durable_file_state(document.resource_path)
+            except (OSError, RuntimeError):
+                # Publication succeeded, but a locked/unreadable source cannot
+                # be advertised as matching the newly loaded authoring state.
+                observed = None
+            if _durable_file_identity(observed) != _durable_file_identity(durable_file_state):
+                document.external_file_state = observed
+                document.external_revision += 1
+                document.state = DocumentState.CONFLICT
         self._touch()
         return revision
 
@@ -1640,6 +1662,7 @@ class DocumentRegistry:
         document = self.require(document_id)
         if document.state is DocumentState.CONFLICT:
             return
+        document.external_file_state = _capture_durable_file_state(document.resource_path)
         document.state = DocumentState.CONFLICT
         self._touch()
 
@@ -1789,8 +1812,12 @@ class DocumentRegistry:
         if content_changed is None:
             return False
 
+        observed_file_state = _capture_durable_file_state(resource_path)
         for document in affected:
-            document.external_revision += 1
+            if (_durable_file_identity(document.external_file_state)
+                    != _durable_file_identity(observed_file_state)):
+                document.external_revision += 1
+                document.external_file_state = observed_file_state
 
         scene_documents = tuple(
             document
@@ -1899,6 +1926,7 @@ class DocumentRegistry:
                     document.durable_file_state = _capture_durable_file_state(
                         resource_path
                     )
+                    document.external_file_state = None
                 continue
             reload_from_disk = self._reload_callback(document)
             if not callable(reload_from_disk):
@@ -1924,9 +1952,13 @@ class DocumentRegistry:
                 if current is not None:
                     current.state = DocumentState.CONFLICT
                 continue
-            self.establish_loaded_baseline(current.document_id)
-            current.durable_file_state = _capture_durable_file_state(resource_path)
-            current.state = DocumentState.READY
+            file_state = (result.durable_file_state
+                          if isinstance(result, DocumentActionResult) else None)
+            self.establish_loaded_baseline(
+                current.document_id,
+                durable_file_state=(file_state if file_state is not None else
+                                    _capture_durable_file_state(resource_path)),
+            )
         if affected:
             self._touch()
         return tuple(document.document_id for document in affected)
@@ -1972,10 +2004,18 @@ class DocumentRegistry:
                 "the document controller rejected the durable reload",
             )
         current = self.require(document.document_id)
-        self.establish_loaded_baseline(current.document_id)
-        current.durable_file_state = _capture_durable_file_state(
-            current.resource_path
+        file_state = (result.durable_file_state
+                      if isinstance(result, DocumentActionResult) else None)
+        self.establish_loaded_baseline(
+            current.document_id,
+            durable_file_state=(file_state if file_state is not None else
+                                _capture_durable_file_state(current.resource_path)),
         )
+        if current.state is DocumentState.CONFLICT:
+            return DocumentActionResult(
+                DocumentActionStatus.FAILED,
+                "the durable resource changed again while it was loading; review the current external conflict",
+            )
         return DocumentActionResult(DocumentActionStatus.APPLIED)
 
     def complete_external_reload(
@@ -1984,6 +2024,7 @@ class DocumentRegistry:
         *,
         success: bool,
         message: str = "",
+        durable_file_state=None,
     ) -> DocumentActionResult:
         """Complete a controller-owned asynchronous durable reload."""
         identifier = str(document_id or "")
@@ -1995,13 +2036,19 @@ class DocumentRegistry:
                 message or "the document closed before durable reload completed",
             )
         elif success:
-            self.establish_loaded_baseline(identifier)
-            document = self.require(identifier)
-            document.durable_file_state = _capture_durable_file_state(
-                document.resource_path
+            self.establish_loaded_baseline(
+                identifier,
+                durable_file_state=(durable_file_state if durable_file_state is not None else
+                                    _capture_durable_file_state(document.resource_path)),
             )
-            document.state = DocumentState.READY
-            result = DocumentActionResult(DocumentActionStatus.APPLIED)
+            document = self.require(identifier)
+            result = (
+                DocumentActionResult(
+                    DocumentActionStatus.FAILED,
+                    "the durable resource changed again while it was loading; review the current external conflict",
+                ) if document.state is DocumentState.CONFLICT else
+                DocumentActionResult(DocumentActionStatus.APPLIED)
+            )
         else:
             document.state = DocumentState.CONFLICT
             result = DocumentActionResult(
@@ -2029,6 +2076,15 @@ class DocumentRegistry:
                 DocumentActionStatus.REJECTED,
                 "the external conflict cannot be resolved while a save is pending",
             )
+        if document.resource_path and document.external_file_state is None:
+            return DocumentActionResult(
+                DocumentActionStatus.REJECTED,
+                "the external file state is unavailable; inspect the durable resource before resolving the conflict",
+            )
+        document.durable_file_state = document.external_file_state
+        document.external_file_state = None
+        if not document.is_dirty:
+            self.mark_changed(document.document_id)
         document.state = DocumentState.READY
         self._touch()
         return DocumentActionResult(DocumentActionStatus.APPLIED)
@@ -2068,6 +2124,11 @@ class DocumentRegistry:
             clean_revision,
         )
         document.state = restored_state
+        if restored_state is DocumentState.CONFLICT:
+            observed = _capture_durable_file_state(document.resource_path)
+            if _durable_file_identity(observed) != _durable_file_identity(document.external_file_state):
+                document.external_revision += 1
+            document.external_file_state = observed
         self._touch()
 
     def dirty_documents(self) -> tuple[EditorDocument, ...]:
@@ -2257,6 +2318,7 @@ class DocumentRegistry:
             document_id=document.document_id,
             captured_revision=document.revision,
             captured_external_revision=document.external_revision,
+            was_conflicted=document.state is DocumentState.CONFLICT,
             expected_file_state=document.durable_file_state,
             resource_path=document.resource_path,
             save_as=bool(save_as),
@@ -2371,7 +2433,13 @@ class DocumentRegistry:
             return ticket
         if conflict:
             success = False
-            document.state = DocumentState.CONFLICT
+            try:
+                self.mark_conflict(document.document_id)
+            except (OSError, RuntimeError) as exc:
+                # A failed disk inspection must not leave a save ticket live
+                # or permit an unconditional write on the next attempt.
+                document.state = DocumentState.CONFLICT
+                message = str(exc)
         if success:
             external_revision_changed = (
                 not ticket.save_as
@@ -2433,6 +2501,7 @@ class DocumentRegistry:
                 if committed_file_state is not None
                 else _capture_durable_file_state(document.resource_path)
             )
+            document.external_file_state = None
             document.edit_revision = max(document.edit_revision, document.revision)
             document.state = DocumentState.READY
             if ticket.save_as:
@@ -2440,7 +2509,11 @@ class DocumentRegistry:
             ticket.status = SaveTicketStatus.SUCCEEDED
         else:
             if not conflict and document.state is not DocumentState.CONFLICT:
-                document.state = DocumentState.READY
+                # Save Copy temporarily presents SAVING, but failure or
+                # cancellation has not resolved the original disk conflict.
+                document.state = (
+                    DocumentState.CONFLICT if ticket.was_conflicted else DocumentState.READY
+                )
             ticket.status = (
                 SaveTicketStatus.CANCELLED if cancelled else SaveTicketStatus.FAILED
             )

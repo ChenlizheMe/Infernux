@@ -6,7 +6,11 @@ from math import isfinite
 
 
 def editor_dpi_scale(ctx) -> float:
-    """Return the native per-monitor content scale or fail immediately."""
+    """Return authored UI units to native window units for this monitor.
+
+    This is display scale / pixel density, not the framebuffer ratio. Pointer
+    events, ImGui bounds and these scaled metrics all use the same window units.
+    """
     scale = float(ctx.get_dpi_scale())
     if not isfinite(scale) or scale <= 0.0:
         raise RuntimeError(f"Editor reported an invalid display scale: {scale!r}")

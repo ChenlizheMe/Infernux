@@ -62,12 +62,7 @@ def _wire_cache_init(ctx):
 
     def _resolve_scene_object(object_id):
         manager = ctx.SceneManager.instance()
-        resolver = getattr(manager, "find_runtime_object_by_id", None)
-        if callable(resolver):
-            obj = resolver(int(object_id or 0))
-        else:
-            scene = manager.get_active_scene()
-            obj = scene.find_by_id(int(object_id or 0)) if scene else None
+        obj = manager.find_runtime_object_by_id(int(object_id or 0))
         scene = getattr(obj, "scene", None) if obj is not None else None
         if scene is None:
             scene = manager.get_active_scene()
@@ -280,7 +275,12 @@ def _wire_object_info(ctx):
         info.tag = getattr(obj, 'tag', 'Untagged')
         info.layer = getattr(obj, 'layer', 0)
         info.prefab_guid = getattr(obj, 'prefab_guid', '') or ''
-        info.hide_transform = getattr(obj, 'hide_transform', False)
+        info.hide_transform = bool(getattr(obj, 'hide_transform', False))
+        from Infernux.ui.inx_ui_screen_component import InxUIScreenComponent
+        info.hide_transform_scale = any(
+            isinstance(component, InxUIScreenComponent)
+            for component in obj.get_py_components()
+        )
         transform = obj.get_transform()
         info.transform_component_id = int(
             getattr(transform, 'component_id', 0) or 0

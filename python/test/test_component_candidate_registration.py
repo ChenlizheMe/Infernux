@@ -632,9 +632,13 @@ def test_candidate_module_failure_after_sys_modules_write_restores_every_entry(
     candidate_environment,
     monkeypatch,
 ):
+    from Infernux.components.serializable_object import get_serializable_class
+
     assets, probe = candidate_environment
     source = (
-        "from Infernux.components import InxComponent\n"
+        "from Infernux.components import InxComponent, SerializableObject\n"
+        "class Rules(SerializableObject):\n"
+        "    score: int = 17\n"
         "class CandidateModuleCommitFailure(InxComponent):\n"
         "    amount: float = 1.0\n"
     )
@@ -643,12 +647,15 @@ def test_candidate_module_failure_after_sys_modules_write_restores_every_entry(
     transaction = _stage(path, source, "candidate-module-commit-failure-guid")
     candidate = transaction.cds_publish_types[0]
     module_name = transaction._candidate_import.publishable_modules[0].__name__
+    data_type_id = f"{module_name}:Rules"
+    assert get_serializable_class(data_type_id) is None
     previous_module = sys.modules.get(module_name)
     real_commit = transaction._candidate_import.commit
 
     def commit_then_fail():
         real_commit()
         assert sys.modules.get(module_name) is not previous_module
+        assert get_serializable_class(data_type_id) is sys.modules[module_name].Rules
         raise RuntimeError("simulated candidate module publication failure")
 
     monkeypatch.setattr(transaction._candidate_import, "commit", commit_then_fail)
@@ -659,6 +666,7 @@ def test_candidate_module_failure_after_sys_modules_write_restores_every_entry(
     assert transaction.rolled_back
     assert snapshot_component_registry_state() == before_registry
     assert sys.modules.get(module_name) is previous_module
+    assert get_serializable_class(data_type_id) is None
     assert is_component_registration_pending(candidate)
     assert probe.class_keys == []
 
@@ -747,6 +755,30 @@ def test_component_free_helper_commit_does_not_create_cds_state(
     assert probe.allocations == []
 
 
+def test_data_only_script_uses_the_existing_reload_publication(candidate_environment):
+    from Infernux.components.serializable_object import get_serializable_class
+
+    assets, probe = candidate_environment
+    source = (
+        "from Infernux.components import SerializableObject\n"
+        "class Rules(SerializableObject):\n"
+        "    score: int = 17\n"
+    )
+    path = _write_candidate(assets, "data_only.py", source)
+    transaction = _stage(path, source, "data-only-guid")
+    module = transaction._candidate_import.publishable_modules[0]
+    identity = f"{module.__name__}:Rules"
+    try:
+        assert get_serializable_class(identity) is None
+        transaction.commit()
+        assert get_serializable_class(identity) is module.Rules
+        assert transaction.registry_entries == ()
+        assert probe.class_keys == probe.allocations == []
+    finally:
+        transaction.rollback()
+    assert get_serializable_class(identity) is None
+
+
 def test_pending_candidate_cannot_reuse_live_schema_or_allocate_slot(
     candidate_environment,
 ):
@@ -828,8 +860,14 @@ def _stage_schema_reload(path: Path, target: type, instances: tuple[object, ...]
 
 def test_schema_transaction_migrates_one_thousand_live_instances_in_place(
     candidate_environment,
+    monkeypatch,
 ):
     assets, probe = candidate_environment
+
+    def reject_redundant_native_copy(*_args):
+        raise AssertionError("prepared semantic values must be written once, not after a raw slot copy")
+
+    monkeypatch.setattr(probe, "_cds_schema_migrate_slot", reject_redundant_native_copy)
     name = "SchemaThousandProbe"
     guid = "schema-thousand-guid"
     target = _schema_target(name, guid)
@@ -903,6 +941,32 @@ def test_multi_class_schema_prepare_failure_rolls_back_every_candidate(
     assert all(not transaction["active"] for transaction in probe._transactions.values())
     assert _cds_bridge.get_class_info(first) is None
     assert _cds_bridge.get_class_info(second) is None
+
+
+def test_invalid_candidate_range_fails_before_native_preparation(candidate_environment, monkeypatch):
+    assets, probe = candidate_environment
+    name, guid = "InvalidRangeProbe", "invalid-range-preflight-guid"
+    target = _schema_target(name, guid)
+    instance = target()
+    instance.count = 8
+    original_slot, original_class_id = instance._cds_slot, instance._cds_class_id
+    source = _schema_candidate_source(name).replace(
+        "InxComponent, FormerlySerializedAs", "InxComponent, FormerlySerializedAs, serialized_field",
+    ).replace("= 0.0", "= serialized_field(default=0.0, range=(10.0, 0.0))")
+    path = _write_candidate(assets, f"{name}.py", source)
+    def reject_early_allocation():
+        raise AssertionError("invalid candidate values must fail before native schema preparation")
+
+    monkeypatch.setattr(probe, "_cds_schema_begin", reject_early_allocation)
+    try:
+        with pytest.raises(ScriptLoadError, match="range must be ordered"):
+            _stage_schema_reload(path, target, (instance,), source, guid)
+        assert instance.count == 8
+        assert instance._cds_slot == original_slot
+        assert instance._cds_class_id == original_class_id
+        assert not hasattr(instance, "velocity")
+    finally:
+        instance._call_on_destroy()
 
 
 def test_schema_transaction_nth_instance_failure_restores_every_live_surface(

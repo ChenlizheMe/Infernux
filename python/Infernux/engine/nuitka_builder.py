@@ -161,35 +161,46 @@ def _windows_ascii_build_alias(build_cache_root: str) -> str:
         return ""
 
     os.makedirs(build_cache_root, exist_ok=True)
-    program_data = os.environ.get("PROGRAMDATA", r"C:\ProgramData")
-    alias_parent = os.path.join(program_data, "Infernux", "BuildLinks")
-    os.makedirs(alias_parent, exist_ok=True)
-    alias = os.path.join(
-        alias_parent,
-        f"{os.getpid()}-{threading.get_ident()}-{uuid.uuid4().hex}",
-    )
-    result = subprocess.run(
-        ["cmd.exe", "/d", "/c", "mklink", "/J", alias, build_cache_root],
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        check=False,
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-    )
-    if result.returncode != 0 or not os.path.isdir(alias):
-        raise RuntimeError(
-            "Windows game builds require an ASCII compiler path, but the "
-            f"build-cache junction could not be created: {result.stdout.strip()}"
+    # Only the temporary junction lives outside the project. Never climb to
+    # C:\Users or a drive root: those are not user-writable cache directories.
+    # A Unicode user TEMP needs Windows' shared Temp instead; mkdtemp creates a
+    # private, unique parent. This also works with NTFS short names disabled.
+    temp_root = tempfile.gettempdir()
+    if not temp_root.isascii():
+        temp_root = os.path.join(os.environ["SystemRoot"], "Temp")
+    if not temp_root.isascii():
+        raise RuntimeError("Windows compiler tooling requires an ASCII TEMP directory.")
+    alias_parent = tempfile.mkdtemp(prefix="infernux-build-link-", dir=temp_root)
+    alias = os.path.join(alias_parent, "cache")
+    try:
+        result = subprocess.run(
+            ["cmd.exe", "/d", "/c", "mklink", "/J", alias, build_cache_root],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
+        if result.returncode != 0 or not os.path.isdir(alias):
+            raise RuntimeError(
+                "Windows compiler tooling could not create its temporary "
+                f"ASCII build-cache junction: {result.stdout.strip()}"
+            )
+    except BaseException:
+        _remove_windows_build_alias(alias)
+        raise
     return alias
 
 
 def _remove_windows_build_alias(alias: str) -> None:
-    if alias and os.path.lexists(alias):
+    if not alias:
+        return
+    if os.path.lexists(alias):
         os.rmdir(alias)
+    os.rmdir(os.path.dirname(alias))
 
 
 def _terminate_process_tree(proc: subprocess.Popen, *, timeout: float = 1.0) -> None:
@@ -1011,10 +1022,13 @@ class NuitkaBuilder:
             "engine/prebuilt_runtime.py",
         }
     )
-    # Source-less Runtime.inxrt must not expose the compiler that produced it.
-    # Keep this separate from _PLAYER_POST_BUILD_ONLY_FILES so changes to the
-    # compiler policy continue to invalidate the prebuilt runtime cache.
-    _PLAYER_RUNTIME_EXCLUDED_FILES = frozenset({"engine/nuitka_builder.py"})
+    # Source-less Runtime.inxrt carries the GPU compiler, but not build-time
+    # packagers. Keep these separate from _PLAYER_POST_BUILD_ONLY_FILES so a
+    # change to their output policy still invalidates the prebuilt runtime.
+    _PLAYER_RUNTIME_EXCLUDED_FILES = frozenset({
+        "_compiler/source_metadata.py",
+        "engine/nuitka_builder.py",
+    })
     _GAME_BUILD_EXCLUDED_PACKAGES = frozenset()
     _ENGINE_MANAGED_RUNTIME_PACKAGES = frozenset(
         {"infernux", "numba", "llvmlite", "numpy", "packaging"}
@@ -1089,7 +1103,7 @@ class NuitkaBuilder:
         "Infernux.engine.bootstrap_inspector",
         "Infernux.engine.interaction",
         "Infernux.engine.undo",
-        "Infernux.gizmos",
+        "Infernux.gizmos.collector",
     })
     _PLAYER_RUNTIME_UI_MODULES = frozenset({
         "Infernux.engine.ui",
@@ -1268,9 +1282,6 @@ class NuitkaBuilder:
             if sys.platform == "win32" and not self.player_module:
                 _p(t("build.step.embedding_manifest"), 0.90)
                 self._embed_utf8_manifest(dist_dir)
-
-                _p(t("build.step.signing_exe"), 0.92)
-                self._sign_executable(dist_dir)
 
             if runtime_pack_key:
                 _p("Caching reusable Infernux Runtime Pack", 0.94)
@@ -3075,9 +3086,32 @@ print(json.dumps({{
             destination.parent.mkdir(parents=True, exist_ok=True)
             if source_path.suffix.casefold() == ".py":
                 destination = destination.with_suffix(".pyc")
+                from Infernux._compiler.source_metadata import embed_compute_sources
+
+                source = source_path.read_text(encoding="utf-8")
+                cooked = embed_compute_sources(source)
+                compile_path = source_path
+                temporary_source = None
+                if cooked != source:
+                    import tempfile
+
+                    handle = tempfile.NamedTemporaryFile(
+                        mode="w",
+                        encoding="utf-8",
+                        newline="\n",
+                        suffix=".py",
+                        delete=False,
+                        dir=destination.parent,
+                    )
+                    try:
+                        handle.write(cooked)
+                        temporary_source = Path(handle.name)
+                    finally:
+                        handle.close()
+                    compile_path = temporary_source
                 try:
                     py_compile.compile(
-                        str(source_path),
+                        str(compile_path),
                         cfile=str(destination),
                         dfile=f"<infernux-runtime>/{relative_posix}",
                         doraise=True,
@@ -3087,9 +3121,46 @@ print(json.dumps({{
                     raise RuntimeError(
                         f"Unable to compile Player runtime module '{relative_posix}'"
                     ) from exc
+                finally:
+                    if temporary_source is not None:
+                        temporary_source.unlink(missing_ok=True)
                 copied_bytecode += 1
             else:
                 shutil.copy2(source_path, destination)
+
+        # The private GPU lowering vendor is staged by CMake, not part of the
+        # checked-out Python package.  Include it in the source-less Player
+        # runtime using the same bytecode policy as the engine modules.
+        try:
+            from Infernux._compiler.taichi import _vendor_dir
+
+            vendor_root = Path(_vendor_dir())
+        except (ImportError, OSError):
+            vendor_root = Path()
+        if not vendor_root.is_dir():
+            repository_root = Path(resolved_path(__file__)).parents[3]
+            staged = sorted(
+                repository_root.glob("out/build/*/gpu-jit-wheel/Infernux/_compiler/taichi/_vendor/taichi")
+            )
+            if staged:
+                vendor_root = staged[-1]
+        if vendor_root.is_dir() and vendor_root != source_root:
+            vendor_destination = destination_root / "_compiler" / "taichi" / "_vendor" / "taichi"
+            for source_path in sorted(vendor_root.rglob("*")):
+                if not source_path.is_file() or source_path.suffix.casefold() in {".pyc", ".pyo"}:
+                    continue
+                relative = source_path.relative_to(vendor_root)
+                destination = vendor_destination / relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                if source_path.suffix.casefold() == ".py":
+                    destination = destination.with_suffix(".pyc")
+                    py_compile.compile(
+                        str(source_path), cfile=str(destination),
+                        dfile=f"<infernux-gpu-vendor>/{relative.as_posix()}",
+                        doraise=True, optimize=2,
+                    )
+                else:
+                    shutil.copy2(source_path, destination)
 
         if not (destination_root / "__init__.pyc").is_file():
             raise RuntimeError("Player Runtime is missing Infernux/__init__.pyc")
@@ -3398,153 +3469,6 @@ print(json.dumps({{
         k32.EndUpdateResourceW(h, False)
 
         Debug.log_internal("Embedded UTF-8 active-code-page manifest")
-
-    # ------------------------------------------------------------------
-    # Code signing (reduces antivirus false positives)
-    # ------------------------------------------------------------------
-
-    def _sign_executable(self, dist_dir: str):
-        """Sign the built EXE with a self-signed certificate.
-
-        Unsigned executables — especially those compiled with MinGW —
-        are far more likely to trigger antivirus false positives because
-        they lack an Authenticode signature.  This method creates a
-        self-signed code-signing certificate (cached per-machine) and
-        applies it to the output EXE using PowerShell's
-        ``Set-AuthenticodeSignature``.
-
-        A self-signed certificate won't prevent SmartScreen warnings
-        (that requires a purchased EV certificate), but it does help
-        with heuristic-based AV scanners that penalise unsigned binaries.
-        """
-        exe_path = os.path.join(dist_dir, self.output_filename)
-        if not os.path.isfile(exe_path):
-            return
-
-        # Use PowerShell to: (1) find or create a self-signed code signing
-        # cert in CurrentUser\\My, (2) sign the EXE.
-        ps_script = r'''
-$ErrorActionPreference = "Stop"
-$certName = "Infernux Build Signing"
-$securityModulePath = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\Modules\Microsoft.PowerShell.Security\Microsoft.PowerShell.Security.psd1"
-if (-not (Test-Path -LiteralPath $securityModulePath)) {
-    Write-Output "UNSUPPORTED:security-module"
-    exit 0
-}
-
-Import-Module $securityModulePath -ErrorAction Stop
-
-if (-not (Get-PSDrive -Name Cert -ErrorAction SilentlyContinue)) {
-    Write-Output "UNSUPPORTED:cert-drive"
-    exit 0
-}
-
-$setAuth = Get-Command Set-AuthenticodeSignature -ErrorAction SilentlyContinue
-if (-not $setAuth) {
-    Write-Output "UNSUPPORTED:set-authenticode"
-    exit 0
-}
-
-$newSelfSigned = Get-Command New-SelfSignedCertificate -ErrorAction SilentlyContinue
-
-$cert = Get-ChildItem Cert:\CurrentUser\My |
-        Where-Object {
-            $_.Subject -eq "CN=$certName" -and
-            $_.NotAfter -gt (Get-Date) -and
-            $_.HasPrivateKey -and
-            ($_.EnhancedKeyUsageList | Where-Object { $_.FriendlyName -eq "Code Signing" })
-        } |
-        Select-Object -First 1
-
-if (-not $cert) {
-    if (-not $newSelfSigned) {
-        Write-Output "UNSUPPORTED:new-self-signed-certificate"
-        exit 0
-    }
-
-    $cert = New-SelfSignedCertificate `
-        -Subject "CN=$certName" `
-        -Type CodeSigningCert `
-        -CertStoreLocation Cert:\CurrentUser\My `
-        -NotAfter (Get-Date).AddYears(5)
-}
-
-$result = Set-AuthenticodeSignature -FilePath $EXE_PATH -Certificate $cert -HashAlgorithm SHA256
-if ($null -eq $result) {
-    Write-Output "UNSUPPORTED:no-result"
-    exit 0
-}
-
-Write-Output ("STATUS:" + [string]$result.Status)
-if ($result.StatusMessage) {
-    Write-Output ("MESSAGE:" + [string]$result.StatusMessage)
-}
-if ($result.SignerCertificate) {
-    Write-Output ("SIGNER:" + [string]$result.SignerCertificate.Thumbprint)
-}
-Write-Output ("CERT:" + [string]$cert.Thumbprint)
-'''
-        ps_script = ps_script.replace("$EXE_PATH", f'"{exe_path}"')
-        try:
-            system_root = os.environ.get("SystemRoot") or os.environ.get("WINDIR") or r"C:\Windows"
-            windows_powershell_root = os.path.join(
-                system_root, "System32", "WindowsPowerShell", "v1.0"
-            )
-            powershell_exe = os.path.join(windows_powershell_root, "powershell.exe")
-            signing_env = os.environ.copy()
-            # The Editor may itself be launched from PowerShell 7. Its inherited
-            # PSModulePath can make Windows PowerShell load incompatible type
-            # data before Microsoft.PowerShell.Security, producing duplicate
-            # ObjectSecurity members. Signing needs only the inbox modules.
-            signing_env["PSModulePath"] = os.path.join(windows_powershell_root, "Modules")
-            r = subprocess.run(
-                [powershell_exe, "-NoLogo", "-NoProfile", "-NonInteractive",
-                 "-ExecutionPolicy", "Bypass", "-Command", ps_script],
-                capture_output=True, text=True, timeout=60, env=signing_env,
-            )
-            stdout_lines = [line.strip() for line in (r.stdout or "").splitlines() if line.strip()]
-            stderr_text = (r.stderr or "").strip()
-
-            unsupported = next((line for line in stdout_lines if line.startswith("UNSUPPORTED:")), "")
-            status_line = next((line for line in stdout_lines if line.startswith("STATUS:")), "")
-            message_line = next((line for line in stdout_lines if line.startswith("MESSAGE:")), "")
-            signer_line = next((line for line in stdout_lines if line.startswith("SIGNER:")), "")
-            cert_line = next((line for line in stdout_lines if line.startswith("CERT:")), "")
-
-            if r.returncode != 0:
-                details = stderr_text or "\n".join(stdout_lines)
-                Debug.log_warning(f"Code signing failed: {details}")
-                return
-
-            if unsupported:
-                reason = unsupported.split(":", 1)[1]
-                Debug.log_internal(f"Code signing skipped: unsupported PowerShell signing environment ({reason})")
-                return
-
-            status = status_line.split(":", 1)[1] if status_line else ""
-            message = message_line.split(":", 1)[1] if message_line else ""
-            signer_thumbprint = signer_line.split(":", 1)[1].strip().upper() if signer_line else ""
-            cert_thumbprint = cert_line.split(":", 1)[1].strip().upper() if cert_line else ""
-
-            if status == "Valid":
-                Debug.log_internal("Signed EXE with self-signed certificate")
-            elif (
-                status in {"UnknownError", "NotTrusted"}
-                and signer_thumbprint
-                and signer_thumbprint == cert_thumbprint
-            ):
-                # A self-signed certificate is expected to terminate at an
-                # untrusted root unless the user explicitly installs it into a
-                # trust store. The Authenticode signature is nevertheless
-                # present and cryptographically associated with our cert.
-                Debug.log_internal(
-                    "Signed EXE with self-signed certificate; the local root is not trusted"
-                )
-            else:
-                details = message or stderr_text or "\n".join(stdout_lines)
-                Debug.log_warning(f"Code signing returned: {status or details}")
-        except Exception as exc:
-            Debug.log_warning(f"Code signing skipped: {exc}")
 
     # ------------------------------------------------------------------
     # Cleanup

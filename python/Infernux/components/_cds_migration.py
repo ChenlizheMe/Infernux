@@ -17,6 +17,7 @@ from .fields import (
     SerializedFieldDescriptor,
     copy_serialized_field_default,
     get_serialized_fields,
+    normalize_runtime_field_value,
 )
 
 
@@ -47,7 +48,8 @@ class ClassSchemaMigration:
         if tuple(old_fields) != tuple(new_fields):
             return True
         return any(
-            _storage_signature(old_fields[name]) != _storage_signature(new_fields[name])
+            (old_fields[name].field_id or name) != (new_fields[name].field_id or name)
+            or _storage_signature(old_fields[name]) != _storage_signature(new_fields[name])
             for name in old_fields
         )
 
@@ -93,9 +95,14 @@ def build_class_schema_migration(
     new_fields = get_serialized_fields(candidate_type)
     claimed_sources: set[str] = set()
     migrations: list[FieldMigration] = []
+    old_by_id = {
+        metadata.field_id if metadata.field_id is not None else name: name
+        for name, metadata in old_fields.items()
+    }
 
     for target_name, target in new_fields.items():
-        source_name: str | None = target_name if target_name in old_fields else None
+        identity = target.field_id if target.field_id is not None else target_name
+        source_name = old_by_id.get(identity)
         if source_name is None:
             declared_matches = [
                 name for name in target.former_names
@@ -169,10 +176,10 @@ def prepare_instance_values(
 ) -> Mapping[object, dict[str, Any]]:
     """Capture all instance values before any live descriptor is replaced.
 
-    New defaults are copied separately for every instance.  Existing reference,
-    list and SerializableObject values retain their authored identity for an
-    identity migration; the eventual descriptor normalization remains the
-    single authority for storage representation.
+    New defaults are copied separately for every instance. Existing values are
+    read raw, without resolving reference wrappers into live scene objects.
+    Candidate values use the same normalization as ordinary field writes before
+    either Python or native storage can be published.
     """
     selected = collect_live_instances(migration.target_type) if instances is None else tuple(instances)
     prepared: dict[object, dict[str, Any]] = {}
@@ -191,9 +198,9 @@ def prepare_instance_values(
                 raise FieldSchemaMigrationError(
                     f"live field descriptor is unavailable: {field.source_name}"
                 )
-            values[field.target_name] = _convert_value(
-                descriptor.get_raw(instance),
-                field.conversion,
+            values[field.target_name] = normalize_runtime_field_value(
+                _convert_value(descriptor.get_raw(instance), field.conversion),
+                field.target,
             )
         prepared[instance] = values
     return prepared

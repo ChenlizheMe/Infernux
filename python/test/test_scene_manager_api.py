@@ -15,6 +15,7 @@ def test_runtime_scene_load_prepares_persistent_group_before_commit(monkeypatch)
 
     calls: list[str] = []
     monkeypatch.setattr(SceneManager, "_runtime_scene_service", None)
+    monkeypatch.setattr(SceneManager, "_unload_other_scenes", staticmethod(lambda _scene: None))
 
     class NativeManager:
         def get_active_scene(self):
@@ -136,7 +137,7 @@ def test_load_scene_accepts_name_filename_and_project_path(tmp_path, monkeypatch
         monkeypatch.setattr(
             SceneManager,
             "_do_load",
-            staticmethod(lambda path: loaded.append(path) or True),
+            staticmethod(lambda path, **_kwargs: loaded.append(path) or True),
         )
 
         references = [

@@ -75,14 +75,47 @@ def test_hierarchy_creation_wiring_only_configures_shared_creation_service(monke
     assert service.configured["selection_service"] is not None
 
 
-def test_hierarchy_creation_catalog_includes_image():
+def test_hierarchy_creation_catalog_includes_ui_frame_and_image():
     from Infernux.engine.hierarchy_creation_service import HierarchyCreationService
 
     service = HierarchyCreationService()
     kinds = {entry["kind"] for entry in service.list_create_kinds()}
 
     assert "ui.image" in kinds
+    assert "ui.frame" in kinds
+    assert "ui.progress_bar" in kinds
+    assert "ui.slider" in kinds
     assert service._description_for("ui.image") == "Create Image"
+    assert service._description_for("ui.frame") == "Create Frame"
+    assert service._description_for("ui.progress_bar") == "Create Progress Bar"
+    assert service._description_for("ui.slider") == "Create Slider"
+
+
+def test_hierarchy_creation_targets_active_scene_without_pausing_other_loaded_scene(scene):
+    from Infernux.engine.hierarchy_creation_service import HierarchyCreationService
+    from Infernux.engine.undo import UndoManager
+    from Infernux.lib import SceneManager
+
+    native = SceneManager.instance()
+    other = native.create_scene("HierarchyCreationDestination")
+    source_marker = scene.create_game_object("SourceWorldMarker")
+    previous_manager = UndoManager.instance()
+    manager = UndoManager()
+    service = HierarchyCreationService()
+    try:
+        native.set_active_scene(other)
+        created = service.create("empty", name="CreatedInActiveScene", select=False)
+
+        assert other.find_by_id(created["id"]) is not None
+        assert scene.find_by_id(created["id"]) is None
+        assert scene.find_by_id(source_marker.id) is source_marker
+        assert native.get_active_scene() is other
+        assert native.scene_count >= 2
+        assert len(manager.action_journal.applied_entries()) == 1
+    finally:
+        native.set_active_scene(scene)
+        native.unload_scene(other)
+        UndoManager._instance = previous_manager
 
 
 def test_creation_selects_through_typed_service_and_records_one_context():
@@ -123,7 +156,7 @@ def test_creation_selects_through_typed_service_and_records_one_context():
         UndoManager._instance = previous_manager
 
 
-def test_ui_element_creation_uses_the_only_existing_canvas_when_context_parent_is_lost():
+def test_ui_creation_uses_only_canvas_only_without_an_explicit_world_parent():
     from Infernux.engine.hierarchy_creation_service import HierarchyCreationService
     from Infernux.ui import UICanvas
 
@@ -155,8 +188,43 @@ def test_ui_element_creation_uses_the_only_existing_canvas_when_context_parent_i
         navigation_service=None,
     )
 
-    assert service._find_canvas_parent_id(_UiScene(), 0) == 39
-    assert service._find_canvas_parent_id(_UiScene(), 12) == 39
+    assert service._find_ui_parent_id(_UiScene(), 0) == 39
+    assert service._find_ui_parent_id(_UiScene(), 12) == 12
+
+
+def test_ui_element_creation_preserves_a_selected_parent_inside_canvas():
+    from Infernux.engine.hierarchy_creation_service import HierarchyCreationService
+    from Infernux.ui import UICanvas, UIFrame
+
+    class _UiObject:
+        def __init__(self, object_id, components=(), parent=None):
+            self.id = object_id
+            self._components = list(components)
+            self._parent = parent
+
+        def get_py_components(self):
+            return list(self._components)
+
+        def get_parent(self):
+            return self._parent
+
+    canvas = _UiObject(39, [UICanvas()])
+    frame = _UiObject(73, [UIFrame()], canvas)
+
+    class _UiScene:
+        def find_by_id(self, object_id):
+            return {39: canvas, 73: frame}.get(object_id)
+
+        def get_all_objects(self):
+            return [canvas, frame]
+
+    service = HierarchyCreationService()
+    service.configure(
+        selection_service=SimpleNamespace(primary_scene_object_id=lambda: 73),
+        navigation_service=None,
+    )
+
+    assert service._find_ui_parent_id(_UiScene(), 73) == 73
 
 
 def test_hierarchy_creation_configures_ui_after_parenting_and_records_once(scene):
@@ -398,11 +466,13 @@ def test_ui_editor_creation_buttons_submit_the_global_scene_command(monkeypatch)
     canvas = SimpleNamespace(id=73)
 
     assert editor._create_canvas()
+    assert editor._create_frame_element(canvas)
     assert editor._create_text_element(canvas)
     assert editor._create_image_element(canvas)
     assert editor._create_button_element(canvas)
     assert [payload[1]["payload"] for payload in calls] == [
         {"kind": "ui.canvas", "parent_id": 0},
+        {"kind": "ui.frame", "parent_id": 73},
         {"kind": "ui.text", "parent_id": 73},
         {"kind": "ui.image", "parent_id": 73},
         {"kind": "ui.button", "parent_id": 73},

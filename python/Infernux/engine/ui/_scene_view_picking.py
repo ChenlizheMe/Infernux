@@ -46,8 +46,7 @@ def _owns_particle_system(object_id: int) -> bool:
     from Infernux.lib import SceneManager
     from Infernux.components.particle_system import ParticleSystem
 
-    scene = SceneManager.instance().get_active_scene()
-    obj = scene.find_by_id(int(object_id)) if scene else None
+    obj = SceneManager.instance().find_runtime_object_by_id(int(object_id))
     if obj is None:
         return False
     return any(isinstance(comp, ParticleSystem) for comp in obj.get_py_components())
@@ -58,8 +57,7 @@ def _has_mesh_pick_geometry(object_id: int) -> bool:
     from Infernux.lib import SceneManager
     from Infernux.components.builtin import MeshRenderer, SkinnedMeshRenderer
 
-    scene = SceneManager.instance().get_active_scene()
-    obj = scene.find_by_id(int(object_id)) if scene else None
+    obj = SceneManager.instance().find_runtime_object_by_id(int(object_id))
     if obj is None:
         return False
     # Native component lookup is exact by C++ type name.  The Python
@@ -86,8 +84,7 @@ def _object_ray_depth(object_id: int, ray_origin, ray_direction) -> float:
     """Approximate pick depth as projection of the object origin onto the ray."""
     from Infernux.lib import SceneManager
 
-    scene = SceneManager.instance().get_active_scene()
-    obj = scene.find_by_id(int(object_id)) if scene else None
+    obj = SceneManager.instance().find_runtime_object_by_id(int(object_id))
     transform = obj.get_transform() if obj is not None else None
     if transform is None:
         return float("inf")
@@ -111,20 +108,29 @@ class SceneViewPickingMixin:
                 and not self._box_select_active):
             ctrl = ctx.is_key_down(_keys.KEY_LEFT_CTRL) or ctx.is_key_down(_keys.KEY_RIGHT_CTRL)
             picked_id = self._pick_scene_object(ctx, vp)
+            world_ui_pick = picked_id in getattr(
+                self, "_last_world_ui_pick_ids", ()
+            )
             defer_mesh_selection = (
                 not ctrl
                 and picked_id > 0
+                and not world_ui_pick
                 and _has_mesh_pick_geometry(picked_id)
             )
             if self._on_object_picked and not defer_mesh_selection:
                 self._on_object_picked(picked_id, ctrl)
-            self._request_scene_pick_refinement(
-                ctx,
-                vp,
-                picked_id,
-                ctrl,
-                selection_deferred=defer_mesh_selection,
-            )
+            # Canvas-free UI is picked against its exact authored quad.  The
+            # delayed scene object-ID pass does not encode every UI primitive
+            # (text glyphs in particular), so it must not replace this precise
+            # result with the geometry rendered behind the element.
+            if not world_ui_pick:
+                self._request_scene_pick_refinement(
+                    ctx,
+                    vp,
+                    picked_id,
+                    ctrl,
+                    selection_deferred=defer_mesh_selection,
+                )
 
         # Box-select
         if self._box_select_active:
@@ -384,7 +390,7 @@ class SceneViewPickingMixin:
         else:
             index = 0
             current_id = self._current_scene_pick_id()
-            if current_id in ids:
+            if current_id in ids and _owns_particle_system(current_id):
                 # Particle and mesh hits are equal candidates. A first click on
                 # an already-selected particle must not jump to a mesh that only
                 # won the AABB sort.
@@ -417,23 +423,30 @@ class SceneViewPickingMixin:
 
         # Gather all scene objects and project them to screen space
         from Infernux.lib import SceneManager
-        scene = SceneManager.instance().get_active_scene()
-        if not scene or not self._engine:
+        manager = SceneManager.instance()
+        if manager.scene_count <= 0 or not self._engine:
             return
 
         native = self._engine.get_native_engine()
         if not native:
             return
 
-        all_objects = scene.get_all_objects()
         selected_ids = []
+        all_objects = (
+            obj
+            for scene_index in range(int(manager.scene_count))
+            for obj in manager.get_scene_at(scene_index).get_all_objects()
+        )
         for obj in all_objects:
             t = obj.get_transform()
             if t is None:
                 continue
-            # Skip screen-space UI elements (canvas children with _hide_transform_)
+            # Canvas-free UI is ordinary world geometry and participates in
+            # Scene selection.  Only UI actually owned by a screen Canvas is
+            # excluded from the world-space box query.
+            from Infernux.ui.inx_ui_screen_component import InxUIScreenComponent
             _skip = any(
-                getattr(type(_pc), '_hide_transform_', False)
+                isinstance(_pc, InxUIScreenComponent) and not _pc.is_world_space()
                 for _pc in obj.get_py_components()
             )
             if _skip:
@@ -473,6 +486,7 @@ class SceneViewPickingMixin:
 
     def _pick_scene_object(self, ctx: InxGUIContext, vp: ViewportInfo) -> int:
         """Pick scene object under mouse cursor with repeated-click cycling."""
+        self._last_world_ui_pick_ids = ()
         if not self._engine:
             return 0
 
@@ -483,6 +497,23 @@ class SceneViewPickingMixin:
             return 0
 
         candidates = self._engine.pick_scene_object_ids(local_x, local_y, vp.width, vp.height)
+
+        ray = self._engine.screen_to_world_ray(local_x, local_y, vp.width, vp.height)
+        if ray is not None:
+            from Infernux.engine.runtime_screen_ui import pick_world_ui_object_ids
+            from Infernux.lib import SceneManager
+
+            manager = SceneManager.instance()
+            world_ui_ids = pick_world_ui_object_ids(
+                manager.get_active_scene(),
+                (float(ray[0]), float(ray[1]), float(ray[2])),
+                (float(ray[3]), float(ray[4]), float(ray[5])),
+                manager.get_runtime_persistent_scene(),
+            )
+            self._last_world_ui_pick_ids = tuple(world_ui_ids)
+            candidates = self._insert_ids_by_depth(
+                candidates, world_ui_ids, local_x, local_y, vp.width, vp.height
+            )
 
         # Filter invalid IDs and gizmo axis pseudo-IDs.
         ids = []

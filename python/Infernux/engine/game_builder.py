@@ -62,6 +62,7 @@ from Infernux.engine.path_utils import (
     same_path,
 )
 from Infernux.engine.build_settings import load_build_settings
+from Infernux.engine.filesystem import replace_path
 from Infernux.engine.runtime_artifact_catalog import (
     RUNTIME_JSON_DOCUMENT_SUFFIXES,
     RuntimeArtifactError,
@@ -226,7 +227,7 @@ def _write_json_atomic(
             stream.write("\n")
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temporary, destination)
+        replace_path(temporary, destination)
     finally:
         try:
             os.remove(temporary)
@@ -543,7 +544,7 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
             self._cleanup_dist(final_dir)
 
             data_root = os.path.join(final_dir, f"{self.project_name}_Data")
-            os.replace(os.path.join(final_dir, "Data"), data_root)
+            replace_path(os.path.join(final_dir, "Data"), data_root)
             report("Packing project content", 0.75)
             self._pack_content_archive(
                 final_dir,
@@ -597,7 +598,6 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
 
         _p(t("build.step.copying_data"), 0.88)
         self._copy_game_data(final_dir)
-
         _p(t("build.step.compiling_scripts"), 0.91)
         self._compile_user_scripts(final_dir)
         self._compile_player_plugin_scripts(final_dir)
@@ -726,7 +726,7 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
                     if os.path.exists(final_dir):
                         _remove_player_path(stale_backup, ignore_errors=True)
                     else:
-                        os.replace(stale_backup, final_dir)
+                        replace_path(stale_backup, final_dir)
             if stale_staging:
                 stale_staging = resolved_path(stale_staging)
                 if (
@@ -794,13 +794,13 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
         moved_old = False
         try:
             if os.path.exists(final_dir):
-                os.replace(final_dir, backup)
+                replace_path(final_dir, backup)
                 moved_old = True
             try:
-                os.replace(state["staging"], final_dir)
+                replace_path(state["staging"], final_dir)
             except Exception:
                 if moved_old and not os.path.exists(final_dir):
-                    os.replace(backup, final_dir)
+                    replace_path(backup, final_dir)
                 raise
             if moved_old:
                 _remove_player_path(backup, ignore_errors=True)
@@ -1153,6 +1153,30 @@ if not os.path.isfile(_BUILD_MANIFEST_PATH):
 _RUNTIME_MODULE_DIR = os.path.join(_DATA_ROOT, "Modules", "Parallel")
 _DLL_DIR_HANDLES = []
 
+# Optional CPU/JIT support is shipped as one compressed archive.  Materialize
+# it only on first use into the Player-owned cache; keeping the delivery tree
+# sealed avoids duplicating the archive's expanded payload in every build.
+_PARALLEL_ARCHIVE = os.path.join(_DATA_ROOT, "Modules", "Parallel.inxmod")
+if os.path.isfile(_PARALLEL_ARCHIVE) and not os.path.isdir(_RUNTIME_MODULE_DIR):
+    import tempfile as _player_tempfile
+    from Infernux.engine.player_package_native import extract_pack as _extract_pack
+    _parallel_cache = os.path.join(
+        _PLAYER_STATE_ROOT, "Cache", "parallel-" + str(os.path.getsize(_PARALLEL_ARCHIVE))
+    )
+    os.makedirs(os.path.dirname(_parallel_cache), exist_ok=True)
+    if not os.path.isdir(_parallel_cache):
+        _parallel_tmp = _player_tempfile.mkdtemp(
+            prefix=".parallel-", dir=os.path.dirname(_parallel_cache)
+        )
+        try:
+            _extract_pack(_PARALLEL_ARCHIVE, _parallel_tmp)
+            os.replace(_parallel_tmp, _parallel_cache)
+        except Exception:
+            from shutil import rmtree as _player_rmtree
+            _player_rmtree(_parallel_tmp, ignore_errors=True)
+            raise
+    _RUNTIME_MODULE_DIR = _parallel_cache
+
 def _register_player_dll_directory(_dll_dir):
     if sys.platform != "win32" or not os.path.isdir(_dll_dir):
         return
@@ -1355,7 +1379,7 @@ finally:
         data_root = os.path.join(final_dir, data_name)
         if os.path.exists(data_root):
             raise RuntimeError(f"Player Data target already exists: {data_root}")
-        os.replace(data_source, data_root)
+        replace_path(data_source, data_root)
 
         expected_executable = (
             f"{self.project_name}.exe" if sys.platform == "win32" else self.project_name
@@ -1632,8 +1656,7 @@ finally:
         )
         self._staged_player_plugin_guids = staged_plugin_guids
 
-    @staticmethod
-    def _compile_player_plugin_scripts(final_dir: str) -> None:
+    def _compile_player_plugin_scripts(self, final_dir: str) -> None:
         """Compile exported package scripts without exposing source."""
 
         data_root = os.path.join(final_dir, "Data")
@@ -1677,6 +1700,10 @@ finally:
                             for declaration in declarations
                         ]
                         registry_changed = True
+                    source_text = Path(source).read_text(encoding="utf-8")
+                    cooked_source = self._cook_compute_source(source_text)
+                    if cooked_source != source_text:
+                        Path(source).write_text(cooked_source, encoding="utf-8", newline="\n")
                     py_compile.compile(
                         source,
                         cfile=source + "c",
@@ -1913,7 +1940,9 @@ finally:
             root = os.path.dirname(root)
         return resolved_path(root)
 
-    def _collect_library_asset_entries(self, entries: list[dict]) -> dict[str, dict]:
+    def _collect_library_asset_entries(
+        self, entries: list[dict], *, extra_roots: tuple[str, ...] = ()
+    ) -> dict[str, dict]:
         """Select every current imported product beneath ``Assets``.
 
         Player builds deliberately use a conservative content policy while
@@ -1967,6 +1996,9 @@ finally:
             .startswith("shaders/")
         )
 
+        # The package export policy has already selected these GUIDs. Their
+        # imported products and dependencies use the same closure as Assets.
+        roots.update(extra_roots)
         selected: dict[str, dict] = {}
         pending = sorted(roots)
         while pending:
@@ -2047,7 +2079,9 @@ finally:
 
         try:
             entries = self._asset_index_entries()
-            selected = self._collect_library_asset_entries(entries)
+            selected = self._collect_library_asset_entries(
+                entries, extra_roots=tuple(getattr(self, "_staged_player_plugin_guids", ()))
+            )
         except RuntimeArtifactError as exc:
             raise RuntimeError(f"Library artifact selection failed: {exc}") from exc
 
@@ -2072,7 +2106,7 @@ finally:
                     )
                 artifact_paths.append(self._particle_artifact_relative(guid))
             if not artifact_paths:
-                if asset_type in {"texture", "mesh", "particlegraph"}:
+                if asset_type in {"texture", "mesh", "particlegraph", "rendertexture"}:
                     raise RuntimeError(
                         "Library asset has no compiled artifact path: "
                         f"guid={guid}, source={source_path}"
@@ -2130,6 +2164,11 @@ finally:
         """
 
         assets_root = resolved_path(os.path.join(self.project_path, "Assets"))
+        packages_root = resolved_path(os.path.join(self.project_path, "Packages"))
+        staged_plugin_guids = {
+            str(guid).casefold()
+            for guid in getattr(self, "_staged_player_plugin_guids", set())
+        }
         compiled_guids = {
             str(binding.get("source_guid", ""))
             for binding in self._runtime_artifact_bindings.values()
@@ -2145,7 +2184,14 @@ finally:
                 raise RuntimeError(f"Player asset GUID is not path-safe: {guid!r}")
 
             source_path = self._library_source_entry_path(entry)
-            if not is_path_within(source_path, assets_root, allow_root=False):
+            is_project_asset = is_path_within(
+                source_path, assets_root, allow_root=False
+            )
+            is_package_asset = (
+                guid.casefold() in staged_plugin_guids
+                and is_path_within(source_path, packages_root, allow_root=False)
+            )
+            if not is_project_asset and not is_package_asset:
                 continue
             suffix = Path(source_path).suffix.casefold()
             if suffix == ".py":
@@ -2157,7 +2203,9 @@ finally:
             ).replace("\\", "/")
             logical_type = logical_type_for_path(source_relative)
             payload_kind = payload_kind_for(logical_type)
-            if payload_kind == "serialized_runtime_document":
+            if logical_type == "data_asset":
+                artifact_directory = "Data"
+            elif payload_kind == "serialized_runtime_document":
                 artifact_directory = "Document"
             elif logical_type == "audio":
                 artifact_directory = "Audio"
@@ -2170,14 +2218,23 @@ finally:
             # Content.inxpkg rather than shipped as loose authoring files, so
             # Player uses the exact same dynamic linker as the Editor and can
             # form shader combinations that did not exist at build time.
-            artifact_suffix = suffix
+            artifact_suffix = ".inxasset" if logical_type == "data_asset" else suffix
             runtime_path = (
                 f"Library/Artifacts/{artifact_directory}/{guid}{artifact_suffix}"
             )
             destination = os.path.join(data_dir, *runtime_path.split("/"))
             os.makedirs(os.path.dirname(destination), exist_ok=True)
-            shutil.copy2(source_path, destination)
-            self._rewrite_player_document_paths(destination, suffix)
+            if logical_type == "data_asset":
+                from Infernux.core.data_asset import encode_data_asset_artifact
+
+                with open(source_path, "r", encoding="utf-8") as source_stream:
+                    data_asset_document = json.load(source_stream)
+                Path(destination).write_bytes(
+                    encode_data_asset_artifact(data_asset_document)
+                )
+            else:
+                shutil.copy2(source_path, destination)
+                self._rewrite_player_document_paths(destination, suffix)
 
             source_state = entry.get("source", {})
             source_fingerprint = {
@@ -2574,7 +2631,8 @@ finally:
             return ""
 
         lifecycle_names = {
-            "awake", "start", "fixed_update", "update", "late_update",
+            "awake", "start", "fixed_update", "physics_pre_step",
+            "physics_post_step", "update", "late_update",
             "on_enable", "on_disable", "on_destroy",
             "on_collision_enter", "on_collision_stay", "on_collision_exit",
             "on_trigger_enter", "on_trigger_stay", "on_trigger_exit",
@@ -2614,6 +2672,67 @@ finally:
                 }
             )
         return records
+
+    def _cook_compute_source(self, source_text: str) -> str:
+        """Embed CPU JIT transforms and source-less GPU kernel metadata."""
+        from Infernux._compiler.source_metadata import embed_compute_sources
+
+        cooked = source_text
+        if not self.enable_jit:
+            cpu_jit = _jit_kernels.cpu_jit_declarations(source_text)
+            if cpu_jit:
+                raise RuntimeError("CPU JIT requires the Numba/llvmlite build runtime: "
+                                   + ", ".join(cpu_jit))
+            required = [name for name, policy in _jit_kernels.auto_parallel_declarations(source_text)
+                        if policy == "required"]
+            if required:
+                raise RuntimeError("parallel_policy='required' needs the Auto Parallel build option: "
+                                   + ", ".join(required))
+        else:
+            cooked = _jit_kernels.build_auto_parallel_embedded_source(cooked) or cooked
+        return embed_compute_sources(cooked)
+
+    @staticmethod
+    def _cook_runtime_component_semantics(
+        records: list[dict[str, object]],
+    ) -> None:
+        """Attach the already-published authoring schema to Player identities."""
+        from Infernux.components.fields import get_field_schema, get_serialized_fields
+        from Infernux.components.registry import get_type_by_identity
+
+        for record in records:
+            script_guid = str(record["script_guid"])
+            type_guid = str(record["type_guid"])
+            qualname = str(record["qualname"])
+            component_type = get_type_by_identity(
+                qualname.rsplit(".", 1)[-1],
+                script_guid,
+                type_guid,
+            )
+            if component_type is None:
+                raise RuntimeError(
+                    "Player semantic cook cannot resolve the published component "
+                    f"identity: {record['type_id']}"
+                )
+            owner = f"script:{script_guid}"
+            record["semantic"] = {
+                "type_guid": type_guid,
+                "readable_id": str(record["type_id"]),
+                "owner": owner,
+                "origin": "python",
+                "schema_version": 1,
+                "display_name": qualname,
+                "base_type_guid": "",
+                "constructible": True,
+                "serializable": True,
+                "runtime_available": True,
+                "runtime_profiles": ["player"],
+                "lifecycle": list(record["lifecycle"]),
+                "fields": [
+                    get_field_schema(component_type, name).to_document()
+                    for name in get_serialized_fields(component_type)
+                ],
+            }
 
     def _compile_user_scripts(self, final_dir: str):
         """Compile .py in Data/Assets/ to .pyc and remove originals.
@@ -2688,22 +2807,13 @@ finally:
                                 runtime_path=runtime_path,
                             )
                         )
-                        declarations = _jit_kernels.auto_parallel_declarations(source_text)
-                        if not self.enable_jit:
-                            required = [name for name, policy in declarations if policy == "required"]
-                            if required:
-                                raise RuntimeError(
-                                    "parallel_policy='required' needs the Auto Parallel build option: "
-                                    + ", ".join(required)
-                                )
-                        else:
-                            embedded_source = _jit_kernels.build_auto_parallel_embedded_source(source_text)
-                            if embedded_source is not None:
-                                with open(py_path, "w", encoding="utf-8", newline="\n") as compiled_source:
-                                    compiled_source.write(embedded_source)
+                        cooked_source = self._cook_compute_source(source_text)
+                        if cooked_source != source_text:
+                            with open(py_path, "w", encoding="utf-8", newline="\n") as compiled_source:
+                                compiled_source.write(cooked_source)
                     except ValueError as exc:
                         raise RuntimeError(
-                            f"auto_parallel compilation rejected for {fname}: {exc}"
+                            f"compute compilation rejected for {fname}: {exc}"
                         ) from exc
                     py_compile.compile(
                         py_path,
@@ -2718,6 +2828,7 @@ finally:
         if guid_map:
             manifest_path = os.path.join(data_dir, "_script_guid_map.json")
             _write_json_atomic(manifest_path, guid_map, indent=None)
+        self._cook_runtime_component_semantics(runtime_type_records)
         self._runtime_type_records = sorted(
             runtime_type_records,
             key=lambda record: str(record["type_guid"]),
@@ -3021,7 +3132,7 @@ finally:
             if not os.path.lexists(path):
                 continue
             destination = os.path.join(park_root, f"{index:04d}")
-            os.replace(path, destination)
+            replace_path(path, destination)
             parked.append((path, destination))
         return parked
 
@@ -3035,7 +3146,7 @@ finally:
                 os.makedirs(parent, exist_ok=True)
             if os.path.lexists(original):
                 continue
-            os.replace(parked_path, original)
+            replace_path(parked_path, original)
 
     def _strip_authoring_from_module_root(self, modules_root: str) -> None:
         """Keep native module archives and drop any staged authoring leftovers."""
@@ -3454,7 +3565,7 @@ finally:
         destination = os.path.join(module_root, self._PARALLEL_ARCHIVE_FILENAME)
         if os.path.exists(destination):
             os.remove(destination)
-        os.replace(source, destination)
+        replace_path(source, destination)
 
     @staticmethod
     def _publish_extracted_tree(source: str, destination: str) -> None:
@@ -3474,7 +3585,7 @@ finally:
                 raise RuntimeError(
                     f"Direct Player layout contains a duplicate path: {relative.as_posix()}"
                 )
-            os.replace(path, target)
+            replace_path(path, target)
 
     def _materialize_desktop_player_layout(self, final_dir: str) -> None:
         """Materialize OS-loadable runtime files while keeping game content sealed."""
@@ -3505,15 +3616,10 @@ finally:
             self._publish_extracted_tree(str(bootstrap_root), str(final_runtime))
             self._publish_extracted_tree(str(runtime_root), str(final_runtime))
 
-            parallel_archive = data_root / "Modules" / self._PARALLEL_ARCHIVE_FILENAME
-            if parallel_archive.is_file():
-                parallel_root = staging / "parallel"
-                extract_pack(parallel_archive, parallel_root)
-                self._publish_extracted_tree(
-                    str(parallel_root),
-                    str(data_root / "Modules" / "Parallel"),
-                )
-                parallel_archive.unlink()
+            # Keep optional Parallel as a sealed module archive.  The Player
+            # runtime can materialize it into its private cache when the
+            # feature is actually used; expanding it here duplicates tens of
+            # megabytes in every delivery and exposes the module layout.
         finally:
             shutil.rmtree(staging, ignore_errors=True)
 
@@ -3612,7 +3718,7 @@ finally:
                 )
                 stream.flush()
                 os.fsync(stream.fileno())
-            os.replace(index_temporary, package_index)
+            replace_path(index_temporary, package_index)
         finally:
             try:
                 index_temporary.unlink()
@@ -4256,7 +4362,7 @@ finally:
                 package_index_stream.write("\n".join(package_index_lines) + "\n")
                 package_index_stream.flush()
                 os.fsync(package_index_stream.fileno())
-            os.replace(package_index_temporary, package_index_path)
+            replace_path(package_index_temporary, package_index_path)
         finally:
             try:
                 os.remove(package_index_temporary)

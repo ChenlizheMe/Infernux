@@ -15,16 +15,22 @@
 
 #pragma once
 
-#include "rhi/RhiTypes.h"
+#include "rhi/RhiDescriptors.h"
 #include <core/types/ShaderTypes.h>
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
 
 namespace infernux
 {
+namespace rhi
+{
+class RenderTexture;
+}
+class RendererSelection;
 
 /**
  * @brief Backend-neutral command recorded by a graph pass.
@@ -42,6 +48,7 @@ enum class GraphCommandType
     DrawRenderers,
     DrawSkybox,
     DrawShadowCasters,
+    DrawWorldUI,
     DrawScreenUI,
     FullscreenQuad,
     CopyTexture,
@@ -85,7 +92,15 @@ enum class GraphTextureRole : uint8_t
 {
     Transient,
     TemporalRead,
-    TemporalWrite
+    TemporalWrite,
+    Persistent
+};
+
+enum class GraphTextureAttachment : uint8_t
+{
+    Color,
+    Depth,
+    Resolve
 };
 
 struct GraphCommandDesc
@@ -99,13 +114,24 @@ struct GraphCommandDesc
     std::string sortMode;
     std::string passTag;
     std::string overrideMaterial;
+    /// Stable owner; entry/parameter edits do not change graph topology.
+    std::shared_ptr<RendererSelection> rendererSelection;
 
     int32_t lightIndex = 0;
     int screenUIList = 0;
+    /// World UI pass filter, intersected with the rendering Camera's mask.
+    uint32_t worldUILayerMask = 0xffffffffu;
 
     std::string shaderName;
-    /// Stable runtime parameter block. When non-empty, pushConstants define
-    /// the block layout and initial values rather than immutable topology.
+    /// Fullscreen raster state. Renderer draws retain their material state.
+    bool depthTest = false;
+    bool depthWrite = false;
+    rhi::CompareFunction depthCompare = rhi::CompareFunction::Always;
+    bool alphaBlend = false;
+    /// Stable pass-local runtime parameter block. When non-empty,
+    /// pushConstants define the block layout and initial values rather than
+    /// immutable topology. This payload does not override Material/Renderer,
+    /// View or World values by name.
     std::string parameterBlock;
     std::vector<std::pair<std::string, float>> pushConstants;
     std::vector<std::pair<std::string, std::string>> inputBindings;
@@ -148,6 +174,16 @@ struct GraphTextureDesc
     uint32_t samples = 1;                                   ///< 0 = inherit frame MSAA, otherwise 1/2/4/8
     GraphTextureRole role = GraphTextureRole::Transient;    ///< Frame-local or one side of a temporal history pair
     std::string temporalKey;                                ///< Stable per-view history identity for temporal resources
+    std::shared_ptr<rhi::RenderTexture> renderTexture;      ///< Persistent owner; never a disk GUID
+    GraphTextureAttachment attachment = GraphTextureAttachment::Color;
+
+    /// The root pipeline's conventional depth resource shares its Camera target.
+    /// Other names denote distinct images, even at the same viewport dimensions.
+    [[nodiscard]] bool IsViewDepth() const noexcept
+    {
+        return name == "depth" && isDepth && role == GraphTextureRole::Transient && width == 0 && height == 0 &&
+               sizeDivisor == 0;
+    }
 };
 
 struct GraphBufferDesc
@@ -224,9 +260,15 @@ struct RenderGraphDescription
     std::vector<GraphBufferDesc> buffers;   ///< All buffer resources
     std::vector<GraphPassDesc> passes;      ///< All passes in declaration order
     std::string outputTexture;              ///< Name of the final output texture
+    /// Terminal linear image before display encoding/overlay. Offscreen
+    /// cameras consume this prefix, not a display-encoded screen image.
+    std::string linearOutputTexture;
+    uint32_t linearOutputPassCount = 0;
 
     /// MSAA sample count requested by the pipeline (0 = don't change, 1/2/4/8).
     int msaaSamples = 0;
+    /// Explicit camera sampling policy, independent of double-buffered resources.
+    bool temporalJitter = false;
 };
 
 } // namespace infernux

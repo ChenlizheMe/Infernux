@@ -91,6 +91,10 @@ class UIEditorCreationMixin:
         """Create a UIText child under the given canvas GameObject."""
         return self._submit_ui_creation("ui.text", int(canvas_go.id))
 
+    def _create_frame_element(self, canvas_go):
+        """Create a UIFrame child under the given canvas GameObject."""
+        return self._submit_ui_creation("ui.frame", int(canvas_go.id))
+
     def _create_image_element(self, canvas_go):
         """Create a UIImage child under the given canvas GameObject."""
         return self._submit_ui_creation("ui.image", int(canvas_go.id))

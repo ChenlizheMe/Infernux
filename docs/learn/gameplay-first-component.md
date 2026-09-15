@@ -93,6 +93,8 @@ An inactive GameObject defers `awake` until it first becomes active. `start` run
 
 Edit-mode execution is a separate opt-in. The native component proxy reads the class attribute set by `@execute_in_edit_mode` and mirrors it onto the instance as `_execute_in_edit_mode`; both the native proxy (`PyComponentProxy`) and the Python scheduler check that instance attribute before running edit-mode callbacks. In a pure Python test context without a native proxy, the mirror step does not happen, so set the instance attribute directly when such a context needs edit-mode updates.
 
+For opted-in Python components, the editor runs all `update` callbacks before all `late_update` callbacks in the same frame. This supports camera-follow and reflection previews without entering Play. It does not start fixed-step physics; ordinary gameplay components remain inactive.
+
 ## Common errors {#troubleshooting}
 
 - **The script is absent from Add Component.** Save the file, confirm the class derives from `InxComponent`, and inspect the Console for an import or syntax error.
@@ -200,6 +202,8 @@ class HelloComponent(inx.InxComponent):
 非活动 GameObject 会把 `awake` 推迟到第一次激活。`start` 只运行一次，位置在该组件第一次模拟更新之前。普通的 `update`、`fixed_update` 与 `late_update` 只在 Play 模式运行。
 
 编辑模式执行需要单独选择加入。原生组件代理读取 `@execute_in_edit_mode` 装饰器设置的类属性，并把它镜像到实例的 `_execute_in_edit_mode` 上；原生代理（`PyComponentProxy`）与 Python 调度器在运行编辑模式回调前都会检查这个实例属性。没有原生代理的纯 Python 测试环境不会发生镜像，如果这类环境需要编辑模式更新，请直接设置实例属性。
+
+对选择加入的 Python 组件，编辑器在同一帧先执行所有 `update`，再执行所有 `late_update`。跟随相机和反射预览因此不必进入 Play 才能更新。这不会启动固定步物理，普通游戏逻辑也不会跟着执行。
 
 ## 常见错误 {#troubleshooting_1}
 

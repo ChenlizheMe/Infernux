@@ -18,6 +18,8 @@ from __future__ import annotations
 import json
 import logging
 import os
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any, Optional
 
 # Re-export MaterialRef from core so existing callers still work.
@@ -25,6 +27,21 @@ from Infernux.core.asset_ref import MaterialRef  # noqa: F401
 from Infernux.debug import Debug
 
 _log = logging.getLogger("Infernux.ref")
+_retiring_worlds = ContextVar('infernux_retiring_reference_worlds', default=frozenset())
+
+
+@contextmanager
+def retiring_scene_references(world_id: int):
+    """Keep retired callbacks from resolving IDs in their replacement Scene.
+
+    Other resident worlds remain accessible. This scope ends before the new
+    Scene runs, so ordinary persistent references still reconnect after reload.
+    """
+    token = _retiring_worlds.set(_retiring_worlds.get() | {int(world_id)})
+    try:
+        yield
+    finally:
+        _retiring_worlds.reset(token)
 
 
 def _iter_reference_scenes():
@@ -37,16 +54,21 @@ def _iter_reference_scenes():
         return ()
 
     scenes = []
-    for getter_name in ("get_active_scene", "get_runtime_persistent_scene"):
-        getter = getattr(manager, getter_name, None)
-        if not callable(getter):
-            continue
-        try:
-            scene = getter()
-        except RuntimeError:
-            continue
-        if scene is not None and all(scene is not existing for existing in scenes):
-            scenes.append(scene)
+    world_ids: set[int] = set()
+
+    def append(scene) -> None:
+        if scene is None:
+            return
+        world_id = int(scene.world_id)
+        if world_id in world_ids or world_id in _retiring_worlds.get():
+            return
+        world_ids.add(world_id)
+        scenes.append(scene)
+
+    append(manager.get_active_scene())
+    for index in range(int(manager.scene_count)):
+        append(manager.get_scene_at(index))
+    append(manager.get_runtime_persistent_scene())
     return tuple(scenes)
 
 
@@ -536,25 +558,19 @@ class ComponentRef:
 
     def resolve(self):
         """Return the live component instance, or ``None`` if unavailable."""
-        # Quick validity check on cached value
-        if self._cached is not None:
+        if self._cached_handle is not None:
             try:
-                if self._cached_handle is not None:
-                    if not any(
-                        scene.resolve_component(self._cached_handle) is not None
-                        for scene in _iter_reference_scenes()
-                    ):
-                        self._cached = None
-                        self._cached_handle = None
-                    else:
-                        return self._cached
-                elif hasattr(self._cached, '_is_destroyed') and self._cached._is_destroyed:
-                    self._cached = None
-                else:
-                    return self._cached
+                alive = any(
+                    scene.resolve_component(self._cached_handle) is not None
+                    for scene in _iter_reference_scenes()
+                )
             except (ImportError, RuntimeError, AttributeError):
+                alive = False
+            if not alive:
                 self._cached = None
                 self._cached_handle = None
+        if self._cached is not None and not getattr(self._cached, '_is_destroyed', False):
+            return self._cached
         return self._resolve()
 
     def __copy__(self):

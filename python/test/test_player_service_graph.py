@@ -352,6 +352,53 @@ def test_player_scene_service_can_hold_and_activate_prepared_load(monkeypatch):
     assert calls == ["start", "commit"]
 
 
+def test_player_scene_service_publishes_prepared_additive_target(monkeypatch):
+    from Infernux.engine.player_scene import PlayerSceneService
+
+    calls = []
+    target_scene = object()
+
+    class Transaction:
+        status = "reading"
+        succeeded = True
+        error = ""
+
+        def start(self):
+            calls.append("start")
+
+        def poll(self):
+            calls.append("commit")
+            self.status = "completed"
+            return True
+
+    service = PlayerSceneService()
+    monkeypatch.setattr(
+        service,
+        "_validated_scene_path",
+        lambda _path: "C:/Game/Content/Additive.scene",
+    )
+    monkeypatch.setattr(
+        service,
+        "_new_additive_transaction",
+        lambda _path: (Transaction(), target_scene),
+    )
+    monkeypatch.setattr(
+        service,
+        "_publish_completed_additive_scene",
+        lambda path, scene: calls.append(("publish_additive", path, scene)),
+    )
+
+    assert service.request_prepared_load("Additive", mode="additive") is True
+    service.process_pending_load()
+
+    assert calls == [
+        "start",
+        "commit",
+        ("publish_additive", "C:/Game/Content/Additive.scene", target_scene),
+    ]
+    assert service.is_load_pending is False
+
+
 def test_player_prepared_load_advances_one_phase_per_frame(monkeypatch):
     from Infernux.engine.player_scene import PlayerSceneService
 

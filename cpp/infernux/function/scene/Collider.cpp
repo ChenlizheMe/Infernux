@@ -4,6 +4,7 @@
  */
 
 #include "Collider.h"
+#include "ComponentFactory.h"
 
 #include "GameObject.h"
 #include "MeshRenderer.h"
@@ -24,6 +25,53 @@
 
 namespace infernux
 {
+
+SemanticTypeDescriptor Collider::DescribeSemanticType(std::string typeName, std::string readableId,
+                                                      std::string displayName)
+{
+    SemanticTypeDescriptor type;
+    type.typeGuid = "native:infernux." + typeName;
+    type.readableId = std::move(readableId);
+    type.owner = "engine:native";
+    type.origin = "native";
+    type.displayName = std::move(displayName);
+    type.runtimeProfiles = {"editor", "player", "headless"};
+    AddSemanticField(type, "center", "VEC3", nlohmann::json::array({0.0, 0.0, 0.0}), "collider.center",
+                     "collider.tooltip.center");
+    AddSemanticField(type, "is_trigger", "BOOL", false, "collider.is_trigger", "collider.tooltip.is_trigger");
+    auto &material =
+        AddSemanticField(type, "physic_material", "ASSET",
+                         {{"$type", "asset_ref"}, {"asset_type", "PhysicMaterial"}, {"guid", ""}, {"path_hint", ""}},
+                         "collider.physic_material", "collider.tooltip.physic_material");
+    material["serialized_name"] = "physic_material_guid";
+    material["asset_type"] = "PhysicMaterial";
+    material["nullable"] = true;
+    // The Python-facing reference is a typed asset document while the native
+    // scene document stores its stable GUID. The property setter owns that
+    // one explicit representation boundary.
+    material["setter_owns_document_shape"] = true;
+    return type;
+}
+
+nlohmann::json &Collider::AddSemanticField(SemanticTypeDescriptor &type, std::string fieldId, std::string valueType,
+                                           nlohmann::json defaultValue, std::string displayNameKey, std::string tooltip)
+{
+    const auto separator = type.typeGuid.find_last_of('.');
+    const std::string typeName = separator == std::string::npos ? type.typeGuid : type.typeGuid.substr(separator + 1);
+    type.fields.push_back({typeName + "." + fieldId,
+                           "FieldType." + std::move(valueType),
+                           false,
+                           {{"field_id", fieldId},
+                            {"serialized_name", fieldId},
+                            {"serialized", true},
+                            {"hidden", false},
+                            {"nullable", false},
+                            {"storage_kind", "native_property"},
+                            {"display_name_key", std::move(displayNameKey)},
+                            {"tooltip", std::move(tooltip)},
+                            {"default", std::move(defaultValue)}}});
+    return type.fields.back().attributes;
+}
 
 // ============================================================================
 // Constructor / Destructor
@@ -207,6 +255,7 @@ void Collider::OnDisable()
 
 void Collider::OnDestroy()
 {
+    PhysicsWorld::Instance().RemoveIgnoredPairsForCollider(this);
     UnregisterBody();
 }
 

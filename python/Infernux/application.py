@@ -155,10 +155,10 @@ class Application:
 
     @staticmethod
     def request_render_target_capture(source: str, output_path: str) -> int:
-        """Queue an engine-native Scene/Game capture under persistent data."""
+        """Queue an engine-native Scene, Game, or complete Editor capture."""
         normalized_source = str(source).strip().lower()
-        if normalized_source not in {"scene", "game"}:
-            raise ValueError("Render target capture source must be 'scene' or 'game'")
+        if normalized_source not in {"scene", "game", "editor"}:
+            raise ValueError("Render target capture source must be 'scene', 'game', or 'editor'")
         root = Application.persistent_data_path()
         if not root:
             raise RuntimeError("Render target capture requires an active project")
