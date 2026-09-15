@@ -1166,8 +1166,12 @@ void PhysicsWorld::SetBodyPositionsBatch(const std::vector<PhysicsBodyPoseUpdate
         return;
 
     JPH::BodyInterface &bodyInterface = m_physicsSystem->GetBodyInterfaceNoLock();
-    bodyInterface.SetPositionAndRotationBatch(bodyIds.data(), positions.data(), rotations.data(),
-                                              static_cast<int>(bodyIds.size()));
+    // Jolt 5.6 removed the legacy batch setter. Keep the update path explicit
+    // and use the no-lock interface; the caller already owns the serial sync
+    // phase, so this preserves the same ordering without a compatibility shim.
+    for (size_t i = 0; i < bodyIds.size(); ++i)
+        bodyInterface.SetPositionAndRotationWhenChanged(bodyIds[i], positions[i], rotations[i],
+                                                        JPH::EActivation::DontActivate);
 }
 
 void PhysicsWorld::UpdateBodyShape(Collider *collider, const Collider *exclude)
