@@ -263,6 +263,10 @@ def _run(args: argparse.Namespace, artifact_root: Path) -> SmokeResult:
             )
 
         captured_runtime_frame = int(observation.get("runtime_frame_count", 0))
+        # Keep the first gameplay observation separate from the deterministic
+        # pause observation.  Previously capture-only runs assigned the same
+        # paused sample to both fields, making a moving Player look static.
+        initial_capture_position = _position(observation, args.object)
         if deterministic_capture:
             deadline = time.monotonic() + args.startup_timeout
             while time.monotonic() < deadline:
@@ -316,9 +320,9 @@ def _run(args: argparse.Namespace, artifact_root: Path) -> SmokeResult:
                 raise RuntimeError(f"Player capture artifact is missing: {capture_path!r}")
 
         if args.capture_only:
-            initial = _position(observation, args.object)
-            final = initial
-            delta = 0.0
+            initial = initial_capture_position
+            final = _position(observation, args.object)
+            delta = _axis_delta(initial, final, args.axis)
         else:
             press = control.call(
                 "press",
