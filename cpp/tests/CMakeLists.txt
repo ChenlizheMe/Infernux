@@ -1325,7 +1325,7 @@ if(INFERNUX_BUILD_TESTS)
         get_property(_infernux_registered_tests DIRECTORY PROPERTY TESTS)
         foreach(_infernux_test IN LISTS _infernux_registered_tests)
             set_property(TEST ${_infernux_test} APPEND PROPERTY
-                ENVIRONMENT "LD_LIBRARY_PATH=$<TARGET_FILE_DIR:_Infernux>")
+                ENVIRONMENT "LD_LIBRARY_PATH=$<TARGET_FILE_DIR:_Infernux>:${INFERNUX_PYTHON_SYNC_DIR}")
         endforeach()
     endif()
 endif()
