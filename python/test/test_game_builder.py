@@ -5309,6 +5309,57 @@ def test_player_type_registry_cooks_published_component_semantics(tmp_path):
     assert semantic["fields"][0]["attributes"]["range"] == [0.0, 8.0]
 
 
+def test_player_type_registry_cooks_published_data_asset_semantics(tmp_path):
+    from Infernux.components import serialized_field
+    from Infernux.core.data_asset import DataAsset
+
+    class BalanceConfig(DataAsset):
+        __serialized_type_id__ = "tests.player.balance-config"
+        gravity: float = serialized_field(default=9.8, range=(0.0, 20.0))
+
+    # Project modules are identified by their stable Assets-relative module
+    # path.  Rebind this test class to the same identity a loaded project
+    # module would expose; the published SerializableObject registry remains
+    # the authority queried by the builder.
+    BalanceConfig.__module__ = "Scripts.balance"
+    BalanceConfig.__qualname__ = "BalanceConfig"
+    output_dir = tmp_path / "build_output"
+    script_path = output_dir / "Data" / "Assets" / "Scripts" / "balance.py"
+    script_path.parent.mkdir(parents=True)
+    script_path.write_text(
+        "from Infernux import DataAsset, serialized_field\n"
+        "class BalanceConfig(DataAsset):\n"
+        "    __serialized_type_id__ = 'tests.player.balance-config'\n"
+        "    gravity: float = serialized_field(default=9.8, range=(0.0, 20.0))\n",
+        encoding="utf-8",
+    )
+    script_guid = "1234567890abcdef1234567890abcdef"
+    builder = _make_builder(tmp_path, output_dir)
+    _bind_staged_script_to_asset_index(
+        builder,
+        output_dir,
+        script_path,
+        guid=script_guid,
+    )
+
+    builder._compile_user_scripts(str(output_dir))
+    document = json.loads(
+        (output_dir / "Data" / "Library" / "RuntimeTypeRegistry.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    records = document["types"]
+
+    assert len(records) == 1
+    record = records[0]
+    assert record["kind"] == "data"
+    assert record["data_asset"] is True
+    assert record["type_id"] == "python:data:tests.player.balance-config"
+    assert record["semantic"]["schema_version"] == 1
+    assert record["semantic"]["fields"][0]["property_path"] == "BalanceConfig.gravity"
+    assert record["semantic"]["fields"][0]["attributes"]["default"] == 9.8
+
+
 def test_payload_manifest_rejects_indexed_asset_outside_build_scene_closure(tmp_path):
     builder = _make_builder(tmp_path, tmp_path / "build_output")
     sources = _write_scene_material_audio_reachability_fixture(

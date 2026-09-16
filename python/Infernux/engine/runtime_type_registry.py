@@ -74,6 +74,9 @@ def install_runtime_type_registry(path: str) -> int:
     for entry in entries:
         if not isinstance(entry, dict):
             raise RuntimeError("Player runtime type registry contains a malformed entry")
+        kind = entry.get("kind", "component")
+        if kind not in {"component", "data"}:
+            raise RuntimeError("Player runtime type registry entry has unknown kind")
         required = (
             "script_guid",
             "type_guid",
@@ -108,8 +111,14 @@ def install_runtime_type_registry(path: str) -> int:
             raise RuntimeError("Player runtime component semantic owner is invalid")
         if semantic.get("origin") != "python" or semantic.get("lifecycle") != phases:
             raise RuntimeError("Player runtime component semantic contract disagrees with its record")
+        if kind == "data" and phases:
+            raise RuntimeError("Player runtime data type cannot declare lifecycle methods")
         semantic_types.setdefault(owner, []).append(semantic)
-        prepared[type_guid] = dict(entry, lifecycle=tuple(sorted(set(phases))))
+        prepared[type_guid] = dict(
+            entry,
+            kind=kind,
+            lifecycle=tuple(sorted(set(phases))),
+        )
 
     edits = [
         {"owner": owner, "types": semantic_types.get(owner, [])}
@@ -142,6 +151,8 @@ def validate_runtime_component_identity(
     record = _runtime_types.get(type_guid)
     if record is None:
         raise RuntimeError(f"Player component type is absent from RuntimeTypeRegistry: {type_guid}")
+    if record.get("kind", "component") != "component":
+        raise RuntimeError(f"Player type is not an InxComponent: {type_guid}")
     expected = {
         "script_guid": script_guid,
         "module": module_name,

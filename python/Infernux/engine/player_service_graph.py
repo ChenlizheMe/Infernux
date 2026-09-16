@@ -266,7 +266,7 @@ _SERVICE_SPECS = (
         "runtime_type_registry",
         "Infernux/engine/runtime_type_registry.pyc",
         flavors=_PLAYER_FLAVORS,
-        retention_reason="static component type and lifecycle registry",
+        retention_reason="static component/data type, field and lifecycle registry",
     ),
     RuntimeServiceSpec(
         "runtime_scene_transaction",

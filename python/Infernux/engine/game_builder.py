@@ -2740,6 +2740,86 @@ finally:
                 ],
             }
 
+    @staticmethod
+    def _runtime_serializable_type_records(
+        *,
+        script_guid: str,
+        runtime_path: str,
+    ) -> list[dict[str, object]]:
+        """Describe project SerializableObject types for the Player catalog.
+
+        Components and authored data used to have different build visibility:
+        components were emitted into ``RuntimeTypeRegistry.json`` while
+        ``DataAsset``/nested ``SerializableObject`` classes were only visible
+        as a side effect of importing a project script.  That made the binary
+        artifact readable in a warm editor but left the Player semantic
+        catalog incomplete.  Reuse the published field schema here and emit
+        the same immutable semantic descriptor used by components.
+        """
+        from Infernux.components.fields import get_field_schema, get_serialized_fields
+        from Infernux.components.serializable_object import (
+            SerializableObject,
+            get_registered_serializable_types,
+            get_serializable_schema_version,
+        )
+        from Infernux.core.data_asset import DataAsset
+
+        module_name = GameBuilder._runtime_script_module_name(runtime_path)
+        project_types = [
+            (type_id, value_type)
+            for type_id, value_type in get_registered_serializable_types()
+            if value_type.__module__ == module_name
+            and issubclass(value_type, SerializableObject)
+            and value_type is not SerializableObject
+        ]
+        type_guids = {
+            type_id: f"python-data:{type_id}"
+            for type_id, _value_type in project_types
+        }
+        records: list[dict[str, object]] = []
+        for type_id, value_type in project_types:
+            type_guid = type_guids[type_id]
+            base_type_guid = ""
+            for base in value_type.__mro__[1:]:
+                base_id = getattr(base, "__serialized_type_id__", "")
+                if base_id in type_guids:
+                    base_type_guid = type_guids[base_id]
+                    break
+            fields = [
+                get_field_schema(value_type, name).to_document()
+                for name in get_serialized_fields(value_type)
+            ]
+            semantic = {
+                "type_guid": type_guid,
+                "readable_id": f"python:data:{type_id}",
+                "owner": f"script:{script_guid}",
+                "origin": "python",
+                "schema_version": get_serializable_schema_version(value_type),
+                "display_name": value_type.__qualname__,
+                "base_type_guid": base_type_guid,
+                "constructible": True,
+                "serializable": True,
+                "runtime_available": True,
+                "runtime_profiles": ["player"],
+                "lifecycle": [],
+                "fields": fields,
+            }
+            records.append(
+                {
+                    "kind": "data",
+                    "script_guid": script_guid,
+                    "type_guid": type_guid,
+                    "type_id": f"python:data:{type_id}",
+                    "module": value_type.__module__,
+                    "qualname": value_type.__qualname__,
+                    "runtime_path": runtime_path,
+                    "lifecycle": [],
+                    "semantic": semantic,
+                    "data_asset": issubclass(value_type, DataAsset),
+                }
+            )
+        return records
+
     def _compile_user_scripts(self, final_dir: str):
         """Compile .py in Data/Assets/ to .pyc and remove originals.
 
@@ -2813,6 +2893,12 @@ finally:
                                 runtime_path=runtime_path,
                             )
                         )
+                        runtime_type_records.extend(
+                            self._runtime_serializable_type_records(
+                                script_guid=script_guid,
+                                runtime_path=runtime_path,
+                            )
+                        )
                         cooked_source = self._cook_compute_source(source_text)
                         if cooked_source != source_text:
                             with open(py_path, "w", encoding="utf-8", newline="\n") as compiled_source:
@@ -2834,7 +2920,13 @@ finally:
         if guid_map:
             manifest_path = os.path.join(data_dir, "_script_guid_map.json")
             _write_json_atomic(manifest_path, guid_map, indent=None)
-        self._cook_runtime_component_semantics(runtime_type_records)
+        self._cook_runtime_component_semantics(
+            [
+                record
+                for record in runtime_type_records
+                if record.get("kind", "component") == "component"
+            ]
+        )
         self._runtime_type_records = sorted(
             runtime_type_records,
             key=lambda record: str(record["type_guid"]),

@@ -180,3 +180,48 @@ def test_runtime_type_registry_rejects_identity_drift(tmp_path):
             )
     finally:
         clear_runtime_type_registry()
+
+
+def test_runtime_type_registry_publishes_data_semantics_without_component_lifecycle(tmp_path):
+    from Infernux.engine.runtime_type_registry import (
+        clear_runtime_type_registry,
+        install_runtime_type_registry,
+    )
+
+    script_guid = "data-script"
+    type_guid = "python-data:tests.data.Config"
+    path = tmp_path / "RuntimeTypeRegistry.json"
+    path.write_text(
+        json.dumps(
+            {
+                "$schema": "infernux.runtime_type_registry",
+                "types": [
+                    {
+                        "kind": "data",
+                        "script_guid": script_guid,
+                        "type_guid": type_guid,
+                        "type_id": "python:data:tests.data.Config",
+                        "module": "Scripts.config",
+                        "qualname": "Config",
+                        "runtime_path": "Assets/Scripts/config.pyc",
+                        "lifecycle": [],
+                        "semantic": _semantic(
+                            script_guid, type_guid,
+                            "python:data:tests.data.Config",
+                        ),
+                        "data_asset": True,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    try:
+        assert install_runtime_type_registry(str(path)) == 1
+        from Infernux.lib import _Infernux as native
+
+        descriptor = native._semantic_catalog_snapshot().type_document(type_guid)
+        assert descriptor["readable_id"] == "python:data:tests.data.Config"
+        assert descriptor["lifecycle"] == []
+    finally:
+        clear_runtime_type_registry()
