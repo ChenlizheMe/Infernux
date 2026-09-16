@@ -1316,4 +1316,16 @@ if(INFERNUX_BUILD_TESTS)
         USES_TERMINAL
         VERBATIM
     )
+
+    # ELF test processes load the Python extension from the build tree, while
+    # its subsystem libraries are staged beside that extension.  Keep the
+    # runtime search path on every CTest entry so invoking ctest directly has
+    # the same deterministic environment as the build-time smoke commands.
+    if(UNIX AND NOT APPLE)
+        get_property(_infernux_registered_tests DIRECTORY PROPERTY TESTS)
+        foreach(_infernux_test IN LISTS _infernux_registered_tests)
+            set_property(TEST ${_infernux_test} APPEND PROPERTY
+                ENVIRONMENT "LD_LIBRARY_PATH=$<TARGET_FILE_DIR:_Infernux>")
+        endforeach()
+    endif()
 endif()
