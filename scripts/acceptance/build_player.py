@@ -340,6 +340,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         # (for example a project that only installed Windows support).  Expose
         # that as a build diagnostic instead of leaking the registry's raw
         # ``Unknown build target`` exception.
+        if not str(error).startswith("'Unknown build target:"):
+            raise
         available_targets = [str(item.id) for item in registry.targets()]
         payload = {
             "schema": "infernux.build_evidence",
