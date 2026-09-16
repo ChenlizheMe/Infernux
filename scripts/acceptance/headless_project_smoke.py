@@ -163,8 +163,18 @@ def _parser() -> argparse.ArgumentParser:
 def main() -> int:
     args = _parser().parse_args()
     project = resolved_path(args.project)
-    scene_relative = str(args.scene).replace("\\", "/")
-    scene_path = resolved_path(os.path.join(project, *scene_relative.split("/")))
+    scene_argument = os.path.expandvars(os.path.expanduser(str(args.scene)))
+    # Accept both the documented project-relative form and an already
+    # resolved absolute path.  MCP callers commonly pass the latter after
+    # resolving a scene from the project asset database; joining it to the
+    # project root would manufacture a path such as
+    # ``<project>/Users/.../scene.scene`` and report a false engine failure.
+    if os.path.isabs(scene_argument):
+        scene_path = resolved_path(scene_argument)
+        scene_relative = os.path.relpath(scene_path, project).replace("\\", "/")
+    else:
+        scene_relative = scene_argument.replace("\\", "/")
+        scene_path = resolved_path(os.path.join(project, *scene_relative.split("/")))
     if not os.path.isdir(project):
         raise FileNotFoundError(project)
     if not os.path.isfile(scene_path):

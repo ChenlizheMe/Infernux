@@ -169,3 +169,21 @@ def test_smoke_writes_failure_report_when_runtime_raises(tmp_path, monkeypatch):
     payload = json.loads(report.read_text(encoding="utf-8"))
     assert payload["status"] == "failed"
     assert payload["error"] == "RuntimeError: scene commit rejected"
+
+
+def test_smoke_accepts_absolute_scene_path(tmp_path, monkeypatch):
+    """MCP callers may pass an AssetDatabase-resolved absolute scene path."""
+    from scripts.acceptance import headless_project_smoke as smoke
+
+    scene = tmp_path / "Assets" / "Main.scene"
+    scene.parent.mkdir()
+    scene.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(smoke.sys, "argv", [
+        "smoke", str(tmp_path), "--scene", str(scene), "--play-frames", "1",
+    ])
+    monkeypatch.setattr(smoke, "run_headless", lambda *args, **kwargs: None)
+
+    # The no-op runner intentionally cannot complete the lifecycle, but the
+    # absolute path must reach the runner instead of being rejected as a
+    # fabricated <project>/<absolute-path> FileNotFoundError.
+    assert smoke.main() == 1
