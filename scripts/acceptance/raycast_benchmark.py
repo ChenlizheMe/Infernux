@@ -51,6 +51,12 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--counts", default="1,100,1000,10000")
     parser.add_argument("--samples", type=int, default=30)
     parser.add_argument("--warmup", type=int, default=5)
+    parser.add_argument(
+        "--pattern",
+        choices=("all_hit", "sparse", "all_miss"),
+        default="all_hit",
+        help="ray distribution: all_hit reproduces the dense baseline, sparse mixes one hit with seven misses, all_miss avoids scene geometry",
+    )
     parser.add_argument("--output")
     return parser
 
@@ -113,6 +119,13 @@ def main() -> int:
             axis = (np.arange(count, dtype=np.float32) % side) / max(1, side - 1)
             origins[:, 0] = axis * 8.0 - 4.0
             origins[:, 2] = (np.arange(count, dtype=np.float32) // side) * 8.0 / side - 4.0
+            if args.pattern == "all_miss":
+                origins[:, 0] = 1000.0
+                origins[:, 2] = 1000.0
+            elif args.pattern == "sparse":
+                miss = (np.arange(count, dtype=np.int64) % 8) != 0
+                origins[miss, 0] = 1000.0
+                origins[miss, 2] = 1000.0
             directions = np.zeros_like(origins)
             directions[:, 1] = -1.0
             output = _output(count)
@@ -148,6 +161,7 @@ def main() -> int:
         "status": "passed" if state["result"] is not None and not state["error"] and not errors else "failed",
         "project": project,
         "scene": scene_relative,
+        "pattern": args.pattern,
         "samples": args.samples,
         "warmup": args.warmup,
         "error": state["error"],

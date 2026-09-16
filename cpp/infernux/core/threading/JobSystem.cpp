@@ -410,6 +410,29 @@ void JobSystem::ParallelFor(uint32_t count, std::function<void(uint32_t index)> 
     Wait(handle);
 }
 
+void JobSystem::ParallelForChunks(uint32_t count, uint32_t chunkSize,
+                                  std::function<void(uint32_t begin, uint32_t end)> body, JobDomain domain,
+                                  JobPriority priority)
+{
+    if (count == 0) {
+        return;
+    }
+    if (chunkSize == 0 || !body) {
+        throw std::invalid_argument("JobSystem::ParallelForChunks requires a positive chunk size and callable");
+    }
+
+    const uint32_t chunkCount = (count + chunkSize - 1) / chunkSize;
+    auto handle = ScheduleBatch(
+        chunkCount,
+        [body = std::move(body), count, chunkSize](uint32_t chunk) -> JobFn {
+            const uint32_t begin = chunk * chunkSize;
+            const uint32_t end = std::min(count, begin + chunkSize);
+            return [body, begin, end] { body(begin, end); };
+        },
+        domain, priority);
+    Wait(handle);
+}
+
 void JobSystem::ParallelFor(TaskGroup &group, uint32_t count, std::function<void(uint32_t index)> body)
 {
     if (count == 0) {

@@ -2078,7 +2078,22 @@ void PhysicsWorld::RaycastBatch(const float *originsXYZ, const float *directions
     constexpr size_t kParallelRaycastThreshold = 256;
     if (count >= kParallelRaycastThreshold && count <= std::numeric_limits<uint32_t>::max() &&
         JobSystem::IsAvailable() && !JobSystem::Get().IsInline() && JobSystem::Get().GetWorkerCount() > 1) {
-        JobSystem::Get().ParallelFor(static_cast<uint32_t>(count), castOne, JobDomain::Physics, JobPriority::Normal);
+        // One task per ray makes large batches spend most of their time in
+        // queueing, allocation and completion bookkeeping. Keep a few chunks
+        // per worker so Jolt's narrow-phase work remains parallel without
+        // turning the batch into thousands of tiny scheduler operations.
+        const uint32_t workerCount = JobSystem::Get().GetWorkerCount();
+        const uint32_t targetChunks = std::max<uint32_t>(workerCount * 4, 1);
+        const uint32_t chunkSize =
+            std::max<uint32_t>(64, (static_cast<uint32_t>(count) + targetChunks - 1) / targetChunks);
+        JobSystem::Get().ParallelForChunks(
+            static_cast<uint32_t>(count), chunkSize,
+            [&](uint32_t begin, uint32_t end) {
+                for (uint32_t index = begin; index < end; ++index) {
+                    castOne(index);
+                }
+            },
+            JobDomain::Physics, JobPriority::Normal);
         return;
     }
 
@@ -2117,10 +2132,9 @@ bool PhysicsWorld::RaycastCurrent(const glm::vec3 &origin, const glm::vec3 &dire
             // The previous path acquired a second BodyLockRead for every hit,
             // which made large raycast batches needlessly serialize on Jolt's
             // body-lock table.
-            Collider *collider = ResolveColliderForSubShape(
-                body, result.mBodyID.GetIndexAndSequenceNumber(), result.mSubShapeID2.GetValue());
-            if (filterTriggers &&
-                (body.IsSensor() || (collider && collider->IsTrigger()))) {
+            Collider *collider = ResolveColliderForSubShape(body, result.mBodyID.GetIndexAndSequenceNumber(),
+                                                            result.mSubShapeID2.GetValue());
+            if (filterTriggers && (body.IsSensor() || (collider && collider->IsTrigger()))) {
                 return false;
             }
             outHit.collider = collider;
@@ -2570,7 +2584,7 @@ Collider *PhysicsWorld::ResolveColliderForSubShape(uint32_t bodyId, uint32_t sub
 }
 
 Collider *PhysicsWorld::ResolveColliderForSubShape(const JPH::Body &body, uint32_t bodyId,
-                                                    uint32_t subShapeIdValue) const
+                                                   uint32_t subShapeIdValue) const
 {
     Collider *fallback = FindColliderByBodyId(bodyId);
     if (!fallback) {

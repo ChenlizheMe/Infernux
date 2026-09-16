@@ -6,6 +6,7 @@
 #include <mutex>
 #include <stdexcept>
 #include <thread>
+#include <vector>
 
 namespace
 {
@@ -480,6 +481,29 @@ void TestInlineExecutionMode()
     Require(batchCount.load(std::memory_order_relaxed) == 9, "inline shutdown dropped queued work");
 }
 
+void TestParallelForChunksCoversEachIndexOnce()
+{
+    infernux::JobSystem::Initialize(2);
+    auto &jobs = infernux::JobSystem::Get();
+    constexpr uint32_t count = 257;
+    std::vector<std::atomic<uint8_t>> visits(count);
+    for (auto &visit : visits) {
+        visit.store(0, std::memory_order_relaxed);
+    }
+
+    jobs.ParallelForChunks(count, 17, [&visits](uint32_t begin, uint32_t end) {
+        Require(begin < end, "chunk was empty");
+        for (uint32_t index = begin; index < end; ++index) {
+            visits[index].fetch_add(1, std::memory_order_relaxed);
+        }
+    });
+
+    for (const auto &visit : visits) {
+        Require(visit.load(std::memory_order_relaxed) == 1, "chunk coverage was not exactly once");
+    }
+    infernux::JobSystem::Shutdown();
+}
+
 } // namespace
 
 int main()
@@ -499,6 +523,7 @@ int main()
         TestPriorityAgingPreventsStarvation();
         TestWaitHelpIsProfiled();
         TestInlineExecutionMode();
+        TestParallelForChunksCoversEachIndexOnce();
     } catch (const std::exception &error) {
         std::cerr << "JobSystem test failed: " << error.what() << '\n';
         infernux::JobSystem::Shutdown();

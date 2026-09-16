@@ -212,6 +212,9 @@ class JobSystem
 
     void ParallelFor(uint32_t count, std::function<void(uint32_t index)> body, JobDomain domain = JobDomain::Default,
                      JobPriority priority = JobPriority::Normal);
+    /** Execute contiguous ranges instead of allocating one task per element. */
+    void ParallelForChunks(uint32_t count, uint32_t chunkSize, std::function<void(uint32_t begin, uint32_t end)> body,
+                           JobDomain domain = JobDomain::Default, JobPriority priority = JobPriority::Normal);
     void ParallelFor(TaskGroup &group, uint32_t count, std::function<void(uint32_t index)> body);
 
     TaskGroup CreateTaskGroup(JobDomain domain = JobDomain::Default, JobPriority priority = JobPriority::Normal) const;
