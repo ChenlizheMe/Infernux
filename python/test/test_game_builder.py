@@ -5309,6 +5309,72 @@ def test_player_type_registry_cooks_published_component_semantics(tmp_path):
     assert semantic["fields"][0]["attributes"]["range"] == [0.0, 8.0]
 
 
+@pytest.mark.parametrize("base_expression", ["Parent", "base_module.Parent"])
+def test_player_component_inheritance_keeps_cross_script_identity(tmp_path, monkeypatch, base_expression):
+    from types import ModuleType
+
+    from Infernux.components.component_identity import bind_asset_script_guid
+    from Infernux.engine.runtime_type_registry import (
+        clear_runtime_type_registry,
+        install_runtime_type_registry,
+    )
+    from Infernux.lib import _Infernux as native
+
+    package = ModuleType("player_inheritance")
+    package.__path__ = []
+    monkeypatch.setitem(sys.modules, package.__name__, package)
+    sources = {
+        "player_inheritance.base": (
+            "from Infernux import InxComponent, serialized_field\n"
+            "class Parent(InxComponent):\n"
+            "    speed: float = serialized_field(default=3.0, field_id='motion.speed')\n"
+            "    def start(self):\n"
+            "        raise AssertionError('cook must not invoke lifecycle methods')\n"
+        ),
+        "player_inheritance.child": (
+            "from player_inheritance.base import Parent\n"
+            "import player_inheritance.base as base_module\n"
+            f"class Child({base_expression}):\n"
+            "    strength: float = 5.0\n"
+            "    def update(self, dt):\n"
+            "        raise AssertionError('cook must not invoke lifecycle methods')\n"
+        ),
+    }
+    output = tmp_path / "build_output"
+    builder = _make_builder(tmp_path, output)
+    for index, (name, source) in enumerate(sources.items()):
+        module = ModuleType(name)
+        monkeypatch.setitem(sys.modules, name, module)
+        monkeypatch.setattr(package, name.rsplit(".", 1)[1], module, raising=False)
+        exec(compile(source, name, "exec"), module.__dict__)
+        value_type = module.Parent if index == 0 else module.Child
+        guid = f"component-script-{index}"
+        bind_asset_script_guid(value_type, guid)
+        script = output / "Data" / "Assets" / (name.replace(".", "/") + ".py")
+        script.parent.mkdir(parents=True, exist_ok=True)
+        script.write_text(source, encoding="utf-8")
+        _bind_staged_script_to_asset_index(builder, output, script, guid=guid)
+
+    builder._compile_user_scripts(str(output))
+    registry_path = output / "Data" / "Library" / "RuntimeTypeRegistry.json"
+    records = {record["qualname"]: record for record in json.loads(registry_path.read_text())["types"]}
+    assert set(records) == {"Parent", "Child"}
+    parent, child = records["Parent"], records["Child"]
+    assert child["script_guid"] == "component-script-1"
+    assert child["lifecycle"] == ["update"]
+    assert parent["lifecycle"] == ["start"]
+    assert child["semantic"]["base_type_guid"] == parent["type_guid"]
+    assert [field["attributes"]["field_id"] for field in child["semantic"]["fields"]] == [
+        "motion.speed", "strength",
+    ]
+    try:
+        assert install_runtime_type_registry(str(registry_path)) == 2
+        descriptor = native._semantic_catalog_snapshot().type_document(child["type_guid"])
+        assert descriptor["base_type_guid"] == parent["type_guid"]
+    finally:
+        clear_runtime_type_registry()
+
+
 def test_player_type_registry_cooks_published_data_asset_semantics(tmp_path):
     from Infernux.components import serialized_field
     from Infernux.core.data_asset import DataAsset
@@ -5358,6 +5424,83 @@ def test_player_type_registry_cooks_published_data_asset_semantics(tmp_path):
     assert record["semantic"]["schema_version"] == 1
     assert record["semantic"]["fields"][0]["property_path"] == "BalanceConfig.gravity"
     assert record["semantic"]["fields"][0]["attributes"]["default"] == 9.8
+
+
+@pytest.mark.parametrize("split_modules", [False, True])
+@pytest.mark.parametrize("data_base,explicit_ids", [
+    ("SerializableObject", False), ("SerializableObject", True), ("DataAsset", True),
+])
+def test_player_data_inheritance_survives_cook_and_catalog_publication(
+    tmp_path, monkeypatch, split_modules, data_base, explicit_ids,
+):
+    from types import ModuleType
+
+    from Infernux.components import serializable_object
+    from Infernux.engine.runtime_type_registry import (
+        clear_runtime_type_registry,
+        install_runtime_type_registry,
+    )
+    from Infernux.lib import _Infernux as native
+
+    monkeypatch.setattr(
+        serializable_object, "_SERIALIZABLE_REGISTRY",
+        dict(serializable_object._SERIALIZABLE_REGISTRY),
+    )
+    base_module = "Scripts.player_base"
+    child_module = "Scripts.player_derived" if split_modules else base_module
+    base_source = (
+        f"from Infernux import {data_base}, serialized_field\n"
+        f"class BaseConfig({data_base}):\n"
+        + ("    __serialized_type_id__ = 'tests.player.base'\n" if explicit_ids or data_base == "DataAsset" else "")
+        + "    speed: float = serialized_field(default=3.0, field_id='motion.speed')\n"
+        "class IntermediateConfig(BaseConfig):\n"
+        + ("    __serialized_type_id__ = 'tests.player.middle'\n" if data_base == "DataAsset" else "")
+        + "    weight: float = 2.0\n"
+    )
+    child_source = (
+        "class DerivedConfig(IntermediateConfig):\n"
+        + ("    __serialized_type_id__ = 'tests.player.derived'\n" if explicit_ids else "")
+        + "    __serialized_schema_version__ = 2\n"
+        "    strength: float = 5.0\n"
+    )
+    sources = {base_module: base_source}
+    if split_modules:
+        sources[child_module] = f"from {base_module} import IntermediateConfig\n" + child_source
+    else:
+        sources[base_module] += child_source
+
+    output = tmp_path / "build_output"
+    builder = _make_builder(tmp_path, output)
+    for index, (name, source) in enumerate(sources.items()):
+        if name.startswith("Scripts.") and "Scripts" not in sys.modules:
+            monkeypatch.setitem(sys.modules, "Scripts", ModuleType("Scripts"))
+        module = ModuleType(name)
+        monkeypatch.setitem(sys.modules, name, module)
+        exec(compile(source, name, "exec"), module.__dict__)
+        script = output / "Data" / "Assets" / (name.replace(".", "/") + ".py")
+        script.parent.mkdir(parents=True, exist_ok=True)
+        script.write_text(source, encoding="utf-8")
+        _bind_staged_script_to_asset_index(builder, output, script, guid=f"data-script-{index}")
+
+    builder._compile_user_scripts(str(output))
+    registry_path = output / "Data" / "Library" / "RuntimeTypeRegistry.json"
+    records = {record["qualname"]: record for record in json.loads(registry_path.read_text())["types"]}
+    assert set(records) == {"BaseConfig", "IntermediateConfig", "DerivedConfig"}
+    base, intermediate, derived = (records[name] for name in ("BaseConfig", "IntermediateConfig", "DerivedConfig"))
+    assert intermediate["semantic"]["base_type_guid"] == base["type_guid"]
+    assert derived["semantic"]["base_type_guid"] == intermediate["type_guid"]
+    assert derived["semantic"]["schema_version"] == 2
+    assert derived["semantic"]["owner"] == f"script:data-script-{int(split_modules)}"
+    assert [field["attributes"]["field_id"] for field in derived["semantic"]["fields"]] == [
+        "motion.speed", "weight", "strength",
+    ]
+    try:
+        assert install_runtime_type_registry(str(registry_path)) == 3
+        descriptor = native._semantic_catalog_snapshot().type_document(derived["type_guid"])
+        assert descriptor["base_type_guid"] == intermediate["type_guid"]
+        assert descriptor["fields"] == derived["semantic"]["fields"]
+    finally:
+        clear_runtime_type_registry()
 
 
 def test_payload_manifest_rejects_indexed_asset_outside_build_scene_closure(tmp_path):

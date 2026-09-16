@@ -2645,12 +2645,19 @@ finally:
         }
         module_name = cls._runtime_script_module_name(runtime_path)
         from Infernux.components.component_identity import component_type_guid
+        from Infernux.components.registry import get_type_by_identity
 
         records: list[dict[str, object]] = []
         for node in tree.body:
             if not isinstance(node, ast.ClassDef):
                 continue
-            if not any(base_name(base) in component_bases for base in node.bases):
+            type_guid = component_type_guid(script_guid, node.name) if script_guid else ""
+            # Imported and aliased bases are resolved by the published registry,
+            # not by executing imports or guessing their names from source.
+            published_type = get_type_by_identity(node.name, script_guid, type_guid)
+            if published_type is None and not any(
+                base_name(base) in component_bases for base in node.bases
+            ):
                 continue
             if not script_guid:
                 raise RuntimeError(
@@ -2663,7 +2670,6 @@ finally:
                 if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
                 and child.name in lifecycle_names
             )
-            type_guid = component_type_guid(script_guid, node.name)
             records.append(
                 {
                     "script_guid": script_guid,
@@ -2706,6 +2712,7 @@ finally:
         from Infernux.components.fields import get_field_schema, get_serialized_fields
         from Infernux.components.registry import get_type_by_identity
 
+        published_types = {}
         for record in records:
             script_guid = str(record["script_guid"])
             type_guid = str(record["type_guid"])
@@ -2720,6 +2727,14 @@ finally:
                     "Player semantic cook cannot resolve the published component "
                     f"identity: {record['type_id']}"
                 )
+            published_types[component_type] = type_guid
+
+        types_by_guid = {guid: value_type for value_type, guid in published_types.items()}
+        for record in records:
+            script_guid = str(record["script_guid"])
+            type_guid = str(record["type_guid"])
+            qualname = str(record["qualname"])
+            component_type = types_by_guid[type_guid]
             owner = f"script:{script_guid}"
             record["semantic"] = {
                 "type_guid": type_guid,
@@ -2728,7 +2743,10 @@ finally:
                 "origin": "python",
                 "schema_version": 1,
                 "display_name": qualname,
-                "base_type_guid": "",
+                "base_type_guid": next(
+                    (published_types[base] for base in component_type.__mro__[1:] if base in published_types),
+                    "",
+                ),
                 "constructible": True,
                 "serializable": True,
                 "runtime_available": True,
@@ -2743,8 +2761,7 @@ finally:
     @staticmethod
     def _runtime_serializable_type_records(
         *,
-        script_guid: str,
-        runtime_path: str,
+        script_paths: dict[str, str],
     ) -> list[dict[str, object]]:
         """Describe project SerializableObject types for the Player catalog.
 
@@ -2764,27 +2781,34 @@ finally:
         )
         from Infernux.core.data_asset import DataAsset
 
-        module_name = GameBuilder._runtime_script_module_name(runtime_path)
+        scripts_by_module = {
+            GameBuilder._runtime_script_module_name(path.replace("\\", "/")): (
+                guid, path.replace("\\", "/")
+            )
+            for guid, path in script_paths.items()
+        }
         project_types = [
             (type_id, value_type)
             for type_id, value_type in get_registered_serializable_types()
-            if value_type.__module__ == module_name
+            if value_type.__module__ in scripts_by_module
             and issubclass(value_type, SerializableObject)
             and value_type is not SerializableObject
         ]
         type_guids = {
-            type_id: f"python-data:{type_id}"
-            for type_id, _value_type in project_types
+            value_type: f"python-data:{type_id}"
+            for type_id, value_type in project_types
         }
         records: list[dict[str, object]] = []
         for type_id, value_type in project_types:
-            type_guid = type_guids[type_id]
-            base_type_guid = ""
-            for base in value_type.__mro__[1:]:
-                base_id = getattr(base, "__serialized_type_id__", "")
-                if base_id in type_guids:
-                    base_type_guid = type_guids[base_id]
-                    break
+            script_guid, runtime_path = scripts_by_module[value_type.__module__]
+            type_guid = type_guids[value_type]
+            # Resolve against the whole build closure, using registered class
+            # identity. A parent's script and explicit-ID policy are independent
+            # of the child's; getattr would inherit an ancestor's explicit ID.
+            base_type_guid = next(
+                (type_guids[base] for base in value_type.__mro__[1:] if base in type_guids),
+                "",
+            )
             fields = [
                 get_field_schema(value_type, name).to_document()
                 for name in get_serialized_fields(value_type)
@@ -2893,12 +2917,6 @@ finally:
                                 runtime_path=runtime_path,
                             )
                         )
-                        runtime_type_records.extend(
-                            self._runtime_serializable_type_records(
-                                script_guid=script_guid,
-                                runtime_path=runtime_path,
-                            )
-                        )
                         cooked_source = self._cook_compute_source(source_text)
                         if cooked_source != source_text:
                             with open(py_path, "w", encoding="utf-8", newline="\n") as compiled_source:
@@ -2915,6 +2933,10 @@ finally:
                         doraise=True,
                     )
                     os.remove(py_path)
+
+        runtime_type_records.extend(
+            self._runtime_serializable_type_records(script_paths=guid_map)
+        )
 
         # Write manifest
         if guid_map:
