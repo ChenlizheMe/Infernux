@@ -439,6 +439,8 @@ class PhysicsWorld
 
     /// Resolve a specific subshape hit/contact back to the owning Collider.
     Collider *ResolveColliderForSubShape(uint32_t bodyId, uint32_t subShapeIdValue) const;
+    Collider *ResolveColliderForSubShape(const JPH::Body &body, uint32_t bodyId,
+                                         uint32_t subShapeIdValue) const;
 
     /// Rebind a body lookup entry to another collider on the same body.
     void RebindBodyCollider(uint32_t bodyId, Collider *collider);

@@ -2103,21 +2103,35 @@ bool PhysicsWorld::RaycastCurrent(const glm::vec3 &origin, const glm::vec3 &dire
     const JPH::NarrowPhaseQuery &query = m_physicsSystem->GetNarrowPhaseQuery();
     LayerMaskObjectFilter objectFilter(layerMask);
 
-    const auto publish = [&](const JPH::RayCastResult &result, Collider *collider) {
+    const auto publish = [&](const JPH::RayCastResult &result, bool filterTriggers) {
         outHit.distance = result.mFraction * maxDistance;
         outHit.point = origin + normalizedDirection * outHit.distance;
         outHit.bodyId = result.mBodyID.GetIndexAndSequenceNumber();
-        outHit.collider = collider;
-        outHit.gameObject = collider ? collider->GetGameObject() : nullptr;
+        outHit.collider = nullptr;
+        outHit.gameObject = nullptr;
 
         JPH::BodyLockRead lock(m_physicsSystem->GetBodyLockInterface(), result.mBodyID);
         if (lock.Succeeded()) {
             const JPH::Body &body = lock.GetBody();
+            // Resolve the owning collider while the body lock is already held.
+            // The previous path acquired a second BodyLockRead for every hit,
+            // which made large raycast batches needlessly serialize on Jolt's
+            // body-lock table.
+            Collider *collider = ResolveColliderForSubShape(
+                body, result.mBodyID.GetIndexAndSequenceNumber(), result.mSubShapeID2.GetValue());
+            if (filterTriggers &&
+                (IsBodySensor(result.mBodyID.GetIndexAndSequenceNumber()) ||
+                 (collider && collider->IsTrigger()))) {
+                return false;
+            }
+            outHit.collider = collider;
+            outHit.gameObject = collider ? collider->GetGameObject() : nullptr;
             const JPH::Vec3 normal = body.GetWorldSpaceSurfaceNormal(
                 result.mSubShapeID2, JPH::RVec3(outHit.point.x, outHit.point.y, outHit.point.z));
             outHit.normal = glm::vec3(normal.GetX(), normal.GetY(), normal.GetZ());
             PublishRaycastSubShape(body, result.mSubShapeID2, outHit);
         }
+        return true;
     };
 
     if (queryTriggers) {
@@ -2125,10 +2139,7 @@ bool PhysicsWorld::RaycastCurrent(const glm::vec3 &origin, const glm::vec3 &dire
         query.CastRay(ray, JPH::RayCastSettings(), collector, JPH::BroadPhaseLayerFilter(), objectFilter);
         if (!collector.HadHit())
             return false;
-        Collider *collider = ResolveColliderForSubShape(collector.mHit.mBodyID.GetIndexAndSequenceNumber(),
-                                                        collector.mHit.mSubShapeID2.GetValue());
-        publish(collector.mHit, collider);
-        return true;
+        return publish(collector.mHit, false);
     }
 
     JPH::AllHitCollisionCollector<JPH::CastRayCollector> collector;
@@ -2137,12 +2148,8 @@ bool PhysicsWorld::RaycastCurrent(const glm::vec3 &origin, const glm::vec3 &dire
         return false;
     collector.Sort();
     for (const JPH::RayCastResult &result : collector.mHits) {
-        const uint32_t bodyId = result.mBodyID.GetIndexAndSequenceNumber();
-        Collider *collider = ResolveColliderForSubShape(bodyId, result.mSubShapeID2.GetValue());
-        if (IsBodySensor(bodyId) || (collider && collider->IsTrigger()))
-            continue;
-        publish(result, collider);
-        return true;
+        if (publish(result, true))
+            return true;
     }
     return false;
 }
@@ -2560,7 +2567,23 @@ Collider *PhysicsWorld::ResolveColliderForSubShape(uint32_t bodyId, uint32_t sub
         return fallback;
     }
 
-    const JPH::Shape *shape = lock.GetBody().GetShape();
+    return ResolveColliderForSubShape(lock.GetBody(), bodyId, subShapeIdValue);
+}
+
+Collider *PhysicsWorld::ResolveColliderForSubShape(const JPH::Body &body, uint32_t bodyId,
+                                                    uint32_t subShapeIdValue) const
+{
+    Collider *fallback = FindColliderByBodyId(bodyId);
+    if (!fallback) {
+        return nullptr;
+    }
+
+    auto *go = fallback->GetGameObject();
+    if (!go) {
+        return fallback;
+    }
+
+    const JPH::Shape *shape = body.GetShape();
     if (!shape || shape->GetType() != JPH::EShapeType::Compound) {
         return fallback;
     }
