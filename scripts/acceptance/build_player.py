@@ -335,6 +335,42 @@ def main(argv: Sequence[str] | None = None) -> int:
         _write_report(report_path, payload)
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         return 2
+    except KeyError as error:
+        # An installed-only project can legitimately lack a platform plugin
+        # (for example a project that only installed Windows support).  Expose
+        # that as a build diagnostic instead of leaking the registry's raw
+        # ``Unknown build target`` exception.
+        available_targets = [str(item.id) for item in registry.targets()]
+        payload = {
+            "schema": "infernux.build_evidence",
+            "status": "plugin-missing",
+            "project": str(project),
+            "target": arguments.target,
+            "output": str(output),
+            "options": options,
+            "diagnostics": [
+                {
+                    "severity": "error",
+                    "code": "build.platform_plugin.missing",
+                    "message": (
+                        f"No installed platform plugin provides build target "
+                        f"{arguments.target!r}. Install the official platform plugin "
+                        "in Hub, then retry."
+                    ),
+                    "source": "scripts/acceptance/build_player.py",
+                    "detail": {
+                        "requested_target": arguments.target,
+                        "available_targets": available_targets,
+                        "cause": str(error),
+                    },
+                }
+            ],
+            "progress": progress,
+            "progress_summary": progress_summary(),
+        }
+        _write_report(report_path, payload)
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 2
 
     payload = {
         "schema": "infernux.build_evidence",
