@@ -2120,8 +2120,7 @@ bool PhysicsWorld::RaycastCurrent(const glm::vec3 &origin, const glm::vec3 &dire
             Collider *collider = ResolveColliderForSubShape(
                 body, result.mBodyID.GetIndexAndSequenceNumber(), result.mSubShapeID2.GetValue());
             if (filterTriggers &&
-                (IsBodySensor(result.mBodyID.GetIndexAndSequenceNumber()) ||
-                 (collider && collider->IsTrigger()))) {
+                (body.IsSensor() || (collider && collider->IsTrigger()))) {
                 return false;
             }
             outHit.collider = collider;
