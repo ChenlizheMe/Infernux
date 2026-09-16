@@ -421,12 +421,14 @@ void JobSystem::ParallelForChunks(uint32_t count, uint32_t chunkSize,
         throw std::invalid_argument("JobSystem::ParallelForChunks requires a positive chunk size and callable");
     }
 
-    const uint32_t chunkCount = (count + chunkSize - 1) / chunkSize;
+    // Avoid the usual ``count + chunkSize - 1`` form: public callers may use
+    // the full uint32 range and that expression wraps before division.
+    const uint32_t chunkCount = 1u + ((count - 1u) / chunkSize);
     auto handle = ScheduleBatch(
         chunkCount,
         [body = std::move(body), count, chunkSize](uint32_t chunk) -> JobFn {
             const uint32_t begin = chunk * chunkSize;
-            const uint32_t end = std::min(count, begin + chunkSize);
+            const uint32_t end = begin + std::min(chunkSize, count - begin);
             return [body, begin, end] { body(begin, end); };
         },
         domain, priority);
