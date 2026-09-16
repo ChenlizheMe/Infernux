@@ -2083,11 +2083,9 @@ void PhysicsWorld::RaycastBatch(const float *originsXYZ, const float *directions
         // per worker so Jolt's narrow-phase work remains parallel without
         // turning the batch into thousands of tiny scheduler operations.
         const uint32_t workerCount = JobSystem::Get().GetWorkerCount();
-        const uint32_t targetWorkerCount =
-            std::min<uint32_t>(workerCount, std::numeric_limits<uint32_t>::max() / 4u);
+        const uint32_t targetWorkerCount = std::min<uint32_t>(workerCount, std::numeric_limits<uint32_t>::max() / 4u);
         const uint32_t targetChunks = std::max<uint32_t>(targetWorkerCount * 4u, 1u);
-        const uint32_t chunkSize =
-            std::max<uint32_t>(64, 1u + (static_cast<uint32_t>(count) - 1u) / targetChunks);
+        const uint32_t chunkSize = std::max<uint32_t>(64, 1u + (static_cast<uint32_t>(count) - 1u) / targetChunks);
         JobSystem::Get().ParallelForChunks(
             static_cast<uint32_t>(count), chunkSize,
             [&](uint32_t begin, uint32_t end) {
