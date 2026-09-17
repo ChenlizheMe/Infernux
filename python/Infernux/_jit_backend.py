@@ -11,7 +11,7 @@ import weakref
 from types import CodeType, FunctionType
 from time import perf_counter
 
-from numba.core import compiler, config, sigutils, types, utils
+from numba.core import codegen, compiler, config, sigutils, types, utils
 from numba.core.compiler_lock import global_compiler_lock
 from numba.core.cpu import CPUContext
 from numba.core.registry import CPUDispatcher, CPUTarget, cpu_target
@@ -23,8 +23,29 @@ from Infernux.jit_runtime import CpuCompilationStatistics, CpuPassTiming, CpuSpe
 _MAX_CPU_SPECIALIZATIONS = 64
 
 
+class _OwnedCodeLibrary(codegen.JITCodeLibrary):
+    def _optimize_functions(self, module):
+        module.data_layout = self._codegen._data_layout
+        for function in module.functions:
+            # llvmlite immediately returns for declarations. Do not construct
+            # an entire optimizer pipeline for an external symbol with no body.
+            if function.is_declaration:
+                continue
+            manager, builder = self._codegen._function_pass_manager()
+            # A builder registers run-local instrumentation callbacks. Keep
+            # one per defined function, not a shared/replayed builder; release
+            # it deterministically, including when optimization raises.
+            with builder, manager:
+                with self._recorded_timings.record(f"Function passes on {function.name!r}", builder):
+                    manager.run(function, builder)
+
+
 class _OwnedContext(CPUContext):
     _compiling_owner = None
+
+    def init(self):
+        super().init()
+        self._internal_codegen._library_class = _OwnedCodeLibrary
 
     def call_unresolved(self, builder, name, signature, args):
         # A recursive call can promote int32 to an already-published int64

@@ -66,6 +66,12 @@ cached objects, cancellation and retirement. Use each compile result's code
 library when measuring its execution engine; the dispatcher's idle target
 context contains shared target metadata, not its published machine code.
 
+The owned LLVM function optimizer skips declarations before constructing a
+pass pipeline: the native optimizer has no body to process for those symbols.
+Defined functions retain the existing optimization passes. Each run owns and
+closes its manager/builder, including on failure; builders are not reused
+across functions because instrumentation callbacks/timing state are run-local.
+
 Automatic parallel dispatch checks array layouts before executing user code.
 Equal-layout shared parameters can run in parallel when the existing HIR
 proves their accesses independent; shifted/reinterpreted aliases and internal
@@ -106,7 +112,7 @@ Install the wheel into an isolated validation directory, put that directory
 first on `PYTHONPATH`, and run `python -m llvmlite.tests`, followed by:
 
 ```sh
-python -m pytest python/test/test_jit.py python/test/test_jit_alias.py python/test/test_jit_statistics.py python/test/test_jit_hir.py python/test/test_jit_runtime.py python/test/test_jit_code_ownership.py python/test/test_jit_disk_cache.py python/test/test_compute.py -q
+python -m pytest python/test/test_jit.py python/test/test_jit_alias.py python/test/test_jit_statistics.py python/test/test_jit_optimizer.py python/test/test_jit_hir.py python/test/test_jit_runtime.py python/test/test_jit_code_ownership.py python/test/test_jit_disk_cache.py python/test/test_compute.py -q
 ```
 
 Run the fork's source metadata checks from `external/llvmlite_for_infernux`
