@@ -238,4 +238,26 @@ int main()
     pendingQueue.Collect();
     assert(sourceLifetime.expired() && device.live.empty());
     assert(pendingQueue.waits == 0);
+
+    TestQueue reuseQueue;
+    ComputeHost reuseHost(device, reuseQueue);
+    auto reuseSource = std::make_shared<ComputeBuffer>(reuseHost, ComputeBufferDesc{4});
+    auto first = reuseSource->GetDataAsync(0, 16);
+    first->Wait();
+    first.reset();
+    assert(reuseQueue.GetStatistics().stagingAllocationCount == 1);
+    auto smaller = reuseSource->GetDataAsync(4, 8);
+    smaller->Wait();
+    assert(reuseQueue.GetStatistics().stagingAllocationCount == 1);
+    const auto waits = reuseQueue.waits;
+    // Completion alone is insufficient: the caller still owns this snapshot.
+    auto concurrent = reuseSource->GetDataAsync(0, 16);
+    assert(reuseQueue.GetStatistics().stagingAllocationCount == 2);
+    assert(reuseQueue.waits == waits);
+    concurrent->Wait();
+    smaller.reset();
+    concurrent.reset();
+    assert(device.live.size() == 2); // Source plus one cached staging allocation.
+    reuseSource.reset();
+    assert(device.live.empty());
 }

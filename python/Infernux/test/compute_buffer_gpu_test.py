@@ -19,6 +19,25 @@ def verify_async_readback() -> None:
     expected = np.arange(8192, dtype=np.float32)
     values = inx.buffer(shape=len(expected), dtype=np.float32, device="gpu", data=expected)
     try:
+        values.get_data_async().get_data()
+        before = inx.compute.statistics()
+        for offset in range(12):
+            np.testing.assert_array_equal(
+                values.get_data_async(offset=offset, count=257).get_data().numpy(), expected[offset:offset + 257],
+            )
+        after = inx.compute.statistics()
+        assert after.staging_allocation_count == before.staging_allocation_count
+
+        # Completed but unconsumed snapshots remain independent, even if newer
+        # writes and readbacks have passed through the same source buffer.
+        first = values.get_data_async()
+        values.set_data(expected + 10)
+        second = values.get_data_async()
+        values.set_data(expected + 20)
+        np.testing.assert_array_equal(values.get_data_async().get_data().numpy(), expected + 20)
+        np.testing.assert_array_equal(second.get_data().numpy(), expected + 10)
+        np.testing.assert_array_equal(first.get_data().numpy(), expected)
+        values.set_data(expected)
         for _ in range(12):
             abandoned = values.get_data_async()
             before = inx.compute.statistics()
@@ -48,7 +67,10 @@ def verify_transform_write_tracking() -> None:
         position=inx.vector3(0, 0, 0), rotation=inx.quaternion.identity,
         local_scale=inx.vector3(1, 1, 1),
     )
-    owner = SimpleNamespace(game_object=SimpleNamespace(id=42, handle=object()))
+    class Owner:
+        game_object = SimpleNamespace(id=42, handle=object())
+
+    owner = Owner()
     data = np.array([[3, 4, 5, 1], [0, 0, 0, 1], [1, 1, 1, 1]], dtype=np.float32)
     pose = inx.buffer(shape=3, dtype=inx.vector4, device="gpu", data=data)
     changes = []

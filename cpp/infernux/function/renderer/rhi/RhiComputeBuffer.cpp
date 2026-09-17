@@ -197,6 +197,20 @@ std::shared_ptr<ComputeReadback> ComputeBuffer::GetDataAsync(uint64_t offset, ui
     return std::make_shared<ComputeReadback>(m_host, shared_from_this(), offset, byteSize);
 }
 
+std::shared_ptr<BufferResource> ComputeBuffer::AcquireAsyncReadbackStorage(uint64_t byteSize)
+{
+    // Both the queue and the consumer must have retired their snapshot before
+    // reuse. Keeping only the latest allocation bounds idle storage to one per
+    // source; replacing it never waits for or overwrites a live request.
+    if (!m_asyncReadback || m_asyncReadback.use_count() != 1 || m_asyncReadback->GetByteSize() < byteSize) {
+        m_asyncReadback =
+            CreateBufferResource(m_host.device, {byteSize, BufferUsageFlags::TransferDestination,
+                                                 BufferMemory::Readback, nullptr, 0, kComputeBufferQueues});
+        m_host.queue.RecordStagingAllocation();
+    }
+    return m_asyncReadback;
+}
+
 ComputeReadback::ComputeReadback(ComputeHost &host, std::shared_ptr<ComputeBuffer> source, uint64_t offset,
                                  uint64_t byteSize)
     : m_host(host.device, host.queue), m_storage(std::make_shared<Storage>()), m_byteSize(byteSize)
@@ -206,9 +220,7 @@ ComputeReadback::ComputeReadback(ComputeHost &host, std::shared_ptr<ComputeBuffe
     if (byteSize == 0 || offset > source->GetByteSize() || byteSize > source->GetByteSize() - offset)
         throw std::out_of_range("Compute readback range is invalid");
     m_storage->source = std::move(source);
-    m_storage->staging = CreateBufferResource(host.device, {byteSize, BufferUsageFlags::TransferDestination,
-                                                            BufferMemory::Readback, nullptr, 0, kComputeBufferQueues});
-    host.queue.RecordStagingAllocation();
+    m_storage->staging = m_storage->source->AcquireAsyncReadbackStorage(byteSize);
     m_ticket = host.queue.Submit(
         [this, offset, byteSize](ComputeRecordingContext &context) {
             context.PipelineBarrier(PipelineStage::AllCommands, Access::MemoryWrite, PipelineStage::Transfer,

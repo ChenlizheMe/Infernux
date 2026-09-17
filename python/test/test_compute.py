@@ -106,6 +106,47 @@ def test_transform_binding_requires_three_vector4_pose_rows():
         )
 
 
+@pytest.mark.parametrize("retirement", ["destroyed", "collected"])
+def test_transform_binding_retires_with_owner_not_only_game_object(monkeypatch, retirement):
+    import gc
+    from types import SimpleNamespace
+
+    class Owner:
+        game_object = SimpleNamespace(id=42, handle=object())
+        _is_destroyed = False
+
+    transform = SimpleNamespace(
+        position=inx.vector3(0, 0, 0), rotation=inx.quaternion.identity,
+        local_scale=inx.vector3(1, 1, 1),
+    )
+    resolved = []
+    monkeypatch.setattr(inx.compute, "_resolve_bound_transform",
+                        lambda *args: resolved.append(args) or transform)
+    data = np.array([[3, 4, 5, 1], [0, 0, 0, 1], [1, 1, 1, 1]], dtype=np.float32)
+    pose = inx.buffer(shape=3, dtype=inx.vector4, device="cpu", data=data)
+    owner = Owner()
+    binding = inx.compute.bind_transform(owner, pose=pose)
+    binding._poll()  # A completed snapshot is waiting to be published.
+    resolved.clear()
+    if retirement == "destroyed":
+        owner._is_destroyed = True
+    else:
+        del owner
+        gc.collect()
+    binding._poll()
+    assert binding.closed and not resolved
+    assert tuple(transform.position) == (0, 0, 0)
+    assert not pose.closed  # Binding does not own the author's buffer.
+    # A new component on exactly the same object identity is unaffected.
+    replacement = Owner()
+    current = inx.compute.bind_transform(replacement, pose=pose)
+    current._poll()
+    current._poll()
+    assert tuple(transform.position) == (3, 4, 5)
+    current.close()
+    pose.close()
+
+
 def test_transform_binding_authored_trs_wins_once_and_updates_pose(monkeypatch):
     class Transform:
         position = inx.vector3(0.0, 0.0, 0.0)

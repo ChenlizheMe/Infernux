@@ -88,6 +88,8 @@ class ComputeBuffer final : public std::enable_shared_from_this<ComputeBuffer>
     [[nodiscard]] std::vector<uint8_t> FinishReadback(uint64_t offset, uint64_t byteSize);
 
   private:
+    friend class ComputeReadback;
+    [[nodiscard]] std::shared_ptr<BufferResource> AcquireAsyncReadbackStorage(uint64_t byteSize);
     [[nodiscard]] BufferResource &EnsureUploadBuffer();
     [[nodiscard]] BufferResource &EnsureReadbackBuffer();
     void ValidateRange(uint64_t offset, uint64_t byteSize) const;
@@ -97,6 +99,8 @@ class ComputeBuffer final : public std::enable_shared_from_this<ComputeBuffer>
     std::unique_ptr<BufferResource> m_storage;
     std::unique_ptr<BufferResource> m_upload;
     std::unique_ptr<BufferResource> m_readback;
+    // One reusable allocation; outstanding snapshots keep their own leases.
+    std::shared_ptr<BufferResource> m_asyncReadback;
     SubmissionTicket m_uploadTicket;
     SubmissionTicket m_lastWriteSubmission;
 };
@@ -125,7 +129,7 @@ class ComputeReadback final
     struct Storage
     {
         std::shared_ptr<ComputeBuffer> source;
-        std::unique_ptr<BufferResource> staging;
+        std::shared_ptr<BufferResource> staging;
     };
     std::shared_ptr<Storage> m_storage;
     SubmissionTicket m_ticket;

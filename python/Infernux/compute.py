@@ -824,6 +824,7 @@ class TransformBinding:
                     )
         self._object_id = object_id
         self._object_handle = object_handle
+        self._owner = weakref.ref(owner)
         self._pose = pose
         self._domain = domain
         self._points = points
@@ -857,6 +858,13 @@ class TransformBinding:
 
     def _poll(self) -> None:
         if self._closed:
+            return
+        owner = self._owner()
+        # Play-domain replacement preserves the GameObject handle but retires
+        # its old Python component. That component must not keep publishing a
+        # second pose into the replacement's still-live Transform.
+        if owner is None or getattr(owner, "_is_destroyed", False):
+            self.close()
             return
         if self._pose.closed:
             self.close()
@@ -918,6 +926,7 @@ class TransformBinding:
         self._closed = True
         _transform_bindings.discard(self)
         self._readback = None
+        self._owner = None
         self._object_handle = None
         self._pose = None
         self._domain = None
