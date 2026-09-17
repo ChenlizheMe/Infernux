@@ -140,6 +140,25 @@ can merge with instance field edits, and an instance parent override survives
 unrelated source updates. If concurrent edits form a parent cycle, Apply rejects
 the conflict before changing the asset file; resolve the hierarchy and apply again.
 
+## Revert one property override
+
+```python
+inx.editor.revert_property_override(component, "amount")
+```
+
+Restores one declared serialized field from the nearest Prefab source and records
+one undoable edit. Other field overrides, object identities, and component
+references stay intact. The source asset is not modified. A `False` result means
+there was no change to record.
+
+Use the public Python field name, including native properties such as a
+collider's `size` or Transform's `local_position`. Explicitly reverting a root
+Transform field restores its source value; whole-instance Revert instead
+preserves root placement. Collection fields are restored as a whole. Nested
+property paths, added instance components, and read-only fields are not supported
+by this entry point. If a source reference targets a removed instance member,
+restore that member first; the reference will not bind an unrelated object.
+
 ## Nested Prefabs
 
 Place a Prefab instance under another hierarchy and save the outer hierarchy as

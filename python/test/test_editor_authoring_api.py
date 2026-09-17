@@ -9,7 +9,8 @@ from Infernux.engine.undo import UndoManager
 from Infernux.engine.play_mode import PlayModeManager
 from Infernux.engine.hierarchy_creation_service import HierarchyCreationService
 from Infernux.lib import Vector3
-from Infernux.components import serialized_field
+from Infernux.components import InxComponent, FieldType, serialized_field
+from Infernux.components.builtin import BoxCollider
 from Infernux.core import AssetManager, DataAsset
 
 
@@ -150,6 +151,35 @@ def test_public_data_asset_and_folder_share_grouped_undo(asset_authoring):
     assert not folder.exists()
 
 
+def test_public_data_asset_uses_published_type_after_script_refresh(asset_authoring):
+    from pathlib import Path
+    from Infernux.components.serializable_object import (
+        _candidate_serializable_scope, _publish_serializable_types,
+        _restore_serializable_types,
+    )
+
+    source = AuthoringLevelData(title="Preloaded", difficulty=7)
+    candidates = {}
+    with _candidate_serializable_scope(candidates, __name__):
+        class PublishedLevelData(DataAsset):
+            __serialized_type_id__ = AuthoringLevelData.__serialized_type_id__
+            title: str = serialized_field(default="New")
+            difficulty: int = serialized_field(default=1)
+
+    before = _publish_serializable_types(candidates, {__name__})
+    try:
+        target = Path(asset_authoring.assets_root) / "RefreshedAuthoring.inxdata"
+        editor.create_data_asset(source, target)
+        loaded = DataAsset.load(str(target))
+        assert type(loaded) is PublishedLevelData
+        assert (loaded.title, loaded.difficulty) == ("Preloaded", 7)
+        assert type(source) is AuthoringLevelData
+        assert not source.is_persistent
+        assert source.difficulty == 7
+    finally:
+        _restore_serializable_types(before)
+
+
 def test_public_data_asset_never_overwrites_or_mutates_input(asset_authoring):
     from pathlib import Path
     target = Path(asset_authoring.assets_root) / "AuthoringUnique.inxdata"
@@ -220,3 +250,158 @@ def test_public_invalid_build_scenes_leave_settings_unchanged(authoring, monkeyp
         editor.set_build_scenes(paths)
     assert editor.get_build_scenes() == before
     assert not UndoManager.instance().can_undo
+
+
+class PropertyRevertProbe(InxComponent):
+    amount: float = serialized_field(default=2.0)
+    label: str = serialized_field(default="Source")
+    target = serialized_field(default=None, field_type=FieldType.GAME_OBJECT)
+    collider = serialized_field(default=None, field_type=FieldType.COMPONENT)
+    locked: int = serialized_field(default=1, readonly=True)
+
+
+@pytest.fixture
+def property_prefab(asset_authoring, scene):
+    root = scene.create_game_object("Property Source")
+    root.transform.local_position = Vector3(2, 3, 4)
+    child = scene.create_game_object("Referenced Child")
+    child.set_parent(root)
+    collider = child.add_component("BoxCollider")
+    for amount in (2.0, 5.0):
+        component = PropertyRevertProbe()
+        component.amount = amount
+        component.target = child
+        component.collider = collider
+        root.add_py_component(component)
+    path = editor.create_prefab(root, asset_authoring.assets_root)
+    instance = editor.instantiate_prefab(path)
+    UndoManager.instance().clear()
+    return path, instance
+
+
+def test_revert_one_python_property_retains_other_fields_and_identity(property_prefab, scene):
+    path, root = property_prefab
+    first, second = root.get_components(PropertyRevertProbe)
+    first.amount = 20.0
+    second.amount = 50.0
+    second.label = "Keep instance label"
+    component_id = second.component_id
+    child_id = root.get_child(0).id
+    root.transform.local_position = Vector3(10, 11, 12)
+    assert editor.revert_property_override(second, "amount")
+    first, second = root.get_components(PropertyRevertProbe)
+    assert (first.amount, second.amount, second.label) == (20.0, 5.0, "Keep instance label")
+    assert second.component_id == component_id
+    assert root.get_child(0).id == child_id
+    assert root.transform.local_position.x == 10
+    editor.undo(defer=False)
+    assert root.get_components(PropertyRevertProbe)[1].amount == 50
+    editor.redo(defer=False)
+    second = root.get_components(PropertyRevertProbe)[1]
+    assert second.amount == 5
+    assert not editor.revert_property_override(second, "amount")
+
+
+@pytest.mark.parametrize("field", ["target", "collider"])
+def test_revert_reference_uses_instance_object_and_exact_component(property_prefab, field):
+    path, root = property_prefab
+    component = root.get_components(PropertyRevertProbe)[0]
+    setattr(component, field, None)
+    assert editor.revert_property_override(component, field)
+    component = root.get_components(PropertyRevertProbe)[0]
+    target = getattr(component, field)
+    if field == "target":
+        assert target.id == root.get_child(0).id
+    else:
+        assert target.component_id == root.get_child(0).get_component("BoxCollider").component_id
+    editor.undo(defer=False)
+    assert getattr(root.get_components(PropertyRevertProbe)[0], field) is None
+
+
+def test_revert_native_and_explicit_root_transform_properties(property_prefab):
+    path, root = property_prefab
+    collider = root.get_child(0).get_component(BoxCollider)
+    collider.size = Vector3(4, 5, 6)
+    collider.center = Vector3(1, 2, 3)
+    assert editor.revert_property_override(collider, "size")
+    collider = root.get_child(0).get_component(BoxCollider)
+    assert collider.size.x == 1
+    assert collider.center.x == 1
+    root.transform.local_position = Vector3(10, 11, 12)
+    assert editor.revert_property_override(root.transform, "local_position")
+    assert root.transform.local_position.x == 2
+    editor.undo(defer=False)
+    assert root.transform.local_position.x == 10
+
+
+@pytest.mark.parametrize("field", ["unknown_field", "locked"])
+def test_revert_undeclared_or_readonly_field_is_not_recorded(property_prefab, field):
+    path, root = property_prefab
+    before = root.serialize_document()
+    with pytest.raises((KeyError, ValueError)):
+        editor.revert_property_override(root.get_components(PropertyRevertProbe)[0], field)
+    assert root.serialize_document() == before
+    assert not UndoManager.instance().can_undo
+
+
+def test_revert_missing_referenced_member_does_not_fall_back_to_raw_id(property_prefab, scene):
+    path, root = property_prefab
+    child = root.get_child(0)
+    scene.destroy_game_object(child)
+    scene.process_pending_destroys()
+    component = root.get_components(PropertyRevertProbe)[0]
+    component.target = None
+    with pytest.raises(KeyError):
+        editor.revert_property_override(component, "target")
+    assert component.target is None
+    assert not UndoManager.instance().can_undo
+
+
+def test_revert_added_component_does_not_touch_same_type_source_component(property_prefab):
+    path, root = property_prefab
+    added = PropertyRevertProbe()
+    added.amount = 12
+    root.add_py_component(added)
+    with pytest.raises(ValueError, match="no source property"):
+        editor.revert_property_override(added, "amount")
+    assert root.get_components(PropertyRevertProbe)[-1].amount == 12
+    assert not UndoManager.instance().can_undo
+
+
+@pytest.mark.parametrize("already_matches", [False, True])
+def test_property_revert_advances_only_selected_source_baseline(property_prefab, already_matches):
+    from Infernux.engine.prefab_manager import _read_prefab_document, save_prefab_document
+    path, root = property_prefab
+    component = root.get_components(PropertyRevertProbe)[0]
+    component.amount = 7 if already_matches else 20
+    component.label = "Keep override"
+    source = _read_prefab_document(path)
+    source["root_object"]["components"][0]["data"]["amount"] = 7
+    source["root_object"]["components"][0]["data"]["label"] = "New source label"
+    assert save_prefab_document(source, path)
+    assert editor.revert_property_override(component, "amount")
+    component = root.get_components(PropertyRevertProbe)[0]
+    assert (component.amount, component.label) == (7, "Keep override")
+    baseline = root.serialize_document()["prefab_source"]["root_object"]["components"][0]["data"]
+    assert (baseline["amount"], baseline["label"]) == (7, "Source")
+    editor.undo(defer=False)
+    restored = root.serialize_document()["prefab_source"]["root_object"]["components"][0]["data"]
+    assert (restored["amount"], restored["label"]) == (2, "Source")
+
+
+def test_revert_nested_component_targets_nearest_prefab_source(property_prefab, asset_authoring):
+    path, inner = property_prefab
+    outer = editor.create_game_object("Outer Property Source")
+    inner.set_parent(outer)
+    outer_path = editor.create_prefab(outer, asset_authoring.assets_root)
+    placed = editor.instantiate_prefab(outer_path)
+    nested = placed.get_child(0)
+    component = nested.get_components(PropertyRevertProbe)[1]
+    component.amount = 50
+    component.label = "Nested override"
+    UndoManager.instance().clear()
+    assert editor.revert_property_override(component, "amount")
+    component = nested.get_components(PropertyRevertProbe)[1]
+    assert (component.amount, component.label) == (5, "Nested override")
+    editor.undo(defer=False)
+    assert nested.get_components(PropertyRevertProbe)[1].amount == 50

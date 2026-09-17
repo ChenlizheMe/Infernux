@@ -361,6 +361,109 @@ def build_prefab_revert_command(instance_obj, prefab_path: str,
     )
 
 
+def _component_property_storage(component, field_name):
+    """Resolve public field spelling through the existing serialized schema."""
+    from Infernux.components.builtin_component import BuiltinComponent, CppProperty
+    from Infernux.components.fields import get_field_schema
+    from Infernux.field_schema import get_native_field_schema
+
+    if getattr(component, "type_name", "") == "Transform":
+        schema = get_native_field_schema("native:infernux.Transform", field_name)
+        section = "transform"
+    elif isinstance(component, BuiltinComponent):
+        descriptor = getattr(type(component), field_name, None)
+        if not isinstance(descriptor, CppProperty) or descriptor.schema is None:
+            raise ValueError(f"Not a declared serialized property: {field_name}")
+        schema = descriptor.schema
+        section = "data"
+    else:
+        schema = get_field_schema(type(component), field_name)
+        section = "data"
+    if schema.read_only:
+        raise ValueError(f"Property is read-only: {schema.property_path}")
+    return section, schema.attributes.get("serialized_name", field_name)
+
+
+def build_prefab_property_revert_command(component, field_name, prefab_path,
+                                         asset_database=None):
+    """Restore one declared field, retaining other overrides and exact identities."""
+    section, key = _component_property_storage(component, field_name)
+    owner = component.game_object
+    root = resolve_prefab_instance_root(owner)
+    if root is None:
+        raise ValueError("Property target is not a Prefab instance member")
+    source = _load_prefab_root(prefab_path)
+    before = _serialize_obj(root)
+    objects = {0: 0}
+    _match_object_ids(before, source, objects)
+    components = _instance_component_ids(before, source)
+    source_id = objects.get(owner.id)
+    source_node = next((node for node in _object_nodes(source)
+                        if node["local_id"] == source_id), None)
+    if source_node is None:
+        raise ValueError("Added instance objects have no source property to revert")
+
+    def storage(node, component_id):
+        if section == "transform":
+            return node["transform"]
+        record = next((item for item in node["components"]
+                       if item["component_id"] == component_id), None)
+        if record is None:
+            raise ValueError("Added or removed components have no source property to revert")
+        return record["data"]
+
+    source_component_id = components.get(component.component_id)
+    source_value = storage(source_node, source_component_id)[key]
+    identities = {local: runtime for runtime, local in objects.items()}
+    for node in _object_nodes(before):
+        local = objects.get(node["id"])
+        if local is None:
+            continue
+        identities[(local, 0)] = node["transform"]["component_id"]
+        for record in node["components"]:
+            identities[(local, components[record["component_id"]])] = record["component_id"]
+
+    def remap(value):
+        if isinstance(value, list):
+            return [remap(item) for item in value]
+        if not isinstance(value, dict):
+            return value
+        kind = value.get(TYPE_KEY)
+        reference_key = _REFERENCE_ID_KEYS.get(kind)
+        if reference_key and value[reference_key]:
+            result = copy.deepcopy(value)
+            local = value[reference_key]
+            # No local-ID fallback: a removed source member must not bind an
+            # unrelated runtime object whose numeric ID happens to match.
+            result[reference_key] = identities[local]
+            if kind == COMPONENT_REF and "component_id" in value:
+                result["component_id"] = identities[(local, value["component_id"])]
+            return result
+        return {name: remap(item) for name, item in value.items()}
+
+    value = remap(source_value)
+    after = copy.deepcopy(before)
+    target = next(node for node in _object_nodes(after) if node["id"] == owner.id)
+    destination = storage(target, component.component_id)
+    destination[key] = value
+
+    # Advance only this field's merge baseline. Updating the entire baseline
+    # would hide unrelated source changes still waiting to reach this instance.
+    if after.get("prefab_source"):
+        from Infernux.engine.prefab_manager import _prefab_baseline_root
+        baseline = _prefab_baseline_root(after["prefab_source"])
+        baseline_node = next((node for node in _object_nodes(baseline)
+                              if node["local_id"] == source_id), None)
+        if baseline_node is not None:
+            storage(baseline_node, source_component_id)[key] = copy.deepcopy(source_value)
+
+    if after == before:
+        return None
+    from Infernux.engine.undo import PrefabRevertCommand
+    return PrefabRevertCommand(root.id, before, after, asset_database,
+                               description=f"Revert {type(component).__name__}.{field_name}")
+
+
 def _build_reverted_prefab_document(instance_obj, prefab_path: str):
     instance_obj = resolve_prefab_instance_root(instance_obj) or instance_obj
     prefab_data = _load_prefab_root(prefab_path)

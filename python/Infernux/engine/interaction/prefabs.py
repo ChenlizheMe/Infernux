@@ -278,6 +278,20 @@ class PrefabCommandService:
         self._execute(PrefabUnpackCommand(root.id), origin)
         return True
 
+    def revert_property(self, component, field_name: str, *,
+                        origin: ActionOrigin = ActionOrigin.USER) -> bool:
+        root = self._require_instance_root(component.game_object.id)
+        path = self._require_instance_path(root)
+        from Infernux.engine.prefab_overrides import build_prefab_property_revert_command
+
+        command = build_prefab_property_revert_command(
+            component, field_name, path, self._project_assets.asset_database,
+        )
+        if command is None:
+            return False
+        self._execute(command, origin)
+        return True
+
     def shutdown(self) -> None:
         self._context_provider = None
         if PrefabCommandService._instance is self:

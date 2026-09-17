@@ -24,6 +24,7 @@ __all__ = (
     "revert_prefab", "save_scene", "open_scene", "new_scene", "undo", "redo",
     "create_data_asset", "create_folder", "get_build_scenes", "set_build_scenes",
     "save_project_settings",
+    "revert_property_override",
 )
 
 
@@ -165,6 +166,11 @@ def apply_prefab(game_object) -> bool:
 
 def revert_prefab(game_object) -> bool:
     return _authoring_core().prefabs.revert(game_object.id)
+
+
+def revert_property_override(component, field_name: str) -> bool:
+    """Revert one declared component field, retaining unrelated instance edits."""
+    return _authoring_core().prefabs.revert_property(component, field_name)
 
 
 def save_scene(path=None) -> DocumentActionResult:

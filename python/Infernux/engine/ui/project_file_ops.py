@@ -965,13 +965,16 @@ def create_data_asset(current_path: str, asset_name: str, type_id: str, asset_da
     if not asset_name or os.path.basename(asset_name) != asset_name:
         return False, "Invalid DataAsset name"
 
-    from Infernux.components.serializable_object import get_serializable_class
+    from Infernux.components.serializable_object import get_serializable_class, get_serializable_type_id
     from Infernux.core.data_asset import DataAsset
 
     asset_type = get_serializable_class(str(type_id or "").strip())
     if asset_type is None or asset_type is DataAsset or not issubclass(asset_type, DataAsset):
         return False, f"Unknown DataAsset type: {type_id}"
-    if value is not None and type(value) is not asset_type:
+    if value is not None and (
+        not isinstance(value, DataAsset)
+        or get_serializable_type_id(value) != get_serializable_type_id(asset_type)
+    ):
         return False, "Initial value must have the requested DataAsset type"
 
     file_name = asset_name + ".inxdata"
@@ -979,7 +982,9 @@ def create_data_asset(current_path: str, asset_name: str, type_id: str, asset_da
     if os.path.exists(file_path):
         return False, f"'{file_name}' already exists"
     try:
-        initial = asset_type() if value is None else value.instantiate()
+        # Preloads can retain a value from before a script type publication.
+        # Materialize its document with the current authoritative schema.
+        initial = asset_type() if value is None else asset_type.from_document(value.serialize_document())
         initial.save_to(file_path, database=asset_database)
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
         return False, str(exc)
