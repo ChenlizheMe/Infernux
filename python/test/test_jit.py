@@ -9,6 +9,14 @@ import Infernux.jit as jit
 import Infernux._jit_kernels as jit_kernels
 
 
+@pytest.fixture(autouse=True)
+def jit_project_cache(tmp_path):
+    from Infernux.engine.project_context import using_project_root
+
+    with using_project_root(str(tmp_path)):
+        yield
+
+
 def _positive_value(value):
     return value if value > 0.0 else 0.0
 
@@ -368,7 +376,6 @@ class TestAutoParallelNjit:
 
     def test_auto_parallel_builds_dual_variants(self, monkeypatch):
         monkeypatch.setattr(jit_kernels, "_HAS_NUMBA", True)
-        monkeypatch.setattr(jit_kernels, "_NUITKA_COMPILED", False)
         monkeypatch.setattr(jit_kernels, "_real_njit", self._fake_numba_njit)
 
         @jit_kernels.njit(cache=True, auto_parallel=True)
@@ -387,7 +394,6 @@ class TestAutoParallelNjit:
 
     def test_warmup_can_pin_serial_variant(self, monkeypatch):
         monkeypatch.setattr(jit_kernels, "_HAS_NUMBA", True)
-        monkeypatch.setattr(jit_kernels, "_NUITKA_COMPILED", False)
         monkeypatch.setattr(jit_kernels, "_real_njit", self._fake_numba_njit)
         monkeypatch.setattr(
             jit_kernels,
@@ -410,7 +416,6 @@ class TestAutoParallelNjit:
 
     def test_warmup_can_pin_parallel_after_compile_cost(self, monkeypatch):
         monkeypatch.setattr(jit_kernels, "_HAS_NUMBA", True)
-        monkeypatch.setattr(jit_kernels, "_NUITKA_COMPILED", False)
         monkeypatch.setattr(jit_kernels, "_real_njit", self._fake_numba_njit)
         monkeypatch.setattr(
             jit_kernels,
@@ -431,7 +436,6 @@ class TestAutoParallelNjit:
 
     def test_parallel_runtime_failure_is_not_replayed_through_serial(self, monkeypatch):
         monkeypatch.setattr(jit_kernels, "_HAS_NUMBA", True)
-        monkeypatch.setattr(jit_kernels, "_NUITKA_COMPILED", False)
         monkeypatch.setattr(jit_kernels, "_real_njit", self._fake_numba_njit)
 
         @jit_kernels.njit(
@@ -639,7 +643,6 @@ class TestAutoParallelNjit:
 
     def test_required_policy_rejects_loop_carried_dependency(self, monkeypatch):
         monkeypatch.setattr(jit_kernels, "_HAS_NUMBA", True)
-        monkeypatch.setattr(jit_kernels, "_NUITKA_COMPILED", False)
         monkeypatch.setattr(jit_kernels, "_real_njit", self._fake_numba_njit)
 
         with pytest.raises(ValueError, match="parallel_policy='required' rejected"):
@@ -650,7 +653,6 @@ class TestAutoParallelNjit:
 
     def test_warmup_decisions_are_per_shape_bucket(self, monkeypatch):
         monkeypatch.setattr(jit_kernels, "_HAS_NUMBA", True)
-        monkeypatch.setattr(jit_kernels, "_NUITKA_COMPILED", False)
         monkeypatch.setattr(jit_kernels, "_real_njit", self._fake_numba_njit)
         monkeypatch.setattr(
             jit_kernels,
@@ -685,7 +687,6 @@ class TestAutoParallelNjit:
 
     def test_static_decision_skips_repeated_timing_for_decisive_shape(self, monkeypatch):
         monkeypatch.setattr(jit_kernels, "_HAS_NUMBA", True)
-        monkeypatch.setattr(jit_kernels, "_NUITKA_COMPILED", False)
         monkeypatch.setattr(jit_kernels, "_real_njit", self._fake_numba_njit)
         monkeypatch.setattr(
             jit_kernels,

@@ -42,3 +42,11 @@ def foreign_helper(value):
 def fill(values):
     for index in range(len(values)):
         values[index] = index * FACTOR
+
+
+def source_less(value):
+    return value * FACTOR
+
+
+source_less.__code__ = source_less.__code__.replace(co_filename="<Content.inxpkg>/cpu_kernel.py")
+source_less = jit.compile(source_less, cache=True, auto_parallel=False)

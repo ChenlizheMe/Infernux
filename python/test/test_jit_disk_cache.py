@@ -15,6 +15,7 @@ import pytest
     ("module_constant", False), ("module_constant", True),
     ("foreign_helper", False), ("foreign_helper", True),
     ("fill", True),
+    ("source_less", False),
 ])
 def test_disk_cache_uses_published_constants_and_reuses_unchanged_revision(
     tmp_path, auto_parallel, kernel,

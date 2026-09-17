@@ -190,6 +190,9 @@ def compile(fn=None, **options):
     Referenced globals and closures are compile-time values for a publication;
     publish a new function revision to change them. ``cache=True`` also keys
     disk entries by those dependencies, not just the source file timestamp.
+    Editor artifacts live under ``Library/Artifacts/Compute/CPU``; Players use
+    their writable application data root. Standalone compiler tools requesting
+    disk caching must supply an explicit ``NUMBA_CACHE_DIR``.
     """
     if not JIT_AVAILABLE:
         if os.environ.get("INFERNUX_WEB_RUNTIME") == "1" or sys.platform == "emscripten":

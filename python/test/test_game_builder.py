@@ -6878,7 +6878,7 @@ class TestGameBuilderAutoParallelExport:
     @pytest.mark.parametrize("declaration", [
         "from Infernux import jit\n@jit.compile(cache=True)\n",
     ])
-    def test_compile_user_scripts_embeds_auto_parallel_without_sidecar(self, tmp_path, declaration):
+    def test_compile_user_scripts_embeds_auto_parallel_without_sidecar(self, tmp_path, declaration, monkeypatch):
         output_dir = tmp_path / "build_output"
         assets_dir = output_dir / "Data" / "Assets"
         assets_dir.mkdir(parents=True)
@@ -6918,12 +6918,19 @@ class TestGameBuilderAutoParallelExport:
         spec = importlib.util.spec_from_loader(loader.name, loader)
         assert spec is not None
         module = importlib.util.module_from_spec(spec)
+        import Infernux.application as application
+
+        player_data = tmp_path / "player-data"
+        monkeypatch.setattr(application, "_runtime_kind", "player")
+        monkeypatch.setenv("_INFERNUX_PLAYER_PERSISTENT_DATA_ROOT", str(player_data))
+        monkeypatch.setitem(sys.modules, loader.name, module)
         loader.exec_module(module)
         assert module.burn(10) == 45
         assert module.burn.parallel is not module.burn.serial
         manifest = module.__infernux_jit_manifest__["burn"]
         assert len(manifest["hir_fingerprint"]) == 64
         assert module.burn.compiler_fingerprint == manifest["hir_fingerprint"]
+        assert list((player_data / "Cache/Compute/CPU").glob("inx-*.nbc"))
 
     def test_compile_user_scripts_skips_sidecar_for_non_auto_parallel_script(self, tmp_path):
         output_dir = tmp_path / "build_output"

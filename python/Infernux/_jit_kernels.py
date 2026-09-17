@@ -69,11 +69,6 @@ def _log_jit(msg: str) -> None:
         pass
 
 
-# In Nuitka standalone builds user scripts are compiled to .pyc and the
-# originals removed.  Numba's cache locator requires the source .py to
-# exist, so ``cache=True`` would raise RuntimeError.
-_NUITKA_COMPILED = "__compiled__" in globals()
-
 # ── Compilation cache ─────────────────────────────────────────────────
 # Prevents re-compiling the same @njit function when a user script module
 # is re-imported (e.g. scene loading calls load_all_components_from_file
@@ -88,7 +83,7 @@ except Exception:
 prange = _numba_prange
 
 
-def _njit_cache_key(fn, kwargs_tag: str = "") -> str | None:
+def _njit_cache_key(fn, kwargs_tag: str = "", *, disk_cache: bool = False) -> str | None:
     """Identify compiled code and its captured environment at publication.
 
     Unchanged publications reuse compiled dispatchers; referenced constants,
@@ -96,21 +91,16 @@ def _njit_cache_key(fn, kwargs_tag: str = "") -> str | None:
     """
     if getattr(fn, "__code__", None) is None:
         return None
-    return compiler_fingerprint(fn, {"numba_options": kwargs_tag})
+    options = {"numba_options": kwargs_tag}
+    if disk_cache:
+        from Infernux._jit_cache import cpu_cache_root
+
+        options["cache_owner"] = str(cpu_cache_root())
+    return compiler_fingerprint(fn, options)
 
 
 def _compile_njit(fn, kwargs):
-    """Compile *fn* with the current numba njit factory and attach ``.py``.
-
-    Automatically drops ``cache=True`` when the source ``.py`` file is
-    missing (e.g. in packaged builds where only ``.pyc`` remains), because
-    Numba's cache locator requires the source file.
-    """
-    if kwargs.get("cache"):
-        co_file = getattr(getattr(fn, "__code__", None), "co_filename", "")
-        if co_file and not os.path.isfile(co_file):
-            kwargs = dict(kwargs)
-            kwargs.pop("cache", None)
+    """Compile *fn*, with owned caching also available for cooked Python code."""
     kwargs = dict(kwargs)
     disk_cache = kwargs.pop("cache", False)
     if kwargs:
@@ -130,7 +120,7 @@ def _compile_njit(fn, kwargs):
 def _compile_njit_cached(fn, kwargs):
     """Reuse a dispatcher when code, captured dependencies and options match."""
     kwargs_tag = ",".join(f"{k}={v}" for k, v in sorted(kwargs.items()))
-    cache_key = _njit_cache_key(fn, kwargs_tag)
+    cache_key = _njit_cache_key(fn, kwargs_tag, disk_cache=bool(kwargs.get("cache")))
     if cache_key and cache_key in _compiled_cache:
         _log_jit(f"[JIT] {fn.__name__}: reusing cached compilation")
         cached = _compiled_cache[cache_key]
@@ -754,9 +744,6 @@ def njit(*args, **kwargs):
             return _attach_fallback(args[0])
         return _wrap
 
-    if _NUITKA_COMPILED:
-        kwargs.pop("cache", None)
-
     if auto_parallel:
         serial_kwargs = dict(kwargs)
         serial_kwargs.pop("parallel", None)
@@ -768,6 +755,7 @@ def njit(*args, **kwargs):
             cache_key = _njit_cache_key(
                 fn,
                 f"auto_parallel:{parallel_policy}:{parallel_fingerprint}:{sorted(serial_kwargs.items())}",
+                disk_cache=bool(serial_kwargs.get("cache")),
             )
             if cache_key and cache_key in _compiled_cache:
                 _log_jit(f"[JIT] {fn.__name__}: reusing cached auto_parallel compilation")
@@ -852,7 +840,7 @@ def warmup(fn, *args, **kwargs):
         custom_warmup(*args, **kwargs)
         return
 
-    if not _HAS_NUMBA or _NUITKA_COMPILED:
+    if not _HAS_NUMBA:
         return
     try:
         fn(*args, **kwargs)

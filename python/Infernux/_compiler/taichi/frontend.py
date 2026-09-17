@@ -25,6 +25,7 @@ import threading
 import numpy as np
 
 from . import CompilerInstallationError, _vendor_dir, load_native
+from ..cache import compiler_cache_root, prune_cache_files
 
 
 _VENDOR_NAME = "Infernux._compiler.taichi._vendor.taichi"
@@ -252,14 +253,7 @@ class CompilerArtifact:
 
 
 def _cache_root() -> Path:
-    from Infernux.application import Application
-
-    if Application.is_player():
-        return Path(Application.persistent_data_path()) / "Cache" / "Compute"
-    project_root = Application.data_path()
-    if not project_root:
-        raise RuntimeError("GPU kernel compilation requires an active project")
-    return Path(project_root) / "Library" / "Artifacts" / "Compute"
+    return compiler_cache_root()
 
 
 def _artifact_key(function, definition, helpers, params) -> str:
@@ -318,14 +312,7 @@ def _store_artifact(key: str, artifact: CompilerArtifact) -> None:
     temporary.write_bytes(payload)
     os.replace(temporary, path)
 
-    entries = sorted(root.glob("*.inxgpu"), key=lambda item: item.stat().st_mtime_ns, reverse=True)
-    retained_bytes = 0
-    for index, entry in enumerate(entries):
-        size = entry.stat().st_size
-        if index < _CACHE_FILE_LIMIT and retained_bytes + size <= _CACHE_BYTE_LIMIT:
-            retained_bytes += size
-            continue
-        entry.unlink()
+    prune_cache_files(root, "*.inxgpu", file_limit=_CACHE_FILE_LIMIT, byte_limit=_CACHE_BYTE_LIMIT)
 
 
 def compile_kernel(function, params) -> CompilerArtifact:
