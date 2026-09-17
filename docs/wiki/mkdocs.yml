@@ -12,6 +12,8 @@ theme:
 
 nav:
   - Home: index.md
+  - Editor tools: en/editor-authoring.md
+  - 编辑器工具: zh/editor-authoring.md
   - API Reference:
     - Overview: en/api/index.md
     - Infernux:

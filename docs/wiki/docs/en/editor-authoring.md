@@ -1,0 +1,85 @@
+# Writing Editor tools
+
+`inx.editor` is the public entry point for project-specific Editor tools.
+Its operations use the same Hierarchy, Prefab, save-ticket and Undo services as
+the Editor UI. They require an active Editor session and are unavailable in Play
+Mode. They are not gameplay APIs and do not belong in a Player script.
+
+Place this script in `Assets/Editor/CreateObstacle.py`:
+
+```python
+import infernux as inx
+
+
+class ObstacleTools(inx.InxPreload):
+    def preload(self, context):
+        inx.editor.EditorCommandRegistry.instance().register(
+            inx.editor.EditorCommand(
+                "my_game.create_obstacle",
+                self.create_obstacle,
+                display_name="Create obstacle",
+            )
+        )
+        inx.editor.ShortcutRouter.instance().register(
+            inx.editor.ShortcutBinding(
+                "my_game.create_obstacle",
+                inx.editor.KeyChord("F9"),
+                binding_id="my_game.create_obstacle.f9",
+            )
+        )
+
+    def create_obstacle(self, context):
+        with inx.editor.edit_scene("Create obstacle"):
+            root = inx.editor.create_game_object("Obstacle")
+            inx.editor.create_game_object(
+                "Body", kind="primitive.cube", parent=root,
+            )
+            prefab_path = inx.editor.create_prefab(root, "Assets")
+            placed = inx.editor.instantiate_prefab(prefab_path)
+        return placed.id
+```
+
+Press F9 or find **Create obstacle** in the command palette. One Undo removes the
+created hierarchy, asset and placed instance; Redo restores the recorded action.
+Register commands and shortcuts inside `preload`: their owner is then removed on
+reload, unload or project close. Do not register them each frame.
+
+## Creation and editing
+
+- `create_game_object` returns the created GameObject. `kind` uses the Hierarchy
+  creation catalog, for example `empty`, `primitive.sphere` or `ui.button`.
+- Its optional `configure(obj)` callback runs before the creation snapshot is
+  recorded. Use it for initial components or Transform values that must survive
+  Undo/Redo. An exception cancels that creation.
+- `edit_scene(description)` groups **journal-aware operations**. It does not
+  intercept arbitrary Python assignments or roll back an entire script on error.
+- `create_prefab(obj, directory)` creates a uniquely named asset and links its
+  source hierarchy. The second argument is a **directory**, not an output filename;
+  it does not overwrite an existing Prefab.
+- `instantiate_prefab(path, parent=...)` returns the new GameObject.
+- `apply_prefab(obj)` publishes instance overrides to the linked asset;
+  `revert_prefab(obj)` restores source-owned values. Both use the global journal.
+
+## Scene documents and history
+
+`save_scene("Assets/Scenes/MyLevel.scene")` saves the active scene to an explicit
+project-relative path. `save_scene()` saves its current document, or requests a
+Save As dialog if it has no path. The result is a `DocumentActionResult`:
+
+- `APPLIED` / `NO_OP`: the operation completed / nothing needed saving.
+- `PENDING`: a dialog or asynchronous operation remains outstanding.
+- `REJECTED` / `FAILED`: inspect `message`; do not report success.
+
+`open_scene(path)` and `new_scene()` retain the normal unsaved-changes confirmation
+and deferred scene-switch rules. Returning from a request is **not** proof that
+the new scene is loaded. Do not create objects for the destination immediately
+after requesting a scene switch.
+
+`undo()` and `redo()` defer replay to the Editor safe point by default. If a
+command invokes them, register that command with `creates_user_action=False`:
+replaying history is not a new edit. `defer=False` is for an already safe,
+caller-controlled non-rendering host, not a GUI callback.
+
+These APIs expose the implemented authoring workflow, not the whole Unity Editor
+SDK. In particular, nested Prefab and arbitrary same-type component reordering
+are not claimed as fully supported by this guide.

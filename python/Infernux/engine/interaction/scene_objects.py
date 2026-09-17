@@ -429,6 +429,9 @@ class SceneObjectCommandService:
         parent_id: int = 0,
         is_guid: bool = False,
     ) -> bool:
+        return self.instantiate_prefab_object(reference, parent_id, is_guid) is not None
+
+    def instantiate_prefab_object(self, reference: str, parent_id: int = 0, is_guid: bool = False):
         """Instantiate one Prefab through the global scene mutation path."""
         from Infernux.engine.prefab_manager import (
             instantiate_prefab,
@@ -517,7 +520,7 @@ class SceneObjectCommandService:
         except Exception as exc:
             rollback()
             Debug.log_error(f"Prefab instantiation failed: {exc}")
-            return False
+            return None
 
         self._selection.select_scene_object(
             int(new_object.id),
@@ -548,9 +551,9 @@ class SceneObjectCommandService:
             else CompoundCommand(commands, "Instantiate Prefab")
         )
         if manager.record(command):
-            return True
+            return new_object
         rollback()
-        return False
+        return None
 
     def create_model(
         self,
