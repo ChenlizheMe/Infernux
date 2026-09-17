@@ -401,8 +401,6 @@ def compile_kernel(function, params) -> CompilerArtifact:
     with _lock:
         runtime = ti.lang.impl.get_runtime()
         if runtime.prog is None:
-            configuration = ti.lang.impl.default_cfg()
-            configuration.arch = ti.vulkan
             runtime.create_program()
         runtime.short_circuit_operators = True
         runtime.print_full_traceback = False
