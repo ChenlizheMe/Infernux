@@ -88,6 +88,7 @@ class FieldDef:
     combo_entries: List[Tuple[str, Any]] = field(default_factory=list)
     float_speed: float = 0.001
     float_range: Optional[Tuple[float, float]] = None
+    page: str = ""
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -371,6 +372,7 @@ class _State:
         self.resource_controller = None
         self.exec_layer = None
         self.extra: dict = {}
+        self.model_tabs_initialized = False
 
     def load(self, file_path: str, category: str,
              cat_def: AssetCategoryDef) -> bool:
@@ -703,13 +705,16 @@ def _ensure_categories():
         load_fn=_load_mesh,
         editable_fields=[
             FieldDef(spec["name"], spec["label"],
-                     {"float": WidgetType.FLOAT, "bool": WidgetType.CHECKBOX}[spec["type"]],
+                     {"float": WidgetType.FLOAT, "bool": WidgetType.CHECKBOX, "enum": WidgetType.COMBO}[spec["type"]],
+                     combo_entries=[(choice["label"], choice["value"]) for choice in spec.get("choices", [])],
+                     page=spec["page"],
                      float_speed=spec.get("step", 0.001),
                      float_range=tuple(spec["display_range"]) if "display_range" in spec else None)
             for spec in mesh_import_settings_schema()["fields"]
-            if spec["page"] == "model"
+            if spec["type"] != "material_remaps"
         ],
         custom_header_fn=_render_mesh_header,
+        custom_body_fn=_render_model_import_pages,
         extra_meta_keys=[
             "mesh_count",
             "vertex_count",
@@ -2304,22 +2309,24 @@ def _render_audio_header(ctx: InxGUIContext, panel, state: _State) -> None:
 
 
 def _render_import_fields(ctx: InxGUIContext, cat_def: AssetCategoryDef,
-                          state: _State):
+                          state: _State, *, fields=None):
     """Auto-render editable import-settings fields from descriptors."""
     from .inspector_utils import render_compact_section_header, render_inspector_checkbox
 
     if render_compact_section_header(ctx, t("asset.import_settings"), level="secondary"):
-        labels = [t(f.label) for f in cat_def.editable_fields]
+        fields = cat_def.editable_fields if fields is None else fields
+        labels = [t(f.label) for f in fields]
         lw = max_label_w(ctx, labels)
 
-        for fdef in cat_def.editable_fields:
+        for fdef in fields:
             cur = getattr(state.settings, fdef.key)
             wid = f"##{fdef.key}"
             semantic_id = f"asset.{state.category}.import.{fdef.key}"
 
             if fdef.field_type == WidgetType.CHECKBOX:
                 # Disable sRGB when texture_type is NORMAL_MAP
-                disabled = (fdef.key == "srgb"
+                disabled = (state.category == "mesh" and fdef.key == "import_animations"
+                            and state.settings.rig_type == "none") or (fdef.key == "srgb"
                             and hasattr(state.settings, "texture_type")
                             and state.settings.texture_type in {
                                 TextureType.NORMAL_MAP, TextureType.DATA, TextureType.VECTOR_FIELD, TextureType.SDF,
@@ -2473,8 +2480,51 @@ def _render_mesh_header(ctx: InxGUIContext, panel, state: _State):
         ctx.pop_style_color(1)
         ctx.separator()
 
-    _render_mesh_info(ctx, panel, state)
-    _render_model_materials(ctx, state)
+
+def _model_page_fields(page: str):
+    return [field for field in _categories["mesh"].editable_fields if field.page == page]
+
+
+def _render_model_import_pages(ctx: InxGUIContext, panel, state: _State):
+    # Authored engine meshes have no source rig or animation import policy.
+    if os.path.splitext(state.file_path)[1].lower() == ".inxmesh":
+        _render_mesh_info(ctx, panel, state)
+        _render_model_materials(ctx, state)
+        _render_import_fields(ctx, _categories["mesh"], state, fields=_model_page_fields("model"))
+        return
+    if not ctx.begin_tab_bar("##model_import_pages"):
+        return
+    first = not state.model_tabs_initialized
+    state.model_tabs_initialized = True
+    try:
+        for page in ("model", "rig", "animation", "materials"):
+            label = t(f"asset.model_page_{page}")
+            opened = ctx.begin_tab_item(f"{label}##model_import_{page}", selected=first and page == "model")
+            ctx.record_semantic_item("tab", label, True, f"asset.mesh.page.{page}")
+            if not opened:
+                continue
+            try:
+                if page == "model":
+                    _render_mesh_info(ctx, panel, state)
+                if page == "materials":
+                    _render_model_materials(ctx, state)
+                else:
+                    _render_import_fields(ctx, _categories["mesh"], state, fields=_model_page_fields(page))
+                if page in {"rig", "animation"}:
+                    meta = state.meta or {}
+                    count_key, names_key = (("bone_count", "bone_names_csv") if page == "rig"
+                                            else ("animation_count", "animation_names_csv"))
+                    ctx.text_wrapped(t(f"asset.model_source_{page}").format(count=meta.get(count_key, 0)))
+                    names = meta.get(names_key, "")
+                    if names:
+                        ctx.text_wrapped(str(names))
+                    ctx.text_wrapped(t(f"asset.model_{page}_scope"))
+                    if state.settings.rig_type == "none":
+                        ctx.text_wrapped(t("asset.model_rig_disabled"))
+            finally:
+                ctx.end_tab_item()
+    finally:
+        ctx.end_tab_bar()
 
 
 def _render_model_materials(ctx: InxGUIContext, state: _State):

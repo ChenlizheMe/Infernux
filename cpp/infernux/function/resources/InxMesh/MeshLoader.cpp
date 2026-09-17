@@ -498,8 +498,9 @@ MeshSourceImportResult MeshLoader::ImportSourceDetailed(const std::string &fileP
     }
     // Animation-only FBX files are first-class sources: their skeleton and
     // tracks can drive a compatible render model even when they have no mesh.
-    if (SkinnedModelImporter::HasSkinningData(*scene))
-        result.skinnedMesh = SkinnedModelImporter::ConvertScene(*scene, guid, filePath, settings.scaleFactor);
+    if (settings.rigType != "none" && SkinnedModelImporter::HasSkinningData(*scene, settings.importAnimations))
+        result.skinnedMesh =
+            SkinnedModelImporter::ConvertScene(*scene, guid, filePath, settings.scaleFactor, settings.importAnimations);
     return result;
 }
 

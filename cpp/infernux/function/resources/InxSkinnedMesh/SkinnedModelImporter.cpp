@@ -222,9 +222,9 @@ bool HasInfluence(const SkinInfluence &influence)
 }
 } // namespace
 
-bool SkinnedModelImporter::HasSkinningData(const aiScene &scene) noexcept
+bool SkinnedModelImporter::HasSkinningData(const aiScene &scene, bool includeAnimations) noexcept
 {
-    if (scene.mNumAnimations > 0)
+    if (includeAnimations && scene.mNumAnimations > 0)
         return true;
     for (unsigned int index = 0; index < scene.mNumMeshes; ++index) {
         if (scene.mMeshes[index] && scene.mMeshes[index]->mNumBones > 0)
@@ -234,7 +234,8 @@ bool SkinnedModelImporter::HasSkinningData(const aiScene &scene) noexcept
 }
 
 std::shared_ptr<InxSkinnedMesh> SkinnedModelImporter::ConvertScene(const aiScene &scene, const std::string &sourceGuid,
-                                                                   const std::string &sourcePath, float scaleFactor)
+                                                                   const std::string &sourcePath, float scaleFactor,
+                                                                   bool importAnimations)
 {
     if (!scene.mRootNode)
         throw std::invalid_argument("Skinned model scene has no root node");
@@ -382,7 +383,7 @@ std::shared_ptr<InxSkinnedMesh> SkinnedModelImporter::ConvertScene(const aiScene
     model->NormalizeInfluences();
 
     std::unordered_set<std::string> animationNames;
-    for (unsigned int animationIndex = 0; animationIndex < scene.mNumAnimations; ++animationIndex) {
+    for (unsigned int animationIndex = 0; importAnimations && animationIndex < scene.mNumAnimations; ++animationIndex) {
         if (!scene.mAnimations[animationIndex])
             throw std::runtime_error("Skinned model scene contains a null animation");
         const aiAnimation &sourceAnimation = *scene.mAnimations[animationIndex];

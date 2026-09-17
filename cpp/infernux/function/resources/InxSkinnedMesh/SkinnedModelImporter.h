@@ -13,9 +13,11 @@ class InxSkinnedMesh;
 class SkinnedModelImporter final
 {
   public:
-    [[nodiscard]] static bool HasSkinningData(const aiScene &scene) noexcept;
-    [[nodiscard]] static std::shared_ptr<InxSkinnedMesh>
-    ConvertScene(const aiScene &scene, const std::string &sourceGuid, const std::string &sourcePath, float scaleFactor);
+    [[nodiscard]] static bool HasSkinningData(const aiScene &scene, bool includeAnimations = true) noexcept;
+    [[nodiscard]] static std::shared_ptr<InxSkinnedMesh> ConvertScene(const aiScene &scene,
+                                                                      const std::string &sourceGuid,
+                                                                      const std::string &sourcePath, float scaleFactor,
+                                                                      bool importAnimations = true);
     [[nodiscard]] static std::shared_ptr<InxSkinnedMesh> ImportSource(const std::string &sourceGuid,
                                                                       const std::string &sourcePath, float scaleFactor);
 };

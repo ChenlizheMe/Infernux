@@ -753,6 +753,8 @@ class MeshImportSettings:
     swap_uv_channels: bool = field(default_factory=lambda: _mesh_import_fields()["swap_uv_channels"]["default"])
     optimize_mesh: bool = field(default_factory=lambda: _mesh_import_fields()["optimize_mesh"]["default"])
     weld_vertices: bool = field(default_factory=lambda: _mesh_import_fields()["weld_vertices"]["default"])
+    rig_type: str = field(default_factory=lambda: _mesh_import_fields()["rig_type"]["default"])
+    import_animations: bool = field(default_factory=lambda: _mesh_import_fields()["import_animations"]["default"])
     material_remaps: Dict[str, str] = field(default_factory=lambda: dict(_mesh_import_fields()["material_remaps"]["default"]))
 
     def to_dict(self) -> Dict[str, Any]:
@@ -768,6 +770,8 @@ class MeshImportSettings:
         # when upgrading sidecars authored before this option was exposed.
         values = {name: d[name] if name in d else spec["default"] for name, spec in fields.items()}
         for name, spec in fields.items():
+            if spec["type"] == "enum" and values[name] not in [choice["value"] for choice in spec["choices"]]:
+                raise ValueError(f"mesh {name} must be one of its declared choices")
             if spec["type"] == "material_remaps":
                 value = values[name]
                 if type(value) is not dict or any(

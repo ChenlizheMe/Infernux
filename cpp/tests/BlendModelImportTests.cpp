@@ -25,7 +25,7 @@ int main(int argc, char **argv)
         Settings::EnsureDefaults(candidate);
         const auto defaults = Settings::Read(candidate);
         const auto schema = Settings::Schema();
-        assert(schema.at("fields").size() == Settings::Flags.size() + Settings::Scalars.size() + 1);
+        assert(schema.at("fields").size() == Settings::Flags.size() + Settings::Scalars.size() + 2);
         assert(defaults.materialRemaps.empty());
         Settings::ApplyPatch(candidate, {{"material_remaps", {{"material/Body", "abcdabcdabcdabcdabcdabcdabcdabcd"}}}});
         assert(candidate.GetMetadata().at("material_remaps").first == "json_object");
@@ -67,11 +67,37 @@ int main(int argc, char **argv)
         reject(nlohmann::json::array());
         reject({{"material_remaps", nlohmann::json::array()}});
         reject({{"material_remaps", {{"slot/0", "guid"}}}});
+        reject({{"rig_type", "humanoid"}});
+        reject({{"rig_type", true}});
+        reject({{"import_animations", 1}});
         infernux::InxResourceMeta legacy;
         legacy.AddMetadata("scale_factor", 0.5f);
         assert(Settings::Read(legacy).weldVertices);
     }
     const std::filesystem::path sourceRoot = INFERNUX_SOURCE_DIR;
+    const auto animatedFbx = sourceRoot / "external/assimp/test/models/FBX/animation_with_skeleton.fbx";
+    infernux::InxResourceMeta animationSettings;
+    const auto full =
+        infernux::MeshLoader::ImportSourceDetailed(infernux::FromFsPath(animatedFbx), "animated", animationSettings);
+    assert(full.skinnedMesh && !full.skinnedMesh->animations.empty() && !full.boneNames.empty());
+    for (const bool animations : {false, true}) {
+        for (const std::string rig : {"none", "generic"}) {
+            infernux::MeshImportSettings::ApplyPatch(animationSettings,
+                                                     {{"rig_type", rig}, {"import_animations", animations}});
+            const auto variant = infernux::MeshLoader::ImportSourceDetailed(infernux::FromFsPath(animatedFbx),
+                                                                            "animated", animationSettings);
+            assert(variant.vertexCount == full.vertexCount && variant.indexCount == full.indexCount);
+            assert(variant.boneNames == full.boneNames && variant.animationNames == full.animationNames);
+            if (rig == "none") {
+                assert(!variant.skinnedMesh);
+                continue;
+            }
+            assert(variant.skinnedMesh);
+            assert(variant.skinnedMesh->skeleton.bones.size() == full.skinnedMesh->skeleton.bones.size());
+            assert(variant.skinnedMesh->influences.size() == full.skinnedMesh->influences.size());
+            assert(variant.skinnedMesh->animations.size() == (animations ? full.skinnedMesh->animations.size() : 0));
+        }
+    }
     const auto blendPath = sourceRoot / "external" / "assimp" / "test" / "models" / "BLEND" / "CubeHierarchy_248.blend";
     assert(std::filesystem::is_regular_file(blendPath));
 

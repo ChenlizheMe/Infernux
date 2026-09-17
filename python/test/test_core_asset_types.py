@@ -319,11 +319,15 @@ class TestMeshImportSettings:
         assert defaults == {item["name"]: item["default"] for item in schema["fields"]}
         inspector._ensure_categories()
         fields = inspector._categories["mesh"].editable_fields
-        model_fields = [item for item in schema["fields"] if item["page"] == "model"]
+        model_fields = [item for item in schema["fields"] if item["type"] != "material_remaps"]
         assert [item.key for item in fields] == [item["name"] for item in model_fields]
         for actual, declared in zip(fields, model_fields):
             assert actual.label == declared["label"]
-            assert actual.field_type.value == {"bool": "checkbox", "float": "float"}[declared["type"]]
+            assert actual.field_type.value == {"bool": "checkbox", "float": "float", "enum": "combo"}[declared["type"]]
+        for page in ("model", "rig", "animation"):
+            assert [item.key for item in inspector._model_page_fields(page)] == [
+                item["name"] for item in schema["fields"] if item["page"] == page
+            ]
         # Authoring clients cannot change the next client's contract or defaults.
         schema["fields"][0]["default"] = -7
         assert mesh_import_settings_schema()["fields"][0]["default"] == defaults["scale_factor"]
@@ -378,6 +382,19 @@ class TestMeshImportSettings:
         assert s == c
         c.optimize_mesh = True
         assert s.optimize_mesh is False
+
+    @pytest.mark.parametrize("invalid", ["humanoid", "legacy", "", 1, True, None])
+    def test_rig_choices_are_authoritative(self, invalid):
+        data = MeshImportSettings().to_dict()
+        data["rig_type"] = invalid
+        with pytest.raises(ValueError):
+            MeshImportSettings.from_dict(data)
+
+    def test_legacy_models_keep_rig_and_animation(self):
+        data = MeshImportSettings().to_dict()
+        del data["rig_type"], data["import_animations"]
+        upgraded = MeshImportSettings.from_dict(data)
+        assert upgraded.rig_type == "generic" and upgraded.import_animations is True
 
 
 # ═══════════════════════════════════════════════════════════════════════════

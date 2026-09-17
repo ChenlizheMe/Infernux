@@ -35,6 +35,7 @@ class FieldDef:
     combo_entries: list = ...
     float_speed: float = 0.1
     float_range: Optional[Tuple[float, float]] = None
+    page: str = ""
 
 
 @dataclass

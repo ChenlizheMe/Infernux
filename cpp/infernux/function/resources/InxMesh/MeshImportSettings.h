@@ -12,7 +12,7 @@
 namespace infernux
 {
 /// One declaration for source import, metadata defaults and authoring clients.
-/// This is the current Model section; later sections extend this contract.
+/// Model, Rig, Animation and Materials share this import contract.
 struct MeshImportSettings
 {
     float scaleFactor = 1.0f;
@@ -23,6 +23,8 @@ struct MeshImportSettings
     bool swapUVChannels = false;
     bool optimizeMesh = true;
     bool weldVertices = true;
+    bool importAnimations = true;
+    std::string rigType = "generic";
     nlohmann::json materialRemaps = nlohmann::json::object();
 
     static void RequireMaterialRemaps(const nlohmann::json &value)
@@ -65,15 +67,24 @@ struct MeshImportSettings
     {
         const char *name;
         bool MeshImportSettings::*member;
+        const char *page = "model";
+        bool legacyOptional = false;
     };
     inline static constexpr std::array Flags = {
         Flag{"generate_normals", &MeshImportSettings::generateNormals},
         Flag{"generate_tangents", &MeshImportSettings::generateTangents},
         Flag{"flip_uvs", &MeshImportSettings::flipUVs},
         Flag{"swap_uv_channels", &MeshImportSettings::swapUVChannels},
-        Flag{"weld_vertices", &MeshImportSettings::weldVertices},
+        Flag{"weld_vertices", &MeshImportSettings::weldVertices, "model", true},
         Flag{"optimize_mesh", &MeshImportSettings::optimizeMesh},
+        Flag{"import_animations", &MeshImportSettings::importAnimations, "animation", true},
     };
+
+    static void RequireRigType(const nlohmann::json &value)
+    {
+        if (!value.is_string() || (value != "none" && value != "generic"))
+            throw std::invalid_argument("model rig_type must be none or generic");
+    }
 
     static void RequireScalar(const Scalar &field, float value)
     {
@@ -100,6 +111,9 @@ struct MeshImportSettings
             settings.materialRemaps = nlohmann::json::parse(std::any_cast<const std::string &>(entry.second));
         }
         RequireMaterialRemaps(settings.materialRemaps);
+        if (metadata.HasKey("rig_type"))
+            settings.rigType = metadata.GetDataAs<std::string>("rig_type");
+        RequireRigType(settings.rigType);
         return settings;
     }
 
@@ -114,6 +128,8 @@ struct MeshImportSettings
                 metadata.AddMetadata(flag.name, defaults.*(flag.member));
         if (!metadata.HasKey("material_remaps"))
             WriteMaterialRemaps(metadata, defaults.materialRemaps);
+        if (!metadata.HasKey("rig_type"))
+            metadata.AddMetadata("rig_type", defaults.rigType);
     }
 
     static void ApplyPatch(InxResourceMeta &metadata, const nlohmann::json &patch)
@@ -122,6 +138,10 @@ struct MeshImportSettings
             throw std::invalid_argument("model import settings require an object");
         // Validate the entire authoring request before modifying its candidate.
         for (const auto &[key, value] : patch.items()) {
+            if (key == "rig_type") {
+                RequireRigType(value);
+                continue;
+            }
             if (key == "material_remaps") {
                 RequireMaterialRemaps(value);
                 continue;
@@ -149,6 +169,8 @@ struct MeshImportSettings
         for (const auto &[key, value] : patch.items()) {
             if (key == "material_remaps")
                 WriteMaterialRemaps(metadata, value);
+            else if (key == "rig_type")
+                metadata.AddMetadata(key, value.get<std::string>());
             else if (value.is_boolean())
                 metadata.AddMetadata(key, value.get<bool>());
             else
@@ -175,9 +197,18 @@ struct MeshImportSettings
             fields.push_back({{"name", flag.name},
                               {"type", "bool"},
                               {"default", defaults.*(flag.member)},
-                              {"page", "model"},
+                              {"page", flag.page},
                               {"label", std::string("asset.") + flag.name},
-                              {"legacy_optional", flag.member == &MeshImportSettings::weldVertices}});
+                              {"legacy_optional", flag.legacyOptional}});
+        fields.push_back({{"name", "rig_type"},
+                          {"type", "enum"},
+                          {"default", defaults.rigType},
+                          {"choices",
+                           {{{"value", "none"}, {"label", "asset.rig_none"}},
+                            {{"value", "generic"}, {"label", "asset.rig_generic"}}}},
+                          {"page", "rig"},
+                          {"label", "asset.rig_type"},
+                          {"legacy_optional", true}});
         fields.push_back({{"name", "material_remaps"},
                           {"type", "material_remaps"},
                           {"default", nlohmann::json::object()},
