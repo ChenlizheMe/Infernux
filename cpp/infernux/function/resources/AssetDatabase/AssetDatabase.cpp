@@ -82,6 +82,18 @@ void ResolveImportedDependencyPathHints(ImportArtifact &artifact,
     artifact.dependencyPathHints.clear();
 }
 
+template <typename Resolve> void ValidateModelMaterialTargets(const ImportArtifact &artifact, Resolve resolve)
+{
+    if (artifact.metadata.GetResourceType() != ResourceType::Mesh)
+        return;
+    const auto settings = MeshImportSettings::Read(artifact.metadata);
+    for (const auto &[sourceId, guid] : settings.materialRemaps.items()) {
+        const auto material = resolve(guid.get<std::string>());
+        if (!material || material->GetResourceType() != ResourceType::Material)
+            throw std::invalid_argument("model material remap requires a registered Material: " + sourceId);
+    }
+}
+
 InxResourceMeta LoadMetadataDocument(const std::string &path)
 {
     std::ifstream file(ToFsPath(path));
@@ -1247,10 +1259,9 @@ void AssetDatabase::PrepareMetadata(WorkerMetadataPrepare &item)
         metadata.AddMetadata("file_path", InxResourceMeta::NormalizeFilePath(item.file.path));
 
         if (item.mode == WorkerMetadataPrepare::Mode::Rebuild && previousMetadataLoaded) {
-            for (const auto &[key, value] : previousMetadata.GetMetadata()) {
-                if (key != "guid" && !metadata.HasKey(key))
-                    metadata.AddMetadata(key, value.second);
-            }
+            for (const auto &[key, value] : previousMetadata.GetMetadata())
+                if (key != "guid")
+                    metadata.CopyMetadataIfMissing(previousMetadata, key);
         }
         if (!preservedGuid.empty()) {
             metadata.AddMetadata("guid", preservedGuid);
@@ -1579,6 +1590,10 @@ bool AssetDatabase::ContinuePendingImportMerge(const std::shared_ptr<PendingRefr
                 throw std::logic_error("Worker importer completed without an artifact");
             ResolveImportedDependencyPathHints(*item.artifact, workingSet.pathToGuid, asset.path);
             ValidateImportedDependencyIdentities(*item.artifact, asset.path);
+            ValidateModelMaterialTargets(*item.artifact, [&workingSet](const std::string &guid) {
+                const auto found = workingSet.metas.find(guid);
+                return found == workingSet.metas.end() ? nullptr : found->second;
+            });
             auto runtimeArtifactWrites = TakeRuntimeArtifactWrites(item.artifact->runtimeCpuArtifacts, asset.guid,
                                                                    item.request.resourceType, m_projectRoot);
             workingSet.metas[asset.guid] = std::make_shared<InxResourceMeta>(std::move(item.artifact->metadata));
@@ -2593,6 +2608,8 @@ bool AssetDatabase::RunImporter(const std::string &guid, const std::string &path
                                       : (isReimport ? importer->Reimport(request) : importer->Import(request));
         ResolveImportedDependencyPathHints(artifact, m_pathToGuid, request.sourcePath);
         ValidateImportedDependencyIdentities(artifact, request.sourcePath);
+        ValidateModelMaterialTargets(artifact,
+                                     [this](const std::string &dependency) { return GetMetaByGuid(dependency); });
         if (expectedSource)
             RequireUnchangedFingerprint(path, *expectedSource);
         std::vector<DocumentTransactionEntry> writes;

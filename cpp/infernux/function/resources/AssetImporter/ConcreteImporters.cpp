@@ -1,4 +1,5 @@
 #include "ConcreteImporters.h"
+#include <function/resources/InxMesh/InxMesh.h>
 
 #include <core/log/InxLog.h>
 #include <function/resources/InxMaterial/MaterialDocumentValidation.h>
@@ -548,6 +549,12 @@ ImportArtifact ModelImporter::Import(const ImportRequest &request) const
 
     const auto externalTextures = MeshLoader::ScanExternalTexturePaths(request.sourcePath);
     artifact.dependencyPathHints.assign(externalTextures.begin(), externalTextures.end());
+    artifact.dependenciesAuthoritative = true;
+    std::set<std::string> materialDependencies;
+    for (const auto &material : imported.mesh->GetMaterialSlotData())
+        if (!material.materialGuid.empty())
+            materialDependencies.insert(material.materialGuid);
+    artifact.dependencies.assign(materialDependencies.begin(), materialDependencies.end());
 
     if (!artifact.metadata.HasKey("content_hash"))
         throw std::logic_error("ModelImporter metadata has no source content hash");

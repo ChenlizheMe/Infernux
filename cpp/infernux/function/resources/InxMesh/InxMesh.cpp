@@ -32,6 +32,8 @@ size_t InxMesh::GetRuntimeMemoryBytes() const noexcept
     for (const auto &name : m_materialSlotNames)
         bytes += name.capacity();
     bytes += m_materialSlotData.capacity() * sizeof(MaterialSlotData);
+    for (const auto &material : m_materialSlotData)
+        bytes += material.sourceId.capacity() + material.materialGuid.capacity();
     bytes += m_nodeNames.capacity() * sizeof(std::string);
     for (const auto &name : m_nodeNames)
         bytes += name.capacity();

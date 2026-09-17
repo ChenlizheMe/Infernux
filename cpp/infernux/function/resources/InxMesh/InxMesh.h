@@ -52,6 +52,10 @@ struct MaterialSlotData
     float metallic = 0.0f;
     float smoothness = 0.5f;
     float opacity = 1.0f;
+    // Import-local material identity: kind + unique authored source name.
+    // Empty for unnamed/ambiguous materials; never substitute a slot index.
+    std::string sourceId;
+    std::string materialGuid; ///< Optional importer-level external material binding.
 };
 
 /// Source hierarchy in parent-before-child order, including transform-only

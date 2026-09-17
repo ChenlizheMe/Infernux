@@ -287,6 +287,11 @@ void ComputeBoundsFromIndexRange(const std::vector<Vertex> &vertices, const std:
 std::shared_ptr<InxMaterial> BuildPreviewMaterialFromSlotData(const MaterialSlotData *slotData,
                                                               const std::shared_ptr<InxMaterial> &defaultMat)
 {
+    if (slotData && !slotData->materialGuid.empty()) {
+        auto &registry = AssetRegistry::Instance();
+        auto material = registry.LoadAsset<InxMaterial>(slotData->materialGuid, ResourceType::Material);
+        return material && !material->IsDeleted() ? material : registry.GetBuiltinMaterial("ErrorMaterial");
+    }
     if (!defaultMat)
         return nullptr;
     if (!slotData)

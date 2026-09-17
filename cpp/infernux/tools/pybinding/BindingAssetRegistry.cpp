@@ -294,6 +294,8 @@ void RegisterAssetRegistryBindings(py::module_ &m)
                     d["metallic"] = sd.metallic;
                     d["smoothness"] = sd.smoothness;
                     d["opacity"] = sd.opacity;
+                    d["source_id"] = sd.sourceId;
+                    d["material_guid"] = sd.materialGuid;
                     result.append(d);
                 }
                 return result;

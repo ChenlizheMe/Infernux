@@ -753,6 +753,7 @@ class MeshImportSettings:
     swap_uv_channels: bool = field(default_factory=lambda: _mesh_import_fields()["swap_uv_channels"]["default"])
     optimize_mesh: bool = field(default_factory=lambda: _mesh_import_fields()["optimize_mesh"]["default"])
     weld_vertices: bool = field(default_factory=lambda: _mesh_import_fields()["weld_vertices"]["default"])
+    material_remaps: Dict[str, str] = field(default_factory=lambda: dict(_mesh_import_fields()["material_remaps"]["default"]))
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -767,6 +768,14 @@ class MeshImportSettings:
         # when upgrading sidecars authored before this option was exposed.
         values = {name: d[name] if name in d else spec["default"] for name, spec in fields.items()}
         for name, spec in fields.items():
+            if spec["type"] == "material_remaps":
+                value = values[name]
+                if type(value) is not dict or any(
+                    not isinstance(key, str) or not key.startswith("material/") or len(key) == 9
+                    or not isinstance(guid, str) or not guid for key, guid in value.items()
+                ):
+                    raise ValueError("mesh material_remaps require source material identifiers and GUIDs")
+                values[name] = dict(value)
             if spec["type"] == "bool" and type(values[name]) is not bool:
                 raise TypeError(f"mesh {name} must be a bool")
             if spec["type"] == "float":
@@ -780,7 +789,7 @@ class MeshImportSettings:
         return cls(**values)
 
     def copy(self) -> "MeshImportSettings":
-        return replace(self)
+        return replace(self, material_remaps=dict(self.material_remaps))
 
 
 def read_mesh_import_settings(asset_path: str) -> MeshImportSettings:

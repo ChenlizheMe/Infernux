@@ -241,3 +241,88 @@ def test_unchanged_model_materials_keep_runtime_instances(imported_model):
     assert result, result.error
     assert [renderer.get_material(index) for index in range(2)] == before
     assert renderer.serialize_document()["materials"] == [None, None]
+
+
+def test_model_material_remap_follows_source_not_slot_and_preserves_overrides(imported_model):
+    from Infernux.core.asset_types import read_mesh_import_settings
+    from Infernux.lib import AssetRegistry, AssetDependencyGraph
+
+    renderer, document, source, database, scene = imported_model
+    mesh = AssetRegistry.instance().load_mesh(str(source))
+    assert [row["source_id"] for row in mesh.get_material_slot_data()] == ["material/Red", "material/Green"]
+    target = source.with_suffix(".mat")
+    blue = mesh.create_material_copy(0)
+    blue.set_color("baseColor", [0, 0, 1, 1])
+    target.write_text(json.dumps(blue.serialize_document()), encoding="utf-8")
+    imported = AssetManager.import_asset(str(target), database=database)
+    assert imported, imported.error
+    settings = read_mesh_import_settings(str(source))
+    settings.material_remaps["material/Green"] = imported.guid
+    assert AssetManager.apply_import_settings("mesh", str(source), settings)
+    assert read_mesh_import_settings(str(source)).material_remaps == settings.material_remaps
+    assert imported.guid in AssetDependencyGraph.instance().get_dependencies(mesh.guid)
+    np.testing.assert_allclose(color(renderer, 1), [0, 0, 1, 1])
+    assert renderer.serialize_document()["materials"] == [None, None]
+    restored = scene.create_game_object("Remapped restored").add_component("MeshRenderer")._require_cpp_component()
+    saved = renderer.serialize_document()
+    saved["component_id"] = restored.component_id
+    assert restored.deserialize_document(saved)
+    np.testing.assert_allclose(color(restored, 1), [0, 0, 1, 1])
+    # Reorder source objects so the Green source now occupies renderer slot 0.
+    document["nodes"][1]["children"] = [3, 2]
+    source.write_text(json.dumps(document), encoding="utf-8")
+    result = AssetManager.reimport_asset(str(source), database=database)
+    assert result, result.error
+    assert mesh.get_material_slot_data()[0]["source_id"] == "material/Green"
+    np.testing.assert_allclose(color(renderer, 0), [0, 0, 1, 1])
+    np.testing.assert_allclose(color(renderer, 1), [1, 0, 0, 1])
+    # Explicit assignment of even the currently inherited material is an override.
+    renderer.set_material(0, imported.guid)
+    settings.material_remaps.clear()
+    assert AssetManager.apply_import_settings("mesh", str(source), settings)
+    assert renderer.serialize_document()["materials"] == [imported.guid, None]
+    assert imported.guid not in AssetDependencyGraph.instance().get_dependencies(mesh.guid)
+    np.testing.assert_allclose(color(renderer, 0), [0, 0, 1, 1])
+    np.testing.assert_allclose(color(restored, 0), [0, 1, 0, 1])
+
+
+@pytest.mark.parametrize("failure", ["missing_source", "ambiguous_source", "missing_guid", "wrong_type"])
+def test_invalid_model_remap_does_not_publish_settings_or_geometry(imported_model, failure):
+    from Infernux.core.asset_types import read_mesh_import_settings
+    from Infernux.lib import AssetRegistry
+
+    renderer, document, source, database, _ = imported_model
+    mesh = AssetRegistry.instance().load_mesh(str(source))
+    target = source.with_suffix(".mat")
+    target.write_text(json.dumps(mesh.create_material_copy(0).serialize_document()), encoding="utf-8")
+    imported = AssetManager.import_asset(str(target), database=database)
+    assert imported, imported.error
+    original_meta = Path(str(source) + ".meta").read_bytes()
+    original_scene = renderer.serialize_document()
+    original_generation = mesh.generation
+    settings = read_mesh_import_settings(str(source))
+    key = "material/Missing" if failure == "missing_source" else "material/Green"
+    guid = ("0" * 32 if failure == "missing_guid" else mesh.guid if failure == "wrong_type" else imported.guid)
+    settings.material_remaps[key] = guid
+    if failure == "ambiguous_source":
+        document["materials"][0]["name"] = "Green"
+        source.write_text(json.dumps(document), encoding="utf-8")
+    result = AssetManager.reimport_asset(str(source), import_settings=settings.to_dict())
+    assert not result
+    assert ("missing or ambiguous" if failure.endswith("source") else "registered Material") in result.error
+    assert Path(str(source) + ".meta").read_bytes() == original_meta
+    assert renderer.serialize_document() == original_scene
+    assert mesh.generation == original_generation
+
+
+def test_material_remap_settings_copy_and_legacy_defaults():
+    from Infernux.core.asset_types import MeshImportSettings
+
+    settings = MeshImportSettings()
+    clone = settings.copy()
+    clone.material_remaps["material/Unique"] = "f" * 32
+    assert settings.material_remaps == {}
+    assert MeshImportSettings.from_dict(clone.to_dict()).material_remaps == clone.material_remaps
+    legacy = settings.to_dict()
+    del legacy["material_remaps"]
+    assert MeshImportSettings.from_dict(legacy).material_remaps == {}

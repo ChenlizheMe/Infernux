@@ -2,6 +2,7 @@
 
 #include "InxMesh.h"
 #include "MeshArtifact.h"
+#include "MeshImportSettings.h"
 
 #include <core/log/InxLog.h>
 #include <function/resources/AssetDatabase/AssetDatabase.h>
@@ -175,6 +176,12 @@ std::set<std::string> MeshLoader::ScanDependencies(const std::string &filePath, 
     std::set<std::string> dependencies;
     if (!adb)
         return dependencies;
+    const auto metadata = adb->GetMetaByGuid(adb->GetGuidFromPath(filePath));
+    if (metadata) {
+        const auto settings = MeshImportSettings::Read(*metadata);
+        for (const auto &[source, guid] : settings.materialRemaps.items())
+            dependencies.insert(guid.get<std::string>());
+    }
     for (const auto &path : ScanExternalTexturePaths(filePath)) {
         const std::string guid = adb->GetGuidFromPath(path);
         if (!guid.empty())

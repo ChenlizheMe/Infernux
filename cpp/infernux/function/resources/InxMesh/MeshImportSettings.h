@@ -23,6 +23,24 @@ struct MeshImportSettings
     bool swapUVChannels = false;
     bool optimizeMesh = true;
     bool weldVertices = true;
+    nlohmann::json materialRemaps = nlohmann::json::object();
+
+    static void RequireMaterialRemaps(const nlohmann::json &value)
+    {
+        if (!value.is_object())
+            throw std::invalid_argument("model material_remaps must be an object");
+        for (const auto &[source, guid] : value.items())
+            if (source.rfind("material/", 0) != 0 || source.size() == 9 || !guid.is_string() ||
+                guid.get_ref<const std::string &>().empty())
+                throw std::invalid_argument("model material_remaps require source material identifiers and GUIDs");
+    }
+
+    static void WriteMaterialRemaps(InxResourceMeta &metadata, const nlohmann::json &value)
+    {
+        auto document = metadata.SerializeDocument();
+        document["metadata"]["material_remaps"] = {{"type", "json_object"}, {"value", value}};
+        metadata.DeserializeDocument(document);
+    }
 
     struct Scalar
     {
@@ -75,6 +93,13 @@ struct MeshImportSettings
         for (const auto &flag : Flags)
             if (metadata.HasKey(flag.name))
                 settings.*(flag.member) = metadata.GetDataAs<bool>(flag.name);
+        if (metadata.HasKey("material_remaps")) {
+            const auto &entry = metadata.GetMetadata().at("material_remaps");
+            if (entry.first != "json_object")
+                throw std::invalid_argument("model material_remaps metadata must use json_object");
+            settings.materialRemaps = nlohmann::json::parse(std::any_cast<const std::string &>(entry.second));
+        }
+        RequireMaterialRemaps(settings.materialRemaps);
         return settings;
     }
 
@@ -87,6 +112,8 @@ struct MeshImportSettings
         for (const auto &flag : Flags)
             if (!metadata.HasKey(flag.name))
                 metadata.AddMetadata(flag.name, defaults.*(flag.member));
+        if (!metadata.HasKey("material_remaps"))
+            WriteMaterialRemaps(metadata, defaults.materialRemaps);
     }
 
     static void ApplyPatch(InxResourceMeta &metadata, const nlohmann::json &patch)
@@ -95,6 +122,10 @@ struct MeshImportSettings
             throw std::invalid_argument("model import settings require an object");
         // Validate the entire authoring request before modifying its candidate.
         for (const auto &[key, value] : patch.items()) {
+            if (key == "material_remaps") {
+                RequireMaterialRemaps(value);
+                continue;
+            }
             bool scalar = false;
             for (const auto &field : Scalars) {
                 if (key != field.name)
@@ -116,7 +147,9 @@ struct MeshImportSettings
                 throw std::invalid_argument("model import flags must be booleans");
         }
         for (const auto &[key, value] : patch.items()) {
-            if (value.is_boolean())
+            if (key == "material_remaps")
+                WriteMaterialRemaps(metadata, value);
+            else if (value.is_boolean())
                 metadata.AddMetadata(key, value.get<bool>());
             else
                 metadata.AddMetadata(key, value.get<float>());
@@ -145,6 +178,12 @@ struct MeshImportSettings
                               {"page", "model"},
                               {"label", std::string("asset.") + flag.name},
                               {"legacy_optional", flag.member == &MeshImportSettings::weldVertices}});
+        fields.push_back({{"name", "material_remaps"},
+                          {"type", "material_remaps"},
+                          {"default", nlohmann::json::object()},
+                          {"page", "materials"},
+                          {"label", "asset.material_remaps"},
+                          {"legacy_optional", true}});
         return {{"version", 1}, {"fields", std::move(fields)}};
     }
 };

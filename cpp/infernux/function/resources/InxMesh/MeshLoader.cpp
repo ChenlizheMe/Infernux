@@ -205,6 +205,12 @@ static std::shared_ptr<InxMesh> ConvertScene(const aiScene *scene, const MeshImp
     std::unordered_map<unsigned int, uint32_t> aiMatToSlot;
     std::vector<std::string> materialSlotNames;
     std::vector<MaterialSlotData> materialSlotDataVec;
+    std::unordered_map<std::string, unsigned> materialNameCounts;
+    for (unsigned mi = 0; mi < scene->mNumMaterials; ++mi) {
+        aiString name;
+        scene->mMaterials[mi]->Get(AI_MATKEY_NAME, name);
+        ++materialNameCounts[name.C_Str()];
+    }
 
     uint32_t currentVertexOffset = 0;
     uint32_t currentIndexOffset = 0;
@@ -307,6 +313,8 @@ static std::shared_ptr<InxMesh> ConvertScene(const aiScene *scene, const MeshImp
                 aiString aiName;
                 aiMat->Get(AI_MATKEY_NAME, aiName);
                 matName = aiName.C_Str();
+                if (!matName.empty() && materialNameCounts.at(matName) == 1)
+                    slotData.sourceId = "material/" + matName;
 
                 // Diffuse / base colour
                 aiColor4D diffuse;
@@ -371,6 +379,13 @@ static std::shared_ptr<InxMesh> ConvertScene(const aiScene *scene, const MeshImp
         currentVertexOffset += aiM->mNumVertices;
     }
 
+    for (const auto &[sourceId, guid] : settings.materialRemaps.items()) {
+        auto found = std::find_if(materialSlotDataVec.begin(), materialSlotDataVec.end(),
+                                  [&](const auto &slot) { return slot.sourceId == sourceId; });
+        if (found == materialSlotDataVec.end())
+            throw std::invalid_argument("model material remap source is missing or ambiguous: " + sourceId);
+        found->materialGuid = guid.get<std::string>();
+    }
     mesh->SetMaterialSlotNames(std::move(materialSlotNames));
     mesh->SetMaterialSlotData(std::move(materialSlotDataVec));
     mesh->SetNodeNames(std::move(nodeNames));
@@ -413,6 +428,8 @@ MeshSourceImportResult MeshLoader::ImportSourceDetailed(const std::string &fileP
                    [](unsigned char character) { return static_cast<char>(std::tolower(character)); });
 
     if (ext == "inxmesh") {
+        if (!settings.materialRemaps.empty())
+            throw std::invalid_argument("material import remaps require a source model, not an authored .inxmesh");
         MeshSourceImportResult result;
         result.mesh = MeshArtifact::DeserializeSource(std::string_view(fileData.data(), fileData.size()));
         result.mesh->SetGuid(guid);

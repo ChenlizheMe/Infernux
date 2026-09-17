@@ -1090,10 +1090,15 @@ void MeshRenderer::SyncMaterialSlotsToMesh()
 
 bool MeshRenderer::IsUnmodifiedEmbeddedMaterial(size_t slot) const
 {
-    if (slot >= m_embeddedMaterialVersions.size() || !m_embeddedMaterialVersions[slot] || m_materials[slot].HasGuid())
+    if (slot >= m_embeddedMaterialVersions.size() || !m_embeddedMaterialVersions[slot])
+        return false;
+    const auto &source = *m_embeddedMaterialVersions[slot];
+    if (!source.guid.empty())
+        return m_materials[slot].GetGuid() == source.guid;
+    if (m_materials[slot].HasGuid())
         return false;
     const auto material = m_materials[slot].Get();
-    return material && material->GetAuthoredVersion() == *m_embeddedMaterialVersions[slot];
+    return material && material->GetAuthoredVersion() == source.authoredVersion;
 }
 
 void MeshRenderer::ApplyEmbeddedMaterialsFromMesh(const std::shared_ptr<InxMesh> &mesh)
@@ -1146,13 +1151,19 @@ void MeshRenderer::ApplyEmbeddedMaterialsFromMesh(const std::shared_ptr<InxMesh>
             continue;
         }
         const MaterialSlotData &data = slotData[sourceSlot];
+        if (!data.materialGuid.empty()) {
+            if (reference.GetGuid() != data.materialGuid)
+                SetMaterial(static_cast<uint32_t>(rendererSlot), data.materialGuid);
+            m_embeddedMaterialVersions[rendererSlot] = ImportedMaterialState{data.materialGuid, 0};
+            continue;
+        }
         const std::string name = sourceSlot < slotNames.size() && !slotNames[sourceSlot].empty()
                                      ? slotNames[sourceSlot]
                                      : "EmbeddedMaterial_" + std::to_string(sourceSlot);
         const std::string sourcePath = mesh->GetFilePath().empty()
                                            ? std::string()
                                            : mesh->GetFilePath() + "::submat:" + std::to_string(sourceSlot);
-        if (importedDefault) {
+        if (importedDefault && !reference.HasGuid()) {
             const auto current = reference.Get();
             const auto matches = [&current](const char *key, const auto &expected) {
                 const auto *property = current->GetProperty(key);
@@ -1168,7 +1179,7 @@ void MeshRenderer::ApplyEmbeddedMaterialsFromMesh(const std::shared_ptr<InxMesh>
                 continue;
         }
         SetMaterial(static_cast<uint32_t>(rendererSlot), mesh->CreateMaterialCopy(sourceSlot));
-        m_embeddedMaterialVersions[rendererSlot] = reference.Get()->GetAuthoredVersion();
+        m_embeddedMaterialVersions[rendererSlot] = ImportedMaterialState{{}, reference.Get()->GetAuthoredVersion()};
     }
 }
 

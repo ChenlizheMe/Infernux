@@ -25,7 +25,13 @@ int main(int argc, char **argv)
         Settings::EnsureDefaults(candidate);
         const auto defaults = Settings::Read(candidate);
         const auto schema = Settings::Schema();
-        assert(schema.at("fields").size() == Settings::Flags.size() + Settings::Scalars.size());
+        assert(schema.at("fields").size() == Settings::Flags.size() + Settings::Scalars.size() + 1);
+        assert(defaults.materialRemaps.empty());
+        Settings::ApplyPatch(candidate, {{"material_remaps", {{"material/Body", "abcdabcdabcdabcdabcdabcdabcdabcd"}}}});
+        assert(candidate.GetMetadata().at("material_remaps").first == "json_object");
+        infernux::InxResourceMeta roundTrip;
+        roundTrip.DeserializeDocument(candidate.SerializeDocument());
+        assert(Settings::Read(roundTrip).materialRemaps == Settings::Read(candidate).materialRemaps);
         assert(schema.at("fields")[0].at("default").get<float>() == defaults.scaleFactor);
         for (size_t index = 0; index < Settings::Flags.size(); ++index) {
             const auto &flag = Settings::Flags[index];
@@ -59,6 +65,8 @@ int main(int argc, char **argv)
         reject({{"normal_smoothing_angle", 175.1}});
         reject({{"normal_smoothing_angle", true}});
         reject(nlohmann::json::array());
+        reject({{"material_remaps", nlohmann::json::array()}});
+        reject({{"material_remaps", {{"slot/0", "guid"}}}});
         infernux::InxResourceMeta legacy;
         legacy.AddMetadata("scale_factor", 0.5f);
         assert(Settings::Read(legacy).weldVertices);

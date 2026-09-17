@@ -147,6 +147,8 @@ int main()
     material.baseColor = {0.1f, 0.2f, 0.3f, 0.4f};
     material.emissionColor = {0.5f, 0.6f, 0.7f, 0.8f};
     material.metallic = 0.9f;
+    material.sourceId = "material/surface";
+    material.materialGuid = "abcdabcdabcdabcdabcdabcdabcdabcd";
     material.smoothness = 0.65f;
     material.opacity = 0.4f;
     source.SetMaterialSlotData({material});
@@ -205,6 +207,8 @@ int main()
     assert(restoredVertex.boneIndices == glm::uvec4(1, 2, 3, 4));
     assert(NearlyEqual(restoredVertex.boneWeights.w, 0.1f));
     assert(NearlyEqual(restored->GetMaterialSlotData().front().metallic, 0.9f));
+    assert(restored->GetMaterialSlotData().front().sourceId == material.sourceId);
+    assert(restored->GetMaterialSlotData().front().materialGuid == material.materialGuid);
 
     RequireInvalid([&] { (void)infernux::MeshArtifact::Deserialize(bytes, "different-source"); });
 

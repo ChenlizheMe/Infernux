@@ -452,7 +452,12 @@ class MeshRenderer : public Component
     std::vector<AssetRef<InxMaterial>> m_materials;
     // Imported defaults are derived data. An explicit assignment or a material
     // edit becomes an authored override; untouched defaults follow reimport.
-    std::vector<std::optional<uint64_t>> m_embeddedMaterialVersions;
+    struct ImportedMaterialState
+    {
+        std::string guid;
+        uint64_t authoredVersion = 0;
+    };
+    std::vector<std::optional<ImportedMaterialState>> m_embeddedMaterialVersions;
     std::vector<std::unordered_map<std::string, MaterialProperty>> m_persistentParameters;
     std::vector<RuntimeParameterOwners> m_runtimeParameters;
     std::vector<std::shared_ptr<const RendererParameterBlock>> m_parameterBlocks;

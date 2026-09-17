@@ -707,6 +707,7 @@ def _ensure_categories():
                      float_speed=spec.get("step", 0.001),
                      float_range=tuple(spec["display_range"]) if "display_range" in spec else None)
             for spec in mesh_import_settings_schema()["fields"]
+            if spec["page"] == "model"
         ],
         custom_header_fn=_render_mesh_header,
         extra_meta_keys=[
@@ -2479,12 +2480,24 @@ def _render_mesh_header(ctx: InxGUIContext, panel, state: _State):
 def _render_model_materials(ctx: InxGUIContext, state: _State):
     from Infernux.lib import AssetRegistry
     from .inspector_utils import render_compact_section_header
+    from ._inspector_references import render_asset_reference_field, _resolve_guid_and_path
+    from Infernux.core.assets import AssetManager
 
     if not render_compact_section_header(ctx, t("asset.mesh_materials"), level="secondary"):
         return
     mesh = AssetRegistry.instance().load_mesh(state.file_path)
     if mesh is None:
         return
+    slot_data = mesh.get_material_slot_data()
+
+    def set_remap(source_id, guid):
+        def mutate(settings):
+            if guid:
+                settings.material_remaps[source_id] = guid
+            else:
+                settings.material_remaps.pop(source_id, None)
+        _edit_import_settings(state, f"material_remaps.{source_id}", mutate, "Remap Model Material")
+
     for slot, name in enumerate(mesh.material_slot_names):
         ctx.label(f"{slot}: {name}")
         ctx.same_line()
@@ -2493,6 +2506,30 @@ def _render_model_materials(ctx: InxGUIContext, state: _State):
         ctx.record_semantic_item("button", label, True, f"asset.mesh.material.extract.{slot}")
         if clicked:
             _request_model_material_extraction(state, mesh, slot)
+        if os.path.splitext(state.file_path)[1].lower() == ".inxmesh":
+            continue
+        source_id = slot_data[slot]["source_id"] if slot < len(slot_data) else ""
+        if not source_id:
+            ctx.text_wrapped(t("asset.material_remap_unavailable"))
+            continue
+        guid = state.settings.material_remaps.get(source_id, "")
+        path = (AssetManager._get_path_from_guid(guid) or "") if guid else ""
+        render_asset_reference_field(
+            ctx, f"##model_material_remap_{slot}", os.path.basename(path) or guid or t("asset.none"),
+            "Material", asset_type="Material", has_value=bool(guid), ping_path=path or None,
+            reference_value={"asset_type": "Material", "guid": guid, "path_hint": path},
+            on_assign=lambda payload, key=source_id: set_remap(key, _resolve_guid_and_path(payload)[0]),
+            on_clear=lambda key=source_id: set_remap(key, ""),
+            semantic_id=f"asset.mesh.material.remap.{slot}",
+        )
+    # Keep removed/renamed source mappings visible so authors can clear them
+    # before Apply; they must not be silently attached to a different material.
+    available = {data["source_id"] for data in slot_data}
+    for source_id in tuple(state.settings.material_remaps):
+        if source_id not in available:
+            ctx.text_wrapped(t("asset.material_remap_missing").format(source=source_id))
+            if ctx.button(f"{t('asset.material_remap_remove')}##{source_id}"):
+                set_remap(source_id, "")
     ctx.separator()
 
 
