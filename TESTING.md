@@ -32,7 +32,7 @@ equivalent is:
 
 ```sh
 python -m pip install pytest PySide6 packaging
-python -m pytest packaging/tests/test_hub_project_workflow.py packaging/tests/test_project_python_runtime.py packaging/tests/test_hub_new_project_python_binding.py packaging/tests/test_hub_launch_state.py packaging/tests/test_project_runtime_strictness.py packaging/tests/test_regression_guide.py -q -ra
+python -m pytest packaging/tests/test_hub_project_workflow.py packaging/tests/test_project_python_runtime.py packaging/tests/test_hub_new_project_python_binding.py packaging/tests/test_hub_launch_state.py packaging/tests/test_project_runtime_strictness.py packaging/tests/test_regression_guide.py packaging/tests/test_cpu_jit_dependency_packaging.py -q -ra
 ```
 
 For a session without a display, set `QT_QPA_PLATFORM=offscreen` first
@@ -50,6 +50,37 @@ portable command stays synchronized with CI.
 The broader Hub suite is `python -m pytest packaging/tests -q -ra`.
 Platform-specific UI/installer tests may skip on the other OS; `-ra` prints each
 reason. A passing mocked download test is not evidence of network availability.
+
+## CPU JIT dependency fork
+
+`external/llvmlite_for_infernux` pins our changes on the upstream 0.49 release
+line, compatible with Numba 0.67. Its `infernux-0.49` branch adds pass-manager
+ownership fixes and per-execution-engine mapped-memory counters. It remains a
+CPU dependency, not a GPU backend or an installable engine plugin.
+
+Install the developer packaging tools (`setuptools`, `wheel`, and `delvewheel`
+on Windows or `auditwheel` on Linux). Make the matching toolchain's dependency
+DLLs discoverable on `PATH` on Windows. With LLVM 22's CMake package available in `CMAKE_PREFIX_PATH`, build the pinned
+wheel using `cmake --build --preset windows-msvc-release --target package_cpu_jit_dependency`.
+The target repairs the wheel's external library dependencies; raw build wheels
+are not release artifacts. Output is under `out/stage/windows-msvc-release/cpu-jit-wheels`. This is a
+developer/release target: ordinary engine installation and game export must
+not require LLVM, CMake, or compilation on the user's machine.
+
+Install the wheel into an isolated validation directory, put that directory
+first on `PYTHONPATH`, and run `python -m llvmlite.tests`, followed by:
+
+```sh
+python -m pytest python/test/test_jit.py python/test/test_jit_hir.py python/test/test_jit_runtime.py python/test/test_jit_code_ownership.py python/test/test_jit_disk_cache.py python/test/test_compute.py -q
+```
+
+Record the installed `llvmlite.__file__` and version to distinguish the wheel
+from a source checkout or the unmodified environment dependency. Counters are
+mapped code/data pages, not total RSS or compiler IR memory. Dependency-channel
+promotion, manylinux validation, and actual code-memory admission budgets are
+separate unfinished gates. Audit notices for any repair-bundled DLLs before
+publishing artifacts; this target does not silently replace the engine's
+declared dependency or the developer's conda environment.
 
 ## Native Python and C++ lanes
 

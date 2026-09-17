@@ -3,6 +3,18 @@
 set(INFERNUX_PYTHON_STAGE_DIR "${INFERNUX_STAGE_DIR}/python-wheel-source")
 set(INFERNUX_PYTHON_WHEEL_DIR "${INFERNUX_STAGE_DIR}/wheels")
 
+# Developer/release dependency build, not part of a user's game export.
+# LLVM's CMake package must already be provided through CMAKE_PREFIX_PATH.
+# Keep this separate from package_python until every supported installation
+# channel can resolve the patched dependency without a source build.
+add_custom_target(package_cpu_jit_dependency
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/cmake/package_cpu_jit_dependency.py"
+        --source-dir "${CMAKE_SOURCE_DIR}/external/llvmlite_for_infernux"
+        --wheel-dir "${INFERNUX_STAGE_DIR}/cpu-jit-wheels"
+    COMMENT "Building the pinned llvmlite dependency wheel (requires an LLVM build toolchain)"
+    VERBATIM
+)
+
 set(_infernux_repair_linux_wheel)
 if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux")
     set(_infernux_repair_linux_wheel

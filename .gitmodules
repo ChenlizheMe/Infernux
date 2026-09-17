@@ -43,3 +43,7 @@
 	path = external/taichi_for_infernux
 	url = https://github.com/ChenlizheMe/taichi_for_infernux.git
 	branch = master
+[submodule "external/llvmlite_for_infernux"]
+	path = external/llvmlite_for_infernux
+	url = https://github.com/ChenlizheMe/llvmlite_for_infernux.git
+	branch = infernux-0.49
