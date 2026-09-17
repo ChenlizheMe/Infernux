@@ -5,6 +5,7 @@
 #include <core/log/InxLog.h>
 
 #include <algorithm>
+#include <cmath>
 #include <limits>
 #include <stdexcept>
 
@@ -27,9 +28,37 @@ size_t InxMesh::GetRuntimeMemoryBytes() const noexcept
     bytes += m_nodeNames.capacity() * sizeof(std::string);
     for (const auto &name : m_nodeNames)
         bytes += name.capacity();
+    bytes += m_modelNodes.capacity() * sizeof(ImportedModelNode);
+    for (const auto &node : m_modelNodes)
+        bytes += node.name.capacity();
     if (m_skinnedData)
         bytes += m_skinnedData->GetRuntimeMemoryBytes();
     return bytes;
+}
+
+void InxMesh::SetModelNodes(std::vector<ImportedModelNode> nodes)
+{
+    std::vector<bool> assignedGroups(m_nodeNames.size(), false);
+    for (size_t index = 0; index < nodes.size(); ++index) {
+        const auto &node = nodes[index];
+        if (node.parentIndex < -1 || (node.parentIndex >= 0 && static_cast<size_t>(node.parentIndex) >= index))
+            throw std::invalid_argument("Model nodes require parent-before-child order");
+        if (node.nodeGroup < -1 || (node.nodeGroup >= 0 && static_cast<size_t>(node.nodeGroup) >= m_nodeNames.size()))
+            throw std::invalid_argument("Model node refers to an invalid geometry group");
+        if (node.nodeGroup >= 0) {
+            if (assignedGroups[node.nodeGroup])
+                throw std::invalid_argument("Model geometry group belongs to more than one node");
+            assignedGroups[node.nodeGroup] = true;
+        }
+        for (glm::length_t column = 0; column < 4; ++column)
+            for (glm::length_t row = 0; row < 4; ++row)
+                if (!std::isfinite(node.localTransform[column][row]))
+                    throw std::invalid_argument("Model node transform must be finite");
+        if (node.localTransform[0][3] != 0.0f || node.localTransform[1][3] != 0.0f ||
+            node.localTransform[2][3] != 0.0f || node.localTransform[3][3] != 1.0f)
+            throw std::invalid_argument("Model node transform must be affine");
+    }
+    m_modelNodes = std::move(nodes);
 }
 
 void InxMesh::SetSkinnedData(std::shared_ptr<const InxSkinnedMesh> skinnedData)

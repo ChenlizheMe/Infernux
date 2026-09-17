@@ -53,6 +53,18 @@ struct MaterialSlotData
     float opacity = 1.0f;
 };
 
+/// Source hierarchy in parent-before-child order, including transform-only
+/// nodes. Indices describe this import, not persistent subresource identities.
+/// Geometry is still stored in model space; consumers must not apply these
+/// transforms a second time to the combined vertex buffer.
+struct ImportedModelNode
+{
+    std::string name;
+    int32_t parentIndex = -1;
+    int32_t nodeGroup = -1;         ///< -1 for nodes without geometry
+    glm::mat4 localTransform{1.0f}; ///< In engine units, relative to parent
+};
+
 /// One immutable geometry generation retained by consumers while in flight.
 struct MeshGeometry
 {
@@ -216,6 +228,12 @@ class InxMesh
         m_nodeNames = std::move(names);
     }
 
+    [[nodiscard]] const std::vector<ImportedModelNode> &GetModelNodes() const noexcept
+    {
+        return m_modelNodes;
+    }
+    void SetModelNodes(std::vector<ImportedModelNode> nodes);
+
     // ── Builder API (called by MeshLoader during import) ─────────────────
 
     /**
@@ -264,6 +282,7 @@ class InxMesh
     std::vector<std::string> m_materialSlotNames;
     std::vector<MaterialSlotData> m_materialSlotData;
     std::vector<std::string> m_nodeNames; ///< Node names indexed by nodeGroup
+    std::vector<ImportedModelNode> m_modelNodes;
     std::shared_ptr<const InxSkinnedMesh> m_skinnedData;
     uint64_t m_generation = 0;
 };

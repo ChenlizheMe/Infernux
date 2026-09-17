@@ -1,0 +1,18 @@
+{
+  "asset": {"version": "2.0", "generator": "Infernux model hierarchy regression"},
+  "scene": 0,
+  "scenes": [{"nodes": [0]}],
+  "nodes": [
+    {"name": "Assembly", "translation": [2, 3, 4], "children": [1]},
+    {"name": "Empty pivot", "translation": [0, 5, 0], "scale": [-2, 3, 1], "children": [2, 3]},
+    {"name": "Upper", "translation": [1, 0, 0], "mesh": 0},
+    {"name": "Lower", "translation": [0, 0, 2], "rotation": [0, 0, 0.7071067811865476, 0.7071067811865476], "mesh": 0}
+  ],
+  "meshes": [{"primitives": [{"attributes": {"POSITION": 0}, "indices": 1}]}],
+  "buffers": [{"byteLength": 42, "uri": "data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAABAAIA"}],
+  "bufferViews": [{"buffer": 0, "byteOffset": 0, "byteLength": 36}, {"buffer": 0, "byteOffset": 36, "byteLength": 6}],
+  "accessors": [
+    {"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3", "min": [0, 0, 0], "max": [1, 1, 0]},
+    {"bufferView": 1, "componentType": 5123, "count": 3, "type": "SCALAR"}
+  ]
+}

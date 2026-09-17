@@ -1,9 +1,11 @@
 #include <function/resources/InxMesh/InxMesh.h>
+#include <function/resources/InxMesh/MeshArtifact.h>
 #include <function/resources/InxMesh/MeshLoader.h>
 #include <function/resources/InxResource/InxResourceMeta.h>
 #include <platform/filesystem/InxPath.h>
 
 #include <cassert>
+#include <cmath>
 #include <filesystem>
 #include <set>
 #include <string>
@@ -12,7 +14,7 @@
 #error "INFERNUX_SOURCE_DIR must be supplied by the CMake test target"
 #endif
 
-int main()
+int main(int argc, char **argv)
 {
     const std::filesystem::path sourceRoot = INFERNUX_SOURCE_DIR;
     const auto blendPath = sourceRoot / "external" / "assimp" / "test" / "models" / "BLEND" / "CubeHierarchy_248.blend";
@@ -33,6 +35,69 @@ int main()
     assert(!imported.mesh->GetNodeNames().empty());
     assert(imported.materialSlots.size() == imported.mesh->GetMaterialSlotNames().size());
     assert(imported.mesh->GetGuid() == "0123456789abcdef0123456789abcdef");
+
+    // A real tree is distinct from the former flat list of mesh-node names.
+    // Transform-only parents, nonuniform mirrored scale and local rotation
+    // must survive import and the same binary artifact used by Player.
+    const auto hierarchyPath = sourceRoot / "cpp/tests/fixtures/model_hierarchy.gltf";
+    metadata.AddMetadata("scale_factor", 2.0f);
+    const auto hierarchy =
+        infernux::MeshLoader::ImportSourceDetailed(infernux::FromFsPath(hierarchyPath), "hierarchy-test-guid", metadata)
+            .mesh;
+    assert(hierarchy);
+    const auto &nodes = hierarchy->GetModelNodes();
+    const auto findNode = [](const auto &modelNodes, const std::string &name) -> size_t {
+        for (size_t index = 0; index < modelNodes.size(); ++index)
+            if (modelNodes[index].name == name)
+                return index;
+        assert(false && "expected imported node is missing");
+        return 0;
+    };
+    const auto root = findNode(nodes, "Assembly");
+    const auto pivot = findNode(nodes, "Empty pivot");
+    const auto upper = findNode(nodes, "Upper");
+    const auto lower = findNode(nodes, "Lower");
+    assert(nodes[pivot].parentIndex == root);
+    assert(nodes[upper].parentIndex == pivot && nodes[lower].parentIndex == pivot);
+    assert(nodes[root].nodeGroup == -1 && nodes[pivot].nodeGroup == -1);
+    assert(nodes[upper].nodeGroup >= 0 && nodes[lower].nodeGroup >= 0);
+    assert(nodes[upper].nodeGroup != nodes[lower].nodeGroup);
+    assert(glm::vec3(nodes[root].localTransform[3]) == glm::vec3(4, 6, 8));
+    assert(glm::vec3(nodes[pivot].localTransform[3]) == glm::vec3(0, 10, 0));
+    assert(nodes[pivot].localTransform[0][0] == -2.0f);
+    assert(nodes[pivot].localTransform[1][1] == 3.0f);
+    assert(std::abs(nodes[lower].localTransform[0][1] - 1.0f) < 1.e-5f);
+    for (const auto &subMesh : hierarchy->GetSubMeshes()) {
+        if (subMesh.nodeGroup != nodes[upper].nodeGroup)
+            continue;
+        // Existing combined geometry remains in model space, not transformed twice.
+        assert(subMesh.boundsMin == glm::vec3(-4, 16, 8));
+        assert(subMesh.boundsMax == glm::vec3(0, 22, 8));
+    }
+    const auto bytes = infernux::MeshArtifact::Serialize(*hierarchy, "hierarchy-source");
+    const auto cooked = infernux::MeshArtifact::Deserialize(bytes, "hierarchy-source");
+    assert(cooked->GetModelNodes().size() == nodes.size());
+    for (size_t index = 0; index < nodes.size(); ++index) {
+        const auto &restored = cooked->GetModelNodes()[index];
+        assert(restored.name == nodes[index].name);
+        assert(restored.parentIndex == nodes[index].parentIndex);
+        assert(restored.nodeGroup == nodes[index].nodeGroup);
+        assert(restored.localTransform == nodes[index].localTransform);
+    }
+
+    // Optional modern Blender-generated GLB supplied by an integration run.
+    // This is additional evidence, never a replacement for the fixed fixture.
+    if (argc > 1) {
+        const auto modern = infernux::MeshLoader::ImportSourceDetailed(argv[1], "modern-blend-guid", metadata).mesh;
+        assert(modern);
+        const auto &modernNodes = modern->GetModelNodes();
+        const auto assembly = findNode(modernNodes, "Assembly");
+        const auto hinge = findNode(modernNodes, "Hinge");
+        assert(modernNodes[hinge].parentIndex == assembly);
+        assert(modernNodes[findNode(modernNodes, "Upper")].parentIndex == hinge);
+        assert(modernNodes[findNode(modernNodes, "Lower")].parentIndex == hinge);
+        assert(modern->GetMaterialSlotCount() == 2);
+    }
 
     // Composite model sources must expose their regular external textures as
     // authoring paths so the AssetDatabase can publish GUID-only edges. The

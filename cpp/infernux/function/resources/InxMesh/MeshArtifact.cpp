@@ -14,6 +14,7 @@ namespace
 constexpr std::string_view Magic = "INXMESHART";
 constexpr std::string_view AuthoredSourceIdentity = "infernux.static-mesh.source";
 constexpr uint32_t EndianMarker = 0x01020304U;
+constexpr uint32_t ModelNodesV1 = 0x31444f4eU; // NOD1, optional source-hierarchy section
 constexpr uint32_t MaximumElementCount = 100'000'000U;
 constexpr uint32_t MaximumStringBytes = 16U * 1024U * 1024U;
 
@@ -247,6 +248,19 @@ std::string MeshArtifact::Serialize(const InxMesh &mesh, std::string_view source
     for (const auto &name : nodeNames)
         AppendString(bytes, name);
 
+    const auto &nodes = mesh.GetModelNodes();
+    if (!nodes.empty()) {
+        AppendU32(bytes, ModelNodesV1);
+        AppendCount(bytes, nodes.size());
+        for (const auto &node : nodes) {
+            AppendString(bytes, node.name);
+            AppendU32(bytes, static_cast<uint32_t>(node.parentIndex));
+            AppendU32(bytes, static_cast<uint32_t>(node.nodeGroup));
+            for (glm::length_t column = 0; column < 4; ++column)
+                AppendVec4(bytes, node.localTransform[column]);
+        }
+    }
+
     AppendU64(bytes, Fnv1a64(bytes));
     return bytes;
 }
@@ -322,6 +336,29 @@ std::shared_ptr<InxMesh> MeshArtifact::Deserialize(std::string_view bytes, std::
     std::vector<std::string> nodeNames(reader.ReadCount());
     for (auto &name : nodeNames)
         name = reader.ReadString();
+    // Existing .inxmesh authoring files have no hierarchy section. They
+    // remain valid geometry, not an inferred or reconstructed node tree.
+    std::vector<ImportedModelNode> nodes;
+    if (!reader.AtEnd()) {
+        if (reader.ReadU32() != ModelNodesV1)
+            throw std::invalid_argument("mesh artifact has an unsupported model hierarchy section");
+        nodes.resize(reader.ReadCount());
+        const auto readNodeIndex = [&reader]() -> int32_t {
+            const uint32_t value = reader.ReadU32();
+            if (value == std::numeric_limits<uint32_t>::max())
+                return -1;
+            if (value > static_cast<uint32_t>(std::numeric_limits<int32_t>::max()))
+                throw std::invalid_argument("mesh artifact contains an invalid model node index");
+            return static_cast<int32_t>(value);
+        };
+        for (auto &node : nodes) {
+            node.name = reader.ReadString();
+            node.parentIndex = readNodeIndex();
+            node.nodeGroup = readNodeIndex();
+            for (glm::length_t column = 0; column < 4; ++column)
+                node.localTransform[column] = ReadVec4(reader);
+        }
+    }
     if (!reader.AtEnd())
         throw std::invalid_argument("mesh artifact contains trailing data");
 
@@ -329,6 +366,7 @@ std::shared_ptr<InxMesh> MeshArtifact::Deserialize(std::string_view bytes, std::
     mesh->SetMaterialSlotNames(std::move(slotNames));
     mesh->SetMaterialSlotData(std::move(slotData));
     mesh->SetNodeNames(std::move(nodeNames));
+    mesh->SetModelNodes(std::move(nodes));
     return mesh;
 }
 

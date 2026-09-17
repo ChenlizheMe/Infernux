@@ -121,20 +121,33 @@ static glm::mat4 AiToGlm(const aiMatrix4x4 &m)
 }
 
 static void CollectMeshes(const aiNode *node, const glm::mat4 &parentTransform, std::vector<CollectedMesh> &outMeshes,
-                          std::vector<std::string> &outNodeNames)
+                          std::vector<std::string> &outNodeNames, std::vector<ImportedModelNode> &outNodes,
+                          int32_t parentIndex, float scale)
 {
-    glm::mat4 nodeTransform = parentTransform * AiToGlm(node->mTransformation);
+    const glm::mat4 localTransform = AiToGlm(node->mTransformation);
+    glm::mat4 nodeTransform = parentTransform * localTransform;
+    const int32_t nodeIndex = static_cast<int32_t>(outNodes.size());
+    ImportedModelNode importedNode;
+    importedNode.name = node->mName.C_Str();
+    importedNode.parentIndex = parentIndex;
+    importedNode.localTransform = localTransform;
+    // Unit conversion is applied to translations once, not as a scale at
+    // every ancestor. Geometry below remains in the existing model space.
+    importedNode.localTransform[3] = glm::vec4(glm::vec3(localTransform[3]) * scale, 1.0f);
 
     if (node->mNumMeshes > 0) {
         uint32_t group = static_cast<uint32_t>(outNodeNames.size());
+        importedNode.nodeGroup = static_cast<int32_t>(group);
         outNodeNames.push_back(node->mName.C_Str());
         for (unsigned int i = 0; i < node->mNumMeshes; ++i) {
             outMeshes.push_back({node->mMeshes[i], nodeTransform, group});
         }
     }
 
+    outNodes.push_back(std::move(importedNode));
+
     for (unsigned int i = 0; i < node->mNumChildren; ++i) {
-        CollectMeshes(node->mChildren[i], nodeTransform, outMeshes, outNodeNames);
+        CollectMeshes(node->mChildren[i], nodeTransform, outMeshes, outNodeNames, outNodes, nodeIndex, scale);
     }
 }
 
@@ -150,10 +163,12 @@ static std::shared_ptr<InxMesh> ConvertScene(const aiScene *scene, const MeshImp
     // Collect all mesh instances with their transforms and node grouping
     std::vector<CollectedMesh> collectedMeshes;
     std::vector<std::string> nodeNames;
+    std::vector<ImportedModelNode> modelNodes;
     collectedMeshes.reserve(scene->mNumMeshes);
-    CollectMeshes(scene->mRootNode, glm::mat4(1.0f), collectedMeshes, nodeNames);
+    CollectMeshes(scene->mRootNode, glm::mat4(1.0f), collectedMeshes, nodeNames, modelNodes, -1, settings.scaleFactor);
 
     if (collectedMeshes.empty()) {
+        mesh->SetModelNodes(std::move(modelNodes));
         INXLOG_WARN("MeshLoader: scene '", name, "' contains no meshes");
         return mesh;
     }
@@ -362,6 +377,7 @@ static std::shared_ptr<InxMesh> ConvertScene(const aiScene *scene, const MeshImp
     mesh->SetMaterialSlotNames(std::move(materialSlotNames));
     mesh->SetMaterialSlotData(std::move(materialSlotDataVec));
     mesh->SetNodeNames(std::move(nodeNames));
+    mesh->SetModelNodes(std::move(modelNodes));
 
     return mesh;
 }

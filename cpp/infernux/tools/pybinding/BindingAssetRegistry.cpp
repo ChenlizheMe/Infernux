@@ -483,6 +483,7 @@ void RegisterAssetRegistryBindings(py::module_ &m)
                 replacement.SetMaterialSlotNames(std::move(slotNames));
                 replacement.SetMaterialSlotData(std::vector<MaterialSlotData>(replacement.GetMaterialSlotCount()));
                 replacement.SetNodeNames({});
+                replacement.SetModelNodes({});
                 replacement.SetSkinnedData(nullptr);
                 self.PublishMesh(guid, std::move(replacement));
             },

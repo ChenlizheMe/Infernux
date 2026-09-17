@@ -7,6 +7,7 @@
 #include <cassert>
 #include <cmath>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 
 namespace
@@ -151,7 +152,36 @@ int main()
     source.SetMaterialSlotData({material});
     source.SetNodeNames({"root", "child"});
 
+    // Old native mesh sources remain byte-for-byte geometry-only payloads.
     constexpr const char *SourceHash = "0123456789abcdef";
+    const auto geometryOnly = infernux::MeshArtifact::Serialize(source, SourceHash);
+    auto geometryOnlyRestored = infernux::MeshArtifact::Deserialize(geometryOnly, SourceHash);
+    assert(geometryOnlyRestored->GetModelNodes().empty());
+    assert(infernux::MeshArtifact::Serialize(*geometryOnlyRestored, SourceHash) == geometryOnly);
+
+    infernux::ImportedModelNode root, pivot, child;
+    root.name = "Assembly";
+    root.localTransform[3] = {2.0f, 3.0f, 4.0f, 1.0f};
+    pivot.name = "Empty pivot";
+    pivot.parentIndex = 0;
+    pivot.localTransform[0][0] = -2.0f;
+    child.name = "child";
+    child.parentIndex = 1;
+    child.nodeGroup = 1;
+    child.localTransform[3] = {0.0f, 5.0f, 0.0f, 1.0f};
+    source.SetModelNodes({root, pivot, child});
+    auto invalidChild = child;
+    invalidChild.parentIndex = 2;
+    RequireInvalid([&] { source.SetModelNodes({root, pivot, invalidChild}); });
+    invalidChild = child;
+    invalidChild.nodeGroup = 2;
+    RequireInvalid([&] { source.SetModelNodes({root, pivot, invalidChild}); });
+    invalidChild = child;
+    invalidChild.localTransform[0][0] = std::numeric_limits<float>::quiet_NaN();
+    RequireInvalid([&] { source.SetModelNodes({root, pivot, invalidChild}); });
+    RequireInvalid([&] { source.SetModelNodes({root, pivot, child, child}); });
+    assert(source.GetModelNodes().size() == 3); // Invalid publication does not replace it.
+
     const std::string bytes = infernux::MeshArtifact::Serialize(source, SourceHash);
     auto restored = infernux::MeshArtifact::Deserialize(bytes, SourceHash);
     assert(restored->GetName() == "artifact-probe");
@@ -161,6 +191,15 @@ int main()
     assert(restored->GetSubMesh(0).name == "triangle");
     assert(restored->GetMaterialSlotNames() == std::vector<std::string>{"surface"});
     assert(restored->GetNodeNames() == std::vector<std::string>({"root", "child"}));
+    const auto &nodes = restored->GetModelNodes();
+    assert(nodes.size() == 3);
+    assert(nodes[0].name == root.name && nodes[0].parentIndex == -1 && nodes[0].nodeGroup == -1);
+    assert(nodes[1].name == pivot.name && nodes[1].parentIndex == 0 && nodes[1].nodeGroup == -1);
+    assert(nodes[2].parentIndex == 1 && nodes[2].nodeGroup == 1);
+    assert(nodes[0].localTransform == root.localTransform);
+    assert(nodes[1].localTransform == pivot.localTransform);
+    assert(nodes[2].localTransform == child.localTransform);
+    assert(infernux::MeshArtifact::Serialize(*restored, SourceHash) == bytes);
     const auto &restoredVertex = restored->GetVertices().front();
     assert(NearlyEqual(restoredVertex.pos.x, 1.0f));
     assert(restoredVertex.boneIndices == glm::uvec4(1, 2, 3, 4));

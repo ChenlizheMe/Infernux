@@ -96,6 +96,7 @@ bool MeshLoader::Reload(const RuntimeAssetPayload &existing, const std::string &
     target->SetMaterialSlotNames(std::vector<std::string>(loaded->GetMaterialSlotNames()));
     target->SetMaterialSlotData(std::vector<MaterialSlotData>(loaded->GetMaterialSlotData()));
     target->SetNodeNames(std::vector<std::string>(loaded->GetNodeNames()));
+    target->SetModelNodes(std::vector<ImportedModelNode>(loaded->GetModelNodes()));
     target->SetSkinnedData(loaded->GetSkinnedData());
     INXLOG_INFO("MeshLoader::Reload: updated '", target->GetName(), "' in-place");
     return true;
