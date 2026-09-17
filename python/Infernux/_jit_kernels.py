@@ -37,6 +37,9 @@ _HAS_NUMBA = False
 _real_njit = None
 try:
     from numba import njit as _numba_njit  # type: ignore[import-untyped]
+    from Infernux._jit_compat import prepare_cpu_backend
+
+    prepare_cpu_backend()
     _real_njit = _numba_njit
     _HAS_NUMBA = True
 except Exception as _exc:
