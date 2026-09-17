@@ -45,6 +45,9 @@ class UICanvas(InxUIComponent):
     View overlay scales all element positions, sizes and font sizes
     proportionally from this reference to the actual viewport.
 
+    The owner's Transform (and its ancestors) never changes screen geometry.
+    Child controls keep their own local layout positions and rotations.
+
     Attributes:
         render_mode: ScreenOverlay or CameraOverlay.
         sort_order: Rendering order (lower draws first).
@@ -248,9 +251,13 @@ class UICanvas(InxUIComponent):
         yield from self._walk_children(go)
 
     def _walk_children(self, parent):
-        from .inx_ui_screen_component import InxUIScreenComponent
+        from .ui_canvas_utils import _is_uicanvas_component
+
         for child in parent.get_children():
-            for comp in child.get_py_components():
+            components = child.get_py_components()
+            if any(_is_uicanvas_component(comp, UICanvas) for comp in components):
+                continue
+            for comp in components:
                 if is_ui_screen_component(comp):
                     yield comp
             yield from self._walk_children(child)

@@ -327,15 +327,31 @@ class InxUIScreenComponent(InxUIComponent):
         """World UI is inferred from hierarchy; no special Canvas is required."""
         return self.get_canvas() is None
 
-    def _get_parent_ui_component(self):
-        """Return the nearest authored UI parent, without inventing a surface."""
+    def _layout_ancestors(self):
+        """Walk UI layout parents, stopping before the screen Canvas owner.
+
+        A Canvas establishes viewport coordinates. Neither its Transform nor
+        UI layout above it participates in that coordinate system. World UI
+        has no Canvas and retains its ordinary scene ancestry.
+        """
+        canvas = self.get_canvas()
+        boundary = canvas.game_object if canvas is not None else None
         current = self._try_get_game_object()
+        if boundary is not None and current.id == boundary.id:
+            return
         current = current.get_parent() if current is not None else None
         while current is not None:
+            if boundary is not None and current.id == boundary.id:
+                break
+            yield current
+            current = current.get_parent()
+
+    def _get_parent_ui_component(self):
+        """Return the nearest UI parent within this layout domain."""
+        for current in self._layout_ancestors():
             for component in current.get_py_components():
                 if isinstance(component, InxUIScreenComponent):
                     return component
-            current = current.get_parent()
         return None
 
     def world_ui_matrix(self):
@@ -398,9 +414,7 @@ class InxUIScreenComponent(InxUIComponent):
         from .ui_frame import UIFrame
 
         clip = None
-        current = self._try_get_game_object()
-        current = current.get_parent() if current is not None else None
-        while current is not None:
+        for current in self._layout_ancestors():
             for component in current.get_py_components():
                 if not isinstance(component, UIFrame) or not component.clip_content:
                     continue
@@ -413,7 +427,6 @@ class InxUIScreenComponent(InxUIComponent):
                         max(clip[0], candidate[0]), max(clip[1], candidate[1]),
                         min(clip[2], candidate[2]), min(clip[3], candidate[3]),
                     )
-            current = current.get_parent()
         return clip
 
     def _anchor_origin(self, ref_width: float, ref_height: float):
@@ -439,15 +452,9 @@ class InxUIScreenComponent(InxUIComponent):
         Walks up the GameObject hierarchy looking for a parent with an
         InxUIScreenComponent.  If none is found, returns the canvas rect.
         """
-        go = self._try_get_game_object()
-        if go is None:
-            return (0.0, 0.0, canvas_width, canvas_height)
-        parent_go = go.get_parent()
-        while parent_go is not None:
-            for py_comp in parent_go.get_py_components():
-                if isinstance(py_comp, InxUIScreenComponent):
-                    return py_comp.get_rect(canvas_width, canvas_height)
-            parent_go = parent_go.get_parent()
+        parent = self._get_parent_ui_component()
+        if parent is not None:
+            return parent.get_rect(canvas_width, canvas_height)
         return (0.0, 0.0, canvas_width, canvas_height)
 
     def get_resolved_size(self) -> tuple[float, float]:
@@ -493,7 +500,7 @@ class InxUIScreenComponent(InxUIComponent):
             return cached
         cw = float(canvas_width)
         ch = float(canvas_height)
-        parent = game_object.get_parent() if game_object is not None else None
+        parent = next(self._layout_ancestors(), None)
         layout_parent = None
         if parent is not None:
             layout_parent = next((

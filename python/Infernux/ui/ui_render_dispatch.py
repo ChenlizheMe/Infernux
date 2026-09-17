@@ -284,13 +284,11 @@ class _UICommandDependencies:
             # through ordinary scene nodes. This membership-only graph avoids
             # walking every hierarchy again when one Transform moves.
             for index, element in enumerate(screen):
-                parent = element.game_object.get_parent()
-                while parent is not None:
+                for parent in element._layout_ancestors():
                     parent_index = screen_owners.get(parent.id)
                     if parent_index is not None:
                         self.screen_children[parent_index].append(index)
                         break
-                    parent = parent.get_parent()
             self.key = key
             self.generation += 1
             self.geometry_revision = None
