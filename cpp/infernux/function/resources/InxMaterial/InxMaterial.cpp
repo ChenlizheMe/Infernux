@@ -553,6 +553,7 @@ void InxMaterial::ResetRenderStateAuthorship()
         return;
     m_renderStateOverrides = 0;
     m_pipelineDirty = true;
+    ++m_version;
 }
 
 InxMaterial &InxMaterial::operator=(const InxMaterial &other)
@@ -587,6 +588,7 @@ InxMaterial &InxMaterial::operator=(const InxMaterial &other)
     m_pipelineDirty = true;
     m_propertiesDirty = true;
     m_version = 0;
+    m_derivedVersion = 0;
     m_isDeleted = other.m_isDeleted;
 
     return *this;
@@ -692,6 +694,7 @@ void InxMaterial::PublishTextureAssets(std::unordered_map<std::string, std::shar
         m_renderTextures = std::move(textures);
         MarkPropertiesDirty();
         ++m_version;
+        ++m_derivedVersion;
     }
     m_textureAssetsPending = false;
 }
@@ -710,6 +713,7 @@ void InxMaterial::InvalidateTextureAssets(const std::string &guid, bool deleted)
     m_textureAssetsPending = true;
     MarkPropertiesDirty();
     ++m_version;
+    ++m_derivedVersion;
 }
 
 void InxMaterial::SetTextureGuid(const std::string &name, const std::string &textureGuid)
@@ -853,6 +857,7 @@ bool InxMaterial::SynchronizeShaderPropertyDefaults(const ShaderProgramArtifact 
     if (changed) {
         m_propertiesDirty = true;
         ++m_version;
+        ++m_derivedVersion;
     }
     return changed;
 }
@@ -877,6 +882,7 @@ void InxMaterial::ApplyShaderRenderMeta(const std::string &cullMode, const std::
                                         const std::string &passTag, const std::string &stencil,
                                         const std::string &alphaClip)
 {
+    const uint64_t previousVersion = m_version;
     bool changed = false;
 
     // Shader metadata describes the complete default state, not a patch over
@@ -1002,6 +1008,7 @@ void InxMaterial::ApplyShaderRenderMeta(const std::string &cullMode, const std::
 
     if (changed)
         m_pipelineDirty = true;
+    m_derivedVersion += m_version - previousVersion;
 }
 
 void InxMaterial::SyncAlphaClipProperty()

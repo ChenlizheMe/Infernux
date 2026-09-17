@@ -10,6 +10,7 @@
 #include <function/resources/InxMesh/InxMesh.h>
 #include <glm/glm.hpp>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -432,10 +433,10 @@ class MeshRenderer : public Component
     }
 
   private:
-    /// Populate otherwise-empty renderer slots from material data embedded in
-    /// the imported mesh. This is a renderer invariant rather than a Python
-    /// binding convenience so scene restore, Player and Web builds agree.
+    /// Populate empty slots and refresh untouched imported defaults. Explicit
+    /// assignments and authored material edits survive model reimport.
     void ApplyEmbeddedMaterialsFromMesh(const std::shared_ptr<InxMesh> &mesh);
+    [[nodiscard]] bool IsUnmodifiedEmbeddedMaterial(size_t slot) const;
 
     MeshRef m_mesh;
 
@@ -449,6 +450,9 @@ class MeshRenderer : public Component
     using RuntimeParameterOwners = std::unordered_map<std::string, RuntimeParameterLayer>;
 
     std::vector<AssetRef<InxMaterial>> m_materials;
+    // Imported defaults are derived data. An explicit assignment or a material
+    // edit becomes an authored override; untouched defaults follow reimport.
+    std::vector<std::optional<uint64_t>> m_embeddedMaterialVersions;
     std::vector<std::unordered_map<std::string, MaterialProperty>> m_persistentParameters;
     std::vector<RuntimeParameterOwners> m_runtimeParameters;
     std::vector<std::shared_ptr<const RendererParameterBlock>> m_parameterBlocks;

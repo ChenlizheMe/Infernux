@@ -323,12 +323,20 @@ void VerifySparseMaterialUsesLinkedShaderDefaults()
     smoothness.byteAlignment = 4;
     artifact.properties.push_back(smoothness);
 
+    const uint64_t authoredVersion = material.GetAuthoredVersion();
     assert(material.SynchronizeShaderPropertyDefaults(artifact));
+    assert(material.GetAuthoredVersion() == authoredVersion);
     assert(std::get<glm::vec4>(material.GetProperty("baseColor")->value) == glm::vec4(0.25f, 0.5f, 0.75f, 1.0f));
     assert(std::get<float>(material.GetProperty("smoothness")->value) == 0.5f);
     const uint64_t synchronizedVersion = material.GetVersion();
     assert(!material.SynchronizeShaderPropertyDefaults(artifact));
     assert(material.GetVersion() == synchronizedVersion);
+    material.ApplyShaderRenderMeta("", "", "", "", 2000, "", "", "0.3");
+    assert(material.GetAuthoredVersion() == authoredVersion);
+    material.InvalidateTextureAssets("unused", false);
+    assert(material.GetAuthoredVersion() == authoredVersion);
+    material.SetColor("baseColor", glm::vec4(1.0f));
+    assert(material.GetAuthoredVersion() > authoredVersion);
 }
 
 void VerifyColorVectorShaderTransitionsPreserveAuthoredValues()

@@ -278,6 +278,8 @@ class InxMaterial
     }
     void SetName(const std::string &name)
     {
+        if (m_name != name)
+            ++m_version;
         m_name = name;
     }
 
@@ -473,6 +475,8 @@ class InxMaterial
     }
     void SetPassTag(const std::string &tag)
     {
+        if (m_passTag != tag)
+            ++m_version;
         m_passTag = tag;
     }
 
@@ -500,20 +504,22 @@ class InxMaterial
     /// @brief Set the entire override bitmask.
     void SetRenderStateOverrides(uint32_t overrides)
     {
+        if (m_renderStateOverrides != overrides)
+            ++m_version;
         m_renderStateOverrides = overrides;
     }
 
     /// @brief Mark a specific render-state field as user-overridden.
     void MarkOverride(RenderStateOverride flag)
     {
-        m_renderStateOverrides |= static_cast<uint32_t>(flag);
+        SetRenderStateOverrides(m_renderStateOverrides | static_cast<uint32_t>(flag));
         m_pipelineDirty = true;
     }
 
     /// @brief Clear a specific override (revert to shader default on next apply).
     void ClearOverride(RenderStateOverride flag)
     {
-        m_renderStateOverrides &= ~static_cast<uint32_t>(flag);
+        SetRenderStateOverrides(m_renderStateOverrides & ~static_cast<uint32_t>(flag));
         m_pipelineDirty = true;
     }
 
@@ -840,6 +846,9 @@ class InxMaterial
     // Monotonic version counter — bumped on every property/state change.
     // Python Inspector can poll this instead of full serialize() each frame.
     uint64_t m_version = 0;
+    // Shader-default hydration and texture publication invalidate GPU caches,
+    // but do not turn an imported default into an authored material override.
+    uint64_t m_derivedVersion = 0;
 
     // True when the backing .mat file has been deleted from disk.
     // All holders should release or ignore a deleted material.
@@ -923,6 +932,10 @@ class InxMaterial
     [[nodiscard]] uint64_t GetVersion() const
     {
         return m_version;
+    }
+    [[nodiscard]] uint64_t GetAuthoredVersion() const
+    {
+        return m_version - m_derivedVersion;
     }
 };
 

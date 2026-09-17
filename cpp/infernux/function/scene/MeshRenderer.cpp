@@ -16,6 +16,7 @@
 #include <limits>
 #include <nlohmann/json.hpp>
 #include <set>
+#include <type_traits>
 
 using json = nlohmann::json;
 
@@ -626,6 +627,7 @@ void MeshRenderer::ClearMeshAsset()
         AssetDependencyGraph::Instance().RemoveRuntimeDependency(GetInstanceGuid(), m_meshAsset.GetGuid());
 
     m_meshAsset.Clear();
+    m_embeddedMaterialVersions.clear();
     m_meshBufferDirty = true;
     m_useInlineMesh = false;
     m_inlineVertices.clear();
@@ -684,6 +686,8 @@ void MeshRenderer::SetMaterial(uint32_t slot, std::shared_ptr<InxMaterial> mater
     if (slot >= m_materials.size())
         m_materials.resize(slot + 1);
     EnsureParameterSlot(slot);
+    m_embeddedMaterialVersions.resize(m_materials.size());
+    m_embeddedMaterialVersions[slot].reset();
 
     auto &ref = m_materials[slot];
     auto oldMat = ref.Get();
@@ -710,6 +714,8 @@ void MeshRenderer::SetMaterial(uint32_t slot, const std::string &guid)
     if (slot >= m_materials.size())
         m_materials.resize(slot + 1);
     EnsureParameterSlot(slot);
+    m_embeddedMaterialVersions.resize(m_materials.size());
+    m_embeddedMaterialVersions[slot].reset();
 
     auto &ref = m_materials[slot];
     const std::string oldGuid = ref.GetGuid();
@@ -736,6 +742,7 @@ void MeshRenderer::SetMaterials(const std::vector<std::string> &guids)
     }
 
     m_materials.resize(guids.size());
+    m_embeddedMaterialVersions.assign(guids.size(), std::nullopt);
     m_persistentParameters.resize(guids.size());
     m_runtimeParameters.resize(guids.size());
     m_parameterBlocks.resize(guids.size());
@@ -763,6 +770,7 @@ void MeshRenderer::SetMaterialSlotCount(uint32_t count)
             graph.RemoveRuntimeDependency(GetInstanceGuid(), m_materials[i].GetGuid());
     }
     m_materials.resize(count);
+    m_embeddedMaterialVersions.resize(count);
     m_persistentParameters.resize(count);
     m_runtimeParameters.resize(count);
     m_parameterBlocks.resize(count);
@@ -1055,10 +1063,7 @@ void MeshRenderer::SyncMaterialSlotsToMesh()
 
     // Single-submesh mode: only 1 material slot needed
     if (m_submeshIndex >= 0) {
-        if (m_materials.size() < 1) {
-            m_materials.resize(1);
-            EnsureParameterSlot(0);
-        }
+        SetMaterialSlotCount(1);
         ApplyEmbeddedMaterialsFromMesh(mesh);
         return;
     }
@@ -1083,13 +1088,28 @@ void MeshRenderer::SyncMaterialSlotsToMesh()
     ApplyEmbeddedMaterialsFromMesh(mesh);
 }
 
+bool MeshRenderer::IsUnmodifiedEmbeddedMaterial(size_t slot) const
+{
+    if (slot >= m_embeddedMaterialVersions.size() || !m_embeddedMaterialVersions[slot] || m_materials[slot].HasGuid())
+        return false;
+    const auto material = m_materials[slot].Get();
+    return material && material->GetAuthoredVersion() == *m_embeddedMaterialVersions[slot];
+}
+
 void MeshRenderer::ApplyEmbeddedMaterialsFromMesh(const std::shared_ptr<InxMesh> &mesh)
 {
     if (!mesh || m_materials.empty())
         return;
+    m_embeddedMaterialVersions.resize(m_materials.size());
     const auto &slotData = mesh->GetMaterialSlotData();
-    if (slotData.empty())
+    if (slotData.empty()) {
+        for (size_t slot = 0; slot < m_materials.size(); ++slot) {
+            if (IsUnmodifiedEmbeddedMaterial(slot))
+                m_materials[slot].Clear();
+        }
+        m_embeddedMaterialVersions.assign(m_materials.size(), std::nullopt);
         return;
+    }
     auto defaultMaterial = AssetRegistry::Instance().GetBuiltinMaterial("DefaultLit");
     if (!defaultMaterial)
         defaultMaterial = InxMaterial::CreateDefaultLit();
@@ -1118,26 +1138,50 @@ void MeshRenderer::ApplyEmbeddedMaterialsFromMesh(const std::shared_ptr<InxMesh>
     const size_t count = std::min(m_materials.size(), sourceSlots.size());
     for (size_t rendererSlot = 0; rendererSlot < count; ++rendererSlot) {
         auto &reference = m_materials[rendererSlot];
-        if (reference.HasGuid() || reference.Get())
+        const bool importedDefault = IsUnmodifiedEmbeddedMaterial(rendererSlot);
+        if (!importedDefault && (reference.HasGuid() || reference.Get())) {
+            m_embeddedMaterialVersions[rendererSlot].reset();
             continue;
+        }
         const uint32_t sourceSlot = sourceSlots[rendererSlot];
-        if (sourceSlot >= slotData.size())
+        if (sourceSlot >= slotData.size()) {
+            reference.Clear();
+            m_embeddedMaterialVersions[rendererSlot].reset();
             continue;
+        }
+        const MaterialSlotData &data = slotData[sourceSlot];
+        const std::string name = sourceSlot < slotNames.size() && !slotNames[sourceSlot].empty()
+                                     ? slotNames[sourceSlot]
+                                     : "EmbeddedMaterial_" + std::to_string(sourceSlot);
+        const std::string sourcePath = mesh->GetFilePath().empty()
+                                           ? std::string()
+                                           : mesh->GetFilePath() + "::submat:" + std::to_string(sourceSlot);
+        if (importedDefault) {
+            const auto current = reference.Get();
+            const auto matches = [&current](const char *key, const auto &expected) {
+                const auto *property = current->GetProperty(key);
+                const auto *value =
+                    property ? std::get_if<std::decay_t<decltype(expected)>>(&property->value) : nullptr;
+                return value && *value == expected;
+            };
+            // Geometry-only publications must not allocate fresh materials or
+            // invalidate their pipelines every frame.
+            if (current->GetName() == name && current->GetFilePath() == sourcePath &&
+                matches("baseColor", data.baseColor) && matches("emissionColor", data.emissionColor) &&
+                matches("metallic", data.metallic) && matches("smoothness", data.smoothness))
+                continue;
+        }
         auto material = defaultMaterial->Clone();
         if (!material)
             continue;
-        const MaterialSlotData &data = slotData[sourceSlot];
         material->SetColor("baseColor", data.baseColor);
         material->SetColor("emissionColor", data.emissionColor);
         material->SetFloat("metallic", data.metallic);
         material->SetFloat("smoothness", data.smoothness);
-        if (sourceSlot < slotNames.size() && !slotNames[sourceSlot].empty())
-            material->SetName(slotNames[sourceSlot]);
-        else
-            material->SetName("EmbeddedMaterial_" + std::to_string(sourceSlot));
-        if (!mesh->GetFilePath().empty())
-            material->SetFilePath(mesh->GetFilePath() + "::submat:" + std::to_string(sourceSlot));
+        material->SetName(name);
+        material->SetFilePath(sourcePath);
         SetMaterial(static_cast<uint32_t>(rendererSlot), std::move(material));
+        m_embeddedMaterialVersions[rendererSlot] = reference.Get()->GetAuthoredVersion();
     }
 }
 
@@ -1288,7 +1332,12 @@ nlohmann::json MeshRenderer::SerializeDocument() const
     // GUID-backed slots remain compact strings. Runtime material snapshots are
     // embedded as typed documents instead of nested JSON text.
     json materialsJson = json::array();
-    for (const auto &ref : m_materials) {
+    for (size_t slot = 0; slot < m_materials.size(); ++slot) {
+        const auto &ref = m_materials[slot];
+        if (IsUnmodifiedEmbeddedMaterial(slot)) {
+            materialsJson.push_back(nullptr);
+            continue;
+        }
         const auto &guid = ref.GetGuid();
         if (!guid.empty()) {
             materialsJson.push_back(guid);
@@ -1719,6 +1768,7 @@ bool MeshRenderer::DeserializeDocument(const nlohmann::json &j)
                 graph.RemoveRuntimeDependency(GetInstanceGuid(), ref.GetGuid());
         }
         m_materials = std::move(stagedMaterials);
+        m_embeddedMaterialVersions.assign(m_materials.size(), std::nullopt);
         for (const auto &reference : m_materials) {
             if (reference.HasGuid())
                 graph.AddRuntimeDependency(GetInstanceGuid(), reference.GetGuid());
@@ -1853,6 +1903,7 @@ std::unique_ptr<Component> MeshRenderer::Clone() const
     }
     // Materials
     clone->m_materials = m_materials;
+    clone->m_embeddedMaterialVersions = m_embeddedMaterialVersions;
     clone->m_persistentParameters = m_persistentParameters;
     clone->m_runtimeParameters.clear();
     clone->m_runtimeParameterWriteRevision = 0;
