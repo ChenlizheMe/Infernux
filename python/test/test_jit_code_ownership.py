@@ -18,7 +18,8 @@ from Infernux._jit_kernels import _compiled_cache
 
 
 def _engine(dispatcher):
-    return dispatcher.targetctx.codegen()._engine._ee
+    result = next(reversed(dispatcher.overloads.values()))
+    return result.library._codegen._engine._ee
 
 
 @pytest.fixture
@@ -165,7 +166,7 @@ def test_disk_loaded_code_is_owned_and_retires(tmp_path, disposed_engines):
             assert identity in disposed_engines
 
 
-def test_specializations_share_owner_and_exception_does_not_retire_it(disposed_engines):
+def test_specializations_own_distinct_code_and_runtime_exception_does_not_retire_it(disposed_engines):
     @compile_cpu
     def function(value):
         if value < 0:
@@ -173,16 +174,20 @@ def test_specializations_share_owner_and_exception_does_not_retire_it(disposed_e
         return value * 2
 
     assert function(2) == 4
+    integer = weakref.ref(_engine(function))
     assert function(2.5) == 5.0
     reference = weakref.ref(_engine(function))
+    assert integer() is not reference()
     assert len(function.overloads) == 2
     with pytest.raises(ValueError, match="authored"):
         function(-1)
     assert function(3) == 6
     assert reference() is not None
+    assert integer() is not None
     del function
     gc.collect()
     assert reference() is None
+    assert integer() is None
 
 
 def test_authored_helpers_do_not_accumulate_in_global_codegen(disposed_engines):
@@ -298,3 +303,109 @@ def test_concurrent_new_types_share_specialization_capacity(monkeypatch):
     assert results.count(3) == 1
     assert results.count("capacity") == 1
     assert len(function.signatures) == 1
+
+
+@pytest.mark.parametrize("failure", [RuntimeError, KeyboardInterrupt])
+def test_unpublished_native_code_is_closed_without_invalidating_old_specializations(
+    monkeypatch, failure,
+):
+    from Infernux._jit_backend import _OwnedDispatcher
+
+    @compile_cpu
+    def increment(values):
+        values[0] += 1
+
+    original = np.zeros(2, dtype=np.int64)
+    increment(original)
+    published = _engine(increment)
+    original_context = increment.targetctx
+    abandoned = []
+
+    def reject(self, result):
+        abandoned.append(result.library._codegen._engine._ee)
+        raise failure("rejected before publication")
+
+    monkeypatch.setattr(_OwnedDispatcher, "add_overload", reject)
+    candidate = np.zeros(2, dtype=np.float64)
+    held_errors = []
+    for _ in range(3):
+        with pytest.raises(failure, match="before publication") as caught:
+            increment(candidate)
+        held_errors.append(caught.value)
+        np.testing.assert_array_equal(candidate, [0, 0])
+        assert len(increment.overloads) == 1
+        assert increment.targetctx is original_context
+        assert increment.targetdescr.target_context is original_context
+        # Keep both exception context and engine references alive: native
+        # disposal must not depend on a future garbage-collection cycle.
+        assert all(item.closed for item in abandoned)
+        assert not published.closed
+        increment(original)
+    assert original[0] == 4
+
+
+def test_cache_write_failure_after_publication_keeps_callable_code(monkeypatch):
+    @compile_cpu
+    def increment(values):
+        values[0] += 1
+
+    def fail_save(*args):
+        raise OSError("cache write failed")
+
+    monkeypatch.setattr(increment._cache, "save_overload", fail_save)
+    values = np.zeros(2)
+    with pytest.raises(OSError, match="cache write failed"):
+        increment(values)
+    assert len(increment.overloads) == 1
+    assert not _engine(increment).closed
+    assert values[0] == 0  # Compiler failure did not execute the user function.
+    increment(values)
+    assert values[0] == 1
+
+
+def test_cached_specialization_rejection_closes_only_unpublished_engine(tmp_path, monkeypatch):
+    from Infernux._jit_backend import _OwnedDispatcher
+    from Infernux._jit_kernels import _compile_njit
+    from Infernux.engine.project_context import using_project_root
+
+    def increment(values):
+        values[0] += 1
+
+    with using_project_root(str(tmp_path)):
+        seed = _compile_njit(increment, {"cache": True})
+        seed(np.zeros(2, dtype=np.float64))
+        del seed
+        gc.collect()
+        native = _compile_njit(increment, {"cache": True})
+        existing = np.zeros(2, dtype=np.int64)
+        native(existing)
+        original = _engine(native)
+        abandoned = []
+
+        def reject(self, result):
+            abandoned.append(result.library._codegen._engine._ee)
+            raise RuntimeError("cached code rejected")
+
+        monkeypatch.setattr(_OwnedDispatcher, "add_overload", reject)
+        candidate = np.zeros(2, dtype=np.float64)
+        with pytest.raises(RuntimeError, match="cached code rejected"):
+            native(candidate)
+        assert sum(native.stats.cache_hits.values()) == 1
+        assert abandoned[0].closed
+        assert not original.closed
+        assert candidate[0] == 0
+        native(existing)
+        assert existing[0] == 2
+
+
+@pytest.mark.parametrize("first", [int, np.int32])
+def test_recursive_typing_restores_enclosing_compilation_context(first):
+    namespace = {"compile_cpu": compile_cpu, "__name__": __name__}
+    exec("@compile_cpu\ndef factorial(n):\n"
+         "    if n < 2: return 1\n"
+         "    return n * factorial(n - 1)\n", namespace)
+    native = namespace["factorial"]
+    assert native(first(6)) == 720
+    assert native(7) == 5040
+    assert native(np.int32(5)) == 120
+    assert native(8) == 40320

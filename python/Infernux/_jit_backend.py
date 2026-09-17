@@ -1,4 +1,4 @@
-"""CPU code ownership: authored dispatchers own their LLVM execution engines.
+"""CPU code ownership: published specializations own their LLVM engines.
 
 Numba's shared MCJIT never removes modules. Keep its typing registry and NRT,
 but retire authored machine code with its last dispatcher/linking consumer.
@@ -7,9 +7,10 @@ Do not call remove_module on a live MCJIT engine.
 
 import dis
 import inspect
+import weakref
 from types import CodeType, FunctionType
 
-from numba.core import compiler, sigutils, types
+from numba.core import compiler, sigutils, types, utils
 from numba.core.compiler_lock import global_compiler_lock
 from numba.core.cpu import CPUContext
 from numba.core.registry import CPUDispatcher, CPUTarget, cpu_target
@@ -20,6 +21,19 @@ _MAX_CPU_SPECIALIZATIONS = 64
 
 
 class _OwnedContext(CPUContext):
+    _compiling_owner = None
+
+    def call_unresolved(self, builder, name, signature, args):
+        # A recursive call can promote int32 to an already-published int64
+        # specialization. Its definition now lives in a different engine;
+        # link that specific library instead of assuming a global symbol pool.
+        owner = self._compiling_owner() if self._compiling_owner is not None else None
+        result = owner.overloads.get(tuple(signature.args)) if owner is not None else None
+        if result is not None and result.fndesc.mangled_name == name:
+            self.active_code_library.add_linking_library(result.library)
+            return self.call_internal(builder, result.fndesc, signature, args)
+        return super().call_unresolved(builder, name, signature, args)
+
     def get_function(self, function, signature, _firstcall=True):
         if isinstance(function, types.Dispatcher):
             result = function.dispatcher.get_compile_result(signature)
@@ -40,7 +54,10 @@ class _OwnedTarget(CPUTarget):
         super().__init__("cpu")
         # Process-wide NRT must not retain the first authored private engine.
         rtsys.initialize(cpu_target.target_context)
-        self._owned_context = _OwnedContext(cpu_target.typing_context, "cpu")
+        # Outside compilation only target metadata is needed. Do not create
+        # an unused private MCJIT engine for every dispatcher; authored code
+        # is always lowered in compile()'s private context below.
+        self._owned_context = cpu_target.target_context
 
     @property
     def typing_context(self):
@@ -59,16 +76,51 @@ class _OwnedDispatcher(CPUDispatcher):
         options = {**(targetoptions or {}), "nopython": True}
         super().__init__(py_func, locals, options, pipeline_class)
 
+    def _make_finalizer(self):
+        # Numba's default finalizer captures one target context. Each of our
+        # specializations instead owns the context that actually compiled it.
+        overloads = self.overloads
+
+        def finalize():
+            if utils.shutting_down():
+                return
+            for result in overloads.values():
+                context = result.target_context
+                if result.entry_point in context._defns:
+                    context.remove_user_function(result.entry_point)
+
+        return finalize
+
     @global_compiler_lock
     def compile(self, sig):
         args, _ = sigutils.normalize_signature(sig)
-        if tuple(args) not in self.overloads and len(self.overloads) >= _MAX_CPU_SPECIALIZATIONS:
+        args = tuple(args)
+        if args in self.overloads:
+            return super().compile(sig)
+        if len(self.overloads) >= _MAX_CPU_SPECIALIZATIONS:
             raise RuntimeError(
                 f"CPU JIT specialization limit ({_MAX_CPU_SPECIALIZATIONS}) exceeded "
                 f"for '{self.py_func.__qualname__}'; the new signature was not compiled: {tuple(args)}. "
                 "Existing signatures remain valid."
             )
-        return super().compile(sig)
+        # Do not add provisional code to an engine containing callable code.
+        # This also isolates object files loaded from the on-disk cache.
+        previous = self.targetctx
+        stage = _OwnedContext(self.typingctx, "cpu")
+        stage._compiling_owner = weakref.ref(self)
+        self.targetctx = self.targetdescr._owned_context = stage
+        try:
+            return super().compile(sig)
+        except BaseException:
+            # A cache-write error can occur *after* add_overload published the
+            # entry point. It is then live and must not be closed here.
+            if args not in self.overloads:
+                stage.codegen()._engine._ee.close()
+            raise
+        finally:
+            # Restore the enclosing context, including for recursive typing.
+            # Successful results retain their own context/library/engine.
+            self.targetctx = self.targetdescr._owned_context = previous
 
 
 def _global_names(code):

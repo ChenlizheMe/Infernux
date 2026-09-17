@@ -219,7 +219,9 @@ def compiler_fingerprint(fn: Any, options: MutableMapping[str, Any] | None = Non
         runtime_versions["numba_threading_layer"] = "uninitialized"
 
     payload = {
-        "compiler_revision": 2,
+        # Revision 3 makes recursive cross-specialization dependencies explicit
+        # in each independently owned code library, including cached objects.
+        "compiler_revision": 3,
         "module": getattr(fn, "__module__", ""),
         "qualname": getattr(fn, "__qualname__", getattr(fn, "__name__", "")),
         "source_ast": source_ast,

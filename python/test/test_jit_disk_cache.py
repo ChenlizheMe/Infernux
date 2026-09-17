@@ -50,3 +50,29 @@ def test_disk_cache_uses_published_constants_and_reuses_unchanged_revision(
     assert run(2) == {"value": 6, "hits": 0}
     assert run(5) == {"value": 15, "hits": 0}
     assert run(5) == {"value": 15, "hits": 1}
+
+
+def test_recursive_specialization_cache_does_not_require_another_live_engine(tmp_path):
+    environment = {**os.environ, "NUMBA_CACHE_DIR": str(tmp_path / "compiled"),
+                   "PYTHONDONTWRITEBYTECODE": "1"}
+    fixture_dir = Path(__file__).with_name("fixtures")
+    script = (
+        "import json, sys, numpy as np; sys.path.insert(0, sys.argv[1]); "
+        "from jit_cache_recursive import factorial; "
+        "first = factorial(7) if sys.argv[2] == 'warm' else None; "
+        "result = factorial(np.int32(6)); "
+        "print(json.dumps({'value':result, 'hits':sum(factorial.stats.cache_hits.values()), "
+        "'signatures':len(factorial.overloads)}))"
+    )
+
+    def run(mode):
+        result = subprocess.run(
+            [sys.executable, "-c", script, str(fixture_dir), mode],
+            env=environment, text=True, capture_output=True, timeout=60, check=True,
+        )
+        return json.loads(result.stdout.strip().splitlines()[-1])
+
+    assert run("warm") == {"value": 720, "hits": 0, "signatures": 2}
+    # A fresh process only requests int32: the linked int64 implementation
+    # must be contained in its object file, not an old process's MCJIT pool.
+    assert run("cached") == {"value": 720, "hits": 1, "signatures": 1}

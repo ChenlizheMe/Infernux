@@ -58,6 +58,14 @@ line, compatible with Numba 0.67. Its `infernux-0.49` branch adds pass-manager
 ownership fixes and per-execution-engine mapped-memory counters. It remains a
 CPU dependency, not a GPU backend or an installable engine plugin.
 
+Authored CPU specializations compile in separate private execution contexts.
+Unpublished code is closed on compilation failure, while already-published
+entry points remain valid even if a subsequent disk-cache write fails. The
+code-ownership suite covers linked consumers, recursive type promotion,
+cached objects, cancellation and retirement. Use each compile result's code
+library when measuring its execution engine; the dispatcher's idle target
+context contains shared target metadata, not its published machine code.
+
 Install the developer packaging tools (`setuptools`, `wheel`, and `delvewheel`
 on Windows or `auditwheel` on Linux). Make the matching toolchain's dependency
 DLLs discoverable on `PATH` on Windows. With LLVM 22's CMake package available in `CMAKE_PREFIX_PATH`, build the pinned
