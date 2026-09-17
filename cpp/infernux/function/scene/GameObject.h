@@ -166,6 +166,22 @@ class GameObject
         m_prefabRoot = isRoot;
     }
 
+    /// Asset-local node identity, independent of scene ID, name and sibling order.
+    [[nodiscard]] uint64_t GetPrefabSourceID() const
+    {
+        return m_prefabSourceId;
+    }
+    void SetPrefabSourceID(uint64_t id)
+    {
+        m_prefabSourceId = id;
+    }
+
+    /// Reserve an identity for a document transaction without creating a live object.
+    static uint64_t ReserveDocumentID()
+    {
+        return GenerateID();
+    }
+
     /// @brief True if this object belongs to a prefab instance (has a non-empty prefab GUID)
     [[nodiscard]] bool IsPrefabInstance() const
     {
@@ -524,6 +540,7 @@ class GameObject
 
     std::string m_prefabGuid;  // GUID of source .prefab asset
     bool m_prefabRoot = false; // true only on the root of a prefab instance
+    uint64_t m_prefabSourceId = 0;
 };
 
 } // namespace infernux

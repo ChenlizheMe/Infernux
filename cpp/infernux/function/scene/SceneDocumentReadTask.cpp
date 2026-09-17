@@ -98,8 +98,8 @@ void ValidateObject(const json &object, const std::string &path, std::unordered_
                     std::unordered_map<uint64_t, std::string> &componentTypes)
 {
     static const std::unordered_set<std::string> allowed = {
-        "name",        "id",          "active",    "is_static",  "tag",      "layer",
-        "prefab_guid", "prefab_root", "transform", "components", "children",
+        "name",        "id",          "active",           "is_static", "tag",        "layer",
+        "prefab_guid", "prefab_root", "prefab_source_id", "transform", "components", "children",
     };
     RequireExactFields(object, allowed, path);
     if (!object.contains("name") || !object["name"].is_string() || !object.contains("active") ||
@@ -116,6 +116,8 @@ void ValidateObject(const json &object, const std::string &path, std::unordered_
         throw std::invalid_argument(path + ".prefab_guid must be a string");
     if (object.contains("prefab_root") && !object["prefab_root"].is_boolean())
         throw std::invalid_argument(path + ".prefab_root must be boolean");
+    if (object.contains("prefab_source_id"))
+        RequirePositiveId(object, "prefab_source_id", path);
 
     const uint64_t objectId = RequirePositiveId(object, "id", path);
     if (!objectIds.insert(objectId).second)

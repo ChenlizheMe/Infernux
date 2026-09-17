@@ -5,7 +5,18 @@ import copy
 import pytest
 
 from Infernux.components.value_document import make_component_ref, make_game_object_ref
-from Infernux.engine.prefab_overrides import _diff_components, _same_value
+from Infernux.engine.prefab_overrides import _diff_components, _same_value, _three_way_merge_prefab
+
+
+def test_authored_list_fields_are_not_mistaken_for_prefab_child_identity():
+    base = [{"local_id": 1, "value": 10}, {"local_id": 1, "value": 20}]
+    local = copy.deepcopy(base)
+    remote = copy.deepcopy(base)
+    local[1]["value"] = 21
+    remote[0]["value"] = 11
+    assert _three_way_merge_prefab(base, local, remote) == [
+        {"local_id": 1, "value": 11}, {"local_id": 1, "value": 21},
+    ]
 
 
 @pytest.mark.parametrize("reference", [make_game_object_ref, lambda value: make_component_ref(value, "Target")])

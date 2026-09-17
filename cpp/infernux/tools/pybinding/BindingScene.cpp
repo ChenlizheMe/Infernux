@@ -1847,6 +1847,17 @@ void RegisterSceneBindings(py::module_ &m)
                       "GUID of the source .prefab asset (empty = not a prefab instance)")
         .def_property("prefab_root", &GameObject::IsPrefabRoot, &GameObject::SetPrefabRoot,
                       "True if this object is the root of a prefab instance hierarchy")
+        .def_property("prefab_source_id", &GameObject::GetPrefabSourceID, &GameObject::SetPrefabSourceID,
+                      "Stable asset-local Prefab node identity (zero for unlinked nodes)")
+        .def_static("_reserve_document_ids",
+                    [](size_t objectCount, size_t componentCount) {
+                        std::vector<uint64_t> objects(objectCount), components(componentCount);
+                        for (auto &id : objects)
+                            id = GameObject::ReserveDocumentID();
+                        for (auto &id : components)
+                            id = Component::ReserveDocumentID();
+                        return py::make_tuple(objects, components);
+                    })
         .def_property_readonly("is_prefab_instance", &GameObject::IsPrefabInstance,
                                "True if this object belongs to a prefab instance")
         .def("compare_tag", &GameObject::CompareTag, py::arg("tag"),

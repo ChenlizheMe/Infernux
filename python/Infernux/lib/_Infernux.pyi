@@ -1274,6 +1274,10 @@ class GameObject:
     is_static: bool
     prefab_guid: str
     prefab_root: bool
+    prefab_source_id: int
+
+    @staticmethod
+    def _reserve_document_ids(object_count: int, component_count: int) -> tuple[list[int], list[int]]: ...
 
     @property
     def active_self(self) -> bool: ...

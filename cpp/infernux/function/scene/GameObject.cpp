@@ -1072,6 +1072,9 @@ nlohmann::json GameObject::SerializeDocument() const
     if (m_prefabRoot) {
         j["prefab_root"] = true;
     }
+    if (m_prefabSourceId != 0) {
+        j["prefab_source_id"] = m_prefabSourceId;
+    }
 
     j["transform"] = m_transform.SerializeDocument();
 
@@ -1297,6 +1300,7 @@ bool GameObject::DeserializeDocument(const nlohmann::json &j, bool preserveDocum
         m_layer = stagedRoot->m_layer;
         m_prefabGuid = std::move(stagedRoot->m_prefabGuid);
         m_prefabRoot = stagedRoot->m_prefabRoot;
+        m_prefabSourceId = stagedRoot->m_prefabSourceId;
         m_parent = targetParent;
         m_scene = targetScene;
 
@@ -1362,6 +1366,7 @@ std::unique_ptr<GameObject> GameObject::CloneGraph(Scene *scene,
     obj->m_layer = m_layer;
     obj->m_prefabGuid = m_prefabGuid;
     obj->m_prefabRoot = m_prefabRoot;
+    obj->m_prefabSourceId = m_prefabSourceId;
 
     // Clone transform data (ECS store copy, no JSON)
     m_transform.CloneDataTo(obj->m_transform);

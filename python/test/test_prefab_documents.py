@@ -56,6 +56,159 @@ class _PrefabAwakeRecorder(InxComponent):
         type(self)._placements.append(self.game_object.transform.position.x)
 
 
+@pytest.mark.parametrize("operation", ["revert", "apply"])
+def test_prefab_operations_preserve_inbound_scene_references(scene, tmp_path, operation):
+    source = scene.create_game_object("ReferencedPrefab")
+    child = scene.create_game_object("Target")
+    child.set_parent(source)
+    child.add_py_component(_PrefabTargetComponent())
+    path = tmp_path / "inbound.prefab"
+    assert save_prefab(source, str(path))
+    instance = instantiate_prefab(file_path=str(path), guid="inbound-guid", scene=scene)
+    target = instance.get_child(0)
+    target_id = target.id
+    watcher = scene.create_game_object("Watcher")
+    references = _PrefabReferenceComponent()
+    watcher.add_py_component(references)
+    references.target_object = GameObjectRef(target)
+    references.target_component = ComponentRef(go_id=target_id, component_type="_PrefabTargetComponent")
+    assert references.target_object is target
+    assert references.target_component is target.get_py_component(_PrefabTargetComponent)
+    target.get_py_component(_PrefabTargetComponent).value = 28
+    command = (build_prefab_revert_command if operation == "revert" else build_prefab_apply_command)(
+        instance, str(path),
+    )
+    for action in (command.execute, command.undo, command.redo):
+        action()
+        assert instance.get_child(0).id == target_id
+        assert references.target_object is instance.get_child(0)
+        assert references.target_component is instance.get_child(0).get_py_component(_PrefabTargetComponent)
+
+
+def test_prefab_renamed_siblings_keep_source_identity_and_inbound_references(scene, tmp_path):
+    source = scene.create_game_object("Pair")
+    for value in (11, 22):
+        child = scene.create_game_object("Same Name")
+        child.set_parent(source)
+        component = _PrefabTargetComponent()
+        component.value = value
+        child.add_py_component(component)
+    path = tmp_path / "pair.prefab"
+    assert save_prefab(source, str(path))
+    instance = instantiate_prefab(file_path=str(path), guid="pair-guid", scene=scene)
+    first, second = instance.get_children()
+    first_id, second_id = first.id, second.id
+    first.name = "Renamed"
+    first.set_parent(None)
+    first.set_parent(instance)
+    assert [child.id for child in instance.get_children()] == [second_id, first_id]
+    changes = compute_overrides(instance, str(path))
+    assert any(change.key == "name" for change in changes)
+    assert not any(change.key.startswith(("added_child:", "removed_child:")) for change in changes)
+    assert not any(".data" in change.key for change in changes)
+    command = build_prefab_revert_command(instance, str(path))
+    command.execute()
+    assert [child.id for child in instance.get_children()] == [first_id, second_id]
+    assert [child.get_py_component(_PrefabTargetComponent).value for child in instance.get_children()] == [11, 22]
+    command.undo()
+    assert [child.id for child in instance.get_children()] == [second_id, first_id]
+    assert instance.get_child(1).name == "Renamed"
+    command.redo()
+    assert [child.id for child in instance.get_children()] == [first_id, second_id]
+
+
+def test_prefab_revert_new_nodes_reserve_stable_redo_ids(scene, tmp_path):
+    source = scene.create_game_object("Expandable")
+    child = scene.create_game_object("Child")
+    child.set_parent(source)
+    child.add_py_component(_PrefabTargetComponent())
+    path = tmp_path / "expandable.prefab"
+    assert save_prefab(source, str(path))
+    instance = instantiate_prefab(file_path=str(path), guid="expandable-guid", scene=scene)
+    scene.destroy_game_object(instance.get_child(0))
+    scene.process_pending_destroys()
+    command = build_prefab_revert_command(instance, str(path))
+    command.execute()
+    restored_id = instance.get_child(0).id
+    component_id = instance.get_child(0).get_py_component(_PrefabTargetComponent).component_id
+    command.undo()
+    assert not instance.get_children()
+    command.redo()
+    assert instance.get_child(0).id == restored_id
+    assert instance.get_child(0).get_py_component(_PrefabTargetComponent).component_id == component_id
+
+
+def test_prefab_source_identity_survives_clone_document_and_unpack(scene, tmp_path):
+    from Infernux.engine.component_restore import deserialize_game_object_document_transactionally
+    from Infernux.engine.undo import PrefabUnpackCommand
+
+    source = scene.create_game_object("SourceIdentity")
+    path = tmp_path / "identity.prefab"
+    assert save_prefab(source, str(path))
+    instance = instantiate_prefab(file_path=str(path), guid="identity-guid", scene=scene)
+    source_id = instance.prefab_source_id
+    assert source_id > 0
+    clone = clone_game_object_transactionally(scene, instance)
+    assert clone.id != instance.id
+    assert clone.prefab_source_id == source_id
+    document = serialize_game_object_document_authoritatively(instance)
+    instance.prefab_source_id = 0
+    assert deserialize_game_object_document_transactionally(instance, document, preserve_document_ids=True)
+    assert instance.prefab_source_id == source_id
+    command = PrefabUnpackCommand(instance.id)
+    command.execute()
+    assert instance.prefab_source_id == 0
+    command.undo()
+    assert instance.prefab_source_id == source_id
+
+
+def test_apply_renamed_child_propagates_without_replacing_scene_identity(scene, tmp_path):
+    source = scene.create_game_object("Renamable")
+    child = scene.create_game_object("Before")
+    child.set_parent(source)
+    child.add_component("BoxCollider")
+    path = tmp_path / "rename.prefab"
+    assert save_prefab(source, str(path))
+    first = instantiate_prefab(file_path=str(path), guid="rename-guid", scene=scene)
+    second = instantiate_prefab(file_path=str(path), guid="rename-guid", scene=scene)
+    first_id, second_id = first.get_child(0).id, second.get_child(0).id
+    source_id = first.get_child(0).prefab_source_id
+    first.get_child(0).name = "After"
+    command = build_prefab_apply_command(first, str(path))
+    command.execute()
+    assert [first.get_child(0).id, second.get_child(0).id] == [first_id, second_id]
+    assert second.get_child(0).name == "After"
+    assert _read_prefab_document(str(path))["root_object"]["children"][0]["local_id"] == source_id
+    command.undo()
+    assert [first.get_child(0).id, second.get_child(0).id] == [first_id, second_id]
+    assert second.get_child(0).name == "Before"
+    command.redo()
+    assert [first.get_child(0).id, second.get_child(0).id] == [first_id, second_id]
+    assert second.get_child(0).name == "After"
+
+@pytest.mark.parametrize("invalid", [0, -1, True, "7"])
+def test_invalid_prefab_source_identity_does_not_replace_live_object(scene, invalid):
+    root = scene.create_game_object("ValidatedIdentity")
+    root.prefab_source_id = 17
+    document = serialize_game_object_document_authoritatively(root)
+    document["prefab_source_id"] = invalid
+    assert not root._commit_document(document, True)
+    assert root.prefab_source_id == 17
+
+
+def test_reserving_document_ids_does_not_publish_live_objects(scene):
+    from Infernux.lib import GameObject
+
+    before = {obj.id for obj in scene.get_all_objects()}
+    objects, components = GameObject._reserve_document_ids(3, 4)
+    assert len(set(objects)) == 3
+    assert len(set(components)) == 4
+    assert all(value > 0 for value in objects + components)
+    assert not before.intersection(objects)
+    assert {obj.id for obj in scene.get_all_objects()} == before
+    assert scene.create_game_object("Next").id > max(objects)
+
+
 def test_prefab_awakens_only_the_configured_scene_instance(scene, tmp_path):
     source = scene.create_game_object("AwakePrefab")
     source.add_py_component(_PrefabAwakeRecorder())
@@ -172,6 +325,7 @@ def test_link_created_prefab_source_stamps_root_and_children(scene, tmp_path):
         def get_guid_from_path(path):
             return "checkpoint-guid" if path == prefab_path else ""
 
+    assert save_prefab(root, prefab_path)
     assert _link_created_prefab_source(root, prefab_path, AssetDatabase()) is True
     assert root.prefab_guid == "checkpoint-guid"
     assert root.prefab_root is True

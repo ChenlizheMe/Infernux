@@ -24,7 +24,7 @@ All paths below are pytest modules. Run one with `python -m pytest PATH -q -ra`.
 | Game export, dependency closure and sealed content | `python/test/test_game_builder_asset_closure.py`, `python/test/test_player_build_preflight.py`, `python/test/test_desktop_build_exporter.py`, `python/test/test_web_exporter_plugin.py`, `python/test/test_multiplatform_player_fixture.py` | Native Python; four-target Player CI |
 | Plugin import, catalog, updates and documentation | `python/test/test_plugin_catalog_refresh.py`, `python/test/test_plugin_updates.py`, `python/test/test_plugin_panel_content.py` | Native Python |
 | Preload-owned editor commands, shortcuts and profile isolation | `python/test/test_editor_contribution_lifetime.py`, `python/test/test_inxpackage_plugins.py`, `python/test/test_preferences_commands.py` | Native Python; visible editor hot reload and removal |
-| Prefab reference overrides, data-only caching and reversible authoring | `python/test/test_prefab_documents.py`, `python/test/test_prefab_override_identity.py`, `python/test/test_prefab_command_service.py` | Native Python; visible editor create/instantiate/Apply/Revert/Undo/Redo |
+| Prefab source identity, inbound references, data-only caching and reversible authoring | `python/test/test_prefab_documents.py`, `python/test/test_prefab_override_identity.py`, `python/test/test_prefab_command_service.py` | Native Python; visible editor create/instantiate/rename/Apply/Revert/Undo/Redo |
 
 `infernux.editor_shortcut_input` (CTest) exercises actual ImGui keyboard edges:
 custom function keys and modifier combinations, palette/find/navigation chords,

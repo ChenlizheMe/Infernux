@@ -212,7 +212,7 @@ def test_create_from_object_delegates_to_project_asset_service(
     assert len(project_assets.create_calls) == 1
     call = project_assets.create_calls[0]
     assert call["destination"] == resolved_path(str(assets))
-    assert call["before"] == ((source.id, "", False),)
+    assert call["before"] == ((source.id, "", False, 0),)
     assert call["origin"] is ActionOrigin.AUTOMATION
 
 

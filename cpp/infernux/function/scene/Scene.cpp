@@ -876,8 +876,8 @@ std::unique_ptr<GameObject> Scene::BuildGameObjectFromJsonImpl(const json &objJs
     }
 
     static const std::unordered_set<std::string> allowedObjectFields = {
-        "name",        "id",          "active",    "is_static",  "tag",      "layer",
-        "prefab_guid", "prefab_root", "transform", "components", "children",
+        "name",        "id",          "active",           "is_static", "tag",        "layer",
+        "prefab_guid", "prefab_root", "prefab_source_id", "transform", "components", "children",
     };
     for (const auto &[key, value] : objJson.items()) {
         (void)value;
@@ -915,6 +915,11 @@ std::unique_ptr<GameObject> Scene::BuildGameObjectFromJsonImpl(const json &objJs
         INXLOG_ERROR("Scene object prefab_root must be a boolean");
         return fail();
     }
+    if (objJson.contains("prefab_source_id") &&
+        (!objJson["prefab_source_id"].is_number_integer() || objJson["prefab_source_id"] <= 0)) {
+        INXLOG_ERROR("Scene object prefab_source_id must be a positive integer");
+        return fail();
+    }
 
     std::string name = objJson["name"].get<std::string>();
     auto obj = std::make_unique<GameObject>(name);
@@ -933,6 +938,7 @@ std::unique_ptr<GameObject> Scene::BuildGameObjectFromJsonImpl(const json &objJs
     if (objJson.contains("prefab_guid"))
         obj->m_prefabGuid = objJson["prefab_guid"].get<std::string>();
     obj->m_prefabRoot = objJson.value("prefab_root", false);
+    obj->m_prefabSourceId = objJson.value("prefab_source_id", uint64_t{0});
 
     // Transform
     if (!objJson.contains("transform") || !objJson["transform"].is_object()) {

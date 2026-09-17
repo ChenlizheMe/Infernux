@@ -107,8 +107,7 @@ def _load_prefab_template_payload(file_path: str, resolved_guid: str):
 
     root_obj_data = copy.deepcopy(prefab_data["root_object"])
     _strip_prefab_runtime_fields(root_obj_data)
-    if resolved_guid:
-        _stamp_prefab_guid(root_obj_data, resolved_guid)
+    _stamp_prefab_guid(root_obj_data, resolved_guid)
 
     return root_obj_data
 
@@ -157,7 +156,16 @@ def _strip_prefab_runtime_fields(obj_data: dict):
     has_local_ids = ["local_id" in node for node, _location in nodes]
     if all(has_runtime_ids) and not any(has_local_ids):
         runtime_to_local = {}
-        for local_id, (node, location) in enumerate(nodes, start=1):
+        source_ids = [node.get("prefab_source_id", 0) for node, _ in nodes]
+        linked_ids = [value for value in source_ids if value]
+        if len(linked_ids) != len(set(linked_ids)):
+            raise PrefabDocumentError("ObjectGraph contains duplicate prefab source identities")
+        next_local_id = max(linked_ids, default=0) + 1
+        for node, location in nodes:
+            local_id = node.get("prefab_source_id", 0)
+            if not local_id:
+                local_id = next_local_id
+                next_local_id += 1
             runtime_id = node["id"]
             if type(runtime_id) is not int or runtime_id <= 0 or runtime_id in runtime_to_local:
                 raise PrefabDocumentError(f"{location}.id must be a unique positive integer")
@@ -258,8 +266,8 @@ def serialize_prefab_document(
                     root_transform[key] = copy.deepcopy(template_transform[key])
 
     # Strip linkage and convert runtime IDs/references to prefab-local IDs.
-    _strip_prefab_fields(go_data)
     _strip_prefab_runtime_fields(go_data)
+    _strip_prefab_fields(go_data)
 
     prefab_data = {
         "root_object": go_data,
@@ -389,6 +397,7 @@ def instantiate_prefab(file_path: str = None, guid: str = None,
 def _stamp_prefab_guid(obj_data: dict, guid: str, is_root: bool = True):
     """Recursively stamp prefab_guid (and prefab_root on root) into JSON data."""
     obj_data["prefab_guid"] = guid
+    obj_data["prefab_source_id"] = obj_data["local_id"]
     if is_root:
         obj_data["prefab_root"] = True
     for child in obj_data.get("children", []):
@@ -408,15 +417,17 @@ def _link_created_prefab_source(game_object, file_path: str, asset_database) -> 
         Debug.log_warning(f"Created prefab has no AssetDatabase GUID: {file_path}")
         return False
 
-    def _link(obj, is_root: bool) -> None:
+    document = _read_prefab_document(file_path)["root_object"]
+
+    def _link(obj, node, is_root: bool) -> None:
         obj.prefab_guid = guid
         obj.prefab_root = is_root
-        children = list(obj.get_children()) if hasattr(obj, "get_children") else []
-        for child in children:
-            _link(child, False)
+        obj.prefab_source_id = node["local_id"]
+        for child, source in zip(obj.get_children(), node["children"], strict=True):
+            _link(child, source, False)
 
     try:
-        _link(game_object, True)
+        _link(game_object, document, True)
     except Exception as exc:
         Debug.log_warning(f"Failed to link created prefab source: {exc}")
         return False
@@ -428,5 +439,6 @@ def _strip_prefab_fields(obj_data: dict):
     """Recursively remove prefab_guid/prefab_root so the template is clean."""
     obj_data.pop("prefab_guid", None)
     obj_data.pop("prefab_root", None)
+    obj_data.pop("prefab_source_id", None)
     for child in obj_data.get("children", []):
         _strip_prefab_fields(child)

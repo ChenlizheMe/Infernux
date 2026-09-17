@@ -216,6 +216,12 @@ class Component
     /// @brief Set component ID (used during deserialization to restore ID)
     void SetComponentID(uint64_t id);
 
+    /// Reserve an identity before preflighting a document transaction.
+    static uint64_t ReserveDocumentID()
+    {
+        return GenerateComponentID();
+    }
+
     /// @brief Get a string key suitable for AssetDependencyGraph registration.
     /// Only called by MeshRenderer when asset edges change — NOT on the hot creation path.
     [[nodiscard]] std::string GetInstanceGuid() const

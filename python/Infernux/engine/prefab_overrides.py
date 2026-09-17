@@ -5,11 +5,8 @@ Compares a live prefab instance hierarchy against its source .prefab asset
 to compute property-level overrides. Supports apply (write overrides back
 to the .prefab file) and revert (reset instance to match the prefab).
 
-Identification strategy:
-  Nodes are matched by *name-path* (e.g. "Root/Child/GrandChild") since
-  instance GameObjects get fresh IDs on instantiation. Name-path is stable
-  as long as the user does not rename nodes — an acceptable trade-off for
-  this iteration of the override system.
+Nodes retain their asset-local source identity independently of scene IDs.
+Name/occurrence matching is limited to legacy instances without source IDs.
 """
 
 import copy
@@ -49,7 +46,7 @@ class _PrefabApplyState:
 
 _SKIP_KEYS = frozenset({
     "id", "local_id", "children", "components",
-    "transform", "prefab_guid", "prefab_root",
+    "transform", "prefab_guid", "prefab_root", "prefab_source_id",
 })
 
 _TRANSFORM_KEYS = ("position", "rotation", "scale")
@@ -318,7 +315,7 @@ def revert_overrides(instance_obj, prefab_path: str,
             instance_obj,
             prefab_data,
             asset_database,
-            preserve_document_ids=False,
+            preserve_document_ids=True,
         ):
             Debug.log_error("Failed to apply prefab document during revert.")
             return False
@@ -361,20 +358,15 @@ def _build_reverted_prefab_document(instance_obj, prefab_path: str):
     # Root position and rotation place the instance in its scene. They are
     # not prefab overrides, so preserve them while reverting prefab-owned
     # scale and every child transform.
-    try:
-        current_document = _serialize_obj(instance_obj)
-        current_transform = current_document.get("transform")
-    except Exception:
-        current_document = None
-        current_transform = None
+    current_document = _serialize_obj(instance_obj)
+    current_transform = current_document.get("transform")
 
     # Keep prefab linkage
     prefab_guid = getattr(instance_obj, 'prefab_guid', '')
 
     # Stamp prefab linkage into the template
     from Infernux.engine.prefab_manager import _stamp_prefab_guid
-    if prefab_guid:
-        _stamp_prefab_guid(prefab_data, prefab_guid, is_root=True)
+    _stamp_prefab_guid(prefab_data, prefab_guid, is_root=True)
 
     # These fields describe this scene instance, not the prefab asset. Revert
     # must not rename the placed object or change its scene organization.
@@ -391,7 +383,63 @@ def _build_reverted_prefab_document(instance_obj, prefab_path: str):
                 if key in current_transform:
                     prefab_transform[key] = copy.deepcopy(current_transform[key])
 
-    return prefab_data
+    return _project_prefab_document(prefab_data, current_document)
+
+
+def _object_nodes(root):
+    yield root
+    for child in root["children"]:
+        yield from _object_nodes(child)
+
+
+def _project_prefab_document(source, current):
+    """Resolve source identities to scene identities before ObjectGraph preflight.
+
+    Unchanged nodes/components retain IDs; new records reserve IDs from the
+    native allocators without publishing temporary objects or firing lifecycle.
+    The returned document is reused by Redo, not allocated again on each replay.
+    """
+    from Infernux.lib import GameObject
+    from Infernux.engine.component_restore import _remap_local_reference_document
+
+    runtime_to_local = {0: 0}
+    _match_object_ids(current, source, runtime_to_local)
+    current_by_local = {
+        runtime_to_local[node["id"]]: node for node in _object_nodes(current)
+        if node["id"] in runtime_to_local
+    }
+    result = copy.deepcopy(source)
+    new_objects, new_components = [], []
+    local_to_runtime = {0: 0}
+    for node in _object_nodes(result):
+        old = current_by_local.get(node["local_id"])
+        if old is None:
+            new_objects.append(node)
+        else:
+            node["id"] = old["id"]
+            local_to_runtime[node["local_id"]] = old["id"]
+        pairs = [(node["transform"], old["transform"] if old else None)]
+        pairs.extend(_match_records(node["components"], old["components"] if old else [], "type_id"))
+        for component, previous in pairs:
+            if component is None:
+                continue
+            if previous is None:
+                new_components.append(component)
+            else:
+                component["component_id"] = previous["component_id"]
+                if "instance_guid" in previous:
+                    component["instance_guid"] = previous["instance_guid"]
+    object_ids, component_ids = GameObject._reserve_document_ids(len(new_objects), len(new_components))
+    for node, object_id in zip(new_objects, object_ids, strict=True):
+        node["id"] = object_id
+        local_to_runtime[node["local_id"]] = object_id
+    for component, component_id in zip(new_components, component_ids, strict=True):
+        component["component_id"] = component_id
+    for node in _object_nodes(result):
+        node.pop("local_id")
+        for component in node["components"]:
+            component["data"] = _remap_local_reference_document(component["data"], local_to_runtime, "prefab")
+    return result
 
 
 def _snapshot_linked_instances(instance_root, prefab_guid: str):
@@ -417,15 +465,15 @@ def _snapshot_linked_instances(instance_root, prefab_guid: str):
                 f"Failed to snapshot linked prefab instance '{getattr(obj, 'name', '')}'"
             )
         local_document = copy.deepcopy(runtime_document)
-        _strip_prefab_fields(local_document)
         _strip_prefab_runtime_fields(local_document)
+        _strip_prefab_fields(local_document)
         snapshots.append((obj, runtime_document, local_document))
     return snapshots
 
 
 _MERGE_IDENTITY_KEYS = frozenset({
-    "id", "local_id", "component_id", "instance_guid",
-    "prefab_guid", "prefab_root",
+    "id", "component_id", "instance_guid",
+    "prefab_guid", "prefab_root", "prefab_source_id",
 })
 _MISSING = object()
 
@@ -445,7 +493,7 @@ def _prefab_content_equal(left, right) -> bool:
     return left == right
 
 
-def _three_way_merge_prefab(base, local, remote):
+def _three_way_merge_prefab(base, local, remote, *, node_kind=None):
     """Merge one instance's old overrides onto an updated prefab document."""
     if _prefab_content_equal(local, base):
         return copy.deepcopy(remote)
@@ -468,12 +516,33 @@ def _three_way_merge_prefab(base, local, remote):
                 elif base_value is _MISSING:
                     value = local_value if local_value != remote_value else remote_value
                 else:
-                    value = _three_way_merge_prefab(base_value, local_value, remote_value)
+                    value = _three_way_merge_prefab(
+                        base_value, local_value, remote_value,
+                        node_kind="children" if node_kind == "object" and key == "children" else None,
+                    )
             if value is not _MISSING:
                 merged[key] = copy.deepcopy(value)
         return merged
 
     if isinstance(base, list) and isinstance(local, list) and isinstance(remote, list):
+        if node_kind == "children":
+            base_nodes = {item["local_id"]: item for item in base}
+            local_nodes = {item["local_id"]: item for item in local}
+            remote_nodes = {item["local_id"]: item for item in remote}
+            merged = []
+            for source_id in dict.fromkeys([*remote_nodes, *local_nodes]):
+                before = base_nodes.get(source_id)
+                ours = local_nodes.get(source_id)
+                theirs = remote_nodes.get(source_id)
+                if ours is None:
+                    if before is None and theirs is not None:
+                        merged.append(copy.deepcopy(theirs))
+                elif theirs is None:
+                    if before is None or not _prefab_content_equal(ours, before):
+                        merged.append(copy.deepcopy(ours))
+                else:
+                    merged.append(_three_way_merge_prefab(before, ours, theirs, node_kind="object"))
+            return merged
         if len(base) == len(local) == len(remote):
             return [
                 _three_way_merge_prefab(base_item, local_item, remote_item)
@@ -502,7 +571,7 @@ def _propagate_applied_prefab(base_root: dict, updated_root: dict, snapshots,
     prepared_updates = []
     try:
         for obj, runtime_document, local_document in snapshots:
-            merged = _three_way_merge_prefab(base_root, local_document, updated_root)
+            merged = _three_way_merge_prefab(base_root, local_document, updated_root, node_kind="object")
             _stamp_prefab_guid(merged, prefab_guid, is_root=True)
 
             for key in _ROOT_INSTANCE_KEYS:
@@ -515,10 +584,11 @@ def _propagate_applied_prefab(base_root: dict, updated_root: dict, snapshots,
                     if key in runtime_transform:
                         merged_transform[key] = copy.deepcopy(runtime_transform[key])
 
+            merged = _project_prefab_document(merged, runtime_document)
             prepared = preflight_game_object_python_components(
                 merged,
                 asset_database,
-                preserve_document_ids=False,
+                preserve_document_ids=True,
                 reference_scene=obj.scene,
             )
             prepared_updates.append((obj, merged, prepared))
@@ -534,7 +604,7 @@ def _propagate_applied_prefab(base_root: dict, updated_root: dict, snapshots,
                 obj,
                 merged,
                 prepared,
-                preserve_document_ids=False,
+                preserve_document_ids=True,
             ):
                 raise RuntimeError("native ObjectGraph commit failed")
         except Exception as exc:
@@ -581,9 +651,27 @@ def _match_records(instances: list, sources: list, key: str):
 
 def _match_object_ids(instance: dict, prefab: dict, object_ids: dict):
     object_ids[instance["id"]] = prefab["local_id"]
+    if instance.get("prefab_source_id"):
+        sources = {node["local_id"] for node in _object_nodes(prefab)}
+        for node in _object_nodes(instance):
+            source_id = node.get("prefab_source_id", 0)
+            if source_id in sources:
+                object_ids[node["id"]] = source_id
+        return
     for child, source in _match_records(instance["children"], prefab["children"], "name"):
         if child is not None and source is not None:
             _match_object_ids(child, source, object_ids)
+
+
+def _match_child_nodes(instance, prefab):
+    if not instance.get("prefab_source_id"):
+        yield from _match_records(instance["children"], prefab["children"], "name")
+        return
+    sources = {child["local_id"]: child for child in prefab["children"]}
+    for child in instance["children"]:
+        yield child, sources.pop(child.get("prefab_source_id", 0), None)
+    for source in sources.values():
+        yield None, source
 
 
 def _same_value(instance, prefab, object_ids: dict) -> bool:
@@ -643,10 +731,13 @@ def _diff_node(instance: dict, prefab: dict, path: str,
         current_path, "components", out, object_ids,
     )
 
-    # Names are the current matching contract; duplicate names retain occurrence order.
-    i_children = instance.get("children", [])
-    p_children = prefab.get("children", [])
-    for i_child, p_child in _match_records(i_children, p_children, "name"):
+    if instance.get("prefab_source_id"):
+        source_order = [child["local_id"] for child in prefab["children"]]
+        current_order = [child.get("prefab_source_id", 0) for child in instance["children"]]
+        common = set(source_order) & set(current_order)
+        if [value for value in current_order if value in common] != [value for value in source_order if value in common]:
+            out.append(Override(current_path, "children.order", source_order, current_order))
+    for i_child, p_child in _match_child_nodes(instance, prefab):
         if i_child is None:
             child_name = p_child["name"]
             out.append(Override(current_path, f"removed_child:{child_name}", child_name, None))

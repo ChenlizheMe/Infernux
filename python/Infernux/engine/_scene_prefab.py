@@ -54,6 +54,7 @@ class ScenePrefabMixin:
         )
         from Infernux.engine.prefab_manager import (
             _read_prefab_document,
+            _stamp_prefab_guid,
             _strip_prefab_runtime_fields,
         )
         from Infernux.engine.interaction import SelectionService
@@ -71,6 +72,7 @@ class ScenePrefabMixin:
 
         root_obj_data = copy.deepcopy(prefab_data["root_object"])
         _strip_prefab_runtime_fields(root_obj_data)
+        _stamp_prefab_guid(root_obj_data, "")
         try:
             prepared_prefab = preflight_game_object_python_components(
                 root_obj_data,
