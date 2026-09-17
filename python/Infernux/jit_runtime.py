@@ -11,6 +11,7 @@ from __future__ import annotations
 from collections import OrderedDict
 from dataclasses import dataclass
 import ast
+import dis
 import hashlib
 import inspect
 import json
@@ -125,10 +126,9 @@ def _compiler_environment(fn: Any) -> list[dict[str, Any]]:
     functions = [fn]
     indices = {id(fn): 0}
     nodes = []
-    module = getattr(fn, "__module__", None)
 
     def capture(value):
-        if inspect.isfunction(value) and value.__module__ == module:
+        if inspect.isfunction(value):
             identity = id(value)
             if identity not in indices:
                 indices[identity] = len(functions)
@@ -139,6 +139,7 @@ def _compiler_environment(fn: Any) -> list[dict[str, Any]]:
     for function in functions:
         code = getattr(function, "__code__", None)
         closure = {}
+        cells = {}
         if code is not None:
             for name, cell in zip(code.co_freevars, function.__closure__ or ()):
                 try:
@@ -146,13 +147,35 @@ def _compiler_environment(fn: Any) -> list[dict[str, Any]]:
                 except ValueError:
                     closure[name] = {"empty_cell": True}
                 else:
+                    cells[name] = value
                     closure[name] = capture(value)
         globals_map = getattr(function, "__globals__", {})
+        # Module identity alone misses e.g. settings.GRAVITY. Track only static
+        # attribute chains the function reads, without walking entire modules
+        # or invoking user-defined attribute hooks during publication.
+        attributes = {}
+        value = None
+        path = ""
+        if code is not None:
+            for instruction in dis.get_instructions(code):
+                if instruction.opname == "LOAD_GLOBAL":
+                    path = instruction.argval
+                    value = globals_map.get(path)
+                elif instruction.opname == "LOAD_DEREF":
+                    path = instruction.argval
+                    value = cells.get(path)
+                elif instruction.opname in {"LOAD_ATTR", "LOAD_METHOD"} and inspect.ismodule(value):
+                    path += "." + instruction.argval
+                    value = vars(value).get(instruction.argval)
+                    attributes[path] = capture(value)
+                else:
+                    value = None
         nodes.append({
             "function": _stable_value(function),
             "defaults": _stable_value(getattr(function, "__defaults__", None)),
             "kwdefaults": _stable_value(getattr(function, "__kwdefaults__", None)),
             "closure": closure,
+            "module_attributes": attributes,
             "globals": {
                 name: capture(globals_map[name])
                 for name in (code.co_names if code is not None else ())

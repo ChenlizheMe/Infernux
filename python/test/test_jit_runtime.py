@@ -126,6 +126,37 @@ def test_compiler_fingerprint_tracks_helper_defaults():
     assert compiler_fingerprint(kernel) != first
 
 
+def test_compiler_fingerprint_tracks_only_referenced_module_attributes():
+    from types import ModuleType
+
+    settings = ModuleType("authored_settings")
+    settings.nested = ModuleType("authored_settings.nested")
+    settings.nested.scale = 2
+    settings.unused = 1
+    namespace = {"__name__": "authored_kernel", "settings": settings}
+    exec("def kernel(value): return value * settings.nested.scale", namespace)
+    function = namespace["kernel"]
+    before = compiler_fingerprint(function)
+    settings.unused = 99
+    assert compiler_fingerprint(function) == before
+    settings.nested.scale = 5
+    assert compiler_fingerprint(function) != before
+
+
+def test_compiler_fingerprint_tracks_module_captured_in_closure():
+    from types import ModuleType
+
+    settings = ModuleType("closed_settings")
+    settings.scale = 2
+
+    def kernel(value):
+        return value * settings.scale
+
+    before = compiler_fingerprint(kernel)
+    settings.scale = 5
+    assert compiler_fingerprint(kernel) != before
+
+
 def test_runtime_signature_separates_shape_dtype_layout_and_threads():
     small = np.zeros((16, 2), dtype=np.float32)
     large = np.zeros((100_000, 2), dtype=np.float32)

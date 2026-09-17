@@ -77,7 +77,7 @@ _NUITKA_COMPILED = "__compiled__" in globals()
 # ── Compilation cache ─────────────────────────────────────────────────
 # Prevents re-compiling the same @njit function when a user script module
 # is re-imported (e.g. scene loading calls load_all_components_from_file
-# multiple times for the same file).  Keyed by (co_filename, func_name, code_hash).
+# multiple times for the same file). Keyed by the complete publication identity.
 _compiled_cache = BoundedLRU(128)
 
 try:
@@ -111,10 +111,18 @@ def _compile_njit(fn, kwargs):
         if co_file and not os.path.isfile(co_file):
             kwargs = dict(kwargs)
             kwargs.pop("cache", None)
+    kwargs = dict(kwargs)
+    disk_cache = kwargs.pop("cache", False)
     if kwargs:
         compiled = _real_njit(**kwargs)(fn)
     else:
         compiled = _real_njit(fn)
+    if disk_cache:
+        from Infernux._jit_cache import PublicationCache
+
+        # Install before the first specialization. A changed dependency selects
+        # a new disk entry; never load stale code then attempt to repair it.
+        compiled._cache = PublicationCache(fn, compiler_fingerprint(fn, kwargs))
     compiled.py = fn
     return compiled
 
@@ -814,7 +822,7 @@ def njit(*args, **kwargs):
 
     # @njit  (bare decorator, no parentheses)
     if args and callable(args[0]):
-        return _compile_njit_cached(args[0], {})
+        return _compile_njit_cached(args[0], kwargs)
 
     # @njit(cache=True, ...)  (decorator factory)
     def _decorator(fn):

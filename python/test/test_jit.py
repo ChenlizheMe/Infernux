@@ -14,6 +14,15 @@ def _positive_value(value):
 
 
 class TestPublicJitCompile:
+    def test_direct_function_compile_preserves_explicit_backend_options(self):
+        def kernel(value):
+            return value * 2.0
+
+        compiled = jit.compile(kernel, auto_parallel=False, fastmath=True, boundscheck=True)
+        assert compiled.targetoptions["fastmath"] is True
+        assert compiled.targetoptions["boundscheck"] is True
+        assert compiled(3.0) == 6.0
+
     @pytest.mark.parametrize("auto_parallel", [False, True])
     def test_warm_calls_do_not_recompute_compiler_identity(self, monkeypatch, auto_parallel):
         @jit.compile(auto_parallel=auto_parallel)

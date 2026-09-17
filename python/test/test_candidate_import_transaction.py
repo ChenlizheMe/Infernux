@@ -797,6 +797,38 @@ def test_public_jit_module_is_lazily_admitted_for_declaration_decorators(
     assert "jit_candidate" not in sys.modules
 
 
+@pytest.mark.parametrize("auto_parallel", [False, True])
+def test_jit_candidate_publication_keeps_live_revision_until_commit(candidate_project, auto_parallel):
+    source = (
+        "from Infernux import jit\n"
+        "FACTOR = 2\n"
+        "def helper(value): return value * FACTOR\n"
+        f"@jit.compile(cache=True, auto_parallel={auto_parallel})\n"
+        "def scale(value): return helper(value)\n"
+    )
+    name = "jit_revision_candidate"
+    live = _broker(candidate_project, name, source)
+    candidate = None
+    try:
+        original = live.load(name)
+        live.commit()
+        assert original.scale(3) == 6
+        candidate = _broker(candidate_project, name, source.replace("FACTOR = 2", "FACTOR = 5"))
+        replacement = candidate.load(name)
+        assert replacement.scale(3) == 15
+        assert sys.modules[name] is original
+        assert original.scale(3) == 6
+        candidate.commit()
+        assert sys.modules[name].scale(3) == 15
+        candidate.rollback()
+        assert sys.modules[name] is original
+        assert original.scale(3) == 6
+    finally:
+        if candidate is not None:
+            candidate.rollback()
+        live.rollback()
+
+
 def test_missing_general_engine_submodule_is_not_lazily_imported(candidate_project):
     source = "import Infernux.not_a_public_candidate_capability\n"
     broker = _broker(candidate_project, "unknown_engine_candidate", source)

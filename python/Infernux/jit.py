@@ -186,6 +186,10 @@ def compile(fn=None, **options):
     strictly serial native function is required. The returned dispatcher keeps
     the existing diagnostics, warmup, bounded specialization, and no-replay
     execution rules.
+
+    Referenced globals and closures are compile-time values for a publication;
+    publish a new function revision to change them. ``cache=True`` also keys
+    disk entries by those dependencies, not just the source file timestamp.
     """
     if not JIT_AVAILABLE:
         if os.environ.get("INFERNUX_WEB_RUNTIME") == "1" or sys.platform == "emscripten":
