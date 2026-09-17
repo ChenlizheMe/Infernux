@@ -548,6 +548,10 @@ def _build_auto_parallel_dispatcher(
 
     @functools.wraps(fn)
     def dispatcher(*args, **kwargs):
+        if parallel_compiled is serial_compiled and parallel_policy != "required":
+            # HIR rejected parallel lowering. Numba still checks argument types;
+            # there is no execution-mode choice to hash, probe, or cache here.
+            return serial_compiled(*args, **kwargs)
         key = _signature(args, kwargs)
         decision = _alias_decision() if key[1] else decisions.get(key)
         if decision is None:
@@ -564,8 +568,6 @@ def _build_auto_parallel_dispatcher(
         return target(*args, **kwargs)
 
     def _warmup(*args, **kwargs):
-        key = _signature(args, kwargs)
-
         def _prepare_selected(target):
             # A dispatch decision is not compilation. Execute only on isolated
             # arguments so the first real interaction does not compile or see
@@ -573,6 +575,10 @@ def _build_auto_parallel_dispatcher(
             prepared_args, prepared_kwargs = clone_call_arguments(args, kwargs)
             target(*prepared_args, **prepared_kwargs)
 
+        if parallel_compiled is serial_compiled and parallel_policy != "required":
+            _prepare_selected(serial_compiled)
+            return
+        key = _signature(args, kwargs)
         if key[1]:
             decision = _alias_decision()
             _prepare_selected(serial_compiled)

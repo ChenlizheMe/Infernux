@@ -14,6 +14,61 @@ def _positive_value(value):
 
 
 class TestPublicJitCompile:
+    @pytest.mark.parametrize("auto_parallel", [False, True])
+    def test_same_vector_retains_aliasing_between_positional_and_keyword_arguments(self, auto_parallel):
+        import Infernux as inx
+
+        @jit.compile(auto_parallel=auto_parallel)
+        def modify(first, second):
+            first.x += 2.0
+            second.x *= 3.0
+            return first.x
+
+        value = inx.vector3(1.0, 2.0, 3.0)
+        assert modify(value, second=value) == pytest.approx(9.0)
+        assert value.x == pytest.approx(9.0)
+
+    def test_serial_warmup_does_not_mutate_author_data(self):
+        import Infernux as inx
+
+        @jit.compile(auto_parallel=False)
+        def modify(values):
+            values[0] += 4.0
+
+        source = np.zeros(3, dtype=np.float32)
+        storage = inx.buffer(shape=3, dtype=np.float32, device="cpu", data=source)
+        jit.warmup(modify, source)
+        jit.warmup(modify, storage)
+        np.testing.assert_array_equal(source, np.zeros(3))
+        np.testing.assert_array_equal(storage.numpy(), np.zeros(3))
+        modify(storage)
+        assert storage.numpy()[0] == pytest.approx(4.0)
+
+    @pytest.mark.parametrize("auto_parallel", [False, True])
+    def test_vector_partial_writes_survive_runtime_error_without_replay(self, auto_parallel):
+        import Infernux as inx
+
+        @jit.compile(auto_parallel=auto_parallel)
+        def modify(value):
+            value.x += 2.0
+            raise ValueError("authored failure")
+
+        value = inx.vector3(1.0, 2.0, 3.0)
+        with pytest.raises(ValueError, match="authored failure"):
+            modify(value)
+        assert value.x == pytest.approx(3.0)
+
+    def test_failed_serial_warmup_preserves_inputs_and_propagates_error(self):
+        @jit.compile(auto_parallel=False)
+        def fail(values):
+            values[0] += 1.0
+            raise ValueError("warmup failure")
+
+        values = np.zeros(2, dtype=np.float32)
+        with pytest.raises(ValueError, match="warmup failure"):
+            jit.warmup(fail, values)
+        np.testing.assert_array_equal(values, [0.0, 0.0])
+
     def test_legacy_numba_decorator_is_not_public(self):
         import Infernux as inx
 
@@ -62,6 +117,27 @@ class TestPublicJitCompile:
             return value + 1
 
         assert advance(2) == 3
+
+    def test_web_import_does_not_require_numpy(self, monkeypatch):
+        import builtins
+        import runpy
+        import sys
+        from types import SimpleNamespace
+
+        original_import = builtins.__import__
+
+        def import_without_numpy(name, *args, **kwargs):
+            if name == "numpy" or name.startswith("numpy."):
+                raise ModuleNotFoundError("NumPy is not bundled in this Web runtime")
+            return original_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", import_without_numpy)
+        monkeypatch.setitem(sys.modules, "Infernux._jit_kernels", SimpleNamespace(
+            JIT_AVAILABLE=False, njit=None, warmup=None))
+        monkeypatch.setenv("INFERNUX_WEB_RUNTIME", "1")
+        loaded = runpy.run_path(jit.__file__)
+        function = lambda value: value + 1
+        assert loaded["compile"](function) is function
 
     def test_cpu_buffer_is_direct_jit_storage_and_gpu_is_explicitly_rejected(self):
         import Infernux as inx
@@ -138,6 +214,32 @@ class TestPublicJitCompile:
 
 
 class TestAutoParallelNjit:
+    def test_serial_only_hir_skips_parallel_signature_and_device_probes(self, monkeypatch):
+        calls = []
+
+        def serial(values):
+            calls.append(values)
+            values[0] += 1
+
+        dispatcher = jit_kernels._build_auto_parallel_dispatcher(
+            serial, serial, serial, diagnostic="loop-carried dependency")
+
+        def unexpected(*args, **kwargs):
+            pytest.fail("serial-only HIR has no parallel decision to probe")
+
+        monkeypatch.setattr(jit_kernels, "runtime_signature", unexpected)
+        monkeypatch.setattr(jit_kernels, "_numba_thread_count", unexpected)
+        monkeypatch.setattr(jit_kernels, "array_arguments_alias", unexpected)
+        values = np.zeros(2)
+        dispatcher._infernux_warmup(values)
+        np.testing.assert_array_equal(values, [0, 0])
+        dispatcher(values)
+        np.testing.assert_array_equal(values, [1, 0])
+        assert len(calls) == 2 and calls[0] is not values and calls[1] is values
+        assert dispatcher.selected_mode == "serial"
+        assert dispatcher.last_diagnostic == "loop-carried dependency"
+        assert len(dispatcher.decisions) == 0
+
     def test_aliasing_cannot_reuse_an_independent_array_parallel_decision(self, monkeypatch):
         from Infernux.jit_runtime import StaticCostDecision
 

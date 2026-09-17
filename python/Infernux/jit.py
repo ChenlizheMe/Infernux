@@ -14,6 +14,7 @@ Numba remains an internal CPU code-generation backend; its decorator and
 """
 
 import inspect
+from functools import lru_cache
 import os
 import sys
 
@@ -51,19 +52,26 @@ def _register_numeric_helpers(function) -> None:
     register_dependencies(function)
 
 
-def _vector_record(value):
-    """Return a typed NumPy scalar for one public engine vector, if any."""
+@lru_cache(maxsize=1)
+def _vector_layouts():
+    """Native vector types and immutable layouts, independent of call data."""
     from Infernux.lib import Vector2, Vector3, vec4f
     import numpy as np
-
-    vector_types = (
-        (Vector2, _VECTOR_FIELDS[2]),
-        (Vector3, _VECTOR_FIELDS[3]),
-        (vec4f, _VECTOR_FIELDS[4]),
+    return tuple(
+        (vector_type, fields, np.dtype([(name, np.float32) for name in fields]))
+        for vector_type, fields in (
+            (Vector2, _VECTOR_FIELDS[2]),
+            (Vector3, _VECTOR_FIELDS[3]),
+            (vec4f, _VECTOR_FIELDS[4]),
+        )
     )
-    for vector_type, fields in vector_types:
+
+
+def _vector_record(value):
+    """Return a typed NumPy scalar for one public engine vector, if any."""
+    import numpy as np
+    for vector_type, fields, dtype in _vector_layouts():
         if isinstance(value, vector_type):
-            dtype = np.dtype([(name, np.float32) for name in fields])
             record = np.array(tuple(float(getattr(value, name)) for name in fields), dtype=dtype)[()]
             return record, value, vector_type, fields
     return None
@@ -87,6 +95,12 @@ class _CompiledCpuFunction:
         owners = {}
 
         def unwrap(value):
+            if value is None or isinstance(value, (bool, int, float, complex, np.number)):
+                return value
+            if isinstance(value, np.ndarray):
+                if value.dtype.hasobject:
+                    raise TypeError("inx.jit.compile does not accept NumPy object arrays")
+                return value
             if isinstance(value, Buffer):
                 value._require_open()
                 if value.device != "cpu":
@@ -94,18 +108,16 @@ class _CompiledCpuFunction:
                 array = value.numpy(copy=False)
                 owners[id(array)] = value
                 return array
+            identity = ("vector", id(value))
+            if identity in owners:
+                return owners[identity]
             vector = _vector_record(value)
             if vector is not None:
                 record, original, vector_type, fields = vector
                 owners.setdefault("vectors", []).append((record, original, vector_type, fields))
                 owners[("vector_type", record.dtype.str)] = (vector_type, fields)
+                owners[identity] = record
                 return record
-            if isinstance(value, np.ndarray):
-                if value.dtype.hasobject:
-                    raise TypeError("inx.jit.compile does not accept NumPy object arrays")
-                return value
-            if value is None or isinstance(value, (bool, int, float, complex, np.number)):
-                return value
             raise TypeError(
                 "inx.jit.compile arguments must be numeric scalars, NumPy arrays, "
                 "CPU inx.buffer values, or Infernux vectors"
@@ -146,8 +158,12 @@ class _CompiledCpuFunction:
 
     def __call__(self, *args, **kwargs):
         native_args, native_kwargs, owners = self._arguments(args, kwargs)
-        result = self._compiled(*native_args, **native_kwargs)
-        self._commit_vectors(owners)
+        try:
+            result = self._compiled(*native_args, **native_kwargs)
+        finally:
+            # As with ndarray writes, an authored exception does not roll back
+            # writes already performed by native code. Never replay the call.
+            self._commit_vectors(owners)
         return self._restore(result, owners)
 
     def _infernux_warmup(self, *args, **kwargs):
@@ -155,7 +171,9 @@ class _CompiledCpuFunction:
         prepare = getattr(self._compiled, "_infernux_warmup", None)
         if prepare is not None:
             return prepare(*native_args, **native_kwargs)
-        self._compiled(*native_args, **native_kwargs)
+        from Infernux.jit_runtime import clone_call_arguments
+        prepared_args, prepared_kwargs = clone_call_arguments(native_args, native_kwargs)
+        self._compiled(*prepared_args, **prepared_kwargs)
 
     def __getattr__(self, name):
         return getattr(self._compiled, name)
