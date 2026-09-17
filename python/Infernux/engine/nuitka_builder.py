@@ -11,9 +11,11 @@ Release-engineering compilation retains its own build cache.
 
 from __future__ import annotations
 
+import csv
 import hashlib
 import importlib
 import importlib.machinery
+import importlib.metadata
 import importlib.util
 import json
 import os
@@ -3350,11 +3352,55 @@ print(json.dumps({{
                     shutil.copytree(libs_src, libs_dst)
                 copied.append(f"{libs_name}")
 
+        self._copy_raw_dependency_licenses(Path(site_packages), dist_root, selected_packages)
+
         if copied:
             Debug.log_internal(
                 f"  JIT package injection: {', '.join(copied)}  "
                 f"(total {_time.perf_counter() - _t0:.1f}s)"
             )
+
+    @staticmethod
+    def _copy_raw_dependency_licenses(
+        site_packages: Path, dist_root: Path, packages: list[str],
+    ) -> None:
+        """Keep wheel notices with their payload, outside disposable dist-info.
+
+        PEP 639 stores licenses beside, not inside, import packages. Older
+        wheels place LICENSE/NOTICE files directly in dist-info. Read only
+        the builder's installed RECORD inventory; never import a dependency
+        or collect licenses from the editor's own environment.
+        """
+        for distribution in importlib.metadata.distributions(path=[str(site_packages)]):
+            # Distribution.files filters missing entries on Python 3.13.
+            # Read RECORD itself so a missing declared notice fails the build.
+            record = distribution.read_text("RECORD")
+            if record is None:
+                continue
+            files = tuple(importlib.metadata.PackagePath(row[0])
+                          for row in csv.reader(record.splitlines()) if row)
+            roots = {entry.parts[0] for entry in files if entry.parts}
+            owners = sorted(set(packages) & roots)
+            if not owners:
+                continue
+            for entry in files:
+                parts = entry.parts
+                if len(parts) < 2 or not parts[0].endswith(".dist-info"):
+                    continue
+                relative = Path(*parts[1:])
+                if not (
+                    parts[1] == "licenses"
+                    or (len(parts) == 2 and parts[1].upper().startswith(
+                        ("LICENSE", "COPYING", "NOTICE", "COPYRIGHT", "AUTHORS")
+                    ))
+                ):
+                    continue
+                if ".." in relative.parts:
+                    raise ValueError(f"Invalid dependency license path: {entry}")
+                source = Path(distribution.locate_file(entry))
+                destination = dist_root / owners[0] / "_licenses" / parts[0][:-10] / relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source, destination)
 
     @staticmethod
     def _compile_raw_python_sources(package_root: str | os.PathLike[str]) -> None:

@@ -74,6 +74,19 @@ first on `PYTHONPATH`, and run `python -m llvmlite.tests`, followed by:
 python -m pytest python/test/test_jit.py python/test/test_jit_hir.py python/test/test_jit_runtime.py python/test/test_jit_code_ownership.py python/test/test_jit_disk_cache.py python/test/test_compute.py -q
 ```
 
+Run the fork's source metadata checks from `external/llvmlite_for_infernux`
+with `python -m unittest discover -s tests -p test_infernux_packaging.py -v`.
+These cover release, post-tag and dirty local-version identifiers and keep
+the runtime version file aligned with its generator.
+
+The repaired wheel includes `NOTICE.runtime`, compression-library licenses,
+and (on Windows) the separate Microsoft runtime terms. Player assembly copies
+wheel `dist-info/licenses` and legacy top-level notices into the owning raw
+package's `_licenses` directory before packaging. They survive metadata
+cleanup and existing Runtime Module extraction filters. This path is covered
+by `python -m pytest python/test/test_game_builder.py -q`; use the actual wheel
+and native pack reader for release acceptance, not just the mocked pack tests.
+
 Record the installed `llvmlite.__file__` and version to distinguish the wheel
 from a source checkout or the unmodified environment dependency. Counters are
 mapped code/data pages, not total RSS or compiler IR memory. Dependency-channel

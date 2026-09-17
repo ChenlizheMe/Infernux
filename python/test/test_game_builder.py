@@ -2368,6 +2368,83 @@ def test_raw_runtime_package_injection_requires_one_complete_environment(
         builder._inject_jit_packages(str(tmp_path / "dist"))
 
 
+def _make_license_distribution(site, package="llvmlite", *, modern=True):
+    package_root = site / package
+    package_root.mkdir(parents=True)
+    (package_root / "__init__.py").write_text("value = 1\n", encoding="utf-8")
+    # Import name and distribution name need not be the same.
+    metadata = site / f"vendor_{package}-1.0.dist-info"
+    metadata.mkdir()
+    (metadata / "METADATA").write_text(
+        f"Metadata-Version: 2.4\nName: vendor-{package}\nVersion: 1.0\n", encoding="utf-8",
+    )
+    relative = "licenses/vendor/copyright.txt" if modern else "LICENSE.thirdparty"
+    notice = metadata / relative
+    notice.parent.mkdir(parents=True, exist_ok=True)
+    notice.write_text("Original copyright — 保留许可\n", encoding="utf-8")
+    (metadata / "RECORD").write_text(
+        f"{package}/__init__.py,,\n{metadata.name}/METADATA,,\n"
+        f"{metadata.name}/{relative},,\n", encoding="utf-8",
+    )
+    return notice, Path(package) / "_licenses" / f"vendor_{package}-1.0" / relative
+
+
+@pytest.mark.parametrize("modern", [False, True])
+def test_raw_dependency_licenses_come_from_selected_builder_distribution(tmp_path, modern):
+    site = tmp_path / "site"
+    notice, relative = _make_license_distribution(site, modern=modern)
+    _make_license_distribution(site, package="unrelated", modern=modern)
+    dist = tmp_path / "dist"
+
+    NuitkaBuilder._copy_raw_dependency_licenses(site, dist, ["llvmlite"])
+
+    assert (dist / relative).read_bytes() == notice.read_bytes()
+    assert not (dist / "unrelated").exists()
+    assert not list(dist.rglob("METADATA"))
+    assert not list(dist.rglob("RECORD"))
+    # Runtime cleanup must not discard the retained license with dist-info.
+    builder = object.__new__(GameBuilder)
+    builder._cleanup_dist(str(dist))
+    assert (dist / relative).read_bytes() == notice.read_bytes()
+
+
+def test_raw_package_injection_retains_external_wheel_licenses(tmp_path, monkeypatch):
+    site = tmp_path / "site"
+    notice, relative = _make_license_distribution(site)
+    builder = object.__new__(NuitkaBuilder)
+    builder._builder_python = sys.executable
+    builder.raw_copy_packages = ["llvmlite"]
+    monkeypatch.setattr(nuitka_builder_module, "_run_python", lambda *a, **kw:
+                        SimpleNamespace(stdout=json.dumps([str(site)])))
+    dist = tmp_path / "dist"
+
+    builder._inject_jit_packages(str(dist))
+
+    assert (dist / "llvmlite/__init__.pyc").is_file()
+    assert not (dist / "llvmlite/__init__.py").exists()
+    assert (dist / relative).read_bytes() == notice.read_bytes()
+
+
+def test_missing_recorded_license_fails_publication(tmp_path):
+    site = tmp_path / "site"
+    notice, _ = _make_license_distribution(site)
+    notice.unlink()
+    with pytest.raises(FileNotFoundError):
+        NuitkaBuilder._copy_raw_dependency_licenses(site, tmp_path / "dist", ["llvmlite"])
+
+
+def test_recorded_license_cannot_escape_its_distribution(tmp_path):
+    site = tmp_path / "site"
+    _make_license_distribution(site)
+    record = site / "vendor_llvmlite-1.0.dist-info/RECORD"
+    record.write_text(
+        "llvmlite/__init__.py,,\nvendor_llvmlite-1.0.dist-info/licenses/../../outside,,\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="Invalid dependency license path"):
+        NuitkaBuilder._copy_raw_dependency_licenses(site, tmp_path / "dist", ["llvmlite"])
+
+
 def test_packaged_parallel_runtime_module_round_trip(tmp_path, monkeypatch):
     module_root = tmp_path / "wheel" / "_runtime_modules"
     builder = object.__new__(NuitkaBuilder)
@@ -2382,6 +2459,9 @@ def test_packaged_parallel_runtime_module_round_trip(tmp_path, monkeypatch):
             (package_dir / "runtime.pyi").write_text(package, encoding="utf-8")
             (package_dir / "runtime.c").write_text(package, encoding="utf-8")
             (package_dir / "runtime.h").write_text(package, encoding="utf-8")
+            license_dir = package_dir / "_licenses" / package
+            license_dir.mkdir(parents=True)
+            (license_dir / "LICENSE").write_text(f"Copyright {package}", encoding="utf-8")
 
     monkeypatch.setattr(builder, "_inject_jit_packages", fake_inject)
     exported = builder.export_runtime_module(str(module_root))
@@ -2392,6 +2472,7 @@ def test_packaged_parallel_runtime_module_round_trip(tmp_path, monkeypatch):
     assert builder.install_runtime_module(str(dist)) is True
     assert (dist / "numba" / "runtime.pyc").read_bytes() == b"numba"
     assert (dist / "llvmlite" / "runtime.pyc").read_bytes() == b"llvmlite"
+    assert (dist / "llvmlite/_licenses/llvmlite/LICENSE").read_text() == "Copyright llvmlite"
     manifest = json.loads(
         (Path(exported) / "Player.inxmanifest").read_text(encoding="utf-8")
     )
@@ -2428,6 +2509,9 @@ def test_packaged_parallel_runtime_module_round_trip(tmp_path, monkeypatch):
         profile="release",
     ) is True
     assert read_manifest(release_dist / "Parallel.inxmod")["compression_profile"] == "release"
+    assert read_entry(
+        release_dist / "Parallel.inxmod", "llvmlite/_licenses/llvmlite/LICENSE",
+    ) == b"Copyright llvmlite"
 
 
 def test_runtime_engine_fingerprint_ignores_generated_meta(tmp_path, monkeypatch):
