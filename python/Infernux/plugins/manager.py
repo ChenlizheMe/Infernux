@@ -55,6 +55,7 @@ from .package import (
     current_meta_bytes,
     package_control_root,
     package_destination,
+    package_migration_error,
     validate_reference,
 )
 from .preload import PreloadManager
@@ -210,6 +211,13 @@ class PluginManager:
         self.official_catalog_error = ""
         self.python_requirement_error = ""
         self.registry = PluginRegistry(self.project_root)
+        for record in self.registry.installed():
+            reference = str(record["reference"])
+            migration = package_migration_error(reference)
+            if migration and bool(record.get("enabled", True)):
+                if not self.runtime:
+                    self.registry.set_enabled(reference, False)
+                Debug.log_warning(migration)
         self.preloads = PreloadManager(
             self.project_root,
             engine=engine,
@@ -1447,6 +1455,8 @@ class PluginManager:
         if record is None:
             raise KeyError(f"Plugin is not installed: {reference}")
         requested = bool(enabled)
+        if requested and (migration := package_migration_error(reference)):
+            raise RuntimeError(migration)
         if bool(record.get("enabled", True)) == requested:
             return self.states.get(reference.casefold()) or self.reload(reference)
         installed = self.registry.installed()
@@ -2136,6 +2146,9 @@ class PluginManager:
             == reference.casefold()
         )
         errors = [str(item.get("error", "")) for item in package_lifecycle if item.get("error")]
+        migration = package_migration_error(reference)
+        if migration:
+            errors.append(migration)
         enabled = bool(record.get("enabled", True))
         resources = {
             str(item.get("logical_path", "")): resolved_path(

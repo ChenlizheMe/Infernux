@@ -51,6 +51,18 @@ _SOURCE_FIELDS = frozenset(
 )
 
 
+def package_migration_error(reference: str) -> str:
+    """Explain a retired official package without touching its authored files."""
+    if str(reference).strip().casefold() == "infernux/taichi":
+        return (
+            "The legacy infernux/taichi plugin is retired. GPU compilation is "
+            "built into Infernux; use inx.buffer and inx.compute.kernel/launch. "
+            "The old plugin will not load. Its files are preserved; migrate any "
+            "custom code before uninstalling it."
+        )
+    return ""
+
+
 def package_control_guid(reference: str) -> str:
     """Return the generated control identity shared by package and Player exports."""
 

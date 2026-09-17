@@ -924,6 +924,78 @@ def test_startup_restores_requirements_before_single_preload_catchup(
         manager.shutdown()
 
 
+@pytest.mark.parametrize("runtime", [False, True])
+def test_retired_compute_plugin_never_imports_and_preserves_files(tmp_path, monkeypatch, runtime):
+    project = _project(tmp_path / "project")
+    root = _source(project / "Packages/infernux/taichi", "infernux/taichi")
+    script = root / "runtime" / "startup.py"
+    script.parent.mkdir()
+    script.write_text(
+        "raise AssertionError('Retired plugin must not be imported')\n"
+        "from Infernux.lifecycle import InxPreload\n"
+        "class Startup(InxPreload):\n"
+        "    def preload(self, context): pass\n",
+        encoding="utf-8",
+    )
+    (root / "user_changes.txt").write_text("keep my custom code", encoding="utf-8")
+    guid = "0123456789abcdef0123456789abcdef"
+    Path(str(script) + ".meta").write_text(_meta(guid), encoding="utf-8")
+    registry = PluginRegistry(str(project))
+    registry.record_install(
+        {"reference": "infernux/taichi", "version": "0.1.0.dev1"},
+        files=[{"guid": guid, "logical_path": "runtime/startup.py",
+                "path_hint": "Packages/infernux/taichi/runtime/startup.py"}],
+        control={"guid": "abcdef0123456789abcdef0123456789",
+                 "path_hint": "Packages/infernux/taichi/inx_package.json"}, enabled=True,
+        python_requirements=[{"name": "taichi", "requirement": "taichi==1.7.4"}],
+    )
+    before = {p.relative_to(root): p.read_bytes() for p in root.rglob("*") if p.is_file()}
+    warnings = []
+    monkeypatch.setattr(plugin_manager_module.Debug, "log_warning", warnings.append)
+    manager = PluginManager(str(project), runtime=runtime)
+    try:
+        states = manager.reload_all()
+        assert len(states) == 1
+        assert not states[0].loaded
+        assert "built into Infernux" in states[0].error
+        assert states[0].lifecycle == ()
+        assert manager.preloads.catch_up() == ()
+        with pytest.raises(RuntimeError, match="built into Infernux"):
+            manager.set_enabled("infernux/taichi", True)
+        assert len(warnings) == 1
+        if not runtime:
+            assert not registry.installed_record("infernux/taichi")["enabled"]
+            assert manager._reconcile_python_requirements_for_startup() == ()
+        else:
+            assert registry.installed_record("infernux/taichi")["enabled"]
+    finally:
+        manager.shutdown()
+    after = {p.relative_to(root): p.read_bytes() for p in root.rglob("*") if p.is_file()}
+    assert after == before
+    second = PluginManager(str(project), runtime=runtime)
+    second.shutdown()
+    assert len(warnings) == (2 if runtime else 1)
+
+
+def test_retired_compute_plugin_cannot_be_installed_again(tmp_path):
+    from Infernux.plugins.platform_support import plugin_install_block_reason
+
+    source = _source(tmp_path / "source", "infernux/taichi")
+    (source / "user.txt").write_text("keep", encoding="utf-8")
+    package = _export(source, tmp_path / "legacy.inxpkg")
+    project = _project(tmp_path / "project")
+    manager = PluginManager(str(project))
+    try:
+        assert "built into Infernux" in plugin_install_block_reason("INFERNUX/TAICHI")
+        assert plugin_install_block_reason("user/taichi") == ""
+        with pytest.raises(RuntimeError, match="built into Infernux"):
+            manager.install_package(str(package), install_dependencies=False)
+        assert manager.registry.installed() == ()
+        assert not (project / "Packages/infernux/taichi").exists()
+    finally:
+        manager.shutdown()
+
+
 def test_resources_root_inxpackages_are_mandatory_and_idempotent(tmp_path):
     source = _source(tmp_path / "source", "infernux/platform-fixture")
     (source / "runtime").mkdir()
