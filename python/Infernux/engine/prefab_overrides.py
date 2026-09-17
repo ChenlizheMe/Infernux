@@ -131,19 +131,21 @@ def apply_overrides_to_prefab(instance_obj, prefab_path: str,
         base_root=prefab_file["root_object"],
     )
 
+    # Resolve topology and preflight all instances before publishing the asset.
+    # A cross-author parent cycle must not leave a changed source on disk.
+    try:
+        prepared = _prepare_applied_prefab(
+            prefab_file["root_object"], updated_document["root_object"],
+            instance_snapshots, prefab_guid, asset_database,
+        )
+    except Exception as exc:
+        Debug.log_error(f"Failed to preflight prefab instance propagation: {exc}")
+        return False
     if not save_prefab_document(updated_document, prefab_path, asset_database=asset_database):
+        for _obj, _merged, plan in prepared:
+            plan.discard()
         return False
-
-    if not _propagate_applied_prefab(
-        prefab_file["root_object"],
-        updated_document["root_object"],
-        instance_snapshots,
-        prefab_guid,
-        asset_database,
-    ):
-        return False
-
-    return True
+    return _publish_applied_prefab(prepared)
 
 
 def build_prefab_apply_command(instance_obj, prefab_path: str,
@@ -609,6 +611,98 @@ def _three_way_merge_prefab(base, local, remote, *, node_kind=None):
     return copy.deepcopy(local)
 
 
+def _merge_prefab_hierarchy(base, local, remote):
+    """Merge node content and parent edges independently, keyed by source ID.
+
+    A reparent is an edge edit, not deletion plus creation. Components still
+    use the existing field/identity merge within their owning node.
+    """
+    from Infernux.engine.prefab_manager import PrefabDocumentError
+
+    def index(root):
+        nodes, parents, orders = {}, {}, {}
+
+        def visit(node, parent):
+            identity = node["local_id"]
+            nodes[identity] = {key: value for key, value in node.items() if key != "children"}
+            parents[identity] = parent
+            orders[identity] = [child["local_id"] for child in node["children"]]
+            for child in node["children"]:
+                visit(child, identity)
+
+        visit(root, None)
+        return nodes, parents, orders
+
+    before, old_parents, old_order = index(base)
+    ours, our_parents, our_order = index(local)
+    theirs, their_parents, their_order = index(remote)
+    merged, parents = {}, {}
+    for identity in dict.fromkeys([*theirs, *ours]):
+        old = before.get(identity)
+        own = ours.get(identity)
+        new = theirs.get(identity)
+        if own is None:
+            if old is not None:  # Explicit instance deletion.
+                continue
+            merged[identity] = copy.deepcopy(new)
+            parents[identity] = their_parents[identity]
+        elif new is None:
+            if old is not None and _prefab_content_equal(own, old) and our_parents[identity] == old_parents[identity]:
+                continue
+            merged[identity] = copy.deepcopy(own)
+            parents[identity] = our_parents[identity]
+        else:
+            merged[identity] = _three_way_merge_prefab(old, own, new, node_kind="object")
+            parents[identity] = _three_way_merge_prefab(
+                old_parents.get(identity), our_parents[identity], their_parents[identity],
+            )
+
+    # A retained local override also retains its author-owned ancestry. New
+    # source children below a locally deleted parent disappear with that parent.
+    pending = list(merged)
+    for identity in pending:
+        parent = parents[identity]
+        if parent is None or parent in merged:
+            continue
+        if parent in ours:
+            merged[parent] = copy.deepcopy(ours[parent])
+            parents[parent] = our_parents[parent]
+            pending.append(parent)
+
+    # Validate the selected edges before materializing a recursive hierarchy.
+    # Two independently valid edits can form A->B->A; reject that conflict,
+    # rather than guessing a parent or silently detaching either object.
+    resolved = {}
+    for identity in merged:
+        chain, visiting = [], set()
+        current = identity
+        while current in merged and current not in resolved:
+            if current in visiting:
+                raise PrefabDocumentError("Prefab parent edits form a cycle; resolve the hierarchy conflict before Apply")
+            visiting.add(current)
+            chain.append(current)
+            current = parents[current]
+        connected = current is None or resolved.get(current, False)
+        for member in chain:
+            resolved[member] = connected
+
+    children = defaultdict(list)
+    for identity, node in merged.items():
+        node["children"] = []
+        if resolved[identity] and parents[identity] is not None:
+            children[parents[identity]].append(identity)
+    for parent, identities in children.items():
+        old = old_order.get(parent, ())
+        own = our_order.get(parent, ())
+        new = their_order.get(parent, ())
+        common = set(old) & set(own)
+        reordered = [item for item in own if item in common] != [item for item in old if item in common]
+        order = dict.fromkeys([*(own if reordered else new), *(new if reordered else own), *identities])
+        selected = set(identities)
+        merged[parent]["children"] = [merged[item] for item in order if item in selected]
+    return merged[local["local_id"]]
+
+
 def _merge_prefab_instance_document(runtime_document, local_document, object_ids,
                                     updated_root, prefab_guid, *, base_root=None,
                                     component_ids=None, reserve_ids=None):
@@ -621,7 +715,7 @@ def _merge_prefab_instance_document(runtime_document, local_document, object_ids
     # overrides on first adoption rather than guessing what the old source was.
     baseline = base_root if base_root is not None else _prefab_baseline_root(runtime_document.get("prefab_source", updated_root))
     _validate_game_object_document(baseline)
-    merged = _three_way_merge_prefab(baseline, local_document, updated_root, node_kind="object")
+    merged = _merge_prefab_hierarchy(baseline, local_document, updated_root)
     source_ids = {node["local_id"] for node in _object_nodes(updated_root)}
     component_sources = {component["component_id"] for node in _object_nodes(updated_root) for component in node["components"]}
     _stamp_prefab_guid(merged, prefab_guid, is_root=True, source_ids=source_ids, component_source_ids=component_sources)
@@ -700,13 +794,16 @@ def resolve_scene_prefab_documents(document: dict, load_source) -> dict:
 
 def _propagate_applied_prefab(base_root: dict, updated_root: dict, snapshots,
                               prefab_guid: str, asset_database=None) -> bool:
-    if not snapshots:
-        return True
+    try:
+        prepared = _prepare_applied_prefab(base_root, updated_root, snapshots, prefab_guid, asset_database)
+    except Exception as exc:
+        Debug.log_error(f"Failed to preflight prefab instance propagation: {exc}")
+        return False
+    return _publish_applied_prefab(prepared)
 
-    from Infernux.engine.component_restore import (
-        commit_prepared_game_object_document,
-        preflight_game_object_python_components,
-    )
+
+def _prepare_applied_prefab(base_root, updated_root, snapshots, prefab_guid, asset_database):
+    from Infernux.engine.component_restore import preflight_game_object_python_components
     prepared_updates = []
     try:
         for obj, runtime_document, local_document, object_ids, component_ids in snapshots:
@@ -721,11 +818,15 @@ def _propagate_applied_prefab(base_root: dict, updated_root: dict, snapshots,
                 reference_scene=obj.scene,
             )
             prepared_updates.append((obj, merged, prepared))
-    except Exception as exc:
+    except Exception:
         for _obj, _merged, prepared in prepared_updates:
             prepared.discard()
-        Debug.log_error(f"Failed to preflight prefab instance propagation: {exc}")
-        return False
+        raise
+    return prepared_updates
+
+
+def _publish_applied_prefab(prepared_updates):
+    from Infernux.engine.component_restore import commit_prepared_game_object_document
 
     for index, (obj, merged, prepared) in enumerate(prepared_updates):
         try:

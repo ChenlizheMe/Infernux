@@ -99,5 +99,10 @@ Legacy type-only references remain readable and acquire an exact ID when saved.
 Copies, Prefab operations and scene loading remap internal references to the new
 identities; explicit references to objects outside the copied graph stay external.
 
+Reparenting a node inside a Prefab preserves its identity. Source hierarchy edits
+can merge with instance field edits, and an instance parent override survives
+unrelated source updates. If concurrent edits form a parent cycle, Apply rejects
+the conflict before changing the asset file; resolve the hierarchy and apply again.
+
 These APIs expose the implemented authoring workflow, not the whole Unity Editor
 SDK. Nested Prefab remains separate, unfinished work.
