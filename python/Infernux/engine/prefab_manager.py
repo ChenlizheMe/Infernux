@@ -13,7 +13,6 @@ from Infernux.debug import Debug
 from Infernux.engine.path_utils import path_key, resolved_path
 
 PREFAB_EXTENSION = ".prefab"
-_PREFAB_TEMPLATE_SCENE_NAME = "__InfernuxPrefabTemplateCache__"
 _PREFAB_TEMPLATE_CACHE = {}
 
 
@@ -88,17 +87,6 @@ def _invalidate_prefab_template_cache(file_path: str = None, guid: str = ""):
         _PREFAB_TEMPLATE_CACHE.pop(key, None)
 
 
-def _get_prefab_template_scene():
-    from Infernux.lib import SceneManager
-
-    manager = SceneManager.instance()
-    scene = manager.get_scene(_PREFAB_TEMPLATE_SCENE_NAME)
-    if scene is None:
-        scene = manager.create_scene(_PREFAB_TEMPLATE_SCENE_NAME)
-        scene.set_playing(False)
-    return scene
-
-
 def _get_file_stamp(file_path: str):
     try:
         stat = os.stat(file_path)
@@ -125,7 +113,8 @@ def _load_prefab_template_payload(file_path: str, resolved_guid: str):
     return root_obj_data
 
 
-def _get_cached_prefab_template(file_path: str, resolved_guid: str, asset_database=None):
+def _get_cached_prefab_template(file_path: str, resolved_guid: str):
+    """Cache authored data, never live objects in a loaded gameplay world."""
     stamp = _get_file_stamp(file_path)
     if stamp is None:
         Debug.log_warning(f"Prefab file not found: {file_path}")
@@ -134,41 +123,17 @@ def _get_cached_prefab_template(file_path: str, resolved_guid: str, asset_databa
     cache_key = resolved_guid or path_key(file_path)
     cached = _PREFAB_TEMPLATE_CACHE.get(cache_key)
     if cached and cached.get("stamp") == stamp:
-        template = cached.get("template")
-        if template is not None:
-            return template
+        return cached["document"]
 
     template_payload = _load_prefab_template_payload(file_path, resolved_guid)
     if template_payload is None:
         return None
 
-    template_scene = _get_prefab_template_scene()
-
-    old_template = cached.get("template") if cached else None
-    from Infernux.engine.component_restore import instantiate_game_object_document_transactionally
-    try:
-        template = instantiate_game_object_document_transactionally(
-            template_scene,
-            template_payload,
-            None,
-            asset_database,
-        )
-    except RuntimeError as exc:
-        Debug.log_error(f"Failed to preflight cached prefab template: {exc}")
-        return None
-    if template is None:
-        Debug.log_error("Failed to build cached prefab template from JSON.")
-        return None
-
-    if old_template is not None:
-        template_scene.destroy_game_object(old_template)
-        template_scene.process_pending_destroys()
-
     _PREFAB_TEMPLATE_CACHE[cache_key] = {
         "stamp": stamp,
-        "template": template,
+        "document": template_payload,
     }
-    return template
+    return template_payload
 
 
 def _strip_prefab_runtime_fields(obj_data: dict):
@@ -390,23 +355,29 @@ def instantiate_prefab(file_path: str = None, guid: str = None,
         Debug.log_warning("No active scene — cannot instantiate prefab.")
         return None
 
-    template = _get_cached_prefab_template(file_path, resolved_guid, asset_database)
+    template = _get_cached_prefab_template(file_path, resolved_guid)
     if template is None:
         return None
 
-    # Repeated prefab instantiation now uses native C++ clone from a cached template.
-    from Infernux.engine.component_restore import clone_game_object_transactionally
+    from Infernux.engine.component_restore import instantiate_game_object_document_transactionally
+
+    def configure_instance(created):
+        created.name = f"{created.name} (Clone)"
+        if parent is not None and instantiate_in_world_space:
+            created.set_parent(parent, True)
+        if configure_created is not None:
+            configure_created(created)
+
     try:
-        new_obj = clone_game_object_transactionally(
+        new_obj = instantiate_game_object_document_transactionally(
             scene,
             template,
-            parent,
+            None if instantiate_in_world_space else parent,
             asset_database,
-            instantiate_in_world_space=instantiate_in_world_space,
-            configure_created=configure_created,
+            configure_created=configure_instance,
         )
     except RuntimeError as exc:
-        Debug.log_error(f"Failed to preflight prefab clone: {exc}")
+        Debug.log_error(f"Failed to instantiate prefab document: {exc}")
         return None
     if new_obj is None:
         Debug.log_error("Failed to instantiate prefab from cached template.")

@@ -1075,6 +1075,8 @@ def instantiate_game_object_document_transactionally(
     document: dict,
     parent=None,
     asset_database=None,
+    *,
+    configure_created=None,
 ):
     """Preflight and instantiate one ID-less ObjectGraph document."""
     _require_clean_pending_queue(scene)
@@ -1084,7 +1086,9 @@ def instantiate_game_object_document_transactionally(
         preserve_document_ids=False,
         reference_scene=scene,
     )
-    return instantiate_prepared_game_object_document(scene, document, prepared, parent)
+    return instantiate_prepared_game_object_document(
+        scene, document, prepared, parent, configure_created=configure_created,
+    )
 
 
 def instantiate_prepared_game_object_document(
@@ -1092,6 +1096,8 @@ def instantiate_prepared_game_object_document(
     document: dict,
     prepared: PreparedPythonComponentGraph,
     parent=None,
+    *,
+    configure_created=None,
 ):
     """Instantiate one already preflighted ID-less ObjectGraph."""
     _require_clean_pending_queue(scene)
@@ -1100,6 +1106,8 @@ def instantiate_prepared_game_object_document(
         prepared.discard()
         return None
     try:
+        if configure_created is not None:
+            configure_created(created)
         object_id_map = _build_instantiated_object_id_map(document, created)
         publish_prepared_scene_python_components(
             scene,
@@ -1109,6 +1117,7 @@ def instantiate_prepared_game_object_document(
         )
     except Exception:
         prepared.discard()
+        scene.take_pending_py_components()
         scene.destroy_game_object(created)
         scene.process_pending_destroys()
         raise
@@ -1213,6 +1222,7 @@ def clone_game_object_transactionally(
         )
     except Exception:
         prepared.discard()
+        scene.take_pending_py_components()
         scene.destroy_game_object(created)
         scene.process_pending_destroys()
         raise

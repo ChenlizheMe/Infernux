@@ -70,12 +70,16 @@ def instantiate_game_object_document_transactionally(
     document: dict[str, Any],
     parent: Any = None,
     asset_database: Any = None,
+    *,
+    configure_created: Any = None,
 ) -> Any: ...
 def instantiate_prepared_game_object_document(
     scene: Any,
     document: dict[str, Any],
     prepared: PreparedPythonComponentGraph,
     parent: Any = None,
+    *,
+    configure_created: Any = None,
 ) -> Any: ...
 def instantiate_prepared_game_object_documents(
     scene: Any,

@@ -33,6 +33,7 @@ from Infernux.engine.undo import (
     UndoManager,
 )
 from Infernux.math import Vector3
+from Infernux.lib import SceneManager
 from Infernux.engine.component_restore import (
     clone_game_object_transactionally,
     serialize_game_object_document_authoritatively,
@@ -46,6 +47,118 @@ class _PrefabTargetComponent(InxComponent):
 class _PrefabReferenceComponent(InxComponent):
     target_object = serialized_field(default=None, field_type=FieldType.GAME_OBJECT)
     target_component = serialized_field(default=None, field_type=FieldType.COMPONENT)
+
+
+class _PrefabAwakeRecorder(InxComponent):
+    _placements = []
+
+    def awake(self):
+        type(self)._placements.append(self.game_object.transform.position.x)
+
+
+def test_prefab_awakens_only_the_configured_scene_instance(scene, tmp_path):
+    source = scene.create_game_object("AwakePrefab")
+    source.add_py_component(_PrefabAwakeRecorder())
+    path = tmp_path / "awake.prefab"
+    assert save_prefab(source, str(path))
+    _PrefabAwakeRecorder._placements.clear()
+    for x in (5.0, 8.0):
+        instance = instantiate_prefab(
+            file_path=str(path), scene=scene,
+            configure_created=lambda obj: setattr(obj.transform, "position", Vector3(x, 0.0, 0.0)),
+        )
+        assert instance is not None
+    assert _PrefabAwakeRecorder._placements == [5.0, 8.0]
+
+
+def test_prefab_instantiation_does_not_publish_a_template_scene(scene, tmp_path):
+    source = scene.create_game_object("CachedPrefab")
+    source.add_py_component(_PrefabTargetComponent())
+    path = tmp_path / "cached.prefab"
+    assert save_prefab(source, str(path))
+    manager = SceneManager.instance()
+    before_worlds = [manager.get_scene_at(index).world_id for index in range(manager.scene_count)]
+    for _ in range(3):
+        instance = instantiate_prefab(file_path=str(path), scene=scene)
+        assert instance.get_py_component(_PrefabTargetComponent).value == 19
+    assert [manager.get_scene_at(index).world_id for index in range(manager.scene_count)] == before_worlds
+
+
+@pytest.mark.parametrize("world_space", [False, True])
+def test_prefab_cached_document_keeps_parent_and_configuration_semantics(scene, tmp_path, world_space):
+    source = scene.create_game_object("ParentedPrefab")
+    source.transform.position = Vector3(2.0, 3.0, 4.0)
+    source.add_py_component(_PrefabTargetComponent())
+    parent = scene.create_game_object("Parent")
+    parent.transform.position = Vector3(10.0, 0.0, 0.0)
+    path = tmp_path / "parented.prefab"
+    assert save_prefab(source, str(path))
+    configured = []
+
+    def configure(instance):
+        assert instance.get_parent() is parent
+        assert instance.transform.position.x == pytest.approx(2.0 if world_space else 12.0)
+        instance.transform.position = Vector3(25.0, 3.0, 4.0)
+        configured.append(instance.id)
+
+    instance = instantiate_prefab(
+        file_path=str(path), scene=scene, parent=parent,
+        instantiate_in_world_space=world_space, configure_created=configure,
+    )
+    assert instance is not None
+    assert configured == [instance.id]
+    assert instance.transform.position.x == pytest.approx(25.0)
+    assert instance.get_py_component(_PrefabTargetComponent).value == 19
+    plain = instantiate_prefab(file_path=str(path), scene=scene)
+    assert plain.transform.position.x == pytest.approx(2.0)
+    assert plain.name == "ParentedPrefab (Clone)"
+
+
+def test_prefab_rejected_configuration_leaves_no_objects_or_pending_components(scene, tmp_path):
+    source = scene.create_game_object("RejectedPrefab")
+    source.add_py_component(_PrefabTargetComponent())
+    path = tmp_path / "rejected.prefab"
+    assert save_prefab(source, str(path))
+    before_ids = {obj.id for obj in scene.get_all_objects()}
+
+    def reject(_instance):
+        raise RuntimeError("author rejected placement")
+
+    assert instantiate_prefab(file_path=str(path), scene=scene, configure_created=reject) is None
+    assert {obj.id for obj in scene.get_all_objects()} == before_ids
+    assert not scene.has_pending_py_components()
+    instance = instantiate_prefab(file_path=str(path), scene=scene)
+    assert instance.get_py_component(_PrefabTargetComponent).value == 19
+
+
+def test_clone_rejected_configuration_retires_pending_python_descriptors(scene):
+    source = scene.create_game_object("RejectedClone")
+    source.add_py_component(_PrefabTargetComponent())
+    before_ids = {obj.id for obj in scene.get_all_objects()}
+
+    def reject(_instance):
+        raise RuntimeError("author rejected placement")
+
+    with pytest.raises(RuntimeError, match="author rejected placement"):
+        clone_game_object_transactionally(scene, source, configure_created=reject)
+    assert not scene.has_pending_py_components()
+    assert {obj.id for obj in scene.get_all_objects()} == before_ids
+    instance = clone_game_object_transactionally(scene, source)
+    assert instance.get_py_component(_PrefabTargetComponent).value == 19
+
+
+def test_prefab_cache_survives_target_scene_unload_without_live_objects(scene, tmp_path):
+    source = scene.create_game_object("CachedDocument")
+    source.add_py_component(_PrefabTargetComponent())
+    path = tmp_path / "unload.prefab"
+    assert save_prefab(source, str(path))
+    manager = SceneManager.instance()
+    target_scene = manager.create_scene("TemporaryPrefabDestination")
+    first = instantiate_prefab(file_path=str(path), scene=target_scene)
+    assert first.get_py_component(_PrefabTargetComponent).value == 19
+    manager.unload_scene(target_scene)
+    second = instantiate_prefab(file_path=str(path), scene=scene)
+    assert second.get_py_component(_PrefabTargetComponent).value == 19
 
 
 def test_link_created_prefab_source_stamps_root_and_children(scene, tmp_path):
@@ -298,6 +411,91 @@ def test_prefab_remaps_internal_python_references(scene, tmp_path):
     restored = instance.get_py_component(_PrefabReferenceComponent)
     assert restored.target_object is instance_child
     assert restored.target_component is instance_child.get_py_component(_PrefabTargetComponent)
+    assert compute_overrides(instance, str(path)) == []
+
+    external = scene.create_game_object("ExternalReference")
+    restored.target_object = GameObjectRef(external)
+    overrides = compute_overrides(instance, str(path))
+    assert len(overrides) == 1
+    assert overrides[0].instance_value["target_object"] == make_game_object_ref(external.id)
+    assert overrides[0].prefab_value["target_object"] == make_game_object_ref(2)
+
+    assert revert_overrides(instance, str(path)) is True
+    assert compute_overrides(instance, str(path)) == []
+    restored = instance.get_py_component(_PrefabReferenceComponent)
+    restored.target_object = GameObjectRef(instance)
+    assert len(compute_overrides(instance, str(path))) == 1
+    assert apply_overrides_to_prefab(instance, str(path)) is True
+    assert compute_overrides(instance, str(path)) == []
+    next_instance = instantiate_prefab(file_path=str(path), scene=scene)
+    assert next_instance.get_py_component(_PrefabReferenceComponent).target_object is next_instance
+    assert compute_overrides(next_instance, str(path)) == []
+
+
+def test_prefab_duplicate_siblings_keep_distinct_reference_targets(scene, tmp_path):
+    root = scene.create_game_object("DuplicateChildren")
+    for value in (19, 37):
+        child = scene.create_game_object("Child")
+        child.set_parent(root)
+        target = _PrefabTargetComponent()
+        target.value = value
+        child.add_py_component(target)
+    references = _PrefabReferenceComponent()
+    references.target_object = GameObjectRef(root.get_child(0))
+    references.target_component = ComponentRef(
+        go_id=root.get_child(1).id, component_type="_PrefabTargetComponent",
+    )
+    root.add_py_component(references)
+    path = tmp_path / "duplicate_children.prefab"
+    assert save_prefab(root, str(path)) is True
+    instance = instantiate_prefab(file_path=str(path), scene=scene)
+    assert compute_overrides(instance, str(path)) == []
+    instance.get_child(1).get_py_component(_PrefabTargetComponent).value = 53
+    overrides = compute_overrides(instance, str(path))
+    assert len(overrides) == 1
+    assert overrides[0].prefab_value["value"] == 37
+    assert overrides[0].instance_value["value"] == 53
+
+
+@pytest.mark.parametrize("action", ["apply", "revert"])
+def test_prefab_reference_edits_survive_undo_redo(scene, tmp_path, action):
+    root = scene.create_game_object("ReferenceUndo")
+    child = scene.create_game_object("Target")
+    child.set_parent(root)
+    child.add_py_component(_PrefabTargetComponent())
+    references = _PrefabReferenceComponent()
+    references.target_object = GameObjectRef(child)
+    references.target_component = ComponentRef(
+        go_id=child.id, component_type="_PrefabTargetComponent",
+    )
+    root.add_py_component(references)
+    path = tmp_path / "reference_undo.prefab"
+    assert save_prefab(root, str(path))
+    instance = instantiate_prefab(file_path=str(path), scene=scene)
+    instance.prefab_guid = "reference-undo-guid"
+    instance.prefab_root = True
+    instance.get_child(0).prefab_guid = "reference-undo-guid"
+    instance.get_py_component(_PrefabReferenceComponent).target_object = GameObjectRef(instance)
+    previous_manager = UndoManager._instance
+    manager = UndoManager()
+
+    def verify(root_reference, has_override):
+        refs = instance.get_py_component(_PrefabReferenceComponent)
+        target = instance.get_child(0)
+        assert refs.target_object is (instance if root_reference else target)
+        assert refs.target_component is target.get_py_component(_PrefabTargetComponent)
+        assert bool(compute_overrides(instance, str(path))) is has_override
+
+    try:
+        builder = build_prefab_apply_command if action == "apply" else build_prefab_revert_command
+        assert manager.execute(builder(instance, str(path)))
+        verify(action == "apply", False)
+        manager.undo()
+        verify(True, True)
+        manager.redo()
+        verify(action == "apply", False)
+    finally:
+        UndoManager._instance = previous_manager
 
 
 def test_prefab_overrides_use_typed_documents(scene, tmp_path):

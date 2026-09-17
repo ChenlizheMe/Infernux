@@ -13,11 +13,13 @@ Identification strategy:
 """
 
 import copy
+from collections import defaultdict, deque
 from dataclasses import dataclass
 import json
 import os
-from typing import Dict, List, Optional
+from typing import List, Optional
 
+from Infernux.components.value_document import TYPE_KEY, GAME_OBJECT_REF, COMPONENT_REF
 from Infernux.debug import Debug
 
 
@@ -52,6 +54,7 @@ _SKIP_KEYS = frozenset({
 
 _TRANSFORM_KEYS = ("position", "rotation", "scale")
 _ROOT_INSTANCE_KEYS = frozenset({"name", "active", "is_static", "tag", "layer"})
+_REFERENCE_ID_KEYS = {GAME_OBJECT_REF: "object_id", COMPONENT_REF: "game_object_id"}
 
 
 def resolve_prefab_instance_root(instance_obj):
@@ -87,7 +90,9 @@ def compute_overrides(instance_obj, prefab_path: str,
     instance_data = _serialize_obj(instance_obj)
 
     overrides: List[Override] = []
-    _diff_node(instance_data, prefab_data, "", overrides, is_root=True)
+    object_ids = {0: 0}
+    _match_object_ids(instance_data, prefab_data, object_ids)
+    _diff_node(instance_data, prefab_data, "", overrides, object_ids, is_root=True)
     return overrides
 
 
@@ -561,8 +566,50 @@ def _serialize_obj(obj) -> Optional[dict]:
     return serialize_game_object_document_authoritatively(obj)
 
 
+def _match_records(instances: list, sources: list, key: str):
+    """Match each record once, retaining occurrence order for duplicate names/types."""
+    remaining = defaultdict(deque)
+    for source in sources:
+        remaining[source[key]].append(source)
+    for instance in instances:
+        matches = remaining[instance[key]]
+        yield instance, matches.popleft() if matches else None
+    for matches in remaining.values():
+        for source in matches:
+            yield None, source
+
+
+def _match_object_ids(instance: dict, prefab: dict, object_ids: dict):
+    object_ids[instance["id"]] = prefab["local_id"]
+    for child, source in _match_records(instance["children"], prefab["children"], "name"):
+        if child is not None and source is not None:
+            _match_object_ids(child, source, object_ids)
+
+
+def _same_value(instance, prefab, object_ids: dict) -> bool:
+    """Compare typed references across scene and asset identity domains."""
+    if isinstance(instance, dict) and isinstance(prefab, dict):
+        if instance.keys() != prefab.keys():
+            return False
+        reference_key = _REFERENCE_ID_KEYS.get(instance.get(TYPE_KEY))
+        for key, value in instance.items():
+            if key == reference_key:
+                # External/added scene objects are overrides even if their numeric
+                # runtime ID happens to equal an asset-local ID.
+                if value not in object_ids or object_ids[value] != prefab[key]:
+                    return False
+            elif not _same_value(value, prefab[key], object_ids):
+                return False
+        return True
+    if isinstance(instance, list) and isinstance(prefab, list):
+        return len(instance) == len(prefab) and all(
+            _same_value(value, source, object_ids) for value, source in zip(instance, prefab)
+        )
+    return instance == prefab
+
+
 def _diff_node(instance: dict, prefab: dict, path: str,
-               out: List[Override], *, is_root: bool = False):
+               out: List[Override], object_ids: dict, *, is_root: bool = False):
     """Recursively diff one node."""
     node_name = instance.get("name", "")
     current_path = f"{path}/{node_name}" if path else node_name
@@ -593,58 +640,41 @@ def _diff_node(instance: dict, prefab: dict, path: str,
     _diff_components(
         instance.get("components", []),
         prefab.get("components", []),
-        current_path, "components", out,
+        current_path, "components", out, object_ids,
     )
 
-    # Recurse children (match by index → name)
+    # Names are the current matching contract; duplicate names retain occurrence order.
     i_children = instance.get("children", [])
     p_children = prefab.get("children", [])
-    p_by_name = {c.get("name"): c for c in p_children}
-
-    for i_child in i_children:
-        child_name = i_child.get("name", "")
-        p_child = p_by_name.get(child_name)
-        if p_child is None:
+    for i_child, p_child in _match_records(i_children, p_children, "name"):
+        if i_child is None:
+            child_name = p_child["name"]
+            out.append(Override(current_path, f"removed_child:{child_name}", child_name, None))
+        elif p_child is None:
+            child_name = i_child["name"]
             out.append(Override(current_path, f"added_child:{child_name}", None, child_name))
         else:
-            _diff_node(i_child, p_child, current_path, out)
-
-    for p_child in p_children:
-        child_name = p_child.get("name", "")
-        i_names = {c.get("name") for c in i_children}
-        if child_name not in i_names:
-            out.append(Override(current_path, f"removed_child:{child_name}", child_name, None))
+            _diff_node(i_child, p_child, current_path, out, object_ids)
 
 
 def _diff_components(instance_comps: list, prefab_comps: list,
                      node_path: str, section: str,
-                     out: List[Override]):
-    """Diff component lists by type_name matching."""
-    p_by_type: Dict[str, dict] = {}
-    for c in prefab_comps:
-        tn = c.get("type_id", "")
-        if tn:
-            p_by_type[tn] = c
-
-    for ic in instance_comps:
-        tn = ic.get("type_id", "")
-        if not tn:
+                     out: List[Override], object_ids: dict):
+    """Diff component lists by type and occurrence."""
+    for ic, pc in _match_records(instance_comps, prefab_comps, "type_id"):
+        if ic is None:
+            tn = pc["type_id"]
+            out.append(Override(node_path, f"removed_{section}:{tn}", tn, None))
             continue
-        pc = p_by_type.get(tn)
+        tn = ic["type_id"]
         if pc is None:
             out.append(Override(node_path, f"added_{section}:{tn}", None, tn))
             continue
         # Compare fields within this component
-        skip = {"type_id", "component_id"}
+        skip = {"type_id", "component_id", "instance_guid"}
         for key in set(ic.keys()) | set(pc.keys()):
             if key in skip:
                 continue
-            if ic.get(key) != pc.get(key):
+            if not _same_value(ic.get(key), pc.get(key), object_ids):
                 out.append(Override(node_path, f"{section}:{tn}.{key}",
                                    pc.get(key), ic.get(key)))
-
-    i_types = {c.get("type_id", "") for c in instance_comps}
-    for pc in prefab_comps:
-        tn = pc.get("type_id", "")
-        if tn and tn not in i_types:
-            out.append(Override(node_path, f"removed_{section}:{tn}", tn, None))
