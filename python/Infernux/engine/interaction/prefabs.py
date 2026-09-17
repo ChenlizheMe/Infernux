@@ -292,6 +292,22 @@ class PrefabCommandService:
         self._execute(command, origin)
         return True
 
+    def property_modifications(self, object_id: int):
+        from Infernux.engine.prefab_overrides import get_property_modifications
+
+        root = self._instance_root(object_id)
+        if root is None:
+            return ()
+        return get_property_modifications(root, self._require_instance_path(root))
+
+    def is_property_override(self, component, field_name: str) -> bool:
+        from Infernux.engine.prefab_overrides import is_property_override
+
+        root = self._instance_root(component.game_object.id)
+        return is_property_override(
+            component, field_name, self._require_instance_path(root) if root else "",
+        )
+
     def shutdown(self) -> None:
         self._context_provider = None
         if PrefabCommandService._instance is self:

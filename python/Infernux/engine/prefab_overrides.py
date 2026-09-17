@@ -37,6 +37,25 @@ class Override:
 
 
 @dataclass(frozen=True, slots=True)
+class PropertyModification:
+    """Detached serialized-field difference, identified without names or indices.
+
+    Values use the existing value-document codec: source references are asset
+    local, instance references are scene local. A zero component ID targets a
+    GameObject; Transform has its actual instance component ID and source ID 0.
+    Added/removed objects and components are structural overrides, not fields.
+    """
+    object_id: int
+    component_id: int
+    source_object_id: int
+    source_component_id: int
+    property_path: str
+    source_value: object
+    instance_value: object
+    is_default_override: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class _PrefabApplyState:
     prefab_document: dict
     instance_documents: tuple[tuple[int, dict], ...]
@@ -87,15 +106,87 @@ def compute_overrides(instance_obj, prefab_path: str,
     instance_data = _serialize_obj(instance_obj)
 
     overrides: List[Override] = []
+    object_ids, component_ids = _comparison_identities(instance_data, prefab_data)
+    _diff_node(instance_data, prefab_data, "", overrides, object_ids, component_ids, is_root=True)
+    return overrides
+
+
+def _comparison_identities(instance, source):
     object_ids = {0: 0}
-    _match_object_ids(instance_data, prefab_data, object_ids)
-    component_ids = _instance_component_ids(instance_data, prefab_data)
-    for node in _object_nodes(instance_data):
+    _match_object_ids(instance, source, object_ids)
+    component_ids = _instance_component_ids(instance, source)
+    for node in _object_nodes(instance):
         object_ids[(node["id"], node["transform"]["component_id"])] = 0
         for component in node["components"]:
             object_ids[(node["id"], component["component_id"])] = component_ids[component["component_id"]]
-    _diff_node(instance_data, prefab_data, "", overrides, object_ids, component_ids, is_root=True)
-    return overrides
+    return object_ids, component_ids
+
+
+def get_property_modifications(instance_obj, prefab_path: str):
+    """Snapshot field differences for the containing instance, including children.
+
+    Root placement/organization differences are included and marked as defaults,
+    matching the existing whole-instance Apply/Revert exclusions. Lists and
+    nested values remain one declared field, so they can be reverted atomically.
+    This reads current source content; it neither records edits nor advances the
+    merge baseline. Removed fields in the source are reported with a None value.
+    """
+    root = resolve_prefab_instance_root(instance_obj)
+    if root is None:
+        return ()
+    source = _load_prefab_root(prefab_path)
+    instance = _serialize_obj(root)
+    object_ids, component_ids = _comparison_identities(instance, source)
+    sources = {node["local_id"]: node for node in _object_nodes(source)}
+    result = []
+
+    def fields(node, original, instance_component_id, source_component_id,
+               current, previous, prefix="", defaults=()):
+        for key in sorted(current.keys() | previous.keys()):
+            if key in current and key in previous and _same_value(current[key], previous[key], object_ids):
+                continue
+            result.append(PropertyModification(
+                node["id"], instance_component_id, original["local_id"], source_component_id,
+                prefix + key, copy.deepcopy(previous.get(key)), copy.deepcopy(current.get(key)),
+                key in defaults,
+            ))
+
+    for node in _object_nodes(instance):
+        original = sources.get(object_ids.get(node["id"]))
+        if original is None:
+            continue
+        is_root = node["id"] == root.id
+        fields(node, original, 0, 0,
+               {key: value for key, value in node.items() if key not in _SKIP_KEYS},
+               {key: value for key, value in original.items() if key not in _SKIP_KEYS},
+               defaults=_ROOT_INSTANCE_KEYS if is_root else ())
+        fields(node, original, node["transform"]["component_id"], 0,
+               {key: node["transform"][key] for key in _TRANSFORM_KEYS},
+               {key: original["transform"][key] for key in _TRANSFORM_KEYS},
+               defaults=("position", "rotation") if is_root else ())
+        original_components = {record["component_id"]: record for record in original["components"]}
+        for record in node["components"]:
+            previous = original_components.get(component_ids[record["component_id"]])
+            if previous is None:
+                continue
+            fields(node, original, record["component_id"], previous["component_id"],
+                   record["data"], previous["data"], prefix="data.")
+            fields(node, original, record["component_id"], previous["component_id"],
+                   {key: value for key, value in record.items() if key not in _COMPONENT_IDENTITY_KEYS},
+                   {key: value for key, value in previous.items() if key not in _COMPONENT_IDENTITY_KEYS})
+    return tuple(result)
+
+
+_COMPONENT_IDENTITY_KEYS = frozenset({
+    "type_id", "component_id", "instance_guid", "prefab_source_id", "data",
+})
+
+
+def is_property_override(component, field_name, prefab_path):
+    section, key = _component_property_storage(component, field_name, writable=False)
+    path = f"data.{key}" if section == "data" else key
+    return any(item.component_id == component.component_id and item.property_path == path
+               for item in get_property_modifications(component.game_object, prefab_path))
 
 
 def apply_overrides_to_prefab(instance_obj, prefab_path: str,
@@ -361,7 +452,7 @@ def build_prefab_revert_command(instance_obj, prefab_path: str,
     )
 
 
-def _component_property_storage(component, field_name):
+def _component_property_storage(component, field_name, *, writable=True):
     """Resolve public field spelling through the existing serialized schema."""
     from Infernux.components.builtin_component import BuiltinComponent, CppProperty
     from Infernux.components.fields import get_field_schema
@@ -379,7 +470,7 @@ def _component_property_storage(component, field_name):
     else:
         schema = get_field_schema(type(component), field_name)
         section = "data"
-    if schema.read_only:
+    if writable and schema.read_only:
         raise ValueError(f"Property is read-only: {schema.property_path}")
     return section, schema.attributes.get("serialized_name", field_name)
 

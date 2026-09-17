@@ -5,6 +5,7 @@ Register contributions from an editor preload, not from gameplay callbacks.
 """
 
 from .engine.interaction.documents import DocumentActionResult, DocumentActionStatus
+from .engine.prefab_overrides import PropertyModification
 
 from .engine.interaction.commands import (
     CommandContext, CommandResult, CommandSource, CommandStatus,
@@ -27,6 +28,7 @@ __all__ = (
     "revert_property_override",
     "load_data_asset", "set_data_asset_fields", "save_data_asset",
     "add_component",
+    "PropertyModification", "get_property_modifications", "is_property_override",
 )
 
 
@@ -251,6 +253,20 @@ def revert_prefab(game_object) -> bool:
 def revert_property_override(component, field_name: str) -> bool:
     """Revert one declared component field, retaining unrelated instance edits."""
     return _authoring_core().prefabs.revert_property(component, field_name)
+
+
+def get_property_modifications(game_object) -> tuple[PropertyModification, ...]:
+    """Read detached field differences for its nearest Prefab instance subtree.
+
+    Includes default root placement differences; structural additions/removals
+    are not property modifications. An ordinary scene object returns ().
+    """
+    return _authoring_core().prefabs.property_modifications(game_object.id)
+
+
+def is_property_override(component, field_name: str) -> bool:
+    """Query a declared field by its Python name without modifying history."""
+    return _authoring_core().prefabs.is_property_override(component, field_name)
 
 
 def save_scene(path=None) -> DocumentActionResult:

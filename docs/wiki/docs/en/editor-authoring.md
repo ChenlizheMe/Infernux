@@ -195,6 +195,38 @@ property paths, added instance components, and read-only fields are not supporte
 by this entry point. If a source reference targets a removed instance member,
 restore that member first; the reference will not bind an unrelated object.
 
+## Query property overrides
+
+```python
+if inx.editor.is_property_override(component, "amount"):
+    inx.editor.revert_property_override(component, "amount")
+
+for change in inx.editor.get_property_modifications(instance):
+    print(change.object_id, change.component_id, change.property_path,
+          change.source_value, change.instance_value)
+```
+
+Queries use the same source identities and typed reference comparison as Prefab
+Apply/Revert. Same-named objects and same-type components remain distinct.
+`is_property_override` takes a public Python field name, including read-only
+serialized fields. An undeclared field is an error; an ordinary scene object or
+an added component has no source field override.
+
+`get_property_modifications` returns a detached tuple for the nearest containing
+Prefab and its descendants. Records contain scene object/component IDs and the
+corresponding asset-local `source_object_id`/`source_component_id`. Component
+fields use `data.<serialized_name>`; Transform fields use `position`, `rotation`,
+and `scale`. Values follow the serialized value codec, including typed references:
+source references use asset-local IDs, instance references use scene IDs.
+Collections are compared as whole fields, not separate array elements.
+
+Root placement/organization differences are included with `is_default_override`
+set, reflecting the existing whole-instance Apply/Revert exclusions. Added or
+removed objects/components and ordering changes are structural overrides, not
+property records. These are current differences against the source, not a log of
+past edits or unused historical Unity overrides. Queries do not save, add Undo,
+or advance the merge baseline; modifying returned values does not modify assets.
+
 ## Nested Prefabs
 
 Place a Prefab instance under another hierarchy and save the outer hierarchy as

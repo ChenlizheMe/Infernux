@@ -113,6 +113,24 @@ inx.editor.revert_property_override(component, "amount")
 
 字段名使用公开的 Python 名称，例如碰撞体的 `size`、Transform 的 `local_position`。显式还原根 Transform 字段会恢复源值；整体 Revert 则保留根物体在场景中的摆放。集合字段按整个字段还原，目前不接受嵌套属性路径、实例新增组件或只读字段。如果源引用指向实例中已删除的成员，应先恢复该成员，不会借用其它物体的 ID 补上引用。
 
+## 查询属性覆盖
+
+```python
+if inx.editor.is_property_override(component, "amount"):
+    inx.editor.revert_property_override(component, "amount")
+
+for change in inx.editor.get_property_modifications(instance):
+    print(change.object_id, change.component_id, change.property_path,
+          change.source_value, change.instance_value)
+```
+
+查询与 Apply/Revert 共用源身份和引用比较规则，同名物体、同类型组件不会混在一起。
+`is_property_override` 接受公开 Python 字段名，也可以查询只读序列化字段。未声明的字段会报错；普通物体和实例新增组件没有对应的源属性覆盖。
+
+`get_property_modifications` 返回最近一层 Prefab 及其子树的独立数据快照。记录包含场景的 `object_id/component_id` 和资产内的 `source_object_id/source_component_id`，不依靠名称或排列下标定位。组件字段路径为 `data.<序列化字段名>`，Transform 使用 `position/rotation/scale`。值采用现有序列化格式：源引用使用资产局部 ID，实例引用使用场景 ID；集合按整个字段比较，不拆成单独数组元素。
+
+根物体摆放和组织属性的差异也会返回，并标记 `is_default_override`，对应整体 Apply/Revert 原有的保留规则。新增、删除物体或组件以及排序属于结构覆盖，不混入属性记录。这里返回当前值与源资产的差异，不是历史修改日志，也不模拟 Unity 已失效的历史 override。查询不会写盘、增加 Undo 或推进合并基线；修改返回数据不会改变资产。
+
 ## 嵌套 Prefab
 
 把 Prefab 实例放在另一个待保存的层级下，再保存外层 Prefab，内层实例会保留自己的资产链接。同一内层资产可以出现多次，引用仍指向各自实例中的物体和组件，不会因为源 ID 相同而串到另一份实例。

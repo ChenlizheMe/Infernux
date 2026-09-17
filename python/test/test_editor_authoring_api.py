@@ -406,6 +406,88 @@ def test_revert_one_python_property_retains_other_fields_and_identity(property_p
     assert not editor.revert_property_override(second, "amount")
 
 
+def test_property_queries_are_field_exact_detached_and_read_only(property_prefab):
+    from pathlib import Path
+    path, root = property_prefab
+    first, second = root.get_components(PropertyRevertProbe)
+    second.amount = 50
+    second.label = "Instance"
+    source_bytes = Path(path).read_bytes()
+    before = root.serialize_document()
+    assert not editor.is_property_override(first, "amount")
+    assert editor.is_property_override(second, "amount")
+    assert not editor.is_property_override(second, "target")
+    assert not editor.is_property_override(second, "collider")
+    assert not editor.is_property_override(second, "locked")
+    changes = editor.get_property_modifications(root)
+    fields = [item for item in changes if item.component_id == second.component_id]
+    assert [(item.property_path, item.source_value, item.instance_value) for item in fields] == [
+        ("data.amount", 5.0, 50.0), ("data.label", "Source", "Instance"),
+    ]
+    assert all(item.source_component_id > 0 and item.object_id == root.id for item in fields)
+    assert root.serialize_document() == before
+    assert Path(path).read_bytes() == source_bytes
+    assert not UndoManager.instance().can_undo
+
+
+def test_property_query_native_transform_defaults_and_snapshot(property_prefab):
+    _, root = property_prefab
+    root.transform.local_position = Vector3(10, 11, 12)
+    collider = root.get_child(0).get_component(BoxCollider)
+    collider.size = Vector3(4, 5, 6)
+    assert editor.is_property_override(root.transform, "local_position")
+    assert editor.is_property_override(collider, "size")
+    changes = editor.get_property_modifications(root)
+    position = next(item for item in changes if item.component_id == root.transform.component_id)
+    assert position.property_path == "position"
+    assert position.is_default_override
+    size = next(item for item in changes if item.component_id == collider.component_id)
+    assert size.property_path == "data.size"
+    assert not size.is_default_override
+    size.instance_value.clear()
+    assert collider.size.x == 4
+    assert editor.get_property_modifications(root) != changes
+
+
+def test_property_query_tracks_revert_undo_and_exact_component_refs(property_prefab):
+    _, root = property_prefab
+    component = root.get_components(PropertyRevertProbe)[1]
+    component.target = None
+    component.collider = None
+    assert editor.is_property_override(component, "target")
+    assert editor.is_property_override(component, "collider")
+    assert editor.revert_property_override(component, "collider")
+    component = root.get_components(PropertyRevertProbe)[1]
+    assert not editor.is_property_override(component, "collider")
+    assert editor.is_property_override(component, "target")
+    editor.undo(defer=False)
+    assert editor.is_property_override(root.get_components(PropertyRevertProbe)[1], "collider")
+
+
+def test_property_query_added_members_and_plain_objects_are_not_source_fields(property_prefab, scene):
+    _, root = property_prefab
+    added = PropertyRevertProbe()
+    added.amount = 12
+    root.add_py_component(added)
+    assert not editor.is_property_override(added, "amount")
+    assert not any(item.component_id == added.component_id for item in editor.get_property_modifications(root))
+    plain = scene.create_game_object("Not a prefab")
+    assert editor.get_property_modifications(plain) == ()
+    assert not editor.is_property_override(plain.transform, "local_position")
+    with pytest.raises((KeyError, ValueError)):
+        editor.is_property_override(added, "undeclared")
+
+
+def test_property_query_deleted_reference_does_not_require_remapping_missing_target(property_prefab, scene):
+    _, root = property_prefab
+    scene.destroy_game_object(root.get_child(0))
+    scene.process_pending_destroys()
+    component = root.get_components(PropertyRevertProbe)[0]
+    component.target = None
+    assert editor.is_property_override(component, "target")
+    assert not UndoManager.instance().can_undo
+
+
 @pytest.mark.parametrize("field", ["target", "collider"])
 def test_revert_reference_uses_instance_object_and_exact_component(property_prefab, field):
     path, root = property_prefab
@@ -483,6 +565,10 @@ def test_property_revert_advances_only_selected_source_baseline(property_prefab,
     source["root_object"]["components"][0]["data"]["amount"] = 7
     source["root_object"]["components"][0]["data"]["label"] = "New source label"
     assert save_prefab_document(source, path)
+    before_query = root.serialize_document()
+    assert editor.is_property_override(component, "amount") == (not already_matches)
+    assert editor.is_property_override(component, "label")
+    assert root.serialize_document() == before_query
     assert editor.revert_property_override(component, "amount")
     component = root.get_components(PropertyRevertProbe)[0]
     assert (component.amount, component.label) == (7, "Keep override")
@@ -504,8 +590,16 @@ def test_revert_nested_component_targets_nearest_prefab_source(property_prefab, 
     component.amount = 50
     component.label = "Nested override"
     UndoManager.instance().clear()
+    assert editor.is_property_override(component, "amount")
+    for target in (nested, placed):
+        changes = editor.get_property_modifications(target)
+        amount = next(item for item in changes if item.component_id == component.component_id
+                      and item.property_path == "data.amount")
+        assert (amount.source_value, amount.instance_value) == (5, 50)
     assert editor.revert_property_override(component, "amount")
     component = nested.get_components(PropertyRevertProbe)[1]
+    assert not editor.is_property_override(component, "amount")
+    assert editor.is_property_override(component, "label")
     assert (component.amount, component.label) == (5, "Nested override")
     editor.undo(defer=False)
     assert nested.get_components(PropertyRevertProbe)[1].amount == 50
