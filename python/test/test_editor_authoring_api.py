@@ -9,6 +9,15 @@ from Infernux.engine.undo import UndoManager
 from Infernux.engine.play_mode import PlayModeManager
 from Infernux.engine.hierarchy_creation_service import HierarchyCreationService
 from Infernux.lib import Vector3
+from Infernux.components import serialized_field
+from Infernux.core import AssetManager, DataAsset
+
+
+class AuthoringLevelData(DataAsset):
+    __serialized_type_id__ = "tests.editor.authoring_level"
+
+    title: str = serialized_field(default="新关卡")
+    difficulty: int = serialized_field(default=1)
 
 
 def test_editor_attribute_is_available_in_a_fresh_process():
@@ -103,3 +112,111 @@ def test_public_save_preserves_pending_status(authoring, monkeypatch):
     monkeypatch.setattr(authoring.documents, "request_save", lambda document_id: calls.append(document_id) or pending)
     assert editor.save_scene() is pending
     assert calls == ["scene-document"]
+
+
+@pytest.fixture
+def asset_authoring(authoring, engine, monkeypatch):
+    from Infernux.engine import project_context
+    database = engine.get_asset_database()
+    monkeypatch.setattr(AssetManager, "_asset_database", database)
+    monkeypatch.setattr(project_context, "get_project_root", lambda: database.project_root)
+    authoring.project_assets.configure(database.project_root, database)
+    return database
+
+
+def test_public_data_asset_and_folder_share_grouped_undo(asset_authoring):
+    from pathlib import Path
+    source = AuthoringLevelData(title="压力板", difficulty=7)
+    folder = Path(asset_authoring.assets_root) / "AuthoringDataContract"
+    with editor.edit_scene("创建关卡数据"):
+        assert Path(editor.create_folder(folder)) == folder
+        target = Path(editor.create_data_asset(source, folder / "Level.inxdata"))
+    assert not source.is_persistent
+    loaded = DataAsset.load(str(target))
+    assert loaded is not source
+    assert (loaded.title, loaded.difficulty) == ("压力板", 7)
+    guid = loaded.guid
+    assert guid
+    content, metadata = target.read_bytes(), Path(str(target) + ".meta").read_bytes()
+    assert UndoManager.instance().undo_description == "创建关卡数据"
+    editor.undo(defer=False)
+    assert not folder.exists()
+    editor.redo(defer=False)
+    assert target.read_bytes() == content
+    assert Path(str(target) + ".meta").read_bytes() == metadata
+    AssetManager.invalidate(guid)
+    assert DataAsset.load(str(target)).guid == guid
+    editor.undo(defer=False)
+    assert not folder.exists()
+
+
+def test_public_data_asset_never_overwrites_or_mutates_input(asset_authoring):
+    from pathlib import Path
+    target = Path(asset_authoring.assets_root) / "AuthoringUnique.inxdata"
+    source = AuthoringLevelData(difficulty=3)
+    editor.create_data_asset(source, target)
+    content = target.read_bytes()
+    with pytest.raises(RuntimeError, match="asset command was rejected"):
+        editor.create_data_asset(AuthoringLevelData(difficulty=9), target)
+    assert target.read_bytes() == content
+    assert not source.is_persistent
+    editor.undo(defer=False)
+    assert not target.exists()
+    assert not UndoManager.instance().can_undo
+
+
+@pytest.mark.parametrize("value,path,error", [
+    (object(), "Assets/Invalid.inxdata", TypeError),
+    (AuthoringLevelData(), "Assets/Invalid.json", ValueError),
+    (AuthoringLevelData(), "Assets/MissingParent/Invalid.inxdata", RuntimeError),
+])
+def test_public_invalid_data_asset_does_not_enter_history(asset_authoring, value, path, error):
+    with pytest.raises(error):
+        editor.create_data_asset(value, path)
+    assert not UndoManager.instance().can_undo
+
+
+def test_public_build_scene_list_shares_settings_and_undo(authoring, monkeypatch, tmp_path):
+    from Infernux.engine import project_context
+    from Infernux.engine.interaction.project_settings import ensure_project_settings_document
+    monkeypatch.setattr(project_context, "get_project_root", lambda: str(tmp_path))
+    authoring.project_assets.configure(str(tmp_path))
+    assets = tmp_path / "Assets"
+    assets.mkdir()
+    for name in ("Start.scene", "Level.scene"):
+        (assets / name).touch()
+    controller = ensure_project_settings_document(str(tmp_path))
+    before = controller.capture_document()
+    assert editor.set_build_scenes([assets / "Level.scene", "Assets/Start.scene"])
+    expected = ["Assets/Level.scene", "Assets/Start.scene"]
+    assert editor.get_build_scenes() == expected
+    detached = editor.get_build_scenes()
+    detached.clear()
+    assert editor.get_build_scenes() == expected
+    assert not editor.set_build_scenes(expected)
+    editor.undo(defer=False)
+    assert controller.capture_document() == before
+    editor.redo(defer=False)
+    assert editor.get_build_scenes() == expected
+    pending = editor.DocumentActionResult(editor.DocumentActionStatus.PENDING)
+    calls = []
+    monkeypatch.setattr(authoring.documents, "request_save", lambda key: calls.append(key) or pending)
+    assert editor.save_project_settings() is pending
+    assert calls == [controller.document_id]
+
+
+@pytest.mark.parametrize("paths,error", [
+    ("Assets/Start.scene", TypeError),
+    (["Assets/Missing.scene"], FileNotFoundError),
+    (["../Outside.scene"], ValueError),
+    (["Assets/Wrong.txt"], ValueError),
+])
+def test_public_invalid_build_scenes_leave_settings_unchanged(authoring, monkeypatch, tmp_path, paths, error):
+    from Infernux.engine import project_context
+    monkeypatch.setattr(project_context, "get_project_root", lambda: str(tmp_path))
+    authoring.project_assets.configure(str(tmp_path))
+    before = editor.get_build_scenes()
+    with pytest.raises(error):
+        editor.set_build_scenes(paths)
+    assert editor.get_build_scenes() == before
+    assert not UndoManager.instance().can_undo

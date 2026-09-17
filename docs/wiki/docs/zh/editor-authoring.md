@@ -41,6 +41,27 @@ class ObstacleTools(inx.InxPreload):
 - `create_prefab(obj, directory)` 的第二个参数是目录，不是文件名；它创建唯一名称的资产并建立源链接，不覆盖已有 Prefab。
 - `instantiate_prefab` 返回新实例；`apply_prefab(obj)` 应用覆盖，`revert_prefab(obj)` 恢复源值，均进入全局撤销历史。
 
+## 创建数据资产和构建列表
+
+运行时数据类型放在 `Assets/Scripts/LevelConfig.py`，用 `DataAsset` 和 `serialized_field` 声明。编辑器工具可以用 `from Scripts.LevelConfig import LevelConfig` 引用它；`Assets` 是项目模块根，不是 Python 包名。
+
+```python
+from Scripts.LevelConfig import LevelConfig
+
+with inx.editor.edit_scene("创建关卡配置"):
+    inx.editor.create_folder("Assets/NewLevel")
+    path = inx.editor.create_data_asset(
+        LevelConfig(title="Garden"), "Assets/NewLevel/Level.inxdata",
+    )
+config = inx.DataAsset.load(path)
+```
+
+`create_data_asset` 保存传入值的独立副本，由资产系统创建 GUID 和导入结果，不改变原对象的持久身份。目标文件必须不存在，目录必须已建立；撤销移除新资产，重做保留原 GUID 和字段值。它不覆盖已有配置；已有资产应通过 Inspector 的文档编辑流程修改。
+
+工具需要加载已有材质时，先用 `inx.Application.asset_path("Assets/Materials/Example.mat")` 解析项目路径，再传给 `inx.AssetManager.load`。不要依赖启动编辑器时的工作目录，也不需要在脚本里手写 GUID。
+
+`get_build_scenes()` 返回独立的、有序的项目相对路径列表。`set_build_scenes(paths)` 用一条可撤销操作更新同一份 Build Settings；路径必须是 `Assets` 下已存在的 `.scene`。传空列表表示清空，相同列表不新增历史。编辑器的自动保存仍生效，也可显式调用 `save_project_settings()`，其返回状态与场景保存相同，不要把 `PENDING` 当成写盘完成。
+
 ## 保存和切换场景
 
 `save_scene("Assets/Scenes/关卡.scene")` 通过正常保存事务另存当前场景；省略路径则保存当前文档，无路径时请求另存对话框。返回结果不能一律当作“保存完成”：

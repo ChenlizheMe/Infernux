@@ -22,6 +22,8 @@ __all__ = (
     "DocumentActionResult", "DocumentActionStatus", "edit_scene",
     "create_game_object", "create_prefab", "instantiate_prefab", "apply_prefab",
     "revert_prefab", "save_scene", "open_scene", "new_scene", "undo", "redo",
+    "create_data_asset", "create_folder", "get_build_scenes", "set_build_scenes",
+    "save_project_settings",
 )
 
 
@@ -67,6 +69,84 @@ def create_game_object(name: str = "GameObject", *, kind: str = "empty", parent=
 def create_prefab(game_object, directory="Assets") -> str:
     """Create a uniquely named asset in directory and link its source hierarchy."""
     return _authoring_core().prefabs.create_from_object(game_object.id, _asset_path(directory))
+
+
+def create_data_asset(value, path) -> str:
+    """Create a typed asset through Project Undo; leave the input value unchanged."""
+    import os
+    from .core.data_asset import DataAsset, DATA_ASSET_EXTENSION
+    from .engine.ui import project_file_ops
+
+    core = _authoring_core()
+    if not isinstance(value, DataAsset):
+        raise TypeError("create_data_asset requires a DataAsset value")
+    target = _asset_path(path)
+    if os.path.splitext(target)[1].casefold() != DATA_ASSET_EXTENSION:
+        raise ValueError("DataAsset paths require the .inxdata extension")
+    parent, name = os.path.split(target)
+    return core.project_assets.create_with_path(
+        parent,
+        lambda: project_file_ops.create_data_asset(
+            parent, name, type(value).__serialized_type_id__,
+            core.project_assets.asset_database, value=value,
+        ),
+        description="Create Data Asset",
+    )
+
+
+def create_folder(path) -> str:
+    """Create one project folder through Project Undo; its parent must exist."""
+    import os
+    from .engine.ui import project_file_ops
+
+    core = _authoring_core()
+    parent, name = os.path.split(_asset_path(path))
+    if not os.path.isdir(parent):
+        raise FileNotFoundError(parent)
+    return core.project_assets.create_with_path(
+        parent, lambda: project_file_ops.create_folder(parent, name),
+        description="Create Folder",
+    )
+
+
+def _project_settings():
+    from .engine.interaction.project_settings import ensure_project_settings_document
+    core = _authoring_core()
+    return ensure_project_settings_document(core.project_assets.project_root)
+
+
+def get_build_scenes() -> list[str]:
+    """Return a copy of the ordered project-relative build scene list."""
+    return _project_settings().section("build")["scenes"]
+
+
+def set_build_scenes(paths) -> bool:
+    """Edit the shared Build Settings document as one undoable operation."""
+    import os
+    from .engine.path_utils import is_path_within, relative_path
+
+    core = _authoring_core()
+    if not isinstance(paths, (list, tuple)):
+        raise TypeError("Build scenes must be a list or tuple of paths")
+    root = core.project_assets.project_root
+    scenes = []
+    for path in paths:
+        target = _asset_path(path)
+        if not is_path_within(target, os.path.join(root, "Assets"), allow_root=False) or not target.lower().endswith(".scene"):
+            raise ValueError("Build scenes must be .scene assets beneath Assets")
+        if not os.path.isfile(target):
+            raise FileNotFoundError(target)
+        scenes.append(relative_path(target, root).replace("\\", "/"))
+    controller = _project_settings()
+    settings = controller.section("build")
+    settings["scenes"] = scenes
+    return controller.apply_section("build", settings, edit_key="build.scenes", description="Set Build Scenes")
+
+
+def save_project_settings() -> DocumentActionResult:
+    """Save through the normal document ticket; PENDING is not completion."""
+    core = _authoring_core()
+    return core.documents.request_save(_project_settings().document_id)
 
 
 def instantiate_prefab(path, *, parent=None):

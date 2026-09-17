@@ -953,7 +953,7 @@ def create_render_texture(current_path: str, asset_name: str, asset_database=Non
     return True, ""
 
 
-def create_data_asset(current_path: str, asset_name: str, type_id: str, asset_database=None):
+def create_data_asset(current_path: str, asset_name: str, type_id: str, asset_database=None, *, value=None):
     """Create one typed ``.inxdata`` asset from its published DataAsset class."""
     if not current_path or not asset_name:
         return False, "Invalid DataAsset name"
@@ -962,6 +962,8 @@ def create_data_asset(current_path: str, asset_name: str, type_id: str, asset_da
         return False, "DataAsset name cannot be empty"
     if asset_name.lower().endswith(".inxdata"):
         asset_name = asset_name[:-len(".inxdata")]
+    if not asset_name or os.path.basename(asset_name) != asset_name:
+        return False, "Invalid DataAsset name"
 
     from Infernux.components.serializable_object import get_serializable_class
     from Infernux.core.data_asset import DataAsset
@@ -969,13 +971,16 @@ def create_data_asset(current_path: str, asset_name: str, type_id: str, asset_da
     asset_type = get_serializable_class(str(type_id or "").strip())
     if asset_type is None or asset_type is DataAsset or not issubclass(asset_type, DataAsset):
         return False, f"Unknown DataAsset type: {type_id}"
+    if value is not None and type(value) is not asset_type:
+        return False, "Initial value must have the requested DataAsset type"
 
     file_name = asset_name + ".inxdata"
     file_path = os.path.join(current_path, file_name)
     if os.path.exists(file_path):
         return False, f"'{file_name}' already exists"
     try:
-        asset_type().save_to(file_path, database=asset_database)
+        initial = asset_type() if value is None else value.instantiate()
+        initial.save_to(file_path, database=asset_database)
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
         return False, str(exc)
     return True, ""

@@ -60,6 +60,42 @@ reload, unload or project close. Do not register them each frame.
 - `apply_prefab(obj)` publishes instance overrides to the linked asset;
   `revert_prefab(obj)` restores source-owned values. Both use the global journal.
 
+## Data assets and build scenes
+
+Declare runtime configuration with `DataAsset` and `serialized_field` in
+`Assets/Scripts/LevelConfig.py`. Editor tools import it as
+`from Scripts.LevelConfig import LevelConfig`: `Assets` is the project module
+root, not a Python package name.
+
+```python
+from Scripts.LevelConfig import LevelConfig
+
+with inx.editor.edit_scene("Create level configuration"):
+    inx.editor.create_folder("Assets/NewLevel")
+    path = inx.editor.create_data_asset(
+        LevelConfig(title="Garden"), "Assets/NewLevel/Level.inxdata",
+    )
+config = inx.DataAsset.load(path)
+```
+
+`create_data_asset` saves an independent copy through the asset system, which
+owns its GUID and import results. The input object's persistent identity is
+unchanged. The parent directory must exist and the target must not exist.
+Undo removes the asset; Redo restores its original GUID and fields. Use the
+Inspector document workflow to edit existing assets rather than overwriting them.
+
+To load an existing material, resolve its project path with
+`inx.Application.asset_path("Assets/Materials/Example.mat")` before passing it to
+`inx.AssetManager.load`. Tools should not depend on the Editor process's working
+directory or hard-code asset GUIDs.
+
+`get_build_scenes()` returns a detached ordered list of project-relative paths.
+`set_build_scenes(paths)` edits the shared Build Settings document as one Undo
+operation. Entries must be existing `.scene` files beneath `Assets`; an empty
+list clears the selection, and an unchanged list creates no history. Normal
+Editor autosave applies. `save_project_settings()` also provides explicit saving
+with the same status contract as scene saving: `PENDING` is not a completed write.
+
 ## Scene documents and history
 
 `save_scene("Assets/Scenes/MyLevel.scene")` saves the active scene to an explicit
