@@ -316,10 +316,7 @@ class MeshRenderer : public Component
     }
 
     /// @brief Set which submesh to render (-1 = all, >= 0 = specific submesh).
-    void SetSubmeshIndex(int32_t index)
-    {
-        m_submeshIndex = index;
-    }
+    void SetSubmeshIndex(int32_t index);
 
     /// @brief Get the mesh pivot offset (pre-transform to re-center submesh geometry).
     [[nodiscard]] const glm::vec3 &GetMeshPivotOffset() const
@@ -328,10 +325,7 @@ class MeshRenderer : public Component
     }
 
     /// @brief Set the mesh pivot offset (used to re-center submesh geometry around the transform).
-    void SetMeshPivotOffset(const glm::vec3 &offset)
-    {
-        m_meshPivotOffset = offset;
-    }
+    void SetMeshPivotOffset(const glm::vec3 &offset);
 
     /// @brief Get the node group filter (-1 = render all nodes, >= 0 = specific node group).
     [[nodiscard]] int32_t GetNodeGroup() const
@@ -416,7 +410,7 @@ class MeshRenderer : public Component
     void ComputeLocalBoundsFromInlineVertices();
 
     /// @brief Recompute local bounds for a specific node group.
-    void UpdateBoundsForNodeGroup(const std::shared_ptr<InxMesh> &mesh);
+    void UpdateBoundsForMeshSelection(const std::shared_ptr<InxMesh> &mesh);
 
     // ========================================================================
     // Serialization

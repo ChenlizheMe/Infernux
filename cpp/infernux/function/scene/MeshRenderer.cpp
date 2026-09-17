@@ -343,7 +343,44 @@ void RecalculateMeshTangents(std::vector<Vertex> &vertices, const std::vector<ui
     }
 }
 
-INFERNUX_REGISTER_VALIDATED_COMPONENT("MeshRenderer", MeshRenderer)
+namespace
+{
+SemanticTypeDescriptor DescribeMeshRenderer()
+{
+    SemanticTypeDescriptor type;
+    type.typeGuid = "native:infernux.MeshRenderer";
+    type.readableId = "infernux.component.mesh_renderer";
+    type.owner = "engine:native";
+    type.origin = "native";
+    type.displayName = "MeshRenderer";
+    type.runtimeProfiles = {"editor", "player", "headless"};
+    const auto add = [&](const char *name, const char *stored, const char *kind, json initial,
+                         bool hidden = false) -> json & {
+        type.fields.push_back({std::string("MeshRenderer.") + name,
+                               std::string("FieldType.") + kind,
+                               false,
+                               {{"field_id", name},
+                                {"serialized_name", stored},
+                                {"serialized", true},
+                                {"hidden", hidden},
+                                {"nullable", false},
+                                {"storage_kind", "native_property"},
+                                {"default", std::move(initial)}}});
+        return type.fields.back().attributes;
+    };
+    add("casts_shadows", "castShadows", "BOOL", true)["tooltip"] = "Whether this renderer casts shadows";
+    add("receives_shadows", "receivesShadows", "BOOL", true)["tooltip"] = "Whether this renderer receives shadows";
+    auto &submesh = add("submesh_index", "submeshIndex", "INT", -1, true);
+    submesh["range"] = {-1, std::numeric_limits<int32_t>::max()};
+    submesh["setter_owns_document_shape"] = true; // -1 omits the serialized selector.
+    add("mesh_pivot_offset", "meshPivotOffset", "VEC3", {0.0, 0.0, 0.0}, true);
+    return type;
+}
+
+const bool registeredMeshRenderer = ComponentFactory::Register(
+    "MeshRenderer", [] { return std::make_unique<MeshRenderer>(); }, MeshRenderer::ValidateSerializedDocument,
+    MeshRenderer::GetTypeConstraints(), DescribeMeshRenderer);
+} // namespace
 
 MeshRenderer::~MeshRenderer()
 {
@@ -555,12 +592,8 @@ void MeshRenderer::SetMeshAsset(const std::string &guid, std::shared_ptr<InxMesh
         graph.AddRuntimeDependency(GetInstanceGuid(), guid);
 
     auto m = m_meshAsset.Get();
-    if (m) {
-        if (m_nodeGroup >= 0)
-            UpdateBoundsForNodeGroup(m);
-        else
-            SetLocalBounds(m->GetBoundsMin(), m->GetBoundsMax());
-    }
+    if (m)
+        UpdateBoundsForMeshSelection(m);
 
     SyncMaterialSlotsToMesh();
     NotifyCollisionGeometryChanged(this);
@@ -630,10 +663,7 @@ void MeshRenderer::OnMeshAssetEvent(AssetEvent event)
     if (!mesh)
         return;
 
-    if (m_nodeGroup >= 0)
-        UpdateBoundsForNodeGroup(mesh);
-    else
-        SetLocalBounds(mesh->GetBoundsMin(), mesh->GetBoundsMax());
+    UpdateBoundsForMeshSelection(mesh);
     SyncMaterialSlotsToMesh();
     MarkMeshBufferDirty();
     if (event == AssetEvent::RuntimeModified)
@@ -1132,22 +1162,56 @@ void MeshRenderer::ComputeLocalBoundsFromInlineVertices()
 
 void MeshRenderer::SetNodeGroup(int32_t group)
 {
+    if (m_nodeGroup == group)
+        return;
     m_nodeGroup = group;
     if (HasMeshAsset()) {
         auto mesh = m_meshAsset.Get();
         if (mesh) {
-            if (m_nodeGroup >= 0)
-                UpdateBoundsForNodeGroup(mesh);
-            else
-                SetLocalBounds(mesh->GetBoundsMin(), mesh->GetBoundsMax());
+            UpdateBoundsForMeshSelection(mesh);
             SyncMaterialSlotsToMesh();
         }
     }
-    NotifyRenderableStateChanged(this);
+    NotifyCollisionGeometryChanged(this);
 }
 
-void MeshRenderer::UpdateBoundsForNodeGroup(const std::shared_ptr<InxMesh> &mesh)
+void MeshRenderer::SetSubmeshIndex(int32_t index)
 {
+    if (index < -1)
+        throw std::invalid_argument("MeshRenderer submesh index must be -1 or non-negative");
+    if (m_submeshIndex == index)
+        return;
+    m_submeshIndex = index;
+    if (auto mesh = m_meshAsset.Get()) {
+        UpdateBoundsForMeshSelection(mesh);
+        SyncMaterialSlotsToMesh();
+    }
+    NotifyCollisionGeometryChanged(this);
+}
+
+void MeshRenderer::SetMeshPivotOffset(const glm::vec3 &offset)
+{
+    if (!std::isfinite(offset.x) || !std::isfinite(offset.y) || !std::isfinite(offset.z))
+        throw std::invalid_argument("MeshRenderer mesh pivot must be finite");
+    if (m_meshPivotOffset == offset)
+        return;
+    m_meshPivotOffset = offset;
+    if (auto mesh = m_meshAsset.Get())
+        UpdateBoundsForMeshSelection(mesh);
+    NotifyCollisionGeometryChanged(this);
+}
+
+void MeshRenderer::UpdateBoundsForMeshSelection(const std::shared_ptr<InxMesh> &mesh)
+{
+    if (m_submeshIndex >= 0 && static_cast<size_t>(m_submeshIndex) < mesh->GetSubMeshes().size()) {
+        const auto &sub = mesh->GetSubMesh(static_cast<uint32_t>(m_submeshIndex));
+        SetLocalBounds(sub.boundsMin + m_meshPivotOffset, sub.boundsMax + m_meshPivotOffset);
+        return;
+    }
+    if (m_nodeGroup < 0) {
+        SetLocalBounds(mesh->GetBoundsMin(), mesh->GetBoundsMax());
+        return;
+    }
     constexpr float INF = std::numeric_limits<float>::max();
     glm::vec3 bmin(INF);
     glm::vec3 bmax(-INF);
@@ -1631,6 +1695,15 @@ bool MeshRenderer::DeserializeDocument(const nlohmann::json &j)
         else
             m_nodeGroup = -1;
 
+        m_submeshIndex = j.contains("submeshIndex") ? j["submeshIndex"].get<int32_t>() : -1;
+        if (j.contains("meshPivotOffset")) {
+            m_meshPivotOffset.x = j["meshPivotOffset"][0].get<float>();
+            m_meshPivotOffset.y = j["meshPivotOffset"][1].get<float>();
+            m_meshPivotOffset.z = j["meshPivotOffset"][2].get<float>();
+        } else {
+            m_meshPivotOffset = glm::vec3(0.0f);
+        }
+
         // Mesh asset GUID (model-file meshes managed by AssetRegistry)
         if (stagedMesh)
             SetMeshAsset(meshGuid, std::move(stagedMesh));
@@ -1685,15 +1758,6 @@ bool MeshRenderer::DeserializeDocument(const nlohmann::json &j)
         // Rendering flags
         m_castShadows = j["castShadows"].get<bool>();
         m_receiveShadows = j["receivesShadows"].get<bool>();
-        m_submeshIndex = j.contains("submeshIndex") ? j["submeshIndex"].get<int32_t>() : -1;
-        if (j.contains("meshPivotOffset")) {
-            m_meshPivotOffset.x = j["meshPivotOffset"][0].get<float>();
-            m_meshPivotOffset.y = j["meshPivotOffset"][1].get<float>();
-            m_meshPivotOffset.z = j["meshPivotOffset"][2].get<float>();
-        } else {
-            m_meshPivotOffset = glm::vec3(0.0f);
-        }
-
         // A resident external mesh owns its imported bounds. Documents without
         // one (including inline geometry) use their required serialized bounds.
         if (!meshAssetResolved) {

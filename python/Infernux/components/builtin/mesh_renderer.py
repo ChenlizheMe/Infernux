@@ -20,7 +20,6 @@ from __future__ import annotations
 from typing import List, Optional, Tuple
 
 from Infernux.components.builtin_component import BuiltinComponent, CppProperty
-from Infernux.components.fields import FieldType
 
 
 def _to_native_material(value):
@@ -36,6 +35,11 @@ def _to_native_material(value):
     if native is not None:
         return native
     return value
+
+
+def _native_mesh_pivot(value):
+    from Infernux.lib import Vector3
+    return Vector3(*value)
 
 
 class MeshRenderer(BuiltinComponent):
@@ -56,17 +60,11 @@ class MeshRenderer(BuiltinComponent):
     _component_category_ = "Rendering"
 
     # ---- Shadow settings ----
-    casts_shadows = CppProperty(
-        "casts_shadows",
-        FieldType.BOOL,
-        default=True,
-        tooltip="Whether this renderer casts shadows",
-    )
-    receives_shadows = CppProperty(
-        "receives_shadows",
-        FieldType.BOOL,
-        default=True,
-        tooltip="Whether this renderer receives shadows",
+    casts_shadows = CppProperty.from_native("MeshRenderer", "casts_shadows")
+    receives_shadows = CppProperty.from_native("MeshRenderer", "receives_shadows")
+    submesh_index = CppProperty.from_native("MeshRenderer", "submesh_index")
+    mesh_pivot_offset = CppProperty.from_native(
+        "MeshRenderer", "mesh_pivot_offset", set_converter=_native_mesh_pivot,
     )
 
     # ------------------------------------------------------------------

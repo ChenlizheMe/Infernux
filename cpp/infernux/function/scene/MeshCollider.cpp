@@ -530,12 +530,34 @@ bool MeshCollider::CollectMeshGeometry(std::vector<glm::vec3> &outVertices, std:
     if (mr && mr->HasMeshAsset()) {
         auto mesh = mr->GetMeshAssetRef().Get();
         if (mesh && !mesh->GetVertices().empty() && mesh->GetIndices().size() >= 3) {
-            outVertices.reserve(mesh->GetVertices().size());
-            for (const auto &vertex : mesh->GetVertices()) {
-                outVertices.push_back(vertex.pos);
+            // Match the renderer's selection, not the complete source model.
+            // Compact selected vertices as well: convex cooking consumes all
+            // supplied positions, including ones not referenced by triangles.
+            const auto geometry = mesh->GetGeometrySnapshot();
+            std::unordered_map<uint32_t, uint32_t> selectedVertices;
+            const auto append = [&](size_t start, size_t count, const glm::vec3 &pivot) {
+                for (size_t offset = 0; offset < count; ++offset) {
+                    const uint32_t source = geometry->indices.at(start + offset);
+                    const auto [entry, inserted] =
+                        selectedVertices.emplace(source, static_cast<uint32_t>(outVertices.size()));
+                    if (inserted)
+                        outVertices.push_back(geometry->vertices.at(source).pos + pivot);
+                    outIndices.push_back(entry->second);
+                }
+            };
+            const auto &subMeshes = geometry->subMeshes;
+            const int32_t selectedSubmesh = mr->GetSubmeshIndex();
+            if (subMeshes.empty()) {
+                append(0, geometry->indices.size(), glm::vec3(0));
+            } else if (selectedSubmesh >= 0 && static_cast<size_t>(selectedSubmesh) < subMeshes.size()) {
+                const auto &sub = subMeshes[selectedSubmesh];
+                append(sub.indexStart, sub.indexCount, mr->GetMeshPivotOffset());
+            } else {
+                for (const auto &sub : subMeshes)
+                    if (mr->GetNodeGroup() < 0 || static_cast<int32_t>(sub.nodeGroup) == mr->GetNodeGroup())
+                        append(sub.indexStart, sub.indexCount, glm::vec3(0));
             }
-            outIndices = mesh->GetIndices();
-            return true;
+            return !outIndices.empty();
         }
     }
 
