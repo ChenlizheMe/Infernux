@@ -4,6 +4,7 @@
 #include "RhiQuery.h"
 #include "RhiSubmission.h"
 #include <functional>
+#include <memory>
 
 namespace infernux::rhi
 {
@@ -25,7 +26,8 @@ struct ComputeQueueStatistics
 };
 
 /// Borrowed encoders, valid only during the synchronous recording callback.
-/// Resources remain caller-owned until the returned submission completes.
+/// Resources must remain alive until completion, either through the caller or
+/// the optional submission-owned resource bundle.
 class ComputeRecordingContext
 {
   public:
@@ -45,7 +47,8 @@ class ComputeQueue
   public:
     using Recorder = std::function<bool(ComputeRecordingContext &)>;
     virtual ~ComputeQueue() = default;
-    [[nodiscard]] virtual SubmissionTicket Submit(const Recorder &record) = 0;
+    /// Optional submission-owned resources retire with the existing queue slot.
+    [[nodiscard]] virtual SubmissionTicket Submit(const Recorder &record, std::shared_ptr<void> resources = {}) = 0;
     /// These accept this queue's tickets, including tickets from reused slots.
     virtual void Wait(SubmissionTicket ticket) = 0;
     [[nodiscard]] virtual bool IsComplete(SubmissionTicket ticket) = 0;

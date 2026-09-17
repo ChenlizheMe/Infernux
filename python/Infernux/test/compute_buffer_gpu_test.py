@@ -13,6 +13,34 @@ import Infernux as inx
 from Infernux.lib import _Infernux as native_api
 
 
+def verify_async_readback() -> None:
+    expected = np.arange(8192, dtype=np.float32)
+    values = inx.buffer(shape=len(expected), dtype=np.float32, device="gpu", data=expected)
+    try:
+        for _ in range(12):
+            abandoned = values.get_data_async()
+            before = inx.compute.statistics()
+            assert abandoned.cancel()
+            assert abandoned.done and abandoned.cancelled
+            assert not abandoned.cancel()
+            after = inx.compute.statistics()
+            assert after.wait_count == before.wait_count
+            assert after.host_map_count == before.host_map_count
+            try:
+                abandoned.get_data()
+            except RuntimeError as error:
+                assert "cancelled" in str(error)
+            else:
+                raise AssertionError("Cancelled result remained readable")
+        retained = values.get_data_async(offset=17, count=257)
+        values.close()
+        np.testing.assert_array_equal(retained.get_data().numpy(), expected[17:274])
+        assert retained.done and not retained.cancelled
+        assert not retained.cancel()
+    finally:
+        values.close()
+
+
 def main() -> int:
     with tempfile.TemporaryDirectory(prefix="infernux-compute-buffer-") as root:
         project = Path(root)
@@ -33,6 +61,7 @@ def main() -> int:
                 print(f"Compute buffer Vulkan test skipped: {exception}")
                 return 77
 
+            verify_async_readback()
             expected = np.arange(36, dtype=np.float32).reshape(12, 3)
             values = inx.buffer(shape=12, dtype=inx.vector3, device="gpu", data=expected)
             assert values.nbytes == expected.nbytes
@@ -124,6 +153,12 @@ void main() {
             sparse_kernel.wait()
             sparse_kernel = None
             scale.close()
+            # An abandoned request also retires correctly when shutdown, not a
+            # subsequent frame, is the next queue completion boundary.
+            shutdown_source = inx.buffer(shape=32, dtype=np.int32, device="gpu", data=np.arange(32, dtype=np.int32))
+            shutdown_request = shutdown_source.get_data_async()
+            shutdown_source.close()
+            assert shutdown_request.cancel()
         finally:
             if kernel is not None:
                 kernel.wait()

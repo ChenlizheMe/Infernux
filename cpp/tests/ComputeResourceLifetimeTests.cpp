@@ -5,6 +5,7 @@
 #endif
 #include <cassert>
 #include <cstring>
+#include <map>
 #include <optional>
 #include <set>
 #include <stdexcept>
@@ -132,21 +133,27 @@ class TestQueue final : public ComputeQueue
   public:
     uint64_t submissions = 0;
     uint64_t waits = 0;
-    SubmissionTicket Submit(const Recorder &) override
+    bool complete = true;
+    std::map<uint64_t, std::shared_ptr<void>> retained;
+    SubmissionTicket Submit(const Recorder &, std::shared_ptr<void> resources = {}) override
     {
+        retained.emplace(submissions + 1, std::move(resources));
         return {1, QueueRole::Compute, ++submissions};
     }
     void Wait(SubmissionTicket ticket) override
     {
         assert(ticket.IsValid());
         ++waits;
+        retained.erase(retained.begin(), retained.upper_bound(ticket.serial));
     }
     bool IsComplete(SubmissionTicket) override
     {
-        return true;
+        return complete;
     }
     void Collect() override
     {
+        if (complete)
+            retained.clear();
     }
     bool SetProfilingEnabled(bool) override
     {
@@ -212,4 +219,23 @@ int main()
     buffer.reset();
     assert(device.live.empty());
     assert(originalQueue.waits > 1 && replacementQueue.waits == 0);
+
+    // Abandoning a pending readback must neither wait nor release either GPU
+    // allocation. The existing queue owns both until its completion boundary.
+    TestQueue pendingQueue;
+    pendingQueue.complete = false;
+    ComputeHost pendingHost(device, pendingQueue);
+    auto pendingSource = std::make_shared<ComputeBuffer>(pendingHost, ComputeBufferDesc{4});
+    auto pendingRead = pendingSource->GetDataAsync(0, 4);
+    std::weak_ptr<ComputeBuffer> sourceLifetime = pendingSource;
+    pendingSource.reset();
+    pendingRead.reset();
+    assert(pendingQueue.waits == 0);
+    assert(!sourceLifetime.expired() && device.live.size() == 2);
+    pendingQueue.Collect();
+    assert(!sourceLifetime.expired() && device.live.size() == 2);
+    pendingQueue.complete = true;
+    pendingQueue.Collect();
+    assert(sourceLifetime.expired() && device.live.empty());
+    assert(pendingQueue.waits == 0);
 }

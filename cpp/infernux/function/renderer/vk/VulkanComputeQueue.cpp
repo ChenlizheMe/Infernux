@@ -128,6 +128,8 @@ void VulkanComputeQueue::Complete(uint32_t index)
     slot.ticket = {};
     slot.epoch = rhi::InvalidSubmissionSerial;
     slot.submission = {};
+    // Publish completion before releasing owners whose older tickets may be queried.
+    slot.resources.reset();
 }
 
 uint32_t VulkanComputeQueue::Find(rhi::SubmissionTicket ticket) const
@@ -220,7 +222,7 @@ uint64_t VulkanComputeQueue::GetPendingSubmissionCount() const noexcept
         std::count_if(m_slots.begin(), m_slots.end(), [](const Slot &slot) { return slot.ticket.IsValid(); }));
 }
 
-rhi::SubmissionTicket VulkanComputeQueue::Submit(const Recorder &record)
+rhi::SubmissionTicket VulkanComputeQueue::Submit(const Recorder &record, std::shared_ptr<void> resources)
 {
     if (!m_context || !record)
         throw std::invalid_argument("Compute submission requires an initialized host and recorder");
@@ -274,6 +276,7 @@ rhi::SubmissionTicket VulkanComputeQueue::Submit(const Recorder &record)
     }
     slot.ticket = result.completionTicket;
     slot.submission = result;
+    slot.resources = std::move(resources);
     const auto submitEnd = std::chrono::steady_clock::now();
     RecordSubmission(std::chrono::duration<double, std::milli>(submitEnd - submitBegin).count());
     if (m_timestamps)

@@ -199,33 +199,30 @@ std::shared_ptr<ComputeReadback> ComputeBuffer::GetDataAsync(uint64_t offset, ui
 
 ComputeReadback::ComputeReadback(ComputeHost &host, std::shared_ptr<ComputeBuffer> source, uint64_t offset,
                                  uint64_t byteSize)
-    : m_host(host.device, host.queue), m_source(std::move(source)), m_byteSize(byteSize)
+    : m_host(host.device, host.queue), m_storage(std::make_shared<Storage>()), m_byteSize(byteSize)
 {
-    if (!m_source || !m_source->GetHost().SharesServicesWith(host))
+    if (!source || !source->GetHost().SharesServicesWith(host))
         throw std::invalid_argument("Compute readback source must belong to its host");
-    if (byteSize == 0 || offset > m_source->GetByteSize() || byteSize > m_source->GetByteSize() - offset)
+    if (byteSize == 0 || offset > source->GetByteSize() || byteSize > source->GetByteSize() - offset)
         throw std::out_of_range("Compute readback range is invalid");
-    m_staging = CreateBufferResource(host.device, {byteSize, BufferUsageFlags::TransferDestination,
-                                                   BufferMemory::Readback, nullptr, 0, kComputeBufferQueues});
+    m_storage->source = std::move(source);
+    m_storage->staging = CreateBufferResource(host.device, {byteSize, BufferUsageFlags::TransferDestination,
+                                                            BufferMemory::Readback, nullptr, 0, kComputeBufferQueues});
     host.queue.RecordStagingAllocation();
-    m_ticket = host.queue.Submit([this, offset, byteSize](ComputeRecordingContext &context) {
-        context.PipelineBarrier(PipelineStage::AllCommands, Access::MemoryWrite, PipelineStage::Transfer,
-                                Access::TransferRead);
-        context.Transfer().CopyBuffer(m_source->GetBuffer(), m_staging->GetBuffer(), {offset, 0, byteSize});
-        context.PipelineBarrier(PipelineStage::Transfer, Access::TransferWrite, PipelineStage::Host, Access::HostRead);
-        return true;
-    });
+    m_ticket = host.queue.Submit(
+        [this, offset, byteSize](ComputeRecordingContext &context) {
+            context.PipelineBarrier(PipelineStage::AllCommands, Access::MemoryWrite, PipelineStage::Transfer,
+                                    Access::TransferRead);
+            context.Transfer().CopyBuffer(m_storage->source->GetBuffer(), m_storage->staging->GetBuffer(),
+                                          {offset, 0, byteSize});
+            context.PipelineBarrier(PipelineStage::Transfer, Access::TransferWrite, PipelineStage::Host,
+                                    Access::HostRead);
+            return true;
+        },
+        m_storage);
     if (!m_ticket.IsValid())
         throw std::runtime_error("Failed to submit compute readback");
     host.queue.RecordReadback(byteSize);
-}
-
-ComputeReadback::~ComputeReadback()
-{
-    try {
-        Wait();
-    } catch (...) {
-    }
 }
 
 bool ComputeReadback::IsComplete()
@@ -250,7 +247,7 @@ std::vector<uint8_t> ComputeReadback::GetData()
 {
     Wait();
     std::vector<uint8_t> bytes(static_cast<size_t>(m_byteSize));
-    if (!m_host.device.ReadBuffer(m_staging->GetBuffer(), 0, bytes.data(), m_byteSize))
+    if (!m_host.device.ReadBuffer(m_storage->staging->GetBuffer(), 0, bytes.data(), m_byteSize))
         throw std::runtime_error("Failed to read completed compute readback storage");
     m_host.queue.RecordHostMap();
     return bytes;

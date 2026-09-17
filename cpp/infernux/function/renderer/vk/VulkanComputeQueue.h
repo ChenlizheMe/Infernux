@@ -21,7 +21,7 @@ class VulkanComputeQueue final : public rhi::ComputeQueue
     {
         return m_context != nullptr;
     }
-    rhi::SubmissionTicket Submit(const Recorder &record) override;
+    rhi::SubmissionTicket Submit(const Recorder &record, std::shared_ptr<void> resources = {}) override;
     void Wait(rhi::SubmissionTicket ticket) override;
     bool IsComplete(rhi::SubmissionTicket ticket) override;
     void Collect() override;
@@ -52,6 +52,7 @@ class VulkanComputeQueue final : public rhi::ComputeQueue
         rhi::SubmissionTicket ticket;
         rhi::SubmissionSerial epoch = rhi::InvalidSubmissionSerial;
         VulkanSubmissionExecutor::ExecuteResult submission;
+        std::shared_ptr<void> resources;
     };
     void Complete(uint32_t index);
     uint32_t Find(rhi::SubmissionTicket ticket) const;

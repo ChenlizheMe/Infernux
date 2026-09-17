@@ -316,6 +316,51 @@ def test_cpu_buffer_async_readback_is_an_immediate_exact_snapshot():
     output = inx.buffer(shape=3, dtype=np.int32, device="cpu")
     assert readback.get_data(output) is output
     np.testing.assert_array_equal(output.numpy(), [2, 3, 4])
+    assert not readback.cancel()
+    assert not readback.cancelled
+
+
+def test_readback_cancel_abandons_without_polling_or_fetching():
+    import weakref
+    from Infernux.compute import Readback
+
+    class Pending:
+        @property
+        def done(self):
+            pytest.fail("cancel must not poll the GPU")
+
+        def get_bytes(self):
+            pytest.fail("cancel must not fetch the GPU result")
+
+    task = Pending()
+    reference = weakref.ref(task)
+    values = inx.buffer(shape=1, dtype=np.int32, device="cpu")
+    readback = Readback(values._dtype, (1,), task=task)
+    del task
+    assert readback.cancel()
+    assert reference() is None
+    assert readback.cancelled and readback.done
+    assert not readback.cancel()
+    with pytest.raises(RuntimeError, match="cancelled"):
+        readback.get_data()
+
+
+def test_native_readback_abandonment_and_source_release_preserve_gpu_data(engine):
+    host = engine._acquire_compute_host()
+    expected = np.arange(1024, dtype=np.int32).tobytes()
+    for _ in range(12):
+        source = host.create_buffer(1024, "int32")
+        source.set_bytes(expected)
+        abandoned = source.get_bytes_async(len(expected))
+        before = host.get_statistics()
+        del abandoned
+        after = host.get_statistics()
+        assert after["wait_count"] == before["wait_count"]
+        assert after["host_map_count"] == before["host_map_count"]
+        retained = source.get_bytes_async(len(expected))
+        del source
+        assert retained.get_bytes() == expected
+        del retained
 
 
 def test_buffer_element_ranges_fill_and_reusable_output():

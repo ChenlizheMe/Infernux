@@ -661,6 +661,8 @@ class Readback:
 
     ``done`` only polls the exact GPU submission. ``get_data`` is the single
     completion boundary and returns a CPU Buffer; no stale frame is exposed.
+    ``cancel`` abandons the result without waiting; submitted GPU work completes
+    normally and its storage retires with the engine queue.
     """
 
     def __init__(self, dtype: _BufferDType, shape: tuple[int, ...], *, task=None,
@@ -670,12 +672,32 @@ class Readback:
         self._task = task
         self._result = immediate
         self._host = host
+        self._cancelled = False
 
     @property
     def done(self) -> bool:
-        return self._result is not None or bool(self._task.done)
+        return self._cancelled or self._result is not None or bool(self._task.done)
+
+    @property
+    def cancelled(self) -> bool:
+        return self._cancelled
+
+    def cancel(self) -> bool:
+        """Abandon an unconsumed result, not the submitted GPU commands.
+
+        Returns False if already cancelled or if a CPU result is available.
+        No polling, waiting or device-to-host mapping is performed.
+        """
+        if self._cancelled or self._result is not None:
+            return False
+        self._cancelled = True
+        self._task = None
+        self._host = None
+        return True
 
     def get_data(self, out: Buffer | None = None) -> Buffer:
+        if self._cancelled:
+            raise RuntimeError("Readback result was cancelled")
         if self._result is None:
             payload = self._task.get_bytes()
             result = Buffer(shape=self._shape, dtype=self._dtype, device="cpu")

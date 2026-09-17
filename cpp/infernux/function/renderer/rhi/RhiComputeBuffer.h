@@ -107,7 +107,7 @@ class ComputeReadback final
 {
   public:
     ComputeReadback(ComputeHost &host, std::shared_ptr<ComputeBuffer> source, uint64_t offset, uint64_t byteSize);
-    ~ComputeReadback();
+    ~ComputeReadback() = default;
 
     ComputeReadback(const ComputeReadback &) = delete;
     ComputeReadback &operator=(const ComputeReadback &) = delete;
@@ -122,8 +122,12 @@ class ComputeReadback final
 
   private:
     ComputeHost m_host;
-    std::shared_ptr<ComputeBuffer> m_source;
-    std::unique_ptr<BufferResource> m_staging;
+    struct Storage
+    {
+        std::shared_ptr<ComputeBuffer> source;
+        std::unique_ptr<BufferResource> staging;
+    };
+    std::shared_ptr<Storage> m_storage;
     SubmissionTicket m_ticket;
     uint64_t m_byteSize = 0;
     bool m_complete = false;
