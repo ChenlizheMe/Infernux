@@ -9,12 +9,15 @@ import dis
 import inspect
 import weakref
 from types import CodeType, FunctionType
+from time import perf_counter
 
-from numba.core import compiler, sigutils, types, utils
+from numba.core import compiler, config, sigutils, types, utils
 from numba.core.compiler_lock import global_compiler_lock
 from numba.core.cpu import CPUContext
 from numba.core.registry import CPUDispatcher, CPUTarget, cpu_target
 from numba.core.runtime import rtsys
+
+from Infernux.jit_runtime import CpuCompilationStatistics, CpuPassTiming, CpuSpecializationStatistics
 
 
 _MAX_CPU_SPECIALIZATIONS = 64
@@ -73,6 +76,7 @@ class _OwnedDispatcher(CPUDispatcher):
         # Keep CPUDispatcher's constructor contract: its serializer rebuilds
         # this class with positional locals/targetoptions in another process.
         self.targetdescr = _OwnedTarget()
+        self._publication_stats = {}
         options = {**(targetoptions or {}), "nopython": True}
         super().__init__(py_func, locals, options, pipeline_class)
 
@@ -106,11 +110,17 @@ class _OwnedDispatcher(CPUDispatcher):
         # Do not add provisional code to an engine containing callable code.
         # This also isolates object files loaded from the on-disk cache.
         previous = self.targetctx
+        started = perf_counter()
+        cache_hits = self._cache_hits[sig]
+        optimization_level = "max" if config.OPT.is_opt_max else str(int(config.OPT))
         stage = _OwnedContext(self.typingctx, "cpu")
         stage._compiling_owner = weakref.ref(self)
         self.targetctx = self.targetdescr._owned_context = stage
+        succeeded = False
         try:
-            return super().compile(sig)
+            result = super().compile(sig)
+            succeeded = True
+            return result
         except BaseException:
             # A cache-write error can occur *after* add_overload published the
             # entry point. It is then live and must not be closed here.
@@ -121,6 +131,66 @@ class _OwnedDispatcher(CPUDispatcher):
             # Restore the enclosing context, including for recursive typing.
             # Successful results retain their own context/library/engine.
             self.targetctx = self.targetdescr._owned_context = previous
+            if args in self.overloads:
+                # Bounded by the actual overload table. Keep only scalar facts,
+                # never exception stacks or another code/library owner.
+                self._publication_stats[args] = (
+                    (perf_counter() - started) * 1000, succeeded,
+                    self._cache_hits[sig] > cache_hits, optimization_level,
+                )
+
+
+@global_compiler_lock
+def compilation_statistics(implementations, *, function_name, selected_mode, last_diagnostic, decisions):
+    """Detached snapshot; only explicit queries walk published code libraries.
+
+    Owned mappings are deduplicated across the supplied implementations.
+    Reachable mappings also include retained linking libraries (which may be
+    shared by other functions). Neither value measures LLVM IR, RSS or the
+    transient compilation peak, and reachable totals cannot be summed across
+    separate function reports without double-counting shared engines.
+    """
+    from llvmlite.binding.executionengine import ExecutionEngine
+
+    available = hasattr(ExecutionEngine, "memory_statistics")
+    owned = {}
+    reachable = {}
+    visited = set()
+
+    def visit(library):
+        if id(library) in visited:
+            return
+        visited.add(id(library))
+        engine = library._codegen._engine._ee
+        reachable[id(engine)] = engine
+        for dependency in library._linking_libraries:
+            visit(dependency)
+
+    rows = []
+    for label, dispatcher in implementations:
+        for args, result in dispatcher.overloads.items():
+            elapsed, succeeded, cache_hit, level = dispatcher._publication_stats[args]
+            engine = result.library._codegen._engine._ee
+            owned[id(engine)] = engine
+            visit(result.library)
+            memory = engine.memory_statistics if available else None
+            # A loaded object file did not execute the optimizer in this
+            # process; do not present cached timings as this run's work.
+            pipelines = () if cache_hit else (result.metadata or {}).get("pipeline_times", {}).items()
+            timings = tuple(CpuPassTiming(pipeline, name, (value.init + value.run + value.finalize) * 1000)
+                            for pipeline, passes in pipelines for name, value in passes.items())
+            rows.append(CpuSpecializationStatistics(
+                label, str(result.signature), elapsed, succeeded, cache_hit, level,
+                bool(result.objectmode), timings,
+                memory["mapped_bytes"] if memory is not None else None,
+                memory["peak_mapped_bytes"] if memory is not None else None,
+            ))
+    return CpuCompilationStatistics(
+        function_name, selected_mode, last_diagnostic, tuple(decisions), tuple(rows),
+        _MAX_CPU_SPECIALIZATIONS, available, len(owned), len(reachable),
+        sum(engine.memory_statistics["mapped_bytes"] for engine in owned.values()) if available else None,
+        sum(engine.memory_statistics["mapped_bytes"] for engine in reachable.values()) if available else None,
+    )
 
 
 def _global_names(code):

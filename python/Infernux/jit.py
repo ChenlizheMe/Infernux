@@ -18,6 +18,11 @@ import os
 import sys
 
 from Infernux._jit_kernels import JIT_AVAILABLE, njit as _njit, warmup
+from Infernux.jit_runtime import (
+    CpuCompilationStatistics as Statistics,
+    CpuPassTiming as PassTiming,
+    CpuSpecializationStatistics as SpecializationStatistics,
+)
 
 
 _VECTOR_FIELDS = {
@@ -201,4 +206,38 @@ def compile(fn=None, **options):
     return _CompiledCpuFunction(_njit(fn, **options))
 
 
-__all__ = ["JIT_AVAILABLE", "compile", "warmup"]
+def statistics(fn) -> Statistics:
+    """Snapshot a CPU compilation without compiling or executing the function.
+
+    Preparation time includes dependency compilation/cache loading, excluding
+    waiting for the compiler lock; it is not steady-state execution time.
+    Pass timings describe cold compilation only. The report owns no native
+    code and remains readable after the function has retired.
+
+    Memory counts require the Infernux llvmlite fork, otherwise they are None.
+    They measure mapped code/data including allocator padding, not IR or RSS.
+    Reachable memory includes shared linking dependencies and cannot be summed
+    across function reports. This reports usage, not a memory-budget guarantee.
+    """
+    if not isinstance(fn, _CompiledCpuFunction):
+        raise TypeError("jit.statistics expects a function returned by jit.compile")
+    from Infernux._jit_backend import compilation_statistics
+
+    compiled = fn._compiled
+    if getattr(compiled, "auto_parallel", False):
+        implementations = [("serial", compiled.serial)]
+        if compiled.parallel is not compiled.serial:
+            implementations.append(("parallel", compiled.parallel))
+        mode = compiled.selected_mode
+        diagnostic = compiled.last_diagnostic
+        decisions = tuple((repr(key), value) for key, value in compiled.decisions.items())
+    else:
+        mode = "parallel" if compiled.targetoptions.get("parallel") else "serial"
+        implementations = [(mode, compiled)]
+        diagnostic = "explicit CPU implementation"
+        decisions = ()
+    return compilation_statistics(implementations, function_name=fn.__qualname__,
+                                  selected_mode=mode, last_diagnostic=diagnostic, decisions=decisions)
+
+
+__all__ = ["JIT_AVAILABLE", "compile", "warmup", "statistics", "Statistics", "PassTiming", "SpecializationStatistics"]

@@ -532,6 +532,42 @@ class DispatchDecision:
     samples: int = 0
 
 
+@dataclass(frozen=True, slots=True)
+class CpuPassTiming:
+    pipeline: str
+    name: str
+    total_ms: float
+
+
+@dataclass(frozen=True, slots=True)
+class CpuSpecializationStatistics:
+    implementation: str
+    signature: str
+    preparation_ms: float
+    preparation_succeeded: bool
+    cache_hit: bool
+    optimization_level: str
+    object_mode: bool
+    pipeline_timings: tuple[CpuPassTiming, ...]
+    mapped_bytes: int | None
+    peak_mapped_bytes: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class CpuCompilationStatistics:
+    function_name: str
+    selected_mode: str
+    last_diagnostic: str
+    decisions: tuple[tuple[str, DispatchDecision], ...]
+    specializations: tuple[CpuSpecializationStatistics, ...]
+    specialization_limit_per_implementation: int
+    memory_statistics_available: bool
+    owned_engine_count: int
+    reachable_engine_count: int
+    owned_mapped_bytes: int | None
+    reachable_mapped_bytes: int | None
+
+
 __all__ = [
     "BoundedLRU",
     "DispatchDecision",

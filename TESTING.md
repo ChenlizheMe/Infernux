@@ -74,6 +74,25 @@ The proof currently covers single-loop functions, not backend loop fusion.
 Cooked bytecode embeds the same proof, and warmup preserves stride-trick view
 ownership rather than silently copying it into an unrelated dense array.
 
+`inx.jit.statistics(function)` returns an immutable detached snapshot of actual
+specializations, preparation/cache-load time, cold compiler pass timings and
+serial/parallel decisions. With the CPU fork it also reads actual MCJIT mapped
+code/data bytes; stock llvmlite reports unavailable (`None`), not zero or an IR
+size estimate. Owned totals deduplicate the function's implementation engines;
+reachable totals include linking dependencies shared with other functions and
+must not be added across reports. They exclude LLVM IR/RSS and do not enforce a
+memory budget. Cached objects have no current-process optimizer pass timings.
+Reading a report never compiles/runs the function and does not keep its code
+alive. Statistics run on explicit request under the existing compiler lock,
+not on the per-frame dispatch path.
+
+```python
+report = inx.jit.statistics(update_particles)
+for specialization in report.specializations:
+    print(specialization.signature, specialization.preparation_ms,
+          specialization.cache_hit, specialization.mapped_bytes)
+```
+
 Install the developer packaging tools (`setuptools`, `wheel`, and `delvewheel`
 on Windows or `auditwheel` on Linux). Make the matching toolchain's dependency
 DLLs discoverable on `PATH` on Windows. With LLVM 22's CMake package available in `CMAKE_PREFIX_PATH`, build the pinned
@@ -87,7 +106,7 @@ Install the wheel into an isolated validation directory, put that directory
 first on `PYTHONPATH`, and run `python -m llvmlite.tests`, followed by:
 
 ```sh
-python -m pytest python/test/test_jit.py python/test/test_jit_alias.py python/test/test_jit_hir.py python/test/test_jit_runtime.py python/test/test_jit_code_ownership.py python/test/test_jit_disk_cache.py python/test/test_compute.py -q
+python -m pytest python/test/test_jit.py python/test/test_jit_alias.py python/test/test_jit_statistics.py python/test/test_jit_hir.py python/test/test_jit_runtime.py python/test/test_jit_code_ownership.py python/test/test_jit_disk_cache.py python/test/test_compute.py -q
 ```
 
 Run the fork's source metadata checks from `external/llvmlite_for_infernux`
