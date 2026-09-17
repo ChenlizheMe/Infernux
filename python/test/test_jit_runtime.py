@@ -73,6 +73,59 @@ def test_compiler_fingerprint_tracks_cpu_feature_configuration(monkeypatch):
     assert first != second
 
 
+def test_compiler_fingerprint_tracks_transitive_helper_closure_values():
+    def make_leaf(offset):
+        def leaf(value):
+            return value + offset
+        return leaf
+
+    leaf = make_leaf(2)
+
+    def helper(value):
+        return leaf(value)
+
+    def kernel(value):
+        return helper(value)
+
+    first = compiler_fingerprint(kernel)
+    leaf = make_leaf(9)
+    assert compiler_fingerprint(kernel) != first
+
+
+def test_compiler_fingerprint_handles_recursive_helpers_without_identity_keys():
+    source = "def left(x): return right(x - 1) if x > 0 else FACTOR\n" \
+             "def right(x): return left(x)\n"
+
+    def publish(factor):
+        namespace = {"__name__": "recursive_jit_dependencies", "FACTOR": factor}
+        exec(source, namespace)
+        return namespace["left"]
+
+    assert compiler_fingerprint(publish(2)) == compiler_fingerprint(publish(2))
+    assert compiler_fingerprint(publish(2)) != compiler_fingerprint(publish(7))
+
+
+def test_compiler_fingerprint_ignores_unreferenced_module_values():
+    def publish(unused):
+        namespace = {"__name__": "jit_relevant_constants", "FACTOR": 2, "UNUSED": unused}
+        exec("def kernel(value): return value * FACTOR", namespace)
+        return namespace["kernel"]
+
+    assert compiler_fingerprint(publish(3)) == compiler_fingerprint(publish(9))
+
+
+def test_compiler_fingerprint_tracks_helper_defaults():
+    def helper(value, offset=2):
+        return value + offset
+
+    def kernel(value):
+        return helper(value)
+
+    first = compiler_fingerprint(kernel)
+    helper.__defaults__ = (5,)
+    assert compiler_fingerprint(kernel) != first
+
+
 def test_runtime_signature_separates_shape_dtype_layout_and_threads():
     small = np.zeros((16, 2), dtype=np.float32)
     large = np.zeros((100_000, 2), dtype=np.float32)

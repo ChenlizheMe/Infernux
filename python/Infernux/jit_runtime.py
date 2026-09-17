@@ -81,6 +81,16 @@ def _stable_value(value: Any, *, depth: int = 0) -> Any:
         return value
     if isinstance(value, bytes):
         return {"bytes_sha256": hashlib.sha256(value).hexdigest(), "size": len(value)}
+    numpy = sys.modules.get("numpy")
+    if numpy is not None and isinstance(value, numpy.ndarray):
+        # Numba embeds captured arrays as constants. This is a compile-boundary
+        # identity, never a hash of invocation arguments or a per-frame check.
+        return {
+            "array_dtype": value.dtype.descr,
+            "shape": value.shape,
+            "strides": value.strides,
+            "data": _stable_value(value.tobytes(order="A"), depth=depth + 1),
+        }
     if isinstance(value, (tuple, list)):
         return [_stable_value(item, depth=depth + 1) for item in value]
     if isinstance(value, (set, frozenset)):
@@ -110,6 +120,48 @@ def _stable_value(value: Any, *, depth: int = 0) -> Any:
     }
 
 
+def _compiler_environment(fn: Any) -> list[dict[str, Any]]:
+    """Describe authored helper dependencies once, including recursive graphs."""
+    functions = [fn]
+    indices = {id(fn): 0}
+    nodes = []
+    module = getattr(fn, "__module__", None)
+
+    def capture(value):
+        if inspect.isfunction(value) and value.__module__ == module:
+            identity = id(value)
+            if identity not in indices:
+                indices[identity] = len(functions)
+                functions.append(value)
+            return {"function_ref": indices[identity]}
+        return _stable_value(value)
+
+    for function in functions:
+        code = getattr(function, "__code__", None)
+        closure = {}
+        if code is not None:
+            for name, cell in zip(code.co_freevars, function.__closure__ or ()):
+                try:
+                    value = cell.cell_contents
+                except ValueError:
+                    closure[name] = {"empty_cell": True}
+                else:
+                    closure[name] = capture(value)
+        globals_map = getattr(function, "__globals__", {})
+        nodes.append({
+            "function": _stable_value(function),
+            "defaults": _stable_value(getattr(function, "__defaults__", None)),
+            "kwdefaults": _stable_value(getattr(function, "__kwdefaults__", None)),
+            "closure": closure,
+            "globals": {
+                name: capture(globals_map[name])
+                for name in (code.co_names if code is not None else ())
+                if name in globals_map
+            },
+        })
+    return nodes
+
+
 def compiler_fingerprint(fn: Any, options: MutableMapping[str, Any] | None = None) -> str:
     """Return a stable compiler/cache identity for a Python kernel."""
 
@@ -120,27 +172,6 @@ def compiler_fingerprint(fn: Any, options: MutableMapping[str, Any] | None = Non
         source_ast = ast.dump(ast.parse(inspect.cleandoc(source)), include_attributes=False)
     except (OSError, TypeError, IndentationError, SyntaxError):
         source_ast = None
-
-    closure_values: tuple[Any, ...] = ()
-    closure = getattr(fn, "__closure__", None)
-    if closure:
-        collected: list[Any] = []
-        for cell in closure:
-            try:
-                collected.append(cell.cell_contents)
-            except ValueError:
-                collected.append({"empty_cell": True})
-        closure_values = tuple(collected)
-
-    dependency_values: dict[str, Any] = {}
-    globals_map = getattr(fn, "__globals__", {})
-    if code is not None:
-        for name in code.co_names:
-            if name not in globals_map:
-                continue
-            value = globals_map[name]
-            if callable(value) and getattr(value, "__module__", None) == getattr(fn, "__module__", None):
-                dependency_values[name] = value
 
     runtime_versions: dict[str, Any] = {
         "python": tuple(sys.version_info[:3]),
@@ -165,7 +196,7 @@ def compiler_fingerprint(fn: Any, options: MutableMapping[str, Any] | None = Non
         runtime_versions["numba_threading_layer"] = "uninitialized"
 
     payload = {
-        "compiler_revision": 1,
+        "compiler_revision": 2,
         "module": getattr(fn, "__module__", ""),
         "qualname": getattr(fn, "__qualname__", getattr(fn, "__name__", "")),
         "source_ast": source_ast,
@@ -174,8 +205,7 @@ def compiler_fingerprint(fn: Any, options: MutableMapping[str, Any] | None = Non
         "names": tuple(code.co_names) if code is not None else (),
         "defaults": _stable_value(getattr(fn, "__defaults__", None)),
         "kwdefaults": _stable_value(getattr(fn, "__kwdefaults__", None)),
-        "closure": _stable_value(closure_values),
-        "dependencies": _stable_value(dependency_values),
+        "environment": _compiler_environment(fn),
         "annotations": _stable_value(getattr(fn, "__annotations__", {})),
         "options": _stable_value(dict(options or {})),
         "runtime": runtime_versions,

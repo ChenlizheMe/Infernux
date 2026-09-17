@@ -15,6 +15,55 @@ def _positive_value(value):
 
 class TestPublicJitCompile:
     @pytest.mark.parametrize("auto_parallel", [False, True])
+    def test_warm_calls_do_not_recompute_compiler_identity(self, monkeypatch, auto_parallel):
+        @jit.compile(auto_parallel=auto_parallel)
+        def kernel(value):
+            return value + 3
+
+        assert kernel(2) == 5
+
+        def unexpected_fingerprint(*args, **kwargs):
+            pytest.fail("warm calls must not rescan captured dependencies")
+
+        monkeypatch.setattr(jit_kernels, "compiler_fingerprint", unexpected_fingerprint)
+        assert kernel(4) == 7
+        assert kernel(6) == 9
+
+    @pytest.mark.parametrize("auto_parallel", [False, True])
+    @pytest.mark.parametrize("source", [
+        "def kernel(value): return value * FACTOR",
+        "def leaf(value): return value * FACTOR\n"
+        "def helper(value): return leaf(value)\n"
+        "def kernel(value): return helper(value)",
+    ])
+    def test_republished_module_constants_do_not_reuse_old_machine_code(self, auto_parallel, source):
+        def publish(factor):
+            namespace = {"__name__": "jit_publication_constants", "FACTOR": factor}
+            exec(source, namespace)
+            return jit.compile(auto_parallel=auto_parallel)(namespace["kernel"])
+
+        first = publish(2)
+        assert first(3) == 6
+        second = publish(5)
+        assert second(3) == 15
+        assert first(3) == 6
+
+    @pytest.mark.parametrize("auto_parallel", [False, True])
+    def test_republished_array_constant_tracks_data_hidden_by_numpy_repr(self, auto_parallel):
+        def publish(middle):
+            values = np.zeros(4096, dtype=np.float64)
+            values[2048] = middle
+            namespace = {"__name__": "jit_array_constants", "VALUES": values}
+            exec("def kernel(index): return VALUES[index]", namespace)
+            return jit.compile(auto_parallel=auto_parallel)(namespace["kernel"])
+
+        first = publish(2.0)
+        assert first(2048) == 2.0
+        second = publish(5.0)
+        assert second(2048) == 5.0
+        assert first(2048) == 2.0
+
+    @pytest.mark.parametrize("auto_parallel", [False, True])
     def test_same_vector_retains_aliasing_between_positional_and_keyword_arguments(self, auto_parallel):
         import Infernux as inx
 

@@ -88,12 +88,11 @@ except Exception:
 prange = _numba_prange
 
 
-def _njit_cache_key(fn, kwargs_tag: str = "") -> tuple:
-    """Build a hashable cache key for a @njit function.
+def _njit_cache_key(fn, kwargs_tag: str = "") -> str | None:
+    """Identify compiled code and its captured environment at publication.
 
-    Uses (co_filename, func_name, bytecode_hash, kwargs_tag) so that
-    re-importing the same module reuses the previous compilation as long
-    as the function source hasn't changed.
+    Unchanged publications reuse compiled dispatchers; referenced constants,
+    authored helpers, compiler options and target changes select a new entry.
     """
     if getattr(fn, "__code__", None) is None:
         return None
@@ -121,7 +120,7 @@ def _compile_njit(fn, kwargs):
 
 
 def _compile_njit_cached(fn, kwargs):
-    """Like _compile_njit but reuses a previous result if the bytecode matches."""
+    """Reuse a dispatcher when code, captured dependencies and options match."""
     kwargs_tag = ",".join(f"{k}={v}" for k, v in sorted(kwargs.items()))
     cache_key = _njit_cache_key(fn, kwargs_tag)
     if cache_key and cache_key in _compiled_cache:
