@@ -313,17 +313,19 @@ def map_runtime_ui_pointer(
             # hit is the GameObject mouse target; the closest non-trigger hit
             # is the world-UI occluder. Keep the old 1000-unit mouse range
             # while allowing UI geometry farther away to retain occlusion.
-            hits = list(Physics.raycast_all(
+            # Native RaycastAll already returns ascending distances. Keep its
+            # order rather than copying and sorting the same hits in Python.
+            hits = Physics.raycast_all(
                 ray_origin,
                 ray_direction,
                 max_distance=max(1000.0, furthest),
                 layer_mask=int(camera.culling_mask),
                 query_triggers=True,
-            ) or ())
-            hits.sort(key=lambda value: float(getattr(value, "distance", float("inf"))))
+            )
             scene_hit = next(
                 (value for value in hits
-                 if float(getattr(value, "distance", float("inf"))) <= 1000.0),
+                 if value.distance <= 1000.0
+                 and value.game_object is not None and value.game_object.layer != 2),
                 None,
             )
             occluder = next(
@@ -358,7 +360,7 @@ def map_runtime_ui_pointer(
             )
         scene_hit = Physics.raycast(
             ray_origin, ray_direction, max_distance=1000.0,
-            layer_mask=int(camera.culling_mask), query_triggers=True,
+            layer_mask=int(camera.culling_mask) & ~(1 << 2), query_triggers=True,
         )
 
     result = tuple(positions)

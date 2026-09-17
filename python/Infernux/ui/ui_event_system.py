@@ -355,12 +355,18 @@ class UIEventProcessor:
         epoch,
     ) -> None:
         press_target = state.press_target
+        press_canvas = state.press_canvas
+        drag_target = state.drag_target if state.is_dragging else None
+        state.press_target = None
+        state.press_canvas = None
+        state.drag_target = None
+        state.is_dragging = False
         if press_target is not None:
             event = self._make_event(
                 pointer,
                 hit_position if hit_element is not None else current,
                 delta,
-                state.press_canvas,
+                press_canvas,
                 press_target,
             )
             event.press_position = state.press_position
@@ -380,22 +386,20 @@ class UIEventProcessor:
                 if callable(debug_dispatch):
                     self._last_pointer_debug["persistent_dispatch"] = debug_dispatch()
 
-        if state.is_dragging and state.drag_target is not None:
+        if drag_target is not None:
             event = self._make_event(
-                pointer, current, delta, state.press_canvas, state.drag_target
+                pointer, current, delta, press_canvas, drag_target
             )
             event.press_position = state.press_position
-            self._dispatch_pointer_callback(state.drag_target, "on_end_drag", event, epoch)
-
-        state.press_target = None
-        state.press_canvas = None
-        state.drag_target = None
-        state.is_dragging = False
+            self._dispatch_pointer_callback(drag_target, "on_end_drag", event, epoch)
 
     def _cancel_pointer(
         self, pointer_key: tuple[PointerType, int], epoch
     ) -> None:
         state = self._pointers.pop(pointer_key)
+        self._cancel_pointer_state(pointer_key, state, epoch)
+
+    def _cancel_pointer_state(self, pointer_key, state, epoch) -> None:
         pointer_type, pointer_id = pointer_key
         positions = state.last_canvas_positions
         current = self._xy(positions[0]) if positions else (0.0, 0.0)
@@ -418,9 +422,12 @@ class UIEventProcessor:
     def reset(self) -> None:
         """Cancel every active pointer transaction."""
 
+        if not self._pointers:
+            return
         epoch = current_runtime_epoch()
-        for pointer_key in tuple(self._pointers):
-            self._cancel_pointer(pointer_key, epoch)
+        pointers, self._pointers = self._pointers, {}
+        for pointer_key, state in pointers.items():
+            self._cancel_pointer_state(pointer_key, state, epoch)
 
     def debug_state(self) -> dict:
         """Return the latest transition without polling input each frame."""
@@ -430,6 +437,8 @@ class UIEventProcessor:
     @staticmethod
     def _dispatch_pointer_callback(target, method_name, event, epoch) -> None:
         """Invoke one callback exactly once and propagate user-code failures."""
+        if getattr(target, "_is_destroyed", False):
+            return
 
         callback = resolve_runtime_method(target, method_name, epoch=epoch)
         epoch.require_descriptor(type(target))

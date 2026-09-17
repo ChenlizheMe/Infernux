@@ -56,6 +56,7 @@ class MouseEventDispatcher:
             return
         if hit is _UNSET_HIT:
             hit = Physics.raycast_screen(camera, screen_position, viewport_size,
+                                         layer_mask=int(camera.culling_mask) & ~(1 << 2),
                                          query_triggers=True)
         target = getattr(hit, "game_object", None) if hit is not None else None
         epoch = current_runtime_epoch()

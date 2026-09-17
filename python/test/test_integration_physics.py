@@ -1750,6 +1750,8 @@ class TestRaycast:
 
         hits = Physics.raycast_all(Vector3(0, 50, 0), Vector3(0, -1, 0), 100.0)
         assert len(hits) >= 2  # at least ground + floating box
+        distances = [hit.distance for hit in hits]
+        assert distances == sorted(distances)
 
     def test_static_non_convex_mesh_returns_triangle_identity(self, scene):
         mesh_object = scene.create_primitive(PrimitiveType.Cube, "RaycastTriangleMesh")

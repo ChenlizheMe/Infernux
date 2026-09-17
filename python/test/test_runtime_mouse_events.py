@@ -26,7 +26,7 @@ def test_mouse_dispatcher_matches_enter_over_down_drag_up_button_exit(monkeypatc
     try:
         dispatcher = MouseEventDispatcher()
         for _ in range(5):
-            dispatcher.process(object(), (1, 1), (10, 10))
+            dispatcher.process(SimpleNamespace(culling_mask=0xffffffff), (1, 1), (10, 10))
         assert events == ["on_mouse_enter", "on_mouse_over", "on_mouse_over", "on_mouse_down",
                           "on_mouse_drag", "on_mouse_over", "on_mouse_drag", "on_mouse_over",
                           "on_mouse_up", "on_mouse_up_as_button", "on_mouse_exit"]
@@ -42,3 +42,12 @@ def test_dispatcher_accepts_a_precomputed_hit_without_raycast(monkeypatch):
                         lambda *args, **kwargs: calls.append(True))
     dispatcher.process(object(), (1, 2), (100, 100), hit=hit)
     assert calls == []
+
+
+def test_direct_mouse_query_respects_camera_mask_and_ignore_raycast(monkeypatch):
+    calls = []
+    monkeypatch.setattr("Infernux.engine.runtime_mouse_events.Physics.raycast_screen",
+                        lambda *args, **kwargs: calls.append(kwargs))
+    MouseEventDispatcher().process(SimpleNamespace(culling_mask=5), (1, 2), (100, 100),
+                                   button_state=(False, False, False))
+    assert calls == [dict(layer_mask=1, query_triggers=True)]

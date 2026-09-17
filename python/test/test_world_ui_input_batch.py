@@ -74,7 +74,7 @@ def test_scene_mouse_hit_without_world_plane_intersection(scene, monkeypatch, wo
         include_scene_hit=True,
     )
     assert actual is hit
-    assert queries == [dict(max_distance=1000.0, layer_mask=5, query_triggers=True)]
+    assert queries == [dict(max_distance=1000.0, layer_mask=1, query_triggers=True)]
     assert len(positions) == int(world_ui)
 
 
@@ -85,6 +85,26 @@ def test_no_scene_query_when_input_disabled_or_camera_absent(monkeypatch):
     monkeypatch.setattr(Physics, 'raycast', unexpected)
     assert map_runtime_ui_pointer((), camera(), 0, 0, 1920, 1080) == ()
     assert map_runtime_ui_pointer((), None, 0, 0, 1920, 1080, include_scene_hit=True) == ((), None)
+
+
+def test_ignore_raycast_solid_occludes_world_ui_but_is_not_mouse_target(scene, monkeypatch):
+    from Infernux.physics import Physics
+    control(scene)
+    surfaces = collect_runtime_ui_input_surfaces(scene)
+    blocker = SimpleNamespace(distance=1., game_object=SimpleNamespace(layer=2),
+                              collider=SimpleNamespace(is_trigger=False))
+    target = SimpleNamespace(distance=2., game_object=SimpleNamespace(layer=0),
+                             collider=SimpleNamespace(is_trigger=True))
+    calls = []
+    def query(*args, **kwargs):
+        calls.append(kwargs)
+        return [blocker, target]
+    monkeypatch.setattr(Physics, 'raycast_all', query)
+    positions, hit = map_runtime_ui_pointer(surfaces, camera(mask=5), 0, 0, 1920, 1080,
+                                           include_scene_hit=True)
+    assert hit is target
+    assert math.isnan(positions[0][0])
+    assert calls == [dict(max_distance=1000.0, layer_mask=5, query_triggers=True)]
 
 
 def test_parent_rotation_translation_and_scale_follow_render_pose(scene):

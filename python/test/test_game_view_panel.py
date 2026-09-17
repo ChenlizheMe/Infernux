@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from Infernux.engine.ui.game_view_panel import (
     GameViewPanel,
     _GAME_UI_BUTTON_SEMANTIC_PREFIX,
@@ -68,6 +70,40 @@ class _RenderActivationEngine(_Engine):
 
     def set_game_camera_enabled(self, enabled: bool) -> None:
         self.game_camera_enabled.append(bool(enabled))
+
+
+@pytest.mark.parametrize('transition', ['hidden', 'disabled', 'stopped', 'unfocused'])
+def test_game_input_departure_cancels_ui_and_mouse_capture(monkeypatch, transition):
+    import Infernux.engine.ui.game_view_panel as module
+    from Infernux.acceptance import RuntimeAcceptance
+
+    panel = GameViewPanel(engine=_RenderActivationEngine())
+    resets = []
+    panel._ui_event_processor = SimpleNamespace(reset=lambda: resets.append('ui'))
+    panel._mouse_event_dispatcher = SimpleNamespace(reset=lambda: resets.append('mouse'))
+    panel.set_play_mode_manager(SimpleNamespace(is_playing=transition != 'stopped'))
+    monkeypatch.setattr(module.Input, 'is_cursor_locked', lambda: False)
+    monkeypatch.setattr(module.ClosablePanel, 'get_active_view_id', lambda: 'scene_view' if transition == 'unfocused' else panel.window_id)
+    monkeypatch.setattr(RuntimeAcceptance, 'is_active', classmethod(lambda cls: False))
+    if transition == 'hidden':
+        panel._on_not_visible(None)
+    elif transition == 'disabled':
+        panel.on_disable()
+    else:
+        panel._route_game_input(None, 1920, 1080, False, False, ())
+    assert sorted(resets) == ['mouse', 'ui']
+
+
+def test_ui_exit_failure_still_releases_mouse_capture():
+    panel = GameViewPanel(engine=_RenderActivationEngine())
+    resets = []
+    def fail():
+        raise ValueError('author exit failed')
+    panel._ui_event_processor = SimpleNamespace(reset=fail)
+    panel._mouse_event_dispatcher = SimpleNamespace(reset=lambda: resets.append('mouse'))
+    with pytest.raises(ValueError, match='author exit failed'):
+        panel._reset_pointer_input()
+    assert resets == ['mouse']
 
 
 def test_game_output_preparation_uses_saved_render_pixels_before_visibility(monkeypatch):

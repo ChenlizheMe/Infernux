@@ -385,12 +385,21 @@ class GameViewPanel(EditorPanel):
     def on_disable(self):
         self._commit_pending_view_edits()
         self._set_game_render_active(False)
+        self._reset_pointer_input()
+
+    def _reset_pointer_input(self):
+        # Both consumers must release capture, even if an author's UI exit
+        # callback raises. Preserve the error; never replay the interaction.
+        try:
+            self._ui_event_processor.reset()
+        finally:
+            self._mouse_event_dispatcher.reset()
 
     def _on_not_visible(self, ctx):
         self._commit_pending_view_edits()
         self._was_focused = False
         Input.set_game_focused(False)
-        self._ui_event_processor.reset()
+        self._reset_pointer_input()
         from Infernux.acceptance import RuntimeAcceptance
 
         if RuntimeAcceptance.is_active():
@@ -784,7 +793,7 @@ class GameViewPanel(EditorPanel):
         ):
             self._process_ui_events(target_w, target_h)
         else:
-            self._ui_event_processor.reset()
+            self._reset_pointer_input()
 
     def _render_game_viewport(self, ctx, target_w, target_h, fit_scale):
         """Render the game texture, screen UI, and route input events."""
@@ -1020,6 +1029,7 @@ class GameViewPanel(EditorPanel):
         scene_manager = SceneManager.instance()
         scene = scene_manager.get_active_scene()
         if scene is None:
+            self._reset_pointer_input()
             return
         get_persistent_scene = getattr(
             scene_manager, "get_runtime_persistent_scene", None

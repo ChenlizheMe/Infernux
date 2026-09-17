@@ -111,6 +111,53 @@ def _make_pointer_target():
     return target
 
 
+@pytest.mark.parametrize('reset_all', [False, True])
+def test_ui_failed_release_cannot_leave_pointer_capture(monkeypatch, reset_all):
+    target = _make_pointer_target()
+    canvas = _Canvas(target)
+    def fail(self, event):
+        self.events.append('failed-up')
+        raise ValueError('author release failed')
+    monkeypatch.setattr(_PointerProbe, 'on_pointer_up', fail)
+    publication = publish_runtime_dispatch_epoch((_PointerProbe,))
+    publication.commit()
+    try:
+        processor = UIEventProcessor()
+        processor.process_pointers([canvas], tuple(
+            UIPointerFrame(i, PointerType.Touch, ((0., 0.),), down=True, held=True)
+            for i in (10, 11)), .016)
+        with pytest.raises(ValueError, match='author release failed'):
+            if reset_all:
+                processor.reset()
+            else:
+                processor.process_pointers([canvas], (
+                    UIPointerFrame(10, PointerType.Touch, ((0., 0.),), up=True),), .016)
+        if reset_all:
+            assert processor._pointers == {}
+            processor.reset()
+        else:
+            state = processor._pointers[(PointerType.Touch, 10)]
+            assert state.press_target is None and state.drag_target is None
+        assert target.events.count('failed-up') == 1
+    finally:
+        publication.rollback()
+
+
+def test_ui_destroyed_target_is_not_called_during_reset():
+    target = _make_pointer_target()
+    publication = publish_runtime_dispatch_epoch((_PointerProbe,))
+    publication.commit()
+    try:
+        processor = UIEventProcessor()
+        processor.process([_Canvas(target)], [(0., 0.)], True, False, True, (0., 0.), .016)
+        target._is_destroyed = True
+        processor.reset()
+        assert target.events == ['enter', 'down']
+        assert processor._pointers == {}
+    finally:
+        publication.rollback()
+
+
 def test_ui_process_routes_all_pointer_hooks_through_one_event_path():
     target = _make_pointer_target()
     canvas = _Canvas(target)
