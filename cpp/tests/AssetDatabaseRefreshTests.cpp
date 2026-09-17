@@ -10,6 +10,7 @@
 #include <function/resources/InxTexture/TextureLoader.h>
 #include <platform/filesystem/InxPath.h>
 
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -503,6 +504,80 @@ void TestRuntimeAssetCatalogResolvesBuiltInArchiveResources()
     std::filesystem::remove_all(root);
 }
 
+void TestModelSettingsPublishOnlyAfterSuccessfulImport()
+{
+    const auto root = std::filesystem::temp_directory_path() /
+                      ("infernux-model-settings-publication-" +
+                       std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    const auto model = root / "Assets" / "Model.obj";
+    const std::string geometry = "o Triangle\nv 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n";
+    WriteText(model, geometry);
+    const auto readBytes = [](const std::filesystem::path &path) {
+        std::ifstream input(path, std::ios::binary);
+        Require(input.good(), "missing committed import file");
+        return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+    };
+    infernux::JobSystem::Initialize(2);
+    try {
+        auto database = std::make_unique<infernux::AssetDatabase>();
+        database->Initialize(infernux::FromFsPath(root));
+        auto &registry = infernux::AssetRegistry::Instance();
+        registry.Initialize(std::move(database));
+        registry.RegisterLoader(infernux::ResourceType::Mesh, std::make_unique<infernux::MeshLoader>());
+        registry.PopulateAssetDatabaseLoaders();
+        auto *db = registry.GetAssetDatabase();
+        db->Refresh();
+        const std::string path = infernux::FromFsPath(model);
+        const auto guid = db->GetGuidFromPath(path);
+        const auto metaPath = infernux::InxResourceMeta::GetMetaFilePath(path);
+        const auto artifactPath = db->GetRuntimeArtifactPath(guid, infernux::ResourceType::Mesh);
+        const auto originalMeta = readBytes(infernux::ToFsPath(metaPath));
+        const auto originalArtifact = readBytes(infernux::ToFsPath(artifactPath));
+        const auto originalSnapshot = db->GetMetaByGuid(guid);
+        const auto generation = db->GetQueryGeneration();
+        WriteText(model, "not a model\n");
+        const auto failure = db->ReimportAsset(path, {{"scale_factor", 3.0}, {"weld_vertices", false}});
+        Require(!failure && !failure.databaseCommitted, "invalid source was published");
+        Require(readBytes(infernux::ToFsPath(metaPath)) == originalMeta, "failed Apply changed disk settings");
+        Require(readBytes(infernux::ToFsPath(artifactPath)) == originalArtifact, "failed Apply changed artifact");
+        Require(db->GetMetaByGuid(guid) == originalSnapshot, "failed Apply replaced live metadata");
+        Require(db->GetQueryGeneration() == generation, "failed Apply advanced published catalog");
+        WriteText(model, geometry);
+        const auto success = db->ReimportAsset(path, {{"scale_factor", 3.0}, {"weld_vertices", false}});
+        Require(success && success.databaseCommitted, "valid model settings were not published");
+        const auto published = db->GetMetaByGuid(guid);
+        Require(published->GetDataAs<float>("scale_factor") == 3.0f, "scale draft was lost");
+        Require(!published->GetDataAs<bool>("weld_vertices"), "welding draft was lost");
+        Require(readBytes(infernux::ToFsPath(artifactPath)) != originalArtifact, "settings did not change geometry");
+        infernux::InxResourceMeta disk;
+        Require(disk.LoadFromFile(metaPath), "could not read committed settings");
+        Require(disk.SerializeDocument() == published->SerializeDocument(), "disk and live settings differ");
+        Require(db->GetGuidFromPath(path) == guid, "Apply replaced source identity");
+        Require(db->ReimportAsset(path).succeeded, "source reimport failed after Apply");
+        Require(db->GetMetaByGuid(guid)->GetDataAs<float>("scale_factor") == 3.0f,
+                "source reimport discarded applied settings");
+        const auto committedMeta = readBytes(infernux::ToFsPath(metaPath));
+        const auto committedArtifact = readBytes(infernux::ToFsPath(artifactPath));
+        bool invalidRejected = false;
+        try {
+            (void)db->ReimportAsset(path, {{"guid", "replacement-guid"}});
+        } catch (const std::invalid_argument &) {
+            invalidRejected = true;
+        }
+        Require(invalidRejected, "settings were allowed to replace asset identity");
+        Require(readBytes(infernux::ToFsPath(metaPath)) == committedMeta, "invalid settings changed metadata");
+        Require(readBytes(infernux::ToFsPath(artifactPath)) == committedArtifact, "invalid settings changed artifact");
+        registry.Shutdown();
+        infernux::JobSystem::Shutdown();
+        std::filesystem::remove_all(root);
+    } catch (...) {
+        if (infernux::AssetRegistry::Instance().IsInitialized())
+            infernux::AssetRegistry::Instance().Shutdown();
+        infernux::JobSystem::Shutdown();
+        throw;
+    }
+}
+
 void TestRuntimeAssetCatalogResolvesPrimaryContentArtifact()
 {
     const auto root = std::filesystem::temp_directory_path() / "infernux-runtime-content-catalog";
@@ -592,6 +667,7 @@ int main()
         TestStartupCatalogSurvivesLiveIndexInvalidation();
         TestRuntimeAssetCatalogInstallsStableIdentityWithoutSidecar();
         TestCompositeModelPublishesExternalTextureGuidDependencies();
+        TestModelSettingsPublishOnlyAfterSuccessfulImport();
         TestRuntimeAssetCatalogResolvesBuiltInArchiveResources();
         TestRuntimeAssetCatalogResolvesPrimaryContentArtifact();
         TestMoveRequiresRegisteredGuidIdentity();

@@ -379,11 +379,10 @@ class AssetManager:
         if cls._execution_strategies_initialized:
             return
 
-        from Infernux.core.asset_types import write_texture_import_settings, write_audio_import_settings, write_mesh_import_settings
+        from Infernux.core.asset_types import write_texture_import_settings, write_audio_import_settings
 
         cls.register_import_strategy("texture", write_texture_import_settings)
         cls.register_import_strategy("audio", write_audio_import_settings)
-        cls.register_import_strategy("mesh", write_mesh_import_settings)
         cls.register_save_strategy("material", cls._save_material_resource)
         cls.register_save_strategy("data_asset", lambda resource: resource.save() is not False)
         cls.register_save_strategy("render_effect", cls._save_render_effect_resource)
@@ -401,6 +400,13 @@ class AssetManager:
     def apply_import_settings(cls, asset_category: str, path: str, settings_obj) -> bool:
         """Apply import settings by category and trigger reimport in one unified step."""
         cls._ensure_execution_strategies()
+
+        if asset_category == "mesh":
+            # Model settings are an import input, not an early sidecar write.
+            # Native import publishes this snapshot and its artifacts together.
+            from Infernux.core.asset_types import MeshImportSettings
+            snapshot = MeshImportSettings.from_dict(settings_obj.to_dict()).to_dict()
+            return bool(cls.reimport_asset(path, import_settings=snapshot))
 
         apply_fn = cls._import_apply_handlers.get(asset_category)
         if apply_fn is None:
@@ -524,7 +530,8 @@ class AssetManager:
         return result
 
     @classmethod
-    def reimport_asset(cls, path: str, *, database=None, suppress_watcher_echo: bool = True):
+    def reimport_asset(cls, path: str, *, database=None, suppress_watcher_echo: bool = True,
+                       import_settings=None):
         """Reimport through AssetDatabase, then refresh any loaded runtime copy."""
         asset_database = cls._mutation_database(database)
         guid = asset_database.get_guid_from_path(path)
@@ -549,7 +556,8 @@ class AssetManager:
         # first and could abort reimport (and meta rebuild) on transient IO races
         # while DocumentStore was still publishing the asset or its .meta sidecar.
         cls._suppress_meta_watcher(path)
-        result = asset_database.reimport_asset(path)
+        result = (asset_database.reimport_asset(path) if import_settings is None
+                  else asset_database.reimport_asset(path, settings=import_settings))
         if not result:
             cls._meta_write_suppression.pop(cls._normalize_asset_path(path), None)
             return result

@@ -12,7 +12,7 @@ import json
 import math
 import os
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from enum import IntEnum
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
@@ -735,16 +735,10 @@ class MeshImportSettings:
     # Unity-style public setting: swap primary/secondary UV channels.
     swap_uv_channels: bool = False
     optimize_mesh: bool = True
+    weld_vertices: bool = True
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
-            "scale_factor": self.scale_factor,
-            "generate_normals": self.generate_normals,
-            "generate_tangents": self.generate_tangents,
-            "flip_uvs": self.flip_uvs,
-            "swap_uv_channels": self.swap_uv_channels,
-            "optimize_mesh": self.optimize_mesh,
-        }
+        return asdict(self)
 
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "MeshImportSettings":
@@ -760,31 +754,20 @@ class MeshImportSettings:
         bool_fields = required - {"scale_factor"}
         if any(type(d[field]) is not bool for field in bool_fields):
             raise TypeError("mesh import setting flags must be bools")
+        # Old models were always welded. Preserve that explicit import policy
+        # when upgrading sidecars authored before this option was exposed.
+        weld_vertices = d.get("weld_vertices", True)
+        if type(weld_vertices) is not bool:
+            raise TypeError("mesh weld_vertices must be a bool")
         return cls(
             scale_factor=float(scale), generate_normals=d["generate_normals"],
             generate_tangents=d["generate_tangents"], flip_uvs=d["flip_uvs"],
             swap_uv_channels=d["swap_uv_channels"], optimize_mesh=d["optimize_mesh"],
+            weld_vertices=weld_vertices,
         )
 
     def copy(self) -> "MeshImportSettings":
-        return MeshImportSettings(
-            scale_factor=self.scale_factor,
-            generate_normals=self.generate_normals,
-            generate_tangents=self.generate_tangents,
-            flip_uvs=self.flip_uvs,
-            swap_uv_channels=self.swap_uv_channels,
-            optimize_mesh=self.optimize_mesh,
-        )
-
-    def __eq__(self, other):
-        if not isinstance(other, MeshImportSettings):
-            return NotImplemented
-        return (self.scale_factor == other.scale_factor
-                and self.generate_normals == other.generate_normals
-                and self.generate_tangents == other.generate_tangents
-                and self.flip_uvs == other.flip_uvs
-                and self.swap_uv_channels == other.swap_uv_channels
-                and self.optimize_mesh == other.optimize_mesh)
+        return replace(self)
 
 
 def read_mesh_import_settings(asset_path: str) -> MeshImportSettings:

@@ -85,6 +85,23 @@ int main(int argc, char **argv)
         assert(restored.localTransform == nodes[index].localTransform);
     }
 
+    // Author options must affect the actual imported geometry, not only meta.
+    const auto duplicatePath = sourceRoot / "cpp/tests/fixtures/model_duplicate_vertices.obj";
+    infernux::InxResourceMeta unweldedSettings;
+    unweldedSettings.AddMetadata("weld_vertices", false);
+    unweldedSettings.AddMetadata("optimize_mesh", false);
+    const auto unwelded = infernux::MeshLoader::ImportSourceDetailed(infernux::FromFsPath(duplicatePath),
+                                                                     "unwelded-guid", unweldedSettings);
+    infernux::InxResourceMeta weldedSettings;
+    weldedSettings.AddMetadata("weld_vertices", true);
+    weldedSettings.AddMetadata("optimize_mesh", true);
+    const auto welded =
+        infernux::MeshLoader::ImportSourceDetailed(infernux::FromFsPath(duplicatePath), "welded-guid", weldedSettings);
+    assert(unwelded.vertexCount == 6);
+    assert(welded.vertexCount == 4);
+    assert(unwelded.indexCount == 6 && welded.indexCount == 6);
+    assert(unwelded.mesh->GetModelNodes().size() == welded.mesh->GetModelNodes().size());
+
     // Optional modern Blender-generated GLB supplied by an integration run.
     // This is additional evidence, never a replacement for the fixed fixture.
     if (argc > 1) {

@@ -11,6 +11,8 @@ from pathlib import Path
 import subprocess
 import tempfile
 
+from Infernux.engine.path_utils import resolved_path
+
 
 class BlenderImportError(RuntimeError):
     pass
@@ -23,9 +25,9 @@ def convert_blend(source: str | Path, destination: str | Path, *,
     Failure leaves the previous derived file intact and is reported to the
     importer; retaining that file does not turn a failed import into success.
     """
-    source = Path(source).resolve(strict=True)
-    executable = Path(blender_executable).resolve(strict=True)
-    destination = Path(destination).resolve()
+    source = Path(resolved_path(source))
+    executable = Path(resolved_path(blender_executable))
+    destination = Path(resolved_path(destination))
     if source.suffix.lower() != ".blend" or not source.is_file():
         raise ValueError("Blender source must be a .blend file")
     if not executable.is_file():

@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <fstream>
 #include <iomanip>
@@ -2052,7 +2053,7 @@ AssetMutationResult AssetDatabase::ImportAsset(const std::string &path)
     return result;
 }
 
-AssetMutationResult AssetDatabase::ReimportAsset(const std::string &path)
+AssetMutationResult AssetDatabase::ReimportAsset(const std::string &path, const nlohmann::json &settings)
 {
     AssertMutationThread("ReimportAsset");
     AssertNoPendingCommit("ReimportAsset");
@@ -2080,88 +2081,68 @@ AssetMutationResult AssetDatabase::ReimportAsset(const std::string &path)
     }
     result.guid = guid;
 
-    if (result.resourceType == ResourceType::Script) {
-        // Python owns script parsing, dependency analysis, and live class
-        // publication, so native reimport must not invoke ScriptImporter or
-        // publish a second dependency event. It still has to rebuild the
-        // lightweight source metadata: keeping only size/mtime current while
-        // retaining an old content_hash produces an internally inconsistent
-        // AssetIndex and makes strict Player cooks reject the edited script.
-        const auto previousMeta = GetMetaByGuid(guid);
-        if (!previousMeta)
-            throw std::logic_error("Registered script has no metadata snapshot");
-        const auto restoreMetadata = [&]() {
-            m_metas[guid] = std::make_shared<InxResourceMeta>(*previousMeta);
-            const std::string metaPath = InxResourceMeta::GetMetaFilePath(path);
-            if (!previousMeta->SaveToFile(metaPath))
-                throw std::runtime_error("Failed to restore script metadata after reimport failure: " + metaPath);
-        };
-        std::string rebuiltGuid;
-        try {
-            rebuiltGuid = RebuildMetadata(path);
-        } catch (...) {
-            restoreMetadata();
-            throw;
-        }
-        if (rebuiltGuid.empty() || rebuiltGuid != guid) {
-            if (!rebuiltGuid.empty() && rebuiltGuid != guid)
-                m_metas.erase(rebuiltGuid);
-            restoreMetadata();
-            result.errorCode = AssetMutationErrorCode::ImportFailed;
-            result.error = "script metadata rebuild did not preserve the registered GUID";
-            return result;
-        }
-        UpdateMapping(guid, path);
-        UpdateCachedFileState(path, IsReadOnlyPath(FilesystemPathKey(path)));
-        m_assetIndexDirty = true;
-        PublishQuerySnapshotForPaths({path});
-        result.succeeded = true;
-        result.databaseCommitted = true;
-        result.changed = true;
-        result.queryGeneration = GetQueryGeneration();
+    // Prepare a candidate without publishing sidecars or touching live metadata.
+    // The importer transaction owns the single durable publication point.
+    WorkerMetadataPrepare candidate;
+    candidate.file.path = path;
+    candidate.file.normalizedPath = FilesystemPathKey(path);
+    candidate.file.readOnly = IsReadOnlyPath(candidate.file.normalizedPath);
+    if (candidate.file.readOnly) {
+        result.errorCode = AssetMutationErrorCode::InvalidPath;
+        result.error = "read-only assets cannot be reimported";
         return result;
     }
-
-    const auto previousMeta = GetMetaByGuid(guid);
-    if (!previousMeta)
-        throw std::logic_error("Registered asset has no metadata snapshot");
-    const auto restoreMetadata = [&]() {
-        m_metas[guid] = std::make_shared<InxResourceMeta>(*previousMeta);
-        const std::string metaPath = InxResourceMeta::GetMetaFilePath(path);
-        if (!previousMeta->SaveToFile(metaPath))
-            throw std::runtime_error("Failed to restore metadata after reimport failure: " + metaPath);
-    };
-
-    std::string rebuiltGuid;
-    try {
-        rebuiltGuid = RebuildMetadata(path);
-    } catch (...) {
-        restoreMetadata();
-        throw;
+    candidate.resourceType = result.resourceType;
+    candidate.fallbackGuid = guid;
+    candidate.mode = WorkerMetadataPrepare::Mode::Rebuild;
+    const auto loader = m_loaders.find(result.resourceType);
+    if (loader == m_loaders.end() || !loader->second)
+        throw std::logic_error("Registered asset has no metadata loader");
+    candidate.loader = loader->second;
+    if (!ReadFingerprint(fsPath, candidate.file.source)) {
+        result.errorCode = AssetMutationErrorCode::InvalidPath;
+        result.error = "could not read source fingerprint";
+        return result;
     }
-    if (rebuiltGuid.empty() || rebuiltGuid != guid) {
-        if (!rebuiltGuid.empty() && rebuiltGuid != guid)
-            m_metas.erase(rebuiltGuid);
-        restoreMetadata();
+    PrepareMetadata(candidate);
+    if (!candidate.error.empty() || !candidate.metadata || candidate.metadata->GetGuid() != guid) {
         result.errorCode = AssetMutationErrorCode::ImportFailed;
-        result.error = "metadata rebuild did not preserve the registered GUID";
+        result.error =
+            candidate.error.empty() ? "metadata preparation did not preserve the registered GUID" : candidate.error;
         return result;
     }
-    UpdateMapping(guid, path);
-    if (!RunImporter(guid, path, true)) {
-        const auto importResult = m_importResults.find(guid);
-        const std::string importError = importResult != m_importResults.end() && !importResult->second.error.empty()
-                                            ? importResult->second.error
-                                            : "asset importer failed";
-        restoreMetadata();
+    if (!settings.is_null()) {
+        if (result.resourceType != ResourceType::Mesh || !settings.is_object())
+            throw std::invalid_argument("import settings require a model and an object");
+        for (const auto &[key, value] : settings.items()) {
+            if (key == "scale_factor") {
+                if (!value.is_number())
+                    throw std::invalid_argument("model scale_factor must be a number");
+                const float scale = value.get<float>();
+                if (!std::isfinite(scale) || scale <= 0)
+                    throw std::invalid_argument("model scale_factor must be finite and positive");
+                candidate.metadata->AddMetadata(key, scale);
+            } else if (key == "generate_normals" || key == "generate_tangents" || key == "flip_uvs" ||
+                       key == "swap_uv_channels" || key == "optimize_mesh" || key == "weld_vertices") {
+                if (!value.is_boolean())
+                    throw std::invalid_argument("model import flags must be booleans");
+                candidate.metadata->AddMetadata(key, value.get<bool>());
+            } else {
+                throw std::invalid_argument("unknown model import setting: " + key);
+            }
+        }
+    }
+    if (!RunImporter(guid, path, true, true, &*candidate.metadata, &candidate.file.source)) {
         result.errorCode = AssetMutationErrorCode::ImportFailed;
-        result.error = importError;
+        result.error = m_importResults.at(guid).error;
         return result;
     }
-    UpdateCachedFileState(path, IsReadOnlyPath(FilesystemPathKey(path)));
+    UpdateCachedFileState(path, false);
     m_assetIndexDirty = true;
     PublishQuerySnapshotForPaths({path});
-    AssetDependencyGraph::Instance().NotifyEvent(guid, GetResourceTypeForPath(path), AssetEvent::Modified);
+    // Python owns ordinary script dependency and live class publication.
+    if (result.resourceType != ResourceType::Script)
+        AssetDependencyGraph::Instance().NotifyEvent(guid, result.resourceType, AssetEvent::Modified);
     result.succeeded = true;
     result.databaseCommitted = true;
     result.changed = true;
@@ -2594,14 +2575,15 @@ void AssetDatabase::UpdateCachedFileState(const std::string &path, bool readOnly
     m_fileStates[FilesystemPathKey(path)] = state;
 }
 
-bool AssetDatabase::RunImporter(const std::string &guid, const std::string &path, bool isReimport, bool persistMetadata)
+bool AssetDatabase::RunImporter(const std::string &guid, const std::string &path, bool isReimport, bool persistMetadata,
+                                const InxResourceMeta *candidateMetadata, const AssetFileFingerprint *expectedSource)
 {
     if (guid.empty() || path.empty())
         throw std::invalid_argument("AssetDatabase importer request requires GUID and path");
 
     std::string ext = FromFsPath(ToFsPath(path).extension());
     AssetImporter *importer = m_importerRegistry.GetImporterForExtension(ext);
-    if (!importer) {
+    if (!importer && !candidateMetadata) {
         m_importResults[guid] = {true, {}};
         return true;
     }
@@ -2614,14 +2596,20 @@ bool AssetDatabase::RunImporter(const std::string &guid, const std::string &path
     request.sourcePath = path;
     request.guid = guid;
     request.resourceType = GetResourceTypeForPath(path);
-    request.metadata = *metaIt->second;
+    request.metadata = candidateMetadata ? *candidateMetadata : *metaIt->second;
     request.isReimport = isReimport;
 
     std::string error;
     try {
-        ImportArtifact artifact = isReimport ? importer->Reimport(request) : importer->Import(request);
+        // Ordinary scripts publish only their source metadata here; their
+        // compiler and dependency transaction are owned by Python.
+        ImportArtifact artifact = (!importer || request.resourceType == ResourceType::Script)
+                                      ? ImportArtifact(request.metadata)
+                                      : (isReimport ? importer->Reimport(request) : importer->Import(request));
         ResolveImportedDependencyPathHints(artifact, m_pathToGuid, request.sourcePath);
         ValidateImportedDependencyIdentities(artifact, request.sourcePath);
+        if (expectedSource)
+            RequireUnchangedFingerprint(path, *expectedSource);
         std::vector<DocumentTransactionEntry> writes;
         writes.reserve(1 + artifact.runtimeCpuArtifacts.size());
         if (persistMetadata) {
@@ -2844,78 +2832,6 @@ std::string AssetDatabase::CreateOrLoadMetadata(const std::string &filePath, Res
     m_metas[guid] = std::make_shared<InxResourceMeta>(metaFile);
     UpdateMapping(guid, filePath);
 
-    return guid;
-}
-
-std::string AssetDatabase::RebuildMetadata(const std::string &path, bool persistMetadata)
-{
-    namespace fs = std::filesystem;
-    fs::path filePath = ToFsPath(path);
-
-    if (!fs::exists(filePath)) {
-        INXLOG_WARN("Asset metadata rebuild skipped; file does not exist: ", path);
-        return {};
-    }
-
-    std::string ext = FromFsPath(filePath.extension());
-    ResourceType type = GetResourcesType(ext);
-
-    if (type == ResourceType::Meta) {
-        return {};
-    }
-
-    std::string metaPath = InxResourceMeta::GetMetaFilePath(path);
-
-    std::vector<char> content;
-    if (!ReadFile(path, content)) {
-        INXLOG_ERROR("Asset metadata rebuild failed to read file: ", path);
-        return {};
-    }
-    if (content.empty()) {
-        content.emplace_back(0);
-    }
-
-    InxResourceMeta meta;
-    std::string existingGuid;
-
-    fs::path fsMetaPath = ToFsPath(metaPath);
-
-    if (fs::exists(fsMetaPath) && meta.LoadFromFile(metaPath)) {
-        existingGuid = meta.GetGuid();
-    }
-    if (existingGuid.empty()) {
-        existingGuid = GetGuidFromPath(path);
-    }
-
-    auto loaderIt = m_loaders.find(type);
-    if (loaderIt == m_loaders.end()) {
-        INXLOG_ERROR("Asset metadata rebuild has no loader for type: ", static_cast<int>(type));
-        return {};
-    }
-
-    InxResourceMeta newMeta;
-    loaderIt->second->CreateMeta(content.data(), content.size(), path, newMeta);
-    newMeta.AddMetadata("file_path", InxResourceMeta::NormalizeFilePath(path));
-
-    if (fs::exists(fsMetaPath) && meta.GetMetadata().size() > 0) {
-        for (const auto &[key, metaPair] : meta.GetMetadata()) {
-            (void)metaPair;
-            if (key == "guid") {
-                continue;
-            }
-            newMeta.CopyMetadataIfMissing(meta, key);
-        }
-    }
-
-    if (!existingGuid.empty()) {
-        newMeta.AddMetadata("guid", existingGuid);
-    }
-
-    if (persistMetadata && !newMeta.SaveToFile(metaPath))
-        throw std::runtime_error("Failed to persist rebuilt asset metadata: " + metaPath);
-
-    std::string guid = newMeta.GetGuid();
-    m_metas[guid] = std::make_shared<InxResourceMeta>(newMeta);
     return guid;
 }
 

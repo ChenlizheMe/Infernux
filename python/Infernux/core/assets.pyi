@@ -61,7 +61,8 @@ class AssetManager:
         """Import a new asset and publish its creation."""
         ...
     @classmethod
-    def reimport_asset(cls, path: str, *, database: Any = ..., suppress_watcher_echo: bool = ...) -> AssetMutationResult:
+    def reimport_asset(cls, path: str, *, database: Any = ..., suppress_watcher_echo: bool = ...,
+                       import_settings: dict | None = ...) -> AssetMutationResult:
         """Reimport an asset from disk."""
         ...
     @classmethod

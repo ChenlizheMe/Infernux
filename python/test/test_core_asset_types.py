@@ -297,6 +297,25 @@ class TestAudioImportSettings:
 # ═══════════════════════════════════════════════════════════════════════════
 
 class TestMeshImportSettings:
+    def test_welding_round_trip_and_old_sidecar_policy(self):
+        settings = MeshImportSettings(weld_vertices=False)
+        assert MeshImportSettings.from_dict(settings.to_dict()) == settings
+        copied = settings.copy()
+        copied.weld_vertices = True
+        assert copied != settings
+        assert not settings.weld_vertices
+        legacy = settings.to_dict()
+        del legacy["weld_vertices"]
+        assert MeshImportSettings.from_dict(legacy).weld_vertices
+        assert "weld_vertices" not in legacy
+
+    @pytest.mark.parametrize("invalid", [0, 1, None, "false"])
+    def test_welding_rejects_non_boolean_flags(self, invalid):
+        document = MeshImportSettings().to_dict()
+        document["weld_vertices"] = invalid
+        with pytest.raises(TypeError, match="weld_vertices"):
+            MeshImportSettings.from_dict(document)
+
     def test_defaults(self):
         s = MeshImportSettings()
         assert s.scale_factor == 1.0

@@ -1,3 +1,4 @@
+#include "JsonPyBridge.h"
 #include "function/resources/AssetDatabase/AssetDatabase.h"
 #include "function/resources/AssetDependencyGraph.h"
 #include "function/resources/InxResource/InxResourceMeta.h"
@@ -93,8 +94,15 @@ void RegisterAssetDatabaseBindings(py::module_ &m)
         .def("add_scan_root", &AssetDatabase::AddScanRoot, py::arg("path"),
              "Add an extra directory to scan during Refresh (e.g. Library/Resources)")
         .def("import_asset", &AssetDatabase::ImportAsset, py::arg("path"), "Import a single asset")
-        .def("reimport_asset", &AssetDatabase::ReimportAsset, py::arg("path"), py::call_guard<py::gil_scoped_release>(),
-             "Reimport an existing asset while preserving its GUID")
+        .def(
+            "reimport_asset",
+            [](AssetDatabase &database, const std::string &path, py::object settings) {
+                const auto snapshot = PythonToJson(settings);
+                py::gil_scoped_release release;
+                return database.ReimportAsset(path, snapshot);
+            },
+            py::arg("path"), py::arg("settings") = py::none(),
+            "Reimport an existing asset, atomically publishing optional model settings with its artifacts")
         .def("delete_asset", &AssetDatabase::DeleteAsset, py::arg("path"), "Delete asset and its meta")
         .def("move_asset", &AssetDatabase::MoveAsset, py::arg("old_path"), py::arg("new_path"),
              "Move/rename asset preserving GUID")

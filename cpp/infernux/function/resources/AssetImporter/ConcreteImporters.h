@@ -313,6 +313,8 @@ class ModelImporter final : public AssetImporter
             meta.AddMetadata("swap_uv_channels", false);
         if (!meta.HasKey("optimize_mesh"))
             meta.AddMetadata("optimize_mesh", true);
+        if (!meta.HasKey("weld_vertices"))
+            meta.AddMetadata("weld_vertices", true);
     }
 };
 

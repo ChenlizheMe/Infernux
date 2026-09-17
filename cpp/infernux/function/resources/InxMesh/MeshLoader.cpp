@@ -44,6 +44,7 @@ struct MeshImportSettings
     bool flipUVs = true;
     bool swapUVChannels = false;
     bool optimizeMesh = true;
+    bool weldVertices = true;
 };
 
 static MeshImportSettings ReadImportSettings(const InxResourceMeta &meta)
@@ -61,6 +62,8 @@ static MeshImportSettings ReadImportSettings(const InxResourceMeta &meta)
         settings.swapUVChannels = meta.GetDataAs<bool>("swap_uv_channels");
     if (meta.HasKey("optimize_mesh"))
         settings.optimizeMesh = meta.GetDataAs<bool>("optimize_mesh");
+    if (meta.HasKey("weld_vertices"))
+        settings.weldVertices = meta.GetDataAs<bool>("weld_vertices");
 
     return settings;
 }
@@ -78,13 +81,13 @@ static unsigned int BuildAssimpFlags(const MeshImportSettings &settings)
     // NOTE: aiProcess_OptimizeMeshes and aiProcess_OptimizeGraph are intentionally
     // omitted — they merge meshes across different Assimp nodes, destroying the
     // per-object hierarchy needed for correct scene object splitting.
-    (void)settings.optimizeMesh;
+    if (settings.optimizeMesh)
+        flags |= aiProcess_ImproveCacheLocality;
+    if (settings.weldVertices)
+        flags |= aiProcess_JoinIdenticalVertices;
 
-    // Always apply these for correctness:
-    flags |= aiProcess_JoinIdenticalVertices; // Weld duplicate vertices
     flags |= aiProcess_SortByPType;           // Separate points/lines from triangles
-    flags |= aiProcess_ValidateDataStructure; // Sanity check
-    flags |= aiProcess_ImproveCacheLocality;  // GPU vertex-cache friendly ordering
+    flags |= aiProcess_ValidateDataStructure; // Validate external source data
 
     return flags;
 }

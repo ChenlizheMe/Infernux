@@ -181,7 +181,7 @@ class AssetDatabase
 
     /// @brief Re-run metadata/dependency import for an already registered asset.
     /// Preserves the existing GUID and returns false for missing or unregistered paths.
-    [[nodiscard]] AssetMutationResult ReimportAsset(const std::string &path);
+    [[nodiscard]] AssetMutationResult ReimportAsset(const std::string &path, const nlohmann::json &settings = nullptr);
 
     /// @brief Delete asset and meta.
     /// Notifies dependents via AssetDependencyGraph::NotifyEvent(Deleted).
@@ -638,11 +638,12 @@ class AssetDatabase
     void UpdateCachedFileState(const std::string &path, bool readOnly);
 
     /// Run the matching importer for this asset (dependency scanning etc.)
-    bool RunImporter(const std::string &guid, const std::string &path, bool isReimport, bool persistMetadata = true);
+    bool RunImporter(const std::string &guid, const std::string &path, bool isReimport, bool persistMetadata = true,
+                     const InxResourceMeta *candidateMetadata = nullptr,
+                     const AssetFileFingerprint *expectedSource = nullptr);
 
     std::string CreateOrLoadMetadata(const std::string &filePath, ResourceType type, bool readOnly,
                                      bool persistMetadata, const std::string &identityKey);
-    [[nodiscard]] std::string RebuildMetadata(const std::string &filePath, bool persistMetadata = true);
     void DeleteMetadata(const std::string &filePath);
     void MoveMetadata(const std::string &oldFilePath, const std::string &newFilePath);
     void RebuildDerivedIndex();
