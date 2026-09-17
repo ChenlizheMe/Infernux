@@ -459,12 +459,14 @@ class ValueCodecRegistry:
             return document_type
 
         if document_type == COMPONENT_REF:
-            if set(value) != {TYPE_KEY, "game_object_id", "component_type"}:
+            if set(value) - {"component_id"} != {TYPE_KEY, "game_object_id", "component_type"}:
                 raise ValueError(f"{path}: ComponentRef document has unknown or missing fields")
             if type(value["game_object_id"]) is not int or value["game_object_id"] < 0:
                 raise TypeError(f"{path}: ComponentRef go_id must be a non-negative integer")
             if not isinstance(value["component_type"], str):
                 raise TypeError(f"{path}: ComponentRef type_name must be a string")
+            if type(value.get("component_id", 0)) is not int or value.get("component_id", 0) < 0:
+                raise TypeError(f"{path}: ComponentRef component_id must be a non-negative integer")
             return document_type
 
         if document_type == ASSET_REF:

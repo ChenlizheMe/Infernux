@@ -271,11 +271,22 @@ def _strip_prefab_runtime_fields(obj_data: dict, *, next_local_id=1, instance_sn
                 raise PrefabDocumentError(f"{path}: prefab cannot reference component outside its subtree")
             remapped = dict(value)
             remapped["game_object_id"] = runtime_to_local[target_id]
+            if "component_id" in value:
+                identity = value["component_id"]
+                if identity in transform_ids:
+                    remapped["component_id"] = 0
+                elif identity in component_ids:
+                    remapped["component_id"] = component_ids[identity]
+                elif identity and instance_snapshot:
+                    remapped["component_id"] = -identity
+                elif identity:
+                    raise PrefabDocumentError(f"{path}: prefab references a missing component {identity}")
             return remapped
         return {key: rewrite_references(item, f"{path}.{key}") for key, item in value.items()}
 
     components = [component for node, _ in nodes for component in node["components"]]
     component_ids = {} if runtime_to_local is not None else None
+    transform_ids = {node["transform"].get("component_id") for node, _ in nodes}
     if component_ids is not None:
         linked = [component.get("prefab_source_id", 0) for component in components]
         linked = [value for value in linked if value]
@@ -302,6 +313,9 @@ def _strip_prefab_runtime_fields(obj_data: dict, *, next_local_id=1, instance_sn
                 component_ids[runtime_id] = source_id
                 component["component_id"] = source_id
             component.pop("instance_guid", None)
+    # References can point forward to components on a later node.
+    for node, location in nodes:
+        for index, component in enumerate(node["components"]):
             if not isinstance(component.get("data"), dict):
                 continue
             component["data"] = rewrite_references(

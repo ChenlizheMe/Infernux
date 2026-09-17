@@ -447,6 +447,8 @@ class SceneDocumentTransaction:
                     self._prepared_graph,
                     clear_registries=self._clear_registries,
                     object_id_map=(dict(object_id_remap) if object_id_remap is not None else None),
+                    component_id_map=(dict(self._commit_token.component_id_remap)
+                                      if object_id_remap is not None else None),
                 )
                 # The replacement was registered while its prepared graph was
                 # attached. Reattach the other resident Scenes without binding

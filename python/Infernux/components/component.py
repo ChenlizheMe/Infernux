@@ -184,7 +184,9 @@ class InxComponent(ComponentNativeMixin, ComponentLifecycleMixin, ComponentPhysi
         self._awake_called = False
         self._is_destroyed = False  # Track destruction state
         self._component_name = self.__class__.__name__
-        self._script_guid: str = self.__class__._intrinsic_script_guid_
+        self._script_guid: str = (
+            self.__class__._asset_script_guid_ or self.__class__._intrinsic_script_guid_
+        )
         self._registered_go_id: Optional[int] = None  # go_id this comp is registered under
         self._native_generation: int = 0
         

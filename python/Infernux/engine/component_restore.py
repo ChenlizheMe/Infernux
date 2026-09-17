@@ -73,8 +73,15 @@ def _validate_reference_documents(
     if document_type == COMPONENT_REF:
         target_id = value.get("game_object_id")
         type_name = value.get("component_type")
+        component_id = value.get("component_id", 0)
         if type(target_id) is not int or target_id < 0 or not isinstance(type_name, str):
             raise PythonComponentRestoreError(f"{path}: invalid ComponentRef target")
+        if type(component_id) is not int or component_id < 0 or (component_id and (not target_id or not type_name)):
+            raise PythonComponentRestoreError(f"{path}: invalid ComponentRef component identity")
+        if component_id:
+            # Exact references may intentionally be missing after deletion.
+            # Resolution checks owner, ID and type; never substitute by type.
+            return
         if target_id == 0:
             return
         target = scene.find_by_id(target_id) if scene is not None else None
@@ -566,9 +573,11 @@ def _native_object_graph_document(document: dict) -> dict:
     return native_document
 
 
-def _build_instantiated_object_id_map(source_document: dict, created) -> dict[int, int]:
+def _build_instantiated_object_id_map(source_document: dict, created) -> dict[int | tuple[int, int], int]:
     created_document = created.serialize_document()
-    mapping: dict[int, int] = {}
+    mapping: dict[int | tuple[int, int], int] = {}
+    pending_ids = {(item.game_object_id, item.component_index): item.fields_document["__component_id__"]
+                   for item in created.scene.get_pending_py_components()}
 
     def visit(source: dict, target: dict, path: str) -> None:
         source_id = source.get("local_id", source.get("id"))
@@ -578,6 +587,14 @@ def _build_instantiated_object_id_map(source_document: dict, created) -> dict[in
         if source_id in mapping:
             raise PythonComponentRestoreError(f"{path}: duplicate ObjectGraph source ID {source_id}")
         mapping[source_id] = target_id
+        mapping[(source_id, source["transform"].get("component_id", 0))] = target["transform"]["component_id"]
+        native_records = iter(target["components"])
+        for index, component in enumerate(source["components"]):
+            if component["type_id"].startswith(_PYTHON_TYPE_PREFIX):
+                runtime_id = pending_ids[(target_id, index)]
+            else:
+                runtime_id = next(native_records)["component_id"]
+            mapping[(source_id, component["component_id"])] = runtime_id
         source_children = source.get("children")
         target_children = target.get("children")
         if not isinstance(source_children, list) or not isinstance(target_children, list):
@@ -591,10 +608,11 @@ def _build_instantiated_object_id_map(source_document: dict, created) -> dict[in
     return mapping
 
 
-def _remap_local_reference_document(value, object_id_map: dict[int, int], path: str):
+def _remap_local_reference_document(value, object_id_map: dict[int | tuple[int, int], int], path: str,
+                                   component_id_map=None):
     if isinstance(value, list):
         return [
-            _remap_local_reference_document(item, object_id_map, f"{path}[{index}]")
+            _remap_local_reference_document(item, object_id_map, f"{path}[{index}]", component_id_map)
             for index, item in enumerate(value)
         ]
     if not isinstance(value, dict):
@@ -614,9 +632,14 @@ def _remap_local_reference_document(value, object_id_map: dict[int, int], path: 
             return copy.deepcopy(value)
         remapped = dict(value)
         remapped["game_object_id"] = object_id_map.get(source_id, source_id)
+        if "component_id" in value:
+            component_id = value["component_id"]
+            remapped["component_id"] = (component_id_map.get(component_id, component_id)
+                                        if component_id_map is not None
+                                        else object_id_map.get((source_id, component_id), component_id))
         return remapped
     return {
-        key: _remap_local_reference_document(item, object_id_map, f"{path}.{key}")
+        key: _remap_local_reference_document(item, object_id_map, f"{path}.{key}", component_id_map)
         for key, item in value.items()
     }
 
@@ -626,7 +649,8 @@ def _publish_prepared_scene_python_components(
     prepared_graph: PreparedPythonComponentGraph,
     *,
     clear_registries: bool = True,
-    object_id_map: Optional[dict[int, int]] = None,
+    object_id_map: Optional[dict[int | tuple[int, int], int]] = None,
+    component_id_map: Optional[dict[int, int]] = None,
 ) -> None:
     """Match native pending descriptors and publish a preflighted graph."""
     prepared_graph.require_open()
@@ -674,12 +698,11 @@ def _publish_prepared_scene_python_components(
         # when another live Scene occupies document IDs. Python proxies do not
         # exist during native staging, so the pending descriptor carries the
         # authoritative freshly reserved ID into this publication phase.
-        if item.component_id is not None:
-            item.component_id = pending_component_id
-            item.fields_document = {
-                **item.fields_document,
-                "__component_id__": pending_component_id,
-            }
+        item.component_id = pending_component_id
+        item.fields_document = {
+            **item.fields_document,
+            "__component_id__": pending_component_id,
+        }
         target = scene.find_by_id(pc.game_object_id)
         if target is None:
             raise PythonComponentRestoreError(
@@ -698,6 +721,7 @@ def _publish_prepared_scene_python_components(
                     item.fields_document,
                     object_id_map,
                     f"{item.document_path}.py_fields",
+                    component_id_map,
                 )
                 item.instance._deserialize_fields_document(
                     remapped_fields,
@@ -725,6 +749,7 @@ def _publish_prepared_scene_python_components(
             published_instance = target._attach_prepared_py_component(
                 instance,
                 pending[prepared_index].component_index,
+                item.component_id,
             )
             if published_instance is not instance:
                 raise PythonComponentRestoreError(
@@ -737,10 +762,6 @@ def _publish_prepared_scene_python_components(
                 )
             attached.append((target, instance, native_component))
             native_component._prefab_source_id = item.prefab_source_id
-            if item.component_id is not None:
-                native_component._set_component_id(item.component_id)
-                instance._component_id = item.component_id
-                instance._refresh_native_handle()
             # The native attach hook mirrors its default state into Python.
             # Restore the descriptor's authored enabled bit after binding and
             # before lifecycle activation, so first Player Start is eligible.
@@ -764,7 +785,8 @@ def publish_prepared_scene_python_components(
     prepared_graph: PreparedPythonComponentGraph,
     *,
     clear_registries: bool = True,
-    object_id_map: Optional[dict[int, int]] = None,
+    object_id_map: Optional[dict[int | tuple[int, int], int]] = None,
+    component_id_map: Optional[dict[int, int]] = None,
 ) -> None:
     """Consume a prepared graph, releasing every unattached instance on failure."""
     try:
@@ -773,6 +795,7 @@ def publish_prepared_scene_python_components(
             prepared_graph,
             clear_registries=clear_registries,
             object_id_map=object_id_map,
+            component_id_map=component_id_map,
         )
     except Exception:
         prepared_graph.discard()
@@ -1141,7 +1164,7 @@ def instantiate_prepared_game_object_documents(
         prepared.require_open()
 
     created = []
-    object_id_map: dict[int, int] = {}
+    object_id_map: dict[int | tuple[int, int], int] = {}
     try:
         for document, _prepared, parent in entries:
             instance = scene._instantiate_document(
@@ -1156,7 +1179,7 @@ def instantiate_prepared_game_object_documents(
             overlap = set(object_id_map).intersection(entry_map)
             if overlap:
                 raise PythonComponentRestoreError(
-                    f"ObjectGraph batch contains duplicate source IDs: {sorted(overlap)}"
+                    f"ObjectGraph batch contains duplicate source IDs: {sorted(overlap, key=repr)}"
                 )
             object_id_map.update(entry_map)
 

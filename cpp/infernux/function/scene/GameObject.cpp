@@ -1262,6 +1262,8 @@ bool GameObject::DeserializeDocument(const nlohmann::json &j, bool preserveDocum
             if (id == stagedToCommittedObjectId.end())
                 throw std::logic_error("pending Python component targets an unknown staged GameObject");
             pending.gameObjectId = id->second;
+            if (!preserveDocumentIds)
+                pending.fieldsDocument["__component_id__"] = Component::ReserveDocumentID();
         }
 
         Component::ReserveRegistry(Component::GetInstanceCount() + componentAssignments.size());
@@ -1411,6 +1413,7 @@ std::unique_ptr<GameObject> GameObject::CloneGraph(Scene *scene,
                 pending.executionOrder = proxy->GetExecutionOrder();
                 pending.componentIndex = componentIndex;
                 pending.fieldsDocument = proxy->SerializePyFieldsDocument();
+                pending.fieldsDocument["__component_id__"] = Component::ReserveDocumentID();
                 scene->AddPendingPyComponent(std::move(pending));
             }
         } else {

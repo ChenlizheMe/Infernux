@@ -428,9 +428,23 @@ def _iter_live_components_on_game_object(game_object) -> list[Any]:
     return result
 
 
-def _resolve_component_on_game_object(game_object, component_type: str = ""):
+def _resolve_component_on_game_object(game_object, component_type: str = "", component_id: int = 0):
     """Resolve a component on *game_object* by type name using internal rules."""
     if game_object is None:
+        return None
+
+    if component_id:
+        from .builtin_component import BuiltinComponent
+        for component in game_object.get_components():
+            if component.component_id != component_id:
+                continue
+            name = getattr(component, "type_name", type(component).__name__)
+            if component_type and name != component_type:
+                return None
+            wrapper = BuiltinComponent._builtin_registry.get(name)
+            if wrapper is not None and not isinstance(component, BuiltinComponent):
+                return wrapper._get_or_create_wrapper(component, game_object)
+            return component
         return None
 
     live_components = _iter_live_components_on_game_object(game_object)
@@ -502,8 +516,8 @@ def _get_component_handle(component):
 class ComponentRef:
     """Null-safe reference to a component on a specific GameObject.
 
-    Stores the target GameObject's persistent ID and the component type
-    name.  Lazily resolves the live component instance at access time.
+    Stores the owning GameObject and exact component identities. Legacy
+    type-only references remain readable; newly assigned instances bind an ID.
 
     Usage::
 
@@ -518,11 +532,16 @@ class ComponentRef:
     Serialization uses the current typed value-document schema.
     """
 
-    __slots__ = ("_go_id", "_component_type", "_cached", "_cached_handle")
+    __slots__ = ("_go_id", "_component_type", "_component_id", "_cached", "_cached_handle")
 
-    def __init__(self, *, go_id: int = 0, component_type: str = ""):
+    def __init__(self, component=None, *, go_id: int = 0, component_type: str = "", component_id: int = 0):
+        if component is not None:
+            go_id = component.game_object.id
+            component_type = getattr(component, "type_name", type(component).__name__)
+            component_id = component.component_id
         self._go_id: int = int(go_id)
         self._component_type: str = component_type
+        self._component_id: int = int(component_id)
         self._cached = None
         self._cached_handle = None
 
@@ -541,7 +560,7 @@ class ComponentRef:
                 if go is None:
                     continue
 
-                found = _resolve_component_on_game_object(go, self._component_type)
+                found = _resolve_component_on_game_object(go, self._component_type, self._component_id)
                 if found is not None:
                     self._cached = found
                     self._cached_handle = _get_component_handle(found)
@@ -574,10 +593,10 @@ class ComponentRef:
         return self._resolve()
 
     def __copy__(self):
-        return type(self)(go_id=self._go_id, component_type=self._component_type)
+        return type(self)(go_id=self._go_id, component_type=self._component_type, component_id=self._component_id)
 
     def __deepcopy__(self, memo):
-        copied = type(self)(go_id=self._go_id, component_type=self._component_type)
+        copied = type(self)(go_id=self._go_id, component_type=self._component_type, component_id=self._component_id)
         memo[id(self)] = copied
         return copied
 
@@ -590,6 +609,10 @@ class ComponentRef:
     @property
     def component_type(self) -> str:
         return self._component_type
+
+    @property
+    def component_id(self) -> int:
+        return self._component_id
 
     @property
     def display_name(self) -> str:
@@ -614,13 +637,19 @@ class ComponentRef:
 
     def _serialize(self) -> dict:
         from .value_document import make_component_ref
-        return make_component_ref(self._go_id, self._component_type)
+        identity = self._component_id
+        if not identity and self._go_id:
+            component = self.resolve()
+            if component is not None:
+                identity = component.component_id
+        return make_component_ref(self._go_id, self._component_type, identity)
 
     @classmethod
     def _from_dict(cls, data: dict) -> "ComponentRef":
         return cls(
             go_id=data["game_object_id"],
             component_type=data["component_type"],
+            component_id=data.get("component_id", 0),
         )
 
     # -- dunder helpers ----------------------------------------------------
@@ -648,11 +677,12 @@ class ComponentRef:
             return self._go_id == 0
         if isinstance(other, ComponentRef):
             return (self._go_id == other._go_id
-                    and self._component_type == other._component_type)
+                    and self._component_type == other._component_type
+                    and self._component_id == other._component_id)
         return NotImplemented
 
     def __hash__(self):
-        return hash((self._go_id, self._component_type))
+        return hash((self._go_id, self._component_type, self._component_id))
 
     def __repr__(self):
         comp = self.resolve()

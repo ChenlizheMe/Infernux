@@ -130,6 +130,7 @@ struct SceneCommitToken::Impl
     uint64_t structureVersion = 0;
     SceneEnvironmentSettings environment;
     std::unordered_map<uint64_t, uint64_t> objectIdRemap;
+    std::unordered_map<uint64_t, uint64_t> componentIdRemap;
 };
 
 namespace
@@ -221,6 +222,12 @@ const std::unordered_map<uint64_t, uint64_t> &SceneCommitToken::GetObjectIdRemap
     return m_impl ? m_impl->objectIdRemap : empty;
 }
 
+const std::unordered_map<uint64_t, uint64_t> &SceneCommitToken::GetComponentIdRemap() const noexcept
+{
+    static const std::unordered_map<uint64_t, uint64_t> empty;
+    return m_impl ? m_impl->componentIdRemap : empty;
+}
+
 bool SceneCommitToken::Rollback()
 {
     if (!IsActive())
@@ -297,7 +304,7 @@ std::shared_ptr<SceneCommitToken> Scene::CommitDocumentRetainingCurrentWorld(con
         return nullptr;
 
     auto token = std::shared_ptr<SceneCommitToken>(new SceneCommitToken(*this));
-    if (DeserializeDocument(document, &token->m_impl->objectIdRemap))
+    if (DeserializeDocument(document, &token->m_impl->objectIdRemap, &token->m_impl->componentIdRemap))
         return token;
     if (!token->Rollback())
         INXLOG_ERROR("Scene candidate commit failed and retained world could not be restored");
@@ -1306,9 +1313,13 @@ GameObject *Scene::InstantiateFromJson(const std::string &jsonStr, GameObject *p
 
 GameObject *Scene::InstantiateFromDocument(const nlohmann::json &document, GameObject *parent)
 {
+    const size_t firstPending = m_pendingPyComponents.size();
     auto clone = BuildGameObjectFromJsonImpl(document, /*preserveIds=*/false);
     if (!clone)
         return nullptr;
+
+    for (size_t index = firstPending; index < m_pendingPyComponents.size(); ++index)
+        m_pendingPyComponents[index].fieldsDocument["__component_id__"] = Component::ReserveDocumentID();
 
     std::unordered_map<uint64_t, uint64_t> componentIdRemap;
     const auto collectRemap = [&](const auto &self, GameObject *object, const json &objectDocument) -> void {
@@ -1439,7 +1450,8 @@ std::shared_ptr<InxMaterial> Scene::ResolveSkyboxMaterial() const
     return AssetRegistry::Instance().GetBuiltinMaterial("SkyboxProcedural");
 }
 
-bool Scene::DeserializeDocument(const nlohmann::json &j, std::unordered_map<uint64_t, uint64_t> *objectIdRemap)
+bool Scene::DeserializeDocument(const nlohmann::json &j, std::unordered_map<uint64_t, uint64_t> *objectIdRemap,
+                                std::unordered_map<uint64_t, uint64_t> *componentIdRemap)
 {
     try {
         using ProfileClock = std::chrono::steady_clock;
@@ -1665,6 +1677,7 @@ bool Scene::DeserializeDocument(const nlohmann::json &j, std::unordered_map<uint
         // globally unique component IDs. Keep every staging ID in that case so
         // the copied graph is internally consistent and no live registry entry
         // is overwritten.
+        std::unordered_map<uint64_t, uint64_t> committedComponentIdRemap;
         if (requiresFreshComponentIds) {
             std::unordered_map<uint64_t, uint64_t> nativeComponentIdRemap;
             nativeComponentIdRemap.reserve(componentIdAssignments.size());
@@ -1676,6 +1689,7 @@ bool Scene::DeserializeDocument(const nlohmann::json &j, std::unordered_map<uint
                 (void)componentId;
                 component->RemapComponentReferences(nativeComponentIdRemap);
             }
+            committedComponentIdRemap = std::move(nativeComponentIdRemap);
 
             // Python components do not have native proxies during staging, so
             // they cannot inherit the fresh IDs allocated to staged native
@@ -1691,6 +1705,7 @@ bool Scene::DeserializeDocument(const nlohmann::json &j, std::unordered_map<uint
             for (uint64_t &componentId : pythonComponentIds) {
                 const uint64_t freshId = Component::GenerateComponentID();
                 pythonComponentIdRemap.emplace(componentId, freshId);
+                committedComponentIdRemap.emplace(componentId, freshId);
                 componentId = freshId;
             }
             for (auto &pending : staging.m_pendingPyComponents) {
@@ -1762,6 +1777,8 @@ bool Scene::DeserializeDocument(const nlohmann::json &j, std::unordered_map<uint
             GameObject::EnsureNextID(objectId);
         if (objectIdRemap)
             *objectIdRemap = std::move(committedObjectIdRemap);
+        if (componentIdRemap)
+            *componentIdRemap = std::move(committedComponentIdRemap);
         const auto profileCommitted = ProfileClock::now();
 
         // ── Step 5: native Awake pass. ──

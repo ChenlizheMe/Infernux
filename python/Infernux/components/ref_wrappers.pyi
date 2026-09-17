@@ -85,11 +85,11 @@ class PrefabRef:
 class ComponentRef:
     """Null-safe reference to a component on a specific GameObject.
 
-    Stores the target GameObject's persistent ID and the component type
-    name.  Lazily resolves the live component instance at access time.
+    Stores the target GameObject's persistent ID, component identity and type
+    name. Lazily resolves that exact instance, never a same-type replacement.
     """
 
-    def __init__(self, *, go_id: int = ..., component_type: str = ...) -> None: ...
+    def __init__(self, component: Any = ..., *, go_id: int = ..., component_type: str = ..., component_id: int = ...) -> None: ...
 
     def resolve(self) -> Any:
         """Return the live component instance, or ``None`` if unavailable."""
@@ -102,6 +102,10 @@ class ComponentRef:
     @property
     def component_type(self) -> str:
         """The type name of the referenced component."""
+        ...
+    @property
+    def component_id(self) -> int:
+        """The exact component identity; zero denotes a legacy type-only reference."""
         ...
     @property
     def display_name(self) -> str:

@@ -1194,7 +1194,7 @@ def _render_onclick_arg_comp(ctx, btn_comp, entries, i, arg_index, spec, arg, lw
                              clone_entries_fn, resolve_go_fn):
     """Render a component On-Click argument field."""
     from Infernux.components.ref_wrappers import ComponentRef
-    from .inspector_components import render_object_field, _picker_scene_gameobjects, _create_component_ref_from_go
+    from .inspector_components import render_object_field, _picker_scene_components, _create_component_ref_from_go
 
     comp_ref = _get_serializable_raw_field(arg, "component")
     display = comp_ref.display_name if isinstance(comp_ref, ComponentRef) else t("igui.none")
@@ -1230,7 +1230,7 @@ def _render_onclick_arg_comp(ctx, btn_comp, entries, i, arg_index, spec, arg, lw
         clickable=False,
         accept_drag_type="HIERARCHY_GAMEOBJECT",
         on_drop_callback=comp_drop,
-        picker_scene_items=lambda filt, _ct=spec.component_type: _picker_scene_gameobjects(filt, required_component=_ct),
+        picker_scene_items=lambda filt, _ct=spec.component_type: _picker_scene_components(filt, required_component=_ct),
         on_pick=comp_pick,
         on_clear=comp_clear,
         on_ping=(

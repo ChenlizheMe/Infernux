@@ -329,7 +329,8 @@ class Scene
     ///
     /// @brief Rebuild the scene from an already parsed current-schema document.
     bool DeserializeDocument(const nlohmann::json &document,
-                             std::unordered_map<uint64_t, uint64_t> *objectIdRemap = nullptr);
+                             std::unordered_map<uint64_t, uint64_t> *objectIdRemap = nullptr,
+                             std::unordered_map<uint64_t, uint64_t> *componentIdRemap = nullptr);
 
     /// Commit a validated candidate while retaining the current native world.
     /// The returned token must be finalized after cross-language publish or
@@ -491,6 +492,7 @@ class SceneCommitToken final
 
     [[nodiscard]] bool IsActive() const noexcept;
     [[nodiscard]] const std::unordered_map<uint64_t, uint64_t> &GetObjectIdRemap() const noexcept;
+    [[nodiscard]] const std::unordered_map<uint64_t, uint64_t> &GetComponentIdRemap() const noexcept;
     bool Rollback();
     void Finalize();
 

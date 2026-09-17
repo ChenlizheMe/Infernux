@@ -503,11 +503,7 @@ def _ensure_component_ref(value):
         return value
     if value is None:
         return ComponentRef()
-    # Live component → wrap by go_id + type_name
-    go = getattr(value, 'game_object', None)
-    go_id = int(go.id) if go is not None else 0
-    type_name = getattr(value, 'type_name', type(value).__name__)
-    return ComponentRef(go_id=go_id, component_type=type_name)
+    return ComponentRef(value)
 
 
 def _get_asset_db():
@@ -921,11 +917,11 @@ def coerce_serialized_field_input(
                 raise ValueError(f"{path}: GameObject reference requires object_id")
             value = make_game_object_ref(value["object_id"])
     elif field_type == FieldType.COMPONENT and isinstance(value, dict) and TYPE_KEY not in value:
-        if set(value) != {"game_object_id", "component_type"}:
+        if set(value) - {"component_id"} != {"game_object_id", "component_type"}:
             raise ValueError(
                 f"{path}: component reference requires game_object_id and component_type"
             )
-        value = make_component_ref(value["game_object_id"], value["component_type"])
+        value = make_component_ref(value["game_object_id"], value["component_type"], value.get("component_id", 0))
 
     from .value_codec import VALUE_CODECS
     if isinstance(value, (dict, list, tuple)) or value is None or field_type in {

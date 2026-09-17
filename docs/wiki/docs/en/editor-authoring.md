@@ -90,6 +90,14 @@ Old scenes without component source identities are adopted once using their
 saved baseline and type order. This cannot recover the identity of a same-type
 component that was already deleted before the scene acquired that metadata.
 
+Component fields store the exact component ID as well as its owning object and
+type. Assign a component instance directly; the Inspector picker lists each
+component separately. Dropping a GameObject binds its first matching component.
+Deleting that target resolves the reference to `None`, not to another component
+of the same type. Clear missing references before saving a Prefab asset.
+Legacy type-only references remain readable and acquire an exact ID when saved.
+Copies, Prefab operations and scene loading remap internal references to the new
+identities; explicit references to objects outside the copied graph stay external.
+
 These APIs expose the implemented authoring workflow, not the whole Unity Editor
-SDK. Nested Prefab and references to a specific one of several same-type
-components remain separate, unfinished work.
+SDK. Nested Prefab remains separate, unfinished work.

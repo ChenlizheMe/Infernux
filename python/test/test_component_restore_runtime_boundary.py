@@ -43,7 +43,9 @@ def test_scene_publish_accepts_native_fresh_python_component_id():
     native = NativeComponent()
 
     class Target:
-        def _attach_prepared_py_component(self, value, _index):
+        def _attach_prepared_py_component(self, value, _index, component_id):
+            native.component_id = component_id
+            value._component_id = component_id
             value._cpp_component = native
             return value
 

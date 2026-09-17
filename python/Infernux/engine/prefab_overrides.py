@@ -90,6 +90,10 @@ def compute_overrides(instance_obj, prefab_path: str,
     object_ids = {0: 0}
     _match_object_ids(instance_data, prefab_data, object_ids)
     component_ids = _instance_component_ids(instance_data, prefab_data)
+    for node in _object_nodes(instance_data):
+        object_ids[(node["id"], node["transform"]["component_id"])] = 0
+        for component in node["components"]:
+            object_ids[(node["id"], component["component_id"])] = component_ids[component["component_id"]]
     _diff_node(instance_data, prefab_data, "", overrides, object_ids, component_ids, is_root=True)
     return overrides
 
@@ -441,24 +445,29 @@ def _project_prefab_document(source, current, *, object_id_map=None, component_i
         for component, previous in pairs:
             if component is None:
                 continue
+            reference_key = (node["local_id"], component.get("component_id", 0))
             if previous is None:
-                new_components.append(component)
+                new_components.append((reference_key, component))
             else:
                 component["component_id"] = previous["component_id"]
+                local_to_runtime[reference_key] = previous["component_id"]
                 if "instance_guid" in previous:
                     component["instance_guid"] = previous["instance_guid"]
     object_ids, component_ids = reserve_ids(len(new_objects), len(new_components))
     for node, object_id in zip(new_objects, object_ids, strict=True):
         node["id"] = object_id
         local_to_runtime[node["local_id"]] = object_id
-    for component, component_id in zip(new_components, component_ids, strict=True):
+    for (reference_key, component), component_id in zip(new_components, component_ids, strict=True):
         component["component_id"] = component_id
+        local_to_runtime[reference_key] = component_id
 
     def map_scene_references(value):
         if isinstance(value, dict):
             key = _REFERENCE_ID_KEYS.get(value.get(TYPE_KEY))
             if key and value[key] < 0:
                 local_to_runtime.setdefault(value[key], -value[key])
+            if value.get(TYPE_KEY) == COMPONENT_REF and value.get("component_id", 0) < 0:
+                local_to_runtime[(value["game_object_id"], value["component_id"])] = -value["component_id"]
             for child in value.values():
                 map_scene_references(child)
         elif isinstance(value, list):
@@ -825,6 +834,13 @@ def _match_child_nodes(instance, prefab):
 def _same_value(instance, prefab, object_ids: dict) -> bool:
     """Compare typed references across scene and asset identity domains."""
     if isinstance(instance, dict) and isinstance(prefab, dict):
+        if instance.get(TYPE_KEY) == prefab.get(TYPE_KEY) == COMPONENT_REF:
+            instance = dict(instance)
+            if "component_id" not in prefab:
+                instance.pop("component_id", None)
+            elif "component_id" in instance:
+                key = (instance["game_object_id"], instance["component_id"])
+                instance["component_id"] = object_ids.get(key, -instance["component_id"])
         if instance.keys() != prefab.keys():
             return False
         reference_key = _REFERENCE_ID_KEYS.get(instance.get(TYPE_KEY))

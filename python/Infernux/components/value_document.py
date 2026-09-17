@@ -23,19 +23,24 @@ def make_game_object_ref(object_id: int) -> dict:
     return make_document(GAME_OBJECT_REF, object_id=object_id)
 
 
-def make_component_ref(game_object_id: int, component_type: str) -> dict:
-    return make_document(
+def make_component_ref(game_object_id: int, component_type: str, component_id: int = 0) -> dict:
+    document = make_document(
         COMPONENT_REF,
         game_object_id=game_object_id,
         component_type=component_type,
     )
+    if component_id:
+        document["component_id"] = component_id
+    return document
 
 
 def is_component_ref_document(value, component_type: str = "") -> bool:
     """Return whether *value* is one complete current component reference."""
     return (
         type(value) is dict
-        and set(value) == {TYPE_KEY, "game_object_id", "component_type"}
+        and set(value) - {"component_id"} == {TYPE_KEY, "game_object_id", "component_type"}
+        and type(value.get("component_id", 0)) is int
+        and value.get("component_id", 0) >= 0
         and value.get(TYPE_KEY) == COMPONENT_REF
         and type(value.get("game_object_id")) is int
         and value["game_object_id"] >= 0

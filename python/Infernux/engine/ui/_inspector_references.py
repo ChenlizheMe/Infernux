@@ -197,7 +197,6 @@ def _create_reference_value_from_payload(element_type, payload, required_compone
 
     if element_type == FieldType.COMPONENT:
         from Infernux.lib import SceneManager as _SM
-        from Infernux.components.ref_wrappers import ComponentRef
 
         scene = _SM.instance().get_active_scene()
         if scene is None:
@@ -207,22 +206,7 @@ def _create_reference_value_from_payload(element_type, payload, required_compone
         if game_object is None:
             return None
 
-        comp_type = required_component or ''
-        if comp_type:
-            if not _game_object_has_required_component(game_object, comp_type):
-                from Infernux.debug import Debug
-                Debug.log_warning(
-                    f"GameObject '{game_object.name}' has no '{comp_type}' component."
-                )
-                return None
-        else:
-            # No type filter — pick the first Python component on this GO
-            from Infernux.components.component import InxComponent
-            py_comps = InxComponent._active_instances.get(obj_id, [])
-            if py_comps:
-                comp_type = py_comps[0].__class__.__name__
-
-        return ComponentRef(go_id=obj_id, component_type=comp_type)
+        return _create_component_ref_from_go(game_object, required_component or "")
 
     return None
 
@@ -532,7 +516,7 @@ def _render_component_ref_inline(ctx, py_comp, field_name, metadata, lw):
     _ct = metadata.component_type
 
     def _comp_scene(filt, _ct=_ct):
-        return _picker_scene_gameobjects(filt, required_component=_ct)
+        return _picker_scene_components(filt, required_component=_ct)
 
     def _comp_on_pick(go, _fn=field_name, _comp=py_comp, _ct=_ct):
         ref = _create_component_ref_from_go(go, _ct)
@@ -693,18 +677,38 @@ def _game_object_has_required_component(game_object, required_component: str) ->
 
 
 def _create_component_ref_from_go(game_object, component_type: str = ""):
-    """Create a ComponentRef from a picked GameObject (for picker popup)."""
-    from Infernux.components.ref_wrappers import ComponentRef, _infer_component_type_on_game_object
+    """Bind an exact picker selection, or the first matching component on a dropped object."""
+    from Infernux.components.ref_wrappers import ComponentRef, _resolve_component_on_game_object
     if game_object is None:
         return None
-    go_id = game_object.id
-    ct = component_type or ''
-    if ct:
-        if not _game_object_has_required_component(game_object, ct):
+    if isinstance(game_object, ComponentRef):
+        if component_type and game_object.component_type != component_type:
             return None
-    else:
-        ct = _infer_component_type_on_game_object(game_object)
-    return ComponentRef(go_id=go_id, component_type=ct)
+        return game_object
+    component = _resolve_component_on_game_object(game_object, component_type or "")
+    return ComponentRef(component) if component is not None else None
+
+
+def _picker_scene_components(filter_text: str, required_component: str = None):
+    """Offer individual components, including repeated types on the same object."""
+    from Infernux.components.ref_wrappers import ComponentRef
+    from Infernux.lib import SceneManager
+    scene = SceneManager.instance().get_active_scene()
+    if scene is None:
+        return []
+    items = []
+    filt = filter_text.lower()
+    for go in scene.get_all_objects():
+        occurrences = {}
+        for component in go.get_components():
+            type_name = getattr(component, "type_name", type(component).__name__)
+            if required_component and type_name != required_component:
+                continue
+            occurrences[type_name] = occurrences.get(type_name, 0) + 1
+            label = f"{go.name} / {type_name} [{occurrences[type_name]}]"
+            if not filt or filt in label.lower():
+                items.append((label, ComponentRef(component)))
+    return items
 
 
 def _picker_scene_gameobjects(filter_text: str, required_component: str = None):

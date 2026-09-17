@@ -883,6 +883,7 @@ class TestPlayModeManager:
                 self._previous_document = previous_document
                 self.is_active = True
                 self.object_id_remap = {}
+                self.component_id_remap = {}
 
             def rollback(self):
                 if not self.is_active:
@@ -941,7 +942,7 @@ class TestPlayModeManager:
         monkeypatch.setattr(
             component_restore,
             "publish_prepared_scene_python_components",
-            lambda scene, prepared, clear_registries=True, object_id_map=None: prepared.consume(),
+            lambda scene, prepared, clear_registries=True, object_id_map=None, component_id_map=None: prepared.consume(),
         )
 
         snapshot = {

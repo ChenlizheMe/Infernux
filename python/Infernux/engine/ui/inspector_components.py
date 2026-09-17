@@ -47,7 +47,7 @@ from ._inspector_references import (  # noqa: F401
     _apply_reference_drop, _apply_gameobject_or_prefab_drop,
     _apply_builtin_audio_clip_drop,
     _game_object_has_required_component, _create_component_ref_from_go,
-    _picker_scene_gameobjects, ping_scene_object_in_hierarchy,
+    _picker_scene_gameobjects, _picker_scene_components, ping_scene_object_in_hierarchy,
     render_asset_reference_field, render_object_field,
     render_component_reference_field,
 )
@@ -631,7 +631,7 @@ def _render_builtin_component_reference(
         component_type,
         accept_drag_type="HIERARCHY_GAMEOBJECT",
         on_drop_callback=_drop,
-        picker_scene_items=lambda filt: _picker_scene_gameobjects(
+        picker_scene_items=lambda filt: _picker_scene_components(
             filt, required_component=component_type,
         ),
         on_pick=_pick,

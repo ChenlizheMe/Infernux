@@ -2142,14 +2142,16 @@ void RegisterSceneBindings(py::module_ &m)
             py::arg("component_instance"), "Add a Python InxComponent instance to this GameObject")
         .def(
             "_attach_prepared_py_component",
-            [](GameObject *obj, py::object instance, size_t componentIndex) -> py::object {
+            [](GameObject *obj, py::object instance, size_t componentIndex, uint64_t componentId) -> py::object {
                 if (!py::hasattr(instance, "_bind_native_component"))
                     throw py::type_error("prepared Python component requires _bind_native_component");
                 auto proxy = std::make_unique<PyComponentProxy>(instance);
+                if (componentId)
+                    proxy->SetComponentID(componentId);
                 obj->AddPreparedPythonComponent(std::move(proxy), componentIndex);
                 return instance;
             },
-            py::arg("component_instance"), py::arg("component_index"),
+            py::arg("component_instance"), py::arg("component_index"), py::arg("component_id") = 0,
             "Internal deferred Python component publication hook")
         .def("_activate_prepared_py_component", &GameObject::ActivatePreparedPythonComponent,
              py::arg("native_component"), "Internal prepared Python component activation hook")
@@ -2452,6 +2454,7 @@ void RegisterSceneBindings(py::module_ &m)
     py::class_<SceneCommitToken, std::shared_ptr<SceneCommitToken>>(m, "_SceneCommitToken")
         .def_property_readonly("is_active", &SceneCommitToken::IsActive)
         .def_property_readonly("object_id_remap", &SceneCommitToken::GetObjectIdRemap)
+        .def_property_readonly("component_id_remap", &SceneCommitToken::GetComponentIdRemap)
         .def("rollback", &SceneCommitToken::Rollback)
         .def("finalize", &SceneCommitToken::Finalize);
 
