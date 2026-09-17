@@ -105,9 +105,9 @@ endforeach()
 # Vulkan frontend is a native payload in this wheel.  Missing either side is a
 # broken distribution, not an optional runtime download.
 file(GLOB _gpu_jit_modules
-    "${_verify_root}/Infernux/_compiler/taichi/_vendor/taichi/_lib/core/taichi_python*.pyd"
-    "${_verify_root}/Infernux/_compiler/taichi/_vendor/taichi/_lib/core/taichi_python*.so"
-    "${_verify_root}/Infernux/_compiler/taichi/_vendor/taichi/_lib/core/taichi_python*.dylib"
+    "${_verify_root}/Infernux/_compiler/taichi/_vendor/taichi/_lib/core/_infernux_gpu_compiler*.pyd"
+    "${_verify_root}/Infernux/_compiler/taichi/_vendor/taichi/_lib/core/_infernux_gpu_compiler*.so"
+    "${_verify_root}/Infernux/_compiler/taichi/_vendor/taichi/_lib/core/_infernux_gpu_compiler*.dylib"
 )
 list(LENGTH _gpu_jit_modules _gpu_jit_module_count)
 if(NOT _gpu_jit_module_count EQUAL 1)

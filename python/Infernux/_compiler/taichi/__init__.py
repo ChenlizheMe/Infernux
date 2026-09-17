@@ -7,7 +7,7 @@ from pathlib import Path
 import sys
 
 
-_NATIVE_NAME = "Infernux._compiler.taichi._native.taichi_python"
+_NATIVE_NAME = "Infernux._compiler.taichi._native._infernux_gpu_compiler"
 
 
 class CompilerInstallationError(RuntimeError):
@@ -53,8 +53,8 @@ def load_native():
         return existing
     core = _vendor_dir() / "_lib" / "core"
     native_path = next(
-        (core / f"taichi_python{suffix}" for suffix in EXTENSION_SUFFIXES
-         if (core / f"taichi_python{suffix}").is_file()),
+        (core / f"_infernux_gpu_compiler{suffix}" for suffix in EXTENSION_SUFFIXES
+         if (core / f"_infernux_gpu_compiler{suffix}").is_file()),
         None,
     )
     if native_path is None:

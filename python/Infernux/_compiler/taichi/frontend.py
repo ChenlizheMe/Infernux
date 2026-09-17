@@ -95,7 +95,7 @@ def _load_vendor():
         module = importlib.util.module_from_spec(spec)
         native = load_native()
         sys.modules[_VENDOR_NAME] = module
-        sys.modules[_VENDOR_NAME + "._lib.core.taichi_python"] = native
+        sys.modules[_VENDOR_NAME + "._lib.core._infernux_gpu_compiler"] = native
         try:
             spec.loader.exec_module(module)
             _vendor = module

@@ -57,7 +57,7 @@ set(_infernux_gpu_jit_cmake_args
     "-DINFERNUX_BUILD_TESTS=${INFERNUX_BUILD_TESTS}"
 )
 
-set(_infernux_gpu_jit_targets taichi_python)
+set(_infernux_gpu_jit_targets _infernux_gpu_compiler)
 if(INFERNUX_BUILD_TESTS)
     list(APPEND _infernux_gpu_jit_targets infernux_compiler_contract_tests infernux_bit_contract_tests)
 endif()
