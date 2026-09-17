@@ -1050,8 +1050,8 @@ class GameViewPanel(EditorPanel):
         camera = scene.effective_game_camera if scene is not None else None
         from Infernux.engine.runtime_screen_ui import map_runtime_ui_pointer
         route_scene_input = should_route_game_input(
-            is_playing=self.__is_playing,
-            panel_focused=self._was_focused,
+            is_playing=self._is_playing(),
+            panel_focused=ClosablePanel.get_active_view_id() == self.window_id,
             cursor_locked=Input.is_cursor_locked(),
         )
         mapped_positions = map_runtime_ui_pointer(
@@ -1079,17 +1079,11 @@ class GameViewPanel(EditorPanel):
         dispatcher = getattr(self, "_mouse_event_dispatcher", None)
         if dispatcher is None:
             return
-        if not should_route_game_input(
-            is_playing=self.__is_playing,
-            panel_focused=self._was_focused,
-            cursor_locked=Input.is_cursor_locked(),
-        ):
+        if not route_scene_input:
             dispatcher.reset()
             return
-        if route_scene_input:
-            dispatcher.process(
-                camera, (game_px, game_py), (float(game_w), float(game_h)),
-                hit=scene_hit,
-            )
-        else:
-            dispatcher.process(camera, (game_px, game_py), (float(game_w), float(game_h)))
+        dispatcher.process(
+            camera, (game_px, game_py), (float(game_w), float(game_h)),
+            hit=scene_hit,
+            button_state=(mouse_held, mouse_down, mouse_up),
+        )

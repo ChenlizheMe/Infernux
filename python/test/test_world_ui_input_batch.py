@@ -55,6 +55,38 @@ def test_batch_reads_native_pose_not_python_component_properties(scene, monkeypa
     assert map_pointer(targets, camera(mask=1 << 31))[0] == pytest.approx((40, 50, 5))
 
 
+@pytest.mark.parametrize('world_ui', [False, True])
+def test_scene_mouse_hit_without_world_plane_intersection(scene, monkeypatch, world_ui):
+    from Infernux.physics import Physics
+    surfaces = ()
+    if world_ui:
+        control(scene)
+        surfaces = collect_runtime_ui_input_surfaces(scene)
+    hit = SimpleNamespace(game_object=object())
+    queries = []
+    def query(*args, **kwargs):
+        queries.append(kwargs)
+        return hit
+    monkeypatch.setattr(Physics, 'raycast', query)
+    # Parallel to the UI plane; ordinary scene input must still query once.
+    positions, actual = map_runtime_ui_pointer(
+        surfaces, camera(direction=(1, 0, 0), mask=5), 20, 30, 1920, 1080,
+        include_scene_hit=True,
+    )
+    assert actual is hit
+    assert queries == [dict(max_distance=1000.0, layer_mask=5, query_triggers=True)]
+    assert len(positions) == int(world_ui)
+
+
+def test_no_scene_query_when_input_disabled_or_camera_absent(monkeypatch):
+    from Infernux.physics import Physics
+    def unexpected(*args, **kwargs):
+        pytest.fail('Disabled scene input must not issue a physics query')
+    monkeypatch.setattr(Physics, 'raycast', unexpected)
+    assert map_runtime_ui_pointer((), camera(), 0, 0, 1920, 1080) == ()
+    assert map_runtime_ui_pointer((), None, 0, 0, 1920, 1080, include_scene_hit=True) == ((), None)
+
+
 def test_parent_rotation_translation_and_scale_follow_render_pose(scene):
     import random
     rng = random.Random(41)

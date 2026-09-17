@@ -229,10 +229,11 @@ class PlayerGUI(InxGUIRenderable):
         # The standalone Player owns the entire window. Touchscreen contacts
         # do not define an ImGui mouse-hover state, so UI dispatch must not be
         # gated by the desktop hover bit.
-        scene_hit = self._process_ui_events(display_w, display_h)
-        self._process_mouse_events(display_w, display_h, scene_hit=scene_hit)
+        mouse_frame = Input.get_game_mouse_frame_state(0)
+        scene_hit = self._process_ui_events(display_w, display_h, mouse_frame=mouse_frame)
+        self._process_mouse_events(display_w, display_h, scene_hit=scene_hit, mouse_frame=mouse_frame)
 
-    def _process_mouse_events(self, game_w: int, game_h: int, *, scene_hit=None) -> None:
+    def _process_mouse_events(self, game_w: int, game_h: int, *, scene_hit=None, mouse_frame=None) -> None:
         dispatcher = getattr(self, "_mouse_event_dispatcher", None)
         if dispatcher is None:
             return
@@ -242,13 +243,14 @@ class PlayerGUI(InxGUIRenderable):
         if camera is None:
             dispatcher.reset()
             return
-        x, y, _sx, _sy, _held, _down, _up = Input.get_game_mouse_frame_state(0)
+        x, y, _sx, _sy, held, down, up = Input.get_game_mouse_frame_state(0) if mouse_frame is None else mouse_frame
         if scene_hit is None and not self._has_shared_scene_query:
-            dispatcher.process(camera, (x, y), (float(game_w), float(game_h)))
+            dispatcher.process(camera, (x, y), (float(game_w), float(game_h)), button_state=(held, down, up))
         else:
-            dispatcher.process(camera, (x, y), (float(game_w), float(game_h)), hit=scene_hit)
+            dispatcher.process(camera, (x, y), (float(game_w), float(game_h)), hit=scene_hit,
+                               button_state=(held, down, up))
 
-    def _process_ui_events(self, game_w: int, game_h: int):
+    def _process_ui_events(self, game_w: int, game_h: int, *, mouse_frame=None):
         """Convert mouse and every active touch to independent UI pointers."""
         from Infernux.lib import SceneManager
 
@@ -268,7 +270,9 @@ class PlayerGUI(InxGUIRenderable):
 
         camera = scene.effective_game_camera
 
-        gx, gy, scroll_x, scroll_y, mouse_held, mouse_down, mouse_up = Input.get_game_mouse_frame_state(0)
+        gx, gy, scroll_x, scroll_y, mouse_held, mouse_down, mouse_up = (
+            Input.get_game_mouse_frame_state(0) if mouse_frame is None else mouse_frame
+        )
 
         mouse_positions, scene_hit = map_runtime_ui_pointer(
             surfaces, camera, gx, gy, game_w, game_h,

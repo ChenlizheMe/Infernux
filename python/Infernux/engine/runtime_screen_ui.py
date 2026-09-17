@@ -346,6 +346,21 @@ def map_runtime_ui_pointer(
                 if occluder_distance + 1e-4 < distance:
                     positions[index] = (float("nan"), float("nan"), distance)
 
+    elif include_scene_hit and camera is not None:
+        # Ordinary Collider input does not depend on there being world UI,
+        # or on the pointer intersecting one of its planes.
+        from Infernux.physics import Physics
+
+        if ray_origin is None:
+            ray_origin, ray_direction = camera.screen_point_to_ray(
+                float(screen_x), float(screen_y),
+                float(viewport_width), float(viewport_height),
+            )
+        scene_hit = Physics.raycast(
+            ray_origin, ray_direction, max_distance=1000.0,
+            layer_mask=int(camera.culling_mask), query_triggers=True,
+        )
+
     result = tuple(positions)
     return (result, scene_hit) if include_scene_hit else result
 

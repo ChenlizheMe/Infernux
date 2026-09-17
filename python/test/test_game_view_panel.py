@@ -26,6 +26,41 @@ class _Engine:
         return 1
 
 
+def test_mouse_route_uses_live_play_manager_and_newly_focused_panel(monkeypatch):
+    import Infernux.lib as lib
+    import Infernux.engine.ui.game_view_panel as module
+    import Infernux.engine.runtime_screen_ui as ui
+    from Infernux.physics import Physics
+
+    camera = SimpleNamespace(culling_mask=1, screen_point_to_ray=lambda *args: (1, 2))
+    scene = SimpleNamespace(effective_game_camera=camera)
+    monkeypatch.setattr(lib, 'SceneManager', SimpleNamespace(instance=lambda: SimpleNamespace(
+        get_active_scene=lambda: scene)))
+    monkeypatch.setattr(ui, 'collect_runtime_ui_input_surfaces', lambda *args: ())
+    panel = GameViewPanel(engine=_Engine())
+    panel.set_play_mode_manager(SimpleNamespace(is_playing=True))
+    panel._was_focused = False  # Focus was acquired during this frame.
+    panel._display_scale = .5
+    monkeypatch.setattr(module.ClosablePanel, 'get_active_view_id', lambda: panel.window_id)
+    monkeypatch.setattr(module.Input, 'is_cursor_locked', lambda: False)
+    monkeypatch.setattr(module.Input, 'get_game_mouse_frame_state', lambda _: (10, 20, 0, 0, True, True, False))
+    hits = []
+    hit = SimpleNamespace(game_object=object())
+    monkeypatch.setattr(Physics, 'raycast', lambda *args, **kwargs: hits.append(args) or hit)
+    calls = []
+    panel._ui_event_processor = SimpleNamespace(reset=lambda: None, process=lambda *args: None)
+    panel._mouse_event_dispatcher = SimpleNamespace(
+        process=lambda *args, **kwargs: calls.append((args, kwargs)),
+        reset=lambda: calls.append('reset'))
+    panel._process_ui_events(1920, 1080)
+    assert hits == [(1, 2)]
+    assert calls == [((camera, (20, 40), (1920., 1080.)), dict(hit=hit, button_state=(True, True, False)))]
+    panel.set_play_mode_manager(SimpleNamespace(is_playing=False))
+    panel._process_ui_events(1920, 1080)
+    assert calls[-1] == 'reset'
+    assert len(hits) == 1
+
+
 class _RenderActivationEngine(_Engine):
     def __init__(self) -> None:
         super().__init__()

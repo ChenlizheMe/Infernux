@@ -163,7 +163,24 @@ def test_standalone_player_dispatches_runtime_ui_without_desktop_hover(monkeypat
     player._last_w = 0
     player._last_h = 0
     player._render_scale = 1.0
-    player._process_ui_events = lambda width, height: dispatched.append((width, height))
+    mouse_frame = (32.0, 48.0, 0.0, 0.0, True, True, False)
+    samples = []
+    routed = []
+    hit = object()
+    monkeypatch.setattr(Input, "get_game_mouse_frame_state", lambda button: samples.append(button) or mouse_frame)
+
+    def ui_events(width, height, *, mouse_frame):
+        dispatched.append((width, height))
+        routed.append(mouse_frame)
+        return hit
+
+    def mouse_events(width, height, *, scene_hit, mouse_frame):
+        assert (width, height) == (1280, 720)
+        assert scene_hit is hit
+        routed.append(mouse_frame)
+
+    player._process_ui_events = ui_events
+    player._process_mouse_events = mouse_events
 
     # A standalone Player owns its whole window. The context intentionally has
     # no desktop hover API because native touchscreen input does not define it.
@@ -171,6 +188,8 @@ def test_standalone_player_dispatches_runtime_ui_without_desktop_hover(monkeypat
 
     assert viewport_origins == [(8.0, 12.0)]
     assert dispatched == [(1280, 720)]
+    assert samples == [0]
+    assert len(routed) == 2 and all(frame is mouse_frame for frame in routed)
 
 
 def _player_gui_for_play_gate(session):
