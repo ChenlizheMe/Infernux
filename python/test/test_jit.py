@@ -280,6 +280,58 @@ class TestPublicJitCompile:
 
 
 class TestAutoParallelNjit:
+    @pytest.mark.parametrize("policy", ["auto", "required"])
+    @pytest.mark.parametrize("failure", ["execution", "mismatch", "benchmark", "isolation"])
+    def test_warmup_failure_is_not_silently_published_as_serial(self, monkeypatch, policy, failure):
+        from Infernux.jit_runtime import StaticCostDecision
+
+        monkeypatch.setattr(jit_kernels, "static_cost_decision", lambda *args, **kwargs:
+                            StaticCostDecision("serial", "gray", 100, "requires measurement"))
+        calls = []
+
+        def serial(values):
+            calls.append("serial")
+            values[0] += 1
+            return values[0]
+
+        def parallel(values):
+            calls.append("parallel")
+            values[0] += 2 if failure == "mismatch" else 1
+            if failure == "execution":
+                raise ValueError("authored parallel failure")
+            return values[0]
+
+        if failure == "isolation":
+            def cannot_clone(*args, **kwargs):
+                raise TypeError("cannot isolate input")
+            monkeypatch.setattr(jit_kernels, "clone_call_arguments", cannot_clone)
+        if failure == "benchmark":
+            def failed_measurement(*args, **kwargs):
+                raise ValueError("measurement failed")
+            monkeypatch.setattr(jit_kernels, "_benchmark_callable", failed_measurement)
+
+        dispatcher = jit_kernels._build_auto_parallel_dispatcher(
+            serial, serial, parallel, parallel_policy=policy)
+        values = np.zeros(4)
+        error = {"execution": ValueError, "mismatch": RuntimeError,
+                 "benchmark": ValueError, "isolation": TypeError}[failure]
+        with pytest.raises(error):
+            dispatcher._infernux_warmup(values)
+        np.testing.assert_array_equal(values, np.zeros(4))
+        assert len(dispatcher.decisions) == 0
+        assert calls == ([] if failure == "isolation" else ["serial", "parallel"])
+
+    def test_legacy_serial_warmup_is_isolated_and_does_not_swallow_failures(self):
+        @jit_kernels.njit
+        def kernel(values):
+            values[0] += 1
+            raise ValueError("invalid warmup input")
+
+        values = np.zeros(4)
+        with pytest.raises(ValueError, match="invalid warmup input"):
+            jit_kernels.warmup(kernel, values)
+        np.testing.assert_array_equal(values, np.zeros(4))
+
     def test_serial_only_hir_skips_parallel_signature_and_device_probes(self, monkeypatch):
         calls = []
 

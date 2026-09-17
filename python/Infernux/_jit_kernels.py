@@ -594,30 +594,14 @@ def _build_auto_parallel_dispatcher(
                 _record(key, DispatchDecision(static.mode, static.reason))
                 _log_jit(f"[JIT] {fn.__name__}: {static.reason}")
                 return
-        try:
-            serial_args, serial_kwargs = clone_call_arguments(args, kwargs)
-            parallel_args, parallel_kwargs = clone_call_arguments(args, kwargs)
-        except TypeError as exc:
-            reason = f"serial retained: inputs cannot be isolated for validation ({exc})"
-            _record(key, DispatchDecision("serial", reason))
-            _log_jit(f"[JIT] {fn.__name__}: {reason}")
-            return
+        serial_args, serial_kwargs = clone_call_arguments(args, kwargs)
+        parallel_args, parallel_kwargs = clone_call_arguments(args, kwargs)
 
         _log_jit(f"[JIT] warmup {fn.__name__}: compiling serial")
         serial_result = serial_compiled(*serial_args, **serial_kwargs)
 
         _log_jit(f"[JIT] warmup {fn.__name__}: compiling parallel")
-        try:
-            parallel_result = parallel_compiled(*parallel_args, **parallel_kwargs)
-        except Exception as exc:
-            if parallel_policy == "required":
-                raise RuntimeError(
-                    f"auto_parallel required kernel {fn.__name__!r} failed during validation"
-                ) from exc
-            reason = f"serial retained: parallel validation failed ({type(exc).__name__}: {exc})"
-            _record(key, DispatchDecision("serial", reason))
-            _log_jit(f"[JIT] {fn.__name__}: {reason}")
-            return
+        parallel_result = parallel_compiled(*parallel_args, **parallel_kwargs)
 
         if not calls_equivalent(
             serial_result,
@@ -627,40 +611,29 @@ def _build_auto_parallel_dispatcher(
             parallel_args,
             parallel_kwargs,
         ):
-            reason = "serial retained: serial and parallel results or mutations differ"
-            if parallel_policy == "required":
-                raise RuntimeError(f"auto_parallel required kernel {fn.__name__!r}: {reason}")
-            _record(key, DispatchDecision("serial", reason))
-            _log_jit(f"[JIT] {fn.__name__}: {reason}")
-            return
+            raise RuntimeError(
+                f"JIT kernel {fn.__name__!r}: serial and parallel results or mutations differ"
+            )
 
         serial_samples: list[float] = []
         parallel_samples: list[float] = []
-        try:
-            sample_target = 5
-            while len(serial_samples) < sample_target:
-                sample_args, sample_kwargs = clone_call_arguments(args, kwargs)
-                serial_samples.append(
-                    _benchmark_callable(serial_compiled, *sample_args, **sample_kwargs)
-                )
-                sample_args, sample_kwargs = clone_call_arguments(args, kwargs)
-                parallel_samples.append(
-                    _benchmark_callable(parallel_compiled, *sample_args, **sample_kwargs)
-                )
-                # Long kernels already provide a strong signal per sample.
-                # Keep a median, but avoid turning a 1.5 s serial baseline
-                # into a 30 s editor warmup through excessive cloning/runs.
-                if len(serial_samples) == 1 and max(
-                    serial_samples[0], parallel_samples[0]
-                ) >= 0.050:
-                    sample_target = 3
-        except Exception as exc:
-            if parallel_policy == "required":
-                raise
-            reason = f"serial retained: benchmark failed ({type(exc).__name__}: {exc})"
-            _record(key, DispatchDecision("serial", reason))
-            _log_jit(f"[JIT] {fn.__name__}: {reason}")
-            return
+        sample_target = 5
+        while len(serial_samples) < sample_target:
+            sample_args, sample_kwargs = clone_call_arguments(args, kwargs)
+            serial_samples.append(
+                _benchmark_callable(serial_compiled, *sample_args, **sample_kwargs)
+            )
+            sample_args, sample_kwargs = clone_call_arguments(args, kwargs)
+            parallel_samples.append(
+                _benchmark_callable(parallel_compiled, *sample_args, **sample_kwargs)
+            )
+            # Long kernels already provide a strong signal per sample.
+            # Keep a median, but avoid turning a 1.5 s serial baseline
+            # into a 30 s editor warmup through excessive cloning/runs.
+            if len(serial_samples) == 1 and max(
+                serial_samples[0], parallel_samples[0]
+            ) >= 0.050:
+                sample_target = 3
 
         serial_elapsed = median(serial_samples)
         parallel_elapsed = median(parallel_samples)
@@ -842,10 +815,8 @@ def warmup(fn, *args, **kwargs):
 
     if not _HAS_NUMBA:
         return
-    try:
-        fn(*args, **kwargs)
-    except Exception as exc:
-        _log_jit(f"[JIT] warmup {getattr(fn, '__name__', '<kernel>')} failed: {exc}")
+    prepared_args, prepared_kwargs = clone_call_arguments(args, kwargs)
+    fn(*prepared_args, **prepared_kwargs)
 
 
 __all__ = [
