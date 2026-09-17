@@ -1249,6 +1249,18 @@ def clone_game_object_transactionally(
         prepared.discard()
         return None
     try:
+        # A copied nested root is a new occurrence in its enclosing asset. Its
+        # inner source identity stays intact; only the enclosing anchor retires.
+        pending = [created]
+        while pending:
+            obj = pending.pop()
+            if obj.prefab_root:
+                baseline = obj._prefab_source_document
+                if baseline and "outer_source_id" in baseline:
+                    baseline.pop("outer_source_id")
+                    obj._prefab_source_document = baseline
+            else:
+                pending.extend(obj.get_children())
         if configure_created is not None:
             configure_created(created)
         object_id_map = _build_instantiated_object_id_map(source_document, created)

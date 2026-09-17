@@ -651,12 +651,13 @@ class PrefabModeCommand(UndoCommand):
 
 
 class PrefabUnpackCommand(UndoCommand):
-    """Undoable removal of prefab linkage from one complete instance tree."""
+    """Remove the enclosing instance link while retaining nested instances."""
 
     def __init__(self, object_id: int, description: str = "Unpack Prefab"):
         super().__init__(description)
         self._object_id = int(object_id)
         self._linkage: list[tuple[int, str, bool, int, dict | None, dict]] = []
+        self._nested_roots: set[int] = set()
         scene = _get_active_scene()
         root = scene.find_by_id(self._object_id) if scene else None
         if root is not None:
@@ -672,7 +673,10 @@ class PrefabUnpackCommand(UndoCommand):
                     {record["component_id"]: record.get("prefab_source_id", 0)
                      for record in obj.serialize_document()["components"]},
                 ))
-                pending.extend(obj.get_children())
+                if obj.id != self._object_id and obj.prefab_root:
+                    self._nested_roots.add(int(obj.id))
+                else:
+                    pending.extend(obj.get_children())
 
     def execute(self) -> None:
         self._apply(restored=False)
@@ -691,6 +695,12 @@ class PrefabUnpackCommand(UndoCommand):
         for object_id, prefab_guid, prefab_root, source_id, source_document, component_ids in self._linkage:
             obj = scene.find_by_id(object_id)
             if obj is None:
+                continue
+            if object_id in self._nested_roots and not restored:
+                baseline = dict(source_document) if source_document else None
+                if baseline:
+                    baseline.pop("outer_source_id", None)
+                obj._prefab_source_document = baseline
                 continue
             obj.prefab_guid = prefab_guid if restored else ""
             obj.prefab_root = prefab_root if restored else False

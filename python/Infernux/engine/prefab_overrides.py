@@ -46,7 +46,7 @@ class _PrefabApplyState:
 
 _SKIP_KEYS = frozenset({
     "id", "local_id", "children", "components",
-    "transform", "prefab_guid", "prefab_root", "prefab_source_id", "prefab_source",
+    "transform", "prefab_guid", "prefab_root", "prefab_source_id", "prefab_source", "nested_prefab",
 })
 
 _TRANSFORM_KEYS = ("position", "rotation", "scale")
@@ -109,6 +109,7 @@ def apply_overrides_to_prefab(instance_obj, prefab_path: str,
     try:
         from Infernux.engine.prefab_manager import (
             _read_prefab_document, _serialize_prefab_snapshot, save_prefab_document,
+            _validate_nested_source_ancestry,
         )
         prefab_file = _read_prefab_document(prefab_path)
     except (OSError, ValueError) as exc:
@@ -134,6 +135,7 @@ def apply_overrides_to_prefab(instance_obj, prefab_path: str,
     # Resolve topology and preflight all instances before publishing the asset.
     # A cross-author parent cycle must not leave a changed source on disk.
     try:
+        _validate_nested_source_ancestry(updated_document["root_object"], (prefab_guid,) if prefab_guid else ())
         prepared = _prepare_applied_prefab(
             prefab_file["root_object"], updated_document["root_object"],
             instance_snapshots, prefab_guid, asset_database,
@@ -379,7 +381,9 @@ def _build_reverted_prefab_document(instance_obj, prefab_path: str):
     source_document = copy.deepcopy(prefab_data)
     _stamp_prefab_guid(prefab_data, prefab_guid, is_root=True)
     if prefab_guid:
-        prefab_data["prefab_source"] = _make_prefab_baseline(source_document)
+        prefab_data["prefab_source"] = _make_prefab_baseline(
+            source_document, outer_source_id=current_document.get("prefab_source", {}).get("outer_source_id", 0),
+        )
 
     # These fields describe this scene instance, not the prefab asset. Revert
     # must not rename the placed object or change its scene organization.
@@ -478,6 +482,7 @@ def _project_prefab_document(source, current, *, object_id_map=None, component_i
 
     for node in _object_nodes(result):
         node.pop("local_id")
+        node.pop("nested_prefab", None)
         for component in node["components"]:
             map_scene_references(component["data"])
             component["data"] = _remap_local_reference_document(component["data"], local_to_runtime, "prefab")
@@ -491,8 +496,7 @@ def _snapshot_linked_instances(scene, prefab_guid: str, *, base_root,
         return []
 
     from Infernux.engine.prefab_manager import (
-        _strip_prefab_fields,
-        _strip_prefab_runtime_fields,
+        _localize_prefab_snapshot,
     )
 
     snapshots = []
@@ -512,11 +516,10 @@ def _snapshot_linked_instances(scene, prefab_guid: str, *, base_root,
             ids = {}
             _match_object_ids(runtime_document, base_root, ids)
         component_map = component_ids if obj is instance_root and component_ids is not None else _instance_component_ids(runtime_document, base_root)
-        object_ids, _, component_map, _ = _strip_prefab_runtime_fields(
-            local_document, instance_snapshot=True, object_id_map=ids,
+        object_ids, _, component_map, _ = _localize_prefab_snapshot(
+            local_document, source=base_root, instance_snapshot=True, object_id_map=ids,
             component_id_map=component_map,
         )
-        _strip_prefab_fields(local_document)
         snapshots.append((obj, runtime_document, local_document, object_ids, component_map))
     return snapshots
 
@@ -720,7 +723,9 @@ def _merge_prefab_instance_document(runtime_document, local_document, object_ids
     component_sources = {component["component_id"] for node in _object_nodes(updated_root) for component in node["components"]}
     _stamp_prefab_guid(merged, prefab_guid, is_root=True, source_ids=source_ids, component_source_ids=component_sources)
     if prefab_guid:
-        merged["prefab_source"] = _make_prefab_baseline(updated_root)
+        merged["prefab_source"] = _make_prefab_baseline(
+            updated_root, outer_source_id=runtime_document.get("prefab_source", {}).get("outer_source_id", 0),
+        )
     for key in _ROOT_INSTANCE_KEYS:
         if key in runtime_document:
             merged[key] = copy.deepcopy(runtime_document[key])
@@ -735,14 +740,15 @@ def _merge_prefab_instance_document(runtime_document, local_document, object_ids
     )
 
 
-def resolve_scene_prefab_documents(document: dict, load_source) -> dict:
+def resolve_scene_prefab_documents(document: dict, load_source, *, reserve_ids=None) -> dict:
     """Resolve a saved scene without instantiating objects or running scripts.
 
     Cook IDs are deterministic and allocated above every ID in this document,
     independent of the Editor's live object allocator. The caller owns source
     lookup through the frozen build catalog; unavailable sources are errors.
+    Editor publication supplies the native allocator instead of cook-local IDs.
     """
-    from Infernux.engine.prefab_manager import _strip_prefab_fields, _strip_prefab_runtime_fields, _make_prefab_baseline
+    from Infernux.engine.prefab_manager import _localize_prefab_snapshot, _make_prefab_baseline
 
     result = copy.deepcopy(document)
     nodes = list(result.get("objects", ()))
@@ -754,7 +760,7 @@ def resolve_scene_prefab_documents(document: dict, load_source) -> dict:
     next_component = max((component["component_id"] for node in nodes
                           for component in [node["transform"], *node["components"]]), default=0) + 1
 
-    def reserve_ids(object_count, component_count):
+    def reserve_document_ids(object_count, component_count):
         nonlocal next_object, next_component
         objects = range(next_object, next_object + object_count)
         components = range(next_component, next_component + component_count)
@@ -762,30 +768,36 @@ def resolve_scene_prefab_documents(document: dict, load_source) -> dict:
         next_component += component_count
         return objects, components
 
+    if reserve_ids is None:
+        reserve_ids = reserve_document_ids
+
     sources = {}
 
-    def resolve(node):
+    def resolve(node, ancestry=()):
         guid = node.get("prefab_guid")
         if guid and node.get("prefab_root"):
+            if guid in ancestry:
+                from Infernux.engine.prefab_manager import PrefabDocumentError
+                raise PrefabDocumentError("Nested Prefab source cycle: " + " -> ".join((*ancestry, guid)))
+            ancestry = (*ancestry, guid)
             if guid not in sources:
                 sources[guid] = load_source(guid)
             updated_root = sources[guid]
-            if node.get("prefab_source") == _make_prefab_baseline(updated_root):
-                return node
-            local = copy.deepcopy(node)
-            ids = None
-            if not node.get("prefab_source_id"):
-                ids = {}
-                _match_object_ids(node, updated_root, ids)
-            object_ids, _, component_ids, _ = _strip_prefab_runtime_fields(
-                local, instance_snapshot=True, object_id_map=ids,
-                component_id_map=_instance_component_ids(node, updated_root),
-            )
-            _strip_prefab_fields(local)
-            return _merge_prefab_instance_document(
-                node, local, object_ids, updated_root, guid, component_ids=component_ids, reserve_ids=reserve_ids,
-            )
-        node["children"] = [resolve(child) for child in node["children"]]
+            expected = _make_prefab_baseline(updated_root, outer_source_id=node.get("prefab_source", {}).get("outer_source_id", 0))
+            if node.get("prefab_source") != expected:
+                local = copy.deepcopy(node)
+                ids = None
+                if not node.get("prefab_source_id"):
+                    ids = {}
+                    _match_object_ids(node, updated_root, ids)
+                object_ids, _, component_ids, _ = _localize_prefab_snapshot(
+                    local, source=updated_root, instance_snapshot=True, object_id_map=ids,
+                    component_id_map=_instance_component_ids(node, updated_root),
+                )
+                node = _merge_prefab_instance_document(
+                    node, local, object_ids, updated_root, guid, component_ids=component_ids, reserve_ids=reserve_ids,
+                )
+        node["children"] = [resolve(child, ancestry) for child in node["children"]]
         return node
 
     result["objects"] = [resolve(root) for root in result["objects"]]
@@ -885,7 +897,9 @@ def _instance_component_ids(instance, source):
     A versioned baseline distinguishes a new private component from a legacy
     unlinked component, even after the author deletes every source component.
     """
-    from Infernux.engine.prefab_manager import _prefab_baseline_root
+    from Infernux.engine.prefab_manager import _prefab_baseline_root, _nested_source_projection
+    if any(node.get("prefab_root") for child in instance["children"] for node in _object_nodes(child)):
+        return _nested_source_projection(instance, source)[1]
     baseline = instance.get("prefab_source", {})
     result = {component["component_id"]: component.get("prefab_source_id", -component["component_id"])
               for node in _object_nodes(instance) for component in node["components"]}
@@ -909,6 +923,10 @@ def _instance_component_ids(instance, source):
 
 def _match_object_ids(instance: dict, prefab: dict, object_ids: dict):
     object_ids[instance["id"]] = prefab["local_id"]
+    if any(node.get("prefab_root") for child in instance["children"] for node in _object_nodes(child)):
+        from Infernux.engine.prefab_manager import _nested_source_projection
+        object_ids.update(_nested_source_projection(instance, prefab)[0])
+        return
     if instance.get("prefab_source_id"):
         sources = {node["local_id"] for node in _object_nodes(prefab)}
         for node in _object_nodes(instance):
@@ -921,13 +939,13 @@ def _match_object_ids(instance: dict, prefab: dict, object_ids: dict):
             _match_object_ids(child, source, object_ids)
 
 
-def _match_child_nodes(instance, prefab):
+def _match_child_nodes(instance, prefab, object_ids):
     if not instance.get("prefab_source_id"):
         yield from _match_records(instance["children"], prefab["children"], "name")
         return
     sources = {child["local_id"]: child for child in prefab["children"]}
     for child in instance["children"]:
-        yield child, sources.pop(child.get("prefab_source_id", 0), None)
+        yield child, sources.pop(object_ids.get(child["id"], 0), None)
     for source in sources.values():
         yield None, source
 
@@ -998,11 +1016,11 @@ def _diff_node(instance: dict, prefab: dict, path: str,
 
     if instance.get("prefab_source_id"):
         source_order = [child["local_id"] for child in prefab["children"]]
-        current_order = [child.get("prefab_source_id", 0) for child in instance["children"]]
+        current_order = [object_ids.get(child["id"], 0) for child in instance["children"]]
         common = set(source_order) & set(current_order)
         if [value for value in current_order if value in common] != [value for value in source_order if value in common]:
             out.append(Override(current_path, "children.order", source_order, current_order))
-    for i_child, p_child in _match_child_nodes(instance, prefab):
+    for i_child, p_child in _match_child_nodes(instance, prefab, object_ids):
         if i_child is None:
             child_name = p_child["name"]
             out.append(Override(current_path, f"removed_child:{child_name}", child_name, None))

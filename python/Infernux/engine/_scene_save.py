@@ -259,6 +259,7 @@ class SceneSaveMixin:
             save_prefab_document,
             serialize_prefab_document,
             _serialize_prefab_snapshot,
+            _make_prefab_baseline,
         )
         from Infernux.engine.component_restore import serialize_game_object_document_authoritatively
         from Infernux.engine.interaction import (
@@ -284,8 +285,10 @@ class SceneSaveMixin:
         if not active_ticket_id:
             active_ticket_id = registry.begin_save(document.document_id).ticket_id
         try:
-            prefab_document, source_ids, component_ids = _serialize_prefab_snapshot(
-                serialize_game_object_document_authoritatively(roots[0]),
+            author_snapshot = serialize_game_object_document_authoritatively(roots[0])
+            author_snapshot["prefab_source"] = _make_prefab_baseline(self.prefab_envelope["root_object"])
+            prefab_document, _, _ = _serialize_prefab_snapshot(
+                author_snapshot,
                 source_canvas_name=source_canvas_name,
                 next_local_id=self.prefab_envelope.get("next_local_id", 1),
                 next_component_id=self.prefab_envelope.get("next_component_id", 1),
@@ -315,12 +318,8 @@ class SceneSaveMixin:
             return False
 
         self.prefab_envelope = prefab_document
-        from Infernux.engine.prefab_manager import _link_prefab_components
-        for runtime_id, source_id in source_ids.items():
-            obj = scene.find_by_id(runtime_id)
-            if obj is not None:
-                obj.prefab_source_id = source_id
-                _link_prefab_components(obj, component_ids)
+        from Infernux.engine.prefab_manager import _link_prefab_hierarchy
+        _link_prefab_hierarchy(roots[0], prefab_document["root_object"], roots[0].prefab_guid)
         current_token = None
         try:
             current_token = document_content_token(

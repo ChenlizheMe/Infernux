@@ -54,8 +54,7 @@ class ScenePrefabMixin:
         )
         from Infernux.engine.prefab_manager import (
             _read_prefab_document,
-            _stamp_prefab_guid,
-            _strip_prefab_runtime_fields,
+            _load_prefab_template_payload,
         )
         from Infernux.engine.interaction import SelectionService
 
@@ -70,9 +69,9 @@ class ScenePrefabMixin:
             Debug.log_error(f"Failed to open prefab for Prefab Mode: {exc}")
             return False
 
-        root_obj_data = copy.deepcopy(prefab_data["root_object"])
-        _strip_prefab_runtime_fields(root_obj_data)
-        _stamp_prefab_guid(root_obj_data, "")
+        root_obj_data = _load_prefab_template_payload(prefab_path, "", self._asset_database)
+        if root_obj_data is None:
+            return False
         try:
             prepared_prefab = preflight_game_object_python_components(
                 root_obj_data,
@@ -397,7 +396,9 @@ class ScenePrefabMixin:
         updated_root = _read_prefab_document(prefab_path)["root_object"]
         snapshots = [
             snapshot for snapshot in _snapshot_linked_instances(scene, prefab_guid, base_root=updated_root)
-            if snapshot[1].get("prefab_source") != _make_prefab_baseline(updated_root)
+            if snapshot[1].get("prefab_source") != _make_prefab_baseline(
+                updated_root, outer_source_id=snapshot[1].get("prefab_source", {}).get("outer_source_id", 0),
+            )
         ]
         if not snapshots:
             return False
@@ -421,34 +422,45 @@ class ScenePrefabMixin:
         if not roots:
             return
 
-        # Collect unique (prefab_guid → prefab_path) pairs
-        guid_to_path: dict[str, str] = {}
+        from Infernux.lib import GameObject
+        from Infernux.engine.component_restore import (
+            serialize_game_object_document_authoritatively,
+            preflight_game_object_python_components,
+        )
+        from Infernux.engine.prefab_manager import _read_prefab_document, PrefabDocumentError
+        from Infernux.engine.prefab_overrides import (
+            resolve_scene_prefab_documents, _publish_applied_prefab,
+        )
 
-        def _walk(objects):
-            for obj in objects:
-                guid = getattr(obj, 'prefab_guid', '')
-                is_root = getattr(obj, 'prefab_root', False)
-                if guid and is_root and guid not in guid_to_path:
-                    try:
-                        p = self._asset_database.get_path_from_guid(guid)
-                        if p and os.path.isfile(p):
-                            guid_to_path[guid] = p
-                    except Exception as exc:
-                        Debug.log_suppressed(
-                            f"ScenePrefabMixin.refresh_prefab_instances.resolve[{guid[:8]}]",
-                            exc,
-                        )
-                children = list(obj.get_children()) if hasattr(obj, 'get_children') else []
-                _walk(children)
+        def load_source(guid):
+            path = self._asset_database.get_path_from_guid(guid)
+            if not path:
+                raise PrefabDocumentError(f"Prefab source cannot be resolved: {guid}")
+            return _read_prefab_document(path)["root_object"]
 
-        _walk(roots)
-
-        changed = False
-        for guid, path in guid_to_path.items():
-            changed |= self._refresh_prefab_instances(
-                scene, guid, path, self._asset_database
-            )
-        if changed:
+        # Resolve the resulting tree, not a GUID list captured before merging:
+        # an outer source update can introduce previously unseen nested sources.
+        # Cook and editor share the same merge; only ID allocation differs.
+        before = {"objects": [serialize_game_object_document_authoritatively(root) for root in roots]}
+        after = resolve_scene_prefab_documents(
+            before, load_source, reserve_ids=GameObject._reserve_document_ids,
+        )
+        prepared_updates = []
+        try:
+            for obj, old, new in zip(roots, before["objects"], after["objects"]):
+                if old == new:
+                    continue
+                prepared = preflight_game_object_python_components(
+                    new, self._asset_database, preserve_document_ids=True, reference_scene=scene,
+                )
+                prepared_updates.append((obj, new, prepared))
+        except Exception:
+            for _obj, _document, prepared in prepared_updates:
+                prepared.discard()
+            raise
+        if not _publish_applied_prefab(prepared_updates):
+            raise RuntimeError("Failed to synchronize scene Prefab instances")
+        if prepared_updates:
             from Infernux.engine.interaction import DocumentRegistry
             document_id = self.document_id_for_scene(scene)
             if document_id:

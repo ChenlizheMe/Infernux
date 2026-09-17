@@ -104,5 +104,24 @@ can merge with instance field edits, and an instance parent override survives
 unrelated source updates. If concurrent edits form a parent cycle, Apply rejects
 the conflict before changing the asset file; resolve the hierarchy and apply again.
 
-These APIs expose the implemented authoring workflow, not the whole Unity Editor
-SDK. Nested Prefab remains separate, unfinished work.
+## Nested Prefabs
+
+Place a Prefab instance under another hierarchy and save the outer hierarchy as
+a Prefab. The inner instance retains its own asset link. Repeated instances of
+the same inner asset have separate outer identities; object and component
+references continue to target their respective instances.
+
+- Applying an inner instance updates its inner source. Applying the outer root
+  records those changes in the outer asset instead.
+- Outer Apply/Revert, Undo/Redo and Prefab Mode saves preserve inner links.
+  Copying an inner instance creates a new outer member rather than reusing the
+  original member's identity.
+- Unpacking the outer instance preserves inner Prefab links. It does not unpack
+  every nesting level recursively.
+- Scene reopening, fresh instantiation and build resolution read the current
+  inner sources even when the outer asset file has not changed. Cyclic nesting
+  is rejected rather than expanded indefinitely.
+
+These APIs are not the complete Unity Editor SDK. Moving nested roots between
+different outer instances and migrating the project's complete authoring tools
+remain under validation; do not treat those workflows as stable yet.
