@@ -4184,6 +4184,19 @@ finally:
         project_root = resolved_path(self.project_path)
         changed = False
 
+        # Prefab history is editor-only, not a runtime dependency or payload.
+        # Traverse actual ObjectGraphs, never similarly named author data fields.
+        if suffix in {".scene", ".prefab"} and isinstance(document, dict):
+            nodes = list(document.get("objects", [])) if suffix == ".scene" else [document.get("root_object")]
+            while nodes:
+                node = nodes.pop()
+                if not isinstance(node, dict):
+                    continue
+                if "prefab_source" in node:
+                    del node["prefab_source"]
+                    changed = True
+                nodes.extend(node.get("children", []))
+
         def portable_asset_hint(value: str) -> str:
             normalized = value.replace("\\", "/")
             lowered = normalized.casefold()

@@ -876,8 +876,9 @@ std::unique_ptr<GameObject> Scene::BuildGameObjectFromJsonImpl(const json &objJs
     }
 
     static const std::unordered_set<std::string> allowedObjectFields = {
-        "name",        "id",          "active",           "is_static", "tag",        "layer",
-        "prefab_guid", "prefab_root", "prefab_source_id", "transform", "components", "children",
+        "name",      "id",          "active",      "is_static",        "tag",
+        "layer",     "prefab_guid", "prefab_root", "prefab_source_id", "prefab_source",
+        "transform", "components",  "children",
     };
     for (const auto &[key, value] : objJson.items()) {
         (void)value;
@@ -939,6 +940,13 @@ std::unique_ptr<GameObject> Scene::BuildGameObjectFromJsonImpl(const json &objJs
         obj->m_prefabGuid = objJson["prefab_guid"].get<std::string>();
     obj->m_prefabRoot = objJson.value("prefab_root", false);
     obj->m_prefabSourceId = objJson.value("prefab_source_id", uint64_t{0});
+    if (objJson.contains("prefab_source")) {
+        if (!objJson["prefab_source"].is_object() || !obj->m_prefabRoot || obj->m_prefabGuid.empty()) {
+            INXLOG_ERROR("Scene prefab_source requires a linked prefab root and an object document");
+            return fail();
+        }
+        obj->SetPrefabSourceDocument(objJson["prefab_source"]);
+    }
 
     // Transform
     if (!objJson.contains("transform") || !objJson["transform"].is_object()) {
@@ -1233,6 +1241,7 @@ GameObject *Scene::InstantiateGameObject(GameObject *source, GameObject *parent,
                 return;
             object->SetPrefabGuid("");
             object->SetPrefabSourceID(0);
+            object->SetPrefabSourceDocument(nullptr);
             for (const auto &child : object->GetChildren())
                 self(self, child.get());
         };

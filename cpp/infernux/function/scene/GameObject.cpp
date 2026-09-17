@@ -1055,6 +1055,22 @@ void GameObject::EditorUpdate(float deltaTime)
     }
 }
 
+const nlohmann::json &GameObject::GetPrefabSourceDocument() const
+{
+    static const nlohmann::json empty;
+    return m_prefabSourceDocument ? *m_prefabSourceDocument : empty;
+}
+
+void GameObject::SetPrefabSourceDocument(const nlohmann::json &document)
+{
+    if (document.is_null())
+        m_prefabSourceDocument.reset();
+    else if (document.is_object())
+        m_prefabSourceDocument = std::make_shared<const nlohmann::json>(document);
+    else
+        throw std::invalid_argument("Prefab source document must be an object or null");
+}
+
 nlohmann::json GameObject::SerializeDocument() const
 {
     json j;
@@ -1066,6 +1082,9 @@ nlohmann::json GameObject::SerializeDocument() const
     j["layer"] = m_layer;
 
     // Prefab instance tracking (only serialize when set)
+    if (m_prefabSourceDocument && m_prefabRoot && !m_prefabGuid.empty()) {
+        j["prefab_source"] = *m_prefabSourceDocument;
+    }
     if (!m_prefabGuid.empty()) {
         j["prefab_guid"] = m_prefabGuid;
     }
@@ -1301,6 +1320,7 @@ bool GameObject::DeserializeDocument(const nlohmann::json &j, bool preserveDocum
         m_prefabGuid = std::move(stagedRoot->m_prefabGuid);
         m_prefabRoot = stagedRoot->m_prefabRoot;
         m_prefabSourceId = stagedRoot->m_prefabSourceId;
+        m_prefabSourceDocument = std::move(stagedRoot->m_prefabSourceDocument);
         m_parent = targetParent;
         m_scene = targetScene;
 
@@ -1367,6 +1387,7 @@ std::unique_ptr<GameObject> GameObject::CloneGraph(Scene *scene,
     obj->m_prefabGuid = m_prefabGuid;
     obj->m_prefabRoot = m_prefabRoot;
     obj->m_prefabSourceId = m_prefabSourceId;
+    obj->m_prefabSourceDocument = m_prefabSourceDocument;
 
     // Clone transform data (ECS store copy, no JSON)
     m_transform.CloneDataTo(obj->m_transform);

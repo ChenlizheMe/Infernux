@@ -1849,6 +1849,12 @@ void RegisterSceneBindings(py::module_ &m)
                       "True if this object is the root of a prefab instance hierarchy")
         .def_property("prefab_source_id", &GameObject::GetPrefabSourceID, &GameObject::SetPrefabSourceID,
                       "Stable asset-local Prefab node identity (zero for unlinked nodes)")
+        .def_property(
+            "_prefab_source_document",
+            [](const GameObject &object) { return JsonToPython(object.GetPrefabSourceDocument()); },
+            [](GameObject &object, const py::object &document) {
+                object.SetPrefabSourceDocument(PythonToJson(document));
+            })
         .def_static("_reserve_document_ids",
                     [](size_t objectCount, size_t componentCount) {
                         std::vector<uint64_t> objects(objectCount), components(componentCount);

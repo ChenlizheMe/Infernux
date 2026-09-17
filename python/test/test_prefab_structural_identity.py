@@ -210,3 +210,75 @@ def test_prefab_mode_save_exit_preserves_instance_overrides_and_identities(scene
         assert not registry.require(original_document_id).is_dirty
     finally:
         core.shutdown()
+
+
+def test_scene_reopen_merges_updated_source_and_keeps_instance_references(scene, tmp_path):
+    from Infernux.engine._scene_prefab import ScenePrefabMixin
+    from Infernux.engine.prefab_manager import save_prefab_document
+    from Infernux.engine.component_restore import serialize_game_object_document_authoritatively
+    from Infernux.engine.scene_document_transaction import SceneDocumentTransaction
+
+    path, first, second = _make_prefab(scene, tmp_path)
+    first_id, second_id = first.id, second.id
+    child_id = second.get_child(0).id
+    second.get_child(0).name = "Local Name"
+    private = scene.create_game_object("Local Addition")
+    private.set_parent(second)
+    private_id = private.id
+    watcher = scene.create_game_object("Watcher")
+    watcher_id = watcher.id
+    watcher.add_py_component(_StructuralReferences())
+    watcher.get_py_component(_StructuralReferences).target = GameObjectRef(second.get_child(0))
+    snapshot = scene.serialize_document()
+    snapshot["objects"] = [serialize_game_object_document_authoritatively(obj) for obj in scene.get_root_objects()]
+    scene_path = tmp_path / "instances.scene"
+    scene_path.write_text(json.dumps(snapshot), encoding="utf-8")
+
+    updated = _read_prefab_document(path)
+    updated["root_object"]["children"][0]["active"] = False
+    added = copy.deepcopy(updated["root_object"]["children"][0])
+    added["name"] = "Source Addition"
+    added["local_id"] = updated["next_local_id"]
+    updated["next_local_id"] += 1
+    updated["root_object"]["children"].append(added)
+    assert save_prefab_document(updated, path)
+    transaction = SceneDocumentTransaction(scene, path=scene_path)
+    assert transaction.run_to_completion()
+    assert ScenePrefabMixin._refresh_prefab_instances(scene, "structural-guid", path)
+    first, second = scene.find_by_id(first_id), scene.find_by_id(second_id)
+    assert {obj.name for obj in first.get_children()} == {"Original", "Source Addition"}
+    assert {obj.name for obj in second.get_children()} == {"Local Name", "Local Addition", "Source Addition"}
+    assert not scene.find_by_id(child_id).active_self
+    assert scene.find_by_id(private_id).prefab_source_id == 0
+    assert scene.find_by_id(watcher_id).get_py_component(_StructuralReferences).target.id == child_id
+    assert second._prefab_source_document == updated["root_object"]
+    assert not ScenePrefabMixin._refresh_prefab_instances(scene, "structural-guid", path)
+
+
+def test_legacy_scene_baseline_adoption_does_not_destroy_authored_overrides(scene, tmp_path):
+    from Infernux.engine._scene_prefab import ScenePrefabMixin
+    path, first, _ = _make_prefab(scene, tmp_path)
+    first._prefab_source_document = None
+    child = first.get_child(0)
+    child_id = child.id
+    child.name = "Legacy Override"
+    assert ScenePrefabMixin._refresh_prefab_instances(scene, "structural-guid", path)
+    assert first.get_child(0).id == child_id
+    assert first.get_child(0).name == "Legacy Override"
+    assert first._prefab_source_document == _read_prefab_document(path)["root_object"]
+
+
+def test_player_cook_strips_only_objectgraph_prefab_baselines(tmp_path):
+    from Infernux.engine.game_builder import GameBuilder
+    builder = GameBuilder.__new__(GameBuilder)
+    builder.project_path = str(tmp_path)
+    source = tmp_path / "payload.scene"
+    document = {"objects": [{
+        "prefab_source": {"old_editor_only_data": True}, "children": [],
+        "components": [{"data": {"prefab_source": "ordinary user field"}}],
+    }]}
+    source.write_text(json.dumps(document), encoding="utf-8")
+    builder._rewrite_player_document_paths(str(source), ".scene")
+    cooked = json.loads(source.read_text(encoding="utf-8"))
+    assert "prefab_source" not in cooked["objects"][0]
+    assert cooked["objects"][0]["components"][0]["data"]["prefab_source"] == "ordinary user field"

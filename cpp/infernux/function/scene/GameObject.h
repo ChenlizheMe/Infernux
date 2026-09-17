@@ -176,6 +176,10 @@ class GameObject
         m_prefabSourceId = id;
     }
 
+    /// Immutable authoring baseline; cloned instances share it until source publication.
+    [[nodiscard]] const nlohmann::json &GetPrefabSourceDocument() const;
+    void SetPrefabSourceDocument(const nlohmann::json &document);
+
     /// Reserve an identity for a document transaction without creating a live object.
     static uint64_t ReserveDocumentID()
     {
@@ -541,6 +545,7 @@ class GameObject
     std::string m_prefabGuid;  // GUID of source .prefab asset
     bool m_prefabRoot = false; // true only on the root of a prefab instance
     uint64_t m_prefabSourceId = 0;
+    std::shared_ptr<const nlohmann::json> m_prefabSourceDocument;
 };
 
 } // namespace infernux

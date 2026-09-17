@@ -46,7 +46,7 @@ class _PrefabApplyState:
 
 _SKIP_KEYS = frozenset({
     "id", "local_id", "children", "components",
-    "transform", "prefab_guid", "prefab_root", "prefab_source_id",
+    "transform", "prefab_guid", "prefab_root", "prefab_source_id", "prefab_source",
 })
 
 _TRANSFORM_KEYS = ("position", "rotation", "scale")
@@ -367,7 +367,10 @@ def _build_reverted_prefab_document(instance_obj, prefab_path: str):
 
     # Stamp prefab linkage into the template
     from Infernux.engine.prefab_manager import _stamp_prefab_guid
+    source_document = copy.deepcopy(prefab_data)
     _stamp_prefab_guid(prefab_data, prefab_guid, is_root=True)
+    if prefab_guid:
+        prefab_data["prefab_source"] = source_document
 
     # These fields describe this scene instance, not the prefab asset. Revert
     # must not rename the placed object or change its scene organization.
@@ -495,7 +498,7 @@ def _snapshot_linked_instances(scene, prefab_guid: str, *, base_root,
 
 _MERGE_IDENTITY_KEYS = frozenset({
     "id", "component_id", "instance_guid",
-    "prefab_guid", "prefab_root", "prefab_source_id",
+    "prefab_guid", "prefab_root", "prefab_source_id", "prefab_source",
 })
 _MISSING = object()
 
@@ -594,8 +597,16 @@ def _propagate_applied_prefab(base_root: dict, updated_root: dict, snapshots,
     try:
         source_ids = {node["local_id"] for node in _object_nodes(updated_root)}
         for obj, runtime_document, local_document, object_ids in snapshots:
-            merged = _three_way_merge_prefab(base_root, local_document, updated_root, node_kind="object")
+            # A persisted baseline distinguishes source edits from instance
+            # overrides after reopening. Legacy scenes have no historical
+            # baseline: retain their authored state as overrides on first sync.
+            baseline = base_root if base_root is not None else runtime_document.get("prefab_source", updated_root)
+            from Infernux.engine.prefab_manager import _validate_game_object_document
+            _validate_game_object_document(baseline)
+            merged = _three_way_merge_prefab(baseline, local_document, updated_root, node_kind="object")
             _stamp_prefab_guid(merged, prefab_guid, is_root=True, source_ids=source_ids)
+            if prefab_guid:
+                merged["prefab_source"] = copy.deepcopy(updated_root)
 
             for key in _ROOT_INSTANCE_KEYS:
                 if key in runtime_document:

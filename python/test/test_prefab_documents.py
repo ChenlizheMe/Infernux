@@ -151,6 +151,8 @@ def test_prefab_source_identity_survives_clone_document_and_unpack(scene, tmp_pa
     clone = clone_game_object_transactionally(scene, instance)
     assert clone.id != instance.id
     assert clone.prefab_source_id == source_id
+    baseline = _read_prefab_document(str(path))["root_object"]
+    assert clone._prefab_source_document == baseline
     document = serialize_game_object_document_authoritatively(instance)
     instance.prefab_source_id = 0
     assert deserialize_game_object_document_transactionally(instance, document, preserve_document_ids=True)
@@ -158,8 +160,10 @@ def test_prefab_source_identity_survives_clone_document_and_unpack(scene, tmp_pa
     command = PrefabUnpackCommand(instance.id)
     command.execute()
     assert instance.prefab_source_id == 0
+    assert instance._prefab_source_document is None
     command.undo()
     assert instance.prefab_source_id == source_id
+    assert instance._prefab_source_document == baseline
 
 
 def test_apply_renamed_child_propagates_without_replacing_scene_identity(scene, tmp_path):

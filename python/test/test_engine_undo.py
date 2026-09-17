@@ -790,6 +790,7 @@ class TestPrefabUnpackCommand:
                 self.id = object_id
                 self.prefab_guid = guid
                 self.prefab_root = is_root
+                self._prefab_source_document = {"name": "Source"} if is_root else None
                 self._children = list(children or [])
 
             def get_children(self):
@@ -809,11 +810,13 @@ class TestPrefabUnpackCommand:
 
         cmd = PrefabUnpackCommand(root.id)
         cmd.execute()
+        assert root._prefab_source_document is None
         assert [(obj.prefab_guid, obj.prefab_root) for obj in (root, left, right)] == [
             ("", False), ("", False), ("", False),
         ]
 
         cmd.undo()
+        assert root._prefab_source_document == {"name": "Source"}
         assert [(obj.prefab_guid, obj.prefab_root) for obj in (root, left, right)] == [
             ("prefab-guid", True),
             ("prefab-guid", False),
@@ -821,6 +824,7 @@ class TestPrefabUnpackCommand:
         ]
 
         cmd.redo()
+        assert root._prefab_source_document is None
         assert [(obj.prefab_guid, obj.prefab_root) for obj in (root, left, right)] == [
             ("", False), ("", False), ("", False),
         ]

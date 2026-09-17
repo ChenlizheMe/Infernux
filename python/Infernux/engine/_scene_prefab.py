@@ -388,65 +388,22 @@ class ScenePrefabMixin:
     @staticmethod
     def _refresh_prefab_instances(scene, prefab_guid: str, prefab_path: str,
                                   asset_database=None):
-        """Re-instantiate all instances of a prefab to pick up updated data.
+        """Merge source changes against each instance's persisted baseline."""
+        from Infernux.engine.prefab_manager import _read_prefab_document
+        from Infernux.engine.prefab_overrides import (
+            _snapshot_linked_instances, _propagate_applied_prefab,
+        )
 
-        Iterates root objects, finds those whose *prefab_guid* matches,
-        then replaces them in-place (preserving only the root's local position).
-        """
-        from Infernux.engine.prefab_manager import instantiate_prefab
-
-        if not prefab_guid or not prefab_path:
-            return
-
-        roots = _get_scene_root_objects(scene)
-        if not roots:
-            return
-
-        def _collect_instances(objects):
-            found = []
-            for obj in objects:
-                guid = getattr(obj, 'prefab_guid', '')
-                is_root = getattr(obj, 'prefab_root', False)
-                if guid == prefab_guid and is_root:
-                    found.append(obj)
-                else:
-                    children = list(obj.get_children()) if hasattr(obj, 'get_children') else []
-                    found.extend(_collect_instances(children))
-            return found
-
-        instances = _collect_instances(roots)
-        if not instances:
-            return
-
-        for old_obj in instances:
-            try:
-                parent = old_obj.get_parent() if hasattr(old_obj, 'get_parent') else None
-                # Preserve the instance's full local transform (position,
-                # rotation, scale) — each instance keeps its own placement.
-                tf = old_obj.transform
-                local_pos = tf.local_position if tf else None
-                local_rot = tf.local_rotation if tf else None
-                local_scl = tf.local_scale if tf else None
-
-                new_obj = instantiate_prefab(
-                    file_path=prefab_path,
-                    scene=scene,
-                    parent=parent,
-                    asset_database=asset_database,
-                )
-                if new_obj:
-                    new_tf = new_obj.transform
-                    if new_tf:
-                        if local_pos is not None:
-                            new_tf.local_position = local_pos
-                        if local_rot is not None:
-                            new_tf.local_rotation = local_rot
-                        if local_scl is not None:
-                            new_tf.local_scale = local_scl
-
-                scene.destroy_game_object(old_obj)
-            except Exception as exc:
-                Debug.log_warning(f"Failed to refresh prefab instance: {exc}")
+        updated_root = _read_prefab_document(prefab_path)["root_object"]
+        snapshots = [
+            snapshot for snapshot in _snapshot_linked_instances(scene, prefab_guid, base_root=updated_root)
+            if snapshot[1].get("prefab_source") != updated_root
+        ]
+        if not snapshots:
+            return False
+        if not _propagate_applied_prefab(None, updated_root, snapshots, prefab_guid, asset_database):
+            raise RuntimeError(f"Failed to synchronize prefab instances: {prefab_path}")
+        return True
 
     def sync_all_prefab_instances(self, scene=None):
         """Sync every prefab instance in *scene* to its latest on-disk data.
@@ -486,8 +443,14 @@ class ScenePrefabMixin:
 
         _walk(roots)
 
+        changed = False
         for guid, path in guid_to_path.items():
-            self._refresh_prefab_instances(
+            changed |= self._refresh_prefab_instances(
                 scene, guid, path, self._asset_database
             )
+        if changed:
+            from Infernux.engine.interaction import DocumentRegistry
+            document_id = self.document_id_for_scene(scene)
+            if document_id:
+                DocumentRegistry.instance().mark_changed(document_id)
 

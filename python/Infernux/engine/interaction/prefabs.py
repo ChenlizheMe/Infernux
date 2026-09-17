@@ -94,12 +94,13 @@ class PrefabCommandService:
                     str(getattr(obj, "prefab_guid", "") or ""),
                     bool(getattr(obj, "prefab_root", False)),
                     int(getattr(obj, "prefab_source_id", 0)),
+                    obj._prefab_source_document,
                 ))
                 pending.extend(list(obj.get_children()))
             return tuple(snapshot)
 
         def restore_linkage(snapshot) -> None:
-            for linked_id, prefab_guid, prefab_root, source_id in snapshot or ():
+            for linked_id, prefab_guid, prefab_root, source_id, source_document in snapshot or ():
                 obj = scene.find_by_id(int(linked_id))
                 if obj is None:
                     raise RuntimeError(
@@ -108,6 +109,7 @@ class PrefabCommandService:
                 obj.prefab_guid = prefab_guid
                 obj.prefab_root = prefab_root
                 obj.prefab_source_id = source_id
+                obj._prefab_source_document = source_document
 
         source_canvas_name = self._source_canvas_name(game_object)
         from Infernux.engine.ui import project_file_ops

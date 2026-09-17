@@ -128,6 +128,8 @@ def _load_prefab_template_payload(file_path: str, resolved_guid: str):
     root_obj_data = copy.deepcopy(prefab_data["root_object"])
     _strip_prefab_runtime_fields(root_obj_data)
     _stamp_prefab_guid(root_obj_data, resolved_guid)
+    if resolved_guid:
+        root_obj_data["prefab_source"] = copy.deepcopy(prefab_data["root_object"])
 
     return root_obj_data
 
@@ -483,6 +485,7 @@ def _link_created_prefab_source(game_object, file_path: str, asset_database) -> 
 
     try:
         _link(game_object, document, True)
+        game_object._prefab_source_document = document
     except Exception as exc:
         Debug.log_warning(f"Failed to link created prefab source: {exc}")
         return False
@@ -495,5 +498,6 @@ def _strip_prefab_fields(obj_data: dict):
     obj_data.pop("prefab_guid", None)
     obj_data.pop("prefab_root", None)
     obj_data.pop("prefab_source_id", None)
+    obj_data.pop("prefab_source", None)
     for child in obj_data.get("children", []):
         _strip_prefab_fields(child)

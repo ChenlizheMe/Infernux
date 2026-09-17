@@ -1275,6 +1275,7 @@ class GameObject:
     prefab_guid: str
     prefab_root: bool
     prefab_source_id: int
+    _prefab_source_document: dict | None
 
     @staticmethod
     def _reserve_document_ids(object_count: int, component_count: int) -> tuple[list[int], list[int]]: ...
