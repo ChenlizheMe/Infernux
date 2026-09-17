@@ -282,3 +282,108 @@ def test_player_cook_strips_only_objectgraph_prefab_baselines(tmp_path):
     cooked = json.loads(source.read_text(encoding="utf-8"))
     assert "prefab_source" not in cooked["objects"][0]
     assert cooked["objects"][0]["components"][0]["data"]["prefab_source"] == "ordinary user field"
+
+
+def test_unopened_scene_cook_merges_source_without_live_objects(scene, tmp_path):
+    from Infernux.engine.prefab_overrides import resolve_scene_prefab_documents
+    from Infernux.engine.component_restore import serialize_game_object_document_authoritatively
+
+    path, first, second = _make_prefab(scene, tmp_path)
+    second.get_child(0).name = "Local Override"
+    private = scene.create_game_object("Private")
+    private.set_parent(second)
+    watcher = scene.create_game_object("Watcher")
+    watcher.add_py_component(_StructuralReferences())
+    watcher.get_py_component(_StructuralReferences).target = GameObjectRef(second.get_child(0))
+    document = scene.serialize_document()
+    document["objects"] = [serialize_game_object_document_authoritatively(obj) for obj in scene.get_root_objects()]
+    before = copy.deepcopy(document)
+    updated = _read_prefab_document(path)["root_object"]
+    updated["children"][0]["active"] = False
+    added = copy.deepcopy(updated["children"][0])
+    added["local_id"] = 100
+    added["name"] = "New From Source"
+    updated["children"].append(added)
+    live_ids = [obj.id for obj in scene.get_all_objects()]
+    reads = []
+
+    def load(guid):
+        reads.append(guid)
+        assert guid == "structural-guid"
+        return updated
+
+    cooked = resolve_scene_prefab_documents(document, load)
+    assert document == before
+    assert [obj.id for obj in scene.get_all_objects()] == live_ids
+    assert reads == ["structural-guid"]
+    assert cooked == resolve_scene_prefab_documents(document, load)
+    roots = {obj["id"]: obj for obj in cooked["objects"]}
+    children = roots[second.id]["children"]
+    assert {obj["name"] for obj in children} == {"Local Override", "Private", "New From Source"}
+    assert next(obj for obj in children if obj["name"] == "Local Override")["id"] == second.get_child(0).id
+    assert not next(obj for obj in children if obj["name"] == "Local Override")["active"]
+    new_first = next(obj for obj in roots[first.id]["children"] if obj["name"] == "New From Source")
+    new_second = next(obj for obj in children if obj["name"] == "New From Source")
+    assert new_first["id"] != new_second["id"]
+    assert min(new_first["id"], new_second["id"]) > max(live_ids)
+    assert roots[watcher.id] == next(obj for obj in before["objects"] if obj["id"] == watcher.id)
+    component_ids = [c["component_id"] for root in cooked["objects"] for node in _all_nodes(root)
+                     for c in [node["transform"], *node["components"]]]
+    assert len(component_ids) == len(set(component_ids))
+
+
+def _all_nodes(root):
+    yield root
+    for child in root["children"]:
+        yield from _all_nodes(child)
+
+
+def test_builder_stages_latest_prefab_for_unopened_scene(scene, tmp_path):
+    from Infernux.engine.game_builder import GameBuilder
+    from Infernux.engine.prefab_manager import save_prefab_document
+    from Infernux.engine.scene_document_transaction import SceneDocumentTransaction
+
+    assets = tmp_path / "Assets"
+    assets.mkdir()
+    path, first, second = _make_prefab(scene, assets)
+    second.get_child(0).name = "Placed Override"
+    scene_path = assets / "unopened.scene"
+    scene_path.write_text(json.dumps(scene.serialize_document()), encoding="utf-8")
+    saved_bytes = scene_path.read_bytes()
+    updated = _read_prefab_document(path)
+    updated["root_object"]["children"][0]["active"] = False
+    assert save_prefab_document(updated, path)
+
+    builder = GameBuilder.__new__(GameBuilder)
+    builder.project_path = str(tmp_path)
+    builder._cooked_asset_entries = {
+        "structural-guid": {"normalized_path": path},
+        "scene-guid": {"normalized_path": str(scene_path)},
+    }
+    builder._runtime_artifact_bindings = {}
+    builder._runtime_artifact_source_paths = set()
+    data = tmp_path / "Data"
+    builder._stage_library_runtime_documents(str(data))
+    artifact = data / "Library/Artifacts/Document/scene-guid.scene"
+    cooked = json.loads(artifact.read_text(encoding="utf-8"))
+    assert all("prefab_source" not in node for root in cooked["objects"] for node in _all_nodes(root))
+    assert scene_path.read_bytes() == saved_bytes
+    # The Editor's live scene was deliberately not refreshed by the cook.
+    assert first.get_child(0).active_self
+    second_id, child_id = second.id, second.get_child(0).id
+    transaction = SceneDocumentTransaction(scene, path=artifact)
+    assert transaction.run_to_completion()
+    assert scene.find_by_id(second_id).get_child(0).name == "Placed Override"
+    assert not scene.find_by_id(child_id).active_self
+
+
+def test_scene_cook_rejects_missing_prefab_source(scene, tmp_path):
+    from Infernux.engine.prefab_overrides import resolve_scene_prefab_documents
+    _make_prefab(scene, tmp_path)
+    document = scene.serialize_document()
+
+    def missing(guid):
+        raise LookupError(f"Missing source: {guid}")
+
+    with pytest.raises(LookupError, match="Missing source: structural-guid"):
+        resolve_scene_prefab_documents(document, missing)

@@ -396,15 +396,18 @@ def _object_nodes(root):
         yield from _object_nodes(child)
 
 
-def _project_prefab_document(source, current, *, object_id_map=None):
+def _project_prefab_document(source, current, *, object_id_map=None, reserve_ids=None):
     """Resolve source identities to scene identities before ObjectGraph preflight.
 
     Unchanged nodes/components retain IDs; new records reserve IDs from the
     native allocators without publishing temporary objects or firing lifecycle.
     The returned document is reused by Redo, not allocated again on each replay.
     """
-    from Infernux.lib import GameObject
     from Infernux.engine.component_restore import _remap_local_reference_document
+
+    if reserve_ids is None:
+        from Infernux.lib import GameObject
+        reserve_ids = GameObject._reserve_document_ids
 
     runtime_to_local = object_id_map
     if runtime_to_local is None:
@@ -435,7 +438,7 @@ def _project_prefab_document(source, current, *, object_id_map=None):
                 component["component_id"] = previous["component_id"]
                 if "instance_guid" in previous:
                     component["instance_guid"] = previous["instance_guid"]
-    object_ids, component_ids = GameObject._reserve_document_ids(len(new_objects), len(new_components))
+    object_ids, component_ids = reserve_ids(len(new_objects), len(new_components))
     for node, object_id in zip(new_objects, object_ids, strict=True):
         node["id"] = object_id
         local_to_runtime[node["local_id"]] = object_id
@@ -582,6 +585,89 @@ def _three_way_merge_prefab(base, local, remote, *, node_kind=None):
     return copy.deepcopy(local)
 
 
+def _merge_prefab_instance_document(runtime_document, local_document, object_ids,
+                                    updated_root, prefab_guid, *, base_root=None,
+                                    reserve_ids=None):
+    """One source/override merge for live publication and offline Player cook."""
+    from Infernux.engine.prefab_manager import _stamp_prefab_guid, _validate_game_object_document
+
+    # A legacy scene has no historical baseline. Preserve authored values as
+    # overrides on first adoption rather than guessing what the old source was.
+    baseline = base_root if base_root is not None else runtime_document.get("prefab_source", updated_root)
+    _validate_game_object_document(baseline)
+    merged = _three_way_merge_prefab(baseline, local_document, updated_root, node_kind="object")
+    source_ids = {node["local_id"] for node in _object_nodes(updated_root)}
+    _stamp_prefab_guid(merged, prefab_guid, is_root=True, source_ids=source_ids)
+    if prefab_guid:
+        merged["prefab_source"] = copy.deepcopy(updated_root)
+    for key in _ROOT_INSTANCE_KEYS:
+        if key in runtime_document:
+            merged[key] = copy.deepcopy(runtime_document[key])
+    runtime_transform = runtime_document.get("transform")
+    merged_transform = merged.get("transform")
+    if isinstance(runtime_transform, dict) and isinstance(merged_transform, dict):
+        for key in ("position", "rotation"):
+            if key in runtime_transform:
+                merged_transform[key] = copy.deepcopy(runtime_transform[key])
+    return _project_prefab_document(
+        merged, runtime_document, object_id_map=object_ids, reserve_ids=reserve_ids,
+    )
+
+
+def resolve_scene_prefab_documents(document: dict, load_source) -> dict:
+    """Resolve a saved scene without instantiating objects or running scripts.
+
+    Cook IDs are deterministic and allocated above every ID in this document,
+    independent of the Editor's live object allocator. The caller owns source
+    lookup through the frozen build catalog; unavailable sources are errors.
+    """
+    from Infernux.engine.prefab_manager import _strip_prefab_fields, _strip_prefab_runtime_fields
+
+    result = copy.deepcopy(document)
+    nodes = list(result.get("objects", ()))
+    for node in nodes:
+        nodes.extend(node.get("children", ()))
+    if not any(node.get("prefab_guid") and node.get("prefab_root") for node in nodes):
+        return result
+    next_object = max((node["id"] for node in nodes), default=0) + 1
+    next_component = max((component["component_id"] for node in nodes
+                          for component in [node["transform"], *node["components"]]), default=0) + 1
+
+    def reserve_ids(object_count, component_count):
+        nonlocal next_object, next_component
+        objects = range(next_object, next_object + object_count)
+        components = range(next_component, next_component + component_count)
+        next_object += object_count
+        next_component += component_count
+        return objects, components
+
+    sources = {}
+
+    def resolve(node):
+        guid = node.get("prefab_guid")
+        if guid and node.get("prefab_root"):
+            if guid not in sources:
+                sources[guid] = load_source(guid)
+            updated_root = sources[guid]
+            if node.get("prefab_source") == updated_root:
+                return node
+            local = copy.deepcopy(node)
+            ids = None
+            if not node.get("prefab_source_id"):
+                ids = {}
+                _match_object_ids(node, updated_root, ids)
+            object_ids, _ = _strip_prefab_runtime_fields(local, instance_snapshot=True, object_id_map=ids)
+            _strip_prefab_fields(local)
+            return _merge_prefab_instance_document(
+                node, local, object_ids, updated_root, guid, reserve_ids=reserve_ids,
+            )
+        node["children"] = [resolve(child) for child in node["children"]]
+        return node
+
+    result["objects"] = [resolve(root) for root in result["objects"]]
+    return result
+
+
 def _propagate_applied_prefab(base_root: dict, updated_root: dict, snapshots,
                               prefab_guid: str, asset_database=None) -> bool:
     if not snapshots:
@@ -591,34 +677,13 @@ def _propagate_applied_prefab(base_root: dict, updated_root: dict, snapshots,
         commit_prepared_game_object_document,
         preflight_game_object_python_components,
     )
-    from Infernux.engine.prefab_manager import _stamp_prefab_guid
-
     prepared_updates = []
     try:
-        source_ids = {node["local_id"] for node in _object_nodes(updated_root)}
         for obj, runtime_document, local_document, object_ids in snapshots:
-            # A persisted baseline distinguishes source edits from instance
-            # overrides after reopening. Legacy scenes have no historical
-            # baseline: retain their authored state as overrides on first sync.
-            baseline = base_root if base_root is not None else runtime_document.get("prefab_source", updated_root)
-            from Infernux.engine.prefab_manager import _validate_game_object_document
-            _validate_game_object_document(baseline)
-            merged = _three_way_merge_prefab(baseline, local_document, updated_root, node_kind="object")
-            _stamp_prefab_guid(merged, prefab_guid, is_root=True, source_ids=source_ids)
-            if prefab_guid:
-                merged["prefab_source"] = copy.deepcopy(updated_root)
-
-            for key in _ROOT_INSTANCE_KEYS:
-                if key in runtime_document:
-                    merged[key] = copy.deepcopy(runtime_document[key])
-            runtime_transform = runtime_document.get("transform")
-            merged_transform = merged.get("transform")
-            if isinstance(runtime_transform, dict) and isinstance(merged_transform, dict):
-                for key in ("position", "rotation"):
-                    if key in runtime_transform:
-                        merged_transform[key] = copy.deepcopy(runtime_transform[key])
-
-            merged = _project_prefab_document(merged, runtime_document, object_id_map=object_ids)
+            merged = _merge_prefab_instance_document(
+                runtime_document, local_document, object_ids, updated_root,
+                prefab_guid, base_root=base_root,
+            )
             prepared = preflight_game_object_python_components(
                 merged,
                 asset_database,

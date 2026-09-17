@@ -2238,6 +2238,21 @@ finally:
                 Path(destination).write_bytes(
                     encode_data_asset_artifact(data_asset_document)
                 )
+            elif suffix == ".scene":
+                from Infernux.engine.prefab_manager import _read_prefab_document
+                from Infernux.engine.prefab_overrides import resolve_scene_prefab_documents
+
+                def load_prefab_source(prefab_guid):
+                    prefab_entry = self._cooked_asset_entries.get(prefab_guid)
+                    if prefab_entry is None:
+                        raise RuntimeError(f"Scene Prefab source is outside the build catalog: {prefab_guid}")
+                    prefab_path = self._library_source_entry_path(prefab_entry)
+                    return _read_prefab_document(prefab_path)["root_object"]
+
+                with open(source_path, "r", encoding="utf-8") as source_stream:
+                    scene_document = json.load(source_stream)
+                _write_json_atomic(destination, resolve_scene_prefab_documents(scene_document, load_prefab_source))
+                self._rewrite_player_document_paths(destination, suffix)
             else:
                 shutil.copy2(source_path, destination)
                 self._rewrite_player_document_paths(destination, suffix)
