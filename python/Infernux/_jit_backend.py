@@ -9,10 +9,14 @@ import dis
 import inspect
 from types import CodeType, FunctionType
 
-from numba.core import compiler, types
+from numba.core import compiler, sigutils, types
+from numba.core.compiler_lock import global_compiler_lock
 from numba.core.cpu import CPUContext
 from numba.core.registry import CPUDispatcher, CPUTarget, cpu_target
 from numba.core.runtime import rtsys
+
+
+_MAX_CPU_SPECIALIZATIONS = 64
 
 
 class _OwnedContext(CPUContext):
@@ -54,6 +58,17 @@ class _OwnedDispatcher(CPUDispatcher):
         self.targetdescr = _OwnedTarget()
         options = {**(targetoptions or {}), "nopython": True}
         super().__init__(py_func, locals, options, pipeline_class)
+
+    @global_compiler_lock
+    def compile(self, sig):
+        args, _ = sigutils.normalize_signature(sig)
+        if tuple(args) not in self.overloads and len(self.overloads) >= _MAX_CPU_SPECIALIZATIONS:
+            raise RuntimeError(
+                f"CPU JIT specialization limit ({_MAX_CPU_SPECIALIZATIONS}) exceeded "
+                f"for '{self.py_func.__qualname__}'; the new signature was not compiled: {tuple(args)}. "
+                "Existing signatures remain valid."
+            )
+        return super().compile(sig)
 
 
 def _global_names(code):

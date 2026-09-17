@@ -235,3 +235,66 @@ def test_nested_code_preserves_its_referenced_globals():
          " return nested(value)", namespace)
     function = jit.compile(namespace["kernel"], auto_parallel=False)
     assert function(4) == 15
+
+
+def test_new_specialization_limit_preserves_existing_code_and_rejects_before_writes(monkeypatch):
+    from Infernux import _jit_backend
+
+    monkeypatch.setattr(_jit_backend, "_MAX_CPU_SPECIALIZATIONS", 2)
+
+    @jit.compile(auto_parallel=False)
+    def modify(values):
+        values[0] += 1
+
+    first = np.zeros(2, dtype=np.float32)
+    second = np.zeros(2, dtype=np.float64)
+    rejected = np.zeros(2, dtype=np.int32)
+    modify(first)
+    modify(second)
+    engine = _engine(modify._compiled)
+    module_count = len(engine._modules)
+    with pytest.raises(RuntimeError, match="specialization limit \\(2\\).*not compiled"):
+        modify(rejected)
+    np.testing.assert_array_equal(rejected, [0, 0])
+    assert len(engine._modules) == module_count
+    assert len(modify.signatures) == 2
+    modify(first)
+    modify(second)
+    assert first[0] == second[0] == 2
+
+
+def test_array_length_does_not_consume_specializations(monkeypatch):
+    from Infernux import _jit_backend
+
+    monkeypatch.setattr(_jit_backend, "_MAX_CPU_SPECIALIZATIONS", 1)
+    function = compile_cpu(lambda values: len(values))
+    for length in (0, 1, 7, 64, 1024):
+        assert function(np.zeros(length, dtype=np.float32)) == length
+    assert len(function.signatures) == 1
+    # Explicitly requesting an existing signature also works at capacity.
+    function.compile(function.signatures[0])
+
+
+def test_concurrent_new_types_share_specialization_capacity(monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+    from Infernux import _jit_backend
+
+    monkeypatch.setattr(_jit_backend, "_MAX_CPU_SPECIALIZATIONS", 1)
+    function = compile_cpu(lambda values: len(values))
+    ready = Barrier(2)
+
+    def compile_type(dtype):
+        ready.wait(timeout=10)
+        try:
+            return function(np.zeros(3, dtype=dtype))
+        except RuntimeError as error:
+            assert "specialization limit (1)" in str(error)
+            return "capacity"
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        pending = [pool.submit(compile_type, dtype) for dtype in (np.int32, np.float64)]
+        results = [future.result(timeout=30) for future in pending]
+    assert results.count(3) == 1
+    assert results.count("capacity") == 1
+    assert len(function.signatures) == 1

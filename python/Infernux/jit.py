@@ -168,6 +168,10 @@ def compile(fn=None, **options):
     Editor artifacts live under ``Library/Artifacts/Compute/CPU``; Players use
     their writable application data root. Standalone compiler tools requesting
     disk caching must supply an explicit ``NUMBA_CACHE_DIR``.
+
+    Each compiled implementation admits up to 64 input-type specializations.
+    Array lengths do not create new specializations. Beyond capacity, new
+    signatures are rejected before user code runs; existing ones remain valid.
     """
     if not JIT_AVAILABLE:
         if os.environ.get("INFERNUX_WEB_RUNTIME") == "1" or sys.platform == "emscripten":
