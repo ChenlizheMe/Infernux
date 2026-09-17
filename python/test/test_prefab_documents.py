@@ -99,8 +99,7 @@ def test_prefab_renamed_siblings_keep_source_identity_and_inbound_references(sce
     first, second = instance.get_children()
     first_id, second_id = first.id, second.id
     first.name = "Renamed"
-    first.set_parent(None)
-    first.set_parent(instance)
+    first.transform.set_sibling_index(1)
     assert [child.id for child in instance.get_children()] == [second_id, first_id]
     changes = compute_overrides(instance, str(path))
     assert any(change.key == "name" for change in changes)

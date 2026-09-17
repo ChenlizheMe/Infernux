@@ -283,6 +283,37 @@ class DeleteGameObjectsCommand(UndoCommand):
         self.execute()
 
 
+def _capture_prefab_parent_links(roots):
+    """Capture source ownership only; hierarchy moves retain live objects."""
+    result = {}
+    for root in roots:
+        if root is None:
+            continue
+        pending = [root.serialize_document()]
+        while pending:
+            node = pending.pop()
+            result[node["id"]] = (
+                node.get("prefab_guid", ""), node.get("prefab_root", False),
+                node.get("prefab_source_id", 0), node.get("prefab_source"),
+                {item["component_id"]: item.get("prefab_source_id", 0) for item in node["components"]},
+            )
+            pending.extend(node["children"])
+    return result
+
+
+def _restore_prefab_parent_links(scene, links):
+    from Infernux.engine.prefab_manager import _link_prefab_components
+    for identity, (guid, root, source_id, baseline, components) in links.items():
+        obj = scene.find_by_id(identity)
+        if obj is None:
+            raise RuntimeError(f"Moved Prefab object is unavailable: {identity}")
+        obj.prefab_guid = guid
+        obj.prefab_root = root
+        obj.prefab_source_id = source_id
+        obj._prefab_source_document = baseline
+        _link_prefab_components(obj, components)
+
+
 class ReparentCommand(UndoCommand):
     """Undo/redo changing the parent of a GameObject."""
 
@@ -296,12 +327,16 @@ class ReparentCommand(UndoCommand):
         self._new_parent_id = new_parent_id
         obj = _find_runtime_object(object_id)
         self._scene_world_id = _scene_world_id(getattr(obj, "scene", None))
+        self._prefab_links = _capture_prefab_parent_links([obj])
 
     def execute(self) -> None:
         self._apply(self._new_parent_id)
 
     def undo(self) -> None:
         self._apply(self._old_parent_id)
+        scene = _get_scene_by_world_id(self._scene_world_id)
+        if scene is not None:
+            _restore_prefab_parent_links(scene, self._prefab_links)
 
     def redo(self) -> None:
         self._apply(self._new_parent_id)
@@ -336,12 +371,16 @@ class MoveGameObjectCommand(UndoCommand):
         self._new_sibling_index = int(new_sibling_index)
         obj = _find_runtime_object(object_id)
         self._scene_world_id = _scene_world_id(getattr(obj, "scene", None))
+        self._prefab_links = _capture_prefab_parent_links([obj])
 
     def execute(self) -> None:
         self._apply(self._new_parent_id, self._new_sibling_index)
 
     def undo(self) -> None:
         self._apply(self._old_parent_id, self._old_sibling_index)
+        scene = _get_scene_by_world_id(self._scene_world_id)
+        if scene is not None:
+            _restore_prefab_parent_links(scene, self._prefab_links)
 
     def redo(self) -> None:
         self._apply(self._new_parent_id, self._new_sibling_index)
@@ -399,6 +438,12 @@ class SceneHierarchyLayoutCommand(UndoCommand):
         if len(world_ids) != 1 or 0 in world_ids:
             raise ValueError("hierarchy layout must belong to one loaded Scene")
         self._scene_world_id = world_ids.pop()
+        before_parents = {obj: parent for parent, objects in self._before_layout.items() for obj in objects}
+        self._moved_ids = tuple(obj for parent, objects in self._after_layout.items()
+                                for obj in objects if before_parents[obj] != parent)
+        self._prefab_links = _capture_prefab_parent_links(
+            [_find_runtime_object(identity) for identity in self._moved_ids],
+        )
 
     @staticmethod
     def _normalize(layout):
@@ -496,11 +541,13 @@ class SceneHierarchyLayoutCommand(UndoCommand):
         scene = _get_scene_by_world_id(self._scene_world_id)
         if scene is None:
             raise RuntimeError("hierarchy layout owning Scene is unavailable")
+        links = _capture_prefab_parent_links([scene.find_by_id(identity) for identity in self._moved_ids])
         try:
             self._apply_layout(scene, target)
         except Exception as original:
             try:
                 self._apply_layout(scene, rollback)
+                _restore_prefab_parent_links(scene, links)
             except Exception as rollback_error:
                 raise RuntimeError(
                     "hierarchy layout failed and rollback could not restore the tree"
@@ -512,6 +559,7 @@ class SceneHierarchyLayoutCommand(UndoCommand):
 
     def undo(self) -> None:
         self._transition(self._before_layout, self._after_layout)
+        _restore_prefab_parent_links(_get_scene_by_world_id(self._scene_world_id), self._prefab_links)
 
     def redo(self) -> None:
         self._transition(self._after_layout, self._before_layout)

@@ -118,10 +118,16 @@ references continue to target their respective instances.
   original member's identity.
 - Unpacking the outer instance preserves inner Prefab links. It does not unpack
   every nesting level recursively.
+- Moving an inner instance to a different outer instance makes it a new member
+  of that outer instance while preserving its inner asset link. Undo restores
+  its previous ownership; Redo applies the move again. Moving within the same
+  outer instance preserves its existing member identity.
+- Moving an ordinary source-owned child out of its instance removes that source
+  membership. Use sibling ordering to reorder children, not detach/reattach;
+  use Undo to restore a detached child's original membership.
 - Scene reopening, fresh instantiation and build resolution read the current
   inner sources even when the outer asset file has not changed. Cyclic nesting
   is rejected rather than expanded indefinitely.
 
-These APIs are not the complete Unity Editor SDK. Moving nested roots between
-different outer instances and migrating the project's complete authoring tools
-remain under validation; do not treat those workflows as stable yet.
+These APIs are not the complete Unity Editor SDK. Migrating the project's
+complete authoring tools remains a separate acceptance task.

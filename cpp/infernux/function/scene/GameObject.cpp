@@ -299,6 +299,13 @@ void GameObject::SetParent(GameObject *newParent, bool worldPositionStays)
         }
     }
 
+    auto prefabScope = [](GameObject *object) -> GameObject * {
+        while (object && !object->m_prefabRoot && !object->m_prefabSourceDocument)
+            object = object->m_parent;
+        return object;
+    };
+    const bool changesPrefabScope = prefabScope(m_parent) != prefabScope(newParent);
+
     // Cache world transform before reparenting
     glm::vec3 savedWorldPos;
     glm::quat savedWorldRot;
@@ -321,6 +328,29 @@ void GameObject::SetParent(GameObject *newParent, bool worldPositionStays)
     if (!selfPtr) {
         // Should not happen unless object is in limbo state
         return;
+    }
+
+    if (changesPrefabScope) {
+        // Source IDs belong to one enclosing instance, not merely its asset
+        // GUID. Moving into another instance creates private outer members.
+        // Nested roots keep their own source namespace and all inner links.
+        auto retireOuterLinks = [](auto &&self, GameObject *object) -> void {
+            if (object->m_prefabRoot || object->m_prefabSourceDocument) {
+                if (object->m_prefabSourceDocument && object->m_prefabSourceDocument->contains("outer_source_id")) {
+                    auto baseline = *object->m_prefabSourceDocument;
+                    baseline.erase("outer_source_id");
+                    object->SetPrefabSourceDocument(baseline);
+                }
+                return;
+            }
+            object->m_prefabGuid.clear();
+            object->m_prefabSourceId = 0;
+            for (auto &component : object->m_components)
+                component->SetPrefabSourceID(0);
+            for (auto &child : object->m_children)
+                self(self, child.get());
+        };
+        retireOuterLinks(retireOuterLinks, this);
     }
 
     // 2. Attach to new owner

@@ -259,6 +259,84 @@ def test_outer_unpack_keeps_nested_links_and_undo_restores_outer_anchors(scene, 
     assert all(child.prefab_guid == "inner-guid" for child in instance.get_children())
 
 
+@pytest.mark.parametrize("api", ["game_object", "transform"])
+def test_moving_nested_instance_between_outer_instances_retires_only_outer_anchor(scene, tmp_path, api):
+    outer, _, path = _make_nested(scene, tmp_path)
+    assert save_prefab(outer, path)
+    first = instantiate_prefab(file_path=path, guid="outer-guid", scene=scene)
+    second = instantiate_prefab(file_path=path, guid="outer-guid", scene=scene)
+    nested = first.get_child(0)
+    identity = nested.id
+    inner_guid, inner_id = nested.prefab_guid, nested.prefab_source_id
+    if api == "game_object":
+        nested.set_parent(second)
+    else:
+        nested.transform.set_parent(second.transform)
+    assert "outer_source_id" not in nested._prefab_source_document
+    assert (nested.prefab_guid, nested.prefab_source_id) == (inner_guid, inner_id)
+    assert nested.get_py_component(_NestedReferences).target.game_object.id == nested.get_child(0).id
+    assert apply_overrides_to_prefab(second, path)
+    second = scene.find_by_id(second.id)
+    assert len(second.get_children()) == 3
+    assert len({child._prefab_source_document["outer_source_id"] for child in second.get_children()}) == 3
+    assert scene.find_by_id(identity) is not None
+
+
+@pytest.mark.parametrize("command_type", ["reparent", "move", "layout"])
+def test_nested_reparent_history_restores_source_namespace(scene, tmp_path, command_type):
+    from Infernux.engine.undo import ReparentCommand, MoveGameObjectCommand, SceneHierarchyLayoutCommand
+    outer, _, path = _make_nested(scene, tmp_path)
+    assert save_prefab(outer, path)
+    first = instantiate_prefab(file_path=path, guid="outer-guid", scene=scene)
+    second = instantiate_prefab(file_path=path, guid="outer-guid", scene=scene)
+    nested = first.get_child(0)
+    baseline = copy.deepcopy(nested._prefab_source_document)
+    if command_type == "reparent":
+        command = ReparentCommand(nested.id, first.id, second.id)
+    elif command_type == "move":
+        command = MoveGameObjectCommand(nested.id, first.id, second.id, 0, 2)
+    else:
+        before = {first.id: tuple(obj.id for obj in first.get_children()),
+                  second.id: tuple(obj.id for obj in second.get_children())}
+        after = {first.id: before[first.id][1:], second.id: (*before[second.id], nested.id)}
+        command = SceneHierarchyLayoutCommand(before, after)
+    command.execute()
+    assert "outer_source_id" not in nested._prefab_source_document
+    command.undo()
+    assert nested.get_parent() is first
+    assert nested._prefab_source_document == baseline
+    command.redo()
+    assert nested.get_parent() is second
+    assert "outer_source_id" not in nested._prefab_source_document
+
+
+def test_nested_move_within_same_outer_keeps_anchor(scene, tmp_path):
+    outer, _, path = _make_nested(scene, tmp_path)
+    assert save_prefab(outer, path)
+    instance = instantiate_prefab(file_path=path, guid="outer-guid", scene=scene)
+    nested = instance.get_child(0)
+    baseline = copy.deepcopy(nested._prefab_source_document)
+    folder = scene.create_game_object("Folder")
+    folder.set_parent(instance)
+    nested.set_parent(folder)
+    assert nested._prefab_source_document == baseline
+
+
+def test_regular_prefab_child_crossing_scope_becomes_private_and_undo_restores_links(scene, tmp_path):
+    from Infernux.engine.undo import ReparentCommand
+    _, inner_path, _ = _make_nested(scene, tmp_path)
+    first = instantiate_prefab(file_path=inner_path, guid="inner-guid", scene=scene)
+    second = instantiate_prefab(file_path=inner_path, guid="inner-guid", scene=scene)
+    child = first.get_child(0)
+    before = child.serialize_document()
+    command = ReparentCommand(child.id, first.id, second.id)
+    command.execute()
+    assert not child.prefab_guid and child.prefab_source_id == 0
+    assert all(item.get("prefab_source_id", 0) == 0 for item in child.serialize_document()["components"])
+    command.undo()
+    assert child.serialize_document() == before
+
+
 def test_prefab_mode_repeated_save_preserves_nested_namespace(scene, tmp_path, monkeypatch):
     from types import SimpleNamespace
     from Infernux.engine.scene_manager import SceneFileManager
