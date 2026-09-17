@@ -73,6 +73,8 @@ result = inx.editor.save_data_asset(level)
 
 作者工具添加组件时，使用 `inx.editor.add_component(obj, "MyComponent", configure=initialize)`。它与 Inspector 共用组件添加服务，解析已发布的脚本和资产身份，并把初始化值纳入撤销/重做。直接从旧的导入类构造实例再调用 `add_py_component`，会绕过这条作者工具链路。
 
+普通的 `obj.add_component(MyComponent)` 与 `obj.get_component(MyComponent)` 也会把保留的类句柄解析到当前已发布脚本类型，包括 preload 在首次资产 GUID 发布前导入的类。匹配按所属模块和限定类名，不会混淆不同脚本中的同名类。直接调用 `MyComponent()` 再传给低层 `add_py_component` 不执行这一步身份解析；编辑已有物体且需要撤销时，仍使用 `inx.editor.add_component`。
+
 工具需要加载已有材质时，先用 `inx.Application.asset_path("Assets/Materials/Example.mat")` 解析项目路径，再传给 `inx.AssetManager.load`。不要依赖启动编辑器时的工作目录，也不需要在脚本里手写 GUID。
 
 `get_build_scenes()` 返回独立的、有序的项目相对路径列表。`set_build_scenes(paths)` 用一条可撤销操作更新同一份 Build Settings；路径必须是 `Assets` 下已存在的 `.scene`。传空列表表示清空，相同列表不新增历史。编辑器的自动保存仍生效，也可显式调用 `save_project_settings()`，其返回状态与场景保存相同，不要把 `PENDING` 当成写盘完成。

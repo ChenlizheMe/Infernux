@@ -112,6 +112,14 @@ Inspector, and records initialized fields for Undo/Redo. Constructing an instanc
 from an old imported Python class and calling `add_py_component` directly bypasses
 that authoring service.
 
+The regular `obj.add_component(MyComponent)` and `obj.get_component(MyComponent)`
+also resolve retained class handles to the currently published script type. This
+includes a class imported by a preload before its first asset-GUID publication;
+matching uses the owning module and qualified name, not a short name shared by
+unrelated scripts. Directly constructing `MyComponent()` and passing that instance
+to `add_py_component` is a lower-level path and does not perform this resolution.
+For undoable edits on existing objects, keep using `inx.editor.add_component`.
+
 To load an existing material, resolve its project path with
 `inx.Application.asset_path("Assets/Materials/Example.mat")` before passing it to
 `inx.AssetManager.load`. Tools should not depend on the Editor process's working

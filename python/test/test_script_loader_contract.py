@@ -238,6 +238,54 @@ def test_asset_load_binds_every_component_type_in_one_script(tmp_path):
         set_project_root(previous_root)
 
 
+def test_game_object_class_handle_uses_published_asset_revision(tmp_path, scene):
+    from Infernux.components.registry import (
+        publish_component_script_types, resolve_published_type,
+        snapshot_component_registry_state, restore_component_registry_state,
+    )
+    project = tmp_path / "project"
+    assets = project / "Assets"
+    assets.mkdir(parents=True)
+    script = assets / "AuthoringHandle.py"
+    script.write_text(
+        "from Infernux import InxComponent, serialized_field\n"
+        "class HandleProbe(InxComponent):\n"
+        "    value = serialized_field(7)\n", encoding="utf-8",
+    )
+    previous_root = get_project_root()
+    registry = snapshot_component_registry_state()
+    set_project_root(str(project))
+    try:
+        provisional = load_all_components_from_file(str(script), register=False)[0]
+        first = load_and_create_component(str(script), script_guid="asset-handle-guid")
+        published = type(first)
+        assert provisional is not published
+        assert not provisional._asset_script_guid_
+        assert resolve_published_type(provisional) is published
+
+        obj = scene.create_game_object("Published handle")
+        component = obj.add_component(provisional)
+        assert type(component) is published
+        assert component._script_guid == "asset-handle-guid"
+        assert obj.get_component(provisional) is component
+
+        # A newer revision is resolved by stable identity, not Python class id.
+        newer = load_all_components_from_file(str(script), register=False)[0]
+        bind_asset_script_guid(newer, "asset-handle-guid", register=False)
+        publish_component_script_types(str(script), (newer,))
+        assert resolve_published_type(published) is newer
+        assert resolve_published_type(provisional) is newer
+
+        other = type("HandleProbe", (InxComponent,), {"__module__": "OtherModule"})
+        assert resolve_published_type(provisional) is newer
+        assert resolve_published_type(other) is other
+        bind_asset_script_guid(published, "different-asset-guid", register=False)
+        assert resolve_published_type(published) is published
+    finally:
+        set_project_root(previous_root)
+        restore_component_registry_state(registry)
+
+
 def test_script_loader_executes_exact_pyc_with_canonical_project_module(tmp_path, monkeypatch):
     project = tmp_path / "project"
     package = project / "Assets" / "Gameplay"

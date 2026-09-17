@@ -1019,7 +1019,8 @@ def _resolve_python_component_class(component_type):
     if isinstance(component_type, type) and issubclass(component_type, InxComponent):
         if issubclass(component_type, BuiltinComponent):
             return None
-        return component_type
+        from Infernux.components.registry import resolve_published_type
+        return resolve_published_type(component_type)
 
     if isinstance(component_type, str):
         component_cls = get_type(component_type)
