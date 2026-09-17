@@ -11,6 +11,7 @@ from pathlib import Path
 from numba.core.caching import CompileResultCacheImpl, FunctionCache, _CacheLocator
 
 from Infernux._compiler.cache import compiler_cache_root, prune_cache_files
+from Infernux.engine.path_utils import resolved_path
 
 
 _CACHE_FILE_LIMIT = 512
@@ -26,7 +27,7 @@ def cpu_cache_root() -> Path:
     # or Player always uses its owned root, never a process-wide override.
     configured = os.environ.get("NUMBA_CACHE_DIR", "").strip()
     if configured:
-        return Path(configured).resolve()
+        return Path(resolved_path(configured))
     raise RuntimeError("CPU disk caching requires an active project or explicit NUMBA_CACHE_DIR")
 
 

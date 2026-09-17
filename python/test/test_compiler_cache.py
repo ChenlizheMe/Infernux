@@ -33,6 +33,9 @@ def test_standalone_disk_cache_requires_explicit_storage(tmp_path, monkeypatch):
             _jit_cache.cpu_cache_root()
         monkeypatch.setenv("NUMBA_CACHE_DIR", str(tmp_path / "tool-cache"))
         assert _jit_cache.cpu_cache_root() == tmp_path / "tool-cache"
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("NUMBA_CACHE_DIR", "intermediate/../tool-cache")
+        assert _jit_cache.cpu_cache_root() == tmp_path / "tool-cache"
 
 
 def test_project_switch_does_not_reuse_previous_project_disk_owner(tmp_path):

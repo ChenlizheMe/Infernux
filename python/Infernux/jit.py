@@ -13,7 +13,6 @@ Numba remains an internal CPU code-generation backend; its decorator and
 ``prange`` are not a second public authoring surface.
 """
 
-import inspect
 from functools import lru_cache
 import os
 import sys
@@ -26,30 +25,6 @@ _VECTOR_FIELDS = {
     3: ("x", "y", "z"),
     4: ("x", "y", "z", "w"),
 }
-
-
-def _register_numeric_helpers(function) -> None:
-    """Make referenced same-module Python helpers visible to nopython lowering."""
-    from numba.extending import register_jitable
-
-    visited = {id(function)}
-
-    def register_dependencies(value) -> None:
-        code = getattr(value, "__code__", None)
-        globals_map = getattr(value, "__globals__", {})
-        if code is None:
-            return
-        for name in code.co_names:
-            dependency = globals_map.get(name)
-            if (not inspect.isfunction(dependency)
-                    or getattr(dependency, "__module__", None) != getattr(function, "__module__", None)
-                    or id(dependency) in visited):
-                continue
-            visited.add(id(dependency))
-            register_dependencies(dependency)
-            register_jitable(dependency)
-
-    register_dependencies(function)
 
 
 @lru_cache(maxsize=1)
@@ -209,12 +184,10 @@ def compile(fn=None, **options):
     options.setdefault("auto_parallel", True)
     if fn is None:
         def decorate(function):
-            _register_numeric_helpers(function)
             return _CompiledCpuFunction(_njit(**options)(function))
         return decorate
     if not callable(fn):
         raise TypeError("inx.jit.compile expects a callable")
-    _register_numeric_helpers(fn)
     return _CompiledCpuFunction(_njit(fn, **options))
 
 
