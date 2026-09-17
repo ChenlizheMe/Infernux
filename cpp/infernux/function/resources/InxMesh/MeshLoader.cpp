@@ -10,6 +10,7 @@
 #include "MeshLoader.h"
 #include "InxMesh.h"
 #include "MeshArtifact.h"
+#include "MeshImportSettings.h"
 
 #include <core/config/MathConstants.h>
 #include <core/log/InxLog.h>
@@ -35,38 +36,6 @@ namespace infernux
 // ============================================================================
 // Import-setting helpers
 // ============================================================================
-
-struct MeshImportSettings
-{
-    float scaleFactor = 1.0f;
-    bool generateNormals = true;
-    bool generateTangents = true;
-    bool flipUVs = true;
-    bool swapUVChannels = false;
-    bool optimizeMesh = true;
-    bool weldVertices = true;
-};
-
-static MeshImportSettings ReadImportSettings(const InxResourceMeta &meta)
-{
-    MeshImportSettings settings;
-    if (meta.HasKey("scale_factor"))
-        settings.scaleFactor = meta.GetDataAs<float>("scale_factor");
-    if (meta.HasKey("generate_normals"))
-        settings.generateNormals = meta.GetDataAs<bool>("generate_normals");
-    if (meta.HasKey("generate_tangents"))
-        settings.generateTangents = meta.GetDataAs<bool>("generate_tangents");
-    if (meta.HasKey("flip_uvs"))
-        settings.flipUVs = meta.GetDataAs<bool>("flip_uvs");
-    if (meta.HasKey("swap_uv_channels"))
-        settings.swapUVChannels = meta.GetDataAs<bool>("swap_uv_channels");
-    if (meta.HasKey("optimize_mesh"))
-        settings.optimizeMesh = meta.GetDataAs<bool>("optimize_mesh");
-    if (meta.HasKey("weld_vertices"))
-        settings.weldVertices = meta.GetDataAs<bool>("weld_vertices");
-
-    return settings;
-}
 
 static unsigned int BuildAssimpFlags(const MeshImportSettings &settings)
 {
@@ -398,7 +367,7 @@ MeshSourceImportResult MeshLoader::ImportSourceDetailed(const std::string &fileP
     if (!file.read(fileData.data(), fileSize))
         throw std::runtime_error("MeshLoader failed to read source file: " + filePath);
 
-    MeshImportSettings settings = ReadImportSettings(metadata);
+    MeshImportSettings settings = MeshImportSettings::Read(metadata);
     unsigned int flags = BuildAssimpFlags(settings);
 
     // Derive extension hint for Assimp (e.g. "fbx")

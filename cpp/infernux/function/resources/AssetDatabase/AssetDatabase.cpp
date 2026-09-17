@@ -5,6 +5,7 @@
 #include <function/resources/AssetDependencyGraph.h>
 #include <function/resources/AssetImporter/ConcreteImporters.h>
 #include <function/resources/InxMesh/MeshArtifact.h>
+#include <function/resources/InxMesh/MeshImportSettings.h>
 #include <function/resources/InxSkinnedMesh/SkinnedMeshArtifact.h>
 #include <function/resources/InxTexture/TextureArtifact.h>
 #include <function/resources/RenderTexture/RenderTextureArtifact.h>
@@ -2114,23 +2115,7 @@ AssetMutationResult AssetDatabase::ReimportAsset(const std::string &path, const 
     if (!settings.is_null()) {
         if (result.resourceType != ResourceType::Mesh || !settings.is_object())
             throw std::invalid_argument("import settings require a model and an object");
-        for (const auto &[key, value] : settings.items()) {
-            if (key == "scale_factor") {
-                if (!value.is_number())
-                    throw std::invalid_argument("model scale_factor must be a number");
-                const float scale = value.get<float>();
-                if (!std::isfinite(scale) || scale <= 0)
-                    throw std::invalid_argument("model scale_factor must be finite and positive");
-                candidate.metadata->AddMetadata(key, scale);
-            } else if (key == "generate_normals" || key == "generate_tangents" || key == "flip_uvs" ||
-                       key == "swap_uv_channels" || key == "optimize_mesh" || key == "weld_vertices") {
-                if (!value.is_boolean())
-                    throw std::invalid_argument("model import flags must be booleans");
-                candidate.metadata->AddMetadata(key, value.get<bool>());
-            } else {
-                throw std::invalid_argument("unknown model import setting: " + key);
-            }
-        }
+        MeshImportSettings::ApplyPatch(*candidate.metadata, settings);
     }
     if (!RunImporter(guid, path, true, true, &*candidate.metadata, &candidate.file.source)) {
         result.errorCode = AssetMutationErrorCode::ImportFailed;

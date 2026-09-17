@@ -44,6 +44,7 @@ from Infernux.core.asset_types import (
     read_texture_import_settings,
     read_audio_import_settings,
     read_mesh_import_settings,
+    mesh_import_settings_schema,
 )
 from .inspector_utils import max_label_w, field_label, render_apply_revert
 from .theme import Theme, ImGuiCol
@@ -701,14 +702,11 @@ def _ensure_categories():
         access_mode=AssetAccessMode.READ_ONLY_RESOURCE,
         load_fn=_load_mesh,
         editable_fields=[
-            FieldDef("scale_factor", "asset.scale_factor", WidgetType.FLOAT,
-                     float_speed=0.001, float_range=(0.0001, 1000.0)),
-            FieldDef("generate_normals", "asset.generate_normals", WidgetType.CHECKBOX),
-            FieldDef("generate_tangents", "asset.generate_tangents", WidgetType.CHECKBOX),
-            FieldDef("flip_uvs", "asset.flip_uvs", WidgetType.CHECKBOX),
-            FieldDef("swap_uv_channels", "asset.swap_uv_channels", WidgetType.CHECKBOX),
-            FieldDef("weld_vertices", "asset.weld_vertices", WidgetType.CHECKBOX),
-            FieldDef("optimize_mesh", "asset.optimize_mesh", WidgetType.CHECKBOX),
+            FieldDef(spec["name"], spec["label"],
+                     {"float": WidgetType.FLOAT, "bool": WidgetType.CHECKBOX}[spec["type"]],
+                     float_speed=spec.get("step", 0.001),
+                     float_range=tuple(spec["display_range"]) if "display_range" in spec else None)
+            for spec in mesh_import_settings_schema()["fields"]
         ],
         custom_header_fn=_render_mesh_header,
         extra_meta_keys=[

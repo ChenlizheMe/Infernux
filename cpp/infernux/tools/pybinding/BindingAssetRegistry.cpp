@@ -1,7 +1,9 @@
+#include "JsonPyBridge.h"
 #include <function/resources/AssetRegistry/AssetRegistry.h>
 #include <function/resources/InxMaterial/InxMaterial.h>
 #include <function/resources/InxMesh/InxMesh.h>
 #include <function/resources/InxMesh/MeshArtifact.h>
+#include <function/resources/InxMesh/MeshImportSettings.h>
 #include <function/resources/InxSkinnedMesh/InxSkinnedMesh.h>
 #include <function/resources/InxTexture/InxTexture.h>
 #include <function/resources/PhysicMaterial/PhysicMaterial.h>
@@ -188,6 +190,7 @@ std::vector<SubMesh> DecodeSubMeshes(const py::object &descriptions, const std::
 
 void RegisterAssetRegistryBindings(py::module_ &m)
 {
+    m.def("_mesh_import_settings_schema", [] { return JsonToPython(MeshImportSettings::Schema()); });
 #if defined(INFERNUX_PYBIND_WEB_PLAYER)
     // The browser Player owns this database through AssetRegistry. Expose only
     // immutable runtime queries; authoring, refresh, and mutation APIs stay out

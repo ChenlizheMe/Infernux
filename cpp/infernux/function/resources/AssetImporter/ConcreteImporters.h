@@ -3,6 +3,7 @@
 #include "AssetImporter.h"
 #include <function/resources/AssetDependencyGraph.h>
 #include <function/resources/AssetFormatRegistry.h>
+#include <function/resources/InxMesh/MeshImportSettings.h>
 #include <function/resources/InxResource/InxResourceMeta.h>
 
 #include <fstream>
@@ -301,20 +302,7 @@ class ModelImporter final : public AssetImporter
 
     void EnsureDefaultSettings(InxResourceMeta &meta) const override
     {
-        if (!meta.HasKey("scale_factor"))
-            meta.AddMetadata("scale_factor", 1.0f);
-        if (!meta.HasKey("generate_normals"))
-            meta.AddMetadata("generate_normals", true);
-        if (!meta.HasKey("generate_tangents"))
-            meta.AddMetadata("generate_tangents", true);
-        if (!meta.HasKey("flip_uvs"))
-            meta.AddMetadata("flip_uvs", true);
-        if (!meta.HasKey("swap_uv_channels"))
-            meta.AddMetadata("swap_uv_channels", false);
-        if (!meta.HasKey("optimize_mesh"))
-            meta.AddMetadata("optimize_mesh", true);
-        if (!meta.HasKey("weld_vertices"))
-            meta.AddMetadata("weld_vertices", true);
+        MeshImportSettings::EnsureDefaults(meta);
     }
 };
 

@@ -297,6 +297,24 @@ class TestAudioImportSettings:
 # ═══════════════════════════════════════════════════════════════════════════
 
 class TestMeshImportSettings:
+    def test_defaults_and_inspector_project_native_schema(self):
+        from Infernux.core.asset_types import mesh_import_settings_schema
+        from Infernux.engine.ui import asset_details_renderer as inspector
+
+        schema = mesh_import_settings_schema()
+        defaults = MeshImportSettings().to_dict()
+        assert defaults == {item["name"]: item["default"] for item in schema["fields"]}
+        inspector._ensure_categories()
+        fields = inspector._categories["mesh"].editable_fields
+        assert [item.key for item in fields] == [item["name"] for item in schema["fields"]]
+        for actual, declared in zip(fields, schema["fields"]):
+            assert actual.label == declared["label"]
+            assert actual.field_type.value == {"bool": "checkbox", "float": "float"}[declared["type"]]
+        # Authoring clients cannot change the next client's contract or defaults.
+        schema["fields"][0]["default"] = -7
+        assert mesh_import_settings_schema()["fields"][0]["default"] == defaults["scale_factor"]
+        assert MeshImportSettings().to_dict() == defaults
+
     def test_welding_round_trip_and_old_sidecar_policy(self):
         settings = MeshImportSettings(weld_vertices=False)
         assert MeshImportSettings.from_dict(settings.to_dict()) == settings

@@ -162,6 +162,10 @@ class AudioImportSettings:
     def __eq__(self, other: object) -> bool: ...
 
 
+def mesh_import_settings_schema() -> Dict[str, Any]:
+    """Return a detached copy of the native model-authoring schema."""
+    ...
+
 @dataclass
 class MeshImportSettings:
     """Import settings for 3D model assets stored in .meta."""

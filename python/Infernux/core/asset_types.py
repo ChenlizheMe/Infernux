@@ -14,6 +14,7 @@ import os
 import uuid
 from dataclasses import asdict, dataclass, field, replace
 from enum import IntEnum
+from functools import cache
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 if TYPE_CHECKING:
@@ -723,48 +724,55 @@ def write_audio_import_settings(asset_path: str, settings: AudioImportSettings) 
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+def mesh_import_settings_schema() -> Dict[str, Any]:
+    """Return the native model-authoring schema as a detached document.
+
+    Resolve lazily: importing asset references in a Player does not require
+    editor-only model import bindings.
+    """
+    from Infernux.lib import _Infernux
+    return _Infernux._mesh_import_settings_schema()
+
+
+@cache
+def _mesh_import_fields() -> Dict[str, Any]:
+    return {item["name"]: item for item in mesh_import_settings_schema()["fields"]}
+
+
 @dataclass
 class MeshImportSettings:
     """Import settings for 3D model assets — stored in .meta alongside the source file."""
 
-    scale_factor: float = 1.0
-    generate_normals: bool = True
-    generate_tangents: bool = True
+    scale_factor: float = field(default_factory=lambda: _mesh_import_fields()["scale_factor"]["default"])
+    generate_normals: bool = field(default_factory=lambda: _mesh_import_fields()["generate_normals"]["default"])
+    generate_tangents: bool = field(default_factory=lambda: _mesh_import_fields()["generate_tangents"]["default"])
     # DCC-authored meshes keep model/textures aligned without per-asset UV flipping.
-    flip_uvs: bool = True
+    flip_uvs: bool = field(default_factory=lambda: _mesh_import_fields()["flip_uvs"]["default"])
     # Unity-style public setting: swap primary/secondary UV channels.
-    swap_uv_channels: bool = False
-    optimize_mesh: bool = True
-    weld_vertices: bool = True
+    swap_uv_channels: bool = field(default_factory=lambda: _mesh_import_fields()["swap_uv_channels"]["default"])
+    optimize_mesh: bool = field(default_factory=lambda: _mesh_import_fields()["optimize_mesh"]["default"])
+    weld_vertices: bool = field(default_factory=lambda: _mesh_import_fields()["weld_vertices"]["default"])
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
 
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "MeshImportSettings":
-        required = {
-            "scale_factor", "generate_normals", "generate_tangents", "flip_uvs",
-            "swap_uv_channels", "optimize_mesh",
-        }
+        fields = _mesh_import_fields()
+        required = {name for name, spec in fields.items() if not spec.get("legacy_optional", False)}
         if type(d) is not dict or not required.issubset(d):
             raise ValueError("mesh import settings must use the complete current field set")
         scale = d["scale_factor"]
         if isinstance(scale, bool) or not isinstance(scale, (int, float)) or not math.isfinite(scale) or scale <= 0.0:
             raise ValueError("mesh scale_factor must be a positive finite number")
-        bool_fields = required - {"scale_factor"}
-        if any(type(d[field]) is not bool for field in bool_fields):
-            raise TypeError("mesh import setting flags must be bools")
         # Old models were always welded. Preserve that explicit import policy
         # when upgrading sidecars authored before this option was exposed.
-        weld_vertices = d.get("weld_vertices", True)
-        if type(weld_vertices) is not bool:
-            raise TypeError("mesh weld_vertices must be a bool")
-        return cls(
-            scale_factor=float(scale), generate_normals=d["generate_normals"],
-            generate_tangents=d["generate_tangents"], flip_uvs=d["flip_uvs"],
-            swap_uv_channels=d["swap_uv_channels"], optimize_mesh=d["optimize_mesh"],
-            weld_vertices=weld_vertices,
-        )
+        values = {name: d[name] if name in d else spec["default"] for name, spec in fields.items()}
+        for name, spec in fields.items():
+            if spec["type"] == "bool" and type(values[name]) is not bool:
+                raise TypeError(f"mesh {name} must be a bool")
+        values["scale_factor"] = float(scale)
+        return cls(**values)
 
     def copy(self) -> "MeshImportSettings":
         return replace(self)

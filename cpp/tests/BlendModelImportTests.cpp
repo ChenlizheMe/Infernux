@@ -1,5 +1,6 @@
 #include <function/resources/InxMesh/InxMesh.h>
 #include <function/resources/InxMesh/MeshArtifact.h>
+#include <function/resources/InxMesh/MeshImportSettings.h>
 #include <function/resources/InxMesh/MeshLoader.h>
 #include <function/resources/InxResource/InxResourceMeta.h>
 #include <platform/filesystem/InxPath.h>
@@ -7,6 +8,7 @@
 #include <cassert>
 #include <cmath>
 #include <filesystem>
+#include <limits>
 #include <set>
 #include <string>
 
@@ -16,6 +18,46 @@
 
 int main(int argc, char **argv)
 {
+    {
+        using Settings = infernux::MeshImportSettings;
+        infernux::InxResourceMeta candidate;
+        Settings::EnsureDefaults(candidate);
+        const auto defaults = Settings::Read(candidate);
+        const auto schema = Settings::Schema();
+        assert(schema.at("fields").size() == Settings::Flags.size() + 1);
+        assert(schema.at("fields")[0].at("default").get<float>() == defaults.scaleFactor);
+        for (size_t index = 0; index < Settings::Flags.size(); ++index) {
+            const auto &flag = Settings::Flags[index];
+            assert(schema.at("fields")[index + 1].at("name") == flag.name);
+            assert(schema.at("fields")[index + 1].at("default").get<bool>() == defaults.*(flag.member));
+        }
+        Settings::ApplyPatch(candidate, {{"scale_factor", 2.0}, {"weld_vertices", false}});
+        Settings::EnsureDefaults(candidate);
+        assert(Settings::Read(candidate).scaleFactor == 2.0f);
+        assert(!Settings::Read(candidate).weldVertices);
+        const auto reject = [&](const nlohmann::json &patch) {
+            bool rejected = false;
+            try {
+                Settings::ApplyPatch(candidate, patch);
+            } catch (const std::invalid_argument &) {
+                rejected = true;
+            }
+            assert(rejected);
+            assert(Settings::Read(candidate).scaleFactor == 2.0f);
+            assert(!Settings::Read(candidate).weldVertices);
+        };
+        reject({{"scale_factor", 3.0}, {"weld_vertices", "true"}});
+        reject({{"scale_factor", 3.0}, {"unknown_setting", true}});
+        reject({{"scale_factor", false}});
+        reject({{"scale_factor", 0.0}});
+        reject({{"scale_factor", -1.0}});
+        reject({{"scale_factor", std::numeric_limits<double>::infinity()}});
+        reject({{"scale_factor", std::numeric_limits<double>::quiet_NaN()}});
+        reject(nlohmann::json::array());
+        infernux::InxResourceMeta legacy;
+        legacy.AddMetadata("scale_factor", 0.5f);
+        assert(Settings::Read(legacy).weldVertices);
+    }
     const std::filesystem::path sourceRoot = INFERNUX_SOURCE_DIR;
     const auto blendPath = sourceRoot / "external" / "assimp" / "test" / "models" / "BLEND" / "CubeHierarchy_248.blend";
     assert(std::filesystem::is_regular_file(blendPath));
