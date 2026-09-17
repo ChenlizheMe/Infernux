@@ -299,6 +299,8 @@ void RegisterAssetRegistryBindings(py::module_ &m)
                 return result;
             },
             "Get per-slot material data extracted from model file")
+        .def("create_material_copy", &InxMesh::CreateMaterialCopy, py::arg("slot"),
+             "Create an independent material instance from one imported model slot; does not save a file")
         .def(
             "get_bounds",
             [](const InxMesh &self) -> py::tuple {

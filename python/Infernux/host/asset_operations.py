@@ -146,6 +146,22 @@ def build_asset_operations(project_path: str) -> tuple[Operation, ...]:
             tags=("asset", "mesh", "save", "authoring"),
         ),
         operation(
+            "infernux.asset.model.material.extract",
+            OperationKind.COMMAND,
+            "Extract a current imported material slot to an independent .mat asset; does not remap the model.",
+            lambda asset_guid, slot, destination: _extract_model_material(project_path, asset_guid, slot, destination),
+            capability="asset.write",
+            input_properties={
+                "asset_guid": {"type": "string"},
+                "slot": {"type": "integer", "minimum": 0},
+                "destination": {"type": "string"},
+            },
+            required=("asset_guid", "slot", "destination"),
+            side_effects=("Creates and imports a new .mat asset; never overwrites an existing path.",),
+            reversible=True,
+            tags=("asset", "model", "material", "authoring"),
+        ),
+        operation(
             "infernux.asset.delete",
             OperationKind.COMMAND,
             "Delete project assets addressed by GUID through asset history.",
@@ -336,6 +352,16 @@ def _save_mesh_copy(project_path: str, asset_guid: str, destination: str) -> dic
         return {"asset": asset_identity(saved), "source_guid": asset_guid}
 
     return on_editor("infernux.asset.mesh.save-copy", save)
+
+
+def _extract_model_material(project_path: str, asset_guid: str, slot: int, destination: str) -> dict[str, object]:
+    def extract():
+        asset_path(asset_guid)
+        target = destination if os.path.isabs(destination) else os.path.join(project_path, destination)
+        saved = EditorAutomationHost.instance().extract_model_material(asset_guid, slot, target)
+        return {"asset": asset_identity(saved), "source_guid": asset_guid, "source_slot": slot}
+
+    return on_editor("infernux.asset.model.material.extract", extract)
 
 
 def _delete_assets(asset_guids: list[str]) -> dict[str, object]:

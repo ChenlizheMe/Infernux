@@ -407,6 +407,17 @@ class EditorAutomationHost:
             mesh, destination, origin=ActionOrigin.AUTOMATION,
         )
 
+    def extract_model_material(self, asset_guid: str, slot: int, destination: str) -> str:
+        from Infernux.lib import AssetRegistry
+        from Infernux.engine.interaction.action_journal import ActionOrigin
+
+        mesh = AssetRegistry.instance().load_mesh_by_guid(asset_guid)
+        if mesh is None:
+            raise OperationError("asset.not_found", "The source model could not be loaded.")
+        return self.interaction_core().project_assets.extract_model_material(
+            mesh, slot, destination, origin=ActionOrigin.AUTOMATION,
+        )
+
     def project_asset_text(self, path: str) -> str:
         return self.interaction_core().project_assets.read_text(path)
 

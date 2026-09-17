@@ -43,6 +43,113 @@ def color(renderer, slot=0):
     return [value.x, value.y, value.z, value.w]
 
 
+def test_material_copy_matches_renderer_without_sharing_edits(imported_model):
+    from Infernux.lib import AssetRegistry
+
+    renderer, _, source, _, _ = imported_model
+    mesh = AssetRegistry.instance().load_mesh(str(source))
+    material = mesh.create_material_copy(1)
+    assert material.name == "Green"
+    assert material.serialize_document() == renderer.get_material(1).serialize_document()
+    material.set_color("baseColor", [0, 0, 1, 1])
+    np.testing.assert_allclose(color(renderer, 1), [0, 1, 0, 1])
+    with pytest.raises(IndexError, match="no imported material"):
+        mesh.create_material_copy(999)
+
+
+def test_material_extraction_undo_redo_and_independent_asset(imported_model):
+    from Infernux.lib import AssetRegistry
+    from Infernux.engine.interaction import EditorActionJournal, ProjectAssetCommandService, SelectionService
+    from Infernux.engine.undo import UndoManager
+
+    renderer, _, source, database, _ = imported_model
+    registry = AssetRegistry.instance()
+    mesh = registry.load_mesh(str(source))
+    target = source.with_name("Extracted.mat")
+    occupied = target.with_name("Occupied.mat")
+    previous_manager = UndoManager._instance
+    manager = UndoManager(EditorActionJournal())
+    service = ProjectAssetCommandService(SelectionService())
+    service.configure(str(Path(database.assets_root).parent), database)
+    original = renderer.serialize_document()
+    try:
+        assert Path(service.extract_model_material(mesh, 1, str(target))) == target
+        guid = database.get_guid_from_path(str(target))
+        assert guid and guid != mesh.guid
+        content = target.read_bytes()
+        saved = registry.load_material_by_guid(guid)
+        expected = renderer.get_material(1).serialize_document()
+        expected["name"] = target.stem  # Imported assets take their authored filename.
+        assert saved.serialize_document() == expected
+        assert renderer.serialize_document() == original  # No implicit remap/scene edit.
+        for slot in (-1, True, "1"):
+            with pytest.raises(ValueError, match="non-negative integer"):
+                service.extract_model_material(mesh, slot, str(target))
+        with pytest.raises(FileExistsError):
+            service.extract_model_material(mesh, 1, str(target))
+        with pytest.raises(ValueError, match=".mat"):
+            service.extract_model_material(mesh, 1, str(target.with_suffix(".txt")))
+        outside = Path(database.assets_root).parent / "Outside.mat"
+        with pytest.raises(ValueError, match="under Assets or Packages"):
+            service.extract_model_material(mesh, 1, str(outside))
+        assert not outside.exists()
+        manager.undo()
+        assert not target.exists()
+        assert not database.contains_guid(guid)
+        manager.redo()
+        assert database.get_guid_from_path(str(target)) == guid
+        assert target.read_bytes() == content
+        class ConcurrentTarget:
+            def serialize_document(self):
+                occupied.write_bytes(b"another author's file")
+                return saved.serialize_document()
+
+        with pytest.raises(RuntimeError):
+            service.save_material_copy(ConcurrentTarget(), str(occupied))
+        assert occupied.read_bytes() == b"another author's file"
+    finally:
+        service.shutdown()
+        UndoManager._instance = previous_manager
+        if database.contains_path(str(target)):
+            database.delete_asset(str(target))
+        occupied.unlink(missing_ok=True)
+
+
+def test_material_save_dialog_captures_source_before_reimport(imported_model, monkeypatch):
+    from types import SimpleNamespace
+    from Infernux.lib import AssetRegistry
+    from Infernux.engine.interaction import EditorInteractionCore
+    from Infernux.engine.ui import asset_details_renderer as inspector, asset_save_dialog
+
+    _, document, source, database, _ = imported_model
+    mesh = AssetRegistry.instance().load_mesh(str(source))
+    captured = {}
+    saved = []
+
+    class Dialog:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def request(self, **kwargs):
+            captured.update(kwargs)
+
+    service = SimpleNamespace(project_root=str(source.parent), save_material_copy=lambda material, path: (
+        saved.append(material.serialize_document()) or path))
+    monkeypatch.setattr(EditorInteractionCore, "instance", lambda: SimpleNamespace(project_assets=service))
+    monkeypatch.setattr(asset_save_dialog, "AssetSaveAsDialog", Dialog)
+    expected = mesh.create_material_copy(1).serialize_document()
+    inspector._request_model_material_extraction(inspector._State(), mesh, 1)
+    document["materials"][1]["name"] = "Changed source"
+    document["materials"][1]["pbrMetallicRoughness"]["baseColorFactor"] = [0, 0, 1, 1]
+    source.write_text(json.dumps(document), encoding="utf-8")
+    result = AssetManager.reimport_asset(str(source), database=database)
+    assert result, result.error
+    assert captured["default_name"] == "Green"
+    assert captured["save_callback"](str(source.with_suffix(".mat")))
+    assert saved == [expected]
+    assert mesh.create_material_copy(1).serialize_document() != expected
+
+
 def select(renderer, index, mode):
     if mode == "submesh":
         renderer.submesh_index = index

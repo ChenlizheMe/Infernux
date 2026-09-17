@@ -153,21 +153,46 @@ class ProjectAssetCommandService:
 
     def save_mesh_copy(self, mesh: Any, target_path: str, *, origin: ActionOrigin = ActionOrigin.USER) -> str:
         """Create an independent static mesh asset, with normal Project Undo/Redo."""
+        return self._save_resource_copy(mesh.serialize_source, target_path, ".inxmesh", "Save Mesh Copy", origin)
+
+    def extract_model_material(self, mesh: Any, slot: int, target_path: str,
+                               *, origin: ActionOrigin = ActionOrigin.USER) -> str:
+        """Extract one currently imported slot as an independent material asset.
+
+        The slot is an index in the current import, not a persistent remap key.
+        Extraction does not change source settings or existing scene overrides.
+        """
+        if type(slot) is not int or slot < 0:
+            raise ValueError("Model material slot must be a non-negative integer")
+        return self.save_material_copy(mesh.create_material_copy(slot), target_path, origin=origin)
+
+    def save_material_copy(self, material: Any, target_path: str,
+                           *, origin: ActionOrigin = ActionOrigin.USER) -> str:
+        """Save a detached material snapshot through normal Project history."""
+        import json
+
+        def content():
+            return json.dumps(material.serialize_document(), ensure_ascii=False, indent=2).encode("utf-8")
+
+        return self._save_resource_copy(content, target_path, ".mat", "Extract Model Material", origin)
+
+    def _save_resource_copy(self, content_factory: Callable[[], bytes], target_path: str,
+                            extension: str, description: str, origin: ActionOrigin) -> str:
         from Infernux.core.document_store import DocumentStore
         from Infernux.lib import DocumentFileState, DocumentWriteOptions
         from Infernux.engine.ui.project_file_ops import _import_new_asset
 
         self._require_configured()
         target = self._project_path(target_path)
-        if os.path.splitext(target)[1].lower() != ".inxmesh":
-            raise ValueError("Mesh copies require an .inxmesh target")
+        if os.path.splitext(target)[1].lower() != extension:
+            raise ValueError(f"{description} requires an {extension} target")
         if not any(is_path_within(target, os.path.join(self._project_root, root)) for root in ("Assets", "Packages")):
-            raise ValueError("Mesh copies must be saved under Assets or Packages")
+            raise ValueError("Asset copies must be saved under Assets or Packages")
         if os.path.exists(target):
             raise FileExistsError(target)
         if not os.path.isdir(os.path.dirname(target)):
             raise FileNotFoundError(os.path.dirname(target))
-        content = mesh.serialize_source()
+        content = content_factory()
         options = DocumentWriteOptions()
         options.expected_file_state = DocumentFileState()  # Must still be absent at commit.
 
@@ -182,7 +207,7 @@ class ProjectAssetCommandService:
                 return False, str(exc)
 
         return self.create_with_path(os.path.dirname(target), create_copy,
-                                     description="Save Mesh Copy", origin=origin)
+                                     description=description, origin=origin)
 
     def read_text(self, path: str) -> str:
         """Read one registered project text asset as UTF-8."""

@@ -12,11 +12,12 @@ def test_editor_authoring_operations_exist_without_mcp_plugin(tmp_path):
     registry = OperationRegistry()
     operation_ids = install_editor_operations(str(tmp_path), registry)
 
-    assert len(operation_ids) == 32
+    assert len(operation_ids) == 33
     assert "infernux.scene.component.schema" in operation_ids
     assert "infernux.scene.component.property.set" in operation_ids
     assert "infernux.asset.inspect" in operation_ids
     assert "infernux.asset.model.inspect" in operation_ids
+    assert "infernux.asset.model.material.extract" in operation_ids
     assert "infernux.asset.text.set" in operation_ids
     assert "infernux.data_asset.inspect" in operation_ids
     assert "infernux.data_asset.schema" in operation_ids
@@ -62,6 +63,28 @@ def test_model_inspection_rejects_non_model_before_loading(monkeypatch):
     monkeypatch.setattr(Mesh, "load_guid", lambda _: pytest.fail("non-model was loaded"))
     with pytest.raises(OperationError, match="requires a mesh asset"):
         operations._inspect_model("text-guid")
+
+
+def test_material_extraction_uses_project_command_and_declared_schema(tmp_path, monkeypatch):
+    from Infernux.host import asset_operations as operations
+
+    calls = []
+    monkeypatch.setattr(operations, "on_editor", lambda _name, callback: callback())
+    monkeypatch.setattr(operations, "asset_path", lambda _: "Assets/Source.glb")
+    monkeypatch.setattr(operations, "asset_identity", lambda path: {"path": path, "guid": "material-guid"})
+
+    def extract(guid, slot, destination):
+        calls.append((guid, slot, destination))
+        return destination
+
+    monkeypatch.setattr(operations.EditorAutomationHost, "instance",
+                        lambda: SimpleNamespace(extract_model_material=extract))
+    operation = next(value for value in operations.build_asset_operations(str(tmp_path))
+                     if value.schema.id == "infernux.asset.model.material.extract")
+    result = operation.handler(asset_guid="model-guid", slot=1, destination="Assets/Green.mat")
+    assert calls == [("model-guid", 1, os.path.join(str(tmp_path), "Assets/Green.mat"))]
+    assert result["source_slot"] == 1 and result["source_guid"] == "model-guid"
+    assert set(result) == set(operation.schema.output_schema["required"])
 
 
 def test_scene_open_reports_scheduling_and_schema_matches(monkeypatch):

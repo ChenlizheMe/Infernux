@@ -855,6 +855,7 @@ class Transform(Component):
 
 
 class InxMesh:
+    def create_material_copy(self, slot: int) -> InxMaterial: ...
     def serialize_source(self) -> bytes:
         """Encode a static .inxmesh source without writing or importing it."""
         ...

@@ -1045,6 +1045,7 @@
   "asset.mesh_indices": "Indices",
   "asset.mesh_material_slots": "Material Slots",
   "asset.mesh_materials": "Materials",
+  "asset.mesh_extract_material": "Extract Material...",
   "asset.mesh_bones": "Bones",
   "asset.mesh_bone_names": "Bone Names",
   "asset.mesh_anims": "Animations",

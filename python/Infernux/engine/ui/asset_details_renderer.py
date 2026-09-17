@@ -2473,6 +2473,48 @@ def _render_mesh_header(ctx: InxGUIContext, panel, state: _State):
         ctx.separator()
 
     _render_mesh_info(ctx, panel, state)
+    _render_model_materials(ctx, state)
+
+
+def _render_model_materials(ctx: InxGUIContext, state: _State):
+    from Infernux.lib import AssetRegistry
+    from .inspector_utils import render_compact_section_header
+
+    if not render_compact_section_header(ctx, t("asset.mesh_materials"), level="secondary"):
+        return
+    mesh = AssetRegistry.instance().load_mesh(state.file_path)
+    if mesh is None:
+        return
+    for slot, name in enumerate(mesh.material_slot_names):
+        ctx.label(f"{slot}: {name}")
+        ctx.same_line()
+        label = t("asset.mesh_extract_material")
+        clicked = ctx.button(f"{label}##model_material_{slot}")
+        ctx.record_semantic_item("button", label, True, f"asset.mesh.material.extract.{slot}")
+        if clicked:
+            _request_model_material_extraction(state, mesh, slot)
+    ctx.separator()
+
+
+def _request_model_material_extraction(state: _State, mesh, slot: int):
+    from Infernux.engine.interaction import EditorInteractionCore
+    from .asset_save_dialog import AssetSaveAsDialog
+
+    service = EditorInteractionCore.instance().project_assets
+    # Capture the current imported material, not a slot index that could refer
+    # to a different material after reimport while the Save As dialog is open.
+    material = mesh.create_material_copy(slot)
+    dialog = state.extra.get("material_save_dialog")
+    if dialog is None:
+        dialog = AssetSaveAsDialog("asset.mesh.material", "material", owner_id="inspector")
+        state.extra["material_save_dialog"] = dialog
+    default_name = "".join("_" if c in '<>:"/\\|?*' or ord(c) < 32 else c for c in material.name)
+    dialog.request(
+        title=t("asset.mesh_extract_material"), extension="mat",
+        default_name=default_name.rstrip(" .") or f"Material_{slot}",
+        project_root=service.project_root,
+        save_callback=lambda path: bool(service.save_material_copy(material, path)),
+    )
 
 
 def _render_prefab_preview(ctx: InxGUIContext, panel, state: _State):

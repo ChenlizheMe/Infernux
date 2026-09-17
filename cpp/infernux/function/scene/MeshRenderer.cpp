@@ -1110,10 +1110,6 @@ void MeshRenderer::ApplyEmbeddedMaterialsFromMesh(const std::shared_ptr<InxMesh>
         m_embeddedMaterialVersions.assign(m_materials.size(), std::nullopt);
         return;
     }
-    auto defaultMaterial = AssetRegistry::Instance().GetBuiltinMaterial("DefaultLit");
-    if (!defaultMaterial)
-        defaultMaterial = InxMaterial::CreateDefaultLit();
-
     std::vector<uint32_t> sourceSlots;
     if (m_submeshIndex >= 0) {
         const auto &subMeshes = mesh->GetSubMeshes();
@@ -1171,16 +1167,7 @@ void MeshRenderer::ApplyEmbeddedMaterialsFromMesh(const std::shared_ptr<InxMesh>
                 matches("metallic", data.metallic) && matches("smoothness", data.smoothness))
                 continue;
         }
-        auto material = defaultMaterial->Clone();
-        if (!material)
-            continue;
-        material->SetColor("baseColor", data.baseColor);
-        material->SetColor("emissionColor", data.emissionColor);
-        material->SetFloat("metallic", data.metallic);
-        material->SetFloat("smoothness", data.smoothness);
-        material->SetName(name);
-        material->SetFilePath(sourcePath);
-        SetMaterial(static_cast<uint32_t>(rendererSlot), std::move(material));
+        SetMaterial(static_cast<uint32_t>(rendererSlot), mesh->CreateMaterialCopy(sourceSlot));
         m_embeddedMaterialVersions[rendererSlot] = reference.Get()->GetAuthoredVersion();
     }
 }

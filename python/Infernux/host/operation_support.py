@@ -113,6 +113,10 @@ _ENGINE_OUTPUTS: dict[str, tuple[dict[str, object], tuple[str, ...]]] = {
         {"asset": _OBJECT, "source_guid": _STRING},
         ("asset", "source_guid"),
     ),
+    "infernux.asset.model.material.extract": (
+        {"asset": _OBJECT, "source_guid": _STRING, "source_slot": _INTEGER},
+        ("asset", "source_guid", "source_slot"),
+    ),
     "infernux.asset.delete": ({"deleted": _ARRAY}, ("deleted",)),
     "infernux.asset.move": ({"asset": _OBJECT}, ("asset",)),
     "infernux.asset.refresh": (

@@ -13,6 +13,7 @@ namespace infernux
 {
 
 class InxSkinnedMesh;
+class InxMaterial;
 
 /**
  * @brief A contiguous range within a shared vertex/index buffer.
@@ -212,6 +213,9 @@ class InxMesh
     {
         m_materialSlotData = std::move(data);
     }
+    /// Create a detached material from one imported source slot. The renderer
+    /// and editor extraction use the same conversion; this does not save an asset.
+    [[nodiscard]] std::shared_ptr<InxMaterial> CreateMaterialCopy(uint32_t slot) const;
 
     // ── Node group metadata (for per-object hierarchy) ────────────────
 
