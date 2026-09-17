@@ -282,8 +282,8 @@ class EditorAutomationHost:
     def request_capture(self, source: str, output_path: str, camera_component_id: int = 0) -> int:
         return int(self._native_engine().request_capture(str(source), str(output_path), int(camera_component_id)))
 
-    def begin_renderer_performance_window(self) -> int:
-        return int(self._native_engine().begin_renderer_performance_window())
+    def begin_renderer_performance_window(self, sample_count: int = 240) -> int:
+        return int(self._native_engine().begin_renderer_performance_window(sample_count))
 
     def renderer_performance_window(self) -> dict[str, object]:
         native = self._native_engine()

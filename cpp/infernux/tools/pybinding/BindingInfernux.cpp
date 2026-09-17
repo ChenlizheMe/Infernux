@@ -1723,10 +1723,11 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
                                })
         .def(
             "begin_renderer_performance_window",
-            [](Infernux &self) -> uint64_t {
+            [](Infernux &self, size_t sampleCount) -> uint64_t {
                 auto *renderer = self.GetRenderer();
-                return renderer ? renderer->BeginFramePerformanceWindow() : uint64_t{0};
+                return renderer ? renderer->BeginFramePerformanceWindow(sampleCount) : uint64_t{0};
             },
+            py::arg("sample_count") = 240,
             "Reset the bounded native frame performance window without reading renderer diagnostics")
         .def(
             "get_renderer_performance_window",
@@ -1756,6 +1757,8 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
                 result["last_frame"] = snapshot.lastFrame;
                 result["sample_count"] = snapshot.sampleCount;
                 result["dropped_sample_count"] = snapshot.droppedSampleCount;
+                result["target_sample_count"] = snapshot.targetSampleCount;
+                result["active"] = snapshot.active;
                 result["timings"] = std::move(timings);
                 return result;
             },

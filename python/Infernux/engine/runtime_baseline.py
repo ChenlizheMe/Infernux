@@ -848,7 +848,7 @@ class RuntimeBaselineRunner:
         metadata: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         frame_count = max(1, int(frames))
-        start_frame = int(native_engine.begin_renderer_performance_window())
+        start_frame = int(native_engine.begin_renderer_performance_window(frame_count))
         wait_frames(frame_count)
         window = dict(native_engine.get_renderer_performance_window())
         self.recorder.record_performance_window(

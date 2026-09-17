@@ -3210,18 +3210,20 @@ RendererFrameTelemetrySnapshot InxRenderer::GetFrameTelemetrySnapshot()
     return snapshot;
 }
 
-uint64_t InxRenderer::BeginFramePerformanceWindow()
+uint64_t InxRenderer::BeginFramePerformanceWindow(size_t sampleCount)
 {
-    m_framePerformanceWriteIndex = 0;
-    m_framePerformanceSampleCount = 0;
-    m_framePerformanceDroppedSampleCount = 0;
+    if (sampleCount == 0 || sampleCount > 65536)
+        throw std::invalid_argument("Frame performance sample count must be between 1 and 65536");
+    m_framePerformanceHistory.reserve(sampleCount);
+    m_framePerformanceHistory.clear();
+    m_framePerformanceSampleLimit = sampleCount;
     m_framePerformanceWindowActive = true;
     return m_frameCount + 1;
 }
 
 void InxRenderer::RecordFramePerformanceSample(double frameMs)
 {
-    auto &sample = m_framePerformanceHistory[m_framePerformanceWriteIndex];
+    auto &sample = m_framePerformanceHistory.emplace_back();
     sample.frame = m_frameCount;
     sample.frameMs = frameMs;
     sample.gameOnlyMs = m_gameOnlyFrameMs;
@@ -3230,31 +3232,22 @@ void InxRenderer::RecordFramePerformanceSample(double frameMs)
     sample.guiMs = m_guiBuildMs;
     sample.prepareMs = m_prepareFrameMs;
 
-    m_framePerformanceWriteIndex = (m_framePerformanceWriteIndex + 1) % FRAME_PERFORMANCE_HISTORY_SIZE;
-    if (m_framePerformanceSampleCount < FRAME_PERFORMANCE_HISTORY_SIZE) {
-        ++m_framePerformanceSampleCount;
-        if (m_framePerformanceSampleCount == FRAME_PERFORMANCE_HISTORY_SIZE)
-            m_framePerformanceWindowActive = false;
-    } else {
-        ++m_framePerformanceDroppedSampleCount;
-    }
+    if (m_framePerformanceHistory.size() == m_framePerformanceSampleLimit)
+        m_framePerformanceWindowActive = false;
 }
 
 RendererFramePerformanceSnapshot InxRenderer::GetFramePerformanceWindow() const
 {
     RendererFramePerformanceSnapshot snapshot;
-    const size_t count = m_framePerformanceSampleCount;
+    const size_t count = m_framePerformanceHistory.size();
     snapshot.sampleCount = count;
-    snapshot.droppedSampleCount = m_framePerformanceDroppedSampleCount;
+    snapshot.targetSampleCount = m_framePerformanceSampleLimit;
+    snapshot.active = m_framePerformanceWindowActive;
     if (count == 0)
         return snapshot;
 
-    const size_t firstSlot =
-        (m_framePerformanceWriteIndex + FRAME_PERFORMANCE_HISTORY_SIZE - count) % FRAME_PERFORMANCE_HISTORY_SIZE;
-    snapshot.firstFrame = m_framePerformanceHistory[firstSlot].frame;
-    snapshot.lastFrame = m_framePerformanceHistory[(m_framePerformanceWriteIndex + FRAME_PERFORMANCE_HISTORY_SIZE - 1) %
-                                                   FRAME_PERFORMANCE_HISTORY_SIZE]
-                             .frame;
+    snapshot.firstFrame = m_framePerformanceHistory.front().frame;
+    snapshot.lastFrame = m_framePerformanceHistory.back().frame;
 
     const auto summarize = [](std::vector<double> values) {
         UIPerformanceMetricStats stats;
@@ -3293,8 +3286,7 @@ RendererFramePerformanceSnapshot InxRenderer::GetFramePerformanceWindow() const
     scene.reserve(count);
     gui.reserve(count);
     prepare.reserve(count);
-    for (size_t index = 0; index < count; ++index) {
-        const auto &sample = m_framePerformanceHistory[(firstSlot + index) % FRAME_PERFORMANCE_HISTORY_SIZE];
+    for (const auto &sample : m_framePerformanceHistory) {
         frame.push_back(sample.frameMs);
         gameOnly.push_back(sample.gameOnlyMs);
         render.push_back(sample.renderMs);

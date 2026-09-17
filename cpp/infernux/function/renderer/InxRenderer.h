@@ -221,6 +221,8 @@ struct RendererFramePerformanceSnapshot
     uint64_t lastFrame = 0;
     size_t sampleCount = 0;
     size_t droppedSampleCount = 0;
+    size_t targetSampleCount = 0;
+    bool active = false;
     UIPerformanceMetricStats frame;
     UIPerformanceMetricStats gameOnly;
     UIPerformanceMetricStats render;
@@ -314,7 +316,7 @@ class InxRenderer
     /// currently advancing DrawFrame(). Never waits for a queue or device.
     void PollGpuCompletions();
     [[nodiscard]] RendererFrameTelemetrySnapshot GetFrameTelemetrySnapshot();
-    [[nodiscard]] uint64_t BeginFramePerformanceWindow();
+    [[nodiscard]] uint64_t BeginFramePerformanceWindow(size_t sampleCount = 240);
     [[nodiscard]] RendererFramePerformanceSnapshot GetFramePerformanceWindow() const;
     [[nodiscard]] uint64_t RequestGpuParticleViewDiagnostics(bool gameView, uint64_t graphInstanceId,
                                                              uint64_t cameraComponentId = 0);
@@ -784,7 +786,6 @@ class InxRenderer
     double m_prepareFrameMs = 0.0;   ///< PrepareFrame (collect/cull) (ms)
     double m_gameOnlyFrameMs = 0.0;  ///< Sum of game-only phases (ms)
 
-    static constexpr size_t FRAME_PERFORMANCE_HISTORY_SIZE = 240;
     struct FramePerformanceSample
     {
         uint64_t frame = 0;
@@ -795,11 +796,9 @@ class InxRenderer
         double guiMs = 0.0;
         double prepareMs = 0.0;
     };
-    std::array<FramePerformanceSample, FRAME_PERFORMANCE_HISTORY_SIZE> m_framePerformanceHistory{};
+    std::vector<FramePerformanceSample> m_framePerformanceHistory;
     bool m_framePerformanceWindowActive = false;
-    size_t m_framePerformanceWriteIndex = 0;
-    size_t m_framePerformanceSampleCount = 0;
-    size_t m_framePerformanceDroppedSampleCount = 0;
+    size_t m_framePerformanceSampleLimit = 0;
     void RecordFramePerformanceSample(double frameMs);
 
     static constexpr size_t UI_PERFORMANCE_HISTORY_SIZE = 240;

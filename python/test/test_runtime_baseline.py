@@ -312,7 +312,8 @@ def test_native_window_capture_is_explicit_and_keeps_cpu_gpu_sections():
         begin_calls = 0
         read_calls = 0
 
-        def begin_renderer_performance_window(self):
+        def begin_renderer_performance_window(self, sample_count):
+            assert sample_count == 1000
             self.begin_calls += 1
             return 100
 
@@ -320,12 +321,12 @@ def test_native_window_capture_is_explicit_and_keeps_cpu_gpu_sections():
             self.read_calls += 1
             return {
                 "first_frame": 100,
-                "last_frame": 339,
-                "sample_count": 240,
+                "last_frame": 1099,
+                "sample_count": 1000,
                 "dropped_sample_count": 0,
                 "timings": {
                     "frame": {
-                        "sample_count": 240,
+                        "sample_count": 1000,
                         "avg_ms": 0.5,
                         "p95_ms": 0.7,
                         "p99_ms": 0.8,
@@ -342,10 +343,10 @@ def test_native_window_capture_is_explicit_and_keeps_cpu_gpu_sections():
         native,
         waited.append,
         name="empty-shadow-on",
-        frames=240,
+        frames=1000,
         gpu_sections={
             "graphics": {
-                "sample_count": 240,
+                "sample_count": 1000,
                 "avg_ms": 0.2,
                 "p95_ms": 0.3,
                 "p99_ms": 0.35,
@@ -354,11 +355,61 @@ def test_native_window_capture_is_explicit_and_keeps_cpu_gpu_sections():
     )
 
     window = recorder.snapshot()["performance_windows"][0]
-    assert waited == [240]
+    assert waited == [1000]
     assert native.begin_calls == 1
     assert native.read_calls == 1
     assert window["cpu_sections"]["frame"]["p99_ms"] == pytest.approx(0.8)
     assert window["gpu_sections"]["graphics"]["p95_ms"] == pytest.approx(0.3)
+
+
+@pytest.fixture
+def timing_engine(engine):
+    from Infernux.renderstack.render_stack_pipeline import RenderStackPipeline
+
+    pipeline = RenderStackPipeline()
+    idle_fps, cap = engine.get_editor_idle_fps(), engine.get_editor_fps_cap()
+    engine.set_render_pipeline(pipeline)
+    engine.set_editor_idle_fps(0.0)
+    engine.set_editor_fps_cap(0.0)
+    try:
+        yield engine
+    finally:
+        engine.set_render_pipeline(None)
+        pipeline.dispose()
+        engine.set_editor_idle_fps(idle_fps)
+        engine.set_editor_fps_cap(cap)
+
+
+def test_native_performance_window_captures_requested_frames_and_then_freezes(timing_engine, scene):
+    engine = timing_engine
+    first = engine.begin_renderer_performance_window(257)
+    empty = engine.get_renderer_performance_window()
+    assert empty["active"] is True
+    assert empty["sample_count"] == 0
+    assert empty["target_sample_count"] == 257
+    for _ in range(257):
+        engine.tick(1.0 / 60.0)
+    completed = engine.get_renderer_performance_window()
+    assert completed["active"] is False
+    assert completed["sample_count"] == 257
+    assert completed["first_frame"] == first
+    assert completed["last_frame"] == first + 256
+    assert completed["dropped_sample_count"] == 0
+    for metric in completed["timings"].values():
+        assert metric["sample_count"] == 257
+        assert 0.0 <= metric["p50_ms"] <= metric["p95_ms"] <= metric["p99_ms"] <= metric["max_ms"]
+    engine.tick(1.0 / 60.0)
+    assert engine.get_renderer_performance_window() == completed
+    for invalid in (0, 65537):
+        with pytest.raises(ValueError, match="between 1 and 65536"):
+            engine.begin_renderer_performance_window(invalid)
+        assert engine.get_renderer_performance_window() == completed
+    next_first = engine.begin_renderer_performance_window(1)
+    engine.tick(1.0 / 60.0)
+    restarted = engine.get_renderer_performance_window()
+    assert restarted["sample_count"] == 1
+    assert restarted["first_frame"] == restarted["last_frame"] == next_first
+    assert restarted["active"] is False
 
 
 def test_live_diagnostics_reads_existing_sources_without_starting_a_window():

@@ -122,7 +122,7 @@ def test_runtime_performance_operations_reuse_native_window(monkeypatch):
     events = []
     snapshot = {"sample_count": 17, "timings": {"frame": {"p95_ms": 4.5}}}
     native = SimpleNamespace(
-        begin_renderer_performance_window=lambda: events.append("begin") or 42,
+        begin_renderer_performance_window=lambda count: events.append(("begin", count)) or 42,
         get_renderer_performance_window=lambda: events.append("get") or snapshot,
         resident_mesh_vertex_buffer_count=3,
         pending_mesh_gpu_upload_count=1,
@@ -147,7 +147,9 @@ def test_runtime_performance_operations_reuse_native_window(monkeypatch):
     }
     assert query.handler() == expected
     assert query.handler() == expected
-    assert events == ["begin", "get", "get"]
+    assert events == [("begin", 240), "get", "get"]
+    assert operations["infernux.runtime.performance.begin"].handler(12000) == {"first_frame": 42}
+    assert events[-1] == ("begin", 12000)
     assert not query.schema.side_effects
 
 
