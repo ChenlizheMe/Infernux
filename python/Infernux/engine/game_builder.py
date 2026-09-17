@@ -391,6 +391,7 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
         enable_jit: bool = False,
         allow_python_jit_fallback: bool = False,
         player_runtime_root: str = "",
+        build_scenes: Optional[List[str]] = None,
     ):
         self.project_path = resolved_path(project_path)
         self.project_name = game_name.strip() if game_name.strip() else os.path.basename(self.project_path)
@@ -419,6 +420,13 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
         self._runtime_type_records: list[dict[str, object]] = []
         self._build_output_transaction: dict[str, str] | None = None
         self._asset_index_entries_snapshot: list[dict] | None = None
+        self._build_scenes_snapshot = copy.deepcopy(build_scenes)
+
+    def _build_scenes(self) -> list[str]:
+        """Use one ordered scene selection throughout this build transaction."""
+        if self._build_scenes_snapshot is None:
+            self._build_scenes_snapshot = load_build_settings(self.project_path)["scenes"]
+        return self._build_scenes_snapshot
 
     def _player_inxpack_profile(self) -> str:
         """Return the compression profile for this concrete Player build."""
@@ -863,14 +871,12 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
         bs = os.path.join(
             self.project_path, "ProjectSettings", "BuildSettings.json"
         )
-        if not os.path.isfile(bs):
+        if self._build_scenes_snapshot is None and not os.path.isfile(bs):
             raise FileNotFoundError(
                 "BuildSettings.json not found. "
                 "Open Build Settings in the editor and add at least one scene."
             )
-        with open(bs, "r", encoding="utf-8", errors="replace") as f:
-            data = json.load(f)
-        scenes = data.get("scenes", [])
+        scenes = self._build_scenes()
         if type(scenes) is not list or not scenes:
             raise ValueError(
                 "Build list is empty. Add at least one scene in Build Settings."
@@ -1974,7 +1980,7 @@ finally:
             path_key(self._library_source_entry_path(entry))
             for entry in entries
         }
-        for configured_scene in load_build_settings(self.project_path)["scenes"]:
+        for configured_scene in self._build_scenes():
             scene_path = self._resolve_build_scene_path(configured_scene)
             if path_key(scene_path) not in indexed_source_paths:
                 raise RuntimeError(
@@ -2308,14 +2314,8 @@ finally:
             _write_json_atomic(index_path, payload)
 
     def _collect_reachable_particle_artifacts(self) -> list[dict[str, str]]:
-        settings_path = os.path.join(
-            self.project_path, "ProjectSettings", "BuildSettings.json"
-        )
-        with open(settings_path, "r", encoding="utf-8", errors="replace") as stream:
-            settings = json.load(stream)
-
         references: set[tuple[str, str]] = set()
-        for configured_scene in settings.get("scenes", ()):
+        for configured_scene in self._build_scenes():
             scene_path = self._resolve_build_scene_path(configured_scene)
             try:
                 with open(scene_path, "r", encoding="utf-8") as stream:
@@ -4616,14 +4616,8 @@ finally:
         bs = os.path.join(
             final_dir, "Data", "ProjectSettings", "BuildSettings.json"
         )
-        if not os.path.isfile(bs):
-            return
-        with open(bs, "r", encoding="utf-8", errors="replace") as f:
-            data = json.load(f)
-
-        scenes = data.get("scenes", [])
         rel_scenes = []
-        for scene_path in scenes:
+        for scene_path in self._build_scenes():
             absolute = self._resolve_build_scene_path(scene_path)
             rel = relative_path(absolute, self.project_path)
             rel_scenes.append(portable_path(rel))

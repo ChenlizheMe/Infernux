@@ -1323,6 +1323,34 @@ def test_rewrite_build_settings_keeps_project_relative_scene_identity(tmp_path):
     assert rewritten["scenes"] == ["Assets/Main.scene"]
 
 
+def test_requested_build_scenes_override_disk_and_remain_a_snapshot(tmp_path):
+    project = _make_project(tmp_path)
+    selected = ["Assets/Requested.scene", "Assets/Main.scene"]
+    builder = GameBuilder(str(project), str(tmp_path / "output"), build_scenes=selected)
+    selected.clear()
+    final = tmp_path / "dist"
+    settings = final / "Data/ProjectSettings/BuildSettings.json"
+    settings.parent.mkdir(parents=True)
+    settings.write_text('{"scenes":["Assets/Main.scene"]}', encoding="utf-8")
+    builder._relativize_scenes(str(final))
+    assert json.loads(settings.read_text(encoding="utf-8")) == {
+        "scenes": ["Assets/Requested.scene", "Assets/Main.scene"],
+    }
+    assert json.loads((project / "ProjectSettings/BuildSettings.json").read_text(encoding="utf-8")) == {
+        "scenes": ["Assets/Main.scene"],
+    }
+
+
+def test_requested_build_scenes_are_validated_instead_of_project_defaults(tmp_path):
+    project = _make_project(tmp_path)
+    builder = GameBuilder(str(project), str(tmp_path / "output"), build_scenes=["Assets/Missing.scene"])
+    with pytest.raises(FileNotFoundError, match="Missing.scene"):
+        builder._validate()
+    builder = GameBuilder(str(project), str(tmp_path / "output"), build_scenes=[])
+    with pytest.raises(ValueError, match="Build list is empty"):
+        builder._validate()
+
+
 def test_rewrite_build_settings_strips_authoring_only_fields(tmp_path):
     project_root = _make_project(tmp_path)
     settings_path = project_root / "ProjectSettings" / "BuildSettings.json"

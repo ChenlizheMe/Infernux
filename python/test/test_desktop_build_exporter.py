@@ -118,6 +118,7 @@ def test_host_exporter_routes_settings_catalog_progress_and_cancellation(
         tmp_path,
         build_settings={
             "game_name": "Balance040",
+            "scenes": ["Assets/Requested.scene"],
             "display_mode": "windowed",
             "window_width": 960,
             "window_height": 540,
@@ -136,6 +137,7 @@ def test_host_exporter_routes_settings_catalog_progress_and_cancellation(
     assert result.success
     assert result.artifacts[0].kind == "player-directory"
     assert captured["kwargs"]["game_name"] == "Balance040"
+    assert captured["kwargs"]["build_scenes"] == ["Assets/Requested.scene"]
     assert captured["kwargs"]["display_mode"] == "windowed"
     assert captured["kwargs"]["debug_mode"] is False
     assert captured["entries"] == [{"guid": "a" * 32}]

@@ -1,4 +1,4 @@
-from Infernux.engine.player_package_audit import _is_format_marker_group
+from Infernux.engine.player_package_audit import _is_format_marker_group, _is_runtime_license_group
 
 
 def test_package_local_format_markers_can_repeat():
@@ -20,3 +20,23 @@ def test_real_payload_duplicates_are_not_format_markers():
         "Content.inxpkg::Library/Compute/a/one/__version__",
         "Content.inxpkg::Assets/copied.txt",
     ])
+
+
+def test_runtime_preserves_repeated_dependency_licenses():
+    assert _is_runtime_license_group([
+        "Game_Data/Runtime.inxrt::numpy/_licenses/numpy-2.5.2/licenses/numpy/ma/LICENSE",
+        "Game_Data/Runtime.inxrt::numpy/ma/LICENSE",
+    ])
+    assert _is_runtime_license_group([
+        "Game_Data/Runtime.inxrt::numpy/random/LICENSE.md",
+        "Game_Data/Parallel.inxmod::dependency/LICENSE.md",
+    ])
+
+
+def test_runtime_license_exception_does_not_hide_code_or_game_assets():
+    for other in (
+        "Runtime.inxrt::numpy/copied.dll", "Runtime.inxrt::numpy/LICENSE.py",
+        "Content.inxpkg::Assets/LICENSE", "loose/LICENSE",
+    ):
+        assert not _is_runtime_license_group(["Runtime.inxrt::numpy/ma/LICENSE", other])
+    assert not _is_runtime_license_group([])

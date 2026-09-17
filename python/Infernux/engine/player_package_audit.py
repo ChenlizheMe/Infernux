@@ -188,6 +188,20 @@ def _is_format_marker_group(paths) -> bool:
     )
 
 
+def _is_runtime_license_group(paths) -> bool:
+    """Dependencies retain their own legal notices even when the text repeats."""
+    for path in paths:
+        archive, separator, entry = path.partition("::")
+        if not separator or Path(archive).suffix.casefold() not in {".inxrt", ".inxmod"}:
+            return False
+        if Path(entry).name.casefold() not in {
+            "license", "license.txt", "license.md", "copying", "copying.txt",
+            "notice", "notice.txt", "notice.md",
+        }:
+            return False
+    return bool(paths)
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as source:
@@ -794,6 +808,7 @@ def audit_player_package(
         if len(paths) > 1
         and not _is_required_bootstrap_duplicate(paths)
         and not _is_format_marker_group(paths)
+        and not _is_runtime_license_group(paths)
         and not _is_linux_soname_alias_group(paths)
         and not _is_logically_distinct_asset_payload(paths, data_relative)
     )

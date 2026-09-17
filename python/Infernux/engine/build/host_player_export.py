@@ -187,6 +187,7 @@ def execute_host_player_build(
         lto=bool(settings["lto"]),
         enable_jit=HOST_PLAYER_CAPABILITIES.numba,
         player_runtime_root=player_runtime_root,
+        build_scenes=list(settings["scenes"]),
     )
     builder.freeze_asset_index_entries(catalog_entries)
     builder._validate_output_directory()
