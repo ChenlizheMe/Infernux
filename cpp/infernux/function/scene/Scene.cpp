@@ -1225,6 +1225,20 @@ GameObject *Scene::InstantiateGameObject(GameObject *source, GameObject *parent,
     if (!clone)
         return nullptr;
 
+    // A copied child is an added object, not another instance of the same
+    // source node. Whole prefab instances (including nested roots) keep links.
+    if (!source->IsPrefabRoot() && (source->IsPrefabInstance() || source->GetPrefabSourceID() != 0)) {
+        const auto clearSource = [&](auto &&self, GameObject *object) -> void {
+            if (object->IsPrefabRoot())
+                return;
+            object->SetPrefabGuid("");
+            object->SetPrefabSourceID(0);
+            for (const auto &child : object->GetChildren())
+                self(self, child.get());
+        };
+        clearSource(clearSource, clone.get());
+    }
+
     // Unity: cloned root object gets " (Clone)" suffix
     clone->SetName(source->GetName() + " (Clone)");
 

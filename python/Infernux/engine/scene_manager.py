@@ -203,8 +203,10 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         self.is_prefab_mode = False
         self.prefab_mode_path = None
         self.prefab_envelope = {}
+        self._prefab_entry_document = None
         self._previous_scene_path = None
         self._previous_scene_document = None
+        self._previous_scene = None
         self._replace_scene_document(
             kind="scene",
             resource_path="",

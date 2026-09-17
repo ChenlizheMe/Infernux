@@ -28,7 +28,6 @@ from Infernux.engine.path_utils import resolved_path, safe_path as _safe_path
 from .scene_manager import (
     DEFAULT_SCENE_NAME,
     PREFAB_MODE_SCENE_NAME,
-    PREFAB_RESTORE_SCENE_NAME,
     _empty_scene_document,
     _get_scene_root_objects,
 )
@@ -51,6 +50,7 @@ class ScenePrefabMixin:
             deserialize_scene_document_transactionally,
             instantiate_prepared_game_object_document,
             preflight_game_object_python_components,
+            serialize_game_object_document_authoritatively,
         )
         from Infernux.engine.prefab_manager import (
             _read_prefab_document,
@@ -84,14 +84,20 @@ class ScenePrefabMixin:
             return False
 
         self._previous_scene_document = active_scene.serialize_document()
+        self._previous_scene = active_scene
+        self._previous_scene_document["objects"] = [
+            serialize_game_object_document_authoritatively(obj)
+            for obj in _get_scene_root_objects(active_scene)
+        ]
         self._previous_scene_path = self._current_scene_path
         self._previous_scene_document_id = self._scene_document_id
         self.prefab_envelope = prefab_data
+        self._prefab_entry_document = copy.deepcopy(prefab_data)
 
         # Clear the RenderStack singleton before the swap — matches the
         # pattern in _do_open_scene / _do_new_scene to avoid stale refs.
         from Infernux.renderstack.render_stack import RenderStack
-        RenderStack.clear_active_instance(scene)
+        RenderStack.clear_active_instance(active_scene)
 
         self._prepare_native_scene_swap()
 
@@ -275,11 +281,10 @@ class ScenePrefabMixin:
         # Clear the RenderStack singleton before the swap — matches the
         # pattern in _do_open_scene / _do_new_scene to avoid stale refs.
         from Infernux.renderstack.render_stack import RenderStack
-        RenderStack.clear_active_instance(scene)
+        sm = SceneManager.instance()
+        RenderStack.clear_active_instance(sm.get_active_scene())
 
         self._prepare_native_scene_swap()
-
-        sm = SceneManager.instance()
 
         # Destroy all objects in the prefab scene FIRST so their physics
         # bodies (Colliders, Rigidbodies) are removed from the global
@@ -295,10 +300,13 @@ class ScenePrefabMixin:
                 Debug.log_error("Cannot exit Prefab Mode: failed to clear prefab scene.")
                 return False
 
-        scene = sm.get_scene(PREFAB_RESTORE_SCENE_NAME)
-        if scene is None:
-            scene = sm.create_scene(PREFAB_RESTORE_SCENE_NAME)
+        # Keep the native Scene bound to the existing editor document. Creating
+        # a replacement Scene leaves additive/save routing pointing at the
+        # emptied original Scene even when the viewport looks restored.
+        scene = self._previous_scene
         sm.set_active_scene(scene)
+        if prefab_scene is not None:
+            sm.unload_scene(prefab_scene)
 
         if self._previous_scene_document:
             if not deserialize_scene_document_transactionally(
@@ -311,19 +319,32 @@ class ScenePrefabMixin:
                 return False
         elif not deserialize_scene_document_transactionally(
             scene,
-            _empty_scene_document(PREFAB_RESTORE_SCENE_NAME),
+            _empty_scene_document(scene.name),
             asset_database=self._asset_database,
             clear_registries=True,
         ):
             Debug.log_error("Cannot exit Prefab Mode: failed to initialize restore scene.")
             return False
 
-        # Refresh instances of the edited prefab so changes propagate
+        # Merge the saved source delta onto each restored instance. Rebuilding
+        # from the asset would discard scene overrides and change reference IDs.
+        instances_changed = False
         if saved_prefab_guid:
-            self._refresh_prefab_instances(
-                scene, saved_prefab_guid, self.prefab_mode_path,
-                self._asset_database
+            from Infernux.engine.prefab_manager import _read_prefab_document
+            from Infernux.engine.prefab_overrides import (
+                _snapshot_linked_instances, _propagate_applied_prefab,
             )
+            base_root = self._prefab_entry_document["root_object"]
+            updated_root = _read_prefab_document(self.prefab_mode_path)["root_object"]
+            if base_root != updated_root:
+                snapshots = _snapshot_linked_instances(
+                    scene, saved_prefab_guid, base_root=base_root,
+                )
+                instances_changed = bool(snapshots)
+                if not _propagate_applied_prefab(
+                    base_root, updated_root, snapshots, saved_prefab_guid, self._asset_database,
+                ):
+                    return False
 
         from Infernux.engine.interaction import DocumentRegistry
 
@@ -346,8 +367,12 @@ class ScenePrefabMixin:
                 ),
                 dirty=False,
             )
+        if instances_changed:
+            registry.mark_changed(self._scene_document_id)
         self.prefab_envelope = {}
+        self._prefab_entry_document = None
         self._previous_scene_document = None
+        self._previous_scene = None
         self._previous_scene_document_id = ""
         self._previous_scene_path = None
         prefab_document = registry.get(prefab_document_id)

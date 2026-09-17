@@ -480,7 +480,7 @@ def test_prefab_save_is_strict_typed_and_atomic(scene, tmp_path):
     assert save_prefab(root, str(path), source_canvas_name="HUD") is True
 
     envelope = json.loads(path.read_text(encoding="utf-8"))
-    assert set(envelope) == {"root_object", "source_canvas_name"}
+    assert set(envelope) == {"root_object", "source_canvas_name", "next_local_id"}
     assert envelope["source_canvas_name"] == "HUD"
     _assert_runtime_ids_removed(envelope["root_object"])
     assert list(path.parent.glob("typed.prefab.tmp.*")) == []

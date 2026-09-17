@@ -61,19 +61,39 @@ def _validate_game_object_document(
 def _validate_prefab_document(document: dict, file_path: str = "<memory>") -> None:
     if not isinstance(document, dict):
         raise PrefabDocumentError(f"Prefab '{file_path}' must contain an object")
-    allowed = {"root_object", "source_canvas_name"}
+    allowed = {"root_object", "source_canvas_name", "next_local_id"}
     required = {"root_object"}
     if not required.issubset(document) or not set(document).issubset(allowed):
         raise PrefabDocumentError(f"Prefab '{file_path}' has missing or unknown envelope fields")
     if "source_canvas_name" in document and not isinstance(document["source_canvas_name"], str):
         raise PrefabDocumentError(f"Prefab '{file_path}' source_canvas_name must be a string")
-    _validate_game_object_document(document["root_object"])
+    local_ids = set()
+    _validate_game_object_document(document["root_object"], local_ids=local_ids)
+    if "next_local_id" in document:
+        next_id = document["next_local_id"]
+        if type(next_id) is not int or next_id <= max(local_ids):
+            raise PrefabDocumentError(f"Prefab '{file_path}' next_local_id must exceed every source node ID")
+
+
+def _prefab_next_local_id(document):
+    """Older assets acquire an allocator watermark at their next authored save."""
+    if "next_local_id" in document:
+        return document["next_local_id"]
+
+    highest = 0
+    pending = [document["root_object"]]
+    while pending:
+        node = pending.pop()
+        highest = max(highest, node["local_id"])
+        pending.extend(node["children"])
+    return highest + 1
 
 
 def _read_prefab_document(file_path: str) -> dict:
     with open(file_path, "r", encoding="utf-8") as file:
         document = json.load(file)
     _validate_prefab_document(document, file_path)
+    document["next_local_id"] = _prefab_next_local_id(document)
     return document
 
 
@@ -135,7 +155,14 @@ def _get_cached_prefab_template(file_path: str, resolved_guid: str):
     return template_payload
 
 
-def _strip_prefab_runtime_fields(obj_data: dict):
+def _strip_prefab_runtime_fields(obj_data: dict, *, next_local_id=1, instance_snapshot=False,
+                                 object_id_map=None):
+    """Localize a graph; negative IDs exist only in private instance merge snapshots.
+
+    A negative scene ID identifies an added node or an external scene reference,
+    never a source node. It is resolved back to a scene ID before preflight and
+    is never written into a prefab asset.
+    """
     if not isinstance(obj_data, dict):
         raise PrefabDocumentError("root_object must be an object")
 
@@ -160,13 +187,16 @@ def _strip_prefab_runtime_fields(obj_data: dict):
         linked_ids = [value for value in source_ids if value]
         if len(linked_ids) != len(set(linked_ids)):
             raise PrefabDocumentError("ObjectGraph contains duplicate prefab source identities")
-        next_local_id = max(linked_ids, default=0) + 1
+        next_local_id = max(next_local_id, max(linked_ids, default=0) + 1)
         for node, location in nodes:
-            local_id = node.get("prefab_source_id", 0)
-            if not local_id:
-                local_id = next_local_id
-                next_local_id += 1
             runtime_id = node["id"]
+            local_id = object_id_map.get(runtime_id, 0) if object_id_map is not None else node.get("prefab_source_id", 0)
+            if not local_id:
+                if instance_snapshot:
+                    local_id = -runtime_id
+                else:
+                    local_id = next_local_id
+                    next_local_id += 1
             if type(runtime_id) is not int or runtime_id <= 0 or runtime_id in runtime_to_local:
                 raise PrefabDocumentError(f"{location}.id must be a unique positive integer")
             runtime_to_local[runtime_id] = local_id
@@ -188,6 +218,8 @@ def _strip_prefab_runtime_fields(obj_data: dict):
             if target_id == 0 or runtime_to_local is None:
                 return dict(value)
             if target_id not in runtime_to_local:
+                if instance_snapshot:
+                    return {**value, "object_id": -target_id}
                 raise PrefabDocumentError(f"{path}: prefab cannot reference GameObject {target_id} outside its subtree")
             remapped = dict(value)
             remapped["object_id"] = runtime_to_local[target_id]
@@ -197,6 +229,8 @@ def _strip_prefab_runtime_fields(obj_data: dict):
             if target_id == 0 or runtime_to_local is None:
                 return copy.deepcopy(value)
             if target_id not in runtime_to_local:
+                if instance_snapshot:
+                    return {**value, "game_object_id": -target_id}
                 raise PrefabDocumentError(f"{path}: prefab cannot reference component outside its subtree")
             remapped = dict(value)
             remapped["game_object_id"] = runtime_to_local[target_id]
@@ -221,6 +255,7 @@ def _strip_prefab_runtime_fields(obj_data: dict):
                 component["data"],
                 f"{location}.components[{index}].data",
             )
+    return runtime_to_local, next_local_id
 
 
 def read_prefab_source_canvas(file_path: str = None, guid: str = None,
@@ -242,6 +277,7 @@ def serialize_prefab_document(
     *,
     source_canvas_name: str = "",
     root_document_template: dict = None,
+    next_local_id: int = 1,
 ) -> dict:
     """Capture the exact strict prefab document owned by a GameObject tree."""
     if game_object is None:
@@ -252,6 +288,16 @@ def serialize_prefab_document(
     )
 
     go_data = serialize_game_object_document_authoritatively(game_object)
+    return _serialize_prefab_snapshot(
+        go_data, source_canvas_name=source_canvas_name,
+        root_document_template=root_document_template, next_local_id=next_local_id,
+    )[0]
+
+
+def _serialize_prefab_snapshot(go_data, *, source_canvas_name="", root_document_template=None,
+                               next_local_id=1):
+    """Capture asset content and its scene-to-source projection from one snapshot."""
+    go_data = copy.deepcopy(go_data)
     if not isinstance(go_data, dict):
         raise TypeError("GameObject.serialize_document() did not return a dict")
     if isinstance(root_document_template, dict):
@@ -266,16 +312,17 @@ def serialize_prefab_document(
                     root_transform[key] = copy.deepcopy(template_transform[key])
 
     # Strip linkage and convert runtime IDs/references to prefab-local IDs.
-    _strip_prefab_runtime_fields(go_data)
+    object_ids, next_local_id = _strip_prefab_runtime_fields(go_data, next_local_id=next_local_id)
     _strip_prefab_fields(go_data)
 
     prefab_data = {
         "root_object": go_data,
+        "next_local_id": next_local_id,
     }
     if source_canvas_name:
         prefab_data["source_canvas_name"] = source_canvas_name
     _validate_prefab_document(prefab_data)
-    return prefab_data
+    return prefab_data, object_ids
 
 
 def save_prefab_document(prefab_data: dict, file_path: str, asset_database=None) -> bool:
@@ -292,7 +339,8 @@ def save_prefab_document(prefab_data: dict, file_path: str, asset_database=None)
     try:
         os.makedirs(os.path.dirname(resolved_path(file_path)), exist_ok=True)
         from Infernux.core.document_store import DocumentStore
-        content = json.dumps(prefab_data, indent=2, ensure_ascii=False)
+        payload = {**prefab_data, "next_local_id": _prefab_next_local_id(prefab_data)}
+        content = json.dumps(payload, indent=2, ensure_ascii=False)
         DocumentStore.instance().write_and_wait(file_path, content)
     except (OSError, RuntimeError) as exc:
         Debug.log_error(f"Failed to write prefab file: {exc}")
@@ -319,11 +367,14 @@ def save_prefab_document(prefab_data: dict, file_path: str, asset_database=None)
 def save_prefab(game_object, file_path: str, asset_database=None,
                source_canvas_name: str = "", root_document_template: dict = None) -> bool:
     """Serialize and durably publish a GameObject hierarchy as a prefab."""
+    if not file_path.lower().endswith(PREFAB_EXTENSION):
+        file_path += PREFAB_EXTENSION
     try:
         prefab_data = serialize_prefab_document(
             game_object,
             source_canvas_name=source_canvas_name,
             root_document_template=root_document_template,
+            next_local_id=_prefab_next_local_id(_read_prefab_document(file_path)) if os.path.isfile(file_path) else 1,
         )
     except Exception as exc:
         Debug.log_error(f"Failed to serialize GameObject for prefab: {exc}")
@@ -394,14 +445,18 @@ def instantiate_prefab(file_path: str = None, guid: str = None,
     return new_obj
 
 
-def _stamp_prefab_guid(obj_data: dict, guid: str, is_root: bool = True):
+def _stamp_prefab_guid(obj_data: dict, guid: str, is_root: bool = True, *, source_ids=None):
     """Recursively stamp prefab_guid (and prefab_root on root) into JSON data."""
     obj_data["prefab_guid"] = guid
-    obj_data["prefab_source_id"] = obj_data["local_id"]
+    local_id = obj_data["local_id"]
+    if source_ids is None or local_id in source_ids:
+        obj_data["prefab_source_id"] = local_id
+    else:
+        obj_data.pop("prefab_source_id", None)
     if is_root:
         obj_data["prefab_root"] = True
     for child in obj_data.get("children", []):
-        _stamp_prefab_guid(child, guid, is_root=False)
+        _stamp_prefab_guid(child, guid, is_root=False, source_ids=source_ids)
 
 
 def _link_created_prefab_source(game_object, file_path: str, asset_database) -> bool:

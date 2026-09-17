@@ -102,33 +102,34 @@ def apply_overrides_to_prefab(instance_obj, prefab_path: str,
     """
     instance_obj = resolve_prefab_instance_root(instance_obj) or instance_obj
     try:
-        from Infernux.engine.prefab_manager import _read_prefab_document, save_prefab
+        from Infernux.engine.prefab_manager import (
+            _read_prefab_document, _serialize_prefab_snapshot, save_prefab_document,
+        )
         prefab_file = _read_prefab_document(prefab_path)
     except (OSError, ValueError) as exc:
         Debug.log_error(f"Failed to read prefab for apply: {exc}")
         return False
 
     prefab_guid = getattr(instance_obj, "prefab_guid", "") or ""
-    instance_snapshots = _snapshot_linked_instances(instance_obj, prefab_guid)
-
-    if not save_prefab(
-        instance_obj,
-        prefab_path,
-        asset_database=asset_database,
+    runtime_document = _serialize_obj(instance_obj)
+    updated_document, source_ids = _serialize_prefab_snapshot(
+        runtime_document,
         source_canvas_name=prefab_file.get("source_canvas_name", ""),
         root_document_template=prefab_file["root_object"],
-    ):
-        return False
+        next_local_id=prefab_file["next_local_id"],
+    )
+    instance_snapshots = _snapshot_linked_instances(
+        instance_obj.scene, prefab_guid, instance_root=instance_obj,
+        source_document=runtime_document, source_ids=source_ids,
+        base_root=prefab_file["root_object"],
+    )
 
-    try:
-        updated_prefab_root = _read_prefab_document(prefab_path)["root_object"]
-    except (OSError, ValueError) as exc:
-        Debug.log_error(f"Failed to read applied prefab: {exc}")
+    if not save_prefab_document(updated_document, prefab_path, asset_database=asset_database):
         return False
 
     if not _propagate_applied_prefab(
         prefab_file["root_object"],
-        updated_prefab_root,
+        updated_document["root_object"],
         instance_snapshots,
         prefab_guid,
         asset_database,
@@ -392,7 +393,7 @@ def _object_nodes(root):
         yield from _object_nodes(child)
 
 
-def _project_prefab_document(source, current):
+def _project_prefab_document(source, current, *, object_id_map=None):
     """Resolve source identities to scene identities before ObjectGraph preflight.
 
     Unchanged nodes/components retain IDs; new records reserve IDs from the
@@ -402,8 +403,10 @@ def _project_prefab_document(source, current):
     from Infernux.lib import GameObject
     from Infernux.engine.component_restore import _remap_local_reference_document
 
-    runtime_to_local = {0: 0}
-    _match_object_ids(current, source, runtime_to_local)
+    runtime_to_local = object_id_map
+    if runtime_to_local is None:
+        runtime_to_local = {0: 0}
+        _match_object_ids(current, source, runtime_to_local)
     current_by_local = {
         runtime_to_local[node["id"]]: node for node in _object_nodes(current)
         if node["id"] in runtime_to_local
@@ -435,17 +438,30 @@ def _project_prefab_document(source, current):
         local_to_runtime[node["local_id"]] = object_id
     for component, component_id in zip(new_components, component_ids, strict=True):
         component["component_id"] = component_id
+
+    def map_scene_references(value):
+        if isinstance(value, dict):
+            key = _REFERENCE_ID_KEYS.get(value.get(TYPE_KEY))
+            if key and value[key] < 0:
+                local_to_runtime.setdefault(value[key], -value[key])
+            for child in value.values():
+                map_scene_references(child)
+        elif isinstance(value, list):
+            for child in value:
+                map_scene_references(child)
+
     for node in _object_nodes(result):
         node.pop("local_id")
         for component in node["components"]:
+            map_scene_references(component["data"])
             component["data"] = _remap_local_reference_document(component["data"], local_to_runtime, "prefab")
     return result
 
 
-def _snapshot_linked_instances(instance_root, prefab_guid: str):
-    """Capture every live root linked to the prefab before Apply writes it."""
-    scene = getattr(instance_root, "scene", None)
-    if scene is None or not prefab_guid:
+def _snapshot_linked_instances(scene, prefab_guid: str, *, base_root,
+                               instance_root=None, source_document=None, source_ids=None):
+    """Capture linked roots for Apply or a saved Prefab Mode document change."""
+    if scene is None:
         return []
 
     from Infernux.engine.prefab_manager import (
@@ -454,20 +470,26 @@ def _snapshot_linked_instances(instance_root, prefab_guid: str):
     )
 
     snapshots = []
-    for obj in scene.get_all_objects():
-        if (getattr(obj, "prefab_guid", "") or "") != prefab_guid:
-            continue
-        if not bool(getattr(obj, "prefab_root", False)):
-            continue
-        runtime_document = _serialize_obj(obj)
+    instances = [obj for obj in scene.get_all_objects() if prefab_guid
+                 and obj.prefab_guid == prefab_guid and obj.prefab_root]
+    if instance_root is not None and instance_root not in instances:
+        instances.append(instance_root)
+    for obj in instances:
+        runtime_document = source_document if obj is instance_root else _serialize_obj(obj)
         if runtime_document is None:
             raise RuntimeError(
                 f"Failed to snapshot linked prefab instance '{getattr(obj, 'name', '')}'"
             )
         local_document = copy.deepcopy(runtime_document)
-        _strip_prefab_runtime_fields(local_document)
+        ids = source_ids if obj is instance_root else None
+        if ids is None and not runtime_document.get("prefab_source_id"):
+            ids = {}
+            _match_object_ids(runtime_document, base_root, ids)
+        object_ids, _ = _strip_prefab_runtime_fields(
+            local_document, instance_snapshot=True, object_id_map=ids,
+        )
         _strip_prefab_fields(local_document)
-        snapshots.append((obj, runtime_document, local_document))
+        snapshots.append((obj, runtime_document, local_document, object_ids))
     return snapshots
 
 
@@ -570,9 +592,10 @@ def _propagate_applied_prefab(base_root: dict, updated_root: dict, snapshots,
 
     prepared_updates = []
     try:
-        for obj, runtime_document, local_document in snapshots:
+        source_ids = {node["local_id"] for node in _object_nodes(updated_root)}
+        for obj, runtime_document, local_document, object_ids in snapshots:
             merged = _three_way_merge_prefab(base_root, local_document, updated_root, node_kind="object")
-            _stamp_prefab_guid(merged, prefab_guid, is_root=True)
+            _stamp_prefab_guid(merged, prefab_guid, is_root=True, source_ids=source_ids)
 
             for key in _ROOT_INSTANCE_KEYS:
                 if key in runtime_document:
@@ -584,7 +607,7 @@ def _propagate_applied_prefab(base_root: dict, updated_root: dict, snapshots,
                     if key in runtime_transform:
                         merged_transform[key] = copy.deepcopy(runtime_transform[key])
 
-            merged = _project_prefab_document(merged, runtime_document)
+            merged = _project_prefab_document(merged, runtime_document, object_id_map=object_ids)
             prepared = preflight_game_object_python_components(
                 merged,
                 asset_database,
