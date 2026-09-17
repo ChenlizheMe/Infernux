@@ -18,6 +18,7 @@ class PreferencesCommandService:
     def __init__(self) -> None:
         self._shortcut_profiles = None
         self._shortcut_router = None
+        self._published_shortcut_ids: list[str] = []
         PreferencesCommandService._instance = self
 
     @classmethod
@@ -25,6 +26,7 @@ class PreferencesCommandService:
         return cls._instance
 
     def shutdown(self) -> None:
+        self._remove_published_shortcuts()
         self._shortcut_profiles = None
         self._shortcut_router = None
         if PreferencesCommandService._instance is self:
@@ -74,6 +76,7 @@ class PreferencesCommandService:
             model = ShortcutProfileModel(defaults, save=save)
             save(model.to_json_data())
 
+        self._remove_published_shortcuts()
         self._shortcut_profiles = model
         self._shortcut_router = router
         self._publish_effective_shortcuts()
@@ -303,9 +306,16 @@ class PreferencesCommandService:
         router = self._shortcut_router
         if model is None or router is None:
             return
-        router.clear()
+        self._remove_published_shortcuts()
         for binding in model.effective_bindings():
-            router.register(binding)
+            router.register(binding, replace=True)
+            self._published_shortcut_ids.append(binding.binding_id)
+
+    def _remove_published_shortcuts(self) -> None:
+        if self._shortcut_router is not None:
+            for binding_id in self._published_shortcut_ids:
+                self._shortcut_router.unregister(binding_id)
+        self._published_shortcut_ids.clear()
 
     def _require_shortcut_profiles(self):
         if self._shortcut_profiles is None:

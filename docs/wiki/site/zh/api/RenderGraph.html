@@ -354,8 +354,8 @@
 </thead>
 <tbody>
 <tr>
-<td><code>RenderGraph.__init__(name: str = ...) → None</code></td>
-<td></td>
+<td><code>RenderGraph.__init__(name: str = ..., *, output_samples: int = 0) → None</code></td>
+<td>固定 Camera 目标提供输出采样配置；0 表示由管线决定屏幕采样。</td>
 </tr>
 </tbody>
 </table>
@@ -449,8 +449,20 @@
 </thead>
 <tbody>
 <tr>
-<td><code>set_msaa_samples(samples: int) → None</code></td>
-<td>Set the MSAA sample count for all render targets.</td>
+<td><code>set_msaa_samples(samples: int) → int</code></td>
+<td>设置屏幕采样偏好并返回实际采样数；附件及 Resolve 拓扑使用该返回值。</td>
+</tr>
+<tr>
+<td><code>import_texture(name: str, texture: RenderTexture, *, attachment: str = "color") → TextureHandle</code></td>
+<td>导入持久颜色、深度或 Resolve 附件，不转移资源所有权。</td>
+</tr>
+<tr>
+<td><code>create_temporal_history(name: str, *, format: Format = ..., size: tuple[int, int] \| None = None, size_divisor: int = 0) → tuple[TextureHandle, TextureHandle]</code></td>
+<td>创建每个 View 独立的历史读写 Handle；失效后的首次读取为零。</td>
+</tr>
+<tr>
+<td><code>set_temporal_jitter(enabled: bool = True) → None</code></td>
+<td>独立请求相机抖动；历史分配本身不启用抖动。</td>
 </tr>
 <tr>
 <td><code>create_texture(name: str, format: Format = ..., camera_target: bool = ..., size: Optional[Tuple[int, int]] = ..., size_divisor: int = ..., samples: Optional[int] = ...) → TextureHandle</code></td>

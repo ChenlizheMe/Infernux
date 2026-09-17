@@ -76,6 +76,7 @@ def test_lowercase_namespace_lazily_forwards_subsystems() -> None:
     for name in (
         "components",
         "core",
+        "editor",
         "input",
         "lifecycle",
         "physics",
@@ -92,6 +93,14 @@ def test_lowercase_namespace_lazily_forwards_subsystems() -> None:
     assert inx.renderstack.__name__ == "Infernux.renderstack"
     assert inx.resources.__name__ == "Infernux.resources"
     assert callable(inx.renderstack.discovery_import_failures)
+
+
+def test_editor_namespace_reuses_authoritative_registries():
+    from Infernux.engine.interaction import EditorCommand, EditorCommandRegistry, ShortcutRouter
+
+    assert inx.editor.EditorCommand is EditorCommand
+    assert inx.editor.EditorCommandRegistry is EditorCommandRegistry
+    assert inx.editor.ShortcutRouter is ShortcutRouter
 
 
 def test_runtime_ui_public_import_does_not_load_editor_theme() -> None:

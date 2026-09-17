@@ -128,6 +128,28 @@ A local package authored directly under `Packages/<name>/runtime/` does not need
 
 No include/exclude fallback list exists. A `.pyd` or `.wasm` under `runtime/` is runtime-owned; the same file under `editor/` is Editor-only. Materials, shaders, HTML, and other ordinary assets are imported under `Assets/Plugins` and included in the Player through the normal asset pipeline.
 
+## Editor commands and shortcuts
+
+Register editor tools during an editor preload's import or `preload(context)`. Panel registrations, `EditorCommandRegistry.register()` commands and `ShortcutRouter.register()` bindings share that preload's lifetime: reload removes the old registrations first; disabling, uninstalling or closing the project removes them. Use stable, package-prefixed command and binding IDs. Replacing another contributor's ID is an error, not an override mechanism.
+
+For example, inside `preload(context)`:
+
+```python
+import infernux as inx
+
+inx.editor.EditorCommandRegistry.instance().register(inx.editor.EditorCommand(
+    "studio.level.create", self.create_level,
+    display_name="Create Level", default_shortcut="Ctrl+Alt+K",
+    can_execute=self.can_create_level,
+))
+inx.editor.ShortcutRouter.instance().register(inx.editor.ShortcutBinding(
+    "studio.level.create", inx.editor.KeyChord.parse("Ctrl+Alt+K"),
+    binding_id="studio.level.create.shortcut",
+))
+```
+
+Both callbacks receive a `CommandContext`. `default_shortcut` is display metadata; the binding performs input routing. Shortcut profile changes preserve independently registered plugin bindings. `ShortcutBinding.owner_id` means panel/input focus scope, not plugin ownership. Registrations made later in arbitrary callbacks are not automatically attributed to the preload; register tools during preload instead.
+
 ## Read assets by authored path
 
 `inx.Application.asset_path("Assets/Data/message.txt")` and `inx.Application.asset_path("Packages/studio/server/runtime/config.json")` use the same general asset lookup API, without a language-specific or `Resources` directory restriction. The Editor resolves author files under `Assets` or `Packages`. The Player resolves the build-frozen binding between the authored path, GUID, and cooked artifact. A missing binding fails explicitly; loose files are not scanned to fill the gap.

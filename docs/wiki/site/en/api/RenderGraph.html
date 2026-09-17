@@ -354,8 +354,8 @@ class in <b>Infernux.rendergraph</b>
 </thead>
 <tbody>
 <tr>
-<td><code>RenderGraph.__init__(name: str = ...) → None</code></td>
-<td></td>
+<td><code>RenderGraph.__init__(name: str = ..., *, output_samples: int = 0) → None</code></td>
+<td>A fixed Camera target supplies the output sample contract; zero leaves screen sampling to the pipeline.</td>
 </tr>
 </tbody>
 </table>
@@ -449,8 +449,20 @@ class in <b>Infernux.rendergraph</b>
 </thead>
 <tbody>
 <tr>
-<td><code>set_msaa_samples(samples: int) → None</code></td>
-<td>Set the MSAA sample count for all render targets.</td>
+<td><code>set_msaa_samples(samples: int) → int</code></td>
+<td>Set the screen preference and return effective sampling. Use this value for attachments and resolve topology.</td>
+</tr>
+<tr>
+<td><code>import_texture(name: str, texture: RenderTexture, *, attachment: str = "color") → TextureHandle</code></td>
+<td>Import a persistent color, depth or resolve attachment without transferring resource ownership.</td>
+</tr>
+<tr>
+<td><code>create_temporal_history(name: str, *, format: Format = ..., size: tuple[int, int] \| None = None, size_divisor: int = 0) → tuple[TextureHandle, TextureHandle]</code></td>
+<td>Create per-view previous/current history handles. The first read after invalidation is zero.</td>
+</tr>
+<tr>
+<td><code>set_temporal_jitter(enabled: bool = True) → None</code></td>
+<td>Request camera jitter separately from history allocation.</td>
 </tr>
 <tr>
 <td><code>create_texture(name: str, format: Format = ..., camera_target: bool = ..., size: Optional[Tuple[int, int]] = ..., size_divisor: int = ..., samples: Optional[int] = ...) → TextureHandle</code></td>

@@ -23,6 +23,12 @@ All paths below are pytest modules. Run one with `python -m pytest PATH -q -ra`.
 | Particle compilation and capacity behavior | `python/test/test_particle_graph_hir.py`, `python/test/test_particle_kernel_ir.py`, `python/test/test_particle_gpu_glsl_backend.py`, `python/test/test_particle_spawn_schedule.py` | Native Python; GPU rendering acceptance |
 | Game export, dependency closure and sealed content | `python/test/test_game_builder_asset_closure.py`, `python/test/test_player_build_preflight.py`, `python/test/test_desktop_build_exporter.py`, `python/test/test_web_exporter_plugin.py`, `python/test/test_multiplatform_player_fixture.py` | Native Python; four-target Player CI |
 | Plugin import, catalog, updates and documentation | `python/test/test_plugin_catalog_refresh.py`, `python/test/test_plugin_updates.py`, `python/test/test_plugin_panel_content.py` | Native Python |
+| Preload-owned editor commands, shortcuts and profile isolation | `python/test/test_editor_contribution_lifetime.py`, `python/test/test_inxpackage_plugins.py`, `python/test/test_preferences_commands.py` | Native Python; visible editor hot reload and removal |
+
+`infernux.editor_shortcut_input` (CTest) exercises actual ImGui keyboard edges:
+custom function keys and modifier combinations, palette/find/navigation chords,
+Enter normalization, no held-key replay, and one publication per frame. This
+replaces source-text assertions for hard-coded shortcut dispatch statements.
 
 ## Portable Hub lane: no compiled engine or Vulkan required
 

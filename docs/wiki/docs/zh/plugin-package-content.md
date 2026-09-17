@@ -108,6 +108,28 @@ Hub 设置页提供“迁移旧版共享资源”：先显示来源、目标和�
 
 这里没有 include/exclude fallback 清单。`.pyd` 或 `.wasm` 放在 `runtime/` 就属于运行时，放在 `editor/` 就只属于编辑器。材质、Shader、HTML 和其它普通资产安装到 `Assets/Plugins`，再通过正常资产管线进入 Player。
 
+## 编辑器命令与快捷键
+
+请在编辑器预载脚本的导入阶段或 `preload(context)` 中注册工具。面板、`EditorCommandRegistry.register()` 注册的命令和 `ShortcutRouter.register()` 注册的快捷键都归属当前预载脚本：重载时先移除旧注册，禁用、卸载插件或关闭项目时一并清理。命令和快捷键 ID 应稳定且带有包名前缀；不能通过 `replace=True` 覆盖其它插件或引擎的注册。
+
+例如在 `preload(context)` 中：
+
+```python
+import infernux as inx
+
+inx.editor.EditorCommandRegistry.instance().register(inx.editor.EditorCommand(
+    "studio.level.create", self.create_level,
+    display_name="创建关卡", default_shortcut="Ctrl+Alt+K",
+    can_execute=self.can_create_level,
+))
+inx.editor.ShortcutRouter.instance().register(inx.editor.ShortcutBinding(
+    "studio.level.create", inx.editor.KeyChord.parse("Ctrl+Alt+K"),
+    binding_id="studio.level.create.shortcut",
+))
+```
+
+两个回调都接收 `CommandContext`。`default_shortcut` 用于显示提示，实际按键路由由快捷键绑定负责。切换快捷键设置不会清空插件独立注册的绑定。`ShortcutBinding.owner_id` 表示面板或输入焦点范围，不是插件归属。不要等到任意后续回调中才注册工具，那时已不在预载归属范围内。
+
 ## 按作者路径读取资产
 
 `inx.Application.asset_path("Assets/Data/message.txt")` 和 `inx.Application.asset_path("Packages/studio/server/runtime/config.json")` 使用同一个通用资产读取入口，不限于某种语言或 `Resources` 目录。Editor 解析 `Assets` 或 `Packages` 中的作者文件；Player 通过构建时冻结的作者路径、GUID 和 Cook 产物绑定解析，找不到绑定会明确失败，不会扫描松散文件来补齐。

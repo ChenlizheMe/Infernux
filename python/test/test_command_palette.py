@@ -1,4 +1,3 @@
-from pathlib import Path
 
 from Infernux.engine.interaction import (
     COMMAND_PALETTE_CONTEXT_ID,
@@ -232,15 +231,4 @@ def test_palette_enter_remains_owned_while_active_with_no_matching_rows():
     assert palette.is_active
 
 
-def test_native_shortcut_pump_publishes_palette_open_and_execute_edges():
-    source = (
-        Path(__file__).parents[2]
-        / "cpp"
-        / "infernux"
-        / "function"
-        / "editor"
-        / "EditorShortcutInput.cpp"
-    ).read_text(encoding="utf-8")
-
-    assert 'dispatch("Ctrl+Shift+P")' in source
-    assert 'dispatch("Enter")' in source
+# Native palette key edges are exercised in EditorShortcutInputTests.cpp.

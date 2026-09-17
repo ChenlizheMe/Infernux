@@ -390,22 +390,9 @@ class TestEditorShortcutInput:
 
         assert "ImGui::GetTopMostPopupModal()" in source
         assert "m_modalActivePreviousFrame" in header
-        assert 'dispatch(shift ? "Ctrl+Shift+Z" : "Ctrl+Z", true)' in source
-        assert 'dispatch("Ctrl+Y", true)' in source
-
-    def test_find_and_align_with_view_have_distinct_global_chords(self):
-        root = Path(__file__).parents[2] / "cpp" / "infernux" / "function" / "editor"
-        source = (root / "EditorShortcutInput.cpp").read_text(encoding="utf-8")
-
-        assert 'dispatch(shift ? "Ctrl+Shift+F" : "Ctrl+F")' in source
-        assert 'dispatch("F")' in source
-
-    def test_project_history_alt_chords_reach_the_shortcut_router(self):
-        root = Path(__file__).parents[2] / "cpp" / "infernux" / "function" / "editor"
-        source = (root / "EditorShortcutInput.cpp").read_text(encoding="utf-8")
-
-        assert 'dispatch("Alt+Left")' in source
-        assert 'dispatch("Alt+Right")' in source
+        assert "ctrl && !alt && !super" in source
+        assert "key == ImGuiKey_Z || (!shift && key == ImGuiKey_Y)" in source
+        assert "dispatch(chord.c_str(), historyChord)" in source
 
     def test_default_dock_layout_does_not_bypass_window_focus_core(self):
         source = (

@@ -14,6 +14,7 @@ import Infernux as _api
 _SUBMODULES = (
     "components",
     "core",
+    "editor",
     "input",
     "lifecycle",
     "physics",

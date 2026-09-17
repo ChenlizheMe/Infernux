@@ -715,7 +715,7 @@ class PreloadManager:
         modules_before = set(sys.modules)
         started = time.perf_counter()
         try:
-            with _panel_contribution_scope(
+            with _editor_contribution_scope(
                 contribution_owner,
                 runtime=self.runtime,
             ):
@@ -724,7 +724,7 @@ class PreloadManager:
                 )
         except Exception as exc:
             try:
-                _remove_panel_contribution_owner(
+                _remove_editor_contribution_owner(
                     contribution_owner,
                     runtime=self.runtime,
                 )
@@ -779,7 +779,7 @@ class PreloadManager:
                     ),
                 )
                 started = time.perf_counter()
-                with _panel_contribution_scope(
+                with _editor_contribution_scope(
                     contribution_owner,
                     runtime=self.runtime,
                 ):
@@ -834,7 +834,7 @@ class PreloadManager:
                 return False
             state.unload_ms = (time.perf_counter() - started) * 1000.0
         if state.contribution_owner:
-            if not _remove_panel_contribution_owner(
+            if not _remove_editor_contribution_owner(
                 state.contribution_owner,
                 runtime=self.runtime,
             ):
@@ -1141,22 +1141,32 @@ def _mark_restart_required(state: PreloadState, reason: str) -> None:
 
 
 @contextmanager
-def _panel_contribution_scope(owner: str, *, runtime: bool) -> Iterator[None]:
+def _editor_contribution_scope(owner: str, *, runtime: bool) -> Iterator[None]:
     if runtime:
         yield
         return
-    from Infernux.engine.ui.panel_registry import PanelRegistry
+    from Infernux.engine.interaction._contributions import contribution_scope
 
-    with PanelRegistry.contribution_scope(owner):
+    with contribution_scope(owner):
         yield
 
 
-def _remove_panel_contribution_owner(owner: str, *, runtime: bool) -> bool:
+def _remove_editor_contribution_owner(owner: str, *, runtime: bool) -> bool:
     if runtime:
         return True
     from Infernux.engine.ui.panel_registry import PanelRegistry
 
-    return bool(PanelRegistry.remove_owner(owner))
+    if not PanelRegistry.remove_owner(owner):
+        return False
+    from Infernux.engine.interaction.commands import EditorCommandRegistry
+    from Infernux.engine.interaction.shortcuts import ShortcutRouter
+
+    # Do not instantiate editor services solely to tear a preload down.
+    if ShortcutRouter._instance is not None:
+        ShortcutRouter._instance.unregister_owner(owner)
+    if EditorCommandRegistry._instance is not None:
+        EditorCommandRegistry._instance.unregister_owner(owner)
+    return True
 
 
 @contextmanager

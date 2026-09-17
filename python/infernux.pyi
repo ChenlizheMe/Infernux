@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from Infernux import __version__ as __version__
+from Infernux import editor as editor
 from Infernux import Engine as Engine
 from Infernux import Application as Application
 from Infernux import Screen as Screen

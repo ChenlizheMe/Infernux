@@ -3599,6 +3599,55 @@ def test_runtime_plugin_panel_is_registered_and_removed_with_package(tmp_path):
         PanelRegistry.unbind_live()
 
 
+@pytest.mark.parametrize("teardown", ["uninstall", "disable", "shutdown"])
+def test_plugin_commands_and_shortcuts_follow_preload_lifetime(tmp_path, monkeypatch, teardown):
+    from Infernux.engine.interaction.commands import EditorCommandRegistry
+    from Infernux.engine.interaction.shortcuts import ShortcutRouter
+
+    monkeypatch.setattr(EditorCommandRegistry, "_instance", None)
+    monkeypatch.setattr(ShortcutRouter, "_instance", None)
+    commands = EditorCommandRegistry.instance()
+    shortcuts = ShortcutRouter.instance()
+    source = _source(tmp_path / "source", "vendor/authoring")
+    editor = source / "editor"
+    editor.mkdir()
+    (editor / "startup.py").write_text(
+        "from Infernux.lifecycle import InxPreload\n"
+        "from Infernux.engine.interaction.commands import EditorCommand, EditorCommandRegistry\n"
+        "from Infernux.engine.interaction.shortcuts import KeyChord, ShortcutBinding, ShortcutRouter\n"
+        "EditorCommandRegistry.instance().register(EditorCommand('vendor.create', lambda ctx: 'created', display_name='创建关卡'))\n"
+        "class Startup(InxPreload):\n"
+        "    def preload(self, context):\n"
+        "        ShortcutRouter.instance().register(ShortcutBinding('vendor.create', KeyChord.parse('Ctrl+F9'), binding_id='vendor.create.key'))\n",
+        encoding="utf-8",
+    )
+    package = _export(source, tmp_path / "authoring.inxpkg")
+    manager = PluginManager(str(_project(tmp_path / "project")))
+    try:
+        manager.install_package(str(package), install_dependencies=False)
+        assert commands.get("vendor.create").display_name == "创建关卡"
+        assert len(shortcuts.bindings) == 1
+        for _ in range(2):
+            manager.reload("vendor/authoring")
+            assert commands.get("vendor.create") is not None
+            assert len(shortcuts.bindings) == 1
+            assert not manager.preloads.failures
+        if teardown == "uninstall":
+            manager.uninstall("vendor/authoring")
+        elif teardown == "disable":
+            manager.set_enabled("vendor/authoring", False)
+        else:
+            manager.shutdown()
+        assert commands.get("vendor.create") is None
+        assert shortcuts.bindings == ()
+        if teardown == "disable":
+            manager.set_enabled("vendor/authoring", True)
+            assert commands.get("vendor.create") is not None
+            assert len(shortcuts.bindings) == 1
+    finally:
+        manager.shutdown()
+
+
 def test_requirements_choose_official_inxpackage_before_pip(tmp_path, monkeypatch):
     dependency = _source(tmp_path / "dependency", "vendor/dependency", version="2.1.0")
     (dependency / "runtime").mkdir()

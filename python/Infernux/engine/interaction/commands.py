@@ -10,6 +10,7 @@ from typing import Any, Optional
 from .contexts import FocusService, FocusSnapshot
 from .descriptors import SelectionSnapshot
 from .selection import SelectionService
+from ._contributions import current_owner
 
 
 class CommandSource(str, Enum):
@@ -100,6 +101,7 @@ class EditorCommandRegistry:
         selection: Optional[SelectionService] = None,
     ) -> None:
         self._commands: dict[str, EditorCommand] = {}
+        self._owners: dict[str, str] = {}
         self._focus = focus
         self._selection = selection
         self._revision = 0
@@ -123,14 +125,28 @@ class EditorCommandRegistry:
         existing = self._commands.get(command.command_id)
         if existing is not None and not replace:
             raise ValueError(f"editor command already registered: {command.command_id}")
+        owner = current_owner.get()
+        if existing is not None and self._owners[command.command_id] != owner:
+            raise ValueError(f"editor command belongs to another contributor: {command.command_id}")
         self._commands[command.command_id] = command
+        self._owners[command.command_id] = owner
         self._revision += 1
 
     def unregister(self, command_id: str) -> bool:
         if self._commands.pop(str(command_id or "").strip(), None) is None:
             return False
+        self._owners.pop(str(command_id or "").strip())
         self._revision += 1
         return True
+
+    def unregister_owner(self, owner: str) -> int:
+        """Remove one preload's commands without disturbing engine commands."""
+        if not owner:
+            raise ValueError("contribution owner must not be empty")
+        identifiers = tuple(key for key, value in self._owners.items() if value == owner)
+        for identifier in identifiers:
+            self.unregister(identifier)
+        return len(identifiers)
 
     def get(self, command_id: str) -> Optional[EditorCommand]:
         return self._commands.get(str(command_id or "").strip())
@@ -264,4 +280,5 @@ class EditorCommandRegistry:
         if not self._commands:
             return
         self._commands.clear()
+        self._owners.clear()
         self._revision += 1
