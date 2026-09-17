@@ -172,6 +172,12 @@ def compile(fn=None, **options):
     Each compiled implementation admits up to 64 input-type specializations.
     Array lengths do not create new specializations. Beyond capacity, new
     signatures are rejected before user code runs; existing ones remain valid.
+
+    Automatic parallel selection also respects actual array storage. Shared
+    parameters need a proven independent access pattern and identical layouts;
+    offset aliases or overlapping elements select serial before execution.
+    ``parallel_policy="required"`` rejects layouts without that proof. No
+    partially executed call is replayed through another implementation.
     """
     if not JIT_AVAILABLE:
         if os.environ.get("INFERNUX_WEB_RUNTIME") == "1" or sys.platform == "emscripten":

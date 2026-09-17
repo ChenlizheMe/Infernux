@@ -66,6 +66,14 @@ cached objects, cancellation and retirement. Use each compile result's code
 library when measuring its execution engine; the dispatcher's idle target
 context contains shared target metadata, not its published machine code.
 
+Automatic parallel dispatch checks array layouts before executing user code.
+Equal-layout shared parameters can run in parallel when the existing HIR
+proves their accesses independent; shifted/reinterpreted aliases and internal
+overlap require serial execution (or reject `parallel_policy="required"`).
+The proof currently covers single-loop functions, not backend loop fusion.
+Cooked bytecode embeds the same proof, and warmup preserves stride-trick view
+ownership rather than silently copying it into an unrelated dense array.
+
 Install the developer packaging tools (`setuptools`, `wheel`, and `delvewheel`
 on Windows or `auditwheel` on Linux). Make the matching toolchain's dependency
 DLLs discoverable on `PATH` on Windows. With LLVM 22's CMake package available in `CMAKE_PREFIX_PATH`, build the pinned
@@ -79,7 +87,7 @@ Install the wheel into an isolated validation directory, put that directory
 first on `PYTHONPATH`, and run `python -m llvmlite.tests`, followed by:
 
 ```sh
-python -m pytest python/test/test_jit.py python/test/test_jit_hir.py python/test/test_jit_runtime.py python/test/test_jit_code_ownership.py python/test/test_jit_disk_cache.py python/test/test_compute.py -q
+python -m pytest python/test/test_jit.py python/test/test_jit_alias.py python/test/test_jit_hir.py python/test/test_jit_runtime.py python/test/test_jit_code_ownership.py python/test/test_jit_disk_cache.py python/test/test_compute.py -q
 ```
 
 Run the fork's source metadata checks from `external/llvmlite_for_infernux`

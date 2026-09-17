@@ -21,7 +21,7 @@ import sys as _sys
 import textwrap
 from time import perf_counter
 
-from Infernux.jit_hir import FunctionHIR, analyze_source, hir_fingerprint
+from Infernux.jit_hir import FunctionHIR, analyze_source, hir_fingerprint, parallel_alias_pairs
 from Infernux.jit_runtime import (
     BoundedLRU,
     DispatchDecision,
@@ -378,14 +378,18 @@ def build_auto_parallel_embedded_source(source: str) -> str | None:
                             value=ast.Constant(hir.operation_cost),
                         )
                     )
+                    alias_pairs = parallel_alias_pairs(hir)
+                    decorator.keywords.append(ast.keyword(
+                        arg="_parallel_alias_pairs", value=ast.parse(repr(alias_pairs), mode="eval").body))
                     manifest[node.name] = {
-                        "compiler_revision": 1,
+                        "compiler_revision": 2,
                         "hir_fingerprint": fingerprint,
                         "parallel_impl": rewritten_fn.name,
                         "policy": policy,
                         "loop_ids": [loop.stable_id for loop in hir.eligible_loops],
                         "diagnostic": _hir_diagnostic(hir),
                         "operation_cost": hir.operation_cost,
+                        "alias_pairs": alias_pairs,
                     }
                     changed = True
         rewritten_body.append(node)
@@ -487,6 +491,7 @@ def _try_build_auto_parallel_variant(fn, parallel_impl=None):
     rewritten_fn.__kwdefaults__ = getattr(fn, "__kwdefaults__", None)
     rewritten_fn.__dict__.update(getattr(fn, "__dict__", {}))
     rewritten_fn._infernux_hir = hir
+    rewritten_fn._infernux_parallel_alias_pairs = parallel_alias_pairs(hir)
     rewritten_fn._infernux_parallel_diagnostic = _hir_diagnostic(hir)
     return rewritten_fn
 
@@ -514,6 +519,7 @@ def _build_auto_parallel_dispatcher(
     parallel_policy: str = "auto",
     diagnostic: str = "",
     operation_cost: int = 1,
+    alias_pairs=(),
 ):
     """Build a signature-aware dispatcher without speculative re-execution.
 
@@ -524,15 +530,17 @@ def _build_auto_parallel_dispatcher(
     never caught and replayed through the serial kernel.
     """
     decisions = BoundedLRU(64)
+    parameter_names = tuple(inspect.signature(fn).parameters)
+    safe_pairs = frozenset(pair for left, right in alias_pairs for pair in ((left, right), (right, left)))
 
     def _signature(args, kwargs):
         return (runtime_signature(args, kwargs, thread_count=_numba_thread_count()),
-                array_arguments_alias(args, kwargs))
+                array_arguments_alias(args, kwargs, parameter_names=parameter_names, safe_pairs=safe_pairs))
 
     def _alias_decision():
         if parallel_policy == "required":
-            raise ValueError("parallel_policy='required' cannot use potentially aliased array arguments")
-        return DispatchDecision("serial", "serial required: array arguments may alias")
+            raise ValueError("parallel_policy='required' cannot use unproven aliased or internally overlapping arrays")
+        return DispatchDecision("serial", "serial required: array alias/layout is not proven independent")
 
     def _static(args, kwargs):
         return static_cost_decision(
@@ -693,6 +701,7 @@ def njit(*args, **kwargs):
     parallel_impl = kwargs.pop("_parallel_impl", None)
     parallel_fingerprint = str(kwargs.pop("_parallel_fingerprint", ""))
     parallel_static_cost = max(1, int(kwargs.pop("_parallel_static_cost", 1)))
+    embedded_alias_pairs = kwargs.pop("_parallel_alias_pairs", ())
     if parallel_policy not in {"auto", "required"}:
         raise ValueError("parallel_policy must be 'auto' or 'required'")
 
@@ -771,6 +780,8 @@ def njit(*args, **kwargs):
                 parallel_policy=parallel_policy,
                 diagnostic=diagnostic,
                 operation_cost=operation_cost,
+                alias_pairs=(embedded_alias_pairs if callable(parallel_impl) else
+                             getattr(parallel_source_fn, "_infernux_parallel_alias_pairs", ())),
             )
             result.compiler_fingerprint = parallel_fingerprint or compiler_fingerprint(
                 fn,

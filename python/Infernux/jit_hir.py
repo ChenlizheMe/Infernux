@@ -545,6 +545,30 @@ def _buffer_dependences(reads, writes, index_name, loop_id, aliases):
     return tuple(result)
 
 
+def parallel_alias_pairs(hir: FunctionHIR) -> tuple[tuple[str, str], ...]:
+    """Equal-layout parameter pairs proven safe for this parallel publication.
+
+    Restrict this first proof to one loop. Multiple loops can be fused by the
+    backend, so per-loop dependence checks alone do not prove their ordering.
+    The small result also travels with cooked bytecode; Players need no source
+    parsing or second alias analysis.
+    """
+    if len(hir.loops) != 1 or not hir.eligible_loops:
+        return ()
+    function = next(node for node in _parse(hir.source).body
+                    if isinstance(node, ast.FunctionDef) and node.name == hir.name)
+    for statement in function.body:
+        if isinstance(statement, ast.For):
+            continue
+        if any(isinstance(node, (ast.Call, ast.Subscript, ast.Attribute))
+               for node in ast.walk(statement)):
+            return ()
+    loop = hir.loops[0]
+    names = sorted({access.buffer for access in (*loop.buffer_reads, *loop.buffer_writes)})
+    return tuple((left, right) for index, left in enumerate(names) for right in names[index + 1:]
+                 if not analyze_buffer_aliases(hir, ((left, right),)))
+
+
 def analyze_buffer_aliases(hir: FunctionHIR, groups: tuple[tuple[str, ...], ...]) -> tuple[Diagnostic, ...]:
     """Check equal-layout shared buffers once per prepared argument alias pattern.
 
@@ -1372,4 +1396,5 @@ __all__ = [
     "build_hir",
     "eligible_loops",
     "hir_fingerprint",
+    "parallel_alias_pairs",
 ]

@@ -125,6 +125,19 @@ def test_nested_aliases_are_not_proven_by_missing_hir_accesses():
     assert "not proven" in diagnostics[0].message
 
 
+@pytest.mark.parametrize("extra", [
+    "    for i in range(len(first)):\n        first[i] += second[i]\n",
+    "    first[:] = second + 1\n",
+    "    first.fill(0)\n",
+])
+def test_parallel_alias_proof_does_not_admit_unanalyzed_array_operations_or_loop_fusion(extra):
+    from Infernux.jit_hir import parallel_alias_pairs
+
+    source = "def kernel(first, second):\n    for i in range(len(first)):\n        first[i] += second[i]\n"
+    assert parallel_alias_pairs(build_hir(source)) == (("first", "second"),)
+    assert parallel_alias_pairs(build_hir(source + extra)) == ()
+
+
 def test_alias_residue_proof_does_not_require_affine_trip_count():
     hir = build_hir("""def kernel(first, second):
     for i in range(first.shape[0] // 2):

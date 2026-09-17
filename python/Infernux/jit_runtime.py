@@ -365,13 +365,38 @@ def static_cost_decision(
     return StaticCostDecision(mode, confidence, work_units, reason)
 
 
-def array_arguments_alias(args: tuple[Any, ...], kwargs: dict[str, Any]) -> bool:
-    """Runtime array overlap invalidates an independent-buffer parallel proof."""
+def array_arguments_alias(args: tuple[Any, ...], kwargs: dict[str, Any], *,
+                          parameter_names=(), safe_pairs=frozenset()) -> bool:
+    """Whether storage overlap invalidates the publication's parallel proof.
+
+    This inspects layout, never array contents. Equal-layout aliases may use
+    HIR-proven parameter pairs; shifted, reinterpreted or internally overlapping
+    views cannot use that proof. Ordinary strided and reversed arrays are valid
+    when each logical element occupies distinct bytes.
+    """
     import numpy as np
 
-    arrays = [value for value in (*args, *kwargs.values()) if isinstance(value, np.ndarray)]
-    return any(np.may_share_memory(left, right)
-               for index, left in enumerate(arrays) for right in arrays[index + 1:])
+    arrays = [(parameter_names[index] if index < len(parameter_names) else index, value)
+              for index, value in enumerate(args) if isinstance(value, np.ndarray)]
+    arrays.extend((name, value) for name, value in kwargs.items() if isinstance(value, np.ndarray))
+    for _name, value in arrays:
+        if value.size == 0 or value.flags.c_contiguous or value.flags.f_contiguous:
+            continue
+        span = value.itemsize
+        for stride, extent in sorted((abs(stride), extent)
+                                     for stride, extent in zip(value.strides, value.shape) if extent > 1):
+            if stride < span:
+                return True
+            span += stride * (extent - 1)
+    for index, (left_name, left) in enumerate(arrays):
+        for right_name, right in arrays[index + 1:]:
+            if not np.may_share_memory(left, right):
+                continue
+            if ((left_name, right_name) not in safe_pairs or left.dtype != right.dtype
+                    or left.shape != right.shape or left.strides != right.strides
+                    or left.ctypes.data != right.ctypes.data):
+                return True
+    return False
 
 
 def clone_call_arguments(args: tuple[Any, ...], kwargs: dict[str, Any]) -> tuple[tuple[Any, ...], dict[str, Any]]:
@@ -391,17 +416,21 @@ def clone_call_arguments(args: tuple[Any, ...], kwargs: dict[str, Any]) -> tuple
             if value.dtype.hasobject:
                 raise TypeError("cannot isolate object-array contents for compute preparation")
             root = value
-            while isinstance(root.base, np.ndarray):
-                root = root.base
+            owner = value
+            # NumPy stride-trick views insert a non-ndarray owner between the
+            # view and its allocation. Preserve their strides and aliases too.
+            while (owner := getattr(owner, "base", None)) is not None:
+                if isinstance(owner, np.ndarray):
+                    root = owner
             if id(root) not in array_roots:
                 if any(np.may_share_memory(root, other) for other in array_roots.values()):
                     raise TypeError("cannot isolate overlapping arrays with independent storage owners")
                 array_roots[id(root)] = root
+            if not (root.flags.c_contiguous or root.flags.f_contiguous):
+                raise TypeError("cannot isolate ndarray views of a non-contiguous storage owner")
             if root is value:
                 copied = value.copy(order="K")
             else:
-                if not (root.flags.c_contiguous or root.flags.f_contiguous):
-                    raise TypeError("cannot isolate ndarray views of a non-contiguous storage owner")
                 copied = np.ndarray(
                     value.shape, dtype=value.dtype, buffer=clone(root),
                     offset=value.ctypes.data - root.ctypes.data, strides=value.strides,
