@@ -80,6 +80,16 @@ command invokes them, register that command with `creates_user_action=False`:
 replaying history is not a new edit. `defer=False` is for an already safe,
 caller-controlled non-rendering host, not a GUI callback.
 
+Prefab components retain source identities independently of their runtime IDs.
+Deleting or reordering same-type components does not retarget the surviving
+components during Apply/Revert, Undo/Redo, or scene synchronization. Newly added
+components remain private to an instance until applied. Deleted source IDs are
+not reused by later additions.
+
+Old scenes without component source identities are adopted once using their
+saved baseline and type order. This cannot recover the identity of a same-type
+component that was already deleted before the scene acquired that metadata.
+
 These APIs expose the implemented authoring workflow, not the whole Unity Editor
-SDK. In particular, nested Prefab and arbitrary same-type component reordering
-are not claimed as fully supported by this guide.
+SDK. Nested Prefab and references to a specific one of several same-type
+components remain separate, unfinished work.

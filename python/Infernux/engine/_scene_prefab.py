@@ -389,7 +389,7 @@ class ScenePrefabMixin:
     def _refresh_prefab_instances(scene, prefab_guid: str, prefab_path: str,
                                   asset_database=None):
         """Merge source changes against each instance's persisted baseline."""
-        from Infernux.engine.prefab_manager import _read_prefab_document
+        from Infernux.engine.prefab_manager import _read_prefab_document, _make_prefab_baseline
         from Infernux.engine.prefab_overrides import (
             _snapshot_linked_instances, _propagate_applied_prefab,
         )
@@ -397,7 +397,7 @@ class ScenePrefabMixin:
         updated_root = _read_prefab_document(prefab_path)["root_object"]
         snapshots = [
             snapshot for snapshot in _snapshot_linked_instances(scene, prefab_guid, base_root=updated_root)
-            if snapshot[1].get("prefab_source") != updated_root
+            if snapshot[1].get("prefab_source") != _make_prefab_baseline(updated_root)
         ]
         if not snapshots:
             return False

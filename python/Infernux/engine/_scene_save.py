@@ -284,10 +284,11 @@ class SceneSaveMixin:
         if not active_ticket_id:
             active_ticket_id = registry.begin_save(document.document_id).ticket_id
         try:
-            prefab_document, source_ids = _serialize_prefab_snapshot(
+            prefab_document, source_ids, component_ids = _serialize_prefab_snapshot(
                 serialize_game_object_document_authoritatively(roots[0]),
                 source_canvas_name=source_canvas_name,
                 next_local_id=self.prefab_envelope.get("next_local_id", 1),
+                next_component_id=self.prefab_envelope.get("next_component_id", 1),
             )
             serialized_token = document_content_token(prefab_document)
             registry.capture_save_revision(
@@ -314,10 +315,12 @@ class SceneSaveMixin:
             return False
 
         self.prefab_envelope = prefab_document
+        from Infernux.engine.prefab_manager import _link_prefab_components
         for runtime_id, source_id in source_ids.items():
             obj = scene.find_by_id(runtime_id)
             if obj is not None:
                 obj.prefab_source_id = source_id
+                _link_prefab_components(obj, component_ids)
         current_token = None
         try:
             current_token = document_content_token(
@@ -325,6 +328,7 @@ class SceneSaveMixin:
                     roots[0],
                     source_canvas_name=source_canvas_name,
                     next_local_id=prefab_document["next_local_id"],
+                    next_component_id=prefab_document["next_component_id"],
                 )
             )
         except Exception as exc:

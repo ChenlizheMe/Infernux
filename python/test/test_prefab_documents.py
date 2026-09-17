@@ -151,7 +151,8 @@ def test_prefab_source_identity_survives_clone_document_and_unpack(scene, tmp_pa
     clone = clone_game_object_transactionally(scene, instance)
     assert clone.id != instance.id
     assert clone.prefab_source_id == source_id
-    baseline = _read_prefab_document(str(path))["root_object"]
+    from Infernux.engine.prefab_manager import _make_prefab_baseline
+    baseline = _make_prefab_baseline(_read_prefab_document(str(path))["root_object"])
     assert clone._prefab_source_document == baseline
     document = serialize_game_object_document_authoritatively(instance)
     instance.prefab_source_id = 0
@@ -484,7 +485,7 @@ def test_prefab_save_is_strict_typed_and_atomic(scene, tmp_path):
     assert save_prefab(root, str(path), source_canvas_name="HUD") is True
 
     envelope = json.loads(path.read_text(encoding="utf-8"))
-    assert set(envelope) == {"root_object", "source_canvas_name", "next_local_id"}
+    assert set(envelope) == {"root_object", "source_canvas_name", "next_local_id", "next_component_id"}
     assert envelope["source_canvas_name"] == "HUD"
     _assert_runtime_ids_removed(envelope["root_object"])
     assert list(path.parent.glob("typed.prefab.tmp.*")) == []

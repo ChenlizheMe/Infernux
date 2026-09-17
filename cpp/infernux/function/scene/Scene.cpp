@@ -1243,6 +1243,8 @@ GameObject *Scene::InstantiateGameObject(GameObject *source, GameObject *parent,
             object->SetPrefabGuid("");
             object->SetPrefabSourceID(0);
             object->SetPrefabSourceDocument(nullptr);
+            for (const auto &component : object->GetAllComponents())
+                component->SetPrefabSourceID(0);
             for (const auto &child : object->GetChildren())
                 self(self, child.get());
         };

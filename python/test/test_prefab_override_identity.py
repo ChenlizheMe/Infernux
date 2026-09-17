@@ -51,10 +51,10 @@ def test_duplicate_component_types_compare_each_occurrence_once():
         instance["component_id"] += 100
         instance["instance_guid"] = str(instance["component_id"])
     overrides = []
-    _diff_components(instances, sources, "Root", "components", overrides, {})
+    _diff_components(instances, sources, "Root", "components", overrides, {}, {101: 1, 102: 2})
     assert overrides == []
     instances[1]["data"]["size"] = 7
-    _diff_components(instances, sources, "Root", "components", overrides, {})
+    _diff_components(instances, sources, "Root", "components", overrides, {}, {101: 1, 102: 2})
     assert len(overrides) == 1
     assert overrides[0].prefab_value == {"size": 5}
     assert overrides[0].instance_value == {"size": 7}
@@ -62,9 +62,9 @@ def test_duplicate_component_types_compare_each_occurrence_once():
 
 @pytest.mark.parametrize("added", [False, True])
 def test_duplicate_component_count_changes_are_reported(added):
-    one = [{"type_id": "Collider", "data": {}}]
-    two = one * 2
+    one = [{"type_id": "Collider", "component_id": 1, "data": {}}]
+    two = [*one, {"type_id": "Collider", "component_id": 2, "data": {}}]
     overrides = []
-    _diff_components(two if added else one, one if added else two, "Root", "components", overrides, {})
+    _diff_components(two if added else one, one if added else two, "Root", "components", overrides, {}, {1: 1, 2: 2})
     assert len(overrides) == 1
     assert overrides[0].key == ("added_components:Collider" if added else "removed_components:Collider")

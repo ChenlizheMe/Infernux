@@ -656,7 +656,7 @@ class PrefabUnpackCommand(UndoCommand):
     def __init__(self, object_id: int, description: str = "Unpack Prefab"):
         super().__init__(description)
         self._object_id = int(object_id)
-        self._linkage: list[tuple[int, str, bool, int, dict | None]] = []
+        self._linkage: list[tuple[int, str, bool, int, dict | None, dict]] = []
         scene = _get_active_scene()
         root = scene.find_by_id(self._object_id) if scene else None
         if root is not None:
@@ -669,6 +669,8 @@ class PrefabUnpackCommand(UndoCommand):
                     bool(getattr(obj, "prefab_root", False)),
                     int(getattr(obj, "prefab_source_id", 0)),
                     obj._prefab_source_document,
+                    {record["component_id"]: record.get("prefab_source_id", 0)
+                     for record in obj.serialize_document()["components"]},
                 ))
                 pending.extend(obj.get_children())
 
@@ -685,7 +687,8 @@ class PrefabUnpackCommand(UndoCommand):
         scene = _get_active_scene()
         if scene is None:
             return
-        for object_id, prefab_guid, prefab_root, source_id, source_document in self._linkage:
+        from Infernux.engine.prefab_manager import _link_prefab_components
+        for object_id, prefab_guid, prefab_root, source_id, source_document, component_ids in self._linkage:
             obj = scene.find_by_id(object_id)
             if obj is None:
                 continue
@@ -693,6 +696,7 @@ class PrefabUnpackCommand(UndoCommand):
             obj.prefab_root = prefab_root if restored else False
             obj.prefab_source_id = source_id if restored else 0
             obj._prefab_source_document = source_document if restored else None
+            _link_prefab_components(obj, component_ids if restored else dict.fromkeys(component_ids, 0))
         _bump_inspector_structure()
 
 

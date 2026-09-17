@@ -973,6 +973,7 @@ def serialize_game_object_document_authoritatively(game_object) -> dict:
     native_metadata = {
         "type",
         "component_id",
+        "prefab_source_id",
         "enabled",
         "execution_order",
     }
@@ -1200,6 +1201,15 @@ def clone_game_object_transactionally(
     """Preflight a source snapshot before native subtree clone/publish."""
     _require_clean_pending_queue(scene)
     source_document = serialize_game_object_document_authoritatively(source)
+    if not source.prefab_root and (source.prefab_guid or source.prefab_source_id):
+        def clear_component_links(node):
+            if node.get("prefab_root"):
+                return
+            for component in node["components"]:
+                component.pop("prefab_source_id", None)
+            for child in node["children"]:
+                clear_component_links(child)
+        clear_component_links(source_document)
     prepared = preflight_game_object_python_components(
         source_document,
         asset_database,

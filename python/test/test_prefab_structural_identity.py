@@ -7,7 +7,7 @@ import pytest
 from Infernux.components import InxComponent, FieldType, serialized_field
 from Infernux.components.ref_wrappers import GameObjectRef, ComponentRef
 from Infernux.engine.component_restore import clone_game_object_transactionally
-from Infernux.engine.prefab_manager import PrefabDocumentError, _read_prefab_document, instantiate_prefab, save_prefab
+from Infernux.engine.prefab_manager import PrefabDocumentError, _read_prefab_document, instantiate_prefab, save_prefab, _make_prefab_baseline
 from Infernux.engine.prefab_overrides import (
     apply_overrides_to_prefab, build_prefab_apply_command, compute_overrides, revert_overrides,
 )
@@ -238,6 +238,8 @@ def test_scene_reopen_merges_updated_source_and_keeps_instance_references(scene,
     updated["root_object"]["children"][0]["active"] = False
     added = copy.deepcopy(updated["root_object"]["children"][0])
     added["name"] = "Source Addition"
+    added["components"][0]["component_id"] = updated["next_component_id"]
+    updated["next_component_id"] += 1
     added["local_id"] = updated["next_local_id"]
     updated["next_local_id"] += 1
     updated["root_object"]["children"].append(added)
@@ -251,7 +253,7 @@ def test_scene_reopen_merges_updated_source_and_keeps_instance_references(scene,
     assert not scene.find_by_id(child_id).active_self
     assert scene.find_by_id(private_id).prefab_source_id == 0
     assert scene.find_by_id(watcher_id).get_py_component(_StructuralReferences).target.id == child_id
-    assert second._prefab_source_document == updated["root_object"]
+    assert second._prefab_source_document == _make_prefab_baseline(updated["root_object"])
     assert not ScenePrefabMixin._refresh_prefab_instances(scene, "structural-guid", path)
 
 
@@ -265,7 +267,7 @@ def test_legacy_scene_baseline_adoption_does_not_destroy_authored_overrides(scen
     assert ScenePrefabMixin._refresh_prefab_instances(scene, "structural-guid", path)
     assert first.get_child(0).id == child_id
     assert first.get_child(0).name == "Legacy Override"
-    assert first._prefab_source_document == _read_prefab_document(path)["root_object"]
+    assert first._prefab_source_document == _make_prefab_baseline(_read_prefab_document(path)["root_object"])
 
 
 def test_player_cook_strips_only_objectgraph_prefab_baselines(tmp_path):
@@ -303,6 +305,7 @@ def test_unopened_scene_cook_merges_source_without_live_objects(scene, tmp_path)
     added = copy.deepcopy(updated["children"][0])
     added["local_id"] = 100
     added["name"] = "New From Source"
+    added["components"][0]["component_id"] = 100
     updated["children"].append(added)
     live_ids = [obj.id for obj in scene.get_all_objects()]
     reads = []

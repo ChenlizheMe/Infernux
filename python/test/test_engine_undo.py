@@ -796,6 +796,12 @@ class TestPrefabUnpackCommand:
             def get_children(self):
                 return list(self._children)
 
+            def get_components(self):
+                return []
+
+            def serialize_document(self):
+                return {"components": []}
+
         left = _GameObject(2, "prefab-guid")
         right = _GameObject(3, "prefab-guid")
         root = _GameObject(1, "prefab-guid", True, [left, right])
