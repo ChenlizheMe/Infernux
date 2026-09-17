@@ -117,6 +117,65 @@ def test_renderer_parameter_operations_are_thin_shared_material_safe_projection(
     assert get_parameter(1, 2, "baseColor")["inherited"] is True
 
 
+def test_runtime_compute_operations_use_host_and_editor_boundary(monkeypatch):
+    from infernux_mcp import runtime_operations
+    from Infernux.host import OperationKind
+
+    calls = []
+    snapshot = {"dispatch_count": 9, "wait_ms": 1.5, "gpu_time_ms": None}
+    host = SimpleNamespace(
+        compute_statistics=lambda **kw: calls.append(("stats", kw)) or snapshot,
+        set_compute_profiling=lambda enabled: calls.append(("profile", enabled)) or {"enabled": enabled},
+    )
+    monkeypatch.setattr(EditorAutomationHost, "instance", staticmethod(lambda: host))
+    monkeypatch.setattr(runtime_operations, "on_editor",
+                        lambda name, callback: calls.append(name) or callback())
+    operations = {item.schema.id: item for item in runtime_operations.build_runtime_operations()}
+    prefix = "infernux.runtime.compute."
+    query = operations[prefix + "statistics"]
+    assert query.schema.kind == OperationKind.QUERY
+    assert query.schema.capabilities == ("runtime.read",)
+    assert not query.schema.side_effects
+    assert query.handler() == snapshot
+    assert operations[prefix + "reset_statistics"].handler() == snapshot
+    profile = operations[prefix + "profiling"]
+    assert profile.schema.capabilities == ("runtime.write",)
+    assert profile.handler(True) == {"enabled": True}
+    assert profile.handler(False) == {"enabled": False}
+    assert calls == [
+        prefix + "statistics", ("stats", {}),
+        prefix + "reset_statistics", ("stats", {"reset": True}),
+        prefix + "profiling", ("profile", True),
+        prefix + "profiling", ("profile", False),
+    ]
+
+
+def test_runtime_compute_host_reuses_public_statistics_and_propagates_errors(monkeypatch):
+    from dataclasses import dataclass
+    from Infernux import compute
+
+    @dataclass
+    class Snapshot:
+        dispatch_count: int = 7
+        gpu_time_ms: float | None = None
+
+    calls = []
+    monkeypatch.setattr(compute, "statistics", lambda **kw: calls.append(kw) or Snapshot())
+    monkeypatch.setattr(compute, "set_profiling_enabled", lambda value: calls.append(value))
+    host = EditorAutomationHost()
+    assert host.compute_statistics() == {"dispatch_count": 7, "gpu_time_ms": None}
+    host.compute_statistics(reset=True)
+    assert host.set_compute_profiling(True) == {"enabled": True}
+    assert calls == [{"reset": False}, {"reset": True}, True]
+
+    def unavailable(_enabled):
+        raise compute.ComputeCapabilityError("no timestamp support")
+
+    monkeypatch.setattr(compute, "set_profiling_enabled", unavailable)
+    with pytest.raises(compute.ComputeCapabilityError, match="no timestamp support"):
+        host.set_compute_profiling(True)
+
+
 def test_runtime_performance_operations_reuse_native_window(monkeypatch):
     from infernux_mcp import runtime_operations
     events = []

@@ -82,6 +82,11 @@ def test_transform_binding_publishes_completed_buffer_pose(monkeypatch):
         owner.transform.rotation,
         inx.quaternion(0.0, 0.0, 0.7071068, 0.7071068),
     ) < 0.01
+    # CPU authors may write through NumPy directly, without a GPU write ticket.
+    pose.numpy(copy=False)[0, :3] = (6.0, 7.0, 8.0)
+    binding._poll()
+    binding._poll()
+    assert tuple(owner.transform.position) == (6.0, 7.0, 8.0)
     binding.close()
     assert binding.closed
 

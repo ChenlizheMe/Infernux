@@ -6,6 +6,8 @@ import sys
 import tempfile
 from pathlib import Path
 import struct
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import numpy as np
 
@@ -41,6 +43,74 @@ def verify_async_readback() -> None:
         values.close()
 
 
+def verify_transform_write_tracking() -> None:
+    transform = SimpleNamespace(
+        position=inx.vector3(0, 0, 0), rotation=inx.quaternion.identity,
+        local_scale=inx.vector3(1, 1, 1),
+    )
+    owner = SimpleNamespace(game_object=SimpleNamespace(id=42, handle=object()))
+    data = np.array([[3, 4, 5, 1], [0, 0, 0, 1], [1, 1, 1, 1]], dtype=np.float32)
+    pose = inx.buffer(shape=3, dtype=inx.vector4, device="gpu", data=data)
+    changes = []
+    binding = inx.compute.bind_transform(
+        owner, pose=pose, on_transform=lambda old, new: changes.append((old, new)),
+    )
+    try:
+        with patch.object(inx.compute, "_resolve_bound_transform", return_value=transform):
+            binding._poll()
+            binding._readback.get_data()  # Complete the real Vulkan transfer.
+            binding._poll()
+            assert tuple(transform.position) == (3, 4, 5)
+            before = inx.compute.statistics()
+            for _ in range(100):
+                binding._poll()
+            after = inx.compute.statistics()
+            assert after.submission_count == before.submission_count
+            assert after.readback_request_count == before.readback_request_count
+            assert after.staging_allocation_count == before.staging_allocation_count
+            assert after.host_map_count == before.host_map_count
+            assert after.wait_count == before.wait_count
+
+            # A queued writer must become visible before the serial comparison.
+            data[0, :3] = (7, 8, 9)
+            with inx.compute.recording():
+                pose.set_data(data)
+                binding._poll()
+            binding._readback.get_data()
+            binding._poll()
+            assert tuple(transform.position) == (7, 8, 9)
+            assert not changes
+
+            # Editing an idle anchor still updates position, rotation and scale.
+            transform.position = inx.vector3(10, 11, 12)
+            transform.rotation = inx.quaternion.euler(10, 20, 30)
+            transform.local_scale = inx.vector3(2, 3, 4)
+            binding._poll()
+            binding._readback.get_data()
+            binding._poll()
+            assert len(changes) == 1
+            np.testing.assert_allclose(pose.get_data().numpy(), inx.compute._pose_array(changes[0][1]))
+            assert tuple(transform.position) == (10, 11, 12)
+            assert tuple(transform.local_scale) == (2, 3, 4)
+
+            # A new write arriving while an earlier snapshot is pending must
+            # schedule another read instead of losing that newer revision.
+            data[0, :3] = (20, 21, 22)
+            pose.set_data(data)
+            binding._poll()
+            data[0, :3] = (30, 31, 32)
+            pose.set_data(data)
+            binding._readback.get_data()
+            binding._poll()
+            assert tuple(transform.position) == (20, 21, 22)
+            binding._readback.get_data()
+            binding._poll()
+            assert tuple(transform.position) == (30, 31, 32)
+    finally:
+        binding.close()
+        pose.close()
+
+
 def main() -> int:
     with tempfile.TemporaryDirectory(prefix="infernux-compute-buffer-") as root:
         project = Path(root)
@@ -62,6 +132,7 @@ def main() -> int:
                 return 77
 
             verify_async_readback()
+            verify_transform_write_tracking()
             expected = np.arange(36, dtype=np.float32).reshape(12, 3)
             values = inx.buffer(shape=12, dtype=inx.vector3, device="gpu", data=expected)
             assert values.nbytes == expected.nbytes
@@ -126,10 +197,14 @@ void main() {
             )
             # Multiple solver launches share one command buffer and one queue
             # submission while retaining the same resident binding.
+            write_serial = scalar_values._native.last_write_serial
             host.dispatch_batch([dispatch, dispatch])
+            assert scalar_values._native.last_write_serial > write_serial
+            write_serial = scalar_values._native.last_write_serial
             np.testing.assert_array_equal(
                 scalar_values.get_data().numpy(), scalar_source * np.float32(6.25)
             )
+            assert scalar_values._native.last_write_serial == write_serial
 
             sparse_source = """#version 450
 layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
@@ -146,7 +221,11 @@ void main() {
             scale = inx.buffer(shape=1, dtype=np.float32, device="gpu", data=np.array([4], np.float32))
             sparse_kernel = host.create_kernel_with_bindings(sparse_spirv, [0, 2])
             assert sparse_kernel.buffer_bindings == [0, 2]
-            sparse_kernel.dispatch([scale._native, scalar_values._native], group_count_x=5)
+            scale_serial = scale._native.last_write_serial
+            host.dispatch_batch([
+                (sparse_kernel, [scale._native, scalar_values._native], ["read", "read_write"], b"", 5, 1, 1),
+            ])
+            assert scale._native.last_write_serial == scale_serial
             np.testing.assert_array_equal(
                 scalar_values.get_data().numpy(), scalar_source * np.float32(25)
             )

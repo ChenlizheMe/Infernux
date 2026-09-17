@@ -299,6 +299,19 @@ class EditorAutomationHost:
     def capture_status(self, capture_id: int) -> dict[str, object]:
         return dict(self._native_engine().query_capture(int(capture_id)))
 
+    def compute_statistics(self, *, reset: bool = False) -> dict[str, object]:
+        """Snapshot the engine's existing compute counters, not a second profiler."""
+        from dataclasses import asdict
+        from Infernux import compute
+
+        return asdict(compute.statistics(reset=reset))
+
+    def set_compute_profiling(self, enabled: bool) -> dict[str, object]:
+        from Infernux import compute
+
+        compute.set_profiling_enabled(enabled)
+        return {"enabled": enabled}
+
     def cancel_capture(self, capture_id: int) -> bool:
         return bool(self._native_engine().cancel_capture(int(capture_id)))
 

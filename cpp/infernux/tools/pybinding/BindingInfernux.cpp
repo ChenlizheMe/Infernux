@@ -1029,6 +1029,8 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
 
     py::class_<rhi::ComputeBuffer, std::shared_ptr<rhi::ComputeBuffer>>(m, "_ComputeBuffer")
         .def_property_readonly("byte_size", &rhi::ComputeBuffer::GetByteSize)
+        .def_property_readonly("last_write_serial",
+                               [](const rhi::ComputeBuffer &buffer) { return buffer.GetLastWriteSubmission().serial; })
         .def_property_readonly("resource_index",
                                [](const rhi::ComputeBuffer &buffer) { return buffer.GetBuffer().index; })
         .def_property_readonly("resource_generation",

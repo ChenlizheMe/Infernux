@@ -832,12 +832,28 @@ class TransformBinding:
         self._initial_pose = initial_pose
         self._readback = None
         self._published_pose = None
+        self._readback_write_serial = None
         self._closed = False
         _transform_bindings.add(self)
 
     @property
     def closed(self) -> bool:
         return self._closed
+
+    def _request_readback(self) -> None:
+        if self._pose.device == "gpu":
+            # Publish queued writers before inspecting the native queue's
+            # existing write identity. No content hash or per-frame transfer.
+            _flush_commands(self._pose._host)
+            serial = self._pose._native.last_write_serial
+            if serial == self._readback_write_serial:
+                return
+            self._readback = self._pose.get_data_async()
+            self._readback_write_serial = serial
+        else:
+            # CPU buffers expose writable NumPy views, so a queue serial cannot
+            # represent their mutations.
+            self._readback = self._pose.get_data_async()
 
     def _poll(self) -> None:
         if self._closed:
@@ -865,30 +881,28 @@ class TransformBinding:
                 if self._on_transform is not None:
                     self._on_transform(previous_pose, current_pose)
             self._published_pose = current_pose
-            self._readback = self._pose.get_data_async()
+            self._request_readback()
             return
+        snapshot = None
         if self._readback is not None:
             if not self._readback.done:
                 return
             snapshot = self._readback.get_data()
             self._readback = None
-            if self._published_pose is not None and _pose_changed(
-                current_pose, self._published_pose
-            ):
-                previous_pose = self._published_pose
-                self._pose.set_data(_pose_array(current_pose))
-                _apply_transform_delta(
-                    self._domain,
-                    self._points,
-                    self._vectors,
-                    previous_pose,
-                    current_pose,
-                )
-                if self._on_transform is not None:
-                    self._on_transform(previous_pose, current_pose)
-                self._published_pose = current_pose
-                self._readback = self._pose.get_data_async()
-                return
+        # Authored TRS remains authoritative even when no GPU write (and hence
+        # no pending readback) occurred since the last publication.
+        if self._published_pose is not None and _pose_changed(current_pose, self._published_pose):
+            previous_pose = self._published_pose
+            self._pose.set_data(_pose_array(current_pose))
+            _apply_transform_delta(
+                self._domain, self._points, self._vectors, previous_pose, current_pose,
+            )
+            if self._on_transform is not None:
+                self._on_transform(previous_pose, current_pose)
+            self._published_pose = current_pose
+            self._request_readback()
+            return
+        if snapshot is not None:
             value = _buffer_pose(snapshot)
             try:
                 _publish_transform_pose(transform, value)
@@ -896,7 +910,7 @@ class TransformBinding:
                 self.close()
                 return
             self._published_pose = value
-        self._readback = self._pose.get_data_async()
+        self._request_readback()
 
     def close(self) -> None:
         if self._closed:
