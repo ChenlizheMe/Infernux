@@ -744,6 +744,7 @@ class MeshImportSettings:
     """Import settings for 3D model assets — stored in .meta alongside the source file."""
 
     scale_factor: float = field(default_factory=lambda: _mesh_import_fields()["scale_factor"]["default"])
+    normal_smoothing_angle: float = field(default_factory=lambda: _mesh_import_fields()["normal_smoothing_angle"]["default"])
     generate_normals: bool = field(default_factory=lambda: _mesh_import_fields()["generate_normals"]["default"])
     generate_tangents: bool = field(default_factory=lambda: _mesh_import_fields()["generate_tangents"]["default"])
     # DCC-authored meshes keep model/textures aligned without per-asset UV flipping.
@@ -762,16 +763,20 @@ class MeshImportSettings:
         required = {name for name, spec in fields.items() if not spec.get("legacy_optional", False)}
         if type(d) is not dict or not required.issubset(d):
             raise ValueError("mesh import settings must use the complete current field set")
-        scale = d["scale_factor"]
-        if isinstance(scale, bool) or not isinstance(scale, (int, float)) or not math.isfinite(scale) or scale <= 0.0:
-            raise ValueError("mesh scale_factor must be a positive finite number")
         # Old models were always welded. Preserve that explicit import policy
         # when upgrading sidecars authored before this option was exposed.
         values = {name: d[name] if name in d else spec["default"] for name, spec in fields.items()}
         for name, spec in fields.items():
             if spec["type"] == "bool" and type(values[name]) is not bool:
                 raise TypeError(f"mesh {name} must be a bool")
-        values["scale_factor"] = float(scale)
+            if spec["type"] == "float":
+                value = values[name]
+                if (isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value)
+                        or value > spec["maximum"]
+                        or ("minimum" in spec and value < spec["minimum"])
+                        or ("minimum_exclusive" in spec and value <= spec["minimum_exclusive"])):
+                    raise ValueError(f"mesh {name} must be within its finite range")
+                values[name] = float(value)
         return cls(**values)
 
     def copy(self) -> "MeshImportSettings":

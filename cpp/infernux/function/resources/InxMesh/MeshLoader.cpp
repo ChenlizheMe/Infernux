@@ -19,6 +19,7 @@
 #include <function/resources/InxSkinnedMesh/SkinnedModelImporter.h>
 
 #include <assimp/Importer.hpp>
+#include <assimp/config.h>
 #include <assimp/postprocess.h>
 #include <assimp/scene.h>
 
@@ -55,10 +56,48 @@ static unsigned int BuildAssimpFlags(const MeshImportSettings &settings)
     if (settings.weldVertices)
         flags |= aiProcess_JoinIdenticalVertices;
 
-    flags |= aiProcess_SortByPType;           // Separate points/lines from triangles
-    flags |= aiProcess_ValidateDataStructure; // Validate external source data
+    flags |= aiProcess_SortByPType; // Separate points/lines from triangles
 
     return flags;
+}
+
+static void PrepareUVChannels(const aiScene &scene, const MeshImportSettings &settings)
+{
+    if (!settings.swapUVChannels && !settings.flipUVs)
+        return;
+    // Change the primary channel before tangent generation and welding, so
+    // static geometry and its skinned companion consume the same vertex basis.
+    const auto swapChannels = [](auto &mesh) {
+        std::swap(mesh.mTextureCoords[0], mesh.mTextureCoords[1]);
+        delete[] mesh.mTangents;
+        delete[] mesh.mBitangents;
+        mesh.mTangents = nullptr;
+        mesh.mBitangents = nullptr;
+    };
+    const auto flipImportedBasis = [](auto &mesh) {
+        // Assimp's FlipUVs changes coordinates but leaves authored tangents
+        // untouched. Preserve T and reverse B when the V direction reverses.
+        if (mesh.HasTextureCoords(0) && mesh.mBitangents)
+            for (unsigned int vertex = 0; vertex < mesh.mNumVertices; ++vertex)
+                mesh.mBitangents[vertex] *= -1.0f;
+    };
+    for (unsigned int index = 0; index < scene.mNumMeshes; ++index) {
+        auto &mesh = *scene.mMeshes[index];
+        // With no secondary channel there is nothing to exchange.
+        if (settings.swapUVChannels && mesh.HasTextureCoords(1)) {
+            swapChannels(mesh);
+            std::swap(mesh.mNumUVComponents[0], mesh.mNumUVComponents[1]);
+            if (mesh.mTextureCoordsNames)
+                std::swap(mesh.mTextureCoordsNames[0], mesh.mTextureCoordsNames[1]);
+            for (unsigned int morph = 0; morph < mesh.mNumAnimMeshes; ++morph)
+                swapChannels(*mesh.mAnimMeshes[morph]);
+        }
+        if (settings.flipUVs) {
+            flipImportedBasis(mesh);
+            for (unsigned int morph = 0; morph < mesh.mNumAnimMeshes; ++morph)
+                flipImportedBasis(*mesh.mAnimMeshes[morph]);
+        }
+    }
 }
 
 // ============================================================================
@@ -182,10 +221,7 @@ static std::shared_ptr<InxMesh> ConvertScene(const aiScene *scene, const MeshImp
 
         const bool hasNormals = aiM->HasNormals();
         const bool hasTangents = aiM->HasTangentsAndBitangents();
-        const bool hasUV0 = aiM->HasTextureCoords(0);
-        const bool hasUV1 = aiM->HasTextureCoords(1);
-        const bool swapUVs = settings.swapUVChannels && hasUV1;
-        const bool hasUVs = swapUVs ? hasUV1 : hasUV0;
+        const bool hasUVs = aiM->HasTextureCoords(0);
         const bool hasColors = aiM->HasVertexColors(0);
 
         // ── Vertices ────────────────────────────────────────────────
@@ -219,8 +255,7 @@ static std::shared_ptr<InxMesh> ConvertScene(const aiScene *scene, const MeshImp
 
             // UV (channel 0 only for now)
             if (hasUVs) {
-                const unsigned int uvChannel = swapUVs ? 1u : 0u;
-                vert.texCoord = glm::vec2(aiM->mTextureCoords[uvChannel][v].x, aiM->mTextureCoords[uvChannel][v].y);
+                vert.texCoord = glm::vec2(aiM->mTextureCoords[0][v].x, aiM->mTextureCoords[0][v].y);
             } else {
                 // Auto-generate UV via triplanar-dominant-axis projection
                 // for meshes that have no texture coordinates at all.
@@ -390,7 +425,15 @@ MeshSourceImportResult MeshLoader::ImportSourceDetailed(const std::string &fileP
     }
 
     Assimp::Importer importer;
-    const aiScene *scene = importer.ReadFileFromMemory(fileData.data(), fileData.size(), flags, ext.c_str());
+    importer.SetPropertyFloat(AI_CONFIG_PP_GSN_MAX_SMOOTHING_ANGLE, settings.normalSmoothingAngle);
+    // Validate external input once, before touching its channel pointers.
+    const aiScene *scene =
+        importer.ReadFileFromMemory(fileData.data(), fileData.size(), aiProcess_ValidateDataStructure, ext.c_str());
+
+    if (scene) {
+        PrepareUVChannels(*scene, settings);
+        scene = importer.ApplyPostProcessing(flags);
+    }
 
     const bool animationOnlyScene = scene && scene->mRootNode && scene->mNumMeshes == 0 && scene->mNumAnimations > 0;
     if (!scene || !scene->mRootNode || ((scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE) && !animationOnlyScene))

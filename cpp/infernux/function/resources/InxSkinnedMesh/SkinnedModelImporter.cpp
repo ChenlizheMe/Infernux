@@ -269,8 +269,10 @@ std::shared_ptr<InxSkinnedMesh> SkinnedModelImporter::ConvertScene(const aiScene
                                      std::string(sourceMesh.mName.C_Str()));
         const glm::mat4 modelToMesh = glm::inverse(meshToModel);
         const glm::mat3 normalToModel = glm::inverseTranspose(glm::mat3(meshToModel));
+        const glm::mat3 tangentToModel(meshToModel);
+        const float orientation = glm::determinant(tangentToModel) < 0.0f ? -1.0f : 1.0f;
         const bool hasNormals = sourceMesh.HasNormals();
-        const bool hasTangents = sourceMesh.HasTangentsAndBitangents();
+        const bool hasTangents = hasNormals && sourceMesh.HasTangentsAndBitangents();
         const bool hasUvs = sourceMesh.HasTextureCoords(0);
         const bool hasColors = sourceMesh.HasVertexColors(0);
         for (unsigned int vertexIndex = 0; vertexIndex < sourceMesh.mNumVertices; ++vertexIndex) {
@@ -281,11 +283,17 @@ std::shared_ptr<InxSkinnedMesh> SkinnedModelImporter::ConvertScene(const aiScene
             vertex.normal = hasNormals ? NormalizeOr(normalToModel * AiToGlm(sourceMesh.mNormals[vertexIndex]),
                                                      glm::vec3(0.0f, 1.0f, 0.0f))
                                        : glm::vec3(0.0f, 1.0f, 0.0f);
-            vertex.tangent = hasTangents
-                                 ? glm::vec4(NormalizeOr(normalToModel * AiToGlm(sourceMesh.mTangents[vertexIndex]),
-                                                         glm::vec3(1.0f, 0.0f, 0.0f)),
-                                             1.0f)
-                                 : glm::vec4(1.0f, 0.0f, 0.0f, 1.0f);
+            if (hasTangents) {
+                const auto tangent = AiToGlm(sourceMesh.mTangents[vertexIndex]);
+                const auto bitangent = AiToGlm(sourceMesh.mBitangents[vertexIndex]);
+                const float handedness =
+                    glm::dot(glm::cross(AiToGlm(sourceMesh.mNormals[vertexIndex]), tangent), bitangent) < 0.0f ? -1.0f
+                                                                                                               : 1.0f;
+                vertex.tangent = glm::vec4(NormalizeOr(tangentToModel * tangent, glm::vec3(1.0f, 0.0f, 0.0f)),
+                                           handedness * orientation);
+            } else {
+                vertex.tangent = glm::vec4(1.0f, 0.0f, 0.0f, 1.0f);
+            }
             if (hasUvs) {
                 vertex.texCoord = {sourceMesh.mTextureCoords[0][vertexIndex].x,
                                    sourceMesh.mTextureCoords[0][vertexIndex].y};

@@ -3,6 +3,7 @@
 #include <function/resources/InxMesh/MeshImportSettings.h>
 #include <function/resources/InxMesh/MeshLoader.h>
 #include <function/resources/InxResource/InxResourceMeta.h>
+#include <function/resources/InxSkinnedMesh/InxSkinnedMesh.h>
 #include <platform/filesystem/InxPath.h>
 
 #include <cassert>
@@ -24,12 +25,13 @@ int main(int argc, char **argv)
         Settings::EnsureDefaults(candidate);
         const auto defaults = Settings::Read(candidate);
         const auto schema = Settings::Schema();
-        assert(schema.at("fields").size() == Settings::Flags.size() + 1);
+        assert(schema.at("fields").size() == Settings::Flags.size() + Settings::Scalars.size());
         assert(schema.at("fields")[0].at("default").get<float>() == defaults.scaleFactor);
         for (size_t index = 0; index < Settings::Flags.size(); ++index) {
             const auto &flag = Settings::Flags[index];
-            assert(schema.at("fields")[index + 1].at("name") == flag.name);
-            assert(schema.at("fields")[index + 1].at("default").get<bool>() == defaults.*(flag.member));
+            assert(schema.at("fields")[index + Settings::Scalars.size()].at("name") == flag.name);
+            assert(schema.at("fields")[index + Settings::Scalars.size()].at("default").get<bool>() ==
+                   defaults.*(flag.member));
         }
         Settings::ApplyPatch(candidate, {{"scale_factor", 2.0}, {"weld_vertices", false}});
         Settings::EnsureDefaults(candidate);
@@ -53,6 +55,9 @@ int main(int argc, char **argv)
         reject({{"scale_factor", -1.0}});
         reject({{"scale_factor", std::numeric_limits<double>::infinity()}});
         reject({{"scale_factor", std::numeric_limits<double>::quiet_NaN()}});
+        reject({{"normal_smoothing_angle", -0.1}});
+        reject({{"normal_smoothing_angle", 175.1}});
+        reject({{"normal_smoothing_angle", true}});
         reject(nlohmann::json::array());
         infernux::InxResourceMeta legacy;
         legacy.AddMetadata("scale_factor", 0.5f);
@@ -157,6 +162,74 @@ int main(int argc, char **argv)
     assert(unwelded.indexCount == 6 && welded.indexCount == 6);
     assert(unwelded.mesh->GetModelNodes().size() == welded.mesh->GetModelNodes().size());
 
+    // The source deliberately has a mirrored, non-uniform transform and two
+    // UV sets with opposite handedness. Swapping must affect both consumers
+    // and recompute the basis, even when the file supplied old tangents.
+    const auto uvPath = sourceRoot / "cpp/tests/fixtures/model_uv_basis.gltf";
+    for (const bool swap : {false, true}) {
+        for (const bool flip : {false, true}) {
+            infernux::InxResourceMeta uvSettings;
+            uvSettings.AddMetadata("swap_uv_channels", swap);
+            uvSettings.AddMetadata("flip_uvs", flip);
+            const auto result =
+                infernux::MeshLoader::ImportSourceDetailed(infernux::FromFsPath(uvPath), "uv-basis-guid", uvSettings);
+            assert(result.skinnedMesh && result.skinnedMesh->IsValid());
+            const auto &vertices = result.mesh->GetVertices();
+            const auto &skinned = result.skinnedMesh->baseVertices;
+            assert(vertices.size() == 3 && skinned.size() == vertices.size());
+            const glm::vec3 expectedLocalTangent =
+                swap ? glm::normalize(glm::vec3(1, 1, -2)) : glm::normalize(glm::vec3(1, -1, 0));
+            const glm::vec3 expectedTangent = glm::normalize(glm::vec3(-2, 3, 0.5) * expectedLocalTangent);
+            // Exchanging the axes and reversing V each reverse handedness;
+            // the mirrored node contributes one more reversal.
+            const float expectedSign = swap != flip ? 1.0f : -1.0f;
+            for (size_t index = 0; index < vertices.size(); ++index) {
+                const auto &vertex = vertices[index];
+                assert(glm::length(vertex.pos - skinned[index].pos) < 1.e-5f);
+                assert(glm::length(vertex.normal - skinned[index].normal) < 1.e-5f);
+                assert(glm::length(vertex.tangent - skinned[index].tangent) < 1.e-5f);
+                assert(glm::length(vertex.texCoord - skinned[index].texCoord) < 1.e-5f);
+                assert(glm::length(glm::vec3(vertex.tangent) - expectedTangent) < 1.e-5f);
+                assert(std::abs(glm::dot(vertex.normal, glm::vec3(vertex.tangent))) < 1.e-5f);
+                assert(vertex.tangent.w == expectedSign);
+            }
+            const auto serialized = infernux::MeshArtifact::Serialize(*result.mesh, "uv-basis-guid");
+            const auto restored = infernux::MeshArtifact::Deserialize(serialized, "uv-basis-guid");
+            for (size_t index = 0; index < vertices.size(); ++index) {
+                assert(glm::length(restored->GetVertices()[index].tangent - vertices[index].tangent) < 1.e-5f);
+                assert(restored->GetVertices()[index].texCoord == vertices[index].texCoord);
+            }
+        }
+    }
+
+    {
+        const auto smoothingPath = sourceRoot / "cpp/tests/fixtures/model_smoothing.obj";
+        infernux::InxResourceMeta smoothSettings, hardSettings;
+        smoothSettings.AddMetadata("normal_smoothing_angle", 175.0f);
+        hardSettings.AddMetadata("normal_smoothing_angle", 30.0f);
+        const auto smooth = infernux::MeshLoader::ImportSourceDetailed(infernux::FromFsPath(smoothingPath),
+                                                                       "smooth-guid", smoothSettings);
+        const auto hard =
+            infernux::MeshLoader::ImportSourceDetailed(infernux::FromFsPath(smoothingPath), "hard-guid", hardSettings);
+        assert(smooth.vertexCount == 4);
+        assert(hard.vertexCount == 6);
+        bool foundSmoothedCorner = false;
+        for (const auto &vertex : smooth.mesh->GetVertices())
+            if (glm::length(vertex.pos) < 1.e-5f) {
+                assert(glm::length(vertex.normal - glm::normalize(glm::vec3(0, 1, 1))) < 1.e-5f);
+                foundSmoothedCorner = true;
+            }
+        assert(foundSmoothedCorner);
+        for (const auto &vertex : hard.mesh->GetVertices())
+            assert(vertex.normal == glm::vec3(0, 1, 0) || vertex.normal == glm::vec3(0, 0, 1));
+        // Smoothing settings never replace authored normals under Import.
+        const auto authoredSmooth = infernux::MeshLoader::ImportSourceDetailed(infernux::FromFsPath(uvPath),
+                                                                               "authored-smooth-guid", smoothSettings);
+        const auto authoredHard = infernux::MeshLoader::ImportSourceDetailed(infernux::FromFsPath(uvPath),
+                                                                             "authored-hard-guid", hardSettings);
+        for (size_t index = 0; index < authoredSmooth.vertexCount; ++index)
+            assert(authoredSmooth.mesh->GetVertices()[index].normal == authoredHard.mesh->GetVertices()[index].normal);
+    }
     // Optional modern Blender-generated GLB supplied by an integration run.
     // This is additional evidence, never a replacement for the fixed fixture.
     if (argc > 1) {

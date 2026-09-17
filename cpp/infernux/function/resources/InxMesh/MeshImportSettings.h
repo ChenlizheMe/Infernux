@@ -4,6 +4,7 @@
 
 #include <array>
 #include <cmath>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -15,12 +16,32 @@ namespace infernux
 struct MeshImportSettings
 {
     float scaleFactor = 1.0f;
+    float normalSmoothingAngle = 175.0f;
     bool generateNormals = true;
     bool generateTangents = true;
     bool flipUVs = true;
     bool swapUVChannels = false;
     bool optimizeMesh = true;
     bool weldVertices = true;
+
+    struct Scalar
+    {
+        const char *name;
+        float MeshImportSettings::*member;
+        float minimum;
+        float maximum;
+        bool exclusiveMinimum;
+        float displayMinimum;
+        float displayMaximum;
+        float step;
+        bool legacyOptional;
+    };
+    inline static constexpr std::array Scalars = {
+        Scalar{"scale_factor", &MeshImportSettings::scaleFactor, 0.0f, std::numeric_limits<float>::max(), true, 0.0001f,
+               1000.0f, 0.001f, false},
+        Scalar{"normal_smoothing_angle", &MeshImportSettings::normalSmoothingAngle, 0.0f, 175.0f, false, 0.0f, 175.0f,
+               1.0f, true},
+    };
 
     struct Flag
     {
@@ -36,18 +57,21 @@ struct MeshImportSettings
         Flag{"optimize_mesh", &MeshImportSettings::optimizeMesh},
     };
 
-    static void RequireScale(float scale)
+    static void RequireScalar(const Scalar &field, float value)
     {
-        if (!std::isfinite(scale) || scale <= 0.0f)
-            throw std::invalid_argument("model scale_factor must be finite and positive");
+        if (!std::isfinite(value) || value > field.maximum || value < field.minimum ||
+            (field.exclusiveMinimum && value == field.minimum))
+            throw std::invalid_argument(std::string("invalid model ") + field.name + ": outside its finite range");
     }
 
     static MeshImportSettings Read(const InxResourceMeta &metadata)
     {
         MeshImportSettings settings;
-        if (metadata.HasKey("scale_factor"))
-            settings.scaleFactor = metadata.GetDataAs<float>("scale_factor");
-        RequireScale(settings.scaleFactor);
+        for (const auto &field : Scalars) {
+            if (metadata.HasKey(field.name))
+                settings.*(field.member) = metadata.GetDataAs<float>(field.name);
+            RequireScalar(field, settings.*(field.member));
+        }
         for (const auto &flag : Flags)
             if (metadata.HasKey(flag.name))
                 settings.*(flag.member) = metadata.GetDataAs<bool>(flag.name);
@@ -57,8 +81,9 @@ struct MeshImportSettings
     static void EnsureDefaults(InxResourceMeta &metadata)
     {
         const MeshImportSettings defaults;
-        if (!metadata.HasKey("scale_factor"))
-            metadata.AddMetadata("scale_factor", defaults.scaleFactor);
+        for (const auto &field : Scalars)
+            if (!metadata.HasKey(field.name))
+                metadata.AddMetadata(field.name, defaults.*(field.member));
         for (const auto &flag : Flags)
             if (!metadata.HasKey(flag.name))
                 metadata.AddMetadata(flag.name, defaults.*(flag.member));
@@ -70,12 +95,18 @@ struct MeshImportSettings
             throw std::invalid_argument("model import settings require an object");
         // Validate the entire authoring request before modifying its candidate.
         for (const auto &[key, value] : patch.items()) {
-            if (key == "scale_factor") {
+            bool scalar = false;
+            for (const auto &field : Scalars) {
+                if (key != field.name)
+                    continue;
                 if (!value.is_number())
-                    throw std::invalid_argument("model scale_factor must be a number");
-                RequireScale(value.get<float>());
-                continue;
+                    throw std::invalid_argument("model " + key + " must be a number");
+                RequireScalar(field, value.get<float>());
+                scalar = true;
+                break;
             }
+            if (scalar)
+                continue;
             bool known = false;
             for (const auto &flag : Flags)
                 known |= key == flag.name;
@@ -85,26 +116,28 @@ struct MeshImportSettings
                 throw std::invalid_argument("model import flags must be booleans");
         }
         for (const auto &[key, value] : patch.items()) {
-            if (key == "scale_factor")
-                metadata.AddMetadata(key, value.get<float>());
-            else
+            if (value.is_boolean())
                 metadata.AddMetadata(key, value.get<bool>());
+            else
+                metadata.AddMetadata(key, value.get<float>());
         }
     }
 
     static nlohmann::json Schema()
     {
         const MeshImportSettings defaults;
-        auto fields = nlohmann::json::array({{
-            {"name", "scale_factor"},
-            {"type", "float"},
-            {"default", defaults.scaleFactor},
-            {"page", "model"},
-            {"label", "asset.scale_factor"},
-            {"minimum_exclusive", 0.0},
-            {"display_range", {0.0001, 1000.0}},
-            {"step", 0.001},
-        }});
+        auto fields = nlohmann::json::array();
+        for (const auto &field : Scalars)
+            fields.push_back({{"name", field.name},
+                              {"type", "float"},
+                              {"default", defaults.*(field.member)},
+                              {"page", "model"},
+                              {"label", std::string("asset.") + field.name},
+                              {field.exclusiveMinimum ? "minimum_exclusive" : "minimum", field.minimum},
+                              {"maximum", field.maximum},
+                              {"display_range", {field.displayMinimum, field.displayMaximum}},
+                              {"step", field.step},
+                              {"legacy_optional", field.legacyOptional}});
         for (const auto &flag : Flags)
             fields.push_back({{"name", flag.name},
                               {"type", "bool"},

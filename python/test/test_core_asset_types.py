@@ -297,6 +297,19 @@ class TestAudioImportSettings:
 # ═══════════════════════════════════════════════════════════════════════════
 
 class TestMeshImportSettings:
+    @pytest.mark.parametrize("invalid", [-1, 176, True, "30", float("inf"), float("nan")])
+    def test_normal_smoothing_range(self, invalid):
+        document = MeshImportSettings().to_dict()
+        document["normal_smoothing_angle"] = invalid
+        with pytest.raises(ValueError, match="normal_smoothing_angle"):
+            MeshImportSettings.from_dict(document)
+
+    def test_legacy_smoothing_preserves_native_default(self):
+        document = MeshImportSettings(normal_smoothing_angle=30).to_dict()
+        assert MeshImportSettings.from_dict(document).normal_smoothing_angle == 30
+        del document["normal_smoothing_angle"]
+        assert MeshImportSettings.from_dict(document).normal_smoothing_angle == 175
+
     def test_defaults_and_inspector_project_native_schema(self):
         from Infernux.core.asset_types import mesh_import_settings_schema
         from Infernux.engine.ui import asset_details_renderer as inspector
