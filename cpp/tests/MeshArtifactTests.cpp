@@ -234,6 +234,69 @@ int main()
     source.SetSkinnedData(skinned);
     RequireInvalid([&] { (void)infernux::MeshArtifact::SerializeSource(source); });
 
+    // Imported assets store node-local geometry once. The ordinary mesh view
+    // remains model-space for existing render, bounds and picking consumers.
+    infernux::InxMesh localModel("local-model");
+    localModel.SetNodeNames({"root", "child"});
+    localModel.SetModelData({vertex}, {0, 0, 0}, {subMesh}, {root, pivot, child});
+    assert(localModel.GetGeneration() == 1);
+    assert(localModel.GetModelSourceGeometry()->vertices[0].pos == vertex.pos);
+    assert(localModel.GetVertices()[0].pos == glm::vec3(0, 10, 7));
+    assert(localModel.GetVertices()[0].normal == vertex.normal);
+    assert(localModel.GetVertices()[0].tangent == glm::vec4(-1, 0, 0, 1));
+    assert(localModel.GetSubMesh(0).boundsMin == localModel.GetVertices()[0].pos);
+    const auto localBytes = infernux::MeshArtifact::SerializeSource(localModel);
+    auto localRestored = infernux::MeshArtifact::DeserializeSource(localBytes);
+    assert(localRestored->GetModelSourceGeometry()->vertices[0].pos == vertex.pos);
+    assert(localRestored->GetVertices()[0].pos == localModel.GetVertices()[0].pos);
+    assert(infernux::MeshArtifact::SerializeSource(*localRestored) == localBytes);
+    auto bakedOnly = localModel;
+    bakedOnly.SetData(localModel.GetVertices(), localModel.GetIndices(), localModel.GetSubMeshes());
+    assert(!bakedOnly.GetModelSourceGeometry());
+    // NOD1/NOD2 have the same metadata size: no duplicated vertex payload.
+    const auto bakedBytes = infernux::MeshArtifact::SerializeSource(bakedOnly);
+    assert(bakedBytes.size() == localBytes.size());
+    assert(!infernux::MeshArtifact::DeserializeSource(bakedBytes)->GetModelSourceGeometry());
+
+    const auto published = localModel.GetGeometrySnapshot();
+    const auto localPublished = localModel.GetModelSourceGeometry();
+    auto invalidSubMesh = subMesh;
+    invalidSubMesh.vertexCount = 2;
+    RequireInvalid([&] { localModel.SetModelData({vertex}, {0, 0, 0}, {invalidSubMesh}, {root, pivot, child}); });
+    RequireInvalid([&] { localModel.SetModelData({vertex}, {1, 0, 0}, {subMesh}, {root, pivot, child}); });
+    RequireInvalid([&] { localModel.SetModelData({vertex}, {}, {}, {root, pivot, child}); });
+    RequireInvalid([&] { localModel.SetModelData({vertex}, {0, 0, 0}, {subMesh}, {root}); });
+    assert(localModel.GetGeometrySnapshot() == published);
+    assert(localModel.GetModelSourceGeometry() == localPublished);
+    assert(localModel.GetGeneration() == 1);
+
+    // Collapsed authored scale must not destroy the source or yield inverse
+    // matrix NaNs. Editing node transforms re-derives from the same local data.
+    auto flattened = pivot;
+    flattened.localTransform[2][2] = 0.0f;
+    localModel.SetModelNodes({root, flattened, child});
+    assert(localModel.GetVertices()[0].pos == glm::vec3(0, 10, 4));
+    assert(localModel.GetVertices()[0].normal == glm::vec3(0));
+    assert(localModel.GetModelSourceGeometry()->vertices[0].pos == vertex.pos);
+    assert(localModel.GetGeneration() == 2);
+    localModel.SetModelNodes({root, pivot, child});
+    assert(localModel.GetVertices()[0].pos == published->vertices[0].pos);
+    assert(localPublished->vertices[0].pos == vertex.pos);
+
+    infernux::InxMesh reloadTarget("before-reload");
+    reloadTarget.SetGuid("persistent-asset-guid");
+    reloadTarget.SetData({}, {}, {});
+    reloadTarget.ReplaceImportedContent(localModel);
+    assert(reloadTarget.GetGuid() == "persistent-asset-guid");
+    assert(reloadTarget.GetGeneration() == 2);
+    assert(reloadTarget.GetGeometrySnapshot() == localModel.GetGeometrySnapshot());
+    assert(reloadTarget.GetModelSourceGeometry() == localModel.GetModelSourceGeometry());
+    auto editedVertex = reloadTarget.GetVertices()[0];
+    editedVertex.pos.x = 20.0f;
+    reloadTarget.UpdateVertexRange(0, {editedVertex});
+    assert(!reloadTarget.GetModelSourceGeometry());
+    assert(localModel.GetVertices()[0].pos.x == 0.0f);
+
     std::cout << "Mesh artifact tests passed\n";
     return 0;
 }

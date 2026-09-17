@@ -50,6 +50,10 @@ def test_imported_model_nodes_preserve_source_hierarchy_and_are_detached(engine,
     assert binary_import, binary_import.error
     restored = inx.Mesh.load_guid(binary_import.guid)
     assert restored.model_nodes == mesh.model_nodes
+    assert restored.serialize_source() == mesh.serialize_source()
+    for attribute, values in mesh.vertex_buffer.items():
+        np.testing.assert_array_equal(restored.vertex_buffer[attribute], values)
+    np.testing.assert_array_equal(restored.index_buffer, mesh.index_buffer)
 
     copied = mesh.copy('Copied source hierarchy')
     try:

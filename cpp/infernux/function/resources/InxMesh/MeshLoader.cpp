@@ -98,18 +98,17 @@ static unsigned int BuildAssimpFlags(const MeshImportSettings &settings)
 
 /**
  * @brief Recursively traverse the Assimp node tree and collect mesh indices
- *        along with their accumulated world transform.
+ *        along with their source-node geometry group.
  *
  * Each node in an Assimp scene has a local transform and references zero or
- * more meshes by index.  We walk the tree depth-first, accumulating the
- * transform chain, so that every mesh's geometry is placed correctly in
- * model space.
+ * more meshes by index. The source tree owns transforms; vertex data stays
+ * local to its node; InxMesh derives the
+ * merged model-space view once.
  */
 struct CollectedMesh
 {
-    uint32_t meshIndex;       ///< Index into aiScene::mMeshes
-    glm::mat4 worldTransform; ///< Accumulated node transform
-    uint32_t nodeGroup;       ///< Source node group (for per-object splitting)
+    uint32_t meshIndex; ///< Index into aiScene::mMeshes
+    uint32_t nodeGroup; ///< Source node group (for per-object splitting)
 };
 
 static glm::mat4 AiToGlm(const aiMatrix4x4 &m)
@@ -123,12 +122,11 @@ static glm::mat4 AiToGlm(const aiMatrix4x4 &m)
     );
 }
 
-static void CollectMeshes(const aiNode *node, const glm::mat4 &parentTransform, std::vector<CollectedMesh> &outMeshes,
+static void CollectMeshes(const aiNode *node, std::vector<CollectedMesh> &outMeshes,
                           std::vector<std::string> &outNodeNames, std::vector<ImportedModelNode> &outNodes,
                           int32_t parentIndex, float scale)
 {
     const glm::mat4 localTransform = AiToGlm(node->mTransformation);
-    glm::mat4 nodeTransform = parentTransform * localTransform;
     const int32_t nodeIndex = static_cast<int32_t>(outNodes.size());
     ImportedModelNode importedNode;
     importedNode.name = node->mName.C_Str();
@@ -143,14 +141,14 @@ static void CollectMeshes(const aiNode *node, const glm::mat4 &parentTransform, 
         importedNode.nodeGroup = static_cast<int32_t>(group);
         outNodeNames.push_back(node->mName.C_Str());
         for (unsigned int i = 0; i < node->mNumMeshes; ++i) {
-            outMeshes.push_back({node->mMeshes[i], nodeTransform, group});
+            outMeshes.push_back({node->mMeshes[i], group});
         }
     }
 
     outNodes.push_back(std::move(importedNode));
 
     for (unsigned int i = 0; i < node->mNumChildren; ++i) {
-        CollectMeshes(node->mChildren[i], nodeTransform, outMeshes, outNodeNames, outNodes, nodeIndex, scale);
+        CollectMeshes(node->mChildren[i], outMeshes, outNodeNames, outNodes, nodeIndex, scale);
     }
 }
 
@@ -168,7 +166,7 @@ static std::shared_ptr<InxMesh> ConvertScene(const aiScene *scene, const MeshImp
     std::vector<std::string> nodeNames;
     std::vector<ImportedModelNode> modelNodes;
     collectedMeshes.reserve(scene->mNumMeshes);
-    CollectMeshes(scene->mRootNode, glm::mat4(1.0f), collectedMeshes, nodeNames, modelNodes, -1, settings.scaleFactor);
+    CollectMeshes(scene->mRootNode, collectedMeshes, nodeNames, modelNodes, -1, settings.scaleFactor);
 
     if (collectedMeshes.empty()) {
         mesh->SetModelNodes(std::move(modelNodes));
@@ -221,38 +219,31 @@ static std::shared_ptr<InxMesh> ConvertScene(const aiScene *scene, const MeshImp
         const bool hasUVs = swapUVs ? hasUV1 : hasUV0;
         const bool hasColors = aiM->HasVertexColors(0);
 
-        // Compute normal matrix from the world transform (no scale skew for normals)
-        const glm::mat4 &xform = cm.worldTransform;
-        const glm::mat3 normalMatrix = glm::transpose(glm::inverse(glm::mat3(xform)));
-
         // ── Vertices ────────────────────────────────────────────────
         for (unsigned int v = 0; v < aiM->mNumVertices; ++v) {
             Vertex vert{};
 
-            // Position: apply node transform, then uniform scale
-            glm::vec3 pos(aiM->mVertices[v].x, aiM->mVertices[v].y, aiM->mVertices[v].z);
-            glm::vec4 worldPos = xform * glm::vec4(pos, 1.0f);
-            vert.pos = glm::vec3(worldPos);
+            // Retain authored local geometry. Unit conversion is shared with
+            // node translations, never baked a second time at each parent.
+            vert.pos = glm::vec3(aiM->mVertices[v].x, aiM->mVertices[v].y, aiM->mVertices[v].z);
             if (applyScale)
                 vert.pos *= scale;
 
             // Normal
             if (hasNormals) {
                 glm::vec3 n(aiM->mNormals[v].x, aiM->mNormals[v].y, aiM->mNormals[v].z);
-                vert.normal = glm::normalize(normalMatrix * n);
+                vert.normal = n;
             }
 
             // Tangent + bitangent handedness
             if (hasTangents) {
                 glm::vec3 t(aiM->mTangents[v].x, aiM->mTangents[v].y, aiM->mTangents[v].z);
-                glm::vec3 worldT = glm::normalize(glm::mat3(xform) * t);
 
                 glm::vec3 b(aiM->mBitangents[v].x, aiM->mBitangents[v].y, aiM->mBitangents[v].z);
-                glm::vec3 worldB = glm::normalize(glm::mat3(xform) * b);
 
                 // Compute handedness: sign of dot(cross(N,T), B)
-                float handedness = (glm::dot(glm::cross(vert.normal, worldT), worldB) < 0.0f) ? -1.0f : 1.0f;
-                vert.tangent = glm::vec4(worldT, handedness);
+                float handedness = (glm::dot(glm::cross(vert.normal, t), b) < 0.0f) ? -1.0f : 1.0f;
+                vert.tangent = glm::vec4(t, handedness);
             } else {
                 vert.tangent = glm::vec4(1.0f, 0.0f, 0.0f, 1.0f);
             }
@@ -376,11 +367,10 @@ static std::shared_ptr<InxMesh> ConvertScene(const aiScene *scene, const MeshImp
         currentVertexOffset += aiM->mNumVertices;
     }
 
-    mesh->SetData(std::move(vertices), std::move(indices), std::move(subMeshes));
     mesh->SetMaterialSlotNames(std::move(materialSlotNames));
     mesh->SetMaterialSlotData(std::move(materialSlotDataVec));
     mesh->SetNodeNames(std::move(nodeNames));
-    mesh->SetModelNodes(std::move(modelNodes));
+    mesh->SetModelData(std::move(vertices), std::move(indices), std::move(subMeshes), std::move(modelNodes));
 
     return mesh;
 }
@@ -445,33 +435,18 @@ MeshSourceImportResult MeshLoader::ImportSourceDetailed(const std::string &fileP
 
     MeshSourceImportResult result;
     result.mesh = std::move(mesh);
-    result.meshCount = scene->mNumMeshes;
-    for (unsigned int meshIndex = 0; meshIndex < scene->mNumMeshes; ++meshIndex) {
-        const aiMesh *sourceMesh = scene->mMeshes[meshIndex];
-        if (!sourceMesh)
-            throw std::runtime_error("MeshLoader Assimp scene contains a null mesh");
-        if (sourceMesh->mPrimitiveTypes & aiPrimitiveType_TRIANGLE) {
-            result.vertexCount += sourceMesh->mNumVertices;
-            for (unsigned int faceIndex = 0; faceIndex < sourceMesh->mNumFaces; ++faceIndex)
-                result.indexCount += sourceMesh->mFaces[faceIndex].mNumIndices;
-        }
-    }
-
-    result.materialSlots.reserve(scene->mNumMaterials);
-    for (unsigned int materialIndex = 0; materialIndex < scene->mNumMaterials; ++materialIndex) {
-        if (!scene->mMaterials[materialIndex])
-            throw std::runtime_error("MeshLoader Assimp scene contains a null material");
-        aiString sourceName;
-        scene->mMaterials[materialIndex]->Get(AI_MATKEY_NAME, sourceName);
-        std::string materialName = sourceName.C_Str();
-        if (materialName.empty())
-            materialName = "Material_" + std::to_string(materialIndex);
-        result.materialSlots.push_back(std::move(materialName));
-    }
+    // Report the published geometry/slot layout, including node instances,
+    // rather than unused Assimp materials or uninstanced source mesh counts.
+    result.meshCount = result.mesh->GetSubMeshCount();
+    result.vertexCount = result.mesh->GetVertexCount();
+    result.indexCount = result.mesh->GetIndexCount();
+    result.materialSlots = result.mesh->GetMaterialSlotNames();
 
     std::unordered_set<std::string> seenBones;
     for (unsigned int meshIndex = 0; meshIndex < scene->mNumMeshes; ++meshIndex) {
         const aiMesh *sourceMesh = scene->mMeshes[meshIndex];
+        if (!sourceMesh)
+            throw std::runtime_error("MeshLoader Assimp scene contains a null mesh");
         for (unsigned int boneIndex = 0; boneIndex < sourceMesh->mNumBones; ++boneIndex) {
             const aiBone *bone = sourceMesh->mBones[boneIndex];
             if (!bone)

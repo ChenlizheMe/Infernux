@@ -14,7 +14,8 @@ namespace
 constexpr std::string_view Magic = "INXMESHART";
 constexpr std::string_view AuthoredSourceIdentity = "infernux.static-mesh.source";
 constexpr uint32_t EndianMarker = 0x01020304U;
-constexpr uint32_t ModelNodesV1 = 0x31444f4eU; // NOD1, optional source-hierarchy section
+constexpr uint32_t ModelNodesV1 = 0x31444f4eU;      // NOD1, optional source-hierarchy section
+constexpr uint32_t ModelNodesLocalV2 = 0x32444f4eU; // NOD2, geometry is local to each source node
 constexpr uint32_t MaximumElementCount = 100'000'000U;
 constexpr uint32_t MaximumStringBytes = 16U * 1024U * 1024U;
 
@@ -196,7 +197,9 @@ std::string MeshArtifact::Serialize(const InxMesh &mesh, std::string_view source
     AppendString(bytes, sourceContentHash);
     AppendString(bytes, mesh.GetName());
 
-    const auto &vertices = mesh.GetVertices();
+    const auto sourceGeometry = mesh.GetModelSourceGeometry();
+    const auto geometry = sourceGeometry ? sourceGeometry : mesh.GetGeometrySnapshot();
+    const auto &vertices = geometry->vertices;
     AppendCount(bytes, vertices.size());
     for (const Vertex &vertex : vertices) {
         AppendVec3(bytes, vertex.pos);
@@ -209,12 +212,12 @@ std::string MeshArtifact::Serialize(const InxMesh &mesh, std::string_view source
         AppendVec4(bytes, vertex.boneWeights);
     }
 
-    const auto &indices = mesh.GetIndices();
+    const auto &indices = geometry->indices;
     AppendCount(bytes, indices.size());
     for (uint32_t index : indices)
         AppendU32(bytes, index);
 
-    const auto &subMeshes = mesh.GetSubMeshes();
+    const auto &subMeshes = geometry->subMeshes;
     AppendCount(bytes, subMeshes.size());
     for (const SubMesh &subMesh : subMeshes) {
         AppendU32(bytes, subMesh.indexStart);
@@ -250,7 +253,7 @@ std::string MeshArtifact::Serialize(const InxMesh &mesh, std::string_view source
 
     const auto &nodes = mesh.GetModelNodes();
     if (!nodes.empty()) {
-        AppendU32(bytes, ModelNodesV1);
+        AppendU32(bytes, sourceGeometry ? ModelNodesLocalV2 : ModelNodesV1);
         AppendCount(bytes, nodes.size());
         for (const auto &node : nodes) {
             AppendString(bytes, node.name);
@@ -339,8 +342,11 @@ std::shared_ptr<InxMesh> MeshArtifact::Deserialize(std::string_view bytes, std::
     // Existing .inxmesh authoring files have no hierarchy section. They
     // remain valid geometry, not an inferred or reconstructed node tree.
     std::vector<ImportedModelNode> nodes;
+    bool sourceLocal = false;
     if (!reader.AtEnd()) {
-        if (reader.ReadU32() != ModelNodesV1)
+        const uint32_t nodeFormat = reader.ReadU32();
+        sourceLocal = nodeFormat == ModelNodesLocalV2;
+        if (nodeFormat != ModelNodesV1 && !sourceLocal)
             throw std::invalid_argument("mesh artifact has an unsupported model hierarchy section");
         nodes.resize(reader.ReadCount());
         const auto readNodeIndex = [&reader]() -> int32_t {
@@ -362,11 +368,15 @@ std::shared_ptr<InxMesh> MeshArtifact::Deserialize(std::string_view bytes, std::
     if (!reader.AtEnd())
         throw std::invalid_argument("mesh artifact contains trailing data");
 
-    mesh->SetData(std::move(vertices), std::move(indices), std::move(subMeshes));
     mesh->SetMaterialSlotNames(std::move(slotNames));
     mesh->SetMaterialSlotData(std::move(slotData));
     mesh->SetNodeNames(std::move(nodeNames));
-    mesh->SetModelNodes(std::move(nodes));
+    if (sourceLocal) {
+        mesh->SetModelData(std::move(vertices), std::move(indices), std::move(subMeshes), std::move(nodes));
+    } else {
+        mesh->SetData(std::move(vertices), std::move(indices), std::move(subMeshes));
+        mesh->SetModelNodes(std::move(nodes));
+    }
     return mesh;
 }
 

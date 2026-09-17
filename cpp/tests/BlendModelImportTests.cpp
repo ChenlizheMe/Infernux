@@ -41,10 +41,15 @@ int main(int argc, char **argv)
     // must survive import and the same binary artifact used by Player.
     const auto hierarchyPath = sourceRoot / "cpp/tests/fixtures/model_hierarchy.gltf";
     metadata.AddMetadata("scale_factor", 2.0f);
-    const auto hierarchy =
-        infernux::MeshLoader::ImportSourceDetailed(infernux::FromFsPath(hierarchyPath), "hierarchy-test-guid", metadata)
-            .mesh;
+    const auto hierarchyImport = infernux::MeshLoader::ImportSourceDetailed(infernux::FromFsPath(hierarchyPath),
+                                                                            "hierarchy-test-guid", metadata);
+    const auto hierarchy = hierarchyImport.mesh;
     assert(hierarchy);
+    assert(hierarchyImport.meshCount == hierarchy->GetSubMeshCount());
+    assert(hierarchyImport.vertexCount == hierarchy->GetVertexCount());
+    assert(hierarchyImport.indexCount == hierarchy->GetIndexCount());
+    assert(hierarchyImport.materialSlots == hierarchy->GetMaterialSlotNames());
+    assert(hierarchy->GetModelSourceGeometry());
     const auto &nodes = hierarchy->GetModelNodes();
     const auto findNode = [](const auto &modelNodes, const std::string &name) -> size_t {
         for (size_t index = 0; index < modelNodes.size(); ++index)
@@ -76,6 +81,14 @@ int main(int argc, char **argv)
     }
     const auto bytes = infernux::MeshArtifact::Serialize(*hierarchy, "hierarchy-source");
     const auto cooked = infernux::MeshArtifact::Deserialize(bytes, "hierarchy-source");
+    assert(cooked->GetModelSourceGeometry());
+    assert(cooked->GetModelSourceGeometry()->vertices.size() == hierarchy->GetVertexCount());
+    for (size_t index = 0; index < hierarchy->GetVertexCount(); ++index) {
+        assert(cooked->GetModelSourceGeometry()->vertices[index].pos ==
+               hierarchy->GetModelSourceGeometry()->vertices[index].pos);
+        assert(cooked->GetVertices()[index].pos == hierarchy->GetVertices()[index].pos);
+    }
+    assert(infernux::MeshArtifact::Serialize(*cooked, "hierarchy-source") == bytes);
     assert(cooked->GetModelNodes().size() == nodes.size());
     for (size_t index = 0; index < nodes.size(); ++index) {
         const auto &restored = cooked->GetModelNodes()[index];
@@ -105,7 +118,8 @@ int main(int argc, char **argv)
     // Optional modern Blender-generated GLB supplied by an integration run.
     // This is additional evidence, never a replacement for the fixed fixture.
     if (argc > 1) {
-        const auto modern = infernux::MeshLoader::ImportSourceDetailed(argv[1], "modern-blend-guid", metadata).mesh;
+        const auto modernImport = infernux::MeshLoader::ImportSourceDetailed(argv[1], "modern-blend-guid", metadata);
+        const auto modern = modernImport.mesh;
         assert(modern);
         const auto &modernNodes = modern->GetModelNodes();
         const auto assembly = findNode(modernNodes, "Assembly");
@@ -114,6 +128,7 @@ int main(int argc, char **argv)
         assert(modernNodes[findNode(modernNodes, "Upper")].parentIndex == hinge);
         assert(modernNodes[findNode(modernNodes, "Lower")].parentIndex == hinge);
         assert(modern->GetMaterialSlotCount() == 2);
+        assert(modernImport.materialSlots == modern->GetMaterialSlotNames());
     }
 
     // Composite model sources must expose their regular external textures as

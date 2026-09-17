@@ -21,6 +21,13 @@ size_t InxMesh::GetRuntimeMemoryBytes() const noexcept
     bytes += m_geometry->subMeshes.capacity() * sizeof(SubMesh);
     for (const auto &subMesh : m_geometry->subMeshes)
         bytes += subMesh.name.capacity();
+    if (m_modelSourceGeometry) {
+        bytes += sizeof(MeshGeometry) + m_modelSourceGeometry->vertices.capacity() * sizeof(Vertex) +
+                 m_modelSourceGeometry->indices.capacity() * sizeof(uint32_t) +
+                 m_modelSourceGeometry->subMeshes.capacity() * sizeof(SubMesh);
+        for (const auto &subMesh : m_modelSourceGeometry->subMeshes)
+            bytes += subMesh.name.capacity();
+    }
     bytes += m_materialSlotNames.capacity() * sizeof(std::string);
     for (const auto &name : m_materialSlotNames)
         bytes += name.capacity();
@@ -38,6 +45,11 @@ size_t InxMesh::GetRuntimeMemoryBytes() const noexcept
 
 void InxMesh::SetModelNodes(std::vector<ImportedModelNode> nodes)
 {
+    if (m_modelSourceGeometry) {
+        SetModelData(m_modelSourceGeometry->vertices, m_modelSourceGeometry->indices, m_modelSourceGeometry->subMeshes,
+                     std::move(nodes));
+        return;
+    }
     std::vector<bool> assignedGroups(m_nodeNames.size(), false);
     for (size_t index = 0; index < nodes.size(); ++index) {
         const auto &node = nodes[index];
@@ -69,6 +81,83 @@ void InxMesh::SetSkinnedData(std::shared_ptr<const InxSkinnedMesh> skinnedData)
     ++m_generation;
 }
 
+void InxMesh::SetModelData(std::vector<Vertex> vertices, std::vector<uint32_t> indices, std::vector<SubMesh> subMeshes,
+                           std::vector<ImportedModelNode> nodes)
+{
+    // Validate and derive away from the published generation. Neither source
+    // geometry nor its model-space view may be partially replaced on failure.
+    InxMesh candidate;
+    candidate.SetNodeNames(m_nodeNames);
+    candidate.SetModelNodes(std::move(nodes));
+    candidate.SetData(std::move(vertices), std::move(indices), std::move(subMeshes));
+    const auto source = candidate.GetGeometrySnapshot();
+    auto bakedVertices = source->vertices;
+    auto bakedSubMeshes = source->subMeshes;
+    std::vector<glm::mat4> world(candidate.m_modelNodes.size());
+    std::vector<int32_t> groupNodes(m_nodeNames.size(), -1);
+    for (size_t index = 0; index < candidate.m_modelNodes.size(); ++index) {
+        const auto &node = candidate.m_modelNodes[index];
+        world[index] = node.parentIndex < 0 ? node.localTransform : world[node.parentIndex] * node.localTransform;
+        if (node.nodeGroup >= 0)
+            groupNodes[node.nodeGroup] = static_cast<int32_t>(index);
+    }
+    const auto normalized = [](const glm::vec3 &value) {
+        const float squared = glm::dot(value, value);
+        return squared > 0.0f ? value / std::sqrt(squared) : glm::vec3(0.0f);
+    };
+    std::vector<int32_t> vertexGroups(source->vertices.size(), -1);
+    for (auto &sub : bakedSubMeshes) {
+        if (sub.nodeGroup >= groupNodes.size() || groupNodes[sub.nodeGroup] < 0 ||
+            sub.vertexStart > bakedVertices.size() || sub.vertexCount > bakedVertices.size() - sub.vertexStart ||
+            sub.indexStart > source->indices.size() || sub.indexCount > source->indices.size() - sub.indexStart)
+            throw std::invalid_argument("Model source geometry has an invalid node or submesh range");
+        const auto &matrix = world[groupNodes[sub.nodeGroup]];
+        const glm::mat3 linear(matrix);
+        const float orientation = glm::determinant(linear) < 0.0f ? -1.0f : 1.0f;
+        // Cofactors transform normals even at singular authored scales. A
+        // fully collapsed surface has a zero normal, not NaNs from inverse().
+        const glm::mat3 normals(glm::cross(linear[1], linear[2]) * orientation,
+                                glm::cross(linear[2], linear[0]) * orientation,
+                                glm::cross(linear[0], linear[1]) * orientation);
+        sub.boundsMin = sub.vertexCount ? glm::vec3(std::numeric_limits<float>::max()) : glm::vec3(0.0f);
+        sub.boundsMax = sub.vertexCount ? glm::vec3(std::numeric_limits<float>::lowest()) : glm::vec3(0.0f);
+        for (size_t offset = 0; offset < sub.vertexCount; ++offset) {
+            const size_t index = sub.vertexStart + offset;
+            if (vertexGroups[index] >= 0 && vertexGroups[index] != static_cast<int32_t>(sub.nodeGroup))
+                throw std::invalid_argument("Model source vertices cannot belong to different node spaces");
+            vertexGroups[index] = static_cast<int32_t>(sub.nodeGroup);
+            const auto &original = source->vertices[index];
+            auto &vertex = bakedVertices[index];
+            vertex.pos = glm::vec3(matrix * glm::vec4(original.pos, 1.0f));
+            vertex.normal = normalized(normals * original.normal);
+            vertex.tangent =
+                glm::vec4(normalized(linear * glm::vec3(original.tangent)), original.tangent.w * orientation);
+            sub.boundsMin = glm::min(sub.boundsMin, vertex.pos);
+            sub.boundsMax = glm::max(sub.boundsMax, vertex.pos);
+        }
+        for (size_t offset = 0; offset < sub.indexCount; ++offset) {
+            const uint32_t vertex = source->indices[sub.indexStart + offset];
+            if (vertex < sub.vertexStart || vertex - sub.vertexStart >= sub.vertexCount)
+                throw std::invalid_argument("Model source index crosses its local vertex range");
+        }
+    }
+    if (std::find(vertexGroups.begin(), vertexGroups.end(), -1) != vertexGroups.end())
+        throw std::invalid_argument("Model source vertices must belong to a node space");
+    candidate.SetData(std::move(bakedVertices), source->indices, std::move(bakedSubMeshes));
+    m_geometry = candidate.m_geometry;
+    m_modelSourceGeometry = source;
+    m_modelNodes = std::move(candidate.m_modelNodes);
+    ++m_generation;
+}
+
+void InxMesh::ReplaceImportedContent(const InxMesh &source)
+{
+    InxMesh replacement(source);
+    replacement.m_guid = m_guid;
+    replacement.m_generation = m_generation + 1;
+    *this = std::move(replacement);
+}
+
 void InxMesh::SetData(std::vector<Vertex> vertices, std::vector<uint32_t> indices, std::vector<SubMesh> subMeshes)
 {
     auto geometry = std::make_shared<MeshGeometry>();
@@ -85,6 +174,7 @@ void InxMesh::SetData(std::vector<Vertex> vertices, std::vector<uint32_t> indice
         }
     }
     m_geometry = std::move(geometry);
+    m_modelSourceGeometry.reset();
     ++m_generation;
 }
 

@@ -234,6 +234,16 @@ class InxMesh
     }
     void SetModelNodes(std::vector<ImportedModelNode> nodes);
 
+    /// Node-local source geometry is authoritative for imported models. The
+    /// ordinary geometry snapshot remains a derived, merged model-space view.
+    [[nodiscard]] std::shared_ptr<const MeshGeometry> GetModelSourceGeometry() const noexcept
+    {
+        return m_modelSourceGeometry;
+    }
+    void SetModelData(std::vector<Vertex> vertices, std::vector<uint32_t> indices, std::vector<SubMesh> subMeshes,
+                      std::vector<ImportedModelNode> nodes);
+    void ReplaceImportedContent(const InxMesh &source);
+
     // ── Builder API (called by MeshLoader during import) ─────────────────
 
     /**
@@ -278,6 +288,7 @@ class InxMesh
     std::string m_filePath;
 
     std::shared_ptr<const MeshGeometry> m_geometry = std::make_shared<const MeshGeometry>();
+    std::shared_ptr<const MeshGeometry> m_modelSourceGeometry;
 
     std::vector<std::string> m_materialSlotNames;
     std::vector<MaterialSlotData> m_materialSlotData;

@@ -89,15 +89,7 @@ bool MeshLoader::Reload(const RuntimeAssetPayload &existing, const std::string &
     if (!target)
         return false;
 
-    target->SetName(loaded->GetName());
-    target->SetFilePath(loaded->GetFilePath());
-    target->SetData(std::vector<Vertex>(loaded->GetVertices()), std::vector<uint32_t>(loaded->GetIndices()),
-                    std::vector<SubMesh>(loaded->GetSubMeshes()));
-    target->SetMaterialSlotNames(std::vector<std::string>(loaded->GetMaterialSlotNames()));
-    target->SetMaterialSlotData(std::vector<MaterialSlotData>(loaded->GetMaterialSlotData()));
-    target->SetNodeNames(std::vector<std::string>(loaded->GetNodeNames()));
-    target->SetModelNodes(std::vector<ImportedModelNode>(loaded->GetModelNodes()));
-    target->SetSkinnedData(loaded->GetSkinnedData());
+    target->ReplaceImportedContent(*loaded);
     INXLOG_INFO("MeshLoader::Reload: updated '", target->GetName(), "' in-place");
     return true;
 }
