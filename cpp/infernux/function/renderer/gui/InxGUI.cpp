@@ -545,7 +545,7 @@ void InxGUI::BuildFrameInternal()
     // synthetic mouse release lands on the same widget as its press.
     float syntheticMouseX = 0.0f;
     float syntheticMouseY = 0.0f;
-    if (InputManager::Instance().GetSyntheticMousePositionForFrame(syntheticMouseX, syntheticMouseY)) {
+    if (InputManager::Instance().GetSyntheticMousePosition(syntheticMouseX, syntheticMouseY)) {
         ImGui::GetIO().AddMousePosEvent(syntheticMouseX, syntheticMouseY);
     }
     ImGui::NewFrame();

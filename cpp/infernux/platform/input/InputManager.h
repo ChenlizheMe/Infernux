@@ -153,15 +153,15 @@ class InputManager
     void InitializeMotionSensors();
     void ShutdownMotionSensors();
 
-    /// @brief Mark a trusted synthetic pointer position for the current GUI frame.
+    /// @brief Give the trusted automation pointer ownership until native pointer input resumes.
     ///
     /// SDL's ImGui backend can otherwise fall back to the physical OS cursor
-    /// after a synthetic button release. The override is intentionally scoped
-    /// to the current frame and is consumed by the GUI layer before NewFrame.
-    void SetSyntheticMousePositionForFrame(float x, float y);
+    /// between automation events. Preserve hover across move/press/release;
+    /// native pointer input explicitly returns ownership to the OS cursor.
+    void SetSyntheticMousePosition(float x, float y);
 
-    /// @brief Return the synthetic pointer position queued for the current frame.
-    [[nodiscard]] bool GetSyntheticMousePositionForFrame(float &x, float &y) const;
+    [[nodiscard]] bool GetSyntheticMousePosition(float &x, float &y) const;
+    void ReleaseSyntheticMousePosition();
 
     /// @brief Mark that the current frame is processing trusted synthetic input.
     ///
@@ -437,7 +437,7 @@ class InputManager
 
     float m_syntheticMouseX = 0.f;
     float m_syntheticMouseY = 0.f;
-    bool m_hasSyntheticMousePositionThisFrame = false;
+    bool m_hasSyntheticMousePosition = false;
     bool m_syntheticInputThisFrame = false;
     std::array<uint8_t, INPUT_MAX_KEYS> m_syntheticKeys{};
     // Synthetic key edges are latched independently of SDL's focus routing.

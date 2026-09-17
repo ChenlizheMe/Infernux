@@ -304,6 +304,18 @@ void InxView::ProcessEvent()
     };
     auto processQueuedEvent = [&](SDL_Event &queuedEvent) {
         ++pacing.queuedEventCount;
+        switch (queuedEvent.type) {
+        case SDL_EVENT_MOUSE_MOTION:
+        case SDL_EVENT_MOUSE_BUTTON_DOWN:
+        case SDL_EVENT_MOUSE_BUTTON_UP:
+        case SDL_EVENT_MOUSE_WHEEL:
+        case SDL_EVENT_WINDOW_MOUSE_LEAVE:
+        case SDL_EVENT_WINDOW_FOCUS_LOST:
+            InputManager::Instance().ReleaseSyntheticMousePosition();
+            break;
+        default:
+            break;
+        }
         if (queuedEvent.type == SDL_EVENT_MOUSE_MOTION) {
             ++pacing.mouseMotionEventCount;
             if (pendingMouseMotion)
@@ -649,10 +661,10 @@ void InxView::DrainSyntheticInputEvents(bool &hadInputEvent)
         }
 
         if (synthetic.type == SyntheticInputType::MouseButton || synthetic.type == SyntheticInputType::MouseMotion) {
-            // Keep the synthetic pointer authoritative for this GUI frame. The
+            // Keep the synthetic pointer authoritative until native input. The
             // SDL ImGui backend may otherwise replace it with the physical OS
             // cursor during its release-frame fallback query.
-            InputManager::Instance().SetSyntheticMousePositionForFrame(synthetic.x, synthetic.y);
+            InputManager::Instance().SetSyntheticMousePosition(synthetic.x, synthetic.y);
         }
         if (synthetic.type == SyntheticInputType::MouseButton || synthetic.type == SyntheticInputType::MouseMotion) {
             // SDL3's ImGui backend tracks the viewport under the pointer from

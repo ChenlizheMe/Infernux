@@ -50,6 +50,20 @@ int main()
     auto &input = InputManager::Instance();
     input.ResetAll();
 
+    // Native cursor polling must not steal hover between remote move and click.
+    float syntheticX = 0.0f, syntheticY = 0.0f;
+    assert(!input.GetSyntheticMousePosition(syntheticX, syntheticY));
+    input.SetSyntheticMousePosition(123.0f, 456.0f);
+    input.BeginFrame();
+    input.BeginFrame();
+    assert(input.GetSyntheticMousePosition(syntheticX, syntheticY));
+    assert(syntheticX == 123.0f && syntheticY == 456.0f);
+    input.ReleaseSyntheticMousePosition();
+    assert(!input.GetSyntheticMousePosition(syntheticX, syntheticY));
+    input.SetSyntheticMousePosition(3.0f, 4.0f);
+    input.ResetAll();
+    assert(!input.GetSyntheticMousePosition(syntheticX, syntheticY));
+
     input.SetCursorVisible(false);
     assert(!input.IsCursorVisible());
     input.SetCursorConfined(true);

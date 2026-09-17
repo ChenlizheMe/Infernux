@@ -183,7 +183,6 @@ void InputManager::BeginFrame()
         touch.deltaY = 0.0f;
     }
     m_droppedFiles.clear();
-    m_hasSyntheticMousePositionThisFrame = false;
     m_syntheticInputThisFrame = false;
     m_syntheticKeyDown.fill(0);
 
@@ -607,22 +606,27 @@ void InputManager::ProcessSDLEvent(const SDL_Event &event)
     }
 }
 
-void InputManager::SetSyntheticMousePositionForFrame(float x, float y)
+void InputManager::SetSyntheticMousePosition(float x, float y)
 {
     m_mouseX = x;
     m_mouseY = y;
     m_syntheticMouseX = x;
     m_syntheticMouseY = y;
-    m_hasSyntheticMousePositionThisFrame = true;
+    m_hasSyntheticMousePosition = true;
 }
 
-bool InputManager::GetSyntheticMousePositionForFrame(float &x, float &y) const
+bool InputManager::GetSyntheticMousePosition(float &x, float &y) const
 {
-    if (!m_hasSyntheticMousePositionThisFrame)
+    if (!m_hasSyntheticMousePosition)
         return false;
     x = m_syntheticMouseX;
     y = m_syntheticMouseY;
     return true;
+}
+
+void InputManager::ReleaseSyntheticMousePosition()
+{
+    m_hasSyntheticMousePosition = false;
 }
 
 void InputManager::MarkSyntheticInputForFrame()
@@ -780,7 +784,7 @@ void InputManager::ResetAll()
     m_editorMouseDX = m_editorMouseDY = 0.f;
     m_scrollX = m_scrollY = 0.f;
     m_syntheticMouseX = m_syntheticMouseY = 0.f;
-    m_hasSyntheticMousePositionThisFrame = false;
+    m_hasSyntheticMousePosition = false;
     m_syntheticInputThisFrame = false;
     m_syntheticKeys.fill(0);
     m_syntheticKeyDown.fill(0);
