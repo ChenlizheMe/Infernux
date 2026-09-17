@@ -1680,7 +1680,18 @@ def load_and_create_component(
     # several components. Methods on one component may refer to sibling types
     # through their module globals, so binding only the requested class leaves
     # those references on provisional module GUIDs and breaks component lookup.
-    component_types = tuple(load_all_components_from_file(file_path, register=False))
+    from Infernux.components.registry import (
+        component_types_for_script_path,
+        publish_component_script_types,
+    )
+    # Instantiation consumes the published revision; only the script-refresh
+    # transaction replaces it. Re-executing here strands earlier instances.
+    component_types = component_types_for_script_path(file_path)
+    already_published = bool(component_types) and all(
+        candidate._asset_script_guid_ == guid for candidate in component_types
+    )
+    if not already_published:
+        component_types = tuple(load_all_components_from_file(file_path, register=False))
     if not component_types:
         return None
     if type_name:
@@ -1699,11 +1710,11 @@ def load_and_create_component(
             )
         component_class = component_types[0]
 
-    from Infernux.components.component_identity import bind_asset_script_guid
-    for candidate in component_types:
-        bind_asset_script_guid(candidate, guid, register=False)
-    from Infernux.components.registry import publish_component_script_types
-    publish_component_script_types(file_path, component_types)
+    if not already_published:
+        from Infernux.components.component_identity import bind_asset_script_guid
+        for candidate in component_types:
+            bind_asset_script_guid(candidate, guid, register=False)
+        publish_component_script_types(file_path, component_types)
 
     instance = create_component_instance(component_class)
     instance._script_guid = guid

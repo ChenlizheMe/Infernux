@@ -222,6 +222,18 @@ def test_asset_load_binds_every_component_type_in_one_script(tmp_path):
             script_guid,
             target._get_type_guid(),
         )._get_type_guid()
+
+        # Restoring another instance is not a script refresh. It must retain
+        # the published classes and the sibling references in their globals.
+        second = load_and_create_component(
+            str(script), type_name="Caller", script_guid=script_guid,
+        )
+        target_instance = load_and_create_component(
+            str(script), type_name="Target", script_guid=script_guid,
+        )
+        assert type(second) is type(caller)
+        assert type(target_instance) is target
+        assert get_type("Caller") is type(caller)
     finally:
         set_project_root(previous_root)
 

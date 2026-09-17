@@ -302,6 +302,7 @@ def list_field(
     element_type: FieldType,
     element_class: Optional[Type] = ...,
     component_type: Optional[str] = ...,
+    asset_type: Optional[str] = ...,
     default: Optional[list] = ...,
     tooltip: str = ...,
     readonly: bool = ...,
@@ -316,6 +317,7 @@ def list_field(
         element_type: FieldType of each list element.
         element_class: For SERIALIZABLE_OBJECT elements, the concrete class.
         component_type: For COMPONENT elements, the target type name.
+        asset_type: For ASSET elements, the required registered asset type.
     """
     ...
 

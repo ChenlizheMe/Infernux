@@ -25,6 +25,8 @@ __all__ = (
     "create_data_asset", "create_folder", "get_build_scenes", "set_build_scenes",
     "save_project_settings",
     "revert_property_override",
+    "load_data_asset", "set_data_asset_fields", "save_data_asset",
+    "add_component",
 )
 
 
@@ -72,6 +74,16 @@ def create_prefab(game_object, directory="Assets") -> str:
     return _authoring_core().prefabs.create_from_object(game_object.id, _asset_path(directory))
 
 
+def add_component(game_object, type_name: str, *, configure=None):
+    """Attach a registered component through Inspector's undoable command."""
+    _authoring_core()
+    from .engine.interaction.components import ComponentCommandService
+
+    return ComponentCommandService.require().add(
+        game_object, type_name, initializer=configure,
+    )
+
+
 def create_data_asset(value, path) -> str:
     """Create a typed asset through Project Undo; leave the input value unchanged."""
     import os
@@ -108,6 +120,74 @@ def create_folder(path) -> str:
         parent, lambda: project_file_ops.create_folder(parent, name),
         description="Create Folder",
     )
+
+
+def load_data_asset(path):
+    """Read the live Editor document, including edits not yet flushed to disk."""
+    from .core.data_asset import DataAsset
+    from .engine.interaction import DocumentKey, DocumentKind, DocumentRegistry
+
+    core = _authoring_core()
+    target = core.project_assets._project_path(_asset_path(path))
+    guid = str(core.project_assets.asset_database.get_guid_from_path(target) or "")
+    if not guid:
+        raise ValueError(f"DataAsset is not registered: {target}")
+    document = DocumentRegistry.instance().get_by_key(DocumentKey.asset(DocumentKind.DATA_ASSET, guid))
+    if document is not None:
+        return document.controller.resource
+    return _data_asset_document(DataAsset.load(target)).resource
+
+
+def _data_asset_document(asset):
+    from .core.data_asset import DataAsset
+    from .engine.interaction import (
+        DocumentKey, DocumentKind, DocumentRegistry, ensure_editable_resource_document,
+    )
+
+    core = _authoring_core()
+    if not isinstance(asset, DataAsset) or not asset.is_persistent:
+        raise ValueError("DataAsset editing requires a persistent DataAsset")
+    core.project_assets._project_path(asset.file_path)
+    document = DocumentRegistry.instance().get_by_key(
+        DocumentKey.asset(DocumentKind.DATA_ASSET, asset.guid),
+    )
+    # A loaded handle may precede an Inspector edit or script refresh. The
+    # shared document owns the current value, not that caller's older handle.
+    resource = document.controller.resource if document is not None else asset
+    return ensure_editable_resource_document(
+        category="data_asset", document_kind=DocumentKind.DATA_ASSET,
+        file_path=asset.file_path, resource=resource, guid=asset.guid,
+        view_id="editor.authoring",
+    )
+
+
+def set_data_asset_fields(asset, **values) -> bool:
+    """Edit declared fields together through the Inspector's document and Undo."""
+    from .components.fields import get_field_schema
+
+    controller = _data_asset_document(asset)
+    draft = controller.resource.instantiate()
+    for name, value in values.items():
+        schema = get_field_schema(type(draft), name)
+        if schema.read_only:
+            raise ValueError(f"Property is read-only: {schema.property_path}")
+        setattr(draft, name, value)
+    after = draft.serialize_document()
+    if after == controller.capture_document():
+        return False
+    if not controller.apply_document(
+        after, view_id="editor.authoring",
+        edit_key="data_asset:" + ",".join(sorted(values)),
+        description="Set Data Asset Fields",
+    ):
+        raise RuntimeError("DataAsset field edit was rejected")
+    return True
+
+
+def save_data_asset(asset) -> DocumentActionResult:
+    """Flush a DataAsset through its SaveTicket; PENDING is not completion."""
+    controller = _data_asset_document(asset)
+    return _authoring_core().documents.request_save(controller.document_id)
 
 
 def _project_settings():

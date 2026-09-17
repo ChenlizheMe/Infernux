@@ -9,7 +9,7 @@ from Infernux.engine.undo import UndoManager
 from Infernux.engine.play_mode import PlayModeManager
 from Infernux.engine.hierarchy_creation_service import HierarchyCreationService
 from Infernux.lib import Vector3
-from Infernux.components import InxComponent, FieldType, serialized_field
+from Infernux.components import InxComponent, FieldType, serialized_field, list_field
 from Infernux.components.builtin import BoxCollider
 from Infernux.core import AssetManager, DataAsset
 
@@ -19,6 +19,12 @@ class AuthoringLevelData(DataAsset):
 
     title: str = serialized_field(default="新关卡")
     difficulty: int = serialized_field(default=1)
+
+
+class AuthoringCatalogData(DataAsset):
+    __serialized_type_id__ = "tests.editor.authoring_catalog"
+    levels = list_field(element_type=FieldType.ASSET, asset_type="DataAsset")
+    locked: int = serialized_field(default=1, readonly=True)
 
 
 def test_editor_attribute_is_available_in_a_fresh_process():
@@ -75,6 +81,18 @@ def test_public_create_failed_initializer_leaves_no_object_or_history(authoring,
         editor.create_game_object("Rejected", configure=fail)
     assert [obj.id for obj in scene.get_all_objects()] == before
     assert not UndoManager.instance().can_undo
+
+
+def test_public_add_component_records_initializer_and_undo(authoring, scene):
+    obj = editor.create_game_object("Collider owner")
+    collider = editor.add_component(
+        obj, "BoxCollider", configure=lambda item: setattr(item, "size", Vector3(2, 3, 4)),
+    )
+    assert collider.size.y == 3
+    editor.undo(defer=False)
+    assert obj.get_component(BoxCollider) is None
+    editor.redo(defer=False)
+    assert obj.get_component(BoxCollider).size.y == 3
 
 
 def test_authoring_without_editor_does_not_create_a_session(monkeypatch):
@@ -193,6 +211,92 @@ def test_public_data_asset_never_overwrites_or_mutates_input(asset_authoring):
     editor.undo(defer=False)
     assert not target.exists()
     assert not UndoManager.instance().can_undo
+
+
+def test_public_data_asset_edit_uses_shared_document_and_one_undo(asset_authoring):
+    from pathlib import Path
+    from Infernux.engine.interaction import DocumentKind, ensure_editable_resource_document
+
+    path = editor.create_data_asset(AuthoringLevelData(), "Assets/EditData.inxdata")
+    asset = DataAsset.load(path)
+    controller = ensure_editable_resource_document(
+        category="data_asset", document_kind=DocumentKind.DATA_ASSET,
+        file_path=path, resource=asset, guid=asset.guid, view_id="inspector.test",
+    )
+    UndoManager.instance().clear()
+    assert editor.set_data_asset_fields(asset, title="第一关", difficulty=5)
+    assert editor.load_data_asset(path) is asset
+    assert editor.load_data_asset(path).title == "第一关"
+    assert controller.resource is asset
+    assert (asset.title, asset.difficulty) == ("第一关", 5)
+    assert not editor.set_data_asset_fields(asset, title="第一关", difficulty=5)
+    editor.undo(defer=False)
+    assert (asset.title, asset.difficulty) == ("新关卡", 1)
+    assert editor.load_data_asset(path).difficulty == 1
+    assert not UndoManager.instance().can_undo
+    editor.redo(defer=False)
+    assert (asset.title, asset.difficulty) == ("第一关", 5)
+    assert editor.save_data_asset(asset).status in (
+        editor.DocumentActionStatus.APPLIED, editor.DocumentActionStatus.NO_OP,
+    )
+    import json
+    assert json.loads(Path(path).read_text(encoding="utf-8"))["fields"]["difficulty"] == 5
+
+
+def test_public_data_asset_edit_rejects_entire_invalid_batch(asset_authoring):
+    path = editor.create_data_asset(AuthoringLevelData(), "Assets/InvalidEditData.inxdata")
+    asset = DataAsset.load(path)
+    UndoManager.instance().clear()
+    with pytest.raises((KeyError, ValueError)):
+        editor.set_data_asset_fields(asset, title="Must not apply", unknown_field=3)
+    assert asset.title == "新关卡"
+    assert not UndoManager.instance().can_undo
+    with pytest.raises(ValueError, match="persistent"):
+        editor.set_data_asset_fields(AuthoringLevelData(), title="Transient")
+
+
+def test_public_data_asset_edit_preserves_newer_document_for_stale_handle(asset_authoring):
+    from Infernux.engine.interaction import DocumentKind, ensure_editable_resource_document
+
+    path = editor.create_data_asset(AuthoringLevelData(), "Assets/StaleEditData.inxdata")
+    stale = DataAsset.load(path)
+    current = stale.instantiate()
+    current._bind_asset(stale.file_path, stale.guid)
+    current.title = "Newer Inspector value"
+    controller = ensure_editable_resource_document(
+        category="data_asset", document_kind=DocumentKind.DATA_ASSET,
+        file_path=path, resource=current, guid=current.guid, view_id="inspector.test",
+    )
+    assert editor.set_data_asset_fields(stale, difficulty=9)
+    assert controller.resource is current
+    assert current.title == "Newer Inspector value"
+    assert current.difficulty == 9
+    assert stale.difficulty == 1
+    assert editor.load_data_asset(path) is current
+
+
+def test_public_data_asset_save_preserves_pending_status(asset_authoring, authoring, monkeypatch):
+    path = editor.create_data_asset(AuthoringLevelData(), "Assets/PendingData.inxdata")
+    asset = DataAsset.load(path)
+    pending = editor.DocumentActionResult(editor.DocumentActionStatus.PENDING)
+    monkeypatch.setattr(authoring.documents, "request_save", lambda _: pending)
+    assert editor.save_data_asset(asset) is pending
+
+
+def test_public_data_asset_reference_list_and_readonly_contract(asset_authoring):
+    level = DataAsset.load(editor.create_data_asset(AuthoringLevelData(), "Assets/ListLevel.inxdata"))
+    catalog = DataAsset.load(editor.create_data_asset(AuthoringCatalogData(), "Assets/EditCatalog.inxdata"))
+    UndoManager.instance().clear()
+    with pytest.raises(ValueError, match="read-only"):
+        editor.set_data_asset_fields(catalog, levels=[level], locked=2)
+    assert list(catalog.levels) == []
+    assert not UndoManager.instance().can_undo
+    assert editor.set_data_asset_fields(catalog, levels=[level])
+    assert catalog.serialize_document()["fields"]["levels"][0]["guid"] == level.guid
+    editor.undo(defer=False)
+    assert list(catalog.levels) == []
+    editor.redo(defer=False)
+    assert catalog.serialize_document()["fields"]["levels"][0]["guid"] == level.guid
 
 
 @pytest.mark.parametrize("value,path,error", [

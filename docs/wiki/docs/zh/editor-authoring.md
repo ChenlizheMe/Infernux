@@ -58,6 +58,21 @@ config = inx.DataAsset.load(path)
 
 `create_data_asset` 保存传入值的独立副本，由资产系统创建 GUID 和导入结果，不改变原对象的持久身份。目标文件必须不存在，目录必须已建立；撤销移除新资产，重做保留原 GUID 和字段值。它不覆盖已有配置；已有资产应通过 Inspector 的文档编辑流程修改。
 
+作者脚本可以操作同一份文档，无需打开 Inspector：
+
+```python
+level = inx.editor.load_data_asset("Assets/Data/Level01.inxdata")
+with inx.editor.edit_scene("更新关卡配置"):
+    inx.editor.set_data_asset_fields(level, title="第一关", difficulty=3)
+result = inx.editor.save_data_asset(level)
+```
+
+`load_data_asset` 读取编辑器当前文档，包括尚未自动保存的修改；不要用直接读取磁盘的 `DataAsset.load` 来检查刚完成的撤销。`set_data_asset_fields` 先在独立副本中验证全部声明字段，再形成一条可撤销修改；只读或未知字段会拒绝整个调用，相同值返回 `False`。多份资产的修改可以放在同一个编辑分组内。`save_data_asset` 使用现有保存事务，仍需检查 `APPLIED/PENDING/FAILED`，不绕过自动保存或外部冲突处理。
+
+关卡目录等资产列表可声明为 `inx.list_field(element_type=inx.FieldType.ASSET, asset_type="DataAsset")`，列表中保存资产引用，而不是复制每份资产的内容。
+
+作者工具添加组件时，使用 `inx.editor.add_component(obj, "MyComponent", configure=initialize)`。它与 Inspector 共用组件添加服务，解析已发布的脚本和资产身份，并把初始化值纳入撤销/重做。直接从旧的导入类构造实例再调用 `add_py_component`，会绕过这条作者工具链路。
+
 工具需要加载已有材质时，先用 `inx.Application.asset_path("Assets/Materials/Example.mat")` 解析项目路径，再传给 `inx.AssetManager.load`。不要依赖启动编辑器时的工作目录，也不需要在脚本里手写 GUID。
 
 `get_build_scenes()` 返回独立的、有序的项目相对路径列表。`set_build_scenes(paths)` 用一条可撤销操作更新同一份 Build Settings；路径必须是 `Assets` 下已存在的 `.scene`。传空列表表示清空，相同列表不新增历史。编辑器的自动保存仍生效，也可显式调用 `save_project_settings()`，其返回状态与场景保存相同，不要把 `PENDING` 当成写盘完成。

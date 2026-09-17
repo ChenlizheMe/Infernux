@@ -84,6 +84,34 @@ unchanged. The parent directory must exist and the target must not exist.
 Undo removes the asset; Redo restores its original GUID and fields. Use the
 Inspector document workflow to edit existing assets rather than overwriting them.
 
+Authoring scripts can use that same document without opening an Inspector:
+
+```python
+level = inx.editor.load_data_asset("Assets/Data/Level01.inxdata")
+with inx.editor.edit_scene("Update level configuration"):
+    inx.editor.set_data_asset_fields(level, title="First level", difficulty=3)
+result = inx.editor.save_data_asset(level)
+```
+
+`load_data_asset` reads the live Editor document, including unsaved changes.
+Do not use the disk-reading `DataAsset.load` to observe an Undo immediately.
+`set_data_asset_fields` validates every declared field on an independent copy
+before recording one undoable edit. Unknown or read-only fields reject the whole
+call; unchanged values return `False`. A group can include several assets.
+`save_data_asset` uses the existing save transaction; inspect its
+`APPLIED/PENDING/FAILED` result rather than assuming that a request has finished.
+
+Declare an asset-reference list with
+`inx.list_field(element_type=inx.FieldType.ASSET, asset_type="DataAsset")`.
+The list stores references, not embedded copies of each asset.
+
+To attach a component in an authoring tool, use
+`inx.editor.add_component(obj, "MyComponent", configure=initialize)`.
+It resolves the published script and asset identity through the same service as
+Inspector, and records initialized fields for Undo/Redo. Constructing an instance
+from an old imported Python class and calling `add_py_component` directly bypasses
+that authoring service.
+
 To load an existing material, resolve its project path with
 `inx.Application.asset_path("Assets/Materials/Example.mat")` before passing it to
 `inx.AssetManager.load`. Tools should not depend on the Editor process's working
