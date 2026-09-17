@@ -25,6 +25,68 @@ def _loop(source: str):
     return hir, hir.loops[0]
 
 
+@pytest.mark.parametrize("body,tail", [
+    ("if source[i] > 0:\n            value = source[i]\n        output[i] = value", "return output"),
+    ("output[i] = value\n        value = source[i]", "return output"),
+    ("value = source[i]\n        output[i] = value", "return value"),
+    ("i = 0\n        output[i] = source[i]", "return output"),
+    ("output[i] = source[i]", "return i"),
+    ("value = value + source[i]\n        output[i] = value", "return output"),
+    ("if source[i] > 0:\n            value = source[i]\n        elif source[i] < 0:\n            continue\n        output[i] = value", "return output"),
+    ("value = source[i]\n        output[i] = value", "if n > 0:\n        value = 9\n    return value"),
+])
+def test_scalar_dependencies_cannot_be_lowered_as_independent_iterations(body, tail):
+    hir, loop = _loop(
+        "def kernel(source, output, n):\n    value = 0\n"
+        f"    for i in range(n):\n        {body}\n    {tail}\n"
+    )
+    assert not loop.parallel_eligible
+    assert any(item.code == DiagnosticCode.LOOP_CARRIED_SCALAR for item in hir.diagnostics)
+
+
+@pytest.mark.parametrize("body,tail", [
+    ("if source[i] > 0:\n            value = source[i]\n        else:\n            value = -source[i]\n        output[i] = value", "return output"),
+    ("if source[i] <= 0:\n            continue\n        value = source[i]\n        output[i] = value", "return output"),
+    ("value = source[i]\n        output[i] = value", "value = 9\n    return value"),
+    ("value = source[i]\n        value = value * 2\n        output[i] = value", "return output"),
+    ("if source[i] <= 0:\n            continue\n        else:\n            value = source[i]\n        output[i] = value", "return output"),
+    ("value = source[i]\n        output[i] = value", "if n > 0:\n        value = 9\n    else:\n        value = 3\n    return value"),
+])
+def test_iteration_local_scalars_and_dead_loop_outputs_remain_parallel(body, tail):
+    _hir, loop = _loop(
+        "def kernel(source, output, n):\n    value = 0\n"
+        f"    for i in range(n):\n        {body}\n    {tail}\n"
+    )
+    assert loop.parallel_eligible, loop.diagnostics
+
+
+@pytest.mark.parametrize("body", [
+    "total += source[i]\n        total *= 2",
+    "if source[i] > 0:\n            total += source[i]\n        else:\n            total *= 2",
+    "total = 1\n        total += source[i]",
+    "total += source[i]\n        total = 1",
+])
+def test_mixed_or_reset_accumulators_are_not_parallel_reductions(body):
+    _hir, loop = _loop(
+        "def kernel(source, n):\n    total = 1\n"
+        f"    for i in range(n):\n        {body}\n    return total\n"
+    )
+    assert not loop.parallel_eligible
+    assert DiagnosticCode.INVALID_REDUCTION in _codes(loop)
+
+
+def test_repeated_additions_to_one_accumulator_remain_a_reduction():
+    _hir, loop = _loop("""def kernel(source, n):
+    total = 1
+    for i in range(n):
+        total += source[i]
+        if source[i] > 0:
+            total += 2
+    return total
+""")
+    assert loop.parallel_eligible, loop.diagnostics
+
+
 @pytest.mark.parametrize("read,expected", [("i, 1", False), ("i-1, 0", True)])
 def test_multidimensional_row_access_dependence(read, expected):
     hir = build_hir(f"def kernel(x,n):\n    for i in range(1,n):\n        x[i,0] = x[{read}] + 1\n        x[i,1] = 2\n")

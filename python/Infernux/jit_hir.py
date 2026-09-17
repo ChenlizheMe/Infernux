@@ -20,7 +20,7 @@ import math
 import textwrap
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 
 class _StrEnum(str, Enum):
@@ -870,8 +870,6 @@ class _Analyzer:
             if isinstance(target, ast.Subscript):
                 self._write_access(target, loop, loop_id, reads, writes, effects, aug=False)
             elif isinstance(target, ast.Name):
-                if self._contains_name(node.value, target.id):
-                    self.diagnostic(DiagnosticCode.LOOP_CARRIED_SCALAR, f"scalar '{target.id}' carries a value between iterations", node, loop_id=loop_id)
                 statements.append(HIRStatement(HIRStatementKind.ASSIGN, target.id, _unparse(node.value), self._expr_type(node.value), _location(node)))
             else:
                 self.diagnostic(DiagnosticCode.INDIRECT_WRITE, "attribute or computed targets are not writable in a parallel loop", target, loop_id=loop_id)
@@ -912,13 +910,93 @@ class _Analyzer:
             return
         self.diagnostic(DiagnosticCode.UNSUPPORTED_STATEMENT, f"statement '{type(node).__name__}' is not supported", node, loop_id=loop_id)
 
-    @staticmethod
-    def _contains_name(node: ast.AST, name: str) -> bool:
-        return any(isinstance(item, ast.Name) and item.id == name and isinstance(item.ctx, ast.Load) for item in ast.walk(node))
-
     def _inspect_function_controls(self) -> None:
         if isinstance(self.function, ast.AsyncFunctionDef):
             self.diagnostic(DiagnosticCode.ASYNC_FUNCTION, "async functions cannot be lowered to this synchronous HIR", self.function)
+
+    @staticmethod
+    def _scalar_flow(
+        nodes: Sequence[ast.stmt],
+        defined: set[str],
+        on_read: Callable[[ast.Name, set[str]], None],
+    ) -> set[str] | None:
+        """Visit structured paths with a must-defined set, without another IR.
+
+        A terminating branch does not reach its sibling's merge. Unsupported
+        compound statements conservatively expose reads and kill no names.
+        """
+        defined = set(defined)
+
+        def read(expression):
+            for child in ast.walk(expression):
+                if isinstance(child, ast.Name) and isinstance(child.ctx, ast.Load):
+                    on_read(child, defined)
+
+        for node in nodes:
+            if isinstance(node, ast.If):
+                read(node.test)
+                branches = [
+                    _Analyzer._scalar_flow(branch, defined, on_read)
+                    for branch in (node.body, node.orelse)
+                ]
+                reachable = [branch for branch in branches if branch is not None]
+                if not reachable:
+                    return None
+                defined = set.intersection(*reachable)
+            elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+                if node.value is not None:
+                    read(node.value)
+                    targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                    for target in targets:
+                        read(target)
+                        defined.update(child.id for child in ast.walk(target)
+                                       if isinstance(child, ast.Name) and isinstance(child.ctx, ast.Store))
+            elif isinstance(node, ast.AugAssign):
+                read(node.value)
+                read(node.target)
+                if isinstance(node.target, ast.Name):
+                    on_read(node.target, defined)
+                    defined.add(node.target.id)
+            else:
+                read(node)
+                if isinstance(node, (ast.Continue, ast.Break, ast.Return, ast.Raise)):
+                    return None
+        return defined
+
+    def _scalar_dependencies(self, node: ast.For, loop_id: str, reductions: Sequence[Reduction]) -> None:
+        assigned = {child.id for statement in node.body for child in ast.walk(statement)
+                    if isinstance(child, ast.Name) and isinstance(child.ctx, ast.Store)}
+        index = node.target.id if isinstance(node.target, ast.Name) else ""
+        reduction_names = {reduction.target for reduction in reductions}
+        carried_candidates = assigned - reduction_names
+        reported = set()
+
+        def reject(name, location, reason):
+            if name not in reported:
+                reported.add(name)
+                self.diagnostic(DiagnosticCode.LOOP_CARRIED_SCALAR, reason, location, loop_id=loop_id)
+
+        if index in assigned:
+            reject(index, node.target, f"loop induction variable '{index}' is reassigned")
+
+        def read_iteration(child, defined):
+            name = child.id
+            if name in carried_candidates and name not in defined:
+                reject(name, child, f"scalar '{name}' may read a previous iteration before being defined")
+
+        self._scalar_flow(node.body, {index}, read_iteration)
+
+        # A non-reduction scalar's last sequential value cannot be obtained
+        # from unordered worker-private assignments. A definite overwrite
+        # before a later read makes that loop output dead and remains legal.
+        live_out_candidates = (assigned | {index}) - reduction_names
+
+        def read_after(child, defined):
+            if child.id in live_out_candidates and child.id not in defined:
+                reject(child.id, child, f"scalar '{child.id}' is read after the loop")
+
+        position = self.function.body.index(node)
+        self._scalar_flow([*node.orelse, *self.function.body[position + 1:]], set(), read_after)
 
     def _loop(self, node: ast.For, ordinal: int) -> RangeLoopHIR:
         loop_id = self._loop_id(node, ordinal)
@@ -933,6 +1011,7 @@ class _Analyzer:
         statements: list[HIRStatement] = []
         for statement in node.body:
             self._statement(statement, node, loop_id, reads, writes, reductions, effects, statements)
+        self._scalar_dependencies(node, loop_id, reductions)
 
         # An access to a previous/future element of a buffer written in this
         # loop is a loop-carried dependence.  Same-element read/modify/write
@@ -943,8 +1022,25 @@ class _Analyzer:
         # An accumulator may be returned after its loop, but consuming its
         # intermediate value inside the loop turns a reduction into a scan.
         reduction_targets = {reduction.target for reduction in reductions}
+        for target in reduction_targets:
+            if len({item.operator for item in reductions if item.target == target}) > 1:
+                self.diagnostic(
+                    DiagnosticCode.INVALID_REDUCTION,
+                    f"reduction '{target}' mixes different operators",
+                    node, loop_id=loop_id,
+                )
         for statement in node.body:
             for child in ast.walk(statement):
+                if isinstance(child, (ast.Assign, ast.AnnAssign)):
+                    targets = child.targets if isinstance(child, ast.Assign) else [child.target]
+                    if child.value is not None:
+                        for target in targets:
+                            if isinstance(target, ast.Name) and target.id in reduction_targets:
+                                self.diagnostic(
+                                    DiagnosticCode.INVALID_REDUCTION,
+                                    f"reduction '{target.id}' is overwritten inside the loop",
+                                    child, loop_id=loop_id,
+                                )
                 if isinstance(child, ast.Name) and isinstance(child.ctx, ast.Load) and child.id in reduction_targets:
                     self.diagnostic(
                         DiagnosticCode.REDUCTION_FEEDBACK,

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import inspect
+
 import pytest
 import numpy as np
 
@@ -19,6 +21,145 @@ def jit_project_cache(tmp_path):
 
 def _positive_value(value):
     return value if value > 0.0 else 0.0
+
+
+def _carried_branch(source, output, n):
+    value = 7
+    for i in range(n):
+        if source[i] > 0:
+            value = source[i]
+        output[i] = value
+    return output
+
+
+def _carried_previous(source, output, n):
+    value = 7
+    for i in range(n):
+        output[i] = value
+        value = source[i]
+    return output
+
+
+def _last_local(source, output, n):
+    value = 7
+    for i in range(n):
+        value = source[i]
+        output[i] = value
+    return value
+
+
+def _last_index(source, output, n):
+    i = -1
+    for i in range(n):
+        output[i] = source[i]
+    return i
+
+
+def _mutated_index(source, output, n):
+    for i in range(n):
+        i = 0
+        output[i] = source[i]
+    return output
+
+
+def _mixed_reduction(source, output, n):
+    total = 1.0
+    for i in range(n):
+        total += source[i]
+        total *= 1.01
+    return total
+
+
+def _reset_reduction(source, output, n):
+    total = 1
+    for i in range(n):
+        total = 1
+        total += source[i]
+    return total
+
+
+@pytest.mark.parametrize("function", [
+    _carried_branch, _carried_previous, _last_local, _last_index, _mutated_index,
+    _mixed_reduction, _reset_reduction,
+])
+def test_scalar_flow_selects_legal_serial_code_before_any_execution(function):
+    compiled = jit.compile(function)
+    assert compiled.parallel is compiled.serial
+    with pytest.raises(ValueError, match="parallel_policy='required' rejected"):
+        jit.compile(function, parallel_policy="required")
+    for count in (0, 1, 257):
+        source = np.arange(count, dtype=np.int64) - count // 2
+        expected = np.full(count, -99, dtype=np.int64)
+        actual = expected.copy()
+        expected_result = function(source, expected, count)
+        result = compiled(source, actual, count)
+        np.testing.assert_array_equal(actual, expected)
+        np.testing.assert_array_equal(result, expected_result)
+
+
+def test_all_paths_define_private_scalar_can_still_run_parallel():
+    @jit.compile(parallel_policy="required")
+    def kernel(source, output):
+        for i in range(len(source)):
+            if source[i] > 0:
+                value = source[i]
+            else:
+                value = -source[i]
+            value = value * 2
+            output[i] = value
+
+    source = np.arange(257, dtype=np.int64) - 128
+    output = np.zeros_like(source)
+    assert kernel.parallel is not kernel.serial
+    kernel(source, output)
+    np.testing.assert_array_equal(output, np.abs(source) * 2)
+
+
+def test_repeated_conditional_reduction_runs_in_parallel():
+    @jit.compile(parallel_policy="required")
+    def kernel(source):
+        total = 1
+        for i in range(len(source)):
+            total += source[i]
+            if source[i] > 0:
+                total += 2
+        return total
+
+    assert kernel.parallel is not kernel.serial
+    for count in (0, 1, 257):
+        source = np.arange(count, dtype=np.int64) - count // 2
+        assert kernel(source) == 1 + source.sum() + 2 * np.count_nonzero(source > 0)
+
+
+@pytest.mark.parametrize("function", [
+    _carried_branch, _carried_previous, _last_local, _last_index,
+    _mutated_index, _mixed_reduction, _reset_reduction,
+])
+def test_player_source_embedding_uses_the_same_scalar_legality(function):
+    source = "from Infernux import jit\n@jit.compile\n" + inspect.getsource(function)
+    assert jit_kernels.build_auto_parallel_embedded_source(source) is None
+    with pytest.raises(ValueError, match="parallel_policy='required' rejected"):
+        jit_kernels.build_auto_parallel_embedded_source(
+            source.replace("@jit.compile\n", "@jit.compile(parallel_policy='required')\n")
+        )
+
+    # A safe sibling still gets a parallel clone. The unsafe function must not
+    # inherit one just because the module has an embedded parallel manifest.
+    source += "\n@jit.compile\ndef fill(output):\n    for i in range(len(output)):\n        output[i] = i\n"
+    embedded = jit_kernels.build_auto_parallel_embedded_source(source)
+    assert embedded is not None
+    namespace = {}
+    exec(compile(embedded, "<041-cooked-jit-module>", "exec"), namespace)
+    assert set(namespace["__infernux_jit_manifest__"]) == {"fill"}
+    compiled = namespace[function.__name__]
+    assert compiled.parallel is compiled.serial
+    source_data = np.arange(17, dtype=np.int64) - 8
+    expected = np.zeros_like(source_data)
+    actual = expected.copy()
+    expected_result = function(source_data, expected, len(source_data))
+    result = compiled(source_data, actual, len(source_data))
+    np.testing.assert_array_equal(actual, expected)
+    np.testing.assert_array_equal(result, expected_result)
 
 
 class TestPublicJitCompile:
