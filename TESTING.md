@@ -79,6 +79,14 @@ overlap require serial execution (or reject `parallel_policy="required"`).
 The proof currently covers single-loop functions, not backend loop fusion.
 Cooked bytecode embeds the same proof, and warmup preserves stride-trick view
 ownership rather than silently copying it into an unrelated dense array.
+Row-local multidimensional scalar accesses such as `positions[i, 0]` use the
+same dependency proof and native loop lowering. Induction axes must be
+unshifted, other coordinates literal, and the range start nonnegative with
+a positive constant step (the current CPU lowerer requires step 1). Mixed
+axes and cross-row accesses are not presumed independent. Runtime layout
+checks still reject overlapping storage; NumPy views, CPU vector buffers and
+cooked source-less kernels share this path. Empty warmup arrays retain their
+shape/strides without trying to reconstruct an invalid empty-owner offset.
 
 `inx.jit.statistics(function)` returns an immutable detached snapshot of actual
 specializations, preparation/cache-load time, cold compiler pass timings and
@@ -112,7 +120,7 @@ Install the wheel into an isolated validation directory, put that directory
 first on `PYTHONPATH`, and run `python -m llvmlite.tests`, followed by:
 
 ```sh
-python -m pytest python/test/test_jit.py python/test/test_jit_alias.py python/test/test_jit_statistics.py python/test/test_jit_optimizer.py python/test/test_jit_hir.py python/test/test_jit_runtime.py python/test/test_jit_code_ownership.py python/test/test_jit_disk_cache.py python/test/test_compute.py -q
+python -m pytest python/test/test_jit.py python/test/test_jit_rows.py python/test/test_jit_alias.py python/test/test_jit_statistics.py python/test/test_jit_optimizer.py python/test/test_jit_hir.py python/test/test_jit_runtime.py python/test/test_jit_code_ownership.py python/test/test_jit_disk_cache.py python/test/test_compute.py -q
 ```
 
 Run the fork's source metadata checks from `external/llvmlite_for_infernux`

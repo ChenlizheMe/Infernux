@@ -511,6 +511,34 @@ def _call_name(node: ast.Call) -> tuple[str | None, str | None]:
     return None, None
 
 
+def _access_axes(node, imports):
+    index = _index_node(node)
+    return tuple(_affine(axis, known_calls=imports) for axis in
+                 (index.elts if isinstance(index, ast.Tuple) else (index,)))
+
+
+def _row_local(axes, loop):
+    """One or more unshifted induction axes, with literal remaining axes.
+
+    Restrict this proof to nonnegative increasing ranges: crossing from -1
+    to positive indices can revisit a NumPy row after negative-index wrapping.
+    Dependence analysis still checks that different accesses share an
+    independent axis; x[i, 0] and x[0, i] are not automatically independent.
+    """
+    if len(axes) < 2 or not isinstance(loop.target, ast.Name):
+        return False
+    call = loop.iter
+    if not isinstance(call, ast.Call) or not isinstance(call.func, ast.Name) or call.func.id != "range":
+        return False
+    start = 0 if len(call.args) == 1 else _constant_int(call.args[0]) if call.args else None
+    step = _constant_int(call.args[2]) if len(call.args) == 3 else 1
+    if start is None or start < 0 or step is None or step <= 0:
+        return False
+    same = lambda axis: _is_same_iteration_index(axis, loop.target.id)
+    return any(same(axis) for axis in axes) and all(
+        axis is not None and (not axis.coefficients or same(axis)) for axis in axes)
+
+
 def _buffer_dependences(reads, writes, index_name, loop_id, aliases):
     """One dependence rule for symbolic buffers and admitted runtime aliases."""
     def same_buffer(left, right):
@@ -518,8 +546,8 @@ def _buffer_dependences(reads, writes, index_name, loop_id, aliases):
 
     def may_cross(left, right):
         # Multidimensional arrays intersect only if every axis intersects.
-        # This does not make tuple indices eligible for the minimal CPU HIR;
-        # it avoids calling row-local GPU accesses a proven cross-row hazard.
+        # Equal induction axes separate row-local work even when other
+        # coordinates differ. Mixed axes/shifted rows remain conservative.
         if left.axes and len(left.axes) == len(right.axes):
             return all(_may_cross_iterations(a, b, index_name)
                        for a, b in zip(left.axes, right.axes))
@@ -768,18 +796,18 @@ class _Analyzer:
                 self.diagnostic(DiagnosticCode.INDIRECT_WRITE, "buffer access base must be a named buffer", node, loop_id=loop_id)
             else:
                 index = _affine(_index_node(node), known_calls=self.imports)
+                axes = _access_axes(node, self.imports)
+                row_local = _row_local(axes, loop)
                 loop_name = loop.target.id if isinstance(loop.target, ast.Name) else ""
-                if index is None or any(name != loop_name for name in index.variables):
+                if not row_local and (index is None or any(name != loop_name for name in index.variables)):
                     self.diagnostic(
                         DiagnosticCode.NON_AFFINE_INDEX,
                         f"read from {node.value.id}[...] is not indexed by the loop induction variable",
                         node,
                         loop_id=loop_id,
                     )
-                same = _is_same_iteration_index(index, loop_name=loop_name)
-                axes = tuple(_affine(axis, known_calls=self.imports) for axis in
-                             (_index_node(node).elts if isinstance(_index_node(node), ast.Tuple) else (_index_node(node),)))
-                reads.append(BufferAccess(node.value.id, index, BufferAccessKind.READ, _location(node), _unparse(node), same, _index_is_unique(index, loop_name), axes))
+                same = row_local or _is_same_iteration_index(index, loop_name=loop_name)
+                reads.append(BufferAccess(node.value.id, index, BufferAccessKind.READ, _location(node), _unparse(node), same, row_local or _index_is_unique(index, loop_name), axes))
                 effects.append(Effect(EffectKind.BUFFER_READ, f"read {node.value.id}[{_unparse(_index_node(node))}]", _location(node), node.value.id))
             for child in ast.iter_child_nodes(node):
                 self._visit_expression(child, loop, loop_id, reads, effects)
@@ -821,8 +849,10 @@ class _Analyzer:
             return
         buffer_name = target.value.id
         index = _affine(_index_node(target), known_calls=self.imports)
-        unique = _index_is_unique(index, loop.target.id if isinstance(loop.target, ast.Name) else "")
-        same = _is_same_iteration_index(index, loop.target.id if isinstance(loop.target, ast.Name) else "")
+        axes = _access_axes(target, self.imports)
+        row_local = _row_local(axes, loop)
+        unique = row_local or _index_is_unique(index, loop.target.id if isinstance(loop.target, ast.Name) else "")
+        same = row_local or _is_same_iteration_index(index, loop.target.id if isinstance(loop.target, ast.Name) else "")
         if not unique:
             self.diagnostic(
                 DiagnosticCode.INDIRECT_WRITE,
@@ -831,8 +861,6 @@ class _Analyzer:
                 loop_id=loop_id,
             )
         access_kind = BufferAccessKind.READ_WRITE if aug else BufferAccessKind.WRITE
-        axes = tuple(_affine(axis, known_calls=self.imports) for axis in
-                     (_index_node(target).elts if isinstance(_index_node(target), ast.Tuple) else (_index_node(target),)))
         access = BufferAccess(buffer_name, index, access_kind, _location(target), _unparse(target), same, unique, axes)
         writes.append(access)
         effects.append(Effect(EffectKind.BUFFER_WRITE, f"write {buffer_name}[{_unparse(_index_node(target))}]", _location(target), buffer_name))

@@ -135,6 +135,18 @@ def test_warmup_does_not_silently_densify_an_external_overlapping_owner():
     np.testing.assert_array_equal(view, 0)
 
 
+@pytest.mark.parametrize("values", [
+    np.empty((0, 6))[:, ::-2], np.empty((3, 0))[::-1],
+    np.empty(0)[::-1], np.empty((3, 0, 2)).transpose(2, 1, 0),
+])
+def test_empty_warmup_views_keep_layout_without_out_of_owner_offsets(values):
+    args, _ = clone_call_arguments((values, values), {})
+    assert args[0] is args[1] and args[0] is not values
+    assert args[0].shape == values.shape
+    assert args[0].strides == values.strides
+    assert args[0].dtype == values.dtype
+
+
 def test_cooked_alias_proof_needs_no_runtime_source_lookup(monkeypatch):
     source = "from Infernux import jit\n@jit.compile(parallel_policy='required')\n" + inspect.getsource(_shared_update)
     embedded = kernels.build_auto_parallel_embedded_source(source)

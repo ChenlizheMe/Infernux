@@ -92,8 +92,7 @@ def test_multidimensional_row_access_dependence(read, expected):
     hir = build_hir(f"def kernel(x,n):\n    for i in range(1,n):\n        x[i,0] = x[{read}] + 1\n        x[i,1] = 2\n")
     hazards = {DiagnosticCode.LOOP_CARRIED_READ, DiagnosticCode.LOOP_CARRIED_WRITE}
     assert any(item.code in hazards for item in hir.diagnostics) is expected
-    # Tuple-index lowering is not yet part of the minimal CPU HIR.
-    assert not hir.eligible_loops
+    assert bool(hir.eligible_loops) is not expected
 
 
 @pytest.mark.parametrize("body,expected", [

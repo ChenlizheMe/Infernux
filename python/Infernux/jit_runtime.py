@@ -415,6 +415,12 @@ def clone_call_arguments(args: tuple[Any, ...], kwargs: dict[str, Any]) -> tuple
         if isinstance(value, np.ndarray):
             if value.dtype.hasobject:
                 raise TypeError("cannot isolate object-array contents for compute preparation")
+            if not value.size:
+                # Empty reversed views may have an offset outside their empty
+                # owner. There are no bytes to alias; retain the exact layout.
+                copied = np.ndarray(value.shape, dtype=value.dtype, buffer=bytearray(), strides=value.strides)
+                memo[identity] = copied
+                return copied
             root = value
             owner = value
             # NumPy stride-trick views insert a non-ndarray owner between the
