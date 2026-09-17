@@ -144,6 +144,7 @@ class PreparedPythonComponent:
     component_id: Optional[int]
     fields_document: dict
     instance: Any
+    prefab_source_id: int = 0
 
     @property
     def component_index(self) -> int:
@@ -164,8 +165,10 @@ _PYTHON_TYPE_PREFIX = "python:"
 
 
 def _decode_python_component_record(record: dict, path: str) -> tuple[str, str, str, str, str]:
-    if not isinstance(record, dict) or set(record) != _COMPONENT_RECORD_FIELDS:
+    if not isinstance(record, dict) or set(record) - {"prefab_source_id"} != _COMPONENT_RECORD_FIELDS:
         raise PythonComponentRestoreError(f"{path} must be an exact ComponentRecord")
+    if "prefab_source_id" in record and (type(record["prefab_source_id"]) is not int or record["prefab_source_id"] <= 0):
+        raise PythonComponentRestoreError(f"{path}.prefab_source_id must be a positive integer")
     type_id = record.get("type_id")
     if not isinstance(type_id, str) or not type_id.startswith(_PYTHON_TYPE_PREFIX):
         raise PythonComponentRestoreError(f"{path}.type_id is not a Python component identity")
@@ -274,7 +277,7 @@ def _prepare_python_component_records(
     component_type_counts: dict[tuple[int, str], int] = {}
     python_component_ids: set[int] = set()
     parsed: list[
-        tuple[Optional[int], str, str, str, str, str, str, bool, int, int, dict]
+        tuple[Optional[int], str, str, str, str, str, str, bool, int, int, dict, int]
     ] = []
 
     for object_id, document_path, descriptor in raw_descriptors:
@@ -312,7 +315,7 @@ def _prepare_python_component_records(
         parsed.append(
             (
                 object_id, document_path, type_name, script_guid, type_guid,
-                module_name, qualified_name, enabled, execution_order, component_id, fields,
+                module_name, qualified_name, enabled, execution_order, component_id, fields, descriptor.get("prefab_source_id", 0),
             )
         )
 
@@ -320,7 +323,7 @@ def _prepare_python_component_records(
     try:
         for (
             object_id, document_path, type_name, script_guid, type_guid,
-            module_name, qualified_name, enabled, execution_order, component_id, fields,
+            module_name, qualified_name, enabled, execution_order, component_id, fields, prefab_source_id,
         ) in parsed:
             _validate_reference_documents(
                 fields,
@@ -446,6 +449,7 @@ def _prepare_python_component_records(
                     component_id,
                     fields,
                     instance,
+                    prefab_source_id,
                 )
             )
         return graph
@@ -732,6 +736,7 @@ def _publish_prepared_scene_python_components(
                     f"Python component '{item.type_name}' was not bound to a native proxy"
                 )
             attached.append((target, instance, native_component))
+            native_component._prefab_source_id = item.prefab_source_id
             if item.component_id is not None:
                 native_component._set_component_id(item.component_id)
                 instance._component_id = item.component_id

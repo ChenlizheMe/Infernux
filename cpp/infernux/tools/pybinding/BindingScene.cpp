@@ -705,6 +705,7 @@ void RegisterSceneBindings(py::module_ &m)
         .def_property_readonly("type_name", &Component::GetTypeName)
         .def_property_readonly("component_id", &Component::GetComponentID)
         .def_property_readonly("handle", &Component::GetHandle)
+        .def_property("_prefab_source_id", &Component::GetPrefabSourceID, &Component::SetPrefabSourceID)
         .def("_set_component_id", &Component::SetComponentID, py::arg("component_id"),
              "Internal transactional restore hook")
         .def_property("enabled", &Component::IsEnabled, &Component::SetEnabled)

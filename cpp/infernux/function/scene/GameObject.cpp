@@ -842,6 +842,7 @@ Component *GameObject::ReplacePythonComponent(Component *current, std::unique_pt
             return nullptr;
         }
         replacement->SetComponentID(current->GetComponentID());
+        replacement->SetPrefabSourceID(current->GetPrefabSourceID());
 
         Component *published = replacement.get();
         slot = std::move(replacement);
@@ -1415,6 +1416,7 @@ std::unique_ptr<GameObject> GameObject::CloneGraph(Scene *scene,
         } else {
             auto clonedComp = comp->Clone();
             if (clonedComp) {
+                clonedComp->SetPrefabSourceID(comp->GetPrefabSourceID());
                 clonedComp->SetGameObject(obj.get());
                 componentIdRemap.emplace(comp->GetComponentID(), clonedComp->GetComponentID());
                 clonedComponents.push_back(clonedComp.get());

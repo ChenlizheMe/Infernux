@@ -1058,6 +1058,7 @@ std::unique_ptr<GameObject> Scene::BuildGameObjectFromJsonImpl(const json &objJs
         comp->SetGameObject(obj.get());
         if (prototypeCache && supportsPrototype && !prototype)
             (*prototypeCache)[prototypeHash].push_back({&componentRecordDocument, comp.get()});
+        comp->SetPrefabSourceID(record.prefabSourceId);
         obj->m_components.push_back(std::move(comp));
     }
 

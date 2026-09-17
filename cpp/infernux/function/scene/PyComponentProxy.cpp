@@ -553,6 +553,8 @@ nlohmann::json PyComponentProxy::SerializeDocument() const
     }
     j["enabled"] = enabled;
     j["component_id"] = m_componentId;
+    if (m_prefabSourceId)
+        j["prefab_source_id"] = m_prefabSourceId;
     j["script_guid"] = m_scriptGuid;
 
     // Serialize Python component's serializable fields

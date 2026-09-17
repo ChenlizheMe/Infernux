@@ -270,6 +270,8 @@ nlohmann::json Component::SerializeDocument() const
     j["enabled"] = m_enabled;
     j["execution_order"] = m_executionOrder;
     j["component_id"] = m_componentId;
+    if (m_prefabSourceId)
+        j["prefab_source_id"] = m_prefabSourceId;
     return j;
 }
 
@@ -311,6 +313,12 @@ bool Component::DeserializeDocument(const nlohmann::json &j)
             return false;
         }
 
+        if (j.contains("prefab_source_id") &&
+            (!j["prefab_source_id"].is_number_unsigned() || j["prefab_source_id"].get<uint64_t>() == 0)) {
+            INXLOG_ERROR("Component prefab_source_id must be a non-zero unsigned integer");
+            return false;
+        }
+        m_prefabSourceId = j.value("prefab_source_id", uint64_t{0});
         m_enabled = j["enabled"].get<bool>();
         m_executionOrder = j["execution_order"].get<int>();
         if (j.contains("component_id")) {

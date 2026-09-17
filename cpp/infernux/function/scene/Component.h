@@ -216,6 +216,16 @@ class Component
     /// @brief Set component ID (used during deserialization to restore ID)
     void SetComponentID(uint64_t id);
 
+    /// Asset-local Prefab identity; zero denotes a component added to an instance.
+    [[nodiscard]] uint64_t GetPrefabSourceID() const
+    {
+        return m_prefabSourceId;
+    }
+    void SetPrefabSourceID(uint64_t id)
+    {
+        m_prefabSourceId = id;
+    }
+
     /// Reserve an identity before preflighting a document transaction.
     static uint64_t ReserveDocumentID()
     {
@@ -442,6 +452,7 @@ class Component
     bool m_isBeingDestroyed = false;
     int m_executionOrder = 0;
     uint64_t m_componentId = 0;
+    uint64_t m_prefabSourceId = 0;
     uint64_t m_lifetimeGeneration = 0;
 
   private:
