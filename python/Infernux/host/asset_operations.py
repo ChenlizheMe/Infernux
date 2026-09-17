@@ -82,6 +82,16 @@ def build_asset_operations(project_path: str) -> tuple[Operation, ...]:
             tags=("asset", "guid", "text", "read"),
         ),
         operation(
+            "infernux.asset.model.inspect",
+            OperationKind.QUERY,
+            "Read the imported source hierarchy, material slots and animation inventory of a model.",
+            _inspect_model,
+            capability="asset.read",
+            input_properties={"asset_guid": {"type": "string"}},
+            required=("asset_guid",),
+            tags=("asset", "model", "hierarchy", "rig", "animation", "material"),
+        ),
+        operation(
             "infernux.asset.text.set",
             OperationKind.COMMAND,
             "Replace one UTF-8 project text asset through Project history.",
@@ -238,6 +248,34 @@ def _read_text_asset(asset_guid: str) -> dict[str, object]:
         }
 
     return on_editor("infernux.asset.text.read", read)
+
+
+def _inspect_model(asset_guid: str) -> dict[str, object]:
+    def read():
+        from Infernux.core.mesh import Mesh
+        from Infernux.core.asset_types import MESH_EXTENSIONS
+
+        path = asset_path(asset_guid)
+        if os.path.splitext(path)[1].lower() not in MESH_EXTENSIONS:
+            raise OperationError("asset.invalid_type", "Model inspection requires a mesh asset.")
+        mesh = Mesh.load_guid(asset_guid)
+        if mesh is None:
+            raise OperationError("asset.load_failed", "The imported model could not be loaded.")
+        return {
+            "asset": asset_identity(path),
+            "model": {
+                "generation": mesh.generation,
+                "geometry_space": "model",
+                "matrix_layout": "rows",
+                "node_identity": "import_local_index",
+                "nodes": list(mesh.model_nodes),
+                "material_slots": list(mesh.material_slots),
+                "bone_count": mesh.native.skinned_bone_count,
+                "animation_names": list(mesh.native.skinned_animation_names),
+            },
+        }
+
+    return on_editor("infernux.asset.model.inspect", read)
 
 
 def _set_text_asset(asset_guid: str, content: str) -> dict[str, object]:

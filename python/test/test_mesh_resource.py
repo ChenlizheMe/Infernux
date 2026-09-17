@@ -7,6 +7,60 @@ from Infernux.components.builtin import MeshRenderer
 from Infernux.lib import AssetRegistry
 
 
+def test_imported_model_nodes_preserve_source_hierarchy_and_are_detached(engine, monkeypatch):
+    from pathlib import Path
+    from Infernux.host import asset_operations
+
+    database = engine.get_asset_database()
+    target = Path(database.assets_root) / "ModelHierarchyContract.gltf"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    source = Path(__file__).resolve().parents[2] / "cpp/tests/fixtures/model_hierarchy.gltf"
+    target.write_bytes(source.read_bytes())
+    result = database.import_asset(str(target))
+    assert result, result.error
+    mesh = inx.Mesh.load_guid(result.guid)
+    nodes = mesh.model_nodes
+    indices = {node['name']: index for index, node in enumerate(nodes)}
+    root, pivot = indices['Assembly'], indices['Empty pivot']
+    assert nodes[pivot]['parent_index'] == root
+    assert nodes[indices['Upper']]['parent_index'] == pivot
+    assert nodes[indices['Lower']]['parent_index'] == pivot
+    assert nodes[pivot]['node_group'] == -1
+    np.testing.assert_array_equal(np.asarray(nodes[root]['local_matrix'])[:3, 3], [2, 3, 4])
+    assert nodes[pivot]['local_matrix'][0][0] == -2
+    nodes[pivot]['name'] = 'changed copy'
+    nodes[root]['local_matrix'][0][3] = 100
+    assert mesh.model_nodes[pivot]['name'] == 'Empty pivot'
+    assert mesh.model_nodes[root]['local_matrix'][0][3] == 2
+
+    monkeypatch.setattr(asset_operations, 'on_editor', lambda _, callback: callback())
+    monkeypatch.setattr(asset_operations, 'asset_path', lambda _: str(target))
+    monkeypatch.setattr(asset_operations, 'asset_identity', lambda _: {'guid': result.guid})
+    inspected = asset_operations._inspect_model(result.guid)['model']
+    assert inspected['nodes'] == list(mesh.model_nodes)
+    assert inspected['geometry_space'] == 'model'
+    assert inspected['matrix_layout'] == 'rows'
+    assert inspected['node_identity'] == 'import_local_index'
+    assert inspected['material_slots'] == list(mesh.material_slots)
+    assert inspected['bone_count'] == 0
+
+    binary = target.with_suffix('.inxmesh')
+    binary.write_bytes(mesh.serialize_source())
+    binary_import = database.import_asset(str(binary))
+    assert binary_import, binary_import.error
+    restored = inx.Mesh.load_guid(binary_import.guid)
+    assert restored.model_nodes == mesh.model_nodes
+
+    copied = mesh.copy('Copied source hierarchy')
+    try:
+        assert copied.model_nodes == mesh.model_nodes
+        copied.set_data(np.zeros((3, 3), dtype=np.float32), np.array([0, 1, 2], dtype=np.uint32))
+        assert copied.model_nodes == ()
+        assert mesh.model_nodes
+    finally:
+        copied.destroy()
+
+
 def _quad(*, z: float = 0.0):
     positions = np.array(
         [[-1, -1, z], [1, -1, z], [1, 1, z], [-1, 1, z]], dtype=np.float32

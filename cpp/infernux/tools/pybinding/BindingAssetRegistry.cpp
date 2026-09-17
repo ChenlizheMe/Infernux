@@ -232,6 +232,29 @@ void RegisterAssetRegistryBindings(py::module_ &m)
         .def_property_readonly("material_slot_count", &InxMesh::GetMaterialSlotCount, "Number of material slots")
         .def_property_readonly("material_slot_names", &InxMesh::GetMaterialSlotNames,
                                "Material slot names from model file")
+        .def(
+            "get_model_nodes",
+            [](const InxMesh &mesh) {
+                py::list result;
+                for (const auto &node : mesh.GetModelNodes()) {
+                    py::dict item;
+                    item["name"] = node.name;
+                    item["parent_index"] = node.parentIndex;
+                    item["node_group"] = node.nodeGroup;
+                    py::list rows;
+                    for (glm::length_t row = 0; row < 4; ++row) {
+                        py::list values;
+                        for (glm::length_t column = 0; column < 4; ++column)
+                            values.append(node.localTransform[column][row]);
+                        rows.append(values);
+                    }
+                    item["local_matrix"] = rows;
+                    result.append(item);
+                }
+                return result;
+            },
+            "Copy source nodes in parent-before-child order; matrices are rows, indices are import-local, not stable "
+            "IDs")
         .def_property_readonly("has_skinned_data", &InxMesh::HasSkinnedData,
                                "Whether this Mesh carries immutable skin/animation data")
         .def_property_readonly("generation", &InxMesh::GetGeneration, "Monotonic immutable geometry generation")

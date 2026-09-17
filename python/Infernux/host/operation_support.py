@@ -95,6 +95,7 @@ _ENGINE_OUTPUTS: dict[str, tuple[dict[str, object], tuple[str, ...]]] = {
         ("assets", "returned", "root", "catalog_count", "global_catalog_count"),
     ),
     "infernux.asset.inspect": ({"asset": _OBJECT}, ("asset",)),
+    "infernux.asset.model.inspect": ({"asset": _OBJECT, "model": _OBJECT}, ("asset", "model")),
     "infernux.asset.text.read": (
         {"asset": _OBJECT, "content": _STRING},
         ("asset", "content"),

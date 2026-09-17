@@ -12,10 +12,11 @@ def test_editor_authoring_operations_exist_without_mcp_plugin(tmp_path):
     registry = OperationRegistry()
     operation_ids = install_editor_operations(str(tmp_path), registry)
 
-    assert len(operation_ids) == 31
+    assert len(operation_ids) == 32
     assert "infernux.scene.component.schema" in operation_ids
     assert "infernux.scene.component.property.set" in operation_ids
     assert "infernux.asset.inspect" in operation_ids
+    assert "infernux.asset.model.inspect" in operation_ids
     assert "infernux.asset.text.set" in operation_ids
     assert "infernux.data_asset.inspect" in operation_ids
     assert "infernux.data_asset.schema" in operation_ids
@@ -49,6 +50,18 @@ def test_transport_projection_cannot_replace_engine_owner(tmp_path):
     retained = registry.get(operation_id)
     assert retained is authoritative
     assert retained.owner == "infernux/engine"
+
+
+def test_model_inspection_rejects_non_model_before_loading(monkeypatch):
+    from Infernux.host import asset_operations as operations
+    from Infernux.core.mesh import Mesh
+    from Infernux.host.operations import OperationError
+
+    monkeypatch.setattr(operations, "on_editor", lambda _name, callback: callback())
+    monkeypatch.setattr(operations, "asset_path", lambda _: "Assets/Readme.txt")
+    monkeypatch.setattr(Mesh, "load_guid", lambda _: pytest.fail("non-model was loaded"))
+    with pytest.raises(OperationError, match="requires a mesh asset"):
+        operations._inspect_model("text-guid")
 
 
 def test_scene_open_reports_scheduling_and_schema_matches(monkeypatch):

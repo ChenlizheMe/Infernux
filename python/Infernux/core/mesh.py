@@ -105,6 +105,18 @@ class Mesh:
         return tuple(self._native.material_slot_names)
 
     @property
+    def model_nodes(self) -> tuple[dict[str, Any], ...]:
+        """Copy the imported source hierarchy, including transform-only nodes.
+
+        Each record contains name, parent_index (-1 for a root), node_group
+        (-1 without geometry), and a row-major 4x4 local_matrix. Indices belong
+        to this import, not persistent asset identities. Current vertex_buffer
+        positions are already in model space: do not apply these matrices to
+        them again. Procedural meshes without source hierarchy return ().
+        """
+        return tuple(self._native.get_model_nodes())
+
+    @property
     def bounds(self) -> tuple[float, float, float, float, float, float]:
         return tuple(self._native.get_bounds())
 
