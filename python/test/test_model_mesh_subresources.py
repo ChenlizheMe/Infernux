@@ -65,6 +65,24 @@ def test_mesh_subresource_ids_survive_source_node_reorder(scene, hierarchy_asset
     assert {tuple(item['path']): item['subresource_id'] for item in after} == ids
 
 
+def test_mesh_subresource_id_survives_unique_source_node_rename(scene, hierarchy_asset, engine, monkeypatch):
+    """A DCC leaf rename updates the path without replacing its asset identity."""
+    from Infernux.core.assets import AssetManager
+
+    database, source, guid = hierarchy_asset
+    monkeypatch.setattr(AssetManager, '_engine', engine)
+    monkeypatch.setattr(AssetManager, '_asset_database', database)
+    before = json.loads(database.get_meta_by_guid(guid).get_string('model_meshes'))
+    upper = next(item for item in before if item['name'] == 'Upper')
+    document = json.loads(source.read_text())
+    document['nodes'][2]['name'] = 'Renamed Upper'
+    source.write_text(json.dumps(document))
+    assert AssetManager.reimport_asset(str(source), database=database)
+    after = json.loads(database.get_meta_by_guid(guid).get_string('model_meshes'))
+    renamed = next(item for item in after if item['name'] == 'Renamed Upper')
+    assert renamed['subresource_id'] == upper['subresource_id']
+
+
 def test_node_material_inspector_does_not_keep_previous_node(imported_model):
     from types import SimpleNamespace
     from Infernux.engine.bootstrap_inspector._materials import _collect_material_renderers, _rebuild_material_entries

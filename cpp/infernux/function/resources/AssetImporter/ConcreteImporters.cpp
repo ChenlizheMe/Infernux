@@ -20,9 +20,11 @@
 #include <cstring>
 #include <fstream>
 #include <functional>
+#include <iomanip>
 #include <limits>
 #include <nlohmann/json.hpp>
 #include <regex>
+#include <sstream>
 #include <unordered_set>
 #include <vector>
 #if !defined(__EMSCRIPTEN__) && !defined(__ANDROID__)
@@ -143,6 +145,88 @@ void RejectPathOnlyReference(const std::string &guid, const std::string &pathHin
         throw std::runtime_error(location +
                                  " must provide a GUID; path_hint is non-authoritative and cannot resolve an asset");
     }
+}
+
+// A source node's path is the public lookup key, but it is not an identity:
+// artists are allowed to rename a node or reorder siblings in the DCC file.
+// Persist a compact geometry signature beside the path so a unique renamed
+// node can retain its subresource GUID without introducing a second identity
+// system.  This is deliberately a fast FNV-1a signature, not a content
+// integrity check; the source content hash still owns import invalidation.
+std::string ModelNodeIdentityKey(const InxMesh &mesh, size_t nodeIndex, const std::vector<std::string> &path)
+{
+    const auto &nodes = mesh.GetModelNodes();
+    if (nodeIndex >= nodes.size() || nodes[nodeIndex].nodeGroup < 0)
+        return {};
+    const auto geometry = mesh.GetModelSourceGeometry();
+    if (!geometry)
+        return {};
+
+    uint64_t hash = 14695981039346656037ull;
+    const auto mix = [&hash](const void *data, size_t size) {
+        const auto *bytes = static_cast<const unsigned char *>(data);
+        for (size_t index = 0; index < size; ++index) {
+            hash ^= bytes[index];
+            hash *= 1099511628211ull;
+        }
+    };
+    const auto mixString = [&mix](std::string_view value) {
+        mix(value.data(), value.size());
+        const unsigned char separator = 0xff;
+        mix(&separator, sizeof(separator));
+    };
+    const auto mixFloat = [&mix](float value) {
+        uint32_t bits = 0;
+        std::memcpy(&bits, &value, sizeof(bits));
+        mix(&bits, sizeof(bits));
+    };
+    const auto mixVec2 = [&mixFloat](const glm::vec2 &value) {
+        mixFloat(value.x);
+        mixFloat(value.y);
+    };
+    const auto mixVec3 = [&mixFloat](const glm::vec3 &value) {
+        mixFloat(value.x);
+        mixFloat(value.y);
+        mixFloat(value.z);
+    };
+    const auto mixVec4 = [&mixFloat](const glm::vec4 &value) {
+        mixFloat(value.x);
+        mixFloat(value.y);
+        mixFloat(value.z);
+        mixFloat(value.w);
+    };
+    const auto mixUvec4 = [&mix](const glm::uvec4 &value) { mix(&value.x, sizeof(uint32_t) * 4); };
+    // Include the parent source path so identical meshes under different
+    // pivots remain distinct while a leaf rename stays matchable.
+    for (size_t index = 0; index + 1 < path.size(); ++index)
+        mixString(path[index]);
+    for (const auto &submesh : geometry->subMeshes) {
+        if (static_cast<int32_t>(submesh.nodeGroup) != nodes[nodeIndex].nodeGroup)
+            continue;
+        mix(&submesh.materialSlot, sizeof(submesh.materialSlot));
+        mix(&submesh.vertexCount, sizeof(submesh.vertexCount));
+        mix(&submesh.indexCount, sizeof(submesh.indexCount));
+        mixVec3(submesh.boundsMin);
+        mixVec3(submesh.boundsMax);
+        if (submesh.vertexStart + submesh.vertexCount <= geometry->vertices.size()) {
+            for (uint32_t vertexIndex = 0; vertexIndex < submesh.vertexCount; ++vertexIndex) {
+                const auto &vertex = geometry->vertices[submesh.vertexStart + vertexIndex];
+                mixVec3(vertex.pos);
+                mixVec3(vertex.normal);
+                mixVec4(vertex.tangent);
+                mixVec3(vertex.color);
+                mixVec2(vertex.texCoord);
+                mixUvec4(vertex.boneIndices);
+                mixVec4(vertex.boneWeights);
+            }
+        }
+        if (submesh.indexStart + submesh.indexCount <= geometry->indices.size())
+            mix(geometry->indices.data() + submesh.indexStart,
+                sizeof(uint32_t) * submesh.indexCount);
+    }
+    std::ostringstream result;
+    result << "v1/" << std::hex << std::setw(16) << std::setfill('0') << hash;
+    return result.str();
 }
 
 } // namespace
@@ -769,12 +853,19 @@ ImportArtifact ModelImporter::Import(const ImportRequest &request) const
     nlohmann::json previousModelMeshes = nlohmann::json::array();
     if (artifact.metadata.HasKey("model_meshes"))
         previousModelMeshes = nlohmann::json::parse(artifact.metadata.GetDataAs<std::string>("model_meshes"));
+    std::unordered_map<std::string, size_t> previousIdentityCounts;
+    for (const auto &previous : previousModelMeshes) {
+        if (previous.contains("identity_key") && previous["identity_key"].is_string())
+            ++previousIdentityCounts[previous["identity_key"].get<std::string>()];
+    }
+    std::unordered_set<std::string> consumedSubresourceIds;
     nlohmann::json modelMeshes = nlohmann::json::array();
     const auto &modelNodes = imported.mesh->GetModelNodes();
     for (size_t i = 0; i < modelNodes.size(); ++i) {
         if (modelNodes[i].nodeGroup < 0)
             continue;
         const auto path = imported.mesh->GetModelNodePath(i);
+        const std::string identityKey = ModelNodeIdentityKey(*imported.mesh, i, path);
         std::string subresourceId;
         for (const auto &previous : previousModelMeshes) {
             if (previous.value("path", nlohmann::json::array()) == nlohmann::json(path) &&
@@ -783,14 +874,30 @@ ImportArtifact ModelImporter::Import(const ImportRequest &request) const
                 break;
             }
         }
+        // A unique geometry signature is the only safe rename match.  If
+        // duplicate source nodes share the same signature, leave them as new
+        // identities rather than guessing and binding two objects together.
+        if (subresourceId.empty() && !identityKey.empty() && previousIdentityCounts[identityKey] == 1) {
+            for (const auto &previous : previousModelMeshes) {
+                if (previous.value("identity_key", "") != identityKey ||
+                    !previous.contains("subresource_id") || !previous["subresource_id"].is_string())
+                    continue;
+                const auto candidate = previous["subresource_id"].get<std::string>();
+                if (consumedSubresourceIds.find(candidate) == consumedSubresourceIds.end()) {
+                    subresourceId = candidate;
+                    break;
+                }
+            }
+        }
         if (subresourceId.empty()) {
             InxResourceMeta subresource;
             subresource.Init(nullptr, 0, request.sourcePath + "::submesh:" + nlohmann::json(path).dump(),
                              ResourceType::Mesh);
             subresourceId = subresource.GetGuid();
         }
+        consumedSubresourceIds.insert(subresourceId);
         modelMeshes.push_back({{"name", modelNodes[i].name}, {"path", path},
-                               {"subresource_id", subresourceId}});
+                               {"subresource_id", subresourceId}, {"identity_key", identityKey}});
     }
     artifact.metadata.AddMetadata("model_meshes", modelMeshes.dump());
 
