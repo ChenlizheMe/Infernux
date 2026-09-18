@@ -87,6 +87,64 @@ def test_wrapper_culling_mask_writes_the_native_authoritative_field(scene):
     assert camera.serialize_document() == before
 
 
+def test_camera_inspector_uses_named_layer_popup_instead_of_numeric_mask(scene, monkeypatch):
+    """The authoring surface must never make users type the 32-bit mask."""
+    import Infernux.engine.ui.inspector_components as inspector_components
+    import Infernux.engine.ui.inspector_utils as inspector_utils
+
+    wrapper = scene.create_game_object("LayerInspectorCamera").add_component("Camera")
+    wrapper.culling_mask = (1 << 0) | (1 << 2)
+
+    class _LayerManager:
+        @staticmethod
+        def instance():
+            return _LayerManager()
+
+        def get_all_layers(self):
+            return ["Gameplay", "UI", "Effects"]
+
+    class _Context:
+        def __init__(self):
+            self.labels = []
+            self.buttons = []
+            self.checkboxes = []
+
+        def button(self, label):
+            self.buttons.append(label)
+            return False
+
+        def begin_popup(self, _popup_id):
+            return True
+
+        def end_popup(self):
+            return None
+
+        def checkbox(self, label, value):
+            self.checkboxes.append((label, value))
+            return value
+
+        def same_line(self):
+            return None
+
+    ctx = _Context()
+    monkeypatch.setattr(inspector_components, "render_builtin_via_setters", lambda *args, **kwargs: None)
+    monkeypatch.setattr(inspector_utils, "field_label", lambda *args, **kwargs: None)
+    monkeypatch.setattr(inspector_utils, "max_label_w", lambda *args, **kwargs: 0.0)
+    monkeypatch.setattr(lib, "TagLayerManager", _LayerManager)
+    wrapper.render_inspector(ctx)
+
+    assert ctx.buttons == [
+        "2 Layers##camera_culling_mask",
+        "Everything##camera_culling_everything",
+        "Nothing##camera_culling_nothing",
+    ]
+    assert [label for label, _ in ctx.checkboxes[:3]] == [
+        "Gameplay##camera_layer_0", "UI##camera_layer_1", "Effects##camera_layer_2",
+    ]
+    assert len(ctx.checkboxes) == 32
+    assert all("input" not in label.lower() for label, _ in ctx.checkboxes)
+
+
 def test_physical_camera_rejects_invalid_sensor_and_lens_values(scene):
     camera = scene.create_game_object("PhysicalCameraContract").add_component("Camera")
     before = camera.serialize_document()
