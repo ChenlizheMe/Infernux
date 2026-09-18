@@ -42,6 +42,24 @@ def _broker(assets: Path, name: str, source: str) -> CandidateImportTransaction:
     return broker
 
 
+def test_preloaded_json_is_not_misclassified_as_a_project_dependency(candidate_project):
+    import json
+
+    broker = _broker(candidate_project, "json_authoring", (
+        "import json\n"
+        "def document():\n"
+        "    return json.loads('{\"name\": \"Clip\"}')\n"
+    ))
+    try:
+        candidate = broker.load("json_authoring")
+        assert candidate.document() == {"name": "Clip"}
+        assert candidate.json is json
+        assert "json_authoring" not in sys.modules
+        assert "json" not in broker.modules
+    finally:
+        broker.rollback()
+
+
 def test_serializable_candidate_is_private_until_module_commit(candidate_project):
     from Infernux.components.serializable_object import get_serializable_class
 

@@ -222,7 +222,7 @@ def source_fingerprint(project_root: str | os.PathLike[str], entry: dict[str, An
 
     source = source_path_for_entry(project_root, entry)
     if _metadata_value(entry, "import_owner_guid"):
-        source = source.partition("::subtex:")[0]
+        source = source.partition("::subtex:")[0].partition("::subanim:")[0]
     try:
         stat = os.stat(source)
     except OSError as exc:

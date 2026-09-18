@@ -33,10 +33,12 @@ def is_asset_guid_string(s: str) -> bool:
 
 
 def resolve_disk_path_for_guid_string(adb, guid: str) -> Optional[str]:
-    """Resolve a current asset GUID to a readable source path."""
+    """Resolve a registered asset to its disk or imported animation document."""
     if not adb or not is_asset_guid_string(guid):
         return None
     path = adb.get_path_from_guid(guid)
+    if path and "::subanim:" in path:
+        return path
     return resolved_path(path) if path and os.path.isfile(path) else None
 
 
@@ -239,6 +241,14 @@ class AnimationClip3D:
         base = base.strip()
         if not base:
             return None
+        from Infernux.core.asset_types import read_asset_metadata
+
+        metadata = read_asset_metadata(virtual_path)
+        if metadata and "import_document" in metadata:
+            clip = cls.from_dict(json.loads(metadata["import_document"]))
+            clip.file_path = virtual_path
+            return clip
+        # Explicit compatibility for older model imports without owned clip GUIDs.
         model_disk = resolve_model_disk_path_from_virtual_base(base)
         if not model_disk:
             return None

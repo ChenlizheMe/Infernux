@@ -756,11 +756,36 @@ ImportArtifact ModelImporter::Import(const ImportRequest &request) const
                                   checkedMetadataInt(imported.animationNames.size(), "animation_count"));
     artifact.metadata.AddMetadata("animation_names_csv", joinCsv(imported.animationNames));
     artifact.metadata.AddMetadata("source_animations", imported.sourceAnimations.dump());
+    // Local clip IDs describe source takes / authored slices. Asset GUIDs belong
+    // to this model and survive temporarily disabling an output clip.
+    auto animationIdentities = artifact.metadata.HasKey("model_animation_identities")
+        ? nlohmann::json::parse(artifact.metadata.GetDataAs<std::string>("model_animation_identities"))
+        : nlohmann::json::object();
     auto modelAnimations = nlohmann::json::array();
-    if (imported.skinnedMesh)
-        for (const auto &animation : imported.skinnedMesh->animations)
-            modelAnimations.push_back({{"id", animation.id}, {"name", animation.name},
-                                       {"duration", animation.durationTicks / animation.ticksPerSecond}});
+    if (imported.skinnedMesh) {
+        for (const auto &animation : imported.skinnedMesh->animations) {
+            InxResourceMeta metadata;
+            metadata.Init("", 0, request.sourcePath, ResourceType::DefaultText);
+            if (animationIdentities.contains(animation.id))
+                metadata.AddMetadata("guid", animationIdentities.at(animation.id).get<std::string>());
+            const auto guid = metadata.GetGuid();
+            animationIdentities[animation.id] = guid;
+            const double duration = animation.durationTicks / animation.ticksPerSecond;
+            const nlohmann::json document = {
+                {"name", animation.name}, {"source_model_guid", request.guid}, {"source_model_path", ""},
+                {"take_name", animation.id}, {"bind_pose_bone_names", imported.boneNames},
+                {"duration_hint", duration}, {"events", nlohmann::json::array()}};
+            metadata.UpdateFilePath(request.sourcePath + "::subanim:" + animation.id);
+            metadata.AddMetadata("import_owner_guid", request.guid);
+            metadata.AddMetadata("resource_name", animation.name);
+            metadata.AddMetadata("file_extension", std::string(".animclip3d"));
+            metadata.AddMetadata("content_hash", request.metadata.GetDataAs<std::string>("content_hash"));
+            metadata.AddMetadata("import_document", document.dump());
+            modelAnimations.push_back({{"id", animation.id}, {"guid", guid}, {"name", animation.name},
+                                       {"duration", duration}, {"metadata", metadata.SerializeDocument()}});
+        }
+    }
+    artifact.metadata.AddMetadata("model_animation_identities", animationIdentities.dump());
     artifact.metadata.AddMetadata("model_animations", modelAnimations.dump());
 
     if (MeshImportSettings::Read(artifact.metadata).materialImportMode != "none") {

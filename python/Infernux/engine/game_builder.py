@@ -1809,6 +1809,10 @@ finally:
                 # The current Library artifact replaces its authoring source;
                 # _stage_library_runtime_artifacts validates and stages it.
                 continue
+            if "import_document" in entry.get("metadata", {}).get("metadata", {}):
+                # Owned model clips have no source file of their own. Their
+                # importer document is staged by _stage_library_runtime_documents.
+                continue
             if is_path_within(source, assets_root, allow_root=False):
                 copy_source(source, reason=f"AssetIndex GUID {guid}")
                 continue
@@ -2205,7 +2209,10 @@ finally:
             )
             if not is_project_asset and not is_package_asset:
                 continue
-            suffix = Path(source_path).suffix.casefold()
+            metadata = entry.get("metadata", {}).get("metadata", {})
+            imported_document = metadata.get("import_document", {}).get("value")
+            suffix = (metadata["file_extension"]["value"] if imported_document is not None
+                      else Path(source_path).suffix).casefold()
             if suffix == ".py":
                 # User scripts are compiled after data staging.
                 continue
@@ -2213,7 +2220,7 @@ finally:
             source_relative = relative_path(
                 source_path, self.project_path
             ).replace("\\", "/")
-            logical_type = logical_type_for_path(source_relative)
+            logical_type = logical_type_for_path("imported" + suffix if imported_document is not None else source_relative)
             payload_kind = payload_kind_for(logical_type)
             if logical_type == "data_asset":
                 artifact_directory = "Data"
@@ -2236,7 +2243,13 @@ finally:
             )
             destination = os.path.join(data_dir, *runtime_path.split("/"))
             os.makedirs(os.path.dirname(destination), exist_ok=True)
-            if logical_type == "data_asset":
+            if imported_document is not None:
+                # Importer-owned documents are already immutable source products,
+                # not files under the Project tree. Cook the same loader format.
+                if suffix not in RUNTIME_JSON_DOCUMENT_SUFFIXES:
+                    raise RuntimeError(f"Unsupported imported document format: {suffix}")
+                _write_json_atomic(destination, json.loads(imported_document))
+            elif logical_type == "data_asset":
                 from Infernux.core.data_asset import encode_data_asset_artifact
 
                 with open(source_path, "r", encoding="utf-8") as source_stream:
@@ -3093,6 +3106,11 @@ finally:
                     "Player asset metadata was not compiled into the current AssetIndex: "
                     f"guid={guid}, path={runtime_path}. Refusing to discard the .meta sidecar."
                 )
+            # Owned resources already have individual cooked identities and
+            # payloads. The editor's source tables contain nested author paths
+            # and must not duplicate that authoring metadata in the Player.
+            for authoring_table in ("model_textures", "model_animations", "model_animation_identities"):
+                metadata_entries.pop(authoring_table, None)
             file_path = metadata_entries.get("file_path")
             if isinstance(file_path, dict):
                 file_path["value"] = runtime_path

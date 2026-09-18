@@ -41,6 +41,7 @@ _TRUSTED_MODULE_PREFIXES = frozenset(
         "dataclasses",
         "typing",
         "math",
+        "json",
         "enum",
         "os",
         "pathlib",

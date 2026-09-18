@@ -1606,11 +1606,11 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
     def _embedded_clip3d_picker_items(filter_text: str) -> List[Tuple[str, str]]:
         """List model-embedded takes alongside standalone ``.animclip3d`` assets.
 
-        The Project panel exposes an embedded take as ``<model-guid>::subanim:<n>``.
+        The Project panel exposes a take as ``<model-path>::subanim:<clip-id>``.
         Returning that same public virtual reference keeps object-picker assignment,
         drag-and-drop assignment, and runtime loading on one contract.
         """
-        from Infernux.core.asset_types import read_meta_file, read_meta_guid
+        from Infernux.core.asset_types import read_meta_file
         from Infernux.engine.interaction import asset_reference_catalog
 
         filt = (filter_text or "").strip().lower()
@@ -1625,16 +1625,15 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
             from Infernux.core.animation_clip3d import embedded_take_descriptors
             takes = embedded_take_descriptors(meta)
             model_name = os.path.splitext(os.path.basename(model_path))[0]
-            base = read_meta_guid(model_path) or model_path
             for take in takes:
                 take_name = take["name"]
                 display = f"{model_name} | {take_name}"
                 if filt and filt not in display.lower():
                     continue
-                virtual_path = f"{base}::subanim:{take['id']}"
+                virtual_path = f"{model_path}::subanim:{take['id']}"
                 items.append((display, {
                     "asset_type": "AnimationClip3D",
-                    "guid": "",
+                    "guid": take.get("guid", ""),
                     "path_hint": virtual_path,
                     "builtin": "",
                 }))

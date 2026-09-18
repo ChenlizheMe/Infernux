@@ -1567,7 +1567,7 @@ def test_animfsm_3d_clip_picker_includes_embedded_model_takes(monkeypatch):
             "asset_type": "AnimationClip3D",
             "builtin": "",
             "guid": "",
-            "path_hint": f"{'a' * 32}::subanim:1",
+            "path_hint": f"{model_path}::subanim:1",
         },
     )]
 

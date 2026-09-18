@@ -14,20 +14,10 @@ from typing import Any, Optional
 
 
 def _get_asset_database():
-    """Return the C++ AssetDatabase, trying AssetManager first then engine."""
+    """Use the database owned by the current AssetManager lifecycle."""
     from Infernux.core.assets import AssetManager
 
-    if AssetManager._asset_database is not None:
-        return AssetManager._asset_database
-    try:
-        # Editor-only module; absent in stripped player runtimes.
-        from Infernux.engine.play_mode import PlayModeManager
-    except ImportError:
-        return None
-    pm = PlayModeManager.instance()
-    if pm and pm._asset_database is not None:
-        return pm._asset_database
-    return None
+    return AssetManager._asset_database
 
 
 class AssetRefBase:
@@ -368,6 +358,11 @@ class AnimationClipRef(AssetRefBase):
 
 class AnimationClip3DRef(AssetRefBase):
     """Reference to an AnimationClip3D (.animclip3d) asset. GUID only."""
+
+    def resolve(self):
+        # Imported clips can be renamed or removed by model Apply. The animator
+        # owns its playback cache; an authoring ref must observe current output.
+        return self._do_resolve() if self._guid else None
 
     def _do_resolve(self):
         db = _get_asset_database()
