@@ -125,31 +125,18 @@ class BootstrapWiringMixin:
             world_id = _scene_world(context)
             if world_id <= 0:
                 return False
-            # Saving a non-active loaded Scene uses the same document owner as
-            # the active path; activate it first so serialization and undo are
-            # routed to the selected Scene, exactly like Unity's scene header.
-            if not sfm.activate_loaded_scene(world_id):
+            document_id = sfm.document_id_for_scene(world_id)
+            if not document_id:
                 return False
-            return bool(sfm.save_current_scene())
+            from Infernux.engine.interaction import DocumentActionStatus, DocumentRegistry
+            result = DocumentRegistry.instance().request_save(document_id)
+            return result.status is not DocumentActionStatus.REJECTED
 
         def _unload_scene(context):
             world_id = _scene_world(context)
             if world_id <= 0:
                 return False
-            from Infernux.lib import SceneManager
-            native = SceneManager.instance()
-            target = native.get_scene_by_world_id(world_id)
-            if target is None or int(native.scene_count) <= 1:
-                return False
-            if target is native.get_active_scene():
-                for index in range(int(native.scene_count)):
-                    candidate = native.get_scene_at(index)
-                    if candidate is not None and candidate is not target:
-                        sfm.activate_loaded_scene(candidate)
-                        break
-            sfm.unregister_loaded_scene(target)
-            native.unload_scene(target)
-            return True
+            return bool(sfm.request_unload_scene(world_id))
 
         def _open_scene_additive(context):
             path = str(context.payload.get("source_path", "") or "").strip()

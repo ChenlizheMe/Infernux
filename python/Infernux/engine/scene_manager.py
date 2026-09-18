@@ -183,6 +183,7 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         # regular scene replacement.  Never mutate the native SceneManager
         # from a drag/drop command while a frame is active.
         self._deferred_additive_path: Optional[str] = None
+        self._deferred_unload_world_id: Optional[int] = None
         self._deferred_new_scene: bool = False            # True → new scene pending
         self._deferred_exit_prefab: bool = False           # True → exit prefab mode task pending
         self._post_prefab_exit_callback: Optional[Callable[[], None]] = None
@@ -540,6 +541,7 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
             or self._additive_scene_transaction is not None
             or self._deferred_load_path is not None
             or self._deferred_additive_path is not None
+            or self._deferred_unload_world_id is not None
             or self._deferred_new_scene
             or self._deferred_exit_prefab
         )
@@ -903,6 +905,32 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         }
         return True
 
+    def request_unload_scene(self, scene_or_world_id) -> bool:
+        """Queue an authored Scene unload for the post-frame owner safe point.
+
+        Unloading is never performed from a hierarchy callback while a native
+        frame is active.  Dirty or conflicted documents are rejected here so
+        the editor cannot silently throw away authored changes; the user must
+        save or explicitly discard them first.
+        """
+        if self._is_play_mode() or self.is_prefab_mode or self.is_loading:
+            return False
+        world_id = self._world_id(scene_or_world_id)
+        binding = self._loaded_scene_documents.get(world_id)
+        if binding is None or len(self._loaded_scene_documents) <= 1:
+            return False
+        from Infernux.engine.interaction import DocumentRegistry, DocumentState
+
+        document = DocumentRegistry.instance().get(binding.document_id)
+        if document is not None and (document.is_dirty or document.state is DocumentState.CONFLICT):
+            Debug.log_warning(
+                f"Cannot unload modified Scene '{document.title}'; save or discard it first."
+            )
+            return False
+        self._deferred_unload_world_id = world_id
+        self._last_scene_load = {"status": "pending_unload", "path": binding.resource_path, "error": ""}
+        return True
+
     def reload_current_scene(self, *, discard_changes: bool = False) -> bool:
         """Schedule a reload of the active scene from its durable file.
 
@@ -1117,6 +1145,38 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         until the new scene's first Execute() overwrites it, so no
         placeholder or extra-frame delay is needed.
         """
+        if self._deferred_unload_world_id is not None:
+            if self._scene_transaction is not None or self._additive_scene_transaction is not None:
+                return
+            world_id = self._deferred_unload_world_id
+            self._deferred_unload_world_id = None
+            binding = self._loaded_scene_documents.get(world_id)
+            if binding is None or len(self._loaded_scene_documents) <= 1:
+                return
+            from Infernux.lib import SceneManager
+            native = SceneManager.instance()
+            target = binding.scene
+            if native.get_active_scene() is target:
+                replacement = next(
+                    (entry.scene for key, entry in self._loaded_scene_documents.items() if key != world_id),
+                    None,
+                )
+                if replacement is not None:
+                    self.activate_loaded_scene(replacement)
+            self.unregister_loaded_scene(target)
+            native.unload_scene(target)
+            try:
+                from Infernux.renderstack.render_stack import RenderStack
+                RenderStack.refresh_active_instance(native.get_active_scene())
+                from Infernux.gizmos.collector import notify_scene_changed
+                notify_scene_changed()
+            except Exception as exc:
+                Debug.log_internal(f"Scene unload editor refresh: {exc}")
+            self._last_scene_load = {"status": "unloaded", "path": binding.resource_path, "error": ""}
+            if self._on_scene_changed:
+                self._on_scene_changed()
+            return
+
         if self._scene_transaction is not None:
             transaction = self._scene_transaction
             if not transaction.poll():
