@@ -1782,6 +1782,14 @@ void RegisterSceneBindings(py::module_ &m)
         .value("Physical", CameraProjection::Physical)
         .export_values();
 
+    py::enum_<PhysicalGateFit>(m, "PhysicalGateFit")
+        .value("None", PhysicalGateFit::None)
+        .value("Vertical", PhysicalGateFit::Vertical)
+        .value("Horizontal", PhysicalGateFit::Horizontal)
+        .value("Fill", PhysicalGateFit::Fill)
+        .value("Overscan", PhysicalGateFit::Overscan)
+        .export_values();
+
     // ========================================================================
     // CameraClearFlags enum
     // ========================================================================
@@ -1812,6 +1820,8 @@ void RegisterSceneBindings(py::module_ &m)
                       "Physical camera sensor size in millimetres (width, height)")
         .def_property("lens_shift", &Camera::GetLensShift, &Camera::SetLensShift,
                       "Physical camera lens shift in normalized sensor units")
+        .def_property("gate_fit", &Camera::GetGateFit, &Camera::SetGateFit,
+                      "Physical camera film/resolution gate fit")
         .def_property("aspect_ratio", &Camera::GetAspectRatio, &Camera::SetAspectRatio, "Aspect ratio (width/height)")
         .def_property(
             "projection_matrix", [](const Camera &c) { return binding::Matrix4ToPython(c.GetProjectionMatrix()); },

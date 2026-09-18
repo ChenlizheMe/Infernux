@@ -125,8 +125,10 @@ def test_physical_camera_lens_shift_changes_frustum_center(camera):
     shifted = np.asarray(camera.projection_matrix)
     camera.lens_shift = lib.Vector2(0.0, 0.0)
     centered = np.asarray(camera.projection_matrix)
-    assert shifted[2, 0] != pytest.approx(centered[2, 0])
-    assert shifted[2, 1] != pytest.approx(centered[2, 1])
+    # Python exposes matrices in row/column order; the native GLM write to
+    # projection[2][0/1] therefore appears at row 0/1, column 2.
+    assert shifted[0, 2] != pytest.approx(centered[0, 2])
+    assert shifted[1, 2] != pytest.approx(centered[1, 2])
 
 
 def test_screen_world_round_trip_uses_top_left_pixels(camera):
