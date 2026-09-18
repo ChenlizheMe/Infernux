@@ -588,6 +588,8 @@ int main(int argc, char **argv)
         renderer.AddFilledRect(list, 8, 8, 72, 56, 1, 0, 0, 1);
         renderer.EndScreenObject();
         auto screenPacket = renderer.EndCommandPacket();
+        renderer.BeginFrame(128, 128);
+        renderer.AppendCommandPackets({screenPacket});
         frame();
         // The first Vulkan submission may only populate the newly-created
         // upload allocation; use one settled frame as the geometry baseline.
