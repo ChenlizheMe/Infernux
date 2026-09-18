@@ -579,7 +579,9 @@ int main(int argc, char **argv)
         // is unchanged.
         list = ScreenUIList::Overlay;
         buildGraph();
+        auto *screenParent = uiScene->CreateGameObject("Screen Canvas Parent");
         auto *screenObject = uiScene->CreateGameObject("Animated screen UI");
+        screenObject->SetParent(screenParent, false);
         renderer.BeginFrame(128, 128);
         renderer.BeginCommandPacket();
         renderer.BeginScreenObject(screenObject, list, 40, 40);
@@ -587,15 +589,57 @@ int main(int argc, char **argv)
         renderer.EndScreenObject();
         auto screenPacket = renderer.EndCommandPacket();
         frame();
+        // The first Vulkan submission may only populate the newly-created
+        // upload allocation; use one settled frame as the geometry baseline.
+        renderer.BeginFrame(128, 128);
+        renderer.AppendCommandPackets({screenPacket});
+        frame();
         std::array<uint8_t, 128 * 128 * 4> screenBefore{};
         assert(device.ReadBuffer(output, 0, screenBefore.data(), screenBefore.size()));
-        screenObject->GetTransform()->SetPosition(.5f, 0.0f, 0.0f);
+        const auto bounds = [](const auto &pixels) {
+            std::array<int, 4> result{128, 128, -1, -1};
+            for (int y = 0; y < 128; ++y) {
+                for (int x = 0; x < 128; ++x) {
+                    if (pixels[static_cast<size_t>((y * 128 + x) * 4 + 3)] == 0)
+                        continue;
+                    result[0] = std::min(result[0], x);
+                    result[1] = std::min(result[1], y);
+                    result[2] = std::max(result[2], x);
+                    result[3] = std::max(result[3], y);
+                }
+            }
+            return result;
+        };
+        const auto screenBeforeBounds = bounds(screenBefore);
+        // Screen-space geometry is independent of the Canvas/parent world
+        // pose.  Moving, rotating or scaling that parent must not move the
+        // retained packet; changing the element's own local pose still does.
+        auto assertParentPoseIgnored = [&](const char *label) {
+            renderer.BeginFrame(128, 128);
+            renderer.AppendCommandPackets({screenPacket});
+            frame();
+            std::array<uint8_t, 128 * 128 * 4> current{};
+            assert(device.ReadBuffer(output, 0, current.data(), current.size()));
+            const auto currentBounds = bounds(current);
+            std::cout << "SCREEN_PARENT_POSE " << label << " bounds=" << currentBounds[0] << "," << currentBounds[1]
+                      << "," << currentBounds[2] << "," << currentBounds[3] << " baseline=" << screenBeforeBounds[0]
+                      << "," << screenBeforeBounds[1] << "," << screenBeforeBounds[2] << "," << screenBeforeBounds[3]
+                      << std::endl;
+            assert(currentBounds == screenBeforeBounds);
+        };
+        screenParent->GetTransform()->SetPosition(.5f, 0.25f, 3.0f);
+        assertParentPoseIgnored("position");
+        screenParent->GetTransform()->SetLocalEulerAngles(15.0f, 25.0f, 35.0f);
+        assertParentPoseIgnored("rotation");
+        screenParent->GetTransform()->SetLocalScale(2.0f, .5f, 4.0f);
+        assertParentPoseIgnored("scale");
+        screenObject->GetTransform()->SetLocalPosition(20.0f, 0.0f, 0.0f);
         renderer.BeginFrame(128, 128);
         renderer.AppendCommandPackets({screenPacket});
         frame();
         std::array<uint8_t, 128 * 128 * 4> screenAfter{};
         assert(device.ReadBuffer(output, 0, screenAfter.data(), screenAfter.size()));
-        assert(screenAfter != screenBefore);
+        assert(bounds(screenAfter) != screenBeforeBounds);
         screenObject->GetTransform()->SetLocalEulerAngles(0.0f, 0.0f, 25.0f);
         screenObject->GetTransform()->SetLocalScale(1.5f, 0.75f, 1.0f);
         renderer.BeginFrame(128, 128);
