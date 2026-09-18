@@ -5,6 +5,7 @@
 #include <array>
 #include <cmath>
 #include <limits>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -26,6 +27,8 @@ struct MeshImportSettings
     bool optimizeMesh = true;
     bool weldVertices = true;
     bool importAnimations = true;
+    bool customAnimationClips = false;
+    nlohmann::json animationClips = nlohmann::json::array();
     std::string rigType = "generic";
     std::string materialImportMode = "description";
     nlohmann::json materialRemaps = nlohmann::json::object();
@@ -44,6 +47,37 @@ struct MeshImportSettings
     {
         auto document = metadata.SerializeDocument();
         document["metadata"]["material_remaps"] = {{"type", "json_object"}, {"value", value}};
+        metadata.DeserializeDocument(document);
+    }
+
+    static void RequireAnimationClips(const nlohmann::json &value)
+    {
+        if (!value.is_array())
+            throw std::invalid_argument("model animation_clips must be an array");
+        std::set<std::string> ids, names;
+        for (const auto &clip : value) {
+            if (!clip.is_object() || clip.size() != 5 || !clip.contains("id") || !clip.contains("name") ||
+                !clip.contains("source_take") || !clip.contains("start") || !clip.contains("end"))
+                throw std::invalid_argument("animation_clips require id, name, source_take, start and end");
+            for (const auto *key : {"id", "name", "source_take"})
+                if (!clip.at(key).is_string() || clip.at(key).get_ref<const std::string &>().empty())
+                    throw std::invalid_argument(std::string("animation clip requires a non-empty ") + key);
+            const auto id = clip.at("id").get<std::string>();
+            if (id.size() != 32 || id.find_first_not_of("0123456789abcdef") != std::string::npos ||
+                !ids.insert(id).second || !names.insert(clip.at("name").get<std::string>()).second)
+                throw std::invalid_argument("animation clips require unique lowercase GUID ids and unique names");
+            if (!clip.at("start").is_number() || !clip.at("end").is_number())
+                throw std::invalid_argument("animation clip start/end must be seconds");
+            const double start = clip.at("start"), end = clip.at("end");
+            if (!std::isfinite(start) || !std::isfinite(end) || start < 0.0 || end <= start)
+                throw std::invalid_argument("animation clip requires finite 0 <= start < end");
+        }
+    }
+
+    static void WriteAnimationClips(InxResourceMeta &metadata, const nlohmann::json &value)
+    {
+        auto document = metadata.SerializeDocument();
+        document["metadata"]["animation_clips"] = {{"type", "json_array"}, {"value", value}};
         metadata.DeserializeDocument(document);
     }
 
@@ -84,6 +118,7 @@ struct MeshImportSettings
         Flag{"weld_vertices", &MeshImportSettings::weldVertices, "model", true},
         Flag{"optimize_mesh", &MeshImportSettings::optimizeMesh},
         Flag{"import_animations", &MeshImportSettings::importAnimations, "animation", true},
+        Flag{"custom_animation_clips", &MeshImportSettings::customAnimationClips, "animation", true},
     };
 
     static void RequireRigType(const nlohmann::json &value)
@@ -132,6 +167,13 @@ struct MeshImportSettings
             settings.materialRemaps = nlohmann::json::parse(std::any_cast<const std::string &>(entry.second));
         }
         RequireMaterialRemaps(settings.materialRemaps);
+        if (metadata.HasKey("animation_clips")) {
+            const auto &entry = metadata.GetMetadata().at("animation_clips");
+            if (entry.first != "json_array")
+                throw std::invalid_argument("model animation_clips metadata must use json_array");
+            settings.animationClips = nlohmann::json::parse(std::any_cast<const std::string &>(entry.second));
+        }
+        RequireAnimationClips(settings.animationClips);
         if (metadata.HasKey("rig_type"))
             settings.rigType = metadata.GetDataAs<std::string>("rig_type");
         RequireRigType(settings.rigType);
@@ -154,6 +196,8 @@ struct MeshImportSettings
                 metadata.AddMetadata(flag.name, defaults.*(flag.member));
         if (!metadata.HasKey("material_remaps"))
             WriteMaterialRemaps(metadata, defaults.materialRemaps);
+        if (!metadata.HasKey("animation_clips"))
+            WriteAnimationClips(metadata, defaults.animationClips);
         if (!metadata.HasKey("rig_type"))
             metadata.AddMetadata("rig_type", defaults.rigType);
         if (!metadata.HasKey("material_import_mode"))
@@ -166,6 +210,10 @@ struct MeshImportSettings
             throw std::invalid_argument("model import settings require an object");
         // Validate the entire authoring request before modifying its candidate.
         for (const auto &[key, value] : patch.items()) {
+            if (key == "animation_clips") {
+                RequireAnimationClips(value);
+                continue;
+            }
             if (key == "max_bones_per_vertex") {
                 RequireMaxBones(value);
                 continue;
@@ -203,7 +251,9 @@ struct MeshImportSettings
                 throw std::invalid_argument("model import flags must be booleans");
         }
         for (const auto &[key, value] : patch.items()) {
-            if (key == "material_remaps")
+            if (key == "animation_clips")
+                WriteAnimationClips(metadata, value);
+            else if (key == "material_remaps")
                 WriteMaterialRemaps(metadata, value);
             else if (key == "max_bones_per_vertex")
                 metadata.AddMetadata(key, value.get<int>());
@@ -266,6 +316,9 @@ struct MeshImportSettings
                           {"page", "materials"},
                           {"label", "asset.material_remaps"},
                           {"legacy_optional", true}});
+        fields.push_back({{"name", "animation_clips"}, {"type", "animation_clips"},
+                          {"default", nlohmann::json::array()}, {"page", "animation"},
+                          {"label", "asset.animation_clips"}, {"legacy_optional", true}});
         return {{"version", 1}, {"fields", std::move(fields)}};
     }
 };

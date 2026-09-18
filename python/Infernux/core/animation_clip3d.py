@@ -57,6 +57,15 @@ def resolve_model_disk_path_from_virtual_base(base: str) -> Optional[str]:
     return p if os.path.isfile(p) else None
 
 
+def embedded_take_descriptors(meta: dict) -> list[dict]:
+    """Published clips, distinct from the source inventory and its ordering."""
+    if "model_animations" in meta:
+        return json.loads(meta["model_animations"])
+    # Explicit migration for models imported before stable clip identities.
+    return [{"id": str(i), "name": name, "duration": 0.0}
+            for i, name in enumerate(part.strip() for part in str(meta.get("animation_names_csv", "")).split(",") if part.strip())]
+
+
 @dataclass
 class AnimationClip3D:
     """A single 3D animation clip — references a model + named take."""
@@ -67,7 +76,7 @@ class AnimationClip3D:
     source_model_guid: str = ""
     source_model_path: str = ""
 
-    # Animation take name as reported by Assimp / the importer metadata.
+    # Stable imported clip ID, or an existing source take name for compatibility.
     take_name: str = ""
 
     # Optional: bind-pose bone names captured at import time (debug / tooling).
@@ -187,7 +196,7 @@ class AnimationClip3D:
     def load(cls, path: str) -> Optional["AnimationClip3D"]:
         if not path:
             return None
-        # Project Panel virtual take: model.fbx::subanim:<index> (not a file on disk)
+        # Project Panel virtual take: model.fbx::subanim:<id> (not a file on disk)
         if "::subanim:" in path:
             return cls.from_embedded_take_virtual_path(path)
         if not os.path.isfile(path):
@@ -222,7 +231,7 @@ class AnimationClip3D:
 
     @classmethod
     def from_embedded_take_virtual_path(cls, virtual_path: str) -> Optional["AnimationClip3D"]:
-        """Build a read-only clip for ``<guid|path>::subanim:<index>`` (Project Panel embedded takes)."""
+        """Resolve a published clip ID; legacy numeric source indices remain readable."""
         token = "::subanim:"
         if token not in virtual_path:
             return None
@@ -230,14 +239,6 @@ class AnimationClip3D:
         base = base.strip()
         if not base:
             return None
-        try:
-            idx = int(rest.strip())
-        except ValueError:
-            return None
-        # Placeholder / overflow row from the project panel
-        if idx < 0 or idx >= 999999:
-            return None
-
         model_disk = resolve_model_disk_path_from_virtual_base(base)
         if not model_disk:
             return None
@@ -245,16 +246,20 @@ class AnimationClip3D:
         from Infernux.core.asset_types import read_meta_file
 
         meta = read_meta_file(model_disk) or {}
-        csv = (meta.get("animation_names_csv") or "")
-        if isinstance(csv, str):
-            names = [p.strip() for p in csv.split(",") if p.strip()]
-        else:
-            names = []
-
-        if idx >= len(names):
+        identifier = rest.strip()
+        published = embedded_take_descriptors(meta)
+        selected = next((item for item in published if item["id"] == identifier), None)
+        if selected is None and identifier.isdecimal() and "model_animations" in meta:
+            # Resolve old index references by their source take, never by a new
+            # custom clip's array position.
+            names = [p.strip() for p in str(meta.get("animation_names_csv", "")).split(",") if p.strip()]
+            index = int(identifier)
+            if index < len(names):
+                source_id = "source-" + names[index].encode("utf-8").hex()
+                selected = next((item for item in published if item["id"] == source_id), None)
+        if selected is None:
             return None
-
-        take_name = names[idx]
+        take_name = selected["id"] if "model_animations" in meta else selected["name"]
         meta_guid = _read_asset_guid_from_meta_sidecar(model_disk)
         if is_asset_guid_string(base):
             source_guid = base
@@ -267,12 +272,12 @@ class AnimationClip3D:
             bind_names = []
 
         clip = cls(
-            name=take_name,
+            name=selected["name"],
             source_model_guid=source_guid,
             source_model_path=model_disk,
             take_name=take_name,
             bind_pose_bone_names=bind_names,
-            duration_hint=0.0,
+            duration_hint=float(selected["duration"]),
         )
         clip.file_path = virtual_path
         return clip

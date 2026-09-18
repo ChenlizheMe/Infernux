@@ -1230,6 +1230,22 @@ void ProjectPanel::AppendModelSubAssets(std::vector<FileItem> &out, AssetDatabas
     // remain persistence identities, but they are not filesystem paths and
     // must never be fed back through Project selection/path projection.
     const std::string &animVirtualBase = modelPath;
+    if (meta->HasKey("model_animations")) {
+        const auto animations = nlohmann::json::parse(TryGetMetaString(meta.get(), "model_animations"));
+        for (size_t i = 0; i < animations.size(); ++i) {
+            const auto &animation = animations[i];
+            FileItem sub{};
+            sub.type = FileItem::SubMesh;
+            sub.name = animation.at("name").get<std::string>() + ".animclip3d";
+            sub.path = animVirtualBase + kSubAnimToken + animation.at("id").get<std::string>();
+            sub.ext = ".animclip3d";
+            sub.parentPath = modelPath;
+            sub.mtimeNs = childMtime;
+            sub.slotIndex = static_cast<int>(i);
+            out.push_back(std::move(sub));
+        }
+        return;
+    }
     std::vector<std::string> animNames = SplitCommaList(TryGetMetaString(meta.get(), "animation_names_csv"));
     int animCount = TryGetMetaInt(meta.get(), "animation_count", -1);
     if (!animNames.empty()) {

@@ -757,6 +757,8 @@ class MeshImportSettings:
     weld_vertices: bool = field(default_factory=lambda: _mesh_import_fields()["weld_vertices"]["default"])
     rig_type: str = field(default_factory=lambda: _mesh_import_fields()["rig_type"]["default"])
     import_animations: bool = field(default_factory=lambda: _mesh_import_fields()["import_animations"]["default"])
+    custom_animation_clips: bool = field(default_factory=lambda: _mesh_import_fields()["custom_animation_clips"]["default"])
+    animation_clips: List[Dict[str, Any]] = field(default_factory=list)
     material_import_mode: str = field(default_factory=lambda: _mesh_import_fields()["material_import_mode"]["default"])
     material_remaps: Dict[str, str] = field(default_factory=lambda: dict(_mesh_import_fields()["material_remaps"]["default"]))
 
@@ -773,6 +775,25 @@ class MeshImportSettings:
         # when upgrading sidecars authored before this option was exposed.
         values = {name: d[name] if name in d else spec["default"] for name, spec in fields.items()}
         for name, spec in fields.items():
+            if spec["type"] == "animation_clips":
+                clips = values[name]
+                if type(clips) is not list:
+                    raise ValueError("animation_clips must be an array")
+                ids, names = set(), set()
+                for clip in clips:
+                    if type(clip) is not dict or set(clip) != {"id", "name", "source_take", "start", "end"}:
+                        raise ValueError("animation_clips require id, name, source_take, start and end")
+                    if any(type(clip[k]) is not str or not clip[k] for k in ("id", "name", "source_take")):
+                        raise ValueError("animation_clips identity fields must be non-empty strings")
+                    if (len(clip["id"]) != 32 or any(c not in "0123456789abcdef" for c in clip["id"])
+                            or clip["id"] in ids or clip["name"] in names):
+                        raise ValueError("animation_clips require unique GUID ids and names")
+                    ids.add(clip["id"])
+                    names.add(clip["name"])
+                    if (any(type(clip[k]) not in (float, int) or not math.isfinite(clip[k]) for k in ("start", "end"))
+                            or not 0 <= clip["start"] < clip["end"]):
+                        raise ValueError("animation_clips require finite 0 <= start < end")
+                values[name] = [dict(clip) for clip in clips]
             if spec["type"] == "enum" and values[name] not in [choice["value"] for choice in spec["choices"]]:
                 raise ValueError(f"mesh {name} must be one of its declared choices")
             if spec["type"] == "material_remaps":
@@ -800,7 +821,8 @@ class MeshImportSettings:
         return cls(**values)
 
     def copy(self) -> "MeshImportSettings":
-        return replace(self, material_remaps=dict(self.material_remaps))
+        return replace(self, material_remaps=dict(self.material_remaps),
+                       animation_clips=[dict(clip) for clip in self.animation_clips])
 
 
 def read_mesh_import_settings(asset_path: str) -> MeshImportSettings:

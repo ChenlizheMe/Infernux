@@ -52,6 +52,7 @@ struct SkinnedRuntimeTrack
 struct SkinnedRuntimeAnimation
 {
     std::string name;
+    std::string id; ///< Stable imported clip identity, independent of label/order.
     double durationTicks = 0.0;
     double ticksPerSecond = 25.0;
     std::vector<SkinnedRuntimeTrack> tracks;

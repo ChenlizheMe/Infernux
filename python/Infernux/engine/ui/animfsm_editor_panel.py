@@ -1622,19 +1622,16 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
                 continue
             seen.add(normalized)
             meta = read_meta_file(model_path) or {}
-            names_csv = meta.get("animation_names_csv") or ""
-            if not isinstance(names_csv, str):
-                continue
-            take_names = [name.strip() for name in names_csv.split(",") if name.strip()]
-            if not take_names:
-                continue
+            from Infernux.core.animation_clip3d import embedded_take_descriptors
+            takes = embedded_take_descriptors(meta)
             model_name = os.path.splitext(os.path.basename(model_path))[0]
             base = read_meta_guid(model_path) or model_path
-            for index, take_name in enumerate(take_names):
+            for take in takes:
+                take_name = take["name"]
                 display = f"{model_name} | {take_name}"
                 if filt and filt not in display.lower():
                     continue
-                virtual_path = f"{base}::subanim:{index}"
+                virtual_path = f"{base}::subanim:{take['id']}"
                 items.append((display, {
                     "asset_type": "AnimationClip3D",
                     "guid": "",
@@ -1824,7 +1821,7 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
                 from Infernux.core.animation_clip3d import AnimationClip3D
                 ec = AnimationClip3D.from_embedded_take_virtual_path(emb)
                 if ec is not None and getattr(ec, "take_name", ""):
-                    return str(ec.take_name)
+                    return str(ec.name)
             except Exception:
                 pass
         try:

@@ -123,7 +123,7 @@ int main(int argc, char **argv)
         Settings::EnsureDefaults(candidate);
         const auto defaults = Settings::Read(candidate);
         const auto schema = Settings::Schema();
-        assert(schema.at("fields").size() == Settings::Flags.size() + Settings::Scalars.size() + 4);
+        assert(schema.at("fields").size() == Settings::Flags.size() + Settings::Scalars.size() + 5);
         assert(defaults.materialImportMode == "description");
         assert(defaults.materialRemaps.empty());
         Settings::ApplyPatch(candidate, {{"material_remaps", {{"material/Body", "abcdabcdabcdabcdabcdabcdabcdabcd"}}}});
@@ -413,6 +413,94 @@ int main(int argc, char **argv)
     for (const char *name :
          {"wal67ar_small.jpg", "wal69ar_small.jpg", "SpiderTex.jpg", "drkwood2.jpg", "engineflare1.jpg"}) {
         assert(textures.count(infernux::FromFsPath(objPath.parent_path() / name)) == 1);
+    }
+    {
+        infernux::InxResourceMeta metadata;
+        infernux::MeshImportSettings::EnsureDefaults(metadata);
+        const auto source = infernux::MeshLoader::ImportSourceDetailed(
+            infernux::FromFsPath(sourceRoot / "external/assimp/test/models/FBX/animation_with_skeleton.fbx"),
+            "animation-clips-guid", metadata);
+        assert(source.skinnedMesh && !source.skinnedMesh->animations.empty());
+        const auto &take = source.skinnedMesh->animations.front();
+        const double duration = take.durationTicks / take.ticksPerSecond;
+        infernux::MeshImportSettings settings;
+        settings.customAnimationClips = true;
+        const std::string id(32, 'a');
+        settings.animationClips = {{{"id", id}, {"name", "Middle"}, {"source_take", take.name},
+                                    {"start", duration * .25}, {"end", duration * .75}}};
+        auto model = *source.skinnedMesh;
+        infernux::SkinnedModelImporter::ApplyAnimationClips(model, settings);
+        assert(model.animations.size() == 1);
+        const auto binary = infernux::SkinnedMeshArtifact::Serialize(model, "clips");
+        auto loaded = infernux::SkinnedMeshArtifact::Deserialize(binary, "clips");
+        assert(loaded->FindAnimation(id) && loaded->FindAnimation("Middle"));
+        assert(std::abs(loaded->GetAnimationDurationSeconds(id) - duration * .5) < 1e-5);
+        for (double phase : {0.0, .1, .5, 1.0}) {
+            infernux::SkinnedSampleRequest original, sliced;
+            original.takeName = take.name;
+            original.timeSeconds = static_cast<float>(duration * (.25 + .5 * phase));
+            original.loop = false;
+            sliced.takeName = id;
+            sliced.timeSeconds = static_cast<float>(duration * .5 * phase);
+            sliced.loop = false;
+            const auto expected = source.skinnedMesh->SampleVertices(original);
+            const auto actual = loaded->SampleVertices(sliced);
+            assert(expected.size() == actual.size());
+            float maxError = 0, maxPosition = 0;
+            for (size_t i = 0; i < expected.size(); ++i) {
+                // This FBX uses coordinates in the thousands. Rebased float
+                // playback times/SLERP introduce a few ULPs, not a fixed metre error.
+                maxError = std::max(maxError, glm::length(expected[i].pos - actual[i].pos));
+                maxPosition = std::max(maxPosition, glm::length(expected[i].pos));
+            }
+            assert(maxError < 1e-5f + 2e-6f * maxPosition);
+        }
+        settings.animationClips[0]["name"] = "Renamed";
+        model = *source.skinnedMesh;
+        infernux::SkinnedModelImporter::ApplyAnimationClips(model, settings);
+        assert(model.FindAnimation(id)->name == "Renamed");
+        auto invalid = settings;
+        invalid.animationClips[0]["end"] = duration + 1;
+        model = *source.skinnedMesh;
+        bool rejected = false;
+        try { infernux::SkinnedModelImporter::ApplyAnimationClips(model, invalid); }
+        catch (const std::invalid_argument &error) {
+            rejected = std::string(error.what()).find("exceeds source take duration") != std::string::npos;
+        }
+        assert(rejected && model.animations[0].id == take.id && !model.FindAnimation(id));
+        // Analytic sparse curve: both cut points fall between source keys.
+        infernux::InxSkinnedMesh analytic;
+        infernux::SkinnedRuntimeAnimation animation;
+        animation.name = "Linear";
+        animation.durationTicks = 2;
+        animation.ticksPerSecond = 1;
+        infernux::SkinnedRuntimeTrack track;
+        track.positions = {{0, glm::vec3(0)}, {2, glm::vec3(2, 4, 6)}};
+        track.scales = {{0, glm::vec3(1)}};
+        track.rotations = {{0, glm::quat(1, 0, 0, 0)},
+                           {2, glm::angleAxis(glm::radians(90.0f), glm::vec3(0, 1, 0))}};
+        animation.tracks.push_back(track);
+        analytic.animations.push_back(animation);
+        settings.animationClips[0]["source_take"] = "Linear";
+        settings.animationClips[0]["start"] = .5;
+        settings.animationClips[0]["end"] = 1.5;
+        infernux::SkinnedModelImporter::ApplyAnimationClips(analytic, settings);
+        const auto &cut = analytic.animations[0].tracks[0];
+        assert(cut.positions.size() == 2 && cut.positions[0].first == 0 && cut.positions[1].first == 1);
+        assert(glm::length(cut.positions[0].second - glm::vec3(.5, 1, 1.5)) < 1e-6f);
+        assert(glm::length(cut.positions[1].second - glm::vec3(1.5, 3, 4.5)) < 1e-6f);
+        assert(glm::length(cut.scales[0].second - glm::vec3(1)) < 1e-6f);
+        const auto expectedRotation = glm::angleAxis(glm::radians(22.5f), glm::vec3(0, 1, 0));
+        assert(std::abs(glm::dot(expectedRotation, cut.rotations[0].second)) > 1 - 1e-6f);
+        analytic.animations = {animation};
+        std::reverse(analytic.animations[0].tracks[0].positions.begin(),
+                     analytic.animations[0].tracks[0].positions.end());
+        rejected = false;
+        try { infernux::SkinnedModelImporter::ApplyAnimationClips(analytic, settings); }
+        catch (const std::invalid_argument &error) {
+            rejected = std::string(error.what()).find("ordered by time") != std::string::npos;
+        }
+        assert(rejected && analytic.animations[0].name == "Linear");
     }
     return 0;
 }

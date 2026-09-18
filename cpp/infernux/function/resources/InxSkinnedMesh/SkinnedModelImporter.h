@@ -9,10 +9,12 @@ namespace infernux
 {
 
 class InxSkinnedMesh;
+struct MeshImportSettings;
 
 class SkinnedModelImporter final
 {
   public:
+    static void ApplyAnimationClips(InxSkinnedMesh &model, const MeshImportSettings &settings);
     [[nodiscard]] static bool HasSkinningData(const aiScene &scene, bool includeAnimations = true) noexcept;
     [[nodiscard]] static std::shared_ptr<InxSkinnedMesh> ConvertScene(const aiScene &scene,
                                                                       const std::string &sourceGuid,

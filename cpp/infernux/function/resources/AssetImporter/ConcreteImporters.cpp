@@ -755,6 +755,13 @@ ImportArtifact ModelImporter::Import(const ImportRequest &request) const
     artifact.metadata.AddMetadata("animation_count",
                                   checkedMetadataInt(imported.animationNames.size(), "animation_count"));
     artifact.metadata.AddMetadata("animation_names_csv", joinCsv(imported.animationNames));
+    artifact.metadata.AddMetadata("source_animations", imported.sourceAnimations.dump());
+    auto modelAnimations = nlohmann::json::array();
+    if (imported.skinnedMesh)
+        for (const auto &animation : imported.skinnedMesh->animations)
+            modelAnimations.push_back({{"id", animation.id}, {"name", animation.name},
+                                       {"duration", animation.durationTicks / animation.ticksPerSecond}});
+    artifact.metadata.AddMetadata("model_animations", modelAnimations.dump());
 
     if (MeshImportSettings::Read(artifact.metadata).materialImportMode != "none") {
         const auto externalTextures = MeshLoader::ScanExternalTexturePaths(sourcePath);

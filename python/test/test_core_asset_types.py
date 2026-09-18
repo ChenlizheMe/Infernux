@@ -319,14 +319,14 @@ class TestMeshImportSettings:
         assert defaults == {item["name"]: item["default"] for item in schema["fields"]}
         inspector._ensure_categories()
         fields = inspector._categories["mesh"].editable_fields
-        model_fields = [item for item in schema["fields"] if item["type"] != "material_remaps"]
+        model_fields = [item for item in schema["fields"] if item["type"] not in {"material_remaps", "animation_clips"}]
         assert [item.key for item in fields] == [item["name"] for item in model_fields]
         for actual, declared in zip(fields, model_fields):
             assert actual.label == declared["label"]
             assert actual.field_type.value == {"bool": "checkbox", "float": "float", "int": "int", "enum": "combo"}[declared["type"]]
         for page in ("model", "rig", "animation"):
             assert [item.key for item in inspector._model_page_fields(page)] == [
-                item["name"] for item in schema["fields"] if item["page"] == page
+                item["name"] for item in schema["fields"] if item["page"] == page and item["type"] != "animation_clips"
             ]
         # Authoring clients cannot change the next client's contract or defaults.
         schema["fields"][0]["default"] = -7

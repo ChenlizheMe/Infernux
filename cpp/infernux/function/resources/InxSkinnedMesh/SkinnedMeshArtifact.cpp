@@ -407,6 +407,15 @@ std::string SkinnedMeshArtifact::Serialize(const InxSkinnedMesh &mesh, std::stri
                        [](std::string &output, const glm::vec3 &value) { AppendVec3(output, value); });
         }
     }
+    // AID1 extends the existing payload with stable animation identities.
+    AppendU32(bytes, 0x31444941U);
+    AppendCount(bytes, mesh.animations.size(), MaximumObjects);
+    std::unordered_set<std::string> clipIds;
+    for (const auto &animation : mesh.animations) {
+        if (!animation.id.empty() && !clipIds.insert(animation.id).second)
+            throw std::invalid_argument("skinned Mesh contains duplicate animation ids");
+        AppendString(bytes, animation.id);
+    }
     if (bytes.size() > MaximumArtifactBytes - sizeof(uint64_t))
         throw std::overflow_error("skinned Mesh artifact exceeds its size limit");
     AppendU64(bytes, Fnv1a64(bytes));
@@ -564,8 +573,18 @@ std::shared_ptr<InxSkinnedMesh> SkinnedMeshArtifact::Deserialize(std::string_vie
         }
         mesh->animations.push_back(std::move(animation));
     }
-    if (!reader.AtEnd())
-        throw std::invalid_argument("skinned Mesh artifact contains trailing data");
+    if (!reader.AtEnd()) {
+        if (reader.ReadU32() != 0x31444941U || reader.ReadCount(MaximumObjects) != animationCount)
+            throw std::invalid_argument("skinned Mesh artifact has an invalid animation identity table");
+        std::unordered_set<std::string> clipIds;
+        for (auto &animation : mesh->animations) {
+            animation.id = reader.ReadString();
+            if (!animation.id.empty() && !clipIds.insert(animation.id).second)
+                throw std::invalid_argument("skinned Mesh artifact contains duplicate animation ids");
+        }
+        if (!reader.AtEnd())
+            throw std::invalid_argument("skinned Mesh artifact contains trailing data");
+    }
     if (!mesh->IsAssetPayloadValid())
         throw std::invalid_argument("skinned Mesh artifact contains neither geometry nor animation data");
     mesh->NormalizeInfluences();

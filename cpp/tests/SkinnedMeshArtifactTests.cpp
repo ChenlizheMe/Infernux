@@ -1,3 +1,8 @@
+// This executable validates production Release artifacts as well as Debug builds.
+#ifdef NDEBUG
+#undef NDEBUG
+#endif
+
 #include <function/resources/InxSkinnedMesh/InxSkinnedMesh.h>
 #include <function/resources/InxSkinnedMesh/SkinnedMeshArtifact.h>
 #include <function/scene/SkinPoseHistory.h>
@@ -317,6 +322,27 @@ int main()
     trailing.insert(trailing.end() - static_cast<std::ptrdiff_t>(sizeof(uint64_t)), 'x');
     RewriteChecksum(trailing);
     RequireInvalid([&] { (void)infernux::SkinnedMeshArtifact::Deserialize(trailing, SourceHash); });
+
+    // Old artifacts ended after tracks; the optional identity table must not
+    // invalidate their named-take playback. Exercise the real old byte layout.
+    const size_t identityOffset = bytes.rfind("AID1");
+    assert(identityOffset != std::string::npos);
+    std::string legacy = bytes.substr(0, identityOffset);
+    legacy.resize(legacy.size() + sizeof(uint64_t));
+    RewriteChecksum(legacy);
+    const auto legacyModel = infernux::SkinnedMeshArtifact::Deserialize(legacy, SourceHash);
+    assert(legacyModel->animations.front().id.empty());
+    assert(legacyModel->FindAnimation("Move"));
+
+    auto identified = source;
+    identified.animations.front().id = std::string(32, 'a');
+    const auto identifiedBytes = infernux::SkinnedMeshArtifact::Serialize(identified, SourceHash);
+    const auto identifiedModel = infernux::SkinnedMeshArtifact::Deserialize(identifiedBytes, SourceHash);
+    assert(identifiedModel->FindAnimation(std::string(32, 'a'))->name == "Move");
+    auto duplicate = identified.animations.front();
+    duplicate.name = "Other";
+    identified.animations.push_back(duplicate);
+    RequireInvalid([&] { (void)infernux::SkinnedMeshArtifact::Serialize(identified, SourceHash); });
 
     source.influences.front().weight[0] = 0.5f;
     RequireInvalid([&] { (void)infernux::SkinnedMeshArtifact::Serialize(source, SourceHash); });

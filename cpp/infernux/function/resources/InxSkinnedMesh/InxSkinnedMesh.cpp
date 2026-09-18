@@ -311,7 +311,7 @@ size_t InxSkinnedMesh::GetRuntimeMemoryBytes() const noexcept
     bytes += skeleton.GetRuntimeMemoryBytes();
     bytes += animations.capacity() * sizeof(SkinnedRuntimeAnimation);
     for (const auto &animation : animations) {
-        bytes += animation.name.capacity();
+        bytes += animation.name.capacity() + animation.id.capacity();
         bytes += animation.tracks.capacity() * sizeof(SkinnedRuntimeTrack);
         for (const auto &track : animation.tracks) {
             bytes += track.positions.capacity() * sizeof(decltype(track.positions)::value_type);
@@ -344,6 +344,9 @@ const SkinnedRuntimeAnimation *InxSkinnedMesh::FindAnimation(const std::string &
     if (takeName.empty())
         return nullptr;
 
+    for (const auto &anim : animations)
+        if (anim.id == takeName)
+            return &anim;
     for (const auto &anim : animations)
         if (anim.name == takeName)
             return &anim;

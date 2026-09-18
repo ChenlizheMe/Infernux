@@ -591,6 +591,12 @@ MeshSourceImportResult MeshLoader::ImportSourceDetailed(const std::string &fileP
         std::string animationName = animation->mName.C_Str();
         if (animationName.empty())
             animationName = "Anim_" + std::to_string(animationIndex);
+        const double rate = std::isfinite(animation->mTicksPerSecond) && animation->mTicksPerSecond > 0
+                                ? animation->mTicksPerSecond : 25.0;
+        result.sourceAnimations.push_back({{"name", animationName},
+                                          {"duration", std::isfinite(animation->mDuration)
+                                              ? std::max(0.0, animation->mDuration) / rate : 0.0},
+                                          {"sample_rate", rate}});
         result.animationNames.push_back(std::move(animationName));
     }
     // Animation-only FBX files are first-class sources: their skeleton and
@@ -599,6 +605,11 @@ MeshSourceImportResult MeshLoader::ImportSourceDetailed(const std::string &fileP
         result.skinnedMesh =
             SkinnedModelImporter::ConvertScene(*scene, guid, filePath, settings.scaleFactor, settings.importAnimations,
                                               settings.maxBonesPerVertex, settings.minBoneWeight);
+    if (result.skinnedMesh) {
+        SkinnedModelImporter::ApplyAnimationClips(*result.skinnedMesh, settings);
+        if (!result.skinnedMesh->IsAssetPayloadValid())
+            result.skinnedMesh.reset();
+    }
     return result;
 }
 

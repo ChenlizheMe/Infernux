@@ -41,6 +41,7 @@ struct MeshSourceImportResult
     std::vector<std::string> materialSlots;
     std::vector<std::string> boneNames;
     std::vector<std::string> animationNames;
+    nlohmann::json sourceAnimations = nlohmann::json::array();
 };
 
 /**

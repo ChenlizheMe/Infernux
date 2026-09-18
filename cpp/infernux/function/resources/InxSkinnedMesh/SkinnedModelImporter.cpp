@@ -1,4 +1,5 @@
 #include "SkinnedModelImporter.h"
+#include <function/resources/InxMesh/MeshImportSettings.h>
 
 #include "InxSkinnedMesh.h"
 
@@ -407,6 +408,12 @@ std::shared_ptr<InxSkinnedMesh> SkinnedModelImporter::ConvertScene(const aiScene
             animation.name = "Anim_" + std::to_string(animationIndex);
         if (!animationNames.insert(animation.name).second)
             throw std::runtime_error("Skinned model contains duplicate animation names: " + animation.name);
+        animation.id = "source-";
+        for (const unsigned char byte : animation.name) {
+            constexpr const char *hex = "0123456789abcdef";
+            animation.id += hex[byte >> 4];
+            animation.id += hex[byte & 15];
+        }
         animation.durationTicks = std::isfinite(sourceAnimation.mDuration) && sourceAnimation.mDuration >= 0.0
                                       ? sourceAnimation.mDuration
                                       : 0.0;
@@ -455,6 +462,69 @@ std::shared_ptr<InxSkinnedMesh> SkinnedModelImporter::ConvertScene(const aiScene
     if (!model->IsAssetPayloadValid())
         throw std::runtime_error("Skinned model conversion produced neither renderable geometry nor animation data");
     return model;
+}
+
+namespace
+{
+template <typename T, typename Interpolate>
+std::vector<std::pair<double, T>> SliceKeys(const std::vector<std::pair<double, T>> &keys,
+                                           double start, double end, Interpolate interpolate)
+{
+    if (keys.empty())
+        return {};
+    if (!std::is_sorted(keys.begin(), keys.end(), [](const auto &a, const auto &b) { return a.first < b.first; }))
+        throw std::invalid_argument("animation clip source keys must be ordered by time");
+    const auto sample = [&](double time) {
+        auto upper = std::upper_bound(keys.begin(), keys.end(), time,
+                                      [](double t, const auto &key) { return t < key.first; });
+        if (upper == keys.begin())
+            return upper->second;
+        if (upper == keys.end())
+            return keys.back().second;
+        const auto &lower = *(upper - 1);
+        return interpolate(lower.second, upper->second,
+                           static_cast<float>((time - lower.first) / (upper->first - lower.first)));
+    };
+    std::vector<std::pair<double, T>> sliced{{0.0, sample(start)}};
+    for (const auto &[time, value] : keys)
+        if (time > start && time < end)
+            sliced.emplace_back(time - start, value);
+    sliced.emplace_back(end - start, sample(end));
+    return sliced;
+}
+} // namespace
+
+void SkinnedModelImporter::ApplyAnimationClips(InxSkinnedMesh &model, const MeshImportSettings &settings)
+{
+    if (!settings.importAnimations || !settings.customAnimationClips)
+        return;
+    MeshImportSettings::RequireAnimationClips(settings.animationClips);
+    std::vector<SkinnedRuntimeAnimation> clips;
+    for (const auto &spec : settings.animationClips) {
+        const auto sourceName = spec.at("source_take").get<std::string>();
+        const auto *source = model.FindAnimation(sourceName);
+        if (!source)
+            throw std::invalid_argument("animation clip source take is missing: " + sourceName);
+        const double start = spec.at("start").get<double>() * source->ticksPerSecond;
+        const double end = spec.at("end").get<double>() * source->ticksPerSecond;
+        if (end > source->durationTicks + 1e-6 * std::max(1.0, source->durationTicks))
+            throw std::invalid_argument("animation clip end exceeds source take duration: " + sourceName);
+        SkinnedRuntimeAnimation clip = *source;
+        clip.name = spec.at("name").get<std::string>();
+        clip.id = spec.at("id").get<std::string>();
+        clip.durationTicks = end - start;
+        for (auto &track : clip.tracks) {
+            const auto linear = [](const glm::vec3 &a, const glm::vec3 &b, float t) { return glm::mix(a, b, t); };
+            track.positions = SliceKeys(track.positions, start, end, linear);
+            track.scales = SliceKeys(track.scales, start, end, linear);
+            track.rotations = SliceKeys(track.rotations, start, end,
+                                       [](const glm::quat &a, const glm::quat &b, float t) {
+                                           return glm::normalize(glm::slerp(a, b, t));
+                                       });
+        }
+        clips.push_back(std::move(clip));
+    }
+    model.animations = std::move(clips);
 }
 
 std::shared_ptr<InxSkinnedMesh> SkinnedModelImporter::ImportSource(const std::string &sourceGuid,

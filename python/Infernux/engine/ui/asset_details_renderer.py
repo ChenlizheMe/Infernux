@@ -761,7 +761,7 @@ def _ensure_categories():
                      float_speed=spec.get("step", 0.001),
                      float_range=tuple(spec["display_range"]) if "display_range" in spec else None)
             for spec in mesh_import_settings_schema()["fields"]
-            if spec["type"] != "material_remaps"
+            if spec["type"] not in {"material_remaps", "animation_clips"}
         ],
         custom_header_fn=_render_mesh_header,
         custom_body_fn=_render_model_import_pages,
@@ -1425,7 +1425,8 @@ def _render_animclip_body(ctx: InxGUIContext, panel, state: _State):
     ctx.dummy(0, 4)
 
     # ── Clip name (read-only, derived from filename) ───────────
-    clip_display_name = os.path.splitext(os.path.basename(state.file_path))[0] if state.file_path else clip.name
+    clip_display_name = (clip.name if embedded else
+                         os.path.splitext(os.path.basename(state.file_path))[0] if state.file_path else clip.name)
     field_label(ctx, t("asset.animclip_name"), lw)
     ctx.begin_disabled(True)
     ctx.text_input("##animclip_name", clip_display_name, 256)
@@ -1691,7 +1692,7 @@ def _render_animclip3d_body(ctx: InxGUIContext, panel, state: _State):
 
     # ── Take name ─────────────────────────────────────────────────
     field_label(ctx, t("asset.animclip3d_take"), lw)
-    take_buf = clip.take_name or ""
+    take_buf = clip.name if embedded else clip.take_name or ""
     new_take = ctx.text_input("##animclip3d_take", take_buf, 256)
     if not embedded and new_take != take_buf:
         document = clip.serialize_document()
@@ -2607,6 +2608,8 @@ def _render_model_import_pages(ctx: InxGUIContext, panel, state: _State):
                         _render_model_materials(ctx, state)
                 else:
                     _render_import_fields(ctx, _categories["mesh"], state, fields=_model_page_fields(page))
+                if page == "animation":
+                    _render_model_animation_clips(ctx, state)
                 if page in {"rig", "animation"}:
                     meta = state.meta or {}
                     count_key, names_key = (("bone_count", "bone_names_csv") if page == "rig"
@@ -2622,6 +2625,54 @@ def _render_model_import_pages(ctx: InxGUIContext, panel, state: _State):
                 ctx.end_tab_item()
     finally:
         ctx.end_tab_bar()
+
+
+def _render_model_animation_clips(ctx: InxGUIContext, state: _State):
+    sources = json.loads((state.meta or {}).get("source_animations", "[]"))
+    if not state.settings.custom_animation_clips:
+        return
+    ctx.text_wrapped(t("asset.animation_clips_hint"))
+    names = [source["name"] for source in sources]
+
+    def edit(identity, key, value):
+        def mutate(settings):
+            next(clip for clip in settings.animation_clips if clip["id"] == identity)[key] = value
+        _edit_import_settings(state, f"animation_clips.{identity}.{key}", mutate, "Edit Imported Clip")
+
+    for clip in tuple(state.settings.animation_clips):
+        identity = clip["id"]
+        ctx.separator()
+        value = ctx.text_input(f"{t('asset.animclip3d_name')}##clip_name_{identity}", clip["name"], 256)
+        ctx.record_semantic_item("text_input", clip["name"], True, f"asset.mesh.clip.{identity}.name")
+        if value != clip["name"]:
+            edit(identity, "name", value)
+        index = names.index(clip["source_take"]) if clip["source_take"] in names else -1
+        new_index = ctx.combo(f"{t('asset.animclip3d_take')}##clip_take_{identity}", index, names)
+        ctx.record_semantic_item("combo", clip["source_take"], True, f"asset.mesh.clip.{identity}.source")
+        if new_index != index and 0 <= new_index < len(names):
+            edit(identity, "source_take", names[new_index])
+        for key in ("start", "end"):
+            value = ctx.drag_float(f"{t('asset.clip_' + key)}##clip_{key}_{identity}", float(clip[key]), .01, 0, 0)
+            ctx.record_semantic_item("drag_float", key, True, f"asset.mesh.clip.{identity}.{key}")
+            if value != clip[key]:
+                edit(identity, key, value)
+        clicked = ctx.button(f"{t('asset.clip_remove')}##remove_clip_{identity}")
+        ctx.record_semantic_item("button", t('asset.clip_remove'), True, f"asset.mesh.clip.{identity}.remove")
+        if clicked:
+            _edit_import_settings(state, "animation_clips", lambda s, key=identity: setattr(
+                s, "animation_clips", [entry for entry in s.animation_clips if entry["id"] != key]), "Remove Imported Clip")
+    timed_sources = [source for source in sources if source["duration"] > 0]
+    if timed_sources:
+        clicked = ctx.button(t("asset.clip_add") + "##add_imported_clip")
+        ctx.record_semantic_item("button", t("asset.clip_add"), True, "asset.mesh.clip.add")
+        if clicked:
+            used = {clip["name"] for clip in state.settings.animation_clips}
+            suffix = 1
+            while f"Clip {suffix}" in used:
+                suffix += 1
+            clip = {"id": uuid.uuid4().hex, "name": f"Clip {suffix}", "source_take": timed_sources[0]["name"],
+                    "start": 0.0, "end": float(timed_sources[0]["duration"])}
+            _edit_import_settings(state, "animation_clips", lambda s: s.animation_clips.append(clip), "Add Imported Clip")
 
 
 def _render_model_materials(ctx: InxGUIContext, state: _State):
