@@ -413,12 +413,14 @@ def _wrap_native_method(name: str, func):
     return _guarded
 
 
-def _install_native_lifetime_guard(cls) -> None:
+def _install_native_lifetime_guard(cls, *, check_liveness: bool = True) -> None:
     """Guard the native boundary once, not every Python method lookup.
 
     Methods and properties use ordinary descriptor binding after installation.
     Python fields need no interception: native accesses inside user methods
     already cross this boundary. There is no per-object callable cache.
+    Query/callback records are values, not entities with an id. Guard their
+    native property access without replacing their Python truth value.
     """
     if cls.__dict__.get("_infernux_native_lifetime_guard_installed", False):
         return
@@ -437,7 +439,7 @@ def _install_native_lifetime_guard(cls) -> None:
               and (isfunction(method) or ismethoddescriptor(method))):
             setattr(cls, name, _wrap_native_method(name, method))
 
-    if getattr(cls, "_infernux_native_lifetime_guard_installed", False):
+    if not check_liveness or getattr(cls, "_infernux_native_lifetime_guard_installed", False):
         cls._infernux_native_lifetime_guard_installed = True
         return  # Inherit the native base's liveness check.
 
@@ -467,8 +469,11 @@ def _install_native_lifetime_guards(cls):
         _install_native_lifetime_guards(child)
 
 
-for _native_cls in (GameObject, Component, RaycastHit, CollisionInfo):
+for _native_cls in (GameObject, Component):
     _install_native_lifetime_guards(_native_cls)
+
+for _native_cls in (RaycastHit, CollisionInfo):
+    _install_native_lifetime_guard(_native_cls, check_liveness=False)
 
 
 class _Vec3WritebackProxy:

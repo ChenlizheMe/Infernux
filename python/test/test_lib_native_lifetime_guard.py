@@ -101,6 +101,29 @@ class TestNativeLifetimeErrorClassifier:
         assert _is_native_lifetime_error(RuntimeError("some other runtime problem")) is False
 
 
+def test_value_record_guard_preserves_truth_and_protects_native_access():
+    class Record:
+        distance = 1.0
+
+        @property
+        def collider(self):
+            raise RuntimeError("native object has been destroyed")
+
+    _install_native_lifetime_guard(Record, check_liveness=False)
+    record = Record()
+    assert bool(record) and record.distance == 1.0
+    with pytest.raises(InvalidNativeObjectError):
+        _ = record.collider
+    # Repeated installation must not reintroduce an entity liveness check.
+    _install_native_lifetime_guard(Record)
+    assert bool(record)
+
+
+def test_query_and_contact_records_have_no_entity_bool_override():
+    for cls in (lib_module.RaycastHit, lib_module.CollisionInfo):
+        assert '__bool__' not in vars(cls)
+
+
 class TestTransformVectorCoercion:
     def test_plain_sequence_becomes_vector3(self):
         value = _unwrap_vec3((1, 2.5, -3))
