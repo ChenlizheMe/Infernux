@@ -410,18 +410,74 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
 
     def unregister_loaded_scene(self, scene_or_world_id) -> bool:
         world_id = self._world_id(scene_or_world_id)
-        binding = self._loaded_scene_documents.pop(world_id, None)
+        binding = self._loaded_scene_documents.get(world_id)
         if binding is None:
             return False
         from Infernux.engine.interaction import DocumentRegistry
 
-        document = DocumentRegistry.instance().get(binding.document_id)
+        registry = DocumentRegistry.instance()
+        document = registry.get(binding.document_id)
+        if document is not None:
+            locator = registry.locate(binding.document_id)
+            self._scene_restore_snapshots[locator.stable_id] = _SceneRestoreSnapshot(
+                locator, binding.scene.serialize_document(), binding.resource_path,
+                document.title, document.revision, document.saved_revision,
+            )
+        del self._loaded_scene_documents[world_id]
         if document is not None and not document.view_ids:
-            DocumentRegistry.instance().unregister(
+            registry.unregister(
                 binding.document_id,
                 preserve_dormant=True,
             )
         return True
+
+    def restore_loaded_scene_locator(self, locator):
+        """Restore a history owner additively, without replacing the active Scene."""
+        from Infernux.engine.interaction import DocumentCapability, DocumentRegistry
+        from Infernux.lib import SceneManager
+        from Infernux.engine.scene_document_transaction import SceneDocumentTransaction
+
+        registry = DocumentRegistry.instance()
+        document = registry.resolve_locator(locator)
+        if document is not None:
+            existing = self.scene_for_document(document.document_id)
+            if existing is not None:
+                return existing
+        snapshot = self._scene_restore_snapshots.get(locator.stable_id)
+        if snapshot is None:
+            raise RuntimeError(f"No editor history snapshot for closed Scene '{locator.title}'")
+        if self.is_loading or self.is_prefab_mode or self._is_play_mode():
+            raise RuntimeError("Scene history restoration requires idle Edit Mode")
+        canonical = registry.canonical_locator(locator)
+        manager = SceneManager.instance()
+        scene = manager.create_scene(snapshot.title)
+        try:
+            transaction = SceneDocumentTransaction(
+                scene, document=snapshot.document, asset_database=self._asset_database,
+                clear_registries=False, prefer_loaded_types=True,
+            )
+            transaction.run_to_completion(raise_on_failure=True)
+            document, _ = registry.open_or_create(
+                canonical.key_hint, snapshot.title, stable_id=locator.stable_id,
+                resource_path=canonical.resource_path or snapshot.resource_path,
+                revision=snapshot.revision, saved_revision=snapshot.saved_revision,
+                capabilities=DocumentCapability.SAVE | DocumentCapability.SAVE_AS | DocumentCapability.DISCARD,
+                controller=self,
+            )
+        except Exception:
+            manager.unload_scene(scene)
+            raise
+        self._loaded_scene_documents[int(scene.world_id)] = _LoadedSceneDocument(
+            scene, document.resource_path, document.document_id,
+        )
+        from Infernux.renderstack.render_stack import RenderStack
+        from Infernux.gizmos.collector import notify_scene_changed
+        from Infernux.components.builtin.sprite_renderer import SpriteRenderer
+
+        RenderStack.refresh_active_instance(scene)
+        SpriteRenderer.init_all_in_scene(scene)
+        notify_scene_changed()
+        return scene
 
     def _loaded_scene_document_ids(self) -> tuple[str, ...]:
         """Return resident Scene documents in their native Scene order."""

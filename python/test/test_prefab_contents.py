@@ -31,7 +31,8 @@ def contents_project(engine, scene, monkeypatch, tmp_path):
 
     database = engine.get_asset_database()
     monkeypatch.setattr(AssetManager, "_asset_database", database)
-    monkeypatch.setattr(project_context, "get_project_root", lambda: database.project_root)
+    previous_project = project_context.get_project_root()
+    project_context.set_project_root(database.project_root)
     monkeypatch.setattr(UndoManager, "_instance", None)
     core = EditorInteractionCore()
     UndoManager(core.action_journal)
@@ -42,6 +43,7 @@ def contents_project(engine, scene, monkeypatch, tmp_path):
         yield core, folder
     finally:
         core.shutdown()
+        project_context.set_project_root(previous_project)
 
 
 def make_asset(scene, path):
@@ -355,3 +357,200 @@ def test_offline_save_rejects_other_world_parent_cycle_before_publication(conten
     finally:
         editor.unload_prefab_contents(root)
         manager.unload_scene(other)
+
+
+@pytest.mark.parametrize("direction", ["undo", "redo"])
+def test_prefab_history_never_overwrites_an_external_source_edit(contents_project, scene, direction):
+    from Infernux.engine.prefab_overrides import build_prefab_asset_edit_command
+
+    _, folder = contents_project
+    path = folder / "ExternalEdit.prefab"
+    make_asset(scene, path)
+    updated = json.loads(path.read_text(encoding="utf8"))
+    updated["root_object"]["name"] = "Our save"
+    command = build_prefab_asset_edit_command(str(path), updated, AssetManager.require_asset_database())
+    command.execute()
+    if direction == "redo":
+        command.undo()
+    outside = json.loads(path.read_text(encoding="utf8"))
+    outside["root_object"]["name"] = "External author's new value"
+    path.write_text(json.dumps(outside), encoding="utf8")
+    external_bytes = path.read_bytes()
+    scene_before = scene.serialize_document()
+    with pytest.raises(RuntimeError, match="outside this history"):
+        getattr(command, direction)()
+    assert path.read_bytes() == external_bytes
+    assert scene.serialize_document() == scene_before
+
+
+@pytest.mark.parametrize("replace", [False, True])
+def test_prefab_history_does_not_recreate_deleted_or_replace_new_asset(contents_project, scene, replace):
+    from Infernux.engine.prefab_overrides import build_prefab_asset_edit_command
+
+    core, folder = contents_project
+    path = folder / "Replaced.prefab"
+    make_asset(scene, path)
+    database = AssetManager.require_asset_database()
+    original_guid = database.get_guid_from_path(str(path))
+    updated = json.loads(path.read_text(encoding="utf8"))
+    updated["root_object"]["name"] = "Our save"
+    command = build_prefab_asset_edit_command(str(path), updated, database)
+    command.execute()
+    core.project_assets.delete([str(path)])
+    if replace:
+        editor.save_as_prefab_asset(scene.create_game_object("A different asset"), path)
+        assert database.get_guid_from_path(str(path)) != original_guid
+        replacement = path.read_bytes()
+    with pytest.raises(RuntimeError, match="identity changed"):
+        command.undo()
+    assert path.exists() is replace
+    if replace:
+        assert path.read_bytes() == replacement
+
+
+def test_prefab_history_allows_formatting_only_source_changes(contents_project, scene):
+    from Infernux.engine.prefab_overrides import build_prefab_asset_edit_command
+
+    _, folder = contents_project
+    path = folder / "Formatting.prefab"
+    make_asset(scene, path)
+    before = json.loads(path.read_text(encoding="utf8"))
+    updated = json.loads(path.read_text(encoding="utf8"))
+    updated["root_object"]["name"] = "Our save"
+    command = build_prefab_asset_edit_command(str(path), updated, AssetManager.require_asset_database())
+    command.execute()
+    path.write_text(json.dumps(updated, sort_keys=True, indent=4), encoding="utf8")
+    command.undo()
+    assert json.loads(path.read_text(encoding="utf8")) == before
+    command.redo()
+    assert json.loads(path.read_text(encoding="utf8")) == updated
+
+
+def test_missing_prefab_instance_world_is_resolved_before_source_write(contents_project, scene, monkeypatch):
+    from Infernux.engine import prefab_overrides as overrides
+    from Infernux.engine.prefab_manager import instantiate_prefab
+
+    _, folder = contents_project
+    path = folder / "ClosedWorld.prefab"
+    make_asset(scene, path)
+    database = AssetManager.require_asset_database()
+    manager = SceneManager.instance()
+    other = manager.create_scene("Unregistered closed world")
+    instantiate_prefab(file_path=str(path), guid=database.get_guid_from_path(str(path)),
+                       scene=other, asset_database=database)
+    updated = json.loads(path.read_text(encoding="utf8"))
+    updated["root_object"]["name"] = "Our save"
+    command = overrides.build_prefab_asset_edit_command(str(path), updated, database)
+    try:
+        command.execute()
+    finally:
+        manager.unload_scene(other)
+    source_bytes = path.read_bytes()
+    monkeypatch.setattr(overrides, "_write_prefab_apply_document",
+                        lambda *args: pytest.fail("Unavailable world must be detected before writing"))
+    with pytest.raises(RuntimeError, match="world .* unavailable"):
+        command.undo()
+    assert path.read_bytes() == source_bytes
+
+
+@pytest.mark.parametrize("closed_count", [1, 2])
+@pytest.mark.parametrize("interrupt_publish", [False, True])
+def test_prefab_history_restores_closed_scene_owners_additively(
+    contents_project, scene, monkeypatch, closed_count, interrupt_publish,
+):
+    from Infernux.engine.prefab_manager import instantiate_prefab
+    from Infernux.engine.scene_manager import SceneFileManager
+    from Infernux.engine.interaction import DocumentRegistry
+
+    _, folder = contents_project
+    database = AssetManager.require_asset_database()
+    manager = SceneManager.instance()
+    monkeypatch.setattr(SceneFileManager, "_instance", None)
+    files = SceneFileManager()
+    files.set_asset_database(database)
+    registry = DocumentRegistry.instance()
+    path = folder / "ClosedScenes.prefab"
+    make_asset(scene, path)
+    source_before = path.read_bytes()
+    guid = database.get_guid_from_path(str(path))
+    owners = []
+    root = None
+    active = manager.get_active_scene()
+    try:
+        for index in range(2):
+            world = manager.create_scene(f"Owner {index}")
+            doc_id = files.register_loaded_scene(world, str(folder / f"Owner{index}.scene"))
+            obj = instantiate_prefab(file_path=str(path), guid=guid, scene=world, asset_database=database)
+            obj.get_child(0).name = f"Private collider {index}"
+            owners.append((doc_id, obj.id, obj.serialize_document(), world.world_id))
+        active_before = active.serialize_document()
+        root = editor.load_prefab_contents(path)
+        root.name = "Updated source"
+        root.scene.create_game_object("New child").set_parent(root)
+        editor.save_as_prefab_asset(root, path)
+        editor.unload_prefab_contents(root)
+        root = None
+        source_after = path.read_bytes()
+        after = [files.scene_for_document(doc_id).find_by_id(obj_id).serialize_document()
+                 for doc_id, obj_id, _, _ in owners]
+
+        def close_owners():
+            for doc_id, _, _, _ in owners[:closed_count]:
+                world = files.scene_for_document(doc_id)
+                assert files.unregister_loaded_scene(world)
+                world_id = world.world_id
+                manager.unload_scene(world)
+                assert manager.get_scene_by_world_id(world_id) is None
+
+        close_owners()
+        if interrupt_publish:
+            from Infernux.engine import prefab_overrides
+            publish = prefab_overrides._publish_applied_prefab
+            calls = []
+
+            def interrupted_publish(prepared):
+                calls.append(len(prepared))
+                if len(calls) == 1:
+                    assert publish(prepared[:1])
+                    for _, _, plan in prepared[1:]:
+                        plan.discard()
+                    return False
+                return publish(prepared)
+
+            with monkeypatch.context() as patch:
+                patch.setattr(prefab_overrides, "_publish_applied_prefab", interrupted_publish)
+                editor.undo(defer=False)
+            assert len(calls) == 2
+            assert path.read_bytes() == source_after
+            for (doc_id, obj_id, _, _), expected in zip(owners, after):
+                assert files.scene_for_document(doc_id).find_by_id(obj_id).serialize_document() == expected
+                assert registry.require(doc_id).is_dirty
+            assert UndoManager.instance().undo_description == "Save Prefab Asset"
+        editor.undo(defer=False)
+        assert path.read_bytes() == source_before
+        for doc_id, obj_id, before, old_world in owners:
+            world = files.scene_for_document(doc_id)
+            assert world is not None
+            assert world.find_by_id(obj_id).serialize_document() == before
+            assert not registry.require(doc_id).is_dirty
+            if doc_id in [item[0] for item in owners[:closed_count]]:
+                assert world.world_id != old_world
+        assert manager.get_active_scene() is active
+        assert active.serialize_document() == active_before
+        # Redo also restores closed owners, not just worlds reopened by Undo.
+        close_owners()
+        editor.redo(defer=False)
+        assert path.read_bytes() == source_after
+        for (doc_id, obj_id, _, _), expected in zip(owners, after):
+            assert files.scene_for_document(doc_id).find_by_id(obj_id).serialize_document() == expected
+            assert registry.require(doc_id).is_dirty
+        assert manager.get_active_scene() is active
+        assert active.serialize_document() == active_before
+    finally:
+        if root is not None:
+            editor.unload_prefab_contents(root)
+        for doc_id, _, _, _ in owners:
+            world = files.scene_for_document(doc_id)
+            if world is not None:
+                files.unregister_loaded_scene(world)
+                manager.unload_scene(world)

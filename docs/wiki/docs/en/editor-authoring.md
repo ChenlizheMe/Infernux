@@ -109,9 +109,14 @@ the merge. Parent cycles are rejected before publishing the source.
 
 The source and affected scene instances share one Undo/Redo operation. Each
 affected scene gets its own dirty revision; unrelated scenes stay unchanged.
-Unloading the temporary contents does not invalidate that operation. Keep the
-affected scenes loaded while replaying it; replay across scene closure and
-external source edits is not yet a completed contract.
+Unloading the temporary contents does not invalidate that operation. If an
+affected editor scene has been closed, replay restores its recorded document
+additively, preserving instance identities and overrides without replacing the
+active scene. This requires the scene to have been registered with the editor;
+destroying an unregistered native world cannot provide a restorable document.
+Undo/Redo refuses to overwrite a source changed outside that history, deleted,
+or replaced by another asset. Formatting-only JSON changes are accepted. A
+conflict leaves the source unchanged; it does not silently discard the action.
 
 ## Data assets and build scenes
 
