@@ -3578,6 +3578,61 @@ def test_player_cooks_data_asset_to_binary_infernux_artifact(tmp_path):
     assert "assets/data/settings.inxdata" in builder._runtime_artifact_source_paths
 
 
+def test_player_cooks_variant_from_current_base_without_authoring_metadata(tmp_path):
+    import copy
+    from Infernux.engine.prefab_variant import create_variant_definition, variant_document
+    from Infernux.engine.prefab_manager import _make_prefab_baseline
+
+    builder = _make_builder(tmp_path, tmp_path / "build_output")
+    project = Path(builder.project_path)
+    base_path = project / "Assets/Base.prefab"
+    variant_path = project / "Assets/Variant.prefab"
+    base = dict(root_object=dict(local_id=1, name="Base", active=True, is_static=False,
+                tag="Untagged", layer=0, children=[], components=[],
+                transform=dict(position=[0, 0, 0], rotation=[0, 0, 0], scale=[1, 1, 1])),
+                next_local_id=3, next_component_id=1)
+    child = copy.deepcopy(base["root_object"])
+    child.update(local_id=2, name="Child")
+    base["root_object"]["children"] = [child]
+    own = copy.deepcopy(base)
+    own["root_object"]["name"] = "Authored Variant"
+    variant = variant_document(create_variant_definition("base-guid", base, own))
+    variant_path.write_text(json.dumps(variant), encoding="utf8")
+    instance = copy.deepcopy(variant["root_object"])
+    for node in (instance, instance["children"][0]):
+        local = node.pop("local_id")
+        node.update(id=20 + local, prefab_guid="variant-guid", prefab_root=local == 1, prefab_source_id=local)
+        node["transform"]["component_id"] = 100 + local
+    instance["prefab_source"] = _make_prefab_baseline(variant["root_object"])
+    instance["children"][0]["name"] = "Instance override"
+    scene_path = project / "Assets/Scene.scene"
+    scene_path.write_text(json.dumps({"objects": [instance]}), encoding="utf8")
+    base["root_object"]["layer"] = 7
+    base["root_object"]["children"][0]["layer"] = 7
+    base_path.write_text(json.dumps(base), encoding="utf8")
+    before = [path.read_bytes() for path in (base_path, variant_path)]
+    builder._cooked_asset_entries = {
+        guid: _asset_index_entry(project, path, guid, "", "Prefab")
+        for guid, path in (("base-guid", base_path), ("variant-guid", variant_path))
+    }
+    builder._cooked_asset_entries["scene-guid"] = _asset_index_entry(project, scene_path, "scene-guid", "", "Scene")
+    builder._runtime_artifact_bindings = {}
+    builder._runtime_artifact_source_paths = set()
+    data_dir = tmp_path / "dist/Data"
+    builder._stage_library_runtime_documents(str(data_dir))
+    cooked = json.loads((data_dir / "Library/Artifacts/Document/variant-guid.prefab").read_text(encoding="utf8"))
+    assert cooked["root_object"]["name"] == "Authored Variant"
+    assert cooked["root_object"]["layer"] == 7
+    assert "variant" not in cooked
+    assert [path.read_bytes() for path in (base_path, variant_path)] == before
+    cooked_scene = json.loads((data_dir / "Library/Artifacts/Document/scene-guid.scene").read_text(encoding="utf8"))
+    result = cooked_scene["objects"][0]
+    assert result["id"] == 21 and result["children"][0]["id"] == 22
+    assert result["children"][0]["layer"] == 7
+    assert result["children"][0]["name"] == "Instance override"
+    assert "prefab_source" not in result
+
+
 def test_content_archive_keeps_only_catalog_staged_project_glsl(tmp_path):
     builder = _make_builder(tmp_path, tmp_path / "build_output")
     data = tmp_path / "dist" / "TestGame_Data"

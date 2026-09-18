@@ -285,6 +285,9 @@ class SceneSaveMixin:
         if not active_ticket_id:
             active_ticket_id = registry.begin_save(document.document_id).ticket_id
         try:
+            from Infernux.engine.prefab_manager import _read_resolved_prefab_document
+            if _read_resolved_prefab_document(self.prefab_mode_path, self._asset_database) != self.prefab_envelope:
+                raise RuntimeError("Prefab source or base changed since opening; reopen before saving")
             author_snapshot = serialize_game_object_document_authoritatively(roots[0])
             author_snapshot["prefab_source"] = _make_prefab_baseline(self.prefab_envelope["root_object"])
             prefab_document, _, _ = _serialize_prefab_snapshot(

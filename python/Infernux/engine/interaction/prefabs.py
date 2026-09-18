@@ -322,8 +322,8 @@ class PrefabCommandService:
         if not self._is_prefab_asset(target):
             raise ValueError("load_prefab_contents requires a .prefab asset")
         content = self._project_assets.read_text(target)
-        document = pm._read_prefab_document(target)
         database = self._project_assets.asset_database
+        document = pm._read_resolved_prefab_document(target, database)
         guid = str(database.get_guid_from_path(target))
         payload = pm._load_prefab_template_payload(target, guid, database)
         if payload is None:
@@ -361,6 +361,10 @@ class PrefabCommandService:
             raise ValueError("Prefab paths require the .prefab extension")
         session = self._contents.get(int(root.id))
         source = session[3] if session else None
+        if source and "variant" in source:
+            current = pm._read_resolved_prefab_document(session[1], self._project_assets.asset_database)
+            if current != source:
+                raise RuntimeError("Variant source or base changed since load; reload contents before saving")
         if session and same_path(session[1], target):
             if self._project_assets.read_text(target) != session[2]:
                 raise RuntimeError("Prefab source changed since load; reload contents before saving")
@@ -385,7 +389,7 @@ class PrefabCommandService:
             base_path = database.get_path_from_guid(root.prefab_guid)
             if not base_path:
                 raise ValueError("Variant base asset is unavailable")
-            base = pm._read_prefab_document(base_path)
+            base = pm._read_resolved_prefab_document(base_path, database)
             if session and self._project_assets.read_text(base_path) != session[2]:
                 raise RuntimeError("Variant base changed since load; reload contents before saving")
             document = variant_document(create_variant_definition(root.prefab_guid, base, document))

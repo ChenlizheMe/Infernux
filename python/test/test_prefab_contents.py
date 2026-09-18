@@ -703,6 +703,72 @@ def test_variant_resave_preserves_equal_base_override_intent(contents_project, s
     assert result["variant"]["baseline"]["root_object"]["children"][0]["layer"] == 7
 
 
+def test_external_base_change_invalidates_variant_template_without_rewriting_sources(contents_project, scene):
+    from Infernux.engine.prefab_manager import instantiate_prefab, _read_resolved_prefab_document
+
+    _, folder = contents_project
+    database = AssetManager.require_asset_database()
+    base_path, variant_path = folder / "Base.prefab", folder / "Variant.prefab"
+    make_asset(scene, base_path)
+    root = editor.load_prefab_contents(base_path)
+    try:
+        root.name = "Private variant"
+        editor.save_as_prefab_asset(root, variant_path)
+    finally:
+        editor.unload_prefab_contents(root)
+    guid = database.get_guid_from_path(str(variant_path))
+    first = instantiate_prefab(file_path=str(variant_path), guid=guid, scene=scene, asset_database=database)
+    assert first.get_child(0).layer == 0
+    stale = editor.load_prefab_contents(variant_path)
+    saved_variant = variant_path.read_bytes()
+    base = json.loads(base_path.read_text(encoding="utf8"))
+    base["root_object"]["children"][0]["layer"] = 7
+    base_path.write_text(json.dumps(base), encoding="utf8")
+    saved_base = base_path.read_bytes()
+    try:
+        second = instantiate_prefab(file_path=str(variant_path), guid=guid, scene=scene, asset_database=database)
+        assert second.get_child(0).layer == 7
+        assert second.name == "Private variant (Clone)"
+        assert first.get_child(0).layer == 0  # Loading is not a live-world mutation.
+        assert _read_resolved_prefab_document(str(variant_path), database)["root_object"]["children"][0]["layer"] == 7
+        with pytest.raises(RuntimeError, match="base changed"):
+            editor.save_as_prefab_asset(stale, variant_path)
+        assert variant_path.read_bytes() == saved_variant
+        assert base_path.read_bytes() == saved_base
+    finally:
+        editor.unload_prefab_contents(stale)
+    current = editor.load_prefab_contents(variant_path)
+    try:
+        assert current.get_child(0).layer == 7
+        editor.save_as_prefab_asset(current, variant_path)
+        assert first.get_child(0).layer == 7
+    finally:
+        editor.unload_prefab_contents(current)
+
+
+def test_variant_resolver_rejects_missing_and_cyclic_bases(contents_project, scene):
+    from Infernux.engine.prefab_manager import _read_resolved_prefab_document, PrefabDocumentError
+
+    _, folder = contents_project
+    database = AssetManager.require_asset_database()
+    base_path, variant_path = folder / "Base.prefab", folder / "Variant.prefab"
+    make_asset(scene, base_path)
+    root = editor.load_prefab_contents(base_path)
+    try:
+        editor.save_as_prefab_asset(root, variant_path)
+    finally:
+        editor.unload_prefab_contents(root)
+    variant = json.loads(variant_path.read_text(encoding="utf8"))
+    for guid, message in (("unavailable-source-guid", "unavailable"),
+                          (database.get_guid_from_path(str(variant_path)), "cycle")):
+        variant["variant"]["guid"] = guid
+        variant_path.write_text(json.dumps(variant), encoding="utf8")
+        before = variant_path.read_bytes()
+        with pytest.raises(PrefabDocumentError, match=message):
+            _read_resolved_prefab_document(str(variant_path), database)
+        assert variant_path.read_bytes() == before
+
+
 @pytest.mark.parametrize("interrupt_write", [False, True])
 def test_prefab_mode_save_updates_variant_assets_and_suspended_and_additive_worlds(
         contents_project, scene, monkeypatch, interrupt_write):

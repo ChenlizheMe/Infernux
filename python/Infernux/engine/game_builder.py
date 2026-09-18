@@ -2190,6 +2190,12 @@ finally:
             for binding in self._runtime_artifact_bindings.values()
             if isinstance(binding, dict) and binding.get("source_guid")
         }
+        def prefab_path_for_guid(prefab_guid):
+            entry = self._cooked_asset_entries.get(prefab_guid)
+            if entry is None:
+                raise RuntimeError(f"Prefab source is outside the build catalog: {prefab_guid}")
+            return self._library_source_entry_path(entry)
+
         for guid, entry in sorted(
             getattr(self, "_cooked_asset_entries", {}).items()
         ):
@@ -2257,20 +2263,25 @@ finally:
                 Path(destination).write_bytes(
                     encode_data_asset_artifact(data_asset_document)
                 )
-            elif suffix == ".scene":
-                from Infernux.engine.prefab_manager import _read_prefab_document
+            elif suffix in (".scene", ".prefab"):
+                from Infernux.engine.prefab_manager import _read_resolved_prefab_document
                 from Infernux.engine.prefab_overrides import resolve_scene_prefab_documents
 
                 def load_prefab_source(prefab_guid):
-                    prefab_entry = self._cooked_asset_entries.get(prefab_guid)
-                    if prefab_entry is None:
-                        raise RuntimeError(f"Scene Prefab source is outside the build catalog: {prefab_guid}")
-                    prefab_path = self._library_source_entry_path(prefab_entry)
-                    return _read_prefab_document(prefab_path)["root_object"]
+                    return _read_resolved_prefab_document(
+                        prefab_path_for_guid(prefab_guid), path_for_guid=prefab_path_for_guid,
+                    )["root_object"]
 
-                with open(source_path, "r", encoding="utf-8") as source_stream:
-                    scene_document = json.load(source_stream)
-                _write_json_atomic(destination, resolve_scene_prefab_documents(scene_document, load_prefab_source))
+                if suffix == ".scene":
+                    with open(source_path, "r", encoding="utf-8") as source_stream:
+                        scene_document = json.load(source_stream)
+                    cooked = resolve_scene_prefab_documents(scene_document, load_prefab_source)
+                else:
+                    cooked = _read_resolved_prefab_document(source_path, path_for_guid=prefab_path_for_guid)
+                    # A Player consumes the resolved tree, not editor inheritance
+                    # snapshots or an independent Variant runtime.
+                    cooked.pop("variant", None)
+                _write_json_atomic(destination, cooked)
                 self._rewrite_player_document_paths(destination, suffix)
             else:
                 shutil.copy2(source_path, destination)

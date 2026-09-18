@@ -196,9 +196,53 @@ def _get_file_stamp(file_path: str):
         return None
 
 
+def _read_resolved_prefab_document(file_path, asset_database=None, *, path_for_guid=None, dependencies=None):
+    """Resolve the current base chain without rewriting author files on read.
+
+    Editor templates and cook share this projection. A stored Variant baseline
+    records override intent, not authority to serve stale inherited values.
+    """
+    from Infernux.engine.prefab_variant import rebase_variant_definition, variant_definition, variant_document
+
+    resolved, active = {}, set()
+
+    def read(path):
+        key = path_key(path)
+        if key in active:
+            raise PrefabDocumentError(f"Variant source cycle at '{path}'")
+        if key in resolved:
+            return resolved[key]
+        active.add(key)
+        try:
+            document = _read_prefab_document(path)
+            if dependencies is not None:
+                dependencies[path] = _get_file_stamp(path)
+            if "variant" in document:
+                guid = document["variant"]["guid"]
+                if path_for_guid is not None:
+                    base_path = path_for_guid(guid)
+                else:
+                    database = asset_database
+                    if database is None:
+                        from Infernux.core.assets import AssetManager
+                        database = AssetManager.require_asset_database()
+                    base_path = database.get_path_from_guid(guid)
+                if not base_path:
+                    raise PrefabDocumentError(f"Variant base asset is unavailable: {guid}")
+                base = read(base_path)
+                base = {name: value for name, value in base.items() if name != "variant"}
+                document = variant_document(rebase_variant_definition(variant_definition(document), base))
+            resolved[key] = document
+            return document
+        finally:
+            active.remove(key)
+
+    return read(file_path)
+
+
 def _load_prefab_template_payload(file_path: str, resolved_guid: str, asset_database=None, dependencies=None):
     try:
-        prefab_data = _read_prefab_document(file_path)
+        prefab_data = _read_resolved_prefab_document(file_path, asset_database, dependencies=dependencies)
     except (OSError, json.JSONDecodeError, PrefabDocumentError) as exc:
         Debug.log_error(f"Failed to read prefab file: {exc}")
         return None
@@ -229,7 +273,7 @@ def _load_prefab_template_payload(file_path: str, resolved_guid: str, asset_data
                 raise PrefabDocumentError(f"Nested Prefab source cannot be resolved: {guid}")
             if dependencies is not None:
                 dependencies[path] = _get_file_stamp(path)
-            return _read_prefab_document(path)["root_object"]
+            return _read_resolved_prefab_document(path, asset_database, dependencies=dependencies)["root_object"]
 
         from Infernux.engine.prefab_overrides import resolve_scene_prefab_documents
         root_obj_data = resolve_scene_prefab_documents({"objects": [root_obj_data]}, load_source)["objects"][0]

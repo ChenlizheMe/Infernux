@@ -104,12 +104,16 @@ and connect. Saving a linked Prefab root to a new path creates a Variant of its
 source. A Variant may itself be the source of another Variant.
 
 Offline saving and Apply update registered descendant Variants and their loaded
-scene instances in the same Undo/Redo operation. Local property overrides,
+scene instances in the same Undo/Redo operation. Prefab Mode saving uses the same
+publication path; exiting also updates Variants in the suspended scene. Local property overrides,
 added children and removed components survive base updates. Inherited objects
 can be deactivated, but cannot be deleted or reparented in a Variant. Variants
 remain ordinary `.prefab` assets with inheritance metadata; they do not introduce
-a second runtime object type. Dedicated Variant override controls, dependency
-refresh after external file edits, and final Player delivery are still in progress.
+a second runtime object type. Loading and cooking resolve the current base chain
+without rewriting the author files, and a base change invalidates cached templates.
+Cooked Variants contain the resolved tree, not editor inheritance metadata.
+Dedicated Variant override controls, automatic propagation of external edits to
+already-open scene instances, and final Player delivery are still in progress.
 
 Saving rejects source changes or deletion since load. Close the same asset's
 Prefab Mode before editing it offline. Saving an existing source, or applying

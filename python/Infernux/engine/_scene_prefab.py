@@ -53,7 +53,7 @@ class ScenePrefabMixin:
             serialize_game_object_document_authoritatively,
         )
         from Infernux.engine.prefab_manager import (
-            _read_prefab_document,
+            _read_resolved_prefab_document,
             _load_prefab_template_payload,
         )
         from Infernux.engine.interaction import SelectionService
@@ -64,7 +64,7 @@ class ScenePrefabMixin:
             return False
 
         try:
-            prefab_data = _read_prefab_document(prefab_path)
+            prefab_data = _read_resolved_prefab_document(prefab_path, self._asset_database)
         except (OSError, ValueError) as exc:
             Debug.log_error(f"Failed to open prefab for Prefab Mode: {exc}")
             return False
@@ -361,12 +361,12 @@ class ScenePrefabMixin:
     def _refresh_prefab_instances(scene, prefab_guid: str, prefab_path: str,
                                   asset_database=None):
         """Merge source changes against each instance's persisted baseline."""
-        from Infernux.engine.prefab_manager import _read_prefab_document, _make_prefab_baseline
+        from Infernux.engine.prefab_manager import _read_resolved_prefab_document, _make_prefab_baseline
         from Infernux.engine.prefab_overrides import (
             _snapshot_linked_instances, _propagate_applied_prefab,
         )
 
-        updated_root = _read_prefab_document(prefab_path)["root_object"]
+        updated_root = _read_resolved_prefab_document(prefab_path, asset_database)["root_object"]
         snapshots = [
             snapshot for snapshot in _snapshot_linked_instances(scene, prefab_guid, base_root=updated_root)
             if snapshot[1].get("prefab_source") != _make_prefab_baseline(
@@ -400,7 +400,7 @@ class ScenePrefabMixin:
             serialize_game_object_document_authoritatively,
             preflight_game_object_python_components,
         )
-        from Infernux.engine.prefab_manager import _read_prefab_document, PrefabDocumentError
+        from Infernux.engine.prefab_manager import _read_resolved_prefab_document, PrefabDocumentError
         from Infernux.engine.prefab_overrides import (
             resolve_scene_prefab_documents, _publish_applied_prefab,
         )
@@ -409,7 +409,7 @@ class ScenePrefabMixin:
             path = self._asset_database.get_path_from_guid(guid)
             if not path:
                 raise PrefabDocumentError(f"Prefab source cannot be resolved: {guid}")
-            return _read_prefab_document(path)["root_object"]
+            return _read_resolved_prefab_document(path, self._asset_database)["root_object"]
 
         # Resolve the resulting tree, not a GUID list captured before merging:
         # an outer source update can introduce previously unseen nested sources.
