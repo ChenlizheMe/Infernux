@@ -586,6 +586,49 @@ class TestColliderRaycast:
         inside = mesh.closest_point(Vector3(0.1, 0, 0))
         assert (inside.x, inside.y, inside.z) == pytest.approx((0.1, 0, 0), abs=1e-6)
 
+    def test_kinematic_non_convex_mesh_query_follows_published_transform(self, scene):
+        import numpy as np
+
+        from Infernux.physics import Physics as PublicPhysics
+
+        obj = scene.create_game_object("kinematic triangle mesh")
+        renderer = obj.add_component("MeshRenderer")
+        positions = np.array(
+            [[-1, 0, -1], [-1, 0, 1], [1, 0, -1], [1, 0, 1]], dtype=np.float32
+        )
+        normals = np.tile([0, 1, 0], (4, 1)).astype(np.float32)
+        uvs = np.zeros((4, 2), dtype=np.float32)
+        indices = np.array([0, 1, 2, 2, 1, 3], dtype=np.uint32)
+        renderer.set_inline_mesh_data(positions, normals, uvs, indices)
+        mesh = obj.add_component("MeshCollider")
+        body = obj.add_component("Rigidbody")
+        body.is_kinematic = True
+        Physics.sync_transforms()
+
+        first = PublicPhysics.raycast(Vector3(0, 5, 0), Vector3(0, -1, 0), 20)
+        assert first is not None
+        assert first.point.y == pytest.approx(0.0, abs=1e-3)
+
+        obj.transform.position = Vector3(0, 2, 0)
+        Physics.sync_transforms()
+        moved = PublicPhysics.raycast(Vector3(0, 5, 0), Vector3(0, -1, 0), 20)
+        assert moved is not None
+        assert moved.point.y == pytest.approx(2.0, abs=1e-3)
+
+        # A visual mesh mutation is not a collision mutation until the author
+        # explicitly publishes a new immutable cooking generation.
+        positions[:, 1] = 1.0
+        renderer.set_inline_mesh_data(positions, normals, uvs, indices)
+        Physics.sync_transforms()
+        unchanged = PublicPhysics.raycast(Vector3(0, 5, 0), Vector3(0, -1, 0), 20)
+        assert unchanged is not None
+        assert unchanged.point.y == pytest.approx(2.0, abs=1e-3)
+        mesh.recook()
+        Physics.sync_transforms()
+        recooked = PublicPhysics.raycast(Vector3(0, 5, 0), Vector3(0, -1, 0), 20)
+        assert recooked is not None
+        assert recooked.point.y == pytest.approx(3.0, abs=1e-3)
+
     def test_compute_penetration_supports_ready_convex_mesh(self, scene):
         mesh_object = scene.create_primitive(PrimitiveType.Cube, "penetration convex mesh")
         mesh = mesh_object.add_component("MeshCollider")
