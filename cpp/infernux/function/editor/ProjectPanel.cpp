@@ -1157,6 +1157,7 @@ void ProjectPanel::AppendModelSubAssets(std::vector<FileItem> &out, AssetDatabas
     const uint64_t childMtime = modelItem.mtimeNs;
 
     // ── Materials (material slots) ────────────────────────────────────
+    const bool importMaterials = TryGetMetaString(meta.get(), "material_import_mode") != "none";
     std::vector<std::string> matNames = SplitCommaList(TryGetMetaString(meta.get(), "material_slots"));
     int matCount = TryGetMetaInt(meta.get(), "material_slot_count", -1);
     if (matNames.empty() && matCount > 0) {
@@ -1165,7 +1166,7 @@ void ProjectPanel::AppendModelSubAssets(std::vector<FileItem> &out, AssetDatabas
             matNames.push_back("Material_" + std::to_string(i));
     }
 
-    if (!matNames.empty()) {
+    if (importMaterials && !matNames.empty()) {
         for (int i = 0; i < static_cast<int>(matNames.size()); ++i) {
             FileItem sub{};
             sub.type = FileItem::SubMaterial;
@@ -1177,7 +1178,7 @@ void ProjectPanel::AppendModelSubAssets(std::vector<FileItem> &out, AssetDatabas
             sub.slotIndex = i;
             out.push_back(std::move(sub));
         }
-    } else {
+    } else if (importMaterials) {
         FileItem sub{};
         sub.type = FileItem::SubMaterial;
         sub.name = "(No materials in meta — reimport model)";

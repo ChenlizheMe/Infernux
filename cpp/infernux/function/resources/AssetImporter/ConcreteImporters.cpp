@@ -4,6 +4,7 @@
 #include <core/log/InxLog.h>
 #include <function/resources/InxMaterial/MaterialDocumentValidation.h>
 #include <function/resources/InxMesh/MeshArtifact.h>
+#include <function/resources/InxMesh/MeshImportSettings.h>
 #include <function/resources/InxMesh/MeshLoader.h>
 #include <function/resources/InxSkinnedMesh/InxSkinnedMesh.h>
 #include <function/resources/InxSkinnedMesh/SkinnedMeshArtifact.h>
@@ -664,8 +665,10 @@ ImportArtifact ModelImporter::Import(const ImportRequest &request) const
                                   checkedMetadataInt(imported.animationNames.size(), "animation_count"));
     artifact.metadata.AddMetadata("animation_names_csv", joinCsv(imported.animationNames));
 
-    const auto externalTextures = MeshLoader::ScanExternalTexturePaths(sourcePath);
-    artifact.dependencyPathHints.assign(externalTextures.begin(), externalTextures.end());
+    if (MeshImportSettings::Read(artifact.metadata).materialImportMode != "none") {
+        const auto externalTextures = MeshLoader::ScanExternalTexturePaths(sourcePath);
+        artifact.dependencyPathHints.assign(externalTextures.begin(), externalTextures.end());
+    }
     artifact.dependenciesAuthoritative = true;
     std::set<std::string> materialDependencies;
     for (const auto &material : imported.mesh->GetMaterialSlotData())

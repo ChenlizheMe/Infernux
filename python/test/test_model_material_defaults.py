@@ -43,6 +43,119 @@ def color(renderer, slot=0):
     return [value.x, value.y, value.z, value.w]
 
 
+@pytest.mark.parametrize("apply_mode", ["sync", "async"])
+@pytest.mark.parametrize("override", [False, True])
+def test_material_creation_mode_controls_artifacts_and_keeps_overrides(imported_model, apply_mode, override):
+    import time
+    from Infernux.core.asset_types import read_mesh_import_settings
+    from Infernux.lib import AssetRegistry, AssetDependencyGraph
+
+    renderer, _, source, database, _ = imported_model
+    registry = AssetRegistry.instance()
+    mesh = registry.load_mesh(str(source))
+    target = source.with_suffix(".mat")
+    blue = mesh.create_material_copy(0)
+    blue.set_color("baseColor", [0, 0, 1, 1])
+    target.write_text(json.dumps(blue.serialize_document()), encoding="utf-8")
+    imported = AssetManager.import_asset(str(target), database=database)
+    assert imported, imported.error
+    settings = read_mesh_import_settings(str(source))
+    settings.material_remaps["material/Green"] = imported.guid
+    if override:
+        renderer.set_material(0, imported.guid)
+    original_vertices = mesh.vertex_count
+    original_names = mesh.material_slot_names
+
+    for mode in ("description", "none", "description"):
+        settings.material_import_mode = mode
+        if apply_mode == "sync":
+            result = AssetManager.reimport_asset(str(source), import_settings=settings.to_dict(), database=database)
+        else:
+            owner = AssetManager.begin_model_reimport(str(source), settings)
+            deadline = time.monotonic() + 30
+            while (result := AssetManager.poll_model_reimport(owner)) is None:
+                assert time.monotonic() < deadline
+                time.sleep(.002)
+        assert result, result.error
+        assert read_mesh_import_settings(str(source)).material_import_mode == mode
+        assert read_mesh_import_settings(str(source)).material_remaps == settings.material_remaps
+        assert mesh.vertex_count == original_vertices
+        assert mesh.material_slot_names == original_names
+        assert (imported.guid in AssetDependencyGraph.instance().get_dependencies(mesh.guid)) == (mode == "description")
+        if override:
+            np.testing.assert_allclose(color(renderer, 0), [0, 0, 1, 1])
+        if mode == "none":
+            assert mesh.get_material_slot_data() == []
+            with pytest.raises(IndexError, match="no imported material"):
+                mesh.create_material_copy(0)
+            assert renderer.serialize_document()["materials"] == ([imported.guid, None] if override else [None, None])
+        else:
+            assert len(mesh.get_material_slot_data()) == 2
+            np.testing.assert_allclose(color(renderer, 1), [0, 0, 1, 1])
+            if not override:
+                np.testing.assert_allclose(color(renderer, 0), [1, 0, 0, 1])
+        # Read the cooked native artifact, not only the live import publication.
+        assert registry.reload_asset(mesh.guid)
+        assert bool(registry.load_mesh(str(source)).get_material_slot_data()) == (mode == "description")
+
+
+def test_disabled_material_import_defers_remap_resolution(imported_model):
+    from Infernux.core.asset_types import read_mesh_import_settings
+    from Infernux.lib import AssetRegistry, AssetDependencyGraph
+
+    renderer, _, source, database, _ = imported_model
+    mesh = AssetRegistry.instance().load_mesh(str(source))
+    settings = read_mesh_import_settings(str(source))
+    settings.material_import_mode = "none"
+    settings.material_remaps = {"material/RemovedSource": "a" * 32}
+    result = AssetManager.reimport_asset(str(source), import_settings=settings.to_dict(), database=database)
+    assert result, result.error
+    assert mesh.get_material_slot_data() == []
+    assert "a" * 32 not in AssetDependencyGraph.instance().get_dependencies(mesh.guid)
+    settings.material_import_mode = "description"
+    result = AssetManager.reimport_asset(str(source), import_settings=settings.to_dict(), database=database)
+    assert not result
+    assert read_mesh_import_settings(str(source)).material_import_mode == "none"
+    assert mesh.get_material_slot_data() == []
+
+
+def test_material_none_removes_external_texture_dependency(imported_model):
+    from PIL import Image
+    from Infernux.core.asset_types import read_mesh_import_settings
+    from Infernux.lib import AssetRegistry, AssetDependencyGraph
+
+    _, document, source, database, _ = imported_model
+    texture = source.with_name("model_color.png")
+    Image.new("RGBA", (4, 4), (220, 80, 40, 255)).save(texture)
+    imported = AssetManager.import_asset(str(texture), database=database)
+    assert imported, imported.error
+    document["images"] = [{"uri": texture.name}]
+    document["textures"] = [{"source": 0}]
+    document["materials"][0]["pbrMetallicRoughness"]["baseColorTexture"] = {"index": 0}
+    source.write_text(json.dumps(document), encoding="utf-8")
+    settings = read_mesh_import_settings(str(source))
+    mesh = AssetRegistry.instance().load_mesh(str(source))
+    for mode in ("description", "none", "description"):
+        settings.material_import_mode = mode
+        result = AssetManager.reimport_asset(str(source), import_settings=settings.to_dict(), database=database)
+        assert result, result.error
+        assert (imported.guid in AssetDependencyGraph.instance().get_dependencies(mesh.guid)) == (mode == "description")
+
+
+@pytest.mark.parametrize("value", [True, 1, "legacy", "", None])
+def test_invalid_material_import_mode_rejected_before_publication(imported_model, value):
+    from Infernux.core.asset_types import read_mesh_import_settings, MeshImportSettings
+    _, _, source, database, _ = imported_model
+    before = source.with_suffix(source.suffix + ".meta").read_bytes()
+    data = read_mesh_import_settings(str(source)).to_dict()
+    data["material_import_mode"] = value
+    with pytest.raises(ValueError, match="material_import_mode"):
+        MeshImportSettings.from_dict(data)
+    with pytest.raises(ValueError, match="material_import_mode"):
+        AssetManager.reimport_asset(str(source), import_settings=data, database=database)
+    assert source.with_suffix(source.suffix + ".meta").read_bytes() == before
+
+
 def test_material_copy_matches_renderer_without_sharing_edits(imported_model):
     from Infernux.lib import AssetRegistry
 

@@ -2559,7 +2559,11 @@ def _render_model_import_pages(ctx: InxGUIContext, panel, state: _State):
                 if page == "model":
                     _render_mesh_info(ctx, panel, state)
                 if page == "materials":
-                    _render_model_materials(ctx, state)
+                    _render_import_fields(ctx, _categories["mesh"], state, fields=_model_page_fields(page))
+                    if state.settings.material_import_mode == "none":
+                        ctx.text_wrapped(t("asset.material_import_disabled"))
+                    else:
+                        _render_model_materials(ctx, state)
                 else:
                     _render_import_fields(ctx, _categories["mesh"], state, fields=_model_page_fields(page))
                 if page in {"rig", "animation"}:
@@ -2591,6 +2595,9 @@ def _render_model_materials(ctx: InxGUIContext, state: _State):
     if mesh is None:
         return
     slot_data = mesh.get_material_slot_data()
+    if not slot_data:
+        ctx.text_wrapped(t("asset.material_import_apply_required"))
+        return
 
     def set_remap(source_id, guid):
         def mutate(settings):

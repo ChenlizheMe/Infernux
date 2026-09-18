@@ -755,6 +755,7 @@ class MeshImportSettings:
     weld_vertices: bool = field(default_factory=lambda: _mesh_import_fields()["weld_vertices"]["default"])
     rig_type: str = field(default_factory=lambda: _mesh_import_fields()["rig_type"]["default"])
     import_animations: bool = field(default_factory=lambda: _mesh_import_fields()["import_animations"]["default"])
+    material_import_mode: str = field(default_factory=lambda: _mesh_import_fields()["material_import_mode"]["default"])
     material_remaps: Dict[str, str] = field(default_factory=lambda: dict(_mesh_import_fields()["material_remaps"]["default"]))
 
     def to_dict(self) -> Dict[str, Any]:

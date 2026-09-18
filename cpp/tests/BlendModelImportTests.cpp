@@ -25,7 +25,8 @@ int main(int argc, char **argv)
         Settings::EnsureDefaults(candidate);
         const auto defaults = Settings::Read(candidate);
         const auto schema = Settings::Schema();
-        assert(schema.at("fields").size() == Settings::Flags.size() + Settings::Scalars.size() + 2);
+        assert(schema.at("fields").size() == Settings::Flags.size() + Settings::Scalars.size() + 3);
+        assert(defaults.materialImportMode == "description");
         assert(defaults.materialRemaps.empty());
         Settings::ApplyPatch(candidate, {{"material_remaps", {{"material/Body", "abcdabcdabcdabcdabcdabcdabcdabcd"}}}});
         assert(candidate.GetMetadata().at("material_remaps").first == "json_object");
@@ -70,9 +71,12 @@ int main(int argc, char **argv)
         reject({{"rig_type", "humanoid"}});
         reject({{"rig_type", true}});
         reject({{"import_animations", 1}});
+        reject({{"material_import_mode", "legacy"}});
+        reject({{"material_import_mode", false}});
         infernux::InxResourceMeta legacy;
         legacy.AddMetadata("scale_factor", 0.5f);
         assert(Settings::Read(legacy).weldVertices);
+        assert(Settings::Read(legacy).materialImportMode == "description");
     }
     const std::filesystem::path sourceRoot = INFERNUX_SOURCE_DIR;
     const auto animatedFbx = sourceRoot / "external/assimp/test/models/FBX/animation_with_skeleton.fbx";
@@ -80,6 +84,20 @@ int main(int argc, char **argv)
     const auto full =
         infernux::MeshLoader::ImportSourceDetailed(infernux::FromFsPath(animatedFbx), "animated", animationSettings);
     assert(full.skinnedMesh && !full.skinnedMesh->animations.empty() && !full.boneNames.empty());
+    for (const std::string mode : {"none", "description"}) {
+        infernux::InxResourceMeta materialSettings;
+        infernux::MeshImportSettings::ApplyPatch(materialSettings, {{"material_import_mode", mode}});
+        const auto variant = infernux::MeshLoader::ImportSourceDetailed(
+            infernux::FromFsPath(animatedFbx), "animated", materialSettings);
+        assert(variant.vertexCount == full.vertexCount && variant.indexCount == full.indexCount);
+        assert(variant.materialSlots == full.materialSlots);
+        assert(variant.skinnedMesh && variant.boneNames == full.boneNames);
+        assert(variant.mesh->GetMaterialSlotData().empty() == (mode == "none"));
+        const auto restored = infernux::MeshArtifact::Deserialize(
+            infernux::MeshArtifact::Serialize(*variant.mesh, "fixture"), "fixture");
+        assert(restored->GetMaterialSlotNames() == full.materialSlots);
+        assert(restored->GetMaterialSlotData().empty() == (mode == "none"));
+    }
     for (const bool animations : {false, true}) {
         for (const std::string rig : {"none", "generic"}) {
             infernux::MeshImportSettings::ApplyPatch(animationSettings,

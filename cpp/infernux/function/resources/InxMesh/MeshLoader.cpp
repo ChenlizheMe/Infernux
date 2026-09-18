@@ -399,12 +399,18 @@ static std::shared_ptr<InxMesh> ConvertScene(const aiScene *scene, const MeshImp
         currentVertexOffset += aiM->mNumVertices;
     }
 
-    for (const auto &[sourceId, guid] : settings.materialRemaps.items()) {
-        auto found = std::find_if(materialSlotDataVec.begin(), materialSlotDataVec.end(),
-                                  [&](const auto &slot) { return slot.sourceId == sourceId; });
-        if (found == materialSlotDataVec.end())
-            throw std::invalid_argument("model material remap source is missing or ambiguous: " + sourceId);
-        found->materialGuid = guid.get<std::string>();
+    // Slot names/layout remain geometry information in None mode. No source
+    // materials or remapped material references enter the runtime artifact.
+    if (settings.materialImportMode == "none") {
+        materialSlotDataVec.clear();
+    } else {
+        for (const auto &[sourceId, guid] : settings.materialRemaps.items()) {
+            auto found = std::find_if(materialSlotDataVec.begin(), materialSlotDataVec.end(),
+                                      [&](const auto &slot) { return slot.sourceId == sourceId; });
+            if (found == materialSlotDataVec.end())
+                throw std::invalid_argument("model material remap source is missing or ambiguous: " + sourceId);
+            found->materialGuid = guid.get<std::string>();
+        }
     }
     mesh->SetMaterialSlotNames(std::move(materialSlotNames));
     mesh->SetMaterialSlotData(std::move(materialSlotDataVec));
@@ -448,6 +454,8 @@ MeshSourceImportResult MeshLoader::ImportSourceDetailed(const std::string &fileP
                    [](unsigned char character) { return static_cast<char>(std::tolower(character)); });
 
     if (ext == "inxmesh") {
+        if (settings.materialImportMode != "description")
+            throw std::invalid_argument("material import mode requires a source model, not an authored .inxmesh");
         if (!settings.materialRemaps.empty())
             throw std::invalid_argument("material import remaps require a source model, not an authored .inxmesh");
         MeshSourceImportResult result;

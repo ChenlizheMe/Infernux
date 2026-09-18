@@ -117,3 +117,32 @@ def test_model_pages_do_not_publish_or_discard_shared_drafts(monkeypatch):
         assert state.settings.to_dict() == expected
     assert len(ctx.selected) == 1 and ctx.selected[0].endswith("_model")
     assert "rig_type" in visited and "import_animations" in visited
+    assert "material_import_mode" in visited
+
+
+def test_material_none_hides_source_operations_without_discarding_remaps(monkeypatch):
+    from Infernux.core.asset_types import MeshImportSettings
+    from Infernux.engine.ui import asset_details_renderer as renderer
+    renderer._ensure_categories()
+    state = renderer._State()
+    state.file_path = "model.fbx"
+    state.category = "mesh"
+    state.settings = MeshImportSettings(material_import_mode="none", material_remaps={"material/A": "saved"})
+    calls = []
+    monkeypatch.setattr(renderer, "_render_model_materials", lambda *a: calls.append("materials"))
+    monkeypatch.setattr(renderer, "_render_import_fields", lambda *a, **kw: calls.append("fields"))
+
+    class Context:
+        def begin_tab_bar(self, _): return True
+        def end_tab_bar(self): pass
+        def begin_tab_item(self, label, **kw): return label.endswith("_materials")
+        def end_tab_item(self): pass
+        def record_semantic_item(self, *a): pass
+        def text_wrapped(self, text): pass
+
+    renderer._render_model_import_pages(Context(), None, state)
+    assert calls == ["fields"]
+    assert state.settings.material_remaps == {"material/A": "saved"}
+    state.settings.material_import_mode = "description"
+    renderer._render_model_import_pages(Context(), None, state)
+    assert calls == ["fields", "fields", "materials"]

@@ -25,6 +25,7 @@ struct MeshImportSettings
     bool weldVertices = true;
     bool importAnimations = true;
     std::string rigType = "generic";
+    std::string materialImportMode = "description";
     nlohmann::json materialRemaps = nlohmann::json::object();
 
     static void RequireMaterialRemaps(const nlohmann::json &value)
@@ -86,6 +87,12 @@ struct MeshImportSettings
             throw std::invalid_argument("model rig_type must be none or generic");
     }
 
+    static void RequireMaterialImportMode(const nlohmann::json &value)
+    {
+        if (!value.is_string() || (value != "none" && value != "description"))
+            throw std::invalid_argument("model material_import_mode must be none or description");
+    }
+
     static void RequireScalar(const Scalar &field, float value)
     {
         if (!std::isfinite(value) || value > field.maximum || value < field.minimum ||
@@ -114,6 +121,9 @@ struct MeshImportSettings
         if (metadata.HasKey("rig_type"))
             settings.rigType = metadata.GetDataAs<std::string>("rig_type");
         RequireRigType(settings.rigType);
+        if (metadata.HasKey("material_import_mode"))
+            settings.materialImportMode = metadata.GetDataAs<std::string>("material_import_mode");
+        RequireMaterialImportMode(settings.materialImportMode);
         return settings;
     }
 
@@ -130,6 +140,8 @@ struct MeshImportSettings
             WriteMaterialRemaps(metadata, defaults.materialRemaps);
         if (!metadata.HasKey("rig_type"))
             metadata.AddMetadata("rig_type", defaults.rigType);
+        if (!metadata.HasKey("material_import_mode"))
+            metadata.AddMetadata("material_import_mode", defaults.materialImportMode);
     }
 
     static void ApplyPatch(InxResourceMeta &metadata, const nlohmann::json &patch)
@@ -138,6 +150,10 @@ struct MeshImportSettings
             throw std::invalid_argument("model import settings require an object");
         // Validate the entire authoring request before modifying its candidate.
         for (const auto &[key, value] : patch.items()) {
+            if (key == "material_import_mode") {
+                RequireMaterialImportMode(value);
+                continue;
+            }
             if (key == "rig_type") {
                 RequireRigType(value);
                 continue;
@@ -169,7 +185,7 @@ struct MeshImportSettings
         for (const auto &[key, value] : patch.items()) {
             if (key == "material_remaps")
                 WriteMaterialRemaps(metadata, value);
-            else if (key == "rig_type")
+            else if (key == "rig_type" || key == "material_import_mode")
                 metadata.AddMetadata(key, value.get<std::string>());
             else if (value.is_boolean())
                 metadata.AddMetadata(key, value.get<bool>());
@@ -208,6 +224,15 @@ struct MeshImportSettings
                             {{"value", "generic"}, {"label", "asset.rig_generic"}}}},
                           {"page", "rig"},
                           {"label", "asset.rig_type"},
+                          {"legacy_optional", true}});
+        fields.push_back({{"name", "material_import_mode"},
+                          {"type", "enum"},
+                          {"default", defaults.materialImportMode},
+                          {"choices",
+                           {{{"value", "none"}, {"label", "asset.material_import_none"}},
+                            {{"value", "description"}, {"label", "asset.material_import_description"}}}},
+                          {"page", "materials"},
+                          {"label", "asset.material_import_mode"},
                           {"legacy_optional", true}});
         fields.push_back({{"name", "material_remaps"},
                           {"type", "material_remaps"},

@@ -179,6 +179,8 @@ std::set<std::string> MeshLoader::ScanDependencies(const std::string &filePath, 
     const auto metadata = adb->GetMetaByGuid(adb->GetGuidFromPath(filePath));
     if (metadata) {
         const auto settings = MeshImportSettings::Read(*metadata);
+        if (settings.materialImportMode == "none")
+            return dependencies;
         for (const auto &[source, guid] : settings.materialRemaps.items())
             dependencies.insert(guid.get<std::string>());
     }

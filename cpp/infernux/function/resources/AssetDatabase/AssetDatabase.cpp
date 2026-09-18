@@ -87,6 +87,8 @@ template <typename Resolve> void ValidateModelMaterialTargets(const ImportArtifa
     if (artifact.metadata.GetResourceType() != ResourceType::Mesh)
         return;
     const auto settings = MeshImportSettings::Read(artifact.metadata);
+    if (settings.materialImportMode == "none")
+        return;
     for (const auto &[sourceId, guid] : settings.materialRemaps.items()) {
         const auto material = resolve(guid.get<std::string>());
         if (!material || material->GetResourceType() != ResourceType::Material)
