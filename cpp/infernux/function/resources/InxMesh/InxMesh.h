@@ -239,6 +239,7 @@ class InxMesh
     /// and editor extraction use the same conversion; this does not save an asset.
     [[nodiscard]] std::shared_ptr<InxMaterial> CreateMaterialCopy(uint32_t slot) const;
     [[nodiscard]] std::vector<std::string> GetModelNodePath(size_t index) const;
+    void UpgradeLegacyModelNodePath(std::vector<std::string> &path) const;
     [[nodiscard]] int32_t RequireModelNode(const std::vector<std::string> &path) const;
     // Detached compact local geometry for previews/tools. Scene renderers share
     // the source asset and persist its GUID + node path instead of this copy.

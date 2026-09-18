@@ -525,6 +525,13 @@ MeshSourceImportResult MeshLoader::ImportSourceDetailed(const std::string &fileP
     const aiScene *scene =
         importer.ReadFileFromMemory(fileData.data(), fileData.size(), aiProcess_ValidateDataStructure, ext.c_str());
 
+    // OBJ has no authored scene root: Assimp derives it from the input file
+    // name. Memory IO supplies a synthetic filename, not an author node name.
+    // Restore the real filename at this boundary; never rename OBJ o/g nodes.
+    if (scene && scene->mRootNode && ext == "obj" &&
+        std::string_view(scene->mRootNode->mName.C_Str()) == "$$$___magic___$$$.obj")
+        scene->mRootNode->mName.Set(FromFsPath(fsPath.filename()));
+
     if (scene) {
         PrepareVertexBasis(*scene, settings);
         scene = importer.ApplyPostProcessing(aiProcess_Triangulate | (settings.flipUVs ? aiProcess_FlipUVs : 0));

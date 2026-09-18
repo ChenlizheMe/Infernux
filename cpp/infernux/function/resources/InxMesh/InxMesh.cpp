@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cctype>
 #include <limits>
 #include <stdexcept>
 
@@ -21,11 +22,29 @@ std::vector<std::string> InxMesh::GetModelNodePath(size_t index) const
     return path;
 }
 
+void InxMesh::UpgradeLegacyModelNodePath(std::vector<std::string> &path) const
+{
+    // Early 041 OBJ references persisted Assimp's synthetic memory-IO root.
+    // Migrate that exact root once; authored child names remain authoritative.
+    if (path.empty() || path.front() != "$$$___magic___$$$.obj" || m_modelNodes.empty())
+        return;
+    const auto &root = m_modelNodes.front();
+    if (root.parentIndex >= 0 || root.name.size() < 4)
+        return;
+    auto extension = root.name.substr(root.name.size() - 4);
+    std::transform(extension.begin(), extension.end(), extension.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (extension == ".obj")
+        path.front() = root.name;
+}
+
 int32_t InxMesh::RequireModelNode(const std::vector<std::string> &path) const
 {
+    auto canonical = path;
+    UpgradeLegacyModelNodePath(canonical);
     int32_t found = -1;
     for (size_t i = 0; i < m_modelNodes.size(); ++i) {
-        if (m_modelNodes[i].nodeGroup < 0 || GetModelNodePath(i) != path)
+        if (m_modelNodes[i].nodeGroup < 0 || GetModelNodePath(i) != canonical)
             continue;
         if (found >= 0)
             throw std::invalid_argument("Ambiguous model mesh node path");

@@ -1246,6 +1246,7 @@ void MeshRenderer::ResolveModelNodeBinding()
     if (!mesh)
         return;
     const auto &nodes = mesh->GetModelNodes();
+    mesh->UpgradeLegacyModelNodePath(m_modelNodePath);
     bool matched = false;
     for (size_t index = 0; index < nodes.size(); ++index) {
         if (nodes[index].nodeGroup < 0)
