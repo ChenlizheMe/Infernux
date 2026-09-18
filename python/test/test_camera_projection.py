@@ -91,6 +91,44 @@ def test_default_ray_cache_follows_fov_and_explicit_viewport_without_changing_ca
     np.testing.assert_allclose(tuple(origin), [-5 * 4 / 3, 5, camera.near_clip], atol=1e-5)
 
 
+@pytest.mark.skipif(not hasattr(lib, "PhysicalGateFit"), reason="native PhysicalGateFit binding not built")
+@pytest.mark.parametrize("gate, expected_sensor_axis", [
+    ("Horizontal", "width"),
+    ("Vertical", "height"),
+])
+def test_physical_camera_uses_vertical_fov_and_selected_gate(camera, gate, expected_sensor_axis):
+    """Physical projection must derive glm's vertical FOV from the selected gate.
+
+    Unity's Horizontal gate ignores sensor height; Vertical ignores sensor
+    width.  This catches the former bug where horizontal FOV was passed to
+    glm::perspective as if it were vertical FOV.
+    """
+    camera.projection_mode = lib.CameraProjection.Physical
+    camera.focal_length = 50.0
+    camera.sensor_size = lib.Vector2(36.0, 24.0)
+    camera.gate_fit = getattr(lib.PhysicalGateFit, gate)
+    camera._require_cpp_component().aspect_ratio = 16.0 / 9.0
+    matrix = np.asarray(camera.projection_matrix, dtype=np.float64)
+    if expected_sensor_axis == "width":
+        gate_height = 36.0 / (16.0 / 9.0)
+    else:
+        gate_height = 24.0
+    fov_y = 2.0 * np.arctan(gate_height / (2.0 * 50.0))
+    np.testing.assert_allclose(abs(matrix[1, 1]), 1.0 / np.tan(fov_y / 2.0), rtol=2e-5)
+
+
+@pytest.mark.skipif(not hasattr(lib, "PhysicalGateFit"), reason="native PhysicalGateFit binding not built")
+def test_physical_camera_lens_shift_changes_frustum_center(camera):
+    camera.projection_mode = lib.CameraProjection.Physical
+    camera.gate_fit = lib.PhysicalGateFit.Horizontal
+    camera.lens_shift = lib.Vector2(0.125, -0.1)
+    shifted = np.asarray(camera.projection_matrix)
+    camera.lens_shift = lib.Vector2(0.0, 0.0)
+    centered = np.asarray(camera.projection_matrix)
+    assert shifted[2, 0] != pytest.approx(centered[2, 0])
+    assert shifted[2, 1] != pytest.approx(centered[2, 1])
+
+
 def test_screen_world_round_trip_uses_top_left_pixels(camera):
     camera.set_clip_planes(.5, 50)
     for pixel in [(100, 120), (960, 540), (1800, 900)]:

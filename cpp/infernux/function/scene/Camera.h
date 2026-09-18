@@ -24,6 +24,16 @@ enum class CameraProjection
     Physical
 };
 
+/** Physical camera film/resolution gate matching Unity's Gate Fit modes. */
+enum class PhysicalGateFit
+{
+    None,
+    Vertical,
+    Horizontal,
+    Fill,
+    Overscan
+};
+
 /**
  * @brief Camera clear flags (Unity URP-style)
  *
@@ -87,6 +97,8 @@ class Camera : public Component
     void SetSensorSize(const glm::vec2 &value);
     [[nodiscard]] glm::vec2 GetLensShift() const { return m_lensShift; }
     void SetLensShift(const glm::vec2 &value);
+    [[nodiscard]] PhysicalGateFit GetGateFit() const { return m_gateFit; }
+    void SetGateFit(PhysicalGateFit value);
 
     [[nodiscard]] float GetAspectRatio() const
     {
@@ -301,6 +313,7 @@ class Camera : public Component
     float m_focalLength = 50.0f; // millimetres
     glm::vec2 m_sensorSize{36.0f, 24.0f}; // millimetres (width, height)
     glm::vec2 m_lensShift{0.0f, 0.0f}; // normalized sensor offsets
+    PhysicalGateFit m_gateFit = PhysicalGateFit::Horizontal;
 
     // Orthographic
     float m_orthoSize = 5.0f; // Half-height of the view

@@ -246,6 +246,15 @@ class SampleCount(IntEnum):
 class CameraProjection(IntEnum):
     Perspective: int
     Orthographic: int
+    Physical: int
+
+
+class PhysicalGateFit(IntEnum):
+    None: int
+    Vertical: int
+    Horizontal: int
+    Fill: int
+    Overscan: int
 
 
 class CameraClearFlags(IntEnum):
@@ -1116,6 +1125,7 @@ class Camera(Component):
     def calculate_oblique_matrix(self, clip_plane: Sequence[float]) -> Any: ...
 
     projection_mode: CameraProjection
+    gate_fit: PhysicalGateFit
     field_of_view: float
     aspect_ratio: float
     orthographic_size: float

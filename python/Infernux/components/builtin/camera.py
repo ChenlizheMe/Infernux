@@ -108,6 +108,9 @@ class Camera(BuiltinComponent):
     lens_shift = CppProperty.from_native(
         "Camera", "lens_shift", visible_when=lambda comp: int(comp.projection_mode) == 2,
     )
+    gate_fit = CppProperty.from_native(
+        "Camera", "gate_fit", visible_when=lambda comp: int(comp.projection_mode) == 2,
+    )
     orthographic_size = CppProperty.from_native(
         "Camera", "orthographic_size", visible_when=lambda comp: int(comp.projection_mode) == 1,
     )

@@ -56,7 +56,7 @@ class Camera(BuiltinComponent):
 
     @property
     def projection_mode(self) -> int:
-        """The projection mode (0 = Perspective, 1 = Orthographic)."""
+        """The projection mode (Perspective, Orthographic, or Physical)."""
         ...
     @projection_mode.setter
     def projection_mode(self, value: int) -> None: ...
@@ -88,6 +88,11 @@ class Camera(BuiltinComponent):
         ...
     @lens_shift.setter
     def lens_shift(self, value: Any) -> None: ...
+
+    @property
+    def gate_fit(self) -> Any: ...
+    @gate_fit.setter
+    def gate_fit(self, value: Any) -> None: ...
 
     @property
     def orthographic_size(self) -> float:

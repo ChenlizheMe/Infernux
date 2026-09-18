@@ -25,6 +25,13 @@ void RequireProjectionMode(int mode)
         throw std::invalid_argument("Camera.projectionMode is unsupported");
 }
 
+void RequireGateFit(int mode)
+{
+    if (mode < static_cast<int>(PhysicalGateFit::None) ||
+        mode > static_cast<int>(PhysicalGateFit::Overscan))
+        throw std::invalid_argument("Camera.gateFit is unsupported");
+}
+
 void RequireClearFlags(int flags)
 {
     if (flags < static_cast<int>(CameraClearFlags::Skybox) || flags > static_cast<int>(CameraClearFlags::DontClear))
@@ -90,6 +97,8 @@ SemanticTypeDescriptor DescribeCamera()
     add("focal_length", "focalLength", "FLOAT", 50.0)["range"] = {1.0, 1000.0};
     add("sensor_size", "sensorSize", "VEC2", {36.0, 24.0});
     add("lens_shift", "lensShift", "VEC2", {0.0, 0.0});
+    enumeration("gate_fit", "gateFit", "PhysicalGateFit", {"None", "Vertical", "Horizontal", "Fill", "Overscan"},
+                {"camera.gate.none", "camera.gate.vertical", "camera.gate.horizontal", "camera.gate.fill", "camera.gate.overscan"});
     add("aspect_ratio", "aspectRatio", "FLOAT", 16.0 / 9.0);
     add("orthographic_size", "orthoSize", "FLOAT", 5.0);
     add("near_clip", "nearClip", "FLOAT", 0.01)["header"] = "camera.section.clipping";
@@ -179,6 +188,13 @@ void Camera::SetLensShift(const glm::vec2 &value)
     m_projectionDirty = true;
 }
 
+void Camera::SetGateFit(PhysicalGateFit value)
+{
+    RequireGateFit(static_cast<int>(value));
+    m_gateFit = value;
+    m_projectionDirty = true;
+}
+
 void Camera::SetAspectRatio(float aspect)
 {
     RequirePositive(aspect, "aspectRatio");
@@ -228,6 +244,7 @@ nlohmann::json Camera::SerializeDocument() const
     j["focalLength"] = m_focalLength;
     j["sensorSize"] = {m_sensorSize.x, m_sensorSize.y};
     j["lensShift"] = {m_lensShift.x, m_lensShift.y};
+    j["gateFit"] = static_cast<int>(m_gateFit);
     j["aspectRatio"] = m_aspectRatio;
     j["orthoSize"] = m_orthoSize;
     j["nearClip"] = m_nearClip;
@@ -249,7 +266,7 @@ void Camera::ValidateSerializedDocument(const nlohmann::json &j)
     ValidateComponentDocument(j, "Camera",
                               {"projectionMode", "fov", "aspectRatio", "orthoSize", "nearClip", "farClip", "depth",
                                "cullingMask", "clearFlags", "backgroundColor"},
-                              {"focalLength", "sensorSize", "lensShift", "dithering", "stopNaNs", "targetTextureGuid"});
+                              {"focalLength", "sensorSize", "lensShift", "gateFit", "dithering", "stopNaNs", "targetTextureGuid"});
     const int projectionMode = RequireInteger(j, "projectionMode", "Camera");
     const float fov = RequireFiniteFloat(j, "fov", "Camera");
     const float focalLength = j.contains("focalLength") ? RequireFiniteFloat(j, "focalLength", "Camera") : 50.0f;
@@ -271,10 +288,15 @@ void Camera::ValidateSerializedDocument(const nlohmann::json &j)
     RequireProjectionMode(projectionMode);
     RequireFieldOfView(fov);
     RequirePositive(focalLength, "focalLength");
-    if (j.contains("sensorSize"))
+    if (j.contains("sensorSize")) {
         RequireFiniteVector(j, "sensorSize", 2, "Camera");
+        RequirePositive(j["sensorSize"][0].get<float>(), "sensorSize.x");
+        RequirePositive(j["sensorSize"][1].get<float>(), "sensorSize.y");
+    }
     if (j.contains("lensShift"))
         RequireFiniteVector(j, "lensShift", 2, "Camera");
+    if (j.contains("gateFit"))
+        RequireGateFit(RequireInteger(j, "gateFit", "Camera"));
     RequirePositive(orthoSize, "orthoSize");
     if (aspectRatio < 0.01f)
         throw std::invalid_argument("Camera.aspectRatio must be at least 0.01");
@@ -298,6 +320,7 @@ bool Camera::DeserializeDocument(const nlohmann::json &j)
             m_sensorSize = glm::vec2(j["sensorSize"][0].get<float>(), j["sensorSize"][1].get<float>());
         if (j.contains("lensShift"))
             m_lensShift = glm::vec2(j["lensShift"][0].get<float>(), j["lensShift"][1].get<float>());
+        m_gateFit = static_cast<PhysicalGateFit>(j.value("gateFit", static_cast<int>(PhysicalGateFit::Horizontal)));
         m_aspectRatio = j["aspectRatio"].get<float>();
         m_orthoSize = j["orthoSize"].get<float>();
         m_nearClip = j["nearClip"].get<float>();
@@ -411,14 +434,30 @@ glm::mat4 Camera::BuildProjectionMatrix(float aspect) const
         float halfHeight = m_orthoSize;
         projection = glm::ortho(-halfWidth, halfWidth, -halfHeight, halfHeight, m_nearClip, m_farClip);
     } else {
-        // Unity-style physical camera: focal length and sensor width determine
-        // the perspective projection. Sensor height is retained for portrait
-        // and lens-shift authoring; aspect selects the active gate.
+        // Physical camera. glm::perspective expects a vertical FOV, so derive
+        // it from the selected film/resolution gate rather than passing the
+        // horizontal FOV directly (which distorts wide and portrait views).
         const float sensorWidth = std::max(m_sensorSize.x, 0.001f);
-        const float fovRad = 2.0f * std::atan(sensorWidth / (2.0f * m_focalLength));
+        const float sensorHeight = std::max(m_sensorSize.y, 0.001f);
+        const float sensorAspect = sensorWidth / sensorHeight;
+        bool fitVertical = false;
+        switch (m_gateFit) {
+        case PhysicalGateFit::Vertical: fitVertical = true; break;
+        case PhysicalGateFit::Horizontal: fitVertical = false; break;
+        case PhysicalGateFit::Fill: fitVertical = aspect < sensorAspect; break;
+        case PhysicalGateFit::Overscan: fitVertical = aspect >= sensorAspect; break;
+        case PhysicalGateFit::None: fitVertical = true; break;
+        }
+        const float gateWidth = m_gateFit == PhysicalGateFit::None
+                                    ? sensorWidth
+                                    : (fitVertical ? sensorHeight * aspect : sensorWidth);
+        const float gateHeight = m_gateFit == PhysicalGateFit::None
+                                     ? sensorHeight
+                                     : gateWidth / aspect;
+        const float fovRad = 2.0f * std::atan(gateHeight / (2.0f * m_focalLength));
         projection = glm::perspective(fovRad, aspect, m_nearClip, m_farClip);
-        projection[2][0] += m_lensShift.x * 2.0f;
-        projection[2][1] += m_lensShift.y * 2.0f;
+        projection[2][0] += m_lensShift.x * 2.0f * sensorWidth / gateWidth;
+        projection[2][1] += m_lensShift.y * 2.0f * sensorHeight / gateHeight;
     }
     projection[1][1] *= -1.0f;
     return projection;
@@ -625,6 +664,7 @@ std::unique_ptr<Component> Camera::Clone() const
     clone->m_focalLength = m_focalLength;
     clone->m_sensorSize = m_sensorSize;
     clone->m_lensShift = m_lensShift;
+    clone->m_gateFit = m_gateFit;
     clone->m_aspectRatio = m_aspectRatio;
     clone->m_orthoSize = m_orthoSize;
     clone->m_nearClip = m_nearClip;
