@@ -115,6 +115,42 @@ class BootstrapWiringMixin:
             sfm.new_scene()
             return True
 
+        def _scene_world(context) -> int:
+            try:
+                return int(context.payload.get("world_id", 0) or 0)
+            except (TypeError, ValueError):
+                return 0
+
+        def _save_scene(context):
+            world_id = _scene_world(context)
+            if world_id <= 0:
+                return False
+            # Saving a non-active loaded Scene uses the same document owner as
+            # the active path; activate it first so serialization and undo are
+            # routed to the selected Scene, exactly like Unity's scene header.
+            if not sfm.activate_loaded_scene(world_id):
+                return False
+            return bool(sfm.save_current_scene())
+
+        def _unload_scene(context):
+            world_id = _scene_world(context)
+            if world_id <= 0:
+                return False
+            from Infernux.lib import SceneManager
+            native = SceneManager.instance()
+            target = native.get_scene_by_world_id(world_id)
+            if target is None or int(native.scene_count) <= 1:
+                return False
+            if target is native.get_active_scene():
+                for index in range(int(native.scene_count)):
+                    candidate = native.get_scene_at(index)
+                    if candidate is not None and candidate is not target:
+                        sfm.activate_loaded_scene(candidate)
+                        break
+            sfm.unregister_loaded_scene(target)
+            native.unload_scene(target)
+            return True
+
         def _pause(_context):
             pmm.toggle_pause()
             return True
@@ -1190,6 +1226,20 @@ class BootstrapWiringMixin:
                 can_execute=lambda context: _can_target_panel_command(
                     context, "hierarchy", "scene.set_active"
                 ),
+            ),
+            EditorCommand(
+                "scene.save",
+                _save_scene,
+                display_name="Save Scene",
+                category="Scene",
+                can_execute=lambda context: _scene_world(context) > 0,
+            ),
+            EditorCommand(
+                "scene.unload",
+                _unload_scene,
+                display_name="Unload Scene",
+                category="Scene",
+                can_execute=lambda context: _scene_world(context) > 0,
             ),
             EditorCommand(
                 "scene.tool.select",

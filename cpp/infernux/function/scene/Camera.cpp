@@ -21,7 +21,7 @@ namespace
 void RequireProjectionMode(int mode)
 {
     if (mode < static_cast<int>(CameraProjection::Perspective) ||
-        mode > static_cast<int>(CameraProjection::Orthographic))
+        mode > static_cast<int>(CameraProjection::Physical))
         throw std::invalid_argument("Camera.projectionMode is unsupported");
 }
 
@@ -84,9 +84,12 @@ SemanticTypeDescriptor DescribeCamera()
                               {"members", std::move(members)},
                               {"labels", std::move(labels)}};
     };
-    enumeration("projection_mode", "projectionMode", "CameraProjection", {"Perspective", "Orthographic"},
-                {"camera.projection.perspective", "camera.projection.orthographic"});
+    enumeration("projection_mode", "projectionMode", "CameraProjection", {"Perspective", "Orthographic", "Physical"},
+                {"camera.projection.perspective", "camera.projection.orthographic", "camera.projection.physical"});
     add("field_of_view", "fov", "FLOAT", 60.0)["range"] = {1.0, 179.0};
+    add("focal_length", "focalLength", "FLOAT", 50.0)["range"] = {1.0, 1000.0};
+    add("sensor_size", "sensorSize", "VEC2", {36.0, 24.0});
+    add("lens_shift", "lensShift", "VEC2", {0.0, 0.0});
     add("aspect_ratio", "aspectRatio", "FLOAT", 16.0 / 9.0);
     add("orthographic_size", "orthoSize", "FLOAT", 5.0);
     add("near_clip", "nearClip", "FLOAT", 0.01)["header"] = "camera.section.clipping";
@@ -153,6 +156,29 @@ void Camera::SetFieldOfView(float fov)
     m_projectionDirty = true;
 }
 
+void Camera::SetFocalLength(float value)
+{
+    RequirePositive(value, "focalLength");
+    m_focalLength = value;
+    m_projectionDirty = true;
+}
+
+void Camera::SetSensorSize(const glm::vec2 &value)
+{
+    RequirePositive(value.x, "sensorSize.x");
+    RequirePositive(value.y, "sensorSize.y");
+    m_sensorSize = value;
+    m_projectionDirty = true;
+}
+
+void Camera::SetLensShift(const glm::vec2 &value)
+{
+    if (!std::isfinite(value.x) || !std::isfinite(value.y))
+        throw std::invalid_argument("Camera.lensShift must be finite");
+    m_lensShift = value;
+    m_projectionDirty = true;
+}
+
 void Camera::SetAspectRatio(float aspect)
 {
     RequirePositive(aspect, "aspectRatio");
@@ -199,6 +225,9 @@ nlohmann::json Camera::SerializeDocument() const
 
     j["projectionMode"] = static_cast<int>(m_projectionMode);
     j["fov"] = m_fov;
+    j["focalLength"] = m_focalLength;
+    j["sensorSize"] = {m_sensorSize.x, m_sensorSize.y};
+    j["lensShift"] = {m_lensShift.x, m_lensShift.y};
     j["aspectRatio"] = m_aspectRatio;
     j["orthoSize"] = m_orthoSize;
     j["nearClip"] = m_nearClip;
@@ -220,9 +249,10 @@ void Camera::ValidateSerializedDocument(const nlohmann::json &j)
     ValidateComponentDocument(j, "Camera",
                               {"projectionMode", "fov", "aspectRatio", "orthoSize", "nearClip", "farClip", "depth",
                                "cullingMask", "clearFlags", "backgroundColor"},
-                              {"dithering", "stopNaNs", "targetTextureGuid"});
+                              {"focalLength", "sensorSize", "lensShift", "dithering", "stopNaNs", "targetTextureGuid"});
     const int projectionMode = RequireInteger(j, "projectionMode", "Camera");
     const float fov = RequireFiniteFloat(j, "fov", "Camera");
+    const float focalLength = j.contains("focalLength") ? RequireFiniteFloat(j, "focalLength", "Camera") : 50.0f;
     const float aspectRatio = RequireFiniteFloat(j, "aspectRatio", "Camera");
     const float orthoSize = RequireFiniteFloat(j, "orthoSize", "Camera");
     const float nearClip = RequireFiniteFloat(j, "nearClip", "Camera");
@@ -240,6 +270,11 @@ void Camera::ValidateSerializedDocument(const nlohmann::json &j)
 
     RequireProjectionMode(projectionMode);
     RequireFieldOfView(fov);
+    RequirePositive(focalLength, "focalLength");
+    if (j.contains("sensorSize"))
+        RequireFiniteVector(j, "sensorSize", 2, "Camera");
+    if (j.contains("lensShift"))
+        RequireFiniteVector(j, "lensShift", 2, "Camera");
     RequirePositive(orthoSize, "orthoSize");
     if (aspectRatio < 0.01f)
         throw std::invalid_argument("Camera.aspectRatio must be at least 0.01");
@@ -258,6 +293,11 @@ bool Camera::DeserializeDocument(const nlohmann::json &j)
 
         m_projectionMode = static_cast<CameraProjection>(j["projectionMode"].get<int>());
         m_fov = j["fov"].get<float>();
+        m_focalLength = j.value("focalLength", 50.0f);
+        if (j.contains("sensorSize"))
+            m_sensorSize = glm::vec2(j["sensorSize"][0].get<float>(), j["sensorSize"][1].get<float>());
+        if (j.contains("lensShift"))
+            m_lensShift = glm::vec2(j["lensShift"][0].get<float>(), j["lensShift"][1].get<float>());
         m_aspectRatio = j["aspectRatio"].get<float>();
         m_orthoSize = j["orthoSize"].get<float>();
         m_nearClip = j["nearClip"].get<float>();
@@ -366,10 +406,19 @@ glm::mat4 Camera::BuildProjectionMatrix(float aspect) const
     if (m_projectionMode == CameraProjection::Perspective) {
         float fovRad = glm::radians(m_fov);
         projection = glm::perspective(fovRad, aspect, m_nearClip, m_farClip);
-    } else {
+    } else if (m_projectionMode == CameraProjection::Orthographic) {
         float halfWidth = m_orthoSize * aspect;
         float halfHeight = m_orthoSize;
         projection = glm::ortho(-halfWidth, halfWidth, -halfHeight, halfHeight, m_nearClip, m_farClip);
+    } else {
+        // Unity-style physical camera: focal length and sensor width determine
+        // the perspective projection. Sensor height is retained for portrait
+        // and lens-shift authoring; aspect selects the active gate.
+        const float sensorWidth = std::max(m_sensorSize.x, 0.001f);
+        const float fovRad = 2.0f * std::atan(sensorWidth / (2.0f * m_focalLength));
+        projection = glm::perspective(fovRad, aspect, m_nearClip, m_farClip);
+        projection[2][0] += m_lensShift.x * 2.0f;
+        projection[2][1] += m_lensShift.y * 2.0f;
     }
     projection[1][1] *= -1.0f;
     return projection;
@@ -573,6 +622,9 @@ std::unique_ptr<Component> Camera::Clone() const
     clone->m_executionOrder = m_executionOrder;
     clone->m_projectionMode = m_projectionMode;
     clone->m_fov = m_fov;
+    clone->m_focalLength = m_focalLength;
+    clone->m_sensorSize = m_sensorSize;
+    clone->m_lensShift = m_lensShift;
     clone->m_aspectRatio = m_aspectRatio;
     clone->m_orthoSize = m_orthoSize;
     clone->m_nearClip = m_nearClip;

@@ -20,7 +20,8 @@ class RenderTexture;
 enum class CameraProjection
 {
     Perspective,
-    Orthographic
+    Orthographic,
+    Physical
 };
 
 /**
@@ -78,6 +79,14 @@ class Camera : public Component
         return m_fov;
     }
     void SetFieldOfView(float fov);
+
+    // Physical camera settings (Unity-compatible photographic model).
+    [[nodiscard]] float GetFocalLength() const { return m_focalLength; }
+    void SetFocalLength(float value);
+    [[nodiscard]] glm::vec2 GetSensorSize() const { return m_sensorSize; }
+    void SetSensorSize(const glm::vec2 &value);
+    [[nodiscard]] glm::vec2 GetLensShift() const { return m_lensShift; }
+    void SetLensShift(const glm::vec2 &value);
 
     [[nodiscard]] float GetAspectRatio() const
     {
@@ -289,6 +298,9 @@ class Camera : public Component
     // Perspective
     float m_fov = 60.0f; // Field of view in degrees
     float m_aspectRatio = 16.0f / 9.0f;
+    float m_focalLength = 50.0f; // millimetres
+    glm::vec2 m_sensorSize{36.0f, 24.0f}; // millimetres (width, height)
+    glm::vec2 m_lensShift{0.0f, 0.0f}; // normalized sensor offsets
 
     // Orthographic
     float m_orthoSize = 5.0f; // Half-height of the view

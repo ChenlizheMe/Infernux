@@ -69,6 +69,27 @@ class Camera(BuiltinComponent):
     def field_of_view(self, value: float) -> None: ...
 
     @property
+    def focal_length(self) -> float:
+        """Physical camera focal length in millimetres."""
+        ...
+    @focal_length.setter
+    def focal_length(self, value: float) -> None: ...
+
+    @property
+    def sensor_size(self) -> Any:
+        """Physical camera sensor size in millimetres (width, height)."""
+        ...
+    @sensor_size.setter
+    def sensor_size(self, value: Any) -> None: ...
+
+    @property
+    def lens_shift(self) -> Any:
+        """Physical camera lens shift in normalized sensor units."""
+        ...
+    @lens_shift.setter
+    def lens_shift(self, value: Any) -> None: ...
+
+    @property
     def orthographic_size(self) -> float:
         """Half-size of the camera in orthographic mode."""
         ...

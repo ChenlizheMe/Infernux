@@ -99,6 +99,15 @@ class Camera(BuiltinComponent):
     field_of_view = CppProperty.from_native(
         "Camera", "field_of_view", visible_when=lambda comp: int(comp.projection_mode) == 0,
     )
+    focal_length = CppProperty.from_native(
+        "Camera", "focal_length", visible_when=lambda comp: int(comp.projection_mode) == 2,
+    )
+    sensor_size = CppProperty.from_native(
+        "Camera", "sensor_size", visible_when=lambda comp: int(comp.projection_mode) == 2,
+    )
+    lens_shift = CppProperty.from_native(
+        "Camera", "lens_shift", visible_when=lambda comp: int(comp.projection_mode) == 2,
+    )
     orthographic_size = CppProperty.from_native(
         "Camera", "orthographic_size", visible_when=lambda comp: int(comp.projection_mode) == 1,
     )
@@ -118,6 +127,46 @@ class Camera(BuiltinComponent):
         native_getter=lambda cpp: (cpp.target_texture_guid, cpp.target_texture),
         get_converter=_wrap_target_texture, native_setter=_set_target_texture,
     )
+
+    _CULLING_MASK_FIELD = frozenset({"culling_mask"})
+
+    def render_inspector(self, ctx) -> None:
+        """Render the camera with a named, multi-select layer mask.
+
+        The serialized value remains Unity-compatible 32-bit bits, but the
+        authoring surface never asks users to type a mask integer. Physical
+        projection fields are supplied by the native Camera schema and only
+        appear when the Physical mode is selected.
+        """
+        from Infernux.engine.ui.inspector_components import (
+            render_builtin_via_setters, _record_builtin_property,
+        )
+        from Infernux.engine.ui.inspector_utils import field_label, max_label_w
+        render_builtin_via_setters(ctx, self, type(self), skip_fields=self._CULLING_MASK_FIELD)
+
+        try:
+            from Infernux.lib import TagLayerManager
+            names = list(TagLayerManager.instance().get_all_layers())
+        except Exception:
+            names = ["Default"]
+        names = (names + [f"Layer {i}" for i in range(len(names), 32)])[:32]
+        old_mask = int(self.culling_mask) & 0xFFFFFFFF
+        selected = sum(1 for i in range(32) if old_mask & (1 << i))
+        label = "Everything" if selected == 32 else ("Nothing" if selected == 0 else f"{selected} Layers")
+        lw = max_label_w(ctx, ["Culling Mask"])
+        field_label(ctx, "Culling Mask", lw)
+        if ctx.button(f"{label}##camera_culling_mask"):
+            ctx.open_popup("##camera_culling_mask_popup")
+        if ctx.begin_popup("##camera_culling_mask_popup"):
+            new_mask = old_mask
+            for index, name in enumerate(names):
+                checked = bool(new_mask & (1 << index))
+                updated = ctx.checkbox(f"{name}##camera_layer_{index}", checked)
+                if updated != checked:
+                    new_mask ^= 1 << index
+            if new_mask != old_mask:
+                _record_builtin_property(self, "culling_mask", old_mask, new_mask, "Set Camera Culling Mask")
+            ctx.end_popup()
 
     # ------------------------------------------------------------------
     # Read-only properties (delegates)

@@ -253,6 +253,12 @@ def wire_hierarchy_callbacks(bs: EditorBootstrap) -> None:
             except ValueError:
                 return {}
             return {"world_id": world_id} if world_id > 0 else {}
+        if command_id in {"scene.save", "scene.unload"}:
+            try:
+                world_id = int(value)
+            except ValueError:
+                return {}
+            return {"world_id": world_id} if world_id > 0 else {}
         if command_id == "hierarchy.set_expanded":
             target_id, separator, expanded = value.rpartition("\t")
             if not separator or expanded not in {"0", "1"}:
