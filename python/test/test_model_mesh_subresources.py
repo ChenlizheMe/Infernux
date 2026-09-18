@@ -29,6 +29,7 @@ def test_mesh_children_manifest_local_preview_and_scene_roundtrip(scene, hierarc
     manifest = json.loads(database.get_meta_by_guid(guid).get_string('model_meshes'))
     assert {entry['name'] for entry in manifest} == {'Upper', 'Lower'}
     for entry in manifest:
+        assert entry["subresource_id"]
         local = mesh.create_model_node_copy(entry['path'])
         assert local.name == entry['name']
         assert local.vertex_count == 3
@@ -46,6 +47,22 @@ def test_mesh_children_manifest_local_preview_and_scene_roundtrip(scene, hierarc
         assert len(renderer.get_submesh_infos()) == 1
         assert renderer.deserialize_document(doc)
         assert renderer.serialize_document()['modelNodePath'] == entry['path']
+
+
+def test_mesh_subresource_ids_survive_source_node_reorder(scene, hierarchy_asset, engine, monkeypatch):
+    from Infernux.core.assets import AssetManager
+
+    database, source, guid = hierarchy_asset
+    monkeypatch.setattr(AssetManager, '_engine', engine)
+    monkeypatch.setattr(AssetManager, '_asset_database', database)
+    before = json.loads(database.get_meta_by_guid(guid).get_string('model_meshes'))
+    ids = {tuple(item['path']): item['subresource_id'] for item in before}
+    document = json.loads(source.read_text())
+    document['nodes'][1]['children'].reverse()
+    source.write_text(json.dumps(document))
+    assert AssetManager.reimport_asset(str(source), database=database)
+    after = json.loads(database.get_meta_by_guid(guid).get_string('model_meshes'))
+    assert {tuple(item['path']): item['subresource_id'] for item in after} == ids
 
 
 def test_node_material_inspector_does_not_keep_previous_node(imported_model):

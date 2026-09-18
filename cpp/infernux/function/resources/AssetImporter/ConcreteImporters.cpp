@@ -761,11 +761,36 @@ ImportArtifact ModelImporter::Import(const ImportRequest &request) const
     // (InxResourceMeta uses std::any; a string is the simplest portable choice)
     artifact.metadata.AddMetadata("material_slots", joinCsv(imported.materialSlots));
 
+    // Model mesh children are addressable sub-resources.  Their identity is
+    // persisted by canonical source path rather than by the node array index,
+    // so reordering sibling nodes does not invalidate scene references.  Keep
+    // the existing id on reimport; newly discovered paths receive an ordinary
+    // resource GUID once and are then persisted in this metadata document.
+    nlohmann::json previousModelMeshes = nlohmann::json::array();
+    if (artifact.metadata.HasKey("model_meshes"))
+        previousModelMeshes = nlohmann::json::parse(artifact.metadata.GetDataAs<std::string>("model_meshes"));
     nlohmann::json modelMeshes = nlohmann::json::array();
     const auto &modelNodes = imported.mesh->GetModelNodes();
     for (size_t i = 0; i < modelNodes.size(); ++i) {
-        if (modelNodes[i].nodeGroup >= 0)
-            modelMeshes.push_back({{"name", modelNodes[i].name}, {"path", imported.mesh->GetModelNodePath(i)}});
+        if (modelNodes[i].nodeGroup < 0)
+            continue;
+        const auto path = imported.mesh->GetModelNodePath(i);
+        std::string subresourceId;
+        for (const auto &previous : previousModelMeshes) {
+            if (previous.value("path", nlohmann::json::array()) == nlohmann::json(path) &&
+                previous.contains("subresource_id") && previous["subresource_id"].is_string()) {
+                subresourceId = previous["subresource_id"].get<std::string>();
+                break;
+            }
+        }
+        if (subresourceId.empty()) {
+            InxResourceMeta subresource;
+            subresource.Init(nullptr, 0, request.sourcePath + "::submesh:" + nlohmann::json(path).dump(),
+                             ResourceType::Mesh);
+            subresourceId = subresource.GetGuid();
+        }
+        modelMeshes.push_back({{"name", modelNodes[i].name}, {"path", path},
+                               {"subresource_id", subresourceId}});
     }
     artifact.metadata.AddMetadata("model_meshes", modelMeshes.dump());
 
