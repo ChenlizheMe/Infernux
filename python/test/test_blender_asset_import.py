@@ -50,6 +50,10 @@ def test_modern_blend_worker_import_reimport_and_failed_publication(engine, tmp_
         "root=bpy.data.objects.new('Assembly',None); bpy.context.collection.objects.link(root); "
         "root.location=(2,1,0); "
         "red=bpy.data.materials.new('Red'); red.diffuse_color=(0.8,0.1,0.1,1); "
+        "red.use_nodes=True; image=bpy.data.images.new('Embedded Color',width=2,height=2); "
+        "image.pixels=[1,0.05,0.05,1, 0.8,0.1,0.1,1, 0.6,0.15,0.15,1, 0.4,0.2,0.2,1]; "
+        "nodes=red.node_tree.nodes; links=red.node_tree.links; bsdf=nodes.get('Principled BSDF'); "
+        "tex=nodes.new('ShaderNodeTexImage'); tex.image=image; links.new(tex.outputs['Color'],bsdf.inputs['Base Color']); "
         "blue=bpy.data.materials.new('Blue'); blue.diffuse_color=(0.1,0.2,0.8,1); "
         "bpy.ops.mesh.primitive_cube_add(); cube=bpy.context.object; "
         "cube.name='ChildCube'; cube.parent=root; cube.location=(0,0,2); cube.data.materials.append(red); "
@@ -82,6 +86,8 @@ def test_modern_blend_worker_import_reimport_and_failed_publication(engine, tmp_
         manifest = json.loads(database.get_meta_by_guid(guid).get_string("model_meshes"))
         assert {entry["name"] for entry in manifest} >= {"ChildCube", "SecondCube"}
         assert all(entry["subresource_id"] for entry in manifest)
+        textures = json.loads(database.get_meta_by_guid(guid).get_string("model_textures"))
+        assert textures and any(record["name"] == "Embedded Color" for record in textures)
         assert source.read_bytes() == before
         assert database.last_refresh_worker_importer_count > 0
         staging = Path(database.project_root) / "Library/ModelImport"
