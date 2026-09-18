@@ -251,6 +251,7 @@ def main() -> int:
                                 "count": count,
                                 "p50_ms": float(np.percentile(timings, 50)),
                                 "p95_ms": float(np.percentile(timings, 95)),
+                                "p99_ms": float(np.percentile(timings, 99)),
                                 "max_ms": float(max(timings)),
                                 "rays_per_second_p50": float(count / (np.percentile(timings, 50) / 1000.0)),
                                 "hits_last_sample": int(output["hit"].sum()),
