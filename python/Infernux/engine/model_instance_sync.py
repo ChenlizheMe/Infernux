@@ -37,6 +37,36 @@ def _descendants(root: Any) -> tuple[Any, ...]:
     return tuple(result)
 
 
+def _source_node_has_authored_content(obj: Any, guid: str) -> bool:
+    """Return whether a removed source node carries author-owned state.
+
+    Model creation contributes only the renderer/collider pair (and the
+    optional skinned renderer).  Any other native or Python component, or an
+    explicitly authored child, means the GameObject is part of the scene
+    authoring rather than disposable imported geometry.
+    """
+    generated = {"Transform", "MeshRenderer", "SkinnedMeshRenderer", "MeshCollider"}
+    for component in tuple(obj.get_components() or ()):
+        if type(component).__name__ not in generated:
+            return True
+    if tuple(obj.get_py_components() or ()):
+        return True
+    for child in _descendants(obj):
+        if str(getattr(child, "_model_source_guid", "") or "") != guid:
+            return True
+    return False
+
+
+def _retire_source_geometry(obj: Any) -> None:
+    """Detach imported geometry while retaining an author-owned GameObject."""
+    renderer = obj.get_component("MeshRenderer")
+    if renderer is None:
+        renderer = obj.get_component("SkinnedMeshRenderer")
+    if renderer is not None:
+        obj.remove_component(renderer)
+    obj._set_model_source("", [])
+
+
 def _model_instance_roots(scene: Any, guid: str) -> tuple[Any, ...]:
     """Find model containers from persisted model-source identities.
 
@@ -218,13 +248,21 @@ def _destroy_stale_geometry(
 
             for obj in selected:
                 source_path = tuple(str(part) for part in (getattr(obj, "_model_source_path", ()) or ()))
-                Debug.log_warning(
-                    "Model source node was removed from the imported asset; "
-                    f"retiring instance '{obj.name}' at source path "
-                    f"'{('/'.join(source_path))}' (guid={guid})"
-                )
+                if _source_node_has_authored_content(obj, guid):
+                    Debug.log_warning(
+                        "Model source node was removed; retaining author-owned instance "
+                        f"'{obj.name}' and retiring imported geometry at source path "
+                        f"'{('/'.join(source_path))}' (guid={guid})"
+                    )
+                    _retire_source_geometry(obj)
+                else:
+                    Debug.log_warning(
+                        "Model source node was removed from the imported asset; "
+                        f"retiring instance '{obj.name}' at source path "
+                        f"'{('/'.join(source_path))}' (guid={guid})"
+                    )
         for obj in selected:
-            if obj is not root:
+            if obj is not root and not _source_node_has_authored_content(obj, guid):
                 scene.destroy_game_object(obj)
         scene.process_pending_destroys()
         return True

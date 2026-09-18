@@ -224,7 +224,6 @@ def test_external_model_source_reconciles_instances_without_overwriting_transfor
     assert tuple(first_upper.transform.local_position) == (7, 8, 9)
     assert 'Artist Renamed Upper' in descendants(first)
     assert tuple(second_upper.transform.local_scale) == (2, 3, 4)
-
     document['nodes'][0]['children'].remove(document['nodes'][0]['children'][-1])
     document['nodes'].pop()
     source.write_text(json.dumps(document))
@@ -236,6 +235,40 @@ def test_external_model_source_reconciles_instances_without_overwriting_transfor
     assert all("source path 'Assembly/Added'" in message and guid in message for message in source_warnings)
     assert tuple(first_upper.transform.local_position) == (7, 8, 9)
     assert tuple(second_upper.transform.local_scale) == (2, 3, 4)
+
+
+def test_removed_source_node_retains_author_owned_components(scene, hierarchy_asset, engine, monkeypatch):
+    """Removing imported geometry must not delete an authored component host."""
+    from Infernux.core.assets import AssetManager
+    from Infernux.debug import Debug
+
+    database, source, guid = hierarchy_asset
+    monkeypatch.setattr(AssetManager, '_engine', engine)
+    monkeypatch.setattr(AssetManager, '_asset_database', database)
+    warnings = []
+    monkeypatch.setattr(Debug, 'log_warning', lambda message, context=None: warnings.append(str(message)))
+    root = scene.create_from_model(guid, 'Author-owned Assembly')
+    target = descendants(root)['Upper']
+    authored_collider = target.add_component('BoxCollider')
+
+    document = json.loads(source.read_text())
+    document['nodes'][0]['children'].append(len(document['nodes']))
+    document['nodes'].append({'name': 'Retained', 'translation': [0, 2, 0], 'mesh': 0})
+    source.write_text(json.dumps(document))
+    assert AssetManager.reimport_asset(str(source), database=database)
+    retained = descendants(root)['Retained']
+    retained.add_component('BoxCollider')
+
+    document['nodes'][0]['children'].remove(document['nodes'][0]['children'][-1])
+    document['nodes'].pop()
+    source.write_text(json.dumps(document))
+    assert AssetManager.reimport_asset(str(source), database=database)
+    retained = descendants(root)['Retained']
+    assert retained.get_component('MeshRenderer') is None
+    assert retained.get_component('BoxCollider') is not None
+    assert retained.serialize_document().get('model_source') in (None, {'guid': '', 'path': []})
+    assert any("Retained" in message and guid in message for message in warnings)
+    assert authored_collider is not None
 
 
 def test_external_source_node_motion_updates_new_instances_only(scene, hierarchy_asset, engine, monkeypatch):
