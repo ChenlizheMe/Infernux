@@ -266,17 +266,6 @@ class ScenePrefabMixin:
         from Infernux.lib import SceneManager
         from Infernux.engine.component_restore import deserialize_scene_document_transactionally
 
-        # Resolve the prefab GUID so instances are refreshed from whichever
-        # on-disk state the user explicitly chose (Save or Discard).
-        saved_prefab_guid = None
-        if self.prefab_mode_path and self._asset_database:
-            try:
-                saved_prefab_guid = self._asset_database.get_guid_from_path(
-                    self.prefab_mode_path
-                ) or None
-            except Exception as exc:
-                Debug.log_suppressed("ScenePrefabMixin.exit_prefab_mode.resolve_prefab_guid", exc)
-
         # Clear the RenderStack singleton before the swap — matches the
         # pattern in _do_open_scene / _do_new_scene to avoid stale refs.
         from Infernux.renderstack.render_stack import RenderStack
@@ -325,25 +314,11 @@ class ScenePrefabMixin:
             Debug.log_error("Cannot exit Prefab Mode: failed to initialize restore scene.")
             return False
 
-        # Merge the saved source delta onto each restored instance. Rebuilding
-        # from the asset would discard scene overrides and change reference IDs.
-        instances_changed = False
-        if saved_prefab_guid:
-            from Infernux.engine.prefab_manager import _read_prefab_document
-            from Infernux.engine.prefab_overrides import (
-                _snapshot_linked_instances, _propagate_applied_prefab,
-            )
-            base_root = self._prefab_entry_document["root_object"]
-            updated_root = _read_prefab_document(self.prefab_mode_path)["root_object"]
-            if base_root != updated_root:
-                snapshots = _snapshot_linked_instances(
-                    scene, saved_prefab_guid, base_root=base_root,
-                )
-                instances_changed = bool(snapshots)
-                if not _propagate_applied_prefab(
-                    base_root, updated_root, snapshots, saved_prefab_guid, self._asset_database,
-                ):
-                    return False
+        # The suspended world may contain derived Variants and nested sources,
+        # not only direct instances of the asset opened in Prefab Mode. Use the
+        # same baseline-aware resolver as scene loading, preserving overrides
+        # and runtime identities, and marking only actually changed documents.
+        self.sync_all_prefab_instances(scene)
 
         from Infernux.engine.interaction import DocumentRegistry
 
@@ -366,8 +341,6 @@ class ScenePrefabMixin:
                 ),
                 dirty=False,
             )
-        if instances_changed:
-            registry.mark_changed(self._scene_document_id)
         self.prefab_envelope = {}
         self._prefab_entry_document = None
         self._previous_scene_document = None

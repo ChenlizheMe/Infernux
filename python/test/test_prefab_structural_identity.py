@@ -184,7 +184,7 @@ def test_prefab_mode_save_exit_preserves_instance_overrides_and_identities(scene
         # Only path resolution is isolated; graph publication and file saving
         # use the real native Scene and bound document controller throughout.
         manager._asset_database = SimpleNamespace(
-            get_guid_from_path=lambda _: "structural-guid", get_path_from_guid=lambda _: "",
+            get_guid_from_path=lambda _: "structural-guid", get_path_from_guid=lambda _: path,
         )
         assert manager._do_exit_prefab_mode()
         restored = SceneManager.instance().get_active_scene()

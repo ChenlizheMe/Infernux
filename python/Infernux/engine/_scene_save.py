@@ -308,15 +308,30 @@ class SceneSaveMixin:
                 message=f"failed to serialize prefab: {exc}",
             )
             return False
-        if not save_prefab_document(
-            prefab_document,
-            self.prefab_mode_path,
-            asset_database=self._asset_database,
-        ):
+        try:
+            if self._asset_database is not None:
+                from Infernux.engine.prefab_overrides import build_prefab_asset_edit_command
+                from Infernux.engine.prefab_manager import _read_prefab_document
+
+                if _read_prefab_document(self.prefab_mode_path) != prefab_document:
+                    command = build_prefab_asset_edit_command(
+                        self.prefab_mode_path, prefab_document, self._asset_database,
+                    )
+                    # Save persists the existing authoring history, rather than
+                    # inserting another edit. The command still provides the
+                    # same all-source/instance publication and compensation.
+                    command.execute()
+                    for world_id in command.scene_world_ids():
+                        owner = self.document_id_for_scene(world_id)
+                        if owner and owner != document.document_id:
+                            registry.mark_changed(owner)
+            elif not save_prefab_document(prefab_document, self.prefab_mode_path):
+                raise RuntimeError("Prefab document write failed")
+        except Exception as exc:
             registry.complete_save(
                 active_ticket_id,
                 success=False,
-                message=f"failed to save prefab: {self.prefab_mode_path}",
+                message=f"failed to save prefab: {exc}",
             )
             return False
 

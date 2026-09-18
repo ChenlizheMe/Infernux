@@ -701,3 +701,108 @@ def test_variant_resave_preserves_equal_base_override_intent(contents_project, s
     assert result["root_object"]["children"][0]["layer"] == 5
     assert result["root_object"]["name"] == "Another edit"
     assert result["variant"]["baseline"]["root_object"]["children"][0]["layer"] == 7
+
+
+@pytest.mark.parametrize("interrupt_write", [False, True])
+def test_prefab_mode_save_updates_variant_assets_and_suspended_and_additive_worlds(
+        contents_project, scene, monkeypatch, interrupt_write):
+    from Infernux.engine import prefab_overrides
+    from Infernux.engine.prefab_manager import instantiate_prefab
+    from Infernux.engine.scene_manager import SceneFileManager
+    from Infernux.engine.interaction import DocumentRegistry, SelectionDomain
+
+    core, folder = contents_project
+    database = AssetManager.require_asset_database()
+    core.panels.register_selection_authority("hierarchy", (SelectionDomain.SCENE_OBJECT,))
+    monkeypatch.setattr(SceneFileManager, "_instance", None)
+    files = SceneFileManager()
+    files._asset_database = database
+    registry = DocumentRegistry.instance()
+    original_owner = files.document_id
+    paths = [folder / name for name in ("Base.prefab", "Variant.prefab", "Derived.prefab")]
+    original = scene.create_game_object("Base")
+    child = scene.create_game_object("Collider")
+    child.set_parent(original)
+    child.add_component("BoxCollider")
+    editor.save_as_prefab_asset(original, paths[0])
+    for index in (1, 2):
+        root = editor.load_prefab_contents(paths[index - 1])
+        try:
+            root.name = f"Variant {index}"
+            editor.save_as_prefab_asset(root, paths[index])
+        finally:
+            editor.unload_prefab_contents(root)
+    manager = SceneManager.instance()
+    other = manager.create_scene("Additional variant world")
+    other_owner = files.register_loaded_scene(other, "")
+    try:
+        instances = [instantiate_prefab(file_path=str(path), guid=database.get_guid_from_path(str(path)),
+                                        scene=scene, asset_database=database) for path in paths]
+        extra = instantiate_prefab(file_path=str(paths[-1]), guid=database.get_guid_from_path(str(paths[-1])),
+                                   scene=other, asset_database=database)
+        instances[-1].get_child(0).name = "Private child"
+        extra.get_child(0).name = "Other private child"
+        instance_ids = [obj.id for obj in instances]
+        before_files = [path.read_bytes() for path in paths]
+        before_extra = extra.serialize_document()
+        assert files.open_prefab_mode(str(paths[0]))
+        root = manager.get_active_scene().get_root_objects()[0]
+        root.get_child(0).layer = 5
+        added = root.scene.create_game_object("Saved addition")
+        added.set_parent(root)
+        registry.mark_changed(files.document_id)
+        if interrupt_write:
+            original_write = prefab_overrides._write_prefab_apply_document
+            attempts = []
+
+            def write(path, document, asset_database=None):
+                if Path(path) == paths[1] and not attempts:
+                    attempts.append(path)
+                    raise OSError("Injected Variant save failure")
+                original_write(path, document, asset_database)
+
+            with monkeypatch.context() as patch:
+                patch.setattr(prefab_overrides, "_write_prefab_apply_document", write)
+                assert not files._save_prefab()
+            assert attempts
+            assert [path.read_bytes() for path in paths] == before_files
+            assert extra.serialize_document() == before_extra
+            assert registry.require(files.document_id).is_dirty
+            assert not registry.require(other_owner).is_dirty
+        assert files._save_prefab()
+        assert extra.get_child(0).layer == 5
+        assert extra.get_child(0).name == "Other private child"
+        assert sum(obj.name == "Saved addition" for obj in extra.get_children()) == 1
+        assert registry.require(other_owner).is_dirty
+        assert not registry.require(files.document_id).is_dirty
+        after_files = [path.read_bytes() for path in paths]
+        revision = registry.require(other_owner).revision
+        assert files._save_prefab()
+        assert [path.read_bytes() for path in paths] == after_files
+        assert registry.require(other_owner).revision == revision
+        assert files._do_exit_prefab_mode()
+        assert manager.get_active_scene() is scene
+        assert files.document_id == original_owner
+        assert registry.require(original_owner).is_dirty
+        for object_id in instance_ids:
+            restored = scene.find_by_id(object_id)
+            assert restored.get_child(0).layer == 5
+            assert sum(obj.name == "Saved addition" for obj in restored.get_children()) == 1
+        assert scene.find_by_id(instance_ids[-1]).get_child(0).name == "Private child"
+        # Saving a Variant in its own Prefab Mode must preserve its base and
+        # propagate new overrides through descendants, not back to the base.
+        assert files.open_prefab_mode(str(paths[1]))
+        manager.get_active_scene().get_root_objects()[0].get_child(0).layer = 7
+        registry.mark_changed(files.document_id)
+        assert files._save_prefab()
+        assert files._do_exit_prefab_mode()
+        assert json.loads(paths[1].read_text(encoding="utf8"))["variant"]["guid"] == database.get_guid_from_path(str(paths[0]))
+        assert scene.find_by_id(instance_ids[0]).get_child(0).layer == 5
+        assert scene.find_by_id(instance_ids[1]).get_child(0).layer == 7
+        assert scene.find_by_id(instance_ids[2]).get_child(0).layer == 7
+        assert extra.get_child(0).layer == 7
+    finally:
+        if files.is_prefab_mode:
+            files._do_exit_prefab_mode()
+        files.unregister_loaded_scene(other)
+        manager.unload_scene(other)
