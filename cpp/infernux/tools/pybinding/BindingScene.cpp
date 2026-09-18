@@ -601,6 +601,10 @@ static GameObject *CreateModelObject(Scene *scene, const std::string &guid, cons
         if (!source)
             throw std::invalid_argument("Model mesh source cannot be loaded");
         source->RequireModelNode(nodePath);
+        const auto metadata = GetModelMeta(sourceGuid, source);
+        const bool generateCollider = !ShouldUseSkinnedRenderer(sourceGuid, source) && metadata &&
+                                      metadata->HasKey("generate_colliders") &&
+                                      metadata->GetDataAs<bool>("generate_colliders");
         auto *object = scene->CreateGameObject(name.empty() ? nodePath.back() : name);
         if (!object)
             return nullptr;
@@ -608,6 +612,8 @@ static GameObject *CreateModelObject(Scene *scene, const std::string &guid, cons
             auto *renderer = object->AddComponent<MeshRenderer>();
             renderer->SetMeshAsset(sourceGuid, source);
             renderer->SetModelNodePath(nodePath);
+            if (generateCollider)
+                object->AddComponent<MeshCollider>();
         } catch (...) {
             scene->DestroyGameObject(object);
             scene->ProcessPendingDestroys();
@@ -627,6 +633,9 @@ static GameObject *CreateModelObject(Scene *scene, const std::string &guid, cons
     uint32_t nodeGroupCount = mesh->GetNodeGroupCount();
     const auto &nodeNames = mesh->GetNodeNames();
     const bool useSkinnedRenderer = ShouldUseSkinnedRenderer(guid, mesh);
+    const auto metadata = GetModelMeta(guid, mesh);
+    const bool generateColliders = !useSkinnedRenderer && metadata && metadata->HasKey("generate_colliders") &&
+                                   metadata->GetDataAs<bool>("generate_colliders");
 
     const auto &nodes = mesh->GetModelNodes();
     if (!useSkinnedRenderer && mesh->GetModelSourceGeometry() && !nodes.empty()) {
@@ -683,6 +692,8 @@ static GameObject *CreateModelObject(Scene *scene, const std::string &guid, cons
                     renderer->SetNodeGroup(node.nodeGroup);
                     renderer->SetMeshAsset(guid, mesh);
                     renderer->SetModelNodePath(paths[index]);
+                    if (generateColliders)
+                        child->AddComponent<MeshCollider>();
                 }
             }
         } catch (...) {
@@ -707,6 +718,8 @@ static GameObject *CreateModelObject(Scene *scene, const std::string &guid, cons
             MeshRenderer *renderer = obj->AddComponent<MeshRenderer>();
             if (renderer) {
                 renderer->SetMeshAsset(guid, mesh);
+                if (generateColliders)
+                    obj->AddComponent<MeshCollider>();
             }
         }
         return obj;
@@ -735,6 +748,8 @@ static GameObject *CreateModelObject(Scene *scene, const std::string &guid, cons
             if (renderer) {
                 renderer->SetMeshAsset(guid, mesh);
                 renderer->SetNodeGroup(static_cast<int32_t>(g));
+                if (generateColliders)
+                    child->AddComponent<MeshCollider>();
             }
         }
     }

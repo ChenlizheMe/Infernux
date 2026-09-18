@@ -28,6 +28,7 @@ struct MeshImportSettings
     bool swapUVChannels = false;
     bool optimizeMesh = true;
     bool weldVertices = true;
+    bool generateColliders = false;
     bool importAnimations = true;
     bool customAnimationClips = false;
     nlohmann::json animationClips = nlohmann::json::array();
@@ -116,6 +117,7 @@ struct MeshImportSettings
         Flag{"flip_uvs", &MeshImportSettings::flipUVs},
         Flag{"swap_uv_channels", &MeshImportSettings::swapUVChannels},
         Flag{"weld_vertices", &MeshImportSettings::weldVertices, "model", true},
+        Flag{"generate_colliders", &MeshImportSettings::generateColliders, "model", true},
         Flag{"optimize_mesh", &MeshImportSettings::optimizeMesh},
         Flag{"import_animations", &MeshImportSettings::importAnimations, "animation", true},
         Flag{"custom_animation_clips", &MeshImportSettings::customAnimationClips, "animation", true},

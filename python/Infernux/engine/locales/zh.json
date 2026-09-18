@@ -964,6 +964,8 @@
   "asset.swap_uv_channels": "交换 UV 通道",
   "asset.optimize_mesh": "优化三角形顺序",
   "asset.weld_vertices": "焊接顶点",
+  "asset.generate_colliders": "生成碰撞体",
+  "asset.generate_colliders_hint": "新拖入的静态模型会在网格节点添加三角网格碰撞体，不包含蒙皮模型，也不改动场景中已有的组件。",
   "asset.display_material": "材质",
   "asset.display_render_effect": "渲染效果",
   "asset.render_effect_group_entries": "效果组",

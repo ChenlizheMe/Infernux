@@ -2628,6 +2628,8 @@ def _render_model_import_pages(ctx: InxGUIContext, panel, state: _State):
                     _render_import_fields(ctx, _categories["mesh"], state, fields=_model_page_fields(page))
                 if page == "model":
                     ctx.text_wrapped(t("asset.basis_modes_hint"))
+                    if state.settings.generate_colliders:
+                        ctx.text_wrapped(t("asset.generate_colliders_hint"))
                 if page == "animation":
                     _render_model_animation_clips(ctx, state)
                 if page in {"rig", "animation"}:

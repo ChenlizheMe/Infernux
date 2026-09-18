@@ -757,6 +757,7 @@ class MeshImportSettings:
     swap_uv_channels: bool = field(default_factory=lambda: _mesh_import_fields()["swap_uv_channels"]["default"])
     optimize_mesh: bool = field(default_factory=lambda: _mesh_import_fields()["optimize_mesh"]["default"])
     weld_vertices: bool = field(default_factory=lambda: _mesh_import_fields()["weld_vertices"]["default"])
+    generate_colliders: bool = field(default_factory=lambda: _mesh_import_fields()["generate_colliders"]["default"])
     rig_type: str = field(default_factory=lambda: _mesh_import_fields()["rig_type"]["default"])
     import_animations: bool = field(default_factory=lambda: _mesh_import_fields()["import_animations"]["default"])
     custom_animation_clips: bool = field(default_factory=lambda: _mesh_import_fields()["custom_animation_clips"]["default"])
