@@ -864,6 +864,53 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
 
         return self._continue_open_scene(path)
 
+    def open_scene_additive(self, path: str) -> bool:
+        """Open an authored Scene beside the current editor Scenes.
+
+        This is the editor equivalent of Unity's ``Open Scene Additive``.  The
+        loaded Scene gets its own document owner and can later be activated or
+        unloaded from its Hierarchy header; the active Scene and its objects
+        remain untouched.
+        """
+        path = resolved_path(path)
+        if self.is_loading or self.is_prefab_mode or self._is_play_mode():
+            return False
+        if not path or not os.path.isfile(path) or not self._is_under_assets(path):
+            return False
+        from Infernux.lib import SceneManager
+        from Infernux.engine.scene_document_transaction import SceneDocumentTransaction
+
+        native = SceneManager.instance()
+        for index in range(int(native.scene_count)):
+            loaded = native.get_scene_at(index)
+            binding = self._loaded_scene_documents.get(self._world_id(loaded))
+            if binding is not None and path_key(binding.resource_path) == path_key(path):
+                return self.activate_loaded_scene(loaded)
+        scene = native.create_scene(os.path.splitext(os.path.basename(path))[0])
+        transaction = SceneDocumentTransaction(
+            scene,
+            path=path,
+            asset_database=self._asset_database,
+            native_engine=self._native_engine_for_close(),
+            clear_registries=False,
+        )
+        if not transaction.run_to_completion(raise_on_failure=False):
+            native.unload_scene(scene)
+            return False
+        self.register_loaded_scene(scene, path)
+        from Infernux.renderstack.render_stack import RenderStack
+        RenderStack.refresh_active_instance(scene)
+        try:
+            from Infernux.components.builtin.sprite_renderer import SpriteRenderer
+            SpriteRenderer.init_all_in_scene(scene)
+        except Exception:
+            pass
+        from Infernux.gizmos.collector import notify_scene_changed
+        notify_scene_changed()
+        if self._on_scene_changed:
+            self._on_scene_changed()
+        return True
+
     def reload_current_scene(self, *, discard_changes: bool = False) -> bool:
         """Schedule a reload of the active scene from its durable file.
 

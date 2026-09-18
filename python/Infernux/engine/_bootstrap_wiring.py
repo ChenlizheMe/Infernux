@@ -151,6 +151,10 @@ class BootstrapWiringMixin:
             native.unload_scene(target)
             return True
 
+        def _open_scene_additive(context):
+            path = str(context.payload.get("source_path", "") or "").strip()
+            return bool(path and sfm.open_scene_additive(path))
+
         def _pause(_context):
             pmm.toggle_pause()
             return True
@@ -1240,6 +1244,13 @@ class BootstrapWiringMixin:
                 display_name="Unload Scene",
                 category="Scene",
                 can_execute=lambda context: _scene_world(context) > 0,
+            ),
+            EditorCommand(
+                "scene.open_additive",
+                _open_scene_additive,
+                display_name="Open Scene Additive",
+                category="Scene",
+                can_execute=lambda context: bool(context.payload.get("source_path", "")),
             ),
             EditorCommand(
                 "scene.tool.select",

@@ -771,6 +771,8 @@ void HierarchyPanel::HandleExternalDropStr(const std::string &dropType, const st
     } else if (dropType == "MODEL_GUID" || dropType == "MODEL_FILE") {
         const bool isGuid = (dropType == "MODEL_GUID");
         ExecuteEditorCommand("scene.create_model", ExternalDropCommandArgument(payload, parentId, isGuid), "drag_drop");
+    } else if (dropType == "SCENE_FILE") {
+        ExecuteEditorCommand("scene.open_additive", payload, "drag_drop");
     }
 }
 
@@ -898,7 +900,7 @@ void HierarchyPanel::RenderMultiDropTarget(InxGUIContext *ctx, uint64_t parentId
             HandleExternalDrop(DRAG_DROP_TYPE, payload, parentId);
         }
         // Accept string payloads
-        for (const char *dt : {"MODEL_GUID", "MODEL_FILE", "PREFAB_GUID", "PREFAB_FILE"}) {
+        for (const char *dt : {"MODEL_GUID", "MODEL_FILE", "PREFAB_GUID", "PREFAB_FILE", "SCENE_FILE"}) {
             std::string strPayload;
             if (ctx->AcceptDragDropPayload(dt, &strPayload)) {
                 HandleExternalDropStr(dt, strPayload, parentId);
@@ -1502,7 +1504,7 @@ void HierarchyPanel::OnRenderContent(InxGUIContext *ctx)
                     accepted = true;
                 }
                 if (!accepted) {
-                    for (const char *dt : {"MODEL_GUID", "MODEL_FILE", "PREFAB_GUID", "PREFAB_FILE"}) {
+                    for (const char *dt : {"MODEL_GUID", "MODEL_FILE", "PREFAB_GUID", "PREFAB_FILE", "SCENE_FILE"}) {
                         std::string strPayload;
                         if (ctx->AcceptDragDropPayload(dt, &strPayload)) {
                             HandleExternalDropStr(dt, strPayload, 0);
