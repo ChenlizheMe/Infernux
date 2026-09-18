@@ -179,11 +179,17 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         # the scene view has one frame to stop rendering old 3D content,
         # preventing in-flight GPU resources from being destroyed mid-use.
         self._deferred_load_path: Optional[str] = None   # non-None → load pending
+        # Additive scene opens use the same owner-safe transaction path as
+        # regular scene replacement.  Never mutate the native SceneManager
+        # from a drag/drop command while a frame is active.
+        self._deferred_additive_path: Optional[str] = None
         self._deferred_new_scene: bool = False            # True → new scene pending
         self._deferred_exit_prefab: bool = False           # True → exit prefab mode task pending
         self._post_prefab_exit_callback: Optional[Callable[[], None]] = None
         self._scene_transaction = None
         self._scene_transaction_path: Optional[str] = None
+        self._additive_scene_transaction = None
+        self._additive_scene_transaction_path: Optional[str] = None
         self._last_scene_load = {"status": "idle", "path": "", "error": ""}
         self._last_loaded_file_state = None
         self._pending_external_reload: Optional[tuple[str, str]] = None
@@ -531,7 +537,9 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         """True while a deferred scene load is pending."""
         return (
             self._scene_transaction is not None
+            or self._additive_scene_transaction is not None
             or self._deferred_load_path is not None
+            or self._deferred_additive_path is not None
             or self._deferred_new_scene
             or self._deferred_exit_prefab
         )
@@ -878,7 +886,6 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         if not path or not os.path.isfile(path) or not self._is_under_assets(path):
             return False
         from Infernux.lib import SceneManager
-        from Infernux.engine.scene_document_transaction import SceneDocumentTransaction
 
         native = SceneManager.instance()
         for index in range(int(native.scene_count)):
@@ -886,29 +893,14 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
             binding = self._loaded_scene_documents.get(self._world_id(loaded))
             if binding is not None and path_key(binding.resource_path) == path_key(path):
                 return self.activate_loaded_scene(loaded)
-        scene = native.create_scene(os.path.splitext(os.path.basename(path))[0])
-        transaction = SceneDocumentTransaction(
-            scene,
-            path=path,
-            asset_database=self._asset_database,
-            native_engine=self._native_engine_for_close(),
-            clear_registries=False,
-        )
-        if not transaction.run_to_completion(raise_on_failure=False):
-            native.unload_scene(scene)
-            return False
-        self.register_loaded_scene(scene, path)
-        from Infernux.renderstack.render_stack import RenderStack
-        RenderStack.refresh_active_instance(scene)
-        try:
-            from Infernux.components.builtin.sprite_renderer import SpriteRenderer
-            SpriteRenderer.init_all_in_scene(scene)
-        except Exception:
-            pass
-        from Infernux.gizmos.collector import notify_scene_changed
-        notify_scene_changed()
-        if self._on_scene_changed:
-            self._on_scene_changed()
+
+        # The command is dispatched from the native frame.  Queue the actual
+        # Scene creation/read for poll_deferred_load(), which is the owner
+        # safe point used by normal scene loads.
+        self._deferred_additive_path = path
+        self._last_scene_load = {
+            "status": "pending_additive", "path": path, "error": "",
+        }
         return True
 
     def reload_current_scene(self, *, discard_changes: bool = False) -> bool:
@@ -1140,6 +1132,29 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
                 self._cancel_scene_navigation()
             return
 
+        if self._additive_scene_transaction is not None:
+            transaction = self._additive_scene_transaction
+            if not transaction.poll():
+                return
+            path = self._additive_scene_transaction_path
+            scene = getattr(transaction, "_scene", None)
+            self._additive_scene_transaction = None
+            self._additive_scene_transaction_path = None
+            self._load_in_progress = False
+            if transaction.succeeded and scene is not None:
+                self._finish_open_scene_additive(
+                    scene, path, file_state=transaction.file_state
+                )
+            else:
+                if scene is not None:
+                    try:
+                        from Infernux.lib import SceneManager
+                        SceneManager.instance().unload_scene(scene)
+                    except Exception as exc:
+                        Debug.log_error(f"Additive scene cleanup failed: {exc}")
+                self._scene_load_failed(path or "", transaction.error)
+            return
+
         if self._load_in_progress:
             return
         if self._deferred_load_path is not None:
@@ -1159,6 +1174,46 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
                 self._scene_load_failed(path, str(exc))
                 self._load_in_progress = False
                 self._cancel_scene_navigation()
+        elif self._deferred_additive_path is not None:
+            path = self._deferred_additive_path
+            self._deferred_additive_path = None
+            self._load_in_progress = True
+            scene = None
+            try:
+                from Infernux.lib import SceneManager
+                from Infernux.engine.scene_document_transaction import (
+                    SceneDocumentTransaction,
+                )
+
+                native = SceneManager.instance()
+                # A second request may have loaded the same path before this
+                # owner-safe point (for example, automation double-clicking).
+                for index in range(int(native.scene_count)):
+                    loaded = native.get_scene_at(index)
+                    binding = self._loaded_scene_documents.get(self._world_id(loaded))
+                    if binding is not None and path_key(binding.resource_path) == path_key(path):
+                        self._load_in_progress = False
+                        self.activate_loaded_scene(loaded)
+                        return
+                scene = native.create_scene(os.path.splitext(os.path.basename(path))[0])
+                transaction = SceneDocumentTransaction(
+                    scene,
+                    path=path,
+                    asset_database=self._asset_database,
+                    native_engine=self._native_engine_for_close(),
+                    clear_registries=False,
+                )
+                transaction.start()
+                self._additive_scene_transaction = transaction
+                self._additive_scene_transaction_path = resolved_path(path)
+            except Exception as exc:
+                if scene is not None:
+                    try:
+                        native.unload_scene(scene)
+                    except Exception:
+                        pass
+                self._scene_load_failed(path, str(exc))
+                self._load_in_progress = False
         elif self._deferred_new_scene:
             self._deferred_new_scene = False
             self._load_in_progress = True
@@ -1257,6 +1312,25 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
             clear_registries=True,
             before_commit=before_commit,
         )
+
+    def _finish_open_scene_additive(self, scene, path: str, *, file_state=None) -> None:
+        """Publish one additive Scene after its owner-safe transaction commits."""
+        self.register_loaded_scene(scene, path)
+        self.activate_loaded_scene(scene)
+        self._last_loaded_file_state = file_state
+
+        from Infernux.renderstack.render_stack import RenderStack
+        RenderStack.refresh_active_instance(scene)
+        try:
+            from Infernux.components.builtin.sprite_renderer import SpriteRenderer
+            SpriteRenderer.init_all_in_scene(scene)
+        except Exception as exc:
+            Debug.log_internal(f"SpriteRenderer additive init: {exc}")
+        from Infernux.gizmos.collector import notify_scene_changed
+        notify_scene_changed()
+        self._last_scene_load = {
+            "status": "loaded_additive", "path": resolved_path(path), "error": "",
+        }
 
     def _finish_open_scene(
         self,
