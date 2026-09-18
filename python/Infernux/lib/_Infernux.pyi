@@ -250,7 +250,7 @@ class CameraProjection(IntEnum):
 
 
 class PhysicalGateFit(IntEnum):
-    None: int
+    None_: int
     Vertical: int
     Horizontal: int
     Fill: int
