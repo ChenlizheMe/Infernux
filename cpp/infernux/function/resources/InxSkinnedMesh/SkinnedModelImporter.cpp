@@ -288,7 +288,7 @@ std::shared_ptr<InxSkinnedMesh> SkinnedModelImporter::ConvertScene(const aiScene
                 throw std::runtime_error("Skinned model contains a non-finite vertex position");
             vertex.normal = hasNormals ? NormalizeOr(normalToModel * AiToGlm(sourceMesh.mNormals[vertexIndex]),
                                                      glm::vec3(0.0f, 1.0f, 0.0f))
-                                       : glm::vec3(0.0f, 1.0f, 0.0f);
+                                       : glm::vec3(0.0f);
             if (hasTangents) {
                 const auto tangent = AiToGlm(sourceMesh.mTangents[vertexIndex]);
                 const auto bitangent = AiToGlm(sourceMesh.mBitangents[vertexIndex]);
@@ -298,7 +298,7 @@ std::shared_ptr<InxSkinnedMesh> SkinnedModelImporter::ConvertScene(const aiScene
                 vertex.tangent = glm::vec4(NormalizeOr(tangentToModel * tangent, glm::vec3(1.0f, 0.0f, 0.0f)),
                                            handedness * orientation);
             } else {
-                vertex.tangent = glm::vec4(1.0f, 0.0f, 0.0f, 1.0f);
+                vertex.tangent = glm::vec4(0.0f);
             }
             if (hasUvs) {
                 vertex.texCoord = {sourceMesh.mTextureCoords[0][vertexIndex].x,

@@ -123,7 +123,8 @@ int main(int argc, char **argv)
         Settings::EnsureDefaults(candidate);
         const auto defaults = Settings::Read(candidate);
         const auto schema = Settings::Schema();
-        assert(schema.at("fields").size() == Settings::Flags.size() + Settings::Scalars.size() + 5);
+        assert(schema.at("fields").size() ==
+               Settings::Flags.size() + Settings::Scalars.size() + Settings::BasisModes.size() + 5);
         assert(defaults.materialImportMode == "description");
         assert(defaults.materialRemaps.empty());
         Settings::ApplyPatch(candidate, {{"material_remaps", {{"material/Body", "abcdabcdabcdabcdabcdabcdabcdabcd"}}}});
@@ -169,6 +170,22 @@ int main(int argc, char **argv)
         reject({{"min_bone_weight", 1.1}});
         reject({{"normal_smoothing_angle", 175.1}});
         reject({{"normal_smoothing_angle", true}});
+        reject({{"normal_mode", true}});
+        reject({{"normal_mode", "auto"}});
+        reject({{"tangent_mode", 0}});
+        for (const bool generate : {true, false}) {
+            infernux::InxResourceMeta legacy;
+            legacy.AddMetadata("generate_normals", generate);
+            legacy.AddMetadata("generate_tangents", generate);
+            assert(Settings::Read(legacy).normalMode == (generate ? "import" : "source_only"));
+            Settings::EnsureDefaults(legacy);
+            assert(!legacy.HasKey("generate_normals") && !legacy.HasKey("generate_tangents"));
+            assert(Settings::Read(legacy).normalMode == (generate ? "import" : "source_only"));
+            assert(Settings::Read(legacy).tangentMode == Settings::Read(legacy).normalMode);
+            Settings::ApplyPatch(legacy, {{"normal_mode", "none"}});
+            Settings::EnsureDefaults(legacy);
+            assert(Settings::Read(legacy).normalMode == "none");
+        }
         reject(nlohmann::json::array());
         reject({{"material_remaps", nlohmann::json::array()}});
         reject({{"material_remaps", {{"slot/0", "guid"}}}});
@@ -385,6 +402,60 @@ int main(int argc, char **argv)
                                                                              "authored-hard-guid", hardSettings);
         for (size_t index = 0; index < authoredSmooth.vertexCount; ++index)
             assert(authoredSmooth.mesh->GetVertices()[index].normal == authoredHard.mesh->GetVertices()[index].normal);
+    }
+    {
+        const auto authoredPath = sourceRoot / "cpp/tests/fixtures/model_authored_normals.obj";
+        const auto missingPath = sourceRoot / "cpp/tests/fixtures/model_smoothing.obj";
+        for (const auto *mode : {"import", "source_only", "calculate", "none"}) {
+            infernux::InxResourceMeta settings;
+            settings.AddMetadata("normal_mode", std::string(mode));
+            settings.AddMetadata("normal_smoothing_angle", 30.0f);
+            const auto authored = infernux::MeshLoader::ImportSourceDetailed(
+                infernux::FromFsPath(authoredPath), "authored-basis", settings);
+            const auto missing = infernux::MeshLoader::ImportSourceDetailed(
+                infernux::FromFsPath(missingPath), "missing-basis", settings);
+            for (const auto &vertex : authored.mesh->GetVertices()) {
+                if (std::string_view(mode) == "none") {
+                    assert(vertex.normal == glm::vec3(0));
+                    assert(vertex.tangent == glm::vec4(0));
+                } else if (std::string_view(mode) == "calculate")
+                    assert(vertex.normal == glm::vec3(0, 1, 0) || vertex.normal == glm::vec3(0, 0, 1));
+                else
+                    assert(vertex.normal == glm::vec3(1, 0, 0));
+            }
+            for (const auto &vertex : missing.mesh->GetVertices()) {
+                const bool generated = std::string_view(mode) == "import" || std::string_view(mode) == "calculate";
+                assert(std::abs(glm::length(vertex.normal) - (generated ? 1.0f : 0.0f)) < 1.e-5f);
+            }
+        }
+        // Both consumers and their cooked binaries use the same basis policy.
+        for (const auto *normalMode : {"import", "calculate", "none", "source_only"}) {
+            for (const auto *tangentMode : {"import", "calculate", "none", "source_only"}) {
+                infernux::InxResourceMeta settings;
+                settings.AddMetadata("normal_mode", std::string(normalMode));
+                settings.AddMetadata("tangent_mode", std::string(tangentMode));
+                const auto result = infernux::MeshLoader::ImportSourceDetailed(
+                    infernux::FromFsPath(uvPath), "mode-basis", settings);
+                const auto mesh = infernux::MeshArtifact::Deserialize(
+                    infernux::MeshArtifact::Serialize(*result.mesh, "mode-basis"), "mode-basis");
+                const auto skin = infernux::SkinnedMeshArtifact::Deserialize(
+                    infernux::SkinnedMeshArtifact::Serialize(*result.skinnedMesh, "mode-basis"), "mode-basis");
+                const bool normalPresent = std::string_view(normalMode) != "none";
+                const bool tangentPresent = normalPresent && std::string_view(tangentMode) != "none" &&
+                    !(std::string_view(normalMode) == "calculate" && std::string_view(tangentMode) == "source_only");
+                for (size_t i = 0; i < mesh->GetVertices().size(); ++i) {
+                    const auto &vertex = mesh->GetVertices()[i];
+                    assert(glm::length(vertex.normal - skin->baseVertices[i].normal) < 1.e-5f);
+                    assert(glm::length(vertex.tangent - skin->baseVertices[i].tangent) < 1.e-5f);
+                    assert(std::abs(glm::length(vertex.normal) - (normalPresent ? 1.0f : 0.0f)) < 1.e-5f);
+                    assert(std::abs(glm::length(glm::vec3(vertex.tangent)) - (tangentPresent ? 1.0f : 0.0f)) < 1.e-5f);
+                    if (tangentPresent)
+                        assert(std::abs(glm::dot(vertex.normal, glm::vec3(vertex.tangent))) < 1.e-5f);
+                    else
+                        assert(vertex.tangent == glm::vec4(0));
+                }
+            }
+        }
     }
     // Optional modern Blender-generated GLB supplied by an integration run.
     // This is additional evidence, never a replacement for the fixed fixture.

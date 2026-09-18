@@ -2590,7 +2590,9 @@ def _render_model_import_pages(ctx: InxGUIContext, panel, state: _State):
     if os.path.splitext(state.file_path)[1].lower() == ".inxmesh":
         _render_mesh_info(ctx, panel, state)
         _render_model_materials(ctx, state)
-        _render_import_fields(ctx, _categories["mesh"], state, fields=_model_page_fields("model"))
+        _render_import_fields(ctx, _categories["mesh"], state, fields=[
+            field for field in _model_page_fields("model") if field.key not in {"normal_mode", "tangent_mode"}
+        ])
         return
     if not ctx.begin_tab_bar("##model_import_pages"):
         return
@@ -2623,6 +2625,8 @@ def _render_model_import_pages(ctx: InxGUIContext, panel, state: _State):
                         _render_model_materials(ctx, state)
                 else:
                     _render_import_fields(ctx, _categories["mesh"], state, fields=_model_page_fields(page))
+                if page == "model":
+                    ctx.text_wrapped(t("asset.basis_modes_hint"))
                 if page == "animation":
                     _render_model_animation_clips(ctx, state)
                 if page in {"rig", "animation"}:

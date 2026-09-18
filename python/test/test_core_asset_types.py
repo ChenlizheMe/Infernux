@@ -355,7 +355,31 @@ class TestMeshImportSettings:
     def test_defaults(self):
         s = MeshImportSettings()
         assert s.scale_factor == 1.0
-        assert s.generate_normals is True
+        assert s.normal_mode == "import"
+        assert s.tangent_mode == "import"
+
+    @pytest.mark.parametrize("mode", ["import", "calculate", "none", "source_only"])
+    def test_basis_modes_round_trip(self, mode):
+        settings = MeshImportSettings(normal_mode=mode, tangent_mode=mode)
+        assert MeshImportSettings.from_dict(settings.to_dict()) == settings
+
+    @pytest.mark.parametrize("generate", [True, False])
+    def test_legacy_basis_flags_migrate_without_losing_authored_data(self, generate):
+        document = MeshImportSettings().to_dict()
+        del document["normal_mode"], document["tangent_mode"]
+        document.update(generate_normals=generate, generate_tangents=generate)
+        settings = MeshImportSettings.from_dict(document)
+        assert settings.normal_mode == settings.tangent_mode == ("import" if generate else "source_only")
+        assert "generate_normals" not in settings.to_dict()
+        document["normal_mode"] = "none"
+        assert MeshImportSettings.from_dict(document).normal_mode == "none"
+
+    @pytest.mark.parametrize("invalid", [True, 1, None, "auto"])
+    def test_basis_modes_reject_invalid_values(self, invalid):
+        document = MeshImportSettings().to_dict()
+        document["normal_mode"] = invalid
+        with pytest.raises(ValueError, match="normal_mode"):
+            MeshImportSettings.from_dict(document)
 
     def test_to_dict_round_trip(self):
         s = MeshImportSettings(scale_factor=1.0, flip_uvs=True)

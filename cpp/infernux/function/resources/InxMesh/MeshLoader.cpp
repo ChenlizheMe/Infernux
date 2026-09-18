@@ -43,9 +43,9 @@ static unsigned int BuildAssimpFlags(const MeshImportSettings &settings)
 {
     unsigned int flags = aiProcess_Triangulate;
 
-    if (settings.generateNormals)
+    if (settings.normalMode == "import" || settings.normalMode == "calculate")
         flags |= aiProcess_GenSmoothNormals;
-    if (settings.generateTangents)
+    if (settings.normalMode != "none" && (settings.tangentMode == "import" || settings.tangentMode == "calculate"))
         flags |= aiProcess_CalcTangentSpace;
     if (settings.flipUVs)
         flags |= aiProcess_FlipUVs;
@@ -62,10 +62,8 @@ static unsigned int BuildAssimpFlags(const MeshImportSettings &settings)
     return flags;
 }
 
-static void PrepareUVChannels(const aiScene &scene, const MeshImportSettings &settings)
+static void PrepareVertexBasis(const aiScene &scene, const MeshImportSettings &settings)
 {
-    if (!settings.swapUVChannels && !settings.flipUVs)
-        return;
     // Change the primary channel before tangent generation and welding, so
     // static geometry and its skinned companion consume the same vertex basis.
     const auto swapChannels = [](auto &mesh) {
@@ -82,8 +80,25 @@ static void PrepareUVChannels(const aiScene &scene, const MeshImportSettings &se
             for (unsigned int vertex = 0; vertex < mesh.mNumVertices; ++vertex)
                 mesh.mBitangents[vertex] *= -1.0f;
     };
+    const auto prepare = [&](auto &mesh) {
+        if (settings.normalMode == "none" || settings.normalMode == "calculate") {
+            delete[] mesh.mNormals;
+            mesh.mNormals = nullptr;
+        }
+        // Tangents belong to a normal/UV basis. Never retain authored tangents
+        // after replacing that basis; generation, when requested, follows below.
+        if (!mesh.mNormals || settings.tangentMode == "none" || settings.tangentMode == "calculate") {
+            delete[] mesh.mTangents;
+            delete[] mesh.mBitangents;
+            mesh.mTangents = nullptr;
+            mesh.mBitangents = nullptr;
+        }
+    };
     for (unsigned int index = 0; index < scene.mNumMeshes; ++index) {
         auto &mesh = *scene.mMeshes[index];
+        prepare(mesh);
+        for (unsigned int morph = 0; morph < mesh.mNumAnimMeshes; ++morph)
+            prepare(*mesh.mAnimMeshes[morph]);
         // With no secondary channel there is nothing to exchange.
         if (settings.swapUVChannels && mesh.HasTextureCoords(1)) {
             swapChannels(mesh);
@@ -246,7 +261,8 @@ static std::shared_ptr<InxMesh> ConvertScene(const aiScene *scene, const MeshImp
             if (hasNormals) {
                 glm::vec3 n(aiM->mNormals[v].x, aiM->mNormals[v].y, aiM->mNormals[v].z);
                 vert.normal = n;
-            }
+            } else
+                vert.normal = glm::vec3(0.0f);
 
             // Tangent + bitangent handedness
             if (hasTangents) {
@@ -258,7 +274,7 @@ static std::shared_ptr<InxMesh> ConvertScene(const aiScene *scene, const MeshImp
                 float handedness = (glm::dot(glm::cross(vert.normal, t), b) < 0.0f) ? -1.0f : 1.0f;
                 vert.tangent = glm::vec4(t, handedness);
             } else {
-                vert.tangent = glm::vec4(1.0f, 0.0f, 0.0f, 1.0f);
+                vert.tangent = glm::vec4(0.0f);
             }
 
             // UV (channel 0 only for now)
@@ -515,7 +531,7 @@ MeshSourceImportResult MeshLoader::ImportSourceDetailed(const std::string &fileP
         importer.ReadFileFromMemory(fileData.data(), fileData.size(), aiProcess_ValidateDataStructure, ext.c_str());
 
     if (scene) {
-        PrepareUVChannels(*scene, settings);
+        PrepareVertexBasis(*scene, settings);
         scene = importer.ApplyPostProcessing(flags);
     }
 

@@ -20,8 +20,8 @@ struct MeshImportSettings
     float normalSmoothingAngle = 175.0f;
     float minBoneWeight = 0.0f;
     int maxBonesPerVertex = 4;
-    bool generateNormals = true;
-    bool generateTangents = true;
+    std::string normalMode = "import";
+    std::string tangentMode = "import";
     bool flipUVs = true;
     bool swapUVChannels = false;
     bool optimizeMesh = true;
@@ -111,8 +111,6 @@ struct MeshImportSettings
         bool legacyOptional = false;
     };
     inline static constexpr std::array Flags = {
-        Flag{"generate_normals", &MeshImportSettings::generateNormals},
-        Flag{"generate_tangents", &MeshImportSettings::generateTangents},
         Flag{"flip_uvs", &MeshImportSettings::flipUVs},
         Flag{"swap_uv_channels", &MeshImportSettings::swapUVChannels},
         Flag{"weld_vertices", &MeshImportSettings::weldVertices, "model", true},
@@ -120,6 +118,37 @@ struct MeshImportSettings
         Flag{"import_animations", &MeshImportSettings::importAnimations, "animation", true},
         Flag{"custom_animation_clips", &MeshImportSettings::customAnimationClips, "animation", true},
     };
+
+    struct BasisMode
+    {
+        const char *name;
+        const char *legacyFlag;
+        std::string MeshImportSettings::*member;
+    };
+    inline static constexpr std::array BasisModes = {
+        BasisMode{"normal_mode", "generate_normals", &MeshImportSettings::normalMode},
+        BasisMode{"tangent_mode", "generate_tangents", &MeshImportSettings::tangentMode},
+    };
+
+    static void RequireBasisMode(const nlohmann::json &value)
+    {
+        if (!value.is_string() ||
+            (value != "import" && value != "calculate" && value != "none" && value != "source_only"))
+            throw std::invalid_argument("model basis mode must be import, calculate, none or source_only");
+    }
+
+    static std::string ReadBasisMode(const InxResourceMeta &metadata, const BasisMode &field)
+    {
+        if (metadata.HasKey(field.name)) {
+            auto value = metadata.GetDataAs<std::string>(field.name);
+            RequireBasisMode(value);
+            return value;
+        }
+        // Old unchecked Generate Missing preserved authored data; it did not
+        // remove it. Keep that policy when upgrading old project metadata.
+        return metadata.HasKey(field.legacyFlag) && !metadata.GetDataAs<bool>(field.legacyFlag) ? "source_only"
+                                                                                            : "import";
+    }
 
     static void RequireRigType(const nlohmann::json &value)
     {
@@ -149,6 +178,8 @@ struct MeshImportSettings
     static MeshImportSettings Read(const InxResourceMeta &metadata)
     {
         MeshImportSettings settings;
+        for (const auto &field : BasisModes)
+            settings.*(field.member) = ReadBasisMode(metadata, field);
         if (metadata.HasKey("max_bones_per_vertex"))
             settings.maxBonesPerVertex = metadata.GetDataAs<int>("max_bones_per_vertex");
         RequireMaxBones(settings.maxBonesPerVertex);
@@ -186,6 +217,14 @@ struct MeshImportSettings
     static void EnsureDefaults(InxResourceMeta &metadata)
     {
         const MeshImportSettings defaults;
+        for (const auto &field : BasisModes)
+            metadata.AddMetadata(field.name, ReadBasisMode(metadata, field));
+        if (metadata.HasKey("generate_normals") || metadata.HasKey("generate_tangents")) {
+            auto document = metadata.SerializeDocument();
+            for (const auto &field : BasisModes)
+                document["metadata"].erase(field.legacyFlag);
+            metadata.DeserializeDocument(document);
+        }
         if (!metadata.HasKey("max_bones_per_vertex"))
             metadata.AddMetadata("max_bones_per_vertex", defaults.maxBonesPerVertex);
         for (const auto &field : Scalars)
@@ -210,6 +249,10 @@ struct MeshImportSettings
             throw std::invalid_argument("model import settings require an object");
         // Validate the entire authoring request before modifying its candidate.
         for (const auto &[key, value] : patch.items()) {
+            if (key == "normal_mode" || key == "tangent_mode") {
+                RequireBasisMode(value);
+                continue;
+            }
             if (key == "animation_clips") {
                 RequireAnimationClips(value);
                 continue;
@@ -257,7 +300,8 @@ struct MeshImportSettings
                 WriteMaterialRemaps(metadata, value);
             else if (key == "max_bones_per_vertex")
                 metadata.AddMetadata(key, value.get<int>());
-            else if (key == "rig_type" || key == "material_import_mode")
+            else if (key == "rig_type" || key == "material_import_mode" || key == "normal_mode" ||
+                     key == "tangent_mode")
                 metadata.AddMetadata(key, value.get<std::string>());
             else if (value.is_boolean())
                 metadata.AddMetadata(key, value.get<bool>());
@@ -292,6 +336,14 @@ struct MeshImportSettings
                           {"default", defaults.maxBonesPerVertex}, {"minimum", 1}, {"maximum", 4},
                           {"display_range", {1, 4}}, {"step", 1}, {"page", "rig"},
                           {"label", "asset.max_bones_per_vertex"}, {"legacy_optional", true}});
+        for (const auto &field : BasisModes)
+            fields.push_back({{"name", field.name}, {"type", "enum"}, {"default", defaults.*(field.member)},
+                              {"page", "model"}, {"label", std::string("asset.") + field.name},
+                              {"legacy_optional", true}, {"legacy_flag", field.legacyFlag},
+                              {"choices", {{{"value", "import"}, {"label", "asset.basis_import"}},
+                                           {{"value", "calculate"}, {"label", "asset.basis_calculate"}},
+                                           {{"value", "none"}, {"label", "asset.basis_none"}},
+                                           {{"value", "source_only"}, {"label", "asset.basis_source_only"}}}}});
         fields.push_back({{"name", "rig_type"},
                           {"type", "enum"},
                           {"default", defaults.rigType},

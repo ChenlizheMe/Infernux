@@ -747,8 +747,8 @@ class MeshImportSettings:
     normal_smoothing_angle: float = field(default_factory=lambda: _mesh_import_fields()["normal_smoothing_angle"]["default"])
     max_bones_per_vertex: int = field(default_factory=lambda: _mesh_import_fields()["max_bones_per_vertex"]["default"])
     min_bone_weight: float = field(default_factory=lambda: _mesh_import_fields()["min_bone_weight"]["default"])
-    generate_normals: bool = field(default_factory=lambda: _mesh_import_fields()["generate_normals"]["default"])
-    generate_tangents: bool = field(default_factory=lambda: _mesh_import_fields()["generate_tangents"]["default"])
+    normal_mode: str = field(default_factory=lambda: _mesh_import_fields()["normal_mode"]["default"])
+    tangent_mode: str = field(default_factory=lambda: _mesh_import_fields()["tangent_mode"]["default"])
     # DCC-authored meshes keep model/textures aligned without per-asset UV flipping.
     flip_uvs: bool = field(default_factory=lambda: _mesh_import_fields()["flip_uvs"]["default"])
     # Unity-style public setting: swap primary/secondary UV channels.
@@ -775,6 +775,11 @@ class MeshImportSettings:
         # when upgrading sidecars authored before this option was exposed.
         values = {name: d[name] if name in d else spec["default"] for name, spec in fields.items()}
         for name, spec in fields.items():
+            legacy = spec.get("legacy_flag")
+            if name not in d and legacy in d:
+                if type(d[legacy]) is not bool:
+                    raise TypeError(f"mesh {legacy} must be a bool")
+                values[name] = "import" if d[legacy] else "source_only"
             if spec["type"] == "animation_clips":
                 clips = values[name]
                 if type(clips) is not list:
