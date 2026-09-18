@@ -1048,7 +1048,7 @@
   "asset.mesh_material_slots": "Material Slots",
   "asset.mesh_materials": "Materials",
   "asset.mesh_extract_material": "Extract Material...",
-  "asset.model_texture_read_only": "Embedded texture — read-only. Managed by the source model; drag this texture into another material to reuse it.",
+  "asset.model_texture_read_only": "Image content comes from the source model. Apply saves import settings in the model's .meta file. Other materials can reference this texture.",
   "asset.material_remaps": "Material Remapping",
   "asset.material_import_mode": "Material Creation Mode",
   "asset.material_import_none": "None",

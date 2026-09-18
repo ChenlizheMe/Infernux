@@ -180,3 +180,82 @@ def test_project_selection_roundtrips_and_texture_fields_accept_owned_path():
     assert _project_path_for_target(target) == path
     for name in ("Texture", "Texture.Sampled"):
         assert not asset_type_registry.require(name).incompatibility(path)
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+def test_owned_texture_import_settings_publish_in_model_sidecar(imported_model, asynchronous):
+    from Infernux.core.asset_types import (
+        read_texture_import_settings, FilterMode, WrapMode, TextureCompression,
+    )
+    _, document, source, database, _ = imported_model
+    embed(document)
+    source.write_text(json.dumps(document), encoding="utf-8")
+    assert AssetManager.reimport_asset(str(source), database=database)
+    before, = records(database, source)
+    path = database.get_path_from_guid(before["guid"])
+    settings = read_texture_import_settings(path)
+    settings.max_size = 4
+    settings.filter_mode = FilterMode.POINT
+    settings.wrap_mode = WrapMode.CLAMP
+    settings.srgb = False
+    settings.generate_mipmaps = False
+    settings.compression = TextureCompression.NONE
+    if asynchronous:
+        owner = AssetManager.begin_model_reimport(path, settings)
+        deadline = time.monotonic() + 30
+        while (result := AssetManager.poll_model_reimport(owner)) is None:
+            assert time.monotonic() < deadline
+            time.sleep(.002)
+    else:
+        result = AssetManager.reimport_asset(path, import_settings=settings.to_dict(), database=database)
+    assert result, result.error
+    assert read_texture_import_settings(path) == settings
+    after, = records(database, source)
+    assert after["guid"] == before["guid"]
+    assert after["metadata"]["metadata"]["artifact_width"]["value"] == 4
+    assert after["metadata"]["metadata"]["artifact_height"]["value"] == 2
+    stored = json.loads(Path(str(source) + ".meta").read_text(encoding="utf-8"))
+    assert json.loads(stored["metadata"]["model_textures"]["value"])[0] == after
+    assert not Path(path + ".meta").exists()
+    embed(document, (20, 40, 60))
+    source.write_text(json.dumps(document), encoding="utf-8")
+    assert AssetManager.reimport_asset(str(source), database=database)
+    assert read_texture_import_settings(path) == settings
+    database.refresh()
+    assert read_texture_import_settings(path) == settings
+
+
+def test_owned_texture_failed_settings_preserve_owner_and_identity(imported_model):
+    _, document, source, database, _ = imported_model
+    embed(document)
+    source.write_text(json.dumps(document), encoding="utf-8")
+    assert AssetManager.reimport_asset(str(source), database=database)
+    child, = records(database, source)
+    path = database.get_path_from_guid(child["guid"])
+    sidecar = Path(str(source) + ".meta")
+    old = sidecar.read_bytes()
+    database.begin_model_reimport(path, {"texture_compression": "not-supported"})
+    deadline = time.monotonic() + 30
+    while (result := database.try_commit_model_reimport()) is None:
+        assert time.monotonic() < deadline
+        time.sleep(.002)
+    assert not result
+    assert "texture_compression" in result.error
+    assert sidecar.read_bytes() == old
+    assert records(database, source) == [child]
+    assert database.get_guid_from_path(path) == child["guid"]
+
+
+def test_owned_texture_inspector_has_its_own_settings_identity(imported_model):
+    from Infernux.engine.ui import asset_details_renderer as ui
+    _, document, source, database, _ = imported_model
+    embed(document)
+    source.write_text(json.dumps(document), encoding="utf-8")
+    assert AssetManager.reimport_asset(str(source), database=database)
+    child, = records(database, source)
+    ui._ensure_categories()
+    state = ui._State()
+    assert state.load(database.get_path_from_guid(child["guid"]), "texture", ui._categories["texture"])
+    assert state.meta["guid"] == child["guid"]
+    assert state.meta["guid"] != database.get_guid_from_path(str(source))
+    assert state.settings.max_size == 2048

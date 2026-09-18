@@ -401,6 +401,11 @@ class AssetManager:
         """Apply import settings by category and trigger reimport in one unified step."""
         cls._ensure_execution_strategies()
 
+        if asset_category == "texture" and "::subtex:" in path:
+            from Infernux.core.asset_types import TextureImportSettings
+            snapshot = TextureImportSettings.from_dict(settings_obj.to_dict()).to_dict()
+            return bool(cls.reimport_asset(path, import_settings=snapshot))
+
         if asset_category == "mesh":
             # Model settings are an import input, not an early sidecar write.
             # Native import publishes this snapshot and its artifacts together.
@@ -428,10 +433,11 @@ class AssetManager:
     @classmethod
     def begin_model_reimport(cls, path: str, settings_obj):
         """Submit an immutable model settings snapshot; return its owning database."""
-        from Infernux.core.asset_types import MeshImportSettings
+        from Infernux.core.asset_types import MeshImportSettings, TextureImportSettings
 
         database = cls._mutation_database()
-        snapshot = MeshImportSettings.from_dict(settings_obj.to_dict()).to_dict()
+        settings_type = TextureImportSettings if "::subtex:" in path else MeshImportSettings
+        snapshot = settings_type.from_dict(settings_obj.to_dict()).to_dict()
         database.begin_model_reimport(path, snapshot)
         return database
 
@@ -582,6 +588,9 @@ class AssetManager:
             cls._meta_write_suppression.pop(cls._normalize_asset_path(path), None)
             return result
 
+        if "::subtex:" in path:
+            path = result.path
+            cls._suppress_meta_watcher(path)
         return cls._publish_reimport_result(
             path, result, database=asset_database, suppress_watcher_echo=suppress_watcher_echo,
             native=native, has_shader_runtime=has_shader_runtime, previous_shader_id=previous_shader_id,

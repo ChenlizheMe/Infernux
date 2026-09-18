@@ -287,7 +287,23 @@ std::shared_ptr<const TextureCpuData> TextureDecoder::DecodeRgba8(
     texture.dimension = TextureDimension::Texture2D;
     texture.semantic = ReadSemantic(metadata);
     texture.format = ReadSrgb(metadata) ? TextureFormat::Rgba8Srgb : TextureFormat::Rgba8UNorm;
-    AppendLevel(texture, width, height, pixels.data(), pixels.size());
+    const float scale = static_cast<float>(ReadMaxSize(metadata)) / static_cast<float>((std::max)(width, height));
+    if (scale < 1.0f) {
+        const auto targetWidth = (std::max)(1U, static_cast<uint32_t>(width * scale));
+        const auto targetHeight = (std::max)(1U, static_cast<uint32_t>(height * scale));
+        std::vector<unsigned char> resized(static_cast<size_t>(targetWidth) * targetHeight * 4);
+        const bool colorSrgb = TextureFormatIsSrgb(texture.format) &&
+            (texture.semantic == TextureSemantic::Color || texture.semantic == TextureSemantic::UserInterface ||
+             texture.semantic == TextureSemantic::Sprite);
+        const auto result = colorSrgb
+            ? stbir_resize_uint8_srgb(pixels.data(), width, height, 0, resized.data(), targetWidth, targetHeight, 0, STBIR_RGBA)
+            : stbir_resize_uint8_linear(pixels.data(), width, height, 0, resized.data(), targetWidth, targetHeight, 0, STBIR_RGBA);
+        if (!result)
+            throw std::runtime_error("failed to resize embedded RGBA texture");
+        AppendLevel(texture, targetWidth, targetHeight, resized.data(), resized.size());
+    } else {
+        AppendLevel(texture, width, height, pixels.data(), pixels.size());
+    }
     return TextureProcessor::Process(std::move(texture),
         TextureProcessOptions{ReadGenerateMipmaps(metadata), ReadCompression(metadata),
                               ReadCompressionQuality(metadata), ReadTargetFormat(metadata)});

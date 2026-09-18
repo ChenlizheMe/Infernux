@@ -62,6 +62,37 @@ std::function<std::string(const std::string &, bool)> ModelTextureResolver(std::
 }
 
 // A model sidecar is the sole authority for its imported Texture identities.
+void ApplyModelTextureSettings(InxResourceMeta &model, const std::string &guid, const nlohmann::json &settings)
+{
+    if (!settings.is_object())
+        throw std::invalid_argument("model Texture settings must be an object");
+    InxResourceMeta defaults;
+    TextureImporter{}.EnsureDefaultSettings(defaults);
+    const auto fields = defaults.SerializeDocument().at("metadata");
+    auto records = nlohmann::json::parse(model.GetDataAs<std::string>("model_textures"));
+    for (auto &record : records) {
+        if (record.at("guid") != guid)
+            continue;
+        auto &entries = record.at("metadata").at("metadata");
+        for (const auto &[key, value] : settings.items()) {
+            if (key == "sprite_frames" && value.is_array()) {
+                entries[key] = {{"type", "json_array"}, {"value", value}};
+                continue;
+            }
+            if (!fields.contains(key))
+                throw std::invalid_argument("unknown Texture import setting: " + key);
+            const auto type = fields.at(key).at("type").get<std::string>();
+            if ((type == "string" && !value.is_string()) || (type == "bool" && !value.is_boolean()) ||
+                (type == "int" && !value.is_number_integer()))
+                throw std::invalid_argument("invalid Texture import setting type: " + key);
+            entries[key] = {{"type", type}, {"value", value}};
+        }
+        model.AddMetadata("model_textures", records.dump());
+        return;
+    }
+    throw std::invalid_argument("model no longer owns Texture: " + guid);
+}
+
 // Rebuild these derived entries at the same publication boundary as the owner.
 template <typename Paths, typename Metas, typename States, typename Results>
 void ExpandModelTextures(Paths &guidToPath, Paths &pathToGuid, Metas &metas, States &fileStates, Results &results)
@@ -2240,9 +2271,20 @@ AssetMutationResult AssetDatabase::ReimportAsset(const std::string &path, const 
     AssertNoPendingCommit("ReimportAsset");
     AssetMutationResult result;
     WorkerMetadataPrepare candidate;
-    if (!PrepareReimportInput(path, candidate, result) || !PrepareReimportMetadata(candidate, settings, result))
+    const auto selected = GetMetaByPath(path);
+    const bool ownedTexture = selected && selected->HasKey("import_owner_guid");
+    if (ownedTexture && settings.is_null()) {
+        result.errorCode = AssetMutationErrorCode::InvalidPath;
+        result.error = "model Texture reimport requires settings; reimport its owner to refresh source content";
         return result;
-    if (!RunImporter(result.guid, path, true, true, &*candidate.metadata, &candidate.file.source)) {
+    }
+    const auto sourcePath = ownedTexture ? GetPathFromGuid(selected->GetDataAs<std::string>("import_owner_guid")) : path;
+    if (!PrepareReimportInput(sourcePath, candidate, result) ||
+        !PrepareReimportMetadata(candidate, ownedTexture ? nlohmann::json{} : settings, result))
+        return result;
+    if (ownedTexture)
+        ApplyModelTextureSettings(*candidate.metadata, selected->GetGuid(), settings);
+    if (!RunImporter(result.guid, sourcePath, true, true, &*candidate.metadata, &candidate.file.source)) {
         result.errorCode = AssetMutationErrorCode::ImportFailed;
         result.error = m_importResults.at(result.guid).error;
         return result;
@@ -2344,27 +2386,33 @@ void AssetDatabase::BeginModelReimport(const std::string &path, const nlohmann::
         throw std::logic_error("A model Apply is already in progress");
     if (!JobSystem::IsAvailable())
         throw std::logic_error("Model Apply requires the engine JobSystem");
-    if (GetResourceTypeForPath(path) != ResourceType::Mesh || !settings.is_object())
+    const auto selected = GetMetaByPath(path);
+    const auto textureGuid = selected && selected->HasKey("import_owner_guid") ? selected->GetGuid() : std::string{};
+    const auto sourcePath = textureGuid.empty() ? path :
+        GetPathFromGuid(selected->GetDataAs<std::string>("import_owner_guid"));
+    if (GetResourceTypeForPath(sourcePath) != ResourceType::Mesh || !settings.is_object())
         throw std::invalid_argument("Model Apply requires a model path and settings object");
 
     auto pending = std::make_shared<PendingModelReimport>();
-    if (!PrepareReimportInput(path, pending->metadata, pending->result))
+    if (!PrepareReimportInput(sourcePath, pending->metadata, pending->result))
         throw std::runtime_error(pending->result.error);
     auto &worker = pending->worker;
-    worker.importer = m_importerRegistry.GetImporterForExtension(FromFsPath(ToFsPath(path).extension()));
+    worker.importer = m_importerRegistry.GetImporterForExtension(FromFsPath(ToFsPath(sourcePath).extension()));
     if (!worker.importer)
         throw std::logic_error("Model Apply has no registered importer");
-    worker.request = MakeImportRequest(pending->result.guid, path, true, *m_metas.at(pending->result.guid));
+    worker.request = MakeImportRequest(pending->result.guid, sourcePath, true, *m_metas.at(pending->result.guid));
     worker.expectedSource = pending->metadata.file.source;
     pending->settings = settings;
     pending->metadataExists =
-        ReadFingerprint(ToFsPath(InxResourceMeta::GetMetaFilePath(path)), pending->metadataFingerprint);
-    pending->job = JobSystem::Get().Schedule([pending] {
+        ReadFingerprint(ToFsPath(InxResourceMeta::GetMetaFilePath(sourcePath)), pending->metadataFingerprint);
+    pending->job = JobSystem::Get().Schedule([pending, textureGuid] {
         auto &worker = pending->worker;
         worker.producerThread = std::this_thread::get_id();
         try {
-            if (!PrepareReimportMetadata(pending->metadata, pending->settings, pending->result))
+            if (!PrepareReimportMetadata(pending->metadata, textureGuid.empty() ? pending->settings : nlohmann::json{}, pending->result))
                 throw std::runtime_error(pending->result.error);
+            if (!textureGuid.empty())
+                ApplyModelTextureSettings(*pending->metadata.metadata, textureGuid, pending->settings);
             worker.request.metadata = std::move(*pending->metadata.metadata);
             worker.artifact = worker.importer->Reimport(worker.request);
         } catch (const std::exception &exception) {

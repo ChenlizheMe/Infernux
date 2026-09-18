@@ -41,6 +41,7 @@ from Infernux.core.asset_types import (
     ShaderAssetInfo,
     FontAssetInfo,
     read_meta_file,
+    read_asset_metadata,
     read_texture_import_settings,
     read_audio_import_settings,
     read_mesh_import_settings,
@@ -259,7 +260,7 @@ class _ImportSettingsController:
             ticket.ticket_id,
             content_token=document_content_token(content),
         )
-        if self.category == "mesh":
+        if self.category == "mesh" or (self.category == "texture" and "::subtex:" in self.file_path):
             from Infernux.core.assets import AssetManager
             from Infernux.engine.interaction import DocumentActionResult, DocumentActionStatus
 
@@ -447,7 +448,8 @@ class _State:
         self.reset()
         self.file_path = file_path
         self.category = category
-        self.meta = read_meta_file(_meta_host_path_for_virtual_asset(file_path))
+        self.meta = (read_asset_metadata(file_path) if "::subtex:" in file_path
+                     else read_meta_file(_meta_host_path_for_virtual_asset(file_path)))
         result = cat_def.load_fn(file_path)
         if result is None:
             return False
@@ -2136,8 +2138,7 @@ def render_asset_inspector(ctx: InxGUIContext, panel,
                            file_path: str, category: str):
     """Single entry point for all asset inspectors."""
     if "::subtex:" in file_path:
-        _render_model_texture_resource(ctx, panel, file_path)
-        return
+        category = "texture"
     if "::submesh:" in file_path:
         _render_model_mesh_resource(ctx, panel, file_path)
         return
@@ -2427,8 +2428,8 @@ def _render_import_fields(ctx: InxGUIContext, cat_def: AssetCategoryDef,
                             settings._sync_derived_fields()
                             if value is TextureType.SPRITE and not settings.sprite_frames:
                                 metadata = state.meta or read_meta_file(state.file_path) or {}
-                                width = int(metadata.get("width", 0) or 0)
-                                height = int(metadata.get("height", 0) or 0)
+                                width = int(metadata.get("width", metadata.get("artifact_width", 0)) or 0)
+                                height = int(metadata.get("height", metadata.get("artifact_height", 0)) or 0)
                                 if width <= 0 or height <= 0:
                                     raise ValueError(
                                         "sprite texture dimensions are unavailable; reimport the texture before changing its type"
@@ -2525,24 +2526,6 @@ def _on_revert():
 
 
 _model_mesh_preview_info = (None, None)
-
-
-def _render_model_texture_resource(ctx, panel, file_path):
-    from Infernux.lib import AssetRegistry
-
-    database = AssetRegistry.instance().get_asset_database()
-    metadata = database.get_meta_by_path(file_path) if database else None
-    if metadata is None:
-        ctx.label(t("asset.failed_load").format(name=file_path))
-        return
-    values = {key: entry["value"] for key, entry in metadata.serialize_document()["metadata"].items()}
-    ctx.label(values.get("resource_name", "Texture"))
-    width = max(32.0, ctx.get_content_region_avail_width() - 8.0)
-    render_resource_preview_rect(ctx, panel, file_path, width, min(width, 420.0),
-                                 preserve_aspect=True, center=True)
-    ctx.label(f"{values['artifact_width']} × {values['artifact_height']}")
-    ctx.text_wrapped(t("asset.model_texture_read_only"))
-    ctx.text_wrapped(file_path.partition("::subtex:")[0])
 
 
 def _render_model_mesh_resource(ctx, panel, file_path):
@@ -3523,12 +3506,16 @@ _SPLITTER_H = 14.0
 
 def _render_texture_preview(ctx: InxGUIContext, panel, state: _State):
     """Render texture preview via standalone resource preview module."""
+    embedded = "::subtex:" in state.file_path
+    if embedded:
+        ctx.label((state.meta or {}).get("resource_name", "Texture"))
+        ctx.text_wrapped(t("asset.model_texture_read_only"))
     avail_w = max(32.0, ctx.get_content_region_avail_width() - 8.0)
     draw_h = min(max(float(state.extra.get("preview_height", 200.0)), _PREVIEW_MIN_H), _PREVIEW_MAX_H)
 
     if not render_resource_preview_rect(ctx, panel, state.file_path, avail_w, draw_h,
                                         preview_size=int(max(avail_w, draw_h)),
-                                        texture_settings=state.settings,
+                                        texture_settings=None if embedded else state.settings,
                                         preserve_aspect=True,
                                         center=True):
         ctx.push_style_color(ImGuiCol.Text, *Theme.META_TEXT)

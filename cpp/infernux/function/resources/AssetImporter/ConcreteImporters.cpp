@@ -645,17 +645,17 @@ ImportArtifact ModelImporter::Import(const ImportRequest &request) const
             return found->second;
         InxResourceMeta metadata;
         metadata.Init("", 0, request.sourcePath, ResourceType::Texture);
+        metadata.AddMetadata("srgb", semantic == "color");
+        metadata.AddMetadata("texture_type", semantic == "normal" ? std::string("normal_map") :
+            semantic == "color" ? std::string("default") : semantic);
         for (const auto &previous : previousTextures)
             if (previous.at("key") == key) {
-                metadata.AddMetadata("guid", previous.at("guid").get<std::string>());
+                metadata.DeserializeDocument(previous.at("metadata"));
                 break;
             }
         const std::string guid = metadata.GetGuid();
         metadata.UpdateFilePath(request.sourcePath + "::subtex:" + guid);
         TextureImporter{}.EnsureDefaultSettings(metadata);
-        metadata.AddMetadata("srgb", semantic == "color");
-        metadata.AddMetadata("texture_type", semantic == "normal" ? std::string("normal_map") :
-            semantic == "color" ? std::string("default") : semantic);
         metadata.AddMetadata("import_owner_guid", request.guid);
         metadata.AddMetadata("resource_name", image.name);
         const auto sourceHash = request.metadata.GetDataAs<std::string>("content_hash");
