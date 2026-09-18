@@ -323,6 +323,9 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
             "gizmo_camera.png",
             "gizmo_light.png",
             "gizmo_particle.png",
+            # The light billboard uses the authored component icon rather than
+            # the legacy solid-square gizmo_light payload.
+            "component_light.png",
         }
     )
 

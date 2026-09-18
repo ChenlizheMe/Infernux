@@ -4475,6 +4475,14 @@ def test_core_runtime_archive_replaces_loose_numpy_and_resources(tmp_path):
     numpy_license = final_dir / "numpy" / "LICENSE.txt"
     font = final_dir / "Infernux" / "resources" / "fonts" / "engine.otf"
     gizmo_icon = final_dir / "Infernux" / "resources" / "icons" / "gizmo_camera.png"
+    light_icon = (
+        final_dir
+        / "Infernux"
+        / "resources"
+        / "icons"
+        / "components"
+        / "component_light.png"
+    )
     editor_icon = final_dir / "Infernux" / "resources" / "icons" / "file.png"
     numpy_file.parent.mkdir(parents=True)
     numpy_core_init.parent.mkdir(parents=True, exist_ok=True)
@@ -4487,6 +4495,7 @@ def test_core_runtime_archive_replaces_loose_numpy_and_resources(tmp_path):
     numpy_license.parent.mkdir(parents=True, exist_ok=True)
     font.parent.mkdir(parents=True)
     gizmo_icon.parent.mkdir(parents=True)
+    light_icon.parent.mkdir(parents=True, exist_ok=True)
     numpy_file.write_text("VALUE = 1", encoding="utf-8")
     numpy_init.write_bytes(b"numpy package")
     numpy_core_init.write_bytes(b"numpy core package")
@@ -4499,6 +4508,7 @@ def test_core_runtime_archive_replaces_loose_numpy_and_resources(tmp_path):
     numpy_license.write_text("license", encoding="utf-8")
     font.write_bytes(b"font")
     gizmo_icon.write_bytes(b"gizmo")
+    light_icon.write_bytes(b"light")
     editor_icon.write_bytes(b"editor")
     stray_exe = (
         final_dir
@@ -4525,6 +4535,7 @@ def test_core_runtime_archive_replaces_loose_numpy_and_resources(tmp_path):
     assert {entry["path"] for entry in header["files"]} == {
         "Infernux/resources/fonts/engine.otf",
         "Infernux/resources/icons/gizmo_camera.png",
+        "Infernux/resources/icons/components/component_light.png",
         "numpy.libs/openblas.dll",
         "numpy/__init__.pyc",
         "numpy/_core/__init__.pyc",

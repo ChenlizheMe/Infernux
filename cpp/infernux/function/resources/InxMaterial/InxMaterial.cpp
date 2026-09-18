@@ -1639,7 +1639,11 @@ std::shared_ptr<InxMaterial> InxMaterial::CreateComponentGizmoCameraIconMaterial
 
 std::shared_ptr<InxMaterial> InxMaterial::CreateComponentGizmoLightIconMaterial()
 {
-    return CreateTexturedComponentGizmoIconMaterial("ComponentGizmoLightIconMaterial", "icons/gizmo_light.png", true);
+    // Keep the light billboard on the same authored icon as the Inspector's
+    // component surface.  The legacy gizmo_light.png payload is a solid white
+    // square, so tinting it with the light colour erases the icon silhouette.
+    return CreateTexturedComponentGizmoIconMaterial("ComponentGizmoLightIconMaterial",
+                                                    "icons/components/component_light.png", true);
 }
 
 std::shared_ptr<InxMaterial> InxMaterial::CreateComponentGizmoParticleIconMaterial()
