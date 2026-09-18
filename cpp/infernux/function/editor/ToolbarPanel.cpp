@@ -288,8 +288,8 @@ void ToolbarPanel::PopupCamera(InxGUIContext *ctx)
     CamParam orthographicParams[] = {
         {"toolbar.orthographic_size", &m_cameraSettings.orthographicSize, 0.01f, 1000.0f, 0.1f, 1.0f, nullptr},
     };
-    // 100% == default for every navigation parameter. Symmetric range
-    // [25%, 175%] keeps the 100% grab centered on the track.
+    // 100% == default for every navigation parameter. Allow up to 4x the
+    // default for navigating large scenes without changing existing settings.
     constexpr float kRotationPercentScale = 100.0f / CAMERA_DEFAULTS_ROTATION;
     constexpr float kPanPercentScale = 100.0f / CAMERA_DEFAULTS_PAN;
     constexpr float kZoomPercentScale = 100.0f / CAMERA_DEFAULTS_ZOOM;
@@ -297,12 +297,12 @@ void ToolbarPanel::PopupCamera(InxGUIContext *ctx)
     // Speed boost baseline: 100% == default (3.0x).
     constexpr float kBoostPercentScale = 100.0f / CAMERA_DEFAULTS_BOOST;
     CamParam navigationParams[] = {
-        {"toolbar.rotation_sensitivity", &m_cameraSettings.rotationSpeed, 25.0f, 175.0f, 5.0f, 25.0f,
+        {"toolbar.rotation_sensitivity", &m_cameraSettings.rotationSpeed, 25.0f, 400.0f, 5.0f, 25.0f,
          "toolbar.navigation_header", kRotationPercentScale},
-        {"toolbar.pan_speed", &m_cameraSettings.panSpeed, 25.0f, 175.0f, 5.0f, 25.0f, nullptr, kPanPercentScale},
-        {"toolbar.zoom_speed", &m_cameraSettings.zoomSpeed, 25.0f, 175.0f, 5.0f, 25.0f, nullptr, kZoomPercentScale},
-        {"toolbar.move_speed", &m_cameraSettings.moveSpeed, 25.0f, 175.0f, 5.0f, 25.0f, nullptr, kMovePercentScale},
-        {"toolbar.speed_boost", &m_cameraSettings.moveSpeedBoost, 25.0f, 175.0f, 5.0f, 25.0f, nullptr,
+        {"toolbar.pan_speed", &m_cameraSettings.panSpeed, 25.0f, 400.0f, 5.0f, 25.0f, nullptr, kPanPercentScale},
+        {"toolbar.zoom_speed", &m_cameraSettings.zoomSpeed, 25.0f, 400.0f, 5.0f, 25.0f, nullptr, kZoomPercentScale},
+        {"toolbar.move_speed", &m_cameraSettings.moveSpeed, 25.0f, 400.0f, 5.0f, 25.0f, nullptr, kMovePercentScale},
+        {"toolbar.speed_boost", &m_cameraSettings.moveSpeedBoost, 25.0f, 400.0f, 5.0f, 25.0f, nullptr,
          kBoostPercentScale},
     };
 

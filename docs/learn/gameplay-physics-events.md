@@ -6,7 +6,7 @@
 
 Physics becomes predictable when shape, motion, and reaction each have one clear owner. A `Collider` supplies the shape, a `Rigidbody` supplies simulated motion, `fixed_update` supplies fixed-step gameplay input, and collision or Trigger callbacks report changes in contact state.
 
-In this chapter you will build a rolling probe that lands on a floor, moves through a Trigger volume, and reports every callback phase in the Console.
+In this chapter you will build a sliding probe that lands on a floor, moves through a Trigger volume, and reports every callback phase in the Console.
 
 <div class="learn-article-toc"><strong>In this chapter</strong><a href="#physics-parts">Collider and Rigidbody roles</a><a href="#build-physics-scene">Build the test scene</a><a href="#physics-probe-script">Write the component</a><a href="#collision-trigger-phases">Read the callbacks</a><a href="#verify-physics">Verify the result</a><a href="#physics-errors">Common errors</a></div>
 
@@ -36,7 +36,7 @@ A GameObject can participate in this exercise in three ways:
 Start from a scene with a Camera that can see the origin, then create these objects:
 
 1. Create a **Cube** named `Ground`. Set Position to `(0, -0.5, 0)` and Scale to `(12, 1, 4)`. The primitive already has a `BoxCollider`; leave its **Is Trigger** disabled and do not add a Rigidbody.
-2. Create a **Sphere** named `Probe`. Set Position to `(-4, 2, 0)`. The primitive already has a `SphereCollider`; use **Add Component** to add only `Rigidbody`. Keep **Use Gravity** enabled and **Is Kinematic** disabled. Enable the Rigidbody's **Freeze Position Z** and all three **Freeze Rotation** controls so the example stays on one line.
+2. Create a **Sphere** named `Probe`. Set Position to `(-4, 2, 0)`. The primitive already has a `SphereCollider`; use **Add Component** to add only `Rigidbody`. Set **Mass** to `1` and **Drag** to `0`, keep **Use Gravity** enabled and **Is Kinematic** disabled. Enable the Rigidbody's **Freeze Position Z** and all three **Freeze Rotation** controls so the example stays on one line. Leave Position X and Y unfrozen and use the default physics material on both Probe and Ground.
 3. Create another **Cube** named `Sensor`. Set Position to `(2, 0.75, 0)` and Scale to `(1, 1.5, 4)`. On its existing `BoxCollider`, enable **Is Trigger**. You may disable its MeshRenderer after placing it so it behaves as an invisible gameplay volume.
 4. Save the scene before entering Play mode.
 
@@ -66,7 +66,7 @@ class PhysicsProbe(inx.InxComponent):
             return
 
         # add_force defaults to ForceMode.Force.
-        self._body.add_force(inx.Vector3(3.0, 0.0, 0.0))
+        self._body.add_force(inx.Vector3(10.0, 0.0, 0.0))
 
     def on_collision_enter(self, collision):
         self._collision_stay_steps = 0
@@ -103,6 +103,8 @@ class PhysicsProbe(inx.InxComponent):
 Return to the editor, select `Probe`, choose **Add Component**, and attach `PhysicsProbe`. The component stores its Rigidbody reference in `start`; Infernux components manage their own initialization, so gameplay scripts use `awake` or `start` instead of defining `__init__`.
 
 The `fixed_delta_time` parameter is available when a calculation needs the duration of one fixed step. `add_force` already applies a force through the physics solver, so this example does not multiply the force vector by `fixed_delta_time`.
+
+Rotation is frozen, so the sphere slides rather than rolls. The default friction coefficient is `0.6`; at mass `1` and default gravity, the force needed to overcome ground friction is about `5.9 N`. The example uses `10 N`. A smaller force such as `3 N` moves the Probe while airborne but lets ground friction stop it before the Sensor.
 
 ## Read the callbacks {#collision-trigger-phases}
 
@@ -144,6 +146,8 @@ For a second check, disable **Is Trigger** on `Sensor` and play again. The Probe
 **No callback appears.** Confirm that `PhysicsProbe` is enabled on `Probe`, Play mode is running, and `Probe` has an enabled Rigidbody. Also check that the objects actually overlap; selecting a collider shows its shape gizmo.
 
 **Only Trigger callbacks appear.** Inspect **Is Trigger** on every collider. A Trigger overlap follows the `on_trigger_*` path and does not create solid contact.
+
+**Only Collision callbacks appear; the Probe stops after landing.** `collision enter/stay: Ground` confirms solid contact, not a Trigger overlap. First watch Position X: the Probe must reach the Sensor at X = `2`. Use the complete `10 N` script above, Mass `1`, Drag `0`, and leave Position X unfrozen; heavier bodies or a different physics material may need more force. A previous `3 N` version of this exercise was too weak with frozen rotation and default friction. If the Probe reaches the Sensor but receives collision callbacks for `Sensor`, enable **Is Trigger** on that object's BoxCollider. If it passes without any Sensor callbacks, check the collider overlap and Physics Layer Matrix. This script intentionally prints only the first Stay, so a quiet Console does not by itself mean physics has stopped.
 
 **The Console floods with Stay messages.** `on_collision_stay` and `on_trigger_stay` run on fixed steps while the relationship remains active. Count, throttle, or use the phase to maintain state instead of logging every call.
 
@@ -193,7 +197,7 @@ The Probe now turns low-level physics transitions into clean gameplay events. In
 先准备一个能看见原点的 Camera，再创建以下物体：
 
 1. 创建 **Cube**，命名为 `Ground`。把 Position 设为 `(0, -0.5, 0)`，Scale 设为 `(12, 1, 4)`。该基础几何体已经带有 `BoxCollider`；保持 **Is Trigger** 关闭，不添加 Rigidbody。
-2. 创建 **Sphere**，命名为 `Probe`。把 Position 设为 `(-4, 2, 0)`。该基础几何体已经带有 `SphereCollider`；通过 **Add Component** 只添加 `Rigidbody`。保持 **Use Gravity** 开启、**Is Kinematic** 关闭。开启 Rigidbody 的 **Freeze Position Z** 和三个 **Freeze Rotation**，让运动稳定在一条直线上。
+2. 创建 **Sphere**，命名为 `Probe`。把 Position 设为 `(-4, 2, 0)`。该基础几何体已经带有 `SphereCollider`；通过 **Add Component** 只添加 `Rigidbody`。把 **Mass** 设为 `1`、**Drag** 设为 `0`，保持 **Use Gravity** 开启、**Is Kinematic** 关闭。开启 Rigidbody 的 **Freeze Position Z** 和三个 **Freeze Rotation**，让运动稳定在一条直线上。Position X、Y 不冻结，Probe 和 Ground 都使用默认物理材质。
 3. 再创建一个 **Cube**，命名为 `Sensor`。把 Position 设为 `(2, 0.75, 0)`，Scale 设为 `(1, 1.5, 4)`。在已有的 `BoxCollider` 上开启 **Is Trigger**。定位完成后可以关闭它的 MeshRenderer，把它作为不可见的玩法区域。
 4. 进入 Play 模式前保存场景。
 
@@ -223,7 +227,7 @@ class PhysicsProbe(inx.InxComponent):
             return
 
         # add_force 默认使用 ForceMode.Force。
-        self._body.add_force(inx.Vector3(3.0, 0.0, 0.0))
+        self._body.add_force(inx.Vector3(10.0, 0.0, 0.0))
 
     def on_collision_enter(self, collision):
         self._collision_stay_steps = 0
@@ -260,6 +264,8 @@ class PhysicsProbe(inx.InxComponent):
 回到编辑器，选中 `Probe`，通过 **Add Component** 挂载 `PhysicsProbe`。组件在 `start` 中保存 Rigidbody 引用。Infernux 会管理组件初始化，因此玩法组件应使用 `awake` 或 `start`，不要定义 `__init__`。
 
 需要固定步时长时，可以读取 `fixed_delta_time`。`add_force` 会把力交给物理解算器，本例无需再用 `fixed_delta_time` 乘以力向量。
+
+由于冻结了旋转，球体会滑动而不是滚动。默认摩擦系数为 `0.6`；质量为 `1`、使用默认重力时，克服地面摩擦约需 `5.9 N`，因此本例使用 `10 N`。若只施加 `3 N`，Probe 会在空中横移，但落地后会被摩擦力制停，无法到达 Sensor。
 
 ## 理解六个回调阶段 {#collision-trigger-phases_1}
 
@@ -301,6 +307,8 @@ Trigger 重叠会直接收到另一个 `Collider`：
 **没有任何回调。** 确认 `PhysicsProbe` 已启用并挂在 `Probe` 上，当前处于 Play 模式，`Probe` 具有启用的 Rigidbody。还要检查物体是否真的相交；选中 Collider 可以查看它的形状 Gizmo。
 
 **只出现 Trigger 回调。** 检查每个 Collider 的 **Is Trigger**。Trigger 重叠只走 `on_trigger_*` 路径，也不会产生实体阻挡。
+
+**只出现 Collision，Probe 落地后停住。** `collision enter/stay: Ground` 只能证明地面实体接触，不能证明已经进入 Trigger。先观察 Position X：Probe 必须移动到 X = `2` 的 Sensor。使用上面完整的 `10 N` 脚本、Mass `1`、Drag `0`，并保持 Position X 不冻结；更大的质量或不同物理材质可能需要更大的力。旧版练习中的 `3 N` 在冻结旋转、默认摩擦的条件下不足以持续移动。如果已经到达 Sensor，却收到针对 `Sensor` 的 Collision，检查该物体 BoxCollider 的 **Is Trigger**。如果穿过时没有任何 Sensor 回调，检查碰撞形状是否相交及 Physics Layer Matrix。本脚本只打印第一个 Stay，Console 安静本身不表示物理已经停止。
 
 **Console 被 Stay 消息占满。** `on_collision_stay` 与 `on_trigger_stay` 会在关系保持期间按固定步运行。可以计数、限频，或用它维护状态。
 
