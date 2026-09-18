@@ -1150,10 +1150,12 @@ VkDescriptorSet InxVkCoreModular::EnsureShadowMaterialBinding(const std::shared_
                         return binding.set == 2 && binding.type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER &&
                                (binding.stageFlags & VK_SHADER_STAGE_VERTEX_BIT) != 0;
                     });
-    const bool hasAlphaClip = material->GetRenderState().alphaClipEnabled;
+    // Even an opaque material must bind the reflected threshold uniform:
+    // the same compiled surface can enable alpha clipping at runtime.
+    const bool hasFragmentMaterialUBO = shadowProgram && shadowProgram->HasMaterialUBO();
     const bool usesBindlessTextures = shadowProgram && shadowProgram->UsesBindlessTextureABI();
     const bool needsDescriptor =
-        hasVertexMaterialUBO || hasVertexMaterialTextures || hasAlphaClip || usesBindlessTextures;
+        hasVertexMaterialUBO || hasVertexMaterialTextures || hasFragmentMaterialUBO || usesBindlessTextures;
     const InxMaterial *identity = material.get();
 
     if (!needsDescriptor) {
@@ -1176,7 +1178,7 @@ VkDescriptorSet InxVkCoreModular::EnsureShadowMaterialBinding(const std::shared_
         INXLOG_WARN("EnsureShadowMaterialBinding: missing vertex material UBO for '", material->GetName(), "'");
         return VK_NULL_HANDLE;
     }
-    if (hasAlphaClip && (!forwardMaterialDesc->materialUBO || !forwardMaterialDesc->materialUBO->IsValid())) {
+    if (hasFragmentMaterialUBO && (!forwardMaterialDesc->materialUBO || !forwardMaterialDesc->materialUBO->IsValid())) {
         INXLOG_WARN("EnsureShadowMaterialBinding: missing alpha-clip material UBO for '", material->GetName(), "'");
         return VK_NULL_HANDLE;
     }
@@ -1199,7 +1201,7 @@ VkDescriptorSet InxVkCoreModular::EnsureShadowMaterialBinding(const std::shared_
         return VK_NULL_HANDLE;
 
     std::vector<std::pair<uint32_t, MaterialDescriptorSet::TextureBinding>> sortedTextures;
-    if (hasAlphaClip || hasVertexMaterialTextures) {
+    if (hasFragmentMaterialUBO || hasVertexMaterialTextures) {
         sortedTextures.assign(forwardMaterialDesc->textureBindings.begin(), forwardMaterialDesc->textureBindings.end());
         std::sort(sortedTextures.begin(), sortedTextures.end(),
                   [](const auto &left, const auto &right) { return left.first < right.first; });
@@ -1214,7 +1216,7 @@ VkDescriptorSet InxVkCoreModular::EnsureShadowMaterialBinding(const std::shared_
     HashCombine(resourceSignature, artifactRevision);
     HashCombine(resourceSignature, hasVertexMaterialUBO ? 1u : 0u);
     HashCombine(resourceSignature, hasVertexMaterialTextures ? 1u : 0u);
-    HashCombine(resourceSignature, hasAlphaClip ? 1u : 0u);
+    HashCombine(resourceSignature, hasFragmentMaterialUBO ? 1u : 0u);
     HashCombine(resourceSignature, usesBindlessTextures ? 1u : 0u);
     HashCombine(resourceSignature, VulkanHandleBits(forwardMaterialDesc->descriptorSet));
     HashCombine(resourceSignature, VulkanHandleBits(defaultView));
@@ -1280,7 +1282,7 @@ VkDescriptorSet InxVkCoreModular::EnsureShadowMaterialBinding(const std::shared_
         }
     }
 
-    const MaterialUBO *fragmentUbo = hasAlphaClip ? forwardMaterialDesc->materialUBO.get() : nullptr;
+    const MaterialUBO *fragmentUbo = hasFragmentMaterialUBO ? forwardMaterialDesc->materialUBO.get() : nullptr;
     const MaterialUBO *vertexUbo = hasVertexMaterialUBO ? forwardMaterialDesc->vertexMaterialUBO.get() : nullptr;
     VkDescriptorBufferInfo fragmentBuffer{};
     fragmentBuffer.buffer =

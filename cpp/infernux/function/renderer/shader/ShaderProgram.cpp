@@ -424,7 +424,7 @@ void ShaderProgram::ExtractMaterialUBOLayout()
     // Also look for a vertex-stage MaterialProperties UBO at binding 14
     // (used when the vertex ShaderInfo declares Properties)
     for (const auto &ubo : m_vertReflection.GetUniformBuffers()) {
-        if (ubo.name == "MaterialProperties" && ubo.binding == 14 && ubo.set == 0) {
+        if (ubo.name == "MaterialProperties" && ubo.binding == 14 && (ubo.set == 0 || ubo.set == 2)) {
             m_vertexMaterialUBOLayout.binding = ubo.binding;
             m_vertexMaterialUBOLayout.size = ubo.size;
             m_vertexMaterialUBOLayout.members = ubo.members;

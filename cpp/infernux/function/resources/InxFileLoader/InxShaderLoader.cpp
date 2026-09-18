@@ -239,14 +239,8 @@ void ValidateReflectedMaterial(const ShaderReflection &reflection, const ShaderP
                                ShaderStageVisibility stage, ShaderCompileTarget target, const std::string &stageName,
                                bool bindlessTextureABI, std::vector<std::string> &errors)
 {
-    // The depth-only Shadow fragment intentionally strips all surface
-    // resources unless its specialized alpha path needs them. The generated
-    // program and Vulkan reflection still validate that specialized layout;
-    // the linked full-material contract applies to Forward/GBuffer and to the
-    // deforming Shadow vertex stage.
-    if (target == ShaderCompileTarget::Shadow && stage == ShaderStageVisibility::Fragment && !bindlessTextureABI)
-        return;
-
+    // Shadow uses the same linked material layout at its own descriptor set,
+    // including bounded-texture surfaces and runtime alpha clipping.
     const uint32_t expectedSet = target == ShaderCompileTarget::Shadow
                                      ? 2u
                                      : (artifact.domain == ShaderProgramDomain::ParticleSprite
@@ -927,7 +921,7 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
     const bool particleBindlessTarget =
         !particleSpriteDomain || target == ShaderCompileTarget::Forward || target == ShaderCompileTarget::ForwardPlus;
     const bool shadowAlphaClipTarget = target == ShaderCompileTarget::Shadow && desc.isFragmentShader &&
-                                       desc.surfaceOptions.alphaClip != "off" && !desc.surfaceOptions.alphaClip.empty();
+                                       desc.hasSurfaceFunc && !desc.hasMainFunc;
     const bool bindlessTextureABI =
         hasCapability("BindlessTextures") && IsBindlessTextureABIEnabled() && desc.isFragmentShader &&
         (target != ShaderCompileTarget::Shadow || shadowAlphaClipTarget) && particleBindlessTarget;
@@ -980,7 +974,7 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
     // Shadow alpha-clip needs
     // texture samplers, MaterialProperties UBO, and user surface() code
     // so it can sample alpha and discard transparent fragments.
-    bool shadowNeedsAlphaClip = false;
+    const bool shadowNeedsAlphaClip = shadowAlphaClipTarget;
     if (target != ShaderCompileTarget::Shadow && target != ShaderCompileTarget::GBuffer &&
         target != ShaderCompileTarget::BaseColor) {
         needsLightingUBO = needsLightingUBO || desc.NeedsLightingUBO();
@@ -992,10 +986,6 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
         if (target == ShaderCompileTarget::GBuffer) {
             hasGBufferTarget = true;
         }
-    }
-    if (target == ShaderCompileTarget::Shadow && desc.surfaceOptions.alphaClip != "off" &&
-        !desc.surfaceOptions.alphaClip.empty()) {
-        shadowNeedsAlphaClip = true;
     }
 
     // ================================================================
@@ -1471,69 +1461,14 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
     if (hasSurfaceFunc && !hasMainFunc && desc.isFragmentShader && (desc.hasExplicitType || !userHasLayoutDecls)) {
         if (target == ShaderCompileTarget::Shadow) {
             if (shadowNeedsAlphaClip) {
-                // Shadow pass with alpha clip: minimal fragment that only
-                // fetches the first (albedo/diffuse) texture for alpha.
-                // Running the full surface() would sample ALL textures
-                // (normal, roughness, emission, …) which is pure waste
-                // for a depth-only pass.  We duplicate only the alpha-
-                // relevant logic: UV remap from displayScale/uvRect, then
-                // a single texture() fetch.
-                //
-                // For shaders that rely on complex surface() logic for
-                // alpha (procedural cutout, multi-texture blending) this
-                // fast path may be inaccurate; authors can override by
-                // providing an explicit main() in the shader source.
-                if (!desc.textureProperties.empty()) {
-                    const std::string &alphaTex = desc.textureProperties[0].name;
-                    result << "\nvoid main() {\n";
-                    // Check for displayScale/uvRect properties — sprite shaders
-                    // use them to remap UVs for aspect-fit sub-rects.
-                    bool hasDisplayScale = false, hasUvRect = false;
-                    for (const auto &p : desc.properties) {
-                        if (p.name == "displayScale")
-                            hasDisplayScale = true;
-                        if (p.name == "uvRect")
-                            hasUvRect = true;
-                    }
-                    if (hasDisplayScale) {
-                        result << "    vec2 dScale = material.displayScale.xy;\n";
-                        result << "    vec2 tc = (v_TexCoord - 0.5) / max(dScale, vec2(1e-6)) + 0.5;\n";
-                        result << "    if (tc.x < 0.0 || tc.x > 1.0 || tc.y < 0.0 || tc.y > 1.0) discard;\n";
-                    } else {
-                        result << "    vec2 tc = v_TexCoord;\n";
-                    }
-                    if (hasUvRect) {
-                        result << "    vec2 uv = material.uvRect.xy + tc * material.uvRect.zw;\n";
-                    } else {
-                        result << "    vec2 uv = tc;\n";
-                    }
-                    if (bindlessTextureABI) {
-                        result << "    float alpha = inxSampleBindlessTexture(_InxMaterialTextureIndices." << alphaTex
-                               << ", uv).a";
-                    } else {
-                        result << "    float alpha = texture(" << alphaTex << ", uv).a";
-                    }
-                    // Multiply by baseColor.a if the material has a baseColor property
-                    for (const auto &p : desc.properties) {
-                        if (p.name == "baseColor") {
-                            result << " * material.baseColor.a";
-                            break;
-                        }
-                    }
-                    result << ";\n";
-                    result << "    if (material._AlphaClipThreshold > 0.0 && alpha < material._AlphaClipThreshold) "
-                              "discard;\n";
-                    result << "}\n";
-                } else {
-                    // No textures — fallback to full surface() path
-                    result << "\nvoid main() {\n";
-                    result << "    SurfaceData s = InitSurfaceData();\n";
-                    result << "    s.normalWS = normalize(v_Normal);\n";
-                    result << "    surface(s);\n";
-                    result << "    if (material._AlphaClipThreshold > 0.0 && s.alpha < material._AlphaClipThreshold) "
-                              "discard;\n";
-                    result << "}\n";
-                }
+                // AlphaClip is a material value, not a shader capability.
+                // Execute the authored surface; never guess an alpha texture
+                // by its name or position. Opaque materials skip the work.
+                std::string mainTpl = LoadTemplate("surface_main_shadow.glsl");
+                ReplacePlaceholder(mainTpl, "${SURFACE_CALL}",
+                                   linkedInterface ? GlslStageInterfaceEmitter::EmitSurfaceCall(*linkedInterface)
+                                                   : "    surface(s);");
+                result << "\n" << mainTpl << "\n";
             } else {
                 // Shadow pass: depth-only, minimal fragment shader
                 result << "\nvoid main() {\n";
@@ -1972,8 +1907,7 @@ InxShaderLoader::CompileLinkedProgramVariant(const std::string &vertexSource, co
                                         target == ShaderCompileTarget::Forward ||
                                         target == ShaderCompileTarget::ForwardPlus;
     const bool shadowAlphaClipTarget = target == ShaderCompileTarget::Shadow &&
-                                       fragmentDescriptor.surfaceOptions.alphaClip != "off" &&
-                                       !fragmentDescriptor.surfaceOptions.alphaClip.empty();
+                                       fragmentDescriptor.hasSurfaceFunc && !fragmentDescriptor.hasMainFunc;
     const bool bindlessTextureABI =
         DescriptorHasCapability(fragmentDescriptor, "BindlessTextures") && IsBindlessTextureABIEnabled() &&
         (target != ShaderCompileTarget::Shadow || shadowAlphaClipTarget) && particleBindlessTarget;

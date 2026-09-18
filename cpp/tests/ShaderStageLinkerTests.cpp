@@ -760,6 +760,61 @@ void surface(out SurfaceData surface) {
     assert(boundedCutoutShadow->generatedFragmentSource.find("set = 2, binding = 0") != std::string::npos);
     assert(boundedCutoutShadow->generatedFragmentSource.find("set = 3, binding = 0") == std::string::npos);
 
+    // Material-side clipping must work without a shader AlphaClip annotation,
+    // and must use the real surface alpha (not the first texture's alpha).
+    const std::string runtimeCutoutFragment = R"(
+ShaderInfo {
+    Name "Tests/RuntimeCutout"
+    Capabilities [BindlessTextures]
+    ShadingModel Unlit
+    Properties {
+        Float opacity = 0.4
+        Texture2D albedoTexture = white
+        Texture2D opacityTexture = white
+    }
+}
+void surface(out SurfaceData s) {
+    s = InitSurfaceData();
+    s.albedo = sampleAlbedoAlpha(albedoTexture).rgb;
+    s.alpha = sampleAlbedoAlpha(opacityTexture).r * material.opacity;
+}
+)";
+    for (bool bindless : {false, true}) {
+        infernux::InxShaderLoader::SetBindlessTextureABIEnabled(bindless);
+        const auto runtimeCutout = compiler.CompileLinkedProgramArtifact(
+            ReadText(shaderRoot + "/standard.vert"), shaderRoot + "/standard.vert",
+            runtimeCutoutFragment, "RuntimeCutout.frag");
+        if (!runtimeCutout.IsValid()) {
+            for (const auto &error : runtimeCutout.errors)
+                std::cerr << error << '\n';
+        }
+        assert(runtimeCutout.IsValid());
+        for (const auto target : {infernux::ShaderCompileTarget::Shadow, infernux::ShaderCompileTarget::Depth,
+                                  infernux::ShaderCompileTarget::Picking}) {
+            const auto variant = std::find_if(runtimeCutout.compiledVariants.begin(), runtimeCutout.compiledVariants.end(),
+                                             [target](const auto &value) { return value.target == target; });
+            assert(variant != runtimeCutout.compiledVariants.end());
+            assert(variant->generatedFragmentSource.find("surface(s);") != std::string::npos);
+            assert(variant->generatedFragmentSource.find("s.alpha < material._AlphaClipThreshold") != std::string::npos);
+            if (target == infernux::ShaderCompileTarget::Shadow) {
+                assert(variant->usesBindlessTextureABI == bindless);
+                assert(variant->generatedFragmentSource.find("sampleAlbedoAlpha(opacityTexture).r * material.opacity") !=
+                       std::string::npos);
+                infernux::ShaderReflection reflection;
+                assert(reflection.Reflect(variant->fragmentSpirv, VK_SHADER_STAGE_FRAGMENT_BIT));
+                assert(std::any_of(reflection.GetUniformBuffers().begin(), reflection.GetUniformBuffers().end(),
+                                   [](const auto &buffer) {
+                                       return buffer.name == "MaterialProperties" && buffer.set == 2 && buffer.binding == 8;
+                                   }));
+                if (!bindless)
+                    assert(std::any_of(reflection.GetSampledImages().begin(), reflection.GetSampledImages().end(),
+                                       [](const auto &texture) {
+                                           return texture.name == "opacityTexture" && texture.set == 2 && texture.binding == 1;
+                                       }));
+            }
+        }
+    }
+
     // The same source must compile to the bindless ABI when the device
     // advertises the complete descriptor-indexing contract.
     infernux::InxShaderLoader::SetBindlessTextureABIEnabled(true);
@@ -857,8 +912,9 @@ void surface(out SurfaceData surface) {
     assert(bindlessCutoutShadow->usesBindlessTextureABI);
     assert(bindlessCutoutShadow->generatedFragmentSource.find("set = 3, binding = 0") != std::string::npos);
     assert(bindlessCutoutShadow->generatedFragmentSource.find("set = 2, binding = 15") != std::string::npos);
-    assert(bindlessCutoutShadow->generatedFragmentSource.find(
-               "inxSampleBindlessTexture(_InxMaterialTextureIndices.texSampler, uv).a") != std::string::npos);
+    assert(bindlessCutoutShadow->generatedFragmentSource.find("surface(s);") != std::string::npos);
+    assert(bindlessCutoutShadow->generatedFragmentSource.find("if (material._AlphaClipThreshold <= 0.0) return;") !=
+           std::string::npos);
     infernux::ShaderReflection bindlessShadowReflection;
     assert(bindlessShadowReflection.Reflect(bindlessCutoutShadow->fragmentSpirv, VK_SHADER_STAGE_FRAGMENT_BIT));
     assert(std::any_of(bindlessShadowReflection.GetSampledImages().begin(),
