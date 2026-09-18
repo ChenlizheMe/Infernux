@@ -58,6 +58,62 @@ def make_asset(scene, path):
     return root
 
 
+def test_variant_asset_property_revert_undo_and_later_inheritance(contents_project, scene):
+    from Infernux.engine.prefab_manager import instantiate_prefab, _read_resolved_prefab_document
+    from Infernux.engine.prefab_variant import variant_property_modifications
+    from Infernux.engine.ui.asset_details_renderer import _load_prefab
+
+    core, folder = contents_project
+    database = AssetManager.require_asset_database()
+    paths = [folder / name for name in ("Base.prefab", "First.prefab", "Second.prefab")]
+    make_asset(scene, paths[0])
+    for index in (1, 2):
+        root = editor.load_prefab_contents(paths[index - 1])
+        try:
+            if index == 1:
+                root.get_child(0).layer = 5
+            else:
+                root.get_child(0).name = "Private child"
+            editor.save_as_prefab_asset(root, paths[index])
+        finally:
+            editor.unload_prefab_contents(root)
+    base = editor.load_prefab_contents(paths[0])
+    try:
+        base.get_child(0).layer = 5
+        editor.save_as_prefab_asset(base, paths[0])
+    finally:
+        editor.unload_prefab_contents(base)
+    instance = instantiate_prefab(file_path=str(paths[-1]), guid=database.get_guid_from_path(str(paths[-1])),
+                                  scene=scene, asset_database=database)
+    instance.tag = "Local tag"
+    before = [path.read_bytes() for path in paths]
+    original = instance.serialize_document()
+    current = _read_resolved_prefab_document(str(paths[1]), database)
+    row = next(item for item in variant_property_modifications(current) if item["path"] == ["layer"])
+    _, info = _load_prefab(str(paths[1]))
+    assert info["variant_modifications"] == variant_property_modifications(current)
+    assert core.prefabs.revert_asset_property(str(paths[1]), row["object"], 0, row["path"], expected_document=current)
+    after = [path.read_bytes() for path in paths]
+    assert after[0] == before[0] and after[1] != before[1]
+    assert instance.get_child(0).layer == 5
+    assert instance.tag == "Local tag" and instance.get_child(0).name == "Private child"
+    editor.undo(defer=False)
+    assert [path.read_bytes() for path in paths] == before
+    assert instance.serialize_document() == original
+    editor.redo(defer=False)
+    assert [path.read_bytes() for path in paths] == after
+    with pytest.raises(RuntimeError, match="changed"):
+        core.prefabs.revert_asset_property(str(paths[1]), row["object"], 0, row["path"], expected_document=current)
+    base = editor.load_prefab_contents(paths[0])
+    try:
+        base.get_child(0).layer = 7
+        editor.save_as_prefab_asset(base, paths[0])
+    finally:
+        editor.unload_prefab_contents(base)
+    assert instance.get_child(0).layer == 7
+    assert instance.tag == "Local tag" and instance.get_child(0).name == "Private child"
+
+
 def test_load_edit_save_unload_keeps_active_world_and_identity(contents_project, scene):
     core, folder = contents_project
     path = folder / "Source.prefab"

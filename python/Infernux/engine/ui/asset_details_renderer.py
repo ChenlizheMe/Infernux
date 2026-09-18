@@ -1250,19 +1250,18 @@ def _load_prefab(path: str):
     allocated a new native scene for each selection, which is not safe with
     the current SceneManager API surface.
     """
-    with open(path, "r", encoding="utf-8") as f:
-        data = json.load(f)
-    if not isinstance(data, dict):
-        raise ValueError("prefab document must contain a JSON object")
+    from Infernux.engine.prefab_manager import _read_resolved_prefab_document
+    from Infernux.engine.prefab_variant import variant_property_modifications
 
-    root_json = data.get("root_object")
-    if not isinstance(root_json, dict):
-        raise ValueError("prefab document must contain a root_object")
-
+    dependencies = {}
+    data = _read_resolved_prefab_document(path, dependencies=dependencies)
+    root_json = data["root_object"]
     root_copy = copy.deepcopy(root_json)
     return root_copy, {
         "prefab_path": path,
         "prefab_envelope": data,
+        "prefab_dependencies": tuple(dependencies),
+        "variant_modifications": variant_property_modifications(data) if "variant" in data else (),
         "root_name": root_copy.get("name", "GameObject"),
         "node_count": _count_prefab_nodes(root_copy),
         "component_count": _count_prefab_components(root_copy),
@@ -1332,6 +1331,8 @@ def _render_prefab_body(ctx: InxGUIContext, panel, state: _State):
     field_label(ctx, t("asset.prefab_path"), lw)
     ctx.label(state.extra.get("prefab_path", state.file_path))
 
+    _render_variant_overrides(ctx, state)
+
     ctx.dummy(0, 6)
     ctx.separator()
 
@@ -1343,6 +1344,51 @@ def _render_prefab_body(ctx: InxGUIContext, panel, state: _State):
         if len(preview) > 8000:
             preview = preview[:8000] + "\n..."
         ctx.label(preview)
+
+
+def _render_variant_overrides(ctx, state):
+    document = state.extra["prefab_envelope"]
+    if "variant" not in document:
+        return
+    from Infernux.engine.interaction import EditorInteractionCore
+    from Infernux.engine.scene_manager import SceneFileManager
+    from .inspector_utils import render_compact_section_header
+
+    core = EditorInteractionCore.instance()
+    database = core.project_assets.asset_database
+    base_path = database.get_path_from_guid(document["variant"]["guid"])
+    ctx.separator()
+    if not render_compact_section_header(ctx, t("asset.prefab_variant_overrides"), level="secondary"):
+        return
+    ctx.label(f"{t('asset.prefab_variant_base')}: {os.path.basename(base_path)}")
+    ctx.button(t("asset.prefab_variant_locate_base"), lambda: core.prefabs.locate(path=base_path))
+    ctx.record_semantic_item("button", t("asset.prefab_variant_locate_base"), True, "asset.prefab.variant.base")
+    rows = state.extra["variant_modifications"]
+    if not rows:
+        ctx.label(t("asset.prefab_variant_no_overrides"))
+        return
+    files = SceneFileManager.instance()
+    editable = not (files and files.is_prefab_mode and same_path(files.prefab_mode_path, state.file_path))
+    ctx.begin_disabled(not editable)
+    try:
+        for item in rows:
+            path = tuple(item["path"])
+            identity = f"{item['object']}.{item['component']}." + ".".join(path)
+            ctx.label(f"{item['object_name']} · {'.'.join(path)}")
+            ctx.label(f"{t('asset.prefab_variant_base_value')}: {str(item['source_value'])[:160]}")
+            ctx.label(f"{t('asset.prefab_variant_own_value')}: {str(item['value'])[:160]}")
+            # Capture the displayed revision. The command rejects a stale view
+            # instead of reverting an override the user has not seen.
+            asset_path = state.file_path
+            def revert(item=item, path=path, asset_path=asset_path, document=document):
+                from Infernux import editor
+                editor.defer(lambda: core.prefabs.revert_asset_property(
+                    asset_path, item["object"], item["component"], path, expected_document=document))
+            label = t("asset.prefab_variant_revert")
+            ctx.button(f"{label}##variant.{identity}", revert)
+            ctx.record_semantic_item("button", label, editable, f"asset.prefab.variant.revert.{identity}")
+    finally:
+        ctx.end_disabled()
 
 
 def _count_prefab_nodes(node: dict) -> int:
@@ -2246,7 +2292,10 @@ def invalidate_asset(path: str, *, keep_view: bool = False):
     """
     if not _state.file_path or not path:
         return
-    if same_path(_state.file_path, path):
+    if same_path(_state.file_path, path) or (
+        _state.category == "prefab" and any(same_path(source, path)
+                                            for source in _state.extra.get("prefab_dependencies", ()))
+    ):
         from Infernux.engine.interaction import ContinuousEditService
 
         ContinuousEditService.instance().commit_owner("inspector")

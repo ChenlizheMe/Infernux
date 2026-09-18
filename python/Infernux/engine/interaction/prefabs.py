@@ -346,6 +346,27 @@ class PrefabCommandService:
             manager._close_preview_scene(scene)
             raise
 
+    def revert_asset_property(self, path, object_id, component_id, property_path, *, expected_document=None,
+                              origin=ActionOrigin.USER):
+        """Inspector Variant edit, published by the ordinary asset transaction."""
+        from Infernux.engine.prefab_manager import _read_resolved_prefab_document
+        from Infernux.engine.prefab_variant import revert_variant_property
+        from Infernux.engine.prefab_overrides import build_prefab_asset_edit_command
+
+        target = self._project_assets._registered_file(path)
+        self._require_closed_prefab_mode(target)
+        if any(same_path(session[1], target) for session in self._contents.values()):
+            raise RuntimeError("Unload this asset's offline contents before reverting its properties")
+        database = self._project_assets.asset_database
+        current = _read_resolved_prefab_document(target, database)
+        if expected_document is not None and current != expected_document:
+            raise RuntimeError("Variant source or base changed; refresh the Inspector before reverting")
+        updated = revert_variant_property(current, object_id, component_id, tuple(property_path))
+        self._execute(build_prefab_asset_edit_command(
+            target, updated, database, description="Revert Variant Property"), origin)
+        self._project_assets._notify_changed()
+        return True
+
     def save_contents(self, root, path: str) -> str:
         """Save detached contents, or create a new asset from an authored tree.
 

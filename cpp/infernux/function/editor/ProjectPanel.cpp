@@ -168,18 +168,6 @@ static std::string SelectionPathForInspector(const std::string &path)
 
 /// True if the mouse is over the docked/floating Inspector window (screen space).
 /// Prevents Project panel from clearing file selection when clicking empty Inspector space.
-bool IsMouseOverInspectorWindow()
-{
-    ImGuiWindow *win = ImGui::FindWindowByName("Inspector###inspector");
-    if (win == nullptr || win->Hidden)
-        return false;
-    const ImVec2 mp = ImGui::GetIO().MousePos;
-    const float x0 = win->Pos.x;
-    const float y0 = win->Pos.y;
-    const float x1 = x0 + win->SizeFull.x;
-    const float y1 = y0 + win->SizeFull.y;
-    return mp.x >= x0 && mp.x <= x1 && mp.y >= y0 && mp.y <= y1;
-}
 } // namespace
 
 // ImGui key constants
@@ -2373,13 +2361,9 @@ void ProjectPanel::OnRenderContent(InxGUIContext *ctx)
     ctx->PopStyleVar(1);   // WindowPadding
     const auto tailStart = std::chrono::steady_clock::now();
 
-    bool hasSelection = !m_selectedFile.empty() || !m_selectedFiles.empty();
-    bool clickedOutsideProject = hasSelection &&
-                                 (ImGui::IsMouseClicked(0) || ImGui::IsMouseClicked(1) || ImGui::IsMouseClicked(2)) &&
-                                 !ImGui::IsWindowHovered(ImGuiHoveredFlags_RootAndChildWindows) &&
-                                 !ImGui::IsAnyItemActive() && !IsMouseOverInspectorWindow();
-    if (clickedOutsideProject)
-        ClearSelection();
+    // Focus changes (menus, toolbars, other panels) are not selection edits.
+    // Each picking surface publishes its own intent to the shared authority;
+    // clearing here would also insert a spurious action ahead of asset Undo.
     const auto contentEnd = std::chrono::steady_clock::now();
     m_subBreadcrumb += std::chrono::duration<double, std::milli>(folderStart - breadcrumbStart).count();
     m_subFolderTree += std::chrono::duration<double, std::milli>(gridStart - folderStart).count();

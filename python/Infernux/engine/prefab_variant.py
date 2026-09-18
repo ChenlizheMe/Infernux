@@ -24,25 +24,83 @@ def variant_document(definition):
 
 
 def edit_variant_document(previous, authored):
-    """Record new edits without clearing unchanged, explicit override intent."""
+    """Record edits; only explicit Revert removes existing override intent."""
     definition = variant_definition(previous)
     base = definition["base"]
     projected = _project_root(base["baseline"]["root_object"], base["object_sources"], base["component_sources"])
     patches = _property_overrides(projected, authored["root_object"])
     keys = {(item["object"], item["component"], tuple(item["path"])) for item in patches}
     nodes = {node["local_id"]: node for node in _prefab_nodes(authored["root_object"])}
+    missing = object()
     for item in base["property_overrides"]:
         key = (item["object"], item["component"], tuple(item["path"]))
         target = nodes.get(item["object"])
         if target is not None and item["component"]:
             target = next((c for c in target["components"] if c["component_id"] == item["component"]), None)
         for part in item["path"]:
-            target = target.get(part) if isinstance(target, dict) else None
-        if key not in keys and target == item["value"]:
-            patches.append(copy.deepcopy(item))
+            target = target.get(part, missing) if isinstance(target, dict) else missing
+        if key not in keys and target is not missing:
+            patches.append({**copy.deepcopy(item), "value": copy.deepcopy(target)})
     definition["document"] = copy.deepcopy(authored)
     definition["document"].pop("variant", None)
     base["property_overrides"] = patches
+    return variant_document(definition)
+
+
+def _property_target(root, object_id, component_id):
+    node = next((node for node in _prefab_nodes(root) if node["local_id"] == object_id), None)
+    if node is not None and component_id:
+        return next((item for item in node["components"] if item["component_id"] == component_id), None)
+    return node
+
+
+def variant_property_modifications(document):
+    """Detached, asset-local overrides, including equal-valued explicit ones."""
+    definition = variant_definition(document)
+    validate_variant_definition(definition)
+    base = definition["base"]
+    projected = _project_root(base["baseline"]["root_object"], base["object_sources"], base["component_sources"])
+    result = []
+    for patch in base["property_overrides"]:
+        current = _property_target(document["root_object"], patch["object"], patch["component"])
+        original = _property_target(projected, patch["object"], patch["component"])
+        if current is None or original is None:
+            continue  # Retired targets are retained only for persistent identity.
+        for part in patch["path"]:
+            original = original.get(part) if isinstance(original, dict) else None
+        node = _property_target(document["root_object"], patch["object"], 0)
+        result.append({**copy.deepcopy(patch), "source_value": copy.deepcopy(original), "object_name": node["name"]})
+    return tuple(result)
+
+
+def revert_variant_property(document, object_id, component_id, property_path):
+    """Remove explicit override intent, restoring the projected current base.
+
+    Input must already be resolved against its current base. Local identities
+    and typed references stay in the Variant domain; unrelated edits survive.
+    """
+    definition = variant_definition(document)
+    validate_variant_definition(definition)
+    key = (object_id, component_id, tuple(property_path))
+    patches = definition["base"]["property_overrides"]
+    matching = [item for item in patches if (item["object"], item["component"], tuple(item["path"])) == key]
+    if not matching:
+        raise PrefabDocumentError("Variant property is not an explicit override")
+    base = definition["base"]
+    projected = _project_root(base["baseline"]["root_object"], base["object_sources"], base["component_sources"])
+    source = _property_target(projected, object_id, component_id)
+    target = _property_target(definition["document"]["root_object"], object_id, component_id)
+    if source is None or target is None:
+        raise PrefabDocumentError("Variant override target no longer exists")
+    for part in property_path[:-1]:
+        source = source.get(part) if isinstance(source, dict) else None
+        target = target[part]
+    field = property_path[-1]
+    if isinstance(source, dict) and field in source:
+        target[field] = copy.deepcopy(source[field])
+    else:
+        target.pop(field, None)
+    base["property_overrides"] = [item for item in patches if item not in matching]
     return variant_document(definition)
 
 

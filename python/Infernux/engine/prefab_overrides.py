@@ -1174,9 +1174,9 @@ def _load_prefab_root(prefab_path: str) -> Optional[dict]:
     """Load and return the root_object dict from a .prefab file."""
     if not prefab_path:
         raise ValueError("prefab override comparison requires an asset path")
-    from Infernux.engine.prefab_manager import _read_prefab_document
+    from Infernux.engine.prefab_manager import _read_resolved_prefab_document
 
-    return _read_prefab_document(prefab_path)["root_object"]
+    return _read_resolved_prefab_document(prefab_path)["root_object"]
 
 
 def _serialize_obj(obj) -> Optional[dict]:

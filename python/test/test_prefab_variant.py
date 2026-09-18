@@ -8,6 +8,7 @@ from Infernux.components.value_document import TYPE_KEY, GAME_OBJECT_REF, COMPON
 from Infernux.engine.prefab_manager import PrefabDocumentError
 from Infernux.engine.prefab_variant import (
     create_variant_definition, rebase_variant_definition, validate_variant_definition, rebase_variant_graph,
+    variant_document, variant_definition, variant_property_modifications, revert_variant_property,
 )
 
 
@@ -39,6 +40,71 @@ def test_variant_inherits_base_edits_preserving_explicit_overrides():
     assert root["children"][0]["components"][0]["value"] == 8
     assert definition == before
     assert rebase_variant_definition(updated, changed) == updated
+
+
+def test_equal_valued_override_can_be_explicitly_reverted_without_touching_other_properties():
+    base = prefab()
+    own = copy.deepcopy(base)
+    own["root_object"]["name"] = "Private"
+    own["root_object"]["children"][0]["layer"] = 5
+    definition = create_variant_definition("base-guid", base, own)
+    base["root_object"]["children"][0]["layer"] = 5
+    current = variant_document(rebase_variant_definition(definition, base))
+    before = copy.deepcopy(current)
+    rows = variant_property_modifications(current)
+    layer = next(item for item in rows if item["path"] == ["layer"])
+    assert layer["value"] == layer["source_value"] == 5
+    reverted = revert_variant_property(current, 2, 0, ("layer",))
+    assert current == before
+    assert reverted["root_object"] == current["root_object"]
+    assert [item["path"] for item in variant_property_modifications(reverted)] == [["name"]]
+    base["root_object"]["children"][0]["layer"] = 7
+    later = rebase_variant_definition(variant_definition(reverted), base)["document"]
+    assert later["root_object"]["children"][0]["layer"] == 7
+    assert later["root_object"]["name"] == "Private"
+
+
+def test_editing_override_to_equal_base_does_not_silently_restore_inheritance():
+    from Infernux.engine.prefab_variant import edit_variant_document
+
+    base = prefab()
+    own = copy.deepcopy(base)
+    own["root_object"]["layer"] = 5
+    current = variant_document(create_variant_definition("base-guid", base, own))
+    edited = copy.deepcopy(own)
+    edited["root_object"]["layer"] = 0
+    saved = edit_variant_document(current, edited)
+    assert saved["variant"]["property_overrides"] == [dict(object=1, component=0, path=["layer"], value=0)]
+    base["root_object"]["layer"] = 8
+    assert rebase_variant_definition(variant_definition(saved), base)["document"]["root_object"]["layer"] == 0
+
+
+def test_variant_revert_projects_references_into_local_identity_domain():
+    base = prefab()
+    base["root_object"]["components"] = [dict(component_id=2, type_id="Ref",
+        target={TYPE_KEY: COMPONENT_REF, "game_object_id": 2, "component_id": 1, "component_type": "Test"})]
+    base["next_component_id"] = 3
+    own = copy.deepcopy(base)
+    own["root_object"]["components"][0]["target"]["game_object_id"] = 0
+    definition = create_variant_definition("base-guid", base, own)
+    # Relocate the inherited child and component to a different local domain.
+    definition["document"]["root_object"]["children"][0]["local_id"] = 12
+    definition["document"]["root_object"]["children"][0]["components"][0]["component_id"] = 11
+    definition["document"].update(next_local_id=13, next_component_id=12)
+    definition["base"]["object_sources"] = [[1, 1], [12, 2]]
+    definition["base"]["component_sources"] = [[11, 1], [2, 2]]
+    reverted = revert_variant_property(variant_document(definition), 1, 2, ("target",))
+    reference = reverted["root_object"]["components"][0]["target"]
+    assert reference["game_object_id"] == 12 and reference["component_id"] == 11
+    assert not variant_property_modifications(reverted)
+
+
+def test_variant_revert_rejects_unknown_property_without_mutating_document():
+    document = variant_document(create_variant_definition("base-guid", prefab()))
+    before = copy.deepcopy(document)
+    with pytest.raises(PrefabDocumentError, match="not an explicit override"):
+        revert_variant_property(document, 1, 0, ("name",))
+    assert document == before
 
 
 def test_concurrent_same_name_additions_and_typed_references_do_not_alias():

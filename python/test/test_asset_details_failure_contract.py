@@ -76,8 +76,24 @@ def test_prefab_loader_rejects_invalid_document(tmp_path):
     prefab = tmp_path / "Broken.prefab"
     prefab.write_text(json.dumps({"name": "missing envelope"}), encoding="utf-8")
 
-    with pytest.raises(ValueError, match="must contain a root_object"):
+    with pytest.raises(ValueError, match="missing or unknown envelope fields"):
         renderer._load_prefab(str(prefab))
+
+
+def test_prefab_inspector_invalidates_when_its_base_changes(monkeypatch, tmp_path):
+    state = renderer._State()
+    state.file_path = str(tmp_path / "Variant.prefab")
+    state.category = "prefab"
+    state.settings = {"name": "cached inherited name"}
+    base = str(tmp_path / "Base.prefab")
+    state.extra = {"prefab_dependencies": (state.file_path, base)}
+    monkeypatch.setattr(renderer, "_state", state)
+    renderer.invalidate_asset(str(tmp_path / "Other.prefab"), keep_view=True)
+    assert state.settings is not None
+    renderer.invalidate_asset(base, keep_view=True)
+    assert state.settings is None
+    assert state.file_path == str(tmp_path / "Variant.prefab")
+    assert state.category == "prefab"
 
 
 def test_particle_graph_loader_exposes_schema_failure(tmp_path):
