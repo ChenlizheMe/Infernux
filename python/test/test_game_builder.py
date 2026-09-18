@@ -3470,6 +3470,26 @@ def test_full_build_cook_rejects_an_empty_runtime_asset_selection(tmp_path):
         builder._copy_cooked_assets(str(data_dir))
 
 
+def test_player_cook_rejects_raw_model_source_without_compiled_artifact(tmp_path):
+    builder = _make_builder(tmp_path, tmp_path / "build_output")
+    project = Path(builder.project_path)
+    scene = project / "Assets" / "Main.scene"
+    scene.write_text("{}", encoding="utf-8")
+    source = project / "Assets" / "Models" / "Raw.blend"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_bytes(b"authoring source")
+    _write_asset_index(
+        project,
+        [
+            _asset_index_entry(project, scene, "scene-guid", "", "Scene"),
+            _asset_index_entry(project, source, "model-guid", "", "Mesh"),
+        ],
+    )
+
+    with pytest.raises(RuntimeError, match="raw model source without a compiled artifact"):
+        builder._copy_cooked_assets(str(tmp_path / "dist" / "Data"))
+
+
 def test_player_cook_uses_asset_index_snapshot_after_live_index_invalidation(tmp_path):
     builder = _make_builder(tmp_path, tmp_path / "build_output")
     project = Path(builder.project_path)

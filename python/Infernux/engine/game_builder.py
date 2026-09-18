@@ -1813,6 +1813,15 @@ finally:
                 # Owned model clips have no source file of their own. Their
                 # importer document is staged by _stage_library_runtime_documents.
                 continue
+            if logical_asset_type(entry) == "mesh":
+                # A Player consumes the imported Infernux mesh/model artifact,
+                # never the DCC/interchange source.  Failing here is deliberate:
+                # silently copying FBX/Blend/GLTF would expose authoring content
+                # and make an incomplete AssetIndex look like a valid build.
+                raise RuntimeError(
+                    "Player asset cook refused raw model source without a compiled artifact: "
+                    f"guid={guid}, source={source}"
+                )
             if is_path_within(source, assets_root, allow_root=False):
                 copy_source(source, reason=f"AssetIndex GUID {guid}")
                 continue
