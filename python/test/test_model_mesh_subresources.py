@@ -108,6 +108,43 @@ def test_mesh_subresource_id_survives_unique_parent_rename(scene, hierarchy_asse
     assert renamed['subresource_id'] == upper['subresource_id']
 
 
+def test_identical_node_geometry_has_same_signature(hierarchy_asset):
+    database, _, guid = hierarchy_asset
+    manifest = json.loads(database.get_meta_by_guid(guid).get_string('model_meshes'))
+    assert manifest[0]['geometry_key'] == manifest[1]['geometry_key']
+    assert manifest[0]['identity_key'] == manifest[1]['identity_key']
+
+
+@pytest.mark.parametrize('keep_original', [True, False])
+def test_added_duplicate_cannot_steal_original_identity(hierarchy_asset, engine, monkeypatch, keep_original):
+    from Infernux.core.assets import AssetManager
+
+    database, source, guid = hierarchy_asset
+    monkeypatch.setattr(AssetManager, '_engine', engine)
+    monkeypatch.setattr(AssetManager, '_asset_database', database)
+    document = json.loads(source.read_text())
+    document['nodes'][1]['children'] = [2]
+    document['nodes'].pop()
+    source.write_text(json.dumps(document))
+    assert AssetManager.reimport_asset(str(source), database=database)
+    before = json.loads(database.get_meta_by_guid(guid).get_string('model_meshes'))[0]
+    document['nodes'].append({'name': 'Added First', 'mesh': 0})
+    document['nodes'][1]['children'] = [3, 2]
+    if not keep_original:
+        document['nodes'][2]['name'] = 'Renamed'
+    source.write_text(json.dumps(document))
+    assert AssetManager.reimport_asset(str(source), database=database)
+    after = json.loads(database.get_meta_by_guid(guid).get_string('model_meshes'))
+    identifiers = [entry['subresource_id'] for entry in after]
+    assert len(set(identifiers)) == len(identifiers)
+    if keep_original:
+        original = next(entry for entry in after if entry['name'] == 'Upper')
+        assert original['subresource_id'] == before['subresource_id']
+    else:
+        # Two equally plausible rename candidates: neither inherits the old ID.
+        assert before['subresource_id'] not in identifiers
+
+
 def test_node_material_inspector_does_not_keep_previous_node(imported_model):
     from types import SimpleNamespace
     from Infernux.engine.bootstrap_inspector._materials import _collect_material_renderers, _rebuild_material_entries

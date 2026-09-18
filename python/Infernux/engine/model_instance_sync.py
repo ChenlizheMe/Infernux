@@ -175,22 +175,10 @@ def _migrate_source_paths_by_identity(scene: Any, root: Any, guid: str, source_i
             renderer.set_model_mesh(guid, list(new_path))
         changed = True
 
-    # A source node may have moved under a different DCC parent as well as
-    # being renamed. Rebuild only that source hierarchy edge and preserve the
-    # authored world pose; source-local TRS is for newly created instances.
-    updated_by_path = {
-        tuple(str(part) for part in (getattr(obj, "_model_source_path", ()) or ())): obj
-        for obj in candidates
-        if str(getattr(obj, "_model_source_guid", "") or "") == guid
-    }
-    for path, obj in sorted(updated_by_path.items(), key=lambda item: (len(item[0]), item[0])):
-        if not path:
-            continue
-        parent = updated_by_path.get(path[:-1], root if len(path) == 1 else None)
-        if parent is None or obj.get_parent() is parent:
-            continue
-        obj.set_parent(parent, world_position_stays=True)
-        changed = True
+    # Do not rebuild parent edges here. A scene author may deliberately move a
+    # source child under a different GameObject; its authored hierarchy is as
+    # authoritative as its Transform. Parent-edge migration needs an explicit
+    # source-vs-author override contract and must not silently reparent it.
     return changed
 
 

@@ -225,12 +225,15 @@ std::string ModelNodeIdentityKey(const InxMesh &mesh, size_t nodeIndex, const st
                 mixVec4(vertex.boneWeights);
             }
         }
-        if (submesh.indexStart + submesh.indexCount <= geometry->indices.size())
-            mix(geometry->indices.data() + submesh.indexStart,
-                sizeof(uint32_t) * submesh.indexCount);
+        for (uint32_t index = 0; index < submesh.indexCount; ++index) {
+            // Source buffers concatenate node geometry; allocation offsets
+            // must not distinguish identical meshes or change on a reorder.
+            const uint32_t local = geometry->indices.at(submesh.indexStart + index) - submesh.vertexStart;
+            mix(&local, sizeof(local));
+        }
     }
     std::ostringstream result;
-    result << (includeParentPath ? "v1/" : "g1/") << std::hex << std::setw(16) << std::setfill('0') << hash;
+    result << (includeParentPath ? "v2/" : "g2/") << std::hex << std::setw(16) << std::setfill('0') << hash;
     return result.str();
 }
 
@@ -858,15 +861,6 @@ ImportArtifact ModelImporter::Import(const ImportRequest &request) const
     nlohmann::json previousModelMeshes = nlohmann::json::array();
     if (artifact.metadata.HasKey("model_meshes"))
         previousModelMeshes = nlohmann::json::parse(artifact.metadata.GetDataAs<std::string>("model_meshes"));
-    std::unordered_map<std::string, size_t> previousIdentityCounts;
-    std::unordered_map<std::string, size_t> previousGeometryCounts;
-    for (const auto &previous : previousModelMeshes) {
-        if (previous.contains("identity_key") && previous["identity_key"].is_string())
-            ++previousIdentityCounts[previous["identity_key"].get<std::string>()];
-        if (previous.contains("geometry_key") && previous["geometry_key"].is_string())
-            ++previousGeometryCounts[previous["geometry_key"].get<std::string>()];
-    }
-    std::unordered_set<std::string> consumedSubresourceIds;
     nlohmann::json modelMeshes = nlohmann::json::array();
     const auto &modelNodes = imported.mesh->GetModelNodes();
     for (size_t i = 0; i < modelNodes.size(); ++i) {
@@ -875,54 +869,47 @@ ImportArtifact ModelImporter::Import(const ImportRequest &request) const
         const auto path = imported.mesh->GetModelNodePath(i);
         const std::string identityKey = ModelNodeIdentityKey(*imported.mesh, i, path, true);
         const std::string geometryKey = ModelNodeIdentityKey(*imported.mesh, i, path, false);
-        std::string subresourceId;
-        for (const auto &previous : previousModelMeshes) {
-            if (previous.value("path", nlohmann::json::array()) == nlohmann::json(path) &&
-                previous.contains("subresource_id") && previous["subresource_id"].is_string()) {
-                subresourceId = previous["subresource_id"].get<std::string>();
-                break;
-            }
-        }
-        // A unique geometry signature is the only safe rename match.  If
-        // duplicate source nodes share the same signature, leave them as new
-        // identities rather than guessing and binding two objects together.
-        if (subresourceId.empty() && !identityKey.empty() && previousIdentityCounts[identityKey] == 1) {
-            for (const auto &previous : previousModelMeshes) {
-                if (previous.value("identity_key", "") != identityKey ||
-                    !previous.contains("subresource_id") || !previous["subresource_id"].is_string())
-                    continue;
-                const auto candidate = previous["subresource_id"].get<std::string>();
-                if (consumedSubresourceIds.find(candidate) == consumedSubresourceIds.end()) {
-                    subresourceId = candidate;
-                    break;
-                }
-            }
-        }
-        // If a parent pivot was renamed, the strict key intentionally changes.
-        // A geometry-only match is safe only when it was unique in the prior
-        // source and has not already been consumed by another current node.
-        if (subresourceId.empty() && !geometryKey.empty() && previousGeometryCounts[geometryKey] == 1) {
-            for (const auto &previous : previousModelMeshes) {
-                if (previous.value("geometry_key", "") != geometryKey ||
-                    !previous.contains("subresource_id") || !previous["subresource_id"].is_string())
-                    continue;
-                const auto candidate = previous["subresource_id"].get<std::string>();
-                if (consumedSubresourceIds.find(candidate) == consumedSubresourceIds.end()) {
-                    subresourceId = candidate;
-                    break;
-                }
-            }
-        }
-        if (subresourceId.empty()) {
-            InxResourceMeta subresource;
-            subresource.Init(nullptr, 0, request.sourcePath + "::submesh:" + nlohmann::json(path).dump(),
-                             ResourceType::Mesh);
-            subresourceId = subresource.GetGuid();
-        }
-        consumedSubresourceIds.insert(subresourceId);
         modelMeshes.push_back({{"name", modelNodes[i].name}, {"path", path},
-                               {"subresource_id", subresourceId}, {"identity_key", identityKey},
+                               {"subresource_id", ""}, {"identity_key", identityKey},
                                {"geometry_key", geometryKey}});
+    }
+    std::unordered_set<std::string> consumedSubresourceIds;
+    // Reserve every exact path before considering renames. Otherwise a new
+    // duplicate visited first can steal an ID still owned by an existing node.
+    // Each subsequent pass matches only one-to-one unmatched candidates on
+    // BOTH sides, rather than letting iteration order choose the winner.
+    const auto matchUnique = [&](const char *key) {
+        std::unordered_map<std::string, std::vector<size_t>> oldByKey, newByKey;
+        for (size_t i = 0; i < previousModelMeshes.size(); ++i) {
+            const auto &entry = previousModelMeshes[i];
+            const auto id = entry.value("subresource_id", std::string{});
+            if (!id.empty() && consumedSubresourceIds.find(id) == consumedSubresourceIds.end() && entry.contains(key))
+                oldByKey[entry[key].dump()].push_back(i);
+        }
+        for (size_t i = 0; i < modelMeshes.size(); ++i) {
+            const auto &entry = modelMeshes[i];
+            if (entry["subresource_id"] == "")
+                newByKey[entry[key].dump()].push_back(i);
+        }
+        for (const auto &[value, newIndices] : newByKey) {
+            const auto found = oldByKey.find(value);
+            if (newIndices.size() != 1 || found == oldByKey.end() || found->second.size() != 1)
+                continue;
+            const auto id = previousModelMeshes[found->second.front()]["subresource_id"].get<std::string>();
+            if (consumedSubresourceIds.insert(id).second)
+                modelMeshes[newIndices.front()]["subresource_id"] = id;
+        }
+    };
+    matchUnique("path");
+    matchUnique("identity_key");
+    matchUnique("geometry_key");
+    for (auto &entry : modelMeshes) {
+        if (entry["subresource_id"] == "") {
+            InxResourceMeta subresource;
+            subresource.Init(nullptr, 0, request.sourcePath + "::submesh:" + entry["path"].dump(),
+                             ResourceType::Mesh);
+            entry["subresource_id"] = subresource.GetGuid();
+        }
     }
     artifact.metadata.AddMetadata("model_meshes", modelMeshes.dump());
 

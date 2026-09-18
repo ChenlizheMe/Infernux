@@ -295,6 +295,13 @@ def test_source_parent_rename_keeps_authored_instance_pose(scene, hierarchy_asse
     database, source, guid = hierarchy_asset
     monkeypatch.setattr(AssetManager, '_engine', engine)
     monkeypatch.setattr(AssetManager, '_asset_database', database)
+    # A parent rename with multiple identical meshes is ambiguous. Use one
+    # mesh here, rather than accidentally matching by merged-buffer offsets.
+    document = json.loads(source.read_text())
+    document['nodes'][1]['children'] = [2]
+    document['nodes'].pop()
+    source.write_text(json.dumps(document))
+    assert AssetManager.reimport_asset(str(source), database=database)
     root = scene.create_from_model(guid)
     upper = descendants(root)['Upper']
     authored_position = Vector3(21, 22, 23)
@@ -316,6 +323,28 @@ def test_source_parent_rename_keeps_authored_instance_pose(scene, hierarchy_asse
     assert renamed_upper.get_component('MeshRenderer').model_node_path == [
         'Renamed Assembly', 'Empty pivot', 'Upper'
     ]
+
+
+def test_source_rename_does_not_reset_unrelated_authored_parent(scene, hierarchy_asset, engine, monkeypatch):
+    from Infernux.core.assets import AssetManager
+
+    database, source, guid = hierarchy_asset
+    monkeypatch.setattr(AssetManager, '_engine', engine)
+    monkeypatch.setattr(AssetManager, '_asset_database', database)
+    root = scene.create_from_model(guid)
+    objects = descendants(root)
+    upper, lower = objects['Upper'], objects['Lower']
+    lower.set_parent(objects['Assembly'], world_position_stays=True)
+    before = world_matrix(lower).copy()
+    parent_id = lower.get_parent().id
+    upper_id = upper.id
+    document = json.loads(source.read_text())
+    document['nodes'][2]['name'] = 'Renamed Upper'
+    source.write_text(json.dumps(document))
+    assert AssetManager.reimport_asset(str(source), database=database)
+    assert descendants(root)['Renamed Upper'].id == upper_id
+    assert lower.get_parent().id == parent_id
+    np.testing.assert_allclose(world_matrix(lower), before, atol=2e-5)
 
 
 def test_ambiguous_source_node_paths_fail_before_creating_objects(scene, hierarchy_asset):
