@@ -902,9 +902,14 @@ bool InxScreenUIRenderer::ResolveScreenPose(ScreenElementSpan &span)
     if (!store.IsValid(span.transform))
         throw std::runtime_error("Screen UI packet outlived its Transform; rebuild membership");
     auto *transform = store.GetOwner(span.transform);
-    const auto position = transform->GetPosition();
-    const auto angles = transform->GetEulerAngles();
-    const auto transformScale = transform->GetScale();
+    // Screen-space UI is laid out in the Canvas' viewport coordinates.  A
+    // Canvas (or any other scene parent) must not inject its world pose into
+    // that layout; only the element's own local pose is meaningful here.
+    // This also keeps the native pose path consistent with
+    // UITransformDependencies and the Python screen-layout contract.
+    const auto position = transform->GetLocalPosition();
+    const auto angles = transform->GetLocalEulerAngles();
+    const auto transformScale = transform->GetLocalScale();
     const glm::vec3 nextDelta{(position.x - span.position.x) * span.scaleX,
                               -(position.y - span.position.y) * span.scaleY, 0.0f};
     const float nextDeltaRotation = glm::radians(angles.z - span.rotation);
@@ -941,10 +946,12 @@ void InxScreenUIRenderer::BeginScreenObject(GameObject *object, ScreenUIList lis
     span.vertexStart = drawList->VtxBuffer.Size;
     span.list = list;
     span.transform = object->GetTransform()->GetECSHandle();
-    const auto position = object->GetTransform()->GetPosition();
+    // Capture the local screen pose.  Using world values here makes moving or
+    // scaling a Canvas move all of its children in screen space.
+    const auto position = object->GetTransform()->GetLocalPosition();
     span.position = position;
-    span.rotation = object->GetTransform()->GetEulerAngles().z;
-    const auto transformScale = object->GetTransform()->GetScale();
+    span.rotation = object->GetTransform()->GetLocalEulerAngles().z;
+    const auto transformScale = object->GetTransform()->GetLocalScale();
     span.transformScaleX = transformScale.x;
     span.transformScaleY = transformScale.y;
     span.pivotX = pivotX;
