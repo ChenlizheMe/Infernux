@@ -61,11 +61,7 @@ def test_modern_blend_worker_import_reimport_and_failed_publication(engine, tmp_
         "second.name='SecondCube'; second.parent=root; second.location=(2,0,2); second.data.materials.append(blue); "
         "second.keyframe_insert(data_path='location',frame=1); second.location=(2,1,2); "
         "second.keyframe_insert(data_path='location',frame=24); "
-        "cam_data=bpy.data.cameras.new('PreviewCamera'); cam=bpy.data.objects.new('PreviewCamera',cam_data); "
-        "bpy.context.collection.objects.link(cam); cam.parent=root; cam.location=(5,-6,5); "
-        "light_data=bpy.data.lights.new('KeyLight','POINT'); light_data.energy=250; "
-        "light=bpy.data.objects.new('KeyLight',light_data); bpy.context.collection.objects.link(light); "
-        "light.parent=root; light.location=(2,-2,5); bpy.context.scene.frame_end=24; "
+        "bpy.context.scene.frame_end=24; "
         "bpy.ops.wm.save_as_mainfile(filepath=" + repr(str(source)) + ")"
     )
     subprocess.run([tool, "--background", "--factory-startup", "--disable-autoexec", "--python-exit-code", "1",
@@ -96,7 +92,7 @@ def test_modern_blend_worker_import_reimport_and_failed_publication(engine, tmp_
         textures = json.loads(database.get_meta_by_guid(guid).get_string("model_textures"))
         assert textures and any(record["name"] == "Embedded Color" for record in textures)
         nodes = mesh.get_model_nodes()
-        assert {node["name"] for node in nodes} >= {"PreviewCamera", "KeyLight"}
+        assert {node["name"] for node in nodes} >= {"Assembly", "ChildCube", "SecondCube"}
         assert database.get_meta_by_guid(guid).get_int("animation_count") > 0
         assert source.read_bytes() == before
         assert database.last_refresh_worker_importer_count > 0

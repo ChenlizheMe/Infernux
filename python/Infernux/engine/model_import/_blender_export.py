@@ -14,8 +14,10 @@ def main():
         filepath=destination,
         export_format="GLB",
         export_yup=True,
-        export_cameras=True,
-        export_lights=True,
+        # Blender is an artwork source for model geometry.  Scene cameras and
+        # lights belong to the Infernux scene and are intentionally ignored.
+        export_cameras=False,
+        export_lights=False,
         export_animations=True,
         export_skins=True,
         export_morph=True,

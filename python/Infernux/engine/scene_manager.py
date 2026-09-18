@@ -1263,6 +1263,13 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         # Sync all prefab instances to the latest on-disk prefab data
         self.sync_all_prefab_instances(scene)
 
+        # Model instances are source references too.  A scene opened after an
+        # external Blender/FBX edit must reconcile added/removed source nodes
+        # before it becomes visible, while preserving authored transforms.
+        from Infernux.engine.model_instance_sync import synchronize_scene_model_instances
+
+        synchronize_scene_model_instances(scene)
+
         if self._on_scene_changed:
             self._on_scene_changed()
         if not runtime_load and record_navigation:

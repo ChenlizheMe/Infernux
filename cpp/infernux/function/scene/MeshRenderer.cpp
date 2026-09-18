@@ -1266,8 +1266,11 @@ void MeshRenderer::ResolveModelNodeBinding()
         matched = true;
         m_nodeGroup = nodes[index].nodeGroup;
     }
-    if (m_nodeGroup < 0)
-        INXLOG_ERROR("Model node path is missing or ambiguous: ", mesh->GetGuid(), " ", json(m_modelNodePath).dump());
+    // A source reimport can temporarily invalidate a path while the editor's
+    // owner-thread model reconciliation removes/creates the corresponding
+    // instance node.  Keep the renderer unbound for that safe-point instead of
+    // reporting a fatal asset error; a genuinely unresolved path remains
+    // visible through the renderer's empty geometry state.
 }
 
 void MeshRenderer::SetSubmeshIndex(int32_t index)

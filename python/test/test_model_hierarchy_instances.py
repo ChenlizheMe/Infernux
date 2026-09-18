@@ -184,7 +184,51 @@ def test_geometry_reimport_keeps_instance_edits_and_updates_local_stream(scene, 
     assert upper.get_parent().name == 'Empty pivot'
 
 
-def test_source_reorder_keeps_node_binding_and_missing_node_is_not_replaced(scene, hierarchy_asset, engine, monkeypatch):
+def test_external_model_source_reconciles_instances_without_overwriting_transforms(
+    scene, hierarchy_asset, engine, monkeypatch
+):
+    """Every live instance follows source add/remove while author transforms win."""
+    from Infernux.core.assets import AssetManager
+
+    database, source, guid = hierarchy_asset
+    monkeypatch.setattr(AssetManager, '_engine', engine)
+    monkeypatch.setattr(AssetManager, '_asset_database', database)
+    first = scene.create_from_model(guid, 'First Assembly')
+    second = scene.create_from_model(guid, 'Second Assembly')
+    first.transform.local_position = Vector3(10, 0, 0)
+    second.transform.local_position = Vector3(-10, 0, 0)
+    first_upper = descendants(first)['Upper']
+    second_upper = descendants(second)['Upper']
+    first_upper.transform.local_position = Vector3(7, 8, 9)
+    second_upper.transform.local_scale = Vector3(2, 3, 4)
+
+    document = json.loads(source.read_text())
+    document['nodes'][0]['children'].append(len(document['nodes']))
+    document['nodes'].append({
+        'name': 'Added', 'translation': [0, 2, 0], 'mesh': 0,
+    })
+    source.write_text(json.dumps(document))
+    result = AssetManager.reimport_asset(str(source), database=database)
+    assert result, result.error
+    assert 'Added' in descendants(first)
+    assert 'Added' in descendants(second)
+    assert first.transform.local_position.x == 10
+    assert second.transform.local_position.x == -10
+    assert tuple(first_upper.transform.local_position) == (7, 8, 9)
+    assert tuple(second_upper.transform.local_scale) == (2, 3, 4)
+
+    document['nodes'][0]['children'].remove(document['nodes'][0]['children'][-1])
+    document['nodes'].pop()
+    source.write_text(json.dumps(document))
+    result = AssetManager.reimport_asset(str(source), database=database)
+    assert result, result.error
+    assert 'Added' not in descendants(first)
+    assert 'Added' not in descendants(second)
+    assert tuple(first_upper.transform.local_position) == (7, 8, 9)
+    assert tuple(second_upper.transform.local_scale) == (2, 3, 4)
+
+
+def test_source_reorder_keeps_node_binding_and_source_rename_reconciles_instance(scene, hierarchy_asset, engine, monkeypatch):
     from Infernux.core.assets import AssetManager
     database, source, guid = hierarchy_asset
     monkeypatch.setattr(AssetManager, '_engine', engine)
@@ -202,13 +246,15 @@ def test_source_reorder_keeps_node_binding_and_missing_node_is_not_replaced(scen
     document['nodes'][2]['name'] = 'Renamed Upper'
     source.write_text(json.dumps(document))
     assert AssetManager.reimport_asset(str(source), database=database)
-    assert upper.serialize_document()['modelNodePath'] == path
-    assert 'nodeGroup' not in upper.serialize_document()
-    assert upper.get_positions() == []  # must not silently bind the other node
+    objects = descendants(root)
+    assert 'Upper' not in objects
+    assert 'Renamed Upper' in objects
+    renamed = objects['Renamed Upper'].get_component('MeshRenderer')
+    assert renamed.model_node_path[-1] == 'Renamed Upper'
     document['nodes'][2]['name'] = 'Upper'
     source.write_text(json.dumps(document))
     assert AssetManager.reimport_asset(str(source), database=database)
-    assert upper.get_positions()
+    assert 'Upper' in descendants(root)
 
 
 def test_ambiguous_source_node_paths_fail_before_creating_objects(scene, hierarchy_asset):

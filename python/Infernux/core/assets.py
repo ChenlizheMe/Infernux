@@ -2060,6 +2060,13 @@ class AssetManager:
             native.reload_mesh(path)
         if guid:
             cls._cache.pop(guid, None)
+            # A model import is a source publication.  MeshRenderers already
+            # observe the new shared geometry; this reconciles the authored
+            # node hierarchy in every resident editor scene without touching
+            # instance transforms or component overrides.
+            from Infernux.engine.model_instance_sync import synchronize_loaded_model_instances
+
+            synchronize_loaded_model_instances(guid)
 
     @classmethod
     def _invalidate_project_panel_cache(cls) -> None:
