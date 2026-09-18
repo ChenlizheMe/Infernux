@@ -1,3 +1,6 @@
+#ifdef NDEBUG
+#undef NDEBUG
+#endif
 #include <function/renderer/MaterialPassPipeline.h>
 
 #include <cassert>

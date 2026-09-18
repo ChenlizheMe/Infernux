@@ -278,10 +278,6 @@ DrawCallResult GizmosDrawCallBuffer::GetIconDrawCalls(const IconMaterials &mater
     }
 
     result.drawCalls.reserve(m_iconEntries.size());
-    std::vector<float> iconDistances;
-    iconDistances.reserve(m_iconEntries.size());
-    std::vector<std::string> iconMaterialNames;
-    iconMaterialNames.reserve(m_iconEntries.size());
 
     for (size_t i = 0; i < m_iconEntries.size(); ++i) {
         const auto &icon = m_iconEntries[i];
@@ -297,7 +293,6 @@ DrawCallResult GizmosDrawCallBuffer::GetIconDrawCalls(const IconMaterials &mater
         } else {
             toCamera /= distance; // normalize
         }
-        iconDistances.push_back(distance);
 
         // Constant angular size
         float worldSize = std::max(distance * ICON_SIZE_FACTOR, ICON_MIN_WORLD_SIZE);
@@ -328,7 +323,6 @@ DrawCallResult GizmosDrawCallBuffer::GetIconDrawCalls(const IconMaterials &mater
         indices = {0, 1, 2, 0, 2, 3};
 
         const std::shared_ptr<InxMaterial> &iconMaterial = materials.Resolve(icon.iconKind);
-        iconMaterialNames.push_back(iconMaterial ? iconMaterial->GetName() : std::string("<null>"));
         if (!iconMaterial) {
             continue;
         }
@@ -345,32 +339,6 @@ DrawCallResult GizmosDrawCallBuffer::GetIconDrawCalls(const IconMaterials &mater
         dc.forceBufferUpdate = true;
 
         result.drawCalls.push_back(dc);
-    }
-
-    static size_t s_lastIconEntryCount = static_cast<size_t>(-1);
-    static size_t s_lastBuiltIconDrawCallCount = static_cast<size_t>(-1);
-    if (s_lastIconEntryCount != m_iconEntries.size() || s_lastBuiltIconDrawCallCount != result.drawCalls.size()) {
-        // INXLOG_INFO("GizmoIcons: built ", result.drawCalls.size(), " draw call(s) from ", m_iconEntries.size(),
-        //             " icon entr", (m_iconEntries.size() == 1 ? "y" : "ies"), " cameraPos=", cameraPos.x, ",",
-        //             cameraPos.y, ",", cameraPos.z);
-        for (size_t i = 0; i < m_iconEntries.size(); ++i) {
-            const auto &icon = m_iconEntries[i];
-            const char *kindName = "default";
-            if (icon.iconKind == ICON_KIND_CAMERA) {
-                kindName = "camera";
-            } else if (icon.iconKind == ICON_KIND_LIGHT) {
-                kindName = "light";
-            } else if (icon.iconKind == ICON_KIND_PARTICLE) {
-                kindName = "particle";
-            }
-            // INXLOG_INFO("GizmoIcons: entry[", i, "] kind=", kindName, " objectId=", icon.objectId,
-            //             " pos=", icon.position.x, ",", icon.position.y, ",", icon.position.z,
-            //             " distance=", (i < iconDistances.size() ? iconDistances[i] : -1.0f),
-            //             " material=", (i < iconMaterialNames.size() ? iconMaterialNames[i] :
-            //             std::string("<missing>")));
-        }
-        s_lastIconEntryCount = m_iconEntries.size();
-        s_lastBuiltIconDrawCallCount = result.drawCalls.size();
     }
 
     return result;

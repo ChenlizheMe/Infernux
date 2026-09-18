@@ -23,6 +23,14 @@ enum class RenderDomain : uint8_t
 
 using RenderDomainMask = uint32_t;
 
+/// Synthetic editor geometry depends on its own shader/topology/alpha mask.
+/// A generic scene error/default material cannot represent these primitives.
+[[nodiscard]] constexpr bool RenderDomainRequiresDedicatedMaterial(RenderDomain domain) noexcept
+{
+    return domain == RenderDomain::ComponentGizmo || domain == RenderDomain::EditorGizmo ||
+           domain == RenderDomain::EditorTool || domain == RenderDomain::Skybox;
+}
+
 [[nodiscard]] constexpr RenderDomainMask RenderDomainBit(RenderDomain domain) noexcept
 {
     return domain == RenderDomain::Unknown ? 0u : (1u << static_cast<uint8_t>(domain));

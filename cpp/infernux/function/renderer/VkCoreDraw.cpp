@@ -1483,20 +1483,18 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
         const std::shared_ptr<InxMaterial> *matOwner = entry.materialOwner;
         InxMaterial *matRaw = matOwner->get();
         ResolvedMaterialPass resolved = resolveCachedMaterialPass(*matOwner);
-        // SkyboxPass owns synthetic cube geometry whose vertices are meaningful
-        // only to a skybox shader (translation-free view and far-plane depth).
-        // Drawing that cube with Error/DefaultLit exposes its interior as a
-        // giant box around the camera. Semantic sky draws therefore fail
-        // closed until their own pipeline is ready; ordinary scene geometry
-        // keeps the visible error/default fallback behavior.
-        if (!resolved.IsValid() && !skyboxPass && errorMaterial) {
+        // Gizmo line topology, icon alpha masks, and sky vertices are meaningful
+        // only with their dedicated shader. DefaultLit can turn icons into solid
+        // quads and cannot draw line handles correctly during shader publication.
+        const bool dedicatedMaterial = skyboxPass || RenderDomainRequiresDedicatedMaterial(dc.identity.domain);
+        if (!resolved.IsValid() && !dedicatedMaterial && errorMaterial) {
             resolved = resolveCachedMaterialPass(errorMaterial);
             if (resolved.IsValid()) {
                 matOwner = &errorMaterial;
                 matRaw = errorMaterial.get();
             }
         }
-        if (!resolved.IsValid() && !skyboxPass && defaultMaterial) {
+        if (!resolved.IsValid() && !dedicatedMaterial && defaultMaterial) {
             resolved = resolveCachedMaterialPass(defaultMaterial);
             if (resolved.IsValid()) {
                 matOwner = &defaultMaterial;
@@ -1542,6 +1540,15 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
                     resolvedMaterialCache[matRaw] = resolved;
                 }
             }
+        }
+
+        // Resolve pending textures above before deciding readiness. A default
+        // white descriptor is Vulkan-valid but not an uploaded icon alpha mask.
+        // Skipping this transient draw must not prevent its upload from advancing.
+        if (dedicatedMaterial &&
+            m_materialPipelineManager.HasPendingTextureProperties(matRaw->GetMaterialKey())) {
+            emitBatch();
+            continue;
         }
 
         if (entry.ParameterIdentity() && matRaw == entry.material) {
