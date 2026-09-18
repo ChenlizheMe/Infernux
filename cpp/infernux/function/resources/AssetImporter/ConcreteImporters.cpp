@@ -149,11 +149,12 @@ void RejectPathOnlyReference(const std::string &guid, const std::string &pathHin
 
 // A source node's path is the public lookup key, but it is not an identity:
 // artists are allowed to rename a node or reorder siblings in the DCC file.
-// Persist a compact geometry signature beside the path so a unique renamed
+// Persist compact geometry signatures beside the path so a unique renamed
 // node can retain its subresource GUID without introducing a second identity
-// system.  This is deliberately a fast FNV-1a signature, not a content
-// integrity check; the source content hash still owns import invalidation.
-std::string ModelNodeIdentityKey(const InxMesh &mesh, size_t nodeIndex, const std::vector<std::string> &path)
+// system. These are deliberately fast FNV-1a signatures, not content
+// integrity checks; the source content hash still owns import invalidation.
+std::string ModelNodeIdentityKey(const InxMesh &mesh, size_t nodeIndex, const std::vector<std::string> &path,
+                                 bool includeParentPath)
 {
     const auto &nodes = mesh.GetModelNodes();
     if (nodeIndex >= nodes.size() || nodes[nodeIndex].nodeGroup < 0)
@@ -196,10 +197,14 @@ std::string ModelNodeIdentityKey(const InxMesh &mesh, size_t nodeIndex, const st
         mixFloat(value.w);
     };
     const auto mixUvec4 = [&mix](const glm::uvec4 &value) { mix(&value.x, sizeof(uint32_t) * 4); };
-    // Include the parent source path so identical meshes under different
-    // pivots remain distinct while a leaf rename stays matchable.
-    for (size_t index = 0; index + 1 < path.size(); ++index)
-        mixString(path[index]);
+    // The strict key includes the parent source path so identical meshes under
+    // different pivots remain distinct while a leaf rename stays matchable.
+    // A second geometry-only key is persisted for a parent rename; it is only
+    // accepted when it is unique in the previous import, never guessed.
+    if (includeParentPath) {
+        for (size_t index = 0; index + 1 < path.size(); ++index)
+            mixString(path[index]);
+    }
     for (const auto &submesh : geometry->subMeshes) {
         if (static_cast<int32_t>(submesh.nodeGroup) != nodes[nodeIndex].nodeGroup)
             continue;
@@ -225,7 +230,7 @@ std::string ModelNodeIdentityKey(const InxMesh &mesh, size_t nodeIndex, const st
                 sizeof(uint32_t) * submesh.indexCount);
     }
     std::ostringstream result;
-    result << "v1/" << std::hex << std::setw(16) << std::setfill('0') << hash;
+    result << (includeParentPath ? "v1/" : "g1/") << std::hex << std::setw(16) << std::setfill('0') << hash;
     return result.str();
 }
 
@@ -854,9 +859,12 @@ ImportArtifact ModelImporter::Import(const ImportRequest &request) const
     if (artifact.metadata.HasKey("model_meshes"))
         previousModelMeshes = nlohmann::json::parse(artifact.metadata.GetDataAs<std::string>("model_meshes"));
     std::unordered_map<std::string, size_t> previousIdentityCounts;
+    std::unordered_map<std::string, size_t> previousGeometryCounts;
     for (const auto &previous : previousModelMeshes) {
         if (previous.contains("identity_key") && previous["identity_key"].is_string())
             ++previousIdentityCounts[previous["identity_key"].get<std::string>()];
+        if (previous.contains("geometry_key") && previous["geometry_key"].is_string())
+            ++previousGeometryCounts[previous["geometry_key"].get<std::string>()];
     }
     std::unordered_set<std::string> consumedSubresourceIds;
     nlohmann::json modelMeshes = nlohmann::json::array();
@@ -865,7 +873,8 @@ ImportArtifact ModelImporter::Import(const ImportRequest &request) const
         if (modelNodes[i].nodeGroup < 0)
             continue;
         const auto path = imported.mesh->GetModelNodePath(i);
-        const std::string identityKey = ModelNodeIdentityKey(*imported.mesh, i, path);
+        const std::string identityKey = ModelNodeIdentityKey(*imported.mesh, i, path, true);
+        const std::string geometryKey = ModelNodeIdentityKey(*imported.mesh, i, path, false);
         std::string subresourceId;
         for (const auto &previous : previousModelMeshes) {
             if (previous.value("path", nlohmann::json::array()) == nlohmann::json(path) &&
@@ -889,6 +898,21 @@ ImportArtifact ModelImporter::Import(const ImportRequest &request) const
                 }
             }
         }
+        // If a parent pivot was renamed, the strict key intentionally changes.
+        // A geometry-only match is safe only when it was unique in the prior
+        // source and has not already been consumed by another current node.
+        if (subresourceId.empty() && !geometryKey.empty() && previousGeometryCounts[geometryKey] == 1) {
+            for (const auto &previous : previousModelMeshes) {
+                if (previous.value("geometry_key", "") != geometryKey ||
+                    !previous.contains("subresource_id") || !previous["subresource_id"].is_string())
+                    continue;
+                const auto candidate = previous["subresource_id"].get<std::string>();
+                if (consumedSubresourceIds.find(candidate) == consumedSubresourceIds.end()) {
+                    subresourceId = candidate;
+                    break;
+                }
+            }
+        }
         if (subresourceId.empty()) {
             InxResourceMeta subresource;
             subresource.Init(nullptr, 0, request.sourcePath + "::submesh:" + nlohmann::json(path).dump(),
@@ -897,7 +921,8 @@ ImportArtifact ModelImporter::Import(const ImportRequest &request) const
         }
         consumedSubresourceIds.insert(subresourceId);
         modelMeshes.push_back({{"name", modelNodes[i].name}, {"path", path},
-                               {"subresource_id", subresourceId}, {"identity_key", identityKey}});
+                               {"subresource_id", subresourceId}, {"identity_key", identityKey},
+                               {"geometry_key", geometryKey}});
     }
     artifact.metadata.AddMetadata("model_meshes", modelMeshes.dump());
 

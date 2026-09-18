@@ -83,6 +83,31 @@ def test_mesh_subresource_id_survives_unique_source_node_rename(scene, hierarchy
     assert renamed['subresource_id'] == upper['subresource_id']
 
 
+def test_mesh_subresource_id_survives_unique_parent_rename(scene, hierarchy_asset, engine, monkeypatch):
+    """Renaming a DCC pivot must not orphan a child mesh reference."""
+    from Infernux.core.assets import AssetManager
+
+    database, source, guid = hierarchy_asset
+    monkeypatch.setattr(AssetManager, '_engine', engine)
+    monkeypatch.setattr(AssetManager, '_asset_database', database)
+    document = json.loads(source.read_text())
+    # Make the candidate unique first; the normal fixture intentionally has
+    # two identical children, for which a parent rename must not guess.
+    document['nodes'][1]['children'] = [2]
+    document['nodes'].pop(3)
+    source.write_text(json.dumps(document))
+    assert AssetManager.reimport_asset(str(source), database=database)
+    before = json.loads(database.get_meta_by_guid(guid).get_string('model_meshes'))
+    upper = next(item for item in before if item['name'] == 'Upper')
+    document['nodes'][0]['name'] = 'Renamed Assembly'
+    source.write_text(json.dumps(document))
+    assert AssetManager.reimport_asset(str(source), database=database)
+    after = json.loads(database.get_meta_by_guid(guid).get_string('model_meshes'))
+    renamed = next(item for item in after if item['name'] == 'Upper')
+    assert renamed['path'] == ['Renamed Assembly', 'Empty pivot', 'Upper']
+    assert renamed['subresource_id'] == upper['subresource_id']
+
+
 def test_node_material_inspector_does_not_keep_previous_node(imported_model):
     from types import SimpleNamespace
     from Infernux.engine.bootstrap_inspector._materials import _collect_material_renderers, _rebuild_material_entries
