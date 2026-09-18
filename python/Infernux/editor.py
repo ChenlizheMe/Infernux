@@ -22,6 +22,7 @@ __all__ = (
     "ShortcutModifier", "ShortcutPhase", "ShortcutRouter", "ShortcutScope",
     "DocumentActionResult", "DocumentActionStatus", "edit_scene",
     "create_game_object", "create_prefab", "instantiate_prefab", "apply_prefab",
+    "load_prefab_contents", "save_as_prefab_asset", "unload_prefab_contents",
     "revert_prefab", "save_scene", "open_scene", "new_scene", "undo", "redo",
     "create_data_asset", "create_folder", "get_build_scenes", "set_build_scenes",
     "save_project_settings",
@@ -74,6 +75,33 @@ def create_game_object(name: str = "GameObject", *, kind: str = "empty", parent=
 def create_prefab(game_object, directory="Assets") -> str:
     """Create a uniquely named asset in directory and link its source hierarchy."""
     return _authoring_core().prefabs.create_from_object(game_object.id, _asset_path(directory))
+
+
+def load_prefab_contents(path):
+    """Load into an isolated Scene; release the returned root in ``finally``.
+
+    Like scene loading, run batch authoring at an owner safe point (the
+    Editor's DeferredTaskRunner), not inside a GUI draw callback. Resolving an
+    unloaded/missing script may need to publish a runtime type descriptor.
+    Loaded contents do not run Awake/Start/Update or join rendering/physics.
+    Serialization callbacks still run. Mutations of this temporary tree are
+    not individual Undo commands; saving the asset is a Project Undo entry.
+    """
+    return _authoring_core().prefabs.load_contents(_asset_path(path))
+
+
+def save_as_prefab_asset(game_object, path) -> str:
+    """Save contents or a new hierarchy through Project history; return the path.
+
+    To overwrite an existing asset, edit its load_prefab_contents root. Scene
+    instances are not linked by this operation; use create_prefab for that.
+    """
+    return _authoring_core().prefabs.save_contents(game_object, _asset_path(path))
+
+
+def unload_prefab_contents(root) -> None:
+    """Discard the isolated Scene. Unsaved edits are deliberately not written."""
+    _authoring_core().prefabs.unload_contents(root)
 
 
 def add_component(game_object, type_name: str, *, configure=None):

@@ -70,6 +70,14 @@ class SceneManager
     /// @brief Create a new empty scene
     Scene *CreateScene(const std::string &name);
 
+    /// Editor-owned content excluded from scene enumeration, rendering and physics.
+    Scene *CreatePreviewScene(const std::string &name);
+    void ClosePreviewScene(Scene *scene);
+    [[nodiscard]] const std::vector<std::unique_ptr<Scene>> &GetPreviewScenes() const noexcept
+    {
+        return m_previewScenes;
+    }
+
     /// @brief Set the active scene
     void SetActiveScene(Scene *scene);
 
@@ -533,6 +541,7 @@ class SceneManager
     void UpdateRuntimeScenePlayingState(bool playing);
 
     std::vector<std::unique_ptr<Scene>> m_scenes;
+    std::vector<std::unique_ptr<Scene>> m_previewScenes;
     std::unordered_set<Scene *> m_loadedSceneSet;
     Scene *m_activeScene = nullptr;
 

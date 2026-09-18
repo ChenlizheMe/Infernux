@@ -60,6 +60,52 @@ reload, unload or project close. Do not register them each frame.
 - `apply_prefab(obj)` publishes instance overrides to the linked asset;
   `revert_prefab(obj)` restores source-owned values. Both use the global journal.
 
+## Editing Prefab contents without instantiating into the active scene
+
+```python
+def edit_obstacle():
+    path = "Assets/Obstacle.prefab"
+    root = inx.editor.load_prefab_contents(path)
+    try:
+        root.name = "Obstacle"
+        root.transform.local_position = inx.vector3(0, 1, 0)
+        inx.editor.save_as_prefab_asset(root, path)
+    finally:
+        inx.editor.unload_prefab_contents(root)
+```
+
+Contents live in an isolated scene, outside Hierarchy, game rendering, physics
+queries and Awake/Start/Update. Serialization callbacks still run. Mutating this
+temporary tree does not record individual Undo steps; saving the asset records a
+Project Undo operation. Unloading discards unsaved changes. Editor shutdown also
+releases outstanding contents.
+
+Menu, command-palette and Inspector handlers should schedule the entire batch
+through the existing editor task runner. Loading scripts during a GUI draw can
+require a type publication, which belongs at an owner safe point:
+
+```python
+from Infernux.engine.deferred_task import DeferredTaskRunner
+
+def on_edit_command(context):
+    accepted = DeferredTaskRunner.instance().submit(
+        "Edit obstacle Prefab", [("Edit and save", 0.5, edit_obstacle)],
+    )
+    if not accepted:
+        raise RuntimeError("Wait for the current editor task to finish")
+```
+
+`save_as_prefab_asset` returns the asset path. New files must be under `Assets`
+or `Packages`, with an existing parent directory. To overwrite an existing file,
+load that file's contents first. Nested Prefabs, internal references and source
+identities are preserved. This operation does not link an ordinary scene object
+to the asset or create a Variant; use `create_prefab` to create and connect.
+
+Saving rejects source changes or deletion since load. Close the same asset's
+Prefab Mode before editing it offline. Synchronizing every already-open scene
+instance and the full conflict matrix are not yet part of this entry point's
+completed contract.
+
 ## Data assets and build scenes
 
 Declare runtime configuration with `DataAsset` and `serialized_field` in

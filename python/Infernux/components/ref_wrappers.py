@@ -69,6 +69,8 @@ def _iter_reference_scenes():
     for index in range(int(manager.scene_count)):
         append(manager.get_scene_at(index))
     append(manager.get_runtime_persistent_scene())
+    for scene in manager._get_preview_scenes():
+        append(scene)
     return tuple(scenes)
 
 

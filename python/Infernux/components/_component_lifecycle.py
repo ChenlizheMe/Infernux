@@ -512,6 +512,9 @@ class RuntimeExecutionScheduler:
         if owner is None:
             return False
         try:
+            scene = getattr(owner, "scene", None)
+            if scene is not None and scene.is_preview:
+                return False
             active = getattr(owner, "active_in_hierarchy", _MISSING)
             if active is _MISSING:
                 return True

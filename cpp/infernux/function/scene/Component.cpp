@@ -117,6 +117,8 @@ bool Component::IsComponentType(const std::string &typeName) const
 
 void Component::CallAwake()
 {
+    if (m_gameObject && m_gameObject->GetScene() && m_gameObject->GetScene()->IsPreview())
+        return;
     if (m_hasAwake || m_hasDestroyed) {
         return;
     }
@@ -139,6 +141,8 @@ void Component::CallStart()
 
 void Component::CallOnEnable()
 {
+    if (m_gameObject && m_gameObject->GetScene() && m_gameObject->GetScene()->IsPreview())
+        return;
     if (m_wasEnabled || m_hasDestroyed) {
         return;
     }

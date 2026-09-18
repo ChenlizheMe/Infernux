@@ -424,6 +424,7 @@ def serialize_prefab_document(
     root_document_template: dict = None,
     next_local_id: int = 1,
     next_component_id: int = 1,
+    preserve_root_properties: bool = True,
 ) -> dict:
     """Capture the exact strict prefab document owned by a GameObject tree."""
     if game_object is None:
@@ -441,16 +442,17 @@ def serialize_prefab_document(
         go_data, source_canvas_name=source_canvas_name,
         root_document_template=root_document_template, next_local_id=next_local_id,
         next_component_id=next_component_id,
+        preserve_root_properties=preserve_root_properties,
     )[0]
 
 
 def _serialize_prefab_snapshot(go_data, *, source_canvas_name="", root_document_template=None,
-                               next_local_id=1, next_component_id=1):
+                               next_local_id=1, next_component_id=1, preserve_root_properties=True):
     """Capture asset content and its scene-to-source projection from one snapshot."""
     go_data = copy.deepcopy(go_data)
     if not isinstance(go_data, dict):
         raise TypeError("GameObject.serialize_document() did not return a dict")
-    if isinstance(root_document_template, dict):
+    if preserve_root_properties and isinstance(root_document_template, dict):
         for key in ("name", "active", "is_static", "tag", "layer"):
             if key in root_document_template:
                 go_data[key] = copy.deepcopy(root_document_template[key])

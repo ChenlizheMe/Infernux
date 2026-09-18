@@ -41,6 +41,41 @@ class ObstacleTools(inx.InxPreload):
 - `create_prefab(obj, directory)` 的第二个参数是目录，不是文件名；它创建唯一名称的资产并建立源链接，不覆盖已有 Prefab。
 - `instantiate_prefab` 返回新实例；`apply_prefab(obj)` 应用覆盖，`revert_prefab(obj)` 恢复源值，均进入全局撤销历史。
 
+## 离线编辑 Prefab
+
+不必把 Prefab 拖进当前场景，也可以修改它的内容：
+
+```python
+def edit_obstacle():
+    path = "Assets/Obstacle.prefab"
+    root = inx.editor.load_prefab_contents(path)
+    try:
+        root.name = "机关"
+        root.transform.local_position = inx.vector3(0, 1, 0)
+        inx.editor.save_as_prefab_asset(root, path)
+    finally:
+        inx.editor.unload_prefab_contents(root)
+```
+
+加载的物体位于隔离场景，不进入 Hierarchy、游戏渲染、物理查询或 Awake/Start/Update；序列化回调仍会执行。临时树的赋值不逐条记录撤销，保存资产才形成一条 Project Undo。未保存就释放会丢弃临时修改，关编辑器也会释放这些对象。
+
+从菜单、命令面板或 Inspector 按钮调用时，将整个批量操作交给编辑器已有的延迟任务，避免在界面绘制期间发布脚本类型：
+
+```python
+from Infernux.engine.deferred_task import DeferredTaskRunner
+
+def on_edit_command(context):
+    accepted = DeferredTaskRunner.instance().submit(
+        "编辑机关 Prefab", [("修改并保存", 0.5, edit_obstacle)],
+    )
+    if not accepted:
+        raise RuntimeError("请等待当前编辑器任务完成")
+```
+
+`save_as_prefab_asset` 返回资产路径。另存的新文件必须位于 `Assets` 或 `Packages` 内，父目录必须存在；已有文件只能由从该文件加载的内容覆盖。它保留嵌套 Prefab、内部引用和稳定源身份，不会把普通场景物体自动连接为实例，也不创建 Variant。需要“创建并连接”时仍用 `create_prefab`。
+
+源文件在加载后被修改或删除时，保存会拒绝，需重新加载；同一资产已在 Prefab Mode 中打开时，应先结束该编辑会话。当前入口不承诺对所有已打开场景实例同步源变化，完整实例同步/冲突组合仍在补齐。
+
 ## 创建数据资产和构建列表
 
 运行时数据类型放在 `Assets/Scripts/LevelConfig.py`，用 `DataAsset` 和 `serialized_field` 声明。编辑器工具可以用 `from Scripts.LevelConfig import LevelConfig` 引用它；`Assets` 是项目模块根，不是 Python 包名。

@@ -2581,6 +2581,7 @@ void RegisterSceneBindings(py::module_ &m)
 
     py::class_<Scene>(m, "Scene")
         .def_property("name", &Scene::GetName, &Scene::SetName)
+        .def_property_readonly("is_preview", &Scene::IsPreview)
         .def(
             "get_environment",
             [](const Scene &scene) {
@@ -2809,6 +2810,15 @@ void RegisterSceneBindings(py::module_ &m)
                     "Get the singleton SceneManager instance")
         .def("create_scene", &SceneManager::CreateScene, py::return_value_policy::reference, py::arg("name"),
              "Create a new empty scene")
+        .def("_create_preview_scene", &SceneManager::CreatePreviewScene, py::return_value_policy::reference,
+             py::arg("name"))
+        .def("_close_preview_scene", &SceneManager::ClosePreviewScene, py::arg("scene"))
+        .def("_get_preview_scenes", [](SceneManager &manager) {
+            py::list result;
+            for (const auto &scene : manager.GetPreviewScenes())
+                result.append(py::cast(scene.get(), py::return_value_policy::reference));
+            return result;
+        })
         .def("unload_scene", &SceneManager::UnloadScene, py::arg("scene"),
              "Unload and destroy a scene, removing all its GameObjects and physics bodies")
         .def("get_active_scene", &SceneManager::GetActiveScene, py::return_value_policy::reference,

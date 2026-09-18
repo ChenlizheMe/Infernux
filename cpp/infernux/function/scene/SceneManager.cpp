@@ -171,6 +171,26 @@ Scene *SceneManager::CreateScene(const std::string &name)
     return ptr;
 }
 
+Scene *SceneManager::CreatePreviewScene(const std::string &name)
+{
+    auto scene = std::make_unique<Scene>(name, true);
+    // Python records still need the binding bridge; execution is excluded by
+    // preview membership, not by disabling authored component flags.
+    scene->SetRuntimeLifecycleSchedulerEnabled(true);
+    auto *result = scene.get();
+    m_previewScenes.push_back(std::move(scene));
+    return result;
+}
+
+void SceneManager::ClosePreviewScene(Scene *scene)
+{
+    const auto it = std::find_if(m_previewScenes.begin(), m_previewScenes.end(),
+                                [scene](const auto &item) { return item.get() == scene; });
+    if (it == m_previewScenes.end())
+        throw std::invalid_argument("Scene is not an open preview Scene");
+    m_previewScenes.erase(it);
+}
+
 void SceneManager::SetActiveScene(Scene *scene)
 {
     if (scene && m_loadedSceneSet.find(scene) == m_loadedSceneSet.end())
@@ -252,6 +272,7 @@ void SceneManager::Shutdown()
 
     // Destroy all scenes (GameObjects → Components → Colliders → bodies).
     UnloadAllScenes();
+    m_previewScenes.clear();
 
 #if !defined(INFERNUX_RUNTIME_MINIMAL_HOST)
     // Destroy the editor camera object (its Camera component must leave the
@@ -809,6 +830,9 @@ Scene *SceneManager::GetSceneByWorldId(uint64_t worldId) const noexcept
     }
     if (m_runtimePersistentScene && m_runtimePersistentScene->GetWorldId() == worldId)
         return m_runtimePersistentScene.get();
+    for (const auto &scene : m_previewScenes)
+        if (scene->GetWorldId() == worldId)
+            return scene.get();
     return nullptr;
 }
 

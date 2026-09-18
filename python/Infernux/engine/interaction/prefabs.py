@@ -35,6 +35,7 @@ class PrefabCommandService:
         self._document_open = document_open
         self._project_assets = project_assets
         self._context_provider = context_provider
+        self._contents = {}
         PrefabCommandService._instance = self
 
     @classmethod
@@ -308,7 +309,114 @@ class PrefabCommandService:
             component, field_name, self._require_instance_path(root) if root else "",
         )
 
+    def load_contents(self, path: str):
+        """Load an asset into an isolated authoring world, not the active Scene."""
+        from Infernux.lib import SceneManager
+        from Infernux.engine import prefab_manager as pm
+        from Infernux.engine.component_restore import (
+            preflight_game_object_python_components, instantiate_prepared_game_object_document,
+        )
+
+        target = self._project_assets._registered_file(path)
+        self._require_closed_prefab_mode(target)
+        if not self._is_prefab_asset(target):
+            raise ValueError("load_prefab_contents requires a .prefab asset")
+        content = self._project_assets.read_text(target)
+        document = pm._read_prefab_document(target)
+        database = self._project_assets.asset_database
+        guid = str(database.get_guid_from_path(target))
+        payload = pm._load_prefab_template_payload(target, guid, database)
+        if payload is None:
+            raise ValueError(f"Cannot load Prefab contents: {target}")
+        manager = SceneManager.instance()
+        scene = manager._create_preview_scene(os.path.basename(target))
+        try:
+            # The Editor's published class is authoritative. Re-importing a
+            # script here would attempt a new dispatch publication mid-UI-frame.
+            prepared = preflight_game_object_python_components(
+                payload, database, preserve_document_ids=False,
+                prefer_loaded_types=True, reference_scene=scene,
+            )
+            root = instantiate_prepared_game_object_document(scene, payload, prepared)
+            if root is None:
+                raise RuntimeError(f"Cannot instantiate Prefab contents: {target}")
+            self._contents[int(root.id)] = (scene, target, content, document)
+            return root
+        except BaseException:
+            manager._close_preview_scene(scene)
+            raise
+
+    def save_contents(self, root, path: str) -> str:
+        """Save detached contents, or create a new asset from an authored tree.
+
+        Existing assets can only be replaced by contents loaded from that asset.
+        Asset writes share Project Undo; editing the temporary tree does not.
+        """
+        import json
+        from Infernux.engine import prefab_manager as pm
+
+        target = self._project_assets._project_path(path)
+        self._require_closed_prefab_mode(target)
+        if not target.lower().endswith(pm.PREFAB_EXTENSION):
+            raise ValueError("Prefab paths require the .prefab extension")
+        session = self._contents.get(int(root.id))
+        source = session[3] if session else None
+        if session and same_path(session[1], target):
+            if self._project_assets.read_text(target) != session[2]:
+                raise RuntimeError("Prefab source changed since load; reload contents before saving")
+            if str(self._project_assets.asset_database.get_guid_from_path(target)) != root.prefab_guid:
+                raise RuntimeError("Prefab source identity changed since load; reload contents before saving")
+        elif os.path.exists(target):
+            raise FileExistsError("Load the target Prefab contents before overwriting it")
+        document = pm.serialize_prefab_document(
+            root, root_document_template=source["root_object"] if source else None,
+            source_canvas_name=source.get("source_canvas_name", "") if source else "",
+            next_local_id=source["next_local_id"] if source else 1,
+            next_component_id=source["next_component_id"] if source else 1,
+            preserve_root_properties=False,
+        )
+        database = self._project_assets.asset_database
+        guid = str(database.get_guid_from_path(target) or "")
+        pm._validate_nested_source_ancestry(document["root_object"], (guid,) if guid else ())
+        content = json.dumps(document, indent=2, ensure_ascii=False)
+        if os.path.exists(target):
+            self._project_assets.set_text(target, content)
+        else:
+            self._project_assets._save_resource_copy(
+                lambda: content, target, extension=pm.PREFAB_EXTENSION,
+                description="Save Prefab Asset", origin=ActionOrigin.USER,
+            )
+        guid = str(database.get_guid_from_path(target))
+        pm._invalidate_prefab_template_cache(target, guid)
+        if session:
+            pm._link_prefab_hierarchy(root, document["root_object"], guid)
+            self._contents[int(root.id)] = (session[0], target, content, document)
+        return target
+
+    @staticmethod
+    def _require_closed_prefab_mode(path):
+        from Infernux.engine.scene_manager import SceneFileManager
+
+        scene_files = SceneFileManager.instance()
+        if scene_files and scene_files.is_prefab_mode and same_path(scene_files.prefab_mode_path, path):
+            raise RuntimeError("Close this asset's Prefab Mode before editing its offline contents")
+
+    def unload_contents(self, root) -> None:
+        from Infernux.lib import SceneManager
+
+        identity = int(root.id)
+        session = self._contents.get(identity)
+        if session is None:
+            raise ValueError("Expected a root returned by load_prefab_contents")
+        SceneManager.instance()._close_preview_scene(session[0])
+        del self._contents[identity]
+
     def shutdown(self) -> None:
+        from Infernux.lib import SceneManager
+
+        for scene, *_ in self._contents.values():
+            SceneManager.instance()._close_preview_scene(scene)
+        self._contents.clear()
         self._context_provider = None
         if PrefabCommandService._instance is self:
             PrefabCommandService._instance = None

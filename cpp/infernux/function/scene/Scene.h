@@ -27,7 +27,7 @@ class Scene
 {
   public:
     Scene() = default;
-    explicit Scene(const std::string &name) : m_name(name)
+    explicit Scene(const std::string &name, bool preview = false) : m_name(name), m_isPreview(preview)
     {
     }
     ~Scene();
@@ -49,6 +49,12 @@ class Scene
     void SetName(const std::string &name)
     {
         m_name = name;
+    }
+
+    /// Isolated authoring content, never a member of the gameplay world.
+    [[nodiscard]] bool IsPreview() const noexcept
+    {
+        return m_isPreview;
     }
 
     /// Per-scene environment (skybox material + ambient) settings.
@@ -434,6 +440,7 @@ class Scene
     static uint64_t GenerateWorldId();
 
     std::string m_name = "Untitled Scene";
+    bool m_isPreview = false;
     uint64_t m_worldId = GenerateWorldId();
 
     // Root-level game objects (objects without parents)

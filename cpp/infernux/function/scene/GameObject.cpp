@@ -286,6 +286,12 @@ void GameObject::SetParent(GameObject *newParent, bool worldPositionStays)
     if (newParent == m_parent)
         return;
 
+    // Reparenting must not transfer ownership across the offline-authoring
+    // boundary (including between two independently loaded Prefab contents).
+    if (newParent && m_scene && newParent->m_scene && m_scene != newParent->m_scene &&
+        (m_scene->IsPreview() || newParent->m_scene->IsPreview()))
+        throw std::invalid_argument("Cannot reparent across an isolated preview Scene boundary");
+
     bool wasActiveInHierarchy = IsActiveInHierarchy();
     Scene *previousScene = m_scene;
 
