@@ -331,6 +331,37 @@ def main() -> int:
             np.testing.assert_array_equal(local_loop_output.get_data().numpy(), expected_local)
 
             @inx.compute.kernel
+            def loop_control(domain_values, output_values, limit):
+                i = inx.compute.index(domain_values)
+                total = 0
+                for j in range(-2, 6):
+                    if j == 0:
+                        continue
+                    if j > limit:
+                        break
+                    total = total * 3 + i + j
+                for outer in range(3):
+                    for inner in range(2):
+                        total += outer * 2 + inner
+                for empty in range(0):
+                    total += 10000
+                output_values[i] = total
+
+            for limit in (0, 3, 7):
+                inx.compute.launch(loop_control, params=(explicit_domain, local_loop_output, limit))
+                expected_control = []
+                for i in range(17):
+                    total = 0
+                    for j in range(-2, 6):
+                        if j == 0:
+                            continue
+                        if j > limit:
+                            break
+                        total = total * 3 + i + j
+                    expected_control.append(total + 15)
+                np.testing.assert_array_equal(local_loop_output.get_data().numpy(), expected_control)
+
+            @inx.compute.kernel
             def invalid_return(domain_values):
                 i = inx.compute.index(domain_values)
                 return i
