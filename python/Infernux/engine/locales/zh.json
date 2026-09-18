@@ -401,6 +401,8 @@
   "prefs.ide.available_hint": "此处仅显示当前检测到的 IDE。",
   "prefs.ide.none_available": "未检测到受支持的 IDE。代码文件将回退为使用系统默认程序打开。",
   "prefs.shortcuts": "快捷键",
+  "prefs.blender": "Blender 5.2 程序路径",
+  "prefs.blender.hint": "仅用于导入 .blend 源文件。填写已安装的 Blender 程序路径，应用后重新导入模型。清空路径可禁用 Blender 导入；构建出的游戏不需要安装 Blender。",
   "prefs.shortcuts.profile": "配置",
   "prefs.shortcuts.profile_name": "配置名称",
   "prefs.shortcuts.default_read_only": "默认配置不可编辑。请新建配置后再修改快捷键。",

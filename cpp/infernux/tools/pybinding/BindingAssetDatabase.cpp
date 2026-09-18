@@ -82,6 +82,8 @@ void RegisterAssetDatabaseBindings(py::module_ &m)
         .def("is_owner_thread", &AssetDatabase::IsOwnerThread,
              "Whether the caller owns this initialized asset database")
         .def("refresh", &AssetDatabase::Refresh, "Refresh assets by scanning Assets folder")
+        .def("configure_blender_import", &AssetDatabase::ConfigureBlenderImport, py::arg("executable"),
+             py::arg("export_script"))
         .def("begin_refresh", &AssetDatabase::BeginRefresh,
              "Schedule filesystem scan and fingerprint collection on the engine JobSystem")
         .def("try_commit_refresh", &AssetDatabase::TryCommitRefresh,

@@ -85,6 +85,12 @@ class PreferencesCommandService:
     def register_commands(self, registry: Any) -> None:
         from .commands import EditorCommand
 
+        registry.register(EditorCommand(
+            "preferences.set_blender_executable",
+            lambda context: self.set_blender_executable(context.payload.get("value", "")),
+            display_name="Set Blender Import Tool",
+            category="Preferences",
+        ))
         registry.register(
             EditorCommand(
                 "preferences.set_locale",
@@ -221,6 +227,13 @@ class PreferencesCommandService:
             value,
             set_locale,
             description="Set Editor Language",
+        )
+
+    def set_blender_executable(self, executable: object) -> bool:
+        from Infernux.engine.model_import.toolchain import get_blender_executable, set_blender_executable
+        return self._set_value(
+            get_blender_executable(), str(executable or "").strip(), set_blender_executable,
+            description="Set Blender Import Tool",
         )
 
     def set_ide(self, ide: object) -> bool:

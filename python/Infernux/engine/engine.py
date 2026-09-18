@@ -39,6 +39,9 @@ class Engine():
             else "editor"
         )
         self._engine = Infernux(_safe_path(lib_dir), self._mode)
+        if not _PLAYER_MODE:
+            from Infernux.engine.model_import.toolchain import configure_database
+            configure_database(self._engine.get_asset_database())
         self.set_log_level(engine_log_level)
         self._gui_objects = {}
         self._play_mode_manager = None

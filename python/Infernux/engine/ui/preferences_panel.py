@@ -41,6 +41,8 @@ class PreferencesPanel(EditorPanel):
         self._shortcut_binding_buffers: dict[str, str] = {}
         self._shortcut_error = ""
         self._shortcut_profile_revision = -1
+        self._blender_path = None
+        self._blender_error = ""
 
     def _initial_size(self) -> tuple[float, float]:
         return 980.0, 720.0
@@ -102,7 +104,31 @@ class PreferencesPanel(EditorPanel):
             ctx.text_wrapped(t("prefs.ide.none_available"))
 
         ctx.separator()
+        self._render_blender_tool(ctx)
+        ctx.separator()
         self._render_shortcuts(ctx, dpi)
+
+    def _render_blender_tool(self, ctx) -> None:
+        from Infernux.engine.model_import.toolchain import get_blender_executable
+        if self._blender_path is None:
+            self._blender_path = get_blender_executable()
+        ctx.label(t("prefs.blender"))
+        ctx.set_next_item_width(max(120.0, ctx.get_content_region_avail_width() - 80.0))
+        self._blender_path = ctx.text_input("##blender_executable", self._blender_path, 4096)
+        ctx.record_semantic_item("text_input", t("prefs.blender"), True, "preferences.blender.path")
+        ctx.same_line()
+        clicked = ctx.button(t("prefs.shortcuts.apply") + "##blender_executable_apply")
+        ctx.record_semantic_item("button", t("prefs.shortcuts.apply"), True, "preferences.blender.apply")
+        if clicked:
+            try:
+                submit_preferences_command("preferences.set_blender_executable", source=CommandSource.POINTER,
+                                           value=self._blender_path)
+                self._blender_error = ""
+            except (ValueError, RuntimeError) as exc:
+                self._blender_error = str(exc)
+        ctx.text_wrapped(t("prefs.blender.hint"))
+        if self._blender_error:
+            ctx.text_wrapped(self._blender_error)
 
     def _render_shortcuts(self, ctx, dpi: float) -> None:
         core = EditorInteractionCore.instance()

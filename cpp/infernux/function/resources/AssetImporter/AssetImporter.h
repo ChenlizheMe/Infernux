@@ -21,6 +21,11 @@ struct ImportRequest
     ResourceType resourceType = ResourceType::DefaultText;
     InxResourceMeta metadata;
     bool isReimport = false;
+    // Editor-owned tool configuration is captured on the owner thread; worker
+    // imports never call Python or read mutable editor preferences.
+    std::string projectRoot;
+    std::string blenderExecutable;
+    std::string blenderExportScript;
 };
 
 /**

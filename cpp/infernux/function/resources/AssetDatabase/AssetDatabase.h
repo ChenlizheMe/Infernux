@@ -123,6 +123,10 @@ class AssetDatabase
     /// Also creates and registers all built-in importers.
     void Initialize(const std::string &projectRoot);
 
+    /// Configure before startup, or on the owner between import transactions.
+    /// Empty paths disable .blend authoring; Players never need this tool.
+    void ConfigureBlenderImport(const std::string &executable, const std::string &exportScript);
+
     /// @brief Initialize the immutable Player-side database without editor importers.
     ///
     /// Platform Players consume build-authored RuntimeAssetRecords and never
@@ -650,6 +654,8 @@ class AssetDatabase
     [[nodiscard]] bool IsReadOnlyPath(const std::string &normalizedPath) const;
 
     std::string m_projectRoot;
+    std::string m_blenderExecutable;
+    std::string m_blenderExportScript;
     std::string m_assetsRoot;
     std::vector<std::string> m_extraScanRoots;
     std::unordered_set<std::string> m_readOnlyScanRoots;

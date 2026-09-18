@@ -5,6 +5,7 @@
 #include <function/resources/InxMaterial/MaterialDocumentValidation.h>
 #include <function/resources/InxMesh/MeshArtifact.h>
 #include <function/resources/InxMesh/MeshLoader.h>
+#include <function/resources/InxSkinnedMesh/InxSkinnedMesh.h>
 #include <function/resources/InxSkinnedMesh/SkinnedMeshArtifact.h>
 #include <function/resources/InxTexture/TextureArtifact.h>
 #include <function/resources/InxTexture/TextureDecoder.h>
@@ -12,6 +13,8 @@
 #include <platform/filesystem/InxPath.h>
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <fstream>
@@ -21,12 +24,112 @@
 #include <regex>
 #include <unordered_set>
 #include <vector>
+#if !defined(__EMSCRIPTEN__) && !defined(__ANDROID__)
+#include <SDL3/SDL.h>
+#endif
 
 namespace infernux
 {
 
 namespace
 {
+
+// A .blend file is an editor source, never a runtime format. The conversion
+// lives inside this import request and is discarded once binary artifacts exist.
+class BlenderSource
+{
+  public:
+    explicit BlenderSource(const ImportRequest &request)
+    {
+        if (request.blenderExecutable.empty() || request.blenderExportScript.empty())
+            throw std::runtime_error(
+                "Blender 5.2 model import is not configured; select the Blender tool in editor preferences");
+        if (request.projectRoot.empty())
+            throw std::logic_error("Blender import requires a project Library directory");
+        const auto parent = ToFsPath(request.projectRoot) / "Library" / "ModelImport";
+        std::filesystem::create_directories(parent);
+        static std::atomic<uint64_t> sequence{0};
+        directory = parent / (std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + "-" +
+                              std::to_string(sequence.fetch_add(1)));
+        if (!std::filesystem::create_directory(directory))
+            throw std::runtime_error("Cannot reserve Blender import directory");
+    }
+
+    ~BlenderSource()
+    {
+        std::error_code error;
+        std::filesystem::remove_all(directory, error);
+        if (error)
+            INXLOG_WARN("Cannot remove Blender import staging directory: ", error.message());
+    }
+
+    std::string Convert(const ImportRequest &request) const
+    {
+#if defined(__EMSCRIPTEN__) || defined(__ANDROID__)
+        throw std::runtime_error("Blender source import is available only in desktop editors");
+#else
+        const std::string output = FromFsPath(directory / "model.glb");
+        const char *args[] = {request.blenderExecutable.c_str(),
+                              "--background",
+                              "--factory-startup",
+                              "--disable-autoexec",
+                              "--python-exit-code",
+                              "1",
+                              "--python",
+                              request.blenderExportScript.c_str(),
+                              "--",
+                              request.sourcePath.c_str(),
+                              output.c_str(),
+                              nullptr};
+        const SDL_PropertiesID props = SDL_CreateProperties();
+        SDL_SetPointerProperty(props, SDL_PROP_PROCESS_CREATE_ARGS_POINTER, const_cast<char **>(args));
+        SDL_SetNumberProperty(props, SDL_PROP_PROCESS_CREATE_STDOUT_NUMBER, SDL_PROCESS_STDIO_APP);
+        SDL_SetBooleanProperty(props, SDL_PROP_PROCESS_CREATE_STDERR_TO_STDOUT_BOOLEAN, true);
+        std::unique_ptr<SDL_Process, decltype(&SDL_DestroyProcess)> process(SDL_CreateProcessWithProperties(props),
+                                                                            SDL_DestroyProcess);
+        SDL_DestroyProperties(props);
+        if (!process)
+            throw std::runtime_error("Cannot launch Blender: " + std::string(SDL_GetError()));
+        // Drain a non-blocking pipe and retain a bounded diagnostic tail. No
+        // inherited log-file handles can keep staging files locked on Windows.
+        std::string detail;
+        SDL_IOStream *stream = SDL_GetProcessOutput(process.get());
+        const auto drain = [&]() {
+            char buffer[4096];
+            for (int block = 0; block < 16; ++block) {
+                const size_t count = SDL_ReadIO(stream, buffer, sizeof(buffer));
+                if (count == 0)
+                    break;
+                detail.append(buffer, count);
+                if (detail.size() > 8000)
+                    detail.erase(0, detail.size() - 8000);
+            }
+        };
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(120);
+        int exitCode = 0;
+        bool timedOut = false;
+        while (!SDL_WaitProcess(process.get(), false, &exitCode)) {
+            drain();
+            if (std::chrono::steady_clock::now() >= deadline) {
+                SDL_KillProcess(process.get(), true);
+                SDL_WaitProcess(process.get(), true, &exitCode);
+                timedOut = true;
+                break;
+            }
+            SDL_Delay(10);
+        }
+        drain();
+        if (timedOut || exitCode != 0 || !std::filesystem::is_regular_file(ToFsPath(output))) {
+            throw std::runtime_error(std::string(timedOut ? "Blender import timed out" : "Blender import failed") +
+                                     " for '" + request.sourcePath + "':\n" + detail);
+        }
+        return output;
+#endif
+    }
+
+  private:
+    std::filesystem::path directory;
+};
 
 bool IsBuiltinTextureToken(const std::string &value)
 {
@@ -509,9 +612,21 @@ ImportArtifact ModelImporter::Import(const ImportRequest &request) const
 {
     ImportArtifact artifact(request.metadata);
     EnsureDefaultSettings(artifact.metadata);
-    auto imported = MeshLoader::ImportSourceDetailed(request.sourcePath, request.guid, artifact.metadata);
+    std::string sourcePath = request.sourcePath;
+    std::string extension = FromFsPath(ToFsPath(sourcePath).extension());
+    std::transform(extension.begin(), extension.end(), extension.begin(),
+                   [](unsigned char c) { return std::tolower(c); });
+    std::unique_ptr<BlenderSource> blender;
+    if (extension == ".blend") {
+        blender = std::make_unique<BlenderSource>(request);
+        sourcePath = blender->Convert(request);
+    }
+    auto imported = MeshLoader::ImportSourceDetailed(sourcePath, request.guid, artifact.metadata);
     if (!imported.mesh)
         throw std::logic_error("ModelImporter detailed source import returned no runtime mesh");
+    imported.mesh->SetFilePath(request.sourcePath);
+    if (imported.skinnedMesh)
+        imported.skinnedMesh->sourcePath = request.sourcePath;
 
     const auto checkedMetadataInt = [](uint64_t value, std::string_view field) {
         if (value > static_cast<uint64_t>(std::numeric_limits<int>::max()))
@@ -547,7 +662,7 @@ ImportArtifact ModelImporter::Import(const ImportRequest &request) const
                                   checkedMetadataInt(imported.animationNames.size(), "animation_count"));
     artifact.metadata.AddMetadata("animation_names_csv", joinCsv(imported.animationNames));
 
-    const auto externalTextures = MeshLoader::ScanExternalTexturePaths(request.sourcePath);
+    const auto externalTextures = MeshLoader::ScanExternalTexturePaths(sourcePath);
     artifact.dependencyPathHints.assign(externalTextures.begin(), externalTextures.end());
     artifact.dependenciesAuthoritative = true;
     std::set<std::string> materialDependencies;

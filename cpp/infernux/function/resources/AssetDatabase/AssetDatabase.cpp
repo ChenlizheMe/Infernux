@@ -582,6 +582,21 @@ void AssetDatabase::InstallQuerySnapshot(std::shared_ptr<QuerySnapshot> snapshot
                                std::memory_order_release);
 }
 
+void AssetDatabase::ConfigureBlenderImport(const std::string &executable, const std::string &exportScript)
+{
+    if (m_initialized) {
+        AssertMutationThread("ConfigureBlenderImport");
+        AssertNoPendingCommit("ConfigureBlenderImport");
+    }
+    if (executable.empty() != exportScript.empty())
+        throw std::invalid_argument("Blender import requires both an executable and an export script");
+    for (const auto &path : {executable, exportScript})
+        if (!path.empty() && !ToFsPath(path).is_absolute())
+            throw std::invalid_argument("Blender import tool requires an absolute path: " + path);
+    m_blenderExecutable = executable;
+    m_blenderExportScript = exportScript;
+}
+
 void AssetDatabase::Initialize(const std::string &projectRoot)
 {
     if (m_initialized)
@@ -1520,6 +1535,9 @@ bool AssetDatabase::ContinuePendingMetadataMerge(const std::shared_ptr<PendingRe
         item.assetIndex = assetIndex;
         item.importer = importer;
         item.request.sourcePath = asset.path;
+        item.request.projectRoot = m_projectRoot;
+        item.request.blenderExecutable = m_blenderExecutable;
+        item.request.blenderExportScript = m_blenderExportScript;
         item.request.guid = asset.guid;
         item.request.resourceType = metadata->second->GetResourceType();
         item.request.metadata = *metadata->second;
@@ -2594,6 +2612,9 @@ bool AssetDatabase::RunImporter(const std::string &guid, const std::string &path
 
     ImportRequest request;
     request.sourcePath = path;
+    request.projectRoot = m_projectRoot;
+    request.blenderExecutable = m_blenderExecutable;
+    request.blenderExportScript = m_blenderExportScript;
     request.guid = guid;
     request.resourceType = GetResourceTypeForPath(path);
     request.metadata = candidateMetadata ? *candidateMetadata : *metaIt->second;
