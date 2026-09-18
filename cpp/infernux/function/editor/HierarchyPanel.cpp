@@ -972,27 +972,55 @@ void HierarchyPanel::RenderSceneHeader(InxGUIContext *ctx, Scene *scene)
     const uint64_t worldId = scene->GetWorldId();
     const bool active = SceneManager::Instance().GetActiveScene() == scene;
     ctx->PushID("HierarchyScene_" + std::to_string(worldId));
-    // Scene groups are first-class rows: they have their own inset header
-    // treatment and never duplicate the panel title above the search field.
+    // Scene groups are first-class rows.  Keep their appearance separate from
+    // GameObject rows: this is the same compact, framed treatment used by
+    // Inspector component headers, while the hierarchy tree below remains
+    // unchanged.
     const float dpi = ctx->GetDpiScale();
-    ctx->PushStyleColor(ImGuiCol_Header, EditorTheme::HEADER_ACTIVE.x, EditorTheme::HEADER_ACTIVE.y,
-                        EditorTheme::HEADER_ACTIVE.z, EditorTheme::HEADER_ACTIVE.w);
-    ctx->PushStyleColor(ImGuiCol_HeaderHovered, EditorTheme::HEADER_HOVERED.x, EditorTheme::HEADER_HOVERED.y,
-                        EditorTheme::HEADER_HOVERED.z, EditorTheme::HEADER_HOVERED.w);
-    ctx->PushStyleColor(ImGuiCol_HeaderActive, EditorTheme::HEADER_ACTIVE.x, EditorTheme::HEADER_ACTIVE.y,
-                        EditorTheme::HEADER_ACTIVE.z, EditorTheme::HEADER_ACTIVE.w);
-    ctx->PushStyleVarVec2(ImGuiStyleVar_FramePadding, 6.0f * dpi, 4.0f * dpi);
-    std::string label = "  " + scene->GetName();
+    const ImVec4 &header = active ? EditorTheme::INSPECTOR_HEADER_SELECTED : EditorTheme::INSPECTOR_HEADER_PRIMARY;
+    const ImVec4 &hovered = active ? EditorTheme::INSPECTOR_HEADER_SELECTED_HOVERED
+                                   : EditorTheme::INSPECTOR_HEADER_PRIMARY_HOVERED;
+    const ImVec4 &pressed = active ? EditorTheme::INSPECTOR_HEADER_SELECTED_ACTIVE
+                                   : EditorTheme::INSPECTOR_HEADER_PRIMARY_ACTIVE;
+    ctx->PushStyleColor(ImGuiCol_Header, header.x, header.y, header.z, header.w);
+    ctx->PushStyleColor(ImGuiCol_HeaderHovered, hovered.x, hovered.y, hovered.z, hovered.w);
+    ctx->PushStyleColor(ImGuiCol_HeaderActive, pressed.x, pressed.y, pressed.z, pressed.w);
+    ctx->PushStyleVarVec2(ImGuiStyleVar_FramePadding,
+                          EditorTheme::INSPECTOR_HEADER_PRIMARY_FRAME_PAD.x * dpi,
+                          EditorTheme::INSPECTOR_HEADER_PRIMARY_FRAME_PAD.y * dpi);
+    ctx->PushStyleVarVec2(ImGuiStyleVar_ItemSpacing,
+                          EditorTheme::INSPECTOR_HEADER_ITEM_SPC.x * dpi,
+                          EditorTheme::INSPECTOR_HEADER_ITEM_SPC.y * dpi);
+    ctx->PushStyleVarFloat(ImGuiStyleVar_FrameBorderSize, EditorTheme::INSPECTOR_HEADER_BORDER_SIZE * dpi);
+    ctx->PushStyleVarFloat(ImGuiStyleVar_FrameRounding, 3.0f * dpi);
+
+    const float originalX = ctx->GetCursorPosX();
+    const float inset = 4.0f * dpi;
+    ctx->SetCursorPosX(originalX + inset);
+    std::string label = scene->GetName();
     label += "###HierarchySceneHeader";
-    if (ctx->Selectable(label, active, ImGuiSelectableFlags_SpanAllColumns, 0.0f, m_cachedItemHeight + 4.0f * dpi))
+    if (ctx->Selectable(label, active, ImGuiSelectableFlags_SpanAllColumns, 0.0f,
+                        m_cachedItemHeight + 4.0f * dpi))
         ExecuteEditorCommand("scene.set_active", std::to_string(worldId), "pointer");
+
+    // Component headers use a quiet accent edge rather than a full saturated
+    // row.  It gives the scene boundary a clear visual identity without
+    // changing the styling of any GameObject row beneath it.
+    const float minX = ctx->GetItemRectMinX();
+    const float minY = ctx->GetItemRectMinY();
+    const float maxY = ctx->GetItemRectMaxY();
+    const ImVec4 &accent = active ? EditorTheme::SELECTION_BG : EditorTheme::PREFAB_TEXT;
+    ctx->DrawFilledRect(minX, minY, minX + 3.0f * dpi, maxY, accent.x, accent.y, accent.z, accent.w, 2.0f * dpi);
+
+    // Do not carry the scene inset into the first GameObject row.
+    ctx->SetCursorPosX(originalX);
     if (ctx->BeginPopupContextItem("##HierarchySceneContext", 1)) {
-        if (ctx->MenuItem("Set Active Scene", "", active, true))
+        if (ctx->MenuItem(Tr("hierarchy.scene.set_active").c_str(), "", active, true))
             ExecuteEditorCommand("scene.set_active", std::to_string(worldId), "context_menu");
-        if (ctx->MenuItem("Save Scene", "Ctrl+S", false, true))
+        if (ctx->MenuItem(Tr("hierarchy.scene.save").c_str(), "Ctrl+S", false, true))
             ExecuteEditorCommand("scene.save", std::to_string(worldId), "context_menu");
         ctx->Separator();
-        if (ctx->MenuItem("Unload Scene", "", false, true))
+        if (ctx->MenuItem(Tr("hierarchy.scene.unload").c_str(), "", false, true))
             ExecuteEditorCommand("scene.unload", std::to_string(worldId), "context_menu");
         ctx->EndPopup();
     }
@@ -1000,7 +1028,7 @@ void HierarchyPanel::RenderSceneHeader(InxGUIContext *ctx, Scene *scene)
         ctx->RecordSemanticItem("hierarchy_scene", scene->GetName(), true, "hierarchy.scene." + std::to_string(worldId),
                                 active);
     ctx->PopID();
-    ctx->PopStyleVar(1);
+    ctx->PopStyleVar(4);
     ctx->PopStyleColor(3);
 }
 
