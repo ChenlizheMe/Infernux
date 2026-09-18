@@ -1784,6 +1784,9 @@ void RegisterSceneBindings(py::module_ &m)
 
     py::enum_<PhysicalGateFit>(m, "PhysicalGateFit")
         .value("None", PhysicalGateFit::None)
+        // ``None`` is retained for serialized/API parity; Python callers can
+        // spell the reserved member as ``PhysicalGateFit.None_``.
+        .value("None_", PhysicalGateFit::None)
         .value("Vertical", PhysicalGateFit::Vertical)
         .value("Horizontal", PhysicalGateFit::Horizontal)
         .value("Fill", PhysicalGateFit::Fill)
