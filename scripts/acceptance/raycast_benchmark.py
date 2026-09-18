@@ -27,6 +27,7 @@ from Infernux.engine.path_utils import resolved_path, same_path
 from Infernux.engine.scene_manager import SceneFileManager
 from Infernux.lib import Physics as NativePhysics
 from Infernux.lib import SceneManager as NativeSceneManager
+from Infernux.lib import Vector3
 from Infernux.scene import SceneManager
 
 
@@ -52,6 +53,11 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--samples", type=int, default=30)
     parser.add_argument("--warmup", type=int, default=5)
     parser.add_argument(
+        "--collider-counts",
+        default="0",
+        help="optional comma-separated counts of temporary static BoxColliders; each count is measured as a separate world-size row",
+    )
+    parser.add_argument(
         "--pattern",
         choices=("all_hit", "sparse", "all_miss"),
         default="all_hit",
@@ -59,6 +65,34 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--output")
     return parser
+
+
+def _create_static_box_matrix(scene, count: int) -> list:
+    """Create a temporary broadphase population without touching the scene document."""
+    if count <= 0:
+        return []
+    objects = []
+    side = max(1, int(np.ceil(np.sqrt(count))))
+    for index in range(count):
+        obj = scene.create_game_object(f"__RaycastBenchmarkCollider_{index}")
+        obj.transform.position = Vector3(
+            (index % side) * 0.75 - (side - 1) * 0.375,
+            0.0,
+            (index // side) * 0.75 - (side - 1) * 0.375,
+        )
+        collider = obj.add_component("BoxCollider")
+        collider.size = Vector3(0.5, 0.5, 0.5)
+        objects.append(obj)
+    NativePhysics.sync_transforms()
+    return objects
+
+
+def _destroy_static_box_matrix(scene, objects: list) -> None:
+    for obj in objects:
+        scene.destroy_game_object(obj)
+    if objects:
+        scene.process_pending_destroys()
+        NativePhysics.sync_transforms()
 
 
 def main() -> int:
@@ -74,8 +108,11 @@ def main() -> int:
     if not os.path.isfile(scene_path):
         raise FileNotFoundError(scene_path)
     counts = tuple(sorted({int(item) for item in str(args.counts).split(",") if item}))
+    collider_counts = tuple(sorted({int(item) for item in str(args.collider_counts).split(",") if item}))
     if not counts or any(item <= 0 for item in counts):
         raise ValueError("--counts must contain positive integers")
+    if not collider_counts or any(item < 0 for item in collider_counts):
+        raise ValueError("--collider-counts must contain non-negative integers")
     if args.samples <= 0 or args.warmup < 0:
         raise ValueError("--samples must be positive and --warmup cannot be negative")
 
@@ -114,41 +151,51 @@ def main() -> int:
 
         NativePhysics.sync_transforms()
         measurements = []
-        for count in counts:
-            origins = np.zeros((count, 3), dtype=np.float32)
-            origins[:, 1] = 5.0
-            # Spread the probes over the scene so dense and sparse worlds can
-            # use the same benchmark without creating one Python ray object per
-            # query.
-            side = max(1, int(np.ceil(np.sqrt(count))))
-            axis = (np.arange(count, dtype=np.float32) % side) / max(1, side - 1)
-            origins[:, 0] = axis * 8.0 - 4.0
-            origins[:, 2] = (np.arange(count, dtype=np.float32) // side) * 8.0 / side - 4.0
-            if args.pattern == "all_miss":
-                origins[:, 0] = 1000.0
-                origins[:, 2] = 1000.0
-            elif args.pattern == "sparse":
-                miss = (np.arange(count, dtype=np.int64) % 8) != 0
-                origins[miss, 0] = 1000.0
-                origins[miss, 2] = 1000.0
-            directions = np.zeros_like(origins)
-            directions[:, 1] = -1.0
-            output = _output(count)
-            for _ in range(args.warmup):
-                inx.physics.Physics.raycast_batch(origins, directions, output, max_distance=20.0)
-            timings = []
-            for _ in range(args.samples):
-                start = time.perf_counter_ns()
-                inx.physics.Physics.raycast_batch(origins, directions, output, max_distance=20.0)
-                timings.append((time.perf_counter_ns() - start) / 1_000_000.0)
-            measurements.append({
-                "count": count,
-                "p50_ms": float(np.percentile(timings, 50)),
-                "p95_ms": float(np.percentile(timings, 95)),
-                "max_ms": float(max(timings)),
-                "rays_per_second_p50": float(count / (np.percentile(timings, 50) / 1000.0)),
-                "hits_last_sample": int(output["hit"].sum()),
-            })
+        active_scene = NativeSceneManager.instance().get_active_scene()
+        if active_scene is None:
+            state["error"] = "active scene unavailable for collider-growth benchmark"
+            return False
+        for collider_count in collider_counts:
+            temporary_colliders = _create_static_box_matrix(active_scene, collider_count)
+            try:
+                for count in counts:
+                    origins = np.zeros((count, 3), dtype=np.float32)
+                    origins[:, 1] = 5.0
+                    # Spread the probes over the scene so dense and sparse worlds can
+                    # use the same benchmark without creating one Python ray object per
+                    # query.
+                    side = max(1, int(np.ceil(np.sqrt(count))))
+                    axis = (np.arange(count, dtype=np.float32) % side) / max(1, side - 1)
+                    origins[:, 0] = axis * 8.0 - 4.0
+                    origins[:, 2] = (np.arange(count, dtype=np.float32) // side) * 8.0 / side - 4.0
+                    if args.pattern == "all_miss":
+                        origins[:, 0] = 1000.0
+                        origins[:, 2] = 1000.0
+                    elif args.pattern == "sparse":
+                        miss = (np.arange(count, dtype=np.int64) % 8) != 0
+                        origins[miss, 0] = 1000.0
+                        origins[miss, 2] = 1000.0
+                    directions = np.zeros_like(origins)
+                    directions[:, 1] = -1.0
+                    output = _output(count)
+                    for _ in range(args.warmup):
+                        inx.physics.Physics.raycast_batch(origins, directions, output, max_distance=20.0)
+                    timings = []
+                    for _ in range(args.samples):
+                        start = time.perf_counter_ns()
+                        inx.physics.Physics.raycast_batch(origins, directions, output, max_distance=20.0)
+                        timings.append((time.perf_counter_ns() - start) / 1_000_000.0)
+                    measurements.append({
+                        "collider_count": collider_count,
+                        "count": count,
+                        "p50_ms": float(np.percentile(timings, 50)),
+                        "p95_ms": float(np.percentile(timings, 95)),
+                        "max_ms": float(max(timings)),
+                        "rays_per_second_p50": float(count / (np.percentile(timings, 50) / 1000.0)),
+                        "hits_last_sample": int(output["hit"].sum()),
+                    })
+            finally:
+                _destroy_static_box_matrix(active_scene, temporary_colliders)
         state["result"] = measurements
         return False
 
@@ -169,6 +216,7 @@ def main() -> int:
         "pattern": args.pattern,
         "samples": args.samples,
         "warmup": args.warmup,
+        "collider_counts": list(collider_counts),
         "error": state["error"],
         "runtime_errors": errors,
         "measurements": state["result"] or [],
