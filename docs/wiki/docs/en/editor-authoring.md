@@ -98,8 +98,18 @@ callback inline or retries it. Register the command with
 `save_as_prefab_asset` returns the asset path. New files must be under `Assets`
 or `Packages`, with an existing parent directory. To overwrite an existing file,
 load that file's contents first. Nested Prefabs, internal references and source
-identities are preserved. This operation does not link an ordinary scene object
-to the asset or create a Variant; use `create_prefab` to create and connect.
+identities are preserved. An ordinary scene object produces an ordinary Prefab;
+this operation does not connect it to the new asset. Use `create_prefab` to create
+and connect. Saving a linked Prefab root to a new path creates a Variant of its
+source. A Variant may itself be the source of another Variant.
+
+Offline saving and Apply update registered descendant Variants and their loaded
+scene instances in the same Undo/Redo operation. Local property overrides,
+added children and removed components survive base updates. Inherited objects
+can be deactivated, but cannot be deleted or reparented in a Variant. Variants
+remain ordinary `.prefab` assets with inheritance metadata; they do not introduce
+a second runtime object type. Dedicated Variant override controls, dependency
+refresh after external file edits, and final Player delivery are still in progress.
 
 Saving rejects source changes or deletion since load. Close the same asset's
 Prefab Mode before editing it offline. Saving an existing source, or applying

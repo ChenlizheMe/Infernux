@@ -500,6 +500,8 @@ def test_prefab_history_restores_closed_scene_owners_additively(
                 assert files.unregister_loaded_scene(world)
                 world_id = world.world_id
                 manager.unload_scene(world)
+
+
                 assert manager.get_scene_by_world_id(world_id) is None
 
         close_owners()
@@ -554,3 +556,148 @@ def test_prefab_history_restores_closed_scene_owners_additively(
             if world is not None:
                 files.unregister_loaded_scene(world)
                 manager.unload_scene(world)
+
+
+@pytest.mark.parametrize("apply_instance", [False, True])
+def test_variant_source_update_and_all_dependents_share_one_history(contents_project, scene, apply_instance):
+    from Infernux.engine.prefab_manager import instantiate_prefab
+    from Infernux.engine.prefab_overrides import build_prefab_apply_command
+
+    _, folder = contents_project
+    database = AssetManager.require_asset_database()
+    base_path = folder / "Base.prefab"
+    first_path = folder / "Variant.prefab"
+    second_path = folder / "Derived.prefab"
+    make_asset(scene, base_path)
+    loaded = editor.load_prefab_contents(base_path)
+    try:
+        loaded.name = "Variant name"
+        editor.save_as_prefab_asset(loaded, first_path)
+    finally:
+        editor.unload_prefab_contents(loaded)
+    loaded = editor.load_prefab_contents(first_path)
+    try:
+        loaded.get_child(0).name = "Derived collider"
+        editor.save_as_prefab_asset(loaded, second_path)
+    finally:
+        editor.unload_prefab_contents(loaded)
+    paths = [base_path, first_path, second_path]
+    instances = [instantiate_prefab(file_path=str(path), guid=database.get_guid_from_path(str(path)),
+                                    scene=scene, asset_database=database) for path in paths]
+    instances[-1].tag = "Private instance"
+    saved_before = [path.read_bytes() for path in paths]
+    before = [instance.serialize_document() for instance in instances]
+    if apply_instance:
+        source = instances[0]
+        source.get_child(0).layer = 5
+        scene.create_game_object("Added by base").set_parent(source)
+        before[0] = source.serialize_document()
+        assert UndoManager.instance().execute(build_prefab_apply_command(source, str(base_path), database))
+    else:
+        loaded = editor.load_prefab_contents(base_path)
+        try:
+            loaded.get_child(0).layer = 5
+            loaded.scene.create_game_object("Added by base").set_parent(loaded)
+            editor.save_as_prefab_asset(loaded, base_path)
+        finally:
+            editor.unload_prefab_contents(loaded)
+    for instance in instances:
+        assert instance.get_child(0).layer == 5
+        assert sum(child.name == "Added by base" for child in instance.get_children()) == 1
+    assert instances[1].name == "Variant name (Clone)"
+    assert instances[2].get_child(0).name == "Derived collider"
+    assert instances[-1].tag == "Private instance"
+    assert json.loads(first_path.read_text(encoding="utf8"))["variant"]["guid"] == database.get_guid_from_path(str(base_path))
+    saved_after = [path.read_bytes() for path in paths]
+    after = [instance.serialize_document() for instance in instances]
+    editor.undo(defer=False)
+    assert [path.read_bytes() for path in paths] == saved_before
+    assert [instance.serialize_document() for instance in instances] == before
+    editor.redo(defer=False)
+    assert [path.read_bytes() for path in paths] == saved_after
+    assert [instance.serialize_document() for instance in instances] == after
+
+
+@pytest.mark.parametrize("failure", ["dependent_write", "external_edit"])
+def test_variant_batch_failure_does_not_leave_partial_history(contents_project, scene, monkeypatch, failure):
+    from Infernux.engine import prefab_overrides
+    from Infernux.engine.prefab_manager import instantiate_prefab
+
+    _, folder = contents_project
+    database = AssetManager.require_asset_database()
+    base_path, variant_path = folder / "Base.prefab", folder / "Variant.prefab"
+    make_asset(scene, base_path)
+    root = editor.load_prefab_contents(base_path)
+    try:
+        root.name = "Private variant"
+        editor.save_as_prefab_asset(root, variant_path)
+    finally:
+        editor.unload_prefab_contents(root)
+    paths = [base_path, variant_path]
+    instances = [instantiate_prefab(file_path=str(path), guid=database.get_guid_from_path(str(path)),
+                                    scene=scene, asset_database=database) for path in paths]
+    before_files = [path.read_bytes() for path in paths]
+    before_instances = [obj.serialize_document() for obj in instances]
+    history = UndoManager.instance().undo_description
+    root = editor.load_prefab_contents(base_path)
+    try:
+        root.get_child(0).layer = 6
+        if failure == "dependent_write":
+            original_write = prefab_overrides._write_prefab_apply_document
+            interrupted = []
+
+            def write(path, document, asset_database=None):
+                if Path(path) == variant_path and not interrupted:
+                    interrupted.append(True)
+                    raise OSError("Injected dependent write failure")
+                return original_write(path, document, asset_database)
+
+            with monkeypatch.context() as patch:
+                patch.setattr(prefab_overrides, "_write_prefab_apply_document", write)
+                with pytest.raises(RuntimeError):
+                    editor.save_as_prefab_asset(root, base_path)
+            assert interrupted
+            assert [path.read_bytes() for path in paths] == before_files
+            assert [obj.serialize_document() for obj in instances] == before_instances
+            assert UndoManager.instance().undo_description == history
+        else:
+            editor.save_as_prefab_asset(root, base_path)
+            edited = json.loads(variant_path.read_text(encoding="utf8"))
+            edited["root_object"]["name"] = "External author"
+            variant_path.write_text(json.dumps(edited, indent=2), encoding="utf8")
+            current_files = [path.read_bytes() for path in paths]
+            current_instances = [obj.serialize_document() for obj in instances]
+            editor.undo(defer=False)
+            assert [path.read_bytes() for path in paths] == current_files
+            assert [obj.serialize_document() for obj in instances] == current_instances
+            assert UndoManager.instance().undo_description == "Save Prefab Asset"
+    finally:
+        editor.unload_prefab_contents(root)
+
+
+def test_variant_resave_preserves_equal_base_override_intent(contents_project, scene):
+    _, folder = contents_project
+    base_path, variant_path = folder / "Base.prefab", folder / "Variant.prefab"
+    make_asset(scene, base_path)
+
+    def save_layer(source, destination, layer):
+        root = editor.load_prefab_contents(source)
+        try:
+            root.get_child(0).layer = layer
+            editor.save_as_prefab_asset(root, destination)
+        finally:
+            editor.unload_prefab_contents(root)
+
+    save_layer(base_path, variant_path, 5)
+    save_layer(base_path, base_path, 5)
+    root = editor.load_prefab_contents(variant_path)
+    try:
+        root.name = "Another edit"
+        editor.save_as_prefab_asset(root, variant_path)
+    finally:
+        editor.unload_prefab_contents(root)
+    save_layer(base_path, base_path, 7)
+    result = json.loads(variant_path.read_text(encoding="utf8"))
+    assert result["root_object"]["children"][0]["layer"] == 5
+    assert result["root_object"]["name"] == "Another edit"
+    assert result["variant"]["baseline"]["root_object"]["children"][0]["layer"] == 7

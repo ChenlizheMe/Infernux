@@ -198,6 +198,13 @@ def apply_overrides_to_prefab(instance_obj, prefab_path: str,
     matches the instance).
     """
     instance_obj = resolve_prefab_instance_root(instance_obj) or instance_obj
+    if asset_database is not None and asset_database.get_guid_from_path(prefab_path):
+        try:
+            build_prefab_apply_command(instance_obj, prefab_path, asset_database).execute()
+            return True
+        except Exception as exc:
+            Debug.log_error(f"Failed to apply Prefab asset transaction: {exc}")
+            return False
     try:
         from Infernux.engine.prefab_manager import (
             _read_prefab_document, _serialize_prefab_snapshot, save_prefab_document,
@@ -251,6 +258,25 @@ def build_prefab_apply_command(instance_obj, prefab_path: str,
     from Infernux.engine.undo import PrefabApplyOverridesCommand
 
     prefab_guid = getattr(instance_root, "prefab_guid", "") or ""
+
+    if asset_database is not None and asset_database.get_guid_from_path(prefab_path):
+        from Infernux.engine.prefab_manager import _read_prefab_document, _serialize_prefab_snapshot
+        from Infernux.engine.prefab_variant import edit_variant_document
+
+        previous = _read_prefab_document(prefab_path)
+        runtime = _serialize_obj(instance_root)
+        updated, source_ids, component_ids = _serialize_prefab_snapshot(
+            runtime, source_canvas_name=previous.get("source_canvas_name", ""),
+            root_document_template=previous["root_object"], next_local_id=previous["next_local_id"],
+            next_component_id=previous["next_component_id"],
+        )
+        if "variant" in previous:
+            updated = edit_variant_document(previous, updated)
+        return build_prefab_asset_edit_command(
+            prefab_path, updated, asset_database, description="Apply Prefab Overrides",
+            source_snapshot=dict(instance_root=instance_root, source_document=runtime,
+                                 source_ids=source_ids, component_ids=component_ids),
+        )
 
     def capture_state():
         return _capture_prefab_apply_state(None, prefab_path, prefab_guid)
@@ -326,25 +352,38 @@ def _linked_prefab_world_ids(prefab_guid, instance_root=None):
                         for obj in scene.get_all_objects()))
 
 
-def build_prefab_asset_edit_command(prefab_path, document, asset_database):
+def build_prefab_asset_edit_command(prefab_path, document, asset_database, *, source_snapshot=None,
+                                   description="Save Prefab Asset"):
     """One source write and every open instance projection share the same Undo."""
     from Infernux.engine.undo import PrefabApplyOverridesCommand
     from Infernux.engine.prefab_manager import _read_prefab_document, _validate_nested_source_ancestry
+    from Infernux.engine.prefab_variant import dependent_variant_updates
 
     guid = str(asset_database.get_guid_from_path(prefab_path) or "")
     if not guid:
         raise ValueError("Prefab source must be registered before editing")
-    updated = copy.deepcopy(document)
+    updates = dependent_variant_updates(prefab_path, copy.deepcopy(document), asset_database)
+    identities = {path: str(asset_database.get_guid_from_path(path)) for path in updates}
+
+    def capture():
+        return {path: _capture_prefab_apply_state(None, path, identities[path]) for path in updates}
 
     def apply():
-        previous = _read_prefab_document(prefab_path)
-        _validate_nested_source_ancestry(updated["root_object"], (guid,))
-        snapshots = _snapshot_all_linked_instances(guid, base_root=previous["root_object"])
-        prepared = _prepare_applied_prefab(
-            previous["root_object"], updated["root_object"], snapshots, guid, asset_database,
-        )
+        prepared = []
         try:
-            _write_prefab_apply_document(prefab_path, updated, asset_database)
+            for path, updated in updates.items():
+                previous = _read_prefab_document(path)
+                identity = identities[path]
+                _validate_nested_source_ancestry(updated["root_object"], (identity,))
+                snapshots = _snapshot_all_linked_instances(
+                    identity, base_root=previous["root_object"],
+                    **(source_snapshot if path == prefab_path and source_snapshot else {}),
+                )
+                prepared.extend(_prepare_applied_prefab(
+                    previous["root_object"], updated["root_object"], snapshots, identity, asset_database,
+                ))
+            for path, updated in updates.items():
+                _write_prefab_apply_document(path, updated, asset_database)
         except BaseException:
             for _obj, _document, plan in prepared:
                 plan.discard()
@@ -352,11 +391,13 @@ def build_prefab_asset_edit_command(prefab_path, document, asset_database):
         return _publish_applied_prefab(prepared)
 
     return PrefabApplyOverridesCommand(
-        lambda: _capture_prefab_apply_state(None, prefab_path, guid), apply,
-        lambda state: _restore_prefab_apply_state(state, prefab_path, asset_database),
-        description="Save Prefab Asset",
-        scene_world_ids=_linked_prefab_world_ids(guid),
-        validate_replay=lambda expected: _validate_prefab_source_replay(expected, prefab_path, asset_database),
+        capture, apply,
+        lambda state: _restore_prefab_edit_batch(state, asset_database),
+        description=description,
+        scene_world_ids=tuple(dict.fromkeys(world for identity in identities.values()
+                                           for world in _linked_prefab_world_ids(identity))),
+        validate_replay=lambda expected: [_validate_prefab_source_replay(state, path, asset_database)
+                                          for path, state in expected.items()],
     )
 
 
@@ -443,28 +484,28 @@ def _restore_prefab_apply_state(state: _PrefabApplyState, prefab_path: str,
                                 asset_database=None) -> None:
     if not isinstance(state, _PrefabApplyState):
         raise TypeError("Prefab Apply restore state is invalid")
-    # World/object/type resolution must finish before the durable asset changes.
-    prepared = _prepare_prefab_instance_restore(state.instance_documents, asset_database)
+    _restore_prefab_edit_batch({prefab_path: state}, asset_database)
+
+
+def _restore_prefab_edit_batch(states, asset_database):
+    # All worlds/types must resolve before any source asset is replaced.
+    documents = tuple(document for state in states.values() for document in state.instance_documents)
+    prepared = _prepare_prefab_instance_restore(documents, asset_database)
     # Include owners just reopened above in transaction compensation as well.
-    current = _capture_prefab_apply_state(None, prefab_path, state.prefab_guid)
+    current = {path: _capture_prefab_apply_state(None, path, state.prefab_guid) for path, state in states.items()}
     try:
-        _write_prefab_apply_document(
-            prefab_path,
-            state.prefab_document,
-            asset_database,
-        )
+        for path, state in states.items():
+            _write_prefab_apply_document(path, state.prefab_document, asset_database)
         if not _publish_applied_prefab(prepared):
             raise RuntimeError("Prefab ObjectGraph restore failed")
     except Exception:
         for _obj, _document, plan in prepared:
             plan.discard()
         try:
-            _write_prefab_apply_document(
-                prefab_path,
-                current.prefab_document,
-                asset_database,
-            )
-            previous = _prepare_prefab_instance_restore(current.instance_documents, asset_database)
+            documents = tuple(document for state in current.values() for document in state.instance_documents)
+            previous = _prepare_prefab_instance_restore(documents, asset_database)
+            for path, state in current.items():
+                _write_prefab_apply_document(path, state.prefab_document, asset_database)
             if not _publish_applied_prefab(previous):
                 raise RuntimeError("Prefab ObjectGraph compensation failed")
         except Exception as rollback_exc:

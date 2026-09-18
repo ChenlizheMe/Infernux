@@ -108,8 +108,9 @@ def load_prefab_contents(path):
 def save_as_prefab_asset(game_object, path) -> str:
     """Save contents or a new hierarchy through Project history; return the path.
 
-    To overwrite an existing asset, edit its load_prefab_contents root. Scene
-    instances are not linked by this operation; use create_prefab for that.
+    To overwrite an existing asset, edit its load_prefab_contents root. Saving
+    a linked root to a new path creates a Variant. Scene instances are not
+    relinked by this operation; use create_prefab for that.
     """
     return _authoring_core().prefabs.save_contents(game_object, _asset_path(path))
 

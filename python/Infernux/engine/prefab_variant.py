@@ -12,6 +12,87 @@ from Infernux.engine.prefab_manager import (
 )
 
 
+def variant_definition(document):
+    """The base projection lives in the ordinary .prefab author envelope."""
+    return {"document": {key: copy.deepcopy(value) for key, value in document.items() if key != "variant"},
+            "base": copy.deepcopy(document["variant"])}
+
+
+def variant_document(definition):
+    validate_variant_definition(definition)
+    return {**copy.deepcopy(definition["document"]), "variant": copy.deepcopy(definition["base"])}
+
+
+def edit_variant_document(previous, authored):
+    """Record new edits without clearing unchanged, explicit override intent."""
+    definition = variant_definition(previous)
+    base = definition["base"]
+    projected = _project_root(base["baseline"]["root_object"], base["object_sources"], base["component_sources"])
+    patches = _property_overrides(projected, authored["root_object"])
+    keys = {(item["object"], item["component"], tuple(item["path"])) for item in patches}
+    nodes = {node["local_id"]: node for node in _prefab_nodes(authored["root_object"])}
+    for item in base["property_overrides"]:
+        key = (item["object"], item["component"], tuple(item["path"]))
+        target = nodes.get(item["object"])
+        if target is not None and item["component"]:
+            target = next((c for c in target["components"] if c["component_id"] == item["component"]), None)
+        for part in item["path"]:
+            target = target.get(part) if isinstance(target, dict) else None
+        if key not in keys and target == item["value"]:
+            patches.append(copy.deepcopy(item))
+    definition["document"] = copy.deepcopy(authored)
+    definition["document"].pop("variant", None)
+    base["property_overrides"] = patches
+    return variant_document(definition)
+
+
+def dependent_variant_updates(source_path, updated, database):
+    """Stage only transitive dependents from the registered asset catalog."""
+    from Infernux.engine.prefab_manager import _read_prefab_document
+
+    source_guid = str(database.get_guid_from_path(source_path))
+    definitions, paths = {}, {}
+    for guid in database.get_all_guids():
+        path = database.get_path_from_guid(guid)
+        if guid == source_guid or not path or not path.lower().endswith(".prefab"):
+            continue
+        document = _read_prefab_document(path)
+        if "variant" in document:
+            paths[guid] = path
+            definitions[guid] = variant_definition(document)
+    affected = {source_guid}
+    while True:
+        incoming = {guid for guid, definition in definitions.items() if definition["base"]["guid"] in affected}
+        if incoming.issubset(affected):
+            break
+        affected.update(incoming)
+    validate_variant_ancestry(updated, source_guid, database)
+
+    def load_source(guid):
+        if guid == source_guid:
+            return {key: value for key, value in updated.items() if key != "variant"}
+        raise PrefabDocumentError(f"Unexpected Variant dependency outside the update graph: {guid}")
+
+    staged = rebase_variant_graph({guid: definition for guid, definition in definitions.items()
+                                  if guid in affected}, load_source)
+    return {source_path: updated, **{paths[guid]: variant_document(definition) for guid, definition in staged.items()}}
+
+
+def validate_variant_ancestry(document, guid, database):
+    from Infernux.engine.prefab_manager import _read_prefab_document
+
+    ancestry = {guid} if guid else set()
+    while "variant" in document:
+        guid = document["variant"]["guid"]
+        if guid in ancestry:
+            raise PrefabDocumentError("Variant source cycle: " + guid)
+        ancestry.add(guid)
+        path = database.get_path_from_guid(guid)
+        if not path:
+            raise PrefabDocumentError("Variant base asset is unavailable: " + guid)
+        document = _read_prefab_document(path)
+
+
 def _parents(root):
     result = {root["local_id"]: None}
     for node in _prefab_nodes(root):
@@ -108,7 +189,9 @@ def _property_overrides(base, own):
 def create_variant_definition(base_guid, base_document, authored_document=None):
     """Capture edits expressed in the base identity domain, never by node name."""
     _validate_prefab_document(base_document)
+    base_document = {key: value for key, value in base_document.items() if key != "variant"}
     document = copy.deepcopy(base_document if authored_document is None else authored_document)
+    document.pop("variant", None)
     document["next_local_id"] = max(_prefab_next_local_id(base_document), _prefab_next_local_id(document))
     document["next_component_id"] = max(_prefab_next_component_id(base_document), _prefab_next_component_id(document))
     result = {"document": document, "base": {

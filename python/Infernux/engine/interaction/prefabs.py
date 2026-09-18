@@ -376,7 +376,22 @@ class PrefabCommandService:
             preserve_root_properties=False,
         )
         database = self._project_assets.asset_database
+        from Infernux.engine.prefab_variant import (
+            create_variant_definition, edit_variant_document, variant_document,
+        )
+        if source and "variant" in source and same_path(session[1], target):
+            document = edit_variant_document(source, document)
+        elif root.prefab_root and root.prefab_guid and (session is None or not same_path(session[1], target)):
+            base_path = database.get_path_from_guid(root.prefab_guid)
+            if not base_path:
+                raise ValueError("Variant base asset is unavailable")
+            base = pm._read_prefab_document(base_path)
+            if session and self._project_assets.read_text(base_path) != session[2]:
+                raise RuntimeError("Variant base changed since load; reload contents before saving")
+            document = variant_document(create_variant_definition(root.prefab_guid, base, document))
         guid = str(database.get_guid_from_path(target) or "")
+        from Infernux.engine.prefab_variant import validate_variant_ancestry
+        validate_variant_ancestry(document, guid, database)
         pm._validate_nested_source_ancestry(document["root_object"], (guid,) if guid else ())
         content = json.dumps(document, indent=2, ensure_ascii=False)
         if os.path.exists(target):

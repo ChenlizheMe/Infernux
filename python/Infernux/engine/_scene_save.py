@@ -293,6 +293,9 @@ class SceneSaveMixin:
                 next_local_id=self.prefab_envelope.get("next_local_id", 1),
                 next_component_id=self.prefab_envelope.get("next_component_id", 1),
             )
+            if "variant" in self.prefab_envelope:
+                from Infernux.engine.prefab_variant import edit_variant_document
+                prefab_document = edit_variant_document(self.prefab_envelope, prefab_document)
             serialized_token = document_content_token(prefab_document)
             registry.capture_save_revision(
                 active_ticket_id,
@@ -322,14 +325,15 @@ class SceneSaveMixin:
         _link_prefab_hierarchy(roots[0], prefab_document["root_object"], roots[0].prefab_guid)
         current_token = None
         try:
-            current_token = document_content_token(
-                serialize_prefab_document(
-                    roots[0],
-                    source_canvas_name=source_canvas_name,
-                    next_local_id=prefab_document["next_local_id"],
-                    next_component_id=prefab_document["next_component_id"],
-                )
+            current_document = serialize_prefab_document(
+                roots[0],
+                source_canvas_name=source_canvas_name,
+                next_local_id=prefab_document["next_local_id"],
+                next_component_id=prefab_document["next_component_id"],
             )
+            if "variant" in prefab_document:
+                current_document = edit_variant_document(prefab_document, current_document)
+            current_token = document_content_token(current_document)
         except Exception as exc:
             Debug.log_suppressed("prefab_save.current_content_token", exc)
         registry.complete_save(

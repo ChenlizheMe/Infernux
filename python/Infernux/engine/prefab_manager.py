@@ -85,7 +85,7 @@ def _validate_nested_prefab(node, location):
 def _validate_prefab_document(document: dict, file_path: str = "<memory>") -> None:
     if not isinstance(document, dict):
         raise PrefabDocumentError(f"Prefab '{file_path}' must contain an object")
-    allowed = {"root_object", "source_canvas_name", "next_local_id", "next_component_id"}
+    allowed = {"root_object", "source_canvas_name", "next_local_id", "next_component_id", "variant"}
     required = {"root_object"}
     if not required.issubset(document) or not set(document).issubset(allowed):
         raise PrefabDocumentError(f"Prefab '{file_path}' has missing or unknown envelope fields")
@@ -105,6 +105,9 @@ def _validate_prefab_document(document: dict, file_path: str = "<memory>") -> No
         next_id = document["next_local_id"]
         if type(next_id) is not int or next_id <= max(local_ids):
             raise PrefabDocumentError(f"Prefab '{file_path}' next_local_id must exceed every source node ID")
+    if "variant" in document:
+        from Infernux.engine.prefab_variant import validate_variant_definition, variant_definition
+        validate_variant_definition(variant_definition(document))
 
 
 def _prefab_next_local_id(document):
@@ -617,6 +620,9 @@ def save_prefab(game_object, file_path: str, asset_database=None,
             next_local_id=previous["next_local_id"] if previous else 1,
             next_component_id=previous["next_component_id"] if previous else 1,
         )
+        if previous and "variant" in previous:
+            from Infernux.engine.prefab_variant import edit_variant_document
+            prefab_data = edit_variant_document(previous, prefab_data)
     except Exception as exc:
         Debug.log_error(f"Failed to serialize GameObject for prefab: {exc}")
         return False
