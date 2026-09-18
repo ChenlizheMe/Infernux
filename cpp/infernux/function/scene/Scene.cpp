@@ -885,7 +885,7 @@ std::unique_ptr<GameObject> Scene::BuildGameObjectFromJsonImpl(const json &objJs
     static const std::unordered_set<std::string> allowedObjectFields = {
         "name",      "id",          "active",      "is_static",        "tag",
         "layer",     "prefab_guid", "prefab_root", "prefab_source_id", "prefab_source",
-        "transform", "components",  "children",
+        "transform", "components",  "children", "model_source",
     };
     for (const auto &[key, value] : objJson.items()) {
         (void)value;
@@ -943,6 +943,11 @@ std::unique_ptr<GameObject> Scene::BuildGameObjectFromJsonImpl(const json &objJs
     obj->m_isStatic = objJson["is_static"].get<bool>();
     obj->m_tag = objJson["tag"].get<std::string>();
     obj->m_layer = layer;
+    if (objJson.contains("model_source")) {
+        GameObject::ValidateModelSourceDocument(objJson["model_source"]);
+        obj->SetModelSource(objJson["model_source"]["guid"].get<std::string>(),
+                            objJson["model_source"]["path"].get<std::vector<std::string>>());
+    }
     if (objJson.contains("prefab_guid"))
         obj->m_prefabGuid = objJson["prefab_guid"].get<std::string>();
     obj->m_prefabRoot = objJson.value("prefab_root", false);

@@ -180,6 +180,13 @@ class GameObject
     [[nodiscard]] const nlohmann::json &GetPrefabSourceDocument() const;
     void SetPrefabSourceDocument(const nlohmann::json &document);
 
+    /// Imported model ownership is independent of display name and renderer overrides.
+    /// An empty node path identifies the model instance container.
+    [[nodiscard]] const std::string &GetModelSourceGuid() const { return m_modelSourceGuid; }
+    [[nodiscard]] const std::vector<std::string> &GetModelSourcePath() const { return m_modelSourcePath; }
+    void SetModelSource(std::string guid, std::vector<std::string> path);
+    static void ValidateModelSourceDocument(const nlohmann::json &document);
+
     /// Reserve an identity for a document transaction without creating a live object.
     static uint64_t ReserveDocumentID()
     {
@@ -546,6 +553,8 @@ class GameObject
     bool m_prefabRoot = false; // true only on the root of a prefab instance
     uint64_t m_prefabSourceId = 0;
     std::shared_ptr<const nlohmann::json> m_prefabSourceDocument;
+    std::string m_modelSourceGuid;
+    std::vector<std::string> m_modelSourcePath;
 };
 
 } // namespace infernux

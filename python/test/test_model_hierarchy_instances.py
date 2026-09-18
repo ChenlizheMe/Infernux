@@ -45,6 +45,9 @@ def test_model_hierarchy_preserves_empty_pivots_local_geometry_and_roundtrip(sce
     mesh = inx.Mesh.load_guid(guid)
     root = scene.create_from_model(guid, 'Imported Assembly')
     objects = descendants(root)
+    root_document = root.serialize_document()
+    assert root_document['model_source'] == {'guid': guid, 'path': []}
+    assert objects['Upper'].serialize_document()['model_source']['path'][-1] == 'Upper'
     assert objects['Empty pivot'].get_parent().name == 'Assembly'
     assert objects['Upper'].get_parent().name == 'Empty pivot'
     assert objects['Lower'].get_parent().name == 'Empty pivot'
@@ -199,6 +202,7 @@ def test_external_model_source_reconciles_instances_without_overwriting_transfor
     second.transform.local_position = Vector3(-10, 0, 0)
     first_upper = descendants(first)['Upper']
     second_upper = descendants(second)['Upper']
+    first_upper.name = 'Artist Renamed Upper'
     first_upper.transform.local_position = Vector3(7, 8, 9)
     second_upper.transform.local_scale = Vector3(2, 3, 4)
 
@@ -215,6 +219,7 @@ def test_external_model_source_reconciles_instances_without_overwriting_transfor
     assert first.transform.local_position.x == 10
     assert second.transform.local_position.x == -10
     assert tuple(first_upper.transform.local_position) == (7, 8, 9)
+    assert 'Artist Renamed Upper' in descendants(first)
     assert tuple(second_upper.transform.local_scale) == (2, 3, 4)
 
     document['nodes'][0]['children'].remove(document['nodes'][0]['children'][-1])

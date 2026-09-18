@@ -24,10 +24,32 @@ def _object_path_map(root: Any) -> dict[tuple[str, ...], Any]:
     return result
 
 
+def _descendants(root: Any) -> tuple[Any, ...]:
+    result: list[Any] = []
+
+    def visit(parent: Any) -> None:
+        for child in tuple(parent.get_children() or ()):
+            result.append(child)
+            visit(child)
+
+    visit(root)
+    return tuple(result)
+
+
 def _model_instance_roots(scene: Any, guid: str) -> tuple[Any, ...]:
-    """Find model containers from their persisted renderer node identities."""
+    """Find model containers from persisted model-source identities.
+
+    The source binding is deliberately independent from the visible object
+    name.  The renderer-path walk remains only for scenes authored before the
+    model_source field was introduced.
+    """
     roots: dict[int, Any] = {}
     for obj in tuple(scene.get_all_objects() or ()):
+        if str(getattr(obj, "_model_source_guid", "") or "") == guid and not tuple(
+            getattr(obj, "_model_source_path", ()) or ()
+        ):
+            roots[int(obj.id)] = obj
+            continue
         renderer = obj.get_component("MeshRenderer")
         if renderer is None or str(renderer.mesh_asset_guid or "") != guid:
             continue
@@ -70,7 +92,38 @@ def _destroy_stale_geometry(
     scene: Any, root: Any, guid: str, source: dict[tuple[str, ...], dict]
 ) -> bool:
     paths = _object_path_map(root)
+    source_objects: dict[tuple[str, ...], Any] = {}
+    for candidate in (root, *_descendants(root)):
+        if str(getattr(candidate, "_model_source_guid", "") or "") != guid:
+            continue
+        source_path = tuple(str(part) for part in (getattr(candidate, "_model_source_path", ()) or ()))
+        source_objects[source_path] = candidate
     stale: dict[int, Any] = {}
+    if source_objects:
+        for path, obj in tuple(source_objects.items()):
+            if not path:
+                continue
+            if path not in source:
+                stale[path] = obj
+                continue
+            source_node = source[path]
+            if int(source_node.get("node_group", -1)) < 0 and obj.get_component("MeshRenderer") is not None:
+                stale[path] = obj
+        if not stale:
+            return False
+        # Destroy only the highest stale source node. Its descendants belong
+        # to the same removed source subtree and are retired with it.
+        selected = []
+        stale_paths = set(stale)
+        for path, obj in sorted(stale.items(), key=lambda item: (len(item[0]), item[0])):
+            if any(path[:index] in stale_paths for index in range(1, len(path))):
+                continue
+            selected.append(obj)
+        for obj in selected:
+            if obj is not root:
+                scene.destroy_game_object(obj)
+        scene.process_pending_destroys()
+        return True
     for path, obj in tuple(paths.items()):
         if not path:
             continue
@@ -107,7 +160,12 @@ def _destroy_stale_geometry(
 def _sync_instance(scene: Any, root: Any, guid: str, mesh: Any) -> bool:
     source = _source_paths(mesh)
     changed = _destroy_stale_geometry(scene, root, guid, source)
-    existing = _object_path_map(root)
+    source_bound = {
+        tuple(str(part) for part in (getattr(obj, "_model_source_path", ()) or ())): obj
+        for obj in (root, *_descendants(root))
+        if str(getattr(obj, "_model_source_guid", "") or "") == guid
+    }
+    existing = source_bound or _object_path_map(root)
     missing = [path for path in source if path not in existing]
     if not missing:
         return changed

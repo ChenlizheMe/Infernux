@@ -3,6 +3,7 @@
 #include <core/threading/JobSystem.h>
 #include <function/scene/ComponentFactory.h>
 #include <function/scene/ComponentRecord.h>
+#include <function/scene/GameObject.h>
 #include <functional>
 #include <stdexcept>
 #include <thread>
@@ -100,7 +101,7 @@ void ValidateObject(const json &object, const std::string &path, std::unordered_
     static const std::unordered_set<std::string> allowed = {
         "name",      "id",          "active",      "is_static",        "tag",
         "layer",     "prefab_guid", "prefab_root", "prefab_source_id", "prefab_source",
-        "transform", "components",  "children",
+        "transform", "components",  "children", "model_source",
     };
     RequireExactFields(object, allowed, path);
     if (!object.contains("name") || !object["name"].is_string() || !object.contains("active") ||
@@ -111,6 +112,8 @@ void ValidateObject(const json &object, const std::string &path, std::unordered_
         throw std::invalid_argument(path + " has invalid GameObject fields");
     }
     const int layer = object["layer"].get<int>();
+    if (object.contains("model_source"))
+        GameObject::ValidateModelSourceDocument(object["model_source"]);
     if (layer < 0 || layer >= 32)
         throw std::invalid_argument(path + ".layer must be in [0, 31]");
     if (object.contains("prefab_guid") && !object["prefab_guid"].is_string())

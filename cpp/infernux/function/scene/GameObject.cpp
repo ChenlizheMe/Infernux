@@ -1108,6 +1108,28 @@ void GameObject::SetPrefabSourceDocument(const nlohmann::json &document)
         throw std::invalid_argument("Prefab source document must be an object or null");
 }
 
+void GameObject::SetModelSource(std::string guid, std::vector<std::string> path)
+{
+    if (guid.empty() && !path.empty())
+        throw std::invalid_argument("Model source path requires a source GUID");
+    for (const auto &part : path)
+        if (part.empty())
+            throw std::invalid_argument("Model source path must contain non-empty names");
+    m_modelSourceGuid = std::move(guid);
+    m_modelSourcePath = std::move(path);
+}
+
+void GameObject::ValidateModelSourceDocument(const nlohmann::json &document)
+{
+    if (!document.is_object() || document.size() != 2 || !document.contains("guid") ||
+        !document["guid"].is_string() || document["guid"].get_ref<const std::string &>().empty() ||
+        !document.contains("path") || !document["path"].is_array())
+        throw std::invalid_argument("GameObject.model_source requires a non-empty guid and a path array");
+    for (const auto &part : document["path"])
+        if (!part.is_string() || part.get_ref<const std::string &>().empty())
+            throw std::invalid_argument("GameObject.model_source.path must contain non-empty names");
+}
+
 nlohmann::json GameObject::SerializeDocument() const
 {
     json j;
@@ -1117,6 +1139,8 @@ nlohmann::json GameObject::SerializeDocument() const
     j["is_static"] = m_isStatic;
     j["tag"] = m_tag;
     j["layer"] = m_layer;
+    if (!m_modelSourceGuid.empty())
+        j["model_source"] = {{"guid", m_modelSourceGuid}, {"path", m_modelSourcePath}};
 
     // Prefab instance tracking (only serialize when set)
     if (m_prefabSourceDocument && m_prefabRoot && !m_prefabGuid.empty()) {
@@ -1360,6 +1384,8 @@ bool GameObject::DeserializeDocument(const nlohmann::json &j, bool preserveDocum
         m_prefabRoot = stagedRoot->m_prefabRoot;
         m_prefabSourceId = stagedRoot->m_prefabSourceId;
         m_prefabSourceDocument = std::move(stagedRoot->m_prefabSourceDocument);
+        m_modelSourceGuid = std::move(stagedRoot->m_modelSourceGuid);
+        m_modelSourcePath = std::move(stagedRoot->m_modelSourcePath);
         m_parent = targetParent;
         m_scene = targetScene;
 
@@ -1427,6 +1453,8 @@ std::unique_ptr<GameObject> GameObject::CloneGraph(Scene *scene,
     obj->m_prefabRoot = m_prefabRoot;
     obj->m_prefabSourceId = m_prefabSourceId;
     obj->m_prefabSourceDocument = m_prefabSourceDocument;
+    obj->m_modelSourceGuid = m_modelSourceGuid;
+    obj->m_modelSourcePath = m_modelSourcePath;
 
     // Clone transform data (ECS store copy, no JSON)
     m_transform.CloneDataTo(obj->m_transform);

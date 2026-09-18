@@ -653,7 +653,7 @@ static GameObject *CreateModelObject(Scene *scene, const std::string &guid, cons
         for (const auto &node : nodes) {
             auto path = node.parentIndex < 0 ? std::vector<std::string>{} : paths[node.parentIndex];
             path.push_back(node.name);
-            if (node.nodeGroup >= 0 && !geometryPaths.insert(path).second)
+            if (!geometryPaths.insert(path).second)
                 throw std::invalid_argument("Model geometry node path is ambiguous: " + node.name);
             paths.push_back(std::move(path));
             Pose pose;
@@ -673,6 +673,7 @@ static GameObject *CreateModelObject(Scene *scene, const std::string &guid, cons
         GameObject *container = scene->CreateGameObject(objName);
         if (!container)
             return nullptr;
+        container->SetModelSource(guid, {});
         try {
             std::vector<GameObject *> objects;
             objects.reserve(nodes.size());
@@ -681,6 +682,7 @@ static GameObject *CreateModelObject(Scene *scene, const std::string &guid, cons
                 GameObject *child = scene->CreateGameObject(node.name);
                 if (!child)
                     throw std::runtime_error("Cannot create imported model node");
+                child->SetModelSource(guid, paths[index]);
                 child->GetTransform()->SetParent(
                     (node.parentIndex < 0 ? container : objects[node.parentIndex])->GetTransform(), false);
                 child->GetTransform()->SetLocalPosition(poses[index].position);
@@ -1973,6 +1975,9 @@ void RegisterSceneBindings(py::module_ &m)
                       "True if this object is the root of a prefab instance hierarchy")
         .def_property("prefab_source_id", &GameObject::GetPrefabSourceID, &GameObject::SetPrefabSourceID,
                       "Stable asset-local Prefab node identity (zero for unlinked nodes)")
+        .def_property_readonly("_model_source_guid", &GameObject::GetModelSourceGuid)
+        .def_property_readonly("_model_source_path", &GameObject::GetModelSourcePath)
+        .def("_set_model_source", &GameObject::SetModelSource)
         .def_property(
             "_prefab_source_document",
             [](const GameObject &object) { return JsonToPython(object.GetPrefabSourceDocument()); },
