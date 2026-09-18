@@ -2697,6 +2697,60 @@ def _render_model_animation_clips(ctx: InxGUIContext, state: _State):
             _edit_import_settings(state, "animation_clips", lambda s: s.animation_clips.append(clip), "Add Imported Clip")
 
 
+def _render_model_material_search(ctx, state, mesh, slot_data, set_remap):
+    from Infernux.core.assets import AssetManager
+    from Infernux.engine.interaction import asset_reference_catalog
+    from .model_material_search import find_material_candidates
+
+    database = AssetManager._asset_database
+    stamp = (mesh.generation, database.query_generation)
+    search = state.extra.setdefault("model_material_search", {})
+    if search.get("stamp") != stamp:
+        search.pop("results", None)
+        search["stamp"] = stamp
+    for key, choices in (("scope", ("local", "upwards", "project")),
+                         ("naming", ("material", "model_material"))):
+        index = search.get(key, 0)
+        labels = [t(f"asset.material_search_{choice}") for choice in choices]
+        field_label(ctx, t("asset.material_search_" + key))
+        value = ctx.combo(f"##material_search_{key}", index, labels)
+        ctx.record_semantic_item("combo", labels[value], True, f"asset.mesh.material.search.{key}")
+        if value != index:
+            search[key] = value
+            search.pop("results", None)
+    label = t("asset.material_search")
+    clicked = ctx.button(label + "##model_material_search")
+    ctx.record_semantic_item("button", label, True, "asset.mesh.material.search")
+    if clicked:
+        paths = [path for _, path in asset_reference_catalog.items("Material", "")]
+        candidates = find_material_candidates(
+            state.file_path, slot_data, paths, database.assets_root,
+            scope=("local", "upwards", "project")[search.get("scope", 0)],
+            naming=("material", "model_material")[search.get("naming", 0)],
+        )
+        search["results"] = {
+            source: [(path, AssetManager._get_guid_from_path(path)) for path in matches]
+            for source, matches in candidates.items()
+        }
+    if "results" not in search:
+        return
+    ctx.text_wrapped(t("asset.material_search_hint"))
+    for source, matches in search["results"].items():
+        ctx.label(source.removeprefix("material/"))
+        if not matches:
+            ctx.text_wrapped(t("asset.material_search_empty"))
+        elif len(matches) > 1:
+            ctx.text_wrapped(t("asset.material_search_ambiguous"))
+        for path, guid in matches:
+            ctx.text_wrapped(os.path.relpath(path, database.assets_root))
+            label = t("asset.material_search_use")
+            clicked = ctx.button(f"{label}##material_search_{source}_{guid}")
+            ctx.record_semantic_item("button", label, True, f"asset.mesh.material.search.use.{source}.{guid}")
+            if clicked:
+                set_remap(source, guid)
+    ctx.separator()
+
+
 def _render_model_materials(ctx: InxGUIContext, state: _State):
     from Infernux.lib import AssetRegistry
     from .inspector_utils import render_compact_section_header
@@ -2720,6 +2774,9 @@ def _render_model_materials(ctx: InxGUIContext, state: _State):
             else:
                 settings.material_remaps.pop(source_id, None)
         _edit_import_settings(state, f"material_remaps.{source_id}", mutate, "Remap Model Material")
+
+    if os.path.splitext(state.file_path)[1].lower() != ".inxmesh":
+        _render_model_material_search(ctx, state, mesh, slot_data, set_remap)
 
     for slot, name in enumerate(mesh.material_slot_names):
         ctx.label(f"{slot}: {name}")
