@@ -2591,7 +2591,8 @@ def _render_model_import_pages(ctx: InxGUIContext, panel, state: _State):
         _render_mesh_info(ctx, panel, state)
         _render_model_materials(ctx, state)
         _render_import_fields(ctx, _categories["mesh"], state, fields=[
-            field for field in _model_page_fields("model") if field.key not in {"normal_mode", "tangent_mode"}
+            field for field in _model_page_fields("model")
+            if field.key not in {"normal_mode", "tangent_mode", "normal_weighting", "tangent_algorithm"}
         ])
         return
     if not ctx.begin_tab_bar("##model_import_pages"):

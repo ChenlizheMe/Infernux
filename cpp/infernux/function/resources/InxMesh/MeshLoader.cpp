@@ -11,6 +11,7 @@
 #include "InxMesh.h"
 #include "MeshArtifact.h"
 #include "MeshImportSettings.h"
+#include "ModelVertexBasis.h"
 
 #include <core/config/MathConstants.h>
 #include <core/log/InxLog.h>
@@ -20,7 +21,6 @@
 
 #include <assimp/Importer.hpp>
 #include <assimp/GltfMaterial.h>
-#include <assimp/config.h>
 #include <assimp/postprocess.h>
 #include <assimp/scene.h>
 
@@ -41,14 +41,10 @@ namespace infernux
 
 static unsigned int BuildAssimpFlags(const MeshImportSettings &settings)
 {
-    unsigned int flags = aiProcess_Triangulate;
-
-    if (settings.normalMode == "import" || settings.normalMode == "calculate")
-        flags |= aiProcess_GenSmoothNormals;
-    if (settings.normalMode != "none" && (settings.tangentMode == "import" || settings.tangentMode == "calculate"))
+    unsigned int flags = 0;
+    if (settings.tangentAlgorithm == "assimp" && settings.normalMode != "none" &&
+        (settings.tangentMode == "import" || settings.tangentMode == "calculate"))
         flags |= aiProcess_CalcTangentSpace;
-    if (settings.flipUVs)
-        flags |= aiProcess_FlipUVs;
     // NOTE: aiProcess_OptimizeMeshes and aiProcess_OptimizeGraph are intentionally
     // omitted — they merge meshes across different Assimp nodes, destroying the
     // per-object hierarchy needed for correct scene object splitting.
@@ -525,14 +521,17 @@ MeshSourceImportResult MeshLoader::ImportSourceDetailed(const std::string &fileP
     }
 
     Assimp::Importer importer;
-    importer.SetPropertyFloat(AI_CONFIG_PP_GSN_MAX_SMOOTHING_ANGLE, settings.normalSmoothingAngle);
     // Validate external input once, before touching its channel pointers.
     const aiScene *scene =
         importer.ReadFileFromMemory(fileData.data(), fileData.size(), aiProcess_ValidateDataStructure, ext.c_str());
 
     if (scene) {
         PrepareVertexBasis(*scene, settings);
-        scene = importer.ApplyPostProcessing(flags);
+        scene = importer.ApplyPostProcessing(aiProcess_Triangulate | (settings.flipUVs ? aiProcess_FlipUVs : 0));
+        if (scene) {
+            BuildModelVertexBasis(*scene, settings);
+            scene = importer.ApplyPostProcessing(flags);
+        }
     }
 
     const bool animationOnlyScene = scene && scene->mRootNode && scene->mNumMeshes == 0 && scene->mNumAnimations > 0;

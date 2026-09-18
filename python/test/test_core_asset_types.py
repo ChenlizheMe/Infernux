@@ -363,6 +363,23 @@ class TestMeshImportSettings:
         settings = MeshImportSettings(normal_mode=mode, tangent_mode=mode)
         assert MeshImportSettings.from_dict(settings.to_dict()) == settings
 
+    def test_basis_algorithms_preserve_old_bake_convention(self):
+        settings = MeshImportSettings()
+        assert settings.tangent_algorithm == "mikktspace"
+        legacy = settings.to_dict()
+        del legacy["tangent_algorithm"], legacy["normal_weighting"]
+        upgraded = MeshImportSettings.from_dict(legacy)
+        assert upgraded.tangent_algorithm == "assimp"
+        assert upgraded.normal_weighting == "unweighted"
+
+    @pytest.mark.parametrize("key", ["normal_weighting", "tangent_algorithm"])
+    @pytest.mark.parametrize("invalid", [True, 4, None, "auto"])
+    def test_basis_algorithms_reject_invalid_values(self, key, invalid):
+        document = MeshImportSettings().to_dict()
+        document[key] = invalid
+        with pytest.raises(ValueError, match=key):
+            MeshImportSettings.from_dict(document)
+
     @pytest.mark.parametrize("generate", [True, False])
     def test_legacy_basis_flags_migrate_without_losing_authored_data(self, generate):
         document = MeshImportSettings().to_dict()

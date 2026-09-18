@@ -1,0 +1,11 @@
+# At the shared origin: Z face area 1 / angle 90 degrees;
+# Y face area .5 / angle 45 degrees. All weighting modes have known ratios.
+o WeightedCorner
+v 0 0 0
+v 2 0 0
+v 0 1 0
+v 1 0 1
+v 1 0 0
+s 1
+f 1 2 3
+f 1 4 5

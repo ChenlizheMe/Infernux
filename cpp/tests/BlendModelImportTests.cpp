@@ -2,6 +2,7 @@
 #include <function/resources/InxMesh/MeshArtifact.h>
 #include <function/resources/InxMesh/MeshImportSettings.h>
 #include <function/resources/InxMesh/MeshLoader.h>
+#include <function/resources/InxMesh/ModelVertexBasis.h>
 #include <function/resources/InxResource/InxResourceMeta.h>
 #include <function/resources/InxSkinnedMesh/InxSkinnedMesh.h>
 #include <function/resources/InxSkinnedMesh/SkinnedModelImporter.h>
@@ -114,9 +115,69 @@ static void TestSkinWeightImport()
         assert(weight == 0.25f);
 }
 
+static void TestMikkMirroredSeamPreservesVertexChannels()
+{
+    aiScene scene;
+    scene.mRootNode = new aiNode("Root");
+    scene.mRootNode->mNumMeshes = 1;
+    scene.mRootNode->mMeshes = new unsigned int[1]{0};
+    scene.mNumMeshes = 1;
+    scene.mMeshes = new aiMesh *[1]{new aiMesh()};
+    auto &mesh = *scene.mMeshes[0];
+    mesh.mPrimitiveTypes = aiPrimitiveType_TRIANGLE;
+    mesh.mNumVertices = 4;
+    mesh.mVertices = new aiVector3D[4]{{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {1, 1, 0}};
+    mesh.mNormals = new aiVector3D[4]{{0, 0, 1}, {0, 0, 1}, {0, 0, 1}, {0, 0, 1}};
+    mesh.mTextureCoords[0] = new aiVector3D[4]{{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0, 0, 0}};
+    mesh.mNumUVComponents[0] = 2;
+    mesh.mColors[1] = new aiColor4D[4];
+    for (unsigned int i = 0; i < 4; ++i)
+        mesh.mColors[1][i] = aiColor4D(float(i), 0, 0, 1);
+    mesh.mNumFaces = 2;
+    mesh.mFaces = new aiFace[2];
+    mesh.mFaces[0].mNumIndices = mesh.mFaces[1].mNumIndices = 3;
+    mesh.mFaces[0].mIndices = new unsigned int[3]{0, 1, 2};
+    mesh.mFaces[1].mIndices = new unsigned int[3]{1, 3, 2};
+    mesh.mNumBones = 1;
+    mesh.mBones = new aiBone *[1]{new aiBone()};
+    mesh.mBones[0]->mName = aiString("Root");
+    mesh.mBones[0]->mNumWeights = 4;
+    mesh.mBones[0]->mWeights = new aiVertexWeight[4]{{0, 1}, {1, 1}, {2, 1}, {3, 1}};
+    mesh.mNumAnimMeshes = 1;
+    mesh.mAnimMeshes = new aiAnimMesh *[1]{new aiAnimMesh()};
+    auto &morph = *mesh.mAnimMeshes[0];
+    morph.mNumVertices = 4;
+    morph.mVertices = new aiVector3D[4];
+    for (unsigned int i = 0; i < 4; ++i)
+        morph.mVertices[i] = mesh.mVertices[i] + aiVector3D(0, 0, 0.1f);
+    infernux::MeshImportSettings settings;
+    settings.tangentMode = "calculate";
+    infernux::BuildModelVertexBasis(scene, settings);
+    assert(mesh.mNumVertices == 6 && morph.mNumVertices == 6);
+    assert(mesh.mBones[0]->mNumWeights == 6);
+    const unsigned int source[] = {0, 1, 2, 1, 3, 2};
+    std::set<unsigned int> influenced;
+    for (unsigned int i = 0; i < 6; ++i) {
+        assert(mesh.mColors[1][i].r == float(source[i]));
+        assert((morph.mVertices[i] - mesh.mVertices[i] - aiVector3D(0, 0, 0.1f)).Length() < 1.e-6f);
+        const auto expected = i < 3 ? aiVector3D(1, 0, 0) : aiVector3D(0, -1, 0);
+        assert((mesh.mTangents[i] - expected).Length() < 1.e-6f);
+        const float sign = (mesh.mNormals[i] ^ mesh.mTangents[i]) * mesh.mBitangents[i];
+        assert(std::abs(sign - (i < 3 ? 1.0f : -1.0f)) < 1.e-6f);
+        influenced.insert(mesh.mBones[0]->mWeights[i].mVertexId);
+        assert(mesh.mBones[0]->mWeights[i].mWeight == 1.0f);
+    }
+    assert(influenced.size() == 6);
+    const auto skin = infernux::SkinnedModelImporter::ConvertScene(scene, "mikk-skin", "mikk-skin", settings.scaleFactor);
+    assert(skin && skin->baseVertices.size() == 6 && skin->influences.size() == 6);
+    for (const auto &influence : skin->influences)
+        assert(influence.weight[0] == 1.0f);
+}
+
 int main(int argc, char **argv)
 {
     TestSkinWeightImport();
+    TestMikkMirroredSeamPreservesVertexChannels();
     {
         using Settings = infernux::MeshImportSettings;
         infernux::InxResourceMeta candidate;
@@ -124,7 +185,7 @@ int main(int argc, char **argv)
         const auto defaults = Settings::Read(candidate);
         const auto schema = Settings::Schema();
         assert(schema.at("fields").size() ==
-               Settings::Flags.size() + Settings::Scalars.size() + Settings::BasisModes.size() + 5);
+               Settings::Flags.size() + Settings::Scalars.size() + Settings::BasisModes.size() + 7);
         assert(defaults.materialImportMode == "description");
         assert(defaults.materialRemaps.empty());
         Settings::ApplyPatch(candidate, {{"material_remaps", {{"material/Body", "abcdabcdabcdabcdabcdabcdabcdabcd"}}}});
@@ -173,11 +234,15 @@ int main(int argc, char **argv)
         reject({{"normal_mode", true}});
         reject({{"normal_mode", "auto"}});
         reject({{"tangent_mode", 0}});
+        reject({{"normal_weighting", "auto"}});
+        reject({{"tangent_algorithm", "fallback"}});
+        assert(defaults.tangentAlgorithm == "mikktspace");
         for (const bool generate : {true, false}) {
             infernux::InxResourceMeta legacy;
             legacy.AddMetadata("generate_normals", generate);
             legacy.AddMetadata("generate_tangents", generate);
             assert(Settings::Read(legacy).normalMode == (generate ? "import" : "source_only"));
+            assert(Settings::Read(legacy).tangentAlgorithm == "assimp");
             Settings::EnsureDefaults(legacy);
             assert(!legacy.HasKey("generate_normals") && !legacy.HasKey("generate_tangents"));
             assert(Settings::Read(legacy).normalMode == (generate ? "import" : "source_only"));
@@ -342,6 +407,7 @@ int main(int argc, char **argv)
     for (const bool swap : {false, true}) {
         for (const bool flip : {false, true}) {
             infernux::InxResourceMeta uvSettings;
+            uvSettings.AddMetadata("tangent_algorithm", std::string("assimp"));
             uvSettings.AddMetadata("swap_uv_channels", swap);
             uvSettings.AddMetadata("flip_uvs", flip);
             const auto result =
@@ -375,6 +441,32 @@ int main(int argc, char **argv)
         }
     }
 
+    for (const bool swap : {false, true}) {
+        for (const bool flip : {false, true}) {
+            infernux::InxResourceMeta settings;
+            settings.AddMetadata("tangent_mode", std::string("calculate"));
+            settings.AddMetadata("tangent_algorithm", std::string("mikktspace"));
+            settings.AddMetadata("swap_uv_channels", swap);
+            settings.AddMetadata("flip_uvs", flip);
+            const auto result = infernux::MeshLoader::ImportSourceDetailed(
+                infernux::FromFsPath(uvPath), "mikk-uv-basis", settings);
+            const auto &vertices = result.mesh->GetVertices();
+            const auto e1 = vertices[1].pos - vertices[0].pos;
+            const auto e2 = vertices[2].pos - vertices[0].pos;
+            const auto uv1 = vertices[1].texCoord - vertices[0].texCoord;
+            const auto uv2 = vertices[2].texCoord - vertices[0].texCoord;
+            const auto determinant = uv1.x * uv2.y - uv1.y * uv2.x;
+            const auto derivativeU = glm::normalize((e1 * uv2.y - e2 * uv1.y) / determinant);
+            const auto derivativeV = (e2 * uv1.x - e1 * uv2.x) / determinant;
+            for (size_t i = 0; i < vertices.size(); ++i) {
+                const auto &vertex = vertices[i];
+                assert(glm::length(glm::vec3(vertex.tangent) - derivativeU) < 1.e-5f);
+                const float sign = glm::dot(glm::cross(vertex.normal, derivativeU), derivativeV) < 0 ? -1.f : 1.f;
+                assert(vertex.tangent.w == sign);
+                assert(glm::length(vertex.tangent - result.skinnedMesh->baseVertices[i].tangent) < 1.e-5f);
+            }
+        }
+    }
     {
         const auto smoothingPath = sourceRoot / "cpp/tests/fixtures/model_smoothing.obj";
         infernux::InxResourceMeta smoothSettings, hardSettings;
@@ -455,6 +547,28 @@ int main(int argc, char **argv)
                         assert(vertex.tangent == glm::vec4(0));
                 }
             }
+        }
+    }
+    {
+        const auto path = sourceRoot / "cpp/tests/fixtures/model_weighted_normals.obj";
+        for (const auto &[weighting, ratio] : std::array<std::pair<const char *, float>, 4>{
+                 {{"unweighted", 1.0f}, {"area", 2.0f}, {"angle", 2.0f}, {"area_angle", 4.0f}}}) {
+            infernux::InxResourceMeta settings;
+            settings.AddMetadata("normal_weighting", std::string(weighting));
+            const auto result = infernux::MeshLoader::ImportSourceDetailed(
+                infernux::FromFsPath(path), "weighted-normal", settings);
+            bool found = false;
+            for (const auto &vertex : result.mesh->GetVertices())
+                if (vertex.pos == glm::vec3(0)) {
+                    assert(glm::length(vertex.normal - glm::normalize(glm::vec3(0, 1, ratio))) < 1.e-5f);
+                    found = true;
+                }
+            assert(found);
+            settings.AddMetadata("normal_smoothing_angle", 30.0f);
+            const auto hard = infernux::MeshLoader::ImportSourceDetailed(
+                infernux::FromFsPath(path), "weighted-hard", settings);
+            for (const auto &vertex : hard.mesh->GetVertices())
+                assert(vertex.normal == glm::vec3(0, 1, 0) || vertex.normal == glm::vec3(0, 0, 1));
         }
     }
     // Optional modern Blender-generated GLB supplied by an integration run.

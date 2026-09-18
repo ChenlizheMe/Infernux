@@ -105,6 +105,7 @@ target_link_libraries(InfernuxRuntime PUBLIC
     InfernuxRendererRuntime
     InfernuxVulkanBackend
 )
+target_include_directories(InfernuxRuntime PRIVATE "${CMAKE_SOURCE_DIR}/external/MikkTSpace")
 if(INFERNUX_USE_TARGET_PYTHON)
     target_link_libraries(InfernuxRuntime PRIVATE pybind11::headers InfernuxTargetPython)
 else()

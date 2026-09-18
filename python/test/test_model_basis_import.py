@@ -109,3 +109,37 @@ def test_calculate_tangents_replaces_authored_uv_basis(engine, tmp_path):
     result = AssetManager.reimport_asset(str(source), import_settings=settings.to_dict(), database=database)
     assert result, result.error
     np.testing.assert_allclose(mesh.vertex_buffer["tangents"], authored, atol=1.e-5)
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+def test_normal_weighting_apply_and_binary_reload(engine, tmp_path, monkeypatch, asynchronous):
+    database = engine.get_asset_database()
+    monkeypatch.setattr(AssetManager, "_engine", engine)
+    monkeypatch.setattr(AssetManager, "_asset_database", database)
+    source = Path(database.assets_root) / tmp_path.name / "Weighting.obj"
+    source.parent.mkdir(parents=True)
+    source.write_bytes((Path(__file__).resolve().parents[2] / "cpp/tests/fixtures/model_weighted_normals.obj").read_bytes())
+    imported = database.import_asset(str(source))
+    assert imported, imported.error
+    mesh = inx.Mesh.load_guid(imported.guid)
+    settings = read_mesh_import_settings(str(source))
+    assert settings.tangent_algorithm == "mikktspace"
+    for mode, ratio in (("unweighted", 1), ("area", 2), ("angle", 2), ("area_angle", 4)):
+        settings.normal_weighting = mode
+        if asynchronous:
+            owner = AssetManager.begin_model_reimport(str(source), settings)
+            deadline = time.monotonic() + 30
+            while (result := AssetManager.poll_model_reimport(owner)) is None:
+                assert time.monotonic() < deadline
+                time.sleep(.002)
+        else:
+            result = AssetManager.reimport_asset(str(source), import_settings=settings.to_dict(), database=database)
+        assert result, result.error
+        assert read_mesh_import_settings(str(source)).normal_weighting == mode
+        assert AssetRegistry.instance().reload_asset(imported.guid)
+        vertices = mesh.vertex_buffer
+        mask = np.all(vertices["positions"] == 0, axis=1)
+        assert mask.any()
+        expected = np.array([0, 1, ratio], dtype=np.float32)
+        expected /= np.linalg.norm(expected)
+        np.testing.assert_allclose(vertices["normals"][mask], np.tile(expected, (mask.sum(), 1)), atol=1.e-5)

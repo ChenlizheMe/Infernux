@@ -22,6 +22,8 @@ struct MeshImportSettings
     int maxBonesPerVertex = 4;
     std::string normalMode = "import";
     std::string tangentMode = "import";
+    std::string normalWeighting = "unweighted";
+    std::string tangentAlgorithm = "mikktspace";
     bool flipUVs = true;
     bool swapUVChannels = false;
     bool optimizeMesh = true;
@@ -137,6 +139,30 @@ struct MeshImportSettings
             throw std::invalid_argument("model basis mode must be import, calculate, none or source_only");
     }
 
+    static void RequireNormalWeighting(const nlohmann::json &value)
+    {
+        if (!value.is_string() || (value != "unweighted" && value != "area" && value != "angle" && value != "area_angle"))
+            throw std::invalid_argument("model normal_weighting must be unweighted, area, angle or area_angle");
+    }
+
+    static void RequireTangentAlgorithm(const nlohmann::json &value)
+    {
+        if (!value.is_string() || (value != "mikktspace" && value != "assimp"))
+            throw std::invalid_argument("model tangent_algorithm must be mikktspace or assimp");
+    }
+
+    static std::string ReadTangentAlgorithm(const InxResourceMeta &metadata)
+    {
+        if (metadata.HasKey("tangent_algorithm")) {
+            auto value = metadata.GetDataAs<std::string>("tangent_algorithm");
+            RequireTangentAlgorithm(value);
+            return value;
+        }
+        // Existing projects used Assimp. New sources use MikkTSpace; upgrading
+        // an old sidecar must not change its normal-map bake convention.
+        return metadata.HasKey("tangent_mode") || metadata.HasKey("generate_tangents") ? "assimp" : "mikktspace";
+    }
+
     static std::string ReadBasisMode(const InxResourceMeta &metadata, const BasisMode &field)
     {
         if (metadata.HasKey(field.name)) {
@@ -178,6 +204,10 @@ struct MeshImportSettings
     static MeshImportSettings Read(const InxResourceMeta &metadata)
     {
         MeshImportSettings settings;
+        settings.tangentAlgorithm = ReadTangentAlgorithm(metadata);
+        if (metadata.HasKey("normal_weighting"))
+            settings.normalWeighting = metadata.GetDataAs<std::string>("normal_weighting");
+        RequireNormalWeighting(settings.normalWeighting);
         for (const auto &field : BasisModes)
             settings.*(field.member) = ReadBasisMode(metadata, field);
         if (metadata.HasKey("max_bones_per_vertex"))
@@ -217,6 +247,9 @@ struct MeshImportSettings
     static void EnsureDefaults(InxResourceMeta &metadata)
     {
         const MeshImportSettings defaults;
+        metadata.AddMetadata("tangent_algorithm", ReadTangentAlgorithm(metadata));
+        if (!metadata.HasKey("normal_weighting"))
+            metadata.AddMetadata("normal_weighting", defaults.normalWeighting);
         for (const auto &field : BasisModes)
             metadata.AddMetadata(field.name, ReadBasisMode(metadata, field));
         if (metadata.HasKey("generate_normals") || metadata.HasKey("generate_tangents")) {
@@ -249,6 +282,14 @@ struct MeshImportSettings
             throw std::invalid_argument("model import settings require an object");
         // Validate the entire authoring request before modifying its candidate.
         for (const auto &[key, value] : patch.items()) {
+            if (key == "normal_weighting") {
+                RequireNormalWeighting(value);
+                continue;
+            }
+            if (key == "tangent_algorithm") {
+                RequireTangentAlgorithm(value);
+                continue;
+            }
             if (key == "normal_mode" || key == "tangent_mode") {
                 RequireBasisMode(value);
                 continue;
@@ -301,7 +342,7 @@ struct MeshImportSettings
             else if (key == "max_bones_per_vertex")
                 metadata.AddMetadata(key, value.get<int>());
             else if (key == "rig_type" || key == "material_import_mode" || key == "normal_mode" ||
-                     key == "tangent_mode")
+                     key == "tangent_mode" || key == "normal_weighting" || key == "tangent_algorithm")
                 metadata.AddMetadata(key, value.get<std::string>());
             else if (value.is_boolean())
                 metadata.AddMetadata(key, value.get<bool>());
@@ -344,6 +385,17 @@ struct MeshImportSettings
                                            {{"value", "calculate"}, {"label", "asset.basis_calculate"}},
                                            {{"value", "none"}, {"label", "asset.basis_none"}},
                                            {{"value", "source_only"}, {"label", "asset.basis_source_only"}}}}});
+        fields.push_back({{"name", "normal_weighting"}, {"type", "enum"}, {"default", defaults.normalWeighting},
+                          {"page", "model"}, {"label", "asset.normal_weighting"}, {"legacy_optional", true},
+                          {"choices", {{{"value", "unweighted"}, {"label", "asset.normal_unweighted"}},
+                                       {{"value", "area"}, {"label", "asset.normal_area"}},
+                                       {{"value", "angle"}, {"label", "asset.normal_angle"}},
+                                       {{"value", "area_angle"}, {"label", "asset.normal_area_angle"}}}}});
+        fields.push_back({{"name", "tangent_algorithm"}, {"type", "enum"}, {"default", defaults.tangentAlgorithm},
+                          {"page", "model"}, {"label", "asset.tangent_algorithm"}, {"legacy_optional", true},
+                          {"legacy_default", "assimp"},
+                          {"choices", {{{"value", "mikktspace"}, {"label", "asset.tangent_mikktspace"}},
+                                       {{"value", "assimp"}, {"label", "asset.tangent_assimp"}}}}});
         fields.push_back({{"name", "rig_type"},
                           {"type", "enum"},
                           {"default", defaults.rigType},
