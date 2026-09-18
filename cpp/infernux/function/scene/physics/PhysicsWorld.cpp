@@ -464,6 +464,7 @@ void PhysicsWorld::Shutdown()
         }
     }
     m_bodyToCollider.clear();
+    m_bodyColliders.clear();
     m_poseReadbackBodyIds.clear();
     m_staticContinuousBodyIds.clear();
     m_continuousBodyIds.clear();
@@ -1100,6 +1101,7 @@ uint32_t PhysicsWorld::CreateBody(Collider *collider, bool isStatic, bool isTrig
 
     uint32_t id = bodyId.GetIndexAndSequenceNumber();
     m_bodyToCollider[id] = collider;
+    m_bodyColliders[id] = go->GetComponents<Collider>();
     m_queryGeneration.fetch_add(1, std::memory_order_release);
     return id;
 }
@@ -1128,6 +1130,7 @@ void PhysicsWorld::DestroyBody(Collider *collider)
     bodyInterface.DestroyBody(JPH::BodyID(id));
 
     m_bodyToCollider.erase(id);
+    m_bodyColliders.erase(id);
     m_staticContinuousBodyIds.erase(id);
     m_continuousBodyIds.erase(id);
     m_kinematicMoveStates.erase(id);
@@ -1200,6 +1203,8 @@ void PhysicsWorld::UpdateBodyShape(Collider *collider, const Collider *exclude)
     JPH::BodyInterface &bodyInterface = m_physicsSystem->GetBodyInterface();
     bodyInterface.SetUseManifoldReduction(JPH::BodyID(id), shapeCount <= 1);
     bodyInterface.SetShape(JPH::BodyID(id), newShape, true, JPH::EActivation::Activate);
+    if (auto *go = collider->GetGameObject())
+        m_bodyColliders[id] = go->GetComponents<Collider>();
     m_queryGeneration.fetch_add(1, std::memory_order_release);
 }
 
@@ -2641,8 +2646,11 @@ Collider *PhysicsWorld::ResolveColliderForSubShape(const JPH::Body &body, uint32
         return fallback;
     }
 
-    auto colliders = go->GetComponents<Collider>();
-    for (auto *col : colliders) {
+    const auto cached = m_bodyColliders.find(bodyId);
+    if (cached == m_bodyColliders.end()) {
+        return fallback;
+    }
+    for (auto *col : cached->second) {
         if (col && static_cast<uint32_t>(col->GetComponentID()) == componentId) {
             return col;
         }

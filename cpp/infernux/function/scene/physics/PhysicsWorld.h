@@ -517,6 +517,10 @@ class PhysicsWorld
 
     // Mapping: Jolt body index → Collider*
     std::unordered_map<uint32_t, Collider *> m_bodyToCollider;
+    // Compound bodies publish their Collider set with the Jolt shape. Raycast
+    // hit publication can resolve sub-shapes without allocating a fresh
+    // GameObject component list for every ray.
+    std::unordered_map<uint32_t, std::vector<Collider *>> m_bodyColliders;
     std::atomic<uint64_t> m_queryGeneration{1};
 
     enum class ConstraintKind : uint8_t
