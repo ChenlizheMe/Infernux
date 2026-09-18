@@ -380,7 +380,11 @@ class PrefabCommandService:
         pm._validate_nested_source_ancestry(document["root_object"], (guid,) if guid else ())
         content = json.dumps(document, indent=2, ensure_ascii=False)
         if os.path.exists(target):
-            self._project_assets.set_text(target, content)
+            if self._project_assets.read_text(target) != content:
+                from Infernux.engine.prefab_overrides import build_prefab_asset_edit_command
+
+                self._execute(build_prefab_asset_edit_command(target, document, database), ActionOrigin.USER)
+                self._project_assets._notify_changed()
         else:
             self._project_assets._save_resource_copy(
                 lambda: content, target, extension=pm.PREFAB_EXTENSION,

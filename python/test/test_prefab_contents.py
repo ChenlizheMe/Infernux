@@ -233,3 +233,125 @@ def test_deleted_source_is_not_recreated_by_stale_contents(contents_project, sce
         assert not path.exists()
     finally:
         editor.unload_prefab_contents(root)
+
+
+@pytest.mark.parametrize("save_offline", [True, False])
+def test_source_edit_updates_all_worlds_nested_instances_and_history(contents_project, scene, monkeypatch, save_offline):
+    from types import SimpleNamespace
+    from Infernux.engine.prefab_manager import instantiate_prefab
+    from Infernux.engine.prefab_overrides import build_prefab_apply_command
+    from Infernux.engine.scene_manager import SceneFileManager
+    from Infernux.engine.interaction import DocumentRegistry, DocumentKind
+
+    core, folder = contents_project
+    database = AssetManager.require_asset_database()
+    path = folder / "Shared.prefab"
+    make_asset(scene, path)
+    guid = database.get_guid_from_path(str(path))
+    manager = SceneManager.instance()
+    second_scene = manager.create_scene("Prefab second world")
+    unrelated = manager.create_scene("No linked Prefab")
+    root = None
+    try:
+        def instantiate(destination, parent=None, source=path, source_guid=guid):
+            return instantiate_prefab(file_path=str(source), guid=source_guid, scene=destination,
+                                      parent=parent, asset_database=database)
+
+        first = instantiate(scene)
+        outer = second_scene.create_game_object("Outer")
+        nested = instantiate(second_scene, outer)
+        outer_path = folder / "Outer.prefab"
+        editor.save_as_prefab_asset(outer, outer_path)
+        repeated = instantiate(scene, source=outer_path,
+                               source_guid=database.get_guid_from_path(str(outer_path))).get_child(0)
+        outer_bytes = outer_path.read_bytes()
+        nested.get_child(0).name = "Private collider"
+        nested.transform.local_position = Vector3(4, 5, 6)
+        external = second_scene.create_game_object("External reference")
+        external_collider = external.add_component("BoxCollider")
+        nested.get_py_component(ContentsProbe).target = ComponentRef(external_collider)
+        roots = (first, nested, repeated)
+        child_ids = [obj.get_child(0).id for obj in roots]
+        before = [obj.serialize_document() for obj in roots]
+        source_before = path.read_bytes()
+
+        # Real registry revisions, with only the editor's world/document lookup supplied.
+        registry = DocumentRegistry.instance()
+        documents = {int(world.world_id): registry.create(DocumentKind.SCENE, world.name)
+                     for world in (scene, second_scene, unrelated)}
+        monkeypatch.setattr(SceneFileManager, "_instance", SimpleNamespace(
+            is_prefab_mode=False, document_id=documents[int(scene.world_id)].document_id,
+            document_id_for_scene=lambda world: documents[int(getattr(world, "world_id", world))].document_id,
+        ))
+        if save_offline:
+            root = editor.load_prefab_contents(path)
+            root.get_child(0).name = "Updated collider"
+            root.scene.create_game_object("New source child").set_parent(root)
+            editor.save_as_prefab_asset(root, path)
+            # History must never depend on the lifetime of the preview world.
+            editor.unload_prefab_contents(root)
+            root = None
+        else:
+            first.get_child(0).name = "Updated collider"
+            scene.create_game_object("New source child").set_parent(first)
+            before[0] = first.serialize_document()
+            assert UndoManager.instance().execute(build_prefab_apply_command(first, str(path), database))
+
+        def verify_updated():
+            assert [obj.get_child(0).id for obj in roots] == child_ids
+            assert [obj.get_child(0).name for obj in roots] == ["Updated collider", "Private collider", "Updated collider"]
+            assert all([c.name for c in obj.get_children()].count("New source child") == 1 for obj in roots)
+            assert nested.transform.local_position.y == 5
+            assert nested.get_py_component(ContentsProbe).target.component_id == external_collider.component_id
+            for obj in (first, repeated):
+                assert obj.get_py_component(ContentsProbe).target.game_object.id == obj.get_child(0).id
+            assert documents[int(scene.world_id)].is_dirty
+            assert documents[int(second_scene.world_id)].is_dirty
+            assert not documents[int(unrelated.world_id)].is_dirty
+            assert outer_path.read_bytes() == outer_bytes
+
+        verify_updated()
+        after = [obj.serialize_document() for obj in roots]
+        editor.undo(defer=False)
+        assert [obj.serialize_document() for obj in roots] == before
+        assert path.read_bytes() == source_before
+        assert all(not document.is_dirty for document in documents.values())
+        editor.redo(defer=False)
+        assert [obj.serialize_document() for obj in roots] == after
+        verify_updated()
+    finally:
+        if root is not None:
+            editor.unload_prefab_contents(root)
+        manager.unload_scene(unrelated)
+        manager.unload_scene(second_scene)
+
+
+def test_offline_save_rejects_other_world_parent_cycle_before_publication(contents_project, scene):
+    from Infernux.engine.prefab_manager import instantiate_prefab
+
+    _, folder = contents_project
+    path = folder / "Cycle.prefab"
+    source = scene.create_game_object("Source")
+    for name in ("Left", "Right"):
+        scene.create_game_object(name).set_parent(source)
+    editor.save_as_prefab_asset(source, path)
+    database = AssetManager.require_asset_database()
+    manager = SceneManager.instance()
+    other = manager.create_scene("Conflicting instance")
+    root = editor.load_prefab_contents(path)
+    try:
+        peer = instantiate_prefab(file_path=str(path), guid=database.get_guid_from_path(str(path)),
+                                  scene=other, asset_database=database)
+        left, right = peer.get_children()
+        right.set_parent(left)
+        left, right = root.get_children()
+        left.set_parent(right)
+        before = peer.serialize_document()
+        source_before = path.read_bytes()
+        with pytest.raises(RuntimeError, match="command was rejected"):
+            editor.save_as_prefab_asset(root, path)
+        assert peer.serialize_document() == before
+        assert path.read_bytes() == source_before
+    finally:
+        editor.unload_prefab_contents(root)
+        manager.unload_scene(other)

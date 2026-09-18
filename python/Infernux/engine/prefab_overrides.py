@@ -58,7 +58,8 @@ class PropertyModification:
 @dataclass(frozen=True, slots=True)
 class _PrefabApplyState:
     prefab_document: dict
-    instance_documents: tuple[tuple[int, dict], ...]
+    instance_documents: tuple[tuple[int, int, dict], ...]
+    prefab_guid: str
 
 
 # ─── Core diff ────────────────────────────────────────────────────────────
@@ -216,8 +217,8 @@ def apply_overrides_to_prefab(instance_obj, prefab_path: str,
         next_local_id=prefab_file["next_local_id"],
         next_component_id=prefab_file["next_component_id"],
     )
-    instance_snapshots = _snapshot_linked_instances(
-        instance_obj.scene, prefab_guid, instance_root=instance_obj,
+    instance_snapshots = _snapshot_all_linked_instances(
+        prefab_guid, instance_root=instance_obj,
         source_document=runtime_document, source_ids=source_ids,
         component_ids=component_ids,
         base_root=prefab_file["root_object"],
@@ -267,6 +268,7 @@ def build_prefab_apply_command(instance_obj, prefab_path: str,
             prefab_path,
             asset_database,
         ),
+        scene_world_ids=_linked_prefab_world_ids(prefab_guid, instance_root),
     )
 
 
@@ -275,9 +277,8 @@ def _capture_prefab_apply_state(instance_root, prefab_path: str,
     from Infernux.engine.prefab_manager import _read_prefab_document
 
     prefab_document = copy.deepcopy(_read_prefab_document(prefab_path))
-    scene = getattr(instance_root, "scene", None)
-    documents: list[tuple[int, dict]] = []
-    if scene is not None and prefab_guid:
+    documents: list[tuple[int, int, dict]] = []
+    for scene in _loaded_prefab_scenes(instance_root):
         for obj in scene.get_all_objects():
             if (getattr(obj, "prefab_guid", "") or "") != prefab_guid:
                 continue
@@ -288,8 +289,68 @@ def _capture_prefab_apply_state(instance_root, prefab_path: str,
                 raise RuntimeError(
                     f"Failed to capture prefab instance '{getattr(obj, 'name', '')}'"
                 )
-            documents.append((int(obj.id), copy.deepcopy(document)))
-    return _PrefabApplyState(prefab_document, tuple(documents))
+            documents.append((int(scene.world_id), int(obj.id), copy.deepcopy(document)))
+    return _PrefabApplyState(prefab_document, tuple(documents), prefab_guid)
+
+
+def _loaded_prefab_scenes(instance_root=None):
+    """All open worlds; isolated authoring copies are not scene instances."""
+    from Infernux.lib import SceneManager
+
+    manager = SceneManager.instance()
+    scenes = [manager.get_scene_at(index) for index in range(manager.scene_count)]
+    source_scene = getattr(instance_root, "scene", None)
+    if source_scene is not None and not source_scene.is_preview and source_scene not in scenes:
+        scenes.append(source_scene)
+    return scenes
+
+
+def _snapshot_all_linked_instances(prefab_guid, *, base_root, instance_root=None, **kwargs):
+    return [snapshot for scene in _loaded_prefab_scenes(instance_root)
+            for snapshot in _snapshot_linked_instances(
+                scene, prefab_guid, base_root=base_root,
+                instance_root=instance_root if instance_root is not None and instance_root.scene is scene else None,
+                **kwargs,
+            )]
+
+
+def _linked_prefab_world_ids(prefab_guid, instance_root=None):
+    return tuple(int(scene.world_id) for scene in _loaded_prefab_scenes(instance_root)
+                 if any(obj.prefab_root and obj.prefab_guid == prefab_guid
+                        for obj in scene.get_all_objects()))
+
+
+def build_prefab_asset_edit_command(prefab_path, document, asset_database):
+    """One source write and every open instance projection share the same Undo."""
+    from Infernux.engine.undo import PrefabApplyOverridesCommand
+    from Infernux.engine.prefab_manager import _read_prefab_document, _validate_nested_source_ancestry
+
+    guid = str(asset_database.get_guid_from_path(prefab_path) or "")
+    if not guid:
+        raise ValueError("Prefab source must be registered before editing")
+    updated = copy.deepcopy(document)
+
+    def apply():
+        previous = _read_prefab_document(prefab_path)
+        _validate_nested_source_ancestry(updated["root_object"], (guid,))
+        snapshots = _snapshot_all_linked_instances(guid, base_root=previous["root_object"])
+        prepared = _prepare_applied_prefab(
+            previous["root_object"], updated["root_object"], snapshots, guid, asset_database,
+        )
+        try:
+            _write_prefab_apply_document(prefab_path, updated, asset_database)
+        except BaseException:
+            for _obj, _document, plan in prepared:
+                plan.discard()
+            raise
+        return _publish_applied_prefab(prepared)
+
+    return PrefabApplyOverridesCommand(
+        lambda: _capture_prefab_apply_state(None, prefab_path, guid), apply,
+        lambda state: _restore_prefab_apply_state(state, None, prefab_path, asset_database),
+        description="Save Prefab Asset",
+        scene_world_ids=_linked_prefab_world_ids(guid),
+    )
 
 
 def _write_prefab_apply_document(prefab_path: str, document: dict,
@@ -324,9 +385,7 @@ def _restore_prefab_instance_documents(instance_root, documents,
                                        asset_database=None) -> None:
     if not documents:
         return
-    scene = getattr(instance_root, "scene", None)
-    if scene is None:
-        raise RuntimeError("Prefab instance scene is unavailable")
+    from Infernux.lib import SceneManager
     from Infernux.engine.component_restore import (
         commit_prepared_game_object_document,
         preflight_game_object_python_components,
@@ -334,7 +393,10 @@ def _restore_prefab_instance_documents(instance_root, documents,
 
     prepared = []
     try:
-        for object_id, document in documents:
+        for world_id, object_id, document in documents:
+            scene = SceneManager.instance().get_scene_by_world_id(world_id)
+            if scene is None:
+                raise RuntimeError(f"Prefab instance world {world_id} is unavailable")
             obj = scene.find_by_id(int(object_id))
             if obj is None:
                 raise RuntimeError(f"Prefab instance root {object_id} is unavailable")
@@ -343,6 +405,7 @@ def _restore_prefab_instance_documents(instance_root, documents,
                 asset_database,
                 preserve_document_ids=True,
                 reference_scene=scene,
+                prefer_loaded_types=True,
             )
             prepared.append((obj, document, plan))
         for obj, document, plan in prepared:
@@ -369,7 +432,7 @@ def _restore_prefab_apply_state(state: _PrefabApplyState, instance_root,
     current = _capture_prefab_apply_state(
         instance_root,
         prefab_path,
-        getattr(instance_root, "prefab_guid", "") or "",
+        state.prefab_guid,
     )
     try:
         _write_prefab_apply_document(
@@ -1022,6 +1085,7 @@ def _prepare_applied_prefab(base_root, updated_root, snapshots, prefab_guid, ass
                 asset_database,
                 preserve_document_ids=True,
                 reference_scene=obj.scene,
+                prefer_loaded_types=True,
             )
             prepared_updates.append((obj, merged, prepared))
     except Exception:

@@ -102,9 +102,16 @@ identities are preserved. This operation does not link an ordinary scene object
 to the asset or create a Variant; use `create_prefab` to create and connect.
 
 Saving rejects source changes or deletion since load. Close the same asset's
-Prefab Mode before editing it offline. Synchronizing every already-open scene
-instance and the full conflict matrix are not yet part of this entry point's
-completed contract.
+Prefab Mode before editing it offline. Saving an existing source, or applying
+instance overrides, updates linked instances in all loaded scenes, including
+nested instances. Instance-specific overrides and component references survive
+the merge. Parent cycles are rejected before publishing the source.
+
+The source and affected scene instances share one Undo/Redo operation. Each
+affected scene gets its own dirty revision; unrelated scenes stay unchanged.
+Unloading the temporary contents does not invalidate that operation. Keep the
+affected scenes loaded while replaying it; replay across scene closure and
+external source edits is not yet a completed contract.
 
 ## Data assets and build scenes
 

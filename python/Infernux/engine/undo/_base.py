@@ -89,6 +89,10 @@ class UndoCommand(ABC):
     def can_merge(self, other: UndoCommand) -> bool:
         return False
 
+    def scene_world_ids(self) -> tuple[int, ...]:
+        """Worlds whose document revisions this command changes; 0 means active."""
+        return (self.scene_world_id(),)
+
     def merge(self, other: UndoCommand) -> None:
         pass
 

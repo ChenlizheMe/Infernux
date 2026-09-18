@@ -801,7 +801,7 @@ class PrefabApplyOverridesCommand(UndoCommand):
     """Atomically apply one Prefab asset edit and all live instance projections."""
 
     def __init__(self, capture_state, apply_overrides, restore_state,
-                 description: str = "Apply Prefab Overrides"):
+                 description: str = "Apply Prefab Overrides", *, scene_world_ids=None):
         super().__init__(description)
         if not callable(capture_state) or not callable(apply_overrides):
             raise TypeError("Prefab Apply command requires capture and apply callbacks")
@@ -812,6 +812,10 @@ class PrefabApplyOverridesCommand(UndoCommand):
         self._restore_state = restore_state
         self._before_state = None
         self._after_state = None
+        self._world_ids = tuple(scene_world_ids) if scene_world_ids is not None else (0,)
+
+    def scene_world_ids(self) -> tuple[int, ...]:
+        return self._world_ids
 
     def execute(self) -> None:
         if self._before_state is not None:
