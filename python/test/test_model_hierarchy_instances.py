@@ -363,6 +363,40 @@ def test_source_parent_rename_keeps_authored_instance_pose(scene, hierarchy_asse
     ]
 
 
+def test_source_cross_parent_move_rehomes_imported_edge_but_keeps_authored_pose(
+    scene, hierarchy_asset, engine, monkeypatch
+):
+    """A DCC parent change updates imported structure, not scene-authored TRS."""
+    from Infernux.core.assets import AssetManager
+
+    database, source, guid = hierarchy_asset
+    monkeypatch.setattr(AssetManager, '_engine', engine)
+    monkeypatch.setattr(AssetManager, '_asset_database', database)
+    root = scene.create_from_model(guid)
+    upper = descendants(root)['Upper']
+    upper_id = upper.id
+    upper.transform.local_position = Vector3(21, 22, 23)
+
+    document = json.loads(source.read_text())
+    # First make the identical geometry unique so a later cross-parent move
+    # has a deterministic stable subresource match rather than guessing.
+    document['nodes'][1]['children'] = [2]
+    document['nodes'].pop(3)
+    source.write_text(json.dumps(document))
+    assert AssetManager.reimport_asset(str(source), database=database)
+
+    document['nodes'][0]['children'] = [1, 2]
+    document['nodes'][1]['children'] = []
+    source.write_text(json.dumps(document))
+    assert AssetManager.reimport_asset(str(source), database=database)
+
+    objects = descendants(root)
+    assert objects['Upper'].id == upper_id
+    assert objects['Upper'].get_parent().name == 'Assembly'
+    assert tuple(objects['Upper'].transform.local_position) == (21, 22, 23)
+    assert objects['Upper'].get_component('MeshRenderer').model_node_path == ['Assembly', 'Upper']
+
+
 def test_source_rename_does_not_reset_unrelated_authored_parent(scene, hierarchy_asset, engine, monkeypatch):
     from Infernux.core.assets import AssetManager
 

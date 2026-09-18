@@ -168,14 +168,25 @@ def _migrate_source_paths_by_identity(scene: Any, root: Any, guid: str, source_i
         if identifier and identifier in source_ids.values() and identifier not in by_id:
             by_id[identifier] = obj
 
-    prefix_maps: dict[tuple[str, ...], tuple[str, ...]] = {}
+    # A path-depth change is a real source reparent, not a rename.  Only
+    # same-depth identity pairs may project their prefixes onto imported empty
+    # pivots; otherwise an old pivot could collide with the moved mesh path.
+    direct_maps: dict[tuple[str, ...], tuple[str, ...]] = {}
+    same_depth_pairs: list[tuple[tuple[str, ...], tuple[str, ...]]] = []
     for new_path, identifier in source_ids.items():
         obj = by_id.get(identifier)
         if obj is None:
             continue
         old_path = tuple(str(part) for part in (getattr(obj, "_model_source_path", ()) or ()))
-        if not old_path or old_path == new_path or len(old_path) != len(new_path):
+        if not old_path or old_path == new_path:
             continue
+        direct_maps[old_path] = new_path
+        if len(old_path) != len(new_path):
+            continue
+        same_depth_pairs.append((old_path, new_path))
+
+    prefix_maps: dict[tuple[str, ...], tuple[str, ...]] = {}
+    for old_path, new_path in same_depth_pairs:
         for length in range(1, len(old_path) + 1):
             old_prefix = old_path[:length]
             new_prefix = new_path[:length]
@@ -186,29 +197,77 @@ def _migrate_source_paths_by_identity(scene: Any, root: Any, guid: str, source_i
             prefix_maps[old_prefix] = new_prefix
         if not prefix_maps:
             break
-    if not prefix_maps:
+    if not prefix_maps and not direct_maps:
         return False
 
+    # Snapshot source paths and parent edges before changing either.  The
+    # source path is the only identity we can use for imported pivots (they do
+    # not have a mesh subresource id), while the live parent edge tells us
+    # whether an author deliberately reparented the object in the scene.
+    old_paths_by_id = {
+        int(obj.id): tuple(str(part) for part in (getattr(obj, "_model_source_path", ()) or ()))
+        for obj in candidates
+        if str(getattr(obj, "_model_source_guid", "") or "") == guid
+    }
+    old_parents_by_id = {int(obj.id): obj.get_parent() for obj in candidates}
     changed = False
     for obj in candidates:
         if str(getattr(obj, "_model_source_guid", "") or "") != guid:
             continue
         old_path = tuple(str(part) for part in (getattr(obj, "_model_source_path", ()) or ()))
         new_path = prefix_maps.get(old_path)
+        if new_path is None:
+            new_path = direct_maps.get(old_path)
         if new_path is None or new_path == old_path:
             continue
         if old_path and str(obj.name) == old_path[-1]:
             obj.name = new_path[-1]
         obj._set_model_source(guid, list(new_path))
-        renderer = obj.get_component("MeshRenderer")
-        if renderer is not None and renderer.model_node_path == list(old_path):
-            renderer.set_model_mesh(guid, list(new_path))
+        for renderer_type in ("MeshRenderer", "SkinnedMeshRenderer"):
+            renderer = obj.get_component(renderer_type)
+            if renderer is not None and renderer.model_node_path == list(old_path):
+                renderer.set_model_mesh(guid, list(new_path))
         changed = True
 
-    # Do not rebuild parent edges here. A scene author may deliberately move a
-    # source child under a different GameObject; its authored hierarchy is as
-    # authoritative as its Transform. Parent-edge migration needs an explicit
-    # source-vs-author override contract and must not silently reparent it.
+    # Rebuild only edges that still match the old source edge.  If a scene
+    # author moved an imported child under another GameObject, the live parent
+    # no longer carries the old source path and therefore remains authoritative.
+    # This lets a DCC cross-parent move update imported structure without
+    # trampling authored hierarchy edits.
+    source_by_new_path: dict[tuple[str, ...], Any] = {}
+    duplicate_new_paths: set[tuple[str, ...]] = set()
+    for obj in candidates:
+        if str(getattr(obj, "_model_source_guid", "") or "") != guid:
+            continue
+        new_path = tuple(str(part) for part in (getattr(obj, "_model_source_path", ()) or ()))
+        if new_path in source_by_new_path:
+            duplicate_new_paths.add(new_path)
+        else:
+            source_by_new_path[new_path] = obj
+    for path in duplicate_new_paths:
+        source_by_new_path.pop(path, None)
+    for obj in candidates:
+        object_id = int(obj.id)
+        old_path = old_paths_by_id.get(object_id)
+        new_path = tuple(str(part) for part in (getattr(obj, "_model_source_path", ()) or ()))
+        if old_path is None or old_path == new_path or not old_path:
+            continue
+        previous_parent = old_parents_by_id.get(object_id)
+        if previous_parent is None:
+            continue
+        previous_parent_path = old_paths_by_id.get(int(previous_parent.id))
+        if previous_parent_path != old_path[:-1]:
+            continue
+        # The destination parent is defined by the migrated source path, so a
+        # cross-parent move naturally targets ``new_path[:-1]``.  For a pure
+        # rename this is equivalent to the migrated old parent path.
+        target_parent_path = new_path[:-1]
+        target_parent = source_by_new_path.get(target_parent_path)
+        if target_parent is None or target_parent is previous_parent:
+            continue
+        obj.set_parent(target_parent, world_position_stays=False)
+        changed = True
+
     return changed
 
 
