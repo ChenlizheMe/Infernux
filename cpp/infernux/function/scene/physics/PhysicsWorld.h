@@ -10,6 +10,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <atomic>
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
 #include <memory>
@@ -370,6 +371,15 @@ class PhysicsWorld
                       RaycastHit *outHits, uint8_t *outHitMask, uint32_t layerMask = (0xFFFFFFFFu & ~(1u << 2)),
                       bool queryTriggers = true) const;
 
+    /// Monotonic identity of the currently published query world. The value
+    /// changes whenever body membership, pose, layer/trigger state, or a
+    /// collider shape changes. Query consumers can retain this token with
+    /// their results instead of inferring validity from object counts.
+    [[nodiscard]] uint64_t GetQueryGeneration() const noexcept
+    {
+        return m_queryGeneration.load(std::memory_order_acquire);
+    }
+
     /// Cast a ray against one authored Collider sub-shape. Unlike a world
     /// query, this intentionally ignores layer, trigger and pair filters.
     bool RaycastCollider(const Collider &collider, const glm::vec3 &origin, const glm::vec3 &direction,
@@ -507,6 +517,7 @@ class PhysicsWorld
 
     // Mapping: Jolt body index → Collider*
     std::unordered_map<uint32_t, Collider *> m_bodyToCollider;
+    std::atomic<uint64_t> m_queryGeneration{1};
 
     enum class ConstraintKind : uint8_t
     {

@@ -3986,6 +3986,7 @@ class PenetrationResult:
 
 class Physics:
     body_count: ClassVar[int]
+    query_generation: ClassVar[int]
     """Static physics query interface."""
 
     @staticmethod

@@ -1099,6 +1099,7 @@ uint32_t PhysicsWorld::CreateBody(Collider *collider, bool isStatic, bool isTrig
 
     uint32_t id = bodyId.GetIndexAndSequenceNumber();
     m_bodyToCollider[id] = collider;
+    m_queryGeneration.fetch_add(1, std::memory_order_release);
     return id;
 }
 
@@ -1129,6 +1130,7 @@ void PhysicsWorld::DestroyBody(Collider *collider)
     m_staticContinuousBodyIds.erase(id);
     m_continuousBodyIds.erase(id);
     m_kinematicMoveStates.erase(id);
+    m_queryGeneration.fetch_add(1, std::memory_order_release);
     if (m_contactListener)
         m_contactListener->RemoveIgnoredPairsForBody(id);
 }
@@ -1143,6 +1145,7 @@ void PhysicsWorld::SetBodyPosition(uint32_t bodyId, const glm::vec3 &pos, const 
     JPH::BodyInterface &bodyInterface = m_physicsSystem->GetBodyInterfaceNoLock();
     bodyInterface.SetPositionAndRotation(JPH::BodyID(bodyId), JPH::RVec3(pos.x, pos.y, pos.z),
                                          JPH::Quat(rot.x, rot.y, rot.z, rot.w), JPH::EActivation::DontActivate);
+    m_queryGeneration.fetch_add(1, std::memory_order_release);
 }
 
 void PhysicsWorld::SetBodyPositionsBatch(const std::vector<PhysicsBodyPoseUpdate> &updates)
@@ -1176,6 +1179,7 @@ void PhysicsWorld::SetBodyPositionsBatch(const std::vector<PhysicsBodyPoseUpdate
     for (size_t i = 0; i < bodyIds.size(); ++i)
         bodyInterface.SetPositionAndRotationWhenChanged(bodyIds[i], positions[i], rotations[i],
                                                         JPH::EActivation::DontActivate);
+    m_queryGeneration.fetch_add(1, std::memory_order_release);
 }
 
 void PhysicsWorld::UpdateBodyShape(Collider *collider, const Collider *exclude)
@@ -1195,6 +1199,7 @@ void PhysicsWorld::UpdateBodyShape(Collider *collider, const Collider *exclude)
     JPH::BodyInterface &bodyInterface = m_physicsSystem->GetBodyInterface();
     bodyInterface.SetUseManifoldReduction(JPH::BodyID(id), shapeCount <= 1);
     bodyInterface.SetShape(JPH::BodyID(id), newShape, true, JPH::EActivation::Activate);
+    m_queryGeneration.fetch_add(1, std::memory_order_release);
 }
 
 void PhysicsWorld::SetBodyIsSensor(uint32_t bodyId, bool isSensor)
@@ -1205,6 +1210,7 @@ void PhysicsWorld::SetBodyIsSensor(uint32_t bodyId, bool isSensor)
     JPH::BodyLockWrite lock(m_physicsSystem->GetBodyLockInterface(), JPH::BodyID(bodyId));
     if (lock.Succeeded()) {
         lock.GetBody().SetIsSensor(isSensor);
+        m_queryGeneration.fetch_add(1, std::memory_order_release);
     }
 }
 
@@ -1223,6 +1229,7 @@ void PhysicsWorld::AddBodyToBroadphase(uint32_t bodyId, bool isStatic)
 
     JPH::BodyInterface &bodyInterface = m_physicsSystem->GetBodyInterface();
     bodyInterface.AddBody(JPH::BodyID(bodyId), isStatic ? JPH::EActivation::DontActivate : JPH::EActivation::Activate);
+    m_queryGeneration.fetch_add(1, std::memory_order_release);
 }
 
 void PhysicsWorld::AddBodiesBatch(const std::vector<std::pair<uint32_t, bool>> &bodies)
@@ -1257,6 +1264,8 @@ void PhysicsWorld::AddBodiesBatch(const std::vector<std::pair<uint32_t, bool>> &
             bi.AddBodiesPrepare(dynamicIds.data(), static_cast<int>(dynamicIds.size()));
         bi.AddBodiesFinalize(dynamicIds.data(), static_cast<int>(dynamicIds.size()), state, JPH::EActivation::Activate);
     }
+    if (!staticIds.empty() || !dynamicIds.empty())
+        m_queryGeneration.fetch_add(1, std::memory_order_release);
 }
 
 void PhysicsWorld::RemoveBodyFromBroadphase(uint32_t bodyId)
@@ -1266,6 +1275,7 @@ void PhysicsWorld::RemoveBodyFromBroadphase(uint32_t bodyId)
 
     JPH::BodyInterface &bodyInterface = m_physicsSystem->GetBodyInterface();
     bodyInterface.RemoveBody(JPH::BodyID(bodyId));
+    m_queryGeneration.fetch_add(1, std::memory_order_release);
 }
 
 // ============================================================================
@@ -1310,6 +1320,7 @@ void PhysicsWorld::SetBodyMotionType(uint32_t bodyId, int motionType)
     // An explicit motion-type change supersedes any pending drag tracking —
     // never restore this body to Static behind the caller's back.
     m_kinematicMoveStates.erase(bodyId);
+    m_queryGeneration.fetch_add(1, std::memory_order_release);
 }
 
 void PhysicsWorld::SetBodyGameLayer(uint32_t bodyId, int gameLayer)
@@ -1321,6 +1332,7 @@ void PhysicsWorld::SetBodyGameLayer(uint32_t bodyId, int gameLayer)
     const JPH::EMotionType motionType = bi.GetMotionType(JPH::BodyID(bodyId));
     const bool moving = motionType != JPH::EMotionType::Static;
     bi.SetObjectLayer(JPH::BodyID(bodyId), PhysicsObjectLayers::Encode(gameLayer, moving));
+    m_queryGeneration.fetch_add(1, std::memory_order_release);
 }
 
 void PhysicsWorld::SetBodyMassProperties(uint32_t bodyId, float mass)

@@ -1202,6 +1202,9 @@ void RegisterPhysicsBindings(py::module_ &m)
             "query_triggers"_a = false,
             "Return Rigidbody broad-phase candidates whose body bounds intersect a world AABB")
         .def_property_readonly_static("body_count", [](py::object) { return PhysicsWorld::Instance().GetBodyCount(); })
+        .def_property_readonly_static(
+            "query_generation", [](py::object) { return PhysicsWorld::Instance().GetQueryGeneration(); },
+            "Monotonic token for the currently published physics query world")
         .def_static(
             "raycast",
             [](const glm::vec3 &origin, const glm::vec3 &direction, float maxDistance, uint32_t layerMask,

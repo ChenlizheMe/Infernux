@@ -2152,6 +2152,31 @@ class TestRaycastBatch:
         # The fixed pybind call frame and returned borrowed dict stay constant.
         assert peak < 32 * 1024
 
+    def test_query_generation_changes_only_when_published_physics_state_changes(self, scene):
+        import numpy as np
+
+        target = scene.create_game_object("QueryGenerationTarget")
+        target.add_component("BoxCollider")
+        Physics.sync_transforms()
+        initial = int(PublicPhysics.query_generation)
+
+        # Repeating a query boundary with no authored change must keep the
+        # same published-world token; consumers can safely retain hit buffers.
+        Physics.sync_transforms()
+        assert int(PublicPhysics.query_generation) == initial
+
+        target.transform.position = Vector3(0, 2, 0)
+        Physics.sync_transforms()
+        moved = int(PublicPhysics.query_generation)
+        assert moved > initial
+
+        origins = np.array([[0, 5, 0]], dtype=np.float32)
+        directions = np.array([[0, -1, 0]], dtype=np.float32)
+        output = self._output(1)
+        PublicPhysics.raycast_batch(origins, directions, output)
+        assert int(PublicPhysics.query_generation) == moved
+        assert output["hit"][0] == 1
+
 class TestIncrementalTransformSync:
     def test_mesh_cooking_cache_reuses_identical_geometry(self, scene):
         NativeMeshCollider.clear_cooking_cache()

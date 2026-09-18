@@ -59,6 +59,12 @@ class Physics:
 
     @classmethod
     @property
+    def query_generation(cls) -> int:
+        """Monotonic token for the currently published physics query world."""
+        ...
+
+    @classmethod
+    @property
     def gravity(cls) -> Any:
         """The global gravity vector applied to all rigidbodies."""
         ...

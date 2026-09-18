@@ -49,6 +49,11 @@ class _PhysicsMeta(type):
         return int(_CppPhysics.body_count)
 
     @property
+    def query_generation(cls) -> int:
+        """Monotonic token for the currently published physics query world."""
+        return int(_CppPhysics.query_generation)
+
+    @property
     def gravity(cls):
         return _CppPhysics.get_gravity()
 
