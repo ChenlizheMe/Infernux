@@ -131,6 +131,27 @@ def test_physical_camera_lens_shift_changes_frustum_center(camera):
     assert shifted[1, 2] != pytest.approx(centered[1, 2])
 
 
+@pytest.mark.skipif(not hasattr(lib, "PhysicalGateFit"), reason="native PhysicalGateFit binding not built")
+def test_physical_gate_fit_ignores_the_non_fitted_sensor_axis(camera):
+    camera.projection_mode = lib.CameraProjection.Physical
+    camera.focal_length = 50.0
+    camera._require_cpp_component().aspect_ratio = 16.0 / 9.0
+
+    camera.gate_fit = lib.PhysicalGateFit.Horizontal
+    camera.sensor_size = lib.Vector2(36.0, 24.0)
+    horizontal_a = np.asarray(camera.projection_matrix)
+    camera.sensor_size = lib.Vector2(36.0, 12.0)
+    horizontal_b = np.asarray(camera.projection_matrix)
+    np.testing.assert_allclose(horizontal_a, horizontal_b, atol=1e-6)
+
+    camera.gate_fit = lib.PhysicalGateFit.Vertical
+    camera.sensor_size = lib.Vector2(36.0, 24.0)
+    vertical_a = np.asarray(camera.projection_matrix)
+    camera.sensor_size = lib.Vector2(18.0, 24.0)
+    vertical_b = np.asarray(camera.projection_matrix)
+    np.testing.assert_allclose(vertical_a, vertical_b, atol=1e-6)
+
+
 def test_screen_world_round_trip_uses_top_left_pixels(camera):
     camera.set_clip_planes(.5, 50)
     for pixel in [(100, 120), (960, 540), (1800, 900)]:
