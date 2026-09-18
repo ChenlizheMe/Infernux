@@ -1282,6 +1282,7 @@
   "asset.import_progress.texture_title": "正在导入纹理",
   "asset.import_progress.preparing": "正在准备导入...",
   "asset.import_progress.processing": "正在处理纹理数据...",
+  "asset.import_progress.model_processing": "正在后台导入模型…",
   "asset.import_progress.publishing": "正在发布 GPU 纹理...",
   "asset.import_progress.complete": "导入完成",
   "panel.plugins": "插件",

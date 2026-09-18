@@ -426,6 +426,25 @@ class AssetManager:
         return False
 
     @classmethod
+    def begin_model_reimport(cls, path: str, settings_obj):
+        """Submit an immutable model settings snapshot; return its owning database."""
+        from Infernux.core.asset_types import MeshImportSettings
+
+        database = cls._mutation_database()
+        snapshot = MeshImportSettings.from_dict(settings_obj.to_dict()).to_dict()
+        database.begin_model_reimport(path, snapshot)
+        return database
+
+    @classmethod
+    def poll_model_reimport(cls, database):
+        """Publish a completed model Apply on the editor owner thread, once."""
+        result = database.try_commit_model_reimport()
+        if result is None or not result:
+            return result
+        cls._suppress_meta_watcher(result.path)
+        return cls._publish_reimport_result(result.path, result, database=database)
+
+    @classmethod
     def _mutation_database(cls, database=None):
         result = database if database is not None else cls._asset_database
         if result is None:
@@ -499,6 +518,7 @@ class AssetManager:
         if not result:
             cls._meta_write_suppression.pop(cls._normalize_asset_path(path), None)
             return result
+
         effect_error = cls._compile_render_effect_runtime(path, result.guid)
         if effect_error:
             from Infernux.lib import AssetMutationErrorCode
@@ -562,6 +582,16 @@ class AssetManager:
             cls._meta_write_suppression.pop(cls._normalize_asset_path(path), None)
             return result
 
+        return cls._publish_reimport_result(
+            path, result, database=asset_database, suppress_watcher_echo=suppress_watcher_echo,
+            native=native, has_shader_runtime=has_shader_runtime, previous_shader_id=previous_shader_id,
+        )
+
+    @classmethod
+    def _publish_reimport_result(cls, path, result, *, database, suppress_watcher_echo=True,
+                                 native=None, has_shader_runtime=False, previous_shader_id=""):
+        guid = result.guid
+        ext = os.path.splitext(path)[1].lower()
         is_ordinary_script = ext == ".py" and not str(path).lower().endswith(".particle.py")
         if is_ordinary_script:
             # Ordinary scripts have their own validated collector and atomic
@@ -589,7 +619,7 @@ class AssetManager:
         particle_error = cls._compile_particle_runtime(
             path,
             guid,
-            database=asset_database,
+            database=database,
         )
         if particle_error:
             from Infernux.lib import AssetMutationErrorCode

@@ -79,14 +79,29 @@ def test_modern_blend_worker_import_reimport_and_failed_publication(engine, tmp_
         assert staging.is_dir() and not list(staging.iterdir())
         settings = read_mesh_import_settings(str(source))
         settings.scale_factor = 2
-        result = AssetManager.reimport_asset(str(source), import_settings=settings.to_dict(), database=database)
+        started = time.monotonic()
+        database.begin_model_reimport(str(source), settings.to_dict())
+        assert time.monotonic() - started < 1.0
+        assert read_mesh_import_settings(str(source)).scale_factor == 1
+        apply_ticks = 0
+        deadline = time.monotonic() + 150
+        while (result := AssetManager.poll_model_reimport(database)) is None:
+            apply_ticks += 1
+            assert database.get_guid_from_path(str(source)) == guid
+            assert time.monotonic() < deadline
+            time.sleep(.005)
+        assert apply_ticks > 1  # Blender was running while owner queries remained available.
         assert result, result.error
         assert result.guid == guid
         assert read_mesh_import_settings(str(source)).scale_factor == 2
         sidecar = Path(str(source) + ".meta").read_bytes()
         vertices = mesh.vertex_count
         source.write_bytes(b"invalid Blender source")
-        result = AssetManager.reimport_asset(str(source), import_settings=settings.to_dict(), database=database)
+        database.begin_model_reimport(str(source), settings.to_dict())
+        deadline = time.monotonic() + 150
+        while (result := AssetManager.poll_model_reimport(database)) is None:
+            assert time.monotonic() < deadline
+            time.sleep(.005)
         assert not result and "Blender import failed" in result.error
         assert Path(str(source) + ".meta").read_bytes() == sidecar
         assert mesh.vertex_count == vertices

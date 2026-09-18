@@ -158,6 +158,7 @@ class _ImportSettingsController:
         self.exec_layer = None
         self.document_id = ""
         self.state: Optional[_State] = None
+        self._pending_model_save = None
 
     def bind(self, *, file_path: str, exec_layer: Any, state: "_State") -> None:
         self.file_path = str(file_path)
@@ -258,6 +259,14 @@ class _ImportSettingsController:
             ticket.ticket_id,
             content_token=document_content_token(content),
         )
+        if self.category == "mesh":
+            from Infernux.core.assets import AssetManager
+            from Infernux.engine.interaction import DocumentActionResult, DocumentActionStatus
+
+            snapshot = copy.deepcopy(self.settings)
+            database = AssetManager.begin_model_reimport(self.file_path, snapshot)
+            self._pending_model_save = (database, ticket.ticket_id, snapshot, document_content_token(content))
+            return DocumentActionResult(DocumentActionStatus.PENDING)
         if self.category == "texture":
             from Infernux.engine.interaction import (
                 DocumentActionResult,
@@ -327,6 +336,43 @@ class _ImportSettingsController:
             content_token=document_content_token(content),
         )
         return True
+
+    def poll_pending_writes(self) -> int:
+        """Use the document save pump, including after the Inspector switches away."""
+        if self._pending_model_save is None:
+            return 0
+        from Infernux.core.assets import AssetManager
+        from Infernux.engine.interaction import DocumentRegistry
+
+        database, ticket_id, snapshot, token = self._pending_model_save
+        ticket = DocumentRegistry.instance().get_save_ticket(ticket_id)
+        if ticket is None or not ticket.is_pending:
+            self.cancel_pending_writes()
+            return 1
+        try:
+            result = AssetManager.poll_model_reimport(database)
+            if result is None:
+                return 0
+            success, message = bool(result), result.error
+        except Exception as exc:
+            success, message = False, str(exc)
+        self._pending_model_save = None
+        if success:
+            self.disk_settings = copy.deepcopy(snapshot)
+            if self.state is not None and self.state.import_controller is self:
+                self.state.disk_settings = self.disk_settings
+        DocumentRegistry.instance().complete_save(
+            ticket_id, success=success, message=message, content_token=token if success else None,
+        )
+        if not success:
+            Debug.log_error(f"Model Apply failed for '{self.file_path}': {message}")
+        return 1
+
+    def cancel_pending_writes(self) -> None:
+        if self._pending_model_save is not None:
+            database = self._pending_model_save[0]
+            database.discard_model_reimport()
+            self._pending_model_save = None
 
     def discard(self, *, document_id: str):
         from Infernux.engine.interaction import DocumentRegistry
@@ -2130,8 +2176,14 @@ def render_asset_inspector(ctx: InxGUIContext, panel,
     # ── Footer ─────────────────────────────────────────────────────────
     if (cat_def.access_mode == AssetAccessMode.READ_ONLY_RESOURCE
             and cat_def.editable_fields):
+        from Infernux.engine.interaction import DocumentRegistry
+
+        saving = bool(_state.document_id and DocumentRegistry.instance().is_save_pending(_state.document_id))
+        if saving:
+            ctx.label(t("asset.import_progress.model_processing") if category == "mesh"
+                      else t("asset.import_progress.processing"))
         render_apply_revert(
-            ctx, _state.is_dirty(),
+            ctx, _state.is_dirty() and not saving,
             on_apply=lambda: _on_apply(),
             on_revert=_on_revert,
             semantic_prefix=f"asset.{category}.import",

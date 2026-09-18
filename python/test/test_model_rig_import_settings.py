@@ -2,6 +2,7 @@
 import base64
 import json
 import struct
+import time
 from pathlib import Path
 
 import pytest
@@ -12,8 +13,9 @@ from Infernux.lib import AssetRegistry
 
 
 @pytest.mark.parametrize("source_kind", ["fbx", "animation_only", "skinned_gltf"])
+@pytest.mark.parametrize("apply_mode", ["sync", "async"])
 def test_rig_animation_apply_replaces_companion_without_losing_source_inventory(
-    engine, tmp_path, monkeypatch, source_kind,
+    engine, tmp_path, monkeypatch, source_kind, apply_mode,
 ):
     database = engine.get_asset_database()
     registry = AssetRegistry.instance()
@@ -54,7 +56,14 @@ def test_rig_animation_apply_replaces_companion_without_losing_source_inventory(
         # Re-enable after each exclusion, including both flags changing together.
         for rig, animations in [("generic", False), ("none", False), ("none", True), ("generic", True)]:
             settings.rig_type, settings.import_animations = rig, animations
-            result = AssetManager.reimport_asset(str(source), import_settings=settings.to_dict(), database=database)
+            if apply_mode == "sync":
+                result = AssetManager.reimport_asset(str(source), import_settings=settings.to_dict(), database=database)
+            else:
+                owner = AssetManager.begin_model_reimport(str(source), settings)
+                deadline = time.monotonic() + 30
+                while (result := AssetManager.poll_model_reimport(owner)) is None:
+                    assert time.monotonic() < deadline
+                    time.sleep(.002)
             assert result, result.error
             assert mesh.vertex_count == original_vertices
             assert mesh.skinned_animation_names == (original_clips if rig == "generic" and animations else [])

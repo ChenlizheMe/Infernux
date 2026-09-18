@@ -1282,6 +1282,7 @@
   "asset.import_progress.texture_title": "Importing Texture",
   "asset.import_progress.preparing": "Preparing import...",
   "asset.import_progress.processing": "Processing texture data...",
+  "asset.import_progress.model_processing": "Importing model in the background...",
   "asset.import_progress.publishing": "Publishing GPU texture...",
   "asset.import_progress.complete": "Import complete",
   "panel.plugins": "Plugins",

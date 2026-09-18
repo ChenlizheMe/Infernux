@@ -186,6 +186,10 @@ class AssetDatabase
     /// @brief Re-run metadata/dependency import for an already registered asset.
     /// Preserves the existing GUID and returns false for missing or unregistered paths.
     [[nodiscard]] AssetMutationResult ReimportAsset(const std::string &path, const nlohmann::json &settings = nullptr);
+    /// Explicit model Apply: immutable worker input, then owner-thread publication.
+    void BeginModelReimport(const std::string &path, const nlohmann::json &settings);
+    [[nodiscard]] std::optional<AssetMutationResult> TryCommitModelReimport();
+    void DiscardModelReimport();
 
     /// @brief Delete asset and meta.
     /// Notifies dependents via AssetDependencyGraph::NotifyEvent(Deleted).
@@ -533,6 +537,18 @@ class AssetDatabase
         Mode mode = Mode::CreateOrLoad;
     };
 
+    struct PendingModelReimport
+    {
+        WorkerImport worker;
+        WorkerMetadataPrepare metadata;
+        nlohmann::json settings;
+        AssetMutationResult result;
+        AssetFileFingerprint metadataFingerprint;
+        bool metadataExists = false;
+        bool discarded = false;
+        JobHandle job;
+    };
+
     struct QuerySnapshot
     {
         uint64_t generation = 0;
@@ -645,6 +661,13 @@ class AssetDatabase
     bool RunImporter(const std::string &guid, const std::string &path, bool isReimport, bool persistMetadata = true,
                      const InxResourceMeta *candidateMetadata = nullptr,
                      const AssetFileFingerprint *expectedSource = nullptr);
+    bool PrepareReimportInput(const std::string &path, WorkerMetadataPrepare &candidate, AssetMutationResult &result);
+    static bool PrepareReimportMetadata(WorkerMetadataPrepare &candidate, const nlohmann::json &settings,
+                                        AssetMutationResult &result);
+    ImportRequest MakeImportRequest(const std::string &guid, const std::string &path, bool isReimport,
+                                    const InxResourceMeta &metadata) const;
+    void PublishImportArtifact(const ImportRequest &request, ImportArtifact artifact, bool persistMetadata);
+    void FinishReimport(AssetMutationResult &result);
 
     std::string CreateOrLoadMetadata(const std::string &filePath, ResourceType type, bool readOnly,
                                      bool persistMetadata, const std::string &identityKey);
@@ -656,6 +679,7 @@ class AssetDatabase
     std::string m_projectRoot;
     std::string m_blenderExecutable;
     std::string m_blenderExportScript;
+    std::shared_ptr<PendingModelReimport> m_pendingModelReimport;
     std::string m_assetsRoot;
     std::vector<std::string> m_extraScanRoots;
     std::unordered_set<std::string> m_readOnlyScanRoots;

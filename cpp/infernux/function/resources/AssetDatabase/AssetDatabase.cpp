@@ -1185,6 +1185,13 @@ bool AssetDatabase::IsRefreshPending() const
 
 void AssetDatabase::WaitForPendingWork() const noexcept
 {
+    if (const auto pending = m_pendingModelReimport; pending && pending->job.IsValid() &&
+        !pending->job.IsComplete() && JobSystem::IsAvailable()) {
+        try {
+            JobSystem::Get().WaitPassive(pending->job);
+        } catch (...) {
+        }
+    }
     if (const auto scan = m_pendingAssetScan) {
         std::unique_lock<std::mutex> lock(scan->mutex);
         scan->completedCv.wait(lock, [&scan] { return scan->complete; });
@@ -2092,6 +2099,21 @@ AssetMutationResult AssetDatabase::ReimportAsset(const std::string &path, const 
     AssertMutationThread("ReimportAsset");
     AssertNoPendingCommit("ReimportAsset");
     AssetMutationResult result;
+    WorkerMetadataPrepare candidate;
+    if (!PrepareReimportInput(path, candidate, result) || !PrepareReimportMetadata(candidate, settings, result))
+        return result;
+    if (!RunImporter(result.guid, path, true, true, &*candidate.metadata, &candidate.file.source)) {
+        result.errorCode = AssetMutationErrorCode::ImportFailed;
+        result.error = m_importResults.at(result.guid).error;
+        return result;
+    }
+    FinishReimport(result);
+    return result;
+}
+
+bool AssetDatabase::PrepareReimportInput(const std::string &path, WorkerMetadataPrepare &candidate,
+                                         AssetMutationResult &result)
+{
     result.operation = "reimport";
     result.path = path;
     result.resourceType = GetResourceTypeForPath(path);
@@ -2099,32 +2121,31 @@ AssetMutationResult AssetDatabase::ReimportAsset(const std::string &path, const 
     if (IsIgnoredImportPath(fsPath)) {
         result.errorCode = AssetMutationErrorCode::UnsupportedType;
         result.error = "Python bytecode and cache paths are not importable assets";
-        return result;
+        return false;
     }
     if (!std::filesystem::is_regular_file(fsPath) || IsMetaFile(fsPath) || result.resourceType == ResourceType::Meta) {
         result.errorCode = AssetMutationErrorCode::InvalidPath;
         result.error = "registered asset path is not a supported regular file";
-        return result;
+        return false;
     }
 
     const std::string guid = GetGuidFromPath(path);
     if (guid.empty()) {
         result.errorCode = AssetMutationErrorCode::NotFound;
         result.error = "asset is not registered";
-        return result;
+        return false;
     }
     result.guid = guid;
 
     // Prepare a candidate without publishing sidecars or touching live metadata.
     // The importer transaction owns the single durable publication point.
-    WorkerMetadataPrepare candidate;
     candidate.file.path = path;
     candidate.file.normalizedPath = FilesystemPathKey(path);
     candidate.file.readOnly = IsReadOnlyPath(candidate.file.normalizedPath);
     if (candidate.file.readOnly) {
         result.errorCode = AssetMutationErrorCode::InvalidPath;
         result.error = "read-only assets cannot be reimported";
-        return result;
+        return false;
     }
     candidate.resourceType = result.resourceType;
     candidate.fallbackGuid = guid;
@@ -2136,36 +2157,130 @@ AssetMutationResult AssetDatabase::ReimportAsset(const std::string &path, const 
     if (!ReadFingerprint(fsPath, candidate.file.source)) {
         result.errorCode = AssetMutationErrorCode::InvalidPath;
         result.error = "could not read source fingerprint";
-        return result;
+        return false;
     }
+    return true;
+}
+
+bool AssetDatabase::PrepareReimportMetadata(WorkerMetadataPrepare &candidate, const nlohmann::json &settings,
+                                            AssetMutationResult &result)
+{
     PrepareMetadata(candidate);
-    if (!candidate.error.empty() || !candidate.metadata || candidate.metadata->GetGuid() != guid) {
+    if (!candidate.error.empty() || !candidate.metadata || candidate.metadata->GetGuid() != result.guid) {
         result.errorCode = AssetMutationErrorCode::ImportFailed;
         result.error =
             candidate.error.empty() ? "metadata preparation did not preserve the registered GUID" : candidate.error;
-        return result;
+        return false;
     }
     if (!settings.is_null()) {
         if (result.resourceType != ResourceType::Mesh || !settings.is_object())
             throw std::invalid_argument("import settings require a model and an object");
         MeshImportSettings::ApplyPatch(*candidate.metadata, settings);
     }
-    if (!RunImporter(guid, path, true, true, &*candidate.metadata, &candidate.file.source)) {
-        result.errorCode = AssetMutationErrorCode::ImportFailed;
-        result.error = m_importResults.at(guid).error;
-        return result;
-    }
-    UpdateCachedFileState(path, false);
+    return true;
+}
+
+void AssetDatabase::FinishReimport(AssetMutationResult &result)
+{
+    UpdateCachedFileState(result.path, false);
     m_assetIndexDirty = true;
-    PublishQuerySnapshotForPaths({path});
+    PublishQuerySnapshotForPaths({result.path});
     // Python owns ordinary script dependency and live class publication.
     if (result.resourceType != ResourceType::Script)
-        AssetDependencyGraph::Instance().NotifyEvent(guid, result.resourceType, AssetEvent::Modified);
+        AssetDependencyGraph::Instance().NotifyEvent(result.guid, result.resourceType, AssetEvent::Modified);
     result.succeeded = true;
     result.databaseCommitted = true;
     result.changed = true;
     result.queryGeneration = GetQueryGeneration();
+}
+
+void AssetDatabase::BeginModelReimport(const std::string &path, const nlohmann::json &settings)
+{
+    AssertMutationThread("BeginModelReimport");
+    AssertNoPendingCommit("BeginModelReimport");
+    if (m_pendingModelReimport && m_pendingModelReimport->discarded && m_pendingModelReimport->job.IsComplete())
+        m_pendingModelReimport.reset();
+    if (m_pendingModelReimport)
+        throw std::logic_error("A model Apply is already in progress");
+    if (!JobSystem::IsAvailable())
+        throw std::logic_error("Model Apply requires the engine JobSystem");
+    if (GetResourceTypeForPath(path) != ResourceType::Mesh || !settings.is_object())
+        throw std::invalid_argument("Model Apply requires a model path and settings object");
+
+    auto pending = std::make_shared<PendingModelReimport>();
+    if (!PrepareReimportInput(path, pending->metadata, pending->result))
+        throw std::runtime_error(pending->result.error);
+    auto &worker = pending->worker;
+    worker.importer = m_importerRegistry.GetImporterForExtension(FromFsPath(ToFsPath(path).extension()));
+    if (!worker.importer)
+        throw std::logic_error("Model Apply has no registered importer");
+    worker.request = MakeImportRequest(pending->result.guid, path, true, *m_metas.at(pending->result.guid));
+    worker.expectedSource = pending->metadata.file.source;
+    pending->settings = settings;
+    pending->metadataExists =
+        ReadFingerprint(ToFsPath(InxResourceMeta::GetMetaFilePath(path)), pending->metadataFingerprint);
+    pending->job = JobSystem::Get().Schedule([pending] {
+        auto &worker = pending->worker;
+        worker.producerThread = std::this_thread::get_id();
+        try {
+            if (!PrepareReimportMetadata(pending->metadata, pending->settings, pending->result))
+                throw std::runtime_error(pending->result.error);
+            worker.request.metadata = std::move(*pending->metadata.metadata);
+            worker.artifact = worker.importer->Reimport(worker.request);
+        } catch (const std::exception &exception) {
+            worker.error = exception.what();
+        } catch (...) {
+            worker.error = "Importer raised a non-standard exception";
+        }
+    });
+    m_pendingModelReimport = std::move(pending);
+}
+
+std::optional<AssetMutationResult> AssetDatabase::TryCommitModelReimport()
+{
+    AssertMutationThread("TryCommitModelReimport");
+    if (!m_pendingModelReimport)
+        throw std::logic_error("No model Apply is in progress");
+    // A scan may have observed an external source edit. Let that transaction
+    // finish first, then reject stale Apply input instead of overwriting it.
+    if (!m_pendingModelReimport->job.IsComplete() || IsRefreshPending())
+        return std::nullopt;
+    auto pending = std::move(m_pendingModelReimport);
+    auto &worker = pending->worker;
+    auto &result = pending->result;
+    try {
+        if (pending->discarded)
+            throw std::runtime_error("Model Apply was discarded before publication");
+        if (!worker.error.empty())
+            throw std::runtime_error(worker.error);
+        if (!worker.artifact)
+            throw std::logic_error("Model importer completed without an artifact");
+        if (GetGuidFromPath(result.path) != result.guid)
+            throw std::runtime_error("Model identity changed while Apply was in progress");
+        RequireUnchangedFingerprint(result.path, worker.expectedSource);
+        AssetFileFingerprint currentMetadata;
+        const bool metadataExists =
+            ReadFingerprint(ToFsPath(InxResourceMeta::GetMetaFilePath(result.path)), currentMetadata);
+        if (metadataExists != pending->metadataExists ||
+            (metadataExists && !(currentMetadata == pending->metadataFingerprint)))
+            throw std::runtime_error("Model import settings changed outside this Apply");
+        PublishImportArtifact(worker.request, std::move(*worker.artifact), true);
+        FinishReimport(result);
+    } catch (const std::exception &exception) {
+        result.errorCode = AssetMutationErrorCode::ImportFailed;
+        result.error = exception.what();
+        INXLOG_ERROR("Model Apply failed for '", result.path, "': ", result.error);
+    }
     return result;
+}
+
+void AssetDatabase::DiscardModelReimport()
+{
+    AssertMutationThread("DiscardModelReimport");
+    if (m_pendingModelReimport)
+        m_pendingModelReimport->discarded = true;
+    // Keep the worker alive until completion or database shutdown; it owns
+    // temporary products only and must never publish after its document closes.
 }
 
 AssetMutationResult AssetDatabase::DeleteAsset(const std::string &path)
@@ -2610,15 +2725,8 @@ bool AssetDatabase::RunImporter(const std::string &guid, const std::string &path
     if (metaIt == m_metas.end() || !metaIt->second)
         throw std::logic_error("AssetDatabase importer request has no metadata snapshot");
 
-    ImportRequest request;
-    request.sourcePath = path;
-    request.projectRoot = m_projectRoot;
-    request.blenderExecutable = m_blenderExecutable;
-    request.blenderExportScript = m_blenderExportScript;
-    request.guid = guid;
-    request.resourceType = GetResourceTypeForPath(path);
-    request.metadata = candidateMetadata ? *candidateMetadata : *metaIt->second;
-    request.isReimport = isReimport;
+    const ImportRequest request = MakeImportRequest(guid, path, isReimport,
+                                                     candidateMetadata ? *candidateMetadata : *metaIt->second);
 
     std::string error;
     try {
@@ -2627,54 +2735,9 @@ bool AssetDatabase::RunImporter(const std::string &guid, const std::string &path
         ImportArtifact artifact = (!importer || request.resourceType == ResourceType::Script)
                                       ? ImportArtifact(request.metadata)
                                       : (isReimport ? importer->Reimport(request) : importer->Import(request));
-        ResolveImportedDependencyPathHints(artifact, m_pathToGuid, request.sourcePath);
-        ValidateImportedDependencyIdentities(artifact, request.sourcePath);
-        ValidateModelMaterialTargets(artifact,
-                                     [this](const std::string &dependency) { return GetMetaByGuid(dependency); });
         if (expectedSource)
             RequireUnchangedFingerprint(path, *expectedSource);
-        std::vector<DocumentTransactionEntry> writes;
-        writes.reserve(1 + artifact.runtimeCpuArtifacts.size());
-        if (persistMetadata) {
-            const std::string metaPath = InxResourceMeta::GetMetaFilePath(path);
-            if (metaPath.empty())
-                throw std::runtime_error("Failed to resolve importer metadata path");
-            writes.push_back({metaPath, artifact.metadata.SerializeDocument().dump(4) + "\n"});
-        }
-        auto runtimeArtifactWrites =
-            TakeRuntimeArtifactWrites(artifact.runtimeCpuArtifacts, guid, request.resourceType, m_projectRoot);
-        for (auto &runtimeArtifactWrite : runtimeArtifactWrites)
-            writes.push_back(std::move(runtimeArtifactWrite));
-        if (!writes.empty()) {
-            if (IsFilesystemPathWithin(path, m_projectRoot)) {
-                (void)DocumentTransaction::Commit(m_projectRoot, m_assetTransactionJournalPath, std::move(writes),
-                                                  {m_assetIndexPath});
-            } else {
-                for (auto &write : writes) {
-                    const std::filesystem::path parent = ToFsPath(write.path).parent_path();
-                    if (!parent.empty()) {
-                        std::error_code directoryError;
-                        std::filesystem::create_directories(parent, directoryError);
-                        if (directoryError)
-                            throw std::runtime_error("Failed to create external import target directory: " +
-                                                     directoryError.message());
-                    }
-                    (void)DocumentStore::Instance().WriteAndWait(write.path, std::move(write.content));
-                }
-                std::error_code indexError;
-                std::filesystem::remove(ToFsPath(m_assetIndexPath), indexError);
-                if (indexError)
-                    throw std::runtime_error("Failed to invalidate AssetIndex after external import: " +
-                                             indexError.message());
-            }
-        }
-        if (artifact.dependenciesAuthoritative) {
-            const std::unordered_set<std::string> dependencies(artifact.dependencies.begin(),
-                                                               artifact.dependencies.end());
-            AssetDependencyGraph::Instance().SetAssetDependencies(guid, dependencies);
-        }
-        metaIt->second = std::make_shared<InxResourceMeta>(std::move(artifact.metadata));
-        m_importResults[guid] = {true, {}};
+        PublishImportArtifact(request, std::move(artifact), persistMetadata);
         return true;
     } catch (const std::exception &exception) {
         error = exception.what();
@@ -2684,6 +2747,74 @@ bool AssetDatabase::RunImporter(const std::string &guid, const std::string &path
     m_importResults[guid] = {false, error};
     INXLOG_ERROR("Asset import failed for '", path, "': ", error);
     return false;
+}
+
+ImportRequest AssetDatabase::MakeImportRequest(const std::string &guid, const std::string &path, bool isReimport,
+                                               const InxResourceMeta &metadata) const
+{
+    ImportRequest request;
+    request.sourcePath = path;
+    request.projectRoot = m_projectRoot;
+    request.blenderExecutable = m_blenderExecutable;
+    request.blenderExportScript = m_blenderExportScript;
+    request.guid = guid;
+    request.resourceType = GetResourceTypeForPath(path);
+    request.metadata = metadata;
+    request.isReimport = isReimport;
+    return request;
+}
+
+void AssetDatabase::PublishImportArtifact(const ImportRequest &request, ImportArtifact artifact, bool persistMetadata)
+{
+    const auto &guid = request.guid;
+    const auto &path = request.sourcePath;
+    const auto metaIt = m_metas.find(guid);
+    if (metaIt == m_metas.end())
+        throw std::logic_error("Import publication has no registered metadata");
+    ResolveImportedDependencyPathHints(artifact, m_pathToGuid, request.sourcePath);
+    ValidateImportedDependencyIdentities(artifact, request.sourcePath);
+    ValidateModelMaterialTargets(artifact, [this](const std::string &dependency) { return GetMetaByGuid(dependency); });
+    std::vector<DocumentTransactionEntry> writes;
+    writes.reserve(1 + artifact.runtimeCpuArtifacts.size());
+    if (persistMetadata) {
+        const std::string metaPath = InxResourceMeta::GetMetaFilePath(path);
+        if (metaPath.empty())
+            throw std::runtime_error("Failed to resolve importer metadata path");
+        writes.push_back({metaPath, artifact.metadata.SerializeDocument().dump(4) + "\n"});
+    }
+    auto runtimeArtifactWrites =
+        TakeRuntimeArtifactWrites(artifact.runtimeCpuArtifacts, guid, request.resourceType, m_projectRoot);
+    for (auto &runtimeArtifactWrite : runtimeArtifactWrites)
+        writes.push_back(std::move(runtimeArtifactWrite));
+    if (!writes.empty()) {
+        if (IsFilesystemPathWithin(path, m_projectRoot)) {
+            (void)DocumentTransaction::Commit(m_projectRoot, m_assetTransactionJournalPath, std::move(writes),
+                                              {m_assetIndexPath});
+        } else {
+            for (auto &write : writes) {
+                const std::filesystem::path parent = ToFsPath(write.path).parent_path();
+                if (!parent.empty()) {
+                    std::error_code directoryError;
+                    std::filesystem::create_directories(parent, directoryError);
+                    if (directoryError)
+                        throw std::runtime_error("Failed to create external import target directory: " +
+                                                 directoryError.message());
+                }
+                (void)DocumentStore::Instance().WriteAndWait(write.path, std::move(write.content));
+            }
+            std::error_code indexError;
+            std::filesystem::remove(ToFsPath(m_assetIndexPath), indexError);
+            if (indexError)
+                throw std::runtime_error("Failed to invalidate AssetIndex after external import: " +
+                                         indexError.message());
+        }
+    }
+    if (artifact.dependenciesAuthoritative) {
+        const std::unordered_set<std::string> dependencies(artifact.dependencies.begin(), artifact.dependencies.end());
+        AssetDependencyGraph::Instance().SetAssetDependencies(guid, dependencies);
+    }
+    metaIt->second = std::make_shared<InxResourceMeta>(std::move(artifact.metadata));
+    m_importResults[guid] = {true, {}};
 }
 
 // ============================================================================

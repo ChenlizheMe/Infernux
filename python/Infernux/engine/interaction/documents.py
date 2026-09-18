@@ -1187,6 +1187,9 @@ class DocumentRegistry:
         document = self._documents.get(identifier)
         if document is None:
             return False
+        cancel = getattr(document.controller, "cancel_pending_writes", None)
+        if callable(cancel):
+            cancel()
         restore_state = None
         if preserve_dormant:
             capture = getattr(
@@ -2610,6 +2613,9 @@ class DocumentRegistry:
         ):
             return
         for document in self._documents.values():
+            cancel = getattr(document.controller, "cancel_pending_writes", None)
+            if callable(cancel):
+                cancel()
             document.state = DocumentState.CLOSED
             document.view_ids.clear()
         self._documents.clear()

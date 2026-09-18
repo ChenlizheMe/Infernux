@@ -105,6 +105,12 @@ void RegisterAssetDatabaseBindings(py::module_ &m)
             },
             py::arg("path"), py::arg("settings") = py::none(),
             "Reimport an existing asset, atomically publishing optional model settings with its artifacts")
+        .def("begin_model_reimport", [](AssetDatabase &database, const std::string &path, py::object settings) {
+            database.BeginModelReimport(path, PythonToJson(settings));
+        }, py::arg("path"), py::arg("settings"), "Start model parsing on the native JobSystem")
+        .def("try_commit_model_reimport", &AssetDatabase::TryCommitModelReimport,
+             "Return None while pending, otherwise publish once and return the mutation result")
+        .def("discard_model_reimport", &AssetDatabase::DiscardModelReimport)
         .def("delete_asset", &AssetDatabase::DeleteAsset, py::arg("path"), "Delete asset and its meta")
         .def("move_asset", &AssetDatabase::MoveAsset, py::arg("old_path"), py::arg("new_path"),
              "Move/rename asset preserving GUID")
