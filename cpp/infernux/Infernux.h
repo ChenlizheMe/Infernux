@@ -372,6 +372,8 @@ class Infernux
 
     /// @brief Execute a pending Timeline cube preview render if one was queued this frame.
     void PumpTimelineCubePreviewIfDirty();
+    uint64_t RenderModelAnimationPreview(const std::shared_ptr<InxMesh> &mesh, const std::string &take,
+                                         float seconds, int size, uint64_t dependencyRevision);
     /// Process queued material preview renders (returns uploads consumed).
     int PumpMaterialPreviewUploads(int uploadBudget, bool ignoreCooldown);
 

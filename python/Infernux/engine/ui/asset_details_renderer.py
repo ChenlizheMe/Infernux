@@ -2562,6 +2562,8 @@ def _render_model_mesh_resource(ctx, panel, file_path):
 
 def _render_mesh_header(ctx: InxGUIContext, panel, state: _State):
     """Render mesh preview + mesh metadata in inspector header."""
+    if state.extra.get("model_active_page") == "animation":
+        return
     avail_w = max(32.0, ctx.get_content_region_avail_width() - 8.0)
     draw_h = min(max(avail_w, 120.0), 320.0)
 
@@ -2598,6 +2600,15 @@ def _render_model_import_pages(ctx: InxGUIContext, panel, state: _State):
             if not opened:
                 continue
             try:
+                state.extra["model_active_page"] = page
+                transport = state.extra.get("model_animation_transport")
+                if page != "animation" and transport is not None:
+                    transport.playing = False
+                    transport.last_time = None
+                if page == "animation":
+                    from .model_animation_preview import render_model_animation_preview
+                    render_model_animation_preview(ctx, panel, state,
+                        json.loads((state.meta or {}).get("model_animations", "[]")))
                 if page == "model":
                     _render_mesh_info(ctx, panel, state)
                 if page == "materials":

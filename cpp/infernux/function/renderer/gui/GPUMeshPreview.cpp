@@ -21,6 +21,7 @@
 #include <function/renderer/vk/VkResourceManager.h>
 #include <function/resources/AssetRegistry/AssetRegistry.h>
 #include <function/resources/InxMaterial/InxMaterial.h>
+#include <function/resources/InxSkinnedMesh/InxSkinnedMesh.h>
 #include <function/scene/Light.h>
 #include <function/scene/LightingData.h>
 
@@ -886,7 +887,8 @@ void GPUMeshPreview::EnsureImGuiDisplayDescriptor()
 uint64_t GPUMeshPreview::RenderToImGuiTextureCamera(const InxMesh &mesh,
                                                     const std::vector<std::shared_ptr<InxMaterial>> &materials,
                                                     int size, const glm::mat4 &view, const glm::mat4 &proj,
-                                                    const glm::vec3 &cameraPos, bool cloneMaterials)
+                                                    const glm::vec3 &cameraPos, bool cloneMaterials,
+                                                    const std::vector<glm::mat4> *bonePalette)
 {
     if (!m_vkCore || size <= 0)
         return 0;
@@ -902,8 +904,10 @@ uint64_t GPUMeshPreview::RenderToImGuiTextureCamera(const InxMesh &mesh,
     }
     m_activeSubmission.reset();
 
-    const auto &vertices = mesh.GetVertices();
-    const auto &indices = mesh.GetIndices();
+    const auto skin = bonePalette ? mesh.GetSkinnedData() : nullptr;
+    const auto &vertices = skin ? skin->baseVertices : mesh.GetVertices();
+    const auto &indices = skin ? skin->indices : mesh.GetIndices();
+    const auto &submeshes = skin ? skin->subMeshes : mesh.GetSubMeshes();
     if (vertices.empty() || indices.empty())
         return 0;
 
@@ -912,10 +916,39 @@ uint64_t GPUMeshPreview::RenderToImGuiTextureCamera(const InxMesh &mesh,
         return 0;
 
     auto &rm = m_vkCore->GetResourceManager();
-    auto vbo = rm.CreateVertexBuffer(vertices.data(), vertices.size() * sizeof(Vertex));
-    auto ibo = rm.CreateIndexBuffer(indices.data(), indices.size() * sizeof(uint32_t));
+    std::shared_ptr<vk::VkBufferHandle> vbo;
+    std::shared_ptr<vk::VkBufferHandle> ibo;
+    if (skin && skin == m_uploadedSkin) {
+        vbo = m_skinVertices;
+        ibo = m_skinIndices;
+    } else {
+        vbo = rm.CreateVertexBuffer(vertices.data(), vertices.size() * sizeof(Vertex));
+        ibo = rm.CreateIndexBuffer(indices.data(), indices.size() * sizeof(uint32_t));
+        if (skin && vbo && ibo) {
+            m_uploadedSkin = skin;
+            m_skinVertices = vbo;
+            m_skinIndices = ibo;
+        }
+    }
     if (!vbo || !ibo)
         return 0;
+
+    const VkDeviceSize paletteBytes = bonePalette ? bonePalette->size() * sizeof(glm::mat4) : sizeof(glm::mat4);
+    if (m_previewSkinPaletteBuffer->GetSize() < paletteBytes) {
+        // The prior preview submission completed above; no shader still reads
+        // this descriptor. Geometry and GUI image consumers have separate leases.
+        m_previewSkinPaletteBuffer = rm.CreateStorageBuffer(paletteBytes, false);
+        if (!m_previewSkinPaletteBuffer)
+            throw std::runtime_error("Failed to allocate animation preview palette");
+        VkDescriptorBufferInfo buffer{m_previewSkinPaletteBuffer->GetBuffer(), 0, VK_WHOLE_SIZE};
+        VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        write.dstSet = m_previewGlobalsSet;
+        write.dstBinding = 3;
+        write.descriptorCount = 1;
+        write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        write.pBufferInfo = &buffer;
+        vkUpdateDescriptorSets(m_vkCore->GetDevice(), 1, &write, 0, nullptr);
+    }
 
     auto defaultMat = AssetRegistry::Instance().GetBuiltinMaterial("DefaultLit");
     struct SubmeshBinding
@@ -928,9 +961,8 @@ uint64_t GPUMeshPreview::RenderToImGuiTextureCamera(const InxMesh &mesh,
         const ShaderProgram *program = nullptr;
     };
     std::vector<SubmeshBinding> bindings;
-    bindings.reserve(mesh.GetSubMeshCount());
-    for (uint32_t si = 0; si < mesh.GetSubMeshCount(); ++si) {
-        const SubMesh &sm = mesh.GetSubMesh(si);
+    bindings.reserve(submeshes.size());
+    for (const SubMesh &sm : submeshes) {
         if (sm.indexCount == 0)
             continue;
         std::shared_ptr<InxMaterial> srcMat;
@@ -1077,11 +1109,17 @@ uint64_t GPUMeshPreview::RenderToImGuiTextureCamera(const InxMesh &mesh,
     vkCmdUpdateBuffer(cmd, lightingUBOBuf, 0, sizeof(lightingUBO), &lightingUBO);
     vkCmdUpdateBuffer(cmd, globalsUBOBuf, 0, sizeof(globalsUBO), &globalsUBO);
     vkCmdUpdateBuffer(cmd, instanceSSBOBuf, 0, sizeof(modelMat), &modelMat);
-    const std::array<uint32_t, 4> emptySkinInstance{};
+    const std::array<uint32_t, 4> skinInstance{0u,
+        bonePalette ? static_cast<uint32_t>(bonePalette->size()) : 0u,
+        bonePalette ? 1u : 0u, 0u};
     const glm::mat4 identityBone(1.0f);
-    vkCmdUpdateBuffer(cmd, m_previewSkinInstanceBuffer->GetBuffer(), 0, sizeof(emptySkinInstance),
-                      emptySkinInstance.data());
-    vkCmdUpdateBuffer(cmd, m_previewSkinPaletteBuffer->GetBuffer(), 0, sizeof(identityBone), &identityBone);
+    vkCmdUpdateBuffer(cmd, m_previewSkinInstanceBuffer->GetBuffer(), 0, sizeof(skinInstance), skinInstance.data());
+    const auto *paletteData = reinterpret_cast<const unsigned char *>(
+        bonePalette ? bonePalette->data() : &identityBone);
+    for (VkDeviceSize offset = 0; offset < paletteBytes; offset += 65536) {
+        const auto bytes = std::min<VkDeviceSize>(65536, paletteBytes - offset);
+        vkCmdUpdateBuffer(cmd, m_previewSkinPaletteBuffer->GetBuffer(), offset, bytes, paletteData + offset);
+    }
     GPUInstanceAuxData instanceAux{};
     instanceAux.previousModel = modelMat;
     instanceAux.layerMask = ~0u;
@@ -1232,6 +1270,64 @@ uint64_t GPUMeshPreview::RenderToImGuiTextureCamera(const InxMesh &mesh,
     m_displayImageShaderReady = true;
     EnsureImGuiDisplayDescriptor();
     return reinterpret_cast<uint64_t>(m_displayDescriptorSet);
+}
+
+uint64_t GPUMeshPreview::RenderAnimation(const std::shared_ptr<InxMesh> &mesh, const std::string &take,
+                                         float seconds, int size, uint64_t dependencyRevision)
+{
+    if (!mesh || !std::isfinite(seconds) || seconds < 0.0f || size < 32 || size > 1024)
+        throw std::invalid_argument("Animation preview requires a mesh, finite nonnegative time and size 32..1024");
+    const auto &skin = mesh->GetSkinnedData();
+    if (!skin || !skin->IsValid())
+        throw std::invalid_argument("Animation preview requires a renderable skinned model");
+    if (!skin->FindAnimation(take))
+        throw std::invalid_argument("Animation preview clip is not present in the published model");
+    const bool changed = mesh != m_animationMesh || mesh->GetGeneration() != m_animationGeneration ||
+                         dependencyRevision != m_animationRevision;
+    if (changed) {
+        m_animationMesh = mesh;
+        m_animationGeneration = mesh->GetGeneration();
+        m_animationRevision = dependencyRevision;
+        m_renderedSeconds = -1.0f;
+        m_animationMaterials.clear();
+        uint32_t slots = 0;
+        for (const auto &submesh : skin->subMeshes)
+            slots = std::max(slots, submesh.materialSlot + 1);
+        auto &registry = AssetRegistry::Instance();
+        for (uint32_t slot = 0; slot < slots; ++slot) {
+            std::shared_ptr<InxMaterial> material;
+            if (slot >= mesh->GetMaterialSlotData().size()) {
+                material = registry.GetBuiltinMaterial("DefaultLit")->Clone();
+            } else if (const auto &guid = mesh->GetMaterialSlotData()[slot].materialGuid; !guid.empty()) {
+                auto source = registry.LoadAsset<InxMaterial>(guid, ResourceType::Material);
+                if (!source || source->IsDeleted())
+                    source = registry.GetBuiltinMaterial("ErrorMaterial");
+                material = source->Clone();
+            } else {
+                material = mesh->CreateMaterialCopy(slot);
+            }
+            m_animationMaterials.push_back(std::move(material));
+        }
+    }
+    if (take == m_renderedTake && seconds == m_renderedSeconds && size == m_renderedSize && GetDisplayTextureId())
+        return GetDisplayTextureId();
+
+    // Fixed bind-pose framing makes root movement visible instead of tracking it.
+    const auto camera = FitCameraToBounds(mesh->GetBoundsMin(), mesh->GetBoundsMax(), kMeshPreviewFovDeg);
+    SkinnedSampleRequest request;
+    request.takeName = take;
+    request.timeSeconds = seconds;
+    request.loop = false; // Scrubbing to duration must show the final pose.
+    const auto palette = skin->BuildGpuBonePalette(request);
+    const uint64_t texture = RenderToImGuiTextureCamera(*mesh, m_animationMaterials, size, camera.view,
+                                                        camera.proj, camera.cameraPos, false, &palette);
+    if (texture) {
+        m_renderedTake = take;
+        m_renderedSeconds = seconds;
+        m_renderedSize = size;
+    }
+    // GPU backpressure retains the last image of this source, not another model.
+    return m_renderedSeconds >= 0.0f ? GetDisplayTextureId() : 0;
 }
 
 } // namespace infernux

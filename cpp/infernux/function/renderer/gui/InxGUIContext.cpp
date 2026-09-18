@@ -1444,6 +1444,11 @@ bool InxGUIContext::IsItemActive()
     return ImGui::IsItemActive();
 }
 
+bool InxGUIContext::IsItemEdited()
+{
+    return ImGui::IsItemEdited();
+}
+
 bool InxGUIContext::IsAnyItemActive()
 {
     return ImGui::IsAnyItemActive();

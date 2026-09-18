@@ -2795,6 +2795,12 @@ void Infernux::PumpTimelineCubePreviewIfDirty()
         m_pendingCubeCamDist, m_pendingCubeSize, m_pendingCubePreviewHash);
 }
 
+uint64_t Infernux::RenderModelAnimationPreview(const std::shared_ptr<InxMesh> &mesh, const std::string &take,
+                                              float seconds, int size, uint64_t dependencyRevision)
+{
+    return m_renderer ? m_renderer->RenderModelAnimationPreview(mesh, take, seconds, size, dependencyRevision) : 0;
+}
+
 bool Infernux::ExecuteTimelineCubePreviewRender(float px, float py, float pz, float rx, float ry, float rz, float sx,
                                                 float sy, float sz, float camYaw, float camPitch, float camDistance,
                                                 int size, uint64_t hash)

@@ -703,6 +703,10 @@ bool InxVkCoreModular::CommitMaterialPipelineGeneration(VkSampleCountFlagBits ne
         std::shared_ptr<GPUMeshPreview> retired(m_gpuMeshPreview.release());
         m_deletionQueue.Retire([retired = std::move(retired)] {});
     }
+    if (m_gpuAnimationPreview) {
+        std::shared_ptr<GPUMeshPreview> retired(m_gpuAnimationPreview.release());
+        m_deletionQueue.Retire([retired = std::move(retired)] {});
+    }
     return true;
 }
 
@@ -715,6 +719,7 @@ bool InxVkCoreModular::RefreshMaterialPipeline(std::shared_ptr<InxMaterial> mate
 void InxVkCoreModular::ReleaseGpuPreviews()
 {
     m_resourceManager.DrainAsyncGraphicsSubmissions();
+    m_gpuAnimationPreview.reset();
     m_gpuMeshPreview.reset();
     m_gpuMaterialPreview.reset();
 }
@@ -1592,6 +1597,16 @@ uint64_t InxVkCoreModular::RenderMeshPreviewGPUImGuiCamera(const InxMesh &mesh,
 uint64_t InxVkCoreModular::GetMeshPreviewDisplayTextureId() const
 {
     return m_gpuMeshPreview ? m_gpuMeshPreview->GetDisplayTextureId() : 0;
+}
+
+uint64_t InxVkCoreModular::RenderModelAnimationPreview(const std::shared_ptr<InxMesh> &mesh, const std::string &take,
+                                                      float seconds, int size, uint64_t dependencyRevision)
+{
+    if (!m_materialPipelineManagerInitialized)
+        return 0;
+    if (!m_gpuAnimationPreview)
+        m_gpuAnimationPreview = std::make_unique<GPUMeshPreview>(this);
+    return m_gpuAnimationPreview->RenderAnimation(mesh, take, seconds, size, dependencyRevision);
 }
 
 } // namespace infernux

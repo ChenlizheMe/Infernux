@@ -472,6 +472,8 @@ class InxRenderer
 
     /// Currently-published live mesh preview descriptor id (0 when absent).
     [[nodiscard]] uint64_t GetMeshPreviewDisplayTextureId() const;
+    uint64_t RenderModelAnimationPreview(const std::shared_ptr<InxMesh> &mesh, const std::string &take,
+                                         float seconds, int size, uint64_t dependencyRevision);
 
     // Refresh all materials using a specific shader
     bool RefreshMaterialsUsingShader(const std::string &shaderId);

@@ -177,6 +177,7 @@ InxVkCoreModular::~InxVkCoreModular()
     // them before the residency cache so no TextureGpuView can outlive the RHI
     // device through a preview-owned descriptor or asynchronous readback.
     m_gpuMeshPreview.reset();
+    m_gpuAnimationPreview.reset();
     m_gpuMaterialPreview.reset();
     // ShaderProgram keeps the table layout as a device-global ABI object. Drop
     // that reference before destroying the table's VkDescriptorSetLayout.

@@ -2197,6 +2197,10 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
                 return result;
             },
             "Read-only diagnostics for active material, texture, and mesh preview tasks")
+        .def("render_model_animation_preview", &Infernux::RenderModelAnimationPreview,
+             py::arg("mesh"), py::arg("take"), py::arg("seconds"), py::arg("size") = 256,
+             py::arg("dependency_revision") = 0, py::call_guard<py::gil_scoped_release>(),
+             "Render published skeletal animation to an isolated GPU preview; does not change the scene.")
         .def("render_timeline_cube_preview", &Infernux::RenderTimelineCubePreview, py::arg("px"), py::arg("py"),
              py::arg("pz"), py::arg("rx"), py::arg("ry"), py::arg("rz"), py::arg("sx"), py::arg("sy"), py::arg("sz"),
              py::arg("cam_yaw"), py::arg("cam_pitch"), py::arg("cam_distance"), py::arg("size") = 192,

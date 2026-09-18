@@ -741,6 +741,7 @@ void RegisterGUIBindings(py::module_ &m)
         // Splitter helper methods
         .def("invisible_button", &InxGUIContext::InvisibleButton)
         .def("is_item_active", &InxGUIContext::IsItemActive)
+        .def("is_item_edited", &InxGUIContext::IsItemEdited)
         .def("is_any_item_active", &InxGUIContext::IsAnyItemActive)
         .def("is_pointer_activation_blocked_by_popup", &InxGUIContext::IsPointerActivationBlockedByPopup,
              "Return whether a popup owns pointer activation for this complete GUI frame")

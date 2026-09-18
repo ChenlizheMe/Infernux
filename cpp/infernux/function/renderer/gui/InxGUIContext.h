@@ -321,6 +321,7 @@ class InxGUIContext
     /* invisible button (for splitter) */
     bool InvisibleButton(const std::string &id, float width, float height);
     bool IsItemActive();
+    bool IsItemEdited();
     bool IsAnyItemActive();
     bool IsItemHovered();
     bool IsItemFocused();

@@ -4087,6 +4087,12 @@ uint64_t InxRenderer::GetMeshPreviewDisplayTextureId() const
     return m_vkCore ? m_vkCore->GetMeshPreviewDisplayTextureId() : 0;
 }
 
+uint64_t InxRenderer::RenderModelAnimationPreview(const std::shared_ptr<InxMesh> &mesh, const std::string &take,
+                                                  float seconds, int size, uint64_t dependencyRevision)
+{
+    return m_vkCore ? m_vkCore->RenderModelAnimationPreview(mesh, take, seconds, size, dependencyRevision) : 0;
+}
+
 void InxRenderer::InvalidateShaderCache(const std::string &shaderId, const std::string &shaderType)
 {
     INXLOG_DEBUG("InvalidateShaderCache called: ", shaderId);
