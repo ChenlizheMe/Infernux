@@ -359,7 +359,7 @@ def test_native_automation_schema_projects_catalog_metadata(scene, monkeypatch):
     schema = host.scene_component_schema(owner.id, camera.component_id)
     fields = {field["name"]: field for field in schema["fields"]}
 
-    assert len(fields) == 13
+    assert len(fields) == 17
     assert fields["targetTextureGuid"]["type"] == "asset"
     assert fields["targetTextureGuid"]["asset_type"] == "RenderTexture"
     assert fields["targetTextureGuid"]["nullable"] is True
@@ -367,6 +367,14 @@ def test_native_automation_schema_projects_catalog_metadata(scene, monkeypatch):
     assert fields["projectionMode"]["enum"] == [
         {"name": "Perspective", "value": 0},
         {"name": "Orthographic", "value": 1},
+        {"name": "Physical", "value": 2},
+    ]
+    assert fields["gateFit"]["enum"] == [
+        {"name": "None", "value": 0},
+        {"name": "Vertical", "value": 1},
+        {"name": "Horizontal", "value": 2},
+        {"name": "Fill", "value": 3},
+        {"name": "Overscan", "value": 4},
     ]
 
 
