@@ -1074,6 +1074,7 @@
   "asset.animation_preview_time": "时间（秒）",
   "asset.animation_preview_fps": "预览帧率",
   "asset.animation_preview_frame": "预览帧",
+  "asset.animation_preview_missing_take": "请指定已发布的源模型和动画片段以进行预览。",
   "asset.animation_preview_empty": "尚无已发布的动画片段，请应用导入设置。",
   "asset.animation_preview_needs_mesh": "此动画源没有可绘制的网格，暂不支持指定其它预览模型。",
   "asset.animation_preview_published": "预览使用上次应用的片段，不修改场景。拖动时间数值可暂停并定位姿态。",

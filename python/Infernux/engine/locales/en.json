@@ -1074,6 +1074,7 @@
   "asset.animation_preview_time": "Time (s)",
   "asset.animation_preview_fps": "Preview grid (fps)",
   "asset.animation_preview_frame": "Preview frame",
+  "asset.animation_preview_missing_take": "Select a published source model and animation take to preview this clip.",
   "asset.animation_preview_empty": "No published animation clips. Apply import settings to publish clips.",
   "asset.animation_preview_needs_mesh": "This animation source has no renderable mesh. Preview model selection is not available yet.",
   "asset.animation_preview_published": "Preview uses the last applied clips and does not change the scene. Drag the time value to pause and scrub.",

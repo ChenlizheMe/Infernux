@@ -449,7 +449,7 @@ class _State:
         self.reset(keep_view=self.category == category and same_path(self.file_path, file_path))
         self.file_path = file_path
         self.category = category
-        self.meta = (read_asset_metadata(file_path) if "::subtex:" in file_path
+        self.meta = (read_asset_metadata(file_path) if any(token in file_path for token in ("::subtex:", "::subanim:"))
                      else read_meta_file(_meta_host_path_for_virtual_asset(file_path)))
         result = cat_def.load_fn(file_path)
         if result is None:
@@ -1593,7 +1593,8 @@ def _render_animclip3d_body(ctx: InxGUIContext, panel, state: _State):
         ctx.pop_style_color(1)
         ctx.dummy(0, 4)
 
-    clip_display_name = os.path.splitext(os.path.basename(state.file_path))[0] if state.file_path else clip.name
+    clip_display_name = (clip.name if embedded or not state.file_path
+                         else os.path.splitext(os.path.basename(state.file_path))[0])
     field_label(ctx, t("asset.animclip3d_name"), lw)
     ctx.begin_disabled(True)
     ctx.text_input("##animclip3d_name", clip_display_name, 256)
@@ -1706,6 +1707,9 @@ def _render_animclip3d_body(ctx: InxGUIContext, panel, state: _State):
 
     if embedded:
         ctx.end_disabled()
+
+    from .model_animation_preview import render_clip_animation_preview
+    render_clip_animation_preview(ctx, panel, state, model_path, clip.take_name)
 
     # ── Imported bone summary (read-only) ─────────────────────────
     if clip.bind_pose_bone_names:
@@ -2267,7 +2271,7 @@ def invalidate_asset(path: str, *, keep_view: bool = False):
 def _render_header(ctx: InxGUIContext, cat_def: AssetCategoryDef,
                    state: _State):
     """Render the standard asset header: name, GUID, path, extra meta."""
-    filename = os.path.basename(state.file_path)
+    filename = (state.meta or {}).get("resource_name") or os.path.basename(state.file_path)
     ctx.label(f"{t(cat_def.display_name)}: {filename}")
 
     # GUID — try .meta first, then serialized data (material stores it inside)

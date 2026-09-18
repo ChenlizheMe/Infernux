@@ -79,7 +79,7 @@ def render_animation_transport(ctx, transport, duration):
                              numeric_value=transport.frame(duration)[0])
 
 
-def render_model_animation_preview(ctx, panel, state, clips):
+def render_model_animation_preview(ctx, panel, state, clips, *, source_path=None):
     """Read published clips only; controls never modify import drafts or the scene."""
     from Infernux.core.assets import AssetManager
     from Infernux.engine.i18n import t
@@ -89,7 +89,8 @@ def render_model_animation_preview(ctx, panel, state, clips):
     if not clips:
         ctx.text_wrapped(t("asset.animation_preview_empty"))
         return
-    mesh = AssetRegistry.instance().load_mesh(state.file_path)
+    source_path = source_path or state.file_path
+    mesh = AssetRegistry.instance().load_mesh(source_path)
     if mesh is None or mesh.vertex_count == 0:
         ctx.text_wrapped(t("asset.animation_preview_needs_mesh"))
         return
@@ -107,7 +108,7 @@ def render_model_animation_preview(ctx, panel, state, clips):
     size = int(min(width, 320.0))
     texture = native.render_model_animation_preview(
         mesh, transport.clip_id, transport.seconds, size,
-        AssetManager.preview_dependency_signature(state.file_path))
+        AssetManager.preview_dependency_signature(source_path))
     if texture:
         ctx.set_cursor_pos_x(ctx.get_cursor_pos_x() + (width - size) * .5)
         ctx.image(texture, float(size), float(size))
@@ -116,3 +117,27 @@ def render_model_animation_preview(ctx, panel, state, clips):
         ctx.dummy(float(size), float(size))
     ctx.text_wrapped(t("asset.animation_preview_published"))
     ctx.separator()
+
+
+def render_clip_animation_preview(ctx, panel, state, model_path, take):
+    """A clip asset previews its published source, never the virtual child path."""
+    import json
+    from Infernux.core.asset_types import read_asset_metadata
+    from Infernux.core.assets import AssetManager
+    from Infernux.engine.i18n import t
+
+    signature = (model_path, AssetManager.preview_dependency_signature(model_path)) if model_path else ("", 0)
+    cached = state.extra.get("clip_preview_source")
+    if cached is None or cached[0] != signature:
+        metadata = read_asset_metadata(model_path) if model_path else None
+        cached = (signature, json.loads((metadata or {}).get("model_animations", "[]")))
+        state.extra["clip_preview_source"] = cached
+    clips = cached[1]
+    # Existing standalone clips may name a take; imported children use stable IDs.
+    clip = next((item for item in clips if item["id"] == take), None)
+    if clip is None:
+        clip = next((item for item in clips if item["name"] == take), None)
+    if clip is None:
+        ctx.text_wrapped(t("asset.animation_preview_missing_take"))
+        return
+    render_model_animation_preview(ctx, panel, state, [clip], source_path=model_path)

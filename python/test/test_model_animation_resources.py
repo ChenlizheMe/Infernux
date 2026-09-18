@@ -132,3 +132,16 @@ def test_clip_picker_returns_owned_guid(model, monkeypatch):
     _, value = AnimFSMEditorPanel._embedded_clip3d_picker_items("")[0]
     assert value["guid"] == output(source)["guid"]
     assert value["path_hint"].startswith(str(source) + "::subanim:")
+
+
+def test_clip_inspector_uses_child_identity_not_parent_model(model):
+    database, source, model_guid = model
+    from Infernux.engine.ui import asset_details_renderer as ui
+    record = output(source)
+    ui._ensure_categories()
+    state = ui._State()
+    path = database.get_path_from_guid(record["guid"])
+    assert state.load(path, "animclip3d", ui._categories["animclip3d"])
+    assert state.meta["guid"] == record["guid"] != model_guid
+    assert state.meta["resource_name"] == record["name"]
+    assert state.settings.take_name == record["id"]
