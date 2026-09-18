@@ -3578,7 +3578,8 @@ def test_player_cooks_data_asset_to_binary_infernux_artifact(tmp_path):
     assert "assets/data/settings.inxdata" in builder._runtime_artifact_source_paths
 
 
-def test_player_cooks_variant_from_current_base_without_authoring_metadata(tmp_path):
+@pytest.mark.parametrize("depth", [1, 2, 4])
+def test_player_cooks_variant_from_current_base_without_authoring_metadata(tmp_path, depth):
     import copy
     from Infernux.engine.prefab_variant import create_variant_definition, variant_document
     from Infernux.engine.prefab_manager import _make_prefab_baseline
@@ -3597,6 +3598,18 @@ def test_player_cooks_variant_from_current_base_without_authoring_metadata(tmp_p
     own = copy.deepcopy(base)
     own["root_object"]["name"] = "Authored Variant"
     variant = variant_document(create_variant_definition("base-guid", base, own))
+    ancestors = [("base-guid", base_path)]
+    # Leave every derived file stale after changing the base below. Cook must
+    # resolve the whole chain, including ancestors that are staged later.
+    for level in range(1, depth):
+        ancestor_path = project / f"Assets/Ancestor{level}.prefab"
+        ancestor_path.write_text(json.dumps(variant), encoding="utf8")
+        ancestor_guid = f"ancestor-{level}"
+        ancestors.append((ancestor_guid, ancestor_path))
+        own = copy.deepcopy(variant)
+        own.pop("variant")
+        own["root_object"]["tag"] = f"Level {level}"
+        variant = variant_document(create_variant_definition(ancestor_guid, variant, own))
     variant_path.write_text(json.dumps(variant), encoding="utf8")
     instance = copy.deepcopy(variant["root_object"])
     for node in (instance, instance["children"][0]):
@@ -3610,10 +3623,11 @@ def test_player_cooks_variant_from_current_base_without_authoring_metadata(tmp_p
     base["root_object"]["layer"] = 7
     base["root_object"]["children"][0]["layer"] = 7
     base_path.write_text(json.dumps(base), encoding="utf8")
-    before = [path.read_bytes() for path in (base_path, variant_path)]
+    source_paths = [path for _, path in ancestors] + [variant_path]
+    before = [path.read_bytes() for path in source_paths]
     builder._cooked_asset_entries = {
         guid: _asset_index_entry(project, path, guid, "", "Prefab")
-        for guid, path in (("base-guid", base_path), ("variant-guid", variant_path))
+        for guid, path in [("variant-guid", variant_path), *reversed(ancestors)]
     }
     builder._cooked_asset_entries["scene-guid"] = _asset_index_entry(project, scene_path, "scene-guid", "", "Scene")
     builder._runtime_artifact_bindings = {}
@@ -3623,14 +3637,51 @@ def test_player_cooks_variant_from_current_base_without_authoring_metadata(tmp_p
     cooked = json.loads((data_dir / "Library/Artifacts/Document/variant-guid.prefab").read_text(encoding="utf8"))
     assert cooked["root_object"]["name"] == "Authored Variant"
     assert cooked["root_object"]["layer"] == 7
+    assert cooked["root_object"]["tag"] == (f"Level {depth - 1}" if depth > 1 else "Untagged")
     assert "variant" not in cooked
-    assert [path.read_bytes() for path in (base_path, variant_path)] == before
+    assert [path.read_bytes() for path in source_paths] == before
+    for guid, _ in ancestors:
+        ancestor = json.loads((data_dir / f"Library/Artifacts/Document/{guid}.prefab").read_text(encoding="utf8"))
+        assert "variant" not in ancestor
+        assert ancestor["root_object"]["children"][0]["layer"] == 7
     cooked_scene = json.loads((data_dir / "Library/Artifacts/Document/scene-guid.scene").read_text(encoding="utf8"))
     result = cooked_scene["objects"][0]
     assert result["id"] == 21 and result["children"][0]["id"] == 22
     assert result["children"][0]["layer"] == 7
     assert result["children"][0]["name"] == "Instance override"
     assert "prefab_source" not in result
+
+
+def test_player_catalog_excludes_editor_assets_and_rejects_runtime_dependencies(tmp_path):
+    builder = _make_builder(tmp_path, tmp_path / "build_output")
+    project = Path(builder.project_path)
+    entries = []
+    for guid, relative, kind in (
+        ("runtime", "Assets/Scripts/EditorHelper.py", "PythonScript"),
+        ("tool", "Assets/Editor/Author.py", "PythonScript"),
+        ("nested-tool", "Assets/Tools/eDiToR/Author.py", "PythonScript"),
+        ("tool-data", "Assets/Tools/Editor/Settings.json", "Text"),
+        ("scene", "Assets/Main.scene", "Scene"),
+    ):
+        source = project / relative
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_text("", encoding="utf8")
+        entries.append(_asset_index_entry(project, source, guid, "", kind))
+    assert set(builder._collect_library_asset_entries(entries)) == {"runtime", "scene"}
+    entries[0]["dependencies"] = ["nested-tool"]
+    with pytest.raises(RuntimeError, match="dependency references editor-only content"):
+        builder._collect_library_asset_entries(entries)
+    entries[0]["dependencies"] = []
+    with pytest.raises(RuntimeError, match="dependency references editor-only content"):
+        builder._collect_library_asset_entries(entries, extra_roots=("tool",))
+    assert builder._is_player_editor_path("Assets/Editor/Author.pyc")
+    assert not builder._is_player_editor_path("Assets/Scripts/EditorHelper.pyc")
+    (project / "ProjectSettings/BuildSettings.json").write_text(
+        json.dumps({"scenes": ["Assets/Editor/Preview.scene"]}), encoding="utf8")
+    # A build freezes its scene list; changing author settings starts a new build.
+    builder = GameBuilder(str(project), str(tmp_path / "preview_output"), game_name="TestGame")
+    with pytest.raises(RuntimeError, match="BuildSettings scene is editor-only"):
+        builder._collect_library_asset_entries(entries)
 
 
 def test_content_archive_keeps_only_catalog_staged_project_glsl(tmp_path):

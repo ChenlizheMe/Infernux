@@ -33,6 +33,10 @@ def get_project_script_roots(project_root: Optional[str] = ...) -> tuple[str, ..
     """Return the project's Assets and Packages source roots."""
     ...
 
+def is_editor_asset_path(project_relative_path: str) -> bool:
+    """Return whether normalized Assets content is in an Editor directory."""
+    ...
+
 def package_script_role(path: str, project_root: Optional[str] = ...) -> str:
     """Return the canonical role of an installed package script."""
     ...

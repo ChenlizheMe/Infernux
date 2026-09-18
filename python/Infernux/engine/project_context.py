@@ -103,6 +103,16 @@ def get_project_script_roots(project_root: Optional[str] = None) -> tuple[str, .
     )
 
 
+def is_editor_asset_path(project_relative_path: str) -> bool:
+    """Assets/Editor (including nested Editor folders) is editor-only content.
+
+    Package roles are manifest-owned and deliberately use a different rule.
+    Callers supply a normalized project-relative path, not a filesystem guess.
+    """
+    parts = portable_path(project_relative_path).casefold().split("/")
+    return len(parts) > 2 and parts[0] == "assets" and "editor" in parts[1:-1]
+
+
 def package_script_role(path: str, project_root: Optional[str] = None) -> str:
     """Return ``runtime`` or ``editor`` for an installed package script.
 

@@ -1850,7 +1850,9 @@ finally:
         """Return whether a staged path belongs exclusively to the Editor."""
 
         normalized = str(relative).replace("\\", "/").lstrip("/").casefold()
-        return normalized in {
+        from Infernux.engine.project_context import is_editor_asset_path
+
+        return is_editor_asset_path(normalized) or normalized in {
             path.casefold() for path in cls._PLAYER_EXCLUDED_CONTENT_RELATIVE_PATHS
         }
 
@@ -1959,11 +1961,12 @@ finally:
     def _collect_library_asset_entries(
         self, entries: list[dict], *, extra_roots: tuple[str, ...] = ()
     ) -> dict[str, dict]:
-        """Select every current imported product beneath ``Assets``.
+        """Select current runtime products beneath ``Assets``, excluding Editor.
 
         Player builds deliberately use a conservative content policy while
         the engine is still evolving: authoring sources are converted to
-        Library products, but no scene-reachability analysis is allowed to
+        Library products and explicit Editor folders are excluded, but no
+        scene-reachability analysis is allowed to
         remove a project asset.  Runtime script choices, RenderStack pipeline
         providers and effect groups are dynamic and cannot be proven from a
         static scene closure without changing Editor behavior.
@@ -1978,14 +1981,24 @@ finally:
         and identity propagation, not content pruning.
         """
 
+        from Infernux.engine.project_context import is_editor_asset_path
+
         by_guid = {str(item["guid"]): item for item in entries}
         assets_root = resolved_path(os.path.join(self.project_path, "Assets"))
+        editor_guids = {
+            str(entry["guid"]) for entry in entries
+            if is_path_within(self._library_source_entry_path(entry), assets_root, allow_root=False)
+            and is_editor_asset_path(relative_path(
+                self._library_source_entry_path(entry), self.project_path))
+        }
         indexed_source_paths = {
             path_key(self._library_source_entry_path(entry))
             for entry in entries
         }
         for configured_scene in self._build_scenes():
             scene_path = self._resolve_build_scene_path(configured_scene)
+            if is_editor_asset_path(relative_path(scene_path, self.project_path)):
+                raise RuntimeError(f"BuildSettings scene is editor-only: {configured_scene}")
             if path_key(scene_path) not in indexed_source_paths:
                 raise RuntimeError(
                     "BuildSettings scene is absent from the current AssetIndex: "
@@ -1994,7 +2007,7 @@ finally:
         roots = {
             str(entry["guid"])
             for entry in entries
-            if is_path_within(
+            if str(entry["guid"]) not in editor_guids and is_path_within(
                 self._library_source_entry_path(entry),
                 assets_root,
                 allow_root=False,
@@ -2025,6 +2038,11 @@ finally:
                 raise RuntimeError(
                     "AssetIndex dependency is absent from the current catalog: "
                     f"{guid}"
+                )
+            if guid in editor_guids:
+                raise RuntimeError(
+                    "Player asset dependency references editor-only content: "
+                    f"{self._library_source_entry_path(by_guid[guid])}"
                 )
             entry = by_guid[guid]
             selected[guid] = entry

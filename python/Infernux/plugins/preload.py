@@ -954,6 +954,10 @@ def _is_editor_source(
 ) -> bool:
     relative = portable_path(relative_path(path, project_root))
     folded_relative = relative.casefold()
+    from Infernux.engine.project_context import is_editor_asset_path
+
+    if is_editor_asset_path(relative):
+        return True
     if folded_relative.startswith("packages/"):
         from Infernux.engine.project_context import package_script_role
 
