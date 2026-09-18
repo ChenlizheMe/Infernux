@@ -213,6 +213,16 @@ def _destroy_stale_geometry(
             if any(path[:index] in stale_paths for index in range(1, len(path))):
                 continue
             selected.append(obj)
+        if selected:
+            from Infernux.debug import Debug
+
+            for obj in selected:
+                source_path = tuple(str(part) for part in (getattr(obj, "_model_source_path", ()) or ()))
+                Debug.log_warning(
+                    "Model source node was removed from the imported asset; "
+                    f"retiring instance '{obj.name}' at source path "
+                    f"'{('/'.join(source_path))}' (guid={guid})"
+                )
         for obj in selected:
             if obj is not root:
                 scene.destroy_game_object(obj)
@@ -244,6 +254,13 @@ def _destroy_stale_geometry(
                 break
     if not stale:
         return False
+    from Infernux.debug import Debug
+
+    for path in sorted(stale):
+        Debug.log_warning(
+            "Model source node was removed from the imported asset; "
+            f"retiring instance source path '{('/'.join(path))}' (guid={guid})"
+        )
     for obj in stale.values():
         if obj is not root:
             scene.destroy_game_object(obj)

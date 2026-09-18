@@ -192,10 +192,13 @@ def test_external_model_source_reconciles_instances_without_overwriting_transfor
 ):
     """Every live instance follows source add/remove while author transforms win."""
     from Infernux.core.assets import AssetManager
+    from Infernux.debug import Debug
 
     database, source, guid = hierarchy_asset
     monkeypatch.setattr(AssetManager, '_engine', engine)
     monkeypatch.setattr(AssetManager, '_asset_database', database)
+    source_warnings = []
+    monkeypatch.setattr(Debug, 'log_warning', lambda message, context=None: source_warnings.append(str(message)))
     first = scene.create_from_model(guid, 'First Assembly')
     second = scene.create_from_model(guid, 'Second Assembly')
     first.transform.local_position = Vector3(10, 0, 0)
@@ -229,6 +232,8 @@ def test_external_model_source_reconciles_instances_without_overwriting_transfor
     assert result, result.error
     assert 'Added' not in descendants(first)
     assert 'Added' not in descendants(second)
+    assert len(source_warnings) == 2
+    assert all("source path 'Assembly/Added'" in message and guid in message for message in source_warnings)
     assert tuple(first_upper.transform.local_position) == (7, 8, 9)
     assert tuple(second_upper.transform.local_scale) == (2, 3, 4)
 
