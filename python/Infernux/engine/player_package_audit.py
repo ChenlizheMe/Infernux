@@ -21,6 +21,8 @@ from collections import defaultdict
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from Infernux.core.asset_types import MESH_EXTENSIONS
+
 from .path_utils import resolved_path
 from .player_package_native import (
     ASSET_CATALOG_ARCHIVE_FILENAME,
@@ -146,6 +148,17 @@ AUTHOR_SOURCE_SUFFIXES = frozenset(
         ".hpp",
     }
 )
+# Interchange/model sources are authoring inputs, not runtime payloads. A
+# cooked Player contains the GUID-addressed InxMesh/InxSkin artifact, never the
+# original DCC file. Keep this tied to the AssetDatabase registry so a newly
+# supported model format cannot silently leak into a Player package.
+RAW_MODEL_SOURCE_SUFFIXES = frozenset(MESH_EXTENSIONS)
+
+
+def _is_raw_model_source_path(path: str) -> bool:
+    """Return whether *path* names an interchange model source."""
+
+    return Path(path).suffix.casefold() in RAW_MODEL_SOURCE_SUFFIXES
 # Runtime.inxrt contains the engine's own shader programs.  This is the only
 # author-source exception: project Content remains subject to the source gate.
 RUNTIME_BUILTIN_SHADER_SUFFIXES = frozenset(
@@ -474,6 +487,10 @@ def _archive_entry_records(
             and not _is_project_runtime_shader_entry(relative_archive, entry_name)
         ):
             author_sources.append(entry_relative)
+        if _is_raw_model_source_path(entry_name):
+            forbidden.append(
+                f"{entry_relative}: raw model source is not a Player payload"
+            )
         if entry_suffix in NATIVE_SUFFIXES:
             native_files.append(entry_relative)
         if entry_suffix == ".exe":
@@ -668,6 +685,8 @@ def audit_player_package(
             meta_files.append(relative)
         if suffix in AUTHOR_SOURCE_SUFFIXES:
             author_sources.append(relative)
+        if _is_raw_model_source_path(relative):
+            forbidden.append(f"{relative}: raw model source is not a Player payload")
         if suffix in {".pyc", ".pyo"}:
             # Compiled user scripts are allowed only inside Content.inxpkg;
             # a loose bytecode file is still redundant package payload.

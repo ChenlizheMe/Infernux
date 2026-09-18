@@ -476,6 +476,19 @@ def test_player_audit_runtime_document_suffixes_are_complete():
     assert expected <= player_package_audit_module.RUNTIME_DOCUMENT_SUFFIXES
 
 
+@pytest.mark.parametrize("suffix", (".blend", ".fbx", ".gltf", ".glb", ".obj"))
+def test_player_audit_recognises_interchange_model_sources(suffix):
+    assert player_package_audit_module._is_raw_model_source_path(
+        f"Assets/Models/Imported{suffix}"
+    )
+
+
+def test_player_audit_does_not_classify_cooked_model_artifacts_as_sources():
+    assert not player_package_audit_module._is_raw_model_source_path(
+        "Library/Artifacts/Mesh/Imported.inxmesh"
+    )
+
+
 @pytest.mark.parametrize("suffix", RUNTIME_DOCUMENT_AND_AUDIO_SUFFIXES)
 def test_all_runtime_document_and_audio_sources_are_library_only(suffix):
     source_path = f"Assets/Runtime/Asset{suffix}"
