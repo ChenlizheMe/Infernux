@@ -4645,6 +4645,16 @@ def test_pack_content_archive_yields_the_editor_thread(tmp_path, monkeypatch):
     assert (final_dir / "TestGame_Data" / "Content.inxpkg").is_file()
 
 
+def test_pack_content_archive_rejects_raw_model_sources(tmp_path):
+    builder = _make_builder(tmp_path, tmp_path / "build_output")
+    data_root = tmp_path / "dist" / "TestGame_Data" / "Assets" / "Models"
+    data_root.mkdir(parents=True)
+    (data_root / "Imported.blend").write_bytes(b"authoring source")
+
+    with pytest.raises(RuntimeError, match="raw model sources"):
+        builder._pack_content_archive(str(tmp_path / "dist"))
+
+
 def test_pack_content_archive_finalizes_staged_trees_in_bulk(tmp_path, monkeypatch):
     builder = _make_builder(tmp_path, tmp_path / "build_output")
     final_dir = tmp_path / "dist"

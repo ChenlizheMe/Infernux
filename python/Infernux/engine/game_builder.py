@@ -39,6 +39,7 @@ from typing import Callable, Dict, List, Optional
 
 import Infernux._jit_kernels as _jit_kernels
 import Infernux.resources as _resources
+from Infernux.core.asset_types import MESH_EXTENSIONS
 from Infernux.debug import Debug
 from Infernux.engine.build_cancellation import BuildCancelled
 from Infernux.engine.i18n import t
@@ -4096,6 +4097,7 @@ finally:
         retained_paths: list[str] = []
         forbidden_plaintext: list[str] = []
         forbidden_direct_payloads: list[str] = []
+        forbidden_model_sources: list[str] = []
         catalog_payloads: set[str] = set()
         processed = 0
         last_report = 0.0
@@ -4129,6 +4131,8 @@ finally:
                 if self._is_particle_authoring_payload(relative):
                     continue
                 suffix = os.path.splitext(filename)[1].lower()
+                if suffix in MESH_EXTENSIONS:
+                    forbidden_model_sources.append(relative)
                 if suffix == ".meta":
                     continue
                 packed_runtime_shader = (
@@ -4200,6 +4204,12 @@ finally:
                 "Player content contains authoring/source files that must be "
                 "compiled into Library artifacts first: "
                 + ", ".join(sorted(forbidden_plaintext)[:12])
+            )
+        if forbidden_model_sources:
+            raise RuntimeError(
+                "Player content contains raw model sources; cook them into "
+                "Library mesh artifacts before packing: "
+                + ", ".join(sorted(forbidden_model_sources)[:12])
             )
         if forbidden_direct_payloads:
             raise RuntimeError(
