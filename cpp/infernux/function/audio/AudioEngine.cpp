@@ -1,6 +1,7 @@
 #include "AudioEngine.h"
 
 #include "AudioClip.h"
+#include "AudioStreamBuffer.h"
 #include "AudioListener.h"
 #include "AudioMixer.h"
 #include "AudioSource.h"
@@ -50,6 +51,9 @@ struct AudioEngine::AudioVoiceState
     AudioEngine *engine = nullptr;
     std::atomic<size_t> busSlot{0};
     std::shared_ptr<const AudioPlaybackPcm> pcm;
+    std::unique_ptr<AudioStreamBuffer> streaming;
+    size_t frameCount = 0;
+    int sampleRate = 0;
     double cursor = 0.0;
     float currentGain = 0.0f;
     float currentSpatialGain = 1.0f;
@@ -263,9 +267,15 @@ void SDLCALL AudioEngine::FeedVoiceStream(void *userdata, SDL_AudioStream *strea
 
     const int bytesPerFrame = static_cast<int>(sizeof(float) * 2);
     int remainingFrames = std::max(1, additional_amount / bytesPerFrame);
-    if (voice->destroyed.load(std::memory_order_acquire) || !voice->pcm || voice->pcm->stereoFrames.empty() ||
-        voice->pcm->frameCount == 0) {
+    if (voice->destroyed.load(std::memory_order_acquire) || voice->frameCount == 0) {
         return;
+    }
+    if (voice->streaming) {
+        if (voice->streaming->Failed()) {
+            voice->finished.store(true, std::memory_order_release);
+            SDL_FlushAudioStream(stream);
+            return;
+        }
     }
 
     const float targetGain =
@@ -276,13 +286,13 @@ void SDLCALL AudioEngine::FeedVoiceStream(void *userdata, SDL_AudioStream *strea
     const float targetSpatialBlend = voice->spatialBlend.load(std::memory_order_relaxed);
     const double step = std::max(0.01, static_cast<double>(voice->pitch.load(std::memory_order_relaxed)));
     const bool loop = voice->loop.load(std::memory_order_relaxed);
-    const float smoothingStep = 1.0f / static_cast<float>(std::max(1, voice->pcm->sampleRate / 200));
+    const float smoothingStep = 1.0f / static_cast<float>(std::max(1, voice->sampleRate / 200));
 
     bool finished = false;
-    const auto &pcmFrames = voice->pcm->stereoFrames;
-    const size_t frameCount = voice->pcm->frameCount;
+    const size_t frameCount = voice->frameCount;
     std::array<float, 2048> output{};
     while (remainingFrames > 0 && !finished) {
+        if (voice->streaming) voice->streaming->Request(static_cast<uint64_t>(voice->cursor));
         const int chunkFrames = std::min(remainingFrames, static_cast<int>(output.size() / 2));
         int writtenFrames = 0;
         for (; writtenFrames < chunkFrames; ++writtenFrames) {
@@ -300,9 +310,23 @@ void SDLCALL AudioEngine::FeedVoiceStream(void *userdata, SDL_AudioStream *strea
             const size_t index0 = std::min(static_cast<size_t>(frameCursor), frameCount - 1);
             const size_t index1 = loop ? (index0 + 1) % frameCount : std::min(index0 + 1, frameCount - 1);
             const float fraction = static_cast<float>(frameCursor - static_cast<double>(index0));
-            const float left = pcmFrames[index0 * 2] + (pcmFrames[index1 * 2] - pcmFrames[index0 * 2]) * fraction;
-            const float right =
-                pcmFrames[index0 * 2 + 1] + (pcmFrames[index1 * 2 + 1] - pcmFrames[index0 * 2 + 1]) * fraction;
+            float l0, r0, l1, r1;
+            if (voice->streaming) {
+                if (!voice->streaming->ReadFrame(index0, l0, r0) || !voice->streaming->ReadFrame(index1, l1, r1)) {
+                    // IO can stall. Output silence without skipping source time;
+                    // never decode, wait, allocate or switch loading mode here.
+                    output[static_cast<size_t>(writtenFrames) * 2] = 0;
+                    output[static_cast<size_t>(writtenFrames) * 2 + 1] = 0;
+                    voice->currentGain = 0.0f;
+                    continue;
+                }
+            } else {
+                const auto &pcmFrames = voice->pcm->stereoFrames;
+                l0 = pcmFrames[index0 * 2]; r0 = pcmFrames[index0 * 2 + 1];
+                l1 = pcmFrames[index1 * 2]; r1 = pcmFrames[index1 * 2 + 1];
+            }
+            const float left = l0 + (l1 - l0) * fraction;
+            const float right = r0 + (r1 - r0) * fraction;
             voice->currentGain = audio_mixer::ApproachParameter(voice->currentGain, targetGain, smoothingStep);
             voice->currentSpatialGain =
                 audio_mixer::ApproachParameter(voice->currentSpatialGain, targetSpatialGain, smoothingStep);
@@ -436,25 +460,35 @@ SDL_AudioStream *AudioEngine::CreateVoice(AudioSource * /*source*/, AudioClip *c
     playbackSpec.channels = 2;
     playbackSpec.freq = m_deviceSpec.freq > 0 ? m_deviceSpec.freq : 44100;
 
-    auto pcm = clip->AcquirePlaybackPcm(playbackSpec.freq);
-    if (!pcm || pcm->frameCount == 0) {
+    if (clip->IsStreaming()) playbackSpec.freq = clip->GetSampleRate();
+    auto pcm = clip->IsStreaming() ? nullptr : clip->AcquirePlaybackPcm(playbackSpec.freq);
+    if (!clip->IsStreaming() && (!pcm || pcm->frameCount == 0)) {
         INXLOG_ERROR("Failed to acquire prepared audio clip for playback");
         return nullptr;
     }
 
+    auto voiceState = std::make_shared<AudioVoiceState>();
+    voiceState->sampleRate = playbackSpec.freq;
+    voiceState->frameCount = pcm ? pcm->frameCount : clip->GetSampleCount();
+    voiceState->cursor = std::clamp(startSeconds * playbackSpec.freq, 0.0, static_cast<double>(voiceState->frameCount));
+    if (clip->IsStreaming()) {
+        try {
+            voiceState->streaming = clip->CreateStream(static_cast<uint64_t>(voiceState->cursor));
+        } catch (const std::exception &e) {
+            INXLOG_ERROR("Cannot prepare streaming voice: ", e.what());
+            return nullptr;
+        }
+    }
     SDL_AudioStream *stream = SDL_CreateAudioStream(&playbackSpec, &m_deviceSpec);
     if (!stream) {
         INXLOG_ERROR("Failed to create audio stream: ", SDL_GetError());
         return nullptr;
     }
 
-    auto voiceState = std::make_shared<AudioVoiceState>();
     voiceState->engine = this;
     voiceState->stream = stream;
     voiceState->order = m_nextVoiceOrder++;
     voiceState->pcm = std::move(pcm);
-    voiceState->cursor =
-        std::clamp(startSeconds * voiceState->pcm->sampleRate, 0.0, static_cast<double>(voiceState->pcm->frameCount));
 
     if (!SDL_SetAudioStreamGetCallback(stream, &AudioEngine::FeedVoiceStream, voiceState.get())) {
         INXLOG_ERROR("Failed to register audio stream callback: ", SDL_GetError());
@@ -555,7 +589,7 @@ double AudioEngine::GetVoiceTime(SDL_AudioStream *stream) const
         return 0.0;
     SDL_LockAudioStream(stream);
     const double frames = VoiceCursorAt(*state, GetOutputTime());
-    const double seconds = frames / state->pcm->sampleRate;
+    const double seconds = frames / state->sampleRate;
     SDL_UnlockAudioStream(stream);
     return seconds;
 }
@@ -569,7 +603,7 @@ void AudioEngine::SetVoiceTime(SDL_AudioStream *stream, double seconds)
         return;
     SDL_LockAudioStream(stream);
     SDL_ClearAudioStream(stream);
-    state->cursor = std::min(seconds * state->pcm->sampleRate, static_cast<double>(state->pcm->frameCount));
+    state->cursor = std::min(seconds * state->sampleRate, static_cast<double>(state->frameCount));
     state->virtualSince = GetOutputTime();
     state->finished.store(false, std::memory_order_release);
     state->currentGain = 0.0f; // Reuse the normal gain ramp after a discontinuity.
@@ -586,7 +620,7 @@ bool AudioEngine::VoiceFinished(const AudioVoiceState &state) const
 {
     if (state.virtualized)
         return !state.loop.load(std::memory_order_relaxed) &&
-               VoiceCursorAt(state, GetOutputTime()) >= static_cast<double>(state.pcm->frameCount);
+               VoiceCursorAt(state, GetOutputTime()) >= static_cast<double>(state.frameCount);
 
     // Producing the last sample does not mean SDL has consumed the tail yet.
     // Keep the voice alive until all flushed output has reached the device.
@@ -597,9 +631,9 @@ double AudioEngine::VoiceCursorAt(const AudioVoiceState &state, double time) con
 {
     double cursor = state.cursor;
     if (state.virtualized && !state.paused)
-        cursor += std::max(0.0, time - state.virtualSince) * state.pcm->sampleRate *
+        cursor += std::max(0.0, time - state.virtualSince) * state.sampleRate *
                   state.pitch.load(std::memory_order_relaxed);
-    const double count = static_cast<double>(state.pcm->frameCount);
+    const double count = static_cast<double>(state.frameCount);
     return state.loop.load(std::memory_order_relaxed) ? std::fmod(cursor, count) : std::min(cursor, count);
 }
 

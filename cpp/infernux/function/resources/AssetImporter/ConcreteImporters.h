@@ -272,6 +272,8 @@ class AudioImporter final : public AssetImporter
     {
         if (!meta.HasKey("force_mono"))
             meta.AddMetadata("force_mono", false);
+        if (!meta.HasKey("load_type"))
+            meta.AddMetadata("load_type", std::string("decompress_on_load"));
         if (!meta.HasKey("load_in_background"))
             meta.AddMetadata("load_in_background", false);
         if (!meta.HasKey("quality"))

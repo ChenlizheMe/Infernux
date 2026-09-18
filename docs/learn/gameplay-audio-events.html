@@ -50,7 +50,7 @@
 <h2 id="editor-setup">Prepare the scene</h2>
 <p>This walkthrough builds on the collision scene from Chapter 5.</p>
 <ol>
-<li>Add <code>Assets/Audio/music_loop.wav</code> and <code>Assets/Audio/hit.wav</code> to the project. The runtime bundles four decoders: WAV (<code>SDL_LoadWAV</code>), OGG/Vorbis (<code>stb_vorbis</code>), MP3 (<code>dr_mp3</code>), and FLAC (<code>dr_flac</code>). WAV is the simplest path and the recommended first asset; native regression tests cover WAV decoding and playback; the other formats still need their own acceptance samples.</li>
+<li>Add <code>Assets/Audio/music_loop.wav</code> and <code>Assets/Audio/hit.wav</code> to the project. WAV, OGG/Vorbis, MP3, and FLAC support both resident and streaming playback. For long music, select the audio asset, set <strong>Load Type → Streaming</strong>, and click <strong>Apply</strong>. Streaming reads and decodes ahead into bounded buffers rather than keeping the entire decoded clip in memory. Keep short effects on <strong>Decompress on Load</strong>. <strong>Revert</strong> discards unapplied import settings.</li>
 <li>Select the main camera and add an <strong>AudioListener</strong> component. Keep one active listener in the scene.</li>
 <li>Select the player and add an <strong>AudioSource</strong> component. Leave <strong>Track Count</strong> at <code>1</code>; the script will assign track 0. Disable <strong>Play On Awake</strong> because the script starts playback after loading the clip.</li>
 <li>Keep the player's Collider and Rigidbody from the physics chapter, and keep a Collider on the object it will hit. <code>on_collision_enter()</code> requires a real collision pair.</li>
@@ -287,7 +287,7 @@
 <h2 id="zh-editor-setup">准备场景</h2>
 <p>以下步骤沿用第 5 章的碰撞场景。</p>
 <ol>
-<li>把 <code>music_loop.wav</code> 和 <code>hit.wav</code> 放入 <code>Assets/Audio</code>。运行时内置四种解码器：WAV（<code>SDL_LoadWAV</code>）、OGG/Vorbis（<code>stb_vorbis</code>）、MP3（<code>dr_mp3</code>）与 FLAC（<code>dr_flac</code>）。WAV 路径最简单，建议把它作为第一份验收资产；原生回归已覆盖 WAV 解码与播放，其它格式仍需各自的验收素材。</li>
+<li>把 <code>music_loop.wav</code> 和 <code>hit.wav</code> 放入 <code>Assets/Audio</code>。WAV、OGG/Vorbis、MP3 和 FLAC 均支持常驻和流式播放。长音乐可在选中资产后，将 <strong>加载方式</strong> 改为 <strong>流式播放</strong>，再点击 <strong>应用</strong>；引擎会分段预读和解码，不会把整首音乐的 PCM 常驻内存。短音效保持 <strong>加载时解压</strong> 即可。点击 <strong>还原</strong> 可以撤销尚未应用的导入设置。</li>
 <li>选择主摄像机，添加 <strong>AudioListener</strong> 组件。场景中保留一个启用的监听器。</li>
 <li>选择玩家，添加 <strong>AudioSource</strong> 组件。<strong>Track Count</strong> 保持 <code>1</code>，脚本会设置轨道 0。关闭 <strong>Play On Awake</strong>，脚本会在音频加载完成后启动播放。</li>
 <li>保留物理章节中的玩家 Collider 与 Rigidbody，并给障碍物保留 Collider。<code>on_collision_enter()</code> 需要有效的碰撞组合。</li>

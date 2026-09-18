@@ -1,9 +1,6 @@
 """Type stubs for Infernux.core.audio_clip.
 
-Agent note:
-    The runtime wrapper currently documents and reliably supports WAV loading.
-    Some older docs/UI filters may mention OGG/MP3, but the C++ decode path is
-    WAV-only until additional decoders are implemented.
+WAV, Ogg/Vorbis, MP3 and FLAC support resident and file-backed streaming voices.
 """
 
 from __future__ import annotations
@@ -32,7 +29,7 @@ class AudioClip:
         """Load an audio clip from a file path.
 
         Args:
-            file_path: Project or absolute path to a WAV file.
+            file_path: Path to a WAV, Ogg/Vorbis, MP3 or FLAC file.
 
         Returns:
             ``AudioClip`` when decoding succeeds; otherwise ``None``.
@@ -51,6 +48,11 @@ class AudioClip:
     @property
     def is_loaded(self) -> bool:
         """Whether the audio data is loaded in memory."""
+        ...
+
+    @property
+    def is_streaming(self) -> bool:
+        """Whether playback uses file-backed bounded read-ahead."""
         ...
     @property
     def duration(self) -> float:

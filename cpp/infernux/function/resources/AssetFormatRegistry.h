@@ -28,7 +28,8 @@ inline constexpr std::array<std::string_view, 36> kMeshExtensions = {
     ".md2", ".md3", ".md4",  ".md5mesh", ".mdc", ".mmd", ".ms3d", ".nff", ".off",     ".ogex", ".x3d", ".inxmesh",
 };
 
-// WAV uses SDL, OGG/Vorbis uses stb_vorbis, and MP3/FLAC use dr_libs.
+// WAV/MP3/FLAC use dr_libs; OGG/Vorbis uses stb_vorbis. Resident and streaming
+// playback share the same file-backed decoders.
 // Every consumer (database, editor icons and drag payloads) derives from this
 // list so a visible AudioClip is always a format the runtime can decode.
 inline constexpr std::array<std::string_view, 4> kAudioExtensions = {".wav", ".ogg", ".mp3", ".flac"};

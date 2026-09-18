@@ -87,6 +87,11 @@ class AudioClip:
         return self._native.is_loaded
 
     @property
+    def is_streaming(self) -> bool:
+        """Whether voices decode this clip from disk using bounded read-ahead."""
+        return self._native.is_streaming
+
+    @property
     def duration(self) -> float:
         """Duration in seconds (Unity: AudioClip.length)."""
         return self._native.duration

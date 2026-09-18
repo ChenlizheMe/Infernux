@@ -9,6 +9,7 @@
 
 namespace infernux
 {
+class AudioStreamBuffer;
 
 struct AudioPlaybackPcm
 {
@@ -18,11 +19,11 @@ struct AudioPlaybackPcm
 };
 
 /**
- * @brief An audio clip holds decoded PCM audio data in memory.
+ * @brief An audio clip owns resident PCM or a file-backed streaming descriptor.
  *
  * AudioClip is the audio equivalent of a Texture — it represents loaded,
- * ready-to-play audio data. Clips are decoded into PCM data in memory and
- * can be referenced by AudioSource components.
+ * ready-to-play audio data. Resident clips share decoded PCM; streaming voices
+ * own bounded read-ahead buffers. Both are referenced by AudioSource components.
  *
  * Unity API alignment:
  * - AudioClip.length       → GetDuration()
@@ -124,9 +125,14 @@ class AudioClip
     /// Return one immutable stereo float playback image shared by every
     /// active voice of this clip at the requested output sample rate.
     [[nodiscard]] std::shared_ptr<const AudioPlaybackPcm> AcquirePlaybackPcm(int sampleRate) const;
+    [[nodiscard]] bool IsStreaming() const { return m_streaming; }
+    [[nodiscard]] std::unique_ptr<AudioStreamBuffer> CreateStream(uint64_t firstFrame) const;
 
   private:
     bool m_loaded = false;
+    bool m_streaming = false;
+    bool m_forceMono = false;
+    uint32_t m_frameCount = 0;
     std::string m_filePath;
     std::string m_name;
     std::string m_guid;
@@ -136,9 +142,6 @@ class AudioClip
     uint32_t m_dataLength = 0;
     mutable std::mutex m_playbackMutex;
     mutable std::shared_ptr<const AudioPlaybackPcm> m_playbackPcm;
-
-    /// @brief Read .meta import settings and apply post-load transformations
-    void ApplyImportSettings();
 
     /// @brief Mix multi-channel data down to mono (in-place)
     void ConvertToMono();

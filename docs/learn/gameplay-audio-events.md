@@ -27,7 +27,7 @@ Use `spatial_blend = 0` for music and screen-centered sound: it preserves the or
 
 This walkthrough builds on the collision scene from Chapter 5.
 
-1. Add `Assets/Audio/music_loop.wav` and `Assets/Audio/hit.wav` to the project. The runtime bundles four decoders: WAV (`SDL_LoadWAV`), OGG/Vorbis (`stb_vorbis`), MP3 (`dr_mp3`), and FLAC (`dr_flac`). WAV is the simplest path and the recommended first asset; native regression tests cover WAV decoding and playback; the other formats still need their own acceptance samples.
+1. Add `Assets/Audio/music_loop.wav` and `Assets/Audio/hit.wav` to the project. WAV, OGG/Vorbis, MP3, and FLAC support both resident and streaming playback. For long music, select the audio asset, set **Load Type → Streaming**, and click **Apply**. Streaming reads and decodes ahead into bounded buffers rather than keeping the entire decoded clip in memory. Keep short effects on **Decompress on Load**. **Revert** discards unapplied import settings.
 2. Select the main camera and add an **AudioListener** component. Keep one active listener in the scene.
 3. Select the player and add an **AudioSource** component. Leave **Track Count** at `1`; the script will assign track 0. Disable **Play On Awake** because the script starts playback after loading the clip.
 4. Keep the player's Collider and Rigidbody from the physics chapter, and keep a Collider on the object it will hit. `on_collision_enter()` requires a real collision pair.
@@ -212,7 +212,7 @@ Infernux 的 `AudioSource` 是多轨组件，没有单一的 `clip` 属性。先
 
 以下步骤沿用第 5 章的碰撞场景。
 
-1. 把 `music_loop.wav` 和 `hit.wav` 放入 `Assets/Audio`。运行时内置四种解码器：WAV（`SDL_LoadWAV`）、OGG/Vorbis（`stb_vorbis`）、MP3（`dr_mp3`）与 FLAC（`dr_flac`）。WAV 路径最简单，建议把它作为第一份验收资产；原生回归已覆盖 WAV 解码与播放，其它格式仍需各自的验收素材。
+1. 把 `music_loop.wav` 和 `hit.wav` 放入 `Assets/Audio`。WAV、OGG/Vorbis、MP3 和 FLAC 均支持常驻和流式播放。长音乐可在选中资产后，将 **加载方式** 改为 **流式播放**，再点击 **应用**；引擎会分段预读和解码，不会把整首音乐的 PCM 常驻内存。短音效保持 **加载时解压** 即可。点击 **还原** 可以撤销尚未应用的导入设置。
 2. 选择主摄像机，添加 **AudioListener** 组件。场景中保留一个启用的监听器。
 3. 选择玩家，添加 **AudioSource** 组件。**Track Count** 保持 `1`，脚本会设置轨道 0。关闭 **Play On Awake**，脚本会在音频加载完成后启动播放。
 4. 保留物理章节中的玩家 Collider 与 Rigidbody，并给障碍物保留 Collider。`on_collision_enter()` 需要有效的碰撞组合。

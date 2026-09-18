@@ -2,6 +2,8 @@
 #include <function/audio/AudioClip.h>
 #include <function/audio/AudioEngine.h>
 #include <function/audio/AudioSource.h>
+#include <function/audio/AudioStreamBuffer.h>
+#include <function/resources/InxResource/InxResourceMeta.h>
 #include <platform/filesystem/InxPath.h>
 
 #include <algorithm>
@@ -405,6 +407,52 @@ int main()
     engine.DestroyVoice(foreground);
     engine.DestroyVoice(distant);
     engine.SetMaxRealVoices(64);
+    // Stream the same source with bounded storage, through the very same voice
+    // scheduler/device. Seek/loop and independent playheads must not share PCM.
+    infernux::InxResourceMeta meta;
+    meta.AddMetadata("load_type", std::string("streaming"));
+    const auto metaPath = infernux::InxResourceMeta::GetMetaFilePath(infernux::FromFsPath(path));
+    assert(meta.SaveToFile(metaPath));
+    infernux::AudioClip streamed;
+    assert(streamed.LoadFromFile(infernux::FromFsPath(path)));
+    assert(streamed.IsStreaming() && streamed.GetSampleCount() == 44100 * 3);
+    assert(streamed.GetData().empty() && streamed.GetRuntimeMemoryBytes() < 4096);
+    assert(!streamed.AcquirePlaybackPcm(44100));
+    {
+        auto pages = streamed.CreateStream(0);
+        for (uint64_t frame : {uint64_t(0), uint64_t(100000), uint64_t(44100), uint64_t(132299), uint64_t(0)}) {
+            pages->Request(frame);
+            float left = 0, right = 0;
+            WaitFor([&] { return pages->ReadFrame(frame, left, right); });
+            const float expected = (1000.0f * (1 + frame / 44100)) / 32768.0f;
+            assert(std::abs(left - expected) < 0.00001f && std::abs(right + expected) < 0.00001f);
+        }
+    }
+    engine.SetBusVolume("Master", 1);
+    engine.SetBusVolume("Music", 1);
+    auto *music = engine.CreateVoice(nullptr, &streamed, 1.1);
+    auto *otherMusic = engine.CreateVoice(nullptr, &streamed, 0.1);
+    assert(music && otherMusic);
+    assert(std::abs(engine.GetVoiceTime(otherMusic) - .1) < .00001);
+    engine.UpdateVoiceMix(music, 1, 1, 0, 0, 1, true, "Music", 0);
+    engine.SetVoicePaused(music, false);
+    engine.ResumeAll();
+    WaitFor([&] { return std::abs(engine.GetOutputPeak() - 2000.0f / 32768) < .001; });
+    engine.PauseAll();
+    engine.SetVoiceTime(music, 2.99);
+    engine.ResumeAll();
+    WaitFor([&] { return engine.GetVoiceTime(music) < 0.3; });
+    WaitFor([&] { return std::abs(engine.GetOutputPeak() - 1000.0f / 32768) < .001; });
+    engine.SetVoicePaused(music, true);
+    const auto pausedTime = engine.GetVoiceTime(music);
+    SDL_Delay(30);
+    assert(engine.GetVoiceTime(music) == pausedTime);
+    engine.SetVoiceTime(music, 2.1);
+    engine.SetVoicePaused(music, false);
+    WaitFor([&] { return std::abs(engine.GetOutputPeak() - 3000.0f / 32768) < .001; });
+    engine.DestroyVoice(music);
+    engine.DestroyVoice(otherMusic);
+    std::filesystem::remove(infernux::ToFsPath(metaPath));
     engine.Shutdown();
     std::filesystem::remove(path);
 }

@@ -715,6 +715,9 @@ def _ensure_categories():
         load_fn=_load_audio,
         editable_fields=[
             FieldDef("force_mono", "asset.force_mono", WidgetType.CHECKBOX),
+            FieldDef("load_type", "asset.audio_load_type", WidgetType.COMBO,
+                     [("asset.audio_decompress_on_load", "decompress_on_load"),
+                      ("asset.audio_streaming", "streaming")]),
             FieldDef("load_in_background", "asset.audio_load_in_background", WidgetType.CHECKBOX),
             FieldDef(
                 "compression_format", "asset.audio_compression_format", WidgetType.COMBO,

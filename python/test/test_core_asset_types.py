@@ -271,6 +271,17 @@ class TestTextureImportSettings:
 # ═══════════════════════════════════════════════════════════════════════════
 
 class TestAudioImportSettings:
+    def test_streaming_and_legacy_load_type(self):
+        settings = AudioImportSettings(load_type="streaming")
+        assert settings == settings.copy() == AudioImportSettings.from_dict(settings.to_dict())
+        old = settings.to_dict()
+        del old["load_type"]
+        assert AudioImportSettings.from_dict(old).load_type == "decompress_on_load"
+        assert settings != AudioImportSettings()
+        old["load_type"] = "automatic_guess"
+        with pytest.raises(ValueError, match="load_type"):
+            AudioImportSettings.from_dict(old)
+
     def test_defaults(self):
         s = AudioImportSettings()
         assert s.force_mono is False

@@ -433,6 +433,7 @@ class AudioImportSettings:
     """Unity-style audio import settings — stored in .meta alongside audio files."""
 
     force_mono: bool = False
+    load_type: str = "decompress_on_load"
     load_in_background: bool = False
     quality: float = 1.0
     compression_format: AudioCompressionFormat = AudioCompressionFormat.PCM
@@ -440,6 +441,7 @@ class AudioImportSettings:
     def to_dict(self) -> Dict[str, Any]:
         return {
             "force_mono": self.force_mono,
+            "load_type": self.load_type,
             "load_in_background": self.load_in_background,
             "quality": self.quality,
             "compression_format": self.compression_format.name.lower(),
@@ -462,14 +464,18 @@ class AudioImportSettings:
                     "adpcm": AudioCompressionFormat.ADPCM}
         if type(fmt_str) is not str or fmt_str not in fmt_map:
             raise ValueError(f"unsupported audio compression_format: {fmt_str}")
+        load_type = d.get("load_type", "decompress_on_load")
+        if load_type not in ("decompress_on_load", "streaming"):
+            raise ValueError("audio load_type must be decompress_on_load or streaming")
         return cls(
-            force_mono=d["force_mono"], load_in_background=d["load_in_background"],
+            force_mono=d["force_mono"], load_type=load_type, load_in_background=d["load_in_background"],
             quality=float(quality), compression_format=fmt_map[fmt_str],
         )
 
     def copy(self) -> "AudioImportSettings":
         return AudioImportSettings(
             force_mono=self.force_mono,
+            load_type=self.load_type,
             load_in_background=self.load_in_background,
             quality=self.quality,
             compression_format=self.compression_format,
@@ -479,6 +485,7 @@ class AudioImportSettings:
         if not isinstance(other, AudioImportSettings):
             return NotImplemented
         return (self.force_mono == other.force_mono
+                and self.load_type == other.load_type
                 and self.load_in_background == other.load_in_background
                 and self.quality == other.quality
                 and self.compression_format == other.compression_format)
