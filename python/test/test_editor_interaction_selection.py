@@ -882,7 +882,12 @@ def test_bootstrap_selection_projection_is_the_single_cross_panel_writer():
     assert outlines == [(42, [42])]
 
 
-def test_bootstrap_projects_subresources_and_all_component_owners(monkeypatch):
+@pytest.mark.parametrize("sub_kind,token", [
+    ("submesh", "::submesh:"), ("subtexture", "::subtex:"),
+    ("submaterial", "::submat:"), ("subbone", "::subbone:"),
+    ("subanimation", "::subanim:"),
+])
+def test_bootstrap_projects_subresources_and_all_component_owners(monkeypatch, sub_kind, token):
     from types import SimpleNamespace
 
     import Infernux.lib as native
@@ -936,13 +941,13 @@ def test_bootstrap_projects_subresources_and_all_component_owners(monkeypatch):
     subresource = SelectionSnapshot.create(
         (
             SelectionTarget.asset_subresource(
-                "Assets/Robot.fbx", "mesh:body", sub_kind="submesh"
+                "Assets/Robot.fbx", "body", sub_kind=sub_kind
             ),
         ),
         owner_id="project",
     )
     bootstrap._present_selection_snapshot(subresource)
-    asset_path = subresource.primary.document_id
+    asset_path = subresource.primary.document_id + token + "body"
     assert project_calls == [([asset_path], asset_path, False)]
     assert inspector_calls == [asset_path]
 
