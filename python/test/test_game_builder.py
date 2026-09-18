@@ -5,6 +5,7 @@ import importlib.machinery
 import hashlib
 import json
 import os
+from collections import defaultdict
 from pathlib import Path
 import py_compile
 import shutil
@@ -487,6 +488,34 @@ def test_player_audit_does_not_classify_cooked_model_artifacts_as_sources():
     assert not player_package_audit_module._is_raw_model_source_path(
         "Library/Artifacts/Mesh/Imported.inxmesh"
     )
+
+
+def test_player_audit_rejects_raw_model_source_inside_content_archive(tmp_path):
+    source = tmp_path / "Imported.blend"
+    source.write_bytes(b"authoring model")
+    archive = tmp_path / "Content.inxpkg"
+    _FakeNativeInxPack._write(
+        [("Assets/Models/Imported.blend", source)],
+        archive,
+        profile="release",
+    )
+    forbidden: list[str] = []
+    player_package_audit_module._archive_entry_records(
+        archive,
+        "Game_Data/Content.inxpkg",
+        payload_candidates=defaultdict(list),
+        archive_entries=[],
+        forbidden=forbidden,
+        author_sources=[],
+        meta_files=[],
+        absolute_paths=[],
+        native_files=[],
+        hidden_executables=[],
+        authoring_tree_files=[],
+        unknown_author_documents=[],
+        unsafe_entry_paths=[],
+    )
+    assert any("raw model source" in message for message in forbidden)
 
 
 @pytest.mark.parametrize("suffix", RUNTIME_DOCUMENT_AND_AUDIO_SUFFIXES)
