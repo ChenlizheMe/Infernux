@@ -421,6 +421,7 @@ void MeshRenderer::SetMesh(std::vector<Vertex> vertices, std::vector<uint32_t> i
     m_useInlineMesh = true;
     m_meshAsset.Clear();
     m_modelNodePath.clear();
+    m_modelSubresourceId.clear();
     ++m_inlineMeshVersion;
     m_meshBufferDirty = true;
     ComputeLocalBoundsFromInlineVertices();
@@ -442,6 +443,7 @@ void MeshRenderer::SetProceduralMesh(std::vector<Vertex> vertices, std::vector<u
     m_useInlineMesh = true;
     m_meshAsset.Clear();
     m_modelNodePath.clear();
+    m_modelSubresourceId.clear();
     ++m_inlineMeshVersion;
     m_meshBufferDirty = true;
     ComputeLocalBoundsFromInlineVertices();
@@ -467,6 +469,7 @@ void MeshRenderer::SetSharedPrimitiveMesh(const std::vector<Vertex> &vertices, c
     m_inlineMeshName = primitiveName;
     m_meshAsset.Clear();
     m_modelNodePath.clear();
+    m_modelSubresourceId.clear();
     ++m_inlineMeshVersion;
     m_meshBufferDirty = true;
 
@@ -578,8 +581,10 @@ void MeshRenderer::ClearVertexBuffer()
 
 void MeshRenderer::SetMeshAsset(const std::string &guid, std::shared_ptr<InxMesh> mesh)
 {
-    if (m_meshAsset.GetGuid() != guid)
+    if (m_meshAsset.GetGuid() != guid) {
         m_modelNodePath.clear();
+        m_modelSubresourceId.clear();
+    }
     auto &graph = AssetDependencyGraph::Instance();
     if (m_meshAsset.HasGuid() && m_meshAsset.GetGuid() != guid)
         graph.RemoveRuntimeDependency(GetInstanceGuid(), m_meshAsset.GetGuid());
@@ -608,8 +613,10 @@ void MeshRenderer::SetMeshAsset(const std::string &guid, std::shared_ptr<InxMesh
 
 void MeshRenderer::SetMeshAssetGuid(const std::string &guid)
 {
-    if (m_meshAsset.GetGuid() != guid)
+    if (m_meshAsset.GetGuid() != guid) {
         m_modelNodePath.clear();
+        m_modelSubresourceId.clear();
+    }
     auto &graph = AssetDependencyGraph::Instance();
     if (m_meshAsset.HasGuid() && m_meshAsset.GetGuid() != guid)
         graph.RemoveRuntimeDependency(GetInstanceGuid(), m_meshAsset.GetGuid());
@@ -632,6 +639,7 @@ void MeshRenderer::SetMeshAssetGuid(const std::string &guid)
 void MeshRenderer::ClearMeshAsset()
 {
     m_modelNodePath.clear();
+    m_modelSubresourceId.clear();
     if (m_meshAsset.HasGuid())
         AssetDependencyGraph::Instance().RemoveRuntimeDependency(GetInstanceGuid(), m_meshAsset.GetGuid());
 
@@ -1443,6 +1451,8 @@ nlohmann::json MeshRenderer::SerializeDocument() const
     }
     if (IsModelNodeLocal())
         j["modelNodePath"] = m_modelNodePath;
+    if (!m_modelSubresourceId.empty())
+        j["modelSubresourceId"] = m_modelSubresourceId;
 
     // Mesh pivot offset (for submesh centering)
     if (m_meshPivotOffset != glm::vec3(0.0f)) {
@@ -1498,7 +1508,8 @@ void MeshRenderer::ValidateSerializedDocumentForType(const nlohmann::json &j, st
                                               "boundsMin", "boundsMax", "useInlineMesh"};
     std::vector<std::string_view> optional = {"meshAssetGuid",   "submeshIndex",   "nodeGroup",
                                               "meshPivotOffset", "inlineMeshName", "inlineMeshBuiltin",
-                                              "inlineVertices",  "inlineIndices",  "parameterOverrides", "modelNodePath"};
+                                              "inlineVertices",  "inlineIndices",  "parameterOverrides", "modelNodePath",
+                                              "modelSubresourceId"};
     if (expectedType == "SpriteRenderer") {
         required.insert(required.end(), {"frameId", "spriteColor", "flipX", "flipY"});
         optional.push_back("spriteGuid");
@@ -1576,6 +1587,8 @@ void MeshRenderer::ValidateSerializedDocumentForType(const nlohmann::json &j, st
             j["meshAssetGuid"].get<std::string>().empty())
             throw std::invalid_argument("Node-local geometry requires a static model node binding");
     }
+    if (j.contains("modelSubresourceId") && RequireString(j, "modelSubresourceId", expectedType).empty())
+        throw std::invalid_argument(std::string(expectedType) + ".modelSubresourceId must not be empty");
     if (j.contains("meshPivotOffset"))
         RequireFiniteVector(j, "meshPivotOffset", 3, expectedType);
     if (j.contains("inlineMeshName"))
@@ -1815,6 +1828,7 @@ bool MeshRenderer::DeserializeDocument(const nlohmann::json &j)
             m_nodeGroup = -1;
 
         m_modelNodePath.clear();
+        m_modelSubresourceId.clear();
         m_submeshIndex = j.contains("submeshIndex") ? j["submeshIndex"].get<int32_t>() : -1;
         if (j.contains("meshPivotOffset")) {
             m_meshPivotOffset.x = j["meshPivotOffset"][0].get<float>();
@@ -1835,6 +1849,7 @@ bool MeshRenderer::DeserializeDocument(const nlohmann::json &j)
         // Restore the view after assigning the source. Ordinary mesh changes
         // clear the previous model binding, while a scene document owns both.
         m_modelNodePath = j.value("modelNodePath", std::vector<std::string>{});
+        m_modelSubresourceId = j.value("modelSubresourceId", std::string{});
         ResolveModelNodeBinding();
         if (const auto mesh = m_meshAsset.Get())
             UpdateBoundsForMeshSelection(mesh);
@@ -2002,6 +2017,7 @@ std::unique_ptr<Component> MeshRenderer::Clone() const
     clone->m_submeshIndex = m_submeshIndex;
     clone->m_nodeGroup = m_nodeGroup;
     clone->m_modelNodePath = m_modelNodePath;
+    clone->m_modelSubresourceId = m_modelSubresourceId;
     clone->m_meshPivotOffset = m_meshPivotOffset;
     // Bounds
     clone->m_localBoundsMin = m_localBoundsMin;

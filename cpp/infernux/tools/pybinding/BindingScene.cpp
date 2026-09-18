@@ -568,6 +568,26 @@ static std::string TryGetMetaString(const InxResourceMeta *meta, const std::stri
     }
 }
 
+static std::string GetModelSubresourceId(const std::shared_ptr<const InxResourceMeta> &meta,
+                                         const std::vector<std::string> &path)
+{
+    if (!meta || path.empty() || !meta->HasKey("model_meshes"))
+        return {};
+    const auto manifest = nlohmann::json::parse(meta->GetDataAs<std::string>("model_meshes"));
+    if (!manifest.is_array())
+        throw std::invalid_argument("model_meshes metadata must be an array");
+    for (const auto &entry : manifest) {
+        if (!entry.is_object() || !entry.contains("path") || !entry["path"].is_array())
+            continue;
+        if (entry["path"].get<std::vector<std::string>>() != path)
+            continue;
+        const auto id = entry.value("subresource_id", std::string{});
+        if (!id.empty())
+            return id;
+    }
+    return {};
+}
+
 static std::vector<std::string> GetAnimationTakeNames(const std::string &guid, const std::shared_ptr<InxMesh> &mesh)
 {
     const auto meta = GetModelMeta(guid, mesh);
@@ -600,7 +620,7 @@ static GameObject *CreateModelObject(Scene *scene, const std::string &guid, cons
         auto source = registry.LoadAsset<InxMesh>(sourceGuid, ResourceType::Mesh);
         if (!source)
             throw std::invalid_argument("Model mesh source cannot be loaded");
-        source->RequireModelNode(nodePath);
+        (void)source->RequireModelNode(nodePath);
         const auto metadata = GetModelMeta(sourceGuid, source);
         const bool generateCollider = !ShouldUseSkinnedRenderer(sourceGuid, source) && metadata &&
                                       metadata->HasKey("generate_colliders") &&
@@ -612,6 +632,7 @@ static GameObject *CreateModelObject(Scene *scene, const std::string &guid, cons
             auto *renderer = object->AddComponent<MeshRenderer>();
             renderer->SetMeshAsset(sourceGuid, source);
             renderer->SetModelNodePath(nodePath);
+            renderer->SetModelSubresourceId(GetModelSubresourceId(metadata, nodePath));
             if (generateCollider)
                 object->AddComponent<MeshCollider>();
         } catch (...) {
@@ -694,6 +715,7 @@ static GameObject *CreateModelObject(Scene *scene, const std::string &guid, cons
                     renderer->SetNodeGroup(node.nodeGroup);
                     renderer->SetMeshAsset(guid, mesh);
                     renderer->SetModelNodePath(paths[index]);
+                    renderer->SetModelSubresourceId(GetModelSubresourceId(metadata, paths[index]));
                     if (generateColliders)
                         child->AddComponent<MeshCollider>();
                 }
@@ -1345,15 +1367,17 @@ void RegisterSceneBindings(py::module_ &m)
             py::arg("guid"), "Assign a model/mesh asset by GUID")
         .def("clear_mesh_asset", &MeshRenderer::ClearMeshAsset, "Clear the assigned asset mesh")
         .def_property_readonly("model_node_path", &MeshRenderer::GetModelNodePath)
+        .def_property_readonly("model_subresource_id", &MeshRenderer::GetModelSubresourceId)
         .def_property_readonly("model_node_group", &MeshRenderer::GetNodeGroup)
         .def("set_model_mesh", [](MeshRenderer &renderer, const std::string &guid,
                                    const std::vector<std::string> &path) {
             auto mesh = AssetRegistry::Instance().LoadAsset<InxMesh>(guid, ResourceType::Mesh);
             if (!mesh)
                 throw std::invalid_argument("Model mesh source cannot be loaded");
-            mesh->RequireModelNode(path);
+            (void)mesh->RequireModelNode(path);
             renderer.SetMeshAsset(guid, mesh);
             renderer.SetModelNodePath(path);
+            renderer.SetModelSubresourceId(GetModelSubresourceId(GetModelMeta(guid, mesh), path));
         }, py::arg("guid"), py::arg("node_path"))
 
         // ====================================================================

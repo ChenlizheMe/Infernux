@@ -8,6 +8,7 @@ safe-point after a model publication.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 
@@ -88,6 +89,111 @@ def _source_paths(mesh: Any) -> dict[tuple[str, ...], dict]:
     return result
 
 
+def _source_subresource_ids(guid: str) -> dict[tuple[str, ...], str]:
+    """Return unique imported mesh identities for the current model source.
+
+    The importer owns this manifest.  Missing/duplicate identities are left
+    out so reconciliation keeps the path-based behavior instead of guessing.
+    """
+    from Infernux.core.assets import AssetManager
+
+    database = AssetManager.require_asset_database()
+    meta = database.get_meta_by_guid(guid)
+    if meta is None or not meta.has_key("model_meshes"):
+        return {}
+    manifest = json.loads(meta.get_string("model_meshes"))
+    if not isinstance(manifest, list):
+        raise ValueError("model_meshes metadata must be a list")
+    counts: dict[str, int] = {}
+    entries: list[tuple[tuple[str, ...], str]] = []
+    for entry in manifest:
+        if not isinstance(entry, dict):
+            continue
+        path = entry.get("path")
+        identifier = str(entry.get("subresource_id") or "")
+        if not isinstance(path, list) or not identifier:
+            continue
+        key = tuple(str(part) for part in path)
+        counts[identifier] = counts.get(identifier, 0) + 1
+        entries.append((key, identifier))
+    return {path: identifier for path, identifier in entries if counts[identifier] == 1}
+
+
+def _migrate_source_paths_by_identity(scene: Any, root: Any, guid: str, source_ids: dict[tuple[str, ...], str]) -> bool:
+    """Move a live model hierarchy's source bindings across unambiguous renames.
+
+    The object itself is retained, so authored TRS, materials and user-added
+    components remain intact.  A user-renamed GameObject keeps its display
+    name; only its hidden source binding follows the DCC path.
+    """
+    if not source_ids:
+        return False
+    candidates = (root, *_descendants(root))
+    by_id: dict[str, Any] = {}
+    for obj in candidates:
+        if str(getattr(obj, "_model_source_guid", "") or "") != guid:
+            continue
+        renderer = obj.get_component("MeshRenderer")
+        identifier = str(getattr(renderer, "model_subresource_id", "") or "") if renderer else ""
+        if identifier and identifier in source_ids.values() and identifier not in by_id:
+            by_id[identifier] = obj
+
+    prefix_maps: dict[tuple[str, ...], tuple[str, ...]] = {}
+    for new_path, identifier in source_ids.items():
+        obj = by_id.get(identifier)
+        if obj is None:
+            continue
+        old_path = tuple(str(part) for part in (getattr(obj, "_model_source_path", ()) or ()))
+        if not old_path or old_path == new_path or len(old_path) != len(new_path):
+            continue
+        for length in range(1, len(old_path) + 1):
+            old_prefix = old_path[:length]
+            new_prefix = new_path[:length]
+            previous = prefix_maps.get(old_prefix)
+            if previous is not None and previous != new_prefix:
+                prefix_maps.clear()
+                break
+            prefix_maps[old_prefix] = new_prefix
+        if not prefix_maps:
+            break
+    if not prefix_maps:
+        return False
+
+    changed = False
+    for obj in candidates:
+        if str(getattr(obj, "_model_source_guid", "") or "") != guid:
+            continue
+        old_path = tuple(str(part) for part in (getattr(obj, "_model_source_path", ()) or ()))
+        new_path = prefix_maps.get(old_path)
+        if new_path is None or new_path == old_path:
+            continue
+        if old_path and str(obj.name) == old_path[-1]:
+            obj.name = new_path[-1]
+        obj._set_model_source(guid, list(new_path))
+        renderer = obj.get_component("MeshRenderer")
+        if renderer is not None and renderer.model_node_path == list(old_path):
+            renderer.set_model_mesh(guid, list(new_path))
+        changed = True
+
+    # A source node may have moved under a different DCC parent as well as
+    # being renamed. Rebuild only that source hierarchy edge and preserve the
+    # authored world pose; source-local TRS is for newly created instances.
+    updated_by_path = {
+        tuple(str(part) for part in (getattr(obj, "_model_source_path", ()) or ())): obj
+        for obj in candidates
+        if str(getattr(obj, "_model_source_guid", "") or "") == guid
+    }
+    for path, obj in sorted(updated_by_path.items(), key=lambda item: (len(item[0]), item[0])):
+        if not path:
+            continue
+        parent = updated_by_path.get(path[:-1], root if len(path) == 1 else None)
+        if parent is None or obj.get_parent() is parent:
+            continue
+        obj.set_parent(parent, world_position_stays=True)
+        changed = True
+    return changed
+
+
 def _destroy_stale_geometry(
     scene: Any, root: Any, guid: str, source: dict[tuple[str, ...], dict]
 ) -> bool:
@@ -159,7 +265,8 @@ def _destroy_stale_geometry(
 
 def _sync_instance(scene: Any, root: Any, guid: str, mesh: Any) -> bool:
     source = _source_paths(mesh)
-    changed = _destroy_stale_geometry(scene, root, guid, source)
+    changed = _migrate_source_paths_by_identity(scene, root, guid, _source_subresource_ids(guid))
+    changed = _destroy_stale_geometry(scene, root, guid, source) or changed
     source_bound = {
         tuple(str(part) for part in (getattr(obj, "_model_source_path", ()) or ())): obj
         for obj in (root, *_descendants(root))

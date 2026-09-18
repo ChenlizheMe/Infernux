@@ -622,6 +622,12 @@ class MeshRenderer(BuiltinComponent):
         """Source node identity, empty for a whole model or an ordinary mesh."""
         return self._require_cpp_component().model_node_path
 
+    @property
+    def model_subresource_id(self) -> str:
+        """Stable imported subresource identity, when this is a model node."""
+        cpp = self._require_cpp_component()
+        return str(getattr(cpp, "model_subresource_id", "") or "")
+
     def clear_mesh_asset(self) -> None:
         """Clear the assigned asset mesh."""
         cpp = self._cpp_component

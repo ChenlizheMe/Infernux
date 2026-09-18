@@ -288,6 +288,36 @@ def test_source_reorder_keeps_node_binding_and_source_rename_reconciles_instance
     assert 'Upper' in descendants(root)
 
 
+def test_source_parent_rename_keeps_authored_instance_pose(scene, hierarchy_asset, engine, monkeypatch):
+    """A DCC pivot rename updates the binding, not the author's placement."""
+    from Infernux.core.assets import AssetManager
+
+    database, source, guid = hierarchy_asset
+    monkeypatch.setattr(AssetManager, '_engine', engine)
+    monkeypatch.setattr(AssetManager, '_asset_database', database)
+    root = scene.create_from_model(guid)
+    upper = descendants(root)['Upper']
+    authored_position = Vector3(21, 22, 23)
+    upper.transform.local_position = authored_position
+    upper_object_id = upper.id
+
+    document = json.loads(source.read_text())
+    document['nodes'][0]['name'] = 'Renamed Assembly'
+    source.write_text(json.dumps(document))
+    assert AssetManager.reimport_asset(str(source), database=database)
+
+    objects = descendants(root)
+    assert objects['Renamed Assembly'].get_parent() is root
+    renamed = objects['Renamed Assembly']
+    renamed_upper = next(child for child in renamed.get_children() if child.name == 'Empty pivot')
+    renamed_upper = next(child for child in renamed_upper.get_children() if child.name == 'Upper')
+    assert renamed_upper.id == upper_object_id
+    assert tuple(renamed_upper.transform.local_position) == tuple(authored_position)
+    assert renamed_upper.get_component('MeshRenderer').model_node_path == [
+        'Renamed Assembly', 'Empty pivot', 'Upper'
+    ]
+
+
 def test_ambiguous_source_node_paths_fail_before_creating_objects(scene, hierarchy_asset):
     database, source, _ = hierarchy_asset
     document = json.loads(source.read_text())
