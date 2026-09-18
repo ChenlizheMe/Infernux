@@ -1,5 +1,6 @@
 """The real asset database owns Blender conversion and binary publication."""
 import os
+import json
 from pathlib import Path
 import subprocess
 import time
@@ -47,8 +48,13 @@ def test_modern_blend_worker_import_reimport_and_failed_publication(engine, tmp_
     script = (
         "import bpy; bpy.ops.wm.read_factory_settings(use_empty=True); "
         "root=bpy.data.objects.new('Assembly',None); bpy.context.collection.objects.link(root); "
-        "root.location=(2,1,0); bpy.ops.mesh.primitive_cube_add(); "
-        "cube=bpy.context.object; cube.name='ChildCube'; cube.parent=root; cube.location=(0,0,2); "
+        "root.location=(2,1,0); "
+        "red=bpy.data.materials.new('Red'); red.diffuse_color=(0.8,0.1,0.1,1); "
+        "blue=bpy.data.materials.new('Blue'); blue.diffuse_color=(0.1,0.2,0.8,1); "
+        "bpy.ops.mesh.primitive_cube_add(); cube=bpy.context.object; "
+        "cube.name='ChildCube'; cube.parent=root; cube.location=(0,0,2); cube.data.materials.append(red); "
+        "bpy.ops.mesh.primitive_cube_add(); second=bpy.context.object; "
+        "second.name='SecondCube'; second.parent=root; second.location=(2,0,2); second.data.materials.append(blue); "
         "bpy.ops.wm.save_as_mainfile(filepath=" + repr(str(source)) + ")"
     )
     subprocess.run([tool, "--background", "--factory-startup", "--disable-autoexec", "--python-exit-code", "1",
@@ -71,8 +77,11 @@ def test_modern_blend_worker_import_reimport_and_failed_publication(engine, tmp_
         guid = database.get_guid_from_path(str(source))
         assert guid
         mesh = registry.load_mesh(str(source))
-        assert mesh and mesh.vertex_count > 0 and mesh.submesh_count == 1
+        assert mesh and mesh.vertex_count > 0 and mesh.submesh_count >= 2
         assert mesh.name == source.stem
+        manifest = json.loads(database.get_meta_by_guid(guid).get_string("model_meshes"))
+        assert {entry["name"] for entry in manifest} >= {"ChildCube", "SecondCube"}
+        assert all(entry["subresource_id"] for entry in manifest)
         assert source.read_bytes() == before
         assert database.last_refresh_worker_importer_count > 0
         staging = Path(database.project_root) / "Library/ModelImport"
