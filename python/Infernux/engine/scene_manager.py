@@ -203,6 +203,8 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         self.is_prefab_mode = False
         self.prefab_mode_path = None
         self.prefab_envelope = {}
+        self._prefab_variant_overrides = []
+        self._prefab_mode_scene = None
         self._prefab_entry_document = None
         self._previous_scene_path = None
         self._previous_scene_document = None
@@ -282,11 +284,16 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         return int(getattr(scene_or_world_id, "world_id", 0) or 0)
 
     def document_id_for_scene(self, scene_or_world_id) -> str:
+        if self.is_prefab_mode and self._prefab_mode_scene is not None:
+            if self._world_id(scene_or_world_id) == self._world_id(self._prefab_mode_scene):
+                return self.document_id
         binding = self._loaded_scene_documents.get(self._world_id(scene_or_world_id))
         return binding.document_id if binding is not None else ""
 
     def scene_for_document(self, document_id: str):
         identifier = str(document_id or "")
+        if self.is_prefab_mode and identifier == self.document_id:
+            return self._prefab_mode_scene
         for binding in self._loaded_scene_documents.values():
             if binding.document_id == identifier:
                 return binding.scene

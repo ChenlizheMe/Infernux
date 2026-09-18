@@ -91,6 +91,7 @@ class ScenePrefabMixin:
         self._previous_scene_path = self._current_scene_path
         self._previous_scene_document_id = self._scene_document_id
         self.prefab_envelope = prefab_data
+        self._prefab_variant_overrides = copy.deepcopy(prefab_data.get("variant", {}).get("property_overrides", []))
         self._prefab_entry_document = copy.deepcopy(prefab_data)
 
         # Clear the RenderStack singleton before the swap — matches the
@@ -154,6 +155,7 @@ class ScenePrefabMixin:
             )
 
         self.is_prefab_mode = True
+        self._prefab_mode_scene = new_scene
         self.prefab_mode_path = resolved_path(prefab_path)
         self._current_scene_path = prefab_path
         self._replace_scene_document(
@@ -169,6 +171,31 @@ class ScenePrefabMixin:
         if self._on_scene_changed:
             self._on_scene_changed()
         return True
+
+    def capture_prefab_mode_document(self):
+        """Capture live values and draft inheritance intent in one source domain."""
+        from Infernux.lib import SceneManager
+        from Infernux.engine.component_restore import serialize_game_object_document_authoritatively
+        from Infernux.engine.prefab_manager import _serialize_prefab_snapshot, _make_prefab_baseline
+        from Infernux.engine.prefab_variant import edit_variant_document
+
+        if not self.is_prefab_mode:
+            raise RuntimeError("Prefab draft requires an open Prefab Mode")
+        roots = _get_scene_root_objects(SceneManager.instance().get_active_scene())
+        if len(roots) != 1:
+            raise RuntimeError("Prefab Mode requires exactly one root object")
+        snapshot = serialize_game_object_document_authoritatively(roots[0])
+        authored = copy.deepcopy(snapshot)
+        authored["prefab_source"] = _make_prefab_baseline(self.prefab_envelope["root_object"])
+        document, objects, components = _serialize_prefab_snapshot(
+            authored, source_canvas_name=self.prefab_envelope.get("source_canvas_name", ""),
+            next_local_id=self.prefab_envelope.get("next_local_id", 1),
+            next_component_id=self.prefab_envelope.get("next_component_id", 1))
+        if "variant" in self.prefab_envelope:
+            previous = copy.deepcopy(self.prefab_envelope)
+            previous["variant"]["property_overrides"] = copy.deepcopy(self._prefab_variant_overrides)
+            document = edit_variant_document(previous, document)
+        return document, snapshot, objects, components
 
     def exit_prefab_mode(self):
         """Resolve the Prefab document, then schedule its deferred exit."""
@@ -342,6 +369,8 @@ class ScenePrefabMixin:
                 dirty=False,
             )
         self.prefab_envelope = {}
+        self._prefab_variant_overrides = []
+        self._prefab_mode_scene = None
         self._prefab_entry_document = None
         self._previous_scene_document = None
         self._previous_scene = None

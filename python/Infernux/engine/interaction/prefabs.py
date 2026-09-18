@@ -367,6 +367,60 @@ class PrefabCommandService:
         self._project_assets._notify_changed()
         return True
 
+    def revert_mode_property(self, object_id, component_id, property_path, *, expected_document=None,
+                             origin=ActionOrigin.USER):
+        """Revert a Variant draft property; asset writes remain Save's job."""
+        import copy
+        from Infernux.engine.scene_manager import SceneFileManager
+        from Infernux.engine.prefab_variant import revert_variant_property
+        from Infernux.engine.prefab_overrides import _project_prefab_document, _object_nodes
+        from Infernux.engine.undo import LambdaCommand, PrefabRevertCommand
+
+        files = SceneFileManager.instance()
+        if files is None or not files.is_prefab_mode:
+            raise RuntimeError("Variant draft requires an open Prefab Mode")
+        document, before, objects, components = files.capture_prefab_mode_document()
+        if expected_document is not None and document != expected_document:
+            raise RuntimeError("Variant draft changed; refresh the Inspector before reverting")
+        updated = revert_variant_property(document, object_id, component_id, tuple(property_path))
+        projected = _project_prefab_document(updated["root_object"], before,
+                                            object_id_map=objects, component_id_map=components)
+        runtime_id = next(runtime for runtime, local in objects.items() if local == object_id)
+        runtime_component = (next(runtime for runtime, local in components.items() if local == component_id)
+                             if component_id else 0)
+
+        def target(snapshot):
+            node = next(node for node in _object_nodes(snapshot) if node["id"] == runtime_id)
+            if component_id:
+                node = next(c for c in node["components"] if c["component_id"] == runtime_component)
+            for part in property_path[:-1]:
+                node = node[part]
+            return node
+
+        after = copy.deepcopy(before)
+        source, destination = target(projected), target(after)
+        field = property_path[-1]
+        if field in source:
+            destination[field] = copy.deepcopy(source[field])
+        else:
+            destination.pop(field, None)
+        change = PrefabRevertCommand(before["id"], before, after, self._project_assets.asset_database)
+        path = files.prefab_mode_path
+        prior_intent = copy.deepcopy(files._prefab_variant_overrides)
+        new_intent = updated["variant"]["property_overrides"]
+
+        def apply(redo):
+            current = SceneFileManager.instance()
+            if not current or not current.is_prefab_mode or not same_path(current.prefab_mode_path, path):
+                raise RuntimeError("Variant draft history requires its Prefab Mode")
+            (change.redo if redo else change.undo)()
+            current._prefab_variant_overrides = copy.deepcopy(new_intent if redo else prior_intent)
+
+        command = LambdaCommand("Revert Variant Draft Property", lambda: apply(False), lambda: apply(True))
+        command._object_id = before["id"]
+        self._execute(command, origin)
+        return True
+
     def save_contents(self, root, path: str) -> str:
         """Save detached contents, or create a new asset from an authored tree.
 

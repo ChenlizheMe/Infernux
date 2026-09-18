@@ -1355,6 +1355,21 @@ def _render_variant_overrides(ctx, state):
     from .inspector_utils import render_compact_section_header
 
     core = EditorInteractionCore.instance()
+    files = SceneFileManager.instance()
+    editing_draft = bool(files and files.is_prefab_mode and same_path(files.prefab_mode_path, state.file_path))
+    rows = state.extra["variant_modifications"]
+    if editing_draft:
+        from Infernux.engine.interaction import DocumentRegistry
+        from Infernux.engine.prefab_variant import variant_property_modifications
+
+        owner = DocumentRegistry.instance().require(files.document_id)
+        key = (owner.document_id, owner.revision, owner.saved_revision)
+        cached = state.extra.get("variant_draft")
+        if cached is None or cached[0] != key:
+            draft, _, _, _ = files.capture_prefab_mode_document()
+            cached = (key, draft, variant_property_modifications(draft))
+            state.extra["variant_draft"] = cached
+        _, document, rows = cached
     database = core.project_assets.asset_database
     base_path = database.get_path_from_guid(document["variant"]["guid"])
     ctx.separator()
@@ -1363,32 +1378,29 @@ def _render_variant_overrides(ctx, state):
     ctx.label(f"{t('asset.prefab_variant_base')}: {os.path.basename(base_path)}")
     ctx.button(t("asset.prefab_variant_locate_base"), lambda: core.prefabs.locate(path=base_path))
     ctx.record_semantic_item("button", t("asset.prefab_variant_locate_base"), True, "asset.prefab.variant.base")
-    rows = state.extra["variant_modifications"]
     if not rows:
         ctx.label(t("asset.prefab_variant_no_overrides"))
         return
-    files = SceneFileManager.instance()
-    editable = not (files and files.is_prefab_mode and same_path(files.prefab_mode_path, state.file_path))
-    ctx.begin_disabled(not editable)
-    try:
-        for item in rows:
-            path = tuple(item["path"])
-            identity = f"{item['object']}.{item['component']}." + ".".join(path)
-            ctx.label(f"{item['object_name']} · {'.'.join(path)}")
-            ctx.label(f"{t('asset.prefab_variant_base_value')}: {str(item['source_value'])[:160]}")
-            ctx.label(f"{t('asset.prefab_variant_own_value')}: {str(item['value'])[:160]}")
-            # Capture the displayed revision. The command rejects a stale view
-            # instead of reverting an override the user has not seen.
-            asset_path = state.file_path
-            def revert(item=item, path=path, asset_path=asset_path, document=document):
-                from Infernux import editor
+    for item in rows:
+        path = tuple(item["path"])
+        identity = f"{item['object']}.{item['component']}." + ".".join(path)
+        ctx.label(f"{item['object_name']} · {'.'.join(path)}")
+        ctx.label(f"{t('asset.prefab_variant_base_value')}: {str(item['source_value'])[:160]}")
+        ctx.label(f"{t('asset.prefab_variant_own_value')}: {str(item['value'])[:160]}")
+        # Capture the displayed revision. The command rejects a stale view
+        # instead of reverting an override the user has not seen.
+        asset_path = state.file_path
+        def revert(item=item, path=path, asset_path=asset_path, document=document, editing_draft=editing_draft):
+            from Infernux import editor
+            if editing_draft:
+                editor.defer(lambda: core.prefabs.revert_mode_property(
+                    item["object"], item["component"], path, expected_document=document))
+            else:
                 editor.defer(lambda: core.prefabs.revert_asset_property(
                     asset_path, item["object"], item["component"], path, expected_document=document))
-            label = t("asset.prefab_variant_revert")
-            ctx.button(f"{label}##variant.{identity}", revert)
-            ctx.record_semantic_item("button", label, editable, f"asset.prefab.variant.revert.{identity}")
-    finally:
-        ctx.end_disabled()
+        label = t("asset.prefab_variant_revert")
+        ctx.button(f"{label}##variant.{identity}", revert)
+        ctx.record_semantic_item("button", label, True, f"asset.prefab.variant.revert.{identity}")
 
 
 def _count_prefab_nodes(node: dict) -> int:

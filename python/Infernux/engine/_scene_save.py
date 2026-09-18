@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import copy
 from typing import Optional
 
 from Infernux.debug import Debug
@@ -257,11 +258,7 @@ class SceneSaveMixin:
         from Infernux.lib import SceneManager
         from Infernux.engine.prefab_manager import (
             save_prefab_document,
-            serialize_prefab_document,
-            _serialize_prefab_snapshot,
-            _make_prefab_baseline,
         )
-        from Infernux.engine.component_restore import serialize_game_object_document_authoritatively
         from Infernux.engine.interaction import (
             DocumentRegistry,
             document_content_token,
@@ -273,9 +270,6 @@ class SceneSaveMixin:
             Debug.log_warning("No root objects in Prefab Mode scene.")
             return False
 
-        source_canvas_name = ""
-        if isinstance(self.prefab_envelope, dict):
-            source_canvas_name = self.prefab_envelope.get("source_canvas_name", "")
         registry = DocumentRegistry.instance()
         document = registry.get(self.document_id)
         active_ticket_id = str(ticket_id or "")
@@ -288,17 +282,7 @@ class SceneSaveMixin:
             from Infernux.engine.prefab_manager import _read_resolved_prefab_document
             if _read_resolved_prefab_document(self.prefab_mode_path, self._asset_database) != self.prefab_envelope:
                 raise RuntimeError("Prefab source or base changed since opening; reopen before saving")
-            author_snapshot = serialize_game_object_document_authoritatively(roots[0])
-            author_snapshot["prefab_source"] = _make_prefab_baseline(self.prefab_envelope["root_object"])
-            prefab_document, _, _ = _serialize_prefab_snapshot(
-                author_snapshot,
-                source_canvas_name=source_canvas_name,
-                next_local_id=self.prefab_envelope.get("next_local_id", 1),
-                next_component_id=self.prefab_envelope.get("next_component_id", 1),
-            )
-            if "variant" in self.prefab_envelope:
-                from Infernux.engine.prefab_variant import edit_variant_document
-                prefab_document = edit_variant_document(self.prefab_envelope, prefab_document)
+            prefab_document, _, _, _ = self.capture_prefab_mode_document()
             serialized_token = document_content_token(prefab_document)
             registry.capture_save_revision(
                 active_ticket_id,
@@ -339,18 +323,12 @@ class SceneSaveMixin:
             return False
 
         self.prefab_envelope = prefab_document
+        self._prefab_variant_overrides = copy.deepcopy(prefab_document.get("variant", {}).get("property_overrides", []))
         from Infernux.engine.prefab_manager import _link_prefab_hierarchy
         _link_prefab_hierarchy(roots[0], prefab_document["root_object"], roots[0].prefab_guid)
         current_token = None
         try:
-            current_document = serialize_prefab_document(
-                roots[0],
-                source_canvas_name=source_canvas_name,
-                next_local_id=prefab_document["next_local_id"],
-                next_component_id=prefab_document["next_component_id"],
-            )
-            if "variant" in prefab_document:
-                current_document = edit_variant_document(prefab_document, current_document)
+            current_document, _, _, _ = self.capture_prefab_mode_document()
             current_token = document_content_token(current_document)
         except Exception as exc:
             Debug.log_suppressed("prefab_save.current_content_token", exc)

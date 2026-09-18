@@ -58,6 +58,112 @@ def make_asset(scene, path):
     return root
 
 
+@pytest.mark.parametrize("equal_value", [False, True])
+def test_variant_mode_draft_revert_save_and_undo_preserve_inheritance_intent(contents_project, scene, monkeypatch, equal_value):
+    from Infernux.engine.scene_manager import SceneFileManager
+    from Infernux.engine.interaction import DocumentRegistry, SelectionDomain
+    from Infernux.engine.prefab_variant import variant_property_modifications
+
+    core, folder = contents_project
+    database = AssetManager.require_asset_database()
+    core.panels.register_selection_authority("hierarchy", (SelectionDomain.SCENE_OBJECT,))
+    monkeypatch.setattr(SceneFileManager, "_instance", None)
+    files = SceneFileManager()
+    files._asset_database = database
+    base_path, variant_path = folder / "Base.prefab", folder / "Variant.prefab"
+    make_asset(scene, base_path)
+    root = editor.load_prefab_contents(base_path)
+    try:
+        root.get_child(0).layer = 5
+        editor.save_as_prefab_asset(root, variant_path)
+    finally:
+        editor.unload_prefab_contents(root)
+    if equal_value:
+        root = editor.load_prefab_contents(base_path)
+        try:
+            root.get_child(0).layer = 5
+            editor.save_as_prefab_asset(root, base_path)
+        finally:
+            editor.unload_prefab_contents(root)
+    before_bytes = variant_path.read_bytes()
+    base_bytes = base_path.read_bytes()
+    manager = SceneManager.instance()
+    try:
+        assert files.open_prefab_mode(str(variant_path))
+        root = manager.get_active_scene().get_root_objects()[0]
+        root_id, child_id = root.id, root.get_child(0).id
+        draft, *_ = files.capture_prefab_mode_document()
+        patch = next(item for item in variant_property_modifications(draft) if item["path"] == ["layer"])
+        saved_envelope = json.loads(json.dumps(files.prefab_envelope))
+        core.prefabs.revert_mode_property(patch["object"], 0, ("layer",), expected_document=draft)
+        assert variant_path.read_bytes() == before_bytes  # Revert is still a draft.
+        assert files.prefab_envelope == saved_envelope
+        assert not variant_property_modifications(files.capture_prefab_mode_document()[0])
+        assert DocumentRegistry.instance().require(files.document_id).is_dirty
+        assert files._save_prefab()
+        assert not json.loads(variant_path.read_text(encoding="utf8"))["variant"]["property_overrides"]
+        assert base_path.read_bytes() == base_bytes
+        undo = UndoManager.instance()
+        undo.undo()
+        root = manager.get_active_scene().find_by_id(root_id)
+        assert root.get_child(0).id == child_id and root.get_child(0).layer == 5
+        assert variant_property_modifications(files.capture_prefab_mode_document()[0])
+        assert files._save_prefab()
+        assert json.loads(variant_path.read_text(encoding="utf8"))["variant"]["property_overrides"]
+        undo.redo()
+        assert files._save_prefab()
+        assert not json.loads(variant_path.read_text(encoding="utf8"))["variant"]["property_overrides"]
+        assert root.get_py_components()[0].target.game_object.id == child_id
+    finally:
+        if files.is_prefab_mode:
+            files._do_exit_prefab_mode()
+
+
+def test_variant_mode_reference_revert_remaps_ids_and_discard_keeps_source(contents_project, scene, monkeypatch):
+    from Infernux.engine.scene_manager import SceneFileManager
+    from Infernux.engine.interaction import SelectionDomain
+    from Infernux.engine.prefab_variant import variant_property_modifications
+
+    core, folder = contents_project
+    database = AssetManager.require_asset_database()
+    core.panels.register_selection_authority("hierarchy", (SelectionDomain.SCENE_OBJECT,))
+    monkeypatch.setattr(SceneFileManager, "_instance", None)
+    files = SceneFileManager()
+    files._asset_database = database
+    base_path, variant_path = folder / "Base.prefab", folder / "Variant.prefab"
+    make_asset(scene, base_path)
+    root = editor.load_prefab_contents(base_path)
+    try:
+        root.get_py_components()[0].target = None
+        editor.save_as_prefab_asset(root, variant_path)
+    finally:
+        editor.unload_prefab_contents(root)
+    before = variant_path.read_bytes()
+    try:
+        assert files.open_prefab_mode(str(variant_path))
+        root = SceneManager.instance().get_active_scene().get_root_objects()[0]
+        draft, *_ = files.capture_prefab_mode_document()
+        patch = next(p for p in variant_property_modifications(draft) if p['path'] == ['data', 'target'])
+        root.tag = "Unrelated draft edit"
+        with pytest.raises(RuntimeError, match="draft changed"):
+            core.prefabs.revert_mode_property(patch['object'], patch['component'], ('data', 'target'), expected_document=draft)
+        core.prefabs.revert_mode_property(patch['object'], patch['component'], ('data', 'target'))
+        root = SceneManager.instance().get_active_scene().get_root_objects()[0]
+        probe = root.get_py_components()[0]
+        assert probe.target.game_object.id == root.get_child(0).id
+        assert probe.target.component_id == root.get_child(0).get_component('BoxCollider').component_id
+        assert root.tag == "Unrelated draft edit"
+        UndoManager.instance().undo()
+        assert not root.get_py_components()[0].target
+        assert root.tag == "Unrelated draft edit"
+        assert variant_path.read_bytes() == before
+    finally:
+        if files.is_prefab_mode:
+            files._do_exit_prefab_mode()
+    assert not files._prefab_variant_overrides and files._prefab_mode_scene is None
+    assert variant_path.read_bytes() == before
+
+
 def test_variant_asset_property_revert_undo_and_later_inheritance(contents_project, scene):
     from Infernux.engine.prefab_manager import instantiate_prefab, _read_resolved_prefab_document
     from Infernux.engine.prefab_variant import variant_property_modifications

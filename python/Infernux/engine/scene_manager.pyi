@@ -123,6 +123,9 @@ class SceneFileManager:
     ) -> bool:
         """Enter prefab editing mode for *prefab_path*."""
         ...
+    def capture_prefab_mode_document(self) -> tuple[dict, dict, dict, dict]:
+        """Capture draft content plus exact runtime-to-source identity maps."""
+        ...
     def exit_prefab_mode(self) -> bool:
         """Leave prefab editing mode and return to the previous scene."""
         ...
