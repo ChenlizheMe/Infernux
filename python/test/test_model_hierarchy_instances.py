@@ -1,0 +1,224 @@
+"""Imported local geometry and authoring hierarchy share one transform chain."""
+import json
+import base64
+import struct
+from pathlib import Path
+
+import numpy as np
+import pytest
+
+import infernux as inx
+from Infernux.lib import Physics, Vector3
+
+
+@pytest.fixture
+def hierarchy_asset(engine, tmp_path):
+    database = engine.get_asset_database()
+    source = Path(database.assets_root) / tmp_path.name / "Hierarchy.gltf"
+    source.parent.mkdir(parents=True)
+    original = Path(__file__).resolve().parents[2] / "cpp/tests/fixtures/model_hierarchy.gltf"
+    source.write_bytes(original.read_bytes())
+    result = database.import_asset(str(source))
+    assert result, result.error
+    yield database, source, result.guid
+    database.delete_asset(str(source))
+    source.unlink(missing_ok=True)
+    Path(str(source) + '.meta').unlink(missing_ok=True)
+
+
+def world_matrix(obj):
+    return np.asarray(obj.transform.local_to_world_matrix()).reshape((4, 4), order='F')
+
+
+def descendants(root):
+    result = {}
+    def visit(obj):
+        for child in obj.get_children():
+            result[child.name] = child
+            visit(child)
+    visit(root)
+    return result
+
+
+def test_model_hierarchy_preserves_empty_pivots_local_geometry_and_roundtrip(scene, hierarchy_asset):
+    _, _, guid = hierarchy_asset
+    mesh = inx.Mesh.load_guid(guid)
+    root = scene.create_from_model(guid, 'Imported Assembly')
+    objects = descendants(root)
+    assert objects['Empty pivot'].get_parent().name == 'Assembly'
+    assert objects['Upper'].get_parent().name == 'Empty pivot'
+    assert objects['Lower'].get_parent().name == 'Empty pivot'
+    assert objects['Empty pivot'].get_component('MeshRenderer') is None
+    matrices = []
+    for node in mesh.model_nodes:
+        local = np.asarray(node['local_matrix'])
+        matrices.append(local if node['parent_index'] < 0 else matrices[node['parent_index']] @ local)
+        np.testing.assert_allclose(world_matrix(objects[node['name']]), matrices[-1], atol=2e-5)
+        if node['node_group'] < 0:
+            continue
+        renderer = objects[node['name']].get_component('MeshRenderer')._require_cpp_component()
+        assert renderer.serialize_document()['modelNodePath'][-1] == node['name']
+        assert renderer.serialize_document()['meshAssetGuid'] == guid
+        local_positions = np.asarray(renderer.get_positions())
+        for index in range(mesh.submesh_count):
+            sub = mesh.get_submesh(index)
+            if sub['node_group'] != node['node_group']:
+                continue
+            start, count = sub['vertex_start'], sub['vertex_count']
+            points = local_positions[start:start+count]
+            transformed = (matrices[-1] @ np.column_stack([points, np.ones(count)]).T).T[:, :3]
+            np.testing.assert_allclose(transformed, mesh.vertex_buffer['positions'][start:start+count], atol=2e-5)
+            np.testing.assert_allclose(renderer.get_world_bounds(),
+                                      np.r_[transformed.min(axis=0), transformed.max(axis=0)], atol=2e-5)
+    document = scene.serialize_document()
+    assert scene._commit_document(document)
+    restored = next(o for o in scene.get_root_objects() if o.name == 'Imported Assembly')
+    assert len(descendants(restored)) == len(objects)
+    for name, obj in descendants(restored).items():
+        renderer = obj.get_component('MeshRenderer')
+        if renderer:
+            assert renderer.serialize_document()['modelNodePath'][-1] == name
+
+
+def test_model_node_collision_and_parent_edits_use_local_geometry(scene, hierarchy_asset):
+    _, _, guid = hierarchy_asset
+    root = scene.create_from_model(guid)
+    objects = descendants(root)
+    upper = objects['Upper']
+    collider = upper.add_component('MeshCollider')
+    collider.convex = False
+    Physics.sync_transforms()
+    assert not collider.shape_error
+    # Imported triangle under a mirrored, nonuniformly scaled parent.
+    before = world_matrix(upper)
+    point = (before @ np.array([.2, .2, 0, 1]))[:3]
+    hit = Physics.raycast(Vector3(*(point + [0, 0, 5])), Vector3(0, 0, -1), 10)
+    assert hit is not None
+    root.transform.position = Vector3(20, 0, 0)
+    Physics.sync_transforms()
+    assert Physics.raycast(Vector3(*(point + [0, 0, 5])), Vector3(0, 0, -1), 10) is None
+    assert Physics.raycast(Vector3(*(point + [20, 0, 5])), Vector3(0, 0, -1), 10) is not None
+
+
+def test_non_trs_source_is_rejected_without_partial_scene(scene, hierarchy_asset):
+    database, source, _ = hierarchy_asset
+    document = json.loads(source.read_text())
+    document['nodes'][0].pop('translation')
+    document['nodes'][0]['matrix'] = [1, 0, 0, 0, .5, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]
+    source.write_text(json.dumps(document))
+    result = database.import_asset(str(source))
+    assert result, result.error
+    before = scene.serialize_document()
+    with pytest.raises(ValueError, match='shear'):
+        scene.create_from_model(result.guid)
+    assert scene.serialize_document() == before
+
+
+def test_model_creation_is_one_undoable_hierarchy(scene, hierarchy_asset):
+    from Infernux.engine.undo import UndoManager
+    from Infernux.engine.interaction import ClipboardService, SelectionService, SceneObjectCommandService
+    _, _, guid = hierarchy_asset
+    previous = UndoManager._instance
+    manager = UndoManager()
+    try:
+        service = SceneObjectCommandService(SelectionService(), ClipboardService())
+        root = service.create_model_object(guid, is_guid=True, name='Undoable model')
+        assert root is not None
+        count = len(descendants(root))
+        assert count >= 4
+        assert len(manager.action_journal.entries) == 1
+        manager.undo()
+        assert all(o.name != 'Undoable model' for o in scene.get_root_objects())
+        manager.redo()
+        restored = next(o for o in scene.get_root_objects() if o.name == 'Undoable model')
+        assert len(descendants(restored)) == count
+        renderer = descendants(restored)['Upper'].get_component('MeshRenderer')
+        assert renderer.serialize_document()['modelNodePath'][-1] == 'Upper'
+    finally:
+        manager.clear()
+        UndoManager._instance = previous
+
+
+def test_replacing_hierarchy_mesh_clears_local_view(scene, hierarchy_asset):
+    _, _, guid = hierarchy_asset
+    root = scene.create_from_model(guid)
+    renderer = descendants(root)['Upper'].get_component('MeshRenderer')._require_cpp_component()
+    saved = renderer.serialize_document()
+    triangle = inx.Mesh.from_data(np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], np.float32),
+                                 np.array([0, 1, 2], np.uint32))
+    try:
+        renderer.set_mesh_asset_guid(triangle.guid)
+        assert 'modelNodePath' not in renderer.serialize_document()
+        assert renderer.deserialize_document(saved)
+        assert renderer.serialize_document()['modelNodePath'][-1] == 'Upper'
+        renderer.clear_mesh_asset()
+        assert 'modelNodePath' not in renderer.serialize_document()
+    finally:
+        triangle.destroy()
+
+
+def test_geometry_reimport_keeps_instance_edits_and_updates_local_stream(scene, hierarchy_asset, engine, monkeypatch):
+    from Infernux.core.assets import AssetManager
+    database, source, guid = hierarchy_asset
+    monkeypatch.setattr(AssetManager, '_engine', engine)
+    monkeypatch.setattr(AssetManager, '_asset_database', database)
+    root = scene.create_from_model(guid)
+    objects = descendants(root)
+    upper = objects['Upper']
+    upper.transform.local_position = Vector3(7, 8, 9)
+    renderer = upper.get_component('MeshRenderer')._require_cpp_component()
+    before = np.asarray(renderer.get_positions())
+    source_document = json.loads(source.read_text())
+    encoded = source_document['buffers'][0]['uri'].split(',', 1)[1]
+    payload = bytearray(base64.b64decode(encoded))
+    struct.pack_into('<f', payload, 12, 2.0)  # second vertex x: 1 -> 2
+    source_document['buffers'][0]['uri'] = 'data:application/octet-stream;base64,' + base64.b64encode(payload).decode()
+    source_document['accessors'][0]['max'] = [2, 1, 0]
+    source.write_text(json.dumps(source_document))
+    result = AssetManager.reimport_asset(str(source), database=database)
+    assert result, result.error
+    assert result.guid == guid
+    assert not np.array_equal(renderer.get_positions(), before)
+    assert renderer.serialize_document()['modelNodePath'][-1] == 'Upper'
+    assert upper.transform.local_position.x == 7
+    assert upper.get_parent().name == 'Empty pivot'
+
+
+def test_source_reorder_keeps_node_binding_and_missing_node_is_not_replaced(scene, hierarchy_asset, engine, monkeypatch):
+    from Infernux.core.assets import AssetManager
+    database, source, guid = hierarchy_asset
+    monkeypatch.setattr(AssetManager, '_engine', engine)
+    monkeypatch.setattr(AssetManager, '_asset_database', database)
+    root = scene.create_from_model(guid)
+    upper = descendants(root)['Upper'].get_component('MeshRenderer')._require_cpp_component()
+    path = upper.serialize_document()['modelNodePath']
+    before = upper.serialize_document()['nodeGroup']
+    document = json.loads(source.read_text())
+    document['nodes'][1]['children'].reverse()
+    source.write_text(json.dumps(document))
+    assert AssetManager.reimport_asset(str(source), database=database)
+    assert upper.serialize_document()['nodeGroup'] != before
+    assert upper.serialize_document()['modelNodePath'] == path
+    document['nodes'][2]['name'] = 'Renamed Upper'
+    source.write_text(json.dumps(document))
+    assert AssetManager.reimport_asset(str(source), database=database)
+    assert upper.serialize_document()['modelNodePath'] == path
+    assert 'nodeGroup' not in upper.serialize_document()
+    assert upper.get_positions() == []  # must not silently bind the other node
+    document['nodes'][2]['name'] = 'Upper'
+    source.write_text(json.dumps(document))
+    assert AssetManager.reimport_asset(str(source), database=database)
+    assert upper.get_positions()
+
+
+def test_ambiguous_source_node_paths_fail_before_creating_objects(scene, hierarchy_asset):
+    database, source, _ = hierarchy_asset
+    document = json.loads(source.read_text())
+    document['nodes'][3]['name'] = 'Upper'
+    source.write_text(json.dumps(document))
+    result = database.import_asset(str(source))
+    assert result, result.error
+    before = scene.serialize_document()
+    with pytest.raises(ValueError, match='ambiguous'):
+        scene.create_from_model(result.guid)
+    assert scene.serialize_document() == before

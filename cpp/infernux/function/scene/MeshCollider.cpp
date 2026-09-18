@@ -533,7 +533,9 @@ bool MeshCollider::CollectMeshGeometry(std::vector<glm::vec3> &outVertices, std:
             // Match the renderer's selection, not the complete source model.
             // Compact selected vertices as well: convex cooking consumes all
             // supplied positions, including ones not referenced by triangles.
-            const auto geometry = mesh->GetGeometrySnapshot();
+            const auto geometry = mr->GetAssetGeometry();
+            if (!geometry)
+                return false;
             std::unordered_map<uint32_t, uint32_t> selectedVertices;
             const auto append = [&](size_t start, size_t count, const glm::vec3 &pivot) {
                 for (size_t offset = 0; offset < count; ++offset) {

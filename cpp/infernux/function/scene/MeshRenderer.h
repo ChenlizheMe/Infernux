@@ -337,6 +337,15 @@ class MeshRenderer : public Component
     /// @brief Set which node group to render (-1 = all, >= 0 = specific node group).
     void SetNodeGroup(int32_t group);
 
+    /// Imported hierarchy instances consume node-local geometry; ordinary mesh
+    /// assignments retain the merged model-space view. Persisted with the binding.
+    void SetModelNodePath(std::vector<std::string> path);
+    [[nodiscard]] bool IsModelNodeLocal() const noexcept
+    {
+        return !m_modelNodePath.empty();
+    }
+    [[nodiscard]] std::shared_ptr<const MeshGeometry> GetAssetGeometry() const;
+
     [[nodiscard]] bool CastsShadows() const
     {
         return m_castShadows;
@@ -436,6 +445,7 @@ class MeshRenderer : public Component
     /// Populate empty slots and refresh untouched imported defaults. Explicit
     /// assignments and authored material edits survive model reimport.
     void ApplyEmbeddedMaterialsFromMesh(const std::shared_ptr<InxMesh> &mesh);
+    void ResolveModelNodeBinding();
     [[nodiscard]] bool IsUnmodifiedEmbeddedMaterial(size_t slot) const;
 
     MeshRef m_mesh;
@@ -490,6 +500,7 @@ class MeshRenderer : public Component
 
     int32_t m_submeshIndex = -1;       // -1 = render all submeshes, >= 0 = single submesh
     int32_t m_nodeGroup = -1;          // -1 = render all node groups, >= 0 = specific node group
+    std::vector<std::string> m_modelNodePath;
     glm::vec3 m_meshPivotOffset{0.0f}; // Pre-transform to re-center submesh geometry
 
     bool m_castShadows = true;

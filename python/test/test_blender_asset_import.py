@@ -72,6 +72,7 @@ def test_modern_blend_worker_import_reimport_and_failed_publication(engine, tmp_
         assert guid
         mesh = registry.load_mesh(str(source))
         assert mesh and mesh.vertex_count > 0 and mesh.submesh_count == 1
+        assert mesh.name == source.stem
         assert source.read_bytes() == before
         assert database.last_refresh_worker_importer_count > 0
         staging = Path(database.project_root) / "Library/ModelImport"

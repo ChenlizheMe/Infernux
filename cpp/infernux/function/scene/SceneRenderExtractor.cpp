@@ -516,11 +516,17 @@ void SceneRenderExtractor::EmitDrawCallsForRenderable(DrawCallResult &result, co
         auto meshPtr = assetRef.Get();
         if (!meshPtr)
             return;
-        const auto stampAssetIdentity = [&assetRef](DrawCall &drawCall) {
+        const auto stampAssetIdentity = [&assetRef, renderer](DrawCall &drawCall) {
             drawCall.meshAssetGuid = assetRef.GetGuid();
+            // GPU cache identity includes the geometry view, not just its source
+            // asset: a merged preview may coexist with local hierarchy instances.
+            if (renderer->IsModelNodeLocal())
+                drawCall.meshAssetGuid += ":node-local";
             drawCall.meshRuntimeVersion = assetRef.GetCachedVersion();
         };
-        const auto geometry = meshPtr->GetGeometrySnapshot();
+        const auto geometry = renderer->GetAssetGeometry();
+        if (!geometry)
+            return;
         const std::vector<Vertex> *objVerticesPtr = &geometry->vertices;
         const std::vector<uint32_t> *objIndicesPtr = &geometry->indices;
         const std::vector<SubMesh> *subMeshesPtr = &geometry->subMeshes;

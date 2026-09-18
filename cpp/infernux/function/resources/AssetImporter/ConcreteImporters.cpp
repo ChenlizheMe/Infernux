@@ -625,6 +625,8 @@ ImportArtifact ModelImporter::Import(const ImportRequest &request) const
     if (!imported.mesh)
         throw std::logic_error("ModelImporter detailed source import returned no runtime mesh");
     imported.mesh->SetFilePath(request.sourcePath);
+    if (blender)
+        imported.mesh->SetName(FromFsPath(ToFsPath(request.sourcePath).stem()));
     if (imported.skinnedMesh)
         imported.skinnedMesh->sourcePath = request.sourcePath;
 

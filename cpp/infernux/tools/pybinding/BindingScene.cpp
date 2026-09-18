@@ -47,12 +47,15 @@
 #include <functional>
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
+#define GLM_ENABLE_EXPERIMENTAL
+#include <glm/gtx/matrix_decompose.hpp>
 #include <mutex>
 #include <optional>
 #include <pybind11/functional.h>
 #include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string_view>
@@ -602,6 +605,71 @@ static GameObject *CreateModelObject(Scene *scene, const std::string &guid, cons
     uint32_t nodeGroupCount = mesh->GetNodeGroupCount();
     const auto &nodeNames = mesh->GetNodeNames();
     const bool useSkinnedRenderer = ShouldUseSkinnedRenderer(guid, mesh);
+
+    const auto &nodes = mesh->GetModelNodes();
+    if (!useSkinnedRenderer && mesh->GetModelSourceGeometry() && !nodes.empty()) {
+        struct Pose
+        {
+            glm::vec3 position, scale;
+            glm::quat rotation;
+        };
+        std::vector<Pose> poses;
+        poses.reserve(nodes.size());
+        std::vector<std::vector<std::string>> paths;
+        std::set<std::vector<std::string>> geometryPaths;
+        // Validate all local transforms before changing the scene. A sheared
+        // source cannot be silently approximated by the engine's TRS Transform.
+        for (const auto &node : nodes) {
+            auto path = node.parentIndex < 0 ? std::vector<std::string>{} : paths[node.parentIndex];
+            path.push_back(node.name);
+            if (node.nodeGroup >= 0 && !geometryPaths.insert(path).second)
+                throw std::invalid_argument("Model geometry node path is ambiguous: " + node.name);
+            paths.push_back(std::move(path));
+            Pose pose;
+            glm::vec3 skew;
+            glm::vec4 perspective;
+            if (!glm::decompose(node.localTransform, pose.scale, pose.rotation, pose.position, skew, perspective))
+                throw std::invalid_argument("Model node has a non-decomposable transform: " + node.name);
+            const glm::mat4 rebuilt = glm::translate(glm::mat4(1), pose.position) *
+                                      glm::mat4_cast(pose.rotation) * glm::scale(glm::mat4(1), pose.scale);
+            for (int column = 0; column < 4; ++column)
+                for (int row = 0; row < 4; ++row)
+                    if (std::abs(rebuilt[column][row] - node.localTransform[column][row]) >
+                        1e-5f * std::max(1.0f, std::abs(node.localTransform[column][row])))
+                        throw std::invalid_argument("Model node shear requires baking before instantiation: " + node.name);
+            poses.push_back(pose);
+        }
+        GameObject *container = scene->CreateGameObject(objName);
+        if (!container)
+            return nullptr;
+        try {
+            std::vector<GameObject *> objects;
+            objects.reserve(nodes.size());
+            for (size_t index = 0; index < nodes.size(); ++index) {
+                const auto &node = nodes[index];
+                GameObject *child = scene->CreateGameObject(node.name);
+                if (!child)
+                    throw std::runtime_error("Cannot create imported model node");
+                child->GetTransform()->SetParent(
+                    (node.parentIndex < 0 ? container : objects[node.parentIndex])->GetTransform(), false);
+                child->GetTransform()->SetLocalPosition(poses[index].position);
+                child->GetTransform()->SetLocalRotation(poses[index].rotation);
+                child->GetTransform()->SetLocalScale(poses[index].scale);
+                objects.push_back(child);
+                if (node.nodeGroup >= 0) {
+                    auto *renderer = child->AddComponent<MeshRenderer>();
+                    renderer->SetNodeGroup(node.nodeGroup);
+                    renderer->SetMeshAsset(guid, mesh);
+                    renderer->SetModelNodePath(paths[index]);
+                }
+            }
+        } catch (...) {
+            scene->DestroyGameObject(container);
+            scene->ProcessPendingDestroys();
+            throw;
+        }
+        return container;
+    }
 
     if (nodeGroupCount <= 1) {
         // Single node — one object with the mesh asset.
@@ -1268,9 +1336,9 @@ void RegisterSceneBindings(py::module_ &m)
             [](const MeshRenderer &mr) -> py::list {
                 py::list result;
                 if (mr.HasMeshAsset()) {
-                    auto m = mr.GetMeshAssetRef().Get();
+                    auto m = mr.GetAssetGeometry();
                     if (m) {
-                        for (const auto &v : m->GetVertices())
+                        for (const auto &v : m->vertices)
                             result.append(py::make_tuple(v.pos.x, v.pos.y, v.pos.z));
                     }
                 } else if (mr.HasInlineMesh()) {
@@ -1285,9 +1353,9 @@ void RegisterSceneBindings(py::module_ &m)
             [](const MeshRenderer &mr) -> py::list {
                 py::list result;
                 if (mr.HasMeshAsset()) {
-                    auto m = mr.GetMeshAssetRef().Get();
+                    auto m = mr.GetAssetGeometry();
                     if (m) {
-                        for (const auto &v : m->GetVertices())
+                        for (const auto &v : m->vertices)
                             result.append(py::make_tuple(v.normal.x, v.normal.y, v.normal.z));
                     }
                 } else if (mr.HasInlineMesh()) {
@@ -1302,9 +1370,9 @@ void RegisterSceneBindings(py::module_ &m)
             [](const MeshRenderer &mr) -> py::list {
                 py::list result;
                 if (mr.HasMeshAsset()) {
-                    auto m = mr.GetMeshAssetRef().Get();
+                    auto m = mr.GetAssetGeometry();
                     if (m) {
-                        for (const auto &v : m->GetVertices())
+                        for (const auto &v : m->vertices)
                             result.append(py::make_tuple(v.texCoord.x, v.texCoord.y));
                     }
                 } else if (mr.HasInlineMesh()) {
@@ -1319,9 +1387,9 @@ void RegisterSceneBindings(py::module_ &m)
             [](const MeshRenderer &mr) -> py::list {
                 py::list result;
                 if (mr.HasMeshAsset()) {
-                    auto m = mr.GetMeshAssetRef().Get();
+                    auto m = mr.GetAssetGeometry();
                     if (m) {
-                        for (uint32_t idx : m->GetIndices())
+                        for (uint32_t idx : m->indices)
                             result.append(idx);
                     }
                 } else if (mr.HasInlineMesh()) {
