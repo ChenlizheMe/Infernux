@@ -147,6 +147,26 @@ void RejectPathOnlyReference(const std::string &guid, const std::string &pathHin
 
 } // namespace
 
+ImportArtifact PrefabImporter::Import(const ImportRequest &request) const
+{
+    std::ifstream stream(ToFsPath(request.sourcePath));
+    if (!stream)
+        throw std::runtime_error("Cannot open Prefab source: " + request.sourcePath);
+    const auto document = nlohmann::json::parse(stream);
+    if (!document.is_object() || !document.contains("root_object") || !document["root_object"].is_object())
+        throw std::runtime_error("Prefab source requires a root_object: " + request.sourcePath);
+    ImportArtifact artifact(request.metadata);
+    artifact.dependenciesAuthoritative = true;
+    const auto variant = document.find("variant");
+    if (variant != document.end()) {
+        if (!variant->is_object() || !variant->contains("guid") || !(*variant)["guid"].is_string() ||
+            (*variant)["guid"].get<std::string>().empty())
+            throw std::runtime_error("Prefab Variant requires a base GUID: " + request.sourcePath);
+        artifact.dependencies.push_back((*variant)["guid"].get<std::string>());
+    }
+    return artifact;
+}
+
 ImportArtifact RenderTextureImporter::Import(const ImportRequest &request) const
 {
     std::ifstream stream(ToFsPath(request.sourcePath));

@@ -390,11 +390,23 @@ class ScenePrefabMixin:
             scene = SceneManager.instance().get_active_scene()
         if scene is None or not self._asset_database:
             return
+        self._sync_prefab_scenes((scene,))
 
-        roots = _get_scene_root_objects(scene)
-        if not roots:
+    def sync_prefab_dependents(self, source_guid):
+        """Publish an external source revision into affected open worlds only."""
+        from Infernux.engine.prefab_variant import dependent_variant_guids
+        from Infernux.engine.prefab_overrides import _loaded_prefab_scenes
+        from Infernux.lib import SceneManager
+
+        if not source_guid or self._asset_database is None:
             return
+        affected = {source_guid, *dependent_variant_guids(source_guid, self._asset_database)}
+        editing = SceneManager.instance().get_active_scene() if self.is_prefab_mode else None
+        scenes = [scene for scene in _loaded_prefab_scenes() if scene is not editing
+                  and any(obj.prefab_root and obj.prefab_guid in affected for obj in scene.get_all_objects())]
+        self._sync_prefab_scenes(scenes, affected_guids=affected)
 
+    def _sync_prefab_scenes(self, scenes, *, affected_guids=None):
         from Infernux.lib import GameObject
         from Infernux.engine.component_restore import (
             serialize_game_object_document_authoritatively,
@@ -405,37 +417,56 @@ class ScenePrefabMixin:
             resolve_scene_prefab_documents, _publish_applied_prefab,
         )
 
-        def load_source(guid):
-            path = self._asset_database.get_path_from_guid(guid)
-            if not path:
-                raise PrefabDocumentError(f"Prefab source cannot be resolved: {guid}")
-            return _read_resolved_prefab_document(path, self._asset_database)["root_object"]
+        sources = {}
 
-        # Resolve the resulting tree, not a GUID list captured before merging:
-        # an outer source update can introduce previously unseen nested sources.
-        # Cook and editor share the same merge; only ID allocation differs.
-        before = {"objects": [serialize_game_object_document_authoritatively(root) for root in roots]}
-        after = resolve_scene_prefab_documents(
-            before, load_source, reserve_ids=GameObject._reserve_document_ids,
-        )
-        prepared_updates = []
+        def load_source(guid):
+            if guid not in sources:
+                path = self._asset_database.get_path_from_guid(guid)
+                if not path:
+                    raise PrefabDocumentError(f"Prefab source cannot be resolved: {guid}")
+                sources[guid] = _read_resolved_prefab_document(path, self._asset_database)["root_object"]
+            return sources[guid]
+
+        prepared_updates, originals, changed_worlds = [], [], []
         try:
-            for obj, old, new in zip(roots, before["objects"], after["objects"]):
-                if old == new:
-                    continue
-                prepared = preflight_game_object_python_components(
-                    new, self._asset_database, preserve_document_ids=True, reference_scene=scene,
+            for scene in scenes:
+                roots = _get_scene_root_objects(scene)
+                before = {"objects": [serialize_game_object_document_authoritatively(root) for root in roots]}
+                after = resolve_scene_prefab_documents(
+                    before, load_source, reserve_ids=GameObject._reserve_document_ids, affected_guids=affected_guids,
                 )
-                prepared_updates.append((obj, new, prepared))
+                for obj, old, new in zip(roots, before["objects"], after["objects"]):
+                    if old == new:
+                        continue
+                    prepared = preflight_game_object_python_components(
+                        new, self._asset_database, preserve_document_ids=True, reference_scene=scene,
+                        prefer_loaded_types=True,
+                    )
+                    originals.append((obj, old, scene))
+                    prepared_updates.append((obj, new, prepared))
+                    changed_worlds.append(scene.world_id)
         except Exception:
             for _obj, _document, prepared in prepared_updates:
                 prepared.discard()
             raise
         if not _publish_applied_prefab(prepared_updates):
+            rollback = []
+            try:
+                for obj, old, scene in originals:
+                    rollback.append((obj, old, preflight_game_object_python_components(
+                        old, self._asset_database, preserve_document_ids=True, reference_scene=scene,
+                        prefer_loaded_types=True,
+                    )))
+            except Exception:
+                for _obj, _document, prepared in rollback:
+                    prepared.discard()
+                raise
+            if not _publish_applied_prefab(rollback):
+                raise RuntimeError("Failed to restore scene Prefab instances after publication failure")
             raise RuntimeError("Failed to synchronize scene Prefab instances")
-        if prepared_updates:
-            from Infernux.engine.interaction import DocumentRegistry
-            document_id = self.document_id_for_scene(scene)
+        from Infernux.engine.interaction import DocumentRegistry
+        for world_id in dict.fromkeys(changed_worlds):
+            document_id = self.document_id_for_scene(world_id)
             if document_id:
                 DocumentRegistry.instance().mark_changed(document_id)
 

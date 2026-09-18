@@ -1192,6 +1192,12 @@ class ResourceChangeHandler(FileSystemEventHandler):
                     manager.notify_script_catalog_changed(path, "modified")
         elif path.lower().endswith((".vert", ".frag")):
             self._notify_shader_reloaded(path)
+        elif path.lower().endswith(".prefab"):
+            from Infernux.engine.scene_manager import SceneFileManager
+
+            files = SceneFileManager.instance()
+            if files is not None:
+                files.sync_prefab_dependents(str(result.guid))
 
     def _commit_deleted(self, path: str, *, guid_hint: str = "") -> None:
         from Infernux.core.assets import AssetManager

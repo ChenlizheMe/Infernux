@@ -1417,7 +1417,7 @@ def test_asset_index_reuses_unchanged_assets_and_recovers_from_corruption(engine
 
         index_path = Path(asset_db.asset_index_path)
         index_document = json.loads(index_path.read_text(encoding="utf-8"))
-        assert set(index_document) == {"project_root", "entries"}
+        assert set(index_document) == {"project_root", "import_revision", "entries"}
 
         query_generation = asset_db.query_generation
         catalog_generation = asset_db.catalog_generation
@@ -1449,12 +1449,14 @@ def test_asset_index_reuses_unchanged_assets_and_recovers_from_corruption(engine
         assert asset_db.last_refresh_reused_count >= len(paths) - 1
         assert asset_db.get_guid_from_path(str(paths[5])) == original_guids[paths[5]]
 
-        index_path.write_text('{"legacy": true}', encoding="utf-8")
+        legacy = json.loads(index_path.read_text(encoding="utf-8"))
+        del legacy["import_revision"]
+        index_path.write_text(json.dumps(legacy), encoding="utf-8")
         asset_db.refresh()
         assert asset_db.last_refresh_imported_count >= len(paths)
         assert {path: asset_db.get_guid_from_path(str(path)) for path in paths} == original_guids
         rebuilt = json.loads(index_path.read_text(encoding="utf-8"))
-        assert set(rebuilt) == {"project_root", "entries"}
+        assert set(rebuilt) == {"project_root", "import_revision", "entries"}
     finally:
         for path in paths:
             path.unlink(missing_ok=True)

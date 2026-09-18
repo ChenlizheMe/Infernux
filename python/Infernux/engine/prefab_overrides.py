@@ -1048,7 +1048,7 @@ def _merge_prefab_instance_document(runtime_document, local_document, object_ids
     )
 
 
-def resolve_scene_prefab_documents(document: dict, load_source, *, reserve_ids=None) -> dict:
+def resolve_scene_prefab_documents(document: dict, load_source, *, reserve_ids=None, affected_guids=None) -> dict:
     """Resolve a saved scene without instantiating objects or running scripts.
 
     Cook IDs are deterministic and allocated above every ID in this document,
@@ -1081,9 +1081,9 @@ def resolve_scene_prefab_documents(document: dict, load_source, *, reserve_ids=N
 
     sources = {}
 
-    def resolve(node, ancestry=()):
+    def resolve(node, ancestry=(), resolve_all=False):
         guid = node.get("prefab_guid")
-        if guid and node.get("prefab_root"):
+        if guid and node.get("prefab_root") and (resolve_all or affected_guids is None or guid in affected_guids):
             if guid in ancestry:
                 from Infernux.engine.prefab_manager import PrefabDocumentError
                 raise PrefabDocumentError("Nested Prefab source cycle: " + " -> ".join((*ancestry, guid)))
@@ -1105,7 +1105,8 @@ def resolve_scene_prefab_documents(document: dict, load_source, *, reserve_ids=N
                 node = _merge_prefab_instance_document(
                     node, local, object_ids, updated_root, guid, component_ids=component_ids, reserve_ids=reserve_ids,
                 )
-        node["children"] = [resolve(child, ancestry) for child in node["children"]]
+            resolve_all = True
+        node["children"] = [resolve(child, ancestry, resolve_all) for child in node["children"]]
         return node
 
     result["objects"] = [resolve(root) for root in result["objects"]]

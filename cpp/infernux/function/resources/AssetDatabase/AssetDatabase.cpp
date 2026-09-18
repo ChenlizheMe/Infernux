@@ -794,6 +794,7 @@ void AssetDatabase::Initialize(const std::string &projectRoot)
     m_importerRegistry.Register(std::make_unique<ScriptImporter>());
     m_importerRegistry.Register(std::make_unique<AudioImporter>());
     m_importerRegistry.Register(std::make_unique<ModelImporter>());
+    m_importerRegistry.Register(std::make_unique<PrefabImporter>());
 
     m_ownerThread = std::this_thread::get_id();
     m_initialized = true;

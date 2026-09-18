@@ -769,6 +769,118 @@ def test_variant_resolver_rejects_missing_and_cyclic_bases(contents_project, sce
         assert variant_path.read_bytes() == before
 
 
+def test_prefab_importer_owns_base_edges_and_save_does_not_scan_unrelated_assets(contents_project, scene):
+    from Infernux.lib import AssetDependencyGraph
+    from Infernux.engine.prefab_variant import dependent_variant_guids
+
+    _, folder = contents_project
+    database = AssetManager.require_asset_database()
+    base_path, variant_path, other_path = [folder / name for name in ("Base.prefab", "Variant.prefab", "Other.prefab")]
+    make_asset(scene, base_path)
+    make_asset(scene, other_path)
+    loaded = editor.load_prefab_contents(base_path)
+    try:
+        editor.save_as_prefab_asset(loaded, variant_path)
+    finally:
+        editor.unload_prefab_contents(loaded)
+    base_guid = database.get_guid_from_path(str(base_path))
+    variant_guid = database.get_guid_from_path(str(variant_path))
+    other_guid = database.get_guid_from_path(str(other_path))
+    graph = AssetDependencyGraph.instance()
+    assert graph.get_dependencies(variant_guid) == {base_guid}
+    assert dependent_variant_guids(base_guid, database) == (variant_guid,)
+    other_original = other_path.read_bytes()
+    other_path.write_text("unrelated invalid author document", encoding="utf8")
+    try:
+        loaded = editor.load_prefab_contents(base_path)
+        try:
+            loaded.get_child(0).layer = 4
+            editor.save_as_prefab_asset(loaded, base_path)
+        finally:
+            editor.unload_prefab_contents(loaded)
+    finally:
+        other_path.write_bytes(other_original)
+    document = json.loads(variant_path.read_text(encoding="utf8"))
+    document["variant"]["guid"] = other_guid
+    variant_path.write_text(json.dumps(document), encoding="utf8")
+    assert AssetManager.reimport_asset(str(variant_path), database=database)
+    assert graph.get_dependencies(variant_guid) == {other_guid}
+    assert dependent_variant_guids(base_guid, database) == ()
+    del document["variant"]
+    variant_path.write_text(json.dumps(document), encoding="utf8")
+    assert AssetManager.reimport_asset(str(variant_path), database=database)
+    assert graph.get_dependencies(variant_guid) == set()
+
+
+@pytest.mark.parametrize("interrupt_publish", [False, True])
+def test_external_prefab_event_updates_loaded_variants_without_writing_their_sources(
+        contents_project, scene, engine, monkeypatch, interrupt_publish):
+    from Infernux.engine.scene_manager import SceneFileManager
+    from Infernux.engine.resources_manager import ResourceChangeHandler
+    from Infernux.engine.prefab_manager import instantiate_prefab
+    from Infernux.engine.interaction import DocumentRegistry
+    from Infernux.engine import prefab_overrides
+
+    _, folder = contents_project
+    database = AssetManager.require_asset_database()
+    monkeypatch.setattr(SceneFileManager, "_instance", None)
+    files = SceneFileManager()
+    files._asset_database = database
+    registry = DocumentRegistry.instance()
+    base_path, variant_path = folder / "Base.prefab", folder / "Variant.prefab"
+    make_asset(scene, base_path)
+    loaded = editor.load_prefab_contents(base_path)
+    try:
+        editor.save_as_prefab_asset(loaded, variant_path)
+    finally:
+        editor.unload_prefab_contents(loaded)
+    guid = database.get_guid_from_path(str(variant_path))
+    manager = SceneManager.instance()
+    extra = manager.create_scene("External update second scene")
+    files.register_loaded_scene(extra, "")
+    try:
+        instances = [instantiate_prefab(file_path=str(variant_path), guid=guid, scene=world,
+                                        asset_database=database) for world in (scene, extra)]
+        instances[-1].get_child(0).name = "Local name"
+        documents = [obj.serialize_document() for obj in instances]
+        owners = [files.document_id_for_scene(world) for world in (scene, extra)]
+        revisions = [registry.require(owner).revision for owner in owners]
+        variant_original = variant_path.read_bytes()
+        base = json.loads(base_path.read_text(encoding="utf8"))
+        base["root_object"]["children"][0]["layer"] = 9
+        base_path.write_text(json.dumps(base), encoding="utf8")
+        handler = ResourceChangeHandler(engine, project_path=database.project_root)
+        if interrupt_publish:
+            publish = prefab_overrides._publish_applied_prefab
+            attempts = []
+
+            def interrupted(prepared):
+                if not attempts:
+                    attempts.append(True)
+                    assert publish(prepared[:1])
+                    for _, _, plan in prepared[1:]:
+                        plan.discard()
+                    return False
+                return publish(prepared)
+
+            with monkeypatch.context() as patch:
+                patch.setattr(prefab_overrides, "_publish_applied_prefab", interrupted)
+                with pytest.raises(RuntimeError, match="synchronize"):
+                    handler._commit_modified(str(base_path))
+            assert [obj.serialize_document() for obj in instances] == documents
+            assert [registry.require(owner).revision for owner in owners] == revisions
+            files.sync_prefab_dependents(database.get_guid_from_path(str(base_path)))
+        else:
+            handler._commit_modified(str(base_path))
+        assert [obj.get_child(0).layer for obj in instances] == [9, 9]
+        assert instances[-1].get_child(0).name == "Local name"
+        assert [registry.require(owner).revision for owner in owners] == [value + 1 for value in revisions]
+        assert variant_path.read_bytes() == variant_original
+    finally:
+        files.unregister_loaded_scene(extra)
+        manager.unload_scene(extra)
+
+
 @pytest.mark.parametrize("interrupt_write", [False, True])
 def test_prefab_mode_save_updates_variant_assets_and_suspended_and_additive_worlds(
         contents_project, scene, monkeypatch, interrupt_write):

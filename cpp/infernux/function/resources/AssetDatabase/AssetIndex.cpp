@@ -14,6 +14,10 @@ namespace infernux
 namespace
 {
 
+// Revision 1 includes authoritative Prefab Variant dependencies. Older
+// catalogs cannot be reused even when the source timestamps are unchanged.
+constexpr int kImportRevision = 1;
+
 void RequireExactFields(const nlohmann::json &object, std::initializer_list<const char *> fields,
                         const std::string &location)
 {
@@ -73,6 +77,10 @@ bool AssetIndex::Load(const std::string &path, const std::string &normalizedProj
         Reset(normalizedProjectRoot);
         return false;
     }
+    if (!document.contains("import_revision") || document["import_revision"] != kImportRevision) {
+        Reset(normalizedProjectRoot);
+        return false;
+    }
     DeserializeDocument(document, normalizedProjectRoot);
     return true;
 }
@@ -127,12 +135,14 @@ nlohmann::json AssetIndex::SerializeDocument() const
                            {"metadata", entry->metadata.SerializeDocument()}});
     }
 
-    return {{"project_root", m_projectRoot}, {"entries", std::move(entries)}};
+    return {{"project_root", m_projectRoot}, {"import_revision", kImportRevision}, {"entries", std::move(entries)}};
 }
 
 void AssetIndex::DeserializeDocument(const nlohmann::json &document, const std::string &normalizedProjectRoot)
 {
-    RequireExactFields(document, {"project_root", "entries"}, "AssetIndex");
+    RequireExactFields(document, {"project_root", "import_revision", "entries"}, "AssetIndex");
+    if (document["import_revision"] != kImportRevision)
+        throw std::invalid_argument("AssetIndex import revision does not match");
     if (!document["project_root"].is_string() || document["project_root"].get<std::string>() != normalizedProjectRoot)
         throw std::invalid_argument("AssetIndex project_root does not match");
     if (!document["entries"].is_array())

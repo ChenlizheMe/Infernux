@@ -52,20 +52,12 @@ def dependent_variant_updates(source_path, updated, database):
 
     source_guid = str(database.get_guid_from_path(source_path))
     definitions, paths = {}, {}
-    for guid in database.get_all_guids():
+    for guid in dependent_variant_guids(source_guid, database):
         path = database.get_path_from_guid(guid)
-        if guid == source_guid or not path or not path.lower().endswith(".prefab"):
-            continue
         document = _read_prefab_document(path)
         if "variant" in document:
             paths[guid] = path
             definitions[guid] = variant_definition(document)
-    affected = {source_guid}
-    while True:
-        incoming = {guid for guid, definition in definitions.items() if definition["base"]["guid"] in affected}
-        if incoming.issubset(affected):
-            break
-        affected.update(incoming)
     validate_variant_ancestry(updated, source_guid, database)
 
     def load_source(guid):
@@ -73,9 +65,26 @@ def dependent_variant_updates(source_path, updated, database):
             return {key: value for key, value in updated.items() if key != "variant"}
         raise PrefabDocumentError(f"Unexpected Variant dependency outside the update graph: {guid}")
 
-    staged = rebase_variant_graph({guid: definition for guid, definition in definitions.items()
-                                  if guid in affected}, load_source)
+    staged = rebase_variant_graph(definitions, load_source)
     return {source_path: updated, **{paths[guid]: variant_document(definition) for guid, definition in staged.items()}}
+
+
+def dependent_variant_guids(source_guid, database):
+    """The importer owns durable base edges; never scan the project on save."""
+    from Infernux.lib import AssetDependencyGraph
+
+    graph = AssetDependencyGraph.instance()
+    seen, pending, result = {source_guid}, [source_guid], []
+    while pending:
+        for guid in sorted(graph.get_dependents(pending.pop())):
+            if guid in seen:
+                continue
+            seen.add(guid)
+            path = database.get_path_from_guid(guid)
+            if path and path.lower().endswith(".prefab"):
+                result.append(guid)
+                pending.append(guid)
+    return tuple(result)
 
 
 def validate_variant_ancestry(document, guid, database):

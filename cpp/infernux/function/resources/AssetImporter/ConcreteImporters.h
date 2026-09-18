@@ -15,6 +15,18 @@ namespace infernux
 {
 
 // ==========================================================================
+// PrefabImporter
+// ==========================================================================
+
+class PrefabImporter final : public AssetImporter
+{
+  public:
+    [[nodiscard]] ResourceType GetResourceType() const override { return ResourceType::DefaultText; }
+    [[nodiscard]] std::vector<std::string> GetSupportedExtensions() const override { return {".prefab"}; }
+    [[nodiscard]] ImportArtifact Import(const ImportRequest &request) const override;
+};
+
+// ==========================================================================
 // TextureImporter
 // ==========================================================================
 
