@@ -62,15 +62,13 @@ def edit_obstacle():
 从菜单、命令面板或 Inspector 按钮调用时，将整个批量操作交给编辑器已有的延迟任务，避免在界面绘制期间发布脚本类型：
 
 ```python
-from Infernux.engine.deferred_task import DeferredTaskRunner
-
 def on_edit_command(context):
-    accepted = DeferredTaskRunner.instance().submit(
-        "编辑机关 Prefab", [("修改并保存", 0.5, edit_obstacle)],
-    )
+    accepted = inx.editor.defer(edit_obstacle, description="编辑机关 Prefab")
     if not accepted:
         raise RuntimeError("请等待当前编辑器任务完成")
 ```
+
+已有编辑器任务运行时，`defer` 返回 `False`，不会当场执行或自动重试。注册这类命令时使用 `creates_user_action=False`，实际的作者操作由延迟执行的批次自行记录。
 
 `save_as_prefab_asset` 返回资产路径。另存的新文件必须位于 `Assets` 或 `Packages` 内，父目录必须存在；已有文件只能由从该文件加载的内容覆盖。它保留嵌套 Prefab、内部引用和稳定源身份，不会把普通场景物体自动连接为实例，也不创建 Variant。需要“创建并连接”时仍用 `create_prefab`。
 

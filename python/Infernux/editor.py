@@ -30,6 +30,7 @@ __all__ = (
     "load_data_asset", "set_data_asset_fields", "save_data_asset",
     "add_component",
     "PropertyModification", "get_property_modifications", "is_property_override",
+    "defer",
 )
 
 
@@ -59,6 +60,20 @@ def edit_scene(description: str):
     return _authoring_core().scene_objects.user_action(description)
 
 
+def defer(callback, *, description: str = "Editor task") -> bool:
+    """Run a batch at the next editor owner safe point, outside GUI drawing.
+
+    Returns False while another editor task is active. The callback is not
+    executed inline or retried, and owns its individual authoring/Undo calls.
+    """
+    _authoring_core()
+    if not callable(callback):
+        raise TypeError("Editor deferred callback must be callable")
+    from .engine.deferred_task import DeferredTaskRunner
+
+    return DeferredTaskRunner.instance().submit(description, [(description, 0.5, callback)])
+
+
 def create_game_object(name: str = "GameObject", *, kind: str = "empty", parent=None, configure=None):
     """Create through Hierarchy; initialize inside configure for one Undo record."""
     _authoring_core()
@@ -81,7 +96,7 @@ def load_prefab_contents(path):
     """Load into an isolated Scene; release the returned root in ``finally``.
 
     Like scene loading, run batch authoring at an owner safe point (the
-    Editor's DeferredTaskRunner), not inside a GUI draw callback. Resolving an
+    public editor.defer entry), not inside a GUI draw callback. Resolving an
     unloaded/missing script may need to publish a runtime type descriptor.
     Loaded contents do not run Awake/Start/Update or join rendering/physics.
     Serialization callbacks still run. Mutations of this temporary tree are

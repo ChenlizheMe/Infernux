@@ -85,15 +85,15 @@ through the existing editor task runner. Loading scripts during a GUI draw can
 require a type publication, which belongs at an owner safe point:
 
 ```python
-from Infernux.engine.deferred_task import DeferredTaskRunner
-
 def on_edit_command(context):
-    accepted = DeferredTaskRunner.instance().submit(
-        "Edit obstacle Prefab", [("Edit and save", 0.5, edit_obstacle)],
-    )
+    accepted = inx.editor.defer(edit_obstacle, description="Edit obstacle Prefab")
     if not accepted:
         raise RuntimeError("Wait for the current editor task to finish")
 ```
+
+`defer` returns `False` while another editor task is active. It never calls the
+callback inline or retries it. Register the command with
+`creates_user_action=False`; the deferred batch records its own authoring actions.
 
 `save_as_prefab_asset` returns the asset path. New files must be under `Assets`
 or `Packages`, with an existing parent directory. To overwrite an existing file,

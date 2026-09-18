@@ -71,6 +71,31 @@ def test_public_create_group_undo_redo_preserves_configuration(authoring, scene)
     assert scene.find_by_id(child_id).transform.local_position.x == 1
 
 
+def test_public_defer_uses_single_editor_task_and_preserves_authoring_history(authoring, scene, monkeypatch):
+    from Infernux.engine.deferred_task import DeferredTaskRunner
+
+    monkeypatch.setattr(DeferredTaskRunner, "_instance", None)
+    runner = DeferredTaskRunner.instance()
+    created = []
+    try:
+        with pytest.raises(TypeError, match="callable"):
+            editor.defer(None)
+        assert editor.defer(lambda: created.append(editor.create_game_object("Delayed authoring")))
+        assert created == []
+        assert not editor.defer(lambda: pytest.fail("Busy submission must not run"))
+        runner.tick()
+        assert len(created) == 1 and not runner.is_busy
+        identity = created[0].id
+        runner.tick()
+        assert len(created) == 1
+        editor.undo(defer=False)
+        assert scene.find_by_id(identity) is None
+        editor.redo(defer=False)
+        assert scene.find_by_id(identity).name == "Delayed authoring"
+    finally:
+        runner.cancel()
+
+
 def test_public_create_failed_initializer_leaves_no_object_or_history(authoring, scene):
     before = [obj.id for obj in scene.get_all_objects()]
 
