@@ -23,6 +23,7 @@ class WidgetType(Enum):
     CHECKBOX = "checkbox"
     COMBO = "combo"
     FLOAT = "float"
+    INT = "int"
 
 
 @dataclass
@@ -67,6 +68,6 @@ def invalidate() -> None:
     """Reset all inspector state (called on selection change)."""
     ...
 
-def invalidate_asset(path: str) -> None:
+def invalidate_asset(path: str, *, keep_view: bool = False) -> None:
     """Clear inspector cache if *path* is the currently inspected asset."""
     ...

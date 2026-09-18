@@ -70,6 +70,7 @@ class WidgetType(Enum):
     CHECKBOX = "checkbox"
     COMBO = "combo"
     FLOAT = "float"
+    INT = "int"
 
 
 @dataclass
@@ -408,9 +409,9 @@ class _State:
     def __init__(self):
         self.reset()
 
-    def reset(self):
-        self.file_path: str = ""
-        self.category: str = ""
+    def reset(self, *, keep_view: bool = False):
+        self.file_path: str = self.file_path if keep_view else ""
+        self.category: str = self.category if keep_view else ""
         self.meta: Optional[dict] = None
         self.settings: Any = None
         self.disk_settings: Any = None   # snapshot for dirty check (read-only)
@@ -419,7 +420,7 @@ class _State:
         self.resource_controller = None
         self.exec_layer = None
         self.extra: dict = {}
-        self.model_tabs_initialized = False
+        self.model_tabs_initialized = self.model_tabs_initialized if keep_view else False
 
     def load(self, file_path: str, category: str,
              cat_def: AssetCategoryDef) -> bool:
@@ -445,7 +446,7 @@ class _State:
 
                 if not AssetManager.has_pending_local_revision(self.file_path):
                     invalidate_live_material_preview(self.file_path)
-        self.reset()
+        self.reset(keep_view=self.category == category and same_path(self.file_path, file_path))
         self.file_path = file_path
         self.category = category
         self.meta = (read_asset_metadata(file_path) if "::subtex:" in file_path
@@ -753,7 +754,8 @@ def _ensure_categories():
         load_fn=_load_mesh,
         editable_fields=[
             FieldDef(spec["name"], spec["label"],
-                     {"float": WidgetType.FLOAT, "bool": WidgetType.CHECKBOX, "enum": WidgetType.COMBO}[spec["type"]],
+                     {"float": WidgetType.FLOAT, "int": WidgetType.INT,
+                      "bool": WidgetType.CHECKBOX, "enum": WidgetType.COMBO}[spec["type"]],
                      combo_entries=[(choice["label"], choice["value"]) for choice in spec.get("choices", [])],
                      page=spec["page"],
                      float_speed=spec.get("step", 0.001),
@@ -2227,11 +2229,12 @@ def invalidate():
     _sprite_state.reset()
 
 
-def invalidate_asset(path: str):
+def invalidate_asset(path: str, *, keep_view: bool = False):
     """Clear inspector cache if *path* is the currently inspected asset.
 
     Call this when an asset file is deleted so that re-creating a file with
     the same name performs a fresh load instead of reusing stale cached data.
+    A MODIFIED notification keeps the current model tab while replacing data.
     """
     if not _state.file_path or not path:
         return
@@ -2252,7 +2255,7 @@ def invalidate_asset(path: str):
                 invalidate_live_texture_preview(_state.file_path)
             else:
                 invalidate_live_material_preview(_state.file_path)
-        _state.reset()
+        _state.reset(keep_view=keep_view)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -2455,14 +2458,16 @@ def _render_import_fields(ctx: InxGUIContext, cat_def: AssetCategoryDef,
                         f"Set {t(fdef.label)}",
                     )
 
-            elif fdef.field_type == WidgetType.FLOAT:
+            elif fdef.field_type in (WidgetType.FLOAT, WidgetType.INT):
                 field_label(ctx, t(fdef.label), lw)
                 speed = fdef.float_speed
                 v_min = fdef.float_range[0] if fdef.float_range else 0.0
                 v_max = fdef.float_range[1] if fdef.float_range else 0.0
-                new_val = ctx.drag_float(wid, float(cur), speed, v_min, v_max)
+                integer = fdef.field_type == WidgetType.INT
+                new_val = (ctx.drag_int(wid, int(cur), speed, int(v_min), int(v_max)) if integer
+                           else ctx.drag_float(wid, float(cur), speed, v_min, v_max))
                 ctx.record_semantic_item(
-                    "drag_float", f"{t(fdef.label)}: {new_val:g}", True, semantic_id,
+                    "drag_int" if integer else "drag_float", f"{t(fdef.label)}: {new_val:g}", True, semantic_id,
                 )
                 if new_val != cur:
                     _edit_import_settings(

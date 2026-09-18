@@ -332,7 +332,7 @@ def on_asset_mutation(change) -> None:
             and new_path.lower().endswith(".scene")
         ):
             _update_build_settings_scene_path(old_path, new_path)
-        asset_details_renderer.invalidate_asset(old_path)
+        asset_details_renderer.invalidate_asset(old_path, keep_view=mutation.kind is AssetMutationKind.MODIFIED)
         if new_path:
             asset_details_renderer.invalidate_asset(new_path)
 

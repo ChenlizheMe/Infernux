@@ -400,12 +400,12 @@ void InxSkinnedMesh::NormalizeInfluences()
 {
     for (size_t vi = 0; vi < influences.size(); ++vi) {
         auto &inf = influences[vi];
-        float total = 0.0f;
+        double total = 0.0;
         for (float w : inf.weight)
             total += w;
-        if (total > kEpsilon) {
+        if (total > 0.0) {
             for (float &w : inf.weight)
-                w /= total;
+                w = static_cast<float>(w / total);
         }
 
         if (vi < baseVertices.size()) {

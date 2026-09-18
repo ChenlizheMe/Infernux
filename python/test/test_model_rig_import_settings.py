@@ -12,6 +12,113 @@ from Infernux.core.asset_types import read_mesh_import_settings
 from Infernux.lib import AssetRegistry
 
 
+@pytest.mark.parametrize("key, value", [
+    ("max_bones_per_vertex", 0), ("max_bones_per_vertex", 5),
+    ("max_bones_per_vertex", 1.5), ("max_bones_per_vertex", True),
+    ("min_bone_weight", -0.1), ("min_bone_weight", 1.1),
+    ("min_bone_weight", float("nan")),
+])
+def test_skin_settings_reject_invalid_author_values(key, value):
+    from Infernux.core.asset_types import MeshImportSettings
+    data = MeshImportSettings().to_dict()
+    data[key] = value
+    with pytest.raises(ValueError, match=key):
+        MeshImportSettings.from_dict(data)
+
+
+def test_skin_settings_legacy_defaults_and_inspector_projection():
+    from Infernux.core.asset_types import MeshImportSettings
+    from Infernux.engine.ui import asset_details_renderer as renderer
+    data = MeshImportSettings().to_dict()
+    del data["min_bone_weight"], data["max_bones_per_vertex"]
+    settings = MeshImportSettings.from_dict(data)
+    assert settings.max_bones_per_vertex == 4 and settings.min_bone_weight == 0
+    renderer._ensure_categories()
+    fields = {f.key: f for f in renderer._categories["mesh"].editable_fields}
+    assert fields["max_bones_per_vertex"].field_type == renderer.WidgetType.INT
+    assert fields["max_bones_per_vertex"].float_range == (1, 4)
+    assert fields["max_bones_per_vertex"].page == fields["min_bone_weight"].page == "rig"
+
+
+def test_model_data_refresh_preserves_tab_but_selection_change_resets_it(tmp_path, monkeypatch):
+    from Infernux.core.asset_types import MeshImportSettings
+    from Infernux.engine.ui import asset_details_renderer as renderer
+    from Infernux.engine.ui import project_file_ops
+    from Infernux.engine.interaction import AssetMutation, AssetMutationKind
+    state = renderer._State()
+    monkeypatch.setattr(renderer, "_state", state)
+    monkeypatch.setattr(renderer, "read_meta_file", lambda _: {})
+    source = str(tmp_path / "Model.fbx")
+    category = renderer.AssetCategoryDef("mesh", renderer.AssetAccessMode.READ_ONLY_RESOURCE,
+                                        load_fn=lambda _: (MeshImportSettings(), {}))
+    assert state.load(source, "mesh", category)
+    state.model_tabs_initialized = True
+    project_file_ops.on_asset_mutation(AssetMutation(AssetMutationKind.MODIFIED, source))
+    assert state.settings is None  # Data actually reloads, not just retaining stale fields.
+    assert state.load(source, "mesh", category)
+    assert state.model_tabs_initialized
+    assert state.load(str(tmp_path / "Other.fbx"), "mesh", category)
+    assert not state.model_tabs_initialized
+    state.model_tabs_initialized = True
+    project_file_ops.on_asset_mutation(AssetMutation(AssetMutationKind.DELETED, state.file_path))
+    assert not state.model_tabs_initialized and not state.file_path
+
+
+@pytest.mark.parametrize("apply_mode", ["sync", "async"])
+def test_skin_settings_publish_companion_and_reject_empty_weights(engine, tmp_path, monkeypatch, apply_mode):
+    database = engine.get_asset_database()
+    registry = AssetRegistry.instance()
+    monkeypatch.setattr(AssetManager, "_engine", engine)
+    monkeypatch.setattr(AssetManager, "_asset_database", database)
+    source = Path(database.assets_root) / tmp_path.name / "Weights.fbx"
+    source.parent.mkdir()
+    root = Path(__file__).resolve().parents[2]
+    source.write_bytes((root / "external/assimp/test/models/FBX/animation_with_skeleton.fbx").read_bytes())
+    imported = AssetManager.import_asset(str(source), database=database)
+    assert imported, imported.error
+    guid = imported.guid
+    sidecar = Path(str(source) + ".meta")
+    settings = read_mesh_import_settings(str(source))
+
+    def apply():
+        if apply_mode == "sync":
+            return AssetManager.reimport_asset(str(source), import_settings=settings.to_dict(), database=database)
+        owner = AssetManager.begin_model_reimport(str(source), settings)
+        deadline = time.monotonic() + 30
+        while (result := AssetManager.poll_model_reimport(owner)) is None:
+            assert time.monotonic() < deadline
+            time.sleep(.002)
+        return result
+
+    try:
+        mesh = registry.load_mesh(str(source))
+        original_bones = mesh.skinned_bone_count
+        for count in (1, 2, 3, 4):
+            settings.max_bones_per_vertex = count
+            result = apply()
+            assert result and result.guid == guid, result.error
+            saved = read_mesh_import_settings(str(source))
+            assert saved.max_bones_per_vertex == count
+            assert mesh.skinned_bone_count == original_bones
+            registry.invalidate_asset(guid)
+            mesh = registry.load_mesh(str(source))
+            assert mesh.has_skinned_data and mesh.skinned_bone_count == original_bones
+        before = sidecar.read_bytes()
+        settings.min_bone_weight = 1.0
+        result = apply()
+        assert not result and "min_bone_weight removes every influence" in result.error
+        assert sidecar.read_bytes() == before
+        assert mesh.skinned_bone_count == original_bones
+        # A normal source reimport retains the last successful author settings.
+        result = AssetManager.reimport_asset(str(source), database=database)
+        assert result, result.error
+        saved = read_mesh_import_settings(str(source))
+        assert saved.max_bones_per_vertex == 4 and saved.min_bone_weight == 0
+    finally:
+        registry.invalidate_asset(guid)
+        database.delete_asset(str(source))
+
+
 @pytest.mark.parametrize("source_kind", ["fbx", "animation_only", "skinned_gltf"])
 @pytest.mark.parametrize("apply_mode", ["sync", "async"])
 def test_rig_animation_apply_replaces_companion_without_losing_source_inventory(

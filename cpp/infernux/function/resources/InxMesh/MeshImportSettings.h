@@ -17,6 +17,8 @@ struct MeshImportSettings
 {
     float scaleFactor = 1.0f;
     float normalSmoothingAngle = 175.0f;
+    float minBoneWeight = 0.0f;
+    int maxBonesPerVertex = 4;
     bool generateNormals = true;
     bool generateTangents = true;
     bool flipUVs = true;
@@ -56,12 +58,15 @@ struct MeshImportSettings
         float displayMaximum;
         float step;
         bool legacyOptional;
+        const char *page = "model";
     };
     inline static constexpr std::array Scalars = {
         Scalar{"scale_factor", &MeshImportSettings::scaleFactor, 0.0f, std::numeric_limits<float>::max(), true, 0.0001f,
                1000.0f, 0.001f, false},
         Scalar{"normal_smoothing_angle", &MeshImportSettings::normalSmoothingAngle, 0.0f, 175.0f, false, 0.0f, 175.0f,
                1.0f, true},
+        Scalar{"min_bone_weight", &MeshImportSettings::minBoneWeight, 0.0f, 1.0f, false, 0.0f, 1.0f,
+               0.001f, true, "rig"},
     };
 
     struct Flag
@@ -87,6 +92,12 @@ struct MeshImportSettings
             throw std::invalid_argument("model rig_type must be none or generic");
     }
 
+    static void RequireMaxBones(const nlohmann::json &value)
+    {
+        if (!value.is_number_integer() || value < 1 || value > 4)
+            throw std::invalid_argument("model max_bones_per_vertex must be an integer between 1 and 4");
+    }
+
     static void RequireMaterialImportMode(const nlohmann::json &value)
     {
         if (!value.is_string() || (value != "none" && value != "description"))
@@ -103,6 +114,9 @@ struct MeshImportSettings
     static MeshImportSettings Read(const InxResourceMeta &metadata)
     {
         MeshImportSettings settings;
+        if (metadata.HasKey("max_bones_per_vertex"))
+            settings.maxBonesPerVertex = metadata.GetDataAs<int>("max_bones_per_vertex");
+        RequireMaxBones(settings.maxBonesPerVertex);
         for (const auto &field : Scalars) {
             if (metadata.HasKey(field.name))
                 settings.*(field.member) = metadata.GetDataAs<float>(field.name);
@@ -130,6 +144,8 @@ struct MeshImportSettings
     static void EnsureDefaults(InxResourceMeta &metadata)
     {
         const MeshImportSettings defaults;
+        if (!metadata.HasKey("max_bones_per_vertex"))
+            metadata.AddMetadata("max_bones_per_vertex", defaults.maxBonesPerVertex);
         for (const auto &field : Scalars)
             if (!metadata.HasKey(field.name))
                 metadata.AddMetadata(field.name, defaults.*(field.member));
@@ -150,6 +166,10 @@ struct MeshImportSettings
             throw std::invalid_argument("model import settings require an object");
         // Validate the entire authoring request before modifying its candidate.
         for (const auto &[key, value] : patch.items()) {
+            if (key == "max_bones_per_vertex") {
+                RequireMaxBones(value);
+                continue;
+            }
             if (key == "material_import_mode") {
                 RequireMaterialImportMode(value);
                 continue;
@@ -185,6 +205,8 @@ struct MeshImportSettings
         for (const auto &[key, value] : patch.items()) {
             if (key == "material_remaps")
                 WriteMaterialRemaps(metadata, value);
+            else if (key == "max_bones_per_vertex")
+                metadata.AddMetadata(key, value.get<int>());
             else if (key == "rig_type" || key == "material_import_mode")
                 metadata.AddMetadata(key, value.get<std::string>());
             else if (value.is_boolean())
@@ -202,7 +224,7 @@ struct MeshImportSettings
             fields.push_back({{"name", field.name},
                               {"type", "float"},
                               {"default", defaults.*(field.member)},
-                              {"page", "model"},
+                              {"page", field.page},
                               {"label", std::string("asset.") + field.name},
                               {field.exclusiveMinimum ? "minimum_exclusive" : "minimum", field.minimum},
                               {"maximum", field.maximum},
@@ -216,6 +238,10 @@ struct MeshImportSettings
                               {"page", flag.page},
                               {"label", std::string("asset.") + flag.name},
                               {"legacy_optional", flag.legacyOptional}});
+        fields.push_back({{"name", "max_bones_per_vertex"}, {"type", "int"},
+                          {"default", defaults.maxBonesPerVertex}, {"minimum", 1}, {"maximum", 4},
+                          {"display_range", {1, 4}}, {"step", 1}, {"page", "rig"},
+                          {"label", "asset.max_bones_per_vertex"}, {"legacy_optional", true}});
         fields.push_back({{"name", "rig_type"},
                           {"type", "enum"},
                           {"default", defaults.rigType},

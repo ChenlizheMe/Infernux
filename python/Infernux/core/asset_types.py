@@ -745,6 +745,8 @@ class MeshImportSettings:
 
     scale_factor: float = field(default_factory=lambda: _mesh_import_fields()["scale_factor"]["default"])
     normal_smoothing_angle: float = field(default_factory=lambda: _mesh_import_fields()["normal_smoothing_angle"]["default"])
+    max_bones_per_vertex: int = field(default_factory=lambda: _mesh_import_fields()["max_bones_per_vertex"]["default"])
+    min_bone_weight: float = field(default_factory=lambda: _mesh_import_fields()["min_bone_weight"]["default"])
     generate_normals: bool = field(default_factory=lambda: _mesh_import_fields()["generate_normals"]["default"])
     generate_tangents: bool = field(default_factory=lambda: _mesh_import_fields()["generate_tangents"]["default"])
     # DCC-authored meshes keep model/textures aligned without per-asset UV flipping.
@@ -783,6 +785,10 @@ class MeshImportSettings:
                 values[name] = dict(value)
             if spec["type"] == "bool" and type(values[name]) is not bool:
                 raise TypeError(f"mesh {name} must be a bool")
+            if spec["type"] == "int":
+                value = values[name]
+                if type(value) is not int or not spec["minimum"] <= value <= spec["maximum"]:
+                    raise ValueError(f"mesh {name} must be an integer within its declared range")
             if spec["type"] == "float":
                 value = values[name]
                 if (isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value)

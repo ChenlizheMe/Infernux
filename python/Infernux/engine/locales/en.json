@@ -945,6 +945,8 @@
   "asset.generate_normals": "Generate Missing Normals",
   "asset.generate_tangents": "Generate Missing Tangents",
   "asset.normal_smoothing_angle": "Normal Smoothing Angle",
+  "asset.max_bones_per_vertex": "Max Bones / Vertex",
+  "asset.min_bone_weight": "Minimum Bone Weight",
   "asset.flip_uvs": "Flip UVs",
   "asset.swap_uv_channels": "Swap UV Channels",
   "asset.optimize_mesh": "Optimize Triangle Order",

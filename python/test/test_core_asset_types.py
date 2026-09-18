@@ -323,7 +323,7 @@ class TestMeshImportSettings:
         assert [item.key for item in fields] == [item["name"] for item in model_fields]
         for actual, declared in zip(fields, model_fields):
             assert actual.label == declared["label"]
-            assert actual.field_type.value == {"bool": "checkbox", "float": "float", "enum": "combo"}[declared["type"]]
+            assert actual.field_type.value == {"bool": "checkbox", "float": "float", "int": "int", "enum": "combo"}[declared["type"]]
         for page in ("model", "rig", "animation"):
             assert [item.key for item in inspector._model_page_fields(page)] == [
                 item["name"] for item in schema["fields"] if item["page"] == page

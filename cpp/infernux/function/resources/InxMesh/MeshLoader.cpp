@@ -597,7 +597,8 @@ MeshSourceImportResult MeshLoader::ImportSourceDetailed(const std::string &fileP
     // tracks can drive a compatible render model even when they have no mesh.
     if (settings.rigType != "none" && SkinnedModelImporter::HasSkinningData(*scene, settings.importAnimations))
         result.skinnedMesh =
-            SkinnedModelImporter::ConvertScene(*scene, guid, filePath, settings.scaleFactor, settings.importAnimations);
+            SkinnedModelImporter::ConvertScene(*scene, guid, filePath, settings.scaleFactor, settings.importAnimations,
+                                              settings.maxBonesPerVertex, settings.minBoneWeight);
     return result;
 }
 

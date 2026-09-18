@@ -126,11 +126,11 @@ void CollectMeshNodes(const aiNode &node, const InxSkinnedMesh &model, std::vect
         CollectMeshNodes(*node.mChildren[childIndex], model, output);
 }
 
-void AddInfluence(SkinInfluence &influence, uint32_t boneIndex, float weight)
+void AddInfluence(SkinInfluence &influence, uint32_t boneIndex, float weight, uint32_t limit = kMaxSkinInfluences)
 {
     if (!std::isfinite(weight) || weight <= 0.0f)
         return;
-    for (uint32_t index = 0; index < kMaxSkinInfluences; ++index) {
+    for (uint32_t index = 0; index < limit; ++index) {
         if (influence.weight[index] <= 0.0f) {
             influence.boneIndex[index] = boneIndex;
             influence.weight[index] = weight;
@@ -138,7 +138,7 @@ void AddInfluence(SkinInfluence &influence, uint32_t boneIndex, float weight)
         }
     }
     uint32_t lightest = 0;
-    for (uint32_t index = 1; index < kMaxSkinInfluences; ++index) {
+    for (uint32_t index = 1; index < limit; ++index) {
         if (influence.weight[index] < influence.weight[lightest])
             lightest = index;
     }
@@ -215,7 +215,7 @@ uint32_t GetOrCreateMeshNodeFallbackBone(InxSkinnedMesh &model, int nodeIndex, c
 bool HasInfluence(const SkinInfluence &influence)
 {
     for (const float weight : influence.weight) {
-        if (weight > 1e-6f)
+        if (weight > 0.0f)
             return true;
     }
     return false;
@@ -235,12 +235,16 @@ bool SkinnedModelImporter::HasSkinningData(const aiScene &scene, bool includeAni
 
 std::shared_ptr<InxSkinnedMesh> SkinnedModelImporter::ConvertScene(const aiScene &scene, const std::string &sourceGuid,
                                                                    const std::string &sourcePath, float scaleFactor,
-                                                                   bool importAnimations)
+                                                                   bool importAnimations, int maxBonesPerVertex,
+                                                                   float minBoneWeight)
 {
     if (!scene.mRootNode)
         throw std::invalid_argument("Skinned model scene has no root node");
     if (!std::isfinite(scaleFactor) || scaleFactor <= 0.0f)
         throw std::invalid_argument("Skinned model scale factor must be finite and positive");
+    if (maxBonesPerVertex < 1 || maxBonesPerVertex > static_cast<int>(kMaxSkinInfluences) ||
+        !std::isfinite(minBoneWeight) || minBoneWeight < 0.0f || minBoneWeight > 1.0f)
+        throw std::invalid_argument("Skinned model requires 1-4 influences and a minimum weight in [0, 1]");
 
     auto model = std::make_shared<InxSkinnedMesh>();
     model->sourcePath = sourcePath;
@@ -311,6 +315,7 @@ std::shared_ptr<InxSkinnedMesh> SkinnedModelImporter::ConvertScene(const aiScene
             model->influences.push_back({});
         }
 
+        std::vector<bool> weightedVertices(sourceMesh.mNumVertices, false);
         for (unsigned int boneIndex = 0; boneIndex < sourceMesh.mNumBones; ++boneIndex) {
             if (!sourceMesh.mBones[boneIndex])
                 throw std::runtime_error("Skinned model mesh contains a null bone");
@@ -321,7 +326,12 @@ std::shared_ptr<InxSkinnedMesh> SkinnedModelImporter::ConvertScene(const aiScene
                 const aiVertexWeight &weight = sourceBone.mWeights[weightIndex];
                 if (weight.mVertexId >= sourceMesh.mNumVertices)
                     throw std::runtime_error("Skinned model bone weight references an invalid vertex");
-                AddInfluence(model->influences[vertexStart + weight.mVertexId], runtimeBone, weight.mWeight);
+                if (!std::isfinite(weight.mWeight) || weight.mWeight < 0.0f)
+                    throw std::runtime_error("Skinned model contains a negative or non-finite bone weight");
+                weightedVertices[weight.mVertexId] = weightedVertices[weight.mVertexId] || weight.mWeight > 0.0f;
+                if (weight.mWeight >= minBoneWeight)
+                    AddInfluence(model->influences[vertexStart + weight.mVertexId], runtimeBone, weight.mWeight,
+                                 static_cast<uint32_t>(maxBonesPerVertex));
             }
         }
 
@@ -331,6 +341,10 @@ std::shared_ptr<InxSkinnedMesh> SkinnedModelImporter::ConvertScene(const aiScene
             for (unsigned int vertexIndex = 0; vertexIndex < sourceMesh.mNumVertices; ++vertexIndex) {
                 SkinInfluence &influence = model->influences[vertexStart + vertexIndex];
                 if (!HasInfluence(influence)) {
+                    if (weightedVertices[vertexIndex])
+                        throw std::runtime_error("min_bone_weight removes every influence of mesh '" +
+                                                 std::string(sourceMesh.mName.C_Str()) + "' vertex " +
+                                                 std::to_string(vertexIndex) + "; lower the threshold");
                     if (!createdFallback) {
                         fallbackBone = GetOrCreateMeshNodeFallbackBone(*model, nodeIndex, modelToMesh);
                         createdFallback = true;

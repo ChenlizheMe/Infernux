@@ -945,6 +945,8 @@
   "asset.generate_normals": "生成缺失法线",
   "asset.generate_tangents": "生成缺失切线",
   "asset.normal_smoothing_angle": "法线平滑角度",
+  "asset.max_bones_per_vertex": "每顶点最大骨骼数",
+  "asset.min_bone_weight": "最小骨骼权重",
   "asset.flip_uvs": "翻转 UV",
   "asset.swap_uv_channels": "交换 UV 通道",
   "asset.optimize_mesh": "优化三角形顺序",

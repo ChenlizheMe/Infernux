@@ -4,6 +4,9 @@
 #include <function/resources/InxMesh/MeshLoader.h>
 #include <function/resources/InxResource/InxResourceMeta.h>
 #include <function/resources/InxSkinnedMesh/InxSkinnedMesh.h>
+#include <function/resources/InxSkinnedMesh/SkinnedModelImporter.h>
+#include <function/resources/InxSkinnedMesh/SkinnedMeshArtifact.h>
+#include <assimp/scene.h>
 #include <platform/filesystem/InxPath.h>
 
 #include <cassert>
@@ -17,15 +20,110 @@
 #error "INFERNUX_SOURCE_DIR must be supplied by the CMake test target"
 #endif
 
+static void TestSkinWeightImport()
+{
+    aiScene scene;
+    scene.mRootNode = new aiNode("Root");
+    scene.mRootNode->mNumMeshes = 1;
+    scene.mRootNode->mMeshes = new unsigned int[1]{0};
+    scene.mNumMeshes = 1;
+    scene.mMeshes = new aiMesh *[1]{new aiMesh()};
+    auto &mesh = *scene.mMeshes[0];
+    mesh.mName = aiString("WeightedTriangle");
+    mesh.mPrimitiveTypes = aiPrimitiveType_TRIANGLE;
+    mesh.mNumVertices = 3;
+    mesh.mVertices = new aiVector3D[3]{{0, 0, 0}, {1, 0, 0}, {0, 1, 0}};
+    mesh.mNumFaces = 1;
+    mesh.mFaces = new aiFace[1];
+    mesh.mFaces[0].mNumIndices = 3;
+    mesh.mFaces[0].mIndices = new unsigned int[3]{0, 1, 2};
+    mesh.mNumBones = 6;
+    mesh.mBones = new aiBone *[6];
+    scene.mRootNode->mNumChildren = 6;
+    scene.mRootNode->mChildren = new aiNode *[6];
+    for (unsigned int i = 0; i < 6; ++i) {
+        const std::string name = "Bone" + std::to_string(i);
+        scene.mRootNode->mChildren[i] = new aiNode(name);
+        scene.mRootNode->mChildren[i]->mParent = scene.mRootNode;
+        auto &bone = *(mesh.mBones[i] = new aiBone());
+        bone.mName = aiString(name);
+        bone.mNumWeights = 3;
+        bone.mWeights = new aiVertexWeight[3];
+        for (unsigned int v = 0; v < 3; ++v)
+            bone.mWeights[v] = aiVertexWeight(v, float(i + 1) / 21.0f);
+    }
+    const auto convert = [&](int limit, float threshold) {
+        return infernux::SkinnedModelImporter::ConvertScene(scene, "weights-guid", "weights.gltf", 1.0f,
+                                                           false, limit, threshold);
+    };
+    for (int limit = 1; limit <= 4; ++limit) {
+        const auto imported = convert(limit, 0.0f);
+        const auto loaded = infernux::SkinnedMeshArtifact::Deserialize(
+            infernux::SkinnedMeshArtifact::Serialize(*imported, "weights"), "weights");
+        for (const auto &model : {imported, loaded}) {
+            assert(model && model->influences.size() == 3);
+            const float sum = float(limit * (13 - limit)) / 2.0f;
+            for (size_t v = 0; v < 3; ++v) {
+                std::set<uint32_t> selected;
+                for (unsigned int i = 0; i < infernux::kMaxSkinInfluences; ++i) {
+                    const auto &influence = model->influences[v];
+                    assert(model->baseVertices[v].boneWeights[i] == influence.weight[i]);
+                    if (influence.weight[i] > 0) {
+                        selected.insert(influence.boneIndex[i]);
+                        assert(std::abs(influence.weight[i] - float(influence.boneIndex[i] + 1) / sum) < 1e-6f);
+                    }
+                }
+                assert(selected.size() == static_cast<size_t>(limit));
+                assert(*selected.begin() == static_cast<uint32_t>(6 - limit));
+                assert(*selected.rbegin() == 5);
+            }
+            // The renderer's palette/CPU consumer reads those same weights.
+            for (size_t i = 0; i < 6; ++i)
+                model->skeleton.nodes[i + 1].bindLocal[3].x = float(i + 1);
+            const auto vertices = model->SampleVertices({});
+            float expected = 0;
+            for (int i = 7 - limit; i <= 6; ++i)
+                expected += float(i * i) / sum;
+            assert(std::abs(vertices[0].pos.x - expected) < 1e-5f);
+        }
+    }
+    const auto thresholded = convert(4, 0.2f);
+    for (const auto &influence : thresholded->influences) {
+        unsigned int count = 0;
+        for (const float weight : influence.weight)
+            count += weight > 0;
+        assert(count == 2);
+    }
+    bool rejected = false;
+    try { (void)convert(4, 0.9f); }
+    catch (const std::runtime_error &error) {
+        rejected = std::string(error.what()).find("min_bone_weight") != std::string::npos;
+    }
+    assert(rejected);
+    // Truly unweighted geometry follows its mesh node, unlike author weights
+    // accidentally eliminated by a threshold.
+    for (unsigned int i = 0; i < 6; ++i)
+        mesh.mBones[i]->mWeights[0].mWeight = 0.0f;
+    const auto unweighted = convert(4, 0.0f);
+    assert(unweighted->influences[0].weight[0] == 1.0f);
+    // Positive tiny weights still normalize to a valid palette contribution.
+    for (unsigned int i = 0; i < 6; ++i)
+        mesh.mBones[i]->mWeights[0].mWeight = 1e-10f;
+    const auto tiny = convert(4, 0.0f);
+    for (const float weight : tiny->influences[0].weight)
+        assert(weight == 0.25f);
+}
+
 int main(int argc, char **argv)
 {
+    TestSkinWeightImport();
     {
         using Settings = infernux::MeshImportSettings;
         infernux::InxResourceMeta candidate;
         Settings::EnsureDefaults(candidate);
         const auto defaults = Settings::Read(candidate);
         const auto schema = Settings::Schema();
-        assert(schema.at("fields").size() == Settings::Flags.size() + Settings::Scalars.size() + 3);
+        assert(schema.at("fields").size() == Settings::Flags.size() + Settings::Scalars.size() + 4);
         assert(defaults.materialImportMode == "description");
         assert(defaults.materialRemaps.empty());
         Settings::ApplyPatch(candidate, {{"material_remaps", {{"material/Body", "abcdabcdabcdabcdabcdabcdabcdabcd"}}}});
@@ -63,6 +161,12 @@ int main(int argc, char **argv)
         reject({{"scale_factor", std::numeric_limits<double>::infinity()}});
         reject({{"scale_factor", std::numeric_limits<double>::quiet_NaN()}});
         reject({{"normal_smoothing_angle", -0.1}});
+        reject({{"max_bones_per_vertex", 0}});
+        reject({{"max_bones_per_vertex", 5}});
+        reject({{"max_bones_per_vertex", 1.5}});
+        reject({{"max_bones_per_vertex", true}});
+        reject({{"min_bone_weight", -0.1}});
+        reject({{"min_bone_weight", 1.1}});
         reject({{"normal_smoothing_angle", 175.1}});
         reject({{"normal_smoothing_angle", true}});
         reject(nlohmann::json::array());
