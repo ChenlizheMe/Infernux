@@ -145,7 +145,6 @@ def _default_scene_document(default_effect_guid: str) -> dict:
                             "outerSpotAngle": 45.0,
                             "range": 10.0,
                             "renderMode": 0,
-                            "shadowNormalBias": 1.0,
                             "shadowSoftness": 1.5,
                             "shadowStrength": 1.0,
                             "shadows": 2,

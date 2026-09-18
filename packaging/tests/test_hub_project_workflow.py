@@ -411,13 +411,12 @@ def test_new_project_uses_structural_staging_but_creates_runtime_at_final_path(t
         "outerSpotAngle",
         "range",
         "renderMode",
-        "shadowNormalBias",
         "shadowSoftness",
         "shadowStrength",
         "shadows",
         "spotAngle",
     }
-    assert light_data["shadowNormalBias"] == 1.0
+    assert light_data["shadowSoftness"] == 1.5
     assert (Path(result) / ".vscode").is_dir()
     assert not list(tmp_path.glob(".infernux-create-*"))
 
