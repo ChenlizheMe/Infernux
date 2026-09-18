@@ -147,11 +147,11 @@ class Camera(BuiltinComponent):
         from Infernux.engine.ui.inspector_utils import field_label, max_label_w
         render_builtin_via_setters(ctx, self, type(self), skip_fields=self._CULLING_MASK_FIELD)
 
-        try:
-            from Infernux.lib import TagLayerManager
-            names = list(TagLayerManager.instance().get_all_layers())
-        except Exception:
-            names = ["Default"]
+        from Infernux.lib import TagLayerManager
+        names = list(TagLayerManager.instance().get_all_layers() or [])
+        # Empty layer slots are valid authoring state. Keep the popup useful
+        # without inventing a serialized name; the index is the stable label.
+        names = [str(name).strip() or f"Layer {index}" for index, name in enumerate(names)]
         names = (names + [f"Layer {i}" for i in range(len(names), 32)])[:32]
         old_mask = int(self.culling_mask) & 0xFFFFFFFF
         selected = sum(1 for i in range(32) if old_mask & (1 << i))
@@ -162,6 +162,11 @@ class Camera(BuiltinComponent):
             ctx.open_popup("##camera_culling_mask_popup")
         if ctx.begin_popup("##camera_culling_mask_popup"):
             new_mask = old_mask
+            if ctx.button("Everything##camera_culling_everything"):
+                new_mask = 0xFFFFFFFF
+            ctx.same_line()
+            if ctx.button("Nothing##camera_culling_nothing"):
+                new_mask = 0
             for index, name in enumerate(names):
                 checked = bool(new_mask & (1 << index))
                 updated = ctx.checkbox(f"{name}##camera_layer_{index}", checked)
