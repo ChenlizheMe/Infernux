@@ -572,6 +572,20 @@ class TestColliderRaycast:
         inside = mesh.closest_point(Vector3(0.1, 0, 0))
         assert (inside.x, inside.y, inside.z) == pytest.approx((0.1, 0, 0), abs=1e-6)
 
+    def test_closest_point_supports_ready_static_non_convex_mesh(self, scene):
+        obj = scene.create_primitive(PrimitiveType.Cube, "closest triangle mesh")
+        mesh = obj.add_component("MeshCollider")
+        assert mesh.convex is False
+        Physics.sync_transforms()
+
+        closest = mesh.closest_point(Vector3(3, 0, 0))
+        assert closest.x == pytest.approx(0.5, abs=2e-2)
+        assert closest.y == pytest.approx(0, abs=2e-2)
+        assert closest.z == pytest.approx(0, abs=2e-2)
+
+        inside = mesh.closest_point(Vector3(0.1, 0, 0))
+        assert (inside.x, inside.y, inside.z) == pytest.approx((0.1, 0, 0), abs=1e-6)
+
     def test_compute_penetration_supports_ready_convex_mesh(self, scene):
         mesh_object = scene.create_primitive(PrimitiveType.Cube, "penetration convex mesh")
         mesh = mesh_object.add_component("MeshCollider")

@@ -2251,9 +2251,14 @@ glm::vec3 PhysicsWorld::ClosestPointOnCollider(const Collider &collider, const g
         !dynamic_cast<const CapsuleCollider *>(&collider) && !dynamic_cast<const CylinderCollider *>(&collider) &&
         !meshCollider)
         throw std::invalid_argument(
-            "closest_point currently supports Box, Sphere, Capsule, Cylinder and convex Mesh colliders");
-    if (meshCollider && !meshCollider->IsConvex())
-        throw std::invalid_argument("closest_point requires MeshCollider.convex = true");
+            "closest_point currently supports Box, Sphere, Capsule, Cylinder and Mesh colliders");
+
+    // Jolt's MeshShape participates in the same point-vs-shape narrow phase
+    // as convex shapes.  Do not reject a ready static triangle mesh here: the
+    // broad phase and triangle BVH already provide the correct non-convex
+    // closest surface.  Dynamic rigidbodies still reject non-convex meshes at
+    // MeshCollider::CreateJoltShapeRaw(), so this does not weaken the physics
+    // body contract or introduce a convex approximation.
 
     const auto *rawShape = static_cast<const JPH::Shape *>(collider.CreateJoltShapeRaw());
     if (!rawShape) {
