@@ -191,7 +191,9 @@ def main() -> int:
                     manager.set_active_scene(scene)
                     model = scene.create_from_model(mesh_guid, f"SoakModel{cycle}")
                     assert model is not None
-                    renderer = model.get_component("MeshRenderer")
+                    # Imported models preserve source hierarchy; the root is
+                    # a container, not necessarily the geometry owner.
+                    renderer = model.get_component_in_children("MeshRenderer")
                     assert renderer is not None
                     material = InxMaterial.create_default_lit()
                     material.set_texture_guid("texSampler", texture_guid)
