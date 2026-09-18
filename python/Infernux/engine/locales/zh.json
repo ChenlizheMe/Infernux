@@ -1240,6 +1240,7 @@
   "camera.projection_mode": "投影模式",
   "camera.projection.perspective": "透视",
   "camera.projection.orthographic": "正交",
+  "camera.projection.physical": "物理相机",
   "camera.field_of_view": "视野角度",
   "camera.orthographic_size": "正交尺寸",
   "camera.near_clip": "近裁剪面",

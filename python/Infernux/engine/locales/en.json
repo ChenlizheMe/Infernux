@@ -1240,6 +1240,7 @@
   "camera.projection_mode": "Projection",
   "camera.projection.perspective": "Perspective",
   "camera.projection.orthographic": "Orthographic",
+  "camera.projection.physical": "Physical",
   "camera.field_of_view": "Field of View",
   "camera.orthographic_size": "Orthographic Size",
   "camera.near_clip": "Near",
