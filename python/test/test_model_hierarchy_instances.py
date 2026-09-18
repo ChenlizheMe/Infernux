@@ -228,6 +228,32 @@ def test_external_model_source_reconciles_instances_without_overwriting_transfor
     assert tuple(second_upper.transform.local_scale) == (2, 3, 4)
 
 
+def test_external_source_node_motion_updates_new_instances_only(scene, hierarchy_asset, engine, monkeypatch):
+    """DCC node motion is source metadata; existing scene placement remains authored."""
+    from Infernux.core.assets import AssetManager
+
+    database, source, guid = hierarchy_asset
+    monkeypatch.setattr(AssetManager, '_engine', engine)
+    monkeypatch.setattr(AssetManager, '_asset_database', database)
+    existing = scene.create_from_model(guid, 'Authored Assembly')
+    authored_upper = descendants(existing)['Upper']
+    authored_upper.transform.local_position = Vector3(21, 22, 23)
+
+    document = json.loads(source.read_text())
+    document['nodes'][2]['translation'] = [9, 8, 7]
+    source.write_text(json.dumps(document))
+    result = AssetManager.reimport_asset(str(source), database=database)
+    assert result, result.error
+
+    # Existing scene edits are authoritative and are never replaced by source TRS.
+    assert tuple(authored_upper.transform.local_position) == (21, 22, 23)
+    # A later instance receives the new source transform, proving the reimport
+    # updated the model source rather than merely suppressing the change.
+    fresh = scene.create_from_model(guid, 'Fresh Assembly')
+    fresh_upper = descendants(fresh)['Upper']
+    assert tuple(round(float(v), 5) for v in fresh_upper.transform.local_position) == (9, 8, 7)
+
+
 def test_source_reorder_keeps_node_binding_and_source_rename_reconciles_instance(scene, hierarchy_asset, engine, monkeypatch):
     from Infernux.core.assets import AssetManager
     database, source, guid = hierarchy_asset
