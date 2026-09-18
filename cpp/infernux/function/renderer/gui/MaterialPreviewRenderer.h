@@ -77,12 +77,17 @@ struct PreviewMaterialParams
     glm::vec3 emissionColor{0.0f, 0.0f, 0.0f};
     float normalScale = 1.0f;
     float specularHighlights = 1.0f;
+    glm::vec4 metallicChannels{1, 0, 0, 0};
+    glm::vec4 smoothnessChannels{1, 0, 0, 0};
+    float smoothnessFromRoughness = 0.0f;
+    float occlusionStrength = 1.0f;
 
     const PreviewTexture *albedoTex = nullptr;
     const PreviewTexture *metallicTex = nullptr;
     const PreviewTexture *smoothnessTex = nullptr;
     const PreviewTexture *aoTex = nullptr;
     const PreviewTexture *normalTex = nullptr;
+    const PreviewTexture *emissionTex = nullptr;
 };
 
 /**

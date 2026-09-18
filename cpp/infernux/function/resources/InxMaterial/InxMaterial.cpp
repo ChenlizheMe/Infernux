@@ -1383,6 +1383,10 @@ std::shared_ptr<InxMaterial> InxMaterial::CreateDefaultLit()
     material->SetColor("emissionColor", glm::vec4(0.0f, 0.0f, 0.0f, 0.0f));
     material->SetFloat("normalScale", 1.0f);
     material->SetFloat("specularHighlights", 1.0f);
+    material->SetVector4("metallicChannels", glm::vec4(1, 0, 0, 0));
+    material->SetVector4("smoothnessChannels", glm::vec4(1, 0, 0, 0));
+    material->SetFloat("smoothnessFromRoughness", 0.0f);
+    material->SetFloat("occlusionStrength", 1.0f);
 
     // Mark as built-in (shader cannot be changed by user)
     material->SetBuiltin(true);

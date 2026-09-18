@@ -19,6 +19,7 @@ constexpr uint32_t ModelNodesLocalV2 = 0x32444f4eU;  // NOD2, geometry is local 
 constexpr uint32_t MaterialBindingsV1 = 0x3142544dU; // MTB1, source identity and external GUID per slot
 constexpr uint32_t MaterialSurfaceV1 = 0x3153544dU;  // MTS1, source surface rendering per slot
 constexpr uint32_t MaterialTexturesV1 = 0x3158544dU; // MTX1, imported base-color texture GUIDs
+constexpr uint32_t MaterialTexturesV2 = 0x3258544dU; // MTX2, six PBR bindings and source sampling factors
 constexpr uint32_t MaximumElementCount = 100'000'000U;
 constexpr uint32_t MaximumStringBytes = 16U * 1024U * 1024U;
 
@@ -281,10 +282,15 @@ std::string MeshArtifact::Serialize(const InxMesh &mesh, std::string_view source
             AppendFloat(bytes, material.alphaCutoff);
             AppendU32(bytes, material.doubleSided ? 1U : 0U);
         }
-        AppendU32(bytes, MaterialTexturesV1);
+        AppendU32(bytes, MaterialTexturesV2);
         AppendCount(bytes, slotData.size());
-        for (const auto &material : slotData)
-            AppendString(bytes, material.baseColorTextureGuid);
+        for (const auto &material : slotData) {
+            for (const auto &guid : material.textureGuids)
+                AppendString(bytes, guid);
+            AppendFloat(bytes, material.normalScale);
+            AppendFloat(bytes, material.occlusionStrength);
+            AppendU32(bytes, material.packedMetallicRoughness ? 1U : 0U);
+        }
     }
     AppendU64(bytes, Fnv1a64(bytes));
     return bytes;
@@ -371,12 +377,23 @@ std::shared_ptr<InxMesh> MeshArtifact::Deserialize(std::string_view bytes, std::
     bool readTextures = false;
     while (!reader.AtEnd()) {
         const uint32_t nodeFormat = reader.ReadU32();
-        if (nodeFormat == MaterialTexturesV1) {
+        if (nodeFormat == MaterialTexturesV1 || nodeFormat == MaterialTexturesV2) {
             if (readTextures || reader.ReadCount() != slotData.size())
                 throw std::invalid_argument("mesh artifact has invalid material textures");
             readTextures = true;
-            for (auto &material : slotData)
-                material.baseColorTextureGuid = reader.ReadString();
+            for (auto &material : slotData) {
+                material.textureGuids[0] = reader.ReadString();
+                if (nodeFormat == MaterialTexturesV2) {
+                    for (size_t index = 1; index < ModelTextureCount; ++index)
+                        material.textureGuids[index] = reader.ReadString();
+                    material.normalScale = reader.ReadFloat();
+                    material.occlusionStrength = reader.ReadFloat();
+                    const auto packed = reader.ReadU32();
+                    if (packed > 1U)
+                        throw std::invalid_argument("mesh artifact has invalid packed texture flag");
+                    material.packedMetallicRoughness = packed != 0;
+                }
+            }
             continue;
         }
         if (nodeFormat == MaterialSurfaceV1) {

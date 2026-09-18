@@ -20,8 +20,9 @@ struct MeshSourceImportResult
     {
         uint32_t materialSlot;
         std::string path;
+        uint32_t channel = 0; // ModelTexture index, shared with MaterialSlotData.
     };
-    std::vector<TextureSource> baseColorTextureSources;
+    std::vector<TextureSource> textureSources;
     std::shared_ptr<InxMesh> mesh;
     std::shared_ptr<InxSkinnedMesh> skinnedMesh;
     uint64_t meshCount = 0;

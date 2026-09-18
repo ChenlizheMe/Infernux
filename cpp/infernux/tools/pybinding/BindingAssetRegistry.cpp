@@ -306,7 +306,13 @@ void RegisterAssetRegistryBindings(py::module_ &m)
                     d["double_sided"] = sd.doubleSided;
                     d["source_id"] = sd.sourceId;
                     d["material_guid"] = sd.materialGuid;
-                    d["base_color_texture_guid"] = sd.baseColorTextureGuid;
+                    constexpr const char *keys[] = {"base_color_texture_guid", "normal_texture_guid",
+                        "metallic_texture_guid", "roughness_texture_guid", "occlusion_texture_guid", "emission_texture_guid"};
+                    for (size_t index = 0; index < ModelTextureCount; ++index)
+                        d[keys[index]] = sd.textureGuids[index];
+                    d["normal_scale"] = sd.normalScale;
+                    d["occlusion_strength"] = sd.occlusionStrength;
+                    d["packed_metallic_roughness"] = sd.packedMetallicRoughness;
                     result.append(d);
                 }
                 return result;

@@ -8,6 +8,30 @@ namespace infernux
 {
 namespace
 {
+constexpr std::array<const char *, ModelTextureCount> TextureProperties{
+    "texSampler", "normalMap", "metallicMap", "smoothnessMap", "aoMap", "emissionMap"};
+
+std::string TextureIdentity(const MaterialSlotData &data, size_t index)
+{
+    return data.textureGuids[index].empty()
+               ? (index == static_cast<size_t>(ModelTexture::Normal) ? "normal" : "white")
+               : data.textureGuids[index];
+}
+
+glm::vec4 MetallicChannels(const MaterialSlotData &data)
+{
+    return data.packedMetallicRoughness ? glm::vec4(0, 0, 1, 0) : glm::vec4(1, 0, 0, 0);
+}
+
+glm::vec4 RoughnessChannels(const MaterialSlotData &data)
+{
+    return data.packedMetallicRoughness ? glm::vec4(0, 1, 0, 0) : glm::vec4(1, 0, 0, 0);
+}
+
+float UsesRoughnessMap(const MaterialSlotData &data)
+{
+    return data.textureGuids[static_cast<size_t>(ModelTexture::Roughness)].empty() ? 0.0f : 1.0f;
+}
 glm::vec4 SourceBaseColor(const MaterialSlotData &data)
 {
     auto baseColor = data.baseColor;
@@ -48,9 +72,14 @@ bool InxMesh::MatchesMaterialCopy(uint32_t slot, const InxMaterial &material) co
     const auto name = slot < m_materialSlotNames.size() && !m_materialSlotNames[slot].empty()
                           ? m_materialSlotNames[slot] : "EmbeddedMaterial_" + std::to_string(slot);
     const auto path = m_filePath.empty() ? std::string() : m_filePath + "::submat:" + std::to_string(slot);
+    for (size_t index = 0; index < ModelTextureCount; ++index)
+        if (!matches(TextureProperties[index], TextureIdentity(data, index)))
+            return false;
     return material.GetName() == name && material.GetFilePath() == path && state == material.GetRenderState() &&
            matches("baseColor", SourceBaseColor(data)) && matches("emissionColor", data.emissionColor) &&
-           matches("texSampler", data.baseColorTextureGuid.empty() ? std::string("white") : data.baseColorTextureGuid) &&
+           matches("normalScale", data.normalScale) && matches("occlusionStrength", data.occlusionStrength) &&
+           matches("metallicChannels", MetallicChannels(data)) && matches("smoothnessChannels", RoughnessChannels(data)) &&
+           matches("smoothnessFromRoughness", UsesRoughnessMap(data)) &&
            matches("metallic", data.metallic) && matches("smoothness", data.smoothness);
 }
 
@@ -67,7 +96,13 @@ std::shared_ptr<InxMaterial> InxMesh::CreateMaterialCopy(uint32_t slot) const
     material->SetColor("emissionColor", data.emissionColor);
     material->SetFloat("metallic", data.metallic);
     material->SetFloat("smoothness", data.smoothness);
-    material->SetTextureGuid("texSampler", data.baseColorTextureGuid.empty() ? "white" : data.baseColorTextureGuid);
+    for (size_t index = 0; index < ModelTextureCount; ++index)
+        material->SetTextureGuid(TextureProperties[index], TextureIdentity(data, index));
+    material->SetFloat("normalScale", data.normalScale);
+    material->SetFloat("occlusionStrength", data.occlusionStrength);
+    material->SetVector4("metallicChannels", MetallicChannels(data));
+    material->SetVector4("smoothnessChannels", RoughnessChannels(data));
+    material->SetFloat("smoothnessFromRoughness", UsesRoughnessMap(data));
     auto state = material->GetRenderState();
     ApplySourceSurface(state, data);
     material->SetRenderState(state);

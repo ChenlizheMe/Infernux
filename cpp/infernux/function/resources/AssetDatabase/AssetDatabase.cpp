@@ -45,15 +45,17 @@ bool IsCanonicalAssetGuid(std::string_view value)
 }
 
 template <typename Snapshot>
-std::function<std::string(const std::string &)> ModelTextureResolver(std::shared_ptr<Snapshot> snapshot)
+std::function<std::string(const std::string &, bool)> ModelTextureResolver(std::shared_ptr<Snapshot> snapshot)
 {
-    return [snapshot = std::move(snapshot)](const std::string &path) -> std::string {
+    return [snapshot = std::move(snapshot)](const std::string &path, bool linear) -> std::string {
         const auto found = snapshot->pathToGuid.find(FilesystemPathKey(path));
         if (found == snapshot->pathToGuid.end())
             throw std::invalid_argument("model texture is not a registered project asset: " + path);
         const auto metadata = snapshot->metas.find(found->second);
         if (metadata == snapshot->metas.end() || metadata->second->GetResourceType() != ResourceType::Texture)
             throw std::invalid_argument("model texture path does not identify a Texture asset: " + path);
+        if (linear && (!metadata->second->HasKey("srgb") || metadata->second->template GetDataAs<bool>("srgb")))
+            throw std::invalid_argument("model data texture requires linear sampling; disable sRGB in its import settings: " + path);
         return found->second;
     };
 }

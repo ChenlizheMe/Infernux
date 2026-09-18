@@ -326,7 +326,7 @@ void MaterialPreviewRenderer::RenderPreview(const InxMaterial &material, int siz
 {
     PreviewMaterialParams params;
 
-    PreviewTexture albedoTex, metallicTex, smoothnessTex, aoTex, normalTex;
+    PreviewTexture albedoTex, metallicTex, smoothnessTex, aoTex, normalTex, emissionTex;
 
     if (mapping && !mapping->IsEmpty()) {
         // ---- Dynamic mode: use parsed shader mapping ----
@@ -424,11 +424,36 @@ void MaterialPreviewRenderer::RenderPreview(const InxMaterial &material, int siz
         normalTex = TryResolveTexture(material, "normalMap", resolver);
     }
 
+    // Standard Lit's channel selection is explicit, not inferred from an
+    // arbitrary surface() expression by the lightweight preview parser.
+    if (material.GetProperty("metallicChannels")) {
+        const auto readChannels = [&material](const char *key, glm::vec4 &channels) {
+            const auto *property = material.GetProperty(key);
+            if (property)
+                if (const auto *value = std::get_if<glm::vec4>(&property->value))
+                    channels = *value;
+        };
+        readChannels("metallicChannels", params.metallicChannels);
+        readChannels("smoothnessChannels", params.smoothnessChannels);
+        if (auto value = TryGetFloat(material, "smoothnessFromRoughness"))
+            params.smoothnessFromRoughness = *value;
+        if (auto value = TryGetFloat(material, "occlusionStrength"))
+            params.occlusionStrength = *value;
+        if (auto value = TryGetFloat(material, "metallic"))
+            params.metallic = *value;
+        if (auto value = TryGetFloat(material, "smoothness"))
+            params.roughness = 1.0f - *value;
+        metallicTex = TryResolveTexture(material, "metallicMap", resolver);
+        smoothnessTex = TryResolveTexture(material, "smoothnessMap", resolver);
+        aoTex = TryResolveTexture(material, "aoMap", resolver);
+        emissionTex = TryResolveTexture(material, "emissionMap", resolver);
+    }
     params.albedoTex = albedoTex.IsValid() ? &albedoTex : nullptr;
     params.metallicTex = metallicTex.IsValid() ? &metallicTex : nullptr;
     params.smoothnessTex = smoothnessTex.IsValid() ? &smoothnessTex : nullptr;
     params.aoTex = aoTex.IsValid() ? &aoTex : nullptr;
     params.normalTex = normalTex.IsValid() ? &normalTex : nullptr;
+    params.emissionTex = emissionTex.IsValid() ? &emissionTex : nullptr;
 
     RenderPreview(params, size, outPixels);
 }
@@ -519,15 +544,16 @@ void MaterialPreviewRenderer::RenderPreview(const PreviewMaterialParams &params,
                 pixelBaseColor *= linearTex;
             }
             if (params.metallicTex) {
-                float texMetal = params.metallicTex->Sample(texU, texV).x;
+                float texMetal = glm::dot(params.metallicTex->Sample(texU, texV), params.metallicChannels);
                 pixelMetallic *= texMetal;
             }
             if (params.smoothnessTex) {
-                float texSmooth = params.smoothnessTex->Sample(texU, texV).x;
-                pixelRoughness = 1.0f - ((1.0f - pixelRoughness) * texSmooth);
+                float texSmooth = glm::dot(params.smoothnessTex->Sample(texU, texV), params.smoothnessChannels);
+                pixelRoughness = glm::mix(1.0f - ((1.0f - params.roughness) * texSmooth),
+                                         params.roughness * texSmooth, params.smoothnessFromRoughness);
             }
             if (params.aoTex) {
-                pixelAO *= params.aoTex->Sample(texU, texV).x;
+                pixelAO *= glm::mix(1.0f, params.aoTex->Sample(texU, texV).x, params.occlusionStrength);
             }
 
             pixelRoughness = std::max(pixelRoughness, 0.04f);
@@ -568,7 +594,12 @@ void MaterialPreviewRenderer::RenderPreview(const PreviewMaterialParams &params,
             float rim = 1.0f - NdotV;
             rim = rim * rim * rim * 0.15f;
 
-            glm::vec3 color = Lo + ambient + glm::vec3(rim) + params.emissionColor;
+            glm::vec3 emission = params.emissionColor;
+            if (params.emissionTex) {
+                const auto sample = params.emissionTex->Sample(texU, texV);
+                emission *= glm::vec3(SRGBToLinear(sample.x), SRGBToLinear(sample.y), SRGBToLinear(sample.z));
+            }
+            glm::vec3 color = Lo + ambient + glm::vec3(rim) + emission;
 
             // Tonemap + gamma
             color = color / (color + glm::vec3(1.0f));

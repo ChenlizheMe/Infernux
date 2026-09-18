@@ -319,21 +319,35 @@ static std::shared_ptr<InxMesh> ConvertScene(const aiScene *scene, const MeshImp
                     slotData.sourceId = "material/" + matName;
 
                 if (settings.materialImportMode != "none" && !settings.materialRemaps.contains(slotData.sourceId)) {
-                    const auto semantic = aiMat->GetTextureCount(aiTextureType_BASE_COLOR)
-                                              ? aiTextureType_BASE_COLOR : aiTextureType_DIFFUSE;
-                    if (aiMat->GetTextureCount(semantic)) {
+                    const auto readTexture = [&](aiTextureType semantic, ModelTexture channel) {
+                        if (!aiMat->GetTextureCount(semantic))
+                            return;
                         aiString texturePath;
                         unsigned int uvChannel = 0;
                         if (aiMat->GetTexture(semantic, 0, &texturePath, nullptr, &uvChannel) != AI_SUCCESS)
-                            throw std::runtime_error("model base color texture could not be read");
+                            throw std::runtime_error("model material texture could not be read");
                         // Embedded image publication is a separate subasset task.
                         // Do not mistake '*N' for a project file path.
                         if (texturePath.length && texturePath.C_Str()[0] != '*') {
                             if (uvChannel != 0)
-                                throw std::invalid_argument("model base color texture currently requires UV channel 0");
-                            textureSources.push_back({slot, texturePath.C_Str()});
+                                throw std::invalid_argument("model material texture currently requires UV channel 0");
+                            textureSources.push_back({slot, texturePath.C_Str(), static_cast<uint32_t>(channel)});
                         }
-                    }
+                    };
+                    readTexture(aiMat->GetTextureCount(aiTextureType_BASE_COLOR)
+                                    ? aiTextureType_BASE_COLOR : aiTextureType_DIFFUSE, ModelTexture::BaseColor);
+                    readTexture(aiTextureType_NORMALS, ModelTexture::Normal);
+                    readTexture(aiTextureType_METALNESS, ModelTexture::Metallic);
+                    readTexture(aiTextureType_DIFFUSE_ROUGHNESS, ModelTexture::Roughness);
+                    readTexture(aiMat->GetTextureCount(aiTextureType_AMBIENT_OCCLUSION)
+                                    ? aiTextureType_AMBIENT_OCCLUSION : aiTextureType_LIGHTMAP, ModelTexture::Occlusion);
+                    readTexture(aiTextureType_EMISSIVE, ModelTexture::Emission);
+                    aiString packedTexture;
+                    slotData.packedMetallicRoughness =
+                        aiMat->GetTexture(AI_MATKEY_GLTF_PBRMETALLICROUGHNESS_METALLICROUGHNESS_TEXTURE,
+                                          &packedTexture) == AI_SUCCESS;
+                    aiMat->Get(AI_MATKEY_GLTF_TEXTURE_SCALE(aiTextureType_NORMALS, 0), slotData.normalScale);
+                    aiMat->Get(AI_MATKEY_GLTF_TEXTURE_STRENGTH(aiTextureType_LIGHTMAP, 0), slotData.occlusionStrength);
                 }
 
                 // Diffuse / base colour
@@ -506,7 +520,7 @@ MeshSourceImportResult MeshLoader::ImportSourceDetailed(const std::string &fileP
 
     std::string name = FromFsPath(fsPath.stem());
     MeshSourceImportResult result;
-    auto mesh = ConvertScene(scene, settings, name, result.baseColorTextureSources);
+    auto mesh = ConvertScene(scene, settings, name, result.textureSources);
     mesh->SetGuid(guid);
     mesh->SetFilePath(filePath);
 

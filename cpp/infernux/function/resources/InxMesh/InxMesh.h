@@ -5,6 +5,7 @@
 #include <glm/glm.hpp>
 
 #include <cstdint>
+#include <array>
 #include <memory>
 #include <string>
 #include <vector>
@@ -52,6 +53,9 @@ enum class ModelAlphaMode : uint32_t
     Blend,
 };
 
+enum class ModelTexture : uint32_t { BaseColor, Normal, Metallic, Roughness, Occlusion, Emission, Count };
+inline constexpr size_t ModelTextureCount = static_cast<size_t>(ModelTexture::Count);
+
 struct MaterialSlotData
 {
     glm::vec4 baseColor{1.0f, 1.0f, 1.0f, 1.0f};     ///< Diffuse / albedo colour (RGBA)
@@ -66,7 +70,10 @@ struct MaterialSlotData
     // Empty for unnamed/ambiguous materials; never substitute a slot index.
     std::string sourceId;
     std::string materialGuid; ///< Optional importer-level external material binding.
-    std::string baseColorTextureGuid; ///< Imported texture identity, never a source path.
+    std::array<std::string, ModelTextureCount> textureGuids; ///< Imported identities, never source paths.
+    float normalScale = 1.0f;
+    float occlusionStrength = 1.0f;
+    bool packedMetallicRoughness = false; ///< glTF: metallic B, roughness G; otherwise scalar R.
 };
 
 /// Source hierarchy in parent-before-child order, including transform-only

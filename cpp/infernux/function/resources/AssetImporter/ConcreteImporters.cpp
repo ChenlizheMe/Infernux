@@ -632,7 +632,7 @@ ImportArtifact ModelImporter::Import(const ImportRequest &request) const
         imported.skinnedMesh->sourcePath = request.sourcePath;
 
     auto materials = imported.mesh->GetMaterialSlotData();
-    for (const auto &texture : imported.baseColorTextureSources) {
+    for (const auto &texture : imported.textureSources) {
         std::string path = texture.path;
         if (path.rfind("//", 0) == 0)
             path.erase(0, 2);
@@ -643,8 +643,10 @@ ImportArtifact ModelImporter::Import(const ImportRequest &request) const
         if (!request.resolveTextureGuid)
             throw std::logic_error("model texture import requires an immutable asset catalog");
         const auto normalizedPath = NormalizeFilesystemPathLexically(FromFsPath(texturePath));
-        auto &guid = materials.at(texture.materialSlot).baseColorTextureGuid;
-        guid = request.resolveTextureGuid(normalizedPath);
+        auto &guid = materials.at(texture.materialSlot).textureGuids.at(texture.channel);
+        const bool linear = texture.channel != static_cast<uint32_t>(ModelTexture::BaseColor) &&
+                            texture.channel != static_cast<uint32_t>(ModelTexture::Emission);
+        guid = request.resolveTextureGuid(normalizedPath, linear);
         artifact.resolvedTextureSources.emplace_back(normalizedPath, guid);
     }
     imported.mesh->SetMaterialSlotData(std::move(materials));
@@ -700,8 +702,9 @@ ImportArtifact ModelImporter::Import(const ImportRequest &request) const
     for (const auto &material : imported.mesh->GetMaterialSlotData()) {
         if (!material.materialGuid.empty())
             materialDependencies.insert(material.materialGuid);
-        if (!material.baseColorTextureGuid.empty())
-            materialDependencies.insert(material.baseColorTextureGuid);
+        for (const auto &textureGuid : material.textureGuids)
+            if (!textureGuid.empty())
+                materialDependencies.insert(textureGuid);
     }
     artifact.dependencies.assign(materialDependencies.begin(), materialDependencies.end());
 

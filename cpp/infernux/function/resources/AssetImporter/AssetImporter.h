@@ -29,7 +29,7 @@ struct ImportRequest
     std::string blenderExportScript;
     // Native immutable catalog lookup, captured before worker execution.
     // No AssetDatabase mutation or Python callback is permitted here.
-    std::function<std::string(const std::string &)> resolveTextureGuid;
+    std::function<std::string(const std::string &, bool linear)> resolveTextureGuid;
 };
 
 /**
