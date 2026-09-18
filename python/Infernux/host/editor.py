@@ -861,12 +861,12 @@ class EditorAutomationHost:
             )
         return target
 
-    def assign_scene_mesh(self, object_id: int, component_id: int, asset_guid: str):
+    def assign_scene_mesh(self, object_id: int, component_id: int, asset_guid: str, *, node_path=None):
         from Infernux.engine.interaction.action_journal import ActionOrigin
 
         target = self.scene_component(object_id, component_id)
         self.interaction_core().components.assign_mesh_asset(
-            target, asset_guid, origin=ActionOrigin.AUTOMATION,
+            target, asset_guid, node_path=node_path, origin=ActionOrigin.AUTOMATION,
         )
         return target
 

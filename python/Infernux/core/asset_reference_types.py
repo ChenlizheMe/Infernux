@@ -75,8 +75,9 @@ def canonical_asset_reference_identity(guid: str, path_hint: str) -> tuple[str, 
     if not hint:
         return "", ""
 
-    candidates = [hint]
-    if not os.path.isabs(hint):
+    source_hint = hint.split("::submesh:", 1)[0]
+    candidates = [source_hint]
+    if not os.path.isabs(source_hint):
         try:
             from Infernux.engine.project_context import get_project_root
 
@@ -84,7 +85,7 @@ def canonical_asset_reference_identity(guid: str, path_hint: str) -> tuple[str, 
         except (ImportError, RuntimeError):
             project_root = ""
         if project_root:
-            candidates.insert(0, os.path.join(project_root, hint))
+            candidates.insert(0, os.path.join(project_root, source_hint))
     for candidate in candidates:
         try:
             resolved_guid = str(database.get_guid_from_path(candidate) or "").strip()
@@ -408,7 +409,7 @@ _register_builtin("Shader.Fragment", "Fragment Shader", {".frag"}, ("SHADER_FILE
 _register_builtin("Shader", "Shader", {".vert", ".frag"}, ("SHADER_FILE",), "shd")
 _register_builtin(
     "Mesh", "Mesh", MESH_EXTENSIONS, ("MODEL_GUID", "MODEL_FILE"), "mesh",
-    aliases=("Model",), structured=True,
+    aliases=("Model",), structured=True, virtual_path_markers=("::submesh:",),
 )
 _register_builtin("AudioClip", "AudioClip", AUDIO_EXTENSIONS, ("AUDIO_FILE",), "aud", aliases=("Audio",))
 _register_builtin("Font", "Font", FONT_EXTENSIONS, ("FONT_FILE",), "font")

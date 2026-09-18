@@ -16,6 +16,12 @@ class InxSkinnedMesh;
 
 struct MeshSourceImportResult
 {
+    struct TextureSource
+    {
+        uint32_t materialSlot;
+        std::string path;
+    };
+    std::vector<TextureSource> baseColorTextureSources;
     std::shared_ptr<InxMesh> mesh;
     std::shared_ptr<InxSkinnedMesh> skinnedMesh;
     uint64_t meshCount = 0;

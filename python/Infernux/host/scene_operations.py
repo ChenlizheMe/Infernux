@@ -207,6 +207,7 @@ def build_scene_operations() -> tuple[Operation, ...]:
                 "object_id": {"type": "integer"},
                 "component_id": {"type": "integer"},
                 "asset_guid": {"type": "string"},
+                "node_path": {"type": "array", "items": {"type": "string"}},
             },
             required=("object_id", "component_id", "asset_guid"),
             side_effects=("Changes the renderer mesh source and records an Undo entry.",),
@@ -413,10 +414,10 @@ def _set_component_property(
     return on_editor("infernux.scene.component.property.set", edit)
 
 
-def _assign_mesh(object_id: int, component_id: int, asset_guid: str) -> dict[str, object]:
+def _assign_mesh(object_id: int, component_id: int, asset_guid: str, node_path=None) -> dict[str, object]:
     def edit():
         target = EditorAutomationHost.instance().assign_scene_mesh(
-            object_id, component_id, asset_guid,
+            object_id, component_id, asset_guid, node_path=node_path,
         )
         return {"object_id": int(object_id), "component": serializable_component(target)}
 

@@ -370,7 +370,7 @@ class ComponentCommandService:
         return False
 
     def assign_mesh_asset(
-        self, component: Any, asset_guid: str, *, origin: Optional[ActionOrigin] = None,
+        self, component: Any, asset_guid: str, *, node_path=None, origin: Optional[ActionOrigin] = None,
     ) -> bool:
         """Assign a model as one aggregate edit, preserving source state in Undo."""
         from Infernux.lib import ResourceType
@@ -384,8 +384,14 @@ class ComponentCommandService:
             raise ValueError("mesh assignment requires a registered Mesh asset GUID")
         setter = (component.set_source_model_guid if kind == "SkinnedMeshRenderer"
                   else component.set_mesh_asset_guid)
+        if node_path:
+            if kind != "MeshRenderer":
+                raise ValueError("A local model mesh is static geometry; use MeshRenderer, or assign the complete rig")
+            edit = lambda: component.set_model_mesh(asset_guid, list(node_path))
+        else:
+            edit = lambda: setter(asset_guid)
         return self.edit_document(
-            component, lambda: setter(asset_guid), description="Set Mesh", origin=origin,
+            component, edit, description="Set Mesh", origin=origin,
         ).changed
 
     def edit_document(

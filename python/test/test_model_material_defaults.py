@@ -119,12 +119,14 @@ def test_disabled_material_import_defers_remap_resolution(imported_model):
     assert mesh.get_material_slot_data() == []
 
 
-def test_material_none_removes_external_texture_dependency(imported_model):
+@pytest.mark.parametrize("apply_mode", ["sync", "async"])
+def test_material_none_removes_external_texture_dependency(imported_model, apply_mode):
+    import time
     from PIL import Image
     from Infernux.core.asset_types import read_mesh_import_settings
     from Infernux.lib import AssetRegistry, AssetDependencyGraph
 
-    _, document, source, database, _ = imported_model
+    renderer, document, source, database, _ = imported_model
     texture = source.with_name("model_color.png")
     Image.new("RGBA", (4, 4), (220, 80, 40, 255)).save(texture)
     imported = AssetManager.import_asset(str(texture), database=database)
@@ -137,9 +139,68 @@ def test_material_none_removes_external_texture_dependency(imported_model):
     mesh = AssetRegistry.instance().load_mesh(str(source))
     for mode in ("description", "none", "description"):
         settings.material_import_mode = mode
-        result = AssetManager.reimport_asset(str(source), import_settings=settings.to_dict(), database=database)
+        if apply_mode == "sync":
+            result = AssetManager.reimport_asset(str(source), import_settings=settings.to_dict(), database=database)
+        else:
+            owner = AssetManager.begin_model_reimport(str(source), settings)
+            deadline = time.monotonic() + 30
+            while (result := AssetManager.poll_model_reimport(owner)) is None:
+                assert time.monotonic() < deadline
+                time.sleep(.002)
         assert result, result.error
         assert (imported.guid in AssetDependencyGraph.instance().get_dependencies(mesh.guid)) == (mode == "description")
+        if mode == "description":
+            assert mesh.get_material_slot_data()[0]["base_color_texture_guid"] == imported.guid
+            for material in (mesh.create_material_copy(0), renderer.get_material(0)):
+                assert material.serialize_document()["properties"]["texSampler"]["guid"] == imported.guid
+            assert AssetRegistry.instance().reload_asset(mesh.guid)
+            assert mesh.get_material_slot_data()[0]["base_color_texture_guid"] == imported.guid
+
+
+def test_model_and_texture_first_scan_share_unpublished_guid_catalog(imported_model):
+    import time
+    from PIL import Image
+    from Infernux.lib import AssetRegistry, AssetDependencyGraph
+
+    _, document, source, database, _ = imported_model
+    fresh = source.parent / "Fresh Textured Model.gltf"
+    image = fresh.with_suffix(".png")
+    Image.new("RGBA", (4, 4), (60, 200, 80, 255)).save(image)
+    document["images"] = [{"uri": image.name}]
+    document["textures"] = [{"source": 0}]
+    document["materials"][0]["pbrMetallicRoughness"]["baseColorTexture"] = {"index": 0}
+    fresh.write_text(json.dumps(document), encoding="utf-8")
+    assert not Path(str(image) + ".meta").exists()
+    assert not Path(str(fresh) + ".meta").exists()
+    database.begin_refresh()
+    deadline = time.monotonic() + 60
+    while not database.try_commit_refresh():
+        assert time.monotonic() < deadline
+        time.sleep(.002)
+    guid = database.get_guid_from_path(str(image))
+    mesh = AssetRegistry.instance().load_mesh(str(fresh))
+    assert mesh and guid
+    assert mesh.get_material_slot_data()[0]["base_color_texture_guid"] == guid
+    assert guid in AssetDependencyGraph.instance().get_dependencies(mesh.guid)
+    assert mesh.create_material_copy(0).serialize_document()["properties"]["texSampler"]["guid"] == guid
+
+
+def test_unregistered_model_texture_rejects_publication_but_none_does_not_use_it(imported_model):
+    from Infernux.core.asset_types import read_mesh_import_settings
+    renderer, document, source, database, _ = imported_model
+    before = Path(str(source) + ".meta").read_bytes()
+    document["images"] = [{"uri": "MissingTexture.png"}]
+    document["textures"] = [{"source": 0}]
+    document["materials"][0]["pbrMetallicRoughness"]["baseColorTexture"] = {"index": 0}
+    source.write_text(json.dumps(document), encoding="utf-8")
+    result = AssetManager.reimport_asset(str(source), database=database)
+    assert not result and "not a registered project asset" in result.error
+    assert Path(str(source) + ".meta").read_bytes() == before
+    np.testing.assert_allclose(color(renderer, 0), [1, 0, 0, 1])
+    settings = read_mesh_import_settings(str(source))
+    settings.material_import_mode = "none"
+    result = AssetManager.reimport_asset(str(source), database=database, import_settings=settings.to_dict())
+    assert result, result.error
 
 
 @pytest.mark.parametrize("value", [True, 1, "legacy", "", None])

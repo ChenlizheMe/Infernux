@@ -591,16 +591,18 @@ class SceneObjectCommandService:
         if scene is None or manager is None:
             return False
 
-        guid = ref if is_guid else ""
+        from Infernux.lib._Infernux import split_model_mesh_reference, make_model_mesh_reference
+        source, node_path = split_model_mesh_reference(ref)
+        guid = source if is_guid else ""
         if not guid:
             registry = AssetRegistry.instance()
             asset_database = registry.get_asset_database() if registry else None
-            guid = asset_database.get_guid_from_path(ref) if asset_database else ""
+            guid = asset_database.get_guid_from_path(source) if asset_database else ""
         if not guid:
             return None
 
         before_selection = self._selection.snapshot
-        new_object = scene.create_from_model(guid)
+        new_object = scene.create_from_model(make_model_mesh_reference(guid, node_path) if node_path else guid)
         if new_object is None:
             return None
         parent = scene.find_by_id(int(parent_id)) if int(parent_id or 0) else None

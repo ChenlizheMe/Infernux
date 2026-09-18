@@ -18,6 +18,7 @@ constexpr uint32_t ModelNodesV1 = 0x31444f4eU;       // NOD1, optional source-hi
 constexpr uint32_t ModelNodesLocalV2 = 0x32444f4eU;  // NOD2, geometry is local to each source node
 constexpr uint32_t MaterialBindingsV1 = 0x3142544dU; // MTB1, source identity and external GUID per slot
 constexpr uint32_t MaterialSurfaceV1 = 0x3153544dU;  // MTS1, source surface rendering per slot
+constexpr uint32_t MaterialTexturesV1 = 0x3158544dU; // MTX1, imported base-color texture GUIDs
 constexpr uint32_t MaximumElementCount = 100'000'000U;
 constexpr uint32_t MaximumStringBytes = 16U * 1024U * 1024U;
 
@@ -280,6 +281,10 @@ std::string MeshArtifact::Serialize(const InxMesh &mesh, std::string_view source
             AppendFloat(bytes, material.alphaCutoff);
             AppendU32(bytes, material.doubleSided ? 1U : 0U);
         }
+        AppendU32(bytes, MaterialTexturesV1);
+        AppendCount(bytes, slotData.size());
+        for (const auto &material : slotData)
+            AppendString(bytes, material.baseColorTextureGuid);
     }
     AppendU64(bytes, Fnv1a64(bytes));
     return bytes;
@@ -363,8 +368,17 @@ std::shared_ptr<InxMesh> MeshArtifact::Deserialize(std::string_view bytes, std::
     bool readNodes = false;
     bool readBindings = false;
     bool readSurface = false;
+    bool readTextures = false;
     while (!reader.AtEnd()) {
         const uint32_t nodeFormat = reader.ReadU32();
+        if (nodeFormat == MaterialTexturesV1) {
+            if (readTextures || reader.ReadCount() != slotData.size())
+                throw std::invalid_argument("mesh artifact has invalid material textures");
+            readTextures = true;
+            for (auto &material : slotData)
+                material.baseColorTextureGuid = reader.ReadString();
+            continue;
+        }
         if (nodeFormat == MaterialSurfaceV1) {
             if (readSurface || reader.ReadCount() != slotData.size())
                 throw std::invalid_argument("mesh artifact has invalid material surfaces");

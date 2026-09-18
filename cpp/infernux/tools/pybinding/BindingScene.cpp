@@ -9,6 +9,7 @@
 
 #include "ComponentBindingRegistry.h"
 #include "JsonPyBridge.h"
+#include <function/resources/InxMesh/ModelMeshReference.h>
 #include "MatrixPyBridge.h"
 #include "core/log/InxLog.h"
 #include "core/threading/JobSystem.h"
@@ -593,6 +594,27 @@ static bool ShouldUseSkinnedRenderer(const std::string &guid, const std::shared_
 static GameObject *CreateModelObject(Scene *scene, const std::string &guid, const std::string &name = "")
 {
     auto &registry = AssetRegistry::Instance();
+
+    const auto [sourceGuid, nodePath] = SplitModelMeshReference(guid);
+    if (!nodePath.empty()) {
+        auto source = registry.LoadAsset<InxMesh>(sourceGuid, ResourceType::Mesh);
+        if (!source)
+            throw std::invalid_argument("Model mesh source cannot be loaded");
+        source->RequireModelNode(nodePath);
+        auto *object = scene->CreateGameObject(name.empty() ? nodePath.back() : name);
+        if (!object)
+            return nullptr;
+        try {
+            auto *renderer = object->AddComponent<MeshRenderer>();
+            renderer->SetMeshAsset(sourceGuid, source);
+            renderer->SetModelNodePath(nodePath);
+        } catch (...) {
+            scene->DestroyGameObject(object);
+            scene->ProcessPendingDestroys();
+            throw;
+        }
+        return object;
+    }
 
     auto mesh = registry.LoadAsset<InxMesh>(guid, ResourceType::Mesh);
     if (!mesh)
@@ -1305,6 +1327,17 @@ void RegisterSceneBindings(py::module_ &m)
             },
             py::arg("guid"), "Assign a model/mesh asset by GUID")
         .def("clear_mesh_asset", &MeshRenderer::ClearMeshAsset, "Clear the assigned asset mesh")
+        .def_property_readonly("model_node_path", &MeshRenderer::GetModelNodePath)
+        .def_property_readonly("model_node_group", &MeshRenderer::GetNodeGroup)
+        .def("set_model_mesh", [](MeshRenderer &renderer, const std::string &guid,
+                                   const std::vector<std::string> &path) {
+            auto mesh = AssetRegistry::Instance().LoadAsset<InxMesh>(guid, ResourceType::Mesh);
+            if (!mesh)
+                throw std::invalid_argument("Model mesh source cannot be loaded");
+            mesh->RequireModelNode(path);
+            renderer.SetMeshAsset(guid, mesh);
+            renderer.SetModelNodePath(path);
+        }, py::arg("guid"), py::arg("node_path"))
 
         // ====================================================================
         // Mesh data access for scripting and inspection tools

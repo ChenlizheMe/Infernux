@@ -631,6 +631,24 @@ ImportArtifact ModelImporter::Import(const ImportRequest &request) const
     if (imported.skinnedMesh)
         imported.skinnedMesh->sourcePath = request.sourcePath;
 
+    auto materials = imported.mesh->GetMaterialSlotData();
+    for (const auto &texture : imported.baseColorTextureSources) {
+        std::string path = texture.path;
+        if (path.rfind("//", 0) == 0)
+            path.erase(0, 2);
+        std::replace(path.begin(), path.end(), '\\', '/');
+        auto texturePath = ToFsPath(path);
+        if (texturePath.is_relative())
+            texturePath = ToFsPath(sourcePath).parent_path() / texturePath;
+        if (!request.resolveTextureGuid)
+            throw std::logic_error("model texture import requires an immutable asset catalog");
+        const auto normalizedPath = NormalizeFilesystemPathLexically(FromFsPath(texturePath));
+        auto &guid = materials.at(texture.materialSlot).baseColorTextureGuid;
+        guid = request.resolveTextureGuid(normalizedPath);
+        artifact.resolvedTextureSources.emplace_back(normalizedPath, guid);
+    }
+    imported.mesh->SetMaterialSlotData(std::move(materials));
+
     const auto checkedMetadataInt = [](uint64_t value, std::string_view field) {
         if (value > static_cast<uint64_t>(std::numeric_limits<int>::max()))
             throw std::overflow_error("ModelImporter metadata count exceeds int range: " + std::string(field));
@@ -658,6 +676,14 @@ ImportArtifact ModelImporter::Import(const ImportRequest &request) const
     // (InxResourceMeta uses std::any; a string is the simplest portable choice)
     artifact.metadata.AddMetadata("material_slots", joinCsv(imported.materialSlots));
 
+    nlohmann::json modelMeshes = nlohmann::json::array();
+    const auto &modelNodes = imported.mesh->GetModelNodes();
+    for (size_t i = 0; i < modelNodes.size(); ++i) {
+        if (modelNodes[i].nodeGroup >= 0)
+            modelMeshes.push_back({{"name", modelNodes[i].name}, {"path", imported.mesh->GetModelNodePath(i)}});
+    }
+    artifact.metadata.AddMetadata("model_meshes", modelMeshes.dump());
+
     artifact.metadata.AddMetadata("bone_count", checkedMetadataInt(imported.boneNames.size(), "bone_count"));
     artifact.metadata.AddMetadata("bone_names_csv", joinCsv(imported.boneNames));
 
@@ -671,9 +697,12 @@ ImportArtifact ModelImporter::Import(const ImportRequest &request) const
     }
     artifact.dependenciesAuthoritative = true;
     std::set<std::string> materialDependencies;
-    for (const auto &material : imported.mesh->GetMaterialSlotData())
+    for (const auto &material : imported.mesh->GetMaterialSlotData()) {
         if (!material.materialGuid.empty())
             materialDependencies.insert(material.materialGuid);
+        if (!material.baseColorTextureGuid.empty())
+            materialDependencies.insert(material.baseColorTextureGuid);
+    }
     artifact.dependencies.assign(materialDependencies.begin(), materialDependencies.end());
 
     if (!artifact.metadata.HasKey("content_hash"))

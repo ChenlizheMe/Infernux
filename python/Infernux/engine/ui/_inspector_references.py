@@ -813,7 +813,7 @@ def _resolve_asset_disk_path(value) -> str:
             if candidate:
                 text = str(candidate)
                 # Embedded sub-assets use virtual paths; ping the host file.
-                for token in ("::submat:", "::subanim:", "::subbone:"):
+                for token in ("::submat:", "::subanim:", "::subbone:", "::submesh:"):
                     if token in text:
                         text = text.split(token, 1)[0]
                         break
@@ -843,7 +843,7 @@ def ping_asset_in_project(path: str) -> bool:
     disk_path = str(path or "").strip()
     if not disk_path:
         return False
-    for token in ("::submat:", "::subanim:", "::subbone:"):
+    for token in ("::submat:", "::subanim:", "::subbone:", "::submesh:"):
         if token in disk_path:
             disk_path = disk_path.split(token, 1)[0]
             break

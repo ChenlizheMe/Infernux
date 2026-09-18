@@ -7,6 +7,7 @@
  */
 
 #include "Infernux.h"
+#include <function/resources/InxMesh/ModelMeshReference.h>
 #include <function/renderer/rhi/RhiComputeHost.h>
 // Explicit includes for types now only forward-declared in InxRenderer.h
 #include <algorithm>
@@ -284,28 +285,18 @@ void ComputeBoundsFromIndexRange(const std::vector<Vertex> &vertices, const std:
     }
 }
 
-std::shared_ptr<InxMaterial> BuildPreviewMaterialFromSlotData(const MaterialSlotData *slotData,
-                                                              const std::shared_ptr<InxMaterial> &defaultMat)
+std::shared_ptr<InxMaterial> BuildPreviewMaterialFromModel(const InxMesh *mesh, uint32_t slot,
+                                                          const std::shared_ptr<InxMaterial> &defaultMat)
 {
-    if (slotData && !slotData->materialGuid.empty()) {
+    if (!mesh || slot >= mesh->GetMaterialSlotData().size())
+        return defaultMat;
+    const auto &slotData = mesh->GetMaterialSlotData()[slot];
+    if (!slotData.materialGuid.empty()) {
         auto &registry = AssetRegistry::Instance();
-        auto material = registry.LoadAsset<InxMaterial>(slotData->materialGuid, ResourceType::Material);
+        auto material = registry.LoadAsset<InxMaterial>(slotData.materialGuid, ResourceType::Material);
         return material && !material->IsDeleted() ? material : registry.GetBuiltinMaterial("ErrorMaterial");
     }
-    if (!defaultMat)
-        return nullptr;
-    if (!slotData)
-        return defaultMat;
-
-    auto mat = defaultMat->Clone();
-    if (!mat)
-        return defaultMat;
-
-    mat->SetColor("baseColor", slotData->baseColor);
-    mat->SetColor("emissionColor", slotData->emissionColor);
-    mat->SetFloat("metallic", slotData->metallic);
-    mat->SetFloat("smoothness", slotData->smoothness);
-    return mat;
+    return mesh->CreateMaterialCopy(slot);
 }
 
 std::shared_ptr<InxMaterial> ResolvePrefabPreviewMaterial(const json &componentJson, uint32_t materialSlot,
@@ -332,10 +323,7 @@ std::shared_ptr<InxMaterial> ResolvePrefabPreviewMaterial(const json &componentJ
         }
     }
 
-    const MaterialSlotData *slotData = nullptr;
-    if (assetMesh && materialSlot < assetMesh->GetMaterialSlotData().size())
-        slotData = &assetMesh->GetMaterialSlotData()[materialSlot];
-    return BuildPreviewMaterialFromSlotData(slotData, defaultMat);
+    return BuildPreviewMaterialFromModel(assetMesh.get(), materialSlot, defaultMat);
 }
 
 bool AppendPrefabMeshComponent(const json &componentJson, const glm::mat4 &worldMatrix,
@@ -591,11 +579,9 @@ std::vector<std::shared_ptr<InxMaterial>> BuildDefaultPreviewMaterialsForMesh(co
     for (const auto &subMesh : mesh.GetSubMeshes())
         maxSlot = std::max(maxSlot, subMesh.materialSlot + 1);
 
-    const auto &slotData = mesh.GetMaterialSlotData();
     materials.reserve(maxSlot);
     for (uint32_t slot = 0; slot < maxSlot; ++slot) {
-        const MaterialSlotData *data = slot < slotData.size() ? &slotData[slot] : nullptr;
-        materials.push_back(BuildPreviewMaterialFromSlotData(data, defaultMat));
+        materials.push_back(BuildPreviewMaterialFromModel(&mesh, slot, defaultMat));
     }
     return materials;
 }
@@ -2215,6 +2201,10 @@ void Infernux::PumpPreviewTasks()
                 request = {completedLoadKey, database ? database->GetPathFromGuid(completedLoadGuid) : std::string(),
                            completedLoadGeneration};
                 request.meshFilePath = request.meshFilePath.empty() ? completedLoadGuid : request.meshFilePath;
+                std::lock_guard<std::mutex> lock(m_previewResultMutex);
+                const auto state = m_meshPreviewStates.find(completedLoadKey);
+                if (state != m_meshPreviewStates.end())
+                    request.meshFilePath = state->second.meshFilePath;
             }
         }
 
@@ -2227,7 +2217,7 @@ void Infernux::PumpPreviewTasks()
                 }
             } else if (!completedLoad) {
                 auto *database = AssetRegistry::Instance().GetAssetDatabase();
-                const std::string guid = database ? database->GetGuidFromPath(request.meshFilePath) : std::string();
+                const std::string guid = database ? database->GetGuidFromPath(SplitModelMeshReference(request.meshFilePath).first) : std::string();
                 if (guid.empty()) {
                     markMeshPreviewFailed(request.resourceKey);
                 } else {
@@ -2254,11 +2244,19 @@ void Infernux::PumpPreviewTasks()
                 }
             } else {
                 auto *database = AssetRegistry::Instance().GetAssetDatabase();
-                const std::string guid = database ? database->GetGuidFromPath(request.meshFilePath) : std::string();
+                const std::string guid = database ? database->GetGuidFromPath(SplitModelMeshReference(request.meshFilePath).first) : std::string();
                 if (!guid.empty())
                     mesh = AssetRegistry::Instance().GetAsset<InxMesh>(guid);
             }
 
+            if (mesh && request.meshFilePath.find(ModelMeshToken) != std::string::npos) {
+                try {
+                    mesh = mesh->CreateModelNodeCopy(SplitModelMeshReference(request.meshFilePath).second);
+                } catch (const std::exception &error) {
+                    INXLOG_ERROR("Model mesh preview rejected: ", error.what());
+                    mesh.reset();
+                }
+            }
             if (mesh && !IsPrefabPreviewPath(request.meshFilePath))
                 materials = BuildDefaultPreviewMaterialsForMesh(*mesh);
 

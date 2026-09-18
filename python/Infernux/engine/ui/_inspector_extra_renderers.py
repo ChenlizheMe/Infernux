@@ -605,11 +605,18 @@ def _mesh_asset_path(comp) -> str:
     guid = getattr(comp, 'mesh_asset_guid', '') or getattr(comp, 'source_model_guid', '') or ''
     path = _path_from_guid(guid)
     if path:
+        node_path = getattr(comp, "model_node_path", [])
+        if node_path:
+            from Infernux.lib._Infernux import make_model_mesh_reference
+            return make_model_mesh_reference(path, node_path)
         return path
     return str(getattr(comp, 'source_model_path', '') or "")
 
 
 def _mesh_display_name(comp) -> str:
+    node_path = getattr(comp, "model_node_path", [])
+    if node_path:
+        return node_path[-1]
     try:
         if comp.has_inline_mesh():
             inline_name = getattr(comp, 'inline_mesh_name', '') or ''
@@ -659,6 +666,8 @@ def _guid_and_path_from_model_payload(payload):
     if not ref:
         return "", ""
 
+    from Infernux.lib._Infernux import split_model_mesh_reference
+    source, node_path = split_model_mesh_reference(ref)
     adb = _get_asset_database()
     if not adb:
         return "", ref
@@ -671,7 +680,7 @@ def _guid_and_path_from_model_payload(payload):
         Debug.log(f"[Suppressed] {type(exc).__name__}: {exc}")
 
     try:
-        guid = adb.get_guid_from_path(ref) or ""
+        guid = adb.get_guid_from_path(source) or ""
         return guid, ref
     except Exception as exc:
         Debug.log(f"[Suppressed] {type(exc).__name__}: {exc}")
@@ -692,6 +701,23 @@ def _mesh_additional_picker_items(filter_text: str):
                 "path_hint": "",
             }))
 
+    import json
+    from Infernux.lib import ResourceType
+    from Infernux.lib._Infernux import make_model_mesh_reference
+    adb = _get_asset_database()
+    for guid in adb.get_all_guids():
+        meta = adb.get_meta_by_guid(guid)
+        if meta is None or meta.get_resource_type() != ResourceType.Mesh:
+            continue
+        manifest = meta.get_string("model_meshes") if meta.has_key("model_meshes") else ""
+        if not manifest:
+            continue
+        path = adb.get_path_from_guid(guid)
+        for entry in json.loads(manifest):
+            label = f"{os.path.basename(path)}/{entry['name']}"
+            if not filt or filt in label.lower():
+                items.append((label, {"asset_type": "Mesh", "guid": guid,
+                                     "path_hint": make_model_mesh_reference(path, entry['path'])}))
     return items
 
 
@@ -733,7 +759,9 @@ def _assign_model_mesh(comp, payload) -> None:
 
     from Infernux.engine.interaction import ComponentCommandService
 
-    ComponentCommandService.require().assign_mesh_asset(comp, guid)
+    from Infernux.lib._Infernux import split_model_mesh_reference
+    _, node_path = split_model_mesh_reference(path)
+    ComponentCommandService.require().assign_mesh_asset(comp, guid, node_path=node_path)
 
 
 def _clear_mesh(comp) -> None:

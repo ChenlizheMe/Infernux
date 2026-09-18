@@ -4,6 +4,7 @@
 #include <function/resources/InxResource/InxResourceMeta.h>
 
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -26,6 +27,9 @@ struct ImportRequest
     std::string projectRoot;
     std::string blenderExecutable;
     std::string blenderExportScript;
+    // Native immutable catalog lookup, captured before worker execution.
+    // No AssetDatabase mutation or Python callback is permitted here.
+    std::function<std::string(const std::string &)> resolveTextureGuid;
 };
 
 /**
@@ -50,6 +54,9 @@ struct ImportArtifact
     // AssetDatabase resolves these paths against the current scan catalog and
     // publishes only the resulting GUIDs. They never enter the durable graph.
     std::vector<std::string> dependencyPathHints;
+    // Source-to-GUID bindings resolved by the immutable worker catalog. The
+    // publication boundary rejects asset identity changes during the import.
+    std::vector<std::pair<std::string, std::string>> resolvedTextureSources;
 
     enum class RuntimeArtifactKind : uint8_t
     {

@@ -130,7 +130,7 @@ class AssetCategoryDef:
 def _meta_host_path_for_virtual_asset(file_path: str) -> str:
     if not file_path:
         return file_path
-    for tok in ("::submat:", "::subanim:", "::subbone:"):
+    for tok in ("::submat:", "::subanim:", "::subbone:", "::submesh:"):
         pos = file_path.find(tok)
         if pos != -1:
             base = file_path[:pos]
@@ -2135,6 +2135,9 @@ def _sync_material_shader_metadata(mat_data: dict):
 def render_asset_inspector(ctx: InxGUIContext, panel,
                            file_path: str, category: str):
     """Single entry point for all asset inspectors."""
+    if "::submesh:" in file_path:
+        _render_model_mesh_resource(ctx, panel, file_path)
+        return
     _ensure_categories()
     cat_def = _categories.get(category)
     if cat_def is None:
@@ -2516,6 +2519,35 @@ def _on_revert():
 # ═══════════════════════════════════════════════════════════════════════════
 # Mesh — info section (custom_header_fn)
 # ═══════════════════════════════════════════════════════════════════════════
+
+
+_model_mesh_preview_info = (None, None)
+
+
+def _render_model_mesh_resource(ctx, panel, file_path):
+    """Imported meshes are read-only children; import settings belong to the model."""
+    global _model_mesh_preview_info
+    from Infernux.lib import AssetRegistry
+    from Infernux.lib._Infernux import split_model_mesh_reference
+    source, node_path = split_model_mesh_reference(file_path)
+    mesh = AssetRegistry.instance().load_mesh(source)
+    if mesh is None:
+        ctx.label(t("asset.failed_load").format(name=node_path[-1]))
+        return
+    key = (file_path, mesh.guid, mesh.generation)
+    if _model_mesh_preview_info[0] != key:
+        _model_mesh_preview_info = (key, mesh.create_model_node_copy(node_path))
+    local = _model_mesh_preview_info[1]
+    ctx.label(local.name)
+    width = max(32.0, ctx.get_content_region_avail_width() - 8.0)
+    render_resource_preview_rect(ctx, panel, file_path, width, min(width, 320.0),
+                                 preserve_aspect=True, center=True)
+    ctx.separator()
+    for label, count in (("asset.mesh_vertices", local.vertex_count),
+                         ("asset.mesh_indices", local.index_count),
+                         ("asset.mesh_meshes", local.submesh_count)):
+        ctx.label(f"{t(label)}: {count}")
+    ctx.text_wrapped(" / ".join(node_path))
 
 
 def _render_mesh_header(ctx: InxGUIContext, panel, state: _State):

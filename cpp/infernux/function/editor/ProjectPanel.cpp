@@ -23,6 +23,9 @@
 #include <nlohmann/json.hpp>
 #include <string_view>
 #include <unordered_set>
+#include <function/resources/InxMesh/ModelMeshReference.h>
+#include <function/resources/InxMesh/InxMesh.h>
+#include <function/resources/AssetRegistry/AssetRegistry.h>
 
 #ifdef INX_PLATFORM_WINDOWS
 #include <ShlObj.h> // CF_HDROP, DragQueryFileW
@@ -87,14 +90,14 @@ static std::string MakeSubAssetVirtualPath(const std::string &basePath, const ch
 static bool IsVirtualSubAssetPath(const std::string &path)
 {
     return path.find(kSubMatToken) != std::string::npos || path.find(kSubBoneToken) != std::string::npos ||
-           path.find(kSubAnimToken) != std::string::npos;
+           path.find(kSubAnimToken) != std::string::npos || path.find(infernux::ModelMeshToken) != std::string::npos;
 }
 
 static std::string ResolveRealAssetPath(const std::string &path)
 {
     if (path.empty())
         return path;
-    for (const char *tok : {kSubMatToken, kSubBoneToken, kSubAnimToken}) {
+    for (const char *tok : {kSubMatToken, kSubBoneToken, kSubAnimToken, infernux::ModelMeshToken}) {
         auto pos = path.find(tok);
         if (pos != std::string::npos)
             return path.substr(0, pos);
@@ -154,6 +157,8 @@ static std::string SelectionPathForInspector(const std::string &path)
         return path;
     // Embedded animation takes use the 3D clip inspector (Python + virtual path).
     if (path.find(kSubAnimToken) != std::string::npos)
+        return path;
+    if (path.find(infernux::ModelMeshToken) != std::string::npos)
         return path;
     return ResolveRealAssetPath(path);
 }
@@ -1156,6 +1161,20 @@ void ProjectPanel::AppendModelSubAssets(std::vector<FileItem> &out, AssetDatabas
 
     const uint64_t childMtime = modelItem.mtimeNs;
 
+    const auto meshManifest = TryGetMetaString(meta.get(), "model_meshes");
+    if (!meshManifest.empty()) {
+        for (const auto &entry : nlohmann::json::parse(meshManifest)) {
+            FileItem sub{};
+            sub.type = FileItem::SubMesh;
+            sub.name = entry.at("name").get<std::string>();
+            sub.path = infernux::MakeModelMeshReference(modelPath, entry.at("path").get<std::vector<std::string>>());
+            sub.ext = ".inxmesh";
+            sub.parentPath = modelPath;
+            sub.mtimeNs = childMtime;
+            out.push_back(std::move(sub));
+        }
+    }
+
     // ── Materials (material slots) ────────────────────────────────────
     const bool importMaterials = TryGetMetaString(meta.get(), "material_import_mode") != "none";
     std::vector<std::string> matNames = SplitCommaList(TryGetMetaString(meta.get(), "material_slots"));
@@ -1539,6 +1558,12 @@ uint64_t ProjectPanel::GetModelThumbnail(const std::string &filePath, uint64_t c
     double now = m_frameTimeNow;
 
     uint64_t mtimeNs = cachedMtimeNs;
+    const bool modelChild = filePath.find(infernux::ModelMeshToken) != std::string::npos;
+    if (modelChild && m_assetDatabase) {
+        const auto guid = m_assetDatabase->GetGuidFromPath(infernux::SplitModelMeshReference(filePath).first);
+        const auto mesh = infernux::AssetRegistry::Instance().GetAsset<infernux::InxMesh>(guid);
+        mtimeNs = mesh ? mesh->GetGeneration() : 1;
+    }
     if (mtimeNs == 0) {
         auto it = m_modelMtimeCache.find(filePath);
         if (it != m_modelMtimeCache.end() && (now - it->second.second) < 1.0) {
@@ -1556,12 +1581,12 @@ uint64_t ProjectPanel::GetModelThumbnail(const std::string &filePath, uint64_t c
 
     const std::string resourceKey = std::string("mesh|") + filePath;
     const uint64_t readyTexture = m_engine->GetMeshPreviewTextureId(resourceKey);
-    if (readyTexture != 0)
+    auto &request = m_modelPreviewRequests[resourceKey];
+    if (readyTexture != 0 && (!modelChild || request.fingerprint == mtimeNs))
         return readyTexture;
     if (m_modelPreviewRequestsThisFrame >= kModelPreviewRequestBudget)
-        return 0;
+        return readyTexture;
 
-    auto &request = m_modelPreviewRequests[resourceKey];
     if (request.fingerprint == mtimeNs && m_previewFrameSerial - request.lastRequestFrame < 30)
         return 0;
     request.fingerprint = mtimeNs;
@@ -3041,7 +3066,10 @@ void ProjectPanel::RenderFileGrid(InxGUIContext *ctx)
             uint64_t displayTexId = 0;
             bool isUiPrefab = false;
             if (item.type == FileItem::SubMesh) {
-                displayTexId = GetTypeIconId(item);
+                if (item.path.find(infernux::ModelMeshToken) != std::string::npos)
+                    displayTexId = GetModelThumbnail(item.path, item.mtimeNs);
+                if (displayTexId == 0)
+                    displayTexId = GetTypeIconId(item);
             } else if (item.type == FileItem::SubMaterial) {
                 displayTexId = GetEmbeddedMaterialThumbnail(item);
                 if (displayTexId == 0)
@@ -3352,6 +3380,13 @@ void ProjectPanel::RenderDragDropSource(InxGUIContext *ctx, const FileItem &item
 
     if (item.type == FileItem::SubMesh) {
         if (item.parentPath.empty()) {
+            ctx->EndDragDropSource();
+            return;
+        }
+
+        if (item.path.find(infernux::ModelMeshToken) != std::string::npos) {
+            ctx->SetDragDropPayload("MODEL_FILE", item.path);
+            ctx->Label("Mesh: " + item.name);
             ctx->EndDragDropSource();
             return;
         }

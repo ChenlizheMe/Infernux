@@ -4,6 +4,7 @@
 #include <function/resources/InxMesh/InxMesh.h>
 #include <function/resources/InxMesh/MeshArtifact.h>
 #include <function/resources/InxMesh/MeshImportSettings.h>
+#include <function/resources/InxMesh/ModelMeshReference.h>
 #include <function/resources/InxSkinnedMesh/InxSkinnedMesh.h>
 #include <function/resources/InxTexture/InxTexture.h>
 #include <function/resources/PhysicMaterial/PhysicMaterial.h>
@@ -190,6 +191,8 @@ std::vector<SubMesh> DecodeSubMeshes(const py::object &descriptions, const std::
 
 void RegisterAssetRegistryBindings(py::module_ &m)
 {
+    m.def("make_model_mesh_reference", &MakeModelMeshReference);
+    m.def("split_model_mesh_reference", &SplitModelMeshReference);
     m.def("_mesh_import_settings_schema", [] { return JsonToPython(MeshImportSettings::Schema()); });
 #if defined(INFERNUX_PYBIND_WEB_PLAYER)
     // The browser Player owns this database through AssetRegistry. Expose only
@@ -227,6 +230,9 @@ void RegisterAssetRegistryBindings(py::module_ &m)
     // ── InxMesh — read-only runtime mesh asset ───────────────────────────
     py::class_<InxMesh, std::shared_ptr<InxMesh>>(m, "InxMesh")
         .def_property_readonly("name", &InxMesh::GetName, "Mesh asset name")
+        .def("create_model_node_copy", &InxMesh::CreateModelNodeCopy)
+        .def("require_model_node", &InxMesh::RequireModelNode)
+        .def("get_model_node_path", &InxMesh::GetModelNodePath)
         .def_property_readonly("guid", &InxMesh::GetGuid, "Mesh asset GUID")
         .def_property_readonly("file_path", &InxMesh::GetFilePath, "Source file path")
         .def_property_readonly("vertex_count", &InxMesh::GetVertexCount, "Total vertex count")
@@ -300,6 +306,7 @@ void RegisterAssetRegistryBindings(py::module_ &m)
                     d["double_sided"] = sd.doubleSided;
                     d["source_id"] = sd.sourceId;
                     d["material_guid"] = sd.materialGuid;
+                    d["base_color_texture_guid"] = sd.baseColorTextureGuid;
                     result.append(d);
                 }
                 return result;

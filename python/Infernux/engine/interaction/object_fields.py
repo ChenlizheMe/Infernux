@@ -507,7 +507,13 @@ class AssetReferenceFieldModel(ObjectReferenceFieldModel):
         current_guid = current["guid"].casefold()
         candidate_guid = candidate["guid"].casefold()
         if current_guid and candidate_guid:
-            return current_guid == candidate_guid
+            if current_guid != candidate_guid:
+                return False
+            if self.asset_type == "Mesh":
+                from Infernux.lib._Infernux import split_model_mesh_reference
+                return (split_model_mesh_reference(current["path_hint"])[1]
+                        == split_model_mesh_reference(candidate["path_hint"])[1])
+            return True
         current_builtin = current["builtin"].casefold()
         candidate_builtin = candidate["builtin"].casefold()
         if current_builtin and candidate_builtin:

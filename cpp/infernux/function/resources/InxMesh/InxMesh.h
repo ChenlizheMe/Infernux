@@ -66,6 +66,7 @@ struct MaterialSlotData
     // Empty for unnamed/ambiguous materials; never substitute a slot index.
     std::string sourceId;
     std::string materialGuid; ///< Optional importer-level external material binding.
+    std::string baseColorTextureGuid; ///< Imported texture identity, never a source path.
 };
 
 /// Source hierarchy in parent-before-child order, including transform-only
@@ -230,6 +231,11 @@ class InxMesh
     /// Create a detached material from one imported source slot. The renderer
     /// and editor extraction use the same conversion; this does not save an asset.
     [[nodiscard]] std::shared_ptr<InxMaterial> CreateMaterialCopy(uint32_t slot) const;
+    [[nodiscard]] std::vector<std::string> GetModelNodePath(size_t index) const;
+    [[nodiscard]] int32_t RequireModelNode(const std::vector<std::string> &path) const;
+    // Detached compact local geometry for previews/tools. Scene renderers share
+    // the source asset and persist its GUID + node path instead of this copy.
+    [[nodiscard]] std::shared_ptr<InxMesh> CreateModelNodeCopy(const std::vector<std::string> &path) const;
     [[nodiscard]] bool MatchesMaterialCopy(uint32_t slot, const InxMaterial &material) const;
 
     // ── Node group metadata (for per-object hierarchy) ────────────────

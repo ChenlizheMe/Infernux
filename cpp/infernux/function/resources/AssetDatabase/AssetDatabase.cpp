@@ -44,6 +44,20 @@ bool IsCanonicalAssetGuid(std::string_view value)
            });
 }
 
+template <typename Snapshot>
+std::function<std::string(const std::string &)> ModelTextureResolver(std::shared_ptr<Snapshot> snapshot)
+{
+    return [snapshot = std::move(snapshot)](const std::string &path) -> std::string {
+        const auto found = snapshot->pathToGuid.find(FilesystemPathKey(path));
+        if (found == snapshot->pathToGuid.end())
+            throw std::invalid_argument("model texture is not a registered project asset: " + path);
+        const auto metadata = snapshot->metas.find(found->second);
+        if (metadata == snapshot->metas.end() || metadata->second->GetResourceType() != ResourceType::Texture)
+            throw std::invalid_argument("model texture path does not identify a Texture asset: " + path);
+        return found->second;
+    };
+}
+
 void ValidateImportedDependencyIdentities(const ImportArtifact &artifact, const std::string &sourcePath)
 {
     if (!artifact.dependenciesAuthoritative)
@@ -64,6 +78,11 @@ void ResolveImportedDependencyPathHints(ImportArtifact &artifact,
                                         const std::unordered_map<std::string, std::string> &pathToGuid,
                                         const std::string &sourcePath)
 {
+    for (const auto &[path, guid] : artifact.resolvedTextureSources) {
+        const auto found = pathToGuid.find(FilesystemPathKey(path));
+        if (found == pathToGuid.end() || found->second != guid)
+            throw std::runtime_error("model texture identity changed during import: " + path);
+    }
     if (artifact.dependencyPathHints.empty())
         return;
 
@@ -1569,6 +1588,20 @@ bool AssetDatabase::ContinuePendingMetadataMerge(const std::shared_ptr<PendingRe
     if (state->workerImports.size() > std::numeric_limits<uint32_t>::max())
         throw std::overflow_error("AssetDatabase importer batch exceeds JobSystem capacity");
 
+    // One immutable catalog for the batch, including freshly assigned GUIDs
+    // whose sidecars have not yet been written. Workers never query live state.
+    std::shared_ptr<QuerySnapshot> textureCatalog;
+    for (auto &item : state->workerImports) {
+        if (item.request.resourceType != ResourceType::Mesh)
+            continue;
+        if (!textureCatalog) {
+            textureCatalog = std::make_shared<QuerySnapshot>();
+            textureCatalog->pathToGuid = workingSet.pathToGuid;
+            textureCatalog->metas.insert(workingSet.metas.begin(), workingSet.metas.end());
+        }
+        item.request.resolveTextureGuid = ModelTextureResolver(textureCatalog);
+    }
+
     state->phase = PendingRefreshCommit::Phase::Import;
     state->importStarted = std::chrono::steady_clock::now();
     state->importJobs =
@@ -2763,6 +2796,8 @@ ImportRequest AssetDatabase::MakeImportRequest(const std::string &guid, const st
     request.resourceType = GetResourceTypeForPath(path);
     request.metadata = metadata;
     request.isReimport = isReimport;
+    if (request.resourceType == ResourceType::Mesh)
+        request.resolveTextureGuid = ModelTextureResolver(LoadQuerySnapshot());
     return request;
 }
 

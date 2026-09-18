@@ -400,6 +400,10 @@ class MeshRenderer(BuiltinComponent):
                     return [names[slot]]
                 sub_name = info.get("name", "")
                 return [sub_name] if sub_name else []
+            node_group = cpp.model_node_group if cpp is not None else -1
+            if node_group >= 0:
+                slots = sorted({int(info["material_slot"]) for info in self.get_submesh_infos()})
+                return [names[slot] if slot < len(names) else f"Material {slot}" for slot in slots]
             return names
         return []
 
@@ -413,8 +417,11 @@ class MeshRenderer(BuiltinComponent):
         if submesh_index >= 0 and submesh_index < mesh.submesh_count:
             return [mesh.get_submesh_info(submesh_index)]
         result = []
+        node_group = cpp.model_node_group if cpp is not None else -1
         for i in range(mesh.submesh_count):
-            result.append(mesh.get_submesh_info(i))
+            info = mesh.get_submesh_info(i)
+            if node_group < 0 or int(info["node_group"]) == node_group:
+                result.append(info)
         return result
 
     @property
@@ -605,6 +612,15 @@ class MeshRenderer(BuiltinComponent):
         cpp = self._cpp_component
         if cpp is not None and hasattr(cpp, "set_mesh_asset_guid"):
             cpp.set_mesh_asset_guid(guid or "")
+
+    def set_model_mesh(self, guid: str, node_path: list[str]) -> None:
+        """Use one source model node's local mesh, retaining its source identity."""
+        self._require_cpp_component().set_model_mesh(guid, node_path)
+
+    @property
+    def model_node_path(self) -> list[str]:
+        """Source node identity, empty for a whole model or an ordinary mesh."""
+        return self._require_cpp_component().model_node_path
 
     def clear_mesh_asset(self) -> None:
         """Clear the assigned asset mesh."""

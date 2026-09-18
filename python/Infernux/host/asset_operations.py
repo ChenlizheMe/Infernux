@@ -285,6 +285,10 @@ def _inspect_model(asset_guid: str) -> dict[str, object]:
                 "matrix_layout": "rows",
                 "node_identity": "import_local_index",
                 "nodes": list(mesh.model_nodes),
+                "meshes": [
+                    {"name": node["name"], "node_path": mesh.native.get_model_node_path(index)}
+                    for index, node in enumerate(mesh.model_nodes) if node["node_group"] >= 0
+                ],
                 "material_slots": list(mesh.material_slots),
                 "material_sources": mesh.native.get_material_slot_data(),
                 "bone_count": mesh.native.skinned_bone_count,

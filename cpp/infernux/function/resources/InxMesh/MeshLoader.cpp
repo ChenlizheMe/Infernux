@@ -166,7 +166,8 @@ static void CollectMeshes(const aiNode *node, std::vector<CollectedMesh> &outMes
 // ============================================================================
 
 static std::shared_ptr<InxMesh> ConvertScene(const aiScene *scene, const MeshImportSettings &settings,
-                                             const std::string &name)
+                                             const std::string &name,
+                                             std::vector<MeshSourceImportResult::TextureSource> &textureSources)
 {
     auto mesh = std::make_shared<InxMesh>(name);
 
@@ -316,6 +317,24 @@ static std::shared_ptr<InxMesh> ConvertScene(const aiScene *scene, const MeshImp
                 matName = aiName.C_Str();
                 if (!matName.empty() && materialNameCounts.at(matName) == 1)
                     slotData.sourceId = "material/" + matName;
+
+                if (settings.materialImportMode != "none" && !settings.materialRemaps.contains(slotData.sourceId)) {
+                    const auto semantic = aiMat->GetTextureCount(aiTextureType_BASE_COLOR)
+                                              ? aiTextureType_BASE_COLOR : aiTextureType_DIFFUSE;
+                    if (aiMat->GetTextureCount(semantic)) {
+                        aiString texturePath;
+                        unsigned int uvChannel = 0;
+                        if (aiMat->GetTexture(semantic, 0, &texturePath, nullptr, &uvChannel) != AI_SUCCESS)
+                            throw std::runtime_error("model base color texture could not be read");
+                        // Embedded image publication is a separate subasset task.
+                        // Do not mistake '*N' for a project file path.
+                        if (texturePath.length && texturePath.C_Str()[0] != '*') {
+                            if (uvChannel != 0)
+                                throw std::invalid_argument("model base color texture currently requires UV channel 0");
+                            textureSources.push_back({slot, texturePath.C_Str()});
+                        }
+                    }
+                }
 
                 // Diffuse / base colour
                 aiColor4D diffuse;
@@ -486,11 +505,11 @@ MeshSourceImportResult MeshLoader::ImportSourceDetailed(const std::string &fileP
                                  "': " + importer.GetErrorString());
 
     std::string name = FromFsPath(fsPath.stem());
-    auto mesh = ConvertScene(scene, settings, name);
+    MeshSourceImportResult result;
+    auto mesh = ConvertScene(scene, settings, name, result.baseColorTextureSources);
     mesh->SetGuid(guid);
     mesh->SetFilePath(filePath);
 
-    MeshSourceImportResult result;
     result.mesh = std::move(mesh);
     // Report the published geometry/slot layout, including node instances,
     // rather than unused Assimp materials or uninstanced source mesh counts.

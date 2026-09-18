@@ -50,6 +50,7 @@ bool InxMesh::MatchesMaterialCopy(uint32_t slot, const InxMaterial &material) co
     const auto path = m_filePath.empty() ? std::string() : m_filePath + "::submat:" + std::to_string(slot);
     return material.GetName() == name && material.GetFilePath() == path && state == material.GetRenderState() &&
            matches("baseColor", SourceBaseColor(data)) && matches("emissionColor", data.emissionColor) &&
+           matches("texSampler", data.baseColorTextureGuid.empty() ? std::string("white") : data.baseColorTextureGuid) &&
            matches("metallic", data.metallic) && matches("smoothness", data.smoothness);
 }
 
@@ -66,6 +67,7 @@ std::shared_ptr<InxMaterial> InxMesh::CreateMaterialCopy(uint32_t slot) const
     material->SetColor("emissionColor", data.emissionColor);
     material->SetFloat("metallic", data.metallic);
     material->SetFloat("smoothness", data.smoothness);
+    material->SetTextureGuid("texSampler", data.baseColorTextureGuid.empty() ? "white" : data.baseColorTextureGuid);
     auto state = material->GetRenderState();
     ApplySourceSurface(state, data);
     material->SetRenderState(state);

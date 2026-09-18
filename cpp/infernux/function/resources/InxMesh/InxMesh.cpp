@@ -12,6 +12,58 @@
 namespace infernux
 {
 
+std::vector<std::string> InxMesh::GetModelNodePath(size_t index) const
+{
+    std::vector<std::string> path;
+    for (int32_t node = static_cast<int32_t>(index); node >= 0; node = m_modelNodes.at(node).parentIndex)
+        path.push_back(m_modelNodes.at(node).name);
+    std::reverse(path.begin(), path.end());
+    return path;
+}
+
+int32_t InxMesh::RequireModelNode(const std::vector<std::string> &path) const
+{
+    int32_t found = -1;
+    for (size_t i = 0; i < m_modelNodes.size(); ++i) {
+        if (m_modelNodes[i].nodeGroup < 0 || GetModelNodePath(i) != path)
+            continue;
+        if (found >= 0)
+            throw std::invalid_argument("Ambiguous model mesh node path");
+        found = static_cast<int32_t>(i);
+    }
+    if (found < 0 || !m_modelSourceGeometry)
+        throw std::invalid_argument("Model mesh node no longer exists; choose an existing mesh");
+    return found;
+}
+
+std::shared_ptr<InxMesh> InxMesh::CreateModelNodeCopy(const std::vector<std::string> &path) const
+{
+    const auto &node = m_modelNodes[RequireModelNode(path)];
+    const auto &source = *m_modelSourceGeometry;
+    std::vector<Vertex> vertices;
+    std::vector<uint32_t> indices;
+    std::vector<SubMesh> subMeshes;
+    for (const auto &sub : source.subMeshes) {
+        if (sub.nodeGroup != static_cast<uint32_t>(node.nodeGroup))
+            continue;
+        auto copy = sub;
+        copy.vertexStart = static_cast<uint32_t>(vertices.size());
+        copy.indexStart = static_cast<uint32_t>(indices.size());
+        copy.nodeGroup = 0;
+        vertices.insert(vertices.end(), source.vertices.begin() + sub.vertexStart,
+                        source.vertices.begin() + sub.vertexStart + sub.vertexCount);
+        for (uint32_t i = 0; i < sub.indexCount; ++i)
+            indices.push_back(source.indices[sub.indexStart + i] - sub.vertexStart + copy.vertexStart);
+        subMeshes.push_back(std::move(copy));
+    }
+    auto result = std::make_shared<InxMesh>();
+    result->SetName(node.name);
+    result->SetData(std::move(vertices), std::move(indices), std::move(subMeshes));
+    result->SetMaterialSlotNames(m_materialSlotNames);
+    result->SetMaterialSlotData(m_materialSlotData);
+    return result;
+}
+
 size_t InxMesh::GetRuntimeMemoryBytes() const noexcept
 {
     size_t bytes = sizeof(*this) + m_name.capacity() + m_guid.capacity() + m_filePath.capacity();

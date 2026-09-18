@@ -340,6 +340,7 @@ class MeshRenderer : public Component
     /// Imported hierarchy instances consume node-local geometry; ordinary mesh
     /// assignments retain the merged model-space view. Persisted with the binding.
     void SetModelNodePath(std::vector<std::string> path);
+    [[nodiscard]] const std::vector<std::string> &GetModelNodePath() const noexcept { return m_modelNodePath; }
     [[nodiscard]] bool IsModelNodeLocal() const noexcept
     {
         return !m_modelNodePath.empty();

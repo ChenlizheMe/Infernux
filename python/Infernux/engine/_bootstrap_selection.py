@@ -11,6 +11,7 @@ methods, and panel/manager references live on the bootstrap instance.
 
 
 _PROJECT_SUBRESOURCE_TOKENS = {
+    "::submesh:": "submesh",
     "::submat:": "submaterial",
     "::subbone:": "subbone",
     "::subanim:": "subanimation",
@@ -42,6 +43,7 @@ def _project_path_for_target(target) -> str:
     if target.domain is not SelectionDomain.ASSET_SUBRESOURCE:
         return ""
     token = {
+        "submesh": "::submesh:",
         "submaterial": "::submat:",
         "subbone": "::subbone:",
         "subanimation": "::subanim:",

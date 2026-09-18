@@ -59,7 +59,11 @@ def _try_get_cpp_mesh_preview(native: Any, norm_path: str) -> int:
     # selected prefab refreshes without polling or ordering by wall-clock mtime.
     from Infernux.core.assets import AssetManager
 
-    dependency_stamp = AssetManager.preview_dependency_signature(norm_path)
+    dependency_stamp = AssetManager.preview_dependency_signature(norm_path.split("::submesh:", 1)[0])
+    if "::submesh:" in norm_path:
+        from Infernux.lib import AssetRegistry
+        mesh = AssetRegistry.instance().load_mesh(norm_path.split("::submesh:", 1)[0])
+        dependency_stamp = mesh.generation if mesh is not None else 1
     native.pump_preview_tasks()
     return int(
         native.query_or_schedule_mesh_preview(
@@ -214,7 +218,7 @@ def get_resource_preview_texture_id(panel: Any, file_path: str, preview_size: in
         return _try_get_cpp_material_preview_texture(
             native, norm_path, material_json=material_json, file_mtime_hint=0)
 
-    if ext in _MODEL_EXTS or ext in _PREFAB_EXTS:
+    if "::submesh:" in norm_path or ext in _MODEL_EXTS or ext in _PREFAB_EXTS:
         return _try_get_cpp_mesh_preview(native, norm_path)
 
     return 0
@@ -246,7 +250,7 @@ def render_resource_preview_rect(ctx: Any, panel: Any, file_path: str, width: fl
         if tex_id != 0:
             src_w = 200
             src_h = 200
-    elif ext in _MODEL_EXTS or ext in _PREFAB_EXTS:
+    elif "::submesh:" in norm_path or ext in _MODEL_EXTS or ext in _PREFAB_EXTS:
         tex_id = _try_get_cpp_mesh_preview(native, norm_path)
         if tex_id == 0:
             return False
