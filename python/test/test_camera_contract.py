@@ -90,13 +90,12 @@ def test_wrapper_culling_mask_writes_the_native_authoritative_field(scene):
 def test_physical_camera_rejects_invalid_sensor_and_lens_values(scene):
     camera = scene.create_game_object("PhysicalCameraContract").add_component("Camera")
     before = camera.serialize_document()
-    for sensor in (lib.Vector2(0.0, 24.0), lib.Vector2(-1.0, 24.0),
-                   lib.Vector2(float("nan"), 24.0)):
+    for sensor in (lib.Vector2(0.0, 24.0), lib.Vector2(-1.0, 24.0)):
         with pytest.raises((TypeError, ValueError)):
             camera.sensor_size = sensor
         assert camera.serialize_document() == before
-    with pytest.raises((TypeError, ValueError)):
-        camera.lens_shift = lib.Vector2(float("nan"), 0.0)
+    with pytest.raises(ValueError):
+        lib.Vector2(float("nan"), 0.0)
     assert camera.serialize_document() == before
 
 
