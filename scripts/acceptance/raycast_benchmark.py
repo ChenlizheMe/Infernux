@@ -58,6 +58,11 @@ def _parser() -> argparse.ArgumentParser:
         help="optional comma-separated counts of temporary static BoxColliders; each count is measured as a separate world-size row",
     )
     parser.add_argument(
+        "--triangle-counts",
+        default="0",
+        help="optional target triangle counts for temporary static grid MeshColliders; each count is measured as a separate non-convex mesh row",
+    )
+    parser.add_argument(
         "--pattern",
         choices=("all_hit", "sparse", "all_miss"),
         default="all_hit",
@@ -95,6 +100,54 @@ def _destroy_static_box_matrix(scene, objects: list) -> None:
         NativePhysics.sync_transforms()
 
 
+def _create_static_triangle_mesh(scene, target_triangles: int):
+    """Create a temporary static non-convex grid mesh for query-growth measurements."""
+    if target_triangles <= 0:
+        return None, 0
+    cells = max(1, int(np.ceil(np.sqrt(target_triangles / 2.0))))
+    axis = np.linspace(-4.0, 4.0, cells + 1, dtype=np.float32)
+    xx, zz = np.meshgrid(axis, axis, indexing="xy")
+    positions = np.column_stack((xx.reshape(-1), np.zeros((xx.size,), dtype=np.float32), zz.reshape(-1)))
+    normals = np.zeros_like(positions)
+    normals[:, 1] = 1.0
+    uvs = np.column_stack((
+        np.repeat(np.linspace(0.0, 1.0, cells + 1, dtype=np.float32), cells + 1),
+        np.tile(np.linspace(0.0, 1.0, cells + 1, dtype=np.float32), cells + 1),
+    ))
+    row = np.arange(cells, dtype=np.uint32)[:, None]
+    col = np.arange(cells, dtype=np.uint32)[None, :]
+    base = row * np.uint32(cells + 1) + col
+    indices = np.stack(
+        (
+            base,
+            base + np.uint32(cells + 1),
+            base + np.uint32(1),
+            base + np.uint32(1),
+            base + np.uint32(cells + 1),
+            base + np.uint32(cells + 2),
+        ),
+        axis=-1,
+    ).reshape(-1).astype(np.uint32, copy=False)
+    obj = scene.create_game_object(f"__RaycastBenchmarkMesh_{target_triangles}")
+    obj.transform.position = Vector3(100.0, 0.0, 100.0)
+    renderer = obj.add_component("MeshRenderer")
+    renderer.set_inline_mesh_data(positions, normals, uvs, indices, "triangle")
+    collider = obj.add_component("MeshCollider")
+    NativePhysics.sync_transforms()
+    if collider.is_cooking:
+        raise RuntimeError(f"static benchmark mesh did not finish cooking: target={target_triangles}")
+    if collider.shape_error:
+        raise RuntimeError(f"static benchmark mesh cooking failed: {collider.shape_error}")
+    return obj, int(indices.size // 3)
+
+
+def _destroy_static_triangle_mesh(scene, obj) -> None:
+    if obj is not None:
+        scene.destroy_game_object(obj)
+        scene.process_pending_destroys()
+        NativePhysics.sync_transforms()
+
+
 def main() -> int:
     args = _parser().parse_args()
     project = resolved_path(args.project)
@@ -109,10 +162,13 @@ def main() -> int:
         raise FileNotFoundError(scene_path)
     counts = tuple(sorted({int(item) for item in str(args.counts).split(",") if item}))
     collider_counts = tuple(sorted({int(item) for item in str(args.collider_counts).split(",") if item}))
+    triangle_counts = tuple(sorted({int(item) for item in str(args.triangle_counts).split(",") if item}))
     if not counts or any(item <= 0 for item in counts):
         raise ValueError("--counts must contain positive integers")
     if not collider_counts or any(item < 0 for item in collider_counts):
         raise ValueError("--collider-counts must contain non-negative integers")
+    if not triangle_counts or any(item < 0 for item in triangle_counts):
+        raise ValueError("--triangle-counts must contain non-negative integers")
     if args.samples <= 0 or args.warmup < 0:
         raise ValueError("--samples must be positive and --warmup cannot be negative")
 
@@ -158,42 +214,49 @@ def main() -> int:
         for collider_count in collider_counts:
             temporary_colliders = _create_static_box_matrix(active_scene, collider_count)
             try:
-                for count in counts:
-                    origins = np.zeros((count, 3), dtype=np.float32)
-                    origins[:, 1] = 5.0
-                    # Spread the probes over the scene so dense and sparse worlds can
-                    # use the same benchmark without creating one Python ray object per
-                    # query.
-                    side = max(1, int(np.ceil(np.sqrt(count))))
-                    axis = (np.arange(count, dtype=np.float32) % side) / max(1, side - 1)
-                    origins[:, 0] = axis * 8.0 - 4.0
-                    origins[:, 2] = (np.arange(count, dtype=np.float32) // side) * 8.0 / side - 4.0
-                    if args.pattern == "all_miss":
-                        origins[:, 0] = 1000.0
-                        origins[:, 2] = 1000.0
-                    elif args.pattern == "sparse":
-                        miss = (np.arange(count, dtype=np.int64) % 8) != 0
-                        origins[miss, 0] = 1000.0
-                        origins[miss, 2] = 1000.0
-                    directions = np.zeros_like(origins)
-                    directions[:, 1] = -1.0
-                    output = _output(count)
-                    for _ in range(args.warmup):
-                        inx.physics.Physics.raycast_batch(origins, directions, output, max_distance=20.0)
-                    timings = []
-                    for _ in range(args.samples):
-                        start = time.perf_counter_ns()
-                        inx.physics.Physics.raycast_batch(origins, directions, output, max_distance=20.0)
-                        timings.append((time.perf_counter_ns() - start) / 1_000_000.0)
-                    measurements.append({
-                        "collider_count": collider_count,
-                        "count": count,
-                        "p50_ms": float(np.percentile(timings, 50)),
-                        "p95_ms": float(np.percentile(timings, 95)),
-                        "max_ms": float(max(timings)),
-                        "rays_per_second_p50": float(count / (np.percentile(timings, 50) / 1000.0)),
-                        "hits_last_sample": int(output["hit"].sum()),
-                    })
+                for triangle_target in triangle_counts:
+                    temporary_mesh, triangle_count = _create_static_triangle_mesh(active_scene, triangle_target)
+                    try:
+                        for count in counts:
+                            origins = np.zeros((count, 3), dtype=np.float32)
+                            origins[:, 1] = 5.0
+                            # Keep the temporary mesh away from authored scene
+                            # geometry so its row measures the static non-convex path.
+                            origin_offset = 100.0 if triangle_count else 0.0
+                            side = max(1, int(np.ceil(np.sqrt(count))))
+                            axis = (np.arange(count, dtype=np.float32) % side) / max(1, side - 1)
+                            origins[:, 0] = origin_offset + axis * 8.0 - 4.0
+                            origins[:, 2] = origin_offset + (np.arange(count, dtype=np.float32) // side) * 8.0 / side - 4.0
+                            if args.pattern == "all_miss":
+                                origins[:, 0] = 1000.0
+                                origins[:, 2] = 1000.0
+                            elif args.pattern == "sparse":
+                                miss = (np.arange(count, dtype=np.int64) % 8) != 0
+                                origins[miss, 0] = 1000.0
+                                origins[miss, 2] = 1000.0
+                            directions = np.zeros_like(origins)
+                            directions[:, 1] = -1.0
+                            output = _output(count)
+                            for _ in range(args.warmup):
+                                inx.physics.Physics.raycast_batch(origins, directions, output, max_distance=20.0)
+                            timings = []
+                            for _ in range(args.samples):
+                                start = time.perf_counter_ns()
+                                inx.physics.Physics.raycast_batch(origins, directions, output, max_distance=20.0)
+                                timings.append((time.perf_counter_ns() - start) / 1_000_000.0)
+                            measurements.append({
+                                "collider_count": collider_count,
+                                "triangle_target": triangle_target,
+                                "triangle_count": triangle_count,
+                                "count": count,
+                                "p50_ms": float(np.percentile(timings, 50)),
+                                "p95_ms": float(np.percentile(timings, 95)),
+                                "max_ms": float(max(timings)),
+                                "rays_per_second_p50": float(count / (np.percentile(timings, 50) / 1000.0)),
+                                "hits_last_sample": int(output["hit"].sum()),
+                            })
+                    finally:
+                        _destroy_static_triangle_mesh(active_scene, temporary_mesh)
             finally:
                 _destroy_static_box_matrix(active_scene, temporary_colliders)
         state["result"] = measurements
@@ -217,6 +280,7 @@ def main() -> int:
         "samples": args.samples,
         "warmup": args.warmup,
         "collider_counts": list(collider_counts),
+        "triangle_counts": list(triangle_counts),
         "error": state["error"],
         "runtime_errors": errors,
         "measurements": state["result"] or [],
