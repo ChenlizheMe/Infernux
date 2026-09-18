@@ -10,7 +10,7 @@ def get_blender_executable() -> str:
 
 
 def export_script() -> str:
-    return str(Path(__file__).with_name("_blender_export.py").resolve())
+    return resolved_path(Path(__file__).with_name("_blender_export.py"))
 
 
 def configure_database(database) -> None:

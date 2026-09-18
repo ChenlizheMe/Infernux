@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+from Infernux.engine.path_utils import resolved_path
+
 
 def find_material_candidates(model_path, slots, paths, assets_root, *, scope="local", naming="material"):
     """Return every exact-name candidate; never assign or break a tie.
@@ -14,10 +16,10 @@ def find_material_candidates(model_path, slots, paths, assets_root, *, scope="lo
         raise ValueError(f"Unknown material search scope: {scope}")
     if naming not in {"material", "model_material"}:
         raise ValueError(f"Unknown material naming rule: {naming}")
-    root = Path(assets_root).resolve()
+    root = Path(resolved_path(assets_root))
     def absolute(path):
         value = Path(path)
-        return (value if value.is_absolute() else root.parent / value).resolve()
+        return Path(resolved_path(value if value.is_absolute() else root.parent / value))
     model = absolute(model_path)
     by_name = {}
     for raw in paths:

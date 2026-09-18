@@ -53,7 +53,7 @@ from .asset_execution_layer import AssetAccessMode, get_asset_execution_layer
 from .asset_resource_preview import render_resource_preview_rect
 from .imgui_keys import KEY_LEFT_CTRL, KEY_RIGHT_CTRL
 from Infernux.engine.texture_task_bridge import texture_stamp, query_or_schedule_texture
-from Infernux.engine.path_utils import resolved_path, same_path
+from Infernux.engine.path_utils import relative_path, resolved_path, same_path
 from Infernux.debug import Debug
 
 
@@ -2745,7 +2745,7 @@ def _render_model_material_search(ctx, state, mesh, slot_data, set_remap):
         elif len(matches) > 1:
             ctx.text_wrapped(t("asset.material_search_ambiguous"))
         for path, guid in matches:
-            ctx.text_wrapped(os.path.relpath(path, database.assets_root))
+            ctx.text_wrapped(relative_path(path, database.assets_root))
             label = t("asset.material_search_use")
             clicked = ctx.button(f"{label}##material_search_{source}_{guid}")
             ctx.record_semantic_item("button", label, True, f"asset.mesh.material.search.use.{source}.{guid}")
