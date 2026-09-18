@@ -224,7 +224,9 @@ def test_camera_declarations_match_native_defaults_and_wrapper_metadata(scene):
     camera = obj.add_component("Camera")
     document = camera.serialize_document()
     descriptor = native._semantic_catalog_snapshot().type_document("native:infernux.Camera")
-    assert len(descriptor["fields"]) == 13
+    # The semantic catalog includes the four physical-camera fields added to
+    # the Camera contract; the old 13-field count predates that API.
+    assert len(descriptor["fields"]) == 17
     assert any(record["type_id"] == descriptor["type_guid"] for record in obj.serialize_document()["components"])
     for field in descriptor["fields"]:
         attributes = field["attributes"]

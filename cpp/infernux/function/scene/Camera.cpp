@@ -99,6 +99,10 @@ SemanticTypeDescriptor DescribeCamera()
     add("lens_shift", "lensShift", "VEC2", {0.0, 0.0});
     enumeration("gate_fit", "gateFit", "PhysicalGateFit", {"None", "Vertical", "Horizontal", "Fill", "Overscan"},
                 {"camera.gate.none", "camera.gate.vertical", "camera.gate.horizontal", "camera.gate.fill", "camera.gate.overscan"});
+    // The native Camera defaults to the Unity-compatible Horizontal gate fit.
+    // Keep the semantic catalog's default in lockstep with the actual C++
+    // object rather than inheriting the first enum member (None).
+    type.fields.back().attributes["default"]["name"] = "Horizontal";
     add("aspect_ratio", "aspectRatio", "FLOAT", 16.0 / 9.0);
     add("orthographic_size", "orthoSize", "FLOAT", 5.0);
     add("near_clip", "nearClip", "FLOAT", 0.01)["header"] = "camera.section.clipping";

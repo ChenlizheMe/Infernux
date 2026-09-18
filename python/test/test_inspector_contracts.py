@@ -24,7 +24,11 @@ def test_generic_native_inspector_uses_declared_schema(scene):
     fields = inspector_components._declared_native_fields(camera)
     by_name = {name: (schema, metadata, value) for name, schema, metadata, value in fields}
 
-    assert len(by_name) == 13
+    # Camera now exposes the physical-camera contract (focal length, sensor
+    # size, lens shift and gate fit) in addition to the perspective fields.
+    # Keep this assertion tied to the declared schema rather than the legacy
+    # pre-physical-camera count.
+    assert len(by_name) == 17
     assert by_name["targetTextureGuid"][1].asset_type == "RenderTexture"
     assert by_name["targetTextureGuid"][2] is None
     assert by_name["fov"][0].attributes["range"] == (1.0, 179.0)
