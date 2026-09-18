@@ -138,32 +138,16 @@ class Material:
 
     @staticmethod
     def _load_embedded_model_material_slot(model_path: str, slot: int, virtual_path: str) -> Optional["Material"]:
-        """Build a DefaultLit material from Assimp-extracted slot data (FBX inline materials)."""
-        from Infernux.lib import AssetRegistry, InxMaterial
+        """Use the same source conversion as model rendering and material extraction."""
+        from Infernux.lib import AssetRegistry
 
         mesh = AssetRegistry.instance().load_mesh(model_path)
         if mesh is None:
             return None
-        slots = mesh.get_material_slot_data()
-        if slot >= len(slots):
+        if slot >= len(mesh.get_material_slot_data()):
             return None
-        slot_data = slots[slot]
-        native = InxMaterial.create_default_lit()
+        native = mesh.create_material_copy(slot)
         native.is_builtin = False
-        base_color = slot_data["base_color"]
-        emission_color = slot_data["emission_color"]
-        native.set_color("baseColor", tuple(float(value) for value in base_color))
-        native.set_color(
-            "emissionColor", tuple(float(value) for value in emission_color)
-        )
-        native.set_float("metallic", float(slot_data["metallic"]))
-        native.set_float("smoothness", float(slot_data["smoothness"]))
-        names = mesh.material_slot_names
-        native.name = (
-            str(names[slot])
-            if slot < len(names) and names[slot]
-            else f"EmbeddedMaterial_{slot}"
-        )
         native.file_path = virtual_path
         return Material.from_native(native)
 

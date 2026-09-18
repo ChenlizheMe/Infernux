@@ -882,17 +882,7 @@ std::shared_ptr<InxMaterial> MaterialPreviewer::BuildEmbeddedPreviewMaterial(con
     if (slotIndex >= static_cast<uint32_t>(slotDataVec.size()))
         return nullptr;
 
-    const auto &sd = slotDataVec[slotIndex];
-    auto defaultMat = AssetRegistry::Instance().GetBuiltinMaterial("DefaultLit");
-    auto mat = defaultMat ? defaultMat->Clone() : InxMaterial::CreateDefaultLit();
-    if (!mat)
-        return nullptr;
-    mat->SetColor("baseColor", sd.baseColor);
-    mat->SetColor("emissionColor", sd.emissionColor);
-    mat->SetFloat("metallic", sd.metallic);
-    mat->SetFloat("smoothness", sd.smoothness);
-
-    return mat;
+    return mesh->CreateMaterialCopy(slotIndex);
 }
 
 } // namespace infernux

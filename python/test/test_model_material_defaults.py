@@ -57,6 +57,68 @@ def test_material_copy_matches_renderer_without_sharing_edits(imported_model):
         mesh.create_material_copy(999)
 
 
+@pytest.mark.parametrize("alpha_mode", ["OPAQUE", "MASK", "BLEND"])
+@pytest.mark.parametrize("double_sided", [False, True])
+def test_source_surface_survives_import_copy_and_binary_reload(imported_model, alpha_mode, double_sided):
+    from Infernux.core.material import Material
+    from Infernux.lib import AssetRegistry, InxMaterial
+
+    renderer, document, source, database, _ = imported_model
+    authored = document["materials"][0]
+    authored.update(alphaMode=alpha_mode, alphaCutoff=0.37, doubleSided=double_sided)
+    authored["pbrMetallicRoughness"]["baseColorFactor"][3] = 0.4
+    source.write_text(json.dumps(document), encoding="utf-8")
+    result = AssetManager.reimport_asset(str(source), database=database)
+    assert result, result.error
+    registry = AssetRegistry.instance()
+    mesh = registry.load_mesh(str(source))
+    data = mesh.get_material_slot_data()[0]
+    assert data["alpha_mode"] == alpha_mode.lower()
+    assert data["double_sided"] is double_sided
+    assert data["alpha_cutoff"] == pytest.approx(0.37)
+    assert data["base_color"][3] == pytest.approx(0.4)  # Not 0.4 squared by Assimp OPACITY.
+
+    def check(material):
+        state = material.get_render_state()
+        assert state.cull_mode == (0 if double_sided else 2)
+        assert state.blend_enable is (alpha_mode == "BLEND")
+        assert state.depth_write_enable is (alpha_mode != "BLEND")
+        assert state.alpha_clip_enabled is (alpha_mode == "MASK")
+        assert state.render_queue == {"OPAQUE": 2000, "MASK": 2450, "BLEND": 3000}[alpha_mode]
+        assert material.get_float("_AlphaClipThreshold") == pytest.approx(0.37 if alpha_mode == "MASK" else 0)
+        assert material.get_color("baseColor").w == pytest.approx(1 if alpha_mode == "OPAQUE" else 0.4)
+        if alpha_mode == "BLEND":
+            assert state.src_color_blend_factor == 6
+            assert state.dst_color_blend_factor == 7
+            assert state.src_alpha_blend_factor == 1
+            assert state.dst_alpha_blend_factor == 7
+
+    check(renderer.get_material(0))
+    check(mesh.create_material_copy(0))
+    check(Material.load(f"{source}::submat:0").native)
+    restored = InxMaterial.create_default_lit()
+    assert restored.deserialize_document(mesh.create_material_copy(0).serialize_document())
+    check(restored)  # Standalone extracted material serialization.
+    assert registry.reload_asset(mesh.guid)
+    check(registry.load_mesh(str(source)).create_material_copy(0))
+
+    # Authored native mesh and Player-oriented binary data retain the same surface.
+    native_source = source.with_suffix(".inxmesh")
+    native_source.write_bytes(mesh.serialize_source())
+    imported = AssetManager.import_asset(str(native_source), database=database)
+    assert imported, imported.error
+    check(registry.load_mesh(str(native_source)).create_material_copy(0))
+
+    # Reimport resets source defaults, rather than retaining stale transparent state.
+    authored.update(alphaMode="OPAQUE", doubleSided=False)
+    source.write_text(json.dumps(document), encoding="utf-8")
+    result = AssetManager.reimport_asset(str(source), database=database)
+    assert result, result.error
+    state = renderer.get_material(0).get_render_state()
+    assert not state.blend_enable and not state.alpha_clip_enabled
+    assert state.depth_write_enable and state.cull_mode == 2 and state.render_queue == 2000
+
+
 def test_material_extraction_undo_redo_and_independent_asset(imported_model):
     from Infernux.lib import AssetRegistry
     from Infernux.engine.interaction import EditorActionJournal, ProjectAssetCommandService, SelectionService

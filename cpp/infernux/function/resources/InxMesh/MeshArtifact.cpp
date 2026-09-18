@@ -17,6 +17,7 @@ constexpr uint32_t EndianMarker = 0x01020304U;
 constexpr uint32_t ModelNodesV1 = 0x31444f4eU;       // NOD1, optional source-hierarchy section
 constexpr uint32_t ModelNodesLocalV2 = 0x32444f4eU;  // NOD2, geometry is local to each source node
 constexpr uint32_t MaterialBindingsV1 = 0x3142544dU; // MTB1, source identity and external GUID per slot
+constexpr uint32_t MaterialSurfaceV1 = 0x3153544dU;  // MTS1, source surface rendering per slot
 constexpr uint32_t MaximumElementCount = 100'000'000U;
 constexpr uint32_t MaximumStringBytes = 16U * 1024U * 1024U;
 
@@ -272,6 +273,13 @@ std::string MeshArtifact::Serialize(const InxMesh &mesh, std::string_view source
             AppendString(bytes, material.sourceId);
             AppendString(bytes, material.materialGuid);
         }
+        AppendU32(bytes, MaterialSurfaceV1);
+        AppendCount(bytes, slotData.size());
+        for (const auto &material : slotData) {
+            AppendU32(bytes, static_cast<uint32_t>(material.alphaMode));
+            AppendFloat(bytes, material.alphaCutoff);
+            AppendU32(bytes, material.doubleSided ? 1U : 0U);
+        }
     }
     AppendU64(bytes, Fnv1a64(bytes));
     return bytes;
@@ -354,8 +362,26 @@ std::shared_ptr<InxMesh> MeshArtifact::Deserialize(std::string_view bytes, std::
     bool sourceLocal = false;
     bool readNodes = false;
     bool readBindings = false;
+    bool readSurface = false;
     while (!reader.AtEnd()) {
         const uint32_t nodeFormat = reader.ReadU32();
+        if (nodeFormat == MaterialSurfaceV1) {
+            if (readSurface || reader.ReadCount() != slotData.size())
+                throw std::invalid_argument("mesh artifact has invalid material surfaces");
+            readSurface = true;
+            for (auto &material : slotData) {
+                const auto mode = reader.ReadU32();
+                if (mode > static_cast<uint32_t>(ModelAlphaMode::Blend))
+                    throw std::invalid_argument("mesh artifact has invalid material alpha mode");
+                material.alphaMode = static_cast<ModelAlphaMode>(mode);
+                material.alphaCutoff = reader.ReadFloat();
+                const auto sided = reader.ReadU32();
+                if (sided > 1U)
+                    throw std::invalid_argument("mesh artifact has invalid material double-sided flag");
+                material.doubleSided = sided != 0;
+            }
+            continue;
+        }
         if (nodeFormat == MaterialBindingsV1) {
             if (readBindings || reader.ReadCount() != slotData.size())
                 throw std::invalid_argument("mesh artifact has invalid material bindings");

@@ -1147,7 +1147,6 @@ void MeshRenderer::ApplyEmbeddedMaterialsFromMesh(const std::shared_ptr<InxMesh>
     if (sourceSlots.empty())
         sourceSlots.push_back(0);
 
-    const auto &slotNames = mesh->GetMaterialSlotNames();
     const size_t count = std::min(m_materials.size(), sourceSlots.size());
     for (size_t rendererSlot = 0; rendererSlot < count; ++rendererSlot) {
         auto &reference = m_materials[rendererSlot];
@@ -1169,27 +1168,10 @@ void MeshRenderer::ApplyEmbeddedMaterialsFromMesh(const std::shared_ptr<InxMesh>
             m_embeddedMaterialVersions[rendererSlot] = ImportedMaterialState{data.materialGuid, 0};
             continue;
         }
-        const std::string name = sourceSlot < slotNames.size() && !slotNames[sourceSlot].empty()
-                                     ? slotNames[sourceSlot]
-                                     : "EmbeddedMaterial_" + std::to_string(sourceSlot);
-        const std::string sourcePath = mesh->GetFilePath().empty()
-                                           ? std::string()
-                                           : mesh->GetFilePath() + "::submat:" + std::to_string(sourceSlot);
-        if (importedDefault && !reference.HasGuid()) {
-            const auto current = reference.Get();
-            const auto matches = [&current](const char *key, const auto &expected) {
-                const auto *property = current->GetProperty(key);
-                const auto *value =
-                    property ? std::get_if<std::decay_t<decltype(expected)>>(&property->value) : nullptr;
-                return value && *value == expected;
-            };
-            // Geometry-only publications must not allocate fresh materials or
-            // invalidate their pipelines every frame.
-            if (current->GetName() == name && current->GetFilePath() == sourcePath &&
-                matches("baseColor", data.baseColor) && matches("emissionColor", data.emissionColor) &&
-                matches("metallic", data.metallic) && matches("smoothness", data.smoothness))
-                continue;
-        }
+        // Geometry-only publications retain materials and their pipelines;
+        // source surface changes must still publish even when colors match.
+        if (importedDefault && !reference.HasGuid() && mesh->MatchesMaterialCopy(sourceSlot, *reference.Get()))
+            continue;
         SetMaterial(static_cast<uint32_t>(rendererSlot), mesh->CreateMaterialCopy(sourceSlot));
         m_embeddedMaterialVersions[rendererSlot] = ImportedMaterialState{{}, reference.Get()->GetAuthoredVersion()};
     }

@@ -151,6 +151,9 @@ int main()
     material.materialGuid = "abcdabcdabcdabcdabcdabcdabcdabcd";
     material.smoothness = 0.65f;
     material.opacity = 0.4f;
+    material.alphaMode = infernux::ModelAlphaMode::Mask;
+    material.alphaCutoff = 0.37f;
+    material.doubleSided = true;
     source.SetMaterialSlotData({material});
     source.SetNodeNames({"root", "child"});
 
@@ -209,6 +212,9 @@ int main()
     assert(NearlyEqual(restored->GetMaterialSlotData().front().metallic, 0.9f));
     assert(restored->GetMaterialSlotData().front().sourceId == material.sourceId);
     assert(restored->GetMaterialSlotData().front().materialGuid == material.materialGuid);
+    assert(restored->GetMaterialSlotData().front().alphaMode == material.alphaMode);
+    assert(restored->GetMaterialSlotData().front().alphaCutoff == material.alphaCutoff);
+    assert(restored->GetMaterialSlotData().front().doubleSided == material.doubleSided);
 
     RequireInvalid([&] { (void)infernux::MeshArtifact::Deserialize(bytes, "different-source"); });
 

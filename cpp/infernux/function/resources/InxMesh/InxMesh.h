@@ -45,6 +45,13 @@ struct SubMesh
  * so that default materials can be created with correct colours rather
  * than falling back to plain white.
  */
+enum class ModelAlphaMode : uint32_t
+{
+    Opaque,
+    Mask,
+    Blend,
+};
+
 struct MaterialSlotData
 {
     glm::vec4 baseColor{1.0f, 1.0f, 1.0f, 1.0f};     ///< Diffuse / albedo colour (RGBA)
@@ -52,6 +59,9 @@ struct MaterialSlotData
     float metallic = 0.0f;
     float smoothness = 0.5f;
     float opacity = 1.0f;
+    ModelAlphaMode alphaMode = ModelAlphaMode::Opaque;
+    float alphaCutoff = 0.5f;
+    bool doubleSided = false;
     // Import-local material identity: kind + unique authored source name.
     // Empty for unnamed/ambiguous materials; never substitute a slot index.
     std::string sourceId;
@@ -220,6 +230,7 @@ class InxMesh
     /// Create a detached material from one imported source slot. The renderer
     /// and editor extraction use the same conversion; this does not save an asset.
     [[nodiscard]] std::shared_ptr<InxMaterial> CreateMaterialCopy(uint32_t slot) const;
+    [[nodiscard]] bool MatchesMaterialCopy(uint32_t slot, const InxMaterial &material) const;
 
     // ── Node group metadata (for per-object hierarchy) ────────────────
 

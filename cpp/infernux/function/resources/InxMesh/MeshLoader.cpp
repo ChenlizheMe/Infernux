@@ -19,6 +19,7 @@
 #include <function/resources/InxSkinnedMesh/SkinnedModelImporter.h>
 
 #include <assimp/Importer.hpp>
+#include <assimp/GltfMaterial.h>
 #include <assimp/config.h>
 #include <assimp/postprocess.h>
 #include <assimp/scene.h>
@@ -341,12 +342,31 @@ static std::shared_ptr<InxMesh> ConvertScene(const aiScene *scene, const MeshImp
                 if (aiMat->Get(AI_MATKEY_ROUGHNESS_FACTOR, roughness) == AI_SUCCESS) {
                     slotData.smoothness = 1.0f - roughness;
                 }
-                // Opacity
+                // glTF exposes the SAME factor as baseColor.a and OPACITY.
+                // Do not multiply that factor twice.
+                aiString alphaMode;
+                const bool explicitAlpha = aiMat->Get(AI_MATKEY_GLTF_ALPHAMODE, alphaMode) == AI_SUCCESS;
                 float opacity = 1.0f;
                 if (aiMat->Get(AI_MATKEY_OPACITY, opacity) == AI_SUCCESS) {
                     slotData.opacity = opacity;
-                    slotData.baseColor.a *= opacity;
+                    if (!explicitAlpha)
+                        slotData.baseColor.a *= opacity;
                 }
+                if (explicitAlpha) {
+                    const std::string mode = alphaMode.C_Str();
+                    if (mode == "MASK")
+                        slotData.alphaMode = ModelAlphaMode::Mask;
+                    else if (mode == "BLEND")
+                        slotData.alphaMode = ModelAlphaMode::Blend;
+                    else if (mode != "OPAQUE")
+                        throw std::invalid_argument("unsupported source material alpha mode: " + mode);
+                    aiMat->Get(AI_MATKEY_GLTF_ALPHACUTOFF, slotData.alphaCutoff);
+                } else if (slotData.baseColor.a < 1.0f) {
+                    slotData.alphaMode = ModelAlphaMode::Blend;
+                }
+                int doubleSided = 0;
+                aiMat->Get(AI_MATKEY_TWOSIDED, doubleSided);
+                slotData.doubleSided = doubleSided != 0;
             }
             if (matName.empty())
                 matName = "Material_" + std::to_string(slot);

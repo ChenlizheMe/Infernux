@@ -294,6 +294,10 @@ void RegisterAssetRegistryBindings(py::module_ &m)
                     d["metallic"] = sd.metallic;
                     d["smoothness"] = sd.smoothness;
                     d["opacity"] = sd.opacity;
+                    d["alpha_mode"] = sd.alphaMode == ModelAlphaMode::Mask ? "mask" :
+                                      sd.alphaMode == ModelAlphaMode::Blend ? "blend" : "opaque";
+                    d["alpha_cutoff"] = sd.alphaCutoff;
+                    d["double_sided"] = sd.doubleSided;
                     d["source_id"] = sd.sourceId;
                     d["material_guid"] = sd.materialGuid;
                     result.append(d);
