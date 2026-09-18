@@ -3206,7 +3206,9 @@ void Infernux::InitRenderer(int width, int height, const std::string &projectPat
         });
 
         auto resolveMaterial = [](const std::string &matGuid) -> std::shared_ptr<InxMaterial> {
-            auto mat = AssetRegistry::Instance().GetAsset<InxMaterial>(matGuid);
+            auto &registry = AssetRegistry::Instance();
+            auto mat = registry.GetAssetType(matGuid) == ResourceType::Material
+                ? registry.GetAsset<InxMaterial>(matGuid) : nullptr;
             if (mat)
                 return mat;
             auto *adb = AssetRegistry::Instance().GetAssetDatabase();

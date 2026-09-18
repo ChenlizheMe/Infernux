@@ -326,12 +326,18 @@ static std::shared_ptr<InxMesh> ConvertScene(const aiScene *scene, const MeshImp
                         unsigned int uvChannel = 0;
                         if (aiMat->GetTexture(semantic, 0, &texturePath, nullptr, &uvChannel) != AI_SUCCESS)
                             throw std::runtime_error("model material texture could not be read");
-                        // Embedded image publication is a separate subasset task.
-                        // Do not mistake '*N' for a project file path.
-                        if (texturePath.length && texturePath.C_Str()[0] != '*') {
+                        if (texturePath.length) {
                             if (uvChannel != 0)
                                 throw std::invalid_argument("model material texture currently requires UV channel 0");
-                            textureSources.push_back({slot, texturePath.C_Str(), static_cast<uint32_t>(channel)});
+                            int32_t embeddedIndex = -1;
+                            if (const auto *image = scene->GetEmbeddedTexture(texturePath.C_Str())) {
+                                for (unsigned int index = 0; index < scene->mNumTextures; ++index)
+                                    if (scene->mTextures[index] == image) {
+                                        embeddedIndex = static_cast<int32_t>(index);
+                                        break;
+                                    }
+                            }
+                            textureSources.push_back({slot, texturePath.C_Str(), static_cast<uint32_t>(channel), embeddedIndex});
                         }
                     };
                     readTexture(aiMat->GetTextureCount(aiTextureType_BASE_COLOR)
@@ -521,6 +527,36 @@ MeshSourceImportResult MeshLoader::ImportSourceDetailed(const std::string &fileP
     std::string name = FromFsPath(fsPath.stem());
     MeshSourceImportResult result;
     auto mesh = ConvertScene(scene, settings, name, result.textureSources);
+    result.embeddedImages.resize(scene->mNumTextures);
+    std::unordered_map<std::string, size_t> imageNameCounts;
+    for (unsigned int index = 0; index < scene->mNumTextures; ++index)
+        ++imageNameCounts[scene->mTextures[index]->mFilename.C_Str()];
+    for (unsigned int index = 0; index < scene->mNumTextures; ++index) {
+        auto &output = result.embeddedImages[index];
+        const auto &input = *scene->mTextures[index];
+        output.name = input.mFilename.C_Str();
+        // Named images survive source reordering. An unnamed source only has
+        // its explicit import-local ordinal; do not invent content-hash identity.
+        output.key = !output.name.empty() && imageNameCounts.at(output.name) == 1
+                         ? "name/" + output.name : "index/" + std::to_string(index);
+        if (output.name.empty())
+            output.name = "Texture " + std::to_string(index);
+        output.width = input.mWidth;
+        output.height = input.mHeight;
+        if (!input.mHeight) {
+            const auto *begin = reinterpret_cast<const unsigned char *>(input.pcData);
+            output.bytes.assign(begin, begin + input.mWidth);
+        } else {
+            output.bytes.resize(static_cast<size_t>(input.mWidth) * input.mHeight * 4);
+            for (size_t pixel = 0; pixel < output.bytes.size() / 4; ++pixel) {
+                const auto &texel = input.pcData[pixel];
+                output.bytes[pixel * 4] = texel.r;
+                output.bytes[pixel * 4 + 1] = texel.g;
+                output.bytes[pixel * 4 + 2] = texel.b;
+                output.bytes[pixel * 4 + 3] = texel.a;
+            }
+        }
+    }
     mesh->SetGuid(guid);
     mesh->SetFilePath(filePath);
 

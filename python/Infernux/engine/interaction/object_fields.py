@@ -120,7 +120,8 @@ class AssetReferenceCatalog:
                 )
                 if not inside_assets:
                     continue
-            if not any(folded.endswith(extension) for extension in descriptor.extensions):
+            is_virtual = any(marker in portable for marker in descriptor.virtual_path_markers)
+            if not is_virtual and not any(folded.endswith(extension) for extension in descriptor.extensions):
                 continue
             if shader_type:
                 from Infernux.engine.ui.inspector_shader_utils import is_shader_hidden
@@ -128,6 +129,11 @@ class AssetReferenceCatalog:
                 if is_shader_hidden(lexical_path(candidate_path)):
                     continue
             name = os.path.basename(portable)
+            if "::subtex:" in portable:
+                from Infernux.core.assets import AssetManager
+                metadata = AssetManager._asset_database.get_meta_by_path(candidate_path)
+                if metadata is not None:
+                    name = f"{metadata.get_string('resource_name')} ({os.path.basename(portable.partition('::subtex:')[0])})"
             matches.append((name, path))
         matches.sort(key=lambda item: (item[0].casefold(), item[1].casefold()))
         result = tuple(matches)

@@ -631,8 +631,58 @@ ImportArtifact ModelImporter::Import(const ImportRequest &request) const
     if (imported.skinnedMesh)
         imported.skinnedMesh->sourcePath = request.sourcePath;
 
+    // Embedded images are owned sub-assets: the source sidecar owns identity,
+    // while their runtime payloads use the same Texture artifacts as file assets.
+    nlohmann::json previousTextures = nlohmann::json::array();
+    if (artifact.metadata.HasKey("model_textures"))
+        previousTextures = nlohmann::json::parse(artifact.metadata.GetDataAs<std::string>("model_textures"));
+    nlohmann::json modelTextures = nlohmann::json::array();
+    std::unordered_map<std::string, std::string> embeddedGuids;
+    const auto publishEmbedded = [&](size_t index, const std::string &semantic) -> std::string {
+        const auto &image = imported.embeddedImages.at(index);
+        const std::string key = image.key + "/" + semantic;
+        if (const auto found = embeddedGuids.find(key); found != embeddedGuids.end())
+            return found->second;
+        InxResourceMeta metadata;
+        metadata.Init("", 0, request.sourcePath, ResourceType::Texture);
+        for (const auto &previous : previousTextures)
+            if (previous.at("key") == key) {
+                metadata.AddMetadata("guid", previous.at("guid").get<std::string>());
+                break;
+            }
+        const std::string guid = metadata.GetGuid();
+        metadata.UpdateFilePath(request.sourcePath + "::subtex:" + guid);
+        TextureImporter{}.EnsureDefaultSettings(metadata);
+        metadata.AddMetadata("srgb", semantic == "color");
+        metadata.AddMetadata("texture_type", semantic == "normal" ? std::string("normal_map") :
+            semantic == "color" ? std::string("default") : semantic);
+        metadata.AddMetadata("import_owner_guid", request.guid);
+        metadata.AddMetadata("resource_name", image.name);
+        const auto sourceHash = request.metadata.GetDataAs<std::string>("content_hash");
+        metadata.AddMetadata("content_hash", sourceHash);
+        const auto pixels = image.height
+            ? TextureDecoder::DecodeRgba8(image.bytes, image.width, image.height, metadata)
+            : TextureDecoder::DecodeMemory(image.bytes, metadata, image.name);
+        metadata.AddMetadata("artifact_width", static_cast<int>(pixels->mipLevels.front().width));
+        metadata.AddMetadata("artifact_height", static_cast<int>(pixels->mipLevels.front().height));
+        metadata.AddMetadata("artifact_depth", 1);
+        modelTextures.push_back({{"key", key}, {"guid", guid}, {"name", image.name},
+                                 {"semantic", semantic}, {"metadata", metadata.SerializeDocument()}});
+        artifact.runtimeCpuArtifacts.push_back({ImportArtifact::RuntimeArtifactKind::Primary,
+            ResourceType::Texture, TextureArtifact::Serialize(*pixels, sourceHash), guid});
+        embeddedGuids.emplace(key, guid);
+        return guid;
+    };
     auto materials = imported.mesh->GetMaterialSlotData();
     for (const auto &texture : imported.textureSources) {
+        auto &guid = materials.at(texture.materialSlot).textureGuids.at(texture.channel);
+        const bool linear = texture.channel != static_cast<uint32_t>(ModelTexture::BaseColor) &&
+                            texture.channel != static_cast<uint32_t>(ModelTexture::Emission);
+        if (texture.embeddedIndex >= 0) {
+            guid = publishEmbedded(static_cast<size_t>(texture.embeddedIndex),
+                texture.channel == static_cast<uint32_t>(ModelTexture::Normal) ? "normal" : linear ? "data" : "color");
+            continue;
+        }
         std::string path = texture.path;
         if (path.rfind("//", 0) == 0)
             path.erase(0, 2);
@@ -643,12 +693,25 @@ ImportArtifact ModelImporter::Import(const ImportRequest &request) const
         if (!request.resolveTextureGuid)
             throw std::logic_error("model texture import requires an immutable asset catalog");
         const auto normalizedPath = NormalizeFilesystemPathLexically(FromFsPath(texturePath));
-        auto &guid = materials.at(texture.materialSlot).textureGuids.at(texture.channel);
-        const bool linear = texture.channel != static_cast<uint32_t>(ModelTexture::BaseColor) &&
-                            texture.channel != static_cast<uint32_t>(ModelTexture::Emission);
         guid = request.resolveTextureGuid(normalizedPath, linear);
         artifact.resolvedTextureSources.emplace_back(normalizedPath, guid);
     }
+    // Keep previously published views while the image exists: other materials
+    // can reference them independently of this model's current material remaps.
+    for (size_t index = 0; index < imported.embeddedImages.size(); ++index)
+        for (const auto &previous : previousTextures) {
+            const auto semantic = previous.at("semantic").get<std::string>();
+            if (previous.at("key") == imported.embeddedImages[index].key + "/" + semantic)
+                (void)publishEmbedded(index, semantic);
+        }
+    // Images unused by the current material remaps remain available to authors.
+    for (size_t index = 0; index < imported.embeddedImages.size(); ++index) {
+        const auto &image = imported.embeddedImages[index];
+        if (!embeddedGuids.count(image.key + "/color") && !embeddedGuids.count(image.key + "/data") &&
+            !embeddedGuids.count(image.key + "/normal"))
+            (void)publishEmbedded(index, "color");
+    }
+    artifact.metadata.AddMetadata("model_textures", modelTextures.dump());
     imported.mesh->SetMaterialSlotData(std::move(materials));
 
     const auto checkedMetadataInt = [](uint64_t value, std::string_view field) {

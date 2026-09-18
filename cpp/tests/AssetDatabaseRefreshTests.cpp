@@ -625,6 +625,37 @@ void TestRuntimeAssetCatalogResolvesPrimaryContentArtifact()
     std::filesystem::remove_all(root);
 }
 
+void TestCookedModelTexturesKeepArtifactPaths()
+{
+    const auto root = std::filesystem::temp_directory_path() / "infernux-cooked-model-textures";
+    infernux::InxResourceMeta model, texture;
+    model.Init("model", 5, "Assets/Composite.glb", infernux::ResourceType::Mesh);
+    texture.Init("model", 5, "Assets/Composite.glb::subtex:image", infernux::ResourceType::Texture);
+    texture.AddMetadata("import_owner_guid", model.GetGuid());
+    model.AddMetadata("model_textures", nlohmann::json::array({{
+        {"key", "image/color"}, {"guid", texture.GetGuid()}, {"name", "Image"},
+        {"metadata", texture.SerializeDocument()}}}).dump());
+    const auto modelPath = "Library/Artifacts/Mesh/" + model.GetGuid() + ".inxmesh";
+    const auto texturePath = "Library/Artifacts/Texture/" + texture.GetGuid() + ".inxtex";
+    WriteText(root / modelPath, "cooked model");
+    WriteText(root / texturePath, "cooked texture");
+    const auto catalog = root / "RuntimeAssetRecords.json";
+    WriteText(catalog, nlohmann::json{
+        {"$schema", "infernux.runtime_asset_records"},
+        {"entries", nlohmann::json::array({
+            {{"guid", model.GetGuid()}, {"runtime_path", modelPath}, {"metadata", model.SerializeDocument()}},
+            {{"guid", texture.GetGuid()}, {"runtime_path", texturePath}, {"metadata", texture.SerializeDocument()}}
+        })}}.dump());
+    infernux::AssetDatabase database;
+    database.InitializeRuntime(infernux::FromFsPath(root));
+    database.InstallRuntimeAssetCatalog(infernux::FromFsPath(catalog));
+    Require(database.GetPathFromGuid(texture.GetGuid()) == infernux::FromFsPath(root / texturePath),
+            "Player expanded editor-only model children over cooked Texture paths");
+    Require(database.GetMetaByGuid(texture.GetGuid())->GetResourceType() == infernux::ResourceType::Texture,
+            "Player lost imported Texture type");
+    std::filesystem::remove_all(root);
+}
+
 void TestMoveRequiresRegisteredGuidIdentity()
 {
     const auto root = std::filesystem::current_path() / "infernux-asset-move-guid-contract";
@@ -670,6 +701,7 @@ int main()
         TestModelSettingsPublishOnlyAfterSuccessfulImport();
         TestRuntimeAssetCatalogResolvesBuiltInArchiveResources();
         TestRuntimeAssetCatalogResolvesPrimaryContentArtifact();
+        TestCookedModelTexturesKeepArtifactPaths();
         TestMoveRequiresRegisteredGuidIdentity();
         return 0;
     } catch (const std::exception &error) {

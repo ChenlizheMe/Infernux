@@ -209,7 +209,7 @@ def get_resource_preview_texture_id(panel: Any, file_path: str, preview_size: in
         return _try_get_cpp_material_preview_texture(
             native, norm_path, material_json=material_json, file_mtime_hint=0)
 
-    if ext in _IMAGE_EXTS:
+    if "::subtex:" in norm_path or ext in _IMAGE_EXTS:
         tex_id, _, _ = _try_get_cpp_texture_preview(native, norm_path, texture_settings)
         return tex_id
 
@@ -256,7 +256,7 @@ def render_resource_preview_rect(ctx: Any, panel: Any, file_path: str, width: fl
             return False
         src_w = 256
         src_h = 256
-    elif ext in _IMAGE_EXTS:
+    elif "::subtex:" in norm_path or ext in _IMAGE_EXTS:
         tex_id, src_w, src_h = _try_get_cpp_texture_preview(native, norm_path, texture_settings)
     elif ext in _MATERIAL_EXTS:
         # Passive read (mtime=0) of the shared "mat|" key; C++ Project panel owns

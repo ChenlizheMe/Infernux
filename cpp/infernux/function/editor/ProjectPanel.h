@@ -131,6 +131,7 @@ class ProjectPanel : public EditorPanel
             Dir,
             File,
             SubMesh,
+            SubTexture,
             SubMaterial
         };
         Type type = File;

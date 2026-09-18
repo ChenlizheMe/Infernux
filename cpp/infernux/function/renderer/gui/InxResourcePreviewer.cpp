@@ -650,13 +650,12 @@ std::vector<std::pair<std::string, std::string>> BinaryPreviewer::GetMetadata() 
 // MaterialPreviewer
 // ============================================================================
 
-/// Drop texture bindings whose GUID does not resolve to an on-disk file so GPU/CPU
-/// preview still draws (albedo samples as white when a slot is empty).
+/// Asset identity, not an on-disk source file, determines whether a texture exists.
+/// Model-owned textures resolve through their imported Library artifacts.
 static void ClearMissingTextureBindings(InxMaterial *mat, AssetDatabase *adb)
 {
     if (!mat || !adb)
         return;
-    namespace fs = std::filesystem;
     std::vector<std::string> toClear;
     for (const auto &kv : mat->GetAllProperties()) {
         if (kv.second.type != MaterialPropertyType::Texture2D)
@@ -671,9 +670,6 @@ static void ClearMissingTextureBindings(InxMaterial *mat, AssetDatabase *adb)
             toClear.push_back(kv.first);
             continue;
         }
-        std::error_code ec;
-        if (!fs::exists(fs::u8path(p), ec))
-            toClear.push_back(kv.first);
     }
     for (const auto &name : toClear)
         mat->ClearTexture(name);

@@ -69,6 +69,7 @@ struct ImportArtifact
         RuntimeArtifactKind kind = RuntimeArtifactKind::Primary;
         ResourceType resourceType = ResourceType::DefaultBinary;
         std::string bytes;
+        std::string guid; // Empty for the source itself; set for an owned imported Texture.
     };
 
     std::vector<RuntimeCpuArtifact> runtimeCpuArtifacts;

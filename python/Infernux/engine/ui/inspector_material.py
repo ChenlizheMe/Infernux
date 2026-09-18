@@ -238,6 +238,14 @@ def _resolve_path_to_guid(path_str):
     return adb.get_guid_from_path(path_str) or ""
 
 
+def _texture_display_name(database, path):
+    if "::subtex:" in path:
+        metadata = database.get_meta_by_path(path)
+        if metadata is not None:
+            return metadata.get_string("resource_name")
+    return os.path.basename(path)
+
+
 def _resolve_texture_display(prop):
     """Return display text for a texture property's GUID."""
     import os
@@ -247,7 +255,7 @@ def _resolve_texture_display(prop):
     adb = _get_asset_database()
     tex_path = adb.get_path_from_guid(tex_guid)
     if tex_path:
-        return os.path.basename(tex_path)
+        return _texture_display_name(adb, tex_path)
     return f"{t('material.missing_texture')} ({tex_guid[:8]}...)"
 
 
@@ -267,7 +275,7 @@ def _render_texture2d_property(ctx, prop, prop_name, wid_prefix, plw,
             reference_cache["key"] = cache_key
             reference_cache["path"] = tex_path or ""
             reference_cache["display"] = (
-                os.path.basename(tex_path) if tex_path else (
+                _texture_display_name(adb, tex_path) if tex_path else (
                     f"{t('material.missing_texture')} ({tex_guid[:8]}...)"
                     if tex_guid else t("igui.none")
                 )

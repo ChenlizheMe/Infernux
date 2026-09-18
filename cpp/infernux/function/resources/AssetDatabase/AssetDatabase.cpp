@@ -3,6 +3,7 @@
 #include <function/resources/AssetFormatRegistry.h>
 
 #include <function/resources/AssetDependencyGraph.h>
+#include <function/resources/AssetRegistry/AssetRegistry.h>
 #include <function/resources/AssetImporter/ConcreteImporters.h>
 #include <function/resources/InxMesh/MeshArtifact.h>
 #include <function/resources/InxMesh/MeshImportSettings.h>
@@ -58,6 +59,54 @@ std::function<std::string(const std::string &, bool)> ModelTextureResolver(std::
             throw std::invalid_argument("model data texture requires linear sampling; disable sRGB in its import settings: " + path);
         return found->second;
     };
+}
+
+// A model sidecar is the sole authority for its imported Texture identities.
+// Rebuild these derived entries at the same publication boundary as the owner.
+template <typename Paths, typename Metas, typename States, typename Results>
+void ExpandModelTextures(Paths &guidToPath, Paths &pathToGuid, Metas &metas, States &fileStates, Results &results)
+{
+    std::vector<std::string> owners;
+    for (auto it = metas.begin(); it != metas.end();) {
+        if (it->second->HasKey("import_owner_guid")) {
+            const auto path = guidToPath.find(it->first);
+            if (path != guidToPath.end()) {
+                const auto key = FilesystemPathKey(path->second);
+                pathToGuid.erase(key);
+                fileStates.erase(key);
+                guidToPath.erase(path);
+            }
+            results.erase(it->first);
+            it = metas.erase(it);
+        } else {
+            if (it->second->HasKey("model_textures"))
+                owners.push_back(it->first);
+            ++it;
+        }
+    }
+    for (const auto &owner : owners) {
+        const auto sourcePath = guidToPath.at(owner);
+        const auto sourceState = fileStates.at(FilesystemPathKey(sourcePath));
+        const auto records = nlohmann::json::parse(metas.at(owner)->template GetDataAs<std::string>("model_textures"));
+        for (const auto &record : records) {
+            auto metadata = std::make_shared<InxResourceMeta>();
+            metadata->DeserializeDocument(record.at("metadata"));
+            const auto guid = metadata->GetGuid();
+            if (!IsCanonicalAssetGuid(guid) || guid == owner || metas.find(guid) != metas.end())
+                throw std::invalid_argument("model Texture identity collides with another asset: " + guid);
+            const auto path = sourcePath + "::subtex:" + guid;
+            metadata->UpdateFilePath(path);
+            metadata->AddMetadata("import_owner_guid", owner);
+            guidToPath.emplace(guid, path);
+            pathToGuid.emplace(FilesystemPathKey(path), guid);
+            metas.emplace(guid, std::move(metadata));
+            auto childState = sourceState;
+            childState.readOnly = true;
+            fileStates.emplace(FilesystemPathKey(path), childState);
+            if (const auto result = results.find(owner); result != results.end())
+                results.emplace(guid, result->second);
+        }
+    }
 }
 
 void ValidateImportedDependencyIdentities(const ImportArtifact &artifact, const std::string &sourcePath)
@@ -226,9 +275,20 @@ TakeRuntimeArtifactWrites(std::vector<ImportArtifact::RuntimeCpuArtifact> &artif
 {
     bool hasPrimary = false;
     bool hasSkinnedMesh = false;
+    std::unordered_set<std::string> ownedTextures;
     std::vector<DocumentTransactionEntry> writes;
     writes.reserve(artifacts.size());
     for (auto &artifact : artifacts) {
+        if (!artifact.guid.empty()) {
+            if (requestedType != ResourceType::Mesh || artifact.resourceType != ResourceType::Texture ||
+                artifact.kind != ImportArtifact::RuntimeArtifactKind::Primary || artifact.bytes.empty() ||
+                !IsCanonicalAssetGuid(artifact.guid) || artifact.guid == guid || !ownedTextures.insert(artifact.guid).second)
+                throw std::logic_error("Importer produced an invalid owned Texture artifact");
+            writes.push_back({FromFsPath(ToFsPath(projectRoot) /
+                std::filesystem::u8path(RuntimeArtifactRelativePath(artifact.guid, ResourceType::Texture))),
+                std::move(artifact.bytes)});
+            continue;
+        }
         if (artifact.resourceType != requestedType || artifact.bytes.empty())
             throw std::logic_error("Importer produced an invalid runtime CPU artifact");
         switch (artifact.kind) {
@@ -489,13 +549,47 @@ std::shared_ptr<const AssetDatabase::QuerySnapshot> AssetDatabase::LoadQuerySnap
 
 void AssetDatabase::PublishQuerySnapshot(bool includeCatalog)
 {
+    const auto previous = LoadQuerySnapshot();
+    ExpandModelTextures(m_guidToPath, m_pathToGuid, m_metas, m_fileStates, m_importResults);
     InstallQuerySnapshot(BuildQuerySnapshotArtifact(m_guidToPath, m_pathToGuid, m_metas, m_fileStates,
                                                     m_queryGeneration + 1, includeCatalog));
+    PublishModelTextureEvents(previous);
+}
+
+void AssetDatabase::PublishModelTextureEvents(const std::shared_ptr<const QuerySnapshot> &previous)
+{
+    if (!previous)
+        return;
+    for (const auto &[guid, metadata] : previous->metas) {
+        if (!metadata->HasKey("import_owner_guid"))
+            continue;
+        const auto current = m_metas.find(guid);
+        if (current == m_metas.end()) {
+            AssetRegistry::Instance().RemoveAsset(guid);
+            AssetDependencyGraph::Instance().NotifyEvent(guid, ResourceType::Texture, AssetEvent::Deleted);
+            AssetDependencyGraph::Instance().RemoveAsset(guid);
+        } else if (metadata->SerializeDocument() != current->second->SerializeDocument()) {
+            AssetRegistry::Instance().UpdateLoadedAssetPath(guid, m_guidToPath.at(guid));
+            if (AssetRegistry::Instance().GetAssetType(guid) == ResourceType::Texture)
+                AssetRegistry::Instance().ReloadAsset(guid);
+            AssetDependencyGraph::Instance().NotifyEvent(guid, ResourceType::Texture, AssetEvent::Modified);
+        }
+    }
 }
 
 void AssetDatabase::PublishQuerySnapshotForPaths(const std::vector<std::string> &paths)
 {
     const auto previous = LoadQuerySnapshot();
+    for (const auto &path : paths) {
+        const auto key = FilesystemPathKey(path);
+        const auto current = m_pathToGuid.find(key);
+        const auto old = previous ? previous->pathToGuid.find(key) : m_pathToGuid.end();
+        if ((current != m_pathToGuid.end() && m_metas.at(current->second)->HasKey("model_textures")) ||
+            (previous && old != previous->pathToGuid.end() && previous->metas.at(old->second)->HasKey("model_textures"))) {
+            PublishQuerySnapshot();
+            return;
+        }
+    }
     if (!previous || !previous->catalog || paths.empty()) {
         PublishQuerySnapshot();
         return;
@@ -677,7 +771,8 @@ void AssetDatabase::InitializeRuntime(const std::string &projectRoot)
     m_assetTransactionJournalPath = FromFsPath(ToFsPath(m_projectRoot) / "Library" / "AssetRefresh.transaction");
     m_ownerThread = std::this_thread::get_id();
     m_initialized = true;
-    PublishQuerySnapshot(false);
+    InstallQuerySnapshot(BuildQuerySnapshotArtifact(m_guidToPath, m_pathToGuid, m_metas, m_fileStates,
+                                                    m_queryGeneration + 1, false));
 }
 
 void AssetDatabase::AddScanRoot(const std::string &path)
@@ -949,8 +1044,9 @@ void AssetDatabase::InstallRuntimeAssetCatalog(const std::string &catalogPath, b
     reportPhase("install_entries");
 
     // Player has no Project/FileManager panel. Keep GUID/path/metadata queries,
-    // but skip the editor-only directory grouping and sorting work.
-    PublishQuerySnapshot(false);
+    // but do not expand source-model children over cooked artifact identities.
+    InstallQuerySnapshot(BuildQuerySnapshotArtifact(m_guidToPath, m_pathToGuid, m_metas, m_fileStates,
+                                                     m_queryGeneration + 1, false));
     reportPhase("publish_snapshot");
     INXLOG_INFO("AssetDatabase: installed ", entries->size(), " cooked Player asset identities");
 }
@@ -1852,6 +1948,8 @@ std::shared_ptr<AssetDatabase::QuerySnapshot> AssetDatabase::BuildQuerySnapshotA
         const auto metadata = metas.find(guid);
         if (metadata == metas.end() || !metadata->second)
             throw std::logic_error("Query snapshot path map references missing metadata");
+        if (metadata->second->HasKey("import_owner_guid"))
+            continue; // Project lists these below their model, not as loose source files.
         const auto fileState = fileStates.find(normalizedPath);
         if (fileState == fileStates.end())
             throw std::logic_error("Query snapshot path map references missing file state");
@@ -1887,6 +1985,9 @@ void AssetDatabase::BeginPendingIndexBuild(const std::shared_ptr<PendingRefreshC
 {
     if (!state || state->phase != PendingRefreshCommit::Phase::ReadyToBuildIndex)
         throw std::logic_error("AssetDatabase index build phase has invalid state");
+
+    auto &working = state->stagedWorkingSet;
+    ExpandModelTextures(working.guidToPath, working.pathToGuid, working.metas, working.fileStates, working.importResults);
 
     const bool reusedLoadedIndex =
         state->pendingImports.empty() && m_lastRefreshReusedCount == state->stagedWorkingSet.assetIndex.Size() &&
@@ -1962,6 +2063,7 @@ void AssetDatabase::FinalizePendingRefreshCommit(const std::shared_ptr<PendingRe
         AssetDependencyGraph::Instance().GetAssetGeneration() != state->expectedDependencyGeneration)
         throw std::logic_error("AssetDatabase refresh dependency artifact is stale");
     const auto finalizeStarted = std::chrono::steady_clock::now();
+    const auto previousSnapshot = LoadQuerySnapshot();
     WorkingSet previousWorkingSet = TakeWorkingSet();
     InstallWorkingSet(std::move(state->stagedWorkingSet));
     auto restorePreviousWorkingSet = MakeScopeExit([this, &previousWorkingSet] {
@@ -1983,6 +2085,7 @@ void AssetDatabase::FinalizePendingRefreshCommit(const std::shared_ptr<PendingRe
         state->ownerFinalizeMilliseconds +
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - finalizeStarted).count();
     restorePreviousWorkingSet.Release();
+    PublishModelTextureEvents(previousSnapshot);
     // INXLOG_INFO("AssetDatabase.Refresh completed. Total assets: ", m_guidToPath.size(),
     //             ", scanned: ", m_lastRefreshScannedCount, ", scan_ms: ", m_lastRefreshScanMilliseconds,
     //             ", restore_ms: ", m_lastRefreshRestoreMilliseconds, ", import_ms: ", m_lastRefreshImportMilliseconds,

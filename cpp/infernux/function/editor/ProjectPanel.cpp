@@ -90,14 +90,15 @@ static std::string MakeSubAssetVirtualPath(const std::string &basePath, const ch
 static bool IsVirtualSubAssetPath(const std::string &path)
 {
     return path.find(kSubMatToken) != std::string::npos || path.find(kSubBoneToken) != std::string::npos ||
-           path.find(kSubAnimToken) != std::string::npos || path.find(infernux::ModelMeshToken) != std::string::npos;
+           path.find(kSubAnimToken) != std::string::npos || path.find(infernux::ModelMeshToken) != std::string::npos ||
+           path.find("::subtex:") != std::string::npos;
 }
 
 static std::string ResolveRealAssetPath(const std::string &path)
 {
     if (path.empty())
         return path;
-    for (const char *tok : {kSubMatToken, kSubBoneToken, kSubAnimToken, infernux::ModelMeshToken}) {
+    for (const char *tok : {kSubMatToken, kSubBoneToken, kSubAnimToken, infernux::ModelMeshToken, "::subtex:"}) {
         auto pos = path.find(tok);
         if (pos != std::string::npos)
             return path.substr(0, pos);
@@ -159,6 +160,8 @@ static std::string SelectionPathForInspector(const std::string &path)
     if (path.find(kSubAnimToken) != std::string::npos)
         return path;
     if (path.find(infernux::ModelMeshToken) != std::string::npos)
+        return path;
+    if (path.find("::subtex:") != std::string::npos)
         return path;
     return ResolveRealAssetPath(path);
 }
@@ -1161,6 +1164,20 @@ void ProjectPanel::AppendModelSubAssets(std::vector<FileItem> &out, AssetDatabas
 
     const uint64_t childMtime = modelItem.mtimeNs;
 
+    const auto textureManifest = TryGetMetaString(meta.get(), "model_textures");
+    if (!textureManifest.empty()) {
+        for (const auto &entry : nlohmann::json::parse(textureManifest)) {
+            FileItem sub{};
+            sub.type = FileItem::SubTexture;
+            sub.name = entry.at("name").get<std::string>();
+            sub.path = modelPath + "::subtex:" + entry.at("guid").get<std::string>();
+            sub.ext = ".png";
+            sub.parentPath = modelPath;
+            sub.mtimeNs = childMtime;
+            out.push_back(std::move(sub));
+        }
+    }
+
     const auto meshManifest = TryGetMetaString(meta.get(), "model_meshes");
     if (!meshManifest.empty()) {
         for (const auto &entry : nlohmann::json::parse(meshManifest)) {
@@ -1743,6 +1760,9 @@ uint64_t ProjectPanel::GetTypeIconId(const FileItem &item) const
     } else if (item.type == FileItem::SubMesh) {
         auto mapIt = iconMap.find(item.ext.empty() ? ".fbx" : item.ext);
         key = mapIt != iconMap.end() ? &mapIt->second : nullptr;
+    } else if (item.type == FileItem::SubTexture) {
+        auto sit = iconMap.find(".png");
+        key = sit != iconMap.end() ? &sit->second : nullptr;
     } else if (item.type == FileItem::SubMaterial) {
         auto sit = iconMap.find(".mat");
         key = sit != iconMap.end() ? &sit->second : nullptr;
@@ -1813,7 +1833,7 @@ const ProjectPanel::LabelEntry &ProjectPanel::GetCachedItemLabel(InxGUIContext *
             }
         }
         nameDisplay = std::string("  ") + subLabel;
-    } else if (item.type == FileItem::SubMaterial) {
+    } else if (item.type == FileItem::SubMaterial || item.type == FileItem::SubTexture) {
         nameDisplay = std::string("  ") + item.name;
     }
 
@@ -1944,7 +1964,7 @@ void ProjectPanel::HandleItemClick(const FileItem &item, InxGUIContext *ctx)
             if (RequestDirectoryNavigation(item.path))
                 m_lastClickedFile.clear();
         }
-    } else if (item.type == FileItem::SubMesh || item.type == FileItem::SubMaterial) {
+    } else if (item.type == FileItem::SubMesh || item.type == FileItem::SubMaterial || item.type == FileItem::SubTexture) {
         // Sub-assets: select only
     } else if (doubleClicked) {
         std::string openKind = "system";
@@ -2995,7 +3015,7 @@ void ProjectPanel::RenderFileGrid(InxGUIContext *ctx)
                 selectionKey = &fallbackSelectionKey;
             }
 
-            const bool isSubAsset = (item.type == FileItem::SubMaterial || item.type == FileItem::SubMesh);
+            const bool isSubAsset = (item.type == FileItem::SubMaterial || item.type == FileItem::SubMesh || item.type == FileItem::SubTexture);
             const std::string itemSemanticId = captureSemantics ? MakeProjectItemSemanticId(item) : std::string{};
             const ImVec2 cellTopLeft = ImGui::GetCursorScreenPos();
 
@@ -3014,7 +3034,7 @@ void ProjectPanel::RenderFileGrid(InxGUIContext *ctx)
             }
 
             const auto isSubAssetItem = [](const FileItem &it) {
-                return it.type == FileItem::SubMaterial || it.type == FileItem::SubMesh;
+                return it.type == FileItem::SubMaterial || it.type == FileItem::SubMesh || it.type == FileItem::SubTexture;
             };
 
             // Expanded model on this row: draw the left portion of the inline strip so it
@@ -3068,6 +3088,10 @@ void ProjectPanel::RenderFileGrid(InxGUIContext *ctx)
             if (item.type == FileItem::SubMesh) {
                 if (item.path.find(infernux::ModelMeshToken) != std::string::npos)
                     displayTexId = GetModelThumbnail(item.path, item.mtimeNs);
+                if (displayTexId == 0)
+                    displayTexId = GetTypeIconId(item);
+            } else if (item.type == FileItem::SubTexture) {
+                displayTexId = GetThumbnail(item.path, item.mtimeNs);
                 if (displayTexId == 0)
                     displayTexId = GetTypeIconId(item);
             } else if (item.type == FileItem::SubMaterial) {
@@ -3363,7 +3387,7 @@ void ProjectPanel::RenderContextMenu(InxGUIContext *ctx)
 void ProjectPanel::RenderDragDropSource(InxGUIContext *ctx, const FileItem &item)
 {
     // Embedded model materials are browse-only (no drag — use a standalone .mat to assign).
-    if (item.type != FileItem::Dir && item.type != FileItem::File && item.type != FileItem::SubMesh)
+    if (item.type != FileItem::Dir && item.type != FileItem::File && item.type != FileItem::SubMesh && item.type != FileItem::SubTexture)
         return;
 
     // BeginDragDropSource is cheap (~1µs) — returns false 99.9% of the time.

@@ -743,7 +743,7 @@ def _project_texture_guid_and_path(payload, *, allow_render_texture: bool = Fals
         supplied_path = str(payload.get("path_hint", "") or "").strip()
     else:
         token = str(payload or "").strip()
-        if os.path.splitext(token)[1].lower() in extensions:
+        if "::subtex:" in token or os.path.splitext(token)[1].lower() in extensions:
             supplied_path = token
         else:
             supplied_guid = token
@@ -759,6 +759,9 @@ def _project_texture_guid_and_path(payload, *, allow_render_texture: bool = Fals
             path = ""
 
     extension = os.path.splitext(path)[1].lower()
+    if "::subtex:" in path and database is not None and _is_project_asset_path(path):
+        guid = database.get_guid_from_path(path)
+        return (guid, path) if guid else ("", "")
     if (
         not path
         or extension not in extensions
@@ -813,7 +816,7 @@ def _resolve_asset_disk_path(value) -> str:
             if candidate:
                 text = str(candidate)
                 # Embedded sub-assets use virtual paths; ping the host file.
-                for token in ("::submat:", "::subanim:", "::subbone:", "::submesh:"):
+                for token in ("::submat:", "::subanim:", "::subbone:", "::submesh:", "::subtex:"):
                     if token in text:
                         text = text.split(token, 1)[0]
                         break
@@ -843,7 +846,7 @@ def ping_asset_in_project(path: str) -> bool:
     disk_path = str(path or "").strip()
     if not disk_path:
         return False
-    for token in ("::submat:", "::subanim:", "::subbone:", "::submesh:"):
+    for token in ("::submat:", "::subanim:", "::subbone:", "::submesh:", "::subtex:"):
         if token in disk_path:
             disk_path = disk_path.split(token, 1)[0]
             break

@@ -263,6 +263,13 @@ TextureResolveResult InxVkCoreModular::ResolveTextureAsset(const std::string &te
     auto pendingGpu = m_pendingTextureGpuUploads.find(cacheKey);
     if (pendingGpu == m_pendingTextureGpuUploads.end()) {
         auto pendingStaging = m_pendingTextureStagingLoads.find(cacheKey);
+        // Reimport supersedes an in-flight preparation. Start the current
+        // generation instead of trying to publish a ticket for the old bytes.
+        if (pendingStaging != m_pendingTextureStagingLoads.end() &&
+            pendingStaging->second->GetRuntimeVersion() != runtimeVersion) {
+            m_pendingTextureStagingLoads.erase(pendingStaging);
+            pendingStaging = m_pendingTextureStagingLoads.end();
+        }
         if (pendingStaging == m_pendingTextureStagingLoads.end()) {
             try {
                 pendingStaging =

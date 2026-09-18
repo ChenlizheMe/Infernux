@@ -167,6 +167,14 @@ std::shared_ptr<const TextureCpuData> TextureDecoder::Decode(const std::string &
                                                              const InxResourceMeta &metadata)
 {
     const auto source = ReadSourceBytes(sourcePath);
+    return DecodeMemory(source, metadata, sourcePath);
+}
+
+std::shared_ptr<const TextureCpuData> TextureDecoder::DecodeMemory(
+    const std::vector<unsigned char> &source, const InxResourceMeta &metadata, const std::string &sourcePath)
+{
+    if (source.empty() || source.size() > static_cast<size_t>(std::numeric_limits<int>::max()))
+        throw std::invalid_argument("texture source is empty or exceeds decoder limits");
     const uint32_t maxSize = ReadMaxSize(metadata);
 
     std::string extension = FromFsPath(ToFsPath(sourcePath).extension());
@@ -268,6 +276,21 @@ std::shared_ptr<const TextureCpuData> TextureDecoder::Decode(const std::string &
     return TextureProcessor::Process(
         std::move(*texture), TextureProcessOptions{ReadGenerateMipmaps(metadata), ReadCompression(metadata),
                                                    ReadCompressionQuality(metadata), ReadTargetFormat(metadata)});
+}
+
+std::shared_ptr<const TextureCpuData> TextureDecoder::DecodeRgba8(
+    const std::vector<unsigned char> &pixels, uint32_t width, uint32_t height, const InxResourceMeta &metadata)
+{
+    if (!width || !height || pixels.size() != LevelByteSize(width, height, TextureFormat::Rgba8UNorm))
+        throw std::invalid_argument("embedded RGBA texture dimensions do not match its payload");
+    TextureCpuData texture;
+    texture.dimension = TextureDimension::Texture2D;
+    texture.semantic = ReadSemantic(metadata);
+    texture.format = ReadSrgb(metadata) ? TextureFormat::Rgba8Srgb : TextureFormat::Rgba8UNorm;
+    AppendLevel(texture, width, height, pixels.data(), pixels.size());
+    return TextureProcessor::Process(std::move(texture),
+        TextureProcessOptions{ReadGenerateMipmaps(metadata), ReadCompression(metadata),
+                              ReadCompressionQuality(metadata), ReadTargetFormat(metadata)});
 }
 
 std::shared_ptr<const TextureCpuData> TextureDecoder::CreateRgba8(const uint8_t *pixels, size_t byteCount,

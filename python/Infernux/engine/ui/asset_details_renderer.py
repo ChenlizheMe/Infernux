@@ -130,7 +130,7 @@ class AssetCategoryDef:
 def _meta_host_path_for_virtual_asset(file_path: str) -> str:
     if not file_path:
         return file_path
-    for tok in ("::submat:", "::subanim:", "::subbone:", "::submesh:"):
+    for tok in ("::submat:", "::subanim:", "::subbone:", "::submesh:", "::subtex:"):
         pos = file_path.find(tok)
         if pos != -1:
             base = file_path[:pos]
@@ -2135,6 +2135,9 @@ def _sync_material_shader_metadata(mat_data: dict):
 def render_asset_inspector(ctx: InxGUIContext, panel,
                            file_path: str, category: str):
     """Single entry point for all asset inspectors."""
+    if "::subtex:" in file_path:
+        _render_model_texture_resource(ctx, panel, file_path)
+        return
     if "::submesh:" in file_path:
         _render_model_mesh_resource(ctx, panel, file_path)
         return
@@ -2522,6 +2525,24 @@ def _on_revert():
 
 
 _model_mesh_preview_info = (None, None)
+
+
+def _render_model_texture_resource(ctx, panel, file_path):
+    from Infernux.lib import AssetRegistry
+
+    database = AssetRegistry.instance().get_asset_database()
+    metadata = database.get_meta_by_path(file_path) if database else None
+    if metadata is None:
+        ctx.label(t("asset.failed_load").format(name=file_path))
+        return
+    values = {key: entry["value"] for key, entry in metadata.serialize_document()["metadata"].items()}
+    ctx.label(values.get("resource_name", "Texture"))
+    width = max(32.0, ctx.get_content_region_avail_width() - 8.0)
+    render_resource_preview_rect(ctx, panel, file_path, width, min(width, 420.0),
+                                 preserve_aspect=True, center=True)
+    ctx.label(f"{values['artifact_width']} × {values['artifact_height']}")
+    ctx.text_wrapped(t("asset.model_texture_read_only"))
+    ctx.text_wrapped(file_path.partition("::subtex:")[0])
 
 
 def _render_model_mesh_resource(ctx, panel, file_path):

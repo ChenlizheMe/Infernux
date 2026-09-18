@@ -1048,6 +1048,7 @@
   "asset.mesh_material_slots": "材质插槽",
   "asset.mesh_materials": "材质",
   "asset.mesh_extract_material": "提取材质…",
+  "asset.model_texture_read_only": "内嵌贴图（只读）。内容随源模型重新导入而更新，可拖到其他材质中复用。",
   "asset.material_remaps": "材质重映射",
   "asset.material_import_mode": "材质创建模式",
   "asset.material_import_none": "不导入",

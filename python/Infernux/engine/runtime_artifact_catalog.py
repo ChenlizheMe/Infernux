@@ -221,6 +221,8 @@ def source_fingerprint(project_root: str | os.PathLike[str], entry: dict[str, An
     """Return and verify the current filesystem fingerprint for an index entry."""
 
     source = source_path_for_entry(project_root, entry)
+    if _metadata_value(entry, "import_owner_guid"):
+        source = source.partition("::subtex:")[0]
     try:
         stat = os.stat(source)
     except OSError as exc:

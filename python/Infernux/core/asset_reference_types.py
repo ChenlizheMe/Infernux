@@ -185,6 +185,10 @@ class AssetReferenceType:
                     "information"
                 )
             portable_path = resolved.replace("\\", "/")
+            for marker in self.virtual_path_markers:
+                head, separator, tail = portable_path.partition(marker)
+                if separator and head and tail:
+                    return ""
         if not any(portable_path.casefold().endswith(item) for item in self.extensions):
             accepted = ", ".join(sorted(self.extensions))
             return (
@@ -389,7 +393,7 @@ def _register_builtin(
 _register_builtin("Material", "Material", MATERIAL_EXTENSIONS, ("MATERIAL_FILE",), "mat")
 _register_builtin(
     "Texture", "Texture", IMAGE_EXTENSIONS, ("TEXTURE_GUID", "TEXTURE_FILE"), "tex",
-    aliases=("Texture2D",), structured=True,
+    aliases=("Texture2D",), structured=True, virtual_path_markers=("::subtex:",),
 )
 _register_builtin(
     "Texture.SDF", "Signed Distance Field", {".inxsdf"},
@@ -398,7 +402,7 @@ _register_builtin(
 _register_builtin(
     "Texture.Sampled", "Sampled Texture", {*IMAGE_EXTENSIONS, ".rendertexture"},
     ("TEXTURE_GUID", "TEXTURE_FILE", "RENDER_TEXTURE_FILE"), "sampled_tex",
-    structured=True, compatible_types=("Texture", "Texture2D", "RenderTexture"),
+    structured=True, compatible_types=("Texture", "Texture2D", "RenderTexture"), virtual_path_markers=("::subtex:",),
 )
 _register_builtin(
     "Texture.VectorField", "Vector Field", {".inxvfield"},
