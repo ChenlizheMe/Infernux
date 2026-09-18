@@ -369,7 +369,7 @@ class PhysicsWorld
     /// caller-owned storage must contain @p count elements.
     void RaycastBatch(const float *originsXYZ, const float *directionsXYZ, size_t count, float maxDistance,
                       RaycastHit *outHits, uint8_t *outHitMask, uint32_t layerMask = (0xFFFFFFFFu & ~(1u << 2)),
-                      bool queryTriggers = true) const;
+                      bool queryTriggers = true, uint64_t *outQueryGeneration = nullptr) const;
 
     /// Monotonic identity of the currently published query world. The value
     /// changes whenever body membership, pose, layer/trigger state, or a

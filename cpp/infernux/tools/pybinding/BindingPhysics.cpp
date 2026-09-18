@@ -165,6 +165,7 @@ py::dict RaycastBatch(py::array origins, py::array directions, py::dict output, 
     static thread_local std::vector<uint8_t> nativeMask;
     nativeHits.resize(static_cast<size_t>(count));
     nativeMask.resize(static_cast<size_t>(count));
+    uint64_t queryGeneration = 0;
     // The native batch query owns the authoritative physics snapshot and does
     // not touch Python objects.  Release the interpreter lock for the whole
     // query so background Python work cannot serialize behind a large ray
@@ -172,7 +173,8 @@ py::dict RaycastBatch(py::array origins, py::array directions, py::dict output, 
     {
         py::gil_scoped_release release;
         PhysicsWorld::Instance().RaycastBatch(originData, directionData, static_cast<size_t>(count), maxDistance,
-                                              nativeHits.data(), nativeMask.data(), layerMask, queryTriggers);
+                                              nativeHits.data(), nativeMask.data(), layerMask, queryTriggers,
+                                              &queryGeneration);
     }
 
     auto *hitData = hit.mutable_data();
@@ -202,6 +204,7 @@ py::dict RaycastBatch(py::array origins, py::array directions, py::dict output, 
         colliderIdData[index] = native.collider ? native.collider->GetComponentID() : 0;
         gameObjectIdData[index] = native.gameObject ? native.gameObject->GetID() : 0;
     }
+    output[py::str("query_generation")] = py::int_(queryGeneration);
     return output;
 }
 

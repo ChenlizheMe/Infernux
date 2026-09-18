@@ -66,6 +66,7 @@
 #include <cmath>
 #include <cstdarg>
 #include <glm/gtc/constants.hpp>
+#include <stdexcept>
 #include <unordered_set>
 
 namespace infernux
@@ -2066,12 +2067,16 @@ bool PhysicsWorld::Raycast(const glm::vec3 &origin, const glm::vec3 &direction, 
 }
 
 void PhysicsWorld::RaycastBatch(const float *originsXYZ, const float *directionsXYZ, size_t count, float maxDistance,
-                                RaycastHit *outHits, uint8_t *outHitMask, uint32_t layerMask, bool queryTriggers) const
+                                RaycastHit *outHits, uint8_t *outHitMask, uint32_t layerMask, bool queryTriggers,
+                                uint64_t *outQueryGeneration) const
 {
     if ((count != 0 && (!originsXYZ || !directionsXYZ || !outHits || !outHitMask)))
         throw std::invalid_argument("raycast batch requires non-null storage");
 
     SceneManager::Instance().EnsurePhysicsQueriesCurrent();
+    const uint64_t queryGeneration = GetQueryGeneration();
+    if (outQueryGeneration)
+        *outQueryGeneration = queryGeneration;
     // The physics snapshot is immutable for the duration of this call.  Keep
     // one native query boundary, then fan out large batches through the
     // engine JobSystem instead of making the caller serialize thousands of
@@ -2106,12 +2111,16 @@ void PhysicsWorld::RaycastBatch(const float *originsXYZ, const float *directions
                 }
             },
             JobDomain::Physics, JobPriority::Normal);
+        if (GetQueryGeneration() != queryGeneration)
+            throw std::logic_error("physics query world changed during raycast batch");
         return;
     }
 
     for (size_t index = 0; index < count; ++index) {
         castOne(static_cast<uint32_t>(index));
     }
+    if (GetQueryGeneration() != queryGeneration)
+        throw std::logic_error("physics query world changed during raycast batch");
 }
 
 bool PhysicsWorld::RaycastCurrent(const glm::vec3 &origin, const glm::vec3 &direction, float maxDistance,

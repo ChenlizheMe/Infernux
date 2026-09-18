@@ -451,7 +451,9 @@ class Physics(metaclass=_PhysicsMeta):
         per-ray Python round trip. The same dictionary and arrays are returned unchanged. Misses use
         ``hit=0``, infinite distance and zero object/component identities.
         ``Physics.query_generation`` exposes the monotonic published-world
-        token for associating retained results with the snapshot they read.
+        token for associating retained results with the snapshot they read;
+        the returned dictionary also contains that scalar under
+        ``query_generation``.
         """
         return _CppPhysics.raycast_batch(
             origins, directions, out, float(max_distance), int(layer_mask), bool(query_triggers)

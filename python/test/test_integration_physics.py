@@ -2096,7 +2096,8 @@ class TestRaycastBatch:
         result = PublicPhysics.raycast_batch(origins, directions, output, max_distance=10)
 
         assert result is output
-        assert {name: id(value) for name, value in output.items()} == identities
+        assert {name: id(value) for name, value in output.items() if isinstance(value, np.ndarray)} == identities
+        assert output["query_generation"] == int(PublicPhysics.query_generation)
         np.testing.assert_array_equal(output["hit"][:2], [1, 0])
         assert output["distance"][0] == pytest.approx(4.5, abs=1e-4)
         assert math.isinf(float(output["distance"][1]))
@@ -2108,8 +2109,9 @@ class TestRaycastBatch:
         assert output["collider_id"][1] == 0
         assert output["game_object_id"][1] == 0
         assert output["triangle_index"][1] == np.iinfo(np.uint32).max
-        for value in output.values():
-            assert np.all(value[2:] == 77)
+        for name, value in output.items():
+            if isinstance(value, np.ndarray):
+                assert np.all(value[2:] == 77)
 
     def test_rejects_insufficient_capacity_before_writing(self, scene):
         import numpy as np
@@ -2173,8 +2175,9 @@ class TestRaycastBatch:
         origins = np.array([[0, 5, 0]], dtype=np.float32)
         directions = np.array([[0, -1, 0]], dtype=np.float32)
         output = self._output(1)
-        PublicPhysics.raycast_batch(origins, directions, output)
+        result = PublicPhysics.raycast_batch(origins, directions, output)
         assert int(PublicPhysics.query_generation) == moved
+        assert result["query_generation"] == moved
         assert output["hit"][0] == 1
 
 class TestIncrementalTransformSync:
