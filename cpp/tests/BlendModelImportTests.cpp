@@ -321,6 +321,16 @@ int main(int argc, char **argv)
     assert(imported.materialSlots.size() == imported.mesh->GetMaterialSlotNames().size());
     assert(imported.mesh->GetGuid() == "0123456789abcdef0123456789abcdef");
 
+    // Assimp's memory importer uses a synthetic OBJ root.  It is an
+    // implementation detail and must never leak into the authored hierarchy
+    // shown by the editor (or become a persisted model-node identity).
+    const auto syntheticObjPath = sourceRoot / "cpp/tests/fixtures/model_smoothing.obj";
+    const auto objImport = infernux::MeshLoader::ImportSourceDetailed(
+        infernux::FromFsPath(syntheticObjPath), "obj-root-guid", metadata);
+    assert(objImport.mesh && !objImport.mesh->GetModelNodes().empty());
+    assert(objImport.mesh->GetModelNodes().front().name == "model_smoothing.obj");
+    assert(objImport.mesh->GetModelNodes().front().name != "$$$___magic___$$$.obj");
+
     // A real tree is distinct from the former flat list of mesh-node names.
     // Transform-only parents, nonuniform mirrored scale and local rotation
     // must survive import and the same binary artifact used by Player.
