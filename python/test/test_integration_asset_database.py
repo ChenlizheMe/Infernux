@@ -97,12 +97,14 @@ def test_shared_mesh_position_publication_keeps_collision_until_recook(engine, s
         # Omitting normals preserves the previously published lighting attributes.
         Physics.sync_transforms()
         assert NativeMeshCollider.get_cooking_cache_stats()["async_submissions"] == before
+        generation_before_recook = int(Physics.query_generation)
         for go, x in zip(objects, (0, 5)):
             np.testing.assert_array_equal(go.get_component("MeshRenderer").get_positions(), positions)
             np.testing.assert_allclose(go.get_component("MeshRenderer").get_normals(), normals)
             assert Physics.raycast(Vector3(x - 0.5, 5, -0.5), Vector3(0, -1, 0), 10).point.y == pytest.approx(0)
         objects[0].get_component("MeshCollider").recook()
         Physics.sync_transforms()
+        assert int(Physics.query_generation) > generation_before_recook
         assert Physics.raycast(Vector3(-0.5, 5, -0.5), Vector3(0, -1, 0), 10).point.y == pytest.approx(2)
         assert Physics.raycast(Vector3(4.5, 5, -0.5), Vector3(0, -1, 0), 10).point.y == pytest.approx(0)
     finally:
