@@ -366,7 +366,7 @@ class VkDeviceContext
     bool CheckDeviceExtensionSupport(VkPhysicalDevice device, const std::vector<const char *> &extensions) const;
 
     /// @brief Get required instance extensions
-    std::vector<const char *> GetRequiredExtensions(bool enableValidation) const;
+    std::vector<const char *> GetRequiredExtensions(const DeviceConfig &config, bool enableValidation) const;
 
     /// @brief Check validation layer support
     bool CheckValidationLayerSupport() const;

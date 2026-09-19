@@ -239,6 +239,19 @@ bool InxVkCoreModular::Init(InxAppMetadata appMetaData, InxAppMetadata rendererM
     // Configure device (store for use in PrepareSurface)
     m_deviceConfig.appName = appMetaData.appName ? appMetaData.appName : "Infernux App";
     m_deviceConfig.engineName = rendererMetaData.appName ? rendererMetaData.appName : "Infernux";
+    if (vkWindowExtCount == 0 || vkWindowExts == nullptr) {
+        INXLOG_ERROR("Vulkan window initialization did not provide instance extensions");
+        return false;
+    }
+    m_deviceConfig.windowInstanceExtensions.clear();
+    m_deviceConfig.windowInstanceExtensions.reserve(vkWindowExtCount);
+    for (uint32_t index = 0; index < vkWindowExtCount; ++index) {
+        if (vkWindowExts[index] == nullptr || vkWindowExts[index][0] == '\0') {
+            INXLOG_ERROR("Vulkan window initialization provided an invalid instance extension at index ", index);
+            return false;
+        }
+        m_deviceConfig.windowInstanceExtensions.emplace_back(vkWindowExts[index]);
+    }
 
 #if INFERNUX_VULKAN_VALIDATION_LAYERS
     m_deviceConfig.enableValidationLayers = true;

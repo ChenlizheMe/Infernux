@@ -122,6 +122,11 @@ struct DeviceConfig
     uint32_t engineVersionPatch = 0;      ///< Engine patch version
     bool enableValidationLayers =
         false; ///< Set true at startup when built with INFERNUX_VULKAN_VALIDATION_LAYERS (Debug / RelWithDebInfo)
+    /// Window-system Vulkan instance extensions captured after the SDL Vulkan
+    /// window exists. Split initialization must carry this exact list from
+    /// the window owner to instance creation; querying SDL again in the
+    /// backend can select a different Wayland/XWayland presentation path.
+    std::vector<std::string> windowInstanceExtensions;
     QueueConfig queueConfig; ///< Queue configuration
 };
 
