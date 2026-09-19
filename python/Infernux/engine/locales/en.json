@@ -446,7 +446,7 @@
   "prefs.ide.none_available": "No supported IDE was detected. Code files will fall back to the system default application.",
   "prefs.shortcuts": "Shortcuts",
   "prefs.blender": "Blender 5.2 executable",
-  "prefs.blender.hint": "Used only to import .blend sources. Select the installed Blender executable, then reimport the model. Clearing this path disables Blender imports; built games do not need Blender.",
+  "prefs.blender.hint": "Used only to import .blend sources. Infernux Hub supplies the managed Blender tool automatically. Set a path here only to override it, then reimport the model. Built games do not need Blender.",
   "prefs.shortcuts.profile": "Profile",
   "prefs.shortcuts.profile_name": "Profile name",
   "prefs.shortcuts.default_read_only": "Default is read-only. Create a profile to customize shortcuts.",
