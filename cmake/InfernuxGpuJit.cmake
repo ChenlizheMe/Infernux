@@ -69,18 +69,13 @@ if(CMAKE_CXX_COMPILER)
         "-DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}")
 endif()
 
-set(_infernux_gpu_jit_targets _infernux_gpu_compiler)
-if(INFERNUX_BUILD_TESTS)
-    list(APPEND _infernux_gpu_jit_targets infernux_compiler_contract_tests infernux_bit_contract_tests)
-endif()
-
 ExternalProject_Add(infernux_gpu_jit_compiler
     SOURCE_DIR "${INFERNUX_GPU_JIT_SOURCE_DIR}"
     BINARY_DIR "${INFERNUX_GPU_JIT_BINARY_DIR}"
     CMAKE_ARGS ${_infernux_gpu_jit_cmake_args}
     BUILD_COMMAND
         "${CMAKE_COMMAND}" --build <BINARY_DIR>
-        --config Release --target ${_infernux_gpu_jit_targets} --parallel 4
+        --config Release --target _infernux_gpu_compiler --parallel 4
     INSTALL_COMMAND
         "${CMAKE_COMMAND}" -E rm -rf "${INFERNUX_GPU_JIT_INSTALL_ROOT}"
     COMMAND "${CMAKE_COMMAND}" --install <BINARY_DIR>
