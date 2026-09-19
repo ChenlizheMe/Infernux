@@ -45,6 +45,7 @@ def test_linux_setup_installs_and_checks_the_native_toolchain() -> None:
     for dependency in (
         "clang-format",
         "glslang-tools",
+        "libegl-dev",
         "libegl1",
         "libgl1",
         "libxcb-cursor0",
@@ -77,6 +78,23 @@ def test_linux_setup_installs_and_checks_the_native_toolchain() -> None:
     assert "find_llvm_tool llvm-ar" in configurator
     assert "find_llvm_tool llvm-ranlib" in configurator
     assert "install_linux_dependencies.sh" in configurator
+
+
+def test_linux_sdl_build_requires_x11_and_wayland() -> None:
+    external_cmake = (ROOT / "external/CMakeLists.txt").read_text(encoding="utf-8")
+
+    assert 'pkg_check_modules(INFERNUX_SDL_WAYLAND REQUIRED' in external_cmake
+    for dependency in (
+        "egl",
+        "wayland-client>=1.18",
+        "wayland-egl",
+        "wayland-cursor",
+        "xkbcommon>=0.5.0",
+        "libdecor-0",
+    ):
+        assert dependency in external_cmake
+    assert 'set(SDL_X11 ON CACHE BOOL "" FORCE)' in external_cmake
+    assert 'set(SDL_WAYLAND ON CACHE BOOL "" FORCE)' in external_cmake
 
 
 def test_linux_ci_reuses_the_repository_dependency_installer() -> None:

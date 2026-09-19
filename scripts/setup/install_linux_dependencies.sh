@@ -17,6 +17,7 @@ sudo apt-get install --yes --no-install-recommends \
     libasound2-dev \
     libdecor-0-dev \
     libdrm-dev \
+    libegl-dev \
     libegl1 \
     libffi-dev \
     libgbm-dev \

@@ -49,6 +49,23 @@ set(SDL_SHARED ON CACHE BOOL "" FORCE)
 set(SDL_STATIC OFF CACHE BOOL "" FORCE)
 set(SDL_OPENGL OFF CACHE BOOL "" FORCE)
 set(SDL_OPENGLES OFF CACHE BOOL "" FORCE)
+if(UNIX AND NOT APPLE AND NOT ANDROID AND NOT EMSCRIPTEN)
+    # Linux desktop artifacts support native X11 and Wayland from the same SDL
+    # build.  Do not let a missing development package silently remove one of
+    # the supported window systems from the published runtime.
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(INFERNUX_SDL_WAYLAND REQUIRED
+        egl
+        wayland-client>=1.18
+        wayland-egl
+        wayland-cursor
+        xkbcommon>=0.5.0
+        libdecor-0
+    )
+    set(SDL_X11 ON CACHE BOOL "" FORCE)
+    set(SDL_WAYLAND ON CACHE BOOL "" FORCE)
+    set(SDL_WAYLAND_LIBDECOR ON CACHE BOOL "" FORCE)
+endif()
 
 # Jolt Physics configuration
 #
