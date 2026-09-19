@@ -1333,10 +1333,21 @@ if(INFERNUX_BUILD_TESTS)
     # runtime search path on every CTest entry so invoking ctest directly has
     # the same deterministic environment as the build-time smoke commands.
     if(UNIX AND NOT APPLE)
+        if(INFERNUX_USE_TARGET_PYTHON)
+            set(_infernux_test_python_library "${INFERNUX_TARGET_PYTHON_LIBRARY}")
+        else()
+            list(GET Python3_LIBRARIES 0 _infernux_test_python_library)
+        endif()
+        get_filename_component(
+            _infernux_test_python_library_dir
+            "${_infernux_test_python_library}"
+            DIRECTORY
+        )
         get_property(_infernux_registered_tests DIRECTORY PROPERTY TESTS)
         foreach(_infernux_test IN LISTS _infernux_registered_tests)
             set_property(TEST ${_infernux_test} APPEND PROPERTY
-                ENVIRONMENT "LD_LIBRARY_PATH=$<TARGET_FILE_DIR:_Infernux>:${INFERNUX_PYTHON_SYNC_DIR}")
+                ENVIRONMENT
+                    "LD_LIBRARY_PATH=$<TARGET_FILE_DIR:_Infernux>:${INFERNUX_PYTHON_SYNC_DIR}:${_infernux_test_python_library_dir}")
         endforeach()
     endif()
 endif()
