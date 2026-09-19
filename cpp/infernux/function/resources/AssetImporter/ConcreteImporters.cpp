@@ -46,7 +46,7 @@ class BlenderSource
     {
         if (request.blenderExecutable.empty() || request.blenderExportScript.empty())
             throw std::runtime_error(
-                "Blender 5.2 model import is not configured; select the Blender tool in editor preferences");
+                "Blender 5.2 model import is not configured; install Model Authoring in Infernux Hub or select Blender in editor preferences");
         if (request.projectRoot.empty())
             throw std::logic_error("Blender import requires a project Library directory");
         const auto parent = ToFsPath(request.projectRoot) / "Library" / "ModelImport";

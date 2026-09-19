@@ -1,4 +1,5 @@
 """Editor-machine model authoring tools, never project or Player dependencies."""
+import os
 from pathlib import Path
 
 from Infernux.engine.preferences_store import PreferencesStore
@@ -6,7 +7,11 @@ from Infernux.engine.path_utils import resolved_path
 
 
 def get_blender_executable() -> str:
-    return PreferencesStore().get("blender_executable", "")
+    configured = PreferencesStore().get("blender_executable", "")
+    if configured:
+        return configured
+    managed = os.environ.get("INFERNUX_BLENDER_EXECUTABLE", "").strip()
+    return resolved_path(managed) if managed else ""
 
 
 def export_script() -> str:
