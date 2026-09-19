@@ -95,6 +95,7 @@ def build_prebuilt_runtime(
             runtime_pack_cache=True,
             packaged_runtime_lookup=False,
             player_module=True,
+            strip_runtime_symbols=profile == "release",
         )
         builder.build(force_runtime_rebuild=force)
         exported_path = builder.export_runtime_pack(output_root)
@@ -109,6 +110,7 @@ def build_prebuilt_runtime(
             module_root,
             module_name="parallel",
             packages=["numba", "llvmlite"],
+            profile=profile,
         )
         manifest_path = os.path.join(exported_path, "Player.inxmanifest")
         with open(manifest_path, "r", encoding="utf-8") as manifest_file:

@@ -2323,6 +2323,44 @@ def test_release_engineering_explicitly_compiles_player_payload(tmp_path, monkey
     assert compiled == [True]
 
 
+def test_linux_release_payload_strips_only_elf_files(tmp_path, monkeypatch):
+    strip_tool = tmp_path / "strip"
+    strip_tool.write_bytes(b"tool")
+    payload = tmp_path / "runtime"
+    payload.mkdir()
+    library = payload / "libEngine.so"
+    library.write_bytes(b"\x7fELFpayload")
+    (payload / "config.json").write_text("{}", encoding="utf-8")
+    link = payload / "libEngine.so.1"
+    try:
+        link.symlink_to(library.name)
+    except OSError:
+        link = None
+
+    commands = []
+    monkeypatch.setattr(nuitka_builder_module.sys, "platform", "linux")
+    monkeypatch.setenv("INFERNUX_STRIP_TOOL", str(strip_tool))
+    monkeypatch.setattr(
+        nuitka_builder_module.subprocess,
+        "run",
+        lambda command, **kwargs: commands.append((command, kwargs)),
+    )
+
+    NuitkaBuilder._strip_linux_release_payload(payload)
+
+    assert commands == [
+        ([str(strip_tool), "--strip-unneeded", str(library)], {"check": True})
+    ]
+
+
+def test_linux_release_payload_requires_configured_strip_tool(tmp_path, monkeypatch):
+    monkeypatch.setattr(nuitka_builder_module.sys, "platform", "linux")
+    monkeypatch.delenv("INFERNUX_STRIP_TOOL", raising=False)
+
+    with pytest.raises(RuntimeError, match="INFERNUX_STRIP_TOOL"):
+        NuitkaBuilder._strip_linux_release_payload(tmp_path)
+
+
 def test_debug_and_release_share_the_compiled_player_entry(tmp_path, monkeypatch):
     project = _make_project(tmp_path)
     entries = []

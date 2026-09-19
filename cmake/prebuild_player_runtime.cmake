@@ -28,6 +28,7 @@ execute_process(
         "PYTHONDONTWRITEBYTECODE=1"
         "INFERNUX_NATIVE_MODULE_DIR=${NATIVE_MODULE_DIR}"
         "INFERNUX_PLAYER_HOST_PATH=${PLAYER_HOST_PATH}"
+        "INFERNUX_STRIP_TOOL=${INFERNUX_STRIP_TOOL}"
         "${PYTHON_EXECUTABLE}" -m Infernux.engine.prebuilt_runtime
         --profile release
         --output-root "${OUTPUT_ROOT}"

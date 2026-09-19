@@ -150,6 +150,7 @@ add_custom_target(prebuild_player_runtime
         "-DMODULE_OUTPUT_ROOT=${INFERNUX_PREBUILT_RUNTIME_MODULE_DIR}"
         "-DPLATFORM_PLAYER_OUTPUT=${INFERNUX_PLATFORM_PLAYER_OUTPUT_DIR}"
         "-DBUILD_CACHE_ROOT=${CMAKE_BINARY_DIR}/build-cache/player-runtime"
+        "-DINFERNUX_STRIP_TOOL=${CMAKE_STRIP}"
         -P "${CMAKE_SOURCE_DIR}/cmake/prebuild_player_runtime.cmake"
     COMMAND "${Python3_EXECUTABLE}"
         "${CMAKE_SOURCE_DIR}/external/plugins/infernux_${_infernux_player_platform}/release.py"

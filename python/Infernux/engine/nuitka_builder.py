@@ -1153,6 +1153,7 @@ class NuitkaBuilder:
         runtime_pack_cache: bool = False,
         packaged_runtime_lookup: bool = True,
         player_module: bool = False,
+        strip_runtime_symbols: bool = False,
     ):
         self.entry_script = resolved_path(entry_script)
         self.output_dir = resolved_path(output_dir)
@@ -1182,6 +1183,7 @@ class NuitkaBuilder:
         self.runtime_pack_cache = bool(runtime_pack_cache)
         self.packaged_runtime_lookup = bool(packaged_runtime_lookup)
         self.player_module = bool(player_module)
+        self.strip_runtime_symbols = bool(strip_runtime_symbols)
         self.last_runtime_pack_key = ""
         self.last_runtime_compatibility_key = ""
         self._engine_fingerprint_cache = ""
@@ -1281,6 +1283,10 @@ class NuitkaBuilder:
                 _p(t("build.step.injecting_jit"), 0.87)
                 self._inject_jit_packages(dist_dir)
 
+            if self.strip_runtime_symbols:
+                _p("Stripping release runtime symbols", 0.89)
+                self._strip_linux_release_payload(Path(dist_dir))
+
             if sys.platform == "win32" and not self.player_module:
                 _p(t("build.step.embedding_manifest"), 0.90)
                 self._embed_utf8_manifest(dist_dir)
@@ -1307,6 +1313,7 @@ class NuitkaBuilder:
         digest = hashlib.sha256()
         digest.update(b"runtime-pack\0")
         digest.update(self._RUNTIME_PACK_LAYOUT.encode("ascii"))
+        digest.update(b"\1" if getattr(self, "strip_runtime_symbols", False) else b"\0")
         normalized_command = []
         for index, argument in enumerate(cmd):
             value = str(argument)
@@ -1376,6 +1383,7 @@ class NuitkaBuilder:
             "console_mode": "module" if self.player_module else self.console_mode,
             "lto": bool(self.lto),
             "player_module": bool(getattr(self, "player_module", False)),
+            "stripped": bool(getattr(self, "strip_runtime_symbols", False)),
             "archive_format": "infernux-native-inxpack",
             # NumPy, Numba and llvmlite are engine-managed closures.
             # Branding/data post-processing also happens after core compile.
@@ -1673,6 +1681,7 @@ print(json.dumps({{
             "machine": platform.machine().lower(),
             "console_mode": self.console_mode,
             "lto": bool(self.lto),
+            "stripped": bool(getattr(self, "strip_runtime_symbols", False)),
             "created_at": time.time(),
         }
         with open(
@@ -1795,6 +1804,8 @@ print(json.dumps({{
         shutil.rmtree(temporary, ignore_errors=True)
         try:
             self._inject_jit_packages(str(payload_root), packages=selected_packages)
+            if getattr(self, "strip_runtime_symbols", False):
+                self._strip_linux_release_payload(payload_root)
             temporary.mkdir(parents=True, exist_ok=False)
             archive_path = temporary / _RUNTIME_MODULE_ARCHIVE_FILENAME
             source_files: list[tuple[str, str]] = []
@@ -1841,6 +1852,41 @@ print(json.dumps({{
         finally:
             shutil.rmtree(payload_root, ignore_errors=True)
             shutil.rmtree(temporary, ignore_errors=True)
+
+    @staticmethod
+    def _strip_linux_release_payload(payload_root: Path) -> None:
+        """Remove link-time symbols from a published Linux release payload."""
+
+        if sys.platform != "linux":
+            return
+        strip_tool = os.environ.get("INFERNUX_STRIP_TOOL", "").strip()
+        if not strip_tool:
+            raise RuntimeError(
+                "Linux release runtime publication requires INFERNUX_STRIP_TOOL "
+                "from the active CMake toolchain"
+            )
+        strip_path = Path(strip_tool)
+        if not strip_path.is_file():
+            raise RuntimeError(f"Configured Linux strip tool does not exist: {strip_path}")
+
+        elf_files: list[str] = []
+        for candidate in sorted(payload_root.rglob("*")):
+            if not candidate.is_file() or candidate.is_symlink():
+                continue
+            try:
+                with candidate.open("rb") as source:
+                    if source.read(4) != b"\x7fELF":
+                        continue
+            except OSError as exc:
+                raise RuntimeError(f"Cannot inspect release runtime file: {candidate}") from exc
+            elf_files.append(str(candidate))
+
+        for offset in range(0, len(elf_files), 64):
+            command = [str(strip_path), "--strip-unneeded", *elf_files[offset:offset + 64]]
+            try:
+                subprocess.run(command, check=True)
+            except (OSError, subprocess.CalledProcessError) as exc:
+                raise RuntimeError("Failed to strip the Linux release runtime payload") from exc
 
     @staticmethod
     def _packaged_runtime_module_roots() -> list[str]:
