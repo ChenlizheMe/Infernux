@@ -341,6 +341,10 @@ find_package(Vulkan REQUIRED)
 set(VMA_BUILD_DOCUMENTATION OFF CACHE BOOL "" FORCE)
 set(VMA_BUILD_SAMPLES OFF CACHE BOOL "" FORCE)
 add_subdirectory(VulkanMemoryAllocator)
+set_property(TARGET VulkanMemoryAllocator PROPERTY
+    INTERFACE_SYSTEM_INCLUDE_DIRECTORIES
+        "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/VulkanMemoryAllocator/include>"
+)
 
 # ------------------------------------------------------------------------------
 # ImGui

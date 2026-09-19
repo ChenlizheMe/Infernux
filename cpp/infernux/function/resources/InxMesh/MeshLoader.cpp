@@ -455,7 +455,9 @@ static std::shared_ptr<InxMesh> ConvertScene(const aiScene *scene, const MeshImp
     if (settings.materialImportMode == "none") {
         materialSlotDataVec.clear();
     } else {
-        for (const auto &[sourceId, guid] : settings.materialRemaps.items()) {
+        for (const auto &remap : settings.materialRemaps.items()) {
+            const auto &sourceId = remap.key();
+            const auto &guid = remap.value();
             auto found = std::find_if(materialSlotDataVec.begin(), materialSlotDataVec.end(),
                                       [&](const auto &slot) { return slot.sourceId == sourceId; });
             if (found == materialSlotDataVec.end())

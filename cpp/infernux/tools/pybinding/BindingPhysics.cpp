@@ -349,7 +349,7 @@ py::dict GetContactEvents()
 {
     const auto &events = PhysicsWorld::Instance().GetContactEvents();
     const py::ssize_t count = static_cast<py::ssize_t>(events.size());
-    py::array_t<uint8_t> type({count});
+    py::array_t<uint8_t> type(count);
     py::array_t<uint32_t> bodyIds({count, py::ssize_t(2)});
     py::array_t<uint32_t> subShapeIds({count, py::ssize_t(2)});
     py::array_t<float> contactPoints({count, py::ssize_t(3)});

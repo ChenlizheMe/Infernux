@@ -397,7 +397,9 @@ bool ValidatePythonGraphDescription(const RenderGraphDescription &desc, uint32_t
         }
         *slot = &tex;
     }
-    for (const auto &[key, pair] : temporalPairs) {
+    for (const auto &temporalEntry : temporalPairs) {
+        const auto &key = temporalEntry.first;
+        const auto &pair = temporalEntry.second;
         if (!pair.read || !pair.write || pair.read->format != pair.write->format ||
             pair.read->width != pair.write->width || pair.read->height != pair.write->height ||
             pair.read->sizeDivisor != pair.write->sizeDivisor) {
@@ -2796,7 +2798,9 @@ void SceneRenderGraph::ImportTemporalHistoryResources(std::unordered_map<std::st
             ++it;
     }
     auto &device = m_vkCore->GetDeviceContext().GetRhiDevice();
-    for (const auto &[key, request] : requested) {
+    for (const auto &requestEntry : requested) {
+        const auto &key = requestEntry.first;
+        const auto &request = requestEntry.second;
         const auto &desc = *request.read; // Pair validated when the graph is published.
         const uint32_t width = desc.width ? desc.width : std::max(1u, m_width / std::max(1u, desc.sizeDivisor));
         const uint32_t height = desc.height ? desc.height : std::max(1u, m_height / std::max(1u, desc.sizeDivisor));
