@@ -1038,6 +1038,16 @@ def test_web_host_build_templates_are_editor_only():
             assert player_file_exported({}, relative) is False
 
 
+def test_web_native_runtime_excludes_model_authoring_and_links_stream_audio():
+    cmake = (
+        ROOT / "external" / "plugins" / "infernux_web" / "native" / "CMakeLists.txt"
+    ).read_text(encoding="utf-8")
+
+    assert 'EXCLUDE REGEX "/InxMesh/ModelVertexBasis\\\\.cpp$"' in cmake
+    assert 'function/audio/AudioStreamBuffer.cpp"' in cmake
+    assert 'function/audio/AudioStreamDecoder.cpp"' in cmake
+
+
 def test_web_shader_stage_deduplicates_shared_particle_kernel(monkeypatch, tmp_path):
     _web_module(monkeypatch)
     exporter = importlib.import_module("infernux_web.exporter")

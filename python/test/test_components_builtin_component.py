@@ -77,6 +77,40 @@ class TestCppPropertyBinding:
             == "component.localized.value"
         )
 
+    def test_web_runtime_uses_direct_native_property_bridge(self, monkeypatch):
+        import Infernux.field_schema as field_schema
+
+        get_converter = object()
+        set_converter = object()
+        native_getter = object()
+        native_setter = object()
+        monkeypatch.setenv("INFERNUX_WEB_RUNTIME", "1")
+        monkeypatch.setattr(
+            field_schema,
+            "get_native_field_schema",
+            lambda *_args, **_kwargs: pytest.fail(
+                "Web Player must not query editor semantic metadata"
+            ),
+        )
+
+        descriptor = CppProperty.from_native(
+            "MeshRenderer",
+            "mesh_pivot_offset",
+            visible_when=("mode", "world"),
+            get_converter=get_converter,
+            set_converter=set_converter,
+            native_getter=native_getter,
+            native_setter=native_setter,
+        )
+
+        assert descriptor.cpp_attr == "mesh_pivot_offset"
+        assert descriptor.metadata.visible_when == ("mode", "world")
+        assert descriptor.get_converter is get_converter
+        assert descriptor.set_converter is set_converter
+        assert descriptor.native_getter is native_getter
+        assert descriptor.native_setter is native_setter
+        assert descriptor.schema is None
+
 
 class TestCppPropertyReadWrite:
     def test_reads_from_cpp_and_casts_enum(self):

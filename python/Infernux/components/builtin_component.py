@@ -131,26 +131,23 @@ class CppProperty:
                     get_converter=None, set_converter=None,
                     native_getter=None, native_setter=None) -> CppProperty:
         """Project a native declaration into the existing Inspector descriptor."""
+        if os.environ.get("INFERNUX_WEB_RUNTIME") == "1" or sys.platform == "emscripten":
+            # Web Player has no Inspector.  Its Python wrappers only need the
+            # direct native property bridge, while the native scene loader owns
+            # validation and serialization.  Do not couple a published wasm
+            # runtime to the editor-only semantic catalog revision.
+            return cls(
+                field_id,
+                visible_when=visible_when,
+                get_converter=get_converter,
+                set_converter=set_converter,
+                native_getter=native_getter,
+                native_setter=native_setter,
+            )
         from Infernux.field_schema import get_native_field_schema
         from Infernux.lib import _Infernux
         from .value_codec import VALUE_CODECS
-
-        if (
-            (os.environ.get("INFERNUX_WEB_RUNTIME") == "1" or sys.platform == "emscripten")
-            and not hasattr(_Infernux, "_semantic_catalog_snapshot")
-        ):
-            return cls(field_id)
-        try:
-            schema = get_native_field_schema(f"native:infernux.{type_name}", field_id)
-        except AttributeError:
-            # Older prebuilt WebAssembly hosts do not expose the native
-            # semantic-catalog reader.  Web Player has no Inspector and can
-            # still delegate the property directly to its native component;
-            # keep this compatibility boundary explicit and never apply it
-            # to editor or native Player processes.
-            if os.environ.get("INFERNUX_WEB_RUNTIME") != "1" and sys.platform != "emscripten":
-                raise
-            return cls(field_id)
+        schema = get_native_field_schema(f"native:infernux.{type_name}", field_id)
         attributes = schema.to_document()["attributes"]
         enum = attributes.get("enum")
         enum_type = None

@@ -24,6 +24,16 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--startup-timeout", type=float, default=60.0)
     parser.add_argument("--transition-timeout", type=float, default=30.0)
     parser.add_argument(
+        "--capture",
+        action="append",
+        choices=("scene", "game", "editor"),
+        default=[],
+        help=(
+            "Capture an engine-owned render target while Play Mode is active. "
+            "May be repeated; files are written under the project's persistent data root."
+        ),
+    )
+    parser.add_argument(
         "--dialog-timeout",
         type=float,
         default=120.0,
@@ -94,6 +104,7 @@ def _run_smoke(
     dialog_timeout: float,
     native_open_dialog: str,
     native_save_dialog: str,
+    capture_sources: tuple[str, ...],
 ) -> None:
     queue = MainThreadCommandQueue.instance()
     try:
@@ -199,6 +210,52 @@ def _run_smoke(
         if float(played.get("total_play_time", 0.0)) <= 0.0:
             raise RuntimeError(f"Play Mode clock did not advance: {played!r}")
 
+        if capture_sources:
+            from Infernux.application import Application
+
+            persistent_root = run("persistent-data-path", Application.persistent_data_path)
+            scene_name = os.path.splitext(os.path.basename(scene_path))[0]
+            capture_root = os.path.join(persistent_root, "AcceptanceCaptures")
+            for source in capture_sources:
+                output_path = os.path.join(capture_root, f"{scene_name}-{source}.png")
+                capture_id = run(
+                    f"capture-{source}",
+                    lambda source=source, output_path=output_path: (
+                        Application.request_render_target_capture(source, output_path)
+                    ),
+                )
+                snapshot = _wait_until(
+                    lambda capture_id=capture_id: (
+                        status
+                        if str(
+                            (
+                                status := run(
+                                    "capture-status",
+                                    lambda capture_id=capture_id: (
+                                        Application.query_render_target_capture(capture_id)
+                                    ),
+                                )
+                            ).get("status", "")
+                        )
+                        in {"completed", "failed", "cancelled", "source_expired"}
+                        else None
+                    ),
+                    timeout=transition_timeout,
+                    label=f"{source} render-target capture",
+                )
+                if str(snapshot.get("status")) != "completed":
+                    raise RuntimeError(f"{source} capture failed: {snapshot!r}")
+                if not os.path.isfile(output_path):
+                    raise RuntimeError(f"{source} capture did not write {output_path!r}")
+                _emit(
+                    "capture",
+                    source=source,
+                    path=resolved_path(output_path),
+                    width=int(snapshot.get("width", 0)),
+                    height=int(snapshot.get("height", 0)),
+                    pixel_origin=str(snapshot.get("pixel_origin", "")),
+                )
+
         exited = run(
             "exit-play",
             lambda: host.runtime_transition("exit_play_mode"),
@@ -267,6 +324,7 @@ def main() -> int:
             "native_save_dialog": resolved_path(args.native_save_dialog)
             if args.native_save_dialog
             else "",
+            "capture_sources": tuple(dict.fromkeys(args.capture)),
         },
         name="InfernuxEditorProjectSmoke",
         daemon=True,

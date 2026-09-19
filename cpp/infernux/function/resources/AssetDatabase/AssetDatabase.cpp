@@ -64,6 +64,12 @@ std::function<std::string(const std::string &, bool)> ModelTextureResolver(std::
 // A model sidecar is the sole authority for its imported Texture identities.
 void ApplyModelTextureSettings(InxResourceMeta &model, const std::string &guid, const nlohmann::json &settings)
 {
+#if defined(INFERNUX_RUNTIME_MINIMAL_HOST)
+    (void)model;
+    (void)guid;
+    (void)settings;
+    throw std::logic_error("Model Texture authoring is unavailable in a minimal Player host");
+#else
     if (!settings.is_object())
         throw std::invalid_argument("model Texture settings must be an object");
     InxResourceMeta defaults;
@@ -91,6 +97,7 @@ void ApplyModelTextureSettings(InxResourceMeta &model, const std::string &guid, 
         return;
     }
     throw std::invalid_argument("model no longer owns Texture: " + guid);
+#endif
 }
 
 // Rebuild these derived entries at the same publication boundary as the owner.
@@ -782,7 +789,8 @@ void AssetDatabase::Initialize(const std::string &projectRoot)
     if (DocumentTransaction::Recover(m_projectRoot, m_assetTransactionJournalPath))
         INXLOG_WARN("AssetDatabase recovered an interrupted metadata transaction");
 
-    // Register built-in importers
+    // Cooked Player hosts never import mutable authoring sources.
+#if !defined(INFERNUX_RUNTIME_MINIMAL_HOST)
     m_importerRegistry.Register(std::make_unique<TextureImporter>());
     m_importerRegistry.Register(std::make_unique<ShaderImporter>());
     m_importerRegistry.Register(std::make_unique<MaterialImporter>());
@@ -795,6 +803,7 @@ void AssetDatabase::Initialize(const std::string &projectRoot)
     m_importerRegistry.Register(std::make_unique<AudioImporter>());
     m_importerRegistry.Register(std::make_unique<ModelImporter>());
     m_importerRegistry.Register(std::make_unique<PrefabImporter>());
+#endif
 
     m_ownerThread = std::this_thread::get_id();
     m_initialized = true;

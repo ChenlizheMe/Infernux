@@ -11,10 +11,12 @@
 #include <function/resources/InxSkinnedMesh/SkinnedMeshArtifact.h>
 #include <platform/filesystem/InxPath.h>
 
+#if !defined(INFERNUX_RUNTIME_MINIMAL_HOST)
 #include <assimp/Importer.hpp>
 #include <assimp/material.h>
 #include <assimp/postprocess.h>
 #include <assimp/scene.h>
+#endif
 
 #include <algorithm>
 #include <filesystem>
@@ -106,6 +108,13 @@ size_t MeshLoader::EstimateRuntimeBytes(const RuntimeAssetPayload &payload) cons
 std::set<std::string> MeshLoader::ScanExternalTexturePaths(const std::string &filePath)
 {
     std::set<std::string> paths;
+#if defined(INFERNUX_RUNTIME_MINIMAL_HOST)
+    // A cooked Player consumes GUID dependencies published by the importer.
+    // It never parses mutable model sources and therefore must not carry
+    // Assimp or its generated configuration into the runtime host.
+    (void)filePath;
+    return paths;
+#else
     if (filePath.empty())
         return paths;
 
@@ -169,6 +178,7 @@ std::set<std::string> MeshLoader::ScanExternalTexturePaths(const std::string &fi
         }
     }
     return paths;
+#endif
 }
 
 std::set<std::string> MeshLoader::ScanDependencies(const std::string &filePath, AssetDatabase *adb)

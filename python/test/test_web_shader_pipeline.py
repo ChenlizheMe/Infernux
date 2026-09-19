@@ -88,7 +88,7 @@ def test_web_shader_pipeline_uses_vulkan_11_and_remaps_sampler_binding(
 ):
     calls: list[tuple[str, ...]] = []
 
-    def run(command, *, capture_output, text, check):
+    def run(command, *, capture_output, check):
         arguments = tuple(str(item) for item in command)
         calls.append(arguments)
         output = (
@@ -109,7 +109,7 @@ def test_web_shader_pipeline_uses_vulkan_11_and_remaps_sampler_binding(
                 )
         elif "-o" in arguments:
             Path(arguments[arguments.index("-o") + 1]).write_bytes(b"SPV")
-        return type("Completed", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+        return type("Completed", (), {"returncode": 0, "stdout": b"", "stderr": b""})()
 
     monkeypatch.setattr(shader_pipeline.subprocess, "run", run)
     compiled = shader_pipeline.compile_glsl_to_wgsl(
@@ -129,6 +129,26 @@ void main() {}
     assert "--sampler-mapping" not in calls[1]
     assert len(calls) == 3
     assert "@binding(503u) var sourceTexture_sampler" in compiled.wgsl
+
+
+def test_web_shader_tool_decodes_native_host_diagnostics_only_on_failure(
+    shader_pipeline, monkeypatch,
+):
+    diagnostic = "找不到着色器".encode("cp936")
+
+    monkeypatch.setattr(shader_pipeline.locale, "getencoding", lambda: "cp936")
+    monkeypatch.setattr(
+        shader_pipeline.subprocess,
+        "run",
+        lambda *_args, **_kwargs: type(
+            "Completed",
+            (),
+            {"returncode": 7, "stdout": b"", "stderr": diagnostic},
+        )(),
+    )
+
+    with pytest.raises(shader_pipeline.WebShaderToolError, match="找不到着色器"):
+        shader_pipeline._run(("glslangValidator", "shader.frag"), "glslang")
 
 
 def test_web_shader_manifest_builds_current_runtime_catalog(
