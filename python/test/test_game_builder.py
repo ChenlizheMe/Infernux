@@ -6500,6 +6500,38 @@ def test_desktop_player_keeps_project_content_in_native_package(tmp_path):
     assert "runtime\t" not in package_index
 
 
+def test_linux_runtime_restores_identical_elf_aliases_without_hashing(
+    tmp_path, monkeypatch
+):
+    runtime = tmp_path / "Runtime"
+    runtime.mkdir()
+    canonical = runtime / "libsample.so.3.1"
+    same_abi = runtime / "libsample.so.3"
+    short_name = runtime / "libsample.so"
+    different_abi = runtime / "libsample.so.2"
+    canonical.write_bytes(b"same shared library")
+    same_abi.write_bytes(canonical.read_bytes())
+    short_name.write_bytes(canonical.read_bytes())
+    different_abi.write_bytes(b"different ABI")
+    links = []
+
+    def record_link(path, target, *args, **kwargs):
+        links.append((path.name, str(target)))
+        path.write_text(str(target), encoding="utf-8")
+
+    monkeypatch.setattr(Path, "symlink_to", record_link)
+
+    collapsed = GameBuilder._collapse_linux_shared_library_aliases(runtime)
+
+    assert collapsed == 2
+    assert sorted(links) == [
+        ("libsample.so", "libsample.so.3.1"),
+        ("libsample.so.3", "libsample.so.3.1"),
+    ]
+    assert canonical.read_bytes() == b"same shared library"
+    assert different_abi.read_bytes() == b"different ABI"
+
+
 def test_payload_manifest_supports_platform_native_player_host(tmp_path):
     builder = _make_builder(tmp_path, tmp_path / "build_output")
     final_dir = tmp_path / "dist"

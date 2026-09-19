@@ -22,6 +22,7 @@ from __future__ import annotations
 import ast
 import copy
 import ctypes
+import filecmp
 import importlib.machinery
 import json
 import hashlib
@@ -3782,6 +3783,41 @@ finally:
                 )
             replace_path(path, target)
 
+    @staticmethod
+    def _collapse_linux_shared_library_aliases(runtime_root: Path) -> int:
+        """Restore conventional ELF aliases expanded by the sealed transport."""
+
+        collapsed = 0
+        for directory, _, names in os.walk(runtime_root):
+            groups: dict[str, list[Path]] = {}
+            for name in names:
+                marker = name.find(".so")
+                if marker < 0:
+                    continue
+                suffix = name[marker + 3 :]
+                if suffix and not re.fullmatch(r"(?:\.\d+)+", suffix):
+                    continue
+                groups.setdefault(name[: marker + 3], []).append(Path(directory) / name)
+
+            for candidates in groups.values():
+                if len(candidates) < 2:
+                    continue
+                canonical = max(
+                    candidates,
+                    key=lambda path: (
+                        len(path.name.split(".so", 1)[1].split(".")),
+                        len(path.name),
+                        path.name,
+                    ),
+                )
+                for alias in candidates:
+                    if alias == canonical or not filecmp.cmp(alias, canonical, shallow=False):
+                        continue
+                    alias.unlink()
+                    alias.symlink_to(canonical.name)
+                    collapsed += 1
+        return collapsed
+
     def _materialize_desktop_player_layout(self, final_dir: str) -> None:
         """Materialize OS-loadable runtime files while keeping game content sealed."""
 
@@ -3810,6 +3846,8 @@ finally:
             final_runtime = data_root / "Runtime"
             self._publish_extracted_tree(str(bootstrap_root), str(final_runtime))
             self._publish_extracted_tree(str(runtime_root), str(final_runtime))
+            if sys.platform.startswith("linux"):
+                self._collapse_linux_shared_library_aliases(final_runtime)
 
             # Keep optional Parallel as a sealed module archive.  The Player
             # runtime can materialize it into its private cache when the
