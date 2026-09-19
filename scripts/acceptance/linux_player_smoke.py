@@ -559,23 +559,6 @@ def _run(args: argparse.Namespace, artifact_root: Path) -> SmokeResult:
                 f"'{args.object}' before startup timeout"
             )
 
-        capture_path = ""
-        if capture_file:
-            capture = control.call(
-                "capture",
-                {
-                    "file_name": capture_file,
-                    "timeout_seconds": args.capture_timeout,
-                },
-                timeout=args.capture_timeout + 5.0,
-                process=player_process,
-            )
-            capture_path = str(capture.get("output_path", "") or "")
-            if str(capture.get("status", "")) != "completed":
-                raise RuntimeError(f"Player render-target capture failed: {capture!r}")
-            if not capture_path or not Path(capture_path).is_file():
-                raise RuntimeError(f"Player capture artifact is missing: {capture_path!r}")
-
         press = control.call(
             "press",
             {
@@ -626,6 +609,23 @@ def _run(args: argparse.Namespace, artifact_root: Path) -> SmokeResult:
             raise RuntimeError(
                 "Linux Player feature readiness timed out: " + last_feature_error
             )
+
+        capture_path = ""
+        if capture_file:
+            capture = control.call(
+                "capture",
+                {
+                    "file_name": capture_file,
+                    "timeout_seconds": args.capture_timeout,
+                },
+                timeout=args.capture_timeout + 5.0,
+                process=player_process,
+            )
+            capture_path = str(capture.get("output_path", "") or "")
+            if str(capture.get("status", "")) != "completed":
+                raise RuntimeError(f"Player render-target capture failed: {capture!r}")
+            if not capture_path or not Path(capture_path).is_file():
+                raise RuntimeError(f"Player capture artifact is missing: {capture_path!r}")
 
         control.call("shutdown", timeout=10.0, process=player_process)
         try:

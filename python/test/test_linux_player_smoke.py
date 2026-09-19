@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import inspect
 import json
 import os
 import subprocess
@@ -182,6 +183,17 @@ def test_linux_smoke_recognizes_the_selected_display_server(environment, expecte
     module = _module()
 
     assert module._display_server_available(environment) is expected
+
+
+def test_linux_smoke_captures_only_after_renderer_submission_is_ready():
+    module = _module()
+    source = inspect.getsource(module._run)
+
+    readiness = source.index('if not bool(feature_observation.get("submission_ready"))')
+    capture = source.index('control.call(\n                "capture"')
+    shutdown = source.index('control.call("shutdown"')
+
+    assert readiness < capture < shutdown
 
 
 def test_linux_smoke_component_probe_asserts_nested_public_state():
