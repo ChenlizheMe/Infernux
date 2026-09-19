@@ -95,13 +95,13 @@ struct MeshImportSettings
         float displayMaximum;
         float step;
         bool legacyOptional;
-        const char *page = "model";
+        const char *page;
     };
     inline static constexpr std::array Scalars = {
         Scalar{"scale_factor", &MeshImportSettings::scaleFactor, 0.0f, std::numeric_limits<float>::max(), true, 0.0001f,
-               1000.0f, 0.001f, false},
+               1000.0f, 0.001f, false, "model"},
         Scalar{"normal_smoothing_angle", &MeshImportSettings::normalSmoothingAngle, 0.0f, 175.0f, false, 0.0f, 175.0f,
-               1.0f, true},
+               1.0f, true, "model"},
         Scalar{"min_bone_weight", &MeshImportSettings::minBoneWeight, 0.0f, 1.0f, false, 0.0f, 1.0f,
                0.001f, true, "rig"},
     };
@@ -110,15 +110,15 @@ struct MeshImportSettings
     {
         const char *name;
         bool MeshImportSettings::*member;
-        const char *page = "model";
-        bool legacyOptional = false;
+        const char *page;
+        bool legacyOptional;
     };
     inline static constexpr std::array Flags = {
-        Flag{"flip_uvs", &MeshImportSettings::flipUVs},
-        Flag{"swap_uv_channels", &MeshImportSettings::swapUVChannels},
+        Flag{"flip_uvs", &MeshImportSettings::flipUVs, "model", false},
+        Flag{"swap_uv_channels", &MeshImportSettings::swapUVChannels, "model", false},
         Flag{"weld_vertices", &MeshImportSettings::weldVertices, "model", true},
         Flag{"generate_colliders", &MeshImportSettings::generateColliders, "model", true},
-        Flag{"optimize_mesh", &MeshImportSettings::optimizeMesh},
+        Flag{"optimize_mesh", &MeshImportSettings::optimizeMesh, "model", false},
         Flag{"import_animations", &MeshImportSettings::importAnimations, "animation", true},
         Flag{"custom_animation_clips", &MeshImportSettings::customAnimationClips, "animation", true},
     };
