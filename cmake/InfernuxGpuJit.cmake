@@ -57,6 +57,18 @@ set(_infernux_gpu_jit_cmake_args
     "-DINFERNUX_BUILD_TESTS=${INFERNUX_BUILD_TESTS}"
 )
 
+# The compiler module is part of the engine wheel and must share the host
+# toolchain selected by the root preset.  Leaving the isolated project to pick
+# a compiler from PATH made Linux Clang builds silently configure it with GCC.
+if(CMAKE_C_COMPILER)
+    list(APPEND _infernux_gpu_jit_cmake_args
+        "-DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}")
+endif()
+if(CMAKE_CXX_COMPILER)
+    list(APPEND _infernux_gpu_jit_cmake_args
+        "-DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}")
+endif()
+
 set(_infernux_gpu_jit_targets _infernux_gpu_compiler)
 if(INFERNUX_BUILD_TESTS)
     list(APPEND _infernux_gpu_jit_targets infernux_compiler_contract_tests infernux_bit_contract_tests)
