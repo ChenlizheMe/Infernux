@@ -429,6 +429,15 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _display_server_available(environment: dict[str, str]) -> bool:
+    driver = str(environment.get("SDL_VIDEODRIVER", "") or "").casefold()
+    if driver == "wayland":
+        return bool(environment.get("WAYLAND_DISPLAY"))
+    if driver == "x11":
+        return bool(environment.get("DISPLAY"))
+    return bool(environment.get("DISPLAY") or environment.get("WAYLAND_DISPLAY"))
+
+
 def _run(args: argparse.Namespace, artifact_root: Path) -> SmokeResult:
     if not sys.platform.startswith("linux"):
         raise RuntimeError("linux_player_smoke.py must run on Linux")
@@ -475,8 +484,9 @@ def _run(args: argparse.Namespace, artifact_root: Path) -> SmokeResult:
     if args.validation:
         environment["VK_INSTANCE_LAYERS"] = "VK_LAYER_KHRONOS_validation"
 
+    display_server_available = _display_server_available(environment)
     use_xvfb = args.xvfb == "always" or (
-        args.xvfb == "auto" and not environment.get("DISPLAY")
+        args.xvfb == "auto" and not display_server_available
     )
     xvfb_process: subprocess.Popen[str] | None = None
     player_process: subprocess.Popen[str] | None = None
@@ -506,8 +516,11 @@ def _run(args: argparse.Namespace, artifact_root: Path) -> SmokeResult:
             time.sleep(0.5)
             if xvfb_process.poll() is not None:
                 raise RuntimeError(f"Xvfb exited with code {xvfb_process.returncode}")
-        elif not environment.get("DISPLAY"):
-            raise RuntimeError("DISPLAY is unset and --xvfb=never was requested")
+        elif not display_server_available:
+            raise RuntimeError(
+                "neither the selected X11 nor Wayland display is available and "
+                "--xvfb=never was requested"
+            )
 
         with outer_log.open("w", encoding="utf-8", newline="\n") as outer_stream:
             player_process = subprocess.Popen(

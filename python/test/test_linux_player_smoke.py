@@ -167,6 +167,23 @@ def test_linux_smoke_parser_defaults_to_managed_cleanup():
     assert arguments.component_probe == []
 
 
+@pytest.mark.parametrize(
+    ("environment", "expected"),
+    (
+        ({"SDL_VIDEODRIVER": "x11", "DISPLAY": ":0"}, True),
+        ({"SDL_VIDEODRIVER": "x11", "WAYLAND_DISPLAY": "wayland-1"}, False),
+        ({"SDL_VIDEODRIVER": "wayland", "WAYLAND_DISPLAY": "wayland-1"}, True),
+        ({"SDL_VIDEODRIVER": "wayland", "DISPLAY": ":0"}, False),
+        ({"WAYLAND_DISPLAY": "wayland-1"}, True),
+        ({}, False),
+    ),
+)
+def test_linux_smoke_recognizes_the_selected_display_server(environment, expected):
+    module = _module()
+
+    assert module._display_server_available(environment) is expected
+
+
 def test_linux_smoke_component_probe_asserts_nested_public_state():
     module = _module()
     probe = module._parse_component_probe(
