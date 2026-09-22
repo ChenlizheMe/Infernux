@@ -52,7 +52,11 @@ class PlatformCapabilities:
     text_input: bool = True
     gamepad_input: bool = True
     python_native_modules: bool = True
-    numba: bool = True
+    # Compiler runtimes are a platform payload decision, never an implicit
+    # consequence of registering a target.  Desktop Vulkan opts in below;
+    # constrained/new targets stay compiler-free until their exporter proves
+    # and declares support.
+    cpu_jit: bool = False
     persistent_storage: bool = True
     features: frozenset[str] = frozenset()
 

@@ -34,8 +34,9 @@ HOST_PLAYER_CAPABILITIES = PlatformCapabilities(
     text_input=True,
     gamepad_input=True,
     python_native_modules=True,
-    numba=True,
+    cpu_jit=True,
     persistent_storage=True,
+    features=frozenset({"gpu-jit"}),
 )
 
 
@@ -185,9 +186,12 @@ def execute_host_player_build(
             request.profile.configuration is BuildConfiguration.DEVELOPMENT
         ),
         lto=bool(settings["lto"]),
-        enable_jit=HOST_PLAYER_CAPABILITIES.numba,
+        include_jit_runtime=(
+            HOST_PLAYER_CAPABILITIES.cpu_jit
+            or "gpu-jit" in HOST_PLAYER_CAPABILITIES.features
+        ),
         player_runtime_root=player_runtime_root,
-        build_scenes=list(settings["scenes"]),
+        build_scene_guids=list(settings["scene_guids"]),
     )
     builder.freeze_asset_index_entries(catalog_entries)
     builder._validate_output_directory()

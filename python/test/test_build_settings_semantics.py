@@ -193,11 +193,20 @@ def test_build_settings_scene_controls_expose_stable_semantic_ids(monkeypatch):
     )
     monkeypatch.setattr(igui.IGUI, "multi_drop_target", staticmethod(lambda *_args, **_kwargs: None))
     monkeypatch.setattr(igui.IGUI, "drop_target", staticmethod(lambda *_args, **_kwargs: None))
+    monkeypatch.setattr(
+        "Infernux.engine.ui.editor_services.EditorServices.instance",
+        staticmethod(lambda: SimpleNamespace(asset_database=SimpleNamespace(
+            get_path_from_guid=lambda guid: {
+                "racetrack-guid": "C:/RacingPilot/Assets/racetrack.scene",
+                "results-guid": "C:/RacingPilot/Assets/results.scene",
+            }.get(guid, "")
+        ))),
+    )
 
     panel = BuildSettingsPanel.__new__(BuildSettingsPanel)
     panel._scenes = [
-        "Assets/racetrack.scene",
-        "Assets/results.scene",
+        "racetrack-guid",
+        "results-guid",
     ]
     panel._save = lambda: None
     ctx = _Context()
@@ -214,8 +223,8 @@ def test_build_settings_scene_controls_expose_stable_semantic_ids(monkeypatch):
         "build_settings.scene.1.move_up",
         "build_settings.scene.1.remove",
     } <= semantic_ids
-    assert ctx.semantic_values["build_settings.scene.0.row"] == "Assets/racetrack.scene"
-    assert ctx.semantic_values["build_settings.scene.1.row"] == "Assets/results.scene"
+    assert ctx.semantic_values["build_settings.scene.0.row"] == "racetrack-guid"
+    assert ctx.semantic_values["build_settings.scene.1.row"] == "results-guid"
 
 
 def test_build_settings_does_not_turn_external_splash_deletion_into_user_edit():
@@ -272,6 +281,14 @@ def test_build_settings_add_open_scene_uses_the_button_result(monkeypatch):
     )
     monkeypatch.setattr(igui.IGUI, "multi_drop_target", staticmethod(lambda *_args, **_kwargs: None))
     monkeypatch.setattr(igui.IGUI, "drop_target", staticmethod(lambda *_args, **_kwargs: None))
+    monkeypatch.setattr(
+        "Infernux.engine.ui.editor_services.EditorServices.instance",
+        staticmethod(lambda: SimpleNamespace(asset_database=SimpleNamespace(
+            get_guid_from_path=lambda _path: "racetrack-guid",
+            get_path_from_guid=lambda guid: current_scene
+            if guid == "racetrack-guid" else "",
+        ))),
+    )
 
     panel = BuildSettingsPanel.__new__(BuildSettingsPanel)
     panel._scenes = []
@@ -280,8 +297,8 @@ def test_build_settings_add_open_scene_uses_the_button_result(monkeypatch):
 
     panel._render_scene_section(_Context(button_results=[True]))
 
-    assert panel._scenes == ["Assets/racetrack.scene"]
-    assert saves == [["Assets/racetrack.scene"]]
+    assert panel._scenes == ["racetrack-guid"]
+    assert saves == [["racetrack-guid"]]
 
 
 def test_build_settings_rejects_scene_outside_assets(monkeypatch):

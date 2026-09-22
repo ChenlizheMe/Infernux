@@ -98,6 +98,7 @@ def _request(tmp_path, progress=None):
 
 
 def test_target_ids_and_graphics_backends_are_strict():
+    assert PlatformCapabilities(graphics_api="vulkan").cpu_jit is False
     assert BuildTargetId("android-x64-emulator") == "android-x64-emulator"
     with pytest.raises(ValueError, match="lowercase"):
         BuildTargetId("Android x64")
