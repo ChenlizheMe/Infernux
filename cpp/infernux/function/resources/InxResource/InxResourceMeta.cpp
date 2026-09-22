@@ -16,12 +16,46 @@
 #include <mutex>
 #include <random>
 #include <sstream>
+#include <string_view>
 
 namespace infernux
 {
 
 namespace
 {
+ResourceType ParseResourceTypeName(std::string_view value)
+{
+    if (value == "Meta")
+        return ResourceType::Meta;
+    if (value == "Shader")
+        return ResourceType::Shader;
+    if (value == "Texture")
+        return ResourceType::Texture;
+    if (value == "Mesh")
+        return ResourceType::Mesh;
+    if (value == "Material")
+        return ResourceType::Material;
+    if (value == "Script")
+        return ResourceType::Script;
+    if (value == "Audio")
+        return ResourceType::Audio;
+    if (value == "DefaultText")
+        return ResourceType::DefaultText;
+    if (value == "DefaultBinary")
+        return ResourceType::DefaultBinary;
+    if (value == "PhysicMaterial")
+        return ResourceType::PhysicMaterial;
+    if (value == "RenderEffect")
+        return ResourceType::RenderEffect;
+    if (value == "ParticleGraph")
+        return ResourceType::ParticleGraph;
+    if (value == "DataAsset")
+        return ResourceType::DataAsset;
+    if (value == "RenderTexture")
+        return ResourceType::RenderTexture;
+    throw std::invalid_argument("unknown ResourceType metadata value: " + std::string(value));
+}
+
 std::string ComputeContentHashHex(const char *content, size_t contentSize)
 {
     // Stable FNV-1a 64-bit hash
@@ -295,8 +329,12 @@ void InxResourceMeta::DeserializeDocument(const nlohmann::json &document)
         } else if (typeName == "enum infernux::ResourceType") {
             if (!value.is_string())
                 throw std::invalid_argument("metadata ResourceType string expected: " + key);
-            const std::any converted = InxTypeRegistry::GetInstance().FromString(typeName, value.get<std::string>());
-            staged.AddMetadata(key, std::any_cast<ResourceType>(converted));
+            // Do not round-trip this enum through std::any here.  On Android
+            // the runtime and Python extension can be loaded from separate
+            // shared objects; their RTTI identities are not guaranteed to be
+            // identical, which makes std::any_cast<ResourceType> fail even
+            // when the textual value is valid.
+            staged.AddMetadata(key, ParseResourceTypeName(value.get<std::string>()));
         } else if (typeName == "json_array") {
             if (!value.is_array())
                 throw std::invalid_argument("metadata JSON array expected: " + key);
