@@ -753,15 +753,21 @@ def run_smoke(arguments: argparse.Namespace) -> SmokeResult:
     surface_destroy_wait_count = log.count(
         "INFERNUX_ANDROID_SURFACE_DESTROY_WAIT_COMPLETE"
     )
-    if presentation_suspend_count < arguments.resume_cycles:
+    if arguments.require_presentation_markers:
+        if presentation_suspend_count < arguments.resume_cycles:
+            raise RuntimeError(
+                "Android Player did not publish every requested presentation suspension: "
+                f"{presentation_suspend_count} markers for {arguments.resume_cycles} cycles"
+            )
+        if presentation_resume_count < arguments.resume_cycles:
+            raise RuntimeError(
+                "Android Player did not publish every requested presentation resume: "
+                f"{presentation_resume_count} markers for {arguments.resume_cycles} cycles"
+            )
+    elif arguments.resume_cycles and surface_destroy_wait_count < arguments.resume_cycles:
         raise RuntimeError(
-            "Android Player did not publish every requested presentation suspension: "
-            f"{presentation_suspend_count} markers for {arguments.resume_cycles} cycles"
-        )
-    if presentation_resume_count < arguments.resume_cycles:
-        raise RuntimeError(
-            "Android Player did not publish every requested presentation resume: "
-            f"{presentation_resume_count} markers for {arguments.resume_cycles} cycles"
+            "Android Player did not complete every requested surface-destroy wait: "
+            f"{surface_destroy_wait_count} markers for {arguments.resume_cycles} cycles"
         )
     landscape_surface = bool(
         surface_extents and surface_extents[-1][0] > surface_extents[-1][1]
@@ -835,6 +841,14 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--expect-back-log", default="BALANCE // CANCEL ACTION")
     parser.add_argument("--startup-timeout", type=float, default=90.0)
     parser.add_argument("--resume-cycles", type=int, default=3)
+    parser.add_argument(
+        "--require-presentation-markers",
+        action="store_true",
+        help=(
+            "Require gameplay presentation suspend/resume markers for every cycle. "
+            "Keep disabled for ordinary fixtures that only exercise the native surface lifecycle."
+        ),
+    )
     parser.add_argument(
         "--max-surface-creations",
         type=int,
