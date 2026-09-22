@@ -16,6 +16,8 @@
 #include <glm/gtc/matrix_transform.hpp>
 
 #include <chrono>
+#include <limits>
+#include <stdexcept>
 
 namespace infernux
 {
@@ -24,6 +26,42 @@ namespace infernux
 #endif
 
 class InxMaterial;
+
+/// Requested index storage for model/runtime mesh GPU publication. CPU
+/// geometry remains uint32_t so physics and editing never inherit a packed
+/// representation.
+enum class MeshIndexFormat : uint32_t
+{
+    Auto,
+    UInt16,
+    UInt32,
+};
+
+/// Distinguishes the two immutable GPU geometry views of an imported model.
+/// The GUID and runtime version remain the asset identity; this view is a
+/// storage-domain discriminator, never a synthetic GUID suffix.
+enum class MeshGeometryView : uint8_t
+{
+    MergedModelSpace,
+    NodeLocal,
+};
+
+inline MeshIndexFormat ResolveMeshIndexFormat(MeshIndexFormat requested, size_t vertexCount,
+                                              const std::vector<uint32_t> &indices)
+{
+    const bool fits16 = vertexCount <= static_cast<size_t>(std::numeric_limits<uint16_t>::max()) + 1U;
+    bool indicesFit16 = fits16;
+    for (const uint32_t index : indices) {
+        if (index >= vertexCount)
+            throw std::invalid_argument("Mesh contains an out-of-range vertex index");
+        if (index > std::numeric_limits<uint16_t>::max())
+            indicesFit16 = false;
+    }
+    if (requested == MeshIndexFormat::UInt16 && !indicesFit16)
+        throw std::invalid_argument("Mesh index_format uint16 exceeds the 16-bit vertex/index range");
+    return requested == MeshIndexFormat::Auto ? (indicesFit16 ? MeshIndexFormat::UInt16 : MeshIndexFormat::UInt32)
+                                               : requested;
+}
 namespace rhi
 {
 class ComputeBuffer;
@@ -38,6 +76,7 @@ class ComputeBuffer;
  * - Tangent: Tangent vector for normal mapping (w = handedness)
  * - Color: Vertex color (can be used for tinting or debugging)
  * - TexCoord: Primary UV coordinates
+ * - TexCoord1: Secondary/lightmap UV coordinates
  */
 struct Vertex
 {
@@ -46,6 +85,7 @@ struct Vertex
     glm::vec4 tangent{1.0f, 0.0f, 0.0f, 1.0f}; ///< Missing tangent direction + handedness
     glm::vec3 color{1.0f, 1.0f, 1.0f};         ///< Vertex color (default white)
     glm::vec2 texCoord{0.0f};                  ///< Missing UVs deterministically use the origin
+    glm::vec2 texCoord1{0.0f};                 ///< Secondary/lightmap UV; missing channels use the origin
     glm::uvec4 boneIndices{0, 0, 0, 0};        ///< GPU skinning bone indices
     glm::vec4 boneWeights{0.0f};               ///< GPU skinning weights
 
@@ -145,6 +185,7 @@ struct DrawCall
     // Used by the renderer to create/update per-object GPU buffers.
     const std::vector<Vertex> *meshVertices = nullptr;
     const std::vector<uint32_t> *meshIndices = nullptr;
+    MeshIndexFormat meshIndexFormat = MeshIndexFormat::Auto;
     // Keeps the storage behind meshVertices/meshIndices alive for immutable
     // RenderWorld snapshots. Asset meshes retain their asset generation;
     // inline meshes retain an extraction-owned snapshot.
@@ -155,6 +196,7 @@ struct DrawCall
     std::shared_ptr<rhi::ComputeBuffer> meshVertexBuffer;
     std::string meshAssetGuid;
     uint64_t meshRuntimeVersion = 0;
+    MeshGeometryView meshGeometryView = MeshGeometryView::MergedModelSpace;
 
     // Optional GPU skinning palette. When present, vertex data is the bind-pose
     // skinned mesh stream and the vertex shader applies these matrices.
