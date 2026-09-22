@@ -8,12 +8,30 @@ import os
 import sys
 import threading
 import time
+from pathlib import Path
 from typing import Any, Callable
 
 from Infernux import release_engine
 from Infernux.engine.path_utils import resolved_path, same_path
 from Infernux.host.commands import MainThreadCommandQueue
 from Infernux.host.editor import EditorAutomationHost
+
+
+_FATAL_PATTERNS = (
+    "Validation Error",
+    "VUID-",
+    "CRASH:",
+    "Traceback (most recent call last)",
+    "[ERROR]",
+    "X Error of failed request",
+    "VK_ERROR_DEVICE_LOST",
+    "device lost",
+    "Aborted",
+    "SIGABRT",
+    "Segmentation fault",
+    "SIGSEGV",
+    "segfault",
+)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -49,6 +67,14 @@ def _parser() -> argparse.ArgumentParser:
         default="",
         help="Choose this destination through the Editor's native save dialog",
     )
+    parser.add_argument(
+        "--process-log",
+        default="",
+        help=(
+            "Editor stdout/stderr log to scan after shutdown. On Linux a regular "
+            "file attached to stdout is discovered automatically."
+        ),
+    )
     return parser
 
 
@@ -61,6 +87,50 @@ def _emit(event: str, **payload: object) -> None:
         ),
         flush=True,
     )
+
+
+def _log_start(path: Path) -> int:
+    return path.stat().st_size if path.is_file() else 0
+
+
+def _new_log_text(path: Path, start_size: int) -> str:
+    if not path.is_file():
+        return ""
+    with path.open("rb") as stream:
+        stream.seek(min(start_size, path.stat().st_size))
+        return stream.read().decode("utf-8", errors="replace")
+
+
+def _fatal_lines(text: str) -> list[str]:
+    return [
+        line
+        for line in text.splitlines()
+        if any(pattern.casefold() in line.casefold() for pattern in _FATAL_PATTERNS)
+    ]
+
+
+def _stdout_log_path() -> Path | None:
+    """Return a redirected stdout file on Linux without inventing a log path."""
+
+    if not sys.platform.startswith("linux"):
+        return None
+    try:
+        target = os.readlink("/proc/self/fd/1")
+    except OSError:
+        return None
+    if not os.path.isabs(target):
+        return None
+    path = Path(target).resolve()
+    return path if path.is_file() else None
+
+
+def _acceptance_logs(project: str, process_log: str) -> list[Path]:
+    paths = [Path(project) / "Logs" / "engine.log"]
+    explicit = str(process_log or os.environ.get("INFERNUX_EDITOR_SMOKE_LOG", "")).strip()
+    process_path = Path(resolved_path(explicit)) if explicit else _stdout_log_path()
+    if process_path is not None and process_path not in paths:
+        paths.append(process_path)
+    return paths
 
 
 def _wait_until(
@@ -94,6 +164,25 @@ def _require_dialog_path(result: dict[str, object], expected_path: str) -> str:
     return selected_path
 
 
+def _scene_manager_ready(manager: object) -> bool:
+    """Return whether the editor's deferred initial scene load has settled.
+
+    ``SceneFileManager.open_scene`` rejects requests while its deferred load is
+    active.  The automation host can observe the project document before that
+    load reaches the owner safe point, so checking only ``project-info`` races
+    with the manager.  A non-loading manager with a current scene path is the
+    stable state needed before deciding whether another open is necessary.
+    """
+
+    if isinstance(manager, dict):
+        is_loading = manager.get("is_loading", True)
+        current_scene_path = manager.get("current_scene_path", "")
+    else:
+        is_loading = getattr(manager, "is_loading", True)
+        current_scene_path = getattr(manager, "current_scene_path", "")
+    return not bool(is_loading) and bool(str(current_scene_path or "").strip())
+
+
 def _run_smoke(
     project: str,
     scene_path: str,
@@ -105,6 +194,7 @@ def _run_smoke(
     native_open_dialog: str,
     native_save_dialog: str,
     capture_sources: tuple[str, ...],
+    outcome: dict[str, object],
 ) -> None:
     queue = MainThreadCommandQueue.instance()
     try:
@@ -140,15 +230,40 @@ def _run_smoke(
         manager = run("scene-manager", SceneFileManager.instance)
         if manager is None:
             raise RuntimeError("SceneFileManager is unavailable")
-        if not same_path(manager.current_scene_path or "", scene_path):
+
+        def scene_manager_state() -> dict[str, object]:
+            # SceneFileManager is owner-thread state.  Never read its mutable
+            # properties directly from this worker thread while deferred loads
+            # are being published; queue every snapshot through the host.
+            return dict(
+                run(
+                    "scene-manager-state",
+                    lambda: {
+                        "is_loading": bool(manager.is_loading),
+                        "current_scene_path": str(manager.current_scene_path or ""),
+                    },
+                )
+            )
+
+        _wait_until(
+            lambda: _scene_manager_ready(scene_manager_state()),
+            timeout=startup_timeout,
+            label="initial scene deferred load",
+        )
+        current_scene_path = str(scene_manager_state().get("current_scene_path", ""))
+        if not same_path(current_scene_path, scene_path):
             accepted = run("open-scene", lambda: manager.open_scene(scene_path))
             if not accepted:
                 raise RuntimeError(f"Editor rejected scene open: {scene_path}")
+
+            def requested_scene_ready() -> bool:
+                state = scene_manager_state()
+                return _scene_manager_ready(state) and same_path(
+                    str(state.get("current_scene_path", "")), scene_path
+                )
+
             _wait_until(
-                lambda: (
-                    not manager.is_loading
-                    and same_path(manager.current_scene_path or "", scene_path)
-                ),
+                requested_scene_ready,
                 timeout=startup_timeout,
                 label="requested scene",
             )
@@ -272,17 +387,16 @@ def _run_smoke(
             timeout=transition_timeout,
             label="Edit Mode restore",
         )
-        _emit(
-            "passed",
-            project=project,
-            scene=scene_path,
-            play_seconds=float(played.get("total_play_time", 0.0)),
-            enter_timings_ms=playing.get("transition_timings_ms", {}),
-            exit_timings_ms=editing.get("transition_timings_ms", {}),
-        )
+        outcome["passed"] = {
+            "project": project,
+            "scene": scene_path,
+            "play_seconds": float(played.get("total_play_time", 0.0)),
+            "enter_timings_ms": playing.get("transition_timings_ms", {}),
+            "exit_timings_ms": editing.get("transition_timings_ms", {}),
+        }
         run("close", host.request_editor_close)
     except BaseException as exc:
-        _emit("failed", error=f"{type(exc).__name__}: {exc}")
+        outcome["error"] = f"{type(exc).__name__}: {exc}"
         try:
             queue.run_sync(
                 "editor-smoke.close-after-failure",
@@ -291,7 +405,6 @@ def _run_smoke(
             )
         except BaseException:
             pass
-        os._exit(1)
 
 
 def main() -> int:
@@ -310,6 +423,10 @@ def main() -> int:
     if args.play_seconds <= 0:
         raise ValueError("--play-seconds must be positive")
 
+    log_paths = _acceptance_logs(project, args.process_log)
+    log_starts = {path: _log_start(path) for path in log_paths}
+    outcome: dict[str, object] = {}
+
     worker = threading.Thread(
         target=_run_smoke,
         args=(project, scene_path),
@@ -325,12 +442,36 @@ def main() -> int:
             if args.native_save_dialog
             else "",
             "capture_sources": tuple(dict.fromkeys(args.capture)),
+            "outcome": outcome,
         },
         name="InfernuxEditorProjectSmoke",
         daemon=True,
     )
     worker.start()
-    release_engine(project)
+    try:
+        release_engine(project)
+    except BaseException as exc:
+        outcome.setdefault("error", f"{type(exc).__name__}: {exc}")
+    worker.join(timeout=max(args.transition_timeout, 5.0))
+    if worker.is_alive():
+        outcome.setdefault("error", "Editor smoke worker did not stop after engine shutdown")
+
+    fatal_records = [
+        {"path": str(path), "lines": _fatal_lines(_new_log_text(path, log_starts[path]))}
+        for path in log_paths
+    ]
+    fatal_records = [record for record in fatal_records if record["lines"]]
+    if fatal_records:
+        outcome.setdefault("error", "Editor emitted fatal diagnostics")
+    if "error" in outcome:
+        _emit("failed", error=outcome["error"], fatal_logs=fatal_records)
+        return 1
+
+    passed = outcome.get("passed")
+    if not isinstance(passed, dict):
+        _emit("failed", error="Editor smoke completed without a success result")
+        return 1
+    _emit("passed", **passed)
     return 0
 
 
