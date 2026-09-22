@@ -27,12 +27,15 @@ namespace infernux
 
 // Forward declarations
 class MeshRenderer;
+#if !defined(INFERNUX_DISABLE_VULKAN_MATERIAL_RUNTIME)
 class ShaderProgram;
 struct MaterialUBOLayout;
+#endif
 struct ShaderProgramArtifact;
 namespace rhi
 {
 class RenderTexture;
+class ComputeBuffer;
 }
 
 /**
@@ -540,9 +543,24 @@ class InxMaterial
     void SetColor(const std::string &name, const glm::vec4 &color);
     void SetInt(const std::string &name, int value);
     void SetMatrix(const std::string &name, const glm::mat4 &matrix);
+    void SetFloatArray(const std::string &name, const std::vector<float> &values);
+    void SetVector4Array(const std::string &name, const std::vector<glm::vec4> &values);
     void SetTextureGuid(const std::string &name, const std::string &textureGuid);
+    /// Override sampling for one Texture2D binding without changing the shared
+    /// Texture asset.  Passing an all-Inherit state removes the override.
+    void SetTextureSampler(const std::string &name, const MaterialTextureSampler &sampler);
+    [[nodiscard]] const MaterialTextureSampler *GetTextureSampler(const std::string &name) const noexcept;
+    void ClearTextureSampler(const std::string &name);
     /// Runtime sampled output; authored texture GUIDs remain unchanged on disk.
     void SetRenderTexture(const std::string &name, std::shared_ptr<rhi::RenderTexture> texture);
+    /// Bind a runtime GPU-resident storage buffer declared by shader reflection.
+    /// Buffer references are not serialized; the material keeps the resource alive.
+    void SetBuffer(const std::string &name, std::shared_ptr<rhi::ComputeBuffer> buffer);
+    [[nodiscard]] std::shared_ptr<rhi::ComputeBuffer> GetBuffer(const std::string &name) const;
+    [[nodiscard]] const auto &GetBuffers() const noexcept
+    {
+        return m_buffers;
+    }
     [[nodiscard]] std::shared_ptr<rhi::RenderTexture> GetRenderTexture(const std::string &name) const;
     [[nodiscard]] const auto &GetRenderTextures() const noexcept
     {
@@ -628,20 +646,19 @@ class InxMaterial
     // + bolt-on shadow pipeline design.
     // ========================================================================
 
-    /// Per-pass shader publication plus backend-owned Vulkan state when the
-    /// Vulkan material runtime is compiled.
+    /// Per-pass shader publication and Vulkan pipeline state. This is kept
+    /// out of backend-neutral material documents, so WebGPU builds do not
+    /// inherit Vulkan shader/reflection types through InxMaterial.
+#if !defined(INFERNUX_DISABLE_VULKAN_MATERIAL_RUNTIME)
     struct PassPipeline
     {
-#if !defined(INFERNUX_DISABLE_VULKAN_MATERIAL_RUNTIME)
         VkPipeline pipeline = VK_NULL_HANDLE;
         VkPipelineLayout layout = VK_NULL_HANDLE;
         VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
-#endif
         std::shared_ptr<const ShaderProgram> shaderProgram;
     };
 
     /// Access per-pass pipeline data by compile target.
-#if !defined(INFERNUX_DISABLE_VULKAN_MATERIAL_RUNTIME)
     void SetPassPipeline(ShaderCompileTarget target, VkPipeline pipeline)
     {
         PassPipeline_(target).pipeline = pipeline;
@@ -668,7 +685,6 @@ class InxMaterial
     {
         return PassPipeline_(target).descriptorSet;
     }
-#endif
 
     void SetPassShaderProgram(ShaderCompileTarget target, std::shared_ptr<const ShaderProgram> program)
     {
@@ -700,13 +716,9 @@ class InxMaterial
     /// Check if a specific pass variant has a valid pipeline.
     [[nodiscard]] bool HasPassPipeline(ShaderCompileTarget target) const
     {
-#if !defined(INFERNUX_DISABLE_VULKAN_MATERIAL_RUNTIME)
         return PassPipeline_(target).pipeline != VK_NULL_HANDLE;
-#else
-        (void)target;
-        return false;
-#endif
     }
+#endif
 
     // ========================================================================
     // Serialization
@@ -807,12 +819,15 @@ class InxMaterial
 
     // Material properties
     std::unordered_map<std::string, MaterialProperty> m_properties;
+    std::unordered_map<std::string, MaterialTextureSampler> m_textureSamplers;
     std::unordered_map<std::string, std::shared_ptr<rhi::RenderTexture>> m_renderTextures;
+    std::unordered_map<std::string, std::shared_ptr<rhi::ComputeBuffer>> m_buffers;
     std::unordered_set<std::string> m_runtimeTextureOverrides;
     bool m_textureAssetsPending = true;
     std::vector<std::string> m_shaderPropertyOrder;
 
-    // Multi-pass pipeline storage
+    // Vulkan-only multi-pass pipeline storage.
+#if !defined(INFERNUX_DISABLE_VULKAN_MATERIAL_RUNTIME)
     // Indexed by ShaderCompileTarget: 0=Forward, 1=GBuffer, 2=Shadow
     PassPipeline m_passPipelines[static_cast<int>(ShaderCompileTarget::Count)];
 
@@ -826,6 +841,7 @@ class InxMaterial
     {
         return m_passPipelines[static_cast<int>(target)];
     }
+#endif
 
 // Per-material Vulkan UBO. WebGPU and other backends own their material
 // buffers through their backend runtime rather than storing foreign handles in
