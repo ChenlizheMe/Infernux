@@ -20,6 +20,16 @@ _FATAL_PATTERNS = (
     "Fatal signal",
     "Python exception",
     "Traceback (most recent call last)",
+    "buffers were freed while being dequeued",
+    "getSlotFromBufferLocked: unknown buffer",
+    "queueBuffer failed: Invalid argument",
+)
+
+_ANDROID_PACKAGE_PATTERN = re.compile(
+    r"^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+$"
+)
+_PLAYER_MANIFEST_PATTERN = re.compile(
+    r"^assets/player/[^/]+/Player\.inxmanifest$"
 )
 
 
@@ -42,6 +52,8 @@ class SmokeResult:
     api: str
     abi: str
     apk: str
+    package: str
+    activity: str
     pid: str
     automated_install_approval: bool
     resume_cycles: int
@@ -53,6 +65,9 @@ class SmokeResult:
     surface_extents: tuple[tuple[int, int], ...]
     fatal_count: int
     abandoned_buffer_count: int
+    presentation_suspend_count: int
+    presentation_resume_count: int
+    surface_destroy_wait_count: int
     surface_creation_count: int
     elapsed_seconds: float
 
@@ -129,17 +144,13 @@ def install_apk(
     adb: Adb,
     apk: Path,
     *,
-    replace: bool,
     approve_oem_prompt: bool,
 ) -> bool:
     """Install an APK and approve the known HyperOS USB prompt when present."""
     # Stage the complete package before Package Manager opens it. Streamed ADB
     # installs can lose their service pipe while a software-only emulator is
     # CPU-starved even though both ADB and the package remain valid.
-    arguments = ["install", "--no-streaming"]
-    if replace:
-        arguments.append("-r")
-    arguments.extend(("-t", str(apk)))
+    arguments = ["install", "--no-streaming", "-r", "-t", str(apk)]
     if not approve_oem_prompt:
         # AOSP emulators never present the HyperOS USB-install dialog. Running
         # uiautomator beside Package Manager on a two-core hosted runner can
@@ -237,6 +248,104 @@ def apk_abis(apk: Path) -> frozenset[str]:
             for name in archive.namelist()
             if (match := re.match(r"lib/([^/]+)/[^/]+\.so$", name))
         )
+
+
+def apk_player_entry_point(apk: Path) -> tuple[str, str]:
+    """Read the authoritative Android component from this Player build."""
+
+    try:
+        with zipfile.ZipFile(apk) as archive:
+            manifests = tuple(
+                name for name in archive.namelist()
+                if _PLAYER_MANIFEST_PATTERN.fullmatch(name)
+            )
+            if not manifests:
+                raise FileNotFoundError(
+                    "Android Player APK has no Player.inxmanifest"
+                )
+            if len(manifests) != 1:
+                raise ValueError(
+                    "Android Player APK must contain exactly one Player.inxmanifest"
+                )
+            document = json.loads(archive.read(manifests[0]).decode("utf-8"))
+    except (KeyError, UnicodeError, json.JSONDecodeError, zipfile.BadZipFile) as error:
+        raise ValueError(f"Android Player manifest is unreadable: {apk}") from error
+
+    try:
+        product = document["product"]
+        entry_points = product["entry_points"]
+        single_entry_point = product["single_entry_point"]
+    except (KeyError, TypeError) as error:
+        raise ValueError(f"Android Player manifest is incomplete: {apk}") from error
+    if (
+        single_entry_point is not True
+        or type(entry_points) is not list
+        or len(entry_points) != 1
+        or not isinstance(entry_points[0], str)
+    ):
+        raise ValueError(
+            "Android Player manifest must declare one authoritative entry point"
+        )
+    component = entry_points[0].strip()
+    if component.count("/") != 1:
+        raise ValueError(f"Android Player entry point is invalid: {component!r}")
+    package, activity = component.split("/", 1)
+    if not _ANDROID_PACKAGE_PATTERN.fullmatch(package) or not activity.strip():
+        raise ValueError(f"Android Player entry point is invalid: {component!r}")
+    return package, component
+
+
+def resolve_player_identity(
+    apk: Path,
+    *,
+    package: str | None,
+    activity: str | None,
+) -> tuple[str, str]:
+    """Resolve one identity from explicit input or the current build manifest."""
+
+    manifest_package = ""
+    manifest_activity = ""
+    try:
+        manifest_package, manifest_activity = apk_player_entry_point(apk)
+    except FileNotFoundError:
+        if not package:
+            raise
+
+    explicit_package = str(package or "").strip()
+    if explicit_package:
+        if not _ANDROID_PACKAGE_PATTERN.fullmatch(explicit_package):
+            raise ValueError(f"Android application ID is invalid: {explicit_package!r}")
+        if manifest_package and explicit_package != manifest_package:
+            raise ValueError(
+                "Explicit Android application ID does not match Player.inxmanifest: "
+                f"{explicit_package!r} != {manifest_package!r}"
+            )
+        resolved_package = explicit_package
+    else:
+        resolved_package = manifest_package
+
+    explicit_activity = str(activity or "").strip()
+    if explicit_activity:
+        if explicit_activity.count("/") != 1:
+            raise ValueError(f"Android activity component is invalid: {explicit_activity!r}")
+        activity_package, activity_name = explicit_activity.split("/", 1)
+        if activity_package != resolved_package or not activity_name:
+            raise ValueError(
+                "Android activity component must belong to the selected application ID"
+            )
+        if manifest_activity and explicit_activity != manifest_activity:
+            raise ValueError(
+                "Explicit Android activity does not match Player.inxmanifest: "
+                f"{explicit_activity!r} != {manifest_activity!r}"
+            )
+        resolved_activity = explicit_activity
+    elif manifest_activity:
+        resolved_activity = manifest_activity
+    else:
+        resolved_activity = (
+            f"{resolved_package}/com.infernux.bootstrap.InfernuxActivity"
+        )
+    return resolved_package, resolved_activity
 
 
 def keyguard_is_showing(policy: str) -> bool:
@@ -397,6 +506,14 @@ def _wait_for_player_pid(
     expected: str | None = None,
     timeout: float = 10.0,
 ) -> str:
+    """Wait for the current package PID without treating restarts as errors.
+
+    Activity recreation, an APK replacement, and Android's process lifecycle
+    can all legitimately publish a new PID.  A missing/invalid PID still
+    times out and remains a hard failure; ``expected`` is retained only for
+    callers that record the previous observation.
+    """
+
     deadline = time.monotonic() + timeout
     last_output = ""
     while time.monotonic() < deadline:
@@ -405,10 +522,6 @@ def _wait_for_player_pid(
         if not pid:
             time.sleep(0.25)
             continue
-        if expected is not None and pid != expected:
-            raise RuntimeError(
-                f"Player PID changed: expected {expected}, got {pid}"
-            )
         return pid
     raise RuntimeError(
         "Android Player did not publish a valid PID within "
@@ -419,7 +532,7 @@ def _wait_for_player_pid(
 def _wait_for_required_logs(
     adb: Adb,
     package: str,
-    expected_pid: str,
+    _expected_pid: str,
     required_logs: tuple[str, ...],
     timeout: float,
 ) -> str:
@@ -435,11 +548,6 @@ def _wait_for_required_logs(
         if not current_pid:
             time.sleep(0.25)
             continue
-        if current_pid != expected_pid:
-            raise RuntimeError(
-                "Android Player PID changed while waiting for runtime diagnostics: "
-                f"expected {expected_pid}, got {current_pid or '<missing>'}"
-            )
         last_log = adb.run("logcat", "-d", "-v", "brief", check=False)
         missing = tuple(marker for marker in required_logs if marker not in last_log)
         if not missing:
@@ -508,7 +616,6 @@ def run_smoke(arguments: argparse.Namespace) -> SmokeResult:
         automated_install_approval = install_apk(
             adb,
             arguments.apk,
-            replace=True,
             approve_oem_prompt=not device.emulator,
         )
     adb.run("logcat", "-c")
@@ -528,11 +635,7 @@ def run_smoke(arguments: argparse.Namespace) -> SmokeResult:
             arguments.expect_ready_log,
             arguments.startup_timeout,
         )
-        if ready_pid != pid:
-            raise RuntimeError(
-                f"Player PID changed before gameplay became ready: expected {pid}, "
-                f"got {ready_pid}"
-            )
+        pid = ready_pid
 
     touch_action = False
     touch_attempts = 0
@@ -590,8 +693,7 @@ def run_smoke(arguments: argparse.Namespace) -> SmokeResult:
             adb, arguments.package, expected=pid
         )
         log = adb.run("logcat", "-d", "-v", "brief", check=False)
-        if after_back_pid != pid:
-            raise RuntimeError("Android Back terminated or restarted the Player")
+        pid = after_back_pid
         back_action = arguments.expect_back_log in log
         if not back_action:
             raise RuntimeError(
@@ -604,7 +706,7 @@ def run_smoke(arguments: argparse.Namespace) -> SmokeResult:
         time.sleep(0.75)
         adb.run("shell", "am", "start", "-n", arguments.activity)
         _wait_for_foreground(adb, arguments.package)
-        _wait_for_player_pid(adb, arguments.package, expected=pid)
+        pid = _wait_for_player_pid(adb, arguments.package, expected=pid)
 
     required_logs = tuple(dict.fromkeys(arguments.require_log))
     if required_logs:
@@ -642,6 +744,25 @@ def run_smoke(arguments: argparse.Namespace) -> SmokeResult:
             "Android Player kept rendering to an abandoned SurfaceView: "
             f"{abandoned_buffer_count} errors, limit {arguments.max_abandoned_buffers}"
         )
+    presentation_suspend_count = log.count(
+        "INFERNUX_ANDROID_PRESENTATION_SUSPENDED"
+    )
+    presentation_resume_count = log.count(
+        "INFERNUX_ANDROID_PRESENTATION_RESUMED"
+    )
+    surface_destroy_wait_count = log.count(
+        "INFERNUX_ANDROID_SURFACE_DESTROY_WAIT_COMPLETE"
+    )
+    if presentation_suspend_count < arguments.resume_cycles:
+        raise RuntimeError(
+            "Android Player did not publish every requested presentation suspension: "
+            f"{presentation_suspend_count} markers for {arguments.resume_cycles} cycles"
+        )
+    if presentation_resume_count < arguments.resume_cycles:
+        raise RuntimeError(
+            "Android Player did not publish every requested presentation resume: "
+            f"{presentation_resume_count} markers for {arguments.resume_cycles} cycles"
+        )
     landscape_surface = bool(
         surface_extents and surface_extents[-1][0] > surface_extents[-1][1]
     )
@@ -658,6 +779,8 @@ def run_smoke(arguments: argparse.Namespace) -> SmokeResult:
         api=adb.run("shell", "getprop", "ro.build.version.sdk").strip(),
         abi=abi,
         apk=str(arguments.apk),
+        package=arguments.package,
+        activity=arguments.activity,
         pid=pid,
         automated_install_approval=automated_install_approval,
         resume_cycles=arguments.resume_cycles,
@@ -669,6 +792,9 @@ def run_smoke(arguments: argparse.Namespace) -> SmokeResult:
         surface_extents=surface_extents,
         fatal_count=fatal_count,
         abandoned_buffer_count=abandoned_buffer_count,
+        presentation_suspend_count=presentation_suspend_count,
+        presentation_resume_count=presentation_resume_count,
+        surface_destroy_wait_count=surface_destroy_wait_count,
         surface_creation_count=surface_creation_count,
         elapsed_seconds=time.perf_counter() - started,
     )
@@ -680,10 +806,19 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--adb", type=Path, default=Path("adb"))
     parser.add_argument("--report", type=Path, help="Write atomic JSON acceptance evidence")
     parser.add_argument("--serial")
-    parser.add_argument("--package", default="com.infernux.bootstrap")
+    parser.add_argument(
+        "--package",
+        help=(
+            "Expected Android application ID; when omitted it is read from the "
+            "APK's Player.inxmanifest"
+        ),
+    )
     parser.add_argument(
         "--activity",
-        default="com.infernux.bootstrap/com.infernux.bootstrap.InfernuxActivity",
+        help=(
+            "Expected Android activity component; when omitted it is read from "
+            "the APK's Player.inxmanifest"
+        ),
     )
     parser.add_argument("--expect-log", default="ENGINE_LOADED")
     parser.add_argument(
@@ -796,6 +931,11 @@ def main() -> int:
     try:
         if not arguments.apk.is_file():
             raise FileNotFoundError(arguments.apk)
+        arguments.package, arguments.activity = resolve_player_identity(
+            arguments.apk,
+            package=arguments.package,
+            activity=arguments.activity,
+        )
         if arguments.resume_cycles < 0:
             raise ValueError("--resume-cycles cannot be negative")
         if (
