@@ -21,6 +21,7 @@ class PlatformContentCookResult:
     game_name: str
     data_directory: Path
     settings: Mapping[str, object]
+    python_sources: tuple[Path, ...] = ()
 
 
 def read_cooked_player_icon(
@@ -128,9 +129,8 @@ def cook_platform_content(
         debug_mode=request.profile.configuration
         is BuildConfiguration.DEVELOPMENT,
         lto=False,
-        enable_jit=False,
-        allow_python_jit_fallback=bool(platform_host.get("python_jit_fallback", False)),
-        build_scenes=list(settings["scenes"]),
+        include_jit_runtime=False,
+        build_scene_guids=list(settings["scene_guids"]),
     )
     builder.freeze_asset_index_entries(catalog_entries)
     def report(message: str, fraction: float) -> None:
@@ -152,7 +152,15 @@ def cook_platform_content(
         raise RuntimeError(
             f"Platform Player cook did not produce its data directory: {cooked}"
         )
-    return PlatformContentCookResult(game_name, cooked, dict(settings))
+    python_sources = tuple(
+        Path(path) for path in builder.cooked_python_source_paths()
+    )
+    return PlatformContentCookResult(
+        game_name,
+        cooked,
+        dict(settings),
+        python_sources,
+    )
 
 
 __all__ = [
