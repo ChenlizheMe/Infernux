@@ -794,6 +794,7 @@ class SceneRenderGraph
 
     // Build state
     bool m_needsRebuild = true;
+    uint64_t m_worldUIDepthRunSignature = 0;
     bool m_needsCompile = true;
     bool m_graphBuilt = false;
     int m_effectiveMsaaSamples = 0;

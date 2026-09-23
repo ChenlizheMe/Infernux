@@ -663,7 +663,8 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
                                          int queueMax, const std::string &sortMode, const std::string &overrideMaterial,
                                          const std::string &passTag,
                                          const MaterialPassPipelineDescriptor *pipelineDescriptor,
-                                         GraphMaterialFilter materialFilter, const RendererSelection *selection)
+                                         GraphMaterialFilter materialFilter, const RendererSelection *selection,
+                                         uint64_t excludedObjectId, bool requireSourceDepthWrite)
 {
     const MaterialPassPipelineDescriptor activePass =
         pipelineDescriptor ? *pipelineDescriptor : m_materialPipelineManager.GetDefaultPassPipelineDescriptor();
@@ -747,7 +748,8 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
     const bool skyboxPass = passTag == "__infernux_internal_skybox";
     const uint64_t materialPublicationGeneration = m_materialPipelineManager.GetPublicationGeneration();
     auto staticFilterCache = m_staticFilteredListCaches.end();
-    if (!selection && overrideMaterial.empty() && sortMode != "back_to_front") {
+    if (!selection && excludedObjectId == 0 && !requireSourceDepthWrite && overrideMaterial.empty() &&
+        sortMode != "back_to_front") {
         staticFilterCache =
             std::find_if(m_staticFilteredListCaches.begin(), m_staticFilteredListCaches.end(),
                          [&](const StaticFilteredListCache &cache) {
@@ -778,6 +780,8 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
         const size_t drawCallIndex = hasCachedSkyboxIndices ? m_skyboxDrawCallIndices[candidateIndex] : candidateIndex;
         ++filterCandidateCount;
         const DrawCall &dc = activeDrawCalls[drawCallIndex];
+        if (excludedObjectId != 0 && dc.objectId == excludedObjectId)
+            continue;
         const auto *parameters =
             selection ? selection->Find(dc.identity) : (overrideMatRaw ? nullptr : &dc.parameterBlock);
         if (selection && !parameters)
@@ -812,6 +816,11 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
         InxMaterial *material =
             overrideMatRaw ? overrideMatRaw : (metadata ? metadata->material : materialOwner->get());
         if (!material)
+            continue;
+        // The semantic Depth target forces depth-write on. During alternate
+        // scene-depth replay, exclude sources whose original Forward pipeline
+        // only wrote color, or they would become new (incorrect) occluders.
+        if (requireSourceDepthWrite && !material->GetRenderState().depthWriteEnable)
             continue;
 
         // Filtering describes which source renderers participate in the pass.

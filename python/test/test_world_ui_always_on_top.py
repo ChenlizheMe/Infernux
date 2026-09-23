@@ -9,6 +9,7 @@ from Infernux.engine.runtime_screen_ui import (
     map_runtime_ui_pointers,
     pick_world_ui_object_ids,
 )
+from Infernux.components import GameObjectRef
 from Infernux.lib import ScreenUIList, Vector3
 from Infernux.physics import Physics
 from Infernux.ui import UIButton
@@ -81,10 +82,83 @@ def test_top_policy_is_serialized_and_defaults_to_scene_depth():
     assert restored.world_always_on_top is True
 
 
+def test_selective_occluder_reference_uses_persistent_object_identity(scene):
+    occluder = scene.create_game_object("renamable occluder")
+    element = UIButton()
+    assert not element.world_ignored_occluder
+    element.world_ignored_occluder = occluder
+    document = element._serialize_fields_document()
+    occluder.name = "renamed occluder"
+
+    restored = UIButton()
+    restored._deserialize_fields_document(document)
+    reference = type(restored).world_ignored_occluder.get_raw(restored)
+    assert isinstance(reference, GameObjectRef)
+    assert reference.persistent_id == occluder.id
+    assert restored.world_ignored_occluder.id == occluder.id
+
+
+def test_selective_pointer_skips_only_associated_object(scene, monkeypatch):
+    associated = scene.create_game_object("associated")
+    other = scene.create_game_object("other")
+    _, element = _control(scene, "label", 0.0)
+    element.world_ignored_occluder = associated
+    surfaces = collect_runtime_ui_input_surfaces(scene)
+    hits = [
+        SimpleNamespace(distance=2.0, game_object=associated, collider=SimpleNamespace(is_trigger=False)),
+        SimpleNamespace(distance=3.0, game_object=other, collider=SimpleNamespace(is_trigger=False)),
+    ]
+    monkeypatch.setattr(Physics, "raycast_all", lambda *_args, **_kwargs: hits)
+
+    assert math.isnan(map_runtime_ui_pointer(surfaces, _camera(), 0, 0, 1920, 1080)[0][0])
+    assert math.isnan(map_runtime_ui_pointers(surfaces, _camera(), ((0, 0),), 1920, 1080)[0][0][0])
+
+    hits.pop()
+    assert map_runtime_ui_pointer(surfaces, _camera(), 0, 0, 1920, 1080)[0] == (100.0, 50.0, 5.0)
+    assert map_runtime_ui_pointers(surfaces, _camera(), ((0, 0),), 1920, 1080)[0][0] == (100.0, 50.0, 5.0)
+
+
+def test_selective_scene_pick_skips_only_associated_collider(scene, monkeypatch):
+    associated = scene.create_game_object("associated")
+    other = scene.create_game_object("other")
+    ui_object, element = _control(scene, "label", 0.0)
+    element.world_ignored_occluder = associated
+    hits = [
+        SimpleNamespace(distance=2.0, game_object=associated, collider=SimpleNamespace(is_trigger=False)),
+        SimpleNamespace(distance=3.0, game_object=other, collider=SimpleNamespace(is_trigger=False)),
+    ]
+    queries = []
+
+    def raycast_all(*args, **kwargs):
+        queries.append(kwargs)
+        return hits
+
+    monkeypatch.setattr(Physics, "raycast_all", raycast_all)
+    assert pick_world_ui_object_ids(scene, (0, 0, 5), (0, 0, -1), camera=_camera()) == ()
+    assert queries[-1]["query_triggers"] is False
+    assert queries[-1]["layer_mask"] == _camera().culling_mask
+
+    hits.pop()
+    assert pick_world_ui_object_ids(scene, (0, 0, 5), (0, 0, -1), camera=_camera()) == (ui_object.id,)
+
+
+def test_selective_input_does_not_treat_colliderless_objects_as_physics_blockers(scene, monkeypatch):
+    associated = scene.create_game_object("associated")
+    scene.create_game_object("renderer only, no collider")
+    ui_object, element = _control(scene, "label", 0.0)
+    element.world_ignored_occluder = associated
+    monkeypatch.setattr(Physics, "raycast_all", lambda *_args, **_kwargs: [])
+
+    surfaces = collect_runtime_ui_input_surfaces(scene)
+    assert map_runtime_ui_pointer(surfaces, _camera(), 0, 0, 1920, 1080)[0] == (100.0, 50.0, 5.0)
+    assert pick_world_ui_object_ids(scene, (0, 0, 5), (0, 0, -1), camera=_camera()) == (ui_object.id,)
+
+
 def test_world_submission_publishes_explicit_depth_policy(scene, monkeypatch):
     import Infernux.engine.runtime_screen_ui as runtime_ui
 
     _, element = _control(scene, "submitted", 0.0)
+    associated = scene.create_game_object("associated")
     calls = []
     renderer = SimpleNamespace(
         begin_world_object=lambda *args: calls.append(args),
@@ -93,6 +167,12 @@ def test_world_submission_publishes_explicit_depth_policy(scene, monkeypatch):
     monkeypatch.setattr(runtime_ui, "_ui_dispatch", lambda *_args, **_kwargs: None)
     RuntimeScreenUISubmission._submit_world_element(element, renderer, lambda _: 0, ScreenUIList)
     assert calls[-1][3] is False
+    assert len(calls[-1]) == 6  # Ordinary packet shape and hot path stay unchanged.
+    element.world_ignored_occluder = associated
+    RuntimeScreenUISubmission._submit_world_element(element, renderer, lambda _: 0, ScreenUIList)
+    assert len(calls[-1]) == 7
+    assert calls[-1][-1] == associated.id
     element.world_always_on_top = True
     RuntimeScreenUISubmission._submit_world_element(element, renderer, lambda _: 0, ScreenUIList)
     assert calls[-1][3] is True
+    assert len(calls[-1]) == 6

@@ -388,6 +388,8 @@ graph.screen_ui_overlay_section()  # Display encoding and screen overlay UI.
 
 World UI always keeps its normal depth test, using the depth attachment you declare for that pass. Drawing later does not make a label visible through walls. A project may instead attach a compatible depth snapshot from an earlier stage; the snapshot must be produced explicitly. Keep masks disjoint to avoid drawing an element twice. `screen_ui_section(world_ui_layer_mask=...)` forwards the same filter to its ordinary World UI pass; predeclared passes retain their own settings. Screen-space UI is unaffected. RenderTexture dependencies are collected from the same filtered elements that are drawn.
 
+For a World UI element attached to one scene object, `world_ignored_occluder` accepts a persistent GameObject reference. By default every scene depth writer still occludes the element. With this opt-in reference, the Default Forward graph replays opaque and alpha-cutout scene depth without that GameObject's renderer draws; all other renderer depth remains. The option is not supported by custom scene-depth writers or preserved camera depth, and those combinations are rejected rather than treated as always-on-top. Runtime pointer input has a separate Physics contract: it ignores collider hits owned by the referenced GameObject, but other non-trigger collider hits still block the element. A visible mesh without a collider can contribute render depth without blocking pointer input, just as it does for ordinary World UI. Scene View selection continues to merge its existing renderer and physics candidates; it is not an alpha-accurate multi-layer GPU pick.
+
 ## Fullscreen depth and blending {#fullscreen-raster-state-en}
 
 These controls cover the roles of Unity's [ZTest](https://docs.unity3d.com/6000.0/Documentation/Manual/SL-ZTest.html), [ZWrite](https://docs.unity3d.com/6000.0/Documentation/Manual/SL-ZWrite.html), and straight-alpha [Blend](https://docs.unity3d.com/6000.0/Documentation/Manual/SL-Blend.html), expressed as graph-pass declarations. This is not the full ShaderLab render-state surface.
@@ -885,6 +887,8 @@ graph.screen_ui_overlay_section()  # 显示编码及屏幕叠加 UI。
 ```
 
 世界 UI 仍按正常规则测试该 Pass 声明的深度；晚绘制不等于穿墙显示。项目也可以选择较早阶段的兼容深度快照，但必须显式生成快照。两组掩码应互不重叠，避免同一个元素画两次。`screen_ui_section(world_ui_layer_mask=...)` 会把同样的过滤条件传给普通世界 UI Pass，预先声明的 Pass 则保留原设置。屏幕空间 UI 不受影响。RenderTexture 依赖也只从该 Pass 实际绘制的元素收集。
+
+若世界 UI 元素明确关联某个场景对象，可将其持久化 GameObject 引用设为 `world_ignored_occluder`。默认仍受所有场景深度遮挡；启用后，Default Forward 图会重放不含该对象 renderer 绘制的 opaque／alpha-cutout 深度，其他对象的深度照常遮挡。自定义场景深度写入和相机保留深度不支持这一策略，会明确拒绝，而不会变成始终置顶。运行时指针使用独立的 Physics 合同：只跳过关联对象拥有的 Collider 命中，其余非 Trigger Collider 仍可阻挡。没有 Collider 的可见网格可以写入渲染深度，却不会阻挡指针；普通世界 UI 也存在这一边界。Scene View 选择仍合并原有的 renderer／physics 候选，不是精确到 alpha 像素的 GPU 多层拾取。
 
 ## 全屏深度与混合 {#fullscreen-raster-state}
 

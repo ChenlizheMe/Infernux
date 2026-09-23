@@ -758,6 +758,7 @@ void InxScreenUIRenderer::AppendCommandPackets(const std::vector<std::shared_ptr
                     span.vertexEnd += vertexStart;
                     span.commandStart += commandStart;
                     span.commandEnd += commandStart;
+                    m_hasSelectiveWorldOcclusion |= span.ignoredOccluderId != 0 && !span.alwaysOnTop;
                     m_worldElementSpans.push_back(span);
                 }
             } else {
@@ -829,6 +830,8 @@ void InxScreenUIRenderer::Destroy()
 {
     m_commandCacheValid = false;
     AbortCommandPacket();
+    m_worldElementSpans.clear();
+    m_hasSelectiveWorldOcclusion = false;
     for (auto &drawList : m_packetDrawLists) {
         if (drawList)
             IM_DELETE(drawList);
@@ -920,6 +923,7 @@ void InxScreenUIRenderer::BeginFrame(uint32_t width, uint32_t height)
     m_overlayHDRRanges.clear();
     m_worldHDRRanges.clear();
     m_worldElementSpans.clear();
+    m_hasSelectiveWorldOcclusion = false;
     m_screenElementSpans.clear();
     m_worldElementStart = -1;
     m_commandCacheValid = false;
@@ -993,8 +997,7 @@ void InxScreenUIRenderer::PopClipRect(ScreenUIList list)
 }
 
 void InxScreenUIRenderer::BeginWorldElement(const std::array<float, 16> &localToWorld, float pivotX, float pivotY,
-                                            uint32_t layerMask, bool alwaysOnTop, bool billboard,
-                                            bool constantScreenSize)
+                                            uint32_t layerMask, bool alwaysOnTop, bool billboard, bool constantScreenSize)
 {
     auto *drawList = GetDrawList(ScreenUIList::World);
     if (m_worldElementStart >= 0)
@@ -1019,6 +1022,7 @@ void InxScreenUIRenderer::BeginWorldElement(const std::array<float, 16> &localTo
     m_pendingWorldElement.alwaysOnTop = alwaysOnTop;
     m_pendingWorldElement.billboard = billboard;
     m_pendingWorldElement.constantScreenSize = constantScreenSize;
+    m_pendingWorldElement.ignoredOccluderId = 0;
 }
 
 void InxScreenUIRenderer::ResolveWorldPose(WorldElementSpan &span)
@@ -1035,13 +1039,14 @@ void InxScreenUIRenderer::ResolveWorldPose(WorldElementSpan &span)
 }
 
 void InxScreenUIRenderer::BeginWorldObject(GameObject *object, float pivotX, float pivotY, bool alwaysOnTop,
-                                           bool billboard, bool constantScreenSize)
+                                           bool billboard, bool constantScreenSize, uint64_t ignoredOccluderId)
 {
     if (!object)
         throw std::invalid_argument("World UI geometry requires a scene object");
-    BeginWorldElement({1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1}, pivotX, pivotY, 0xffffffffu, alwaysOnTop,
-                      billboard, constantScreenSize);
+    BeginWorldElement({1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1}, pivotX, pivotY, 0xffffffffu,
+                      alwaysOnTop, billboard, constantScreenSize);
     m_pendingWorldElement.transform = object->GetTransform()->GetECSHandle();
+    m_pendingWorldElement.ignoredOccluderId = ignoredOccluderId;
     ResolveWorldPose(m_pendingWorldElement);
 }
 
@@ -1139,6 +1144,9 @@ void InxScreenUIRenderer::EndWorldElement()
             throw std::logic_error("World UI element produced vertices without a draw command");
         auto &spans = m_recordingPacket ? m_recordingPacket->m_data->worlds : m_worldElementSpans;
         spans.push_back(m_pendingWorldElement);
+        if (!m_recordingPacket)
+            m_hasSelectiveWorldOcclusion |=
+                m_pendingWorldElement.ignoredOccluderId != 0 && !m_pendingWorldElement.alwaysOnTop;
         // Texture/clip changes may merge an empty ImDrawCmd with the previous
         // one. A callback command is the explicit, non-mergeable separator
         // between independently sorted world elements. RenderWorld consumes
@@ -1759,15 +1767,58 @@ ImDrawList *InxScreenUIRenderer::GetDrawList(ScreenUIList list)
     return m_worldDrawList;
 }
 
+bool InxScreenUIRenderer::HasSelectiveWorldOcclusion(uint32_t cullingMask) const
+{
+    if (!m_initialized || !m_hasSelectiveWorldOcclusion)
+        return false;
+    return std::any_of(m_worldElementSpans.begin(), m_worldElementSpans.end(), [cullingMask](const auto &element) {
+        return element.ignoredOccluderId != 0 && !element.alwaysOnTop &&
+               (element.layerMask & cullingMask) != 0;
+    });
+}
+
+std::vector<InxScreenUIRenderer::WorldDepthRun>
+InxScreenUIRenderer::GetWorldDepthRuns(const glm::mat4 &viewProjection, uint32_t cullingMask) const
+{
+    struct OrderedElement
+    {
+        size_t index;
+        float depth;
+    };
+    std::vector<OrderedElement> order;
+    order.reserve(m_worldElementSpans.size());
+    for (size_t index = 0; index < m_worldElementSpans.size(); ++index) {
+        const auto &element = m_worldElementSpans[index];
+        if ((element.layerMask & cullingMask) == 0)
+            continue;
+        const glm::vec4 clipCenter = viewProjection * element.localToWorld[3];
+        order.push_back({index, clipCenter.w > 0.0f ? clipCenter.z / clipCenter.w : -1.0f});
+    }
+    std::stable_sort(order.begin(), order.end(), [&](const OrderedElement &lhs, const OrderedElement &rhs) {
+        const bool lhsTop = m_worldElementSpans[lhs.index].alwaysOnTop;
+        const bool rhsTop = m_worldElementSpans[rhs.index].alwaysOnTop;
+        return lhsTop != rhsTop ? !lhsTop : lhs.depth > rhs.depth;
+    });
+    std::vector<WorldUIOcclusionPolicy> policies;
+    policies.reserve(order.size());
+    for (const auto &entry : order) {
+        const auto &element = m_worldElementSpans[entry.index];
+        policies.push_back({element.ignoredOccluderId, element.alwaysOnTop});
+    }
+    return BuildWorldUIOcclusionPlan(policies).runs;
+}
+
 void InxScreenUIRenderer::RenderWorld(VkCommandBuffer cmdBuf, uint32_t width, uint32_t height,
                                       const glm::mat4 &viewProjection, const rhi::GraphicsRenderingSignature &target,
                                       uint32_t frameSlot, uint32_t cullingMask, const glm::mat4 &view,
-                                      const glm::mat4 &projection)
+                                      const glm::mat4 &projection, uint32_t firstOrdinal, uint32_t endOrdinal)
 {
     constexpr ScreenUIList list = ScreenUIList::World;
     constexpr int listIndex = 2;
-    m_lastSubmittedDrawCounts[listIndex] = 0;
-    m_lastSubmittedIndexCounts[listIndex] = 0;
+    if (firstOrdinal == 0) {
+        m_lastSubmittedDrawCounts[listIndex] = 0;
+        m_lastSubmittedIndexCounts[listIndex] = 0;
+    }
     if (!m_initialized || !m_worldPipeline || width == 0 || height == 0 || !m_enabled)
         return;
     if (m_worldElementStart >= 0)
@@ -1891,14 +1942,21 @@ void InxScreenUIRenderer::RenderWorld(VkCommandBuffer cmdBuf, uint32_t width, ui
     const bool hasBillboard = std::any_of(elementOrder.begin(), elementOrder.end(), [&](const ElementDepth &entry) {
         return m_worldElementSpans[entry.index].billboard;
     });
+    const size_t first = std::min<size_t>(firstOrdinal, elementOrder.size());
+    const size_t end = std::min<size_t>(endOrdinal, elementOrder.size());
+    if (first >= end)
+        return;
+    elementOrder.erase(elementOrder.begin() + end, elementOrder.end());
+    elementOrder.erase(elementOrder.begin(), elementOrder.begin() + first);
     const bool hasConstantSize = std::any_of(elementOrder.begin(), elementOrder.end(), [&](const ElementDepth &entry) {
         return m_worldElementSpans[entry.index].constantScreenSize;
     });
     const glm::mat4 cameraToWorld = hasBillboard ? glm::inverse(view) : glm::mat4(1.0f);
     const glm::vec4 cameraRight(glm::vec3(cameraToWorld[0]), 0.0f);
     const glm::vec4 cameraUp(glm::vec3(cameraToWorld[1]), 0.0f);
-    const float screenPixelScale =
-        hasConstantSize ? 2.0f / (std::max(std::abs(projection[1][1]), 1e-6f) * float(height)) : 0.0f;
+    const float screenPixelScale = hasConstantSize
+                                       ? 2.0f / (std::max(std::abs(projection[1][1]), 1e-6f) * float(height))
+                                       : 0.0f;
     const auto drawCommand = [&](const ImDrawCmd &command, int commandIndex, bool alwaysOnTop) {
         if (command.ElemCount == 0)
             return;
@@ -1971,8 +2029,8 @@ void InxScreenUIRenderer::RenderWorld(VkCommandBuffer cmdBuf, uint32_t width, ui
         }
     }
     drawCommand(pending, pendingCommandIndex, pendingAlwaysOnTop);
-    m_lastSubmittedDrawCounts[listIndex] = submittedDraws;
-    m_lastSubmittedIndexCounts[listIndex] = submittedIndices;
+    m_lastSubmittedDrawCounts[listIndex] += submittedDraws;
+    m_lastSubmittedIndexCounts[listIndex] += submittedIndices;
 }
 
 std::vector<std::shared_ptr<rhi::RenderTexture>> InxScreenUIRenderer::GetRenderTextureReads(ScreenUIList list,

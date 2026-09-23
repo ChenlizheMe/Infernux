@@ -8,7 +8,7 @@ Hierarchy:
 
 import math
 
-from Infernux.components import DrivenTransformProperties, serialized_field
+from Infernux.components import DrivenTransformProperties, GameObjectRef, serialized_field
 from Infernux.components.fields import FieldType
 from .inx_ui_component import InxUIComponent
 from .enums import ScreenAlignH, ScreenAlignV, UILayoutPosition, UILayoutSizing
@@ -121,6 +121,13 @@ class InxUIScreenComponent(InxUIComponent):
     world_always_on_top: bool = serialized_field(
         default=False,
         tooltip="World UI only: draw and receive pointers over scene occluders",
+        group="World UI",
+    )
+    world_ignored_occluder: GameObjectRef = serialized_field(
+        default=None,
+        field_type=FieldType.GAME_OBJECT,
+        tooltip=("World UI only: exclude this GameObject's renderer depth; pointer input "
+                 "ignores only this GameObject's Physics collider hits. Other occluders remain."),
         group="World UI",
     )
     world_billboard: bool = serialized_field(

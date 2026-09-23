@@ -20,6 +20,7 @@
 
 #include "../rhi/GpuRetirementQueue.h"
 #include "../rhi/RhiRenderTexture.h"
+#include "WorldUIOcclusionPlan.h"
 #include <function/scene/TransformECSStore.h>
 
 #include <array>
@@ -199,7 +200,8 @@ class InxScreenUIRenderer
     /// Retain local geometry while sampling this scene object's current pose
     /// at packet publication. UI ignores scale, but inherits parent motion.
     void BeginWorldObject(GameObject *object, float pivotX, float pivotY, bool alwaysOnTop = false,
-                          bool billboard = false, bool constantScreenSize = false);
+                          bool billboard = false, bool constantScreenSize = false,
+                          uint64_t ignoredOccluderId = 0);
     void BeginScreenObject(GameObject *object, ScreenUIList list, float pivotX, float pivotY, float scaleX = 1.0f,
                            float scaleY = 1.0f);
     void EndScreenObject();
@@ -305,7 +307,13 @@ class InxScreenUIRenderer
     void RenderWorld(VkCommandBuffer cmdBuf, uint32_t width, uint32_t height, const glm::mat4 &viewProjection,
                      const rhi::GraphicsRenderingSignature &target, uint32_t frameSlot,
                      uint32_t cullingMask = 0xffffffffu, const glm::mat4 &view = glm::mat4(1.0f),
-                     const glm::mat4 &projection = glm::mat4(1.0f));
+                     const glm::mat4 &projection = glm::mat4(1.0f), uint32_t firstOrdinal = 0,
+                     uint32_t endOrdinal = 0xffffffffu);
+
+    using WorldDepthRun = WorldUIOcclusionRun;
+    [[nodiscard]] bool HasSelectiveWorldOcclusion(uint32_t cullingMask = 0xffffffffu) const;
+    [[nodiscard]] std::vector<WorldDepthRun> GetWorldDepthRuns(const glm::mat4 &viewProjection,
+                                                               uint32_t cullingMask = 0xffffffffu) const;
 
   private:
     static constexpr int ListIndex(ScreenUIList list) noexcept
@@ -379,6 +387,7 @@ class InxScreenUIRenderer
         bool alwaysOnTop = false;
         bool billboard = false;
         bool constantScreenSize = false;
+        uint64_t ignoredOccluderId = 0;
         TransformECSStore::Handle transform;
     };
 
@@ -475,6 +484,7 @@ class InxScreenUIRenderer
     std::vector<HDRColorRange> m_overlayHDRRanges;
     std::vector<HDRColorRange> m_worldHDRRanges;
     std::vector<WorldElementSpan> m_worldElementSpans;
+    bool m_hasSelectiveWorldOcclusion = false;
     std::vector<ScreenElementSpan> m_screenElementSpans;
     int m_worldElementStart = -1;
     WorldElementSpan m_pendingWorldElement;

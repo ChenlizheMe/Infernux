@@ -26,6 +26,19 @@ if(INFERNUX_BUILD_TESTS)
     endif()
     add_test(NAME infernux.path COMMAND infernux_path_tests)
 
+    add_executable(infernux_world_ui_occlusion_plan_tests
+        cpp/tests/WorldUIOcclusionPlanTests.cpp
+    )
+    target_include_directories(infernux_world_ui_occlusion_plan_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/cpp/infernux
+    )
+    if(MSVC)
+        target_compile_options(infernux_world_ui_occlusion_plan_tests PRIVATE /utf-8 /UNDEBUG)
+    else()
+        target_compile_options(infernux_world_ui_occlusion_plan_tests PRIVATE -UNDEBUG)
+    endif()
+    add_test(NAME infernux.world_ui_occlusion_plan COMMAND infernux_world_ui_occlusion_plan_tests)
+
     add_executable(infernux_gizmo_draw_buffer_tests
         cpp/tests/GizmosDrawCallBufferTests.cpp
     )

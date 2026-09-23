@@ -8,7 +8,7 @@ from Infernux.ui.inx_ui_component import InxUIComponent
 from Infernux.ui.enums import ScreenAlignH, ScreenAlignV, UILayoutPosition, UILayoutSizing
 from Infernux.ui.ui_event_data import PointerEventData
 from Infernux.core.material import Material
-from Infernux.components import DrivenTransformProperties
+from Infernux.components import DrivenTransformProperties, GameObjectRef
 
 
 def clear_rect_cache(frame_id: object = ...) -> None:
@@ -59,6 +59,7 @@ class InxUIScreenComponent(InxUIComponent):
     material: Material | None
     raycast_target: bool
     world_always_on_top: bool
+    world_ignored_occluder: GameObjectRef
     world_billboard: bool
     world_constant_screen_size: bool
 

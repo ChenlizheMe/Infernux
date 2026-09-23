@@ -312,7 +312,8 @@ class InxVkCoreModular
                            const std::string &overrideMaterial = "", const std::string &passTag = "",
                            const MaterialPassPipelineDescriptor *pipelineDescriptor = nullptr,
                            GraphMaterialFilter materialFilter = GraphMaterialFilter::All,
-                           const RendererSelection *selection = nullptr);
+                           const RendererSelection *selection = nullptr, uint64_t excludedObjectId = 0,
+                           bool requireSourceDepthWrite = false);
 
     /**
      * @brief Draw shadow casters into a depth-only shadow map.

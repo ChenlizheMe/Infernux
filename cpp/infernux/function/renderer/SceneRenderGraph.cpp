@@ -2169,6 +2169,80 @@ void SceneRenderGraph::EnsureGraphBuilt()
     // inputs here, before graph compilation and cross-camera scheduling.
     RefreshMaterialTextureReads();
 
+    uint64_t worldUIDepthSignature = 0;
+    if (m_screenUIRenderer) {
+        uint32_t mask = m_cachedCamera ? m_cachedCamera->GetCullingMask() : 0xffffffffu;
+        for (const auto &pass : m_pythonGraphDesc.passes) {
+            const auto *command = PrimaryCommand(pass);
+            if (command && command->type == GraphCommandType::DrawWorldUI) {
+                mask &= command->worldUILayerMask;
+                break;
+            }
+        }
+        if (m_screenUIRenderer->HasSelectiveWorldOcclusion(mask)) {
+            const auto runs = m_screenUIRenderer->GetWorldDepthRuns(m_cachedProj * m_drawView, mask);
+            worldUIDepthSignature = 1469598103934665603ull;
+            for (const auto &run : runs) {
+                for (const uint64_t value : {uint64_t(run.firstOrdinal), uint64_t(run.endOrdinal),
+                                             run.ignoredOccluderId, uint64_t(run.alwaysOnTop)}) {
+                    worldUIDepthSignature = (worldUIDepthSignature ^ value) * 1099511628211ull;
+                }
+            }
+        }
+    }
+    if (worldUIDepthSignature != m_worldUIDepthRunSignature) {
+        m_worldUIDepthRunSignature = worldUIDepthSignature;
+        m_needsRebuild = true;
+    }
+    if (worldUIDepthSignature && m_vkCore) {
+        const GraphCommandDesc *opaqueCommand = nullptr;
+        for (const auto &pass : m_pythonGraphDesc.passes) {
+            if (pass.name == "OpaquePass") {
+                opaqueCommand = PrimaryCommand(pass);
+                break;
+            }
+        }
+        if (opaqueCommand && opaqueCommand->type == GraphCommandType::DrawRenderers) {
+            const auto defaultMaterial = AssetRegistry::Instance().GetBuiltinMaterial("DefaultLit");
+            for (const auto &draw : GetCachedDrawCalls()) {
+                if (!draw.frustumVisible)
+                    continue;
+                const auto &material = draw.material ? draw.material : defaultMaterial;
+                if (!material || material->GetRenderQueue() < opaqueCommand->queueMin ||
+                    material->GetRenderQueue() > opaqueCommand->queueMax)
+                    continue;
+                const auto &tag = material->GetPassTag();
+                if (!opaqueCommand->passTag.empty() && !tag.empty() && tag != opaqueCommand->passTag)
+                    continue;
+                const auto &state = material->GetRenderState();
+                if (!state.depthWriteEnable)
+                    continue;
+                ShaderStagePair stages{material->GetVertShaderName(), material->GetFragShaderName()};
+                if (const auto *committed = m_vkCore->GetMaterialPipelineManager().GetRenderData(
+                        material->GetMaterialKey()))
+                    stages = committed->programKey.stages;
+                const auto *artifact = m_vkCore->GetShaderCache().FindProgramArtifact(stages);
+                if (!artifact) {
+                    m_vkCore->RefreshMaterialPipeline(
+                        material, material->GetVertShaderName(), material->GetFragShaderName());
+                    if (const auto *committed = m_vkCore->GetMaterialPipelineManager().GetRenderData(
+                            material->GetMaterialKey()))
+                        stages = committed->programKey.stages;
+                    artifact = m_vkCore->GetShaderCache().FindProgramArtifact(stages);
+                }
+                if (!state.depthTestEnable || state.stencilTestEnable ||
+                    !artifact || !artifact->FindVariant(ShaderCompileTarget::Depth)) {
+                    INXLOG_ERROR("Selective World UI occlusion cannot replay depth-writing material '",
+                                 material->GetName(),
+                                 "': it requires ordinary depth testing, no stencil test, and a Depth shader variant");
+                    m_graphBuilt = false;
+                    m_needsRebuild = true;
+                    return;
+                }
+            }
+        }
+    }
+
     for (auto &texture : m_pythonGraphDesc.textures) {
         if (texture.role != GraphTextureRole::Persistent)
             continue;
@@ -3296,6 +3370,52 @@ void SceneRenderGraph::BuildRenderGraph()
         }
 
         const auto &sortedPasses = m_pythonGraphDesc.passes;
+
+        uint32_t worldUIMask = m_cachedCamera ? m_cachedCamera->GetCullingMask() : 0xffffffffu;
+        for (const auto &candidate : sortedPasses) {
+            const auto *candidateCommand = PrimaryCommand(candidate);
+            if (candidateCommand && candidateCommand->type == GraphCommandType::DrawWorldUI) {
+                worldUIMask &= candidateCommand->worldUILayerMask;
+                break;
+            }
+        }
+        const bool hasSelectiveWorldUI =
+            m_screenUIRenderer && m_screenUIRenderer->HasSelectiveWorldOcclusion(worldUIMask);
+        const auto worldUIDepthRuns = hasSelectiveWorldUI
+                                          ? m_screenUIRenderer->GetWorldDepthRuns(m_cachedProj * m_drawView, worldUIMask)
+                                          : std::vector<InxScreenUIRenderer::WorldDepthRun>{};
+        const GraphPassDesc *worldUIOpaqueSource = nullptr;
+        if (hasSelectiveWorldUI) {
+            bool seenWorldUI = false;
+            bool invalidDepthWriter = m_pythonGraphDesc.name != "Default Forward" ||
+                                      m_cameraClearFlags == CameraClearFlags::DontClear;
+            for (const auto &candidate : sortedPasses) {
+                const auto *candidateCommand = PrimaryCommand(candidate);
+                if (candidateCommand && candidateCommand->type == GraphCommandType::DrawWorldUI) {
+                    seenWorldUI = true;
+                    break;
+                }
+                if (candidate.writeDepth != "depth")
+                    continue;
+                if (candidate.name == "OpaquePass" && candidateCommand &&
+                    candidateCommand->type == GraphCommandType::DrawRenderers &&
+                    candidateCommand->shaderTarget == ShaderCompileTarget::Forward &&
+                    candidate.type == GraphPassType::Raster && candidate.commands.size() == 1 &&
+                    candidate.clearDepth && candidate.clearDepthValue == 1.0f &&
+                    !candidateCommand->rendererSelection &&
+                    candidateCommand->overrideMaterial.empty() &&
+                    candidateCommand->materialFilter == GraphMaterialFilter::All) {
+                    worldUIOpaqueSource = &candidate;
+                } else {
+                    invalidDepthWriter = true;
+                }
+            }
+            if (!seenWorldUI || !worldUIOpaqueSource || invalidDepthWriter) {
+                INXLOG_ERROR("Selective World UI occlusion requires the unmodified Default Forward scene-depth "
+                             "writer; this graph or camera depth-preservation policy cannot be replayed exactly");
+                return;
+            }
+        }
 
         uint32_t width = m_width;
         uint32_t height = m_height;
@@ -4462,6 +4582,98 @@ void SceneRenderGraph::BuildRenderGraph()
             const vk::ResourceHandle rendererListHandle =
                 usesShadowRendererList ? m_shadowRendererList
                                        : (usesVisibleRendererList ? m_visibleRendererList : vk::ResourceHandle{});
+            if (hasSelectiveWorldUI && command && command->type == GraphCommandType::DrawWorldUI) {
+                if (!primaryColorTarget.IsValid() || !sharedDepth.IsValid() || colorTargets.size() != 1 ||
+                    colorTargets.begin()->first != 0) {
+                    INXLOG_ERROR("Selective World UI requires one existing color target and scene depth");
+                    return;
+                }
+                const auto *opaqueCommand = PrimaryCommand(*worldUIOpaqueSource);
+                auto replayPipeline = m_pythonMaterialPasses.at(worldUIOpaqueSource->name);
+                const auto uiMaterialPass = m_pythonMaterialPasses.at(passDesc.name);
+                const uint32_t worldUILayerMask = command->worldUILayerMask;
+                replayPipeline.target = ShaderCompileTarget::Depth;
+                replayPipeline.colorFormats.clear();
+                replayPipeline.depthReadOnly = false;
+                std::vector<vk::ResourceHandle> replayTextureReads;
+                if (const auto inputs = m_drawTextureInputs.find(worldUIOpaqueSource->name);
+                    inputs != m_drawTextureInputs.end()) {
+                    for (const auto &generation : inputs->second) {
+                        const auto resources = m_renderGraph->ImportRenderTexture(
+                            "__DrawTexture/" + generation->sampledColor->GetSourceId(), generation);
+                        replayTextureReads.push_back(
+                            generation->multisampleColor ? resources.resolve : resources.color);
+                    }
+                }
+                std::unordered_map<uint64_t, vk::ResourceHandle> alternateDepths;
+                for (const auto &run : worldUIDepthRuns) {
+                    const uint64_t excludedId = run.ignoredOccluderId;
+                    if (!excludedId || alternateDepths.count(excludedId))
+                        continue;
+                    const std::string replayName = passDesc.name + "/Exclude/" + std::to_string(excludedId);
+                    auto alternateDepth = m_renderGraph->RegisterTransientTexture(
+                        replayName + "/Depth", width, height, depthFormat, msaaSamples);
+                    vk::ResourceHandle writtenAlternateDepth;
+                    m_renderGraph->AddPass(replayName, [=, &writtenAlternateDepth](vk::PassBuilder &builder) {
+                        builder.ReadRendererList(m_visibleRendererList);
+                        for (const auto texture : replayTextureReads)
+                            builder.Read(texture, rhi::PipelineStage::VertexShader | rhi::PipelineStage::FragmentShader);
+                        writtenAlternateDepth = builder.WriteDepth(alternateDepth);
+                        builder.SetRenderArea(width, height);
+                        builder.SetClearDepth(1.0f, 0);
+                        return [this, vkCore, opaqueCommand, replayPipeline, excludedId, width,
+                                height](vk::RenderContext &ctx) {
+                            const auto *list = ctx.GetRendererList(m_visibleRendererList);
+                            const auto *draws = list ? &list->DrawCalls() : nullptr;
+                            if (!vkCore->UsesDrawCalls(draws))
+                                vkCore->SetDrawCalls(draws);
+                            vkCore->DrawSceneFiltered(
+                                ctx.GetCommandBuffer(), width, height, GetPerViewBindGroup(), m_drawView,
+                                opaqueCommand->queueMin, opaqueCommand->queueMax, opaqueCommand->sortMode,
+                                "", opaqueCommand->passTag, &replayPipeline, opaqueCommand->materialFilter,
+                                nullptr, excludedId, true);
+                        };
+                    });
+                    alternateDepths.emplace(excludedId, writtenAlternateDepth);
+                }
+
+                vk::ResourceHandle currentColor = primaryColorTarget;
+                for (size_t runIndex = 0; runIndex < worldUIDepthRuns.size(); ++runIndex) {
+                    const auto run = worldUIDepthRuns[runIndex];
+                    const auto runDepth = run.ignoredOccluderId
+                                              ? alternateDepths.at(run.ignoredOccluderId)
+                                              : sharedDepth;
+                    const std::string runName = passDesc.name + "/Run/" + std::to_string(runIndex);
+                    const bool lastRun = runIndex + 1 == worldUIDepthRuns.size();
+                    vk::ResourceHandle writtenColor;
+                    vk::ResourceHandle writtenResolve;
+                    m_renderGraph->AddPass(runName, [=, &writtenColor, &writtenResolve](vk::PassBuilder &builder) {
+                        builder.SetSideEffect(passDesc.sideEffect || writesPersistent);
+                        builder.ReadDepth(runDepth);
+                        for (const auto texture : drawTextureReads)
+                            builder.Read(texture, rhi::PipelineStage::VertexShader | rhi::PipelineStage::FragmentShader);
+                        writtenColor = builder.WriteColor(currentColor, 0);
+                        if (lastRun && resolveTarget.IsValid())
+                            writtenResolve = builder.WriteResolve(resolveTarget);
+                        builder.SetRenderArea(width, height);
+                        return [this, vkCore, uiMaterialPass, worldUILayerMask, run, width,
+                                height](vk::RenderContext &ctx) {
+                            m_screenUIRenderer->RenderWorld(
+                                ctx.GetCommandBuffer(), width, height, m_cachedProj * m_drawView,
+                                uiMaterialPass.RenderingSignature(), vkCore->GetCurrentFrameSlot(),
+                                worldUILayerMask & (m_cachedCamera ? m_cachedCamera->GetCullingMask()
+                                                                   : 0xffffffffu),
+                                m_drawView, m_cachedProj, run.firstOrdinal, run.endOrdinal);
+                        };
+                    });
+                    currentColor = writtenColor;
+                    publishResourceVersion(writtenColor);
+                    publishResourceVersion(writtenResolve);
+                }
+                if (writesBackbuffer)
+                    backbufferDirtySinceResolve = true;
+                continue;
+            }
             m_renderGraph->AddPass(passDesc.name, [=, &sharedDepth, &writtenColorVersions, &writtenDepthVersion,
                                                    &writtenResolveVersion](vk::PassBuilder &builder) {
                 builder.SetSideEffect(passDesc.sideEffect || writesPersistent);

@@ -137,6 +137,12 @@ class WorldUIElementTarget:
         distance = float(position[2]) if len(position) > 2 else float("inf")
         return 0, int(self.element.world_always_on_top), -distance
 
+    @property
+    def ignored_occluder_id(self) -> int:
+        """Resolve the explicit scene-object reference; stale refs ignore nothing."""
+        object_ = self.element.world_ignored_occluder
+        return int(object_.id) if object_ is not None else 0
+
     def raycast(self, canvas_x: float, canvas_y: float):
         if not (canvas_x == canvas_x and canvas_y == canvas_y):
             return None
@@ -227,6 +233,28 @@ def pick_world_ui_object_ids(scene, ray_origin, ray_direction, persistent_scene=
     targets = _world_targets(_collect_world_ui_elements(scene, persistent_scene))
     positions = _project_world_ui_targets(targets, ray_origin, ray_direction,
                                           camera=camera, viewport_height=viewport_height)
+    selective_distances = [
+        float(position[2])
+        for target, position in zip(targets, positions)
+        if target.ignored_occluder_id and not target.element.world_always_on_top
+        and position is not None
+        and not isinstance(target.element, UIFrame)
+        and target.element.enabled
+        and target.element.game_object is not None
+        and target.element.game_object.active_in_hierarchy
+        and 0.0 <= position[0] <= target.input_logical_size[0]
+        and 0.0 <= position[1] <= target.input_logical_size[1]
+    ]
+    selective_occluders = ()
+    if selective_distances:
+        from Infernux.physics import Physics
+
+        selective_occluders = Physics.raycast_all(
+            ray_origin, ray_direction,
+            max_distance=max(selective_distances),
+            layer_mask=int(getattr(camera, "culling_mask", 0xffffffff)),
+            query_triggers=False,
+        )
     for target, position in zip(targets, positions):
         element = target.element
         # UIFrame is a visual-neutral layout/grouping component.  Its authored
@@ -237,6 +265,10 @@ def pick_world_ui_object_ids(scene, ray_origin, ray_direction, persistent_scene=
             continue
         width, height = target.input_logical_size
         if not (0.0 <= position[0] <= width and 0.0 <= position[1] <= height):
+            continue
+        if target.ignored_occluder_id and _world_hit_occludes_surface(
+            target, float(position[2]), selective_occluders
+        ):
             continue
         game_object = getattr(element, "game_object", None)
         if game_object is None or not game_object.active_in_hierarchy or not element.enabled:
@@ -420,6 +452,22 @@ def _vector_xyz(value):
     return float(value[0]), float(value[1]), float(value[2])
 
 
+def _world_hit_occludes_surface(surface, distance, hits) -> bool:
+    if surface.element.world_always_on_top:
+        return False
+    ignored_id = surface.ignored_occluder_id
+    for hit in hits:
+        if float(hit.distance) + 1e-4 >= distance:
+            break
+        if bool(getattr(getattr(hit, "collider", None), "is_trigger", False)):
+            continue
+        hit_object = getattr(hit, "game_object", None)
+        if ignored_id and hit_object is not None and int(hit_object.id) == ignored_id:
+            continue
+        return True
+    return False
+
+
 def map_runtime_ui_pointers(
     surfaces,
     camera,
@@ -455,30 +503,53 @@ def map_runtime_ui_pointers(
     if candidates:
         from Infernux.physics import Physics
 
+        selective_candidates = []
+        ordinary_candidates = []
+        for candidate in candidates:
+            pointer_index = candidate[0]
+            intersections = geometries[pointer_index][1]
+            if any(
+                surfaces[index].ignored_occluder_id
+                and not surfaces[index].element.world_always_on_top
+                for index, _distance in intersections
+            ):
+                selective_candidates.append(candidate)
+            else:
+                ordinary_candidates.append(candidate)
+        for pointer_index, furthest, origin, direction in selective_candidates:
+            hits = Physics.raycast_all(
+                origin, direction, max_distance=furthest,
+                layer_mask=int(camera.culling_mask), query_triggers=False,
+            )
+            positions, intersections, _origin, _direction, _screen_blocks = geometries[pointer_index]
+            for surface_index, distance in intersections:
+                if _world_hit_occludes_surface(surfaces[surface_index], distance, hits):
+                    positions[surface_index] = (float("nan"), float("nan"), distance)
+
         occluder_distances = {}
-        if len(candidates) == 1:
-            pointer_index, furthest, origin, direction = candidates[0]
+        if len(ordinary_candidates) == 1:
+            pointer_index, furthest, origin, direction = ordinary_candidates[0]
             hit = Physics.raycast(
                 origin, direction, max_distance=furthest,
                 layer_mask=int(camera.culling_mask), query_triggers=False,
             )
             if hit is not None:
                 occluder_distances[pointer_index] = float(hit.distance)
-        else:
-            origins, directions, output = _pointer_batch_storage(len(candidates))
-            max_distance = max(candidate[1] for candidate in candidates)
-            for row, (_pointer_index, _furthest, origin, direction) in enumerate(candidates):
+        elif ordinary_candidates:
+            origins, directions, output = _pointer_batch_storage(len(ordinary_candidates))
+            max_distance = max(candidate[1] for candidate in ordinary_candidates)
+            for row, (_pointer_index, _furthest, origin, direction) in enumerate(ordinary_candidates):
                 origins[row] = _vector_xyz(origin)
                 directions[row] = _vector_xyz(direction)
             Physics.raycast_batch(
-                origins[:len(candidates)],
-                directions[:len(candidates)],
+                origins[:len(ordinary_candidates)],
+                directions[:len(ordinary_candidates)],
                 output,
                 max_distance=max_distance,
                 layer_mask=int(camera.culling_mask),
                 query_triggers=False,
             )
-            for row, (pointer_index, furthest, _origin, _direction) in enumerate(candidates):
+            for row, (pointer_index, furthest, _origin, _direction) in enumerate(ordinary_candidates):
                 hit_distance = float(output["distance"][row])
                 if output["hit"][row] and hit_distance <= furthest:
                     occluder_distances[pointer_index] = hit_distance
@@ -522,7 +593,12 @@ def map_runtime_ui_pointer(
         from Infernux.physics import Physics
 
         furthest = max(distance for _, distance in world_intersections)
-        if include_scene_hit:
+        selective = any(
+            surfaces[index].ignored_occluder_id
+            and not surfaces[index].element.world_always_on_top
+            for index, _distance in world_intersections
+        )
+        if include_scene_hit or selective:
             # One query serves both consumers: the closest trigger-inclusive
             # hit is the GameObject mouse target; the closest non-trigger hit
             # is the world-UI occluder. Keep the old 1000-unit mouse range
@@ -532,22 +608,17 @@ def map_runtime_ui_pointer(
             hits = Physics.raycast_all(
                 ray_origin,
                 ray_direction,
-                max_distance=max(1000.0, furthest),
+                max_distance=max(1000.0, furthest) if include_scene_hit else furthest,
                 layer_mask=int(camera.culling_mask),
-                query_triggers=True,
+                query_triggers=include_scene_hit,
             )
-            scene_hit = next(
-                (value for value in hits
-                 if value.distance <= 1000.0
-                 and value.game_object is not None and value.game_object.layer != 2),
-                None,
-            )
-            occluder = next(
-                (value for value in hits
-                 if not bool(getattr(getattr(value, "collider", None), "is_trigger", False))
-                 and float(getattr(value, "distance", float("inf"))) < furthest),
-                None,
-            )
+            if include_scene_hit:
+                scene_hit = next(
+                    (value for value in hits
+                     if value.distance <= 1000.0
+                     and value.game_object is not None and value.game_object.layer != 2),
+                    None,
+                )
         else:
             occluder = Physics.raycast(
                 ray_origin,
@@ -556,12 +627,10 @@ def map_runtime_ui_pointer(
                 layer_mask=int(camera.culling_mask),
                 query_triggers=False,
             )
-        if occluder is not None:
-            occluder_distance = float(occluder.distance)
-            for index, distance in world_intersections:
-                if (not surfaces[index].element.world_always_on_top
-                        and occluder_distance + 1e-4 < distance):
-                    positions[index] = (float("nan"), float("nan"), distance)
+            hits = (occluder,) if occluder is not None else ()
+        for index, distance in world_intersections:
+            if _world_hit_occludes_surface(surfaces[index], distance, hits):
+                positions[index] = (float("nan"), float("nan"), distance)
 
     elif include_scene_hit and camera is not None and not screen_blocks_scene:
         # Ordinary Collider input does not depend on there being world UI,
@@ -758,7 +827,8 @@ class RuntimeScreenUISubmission:
         if callable(getattr(element, "resolve_text_layout", None)):
             _resolve_text_layout(element, renderer.measure_text, 1.0)
         logical_width, logical_height = (max(1.0, value) for value in element.get_resolved_size())
-        begin_element(
+        ignored_occluder = element.world_ignored_occluder
+        world_args = (
             game_object,
             logical_width * 0.5,
             logical_height * 0.5,
@@ -766,6 +836,8 @@ class RuntimeScreenUISubmission:
             bool(element.world_billboard),
             bool(element.world_constant_screen_size),
         )
+        ignored_id = int(ignored_occluder.id) if ignored_occluder is not None and not element.world_always_on_top else 0
+        begin_element(*world_args, ignored_id) if ignored_id else begin_element(*world_args)
         try:
             _ui_dispatch(
                 element,

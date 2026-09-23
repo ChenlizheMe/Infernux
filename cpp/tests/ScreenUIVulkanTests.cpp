@@ -6,8 +6,8 @@
 #include <function/renderer/vk/VkDeviceContext.h>
 #include <function/renderer/vk/VulkanRhiDevice.h>
 #include <function/scene/SceneManager.h>
-#include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
+#include <glm/gtc/matrix_transform.hpp>
 #ifdef NDEBUG
 #undef NDEBUG
 #endif
@@ -309,8 +309,8 @@ int main(int argc, char **argv)
             return result;
         };
         const auto cameraPolicyBounds = [&](float depth, bool billboard, bool constantSize, bool rotate) {
-            glm::mat4 pose =
-                rotate ? glm::rotate(glm::mat4(1.f), glm::radians(90.f), glm::vec3(0, 1, 0)) : glm::mat4(1.f);
+            glm::mat4 pose = rotate ? glm::rotate(glm::mat4(1.f), glm::radians(90.f), glm::vec3(0, 1, 0))
+                                    : glm::mat4(1.f);
             pose[3].z = -depth;
             std::array<float, 16> matrix{};
             std::copy_n(glm::value_ptr(pose), 16, matrix.begin());
@@ -334,7 +334,8 @@ int main(int argc, char **argv)
         const auto perspectiveWorld = cameraPolicyBounds(2.f, false, false, false);
         const auto perspectiveFixed = cameraPolicyBounds(2.f, false, true, false);
         assert(perspectiveFixed[2] - perspectiveFixed[0] > perspectiveWorld[2] - perspectiveWorld[0]);
-        cameraView = glm::lookAtRH(glm::vec3(2.f, 0.f, -2.f), glm::vec3(0.f, 0.f, -2.f), glm::vec3(0.f, 1.f, 0.f));
+        cameraView = glm::lookAtRH(glm::vec3(2.f, 0.f, -2.f), glm::vec3(0.f, 0.f, -2.f),
+                                   glm::vec3(0.f, 1.f, 0.f));
         camera = cameraProjection * cameraView;
         buildGraph();
         const auto sideCameraPixels = cameraPolicyBounds(2.f, true, true, true);
@@ -708,6 +709,22 @@ int main(int argc, char **argv)
         auto *object = uiScene->CreateGameObject("Animated UI");
         object->SetParent(parent, false);
         object->GetTransform()->SetLocalPosition(.1f, .1f, .4f);
+        renderer.BeginFrame(128, 128);
+        assert(!renderer.HasSelectiveWorldOcclusion());
+        renderer.BeginCommandPacket();
+        renderer.BeginWorldObject(object, 50, 50, false, false, false, parent->GetID());
+        renderer.AddFilledRect(list, 0, 0, 10, 10, 1, 1, 1, 1);
+        renderer.EndWorldElement();
+        auto selectivePacket = renderer.EndCommandPacket();
+        assert(!renderer.HasSelectiveWorldOcclusion()); // Capture alone does not draw.
+        renderer.AppendCommandPackets({selectivePacket});
+        assert(renderer.HasSelectiveWorldOcclusion());
+        assert(!renderer.HasSelectiveWorldOcclusion(1u << 30));
+        const auto selectiveRuns = renderer.GetWorldDepthRuns(glm::mat4(1.0f));
+        assert(selectiveRuns.size() == 1 && selectiveRuns[0].ignoredOccluderId == parent->GetID());
+        assert(!renderer.BeginFrameCached(128, 128, 0x57u)); // Appending invalidated the cached frame.
+        assert(renderer.BeginFrameCached(128, 128, 0x57u)); // Reusing the empty frame keeps it empty.
+        assert(!renderer.HasSelectiveWorldOcclusion());
         const auto drawLocal = [&] {
             renderer.AddFilledRect(list, 10, 20, 85, 70, .3f, .8f, 1.2f, .7f, 7);
             renderer.AddText(list, 10, 20, 85, 70, "UI", 1, 1, 1, .8f, .5f, .5f, 18);
