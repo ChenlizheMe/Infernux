@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from Infernux.engine.path_utils import (
+    is_lexical_path_within,
     is_path_within,
     lexical_path,
     lexical_path_key,
@@ -75,6 +76,7 @@ def test_containment_resolves_symlink_escape(tmp_path: Path):
         link.symlink_to(outside, target_is_directory=True)
     except OSError as exc:
         pytest.skip(f"directory symlinks unavailable: {exc}")
+    assert is_lexical_path_within(link / "asset.txt", root)
     assert not is_path_within(link / "asset.txt", root)
 
 
@@ -111,3 +113,19 @@ def test_existing_windows_short_path_resolves_to_long_storage_path(tmp_path: Pat
 
     assert resolved_path(buffer.value) == resolved_path(str(source))
     assert same_path(buffer.value, str(source))
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows short-path identity regression")
+def test_windows_short_parent_resolves_for_nonexistent_child(tmp_path: Path):
+    import ctypes
+
+    root = tmp_path / "long parent directory"
+    root.mkdir()
+    buffer = ctypes.create_unicode_buffer(32768)
+    length = ctypes.windll.kernel32.GetShortPathNameW(str(root), buffer, len(buffer))
+    if not length or buffer.value == str(root):
+        pytest.skip("8.3 short paths are unavailable on this volume")
+
+    unresolved = os.path.join(buffer.value, "not-created", "asset.bin")
+    expected = os.path.join(str(root), "not-created", "asset.bin")
+    assert resolved_path(unresolved) == resolved_path(expected)
