@@ -416,6 +416,13 @@ def _run(args: argparse.Namespace, artifact_root: Path) -> SmokeResult:
         )
     finally:
         _terminate(process)
+        state_artifact = artifact_root / "player-state.log"
+        if not state_artifact.is_file():
+            state_artifact.write_text(
+                _new_log_text(state_log, state_start),
+                encoding="utf-8",
+                newline="\n",
+            )
 
 
 def main() -> int:

@@ -18,6 +18,14 @@ from pathlib import Path
 from typing import Any
 
 
+# Importing the source engine prepares its own native-library search path for
+# the acceptance process.  A packaged Player must not inherit those build-tree
+# entries: doing so can load one half of the runtime from the checkout and the
+# other half from the Player package.  Preserve the caller's launch environment
+# before importing Infernux and use that clean boundary for the child process.
+_PLAYER_LAUNCH_ENVIRONMENT = os.environ.copy()
+
+
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 _PYTHON_ROOT = _REPOSITORY_ROOT / "python"
 if str(_PYTHON_ROOT) not in sys.path:
@@ -34,6 +42,14 @@ _FATAL_PATTERNS = (
     "CRASH:",
     "Traceback (most recent call last)",
     "[ERROR]",
+    "X Error of failed request",
+    "VK_ERROR_DEVICE_LOST",
+    "device lost",
+    "Aborted",
+    "SIGABRT",
+    "Segmentation fault",
+    "SIGSEGV",
+    "segfault",
 )
 
 
@@ -467,7 +483,7 @@ def _run(args: argparse.Namespace, artifact_root: Path) -> SmokeResult:
     probes = list(args.component_probe)
     player_probes = _player_component_probes(probes)
     object_names = _probe_object_names(args.object, probes)
-    environment = os.environ.copy()
+    environment = _PLAYER_LAUNCH_ENVIRONMENT.copy()
     environment.update(
         {
             "_INFERNUX_PLAYER_DEBUG_BUILD": "1",
@@ -663,6 +679,13 @@ def _run(args: argparse.Namespace, artifact_root: Path) -> SmokeResult:
     finally:
         _terminate(player_process)
         _terminate(xvfb_process)
+        state_artifact = artifact_root / "player-state.log"
+        if not state_artifact.is_file():
+            state_artifact.write_text(
+                _new_log_text(state_log, state_start),
+                encoding="utf-8",
+                newline="\n",
+            )
 
 
 def main() -> int:
