@@ -1,7 +1,10 @@
+#include <platform/window/WindowPresentationPolicy.h>
 #include <platform/window/WindowSizingPolicy.h>
 
 #include <cassert>
 #include <stdexcept>
+#include <string_view>
+#include <vector>
 
 int main()
 {
@@ -26,5 +29,44 @@ int main()
         rejected = true;
     }
     assert(rejected);
+
+    const auto ordinaryWayland = infernux::ResolveWindowPresentationPolicy(false, "wayland");
+    assert(ordinaryWayland.focusable);
+    assert(ordinaryWayland.activateWhenShown);
+    assert(!ordinaryWayland.showBeforeSurface);
+
+    const auto controlledWayland = infernux::ResolveWindowPresentationPolicy(true, "wayland");
+    assert(!controlledWayland.focusable);
+    assert(!controlledWayland.activateWhenShown);
+    assert(controlledWayland.showBeforeSurface);
+
+    const auto controlledX11 = infernux::ResolveWindowPresentationPolicy(true, "x11");
+    assert(!controlledX11.focusable);
+    assert(!controlledX11.activateWhenShown);
+    assert(!controlledX11.showBeforeSurface);
+
+    const auto controlledWindows = infernux::ResolveWindowPresentationPolicy(true, "windows");
+    assert(!controlledWindows.focusable);
+    assert(!controlledWindows.activateWhenShown);
+    assert(!controlledWindows.showBeforeSurface);
+
+    const std::vector<std::string_view> waylandExtensions = {"VK_KHR_surface", "VK_KHR_wayland_surface"};
+    const std::vector<std::string_view> xlibExtensions = {"VK_KHR_surface", "VK_KHR_xlib_surface"};
+    const std::vector<std::string_view> xcbExtensions = {"VK_KHR_surface", "VK_KHR_xcb_surface"};
+    const std::vector<std::string_view> surfaceOnlyExtensions = {"VK_KHR_surface"};
+    assert(infernux::ValidateVulkanWindowExtensions("wayland", waylandExtensions));
+    assert(infernux::ValidateVulkanWindowExtensions("x11", xlibExtensions));
+    assert(infernux::ValidateVulkanWindowExtensions("x11", xcbExtensions));
+    assert(!infernux::ValidateVulkanWindowExtensions("wayland", xlibExtensions));
+    assert(!infernux::ValidateVulkanWindowExtensions("x11", surfaceOnlyExtensions));
+    assert(infernux::ValidateVulkanWindowExtensions("custom", surfaceOnlyExtensions));
+
+    using infernux::ShouldSuspendWindowRendering;
+    using infernux::WindowVisibility;
+    assert(!ShouldSuspendWindowRendering(WindowVisibility::Visible, false, false));
+    assert(!ShouldSuspendWindowRendering(WindowVisibility::Occluded, false, false));
+    assert(ShouldSuspendWindowRendering(WindowVisibility::Minimized, false, false));
+    assert(ShouldSuspendWindowRendering(WindowVisibility::Visible, true, false));
+    assert(ShouldSuspendWindowRendering(WindowVisibility::Visible, false, true));
     return 0;
 }

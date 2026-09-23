@@ -1,4 +1,5 @@
 #include "InxView.h"
+#include "WindowPresentationPolicy.h"
 #include "WindowSizingPolicy.h"
 #include "WindowsDpiPolicy.h"
 
@@ -76,13 +77,38 @@ InxView::InxView()
 
 const char *const *InxView::GetVkExtensions(uint32_t *count)
 {
-    INXLOG_DEBUG("Get Vulkan Extensions.");
+    const char *requestedDriver = std::getenv("SDL_VIDEODRIVER");
+    const char *selectedDriver = SDL_GetCurrentVideoDriver();
+    const std::string_view videoDriver = selectedDriver ? selectedDriver : "";
+    INXLOG_DEBUG("Get Vulkan Extensions: SDL_VIDEODRIVER=", requestedDriver ? requestedDriver : "<default>",
+                 ", selected backend=", videoDriver.empty() ? "<none>" : videoDriver);
+
     unsigned int extensionCount = 0;
     const char *const *extensions = SDL_Vulkan_GetInstanceExtensions(&extensionCount);
     if (!extensions) {
         INXLOG_ERROR("SDL_Vulkan_GetInstanceExtensions failed: ", SDL_GetError());
         return nullptr;
     }
+
+    std::vector<std::string_view> extensionViews;
+    extensionViews.reserve(extensionCount);
+    for (unsigned int index = 0; index < extensionCount; ++index) {
+        const char *extension = extensions[index];
+        if (!extension || *extension == '\0') {
+            INXLOG_ERROR("SDL returned an empty Vulkan instance extension for backend ", videoDriver);
+            return nullptr;
+        }
+        extensionViews.emplace_back(extension);
+        INXLOG_DEBUG("  Vulkan instance extension: ", extension);
+    }
+
+    if (!infernux::ValidateVulkanWindowExtensions(videoDriver, extensionViews)) {
+        INXLOG_ERROR("SDL/Vulkan window backend contract rejected: backend=", videoDriver,
+                     " does not provide the required native surface extensions");
+        return nullptr;
+    }
+    INXLOG_DEBUG("SDL/Vulkan window backend contract accepted: backend=", videoDriver, ", extensions=", extensionCount);
+
     if (count) {
         *count = extensionCount;
     }
@@ -512,19 +538,12 @@ bool InxView::ProcessOneEvent(SDL_Event &event, bool syntheticScreenCoordinates)
         m_closeRequested = true;
     }
 
-    if (event.type == SDL_EVENT_WINDOW_MINIMIZED) {
-        m_isMinimized = true;
-    }
     if (event.type == SDL_EVENT_WINDOW_RESTORED || event.type == SDL_EVENT_WINDOW_EXPOSED ||
         event.type == SDL_EVENT_WINDOW_FOCUS_GAINED) {
-        m_isMinimized = false;
         m_needsImmediateGuiRefresh = true;
         if (event.type != SDL_EVENT_WINDOW_EXPOSED) {
             hadInputEvent = true;
         }
-    }
-    if (event.type == SDL_EVENT_WINDOW_OCCLUDED) {
-        m_isMinimized = true;
     }
     if (event.type == SDL_EVENT_WINDOW_RESIZED || event.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED ||
         event.type == SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED || event.type == SDL_EVENT_WINDOW_DISPLAY_CHANGED) {
@@ -797,16 +816,44 @@ int InxView::GetUserEvent()
 void InxView::Show()
 {
     if (m_window) {
-        // A token-authenticated Player control channel is an automated test
-        // surface. Keep its Vulkan window alive and rendering, but never let
-        // the test steal foreground focus from the developer's desktop.
-        const char *controlFile = std::getenv("_INFERNUX_PLAYER_CONTROL_FILE");
-        if (controlFile != nullptr && *controlFile != '\0')
-            return;
-        SDL_ShowWindow(m_window);
+        if (!ShowNativeWindow())
+            INXLOG_ERROR("Could not show the InxView window: ", SDL_GetError());
     } else {
         INXLOG_ERROR("InxView Window is not initialized.");
     }
+}
+
+bool InxView::ShowNativeWindow()
+{
+    if (!m_window)
+        return false;
+    if (m_activateWhenShown)
+        return SDL_ShowWindow(m_window);
+
+    // SDL reads this hint synchronously inside SDL_ShowWindow. Keep the
+    // process-global override scoped to this call so later non-automated
+    // windows retain the application's normal activation policy.
+    if (!SDL_GetHintBoolean(SDL_HINT_WINDOW_ACTIVATE_WHEN_SHOWN, true))
+        return SDL_ShowWindow(m_window);
+    const char *previousHint = SDL_GetHint(SDL_HINT_WINDOW_ACTIVATE_WHEN_SHOWN);
+    const std::optional<std::string> previousValue =
+        previousHint ? std::optional<std::string>(previousHint) : std::nullopt;
+    if (!SDL_SetHint(SDL_HINT_WINDOW_ACTIVATE_WHEN_SHOWN, "0"))
+        return false;
+    const bool shown = SDL_ShowWindow(m_window);
+    const std::string showError = shown ? std::string{} : std::string{SDL_GetError()};
+    bool restored = false;
+    if (previousValue)
+        restored = SDL_SetHint(SDL_HINT_WINDOW_ACTIVATE_WHEN_SHOWN, previousValue->c_str());
+    else
+        restored = SDL_ResetHint(SDL_HINT_WINDOW_ACTIVATE_WHEN_SHOWN);
+    if (!shown) {
+        SDL_SetError("SDL_ShowWindow failed: %s", showError.c_str());
+        return false;
+    }
+    if (!restored)
+        INXLOG_WARN("Could not restore SDL window activation hint after showing the window: ", SDL_GetError());
+    return true;
 }
 
 bool InxView::PumpStartupEvents()
@@ -948,6 +995,12 @@ void InxView::SDLInit()
 
     const char *playerModeFlag = std::getenv("_INFERNUX_PLAYER_MODE");
     const bool playerMode = playerModeFlag != nullptr && playerModeFlag[0] == '1' && playerModeFlag[1] == '\0';
+    const char *controlFile = std::getenv("_INFERNUX_PLAYER_CONTROL_FILE");
+    const bool hasControlChannel = controlFile != nullptr && *controlFile != '\0';
+    const char *videoDriver = SDL_GetCurrentVideoDriver();
+    const WindowPresentationPolicy presentation =
+        ResolveWindowPresentationPolicy(hasControlChannel, videoDriver ? videoDriver : "");
+    m_activateWhenShown = presentation.activateWhenShown;
     if (!playerMode) {
         const SDL_DisplayID primaryDisplay = SDL_GetPrimaryDisplay();
         if (primaryDisplay == 0)
@@ -966,9 +1019,11 @@ void InxView::SDLInit()
     }
 
     INXLOG_DEBUG("Window engine: SDL Vulkan");
-    m_window =
-        SDL_CreateWindow(m_appMetadata.appName, m_windowWidth, m_windowHeight,
-                         SDL_WINDOW_RESIZABLE | SDL_WINDOW_VULKAN | SDL_WINDOW_HIDDEN | SDL_WINDOW_HIGH_PIXEL_DENSITY);
+    SDL_WindowFlags windowFlags =
+        SDL_WINDOW_RESIZABLE | SDL_WINDOW_VULKAN | SDL_WINDOW_HIDDEN | SDL_WINDOW_HIGH_PIXEL_DENSITY;
+    if (!presentation.focusable)
+        windowFlags |= SDL_WINDOW_NOT_FOCUSABLE;
+    m_window = SDL_CreateWindow(m_appMetadata.appName, m_windowWidth, m_windowHeight, windowFlags);
     if (!m_window) {
         const std::string error = SDL_GetError();
         INXLOG_ERROR("Could not create a window: ", error);
@@ -984,6 +1039,15 @@ void InxView::SDLInit()
         SDL_GetWindowSize(m_window, &m_windowWidth, &m_windowHeight);
     }
     SDL_GetWindowSizeInPixels(m_window, &m_framebufferWidth, &m_framebufferHeight);
+
+    // A Wayland Vulkan toplevel has no authoritative extent before its first
+    // show/configure roundtrip. Automated Players must complete that handshake
+    // before renderer surface preparation, while the non-activation policy
+    // above keeps the validation window from taking keyboard focus.
+    if (presentation.showBeforeSurface && !ShowNativeWindow()) {
+        const std::string error = SDL_GetError();
+        throw std::runtime_error("Wayland automation window configure failed: " + error);
+    }
 }
 
 void InxView::CreateSurface(VkInstance *vkInstance, VkSurfaceKHR *vkSurface)
@@ -1022,8 +1086,7 @@ bool SDLCALL InxView::WatchApplicationEvents(void *userdata, SDL_Event *event)
         // SDL requires mobile lifecycle events to be handled from an event
         // watch: Android may suspend the normal event loop immediately after
         // delivering them. Stop presentation before SurfaceView tears down.
-        const bool wasAlreadyInBackground =
-            view->m_applicationInBackground.exchange(true, std::memory_order_acq_rel);
+        const bool wasAlreadyInBackground = view->m_applicationInBackground.exchange(true, std::memory_order_acq_rel);
 #if defined(SDL_PLATFORM_ANDROID) || defined(__ANDROID__) || defined(ANDROID)
         // Android replaces the ANativeWindow while an Activity is backgrounded.
         // The UI thread is waiting for this callback to finish the renderer-
