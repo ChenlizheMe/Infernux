@@ -228,6 +228,21 @@ static void CheckRendererParameterBuffer(vk::VkDeviceContext &context, vk::Vulka
            rendererDescriptor->storageBufferBindings.at(storageBinding->binding) == parameters);
     assert(program->GetPipelineLayout() != VK_NULL_HANDLE);
 
+    // Semantic passes consume the Forward material set-0 ABI. Calling the
+    // renderer publication path with another compatible program must neither
+    // replace the Forward base descriptor nor create a pass-local override
+    // for the same immutable parameter block.
+    auto semanticProgram = std::make_shared<ShaderProgram>();
+    auto semanticKey = programKey;
+    semanticKey.target = ShaderCompileTarget::GBuffer;
+    assert(semanticProgram->Create(context.GetDevice(), SpirvBytes(vertexCode), SpirvBytes(fragmentCode), semanticKey));
+    material->SetPassShaderProgram(ShaderCompileTarget::GBuffer, semanticProgram);
+    MaterialDescriptorSet *forwardBase = descriptors.GetOrCreateDescriptorSet(*material, *program);
+    auto emptyPublication = std::make_shared<RendererParameterBlock>();
+    assert(descriptors.GetOrCreateRendererDescriptorSet(*material, *semanticProgram, emptyPublication) == forwardBase);
+    assert(descriptors.GetOrCreateRendererDescriptorSet(*material, *semanticProgram, publication) ==
+           rendererDescriptor);
+
     rhi::BufferDesc readbackDesc;
     readbackDesc.byteSize = 4;
     readbackDesc.usage = rhi::BufferUsageFlags::TransferDestination;
@@ -390,6 +405,7 @@ static void CheckRendererParameterBuffer(vk::VkDeviceContext &context, vk::Vulka
     descriptors.Shutdown();
     descriptorAllocator.Destroy();
     material.reset();
+    semanticProgram.reset();
     program.reset();
     parameters.reset();
     computeQueue.Destroy();

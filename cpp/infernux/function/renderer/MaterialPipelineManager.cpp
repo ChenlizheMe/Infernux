@@ -424,6 +424,27 @@ MaterialPipelineManager::GetDefaultPassPipelineDescriptorFor(VkSampleCountFlagBi
 
 bool MaterialPipelineManager::IsMaterialDescriptorSetCompatible(const ShaderProgram &forward, const ShaderProgram &pass)
 {
+    const auto hasSameUniformLayout = [](const MaterialUBOLayout *lhs, const MaterialUBOLayout *rhs) {
+        if (!lhs || !rhs)
+            return lhs == rhs;
+        if (lhs->binding != rhs->binding || lhs->size != rhs->size || lhs->members.size() != rhs->members.size())
+            return false;
+        for (const auto &member : lhs->members) {
+            const auto other = std::find_if(rhs->members.begin(), rhs->members.end(),
+                                            [&](const UniformMember &value) { return value.name == member.name; });
+            if (other == rhs->members.end() || other->offset != member.offset || other->size != member.size ||
+                other->arraySize != member.arraySize || other->format != member.format)
+                return false;
+        }
+        return true;
+    };
+
+    if (!hasSameUniformLayout(forward.GetMaterialUBOLayout(), pass.GetMaterialUBOLayout()) ||
+        !hasSameUniformLayout(forward.GetVertexMaterialUBOLayout(), pass.GetVertexMaterialUBOLayout()) ||
+        forward.UsesBindlessTextureABI() != pass.UsesBindlessTextureABI() ||
+        !hasSameUniformLayout(forward.GetBindlessTextureIndexLayout(), pass.GetBindlessTextureIndexLayout()))
+        return false;
+
     std::vector<const MergedDescriptorBinding *> forwardBindings;
     std::vector<const MergedDescriptorBinding *> passBindings;
     for (const auto &binding : forward.GetDescriptorBindings()) {

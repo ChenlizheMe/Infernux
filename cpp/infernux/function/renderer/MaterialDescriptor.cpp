@@ -729,9 +729,6 @@ MaterialDescriptorSet *MaterialDescriptorManager::GetOrCreateRendererDescriptorS
     const InxMaterial &material, const ShaderProgram &program,
     const std::shared_ptr<const RendererParameterBlock> &parameters)
 {
-    if (!parameters || (parameters->properties.empty() && parameters->buffers.empty()))
-        return GetOrCreateDescriptorSet(material, program);
-
     // Every compatible material pass borrows the Forward set-0 ABI. Building
     // an override from the active pass layout would replace the material's
     // authoritative descriptor whenever a non-primary camera/pass consumes a
@@ -740,6 +737,9 @@ MaterialDescriptorSet *MaterialDescriptorManager::GetOrCreateRendererDescriptorS
     const ShaderProgram *baseProgram = material.GetPassShaderProgram(ShaderCompileTarget::Forward);
     if (!baseProgram)
         baseProgram = &program;
+    if (!parameters || (parameters->properties.empty() && parameters->buffers.empty()))
+        return GetOrCreateDescriptorSet(material, *baseProgram);
+
     MaterialDescriptorSet *base = GetOrCreateDescriptorSet(material, *baseProgram);
     if (!base || !base->isValid)
         return nullptr;
@@ -777,7 +777,7 @@ MaterialDescriptorSet *MaterialDescriptorManager::GetOrCreateRendererDescriptorS
 
     auto descriptor = std::make_unique<MaterialDescriptorSet>();
     descriptor->layout = layout;
-    descriptor->bindings = program.GetDescriptorBindings();
+    descriptor->bindings = baseProgram->GetDescriptorBindings();
     descriptor->usesBindlessTextureABI = base->usesBindlessTextureABI;
     descriptor->textureBindings = base->textureBindings;
     descriptor->storageBufferBindings = base->storageBufferBindings;
@@ -790,7 +790,7 @@ MaterialDescriptorSet *MaterialDescriptorManager::GetOrCreateRendererDescriptorS
         return nullptr;
     descriptor->descriptorSet = descriptor->descriptorLease.set;
 
-    if (const auto *materialLayout = program.GetMaterialUBOLayout(); materialLayout && materialLayout->size > 0) {
+    if (const auto *materialLayout = baseProgram->GetMaterialUBOLayout(); materialLayout && materialLayout->size > 0) {
         descriptor->materialUBO = std::make_unique<MaterialUBO>();
         if (!descriptor->materialUBO->Create(m_vmaAllocator, m_device, *materialLayout)) {
             RetireDescriptorSet(std::shared_ptr<MaterialDescriptorSet>(std::move(descriptor)));
@@ -799,7 +799,7 @@ MaterialDescriptorSet *MaterialDescriptorManager::GetOrCreateRendererDescriptorS
         descriptor->materialUBO->Update(material);
         descriptor->materialUBO->Apply(*parameters);
     }
-    if (const auto *vertexLayout = program.GetVertexMaterialUBOLayout(); vertexLayout && vertexLayout->size > 0) {
+    if (const auto *vertexLayout = baseProgram->GetVertexMaterialUBOLayout(); vertexLayout && vertexLayout->size > 0) {
         descriptor->vertexMaterialUBO = std::make_unique<MaterialUBO>();
         if (!descriptor->vertexMaterialUBO->Create(m_vmaAllocator, m_device, *vertexLayout)) {
             RetireDescriptorSet(std::shared_ptr<MaterialDescriptorSet>(std::move(descriptor)));
@@ -830,7 +830,7 @@ MaterialDescriptorSet *MaterialDescriptorManager::GetOrCreateRendererDescriptorS
         if (!guid)
             continue;
         if (descriptor->usesBindlessTextureABI) {
-            const auto *indexLayout = program.GetBindlessTextureIndexLayout();
+            const auto *indexLayout = baseProgram->GetBindlessTextureIndexLayout();
             if (!indexLayout)
                 continue;
             for (size_t slot = 0; slot < indexLayout->members.size(); ++slot) {
@@ -869,7 +869,7 @@ MaterialDescriptorSet *MaterialDescriptorManager::GetOrCreateRendererDescriptorS
 
     if (descriptor->usesBindlessTextureABI) {
         MaterialUBOLayout indexLayout{};
-        if (const auto *reflected = program.GetBindlessTextureIndexLayout())
+        if (const auto *reflected = baseProgram->GetBindlessTextureIndexLayout())
             indexLayout = *reflected;
         else {
             indexLayout.binding = ShaderProgram::MaterialTextureIndexBinding;
@@ -892,7 +892,7 @@ MaterialDescriptorSet *MaterialDescriptorManager::GetOrCreateRendererDescriptorS
         descriptor->textureIndexUBO->UpdateTextureIndices(indices);
     }
 
-    if (!UpdateDescriptorBindings(*descriptor, program)) {
+    if (!UpdateDescriptorBindings(*descriptor, *baseProgram)) {
         RetireDescriptorSet(std::shared_ptr<MaterialDescriptorSet>(std::move(descriptor)));
         return nullptr;
     }
