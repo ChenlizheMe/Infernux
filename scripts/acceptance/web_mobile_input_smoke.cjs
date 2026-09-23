@@ -37,9 +37,7 @@ function resolveBrowserExecutable(browserEngine) {
   return candidates.find((candidate) => fs.existsSync(candidate));
 }
 
-async function activateCanvas(page, canvasBox, cdpEndpoint) {
-  const x = canvasBox.x + canvasBox.width * 0.5;
-  const y = canvasBox.y + canvasBox.height * 0.5;
+async function tapCanvasPoint(page, x, y, cdpEndpoint) {
   if (!cdpEndpoint) {
     await page.touchscreen.tap(x, y);
     return;
@@ -58,6 +56,15 @@ async function activateCanvas(page, canvasBox, cdpEndpoint) {
   } finally {
     await session.detach();
   }
+}
+
+async function activateCanvas(page, canvasBox, cdpEndpoint) {
+  await tapCanvasPoint(
+    page,
+    canvasBox.x + canvasBox.width * 0.5,
+    canvasBox.y + canvasBox.height * 0.5,
+    cdpEndpoint,
+  );
 }
 
 async function readCanvasFrame(canvas) {
@@ -180,7 +187,7 @@ async function main() {
       "[--capture-only --fixed-delta N --pause-after-frame N] " +
       "[--device-scale-factor N] " +
       "[--verify-particle-bloom] [--verify-native-multitouch] " +
-      "[--verify-mobile-ime]",
+      "[--verify-mobile-ime] [--verify-fixture-ui-click]",
     );
   }
   const argumentValue = (name, fallback = "") => {
@@ -246,6 +253,10 @@ async function main() {
   const verifyParticleBloom = process.argv.includes("--verify-particle-bloom");
   const verifyNativeMultitouch = process.argv.includes("--verify-native-multitouch");
   const verifyMobileIme = process.argv.includes("--verify-mobile-ime");
+  const verifyFixtureUiClick = process.argv.includes("--verify-fixture-ui-click");
+  if (captureOnly && verifyFixtureUiClick) {
+    throw new Error("--verify-fixture-ui-click requires interactive acceptance mode");
+  }
   const browserEngine = (
     process.env.INFERNUX_WEB_BROWSER_ENGINE?.trim() || "chromium"
   ).toLowerCase();
@@ -1084,6 +1095,30 @@ async function main() {
       return contextMenu.defaultPrevented;
     }, !verifyMobileIme);
     await page.waitForTimeout(1000);
+    let fixtureUiClick = null;
+    if (verifyFixtureUiClick) {
+      // The fixture button occupies (512,20)..(768,84) in its 1280x720
+      // canvas. Its default CanvasScaler blends width and height equally.
+      const scale = Math.sqrt(
+        (canvasBox.width / 1280) * (canvasBox.height / 720),
+      );
+      const x = canvasBox.x + 640 * scale;
+      const y = canvasBox.y + 52 * scale;
+      if (x >= canvasBox.x + canvasBox.width ||
+          y >= canvasBox.y + canvasBox.height) {
+        throw new Error("Fixture UI button is outside the Web Player canvas");
+      }
+      await tapCanvasPoint(page, x, y, cdpEndpoint);
+      await page.waitForFunction(() => {
+        const diagnostics = JSON.parse(
+          document.querySelector("#canvas")?.dataset.infernuxDiagnostics || "[]",
+        );
+        return diagnostics.some((item) =>
+          item.includes("INFERNUX_PLATFORM_FIXTURE_UI_CLICK_READY")
+        );
+      }, null, { timeout: 10000 });
+      fixtureUiClick = { x, y, marker: "INFERNUX_PLATFORM_FIXTURE_UI_CLICK_READY" };
+    }
     const frameAfterInput = skipFrameChecks ? null : await measureCanvasFrame(canvas);
     const result = await page.evaluate((contract) => {
       const canvas = document.querySelector("#canvas");
@@ -1189,6 +1224,7 @@ async function main() {
     result.gameplayMovement = gameplayMovement;
     result.nativeMultitouch = nativeMultitouch;
     result.mobileIme = mobileIme;
+    result.fixtureUiClick = fixtureUiClick;
     if (captureFramePath) result.captureFramePath = captureFramePath;
     const frameIsVisible = (frame) => frame && (
       frame.nonBlackRatio >= 0.1 &&

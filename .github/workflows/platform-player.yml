@@ -461,8 +461,11 @@ jobs:
               "http://127.0.0.1:8765/infernux-player.html?infernuxWebGpuAdapter=fallback" `
               --startup-timeout-ms 360000 `
               --verify-native-multitouch `
+              --verify-fixture-ui-click `
               --require-diagnostic "INFERNUX_PLATFORM_FIXTURE_PACKAGE_RESOURCE_READY value=Package resource reached UIText on every Player target." `
               --require-diagnostic "INFERNUX_PLATFORM_FIXTURE_PRELOAD_RESOURCE_READY value=Package resource reached UIText on every Player target." `
+              --require-diagnostic "INFERNUX_PLATFORM_FIXTURE_MANAGED_GUID_READ_READY guid=8b7148eba8303c90b0589315c16f7cba" `
+              --require-diagnostic "INFERNUX_PLATFORM_FIXTURE_UI_CLICK_READY" `
               --report out/test-results/web-browser-player-smoke.json
           } finally {
             Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue
