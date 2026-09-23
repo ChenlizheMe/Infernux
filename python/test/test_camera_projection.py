@@ -103,7 +103,8 @@ def test_physical_camera_uses_vertical_fov_and_selected_gate(camera, gate, expec
     width.  This catches the former bug where horizontal FOV was passed to
     glm::perspective as if it were vertical FOV.
     """
-    camera.projection_mode = lib.CameraProjection.Physical
+    camera.projection_mode = lib.CameraProjection.Perspective
+    camera.use_physical_properties = True
     camera.focal_length = 50.0
     camera.sensor_size = lib.Vector2(36.0, 24.0)
     camera.gate_fit = getattr(lib.PhysicalGateFit, gate)
@@ -119,7 +120,8 @@ def test_physical_camera_uses_vertical_fov_and_selected_gate(camera, gate, expec
 
 @pytest.mark.skipif(not hasattr(lib, "PhysicalGateFit"), reason="native PhysicalGateFit binding not built")
 def test_physical_camera_lens_shift_changes_frustum_center(camera):
-    camera.projection_mode = lib.CameraProjection.Physical
+    camera.projection_mode = lib.CameraProjection.Perspective
+    camera.use_physical_properties = True
     camera.gate_fit = lib.PhysicalGateFit.Horizontal
     camera.lens_shift = lib.Vector2(0.125, -0.1)
     shifted = np.asarray(camera.projection_matrix)
@@ -133,7 +135,8 @@ def test_physical_camera_lens_shift_changes_frustum_center(camera):
 
 @pytest.mark.skipif(not hasattr(lib, "PhysicalGateFit"), reason="native PhysicalGateFit binding not built")
 def test_physical_gate_fit_ignores_the_non_fitted_sensor_axis(camera):
-    camera.projection_mode = lib.CameraProjection.Physical
+    camera.projection_mode = lib.CameraProjection.Perspective
+    camera.use_physical_properties = True
     camera.focal_length = 50.0
     camera._require_cpp_component().aspect_ratio = 16.0 / 9.0
 

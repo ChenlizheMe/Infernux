@@ -66,11 +66,109 @@ def _set_target_texture(cpp, value):
     cpp.target_texture = None if value is None else value._native
 
 
+def _is_perspective(comp) -> bool:
+    return int(comp.projection_mode) == 0
+
+
+def _uses_physical_properties(comp) -> bool:
+    return _is_perspective(comp) and bool(comp.use_physical_properties)
+
+
+def _uses_field_of_view(comp) -> bool:
+    return _is_perspective(comp) and not bool(comp.use_physical_properties)
+
+
+def _set_near_clip(cpp, value) -> None:
+    # Inspector/Python wrapper edits are clamped before crossing the native
+    # boundary, so a drag cannot publish an invalid transient clip plane.
+    near = min(max(float(value), 0.001), float(cpp.far_clip) - 0.001)
+    cpp.near_clip = max(near, 0.001)
+
+
+def _set_far_clip(cpp, value) -> None:
+    far = max(float(value), float(cpp.near_clip) + 0.001)
+    cpp.far_clip = min(far, 1_000_000_000.0)
+
+
 # Maximum far-plane distance for gizmo visualization (Unity caps ~1000)
 _FAR_CLIP_VISUAL_CAP = 1000.0
 
 # Gizmo color — Unity uses white for camera gizmos
 _CAMERA_GIZMO_COLOR = (1.0, 1.0, 1.0)
+
+# Unity CameraEditor sensor presets.  Sensor Type is a derived Inspector
+# convenience rather than Camera document state; choosing a preset commits the
+# authoritative sensor_size so Undo and serialization remain exact.
+_SENSOR_PRESET_SIZES = (
+    (4.8, 3.5), (5.79, 4.01), (10.26, 7.49), (12.522, 7.417),
+    (21.95, 9.35), (21.946, 16.002), (24.89, 18.66),
+    (20.726, 15.545), (24.892, 18.669), (20.955, 11.328),
+    (21.946, 18.593), (54.12, 25.59), (52.476, 23.012),
+    (70.41, 52.63),
+)
+
+
+def _render_sensor_type(ctx, comp, label_width) -> None:
+    from Infernux.engine.ui.inspector_components import (
+        _record_builtin_property,
+        _serialized_field_label,
+    )
+    from Infernux.engine.ui.inspector_utils import (
+        has_field_changed,
+        render_serialized_field,
+    )
+
+    prop = type(comp).sensor_type
+    current_type = comp.sensor_type
+    sensor_label = _serialized_field_label("sensor_type", prop.metadata)
+    selected_type = render_serialized_field(
+        ctx, "##camera_sensor_type", sensor_label, prop.metadata,
+        current_type, label_width,
+    )
+    if not has_field_changed(prop.metadata.field_type, current_type, selected_type):
+        return
+    preset_index = int(selected_type)
+    if 0 <= preset_index < len(_SENSOR_PRESET_SIZES):
+        from Infernux.lib import Vector2
+        width, height = _SENSOR_PRESET_SIZES[preset_index]
+        _record_builtin_property(
+            comp, "sensor_size", comp.sensor_size,
+            Vector2(width, height), "Set Camera Sensor Type",
+        )
+
+
+def _render_culling_mask(ctx, comp, label_width) -> None:
+    from Infernux.engine.ui.inspector_components import _record_builtin_property
+    from Infernux.engine.ui.inspector_utils import field_label
+    from Infernux.lib import TagLayerManager
+
+    names = list(TagLayerManager.instance().get_all_layers() or [])
+    names = [str(name).strip() or f"Layer {index}" for index, name in enumerate(names)]
+    names = (names + [f"Layer {i}" for i in range(len(names), 32)])[:32]
+    old_mask = int(comp.culling_mask) & 0xFFFFFFFF
+    selected = sum(1 for i in range(32) if old_mask & (1 << i))
+    label = "Everything" if selected == 32 else ("Nothing" if selected == 0 else f"{selected} Layers")
+    field_label(ctx, "Culling Mask", label_width)
+    if ctx.button(f"{label}##camera_culling_mask"):
+        ctx.open_popup("##camera_culling_mask_popup")
+    if ctx.begin_popup("##camera_culling_mask_popup"):
+        new_mask = old_mask
+        if ctx.button("Everything##camera_culling_everything"):
+            new_mask = 0xFFFFFFFF
+        ctx.same_line()
+        if ctx.button("Nothing##camera_culling_nothing"):
+            new_mask = 0
+        for index, name in enumerate(names):
+            checked = bool(new_mask & (1 << index))
+            updated = ctx.checkbox(f"{name}##camera_layer_{index}", checked)
+            if updated != checked:
+                new_mask ^= 1 << index
+        if new_mask != old_mask:
+            _record_builtin_property(
+                comp, "culling_mask", old_mask, new_mask,
+                "Set Camera Culling Mask",
+            )
+        ctx.end_popup()
 
 
 class Camera(BuiltinComponent):
@@ -97,25 +195,55 @@ class Camera(BuiltinComponent):
     # Visibility callbacks and Python/native value adapters stay outside the catalog.
     projection_mode = CppProperty.from_native("Camera", "projection_mode")
     field_of_view = CppProperty.from_native(
-        "Camera", "field_of_view", visible_when=lambda comp: int(comp.projection_mode) == 0,
+        "Camera", "field_of_view", visible_when=_uses_field_of_view,
+    )
+    use_physical_properties = CppProperty.from_native(
+        "Camera", "use_physical_properties", visible_when=_is_perspective,
+    )
+    iso = CppProperty.from_native(
+        "Camera", "iso", visible_when=_uses_physical_properties,
+    )
+    shutter_speed = CppProperty.from_native(
+        "Camera", "shutter_speed", visible_when=_uses_physical_properties,
+    )
+    aperture = CppProperty.from_native(
+        "Camera", "aperture", visible_when=_uses_physical_properties,
+    )
+    focus_distance = CppProperty.from_native(
+        "Camera", "focus_distance", visible_when=_uses_physical_properties,
+    )
+    blade_count = CppProperty.from_native(
+        "Camera", "blade_count", visible_when=_uses_physical_properties,
+    )
+    curvature = CppProperty.from_native(
+        "Camera", "curvature", visible_when=_uses_physical_properties,
+    )
+    barrel_clipping = CppProperty.from_native(
+        "Camera", "barrel_clipping", visible_when=_uses_physical_properties,
+    )
+    anamorphism = CppProperty.from_native(
+        "Camera", "anamorphism", visible_when=_uses_physical_properties,
     )
     focal_length = CppProperty.from_native(
-        "Camera", "focal_length", visible_when=lambda comp: int(comp.projection_mode) == 2,
+        "Camera", "focal_length", visible_when=_uses_physical_properties,
+    )
+    sensor_type = CppProperty.from_native(
+        "Camera", "sensor_type", visible_when=_uses_physical_properties,
     )
     sensor_size = CppProperty.from_native(
-        "Camera", "sensor_size", visible_when=lambda comp: int(comp.projection_mode) == 2,
+        "Camera", "sensor_size", visible_when=_uses_physical_properties,
     )
     lens_shift = CppProperty.from_native(
-        "Camera", "lens_shift", visible_when=lambda comp: int(comp.projection_mode) == 2,
+        "Camera", "lens_shift", visible_when=_uses_physical_properties,
     )
     gate_fit = CppProperty.from_native(
-        "Camera", "gate_fit", visible_when=lambda comp: int(comp.projection_mode) == 2,
+        "Camera", "gate_fit", visible_when=_uses_physical_properties,
     )
     orthographic_size = CppProperty.from_native(
         "Camera", "orthographic_size", visible_when=lambda comp: int(comp.projection_mode) == 1,
     )
-    near_clip = CppProperty.from_native("Camera", "near_clip")
-    far_clip = CppProperty.from_native("Camera", "far_clip")
+    near_clip = CppProperty.from_native("Camera", "near_clip", native_setter=_set_near_clip)
+    far_clip = CppProperty.from_native("Camera", "far_clip", native_setter=_set_far_clip)
     depth = CppProperty.from_native("Camera", "depth")
     culling_mask = CppProperty.from_native("Camera", "culling_mask")
     clear_flags = CppProperty.from_native("Camera", "clear_flags")
@@ -131,50 +259,23 @@ class Camera(BuiltinComponent):
         get_converter=_wrap_target_texture, native_setter=_set_target_texture,
     )
 
-    _CULLING_MASK_FIELD = frozenset({"culling_mask"})
-
     def render_inspector(self, ctx) -> None:
         """Render the camera with a named, multi-select layer mask.
 
         The serialized value remains Unity-compatible 32-bit bits, but the
         authoring surface never asks users to type a mask integer. Physical
-        projection fields are supplied by the native Camera schema and only
-        appear when the Physical mode is selected.
+        properties follow Unity's Perspective + Physical Camera checkbox and
+        remain hidden for orthographic or ordinary perspective cameras.
         """
-        from Infernux.engine.ui.inspector_components import (
-            render_builtin_via_setters, _record_builtin_property,
-        )
-        from Infernux.engine.ui.inspector_utils import field_label, max_label_w
-        render_builtin_via_setters(ctx, self, type(self), skip_fields=self._CULLING_MASK_FIELD)
+        from Infernux.engine.ui.inspector_components import render_builtin_via_setters
 
-        from Infernux.lib import TagLayerManager
-        names = list(TagLayerManager.instance().get_all_layers() or [])
-        # Empty layer slots are valid authoring state. Keep the popup useful
-        # without inventing a serialized name; the index is the stable label.
-        names = [str(name).strip() or f"Layer {index}" for index, name in enumerate(names)]
-        names = (names + [f"Layer {i}" for i in range(len(names), 32)])[:32]
-        old_mask = int(self.culling_mask) & 0xFFFFFFFF
-        selected = sum(1 for i in range(32) if old_mask & (1 << i))
-        label = "Everything" if selected == 32 else ("Nothing" if selected == 0 else f"{selected} Layers")
-        lw = max_label_w(ctx, ["Culling Mask"])
-        field_label(ctx, "Culling Mask", lw)
-        if ctx.button(f"{label}##camera_culling_mask"):
-            ctx.open_popup("##camera_culling_mask_popup")
-        if ctx.begin_popup("##camera_culling_mask_popup"):
-            new_mask = old_mask
-            if ctx.button("Everything##camera_culling_everything"):
-                new_mask = 0xFFFFFFFF
-            ctx.same_line()
-            if ctx.button("Nothing##camera_culling_nothing"):
-                new_mask = 0
-            for index, name in enumerate(names):
-                checked = bool(new_mask & (1 << index))
-                updated = ctx.checkbox(f"{name}##camera_layer_{index}", checked)
-                if updated != checked:
-                    new_mask ^= 1 << index
-            if new_mask != old_mask:
-                _record_builtin_property(self, "culling_mask", old_mask, new_mask, "Set Camera Culling Mask")
-            ctx.end_popup()
+        render_builtin_via_setters(
+            ctx, self, type(self),
+            custom_fields={
+                "sensor_type": _render_sensor_type,
+                "culling_mask": _render_culling_mask,
+            },
+        )
 
     # ------------------------------------------------------------------
     # Read-only properties (delegates)

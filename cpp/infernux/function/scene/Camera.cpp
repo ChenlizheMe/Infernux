@@ -4,6 +4,7 @@
 #include "GameObject.h"
 #include "Scene.h"
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <core/log/InxLog.h>
 #include <function/renderer/rhi/RhiRenderTexture.h>
@@ -21,7 +22,7 @@ namespace
 void RequireProjectionMode(int mode)
 {
     if (mode < static_cast<int>(CameraProjection::Perspective) ||
-        mode > static_cast<int>(CameraProjection::Physical))
+        mode > static_cast<int>(CameraProjection::Orthographic))
         throw std::invalid_argument("Camera.projectionMode is unsupported");
 }
 
@@ -48,6 +49,50 @@ void RequirePositive(float value, const char *field)
 {
     if (!std::isfinite(value) || value <= 0.0f)
         throw std::invalid_argument(std::string("Camera.") + field + " must be finite and positive");
+}
+
+void RequireFiniteRange(float value, float minimum, float maximum, const char *field)
+{
+    if (!std::isfinite(value) || value < minimum || value > maximum)
+        throw std::invalid_argument(std::string("Camera.") + field + " is outside its supported range");
+}
+
+constexpr float MinAperture = 0.7f;
+constexpr float MaxAperture = 32.0f;
+constexpr int MinBladeCount = 3;
+constexpr int MaxBladeCount = 11;
+
+struct SensorPreset
+{
+    CameraSensorType type;
+    glm::vec2 size;
+};
+
+const std::array<SensorPreset, 14> SensorPresets{{
+    {CameraSensorType::Film8mm, {4.8f, 3.5f}},
+    {CameraSensorType::Super8mm, {5.79f, 4.01f}},
+    {CameraSensorType::Film16mm, {10.26f, 7.49f}},
+    {CameraSensorType::Super16mm, {12.522f, 7.417f}},
+    {CameraSensorType::Film35mm2Perf, {21.95f, 9.35f}},
+    {CameraSensorType::Film35mmAcademy, {21.946f, 16.002f}},
+    {CameraSensorType::Super35, {24.89f, 18.66f}},
+    {CameraSensorType::Film35mmTVProjection, {20.726f, 15.545f}},
+    {CameraSensorType::Film35mmFullAperture, {24.892f, 18.669f}},
+    {CameraSensorType::Film35mm185Projection, {20.955f, 11.328f}},
+    {CameraSensorType::Film35mmAnamorphic, {21.946f, 18.593f}},
+    {CameraSensorType::Film65mmAlexa, {54.12f, 25.59f}},
+    {CameraSensorType::Film70mm, {52.476f, 23.012f}},
+    {CameraSensorType::Film70mmImax, {70.41f, 52.63f}},
+}};
+
+float FocalLengthToVerticalFieldOfView(float focalLength, float sensorHeight)
+{
+    return glm::degrees(2.0f * std::atan(sensorHeight / (2.0f * focalLength)));
+}
+
+float VerticalFieldOfViewToFocalLength(float fieldOfView, float sensorHeight)
+{
+    return sensorHeight / (2.0f * std::tan(glm::radians(fieldOfView) * 0.5f));
 }
 
 void RequireClipPlanes(float nearClip, float farClip)
@@ -91,10 +136,30 @@ SemanticTypeDescriptor DescribeCamera()
                               {"members", std::move(members)},
                               {"labels", std::move(labels)}};
     };
-    enumeration("projection_mode", "projectionMode", "CameraProjection", {"Perspective", "Orthographic", "Physical"},
-                {"camera.projection.perspective", "camera.projection.orthographic", "camera.projection.physical"});
+    enumeration("projection_mode", "projectionMode", "CameraProjection", {"Perspective", "Orthographic"},
+                {"camera.projection.perspective", "camera.projection.orthographic"});
     add("field_of_view", "fov", "FLOAT", 60.0)["range"] = {1.0, 179.0};
+    add("use_physical_properties", "usePhysicalProperties", "BOOL", false);
+    add("iso", "iso", "INT", 200);
+    add("shutter_speed", "shutterSpeed", "FLOAT", 0.005);
+    add("aperture", "aperture", "FLOAT", 16.0)["range"] = {MinAperture, MaxAperture};
+    add("focus_distance", "focusDistance", "FLOAT", 10.0);
+    add("blade_count", "bladeCount", "INT", 5)["range"] = {MinBladeCount, MaxBladeCount};
+    add("curvature", "curvature", "VEC2", {2.0, 11.0});
+    add("barrel_clipping", "barrelClipping", "FLOAT", 0.25)["range"] = {0.0, 1.0};
+    add("anamorphism", "anamorphism", "FLOAT", 0.0)["range"] = {-1.0, 1.0};
     add("focal_length", "focalLength", "FLOAT", 50.0)["range"] = {1.0, 1000.0};
+    enumeration("sensor_type", "sensorType", "CameraSensorType",
+                {"Film8mm", "Super8mm", "Film16mm", "Super16mm", "Film35mm2Perf", "Film35mmAcademy",
+                 "Super35", "Film35mmTVProjection", "Film35mmFullAperture", "Film35mm185Projection",
+                 "Film35mmAnamorphic", "Film65mmAlexa", "Film70mm", "Film70mmImax", "Custom"},
+                {"8mm", "Super 8mm", "16mm", "Super 16mm", "35mm 2-perf", "35mm Academy", "Super-35",
+                 "35mm TV Projection", "35mm Full Aperture", "35mm 1.85 Projection", "35mm Anamorphic",
+                 "65mm ALEXA", "70mm", "70mm IMAX", "Custom"});
+    type.fields.back().attributes["serialized"] = false;
+    type.fields.back().attributes["setter_owns_document_shape"] = true;
+    type.fields.back().attributes["default"]["name"] = "Custom";
+    type.fields.back().readOnly = true;
     add("sensor_size", "sensorSize", "VEC2", {36.0, 24.0});
     add("lens_shift", "lensShift", "VEC2", {0.0, 0.0});
     enumeration("gate_fit", "gateFit", "PhysicalGateFit", {"None", "Vertical", "Horizontal", "Fill", "Overscan"},
@@ -105,8 +170,13 @@ SemanticTypeDescriptor DescribeCamera()
     type.fields.back().attributes["default"]["name"] = "Horizontal";
     add("aspect_ratio", "aspectRatio", "FLOAT", 16.0 / 9.0);
     add("orthographic_size", "orthoSize", "FLOAT", 5.0);
-    add("near_clip", "nearClip", "FLOAT", 0.01)["header"] = "camera.section.clipping";
-    add("far_clip", "farClip", "FLOAT", 5000.0);
+    auto &nearClip = add("near_clip", "nearClip", "FLOAT", 0.01);
+    nearClip["header"] = "camera.section.clipping";
+    nearClip["range"] = {0.001, 1000000.0};
+    nearClip["setter_owns_document_shape"] = true;
+    auto &farClip = add("far_clip", "farClip", "FLOAT", 5000.0);
+    farClip["range"] = {0.002, 1000000000.0};
+    farClip["setter_owns_document_shape"] = true;
     add("depth", "depth", "FLOAT", 0.0);
     add("culling_mask", "cullingMask", "INT", 0xffffffffu)["range"] = {0u, 0xffffffffu};
     enumeration(
@@ -117,7 +187,7 @@ SemanticTypeDescriptor DescribeCamera()
     add("dithering", "dithering", "BOOL", false);
     add("stop_nans", "stopNaNs", "BOOL", false)["header"] = "camera.section.output";
     auto &target = add("target_texture", "targetTextureGuid", "ASSET",
-                       {{"$type", "asset_ref"}, {"asset_type", "RenderTexture"}, {"guid", ""}, {"path_hint", ""}});
+                       {{"$type", "asset_ref"}, {"asset_type", "RenderTexture"}, {"guid", ""}});
     target["asset_type"] = "RenderTexture";
     target["nullable"] = true;
     target["setter_owns_document_shape"] = true;
@@ -166,14 +236,101 @@ void Camera::SetFieldOfView(float fov)
 {
     RequireFieldOfView(fov);
     m_fov = fov;
+    if (m_usePhysicalProperties)
+        m_focalLength = VerticalFieldOfViewToFocalLength(fov, m_sensorSize.y);
     m_projectionDirty = true;
+}
+
+void Camera::SetUsePhysicalProperties(bool enabled)
+{
+    if (m_usePhysicalProperties == enabled)
+        return;
+    m_usePhysicalProperties = enabled;
+    if (enabled)
+        m_fov = FocalLengthToVerticalFieldOfView(m_focalLength, m_sensorSize.y);
+    m_projectionDirty = true;
+}
+
+void Camera::SetIso(int value)
+{
+    if (value <= 0)
+        throw std::invalid_argument("Camera.iso must be positive");
+    m_iso = value;
+}
+
+void Camera::SetShutterSpeed(float value)
+{
+    RequirePositive(value, "shutterSpeed");
+    m_shutterSpeed = value;
+}
+
+void Camera::SetAperture(float value)
+{
+    RequireFiniteRange(value, MinAperture, MaxAperture, "aperture");
+    m_aperture = value;
+}
+
+void Camera::SetFocusDistance(float value)
+{
+    RequirePositive(value, "focusDistance");
+    m_focusDistance = value;
+}
+
+void Camera::SetBladeCount(int value)
+{
+    if (value < MinBladeCount || value > MaxBladeCount)
+        throw std::invalid_argument("Camera.bladeCount must be in [3, 11]");
+    m_bladeCount = value;
+}
+
+void Camera::SetCurvature(const glm::vec2 &value)
+{
+    RequireFiniteRange(value.x, MinAperture, MaxAperture, "curvature.x");
+    RequireFiniteRange(value.y, MinAperture, MaxAperture, "curvature.y");
+    if (value.x > value.y)
+        throw std::invalid_argument("Camera.curvature requires x <= y");
+    m_curvature = value;
+}
+
+void Camera::SetBarrelClipping(float value)
+{
+    RequireFiniteRange(value, 0.0f, 1.0f, "barrelClipping");
+    m_barrelClipping = value;
+}
+
+void Camera::SetAnamorphism(float value)
+{
+    RequireFiniteRange(value, -1.0f, 1.0f, "anamorphism");
+    m_anamorphism = value;
 }
 
 void Camera::SetFocalLength(float value)
 {
     RequirePositive(value, "focalLength");
     m_focalLength = value;
+    if (m_usePhysicalProperties)
+        m_fov = FocalLengthToVerticalFieldOfView(value, m_sensorSize.y);
     m_projectionDirty = true;
+}
+
+CameraSensorType Camera::GetSensorType() const
+{
+    for (const auto &preset : SensorPresets)
+        if (std::abs(m_sensorSize.x - preset.size.x) <= 0.0005f &&
+            std::abs(m_sensorSize.y - preset.size.y) <= 0.0005f)
+            return preset.type;
+    return CameraSensorType::Custom;
+}
+
+void Camera::SetSensorType(CameraSensorType value)
+{
+    if (value == CameraSensorType::Custom)
+        return;
+    const auto preset = std::find_if(SensorPresets.begin(), SensorPresets.end(),
+                                     [value](const SensorPreset &candidate) { return candidate.type == value; });
+    if (preset == SensorPresets.end())
+        throw std::invalid_argument("Camera.sensorType is unsupported");
+    SetSensorSize(preset->size);
 }
 
 void Camera::SetSensorSize(const glm::vec2 &value)
@@ -181,6 +338,8 @@ void Camera::SetSensorSize(const glm::vec2 &value)
     RequirePositive(value.x, "sensorSize.x");
     RequirePositive(value.y, "sensorSize.y");
     m_sensorSize = value;
+    if (m_usePhysicalProperties)
+        m_fov = FocalLengthToVerticalFieldOfView(m_focalLength, value.y);
     m_projectionDirty = true;
 }
 
@@ -245,7 +404,16 @@ nlohmann::json Camera::SerializeDocument() const
 
     j["projectionMode"] = static_cast<int>(m_projectionMode);
     j["fov"] = m_fov;
+    j["usePhysicalProperties"] = m_usePhysicalProperties;
+    j["iso"] = m_iso;
+    j["shutterSpeed"] = m_shutterSpeed;
+    j["aperture"] = m_aperture;
+    j["focusDistance"] = m_focusDistance;
     j["focalLength"] = m_focalLength;
+    j["bladeCount"] = m_bladeCount;
+    j["curvature"] = {m_curvature.x, m_curvature.y};
+    j["barrelClipping"] = m_barrelClipping;
+    j["anamorphism"] = m_anamorphism;
     j["sensorSize"] = {m_sensorSize.x, m_sensorSize.y};
     j["lensShift"] = {m_lensShift.x, m_lensShift.y};
     j["gateFit"] = static_cast<int>(m_gateFit);
@@ -269,11 +437,22 @@ void Camera::ValidateSerializedDocument(const nlohmann::json &j)
     using namespace component_document_validation;
     ValidateComponentDocument(j, "Camera",
                               {"projectionMode", "fov", "aspectRatio", "orthoSize", "nearClip", "farClip", "depth",
-                               "cullingMask", "clearFlags", "backgroundColor"},
-                              {"focalLength", "sensorSize", "lensShift", "gateFit", "dithering", "stopNaNs", "targetTextureGuid"});
+                               "cullingMask", "clearFlags", "backgroundColor", "usePhysicalProperties", "iso",
+                               "shutterSpeed", "aperture", "focusDistance", "focalLength", "bladeCount", "curvature",
+                               "barrelClipping", "anamorphism", "sensorSize", "lensShift", "gateFit"},
+                              {"dithering", "stopNaNs", "targetTextureGuid"});
     const int projectionMode = RequireInteger(j, "projectionMode", "Camera");
     const float fov = RequireFiniteFloat(j, "fov", "Camera");
-    const float focalLength = j.contains("focalLength") ? RequireFiniteFloat(j, "focalLength", "Camera") : 50.0f;
+    RequireBoolean(j, "usePhysicalProperties", "Camera");
+    const int iso = RequireInteger(j, "iso", "Camera");
+    const float shutterSpeed = RequireFiniteFloat(j, "shutterSpeed", "Camera");
+    const float aperture = RequireFiniteFloat(j, "aperture", "Camera");
+    const float focusDistance = RequireFiniteFloat(j, "focusDistance", "Camera");
+    const float focalLength = RequireFiniteFloat(j, "focalLength", "Camera");
+    const int bladeCount = RequireInteger(j, "bladeCount", "Camera");
+    RequireFiniteVector(j, "curvature", 2, "Camera");
+    const float barrelClipping = RequireFiniteFloat(j, "barrelClipping", "Camera");
+    const float anamorphism = RequireFiniteFloat(j, "anamorphism", "Camera");
     const float aspectRatio = RequireFiniteFloat(j, "aspectRatio", "Camera");
     const float orthoSize = RequireFiniteFloat(j, "orthoSize", "Camera");
     const float nearClip = RequireFiniteFloat(j, "nearClip", "Camera");
@@ -291,16 +470,26 @@ void Camera::ValidateSerializedDocument(const nlohmann::json &j)
 
     RequireProjectionMode(projectionMode);
     RequireFieldOfView(fov);
+    if (iso <= 0)
+        throw std::invalid_argument("Camera.iso must be positive");
+    RequirePositive(shutterSpeed, "shutterSpeed");
+    RequireFiniteRange(aperture, MinAperture, MaxAperture, "aperture");
+    RequirePositive(focusDistance, "focusDistance");
     RequirePositive(focalLength, "focalLength");
-    if (j.contains("sensorSize")) {
-        RequireFiniteVector(j, "sensorSize", 2, "Camera");
-        RequirePositive(j["sensorSize"][0].get<float>(), "sensorSize.x");
-        RequirePositive(j["sensorSize"][1].get<float>(), "sensorSize.y");
-    }
-    if (j.contains("lensShift"))
-        RequireFiniteVector(j, "lensShift", 2, "Camera");
-    if (j.contains("gateFit"))
-        RequireGateFit(RequireInteger(j, "gateFit", "Camera"));
+    if (bladeCount < MinBladeCount || bladeCount > MaxBladeCount)
+        throw std::invalid_argument("Camera.bladeCount must be in [3, 11]");
+    const auto curvature = glm::vec2(j["curvature"][0].get<float>(), j["curvature"][1].get<float>());
+    RequireFiniteRange(curvature.x, MinAperture, MaxAperture, "curvature.x");
+    RequireFiniteRange(curvature.y, MinAperture, MaxAperture, "curvature.y");
+    if (curvature.x > curvature.y)
+        throw std::invalid_argument("Camera.curvature requires x <= y");
+    RequireFiniteRange(barrelClipping, 0.0f, 1.0f, "barrelClipping");
+    RequireFiniteRange(anamorphism, -1.0f, 1.0f, "anamorphism");
+    RequireFiniteVector(j, "sensorSize", 2, "Camera");
+    RequirePositive(j["sensorSize"][0].get<float>(), "sensorSize.x");
+    RequirePositive(j["sensorSize"][1].get<float>(), "sensorSize.y");
+    RequireFiniteVector(j, "lensShift", 2, "Camera");
+    RequireGateFit(RequireInteger(j, "gateFit", "Camera"));
     RequirePositive(orthoSize, "orthoSize");
     if (aspectRatio < 0.01f)
         throw std::invalid_argument("Camera.aspectRatio must be at least 0.01");
@@ -319,12 +508,19 @@ bool Camera::DeserializeDocument(const nlohmann::json &j)
 
         m_projectionMode = static_cast<CameraProjection>(j["projectionMode"].get<int>());
         m_fov = j["fov"].get<float>();
-        m_focalLength = j.value("focalLength", 50.0f);
-        if (j.contains("sensorSize"))
-            m_sensorSize = glm::vec2(j["sensorSize"][0].get<float>(), j["sensorSize"][1].get<float>());
-        if (j.contains("lensShift"))
-            m_lensShift = glm::vec2(j["lensShift"][0].get<float>(), j["lensShift"][1].get<float>());
-        m_gateFit = static_cast<PhysicalGateFit>(j.value("gateFit", static_cast<int>(PhysicalGateFit::Horizontal)));
+        m_usePhysicalProperties = j["usePhysicalProperties"].get<bool>();
+        m_iso = j["iso"].get<int>();
+        m_shutterSpeed = j["shutterSpeed"].get<float>();
+        m_aperture = j["aperture"].get<float>();
+        m_focusDistance = j["focusDistance"].get<float>();
+        m_focalLength = j["focalLength"].get<float>();
+        m_bladeCount = j["bladeCount"].get<int>();
+        m_curvature = glm::vec2(j["curvature"][0].get<float>(), j["curvature"][1].get<float>());
+        m_barrelClipping = j["barrelClipping"].get<float>();
+        m_anamorphism = j["anamorphism"].get<float>();
+        m_sensorSize = glm::vec2(j["sensorSize"][0].get<float>(), j["sensorSize"][1].get<float>());
+        m_lensShift = glm::vec2(j["lensShift"][0].get<float>(), j["lensShift"][1].get<float>());
+        m_gateFit = static_cast<PhysicalGateFit>(j["gateFit"].get<int>());
         m_aspectRatio = j["aspectRatio"].get<float>();
         m_orthoSize = j["orthoSize"].get<float>();
         m_nearClip = j["nearClip"].get<float>();
@@ -430,7 +626,7 @@ void Camera::UpdateProjectionMatrix() const
 glm::mat4 Camera::BuildProjectionMatrix(float aspect) const
 {
     glm::mat4 projection;
-    if (m_projectionMode == CameraProjection::Perspective) {
+    if (m_projectionMode == CameraProjection::Perspective && !m_usePhysicalProperties) {
         float fovRad = glm::radians(m_fov);
         projection = glm::perspective(fovRad, aspect, m_nearClip, m_farClip);
     } else if (m_projectionMode == CameraProjection::Orthographic) {
@@ -665,7 +861,16 @@ std::unique_ptr<Component> Camera::Clone() const
     clone->m_executionOrder = m_executionOrder;
     clone->m_projectionMode = m_projectionMode;
     clone->m_fov = m_fov;
+    clone->m_usePhysicalProperties = m_usePhysicalProperties;
+    clone->m_iso = m_iso;
+    clone->m_shutterSpeed = m_shutterSpeed;
+    clone->m_aperture = m_aperture;
+    clone->m_focusDistance = m_focusDistance;
     clone->m_focalLength = m_focalLength;
+    clone->m_bladeCount = m_bladeCount;
+    clone->m_curvature = m_curvature;
+    clone->m_barrelClipping = m_barrelClipping;
+    clone->m_anamorphism = m_anamorphism;
     clone->m_sensorSize = m_sensorSize;
     clone->m_lensShift = m_lensShift;
     clone->m_gateFit = m_gateFit;

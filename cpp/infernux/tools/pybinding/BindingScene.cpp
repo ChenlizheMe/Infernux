@@ -1803,7 +1803,6 @@ void RegisterSceneBindings(py::module_ &m)
     py::enum_<CameraProjection>(m, "CameraProjection")
         .value("Perspective", CameraProjection::Perspective)
         .value("Orthographic", CameraProjection::Orthographic)
-        .value("Physical", CameraProjection::Physical)
         .export_values();
 
     py::enum_<PhysicalGateFit>(m, "PhysicalGateFit")
@@ -1815,6 +1814,24 @@ void RegisterSceneBindings(py::module_ &m)
         .value("Horizontal", PhysicalGateFit::Horizontal)
         .value("Fill", PhysicalGateFit::Fill)
         .value("Overscan", PhysicalGateFit::Overscan)
+        .export_values();
+
+    py::enum_<CameraSensorType>(m, "CameraSensorType")
+        .value("Film8mm", CameraSensorType::Film8mm)
+        .value("Super8mm", CameraSensorType::Super8mm)
+        .value("Film16mm", CameraSensorType::Film16mm)
+        .value("Super16mm", CameraSensorType::Super16mm)
+        .value("Film35mm2Perf", CameraSensorType::Film35mm2Perf)
+        .value("Film35mmAcademy", CameraSensorType::Film35mmAcademy)
+        .value("Super35", CameraSensorType::Super35)
+        .value("Film35mmTVProjection", CameraSensorType::Film35mmTVProjection)
+        .value("Film35mmFullAperture", CameraSensorType::Film35mmFullAperture)
+        .value("Film35mm185Projection", CameraSensorType::Film35mm185Projection)
+        .value("Film35mmAnamorphic", CameraSensorType::Film35mmAnamorphic)
+        .value("Film65mmAlexa", CameraSensorType::Film65mmAlexa)
+        .value("Film70mm", CameraSensorType::Film70mm)
+        .value("Film70mmImax", CameraSensorType::Film70mmImax)
+        .value("Custom", CameraSensorType::Custom)
         .export_values();
 
     // ========================================================================
@@ -1841,8 +1858,27 @@ void RegisterSceneBindings(py::module_ &m)
         // Perspective settings
         .def_property("field_of_view", &Camera::GetFieldOfView, &Camera::SetFieldOfView,
                       "Field of view in degrees (Perspective mode)")
+        .def_property("use_physical_properties", &Camera::GetUsePhysicalProperties, &Camera::SetUsePhysicalProperties,
+                      "Use physical lens and sensor properties for perspective projection")
+        .def_property("iso", &Camera::GetIso, &Camera::SetIso, "Physical camera sensor sensitivity")
+        .def_property("shutter_speed", &Camera::GetShutterSpeed, &Camera::SetShutterSpeed,
+                      "Physical camera exposure time in seconds")
+        .def_property("aperture", &Camera::GetAperture, &Camera::SetAperture,
+                      "Physical camera aperture in f-stops")
+        .def_property("focus_distance", &Camera::GetFocusDistance, &Camera::SetFocusDistance,
+                      "Physical camera focus-plane distance")
+        .def_property("blade_count", &Camera::GetBladeCount, &Camera::SetBladeCount,
+                      "Physical camera diaphragm blade count")
+        .def_property("curvature", &Camera::GetCurvature, &Camera::SetCurvature,
+                      "Aperture range mapped to diaphragm blade curvature")
+        .def_property("barrel_clipping", &Camera::GetBarrelClipping, &Camera::SetBarrelClipping,
+                      "Optical-vignetting cat-eye strength")
+        .def_property("anamorphism", &Camera::GetAnamorphism, &Camera::SetAnamorphism,
+                      "Physical camera sensor stretch")
         .def_property("focal_length", &Camera::GetFocalLength, &Camera::SetFocalLength,
                       "Physical camera focal length in millimetres")
+        .def_property("sensor_type", &Camera::GetSensorType, &Camera::SetSensorType,
+                      "Derived Unity sensor-size preset; Custom leaves the authored size unchanged")
         .def_property("sensor_size", &Camera::GetSensorSize, &Camera::SetSensorSize,
                       "Physical camera sensor size in millimetres (width, height)")
         .def_property("lens_shift", &Camera::GetLensShift, &Camera::SetLensShift,

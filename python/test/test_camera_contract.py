@@ -1,5 +1,6 @@
 """Camera authoring writes must preserve a valid, serializable native state."""
 
+import math
 import pytest
 
 from Infernux import lib
@@ -67,11 +68,60 @@ def test_document_clip_update_is_atomic_and_depth_invalidates_order(camera, scen
 def test_wrapper_atomic_clip_update_keeps_its_native_binding_after_rejection(scene):
     camera = scene.create_game_object("WrapperClip").add_component("Camera")
     camera.set_clip_planes(6000.0, 10000.0)
-    with pytest.raises(ValueError):
-        camera.near_clip = 10000.0
-    assert camera.near_clip == 6000.0
+    camera.near_clip = 12000.0
+    assert camera.near_clip == pytest.approx(9999.999)
+    camera.far_clip = -10.0
+    assert camera.far_clip == pytest.approx(10000.0)
     camera.set_clip_planes(1.0, 50.0)
     assert (camera.near_clip, camera.far_clip) == (1.0, 50.0)
+
+
+def test_physical_camera_matches_unity_property_model_and_sensor_presets(scene):
+    from Infernux.components.builtin.camera import Camera
+
+    camera = scene.create_game_object("UnityPhysicalCamera").add_component("Camera")
+    assert not hasattr(lib.CameraProjection, "Physical")
+    assert camera.projection_mode == lib.CameraProjection.Perspective
+    assert camera.use_physical_properties is False
+    assert Camera.field_of_view.metadata.visible_when(camera) is True
+    camera.use_physical_properties = True
+    assert Camera.field_of_view.metadata.visible_when(camera) is False
+    assert Camera.focal_length.metadata.visible_when(camera) is True
+    assert camera.iso == 200
+    assert camera.shutter_speed == pytest.approx(0.005)
+    assert camera.aperture == pytest.approx(16.0)
+    assert camera.focus_distance == pytest.approx(10.0)
+    assert camera.blade_count == 5
+    assert tuple(camera.curvature) == pytest.approx((2.0, 11.0))
+    assert camera.barrel_clipping == pytest.approx(0.25)
+    assert camera.anamorphism == pytest.approx(0.0)
+
+    camera._require_cpp_component().sensor_type = lib.CameraSensorType.Film70mmImax
+    assert tuple(camera.sensor_size) == pytest.approx((70.41, 52.63))
+    assert camera.sensor_type == lib.CameraSensorType.Film70mmImax
+    camera.sensor_size = lib.Vector2(36.0, 24.0)
+    assert camera.sensor_type == lib.CameraSensorType.Custom
+    document = camera.serialize_document()
+    assert "sensorType" not in document
+    assert document["sensorSize"] == pytest.approx([36.0, 24.0])
+    with pytest.raises(AttributeError, match="read-only"):
+        camera.sensor_type = lib.CameraSensorType.Film8mm
+
+
+def test_physical_camera_projection_stays_finite_and_continuous_while_dragging(scene):
+    camera = scene.create_game_object("PhysicalCameraDrag").add_component("Camera")
+    camera.use_physical_properties = True
+    camera.focal_length = 35.0
+    previous = camera.projection_matrix.copy()
+    structure_version = scene.structure_version
+    for focal_length in [35.25 + index * 0.25 for index in range(120)]:
+        camera.focal_length = focal_length
+        current = camera.projection_matrix.copy()
+        assert current.shape == (4, 4)
+        assert all(math.isfinite(float(value)) for value in current.flat)
+        assert abs(float(current[1, 1] - previous[1, 1])) < 0.05
+        previous = current
+    assert scene.structure_version == structure_version
 
 
 def test_wrapper_culling_mask_writes_the_native_authoritative_field(scene):
@@ -127,7 +177,12 @@ def test_camera_inspector_uses_named_layer_popup_instead_of_numeric_mask(scene, 
             return None
 
     ctx = _Context()
-    monkeypatch.setattr(inspector_components, "render_builtin_via_setters", lambda *args, **kwargs: None)
+    def _render_custom_fields(_ctx, comp, _wrapper_cls, **kwargs):
+        kwargs["custom_fields"]["culling_mask"](_ctx, comp, 0.0)
+
+    monkeypatch.setattr(
+        inspector_components, "render_builtin_via_setters", _render_custom_fields,
+    )
     monkeypatch.setattr(inspector_utils, "field_label", lambda *args, **kwargs: None)
     monkeypatch.setattr(inspector_utils, "max_label_w", lambda *args, **kwargs: 0.0)
     monkeypatch.setattr(lib, "TagLayerManager", _LayerManager)
@@ -175,10 +230,10 @@ def test_removing_preferred_camera_clears_borrowed_scene_reference(engine, scene
     assert expected in engine.renderer_frame_snapshot['game_camera_ids']
 
 
-def test_multi_camera_edit_preflights_all_targets_before_creating_commands(scene, monkeypatch):
+def test_multi_camera_clip_edit_clamps_each_target_before_native_publication(scene):
     from Infernux.components.builtin.camera import Camera
     from Infernux.engine.ui.inspector_components import _apply_multi_builtin_change
-    from Infernux.engine.undo import SetPropertyCommand, UndoManager
+    from Infernux.engine.undo import UndoManager
 
     first = scene.create_game_object("FirstCamera").add_component("Camera")
     second = scene.create_game_object("SecondCamera").add_component("Camera")
@@ -188,17 +243,14 @@ def test_multi_camera_edit_preflights_all_targets_before_creating_commands(scene
     previous = UndoManager._instance
     manager = UndoManager()
     try:
-        def forbid_command(*args, **kwargs):
-            pytest.fail("a rejected multi-target edit must not create any write command")
-
-        with monkeypatch.context() as patch:
-            patch.setattr(SetPropertyCommand, "__init__", forbid_command)
-            with pytest.raises(RuntimeError, match="Camera clip planes"):
-                _apply_multi_builtin_change(
-                    (first, second), ("far_clip", "far_clip"), Camera.far_clip.metadata, 5.0,
-                )
+        _apply_multi_builtin_change(
+            (first, second), ("far_clip", "far_clip"), Camera.far_clip.metadata, 5.0,
+        )
+        assert first.far_clip == pytest.approx(5.0)
+        assert second.far_clip == pytest.approx(10.001)
+        assert len(manager.action_journal.applied_entries()) == 1
+        manager.undo()
         assert (first.serialize_document(), second.serialize_document()) == before
-        assert not manager.action_journal.applied_entries()
         _apply_multi_builtin_change(
             (first, second), ("far_clip", "far_clip"), Camera.far_clip.metadata, 50.0,
         )

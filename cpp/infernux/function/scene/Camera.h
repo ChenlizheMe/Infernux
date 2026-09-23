@@ -20,8 +20,7 @@ class RenderTexture;
 enum class CameraProjection
 {
     Perspective,
-    Orthographic,
-    Physical
+    Orthographic
 };
 
 /** Physical camera film/resolution gate matching Unity's Gate Fit modes. */
@@ -32,6 +31,26 @@ enum class PhysicalGateFit
     Horizontal,
     Fill,
     Overscan
+};
+
+/** Unity Camera Inspector sensor-size presets. Custom is derived, not serialized. */
+enum class CameraSensorType
+{
+    Film8mm,
+    Super8mm,
+    Film16mm,
+    Super16mm,
+    Film35mm2Perf,
+    Film35mmAcademy,
+    Super35,
+    Film35mmTVProjection,
+    Film35mmFullAperture,
+    Film35mm185Projection,
+    Film35mmAnamorphic,
+    Film65mmAlexa,
+    Film70mm,
+    Film70mmImax,
+    Custom
 };
 
 /**
@@ -91,8 +110,28 @@ class Camera : public Component
     void SetFieldOfView(float fov);
 
     // Physical camera settings (Unity-compatible photographic model).
+    [[nodiscard]] bool GetUsePhysicalProperties() const { return m_usePhysicalProperties; }
+    void SetUsePhysicalProperties(bool enabled);
+    [[nodiscard]] int GetIso() const { return m_iso; }
+    void SetIso(int value);
+    [[nodiscard]] float GetShutterSpeed() const { return m_shutterSpeed; }
+    void SetShutterSpeed(float value);
+    [[nodiscard]] float GetAperture() const { return m_aperture; }
+    void SetAperture(float value);
+    [[nodiscard]] float GetFocusDistance() const { return m_focusDistance; }
+    void SetFocusDistance(float value);
+    [[nodiscard]] int GetBladeCount() const { return m_bladeCount; }
+    void SetBladeCount(int value);
+    [[nodiscard]] glm::vec2 GetCurvature() const { return m_curvature; }
+    void SetCurvature(const glm::vec2 &value);
+    [[nodiscard]] float GetBarrelClipping() const { return m_barrelClipping; }
+    void SetBarrelClipping(float value);
+    [[nodiscard]] float GetAnamorphism() const { return m_anamorphism; }
+    void SetAnamorphism(float value);
     [[nodiscard]] float GetFocalLength() const { return m_focalLength; }
     void SetFocalLength(float value);
+    [[nodiscard]] CameraSensorType GetSensorType() const;
+    void SetSensorType(CameraSensorType value);
     [[nodiscard]] glm::vec2 GetSensorSize() const { return m_sensorSize; }
     void SetSensorSize(const glm::vec2 &value);
     [[nodiscard]] glm::vec2 GetLensShift() const { return m_lensShift; }
@@ -310,7 +349,16 @@ class Camera : public Component
     // Perspective
     float m_fov = 60.0f; // Field of view in degrees
     float m_aspectRatio = 16.0f / 9.0f;
+    bool m_usePhysicalProperties = false;
+    int m_iso = 200;
+    float m_shutterSpeed = 0.005f; // seconds (1/200)
+    float m_aperture = 16.0f; // f-stop
+    float m_focusDistance = 10.0f;
     float m_focalLength = 50.0f; // millimetres
+    int m_bladeCount = 5;
+    glm::vec2 m_curvature{2.0f, 11.0f};
+    float m_barrelClipping = 0.25f;
+    float m_anamorphism = 0.0f;
     glm::vec2 m_sensorSize{36.0f, 24.0f}; // millimetres (width, height)
     glm::vec2 m_lensShift{0.0f, 0.0f}; // normalized sensor offsets
     PhysicalGateFit m_gateFit = PhysicalGateFit::Horizontal;

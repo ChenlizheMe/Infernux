@@ -246,7 +246,6 @@ class SampleCount(IntEnum):
 class CameraProjection(IntEnum):
     Perspective: int
     Orthographic: int
-    Physical: int
 
 
 class PhysicalGateFit(IntEnum):
@@ -255,6 +254,24 @@ class PhysicalGateFit(IntEnum):
     Horizontal: int
     Fill: int
     Overscan: int
+
+
+class CameraSensorType(IntEnum):
+    Film8mm: int
+    Super8mm: int
+    Film16mm: int
+    Super16mm: int
+    Film35mm2Perf: int
+    Film35mmAcademy: int
+    Super35: int
+    Film35mmTVProjection: int
+    Film35mmFullAperture: int
+    Film35mm185Projection: int
+    Film35mmAnamorphic: int
+    Film65mmAlexa: int
+    Film70mm: int
+    Film70mmImax: int
+    Custom: int
 
 
 class CameraClearFlags(IntEnum):
@@ -1129,6 +1146,19 @@ class Camera(Component):
     projection_mode: CameraProjection
     gate_fit: PhysicalGateFit
     field_of_view: float
+    use_physical_properties: bool
+    iso: int
+    shutter_speed: float
+    aperture: float
+    focus_distance: float
+    blade_count: int
+    curvature: Vector2
+    barrel_clipping: float
+    anamorphism: float
+    focal_length: float
+    sensor_type: CameraSensorType
+    sensor_size: Vector2
+    lens_shift: Vector2
     aspect_ratio: float
     orthographic_size: float
     near_clip: float
