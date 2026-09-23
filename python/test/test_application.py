@@ -146,18 +146,16 @@ def test_asset_path_resolves_editor_asset_and_rejects_outside_file(tmp_path):
     asset = tmp_path / "Assets" / "Data" / "cache.npy"
     asset.parent.mkdir(parents=True)
     asset.write_bytes(b"cache")
-    package_asset = tmp_path / "Packages" / "vendor" / "tool" / "runtime" / "server.exe"
-    package_asset.parent.mkdir(parents=True)
-    package_asset.write_bytes(b"server")
     outside = tmp_path / "Library" / "cache.npy"
     outside.parent.mkdir()
     outside.write_bytes(b"cache")
     set_project_root(str(tmp_path))
     try:
         assert Application.asset_path("Assets/Data/cache.npy") == str(asset.resolve())
-        assert Application.asset_path(
-            "Packages/vendor/tool/runtime/server.exe"
-        ) == str(package_asset.resolve())
+        with pytest.raises(FileNotFoundError, match="not available"):
+            Application.asset_path("Packages/vendor/tool/runtime/server.exe")
+        with pytest.raises(FileNotFoundError, match="not available"):
+            Application.asset_path(str(asset))
         with pytest.raises(FileNotFoundError, match="not available"):
             Application.asset_path(str(outside))
     finally:
@@ -193,7 +191,7 @@ def test_package_paths_use_frozen_catalog_for_files_and_preserved_directories(tm
     from Infernux.engine.player_service_graph import PlayerRuntimeAssetCatalog
     from Infernux.engine.project_context import (
         set_project_root,
-        set_runtime_asset_resolver,
+        set_runtime_package_resolver,
     )
     from Infernux.lifecycle import PreloadContext
 
@@ -240,7 +238,7 @@ def test_package_paths_use_frozen_catalog_for_files_and_preserved_directories(tm
     decoy.parent.mkdir()
     decoy.write_text("not in catalog", encoding="utf-8")
     set_project_root(str(tmp_path))
-    set_runtime_asset_resolver(catalog.resolve_asset)
+    set_runtime_package_resolver(catalog.resolve_package)
     try:
         for lookup in (
             context.package_path,
@@ -265,6 +263,7 @@ def test_package_paths_use_frozen_catalog_for_files_and_preserved_directories(tm
         with pytest.raises(FileNotFoundError):
             Application.asset_path("Packages/vendor/server/runtime/data")
     finally:
+        set_runtime_package_resolver(None)
         set_project_root(None)
 
 
@@ -273,6 +272,7 @@ def test_temporary_project_context_restores_player_asset_resolver(tmp_path):
         get_project_root,
         resolve_asset_path,
         set_project_root,
+        set_runtime_asset_query,
         set_runtime_asset_resolver,
         using_project_root,
     )
@@ -280,7 +280,10 @@ def test_temporary_project_context_restores_player_asset_resolver(tmp_path):
     project = tmp_path / "player"
     authoring = tmp_path / "authoring"
     set_project_root(str(project))
-    set_runtime_asset_resolver(lambda path, **_kwargs: "cooked:" + path)
+    set_runtime_asset_query(
+        lambda path: ("message-guid",) if path == "Assets/message.txt" else ()
+    )
+    set_runtime_asset_resolver(lambda guid: "cooked:" + guid)
     try:
         with pytest.raises(RuntimeError, match="compile failed"):
             with using_project_root(str(authoring)):
@@ -288,8 +291,10 @@ def test_temporary_project_context_restores_player_asset_resolver(tmp_path):
                 assert resolve_asset_path("Assets/missing.txt") is None
                 raise RuntimeError("compile failed")
         assert get_project_root() == str(project.resolve())
-        assert resolve_asset_path("Assets/message.txt") == "cooked:Assets/message.txt"
+        assert resolve_asset_path("Assets/message.txt") == "cooked:message-guid"
     finally:
+        set_runtime_asset_resolver(None)
+        set_runtime_asset_query(None)
         set_project_root(None)
 
 

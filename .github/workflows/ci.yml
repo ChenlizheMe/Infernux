@@ -294,6 +294,7 @@ jobs:
       - name: Run Python and platform contract tests
         run: |
           conda activate infernux
+          export PYTHONPATH="$GITHUB_WORKSPACE/python${PYTHONPATH:+:$PYTHONPATH}"
           xvfb-run --auto-servernum python -m pytest python/test -q --junitxml out/test-results/pytest-linux.xml
 
       - name: Build Linux editor wheel and Hub distribution
