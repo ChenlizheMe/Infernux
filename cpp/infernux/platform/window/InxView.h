@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <mutex>
 #include <string>
 
@@ -142,10 +143,8 @@ class InxView
         m_surfaceRecreationPending.store(true, std::memory_order_release);
         RequestExternalWake();
     }
-    void AcknowledgeSurfaceRecreation() noexcept
-    {
-        m_surfaceRecreationPending.store(false, std::memory_order_release);
-    }
+    void AcknowledgeSurfaceRecreation() noexcept;
+    void SetPresentationSuspendHandler(std::function<void()> handler);
     // ---- Power-save / idle accessors ----
     FpsIdling &GetIdling()
     {
@@ -236,6 +235,7 @@ class InxView
     bool m_eventWatchInstalled = false;
     bool m_isPlayMode = false;
     bool m_needsImmediateGuiRefresh = false;
+    std::function<void()> m_presentationSuspendHandler;
     InxAppMetadata m_appMetadata;
 
     // ---- Power-save idle state ----

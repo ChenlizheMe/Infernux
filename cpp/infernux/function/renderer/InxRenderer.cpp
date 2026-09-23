@@ -567,6 +567,10 @@ InxRenderer::InxRenderer()
     m_vkCore = std::make_unique<InxVkCoreModular>(static_cast<int>(ResolveMaxFramesInFlight()));
     m_vkCore->SetRenderTextureAssetLoader([this](const std::string &guid) { return LoadRenderTexture(guid); });
     m_view = std::make_unique<InxView>();
+    m_view->SetPresentationSuspendHandler([this]() {
+        if (m_vkCore)
+            m_vkCore->SuspendPresentationSurface();
+    });
     m_captureService = std::make_unique<CaptureService>();
     m_scenePickingService = std::make_unique<ScenePickingService>();
 }
@@ -628,16 +632,22 @@ InxRenderer::~InxRenderer()
         m_vkCore->ReleaseGpuPreviews();
     m_gui.reset();
 
-    // 3. Now safe to destroy the Vulkan device itself.
+    // 3. Stop the platform callback before destroying the Vulkan owner. On
+    // Android this also releases any SurfaceView teardown waiting at the
+    // terminal runtime boundary.
+    if (m_view)
+        m_view->SetPresentationSuspendHandler({});
+
+    // 4. Now safe to destroy the Vulkan device itself.
     m_vkCore.reset();
 
-    // 4. Tear down the platform window last.
+    // 5. Tear down the platform window last.
     if (m_view) {
         m_view->Quit();
     }
     m_view.reset();
 
-    // 5. Stop the engine-wide worker pool. Done last so any
+    // 6. Stop the engine-wide worker pool. Done last so any
     //    last-minute teardown work scheduled by subsystem destructors
     //    above has a thread to run on.
     JobSystem::Shutdown();

@@ -2,6 +2,8 @@
 #include "WindowSizingPolicy.h"
 #include "WindowsDpiPolicy.h"
 
+#include <core/platform/AndroidPresentationLifecycle.h>
+
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -10,6 +12,7 @@
 #include <iostream>
 #include <optional>
 #include <stdexcept>
+#include <utility>
 
 #include <imgui_impl_sdl3.h>
 #include <platform/filesystem/InxPath.h>
@@ -94,6 +97,26 @@ void InxView::Init(int width, int height)
 
     INXLOG_DEBUG("Initialize InxView Window with size: ", m_windowWidth, "x", m_windowHeight);
     SDLInit();
+}
+
+void InxView::SetPresentationSuspendHandler(std::function<void()> handler)
+{
+    m_presentationSuspendHandler = std::move(handler);
+#if defined(SDL_PLATFORM_ANDROID) || defined(__ANDROID__) || defined(ANDROID)
+    if (m_presentationSuspendHandler)
+        AndroidPresentationLifecycle::ActivateRuntime();
+    else
+        AndroidPresentationLifecycle::DeactivateRuntime();
+#endif
+}
+
+void InxView::AcknowledgeSurfaceRecreation() noexcept
+{
+    m_surfaceRecreationPending.store(false, std::memory_order_release);
+#if defined(SDL_PLATFORM_ANDROID) || defined(__ANDROID__) || defined(ANDROID)
+    AndroidPresentationLifecycle::MarkPresentationResumed();
+    INXLOG_INFO("INFERNUX_ANDROID_PRESENTATION_RESUMED");
+#endif
 }
 
 uint64_t InxView::QueueSyntheticKeyInput(int scancode, bool pressed, bool repeat)
@@ -739,6 +762,12 @@ void InxView::NotifyGuiFrameBuilt() noexcept
 
 void InxView::Quit()
 {
+#if defined(SDL_PLATFORM_ANDROID) || defined(__ANDROID__) || defined(ANDROID)
+    // Release a SurfaceView callback that may be waiting for renderer-owned
+    // presentation teardown.  Quit is the terminal lifetime boundary; Show is
+    // not, and must leave the runtime rendezvous active.
+    AndroidPresentationLifecycle::DeactivateRuntime();
+#endif
     if (m_eventWatchInstalled) {
         SDL_RemoveEventWatch(&InxView::WatchApplicationEvents, this);
         m_eventWatchInstalled = false;
@@ -989,17 +1018,27 @@ bool SDLCALL InxView::WatchApplicationEvents(void *userdata, SDL_Event *event)
 
     switch (event->type) {
     case SDL_EVENT_WILL_ENTER_BACKGROUND:
-    case SDL_EVENT_DID_ENTER_BACKGROUND:
+    case SDL_EVENT_DID_ENTER_BACKGROUND: {
         // SDL requires mobile lifecycle events to be handled from an event
         // watch: Android may suspend the normal event loop immediately after
         // delivering them. Stop presentation before SurfaceView tears down.
-        view->m_applicationInBackground.store(true, std::memory_order_release);
+        const bool wasAlreadyInBackground =
+            view->m_applicationInBackground.exchange(true, std::memory_order_acq_rel);
 #if defined(SDL_PLATFORM_ANDROID) || defined(__ANDROID__) || defined(ANDROID)
         // Android replaces the ANativeWindow while an Activity is backgrounded.
-        // The old VkSurfaceKHR and its swapchain cannot be reused on resume.
+        // The UI thread is waiting for this callback to finish the renderer-
+        // owned drain before SurfaceView releases the ANativeWindow. Destroy
+        // the complete old presentation generation here; it is never reused.
         view->m_surfaceRecreationPending.store(true, std::memory_order_release);
+        if (!wasAlreadyInBackground) {
+            if (view->m_presentationSuspendHandler)
+                view->m_presentationSuspendHandler();
+            AndroidPresentationLifecycle::MarkPresentationSuspended();
+            INXLOG_INFO("INFERNUX_ANDROID_PRESENTATION_SUSPENDED");
+        }
 #endif
         break;
+    }
     case SDL_EVENT_WILL_ENTER_FOREGROUND:
         // Keep presentation suspended until the new native surface is ready.
         break;

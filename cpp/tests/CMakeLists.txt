@@ -291,6 +291,24 @@ if(INFERNUX_BUILD_TESTS)
     endif()
     add_test(NAME infernux.window_sizing_policy COMMAND infernux_window_sizing_policy_tests)
 
+    add_executable(infernux_android_presentation_lifecycle_tests
+        cpp/tests/AndroidPresentationLifecycleTests.cpp
+    )
+    target_include_directories(infernux_android_presentation_lifecycle_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/cpp/infernux
+    )
+    target_link_libraries(infernux_android_presentation_lifecycle_tests PRIVATE
+        InfernuxFoundation
+        Threads::Threads
+    )
+    if(MSVC)
+        target_compile_options(infernux_android_presentation_lifecycle_tests PRIVATE /utf-8 /UNDEBUG)
+    else()
+        target_compile_options(infernux_android_presentation_lifecycle_tests PRIVATE -UNDEBUG)
+    endif()
+    add_test(NAME infernux.android_presentation_lifecycle
+        COMMAND infernux_android_presentation_lifecycle_tests)
+
     add_executable(infernux_editor_display_scale_tests cpp/tests/EditorDisplayScaleTests.cpp)
     target_include_directories(infernux_editor_display_scale_tests PRIVATE
         ${CMAKE_SOURCE_DIR}/cpp/infernux
