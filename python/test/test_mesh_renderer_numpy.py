@@ -144,7 +144,7 @@ def test_inline_mesh_exposes_canonical_interleaved_vertex_storage(scene):
     uvs = np.array([[0, 0], [1, 0], [0, 1]], dtype=np.float32)
     renderer.set_inline_mesh_data(positions, normals, uvs, np.array([0, 1, 2], dtype=np.uint32))
     words = renderer._require_cpp_component().get_vertex_buffer_data()
-    assert words.shape == (3, 23)
+    assert words.shape == (3, 25)
     np.testing.assert_array_equal(words[:, 0:3], positions)
     np.testing.assert_array_equal(words[:, 3:6], normals)
     np.testing.assert_array_equal(words[:, 13:15], uvs)
@@ -163,7 +163,7 @@ def test_vertex_buffer_requires_gpu_inx_buffer(scene):
         np.zeros((3, 2), dtype=np.float32),
         np.array([0, 1, 2], dtype=np.uint32),
     )
-    cpu = buffer(shape=(3, 23), dtype=np.float32, device="cpu")
+    cpu = buffer(shape=(3, 25), dtype=np.float32, device="cpu")
     with pytest.raises(TypeError, match="GPU inx.buffer"):
         renderer.set_vertex_buffer(cpu, (-1, -1, -1), (1, 1, 1))
 

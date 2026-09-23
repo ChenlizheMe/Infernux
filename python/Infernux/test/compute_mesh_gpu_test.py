@@ -45,10 +45,10 @@ def main():
             active_vertex_count = renderer.vertex_count
             vertex_buffer = renderer.create_vertex_buffer(
                 device="gpu", capacity=active_vertex_count + 64)
-            assert vertex_buffer.shape == (active_vertex_count + 64, 23)
+            assert vertex_buffer.shape == (active_vertex_count + 64, 25)
             domain = inx.buffer(shape=renderer.vertex_count, dtype=np.int32, device="gpu")
             unrelated_domain = inx.buffer(shape=8, dtype=np.int32, device="gpu")
-            unrelated_vertices = inx.buffer(shape=(8, 23), dtype=np.float32, device="gpu")
+            unrelated_vertices = inx.buffer(shape=(8, 25), dtype=np.float32, device="gpu")
             initial_vertices = vertex_buffer.get_data().numpy(copy=False)
             initial_normals = initial_vertices[:active_vertex_count, 3:6].copy()
             initial_tangents = initial_vertices[:active_vertex_count, 6:10].copy()
@@ -166,7 +166,7 @@ def main():
                         np.testing.assert_allclose(np.abs(tangents[:, 3]), 1.0, atol=0.0)
                         np.testing.assert_array_equal(
                             values[active_vertex_count:],
-                            np.zeros((64, 23), dtype=np.float32),
+                            np.zeros((64, 25), dtype=np.float32),
                         )
                         # MeshRenderer borrows the native allocation through
                         # the engine's shared RHI ownership.  Closing the

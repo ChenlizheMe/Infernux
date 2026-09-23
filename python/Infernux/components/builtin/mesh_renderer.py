@@ -576,9 +576,9 @@ class MeshRenderer(BuiltinComponent):
         if not isinstance(value, Buffer) or value.device != "gpu":
             raise TypeError("MeshRenderer.set_vertex_buffer expects a GPU inx.buffer")
         value._require_open()
-        if value.dtype != "float32" or len(value.shape) != 2 or value.shape[1] != 23:
+        if value.dtype != "float32" or len(value.shape) != 2 or value.shape[1] != 25:
             raise ValueError(
-                "MeshRenderer vertex storage must use float32 shape (capacity, 23)"
+                "MeshRenderer vertex storage must use float32 shape (capacity, 25)"
             )
         if value.shape[0] < self.vertex_count:
             raise ValueError(

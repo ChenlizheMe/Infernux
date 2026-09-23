@@ -1324,7 +1324,7 @@ void RegisterSceneBindings(py::module_ &m)
                     std::memcpy(result.mutable_data(), vertices.data(), vertices.size() * sizeof(Vertex));
                 return result;
             },
-            "Return canonical interleaved Vertex bytes as float32 (N, 23) storage")
+            "Return canonical interleaved Vertex bytes as float32 (N, 25) storage")
         .def(
             "get_tangents",
             [](const MeshRenderer &mr) -> py::list {
