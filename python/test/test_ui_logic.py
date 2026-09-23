@@ -3201,9 +3201,10 @@ class TestPanelFocusEvents:
         finally:
             SelectionService._instance = previous_selection
 
-        assert bootstrap.scene_view.bound == ["scene-document"]
-        assert bootstrap.game_view.bound == ["scene-document"]
-        assert bootstrap.ui_editor.bound == ["scene-document"]
+        expected = [("scene-document", {"preserve_previous": True})]
+        assert bootstrap.scene_view.bound == expected
+        assert bootstrap.game_view.bound == expected
+        assert bootstrap.ui_editor.bound == expected
 
     def test_document_binding_projects_focus_without_user_history(self):
         from Infernux.engine.interaction import (
@@ -3236,6 +3237,28 @@ class TestPanelFocusEvents:
         finally:
             DocumentRegistry._instance = previous_registry
             FocusService._instance = previous_focus
+
+    def test_loaded_document_switch_detaches_view_without_retiring_previous_document(self):
+        from Infernux.engine.interaction import DocumentKind, DocumentRegistry
+        from Infernux.engine.ui.closable_panel import ClosablePanel
+
+        previous_registry = DocumentRegistry._instance
+        registry = DocumentRegistry()
+        try:
+            scene_a = registry.create(DocumentKind.SCENE, "Scene A")
+            scene_b = registry.create(DocumentKind.SCENE, "Scene B")
+            panel = ClosablePanel("Scene", "scene_view")
+            panel.bind_document(scene_a.document_id)
+
+            panel.bind_document(scene_b.document_id, preserve_previous=True)
+
+            assert registry.get(scene_a.document_id) is scene_a
+            assert registry.get(scene_b.document_id) is scene_b
+            assert registry.document_for_view("scene_view") is scene_b
+            assert not scene_a.view_ids
+            assert scene_b.view_ids == {"scene_view"}
+        finally:
+            DocumentRegistry._instance = previous_registry
 
     def test_closable_panel_publishes_focus_only_through_focus_service(self):
         from Infernux.engine.ui.closable_panel import ClosablePanel
