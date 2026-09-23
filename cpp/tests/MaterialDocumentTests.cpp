@@ -43,16 +43,18 @@ void VerifyStableReferencesAndClone()
     assert(!document["shaders"]["fragment"].contains("path_hint"));
     InxMaterial restored;
     assert(restored.DeserializeDocument(document));
-    assert(restored.GetVertShaderReference() == vertex);
-    assert(restored.GetFragShaderReference() == fragment);
+    const ShaderAssetReference persistedVertex{"vertex-guid", "Standard", ""};
+    const ShaderAssetReference persistedFragment{"fragment-guid", "Unlit", ""};
+    assert(restored.GetVertShaderReference() == persistedVertex);
+    assert(restored.GetFragShaderReference() == persistedFragment);
     assert(restored.GetVertShaderReference().pathHint.empty());
     assert(restored.GetFragShaderReference().pathHint.empty());
     assert(restored.GetShaderId() == "vertex-guid|fragment-guid");
 
     const std::shared_ptr<InxMaterial> clone = restored.Clone();
     assert(clone);
-    assert(clone->GetVertShaderReference() == vertex);
-    assert(clone->GetFragShaderReference() == fragment);
+    assert(clone->GetVertShaderReference() == persistedVertex);
+    assert(clone->GetFragShaderReference() == persistedFragment);
 }
 
 void VerifyTransactionalFailure()
