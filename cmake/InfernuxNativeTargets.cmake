@@ -15,10 +15,10 @@ if(INFERNUX_VULKAN_LOADER_TARGET)
     set(_infernux_vulkan_loader ${INFERNUX_VULKAN_LOADER_TARGET})
 endif()
 
-# Shipping builds keep the composition layer as a private archive so the Python
-# module can LTO/dead-strip the exact bound surface instead of shipping a
-# 60k-symbol auto-export DLL. Native regression tests use the shared form to
-# avoid loading a full private runtime image into every test process.
+# The Windows composition layer is always a private archive: its internal C++
+# surface is larger than the PE export-table limit and is not a public DLL ABI.
+# ELF development builds may still share it so native test processes reuse the
+# runtime image; shipping builds link it privately for LTO/dead stripping.
 if(INFERNUX_RUNTIME_STATIC)
     add_library(InfernuxRuntime STATIC ${INFERNUX_RUNTIME_SOURCES})
 else()
@@ -212,10 +212,16 @@ else()
 endif()
 
 foreach(_infernux_target ${INFERNUX_NATIVE_TARGETS})
+    # ProfileConfig.h is included by public renderer headers whose class
+    # layouts contain profiling state in RelWithDebInfo.  Consumers must see
+    # the same configuration-specific value as the library or objects such as
+    # SceneRenderExtractor are allocated with the wrong size.
+    target_compile_definitions(${_infernux_target} PUBLIC
+        $<$<CONFIG:RelWithDebInfo>:INFERNUX_FRAME_PROFILE=1>
+    )
     target_compile_definitions(${_infernux_target} PRIVATE
         GLM_FORCE_DEPTH_ZERO_TO_ONE
         GLM_FORCE_LEFT_HANDED
-        $<$<CONFIG:RelWithDebInfo>:INFERNUX_FRAME_PROFILE=1>
         $<$<CONFIG:Debug>:INFERNUX_FILE_LOGGING=1>
         $<$<CONFIG:RelWithDebInfo>:INFERNUX_FILE_LOGGING=1>
         $<$<CONFIG:Release>:INFERNUX_FILE_LOGGING=1>
