@@ -7,6 +7,7 @@
 #endif
 #include <cassert>
 #include <cmath>
+#include <string_view>
 #include <utility>
 
 using namespace infernux;
@@ -111,6 +112,46 @@ void CheckFullscreenState()
     key.alphaBlend = true;
     variants.emplace(key, 5);
     assert(variants.size() == 6 && variants.at(key) == 5);
+}
+
+void CheckGraphBufferValidation()
+{
+    RenderGraphDescription graph;
+    graph.textures.push_back({"color", rhi::PixelFormat::RGBA8UNorm});
+    graph.buffers.push_back(
+        {"producer/data", 64,
+         static_cast<uint32_t>(GraphBufferUsage::Storage) | static_cast<uint32_t>(GraphBufferUsage::TransferSource)});
+    graph.buffers.push_back({"consumer/data", 64, static_cast<uint32_t>(GraphBufferUsage::TransferDestination)});
+    GraphPassDesc clear;
+    clear.name = "clear";
+    clear.writeColors = {{0, "color"}};
+    clear.clearColor = true;
+    graph.passes.push_back(clear);
+    GraphPassDesc copy;
+    copy.name = "copy";
+    copy.type = GraphPassType::Copy;
+    copy.bufferAccesses.push_back({"producer/data", GraphBufferAccessType::TransferRead});
+    copy.bufferAccesses.push_back({"consumer/data", GraphBufferAccessType::TransferWrite});
+    GraphCommandDesc command;
+    command.type = GraphCommandType::CopyBuffer;
+    command.sourceResource = "producer/data";
+    command.destinationResource = "consumer/data";
+    command.copyBytes = 64;
+    copy.commands.push_back(command);
+    graph.passes.push_back(copy);
+    graph.outputTexture = "color";
+
+    const auto valid = [](const auto &desc) { return SceneRenderGraph::ValidateGraphDescription(desc, 1); };
+    assert(valid(graph));
+    auto broken = graph;
+    broken.passes.back().bufferAccesses[0].resource = "other_view/data";
+    assert(!valid(broken));
+    broken = graph;
+    broken.buffers[0].usage = static_cast<uint32_t>(GraphBufferUsage::Storage);
+    assert(!valid(broken));
+    broken = graph;
+    broken.passes.back().commands[0].copyBytes = 65;
+    assert(!valid(broken));
 }
 
 void CheckWorldUIPassAttachments()
@@ -410,10 +451,15 @@ RenderGraphDescription MakeAttachmentGraph(int secondColorSlot, uint32_t readOnl
 
 } // namespace
 
-int main()
+int main(int argc, char **argv)
 {
+    if (argc == 2 && std::string_view(argv[1]) == "--graph-buffer-contract") {
+        CheckGraphBufferValidation();
+        return 0;
+    }
     CheckCameraHistoryResetIsolation();
     CheckFullscreenState();
+    CheckGraphBufferValidation();
     CheckWorldUIPassAttachments();
     CheckViewResourceSchedule();
     CheckViewMaterialContracts();

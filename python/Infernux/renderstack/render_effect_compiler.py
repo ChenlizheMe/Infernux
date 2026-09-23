@@ -777,6 +777,7 @@ def _compile_effect(
     instance = feature.instantiate(source)
     first_pass = len(graph._passes)
     first_texture = len(graph._textures)
+    first_buffer = len(graph._buffers)
     first_topology = len(graph._topology)
     bus_snapshot = bus.snapshot()
     try:
@@ -785,6 +786,7 @@ def _compile_effect(
     except Exception:
         del graph._passes[first_pass:]
         del graph._textures[first_texture:]
+        del graph._buffers[first_buffer:]
         del graph._topology[first_topology:]
         bus._resources = bus_snapshot
         raise
@@ -821,12 +823,15 @@ def _record_feature_passes(source: RenderEffect, feature: RenderEffectFeature):
     depth = graph.create_texture("depth", format=Format.D32_SFLOAT)
     normal = graph.create_texture("normal", format=Format.RGBA16_SFLOAT, samples=1)
     motion = graph.create_texture("motion", format=Format.RG16_SFLOAT, samples=1)
-    bus = ResourceBus({
-        "color": color,
-        "depth": depth,
-        "normal": normal,
-        "motion": motion,
-    })
+    bus = ResourceBus(
+        {
+            "color": color,
+            "depth": depth,
+            "normal": normal,
+            "motion": motion,
+        },
+        graph=graph,
+    )
     feature.instantiate(source).setup_passes(graph, bus)
     return graph._passes
 

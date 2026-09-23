@@ -3,7 +3,7 @@ ResourceBus — Transient resource handle dictionary for graph construction.
 
 Created by ``RenderStack.build_graph()``, passed into
 ``Pipeline.define_topology()`` and each ``Pass.inject()``.
-Carries TextureHandle references between pipeline stages and user passes.
+Carries graph-local texture and buffer handles between pipeline stages and passes.
 
 Lifecycle::
 
@@ -21,10 +21,12 @@ Resource name conventions::
 
 from __future__ import annotations
 
-from typing import Dict, Optional, Set, TYPE_CHECKING
+from typing import Dict, Optional, Set, TYPE_CHECKING, Union
 
 if TYPE_CHECKING:
-    from Infernux.rendergraph.graph import TextureHandle
+    from Infernux.rendergraph.graph import BufferHandle, RenderGraph, TextureHandle
+
+    ResourceHandle = Union[TextureHandle, BufferHandle]
 
 
 class ResourceBus:
@@ -40,21 +42,56 @@ class ResourceBus:
     """
 
     def __init__(
-        self, initial: Optional[Dict[str, "TextureHandle"]] = None
+        self, initial: Optional[Dict[str, "ResourceHandle"]] = None,
+        *, graph: "RenderGraph | None" = None,
     ) -> None:
-        self._resources: Dict[str, "TextureHandle"] = dict(initial or {})
+        self._graph = graph
+        self._resources: Dict[str, "ResourceHandle"] = {}
+        for name, handle in (initial or {}).items():
+            self.set(name, handle)
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
-    def get(self, name: str) -> Optional["TextureHandle"]:
+    def get(self, name: str) -> Optional["ResourceHandle"]:
         """Return a resource handle, or ``None`` if it is missing."""
         return self._resources.get(name)
 
-    def set(self, name: str, handle: "TextureHandle") -> None:
-        """Set or update a resource handle."""
+    def set(self, name: str, handle: "ResourceHandle") -> None:
+        """Publish a graph-local handle for the current View build."""
+        if self._graph is not None:
+            from Infernux.rendergraph.graph import BufferHandle, TextureHandle
+
+            owned = (
+                isinstance(handle, TextureHandle) and self._graph._owns_texture(handle)
+                or isinstance(handle, BufferHandle) and self._graph._owns_buffer(handle)
+            )
+            if not owned:
+                raise ValueError(f"Resource '{name}' does not belong to this RenderGraph")
         self._resources[name] = handle
+
+    def require_buffer(self, name: str) -> "BufferHandle":
+        """Resolve a declared buffer at this injection stage."""
+        from Infernux.rendergraph.graph import BufferHandle
+
+        handle = self._resources.get(name)
+        if handle is None:
+            raise ValueError(f"Buffer resource '{name}' is not available at this stage")
+        if not isinstance(handle, BufferHandle):
+            raise TypeError(f"Resource '{name}' is not a graph BufferHandle")
+        return handle
+
+    def require_texture(self, name: str) -> "TextureHandle":
+        """Resolve a declared texture at this injection stage."""
+        from Infernux.rendergraph.graph import TextureHandle
+
+        handle = self._resources.get(name)
+        if handle is None:
+            raise ValueError(f"Texture resource '{name}' is not available at this stage")
+        if not isinstance(handle, TextureHandle):
+            raise TypeError(f"Resource '{name}' is not a graph TextureHandle")
+        return handle
 
     def has(self, name: str) -> bool:
         """Return whether a resource exists."""
@@ -65,7 +102,7 @@ class ResourceBus:
         """Return the set of currently available resource names."""
         return set(self._resources.keys())
 
-    def snapshot(self) -> Dict[str, "TextureHandle"]:
+    def snapshot(self) -> Dict[str, "ResourceHandle"]:
         """Return a shallow snapshot of the current resources for debugging."""
         return dict(self._resources)
 

@@ -764,14 +764,17 @@ class RenderGraph:
             raise ValueError(
                 f"pass result source {source_name!r} is already published"
             )
-        for semantic, texture in dict(buffers).items():
-            if texture is not None and not isinstance(texture, TextureHandle):
+        for semantic, resource in dict(buffers).items():
+            if resource is not None and not isinstance(resource, (TextureHandle, BufferHandle)):
                 raise TypeError(
-                    f"pass buffer {semantic!r} must be a TextureHandle"
+                    f"pass resource {semantic!r} must be a graph TextureHandle or BufferHandle"
                 )
-            if texture is not None and not self._owns_texture(texture):
+            if resource is not None and not (
+                isinstance(resource, TextureHandle) and self._owns_texture(resource)
+                or isinstance(resource, BufferHandle) and self._owns_buffer(resource)
+            ):
                 raise ValueError(
-                    f"pass buffer {semantic!r} does not belong to this RenderGraph"
+                    f"pass resource {semantic!r} does not belong to this RenderGraph"
                 )
         self._pass_result_revision += 1
         result = PassResult(

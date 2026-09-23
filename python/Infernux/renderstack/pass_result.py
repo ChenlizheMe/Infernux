@@ -81,8 +81,11 @@ class PassResult:
         """Publish a lazy provider result without changing source identity."""
         if texture is None:
             raise ValueError("pass result cannot publish a null buffer")
-        if self._owner_graph is not None and not self._owner_graph._owns_texture(texture):
-            raise ValueError("materialized pass buffer does not belong to this RenderGraph")
+        if self._owner_graph is not None and not (
+            self._owner_graph._owns_texture(texture)
+            or self._owner_graph._owns_buffer(texture)
+        ):
+            raise ValueError("materialized pass resource does not belong to this RenderGraph")
         self.buffers[normalize_buffer_name(name)] = texture
 
     @property

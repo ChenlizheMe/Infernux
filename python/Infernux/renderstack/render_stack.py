@@ -653,7 +653,7 @@ class RenderStack(PipelineReloadMixin, InxComponent):
 
         self._select_graph_state(output_samples)
         graph = RenderGraph("Pipeline+Stack", output_samples=output_samples)
-        self._resource_bus = ResourceBus()
+        self._resource_bus = ResourceBus(graph=graph)
         compiled_effects = []
         effect_errors = []
 
@@ -680,7 +680,7 @@ class RenderStack(PipelineReloadMixin, InxComponent):
             # A route/layer/stage/composite mount owns a local semantic image
             # set. Reusing one bus across mount points leaks the last isolated
             # route color into the final scene output.
-            bus = ResourceBus()
+            bus = ResourceBus(graph=graph)
             self._resource_bus = bus
             source_result = graph.current_pass_result
             semantic_resources = (
@@ -690,7 +690,7 @@ class RenderStack(PipelineReloadMixin, InxComponent):
             for resource_name in stage.contract.inputs:
                 resource = semantic_resources.get(resource_name)
                 if resource is None:
-                    resource = graph.get_texture(resource_name)
+                    resource = graph.get_texture(resource_name) or graph.get_buffer(resource_name)
                 if resource is not None:
                     bus.set(resource_name, resource)
 
