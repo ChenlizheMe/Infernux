@@ -26,7 +26,7 @@ BUILD_SETTINGS_DEFAULTS: dict[str, Any] = {
     "build_target": "",
     "android_artifact": "apk",
     "game_name": "",
-    "scenes": [],
+    "scene_guids": [],
     "output_dir": "",
     "icon_guid": "",
     "display_mode": "fullscreen_borderless",
@@ -35,7 +35,6 @@ BUILD_SETTINGS_DEFAULTS: dict[str, Any] = {
     "window_resizable": True,
     "debug_mode": False,
     "lto": True,
-    "enable_jit": False,
     "splash_items": [],
 }
 
@@ -54,17 +53,18 @@ def normalize_build_settings(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise TypeError("build settings must be a JSON object")
     value = copy.deepcopy(value)
-    unknown = set(value) - set(BUILD_SETTINGS_DEFAULTS)
-    if unknown:
-        raise ValueError(
-            f"unknown build settings fields: {', '.join(sorted(unknown))}"
-        )
     result = copy.deepcopy(BUILD_SETTINGS_DEFAULTS)
-    result.update(copy.deepcopy(value))
-    if not isinstance(result["scenes"], list) or not all(
-        isinstance(item, str) and item for item in result["scenes"]
+    result.update(
+        copy.deepcopy({
+            key: item
+            for key, item in value.items()
+            if key in BUILD_SETTINGS_DEFAULTS
+        })
+    )
+    if not isinstance(result["scene_guids"], list) or not all(
+        isinstance(item, str) and item for item in result["scene_guids"]
     ):
-        raise TypeError("build settings scenes must contain non-empty strings")
+        raise TypeError("build settings scene_guids must contain non-empty strings")
     if not isinstance(result["splash_items"], list):
         raise TypeError("build settings splash_items must be an array")
     splash_keys = {"type", "asset_guid", "duration", "fade_in", "fade_out"}
@@ -113,7 +113,7 @@ def normalize_build_settings(value: Any) -> dict[str, Any]:
             raise TypeError(f"build settings {field} must be an integer")
         if result[field] <= 0:
             raise ValueError(f"build settings {field} must be positive")
-    for field in ("window_resizable", "debug_mode", "lto", "enable_jit"):
+    for field in ("window_resizable", "debug_mode", "lto"):
         if not isinstance(result[field], bool):
             raise TypeError(f"build settings {field} must be a boolean")
     return _json_copy(result)

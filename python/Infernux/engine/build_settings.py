@@ -33,11 +33,6 @@ def load_build_settings(project_path: Optional[str] = None) -> dict:
         raise ValueError(f"Build settings are unreadable: {path}: {error}") from error
     if not isinstance(data, dict):
         raise TypeError("Build settings must be a JSON object")
-    scenes = data.get("scenes")
-    if not isinstance(scenes, list) or not all(
-        isinstance(scene, str) and scene for scene in scenes
-    ):
-        raise TypeError("Build settings scenes must contain non-empty strings")
     return data
 
 
