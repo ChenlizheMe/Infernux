@@ -38,5 +38,22 @@ int main()
     ExpectMissingToken("vec2", [] { (void)EditorThemeRegistry::Vec2("INFERNUX_TEST_MISSING_TOKEN"); });
     ExpectMissingToken("float", [] { (void)EditorThemeRegistry::Float("INFERNUX_TEST_MISSING_TOKEN"); });
 
+    ImGui::CreateContext();
+    assert(EditorThemeRegistry::SetActiveTheme("graphite"));
+    EditorThemeRegistry::ApplyImGuiColors();
+    const ImVec4 standardSelection = EditorThemeRegistry::Color("SELECTION_BG");
+    const ImVec4 variantAccent = EditorThemeRegistry::Color("ROLE_ACCENT");
+    const ImVec4 focusedPanel = ImGui::GetStyle().Colors[ImGuiCol_TabSelectedOverline];
+    const ImVec4 unfocusedPanel = ImGui::GetStyle().Colors[ImGuiCol_TabDimmedSelectedOverline];
+    assert(focusedPanel.x == standardSelection.x);
+    assert(focusedPanel.y == standardSelection.y);
+    assert(focusedPanel.z == standardSelection.z);
+    assert(focusedPanel.w == 1.0f);
+    assert(unfocusedPanel.x == variantAccent.x);
+    assert(unfocusedPanel.y == variantAccent.y);
+    assert(unfocusedPanel.z == variantAccent.z);
+    assert(unfocusedPanel.w == 0.60f);
+    ImGui::DestroyContext();
+
     return 0;
 }

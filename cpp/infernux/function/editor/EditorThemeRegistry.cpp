@@ -168,6 +168,7 @@ void EditorThemeRegistry::ApplyImGuiColors()
     const ImVec4 text = Color("ROLE_TEXT");
     const ImVec4 dim = Color("ROLE_TEXT_DIM");
     const ImVec4 border = Color("ROLE_BORDER");
+    const ImVec4 panelFocus = Color("SELECTION_BG");
 
     const ImVec4 transparent(0.0f, 0.0f, 0.0f, 0.0f);
 
@@ -229,7 +230,10 @@ void EditorThemeRegistry::ApplyImGuiColors()
     c[ImGuiCol_Tab] = bg;
     c[ImGuiCol_TabHovered] = hover;
     c[ImGuiCol_TabSelected] = surf;
-    c[ImGuiCol_TabSelectedOverline] = accent;
+    // A focused editor panel uses the canonical Infernux selection red at
+    // full opacity. The dimmed overline below intentionally keeps its current
+    // subdued accent treatment for visible but unfocused dock tabs.
+    c[ImGuiCol_TabSelectedOverline] = Alpha(panelFocus, 1.0f);
     c[ImGuiCol_TabDimmed] = bg;
     c[ImGuiCol_TabDimmedSelected] = surf;
     c[ImGuiCol_TabDimmedSelectedOverline] = Alpha(accent, 0.60f);
