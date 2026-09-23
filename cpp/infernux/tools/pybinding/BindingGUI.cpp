@@ -1135,6 +1135,7 @@ void RegisterGUIBindings(py::module_ &m)
         .def("select_entry", &ConsolePanel::SelectEntry, py::arg("uid"))
         .def("set_selection_snapshot", &ConsolePanel::SetSelectionSnapshot, py::arg("uid"))
         .def_property_readonly("_selected_uid", &ConsolePanel::GetSelectedUid)
+        .def_property_readonly("_selected_uids", &ConsolePanel::GetSelectedUids)
         .def_property_readonly("_revision", &ConsolePanel::GetRevision)
         .def(
             "_get_visible_log_snapshot",
