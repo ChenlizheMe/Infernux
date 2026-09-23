@@ -23,11 +23,13 @@ namespace
 {
 constexpr size_t MaxInFlightCaptures = 4;
 constexpr size_t MaxRetainedCaptures = 128;
+constexpr auto DefaultGpuTimeout = std::chrono::seconds(10);
 
 struct EncodeResult
 {
     bool ok = false;
     std::string error;
+    std::vector<unsigned char> bytes;
 };
 
 float HalfToFloat(uint16_t value)
@@ -123,8 +125,7 @@ void AppendPngBytes(void *context, void *data, int size)
     bytes.insert(bytes.end(), begin, begin + size);
 }
 
-EncodeResult EncodePng(const std::shared_ptr<vk::ImageReadbackTicket> &ticket, const std::string &outputPath,
-                       bool linear)
+EncodeResult EncodePng(const std::shared_ptr<vk::ImageReadbackTicket> &ticket, bool linear)
 {
     try {
         const auto pixels = ConvertToRgba8(*ticket, linear);
@@ -132,21 +133,63 @@ EncodeResult EncodePng(const std::shared_ptr<vk::ImageReadbackTicket> &ticket, c
         if (stbi_write_png_to_func(AppendPngBytes, &encoded, static_cast<int>(ticket->GetWidth()),
                                    static_cast<int>(ticket->GetHeight()), 4, pixels.data(),
                                    static_cast<int>(ticket->GetWidth() * 4U)) == 0) {
-            return {false, "PNG encoder rejected the capture image"};
+            return {false, "PNG encoder rejected the capture image", {}};
         }
+        return {true, {}, std::move(encoded)};
+    } catch (const std::exception &exc) {
+        return {false, exc.what(), {}};
+    }
+}
 
+std::string PublishPng(const std::string &outputPath, uint64_t captureId, const std::vector<unsigned char> &encoded)
+{
+    try {
         const std::filesystem::path path = std::filesystem::u8path(outputPath);
         if (path.has_parent_path())
             std::filesystem::create_directories(path.parent_path());
-        std::ofstream stream(path, std::ios::binary | std::ios::trunc);
-        if (!stream)
-            return {false, "Unable to open capture artifact for writing"};
-        stream.write(reinterpret_cast<const char *>(encoded.data()), static_cast<std::streamsize>(encoded.size()));
-        if (!stream)
-            return {false, "Unable to write the complete capture artifact"};
-        return {true, {}};
+
+        std::filesystem::path temporary = path;
+        temporary += ".capture-" + std::to_string(captureId) + ".tmp";
+        {
+            std::ofstream stream(temporary, std::ios::binary | std::ios::trunc);
+            if (!stream)
+                return "Unable to open temporary capture artifact for writing";
+            stream.write(reinterpret_cast<const char *>(encoded.data()), static_cast<std::streamsize>(encoded.size()));
+            if (!stream) {
+                std::error_code ignored;
+                std::filesystem::remove(temporary, ignored);
+                return "Unable to write the complete capture artifact";
+            }
+        }
+
+        std::filesystem::path backup = path;
+        backup += ".capture-" + std::to_string(captureId) + ".previous";
+        std::error_code error;
+        const bool hadPrevious = std::filesystem::exists(path, error) && !error;
+        if (hadPrevious) {
+            std::filesystem::rename(path, backup, error);
+            if (error) {
+                std::error_code ignored;
+                std::filesystem::remove(temporary, ignored);
+                return "Unable to preserve previous capture artifact: " + error.message();
+            }
+        }
+
+        std::filesystem::rename(temporary, path, error);
+        if (error) {
+            std::error_code ignored;
+            std::filesystem::remove(temporary, ignored);
+            if (hadPrevious)
+                std::filesystem::rename(backup, path, ignored);
+            return "Unable to publish capture artifact: " + error.message();
+        }
+        if (hadPrevious) {
+            std::error_code ignored;
+            std::filesystem::remove(backup, ignored);
+        }
+        return {};
     } catch (const std::exception &exc) {
-        return {false, exc.what()};
+        return exc.what();
     }
 }
 
@@ -164,10 +207,12 @@ struct CaptureService::Impl
         CaptureSnapshot snapshot;
         std::shared_ptr<vk::ImageReadbackTicket> ticket;
         std::future<EncodeResult> encoder;
+        std::chrono::steady_clock::time_point phaseStartedAt;
         bool cancelRequested = false;
         bool sourceExpired = false;
     };
 
+    std::chrono::milliseconds gpuTimeout{DefaultGpuTimeout};
     uint64_t nextId = 1;
     std::unordered_map<uint64_t, Record> records;
 };
@@ -210,6 +255,13 @@ CaptureService::CaptureService() : m_impl(std::make_unique<Impl>())
 {
 }
 
+CaptureService::CaptureService(std::chrono::milliseconds gpuTimeout) : m_impl(std::make_unique<Impl>())
+{
+    if (gpuTimeout.count() < 0)
+        throw std::invalid_argument("Capture GPU timeout cannot be negative");
+    m_impl->gpuTimeout = gpuTimeout;
+}
+
 CaptureService::~CaptureService() = default;
 
 uint64_t CaptureService::Request(CaptureSource source, const rhi::RenderViewContext &view, uint64_t sourceGeneration,
@@ -224,7 +276,7 @@ uint64_t CaptureService::Request(CaptureSource source, const rhi::RenderViewCont
     size_t inFlight = 0;
     for (const auto &[id, record] : m_impl->records) {
         (void)id;
-        if (!IsTerminal(record.snapshot.status))
+        if (!IsTerminal(record.snapshot.status) || record.encoder.valid())
             ++inFlight;
     }
     if (inFlight >= MaxInFlightCaptures)
@@ -232,7 +284,7 @@ uint64_t CaptureService::Request(CaptureSource source, const rhi::RenderViewCont
 
     if (m_impl->records.size() >= MaxRetainedCaptures) {
         for (auto it = m_impl->records.begin(); it != m_impl->records.end();) {
-            if (IsTerminal(it->second.snapshot.status))
+            if (IsTerminal(it->second.snapshot.status) && !it->second.encoder.valid())
                 it = m_impl->records.erase(it);
             else
                 ++it;
@@ -252,6 +304,7 @@ uint64_t CaptureService::Request(CaptureSource source, const rhi::RenderViewCont
     record.snapshot.width = view.width;
     record.snapshot.height = view.height;
     record.snapshot.outputPath = std::move(outputPath);
+    record.phaseStartedAt = std::chrono::steady_clock::now();
     m_impl->records.emplace(id, std::move(record));
     return id;
 }
@@ -280,8 +333,10 @@ void CaptureService::Fail(uint64_t captureId, std::string error)
     const auto it = m_impl->records.find(captureId);
     if (it == m_impl->records.end() || IsTerminal(it->second.snapshot.status))
         return;
-    it->second.snapshot.status = CaptureStatus::Failed;
-    it->second.snapshot.error = std::move(error);
+    auto &record = it->second;
+    record.cancelRequested = record.encoder.valid();
+    record.snapshot.status = CaptureStatus::Failed;
+    record.snapshot.error = std::move(error);
 }
 
 CaptureSnapshot CaptureService::Query(uint64_t captureId) const
@@ -305,6 +360,8 @@ bool CaptureService::Cancel(uint64_t captureId)
         if (record.ticket)
             record.ticket->Cancel();
         record.snapshot.status = CaptureStatus::Cancelled;
+    } else if (record.snapshot.status == CaptureStatus::PendingEncode) {
+        record.snapshot.status = CaptureStatus::Cancelled;
     }
     return true;
 }
@@ -321,6 +378,10 @@ void CaptureService::InvalidateSource(CaptureSource source, uint64_t sourceGener
             record.snapshot.status = CaptureStatus::SourceExpired;
             record.snapshot.error = "Capture source was resized or recreated before completion";
         }
+        if (record.snapshot.status == CaptureStatus::PendingEncode) {
+            record.snapshot.status = CaptureStatus::SourceExpired;
+            record.snapshot.error = "Capture source was resized or recreated before completion";
+        }
         if (record.ticket && !record.ticket->IsDone())
             record.ticket->Cancel();
     }
@@ -329,6 +390,7 @@ void CaptureService::InvalidateSource(CaptureSource source, uint64_t sourceGener
 void CaptureService::Poll()
 {
     using namespace std::chrono_literals;
+    const auto now = std::chrono::steady_clock::now();
     for (auto &[id, record] : m_impl->records) {
         (void)id;
         if (record.snapshot.status == CaptureStatus::PendingGpu && record.ticket && record.ticket->IsDone()) {
@@ -336,11 +398,10 @@ void CaptureService::Poll()
             if (status == vk::ImageReadbackStatus::Completed) {
                 record.snapshot.status = CaptureStatus::PendingEncode;
                 const auto ticket = record.ticket;
-                const auto path = record.snapshot.outputPath;
                 const bool linear = record.snapshot.source == CaptureSource::Camera &&
                                     !rhi::IsSrgbFormat(record.snapshot.view.colorFormat);
-                record.encoder = std::async(std::launch::async,
-                                            [ticket, path, linear]() { return EncodePng(ticket, path, linear); });
+                record.encoder =
+                    std::async(std::launch::async, [ticket, linear]() { return EncodePng(ticket, linear); });
             } else if (status == vk::ImageReadbackStatus::Cancelled) {
                 record.snapshot.status = CaptureStatus::Cancelled;
             } else {
@@ -349,26 +410,48 @@ void CaptureService::Poll()
             }
         }
 
-        if (record.snapshot.status == CaptureStatus::PendingEncode && record.encoder.valid() &&
-            record.encoder.wait_for(0ms) == std::future_status::ready) {
+        if (record.snapshot.status == CaptureStatus::PendingGpu && now - record.phaseStartedAt >= m_impl->gpuTimeout) {
+            if (record.ticket && !record.ticket->IsDone())
+                record.ticket->Cancel();
+            record.snapshot.status = CaptureStatus::Failed;
+            record.snapshot.error = record.ticket ? "GPU capture readback timed out"
+                                                  : "Capture source frame was not submitted before timeout";
+            continue;
+        }
+
+        // Encoding is side-effect free. Only this owner-thread publication
+        // point may replace the final artifact after validating terminal state.
+        if (record.encoder.valid() && record.encoder.wait_for(0ms) == std::future_status::ready) {
             const EncodeResult result = record.encoder.get();
             if (record.sourceExpired) {
-                std::error_code ignored;
-                std::filesystem::remove(std::filesystem::u8path(record.snapshot.outputPath), ignored);
                 record.snapshot.status = CaptureStatus::SourceExpired;
                 record.snapshot.error = "Capture source was resized or recreated before completion";
             } else if (record.cancelRequested) {
-                std::error_code ignored;
-                std::filesystem::remove(std::filesystem::u8path(record.snapshot.outputPath), ignored);
-                record.snapshot.status = CaptureStatus::Cancelled;
+                if (!IsTerminal(record.snapshot.status))
+                    record.snapshot.status = CaptureStatus::Cancelled;
             } else if (result.ok) {
-                record.snapshot.status = CaptureStatus::Completed;
+                const std::string publishError =
+                    PublishPng(record.snapshot.outputPath, record.snapshot.id, result.bytes);
+                if (publishError.empty()) {
+                    record.snapshot.status = CaptureStatus::Completed;
+                } else {
+                    record.snapshot.status = CaptureStatus::Failed;
+                    record.snapshot.error = publishError;
+                }
             } else {
                 record.snapshot.status = CaptureStatus::Failed;
                 record.snapshot.error = result.error;
             }
+            continue;
         }
     }
+}
+
+bool CaptureService::HasPending() const noexcept
+{
+    return std::any_of(m_impl->records.begin(), m_impl->records.end(), [](const auto &entry) {
+        return !IsTerminal(entry.second.snapshot.status) || entry.second.encoder.valid();
+    });
 }
 
 } // namespace infernux

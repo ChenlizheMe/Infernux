@@ -1066,6 +1066,16 @@ void InxRenderer::DrawFrame()
         m_nextFrameDeltaTimeOverride = -1.0f;
     }
 
+    // Captures are asynchronous renderer work, not UI polling work. Keep the
+    // owner loop active until every request reaches a terminal state. This is
+    // also evaluated before the minimized early return so a source that cannot
+    // produce a frame fails on its bounded deadline instead of hanging forever.
+    if (m_captureService) {
+        m_captureService->Poll();
+        if (m_captureService->HasPending())
+            RequestFullSpeedFrame();
+    }
+
     // ========================================================================
     // Frame Profiler - aggregates per-phase timings and reports at a bounded cadence.
     // Controlled by INFERNUX_FRAME_PROFILE in ProfileConfig.h (0 = off, 1 = on).
@@ -1571,8 +1581,11 @@ void InxRenderer::DrawFrame()
         m_view->RequestSurfaceRecreation();
     }
     SubmitPendingCaptureReadbacks();
-    if (m_captureService)
+    if (m_captureService) {
         m_captureService->Poll();
+        if (m_captureService->HasPending())
+            RequestFullSpeedFrame();
+    }
     sceneManager.EmitRuntimeFrameBarrier(SceneManager::RuntimeFrameBarrier::SnapshotPublication);
 #if INFERNUX_FRAME_PROFILE
     _fp.stamp(); // [10] after VkCore::DrawFrame (GPU submit + present)
@@ -3419,6 +3432,7 @@ uint64_t InxRenderer::RequestCapture(CaptureSource source, const std::string &ou
         captureView.color = captureView.depth = captureView.motion = captureView.history = {};
         const auto id = m_captureService->Request(source, captureView, generation, m_frameCount, outputPath);
         m_pendingCaptures.push_back({id, source, generation, cameraComponentId});
+        RequestFullSpeedFrame();
         return id;
     }
     if (cameraComponentId != 0)
@@ -3438,6 +3452,7 @@ uint64_t InxRenderer::RequestCapture(CaptureSource source, const std::string &ou
         captureView.history = {};
         const uint64_t captureId = m_captureService->Request(source, captureView, generation, m_frameCount, outputPath);
         m_pendingCaptures.push_back({captureId, source, generation});
+        RequestFullSpeedFrame();
         return captureId;
     }
     const bool gameView = source == CaptureSource::Game;
@@ -3471,6 +3486,7 @@ uint64_t InxRenderer::RequestCapture(CaptureSource source, const std::string &ou
     captureView.history = {};
     const uint64_t captureId = m_captureService->Request(source, captureView, generation, m_frameCount, outputPath);
     m_pendingCaptures.push_back({captureId, source, generation});
+    RequestFullSpeedFrame();
     return captureId;
 }
 
@@ -3513,6 +3529,9 @@ void InxRenderer::SubmitPendingCaptureReadbacks()
                 continue;
             }
             if (capture.source == CaptureSource::Editor) {
+                const CaptureSnapshot snapshot = m_captureService->Query(capture.id);
+                if (snapshot.status != CaptureStatus::PendingGpu)
+                    continue;
                 const uint64_t currentGeneration = m_vkCore->GetPresentationViewContext().revision;
                 if (capture.sourceGeneration != currentGeneration) {
                     m_captureService->InvalidateSource(capture.source, currentGeneration);
