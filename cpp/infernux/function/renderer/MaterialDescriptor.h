@@ -70,6 +70,8 @@ class MaterialUBO
     void SetVec4(const std::string &name, const glm::vec4 &value);
     void SetInt(const std::string &name, int value);
     void SetMat4(const std::string &name, const glm::mat4 &value);
+    void SetFloatArray(const std::string &name, const std::vector<float> &values);
+    void SetVec4Array(const std::string &name, const std::vector<glm::vec4> &values);
 
     /// Update the fixed bindless material-index ABI (set 0, binding 15).
     void UpdateTextureIndices(const std::array<uint32_t, ShaderProgram::MaterialTextureIndexCapacity> &indices);
@@ -138,6 +140,7 @@ struct MaterialDescriptorSet
     std::unique_ptr<MaterialUBO> textureIndexUBO;   // Bindless ABI (binding 15)
     std::vector<MergedDescriptorBinding> bindings;
     std::unordered_map<uint32_t, VkDescriptorBufferInfo> bufferBindings;
+    std::unordered_map<uint32_t, std::shared_ptr<rhi::ComputeBuffer>> storageBufferBindings;
 
     // Texture bindings (binding -> imageView, sampler)
     struct TextureBinding
@@ -154,6 +157,7 @@ struct MaterialDescriptorSet
     bool isValid = false;
     bool hasPendingTextures = false;
     bool usesBindlessTextureABI = false;
+    bool hasUnboundRequiredBuffers = false;
 };
 
 enum class TextureResolveStatus
@@ -184,6 +188,8 @@ using TextureResolver =
 
 using BindlessTextureResolver =
     std::function<rhi::ResourceIndex(const std::shared_ptr<const rhi::TextureGpuView> &view)>;
+
+using BufferResolver = std::function<VkDescriptorBufferInfo(const std::shared_ptr<rhi::ComputeBuffer> &buffer)>;
 
 /**
  * @brief MaterialDescriptorManager - Manages material-specific descriptor sets
@@ -236,6 +242,11 @@ class MaterialDescriptorManager
     void SetBindlessTextureResolver(BindlessTextureResolver resolver)
     {
         m_bindlessTextureResolver = std::move(resolver);
+    }
+
+    void SetBufferResolver(BufferResolver resolver)
+    {
+        m_bufferResolver = std::move(resolver);
     }
 
     void SetBindlessMaterialMode(bool enabled) noexcept
@@ -349,6 +360,10 @@ class MaterialDescriptorManager
     {
         return m_pendingDescriptorSetReleases->load(std::memory_order_relaxed);
     }
+    /// Retire per-renderer descriptor generations whose immutable CPU
+    /// parameter publication no longer has an owner. Returns the number
+    /// removed from the live cache; GPU objects remain serial-gated.
+    size_t CollectExpiredRendererDescriptorSets();
     [[nodiscard]] size_t GetDescriptorPoolCount() const noexcept
     {
         return m_descriptorManager ? m_descriptorManager->GetStats().poolCount : 0;
@@ -387,7 +402,7 @@ class MaterialDescriptorManager
     /// Tracks currently active descriptor sets referenced by m_descriptorSets.
     /// Retired sets are removed from this set immediately so draw-time checks
     /// can detect stale material handles and refresh pipelines safely.
-    std::unordered_set<uint64_t> m_liveDescriptorHandles;
+    std::unordered_map<uint64_t, const MaterialDescriptorSet *> m_liveDescriptorHandles;
 
     // Default texture for fallback
     VkImageView m_defaultImageView = VK_NULL_HANDLE;
@@ -424,8 +439,9 @@ class MaterialDescriptorManager
     {
         if (ds == VK_NULL_HANDLE)
             return false;
-        return m_liveDescriptorHandles.count(reinterpret_cast<uint64_t>(ds)) > 0;
+        return m_liveDescriptorHandles.find(reinterpret_cast<uint64_t>(ds)) != m_liveDescriptorHandles.end();
     }
+    [[nodiscard]] bool IsDescriptorSetComplete(VkDescriptorSet ds) const;
 
   private:
     // Texture resolver callback (set via SetTextureResolver)
@@ -435,6 +451,7 @@ class MaterialDescriptorManager
     TextureResolveStatus ResolveRenderTextureBinding(const std::shared_ptr<rhi::RenderTexture> &texture,
                                                      MaterialDescriptorSet::TextureBinding &binding) const;
     BindlessTextureResolver m_bindlessTextureResolver;
+    BufferResolver m_bufferResolver;
 
     // Optional submission-serial queue for descriptor-owned resource cleanup.
     GpuRetirementQueue *m_deletionQueue = nullptr;

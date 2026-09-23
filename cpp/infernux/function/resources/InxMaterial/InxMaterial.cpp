@@ -752,18 +752,17 @@ void InxMaterial::SetBuffer(const std::string &name, std::shared_ptr<rhi::Comput
         }
         return;
     }
-#if !defined(INFERNUX_DISABLE_VULKAN_MATERIAL_RUNTIME)
     const ShaderProgram *program = GetPassShaderProgram(ShaderCompileTarget::Forward);
-    if (!program)
-        throw std::logic_error("material buffer assignment requires a reflected shader program");
-    const auto binding = std::find_if(program->GetDescriptorBindings().begin(), program->GetDescriptorBindings().end(),
-                                      [&](const MergedDescriptorBinding &candidate) {
-                                          return candidate.set == 0 && candidate.name == name &&
-                                                 candidate.type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-                                      });
-    if (binding == program->GetDescriptorBindings().end())
-        throw std::invalid_argument("material shader has no storage buffer named '" + name + "'");
-#endif
+    if (program) {
+        const auto binding =
+            std::find_if(program->GetDescriptorBindings().begin(), program->GetDescriptorBindings().end(),
+                         [&](const MergedDescriptorBinding &candidate) {
+                             return candidate.set == 0 && candidate.name == name &&
+                                    candidate.type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+                         });
+        if (binding == program->GetDescriptorBindings().end())
+            throw std::invalid_argument("material shader has no storage buffer named '" + name + "'");
+    }
     m_buffers[name] = std::move(buffer);
     m_propertiesDirty = true;
     ++m_version;

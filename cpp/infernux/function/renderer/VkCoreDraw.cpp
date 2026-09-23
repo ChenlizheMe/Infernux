@@ -141,6 +141,8 @@ void InxVkCoreModular::DrawFrame(const float *viewPos, const float *viewLookAt, 
     const bool separateComputeBatch = !asyncCompute && frameComputeHasWork && partitionedCompute;
 
     const bool composedFrame = static_cast<bool>(m_frameSubmissionBuilder);
+    m_frameComputeReadTicket = {};
+    m_frameComputeReadStages = 0;
     if (composedFrame) {
         if (!EnsureGuiRenderGraph(imageIndex))
             return;
@@ -377,7 +379,8 @@ void InxVkCoreModular::DrawFrame(const float *viewPos, const float *viewLookAt, 
     externalSync.imageAvailableStages = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
     externalSync.uploadTimeline = m_resourceManager.GetUploadTimelineSemaphore();
     externalSync.uploadTimelineValue = m_resourceManager.GetRequiredUploadTimelineValue();
-    rhi::SubmissionTicket residentWrite{};
+    rhi::SubmissionTicket residentWrite = m_frameComputeReadTicket;
+    VkPipelineStageFlags residentReadStages = m_frameComputeReadStages;
     for (const auto &[objectId, buffers] : m_perObjectBuffers) {
         (void)objectId;
         if (!buffers.residentVertexBuffer)
@@ -385,6 +388,8 @@ void InxVkCoreModular::DrawFrame(const float *viewPos, const float *viewLookAt, 
         const auto write = buffers.residentVertexBuffer->GetLastWriteSubmission();
         if (write.IsValid() && (!residentWrite.IsValid() || write.serial > residentWrite.serial))
             residentWrite = write;
+        if (write.IsValid())
+            residentReadStages |= VK_PIPELINE_STAGE_VERTEX_INPUT_BIT;
     }
     m_frameSubmissionTelemetry.residentComputeWriteSerial = residentWrite.serial;
     m_frameSubmissionTelemetry.latestBackgroundComputeSerial = m_computeQueue.LastSubmission().completionTicket.serial;
@@ -393,7 +398,8 @@ void InxVkCoreModular::DrawFrame(const float *viewPos, const float *viewLookAt, 
         const auto compute = m_computeQueue.DependencyFor(residentWrite);
         externalSync.backgroundComputeTimeline = compute.completionTimeline;
         externalSync.backgroundComputeTimelineValue = compute.completionTimelineValue;
-        externalSync.backgroundComputeStages = VK_PIPELINE_STAGE_VERTEX_INPUT_BIT;
+        externalSync.backgroundComputeStages = residentReadStages != 0 ? residentReadStages
+                                                                       : VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT;
         m_frameSubmissionTelemetry.residentComputeWaitPending = compute.completionTimeline != VK_NULL_HANDLE;
     }
     externalSync.renderFinished = m_backend.Presentation().GetRenderFinishedSemaphore(imageIndex);
@@ -1574,6 +1580,17 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
         VkPipeline pipeline = resolved.pipeline;
         VkPipelineLayout pipelineLayout = resolved.layout;
         VkDescriptorSet descriptorSet = resolved.descriptorSet;
+
+        const bool requiresMaterialBuffer =
+            std::any_of(resolved.program->GetDescriptorBindings().begin(), resolved.program->GetDescriptorBindings().end(),
+                        [](const MergedDescriptorBinding &binding) {
+                            return binding.set == 0 && binding.type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+                        });
+        if (requiresMaterialBuffer &&
+            !m_materialPipelineManager.GetDescriptorManager().IsDescriptorSetComplete(descriptorSet)) {
+            emitBatch();
+            continue;
+        }
 
         if (descriptorSet == VK_NULL_HANDLE) {
             static int warnCount = 0;

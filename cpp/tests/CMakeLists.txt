@@ -937,16 +937,41 @@ if(INFERNUX_BUILD_TESTS)
 
     add_executable(infernux_render_graph_queue_replay_tests
         cpp/tests/RenderGraphQueueReplayTests.cpp "${_render_texture_sample}")
+    set(_renderer_parameter_shader_sources
+        "${CMAKE_SOURCE_DIR}/cpp/tests/shaders/RendererParameterBuffer.comp"
+        "${CMAKE_SOURCE_DIR}/cpp/tests/shaders/RendererParameterBuffer.vert"
+        "${CMAKE_SOURCE_DIR}/cpp/tests/shaders/RendererParameterBuffer.frag")
+    set(_renderer_parameter_shader_outputs)
+    foreach(_shader_source IN LISTS _renderer_parameter_shader_sources)
+        get_filename_component(_shader_name "${_shader_source}" NAME)
+        set(_shader_output "${INFERNUX_COMPUTE_INDIRECT_SHADER_DIR}/${_shader_name}.spv")
+        add_custom_command(
+            OUTPUT "${_shader_output}"
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${INFERNUX_COMPUTE_INDIRECT_SHADER_DIR}"
+            COMMAND "${Vulkan_GLSLANG_VALIDATOR_EXECUTABLE}" -V "${_shader_source}" -o "${_shader_output}"
+            DEPENDS "${_shader_source}"
+            VERBATIM)
+        list(APPEND _renderer_parameter_shader_outputs "${_shader_output}")
+    endforeach()
+    add_custom_target(infernux_renderer_parameter_shaders
+        DEPENDS ${_renderer_parameter_shader_outputs})
+    add_dependencies(infernux_render_graph_queue_replay_tests infernux_renderer_parameter_shaders)
     target_include_directories(infernux_render_graph_queue_replay_tests PRIVATE
         ${CMAKE_SOURCE_DIR}/cpp/infernux ${CMAKE_SOURCE_DIR}/external)
     target_link_libraries(infernux_render_graph_queue_replay_tests PRIVATE infernux_runtime_test_support)
     if(MSVC)
-        target_compile_options(infernux_render_graph_queue_replay_tests PRIVATE /utf-8)
+        target_compile_options(infernux_render_graph_queue_replay_tests PRIVATE /utf-8 /UNDEBUG)
+    else()
+        target_compile_options(infernux_render_graph_queue_replay_tests PRIVATE -UNDEBUG)
     endif()
     add_test(NAME infernux.render_graph_queue_replay COMMAND infernux_render_graph_queue_replay_tests
-        "${_render_texture_sample}")
+        "${_render_texture_sample}"
+        "${INFERNUX_COMPUTE_INDIRECT_SHADER_DIR}/RendererParameterBuffer.comp.spv"
+        "${INFERNUX_COMPUTE_INDIRECT_SHADER_DIR}/RendererParameterBuffer.vert.spv"
+        "${INFERNUX_COMPUTE_INDIRECT_SHADER_DIR}/RendererParameterBuffer.frag.spv")
     set_tests_properties(infernux.render_graph_queue_replay PROPERTIES
-        LABELS "requires_vulkan_device" TIMEOUT 60 FAIL_REGULAR_EXPRESSION "\\[ERROR\\]"
+        LABELS "requires_vulkan_device" TIMEOUT 60
+        FAIL_REGULAR_EXPRESSION "\\[ERROR\\]|Validation Error:"
         ENVIRONMENT "VK_LAYER_ENABLES=VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT")
 
     add_executable(infernux_renderer_list_tests
@@ -971,7 +996,9 @@ if(INFERNUX_BUILD_TESTS)
     )
     target_link_libraries(infernux_command_buffer_tests PRIVATE infernux_runtime_test_support)
     if(MSVC)
-        target_compile_options(infernux_command_buffer_tests PRIVATE /utf-8)
+        target_compile_options(infernux_command_buffer_tests PRIVATE /utf-8 /UNDEBUG)
+    else()
+        target_compile_options(infernux_command_buffer_tests PRIVATE -UNDEBUG)
     endif()
     add_test(NAME infernux.command_buffer COMMAND infernux_command_buffer_tests)
 

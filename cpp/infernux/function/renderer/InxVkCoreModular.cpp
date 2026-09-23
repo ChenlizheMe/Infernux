@@ -604,6 +604,18 @@ InxVkCoreModular::CopyShaderProgramArtifact(const ShaderStagePair &stages) const
     return artifact ? std::make_shared<const ShaderProgramArtifact>(*artifact) : nullptr;
 }
 
+const ShaderProgramArtifact *
+InxVkCoreModular::ResolveShaderProgramArtifact(const std::shared_ptr<InxMaterial> &material,
+                                               const ShaderStagePair &stages)
+{
+    const auto *artifact = m_shaderCache.FindProgramArtifact(stages);
+    if (!artifact && material && m_shaderProgramArtifactResolver) {
+        m_shaderProgramArtifactResolver(material);
+        artifact = m_shaderCache.FindProgramArtifact(stages);
+    }
+    return artifact;
+}
+
 void InxVkCoreModular::StoreShaderRenderMeta(const std::string &shaderId, const std::string &cullMode,
                                              const std::string &depthWrite, const std::string &depthTest,
                                              const std::string &blend, int queue, const std::string &passTag,
@@ -1119,6 +1131,9 @@ void InxVkCoreModular::CollectRetiredGpuResources()
     (void)m_backend.Device().GetRhiDevice().CollectResourceRetirements(completedEpoch);
     (void)m_deletionQueue.Collect(completedEpoch);
     if ((m_ensureFrameCounter & 63u) == 0u) {
+        if (m_materialPipelineManagerInitialized) {
+            (void)m_materialPipelineManager.GetDescriptorManager().CollectExpiredRendererDescriptorSets();
+        }
         CollectUnusedShadowMaterialBindings();
         CollectUnusedMaterialTextureOwners();
     }

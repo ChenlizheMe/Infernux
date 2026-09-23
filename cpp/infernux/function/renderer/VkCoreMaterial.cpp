@@ -17,6 +17,7 @@
 #include "gui/GPUMaterialPreview.h"
 #include "gui/GPUMeshPreview.h"
 #include "rhi/RhiRenderTexture.h"
+#include "rhi/RhiComputeBuffer.h"
 #include "vk/DescriptorBindTrace.h"
 #include "vk/MaterialRenderStateVulkan.h"
 #include "vk/RhiVulkanTypes.h"
@@ -445,6 +446,23 @@ void InxVkCoreModular::UpdateMaterialUBO(InxMaterial &material)
             case MaterialPropertyType::Int:
                 CopyPropertyToUBO<int>(prop, uboData.data(), memberOffset, uboSize);
                 break;
+            case MaterialPropertyType::Mat4:
+                CopyPropertyToUBO<glm::mat4>(prop, uboData.data(), memberOffset, uboSize);
+                break;
+            case MaterialPropertyType::FloatArray: {
+                const auto &values = std::get<std::vector<float>>(prop.value);
+                if (memberOffset + values.size() * 16u <= uboSize) {
+                    for (size_t index = 0; index < values.size(); ++index)
+                        std::memcpy(uboData.data() + memberOffset + index * 16u, &values[index], sizeof(float));
+                }
+                break;
+            }
+            case MaterialPropertyType::Float4Array: {
+                const auto &values = std::get<std::vector<glm::vec4>>(prop.value);
+                if (memberOffset + values.size() * sizeof(glm::vec4) <= uboSize && !values.empty())
+                    std::memcpy(uboData.data() + memberOffset, values.data(), values.size() * sizeof(glm::vec4));
+                break;
+            }
             default:
                 break;
             }
@@ -599,6 +617,16 @@ void InxVkCoreModular::InitializeMaterialSystem()
         materialDescriptors.SetBindlessTextureResolver(
             [device = &rhiDevice](const std::shared_ptr<const rhi::TextureGpuView> &view) -> rhi::ResourceIndex {
                 return device->PublishBindlessTexture(view);
+            });
+        materialDescriptors.SetBufferResolver(
+            [device = &rhiDevice](const std::shared_ptr<rhi::ComputeBuffer> &buffer) -> VkDescriptorBufferInfo {
+                VkDescriptorBufferInfo result{};
+                if (!buffer || &buffer->GetHost().device != device)
+                    return result;
+                result.buffer = device->Resolve(buffer->GetBuffer());
+                result.offset = 0;
+                result.range = buffer->GetByteSize();
+                return result;
             });
 
         auto whiteSlot = m_textureCache.Find("white", m_ensureFrameCounter);

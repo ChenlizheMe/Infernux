@@ -174,6 +174,12 @@ void MaterialUBO::Update(const InxMaterial &material)
         case MaterialPropertyType::Texture2D:
             // Textures are bound separately, not in UBO
             break;
+        case MaterialPropertyType::FloatArray:
+            SetFloatArray(name, std::get<std::vector<float>>(prop.value));
+            break;
+        case MaterialPropertyType::Float4Array:
+            SetVec4Array(name, std::get<std::vector<glm::vec4>>(prop.value));
+            break;
         }
     }
 }
@@ -204,6 +210,12 @@ void MaterialUBO::Apply(const RendererParameterBlock &parameters)
             SetMat4(name, std::get<glm::mat4>(property.value));
             break;
         case MaterialPropertyType::Texture2D:
+            break;
+        case MaterialPropertyType::FloatArray:
+            SetFloatArray(name, std::get<std::vector<float>>(property.value));
+            break;
+        case MaterialPropertyType::Float4Array:
+            SetVec4Array(name, std::get<std::vector<glm::vec4>>(property.value));
             break;
         }
     }
@@ -287,6 +299,26 @@ void MaterialUBO::SetMat4(const std::string &name, const glm::mat4 &value)
     }
 }
 
+void MaterialUBO::SetFloatArray(const std::string &name, const std::vector<float> &values)
+{
+    const auto member = std::find_if(m_layout.members.begin(), m_layout.members.end(),
+                                     [&](const UniformMember &candidate) { return candidate.name == name; });
+    if (member == m_layout.members.end() || member->arraySize != values.size() || member->size < values.size() * 16u)
+        return;
+    for (size_t index = 0; index < values.size(); ++index)
+        WriteData(member->offset + static_cast<uint32_t>(index * 16u), &values[index], sizeof(float));
+}
+
+void MaterialUBO::SetVec4Array(const std::string &name, const std::vector<glm::vec4> &values)
+{
+    const auto member = std::find_if(m_layout.members.begin(), m_layout.members.end(),
+                                     [&](const UniformMember &candidate) { return candidate.name == name; });
+    if (member == m_layout.members.end() || member->arraySize != values.size() || member->size < values.size() * 16u)
+        return;
+    if (!values.empty())
+        WriteData(member->offset, values.data(), static_cast<uint32_t>(values.size() * sizeof(glm::vec4)));
+}
+
 // ============================================================================
 // MaterialDescriptorManager Implementation
 // ============================================================================
@@ -294,6 +326,16 @@ void MaterialUBO::SetMat4(const std::string &name, const glm::mat4 &value)
 MaterialDescriptorManager::~MaterialDescriptorManager()
 {
     Shutdown();
+}
+
+bool MaterialDescriptorManager::IsDescriptorSetComplete(VkDescriptorSet descriptorSet) const
+{
+    if (descriptorSet == VK_NULL_HANDLE)
+        return false;
+    const auto found = m_liveDescriptorHandles.find(reinterpret_cast<uint64_t>(descriptorSet));
+    const MaterialDescriptorSet *descriptor =
+        found == m_liveDescriptorHandles.end() ? nullptr : found->second;
+    return descriptor && descriptor->isValid && !descriptor->hasUnboundRequiredBuffers;
 }
 
 void MaterialDescriptorManager::Initialize(VmaAllocator allocator, VkDevice device, VkPhysicalDevice physicalDevice,
@@ -329,6 +371,7 @@ void MaterialDescriptorManager::Shutdown()
     m_physicalDevice = VK_NULL_HANDLE;
     m_descriptorManager = nullptr;
     m_liveDescriptorHandles.clear();
+    m_bufferResolver = {};
 }
 
 bool MaterialDescriptorManager::IsPlaceholderTexturePath(std::string_view texturePath) const
@@ -419,6 +462,24 @@ MaterialDescriptorSet *MaterialDescriptorManager::GetOrCreateDescriptorSet(const
         return nullptr;
     }
 
+    // SetBuffer is intentionally authorable before the first Forward program
+    // exists. Once the real pass is available, however, every authored buffer
+    // must resolve to exactly one reflected set-0 storage binding. Do this
+    // before accepting a cached descriptor so first-use ordering never turns
+    // an invalid binding into a silently ignored value.
+    for (const auto &[name, buffer] : material.GetBuffers()) {
+        const auto binding =
+            std::find_if(program.GetDescriptorBindings().begin(), program.GetDescriptorBindings().end(),
+                         [&](const MergedDescriptorBinding &candidate) {
+                             return candidate.set == 0 && candidate.name == name &&
+                                    candidate.type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+                         });
+        if (!buffer || binding == program.GetDescriptorBindings().end() || binding->descriptorCount != 1) {
+            INXLOG_ERROR("Material buffer '", name, "' does not match one reflected set-0 storage binding");
+            return nullptr;
+        }
+    }
+
     // Check if already exists AND uses the same layout
     auto it = m_descriptorSets.find(materialName);
     if (it != m_descriptorSets.end() && it->second->isValid) {
@@ -431,11 +492,22 @@ MaterialDescriptorSet *MaterialDescriptorManager::GetOrCreateDescriptorSet(const
         const bool needsBindlessTextureUBO = m_bindlessMaterialMode && program.UsesBindlessTextureABI();
         const bool hasBindlessTextureUBO = it->second->textureIndexUBO && it->second->textureIndexUBO->IsValid();
         const bool hasSameTextureABI = it->second->usesBindlessTextureABI == needsBindlessTextureUBO;
+        bool hasSameStorageBuffers = true;
+        for (const auto &binding : program.GetDescriptorBindings()) {
+            if (binding.set != 0 || binding.type != VK_DESCRIPTOR_TYPE_STORAGE_BUFFER)
+                continue;
+            const auto current = material.GetBuffer(binding.name);
+            const auto published = it->second->storageBufferBindings.find(binding.binding);
+            if ((published == it->second->storageBufferBindings.end() ? nullptr : published->second) != current) {
+                hasSameStorageBuffers = false;
+                break;
+            }
+        }
 
         // CRITICAL: Must verify layout matches - shader may have changed
         if (it->second->layout == requiredLayout && needsMaterialUBO == hasMaterialUBO &&
             needsVertexMaterialUBO == hasVertexMaterialUBO && needsBindlessTextureUBO == hasBindlessTextureUBO &&
-            hasSameTextureABI) {
+            hasSameTextureABI && hasSameStorageBuffers) {
             return it->second.get();
         } else {
             INXLOG_INFO("Material '", materialName, "' descriptor requirements changed, recreating descriptor set");
@@ -468,7 +540,7 @@ MaterialDescriptorSet *MaterialDescriptorManager::GetOrCreateDescriptorSet(const
     matDescSet->descriptorSet = matDescSet->descriptorLease.set;
 
     // Track this handle so callers can verify it's still live before binding.
-    m_liveDescriptorHandles.insert(reinterpret_cast<uint64_t>(matDescSet->descriptorSet));
+    m_liveDescriptorHandles.emplace(reinterpret_cast<uint64_t>(matDescSet->descriptorSet), matDescSet.get());
 
     // Create material UBO if shader has one
     const MaterialUBOLayout *uboLayout = program.GetMaterialUBOLayout();
@@ -509,6 +581,16 @@ MaterialDescriptorSet *MaterialDescriptorManager::GetOrCreateDescriptorSet(const
     }
 
     // Update descriptor bindings
+    for (const auto &binding : matDescSet->bindings) {
+        if (binding.set != 0 || binding.type != VK_DESCRIPTOR_TYPE_STORAGE_BUFFER)
+            continue;
+        if (binding.descriptorCount != 1) {
+            INXLOG_ERROR("Material storage-buffer arrays are not supported for binding '", binding.name, "'");
+            continue;
+        }
+        if (auto buffer = material.GetBuffer(binding.name))
+            matDescSet->storageBufferBindings[binding.binding] = std::move(buffer);
+    }
     if (!UpdateDescriptorBindings(*matDescSet, program)) {
         m_liveDescriptorHandles.erase(reinterpret_cast<uint64_t>(matDescSet->descriptorSet));
         RetireDescriptorSet(std::shared_ptr<MaterialDescriptorSet>(std::move(matDescSet)));
@@ -647,20 +729,34 @@ MaterialDescriptorSet *MaterialDescriptorManager::GetOrCreateRendererDescriptorS
     const InxMaterial &material, const ShaderProgram &program,
     const std::shared_ptr<const RendererParameterBlock> &parameters)
 {
-    if (!parameters || parameters->properties.empty())
+    if (!parameters || (parameters->properties.empty() && parameters->buffers.empty()))
         return GetOrCreateDescriptorSet(material, program);
 
-    MaterialDescriptorSet *base = GetOrCreateDescriptorSet(material, program);
+    // Every compatible material pass borrows the Forward set-0 ABI. Building
+    // an override from the active pass layout would replace the material's
+    // authoritative descriptor whenever a non-primary camera/pass consumes a
+    // short-lived payload. Keep one owner/layout and bind that publication in
+    // all reflection-compatible pass pipelines.
+    const ShaderProgram *baseProgram = material.GetPassShaderProgram(ShaderCompileTarget::Forward);
+    if (!baseProgram)
+        baseProgram = &program;
+    MaterialDescriptorSet *base = GetOrCreateDescriptorSet(material, *baseProgram);
     if (!base || !base->isValid)
         return nullptr;
-    const VkDescriptorSetLayout layout = program.GetDescriptorSetLayout(0);
+    const VkDescriptorSetLayout layout = base->layout;
     const std::string key = material.GetMaterialKey() + "|" + std::to_string(reinterpret_cast<uintptr_t>(layout)) +
                             "|" + std::to_string(reinterpret_cast<uintptr_t>(parameters.get())) + "|" +
                             std::to_string(material.GetVersion()) + "|" +
                             std::to_string(reinterpret_cast<uintptr_t>(base->descriptorSet));
     const auto cached = m_rendererDescriptorSets.find(key);
-    if (cached != m_rendererDescriptorSets.end() && cached->second.descriptor && cached->second.descriptor->isValid)
-        return cached->second.descriptor.get();
+    if (cached != m_rendererDescriptorSets.end() && cached->second.descriptor && cached->second.descriptor->isValid) {
+        // The address is part of the key for speed, but allocators may reuse an
+        // expired block's address. Confirm ownership before accepting a hit so
+        // a later draw can never inherit the retired payload.
+        const auto owner = cached->second.parameters.lock();
+        if (owner && owner.get() == parameters.get())
+            return cached->second.descriptor.get();
+    }
 
     // A block is immutable. A new block identity is the publication boundary;
     // a changed base material or descriptor replaces only this block/layout
@@ -684,6 +780,7 @@ MaterialDescriptorSet *MaterialDescriptorManager::GetOrCreateRendererDescriptorS
     descriptor->bindings = program.GetDescriptorBindings();
     descriptor->usesBindlessTextureABI = base->usesBindlessTextureABI;
     descriptor->textureBindings = base->textureBindings;
+    descriptor->storageBufferBindings = base->storageBufferBindings;
     descriptor->hasPendingTextures = base->hasPendingTextures;
 
     const auto arena =
@@ -757,6 +854,19 @@ MaterialDescriptorSet *MaterialDescriptorManager::GetOrCreateRendererDescriptorS
         }
     }
 
+    for (const auto &[name, buffer] : parameters->buffers) {
+        const auto declaredBinding =
+            std::find_if(descriptor->bindings.begin(), descriptor->bindings.end(), [&](const auto &binding) {
+                return binding.set == 0 && binding.type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER && binding.name == name;
+            });
+        if (declaredBinding == descriptor->bindings.end() || declaredBinding->descriptorCount != 1) {
+            INXLOG_ERROR("Renderer parameter buffer '", name, "' does not match one reflected storage binding");
+            RetireDescriptorSet(std::shared_ptr<MaterialDescriptorSet>(std::move(descriptor)));
+            return nullptr;
+        }
+        descriptor->storageBufferBindings[declaredBinding->binding] = buffer;
+    }
+
     if (descriptor->usesBindlessTextureABI) {
         MaterialUBOLayout indexLayout{};
         if (const auto *reflected = program.GetBindlessTextureIndexLayout())
@@ -786,9 +896,14 @@ MaterialDescriptorSet *MaterialDescriptorManager::GetOrCreateRendererDescriptorS
         RetireDescriptorSet(std::shared_ptr<MaterialDescriptorSet>(std::move(descriptor)));
         return nullptr;
     }
+    if (descriptor->hasUnboundRequiredBuffers) {
+        INXLOG_ERROR("Renderer parameter block does not bind every reflected material storage buffer");
+        RetireDescriptorSet(std::shared_ptr<MaterialDescriptorSet>(std::move(descriptor)));
+        return nullptr;
+    }
 
     descriptor->isValid = true;
-    m_liveDescriptorHandles.insert(reinterpret_cast<uint64_t>(descriptor->descriptorSet));
+    m_liveDescriptorHandles.emplace(reinterpret_cast<uint64_t>(descriptor->descriptorSet), descriptor.get());
     MaterialDescriptorSet *result = descriptor.get();
     RendererDescriptorEntry entry;
     entry.parameters = parameters;
@@ -802,6 +917,7 @@ bool MaterialDescriptorManager::UpdateDescriptorBindings(MaterialDescriptorSet &
                                                          const ShaderProgram &program)
 {
     matDescSet.bufferBindings.clear();
+    matDescSet.hasUnboundRequiredBuffers = false;
     std::vector<VkWriteDescriptorSet> writes;
     std::vector<VkDescriptorBufferInfo> bufferInfos;
     std::vector<VkDescriptorImageInfo> imageInfos;
@@ -856,6 +972,20 @@ bool MaterialDescriptorManager::UpdateDescriptorBindings(MaterialDescriptorSet &
 
             AppendBufferWrite(writes, bufferInfos, matDescSet.descriptorSet, binding.binding, binding.type, bufferInfo,
                               binding.descriptorCount);
+            matDescSet.bufferBindings[binding.binding] = bufferInfo;
+        } else if (binding.type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) {
+            const auto storage = matDescSet.storageBufferBindings.find(binding.binding);
+            if (binding.descriptorCount != 1 || storage == matDescSet.storageBufferBindings.end() ||
+                !storage->second || !m_bufferResolver) {
+                matDescSet.hasUnboundRequiredBuffers = true;
+                continue;
+            }
+            const VkDescriptorBufferInfo bufferInfo = m_bufferResolver(storage->second);
+            if (bufferInfo.buffer == VK_NULL_HANDLE || bufferInfo.range == 0) {
+                INXLOG_ERROR("Material storage buffer '", binding.name, "' is not resident on this render device");
+                return false;
+            }
+            AppendBufferWrite(writes, bufferInfos, matDescSet.descriptorSet, binding.binding, binding.type, bufferInfo);
             matDescSet.bufferBindings[binding.binding] = bufferInfo;
         } else if (binding.type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) {
             if (matDescSet.usesBindlessTextureABI)
@@ -959,6 +1089,17 @@ bool MaterialDescriptorManager::PublishDescriptorReplacement(
                               binding.descriptorCount);
             continue;
         }
+        if (binding.type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) {
+            const auto buffer = descriptorSet.bufferBindings.find(binding.binding);
+            if (buffer == descriptorSet.bufferBindings.end() || buffer->second.buffer == VK_NULL_HANDLE) {
+                // An incomplete base material descriptor remains incomplete;
+                // renderer parameter publications may provide this binding.
+                continue;
+            }
+            AppendBufferWrite(writes, bufferInfos, replacement.set, binding.binding, binding.type, buffer->second,
+                              binding.descriptorCount);
+            continue;
+        }
         if (binding.type != VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) {
             INXLOG_ERROR("Cannot publish material descriptor replacement: unsupported set-0 descriptor type ",
                          static_cast<int>(binding.type), " at binding ", binding.binding);
@@ -1039,7 +1180,7 @@ bool MaterialDescriptorManager::PublishDescriptorReplacement(
         }
     }
     m_liveDescriptorHandles.erase(reinterpret_cast<uint64_t>(retiredSet));
-    m_liveDescriptorHandles.insert(reinterpret_cast<uint64_t>(replacement.set));
+    m_liveDescriptorHandles.emplace(reinterpret_cast<uint64_t>(replacement.set), &descriptorSet);
     m_descriptorManager->Retire(retiredLease);
     if (m_deletionQueue && !retiredTextureBindings.empty()) {
         m_deletionQueue->Retire([bindings = std::move(retiredTextureBindings)]() mutable { bindings.clear(); });
@@ -1322,6 +1463,25 @@ void MaterialDescriptorManager::RemoveDescriptorSet(const std::string &materialN
         rendererIt = m_rendererDescriptorSets.erase(rendererIt);
         RetireDescriptorSet(std::move(retiredEntry));
     }
+}
+
+size_t MaterialDescriptorManager::CollectExpiredRendererDescriptorSets()
+{
+    size_t retiredCount = 0;
+    for (auto it = m_rendererDescriptorSets.begin(); it != m_rendererDescriptorSets.end();) {
+        if (!it->second.parameters.expired()) {
+            ++it;
+            continue;
+        }
+        auto retired = std::shared_ptr<MaterialDescriptorSet>(std::move(it->second.descriptor));
+        if (retired && retired->descriptorSet != VK_NULL_HANDLE)
+            m_liveDescriptorHandles.erase(reinterpret_cast<uint64_t>(retired->descriptorSet));
+        it = m_rendererDescriptorSets.erase(it);
+        if (retired)
+            RetireDescriptorSet(std::move(retired));
+        ++retiredCount;
+    }
+    return retiredCount;
 }
 
 void MaterialDescriptorManager::RetireDescriptorSet(std::shared_ptr<MaterialDescriptorSet> descriptorSet)

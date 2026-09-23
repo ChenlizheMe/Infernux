@@ -475,6 +475,21 @@ class SceneRenderGraph
         }
     };
 
+    struct MaterialBufferRead
+    {
+        std::string passName;
+        std::shared_ptr<rhi::ComputeBuffer> buffer;
+        bool operator==(const MaterialBufferRead &other) const
+        {
+            return passName == other.passName && buffer == other.buffer;
+        }
+    };
+
+    /// Latest background-compute publication consumed by this compiled view.
+    /// The buffer owners are retained by m_materialBufferReads; callers use
+    /// this ticket to add the frame's external compute->graphics wait.
+    [[nodiscard]] rhi::SubmissionTicket GetLatestMaterialBufferWriteSubmission() const noexcept;
+
     /// Classify an implicit material/UI sample against explicit same-graph
     /// writers. Sampling before a local producer or in its writing pass is
     /// invalid; false means the frame schedule must supply an external producer.
@@ -871,6 +886,7 @@ class SceneRenderGraph
     std::unordered_map<std::string, TemporalHistoryResource> m_temporalHistories;
     std::unordered_map<const rhi::RenderTexture *, uint64_t> m_persistentTextureRevisions;
     std::vector<MaterialTextureRead> m_materialTextureReads;
+    std::vector<MaterialBufferRead> m_materialBufferReads;
     std::unordered_map<std::string, std::vector<std::shared_ptr<const rhi::RenderTextureGeneration>>>
         m_drawTextureInputs;
 

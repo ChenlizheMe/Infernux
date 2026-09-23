@@ -5,6 +5,11 @@
 #include <memory>
 #include <unordered_map>
 
+namespace infernux::rhi
+{
+class ComputeBuffer;
+}
+
 namespace infernux
 {
 
@@ -24,6 +29,7 @@ class InxMaterial;
 struct RendererParameterBlock
 {
     std::unordered_map<std::string, MaterialProperty> properties;
+    std::unordered_map<std::string, std::shared_ptr<rhi::ComputeBuffer>> buffers;
     uint64_t revision = 0;
 };
 
@@ -41,13 +47,16 @@ class DrawParameterBlock
     void SetColor(const std::string &name, const glm::vec4 &value);
     void SetInt(const std::string &name, int value);
     void SetMatrix(const std::string &name, const glm::mat4 &value);
+    void SetFloatArray(const std::string &name, const std::vector<float> &values);
+    void SetVector4Array(const std::string &name, const std::vector<glm::vec4> &values);
     void SetTexture(const std::string &name, const std::string &textureGuid);
+    void SetBuffer(const std::string &name, std::shared_ptr<rhi::ComputeBuffer> buffer);
     bool Remove(const std::string &name);
     void Clear();
 
     [[nodiscard]] size_t Size() const noexcept
     {
-        return m_properties.size();
+        return m_properties.size() + m_buffers.size();
     }
 
     [[nodiscard]] std::shared_ptr<const RendererParameterBlock> Capture(const InxMaterial &material) const;
@@ -55,6 +64,12 @@ class DrawParameterBlock
   private:
     void Set(MaterialProperty property);
     std::unordered_map<std::string, MaterialProperty> m_properties;
+    std::unordered_map<std::string, std::shared_ptr<rhi::ComputeBuffer>> m_buffers;
+    // Capture reuses an immutable publication while its reflected values are
+    // unchanged. Besides avoiding per-draw allocations, pointer identity is
+    // the renderer's batching key, so this keeps repeated draws using one
+    // DrawParameterBlock on the instanced path.
+    mutable std::weak_ptr<const RendererParameterBlock> m_cachedPublication;
 };
 
 } // namespace infernux

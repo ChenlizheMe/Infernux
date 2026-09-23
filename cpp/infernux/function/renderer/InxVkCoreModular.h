@@ -62,6 +62,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -226,6 +227,8 @@ class InxVkCoreModular
     [[nodiscard]] bool HasShaderProgramArtifact(const ShaderProgramKey &programKey) const;
     [[nodiscard]] std::shared_ptr<const ShaderProgramArtifact>
     CopyShaderProgramArtifact(const ShaderStagePair &stages) const;
+    [[nodiscard]] const ShaderProgramArtifact *ResolveShaderProgramArtifact(
+        const std::shared_ptr<InxMaterial> &material, const ShaderStagePair &stages);
     void SetShaderProgramArtifactResolver(std::function<void(const std::shared_ptr<InxMaterial> &)> resolver)
     {
         m_shaderProgramArtifactResolver = std::move(resolver);
@@ -676,6 +679,21 @@ class InxVkCoreModular
     [[nodiscard]] const FrameSubmissionTelemetry &GetFrameSubmissionTelemetry() const noexcept
     {
         return m_frameSubmissionTelemetry;
+    }
+
+    /// Register a background compute publication consumed by one of this
+    /// frame's composed render graphs. Calls accumulate across Scene/Game
+    /// views; DrawFrame emits one wait at the latest serial and the union of
+    /// destination stages.
+    void RegisterFrameComputeReadDependency(rhi::SubmissionTicket ticket, VkPipelineStageFlags stages)
+    {
+        if (!ticket.IsValid())
+            return;
+        if (ticket.device != m_backend.Device().GetDeviceId() || ticket.queue != rhi::QueueRole::Compute)
+            throw std::invalid_argument("Frame storage-buffer dependency does not belong to the renderer compute queue");
+        if (!m_frameComputeReadTicket.IsValid() || ticket.serial > m_frameComputeReadTicket.serial)
+            m_frameComputeReadTicket = ticket;
+        m_frameComputeReadStages |= stages;
     }
 
     /// Optional GPU work that precedes scene rendering. It is submitted as a
@@ -1141,6 +1159,8 @@ class InxVkCoreModular
     vk::VulkanSubmissionExecutor m_submissionExecutor;
     vk::VulkanComputeQueue m_computeQueue;
     FrameSubmissionTelemetry m_frameSubmissionTelemetry;
+    rhi::SubmissionTicket m_frameComputeReadTicket{};
+    VkPipelineStageFlags m_frameComputeReadStages = 0;
     std::vector<std::unique_ptr<vk::RenderGraph>> m_additionalGuiRenderGraphs;
     std::vector<bool> m_guiRenderGraphReady;
 #if INFERNUX_FRAME_PROFILE
