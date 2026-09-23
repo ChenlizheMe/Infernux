@@ -100,9 +100,14 @@ def test_instrumentation_result_fails_closed(output: str):
 def test_parser_uses_current_android_fixture_contract():
     module = _module()
 
-    arguments = module._parser().parse_args(["input.apk"])
+    with pytest.raises(SystemExit):
+        module._parser().parse_args(["input.apk"])
 
-    assert arguments.target_package == "com.infernux.bootstrap"
+    arguments = module._parser().parse_args(
+        ["input.apk", "--target-package", "com.infernux.infernux041labv2"]
+    )
+
+    assert arguments.target_package == "com.infernux.infernux041labv2"
     assert arguments.instrumentation_package == "com.infernux.acceptance.input"
     assert arguments.wait_milliseconds == 7000
     assert module._DEFAULT_REQUIRED_LOGS == (

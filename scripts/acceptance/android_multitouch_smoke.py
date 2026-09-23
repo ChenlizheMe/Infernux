@@ -244,7 +244,6 @@ def run_smoke(arguments: argparse.Namespace) -> MultiTouchResult:
         automated_install_approval = install_apk(
             adb,
             arguments.instrumentation_apk,
-            replace=False,
             approve_oem_prompt=not device.emulator,
         )
         installed = True
@@ -353,7 +352,11 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--serial")
     parser.add_argument("--report", type=Path)
     parser.add_argument("--logcat-report", type=Path)
-    parser.add_argument("--target-package", default="com.infernux.bootstrap")
+    parser.add_argument(
+        "--target-package",
+        required=True,
+        help="Installed Player applicationId (for example com.infernux.infernux041labv2)",
+    )
     parser.add_argument(
         "--instrumentation-package", default="com.infernux.acceptance.input"
     )

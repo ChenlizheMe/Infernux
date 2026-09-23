@@ -8,6 +8,7 @@ fi
 
 python_executable="$1"
 mode="${2:-all}"
+target_package="com.infernux.infernuxplatformfixture"
 if [[ ! -x "$python_executable" ]]; then
     echo "Python executable is unavailable: $python_executable" >&2
     exit 2
@@ -69,7 +70,7 @@ if [[ "$mode" == "build" || "$mode" == "all" ]]; then
     gradle -p tests/android/input_instrumentation \
         --no-daemon \
         --console=plain \
-        -PinfernuxTargetPackage=com.infernux.bootstrap \
+        -PinfernuxTargetPackage="$target_package" \
         :app:assembleDebug
 fi
 
@@ -97,6 +98,7 @@ if [[ "$mode" == "smoke" || "$mode" == "all" ]]; then
     "$python_executable" scripts/acceptance/android_player_smoke.py \
         out/acceptance/android/InfernuxPlatformFixture-android-x86_64-debug.apk \
         --serial emulator-5554 \
+        --package "$target_package" \
         --no-back \
         --startup-timeout 240 \
         --expect-landscape \
@@ -106,6 +108,7 @@ if [[ "$mode" == "smoke" || "$mode" == "all" ]]; then
     "$python_executable" scripts/acceptance/android_multitouch_smoke.py \
         tests/android/input_instrumentation/app/build/outputs/apk/debug/app-debug.apk \
         --serial emulator-5554 \
+        --target-package "$target_package" \
         --wait-milliseconds 20000 \
         --report out/test-results/android-multitouch-smoke.json \
         --logcat-report out/test-results/android-multitouch-smoke.logcat.txt
