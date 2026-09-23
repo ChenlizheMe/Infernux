@@ -441,20 +441,7 @@ bool InxVkCoreModular::RecreatePresentationSurface(const std::function<bool(VkIn
     if (!createSurface || !m_backend.Device().IsValid() || m_instance == VK_NULL_HANDLE)
         return false;
 
-    // Mobile surface replacement is rare and is a hard presentation boundary.
-    // A full drain is intentional: no command may retain an image from the
-    // Android SurfaceView that was destroyed while the app was backgrounded.
-    m_backend.Device().WaitIdle();
-    ReleaseMaterialPassResolutionCache();
-    DestroyGuiRenderGraphs();
-    m_depthImage.reset();
-    m_backend.Presentation().Destroy();
-
-    m_backend.Device().SetExternalSurface(VK_NULL_HANDLE);
-    if (m_surface != VK_NULL_HANDLE) {
-        SDL_Vulkan_DestroySurface(m_instance, m_surface, nullptr);
-        m_surface = VK_NULL_HANDLE;
-    }
+    SuspendPresentationSurface();
 
     VkSurfaceKHR replacement = VK_NULL_HANDLE;
     if (!createSurface(m_instance, &replacement) || replacement == VK_NULL_HANDLE) {
@@ -487,6 +474,29 @@ bool InxVkCoreModular::RecreatePresentationSurface(const std::function<bool(VkIn
     CreateDepthResources();
     INXLOG_INFO("Platform presentation surface recreated: ", extent.width, "x", extent.height);
     return true;
+}
+
+void InxVkCoreModular::SuspendPresentationSurface()
+{
+    // SurfaceView destruction is a hard ownership boundary. Finish every
+    // command that can reference a presentation image before releasing any
+    // swapchain, framebuffer, or VkSurfaceKHR object. The resume path creates
+    // one entirely new generation; no old image or semaphore is retried.
+    if (m_backend.Device().IsValid()) {
+        m_backend.Device().WaitIdle();
+        ReleaseMaterialPassResolutionCache();
+        DestroyGuiRenderGraphs();
+        m_depthImage.reset();
+        auto &presentation = m_backend.Presentation();
+        presentation.SetSkipWaitIdle(true);
+        presentation.Destroy();
+        presentation.SetSkipWaitIdle(false);
+        m_backend.Device().SetExternalSurface(VK_NULL_HANDLE);
+    }
+    if (m_surface != VK_NULL_HANDLE) {
+        SDL_Vulkan_DestroySurface(m_instance, m_surface, nullptr);
+        m_surface = VK_NULL_HANDLE;
+    }
 }
 
 void InxVkCoreModular::PreparePipeline()

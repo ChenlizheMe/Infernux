@@ -167,6 +167,11 @@ class InxVkCoreModular
     [[nodiscard]] bool
     RecreatePresentationSurface(const std::function<bool(VkInstance, VkSurfaceKHR *)> &createSurface);
 
+    /// Close the current platform presentation generation after a hard GPU
+    /// drain. Android calls this from its SDL-thread pause boundary before the
+    /// UI thread is allowed to release the backing ANativeWindow.
+    void SuspendPresentationSurface();
+
     /**
      * @brief Prepare graphics pipeline
      */
