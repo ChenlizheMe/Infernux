@@ -62,6 +62,10 @@ class Engine():
         self._render_submission_frame = 0
         self._gizmos_collector = None  # lazy-init GizmosCollector
         self._scene_view_visible = self._mode == RuntimeMode.Graphical and not _PLAYER_MODE
+        # Authoritative Scene View Gizmos switch. Keep this Python-side so it
+        # gates user callbacks and geometry construction before any native or
+        # GPU work is recorded.
+        self._show_gizmos = True
         self._next_reload_poll_time = 0.0
         self._next_gizmo_collect_time = 0.0
         # Script candidates are prepared off-thread. Publish completed work at
@@ -425,7 +429,10 @@ class Engine():
             # Gizmos describe the exact world which is about to render.  This
             # barrier is after FixedUpdate/physics/Update/LateUpdate and after
             # their compute submissions, but before render-list extraction.
-            if getattr(self, "_scene_view_visible", False):
+            if (
+                getattr(self, "_scene_view_visible", False)
+                and getattr(self, "_show_gizmos", True)
+            ):
                 now = time.monotonic()
                 is_playing = bool(scene_manager and scene_manager.is_playing())
                 interval = (
@@ -816,8 +823,11 @@ class Engine():
         if not native:
             self._gizmos_uploaded = False
             return
-        native.clear_component_gizmos()
-        native.clear_component_gizmo_icons()
+        collector = getattr(self, "_gizmos_collector", None)
+        if collector is not None:
+            collector.retire_uploaded(native)
+        else:
+            native.clear_component_gizmos()
         self._gizmos_uploaded = False
 
     def set_scene_view_visible(self, visible: bool):
@@ -833,6 +843,48 @@ class Engine():
             self._next_gizmo_collect_time = 0.0
         else:
             self._clear_uploaded_gizmos()
+
+    def set_show_gizmos(self, show: bool):
+        """Enable or disable all component Gizmos in the Scene View.
+
+        Disabling is a collection gate, not only a render mask: Python Gizmo
+        callbacks, resident compute expansion, packing, and GPU uploads all
+        stop immediately. Editor transform tools remain available because
+        they are a separate native interaction pass.
+        """
+        show = bool(show)
+        if self._show_gizmos == show:
+            return
+        self._show_gizmos = show
+        if show:
+            self._next_gizmo_collect_time = 0.0
+        else:
+            self._clear_uploaded_gizmos()
+
+    def is_show_gizmos(self) -> bool:
+        """Return whether component-authored Scene View Gizmos are enabled."""
+        return bool(self._show_gizmos)
+
+    def get_gizmo_collection_observation(self) -> dict:
+        """Return the last CPU collection/upload marker for acceptance tooling.
+
+        GPU pass timing intentionally is not inferred here; renderer profiling
+        remains the authority for draw execution and waits.
+        """
+        collector = getattr(self, "_gizmos_collector", None)
+        observation = getattr(collector, "last_observation", None)
+        payload = {
+            "enabled": bool(getattr(self, "_show_gizmos", True)),
+            "scene_view_visible": bool(
+                getattr(self, "_scene_view_visible", False)
+            ),
+            "uploaded": bool(getattr(self, "_gizmos_uploaded", False)),
+        }
+        if observation is None:
+            return payload
+        for name in observation.__dataclass_fields__:
+            payload[name] = getattr(observation, name)
+        return payload
     
     def get_play_mode_manager(self) -> "PlayModeManager":
         """Get the play mode manager for controlling play/pause/stop."""

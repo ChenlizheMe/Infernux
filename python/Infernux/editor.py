@@ -15,6 +15,11 @@ from .engine.interaction.shortcuts import (
     KeyChord, ShortcutBinding, ShortcutModifier, ShortcutPhase,
     ShortcutRouter, ShortcutScope,
 )
+from .engine.interaction.handles import (
+    EditorHandleContext, EditorHandleKind, EditorHandleProvider,
+    EditorHandleRegistry, EditorHandleSnapshot, HandleRegistration,
+    register_handle_provider,
+)
 
 __all__ = (
     "CommandContext", "CommandResult", "CommandSource", "CommandStatus",
@@ -30,7 +35,9 @@ __all__ = (
     "load_data_asset", "set_data_asset_fields", "save_data_asset",
     "add_component",
     "PropertyModification", "get_property_modifications", "is_property_override",
-    "defer",
+    "defer", "EditorHandleContext", "EditorHandleKind", "EditorHandleProvider",
+    "EditorHandleRegistry", "EditorHandleSnapshot", "HandleRegistration",
+    "register_handle_provider",
 )
 
 

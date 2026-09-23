@@ -14,6 +14,15 @@ from .engine.interaction.shortcuts import (
     ShortcutRouter as ShortcutRouter,
     ShortcutScope as ShortcutScope,
 )
+from .engine.interaction.handles import (
+    EditorHandleContext as EditorHandleContext,
+    EditorHandleKind as EditorHandleKind,
+    EditorHandleProvider as EditorHandleProvider,
+    EditorHandleRegistry as EditorHandleRegistry,
+    EditorHandleSnapshot as EditorHandleSnapshot,
+    HandleRegistration as HandleRegistration,
+    register_handle_provider as register_handle_provider,
+)
 
 __all__: tuple[str, ...]
 

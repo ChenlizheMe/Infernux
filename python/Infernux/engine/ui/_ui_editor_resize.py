@@ -19,7 +19,7 @@ from typing import Optional
 from Infernux.lib import InxGUIContext
 from Infernux.engine.i18n import t
 from Infernux.engine.project_context import get_project_root
-from .ui_rect_manipulation import prepare_layout_resize
+from .ui_rect_manipulation import apply_layout_size, prepare_layout_resize
 from Infernux.ui.inx_ui_screen_component import clear_rect_cache
 from Infernux.ui.ui_texture_cache import get_shared_cache as _get_tex_cache
 from Infernux.ui.ui_render_dispatch import dispatch as _ui_dispatch
@@ -129,8 +129,7 @@ class UIEditorResizeMixin:
         off_x, off_y = elem._rotated_corner_offset(new_w, new_h, fixed_idx)
         new_rx = fixed_cx - off_x
         new_ry = fixed_cy - off_y
-        elem.width = new_w
-        elem.height = new_h
+        apply_layout_size(elem, width=new_w, height=new_h)
         elem._set_layout_rect_origin(new_rx, new_ry, cw, ch)
 
     def _apply_drag_suppressed(self, vis_x, vis_y, ref_w, ref_h):

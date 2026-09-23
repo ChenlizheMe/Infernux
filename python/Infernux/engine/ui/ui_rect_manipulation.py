@@ -44,6 +44,32 @@ def prepare_layout_resize(component, *, width: bool = True, height: bool = True)
         component.resize_mode = TextResizeMode.FixedSize
 
 
+def apply_layout_size(
+    component,
+    *,
+    width: float | None = None,
+    height: float | None = None,
+) -> None:
+    """Commit a direct rectangle resize through the shared authoring rule.
+
+    Views own pointer projection and handle visuals.  They do not independently
+    decide how a direct size edit changes layout authority.
+    """
+    touches_width = width is not None
+    touches_height = height is not None
+    if not touches_width and not touches_height:
+        return
+    prepare_layout_resize(
+        component,
+        width=touches_width,
+        height=touches_height,
+    )
+    if touches_width:
+        component.width = float(width)
+    if touches_height:
+        component.height = float(height)
+
+
 def resolve_world_ui_frame(component):
     """Resolve one free world UI element into a Scene-tool world frame."""
     if component is None or not component.is_world_space():

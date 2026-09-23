@@ -75,6 +75,15 @@ from .shortcuts import (
     ShortcutRouter,
     ShortcutScope,
 )
+from .handles import (
+    EditorHandleContext,
+    EditorHandleKind,
+    EditorHandleProvider,
+    EditorHandleRegistry,
+    EditorHandleSnapshot,
+    HandleRegistration,
+    register_handle_provider,
+)
 from .command_palette import (
     COMMAND_PALETTE_CONTEXT_ID,
     COMMAND_PALETTE_MODAL_ID,
@@ -350,6 +359,13 @@ __all__ = [
     "ShortcutRouteStatus",
     "ShortcutRouter",
     "ShortcutScope",
+    "EditorHandleContext",
+    "EditorHandleKind",
+    "EditorHandleProvider",
+    "EditorHandleRegistry",
+    "EditorHandleSnapshot",
+    "HandleRegistration",
+    "register_handle_provider",
     "COMMAND_PALETTE_CONTEXT_ID",
     "COMMAND_PALETTE_MODAL_ID",
     "CommandPaletteEntry",

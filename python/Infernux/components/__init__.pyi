@@ -137,6 +137,11 @@ from .decorators import (
     HelpURL as HelpURL,
     Icon as Icon,
 )
+from .transform_authoring import (
+    DrivenTransformProperties as DrivenTransformProperties,
+    drives_transform as drives_transform,
+    DrivesTransform as DrivesTransform,
+)
 
 __all__ = [
     "InxComponent",
@@ -220,6 +225,9 @@ __all__ = [
     "AddComponentMenu",
     "HelpURL",
     "Icon",
+    "DrivenTransformProperties",
+    "drives_transform",
+    "DrivesTransform",
     "SpiritAnimator",
     "SkeletalAnimator",
     "TimelineAction",

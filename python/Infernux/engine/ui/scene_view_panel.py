@@ -298,7 +298,7 @@ class SceneViewPanel(
 
         self._particle_preview_selection_service = SelectionService.instance()
         self._particle_preview_selection_service.add_listener(
-            self._on_particle_preview_selection_changed
+            self._on_scene_view_selection_changed
         )
         if self._play_mode_manager is not None:
             self._play_mode_manager.add_state_change_listener(
@@ -309,9 +309,10 @@ class SceneViewPanel(
     def on_disable(self):
         """Panel closed — shrink render target to save GPU memory."""
         self._interrupt_gizmo_drag(commit=True)
+        self._cancel_custom_handle_capture()
         selection = getattr(self, "_particle_preview_selection_service", None)
         if selection is not None:
-            selection.remove_listener(self._on_particle_preview_selection_changed)
+            selection.remove_listener(self._on_scene_view_selection_changed)
         self._particle_preview_selection_service = None
         if self._play_mode_manager is not None:
             self._play_mode_manager.remove_state_change_listener(
@@ -330,6 +331,7 @@ class SceneViewPanel(
     def _on_not_visible(self, ctx):
         """Window collapsed/tabbed out — mark invisible for C++ side."""
         self._interrupt_gizmo_drag(commit=True)
+        self._cancel_custom_handle_capture()
         self._particle_preview_resize_drag = False
         if self._engine:
             self._engine.set_scene_view_visible(False)
@@ -371,6 +373,7 @@ class SceneViewPanel(
         focused = ClosablePanel.get_active_view_id() == self.window_id
         if not focused:
             self._interrupt_gizmo_drag(commit=True)
+            self._cancel_custom_handle_capture()
         if not focused and self._camera_capture_active:
             self._is_camera_dragging = False
             self._end_camera_capture(restore_cursor=False)
@@ -379,6 +382,13 @@ class SceneViewPanel(
             if self._on_focus_gained:
                 self._on_focus_gained()
         self._was_focused = focused
+
+    @staticmethod
+    def _cancel_custom_handle_capture() -> bool:
+        from Infernux.engine.interaction.handles import EditorHandleRegistry
+
+        registry = EditorHandleRegistry._instance
+        return bool(registry is not None and registry.cancel_capture())
 
     def on_render_content(self, ctx: InxGUIContext):
         delta_time = getattr(self, '_delta_time', 0.016)

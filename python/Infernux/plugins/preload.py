@@ -1163,9 +1163,12 @@ def _remove_editor_contribution_owner(owner: str, *, runtime: bool) -> bool:
     if not PanelRegistry.remove_owner(owner):
         return False
     from Infernux.engine.interaction.commands import EditorCommandRegistry
+    from Infernux.engine.interaction.handles import EditorHandleRegistry
     from Infernux.engine.interaction.shortcuts import ShortcutRouter
 
     # Do not instantiate editor services solely to tear a preload down.
+    if EditorHandleRegistry._instance is not None:
+        EditorHandleRegistry._instance.unregister_owner(owner)
     if ShortcutRouter._instance is not None:
         ShortcutRouter._instance.unregister_owner(owner)
     if EditorCommandRegistry._instance is not None:
