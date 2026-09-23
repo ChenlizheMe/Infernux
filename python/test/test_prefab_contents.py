@@ -299,14 +299,19 @@ def test_existing_target_requires_explicit_load_and_prefab_mode_closed(contents_
     from types import SimpleNamespace
     from Infernux.engine.scene_manager import SceneFileManager
 
-    _, folder = contents_project
+    core, folder = contents_project
     path = folder / "Guard.prefab"
     root = make_asset(scene, path)
     before = path.read_bytes()
     with pytest.raises(FileExistsError, match="Load the target"):
         editor.save_as_prefab_asset(root, path)
+    database = core.project_assets.asset_database
     monkeypatch.setattr(SceneFileManager, "_instance", SimpleNamespace(
-        is_prefab_mode=True, prefab_mode_path=str(path)))
+        is_prefab_mode=True,
+        prefab_mode_path=str(path),
+        prefab_mode_guid=str(database.get_guid_from_path(str(path))),
+        _asset_database=database,
+    ))
     with pytest.raises(RuntimeError, match="Close this asset"):
         editor.load_prefab_contents(path)
     assert path.read_bytes() == before
@@ -395,6 +400,32 @@ def test_deleted_source_is_not_recreated_by_stale_contents(contents_project, sce
         with pytest.raises(FileNotFoundError):
             editor.save_as_prefab_asset(root, path)
         assert not path.exists()
+    finally:
+        editor.unload_prefab_contents(root)
+
+
+def test_loaded_contents_follow_prefab_guid_after_project_rename(contents_project, scene):
+    from Infernux.engine.interaction import SelectionDomain
+
+    core, folder = contents_project
+    core.panels.register_selection_authority("project", (SelectionDomain.ASSET,))
+    source = folder / "BeforeRename.prefab"
+    make_asset(scene, source)
+    root = editor.load_prefab_contents(source)
+    guid = str(core.project_assets.asset_database.get_guid_from_path(str(source)))
+    try:
+        destination = core.project_assets.rename(str(source), "AfterRename")
+        assert destination
+        from Infernux.engine.path_utils import same_path
+
+        assert same_path(
+            core.project_assets.asset_database.get_path_from_guid(guid),
+            destination,
+        )
+        root.name = "Renamed Contents"
+
+        assert editor.save_as_prefab_asset(root, destination) == destination
+        assert json.loads(Path(destination).read_text(encoding="utf-8"))["root_object"]["name"] == "Renamed Contents"
     finally:
         editor.unload_prefab_contents(root)
 

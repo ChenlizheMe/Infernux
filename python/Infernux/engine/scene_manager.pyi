@@ -140,8 +140,12 @@ class SceneFileManager:
         """True when editing a prefab."""
         ...
     @property
+    def prefab_mode_guid(self) -> str:
+        """GUID of the prefab being edited, or an empty string outside Prefab Mode."""
+        ...
+    @property
     def prefab_mode_path(self) -> Optional[str]:
-        """Path to the prefab being edited, or None."""
+        """Current filesystem projection of the prefab being edited, or None."""
         ...
     @property
     def prefab_envelope(self) -> dict:

@@ -814,11 +814,18 @@ class PrefabModeCommand(UndoCommand):
 
     marks_dirty: bool = False
 
-    def __init__(self, prefab_path: str, enter_mode: bool):
+    def __init__(self, prefab_guid: str, enter_mode: bool):
         action = "Enter Prefab Mode" if enter_mode else "Exit Prefab Mode"
         super().__init__(action)
-        self._prefab_path = prefab_path or ""
+        self._prefab_guid = str(prefab_guid or "").strip().casefold()
+        if not self._prefab_guid:
+            raise ValueError("Prefab Mode history requires an asset GUID")
         self._enter_mode = bool(enter_mode)
+
+    def _enter(self, sfm) -> bool:
+        database = getattr(sfm, "_asset_database", None)
+        path = str(database.get_path_from_guid(self._prefab_guid) or "").strip() if database else ""
+        return bool(path and sfm.open_prefab_mode(path, preserve_undo_history=True))
 
     def execute(self) -> None:
         from Infernux.engine.scene_manager import SceneFileManager
@@ -826,10 +833,7 @@ class PrefabModeCommand(UndoCommand):
         if not sfm:
             raise RuntimeError("Prefab Mode requires an active SceneFileManager")
         if self._enter_mode:
-            succeeded = sfm.open_prefab_mode(
-                self._prefab_path,
-                preserve_undo_history=True,
-            )
+            succeeded = self._enter(sfm)
         else:
             succeeded = sfm._do_exit_prefab_mode(preserve_undo_history=True)
         if not succeeded:
@@ -843,10 +847,7 @@ class PrefabModeCommand(UndoCommand):
         if self._enter_mode:
             succeeded = sfm._do_exit_prefab_mode(preserve_undo_history=True)
         else:
-            succeeded = sfm.open_prefab_mode(
-                self._prefab_path,
-                preserve_undo_history=True,
-            )
+            succeeded = self._enter(sfm)
         if not succeeded:
             raise RuntimeError(f"Undo {self.description} was rejected")
 

@@ -6,7 +6,7 @@ import os
 from typing import Any, Callable, Optional
 
 from Infernux.debug import Debug
-from Infernux.engine.path_utils import is_path_within, resolved_path, same_path
+from Infernux.engine.path_utils import is_path_within, resolved_path
 
 from .action_journal import ActionOrigin
 from .descriptors import SelectionTarget
@@ -141,8 +141,16 @@ class PrefabCommandService:
         prefab_path = self._resolve_path(object_id=object_id, path=path)
         if not prefab_path:
             return False
+        database = self._project_assets.asset_database
+        guid = (
+            str(database.get_guid_from_path(prefab_path) or "").strip().casefold()
+            if database
+            else ""
+        )
+        if not guid:
+            return False
         return self._navigation.locate(
-            SelectionTarget.asset(prefab_path),
+            SelectionTarget.asset(guid),
             owner_id="prefab",
             reason="prefab_locate",
             record_history=record_history,
@@ -163,14 +171,23 @@ class PrefabCommandService:
         scene_files = SceneFileManager.instance()
         if scene_files is None:
             return False
+        database = self._project_assets.asset_database
+        prefab_guid = (
+            str(database.get_guid_from_path(prefab_path) or "").strip().casefold()
+            if database
+            else ""
+        )
+        if not prefab_guid:
+            return False
         if scene_files.is_prefab_mode:
-            return same_path(scene_files.prefab_mode_path or "", prefab_path)
+            return str(scene_files.prefab_mode_guid or "").casefold() == prefab_guid.casefold()
         from Infernux.engine.undo import PrefabModeCommand
 
-        self._execute(PrefabModeCommand(prefab_path, enter_mode=True), origin)
+        self._execute(PrefabModeCommand(prefab_guid, enter_mode=True), origin)
         result = self._document_open.open_resource(
             DocumentKind.PREFAB,
             prefab_path,
+            guid=prefab_guid,
         )
         if result.status is DocumentOpenStatus.FAILED:
             raise RuntimeError(result.message or "Prefab document did not open")
@@ -216,11 +233,11 @@ class PrefabCommandService:
             or self._context_provider is None
         ):
             return False
-        prefab_path = str(scene_files.prefab_mode_path or "")
+        prefab_guid = str(scene_files.prefab_mode_guid or "")
         before_context = self._context_provider()
 
         def record_completed_exit() -> None:
-            command = PrefabModeCommand(prefab_path, enter_mode=False)
+            command = PrefabModeCommand(prefab_guid, enter_mode=False)
             if manager.record(
                 command,
                 before_context=before_context,
@@ -228,10 +245,9 @@ class PrefabCommandService:
                 origin=ActionOrigin(origin),
             ):
                 return
-            if not scene_files.open_prefab_mode(
-                prefab_path,
-                preserve_undo_history=True,
-            ):
+            database = self._project_assets.asset_database
+            path = str(database.get_path_from_guid(prefab_guid) or "").strip() if database else ""
+            if not path or not scene_files.open_prefab_mode(path, preserve_undo_history=True):
                 Debug.log_error(
                     "Exit Prefab Mode completed but could not be recorded or rolled back"
                 )
@@ -340,7 +356,7 @@ class PrefabCommandService:
             root = instantiate_prepared_game_object_document(scene, payload, prepared)
             if root is None:
                 raise RuntimeError(f"Cannot instantiate Prefab contents: {target}")
-            self._contents[int(root.id)] = (scene, target, content, document)
+            self._contents[int(root.id)] = (scene, guid, content, document)
             return root
         except BaseException:
             manager._close_preview_scene(scene)
@@ -355,9 +371,13 @@ class PrefabCommandService:
 
         target = self._project_assets._registered_file(path)
         self._require_closed_prefab_mode(target)
-        if any(same_path(session[1], target) for session in self._contents.values()):
-            raise RuntimeError("Unload this asset's offline contents before reverting its properties")
         database = self._project_assets.asset_database
+        target_guid = str(database.get_guid_from_path(target) or "").strip()
+        if target_guid and any(
+            str(session[1]).casefold() == target_guid.casefold()
+            for session in self._contents.values()
+        ):
+            raise RuntimeError("Unload this asset's offline contents before reverting its properties")
         current = _read_resolved_prefab_document(target, database)
         if expected_document is not None and current != expected_document:
             raise RuntimeError("Variant source or base changed; refresh the Inspector before reverting")
@@ -405,13 +425,14 @@ class PrefabCommandService:
         else:
             destination.pop(field, None)
         change = PrefabRevertCommand(before["id"], before, after, self._project_assets.asset_database)
-        path = files.prefab_mode_path
+        prefab_guid = str(files.prefab_mode_guid or "")
         prior_intent = copy.deepcopy(files._prefab_variant_overrides)
         new_intent = updated["variant"]["property_overrides"]
 
         def apply(redo):
             current = SceneFileManager.instance()
-            if not current or not current.is_prefab_mode or not same_path(current.prefab_mode_path, path):
+            if (not current or not current.is_prefab_mode
+                    or str(current.prefab_mode_guid or "").casefold() != prefab_guid.casefold()):
                 raise RuntimeError("Variant draft history requires its Prefab Mode")
             (change.redo if redo else change.undo)()
             current._prefab_variant_overrides = copy.deepcopy(new_intent if redo else prior_intent)
@@ -436,14 +457,29 @@ class PrefabCommandService:
             raise ValueError("Prefab paths require the .prefab extension")
         session = self._contents.get(int(root.id))
         source = session[3] if session else None
+        database = self._project_assets.asset_database
+        session_guid = str(session[1] or "") if session else ""
+        source_path = (
+            str(database.get_path_from_guid(session_guid) or "").strip()
+            if session_guid
+            else ""
+        )
+        if session and not source_path:
+            raise FileNotFoundError("Loaded Prefab asset is no longer registered")
+        target_guid = str(database.get_guid_from_path(target) or "").strip()
+        same_asset = bool(
+            session_guid
+            and target_guid
+            and session_guid.casefold() == target_guid.casefold()
+        )
         if source and "variant" in source:
-            current = pm._read_resolved_prefab_document(session[1], self._project_assets.asset_database)
+            current = pm._read_resolved_prefab_document(source_path, database)
             if current != source:
                 raise RuntimeError("Variant source or base changed since load; reload contents before saving")
-        if session and same_path(session[1], target):
-            if self._project_assets.read_text(target) != session[2]:
+        if same_asset:
+            if self._project_assets.read_text(source_path) != session[2]:
                 raise RuntimeError("Prefab source changed since load; reload contents before saving")
-            if str(self._project_assets.asset_database.get_guid_from_path(target)) != root.prefab_guid:
+            if target_guid != root.prefab_guid:
                 raise RuntimeError("Prefab source identity changed since load; reload contents before saving")
         elif os.path.exists(target):
             raise FileExistsError("Load the target Prefab contents before overwriting it")
@@ -454,13 +490,12 @@ class PrefabCommandService:
             next_component_id=source["next_component_id"] if source else 1,
             preserve_root_properties=False,
         )
-        database = self._project_assets.asset_database
         from Infernux.engine.prefab_variant import (
             create_variant_definition, edit_variant_document, variant_document,
         )
-        if source and "variant" in source and same_path(session[1], target):
+        if source and "variant" in source and same_asset:
             document = edit_variant_document(source, document)
-        elif root.prefab_root and root.prefab_guid and (session is None or not same_path(session[1], target)):
+        elif root.prefab_root and root.prefab_guid and not same_asset:
             base_path = database.get_path_from_guid(root.prefab_guid)
             if not base_path:
                 raise ValueError("Variant base asset is unavailable")
@@ -488,7 +523,7 @@ class PrefabCommandService:
         pm._invalidate_prefab_template_cache(target, guid)
         if session:
             pm._link_prefab_hierarchy(root, document["root_object"], guid)
-            self._contents[int(root.id)] = (session[0], target, content, document)
+            self._contents[int(root.id)] = (session[0], guid, content, document)
         return target
 
     @staticmethod
@@ -496,7 +531,11 @@ class PrefabCommandService:
         from Infernux.engine.scene_manager import SceneFileManager
 
         scene_files = SceneFileManager.instance()
-        if scene_files and scene_files.is_prefab_mode and same_path(scene_files.prefab_mode_path, path):
+        if not scene_files or not scene_files.is_prefab_mode:
+            return
+        database = getattr(scene_files, "_asset_database", None)
+        guid = str(database.get_guid_from_path(path) or "").strip() if database else ""
+        if guid and guid.casefold() == str(scene_files.prefab_mode_guid or "").casefold():
             raise RuntimeError("Close this asset's Prefab Mode before editing its offline contents")
 
     def unload_contents(self, root) -> None:

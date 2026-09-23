@@ -41,6 +41,22 @@ class ScenePrefabMixin:
         if self.is_prefab_mode or not prefab_path or not os.path.isfile(prefab_path):
             return False
 
+        target_path = resolved_path(prefab_path)
+        database = self._asset_database
+        guid = (
+            str(database.get_guid_from_path(target_path) or "").strip().casefold()
+            if database
+            else ""
+        )
+        if not guid:
+            Debug.log_error("Prefab Mode requires a registered Prefab asset GUID.")
+            return False
+        current_path = str(database.get_path_from_guid(guid) or "").strip()
+        if not current_path:
+            Debug.log_error("Prefab Mode asset GUID has no current file projection.")
+            return False
+        prefab_path = resolved_path(current_path)
+
         if self._is_play_mode():
             Debug.log_warning("Cannot enter Prefab Mode while in Play mode.")
             return False
@@ -156,14 +172,17 @@ class ScenePrefabMixin:
 
         self.is_prefab_mode = True
         self._prefab_mode_scene = new_scene
-        self.prefab_mode_path = resolved_path(prefab_path)
+        self.prefab_mode_guid = guid
+        self.prefab_mode_path = prefab_path
         self._current_scene_path = prefab_path
+        from Infernux.engine.interaction import DocumentKey, DocumentKind
         self._replace_scene_document(
             kind="prefab",
             resource_path=self.prefab_mode_path,
             title=os.path.splitext(os.path.basename(self.prefab_mode_path))[0],
             dirty=False,
             preserve_previous=True,
+            key_override=DocumentKey.asset(DocumentKind.PREFAB, guid),
         )
         if not preserve_undo_history:
             self._reset_undo_history()
@@ -353,6 +372,7 @@ class ScenePrefabMixin:
         prefab_document_id = self._scene_document_id
         previous_document_id = self._previous_scene_document_id
         self.is_prefab_mode = False
+        self.prefab_mode_guid = ""
         self.prefab_mode_path = None
         self._current_scene_path = self._previous_scene_path
         if previous_document_id and registry.get(previous_document_id) is not None:

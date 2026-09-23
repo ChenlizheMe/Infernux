@@ -841,6 +841,10 @@ class TestPrefabModeCommand:
         calls = []
 
         class _FakeSceneManager:
+            _asset_database = types.SimpleNamespace(
+                get_path_from_guid=lambda guid: "Assets/test.prefab" if guid == "prefab-guid" else ""
+            )
+
             def open_prefab_mode(self, path, preserve_undo_history=False):
                 calls.append(("open", path, preserve_undo_history))
                 return True
@@ -860,7 +864,7 @@ class TestPrefabModeCommand:
         scene_manager_mod.SceneFileManager = _SceneFileManager
         monkeypatch.setitem(sys.modules, "Infernux.engine.scene_manager", scene_manager_mod)
 
-        cmd = PrefabModeCommand("Assets/test.prefab", enter_mode=True)
+        cmd = PrefabModeCommand("prefab-guid", enter_mode=True)
         cmd.execute()
         cmd.undo()
         cmd.redo()
@@ -871,8 +875,52 @@ class TestPrefabModeCommand:
             ("open", "Assets/test.prefab", True),
         ]
 
+    def test_redo_resolves_the_current_path_from_stable_guid(self, monkeypatch):
+        calls = []
+        paths = {"prefab-guid": "Assets/BeforeMove.prefab"}
+
+        class _FakeSceneManager:
+            _asset_database = types.SimpleNamespace(
+                get_path_from_guid=lambda guid: paths.get(guid, "")
+            )
+
+            def open_prefab_mode(self, path, preserve_undo_history=False):
+                calls.append(("open", path, preserve_undo_history))
+                return True
+
+            def _do_exit_prefab_mode(self, preserve_undo_history=False):
+                calls.append(("exit", "", preserve_undo_history))
+                return True
+
+        fake_sfm = _FakeSceneManager()
+        scene_manager_mod = types.ModuleType("Infernux.engine.scene_manager")
+
+        class _SceneFileManager:
+            @staticmethod
+            def instance():
+                return fake_sfm
+
+        scene_manager_mod.SceneFileManager = _SceneFileManager
+        monkeypatch.setitem(sys.modules, "Infernux.engine.scene_manager", scene_manager_mod)
+
+        command = PrefabModeCommand("prefab-guid", enter_mode=True)
+        command.execute()
+        command.undo()
+        paths["prefab-guid"] = "Assets/AfterMove.prefab"
+        command.redo()
+
+        assert calls == [
+            ("open", "Assets/BeforeMove.prefab", True),
+            ("exit", "", True),
+            ("open", "Assets/AfterMove.prefab", True),
+        ]
+
     def test_rejected_transition_raises_and_cannot_be_recorded(self, monkeypatch):
         class _FakeSceneManager:
+            _asset_database = types.SimpleNamespace(
+                get_path_from_guid=lambda guid: "Assets/test.prefab" if guid == "prefab-guid" else ""
+            )
+
             @staticmethod
             def open_prefab_mode(_path, preserve_undo_history=False):
                 del preserve_undo_history
@@ -888,7 +936,7 @@ class TestPrefabModeCommand:
         scene_manager_mod.SceneFileManager = _SceneFileManager
         monkeypatch.setitem(sys.modules, "Infernux.engine.scene_manager", scene_manager_mod)
 
-        command = PrefabModeCommand("Assets/test.prefab", enter_mode=True)
+        command = PrefabModeCommand("prefab-guid", enter_mode=True)
         with pytest.raises(RuntimeError, match="Enter Prefab Mode was rejected"):
             command.execute()
 

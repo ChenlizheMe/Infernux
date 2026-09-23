@@ -251,9 +251,17 @@ class SceneSaveMixin:
 
     def _save_prefab(self, *, ticket_id: str = "") -> bool:
         """Save the currently-edited prefab in Prefab Mode."""
-        if not self.prefab_mode_path:
-            Debug.log_warning("No prefab path in Prefab Mode.")
+        prefab_guid = str(self.prefab_mode_guid or "").strip().casefold()
+        prefab_path = (
+            str(self._asset_database.get_path_from_guid(prefab_guid) or "").strip()
+            if self._asset_database is not None and prefab_guid
+            else ""
+        )
+        if not prefab_path:
+            Debug.log_warning("Prefab Mode asset GUID has no current file projection.")
             return False
+        self.prefab_mode_path = resolved_path(prefab_path)
+        prefab_path = self.prefab_mode_path
 
         from Infernux.lib import SceneManager
         from Infernux.engine.prefab_manager import (
@@ -280,7 +288,7 @@ class SceneSaveMixin:
             active_ticket_id = registry.begin_save(document.document_id).ticket_id
         try:
             from Infernux.engine.prefab_manager import _read_resolved_prefab_document
-            if _read_resolved_prefab_document(self.prefab_mode_path, self._asset_database) != self.prefab_envelope:
+            if _read_resolved_prefab_document(prefab_path, self._asset_database) != self.prefab_envelope:
                 raise RuntimeError("Prefab source or base changed since opening; reopen before saving")
             prefab_document, _, _, _ = self.capture_prefab_mode_document()
             serialized_token = document_content_token(prefab_document)
@@ -300,9 +308,9 @@ class SceneSaveMixin:
                 from Infernux.engine.prefab_overrides import build_prefab_asset_edit_command
                 from Infernux.engine.prefab_manager import _read_prefab_document
 
-                if _read_prefab_document(self.prefab_mode_path) != prefab_document:
+                if _read_prefab_document(prefab_path) != prefab_document:
                     command = build_prefab_asset_edit_command(
-                        self.prefab_mode_path, prefab_document, self._asset_database,
+                        prefab_path, prefab_document, self._asset_database,
                     )
                     # Save persists the existing authoring history, rather than
                     # inserting another edit. The command still provides the
@@ -312,7 +320,7 @@ class SceneSaveMixin:
                         owner = self.document_id_for_scene(world_id)
                         if owner and owner != document.document_id:
                             registry.mark_changed(owner)
-            elif not save_prefab_document(prefab_document, self.prefab_mode_path):
+            elif not save_prefab_document(prefab_document, prefab_path):
                 raise RuntimeError("Prefab document write failed")
         except Exception as exc:
             registry.complete_save(
@@ -332,12 +340,14 @@ class SceneSaveMixin:
             current_token = document_content_token(current_document)
         except Exception as exc:
             Debug.log_suppressed("prefab_save.current_content_token", exc)
+        from Infernux.engine.interaction import DocumentKey, DocumentKind
+        key = DocumentKey.asset(DocumentKind.PREFAB, prefab_guid)
         registry.complete_save(
             active_ticket_id,
             success=True,
-            key=self._document_key("prefab", self.prefab_mode_path),
-            resource_path=self.prefab_mode_path,
-            title=os.path.splitext(os.path.basename(self.prefab_mode_path))[0],
+            key=key,
+            resource_path=prefab_path,
+            title=os.path.splitext(os.path.basename(prefab_path))[0],
             content_token=current_token,
         )
         return True
