@@ -971,6 +971,9 @@ def runtime_baseline_diagnostics(
     scheduler_profile = _safe_mapping_call(scheduler, "profiler_snapshot")
     journal = getattr(scheduler, "change_journal", None)
     journal_profile = _safe_mapping_call(journal, "profiler_snapshot")
+    gizmo_profile = _safe_mapping_call(
+        engine, "get_gizmo_collection_observation"
+    )
     scene_profile: dict[str, Any] = {}
     try:
         from Infernux.lib import SceneManager
@@ -1017,6 +1020,7 @@ def runtime_baseline_diagnostics(
         "live_sources": {
             "scheduler": scheduler_profile,
             "change_journal": journal_profile,
+            "gizmo_collection": _stable_value(gizmo_profile),
             "scene_frame": _stable_value(scene_profile),
             "renderer_frame": _stable_value(native_frame),
             "counter_slots": live_counter_slots,

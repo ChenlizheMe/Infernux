@@ -453,6 +453,7 @@ def test_live_diagnostics_reads_existing_sources_without_starting_a_window():
     assert state["capabilities"]["native_performance_window"] is True
     assert state["live_sources"]["scheduler"]["plan_builds"] == 2
     assert state["live_sources"]["renderer_frame"]["frame"] == 12
+    assert "gizmo_collection" in state["live_sources"]
     assert set(state["live_sources"]["counter_slots"]) == set(RUNTIME_BASELINE_COUNTERS)
     assert state["live_sources"]["counter_slots"]["gil_acquires"] is None
 
