@@ -72,6 +72,38 @@ def test_lowercase_namespace_exposes_gameplay_api() -> None:
     assert inx.GameObject is Infernux.GameObject
 
 
+def test_lowercase_namespace_imports_with_web_runtime_package() -> None:
+    repository = Path(__file__).parents[2]
+    python_root = repository / "python"
+    code = r'''
+import sys
+from types import ModuleType
+
+package = ModuleType("Infernux")
+package.__path__ = [sys.argv[1]]
+package.__all__ = ("sentinel",)
+package.sentinel = object()
+sys.modules["Infernux"] = package
+
+import infernux as inx
+from Infernux.version import ENGINE_VERSION
+
+assert not hasattr(package, "__version__")
+assert inx.__version__ == ENGINE_VERSION
+assert inx.sentinel is package.sentinel
+'''
+    completed = subprocess.run(
+        [sys.executable, "-c", code, str(python_root / "Infernux")],
+        cwd=repository,
+        env={**os.environ, "PYTHONPATH": str(python_root)},
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+
+
 def test_lowercase_namespace_lazily_forwards_subsystems() -> None:
     for name in (
         "components",

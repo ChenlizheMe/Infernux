@@ -1109,14 +1109,29 @@ async function main() {
         throw new Error("Fixture UI button is outside the Web Player canvas");
       }
       await tapCanvasPoint(page, x, y, cdpEndpoint);
-      await page.waitForFunction(() => {
-        const diagnostics = JSON.parse(
+      try {
+        await page.waitForFunction(() => {
+          const diagnostics = JSON.parse(
+            document.querySelector("#canvas")?.dataset.infernuxDiagnostics || "[]",
+          );
+          return diagnostics.some((item) =>
+            item.includes("INFERNUX_PLATFORM_FIXTURE_UI_CLICK_READY")
+          );
+        }, null, { timeout: 10000 });
+      } catch (error) {
+        const diagnosticTail = await page.evaluate(() => JSON.parse(
           document.querySelector("#canvas")?.dataset.infernuxDiagnostics || "[]",
-        );
-        return diagnostics.some((item) =>
-          item.includes("INFERNUX_PLATFORM_FIXTURE_UI_CLICK_READY")
-        );
-      }, null, { timeout: 10000 });
+        ).slice(-100));
+        throw new Error(JSON.stringify({
+          phase: "fixture-ui-click",
+          point: { x, y },
+          canvasBox,
+          diagnosticTail,
+          pageErrors,
+          consoleErrors,
+          cause: String(error),
+        }));
+      }
       fixtureUiClick = { x, y, marker: "INFERNUX_PLATFORM_FIXTURE_UI_CLICK_READY" };
     }
     const frameAfterInput = skipFrameChecks ? null : await measureCanvasFrame(canvas);

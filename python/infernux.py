@@ -10,6 +10,7 @@ from __future__ import annotations
 import importlib
 
 import Infernux as _api
+from Infernux.version import ENGINE_VERSION
 
 _SUBMODULES = (
     "components",
@@ -26,7 +27,7 @@ _SUBMODULES = (
 )
 
 __all__ = tuple(dict.fromkeys((*_api.__all__, *_SUBMODULES)))
-__version__ = _api.__version__
+__version__ = ENGINE_VERSION
 
 for _name in __all__:
     if _name not in _SUBMODULES:
