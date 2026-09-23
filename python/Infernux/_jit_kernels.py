@@ -176,6 +176,32 @@ def _jit_compile_decorator_names(module_ast) -> set[str]:
     return names
 
 
+def _jit_warmup_names(module_ast) -> set[str]:
+    """Resolve public ``inx.jit.warmup`` aliases without importing a module."""
+    names = set()
+    for node in module_ast.body:
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name in ("Infernux", "infernux"):
+                    names.add(f"{alias.asname or alias.name}.jit.warmup")
+                elif alias.name in ("Infernux.jit", "infernux.jit"):
+                    names.add(
+                        f"{alias.asname}.warmup"
+                        if alias.asname
+                        else f"{alias.name}.warmup"
+                    )
+        elif isinstance(node, ast.ImportFrom) and node.level == 0:
+            for alias in node.names:
+                if node.module in ("Infernux", "infernux") and alias.name == "jit":
+                    names.add(f"{alias.asname or alias.name}.warmup")
+                elif (
+                    node.module in ("Infernux.jit", "infernux.jit")
+                    and alias.name == "warmup"
+                ):
+                    names.add(alias.asname or alias.name)
+    return names
+
+
 def _is_jit_compile_decorator(node, compile_names) -> bool:
     decorator = node.func if isinstance(node, ast.Call) else node
     return _expression_name(decorator) in compile_names
@@ -190,6 +216,432 @@ def _decorator_requests_auto_parallel(node, compile_names) -> bool:
                 return bool(keyword.value.value)
         return True
     return False
+
+
+def _source_offset(source: str, line_starts: list[int], line: int, byte_column: int) -> int:
+    """Translate CPython AST's UTF-8 byte column into a source character offset."""
+    line_start = line_starts[line - 1]
+    line_end = source.find("\n", line_start)
+    if line_end < 0:
+        line_end = len(source)
+    line_text = source[line_start:line_end]
+    character_column = len(
+        line_text.encode("utf-8")[:byte_column].decode("utf-8")
+    )
+    return line_start + character_column
+
+
+def _blank_source_span(source: str, start: int, end: int, replacement: str = "") -> str:
+    """Blank one source span without changing its line count or later locations."""
+    segment = source[start:end]
+    blanked = "".join("\n" if char == "\n" else " " for char in segment)
+    if not replacement:
+        return blanked
+    first_content = next(
+        (index for index, char in enumerate(blanked) if char != "\n"),
+        None,
+    )
+    if first_content is None or len(replacement) > len(blanked) - first_content:
+        raise ValueError("interpreted CPU source replacement has no writable span")
+    return (
+        blanked[:first_content]
+        + replacement
+        + blanked[first_content + len(replacement):]
+    )
+
+
+_CPU_JIT_COMPILE_NAME = "infernux.jit.compile"
+_CPU_JIT_WARMUP_NAME = "infernux.jit.warmup"
+_RUNTIME_BINDING = "<runtime-binding>"
+
+
+class _CpuJitCookBindings:
+    """Source-ordered names used by the no-JIT cook.
+
+    A set is retained for every name because control-flow joins can make an
+    alias ambiguous.  Only a binding proven to be exactly one public JIT API
+    is rewritten; an ambiguous public binding is rejected instead of silently
+    changing either branch's execution model.
+    """
+
+    def __init__(self, parent=None, *, kind: str = "module"):
+        self.parent = parent
+        self.kind = kind
+        self.aliases: dict[str, frozenset[str]] = {}
+
+    def clone(self):
+        result = _CpuJitCookBindings(self.parent, kind=self.kind)
+        result.aliases = dict(self.aliases)
+        return result
+
+    def lookup(self, name: str) -> frozenset[str]:
+        if name in self.aliases:
+            return self.aliases[name]
+        if self.parent is not None:
+            return self.parent.lookup(name)
+        return frozenset({f"name:{name}"})
+
+    def bind(self, name: str, candidates) -> None:
+        resolved = frozenset(candidates)
+        self.aliases[name] = resolved or frozenset({_RUNTIME_BINDING})
+
+    def canonical(self, expression) -> frozenset[str]:
+        if isinstance(expression, ast.Name):
+            return self.lookup(expression.id)
+        if isinstance(expression, ast.Attribute):
+            owners = self.canonical(expression.value)
+            return frozenset(
+                _RUNTIME_BINDING
+                if owner == _RUNTIME_BINDING
+                else f"{owner}.{expression.attr}"
+                for owner in owners
+            )
+        if isinstance(expression, ast.IfExp):
+            return self.canonical(expression.body) | self.canonical(expression.orelse)
+        if isinstance(expression, ast.NamedExpr):
+            return self.canonical(expression.value)
+        return frozenset({_RUNTIME_BINDING})
+
+
+def _cpu_jit_import_identity(module: str) -> str:
+    if module in ("Infernux", "infernux"):
+        return "infernux"
+    if module in ("Infernux.jit", "infernux.jit"):
+        return "infernux.jit"
+    return f"module:{module}"
+
+
+def _merge_cpu_jit_cook_bindings(
+    destination: _CpuJitCookBindings,
+    branches: list[_CpuJitCookBindings],
+) -> None:
+    names = set(destination.aliases)
+    names.update(*(branch.aliases for branch in branches))
+    destination.aliases = {
+        name: frozenset().union(*(branch.lookup(name) for branch in branches))
+        for name in names
+    }
+
+
+class _CpuJitCookAnalyzer:
+    """Find source spans that are certainly public CPU JIT authoring."""
+
+    def __init__(self, source: str, line_starts: list[int]):
+        self.source = source
+        self.line_starts = line_starts
+        self.replacements: list[tuple[int, int, str]] = []
+
+    def _offset(self, node, *, end: bool = False) -> int:
+        return _source_offset(
+            self.source,
+            self.line_starts,
+            node.end_lineno if end else node.lineno,
+            node.end_col_offset if end else node.col_offset,
+        )
+
+    @staticmethod
+    def _classify(candidates: frozenset[str], expected: str, node) -> bool:
+        if expected not in candidates:
+            return False
+        if candidates != frozenset({expected}):
+            raise ValueError(
+                "ambiguous CPU JIT binding at "
+                f"line {getattr(node, 'lineno', 0)}; bind the public API "
+                "unconditionally before cooking"
+            )
+        return True
+
+    def _record_decorator(self, decorator, bindings: _CpuJitCookBindings) -> None:
+        target = decorator.func if isinstance(decorator, ast.Call) else decorator
+        if not self._classify(
+            bindings.canonical(target), _CPU_JIT_COMPILE_NAME, decorator
+        ):
+            return
+        start = self._offset(decorator)
+        line_start = self.line_starts[decorator.lineno - 1]
+        at_sign = self.source.rfind("@", line_start, start + 1)
+        if at_sign < line_start:
+            raise ValueError("CPU JIT decorator source range has no '@' marker")
+        self.replacements.append((at_sign, self._offset(decorator, end=True), ""))
+
+    def _scan_expression(self, expression, bindings: _CpuJitCookBindings) -> None:
+        if expression is None:
+            return
+        if isinstance(
+            expression,
+            (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp),
+        ):
+            lexical_parent = bindings.parent if bindings.kind == "class" else bindings
+            child = _CpuJitCookBindings(lexical_parent, kind="function")
+            for index, generator in enumerate(expression.generators):
+                self._scan_expression(
+                    generator.iter,
+                    bindings if index == 0 else child,
+                )
+                self._bind_target(generator.target, {_RUNTIME_BINDING}, child)
+                for condition in generator.ifs:
+                    self._scan_expression(condition, child)
+            if isinstance(expression, ast.DictComp):
+                self._scan_expression(expression.key, child)
+                self._scan_expression(expression.value, child)
+            else:
+                self._scan_expression(expression.elt, child)
+            return
+        if isinstance(expression, ast.NamedExpr):
+            self._scan_expression(expression.value, bindings)
+            self._bind_target(
+                expression.target, bindings.canonical(expression.value), bindings
+            )
+            return
+        if isinstance(expression, ast.Lambda):
+            child = _CpuJitCookBindings(bindings, kind="function")
+            self._bind_arguments(expression.args, child)
+            self._scan_expression(expression.body, child)
+            return
+        if isinstance(expression, ast.Call):
+            if self._classify(
+                bindings.canonical(expression.func),
+                _CPU_JIT_WARMUP_NAME,
+                expression,
+            ):
+                self.replacements.append(
+                    (self._offset(expression), self._offset(expression, end=True), "None")
+                )
+        for child in ast.iter_child_nodes(expression):
+            self._scan_expression(child, bindings)
+
+    @staticmethod
+    def _bind_arguments(arguments, bindings: _CpuJitCookBindings) -> None:
+        for argument in (
+            *arguments.posonlyargs,
+            *arguments.args,
+            *arguments.kwonlyargs,
+        ):
+            bindings.bind(argument.arg, {_RUNTIME_BINDING})
+        if arguments.vararg is not None:
+            bindings.bind(arguments.vararg.arg, {_RUNTIME_BINDING})
+        if arguments.kwarg is not None:
+            bindings.bind(arguments.kwarg.arg, {_RUNTIME_BINDING})
+
+    def _bind_target(self, target, candidates, bindings: _CpuJitCookBindings) -> None:
+        if isinstance(target, ast.Name):
+            bindings.bind(target.id, candidates)
+        elif isinstance(target, (ast.Tuple, ast.List)):
+            for item in target.elts:
+                self._bind_target(item, {_RUNTIME_BINDING}, bindings)
+
+    def _bind_assignment(self, target, value, bindings: _CpuJitCookBindings) -> None:
+        if (
+            isinstance(target, (ast.Tuple, ast.List))
+            and isinstance(value, (ast.Tuple, ast.List))
+            and len(target.elts) == len(value.elts)
+            and not any(isinstance(item, ast.Starred) for item in target.elts)
+        ):
+            for target_item, value_item in zip(target.elts, value.elts):
+                self._bind_assignment(target_item, value_item, bindings)
+            return
+        self._bind_target(target, bindings.canonical(value), bindings)
+
+    def _bind_pattern(self, pattern, bindings: _CpuJitCookBindings) -> None:
+        if isinstance(pattern, ast.MatchAs):
+            if pattern.pattern is not None:
+                self._bind_pattern(pattern.pattern, bindings)
+            if pattern.name is not None:
+                bindings.bind(pattern.name, {_RUNTIME_BINDING})
+        elif isinstance(pattern, ast.MatchStar):
+            if pattern.name is not None:
+                bindings.bind(pattern.name, {_RUNTIME_BINDING})
+        elif isinstance(pattern, ast.MatchMapping):
+            for child in pattern.patterns:
+                self._bind_pattern(child, bindings)
+            if pattern.rest is not None:
+                bindings.bind(pattern.rest, {_RUNTIME_BINDING})
+        elif isinstance(pattern, (ast.MatchSequence, ast.MatchOr)):
+            for child in pattern.patterns:
+                self._bind_pattern(child, bindings)
+        elif isinstance(pattern, ast.MatchClass):
+            for child in (*pattern.patterns, *pattern.kwd_patterns):
+                self._bind_pattern(child, bindings)
+
+    def _scan_import(self, statement, bindings: _CpuJitCookBindings) -> None:
+        if isinstance(statement, ast.Import):
+            for alias in statement.names:
+                if alias.asname:
+                    bindings.bind(alias.asname, {_cpu_jit_import_identity(alias.name)})
+                else:
+                    root = alias.name.split(".", 1)[0]
+                    bindings.bind(root, {_cpu_jit_import_identity(root)})
+            return
+
+        module = statement.module or ""
+        identity = (
+            _cpu_jit_import_identity(module)
+            if statement.level == 0
+            else f"module:{'.' * statement.level}{module}"
+        )
+        for alias in statement.names:
+            if alias.name == "*":
+                if identity == "infernux.jit":
+                    bindings.bind("compile", {_CPU_JIT_COMPILE_NAME})
+                    bindings.bind("warmup", {_CPU_JIT_WARMUP_NAME})
+                elif identity != "infernux":
+                    # An arbitrary star import may replace any name that is
+                    # already being tracked.  Preserve both possibilities so
+                    # a later public JIT-looking use fails closed instead of
+                    # deleting a decorator or call that may be unrelated.
+                    for name, candidates in tuple(bindings.aliases.items()):
+                        bindings.bind(name, {*candidates, _RUNTIME_BINDING})
+                continue
+            bindings.bind(
+                alias.asname or alias.name,
+                {f"{identity}.{alias.name}"},
+            )
+
+    def _scan_function(self, statement, bindings: _CpuJitCookBindings) -> None:
+        for decorator in statement.decorator_list:
+            self._record_decorator(decorator, bindings)
+            self._scan_expression(decorator, bindings)
+        for default in (*statement.args.defaults, *statement.args.kw_defaults):
+            self._scan_expression(default, bindings)
+        self._scan_expression(statement.returns, bindings)
+
+        # Method bodies do not close over their class namespace.  Their
+        # decorators do, because those expressions run in the class body.
+        lexical_parent = bindings.parent if bindings.kind == "class" else bindings
+        child = _CpuJitCookBindings(lexical_parent, kind="function")
+        self._bind_arguments(statement.args, child)
+        self._scan_body(statement.body, child)
+        bindings.bind(statement.name, {_RUNTIME_BINDING})
+
+    def _scan_body(self, statements, bindings: _CpuJitCookBindings) -> None:
+        for statement in statements:
+            if isinstance(statement, (ast.Import, ast.ImportFrom)):
+                self._scan_import(statement, bindings)
+            elif isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                self._scan_function(statement, bindings)
+            elif isinstance(statement, ast.ClassDef):
+                for decorator in statement.decorator_list:
+                    self._scan_expression(decorator, bindings)
+                for base in statement.bases:
+                    self._scan_expression(base, bindings)
+                for keyword in statement.keywords:
+                    self._scan_expression(keyword.value, bindings)
+                self._scan_body(
+                    statement.body,
+                    _CpuJitCookBindings(bindings, kind="class"),
+                )
+                bindings.bind(statement.name, {_RUNTIME_BINDING})
+            elif isinstance(statement, ast.Assign):
+                self._scan_expression(statement.value, bindings)
+                for target in statement.targets:
+                    self._bind_assignment(target, statement.value, bindings)
+            elif isinstance(statement, ast.AnnAssign):
+                self._scan_expression(statement.annotation, bindings)
+                if statement.value is not None:
+                    self._scan_expression(statement.value, bindings)
+                    self._bind_assignment(statement.target, statement.value, bindings)
+            elif isinstance(statement, (ast.AugAssign, ast.Delete)):
+                if isinstance(statement, ast.AugAssign):
+                    self._scan_expression(statement.value, bindings)
+                    targets = (statement.target,)
+                else:
+                    targets = statement.targets
+                for target in targets:
+                    self._bind_target(target, {_RUNTIME_BINDING}, bindings)
+            elif isinstance(statement, ast.If):
+                self._scan_expression(statement.test, bindings)
+                body = bindings.clone()
+                otherwise = bindings.clone()
+                self._scan_body(statement.body, body)
+                self._scan_body(statement.orelse, otherwise)
+                _merge_cpu_jit_cook_bindings(bindings, [body, otherwise])
+            elif isinstance(statement, (ast.For, ast.AsyncFor, ast.While)):
+                expression = statement.test if isinstance(statement, ast.While) else statement.iter
+                self._scan_expression(expression, bindings)
+                body = bindings.clone()
+                if isinstance(statement, (ast.For, ast.AsyncFor)):
+                    self._bind_target(statement.target, {_RUNTIME_BINDING}, body)
+                self._scan_body(statement.body, body)
+                otherwise = bindings.clone()
+                self._scan_body(statement.orelse, otherwise)
+                _merge_cpu_jit_cook_bindings(bindings, [bindings.clone(), body, otherwise])
+            elif isinstance(statement, (ast.With, ast.AsyncWith)):
+                for item in statement.items:
+                    self._scan_expression(item.context_expr, bindings)
+                    if item.optional_vars is not None:
+                        self._bind_target(item.optional_vars, {_RUNTIME_BINDING}, bindings)
+                self._scan_body(statement.body, bindings)
+            elif isinstance(statement, (ast.Try, ast.TryStar)):
+                successful = bindings.clone()
+                self._scan_body(statement.body, successful)
+                self._scan_body(statement.orelse, successful)
+                branches = [successful]
+                for handler in statement.handlers:
+                    handled = bindings.clone()
+                    self._scan_expression(handler.type, handled)
+                    if handler.name:
+                        handled.bind(handler.name, {_RUNTIME_BINDING})
+                    self._scan_body(handler.body, handled)
+                    branches.append(handled)
+                _merge_cpu_jit_cook_bindings(bindings, branches)
+                self._scan_body(statement.finalbody, bindings)
+            elif isinstance(statement, ast.Match):
+                self._scan_expression(statement.subject, bindings)
+                branches = [bindings.clone()]
+                for case in statement.cases:
+                    branch = bindings.clone()
+                    self._bind_pattern(case.pattern, branch)
+                    self._scan_expression(case.guard, branch)
+                    self._scan_body(case.body, branch)
+                    branches.append(branch)
+                _merge_cpu_jit_cook_bindings(bindings, branches)
+            else:
+                for child in ast.iter_child_nodes(statement):
+                    if isinstance(child, ast.expr):
+                        self._scan_expression(child, bindings)
+
+    def analyze(self, module_ast) -> list[tuple[int, int, str]]:
+        self._scan_body(module_ast.body, _CpuJitCookBindings())
+        return self.replacements
+
+
+def build_interpreted_cpu_source(source: str) -> str:
+    """Freeze public CPU JIT authoring into ordinary Python for no-JIT targets.
+
+    This is a build transform, not a runtime fallback. It removes only the
+    public ``jit.compile`` decorator and replaces public ``jit.warmup`` calls
+    with ``None`` while preserving authored line numbers for diagnostics.
+    GPU declarations remain untouched and are validated by the platform
+    exporter because their execution model cannot become ordinary Python.
+    """
+    module_ast = ast.parse(source)
+    line_starts = [0]
+    line_starts.extend(
+        index + 1 for index, char in enumerate(source) if char == "\n"
+    )
+    replacements = _CpuJitCookAnalyzer(source, line_starts).analyze(module_ast)
+
+    if not replacements:
+        return source
+
+    # Keep the outermost replacement if authored code nests warmup calls.
+    selected: list[tuple[int, int, str]] = []
+    for candidate in sorted(replacements, key=lambda item: (item[0], -item[1])):
+        if selected and candidate[0] >= selected[-1][0] and candidate[1] <= selected[-1][1]:
+            continue
+        if selected and candidate[0] < selected[-1][1]:
+            raise ValueError("overlapping CPU JIT source transformations")
+        selected.append(candidate)
+
+    cooked = source
+    for start, end, replacement in reversed(selected):
+        cooked = (
+            cooked[:start]
+            + _blank_source_span(cooked, start, end, replacement)
+            + cooked[end:]
+        )
+    ast.parse(cooked)
+    return cooked
 
 
 class _AutoParallelRangeTransformer(ast.NodeTransformer):
@@ -685,16 +1137,11 @@ def _build_auto_parallel_dispatcher(
 # ── njit wrapper ──────────────────────────────────────────────────────
 
 def njit(*args, **kwargs):
-    """``numba.njit`` wrapper — safe for both editor and standalone builds.
+    """Internal Numba adapter with engine-owned caching and dispatch policy.
 
-    The returned callable always has a ``.py`` attribute pointing to the
-    original pure-Python function, so callers can force the fallback::
-
-        @njit(cache=True, fastmath=True)
-        def burn(n: int) -> float: ...
-
-        burn(100)       # JIT-accelerated (or fallback if no Numba)
-        burn.py(100)    # always pure Python
+    This is not a fallback execution surface. Targets without the CPU compiler
+    reject publication instead of silently running authored JIT work through
+    the Python interpreter.
     """
     auto_parallel = bool(kwargs.pop("auto_parallel", False))
     parallel_policy = str(kwargs.pop("parallel_policy", "auto"))
@@ -706,29 +1153,9 @@ def njit(*args, **kwargs):
         raise ValueError("parallel_policy must be 'auto' or 'required'")
 
     if not _HAS_NUMBA:
-        # No-op fallback — attach .py for uniform API
-        def _attach_fallback(fn):
-            fn.auto_parallel = auto_parallel
-            fn.parallel_policy = parallel_policy
-            fn.compiler_fingerprint = parallel_fingerprint
-            fn.static_operation_cost = parallel_static_cost
-            fn.selected_mode = "serial"
-            fn.last_diagnostic = "serial selected: JIT runtime is unavailable in this build"
-            fn.serial = fn
-            fn.parallel = fn
-            fn.decisions = BoundedLRU(1)
-            fn.py = fn
-            return fn
-
-        def _wrap(fn):
-            if auto_parallel and parallel_policy == "required":
-                raise RuntimeError("parallel_policy='required' needs the Numba JIT runtime")
-            return _attach_fallback(fn)
-        if args and callable(args[0]):
-            if auto_parallel and parallel_policy == "required":
-                raise RuntimeError("parallel_policy='required' needs the Numba JIT runtime")
-            return _attach_fallback(args[0])
-        return _wrap
+        raise RuntimeError(
+            "Infernux CPU compilation requires the bundled Numba/llvmlite JIT runtime"
+        )
 
     if auto_parallel:
         serial_kwargs = dict(kwargs)
@@ -829,7 +1256,9 @@ def warmup(fn, *args, **kwargs):
         return
 
     if not _HAS_NUMBA:
-        return
+        raise RuntimeError(
+            "Infernux CPU compilation requires the bundled Numba/llvmlite JIT runtime"
+        )
     prepared_args, prepared_kwargs = clone_call_arguments(args, kwargs)
     fn(*prepared_args, **prepared_kwargs)
 
