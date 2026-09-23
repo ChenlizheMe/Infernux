@@ -197,6 +197,10 @@ class RenderPassBuilder:
                     f"'{self._graph.name}'"
                 )
             return handle
+        if not isinstance(texture, TextureHandle):
+            raise TypeError("Expected a texture alias or TextureHandle")
+        if self._graph is None or not self._graph._owns_texture(texture):
+            raise ValueError("TextureHandle does not belong to this RenderGraph")
         return texture
 
     def _resolve_buffer(self, buffer) -> "BufferHandle":
@@ -213,6 +217,8 @@ class RenderPassBuilder:
             return handle
         if not isinstance(buffer, BufferHandle):
             raise TypeError("Expected a buffer alias or BufferHandle")
+        if self._graph is None or not self._graph._owns_buffer(buffer):
+            raise ValueError("BufferHandle does not belong to this RenderGraph")
         return buffer
 
     # ---- Resource declarations ----
@@ -763,12 +769,17 @@ class RenderGraph:
                 raise TypeError(
                     f"pass buffer {semantic!r} must be a TextureHandle"
                 )
+            if texture is not None and not self._owns_texture(texture):
+                raise ValueError(
+                    f"pass buffer {semantic!r} does not belong to this RenderGraph"
+                )
         self._pass_result_revision += 1
         result = PassResult(
             source=source_name,
             revision=self._pass_result_revision,
             buffers=buffers,
             _materialize=materialize,
+            _owner_graph=self,
         )
         self._pass_results[source_name] = result
         return result
@@ -779,6 +790,8 @@ class RenderGraph:
 
         if not isinstance(parent, PassResult):
             raise TypeError("derive_pass_result() requires a PassResult parent")
+        if parent._owner_graph is not self:
+            raise ValueError("PassResult does not belong to this RenderGraph")
         merged = dict(parent.snapshot)
         merged.update(dict(overrides))
         return self.publish_pass_result(
@@ -847,6 +860,10 @@ class RenderGraph:
                 raise TypeError(
                     f"effect resource {resource_name!r} must be a TextureHandle"
                 )
+            if not self._owns_texture(handle):
+                raise ValueError(
+                    f"effect resource {resource_name!r} does not belong to this RenderGraph"
+                )
             normalized[resource_name] = handle
         self._effect_resource_scopes.append(normalized)
         try:
@@ -873,6 +890,8 @@ class RenderGraph:
 
         if not isinstance(result, PassResult):
             raise TypeError("pass_result() requires a PassResult")
+        if result._owner_graph is not self:
+            raise ValueError("PassResult does not belong to this RenderGraph")
         self._pass_result_scopes.append(result)
         try:
             yield self
@@ -890,6 +909,8 @@ class RenderGraph:
             raise RuntimeError("no active pass-result scope")
         if not isinstance(result, PassResult):
             raise TypeError("current pass result must be a PassResult")
+        if result._owner_graph is not self:
+            raise ValueError("PassResult does not belong to this RenderGraph")
         self._pass_result_scopes[-1] = result
 
     def resolve_effect_route_policy(self, stages):
@@ -928,8 +949,14 @@ class RenderGraph:
     def _find_texture_exact(self, name: str) -> Optional[TextureHandle]:
         return next((texture for texture in self._textures if texture.name == name), None)
 
+    def _owns_texture(self, handle: TextureHandle) -> bool:
+        return any(texture is handle for texture in self._textures)
+
     def _find_buffer_exact(self, name: str) -> Optional[BufferHandle]:
         return next((buffer for buffer in self._buffers if buffer.name == name), None)
+
+    def _owns_buffer(self, handle: BufferHandle) -> bool:
+        return any(buffer is handle for buffer in self._buffers)
 
     def create_texture(
         self,
@@ -1421,6 +1448,8 @@ class RenderGraph:
 
     def append_pass(self, builder: "RenderPassBuilder") -> None:
         """Re-append a previously removed pass at the end of the topology."""
+        if not isinstance(builder, RenderPassBuilder) or builder._graph is not self:
+            raise ValueError("RenderPassBuilder does not belong to this RenderGraph")
         self._passes.append(builder)
         self._topology.append(("pass", builder._name))
 
@@ -1441,6 +1470,8 @@ class RenderGraph:
                 )
             self._output = handle.name
         else:
+            if not isinstance(texture, TextureHandle) or not self._owns_texture(texture):
+                raise ValueError("set_output: TextureHandle does not belong to this RenderGraph")
             self._output = texture.name
 
     # ---- Validation & finalization ----

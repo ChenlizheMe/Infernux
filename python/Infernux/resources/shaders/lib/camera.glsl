@@ -11,7 +11,8 @@ ShaderInfo {
 
 // ---- Screen coordinates ----
 
-// Normalized screen UV (0~1, bottom-left origin)
+// Normalized Vulkan screen UV (0~1, upper-left origin), matching sampled
+// render-target textures and the projection matrix's inverted Y axis.
 vec2 getScreenUV() {
     return gl_FragCoord.xy * _Globals._ScreenParams.zw;
 }
