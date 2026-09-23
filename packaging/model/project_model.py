@@ -308,7 +308,6 @@ def _create_default_project_content(
         {
             "debug_mode": False,
             "display_mode": "windowed",
-            "enable_jit": False,
             "game_name": project_name,
             "icon_guid": "",
             "lto": True,

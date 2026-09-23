@@ -297,7 +297,6 @@ class BuildSettingsPanel(EditorPanel):
         self._window_resizable = data["window_resizable"]
         self._debug_mode = data["debug_mode"]
         self._lto = data["lto"]
-        self._enable_jit = data["enable_jit"]
         self._splash_items = list(data["splash_items"])
 
     def _capture_build_settings(self) -> dict:
@@ -314,7 +313,6 @@ class BuildSettingsPanel(EditorPanel):
             "window_resizable": self._window_resizable,
             "debug_mode": self._debug_mode,
             "lto": self._lto,
-            "enable_jit": self._enable_jit,
             "splash_items": self._splash_items,
         })
 
@@ -652,7 +650,7 @@ class BuildSettingsPanel(EditorPanel):
         # checkbox: users should not be able to produce a Player whose
         # runtime backend contradicts its platform.
         ctx.same_line(0, _metric(ctx, 20.0))
-        ctx.label(t("build.enable_jit") + ": automatic")
+        ctx.label(t("build.jit_runtime_automatic"))
         if not self._game_name:
             ctx.same_line()
             ctx.push_style_color(ImGuiCol.Text, 0.5, 0.5, 0.5, 1.0)

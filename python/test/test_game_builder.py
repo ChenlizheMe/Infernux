@@ -1942,7 +1942,7 @@ def test_jit_build_selects_the_plugin_parallel_archive(tmp_path, monkeypatch, de
     monkeypatch.setattr(game_builder_module, "NuitkaBuilder",
                         lambda **kwargs: pytest.fail("Do not assemble a replacement Parallel module"))
     builder = _make_builder(tmp_path, tmp_path / "build_output")
-    builder.enable_jit = True
+    builder.include_jit_runtime = True
     builder.debug_mode = debug_mode
     assert builder._stage_player_runtime(str(tmp_path / "boot.py"), None) == str(tmp_path / "dist")
     assert captured == {"parallel": True}
@@ -6571,6 +6571,50 @@ def test_desktop_player_keeps_project_content_in_native_package(tmp_path):
     assert "runtime\t" not in package_index
 
 
+def test_desktop_player_indexes_the_sealed_parallel_module(tmp_path):
+    project_root = _make_project(tmp_path)
+    builder = GameBuilder(
+        str(project_root),
+        str(tmp_path / "build_output"),
+        game_name="TestGame",
+        include_jit_runtime=True,
+    )
+    final_dir = tmp_path / "dist"
+    data_root = _prepare_runtime_catalog_inputs(builder, final_dir)
+    bootstrap_source = tmp_path / "bootstrap.pyd"
+    parallel_source = tmp_path / "parallel.pyd"
+    bootstrap_source.write_bytes(b"bootstrap")
+    parallel_source.write_bytes(b"parallel")
+    write_pack(
+        (("_InfernuxBootstrap.pyd", bootstrap_source),),
+        data_root / "Bootstrap.inxrt",
+    )
+    parallel_archive = data_root / "Modules" / builder._PARALLEL_ARCHIVE_FILENAME
+    parallel_archive.parent.mkdir(parents=True)
+    write_pack(
+        (("llvmlite/binding/ffi.pyd", parallel_source),),
+        parallel_archive,
+    )
+    builder._write_payload_manifest(str(final_dir))
+
+    builder._materialize_desktop_player_layout(str(final_dir))
+    builder._audit_direct_player_layout(str(final_dir))
+
+    package_index = (
+        data_root / builder._PLAYER_PACKAGE_INDEX_FILENAME
+    ).read_text(encoding="ascii").splitlines()
+    records = {
+        parts[0]: (parts[1], int(parts[2]))
+        for parts in (line.split("\t") for line in package_index[1:])
+    }
+    parallel_manifest = read_manifest(parallel_archive)
+    assert records["parallel"] == (
+        parallel_manifest["archive_sha256"],
+        parallel_manifest["archive_bytes"],
+    )
+    assert "runtime" not in records
+
+
 def test_linux_runtime_restores_identical_elf_aliases_without_hashing(
     tmp_path, monkeypatch
 ):
@@ -7140,7 +7184,7 @@ class TestGameBuilderDependencyCollection:
         project_root = _make_project(tmp_path)
         _write_asset_script(project_root, "stress.py", "import numba\n")
         builder = GameBuilder(str(project_root), str(tmp_path / "build_output"), game_name="TestGame")
-        builder.enable_jit = True
+        builder.include_jit_runtime = True
 
         original_find_spec = importlib.util.find_spec
 
@@ -7256,7 +7300,7 @@ class TestGameBuilderAutoParallelExport:
         script_path.write_text("score = 1\n", encoding="utf-8")
 
         builder = _make_builder(tmp_path, output_dir)
-        builder.enable_jit = True
+        builder.include_jit_runtime = True
         _bind_staged_script_to_asset_index(
             builder,
             output_dir,
@@ -7303,7 +7347,7 @@ class TestGameBuilderAutoParallelExport:
         )
 
         builder = _make_builder(tmp_path, output_dir)
-        builder.enable_jit = True
+        builder.include_jit_runtime = True
         _bind_staged_script_to_asset_index(
             builder,
             output_dir,
@@ -7356,7 +7400,7 @@ class TestGameBuilderAutoParallelExport:
         )
 
         builder = _make_builder(tmp_path, output_dir)
-        builder.enable_jit = True
+        builder.include_jit_runtime = True
         _bind_staged_script_to_asset_index(
             builder,
             output_dir,
@@ -7384,7 +7428,7 @@ class TestGameBuilderAutoParallelExport:
         )
 
         builder = _make_builder(tmp_path, output_dir)
-        builder.enable_jit = True
+        builder.include_jit_runtime = True
         _bind_staged_script_to_asset_index(
             builder,
             output_dir,
@@ -7394,7 +7438,9 @@ class TestGameBuilderAutoParallelExport:
         with pytest.raises(RuntimeError, match="compute compilation rejected"):
             builder._compile_user_scripts(str(output_dir))
 
-    def test_compile_user_scripts_without_jit_rejects_cpu_jit(self, tmp_path):
+    def test_compile_user_scripts_without_jit_keeps_cpu_function_as_plain_python(
+        self, tmp_path
+    ):
         output_dir = tmp_path / "build_output"
         assets_dir = output_dir / "Data" / "Assets"
         assets_dir.mkdir(parents=True)
@@ -7407,16 +7453,26 @@ class TestGameBuilderAutoParallelExport:
             encoding="utf-8",
         )
         builder = _make_builder(tmp_path, output_dir)
-        builder.enable_jit = False
+        builder.include_jit_runtime = False
         _bind_staged_script_to_asset_index(
             builder, output_dir, script_path, guid="cpu-compute-script-guid",
         )
-        with pytest.raises(RuntimeError, match="CPU JIT requires.*square"):
-            builder._compile_user_scripts(str(output_dir))
-        assert script_path.is_file()
-        assert not script_path.with_suffix(".pyc").exists()
+        builder._compile_user_scripts(str(output_dir))
 
-    def test_compile_user_scripts_without_jit_rejects_required_policy(self, tmp_path):
+        assert not script_path.exists()
+        bytecode_path = script_path.with_suffix(".pyc")
+        assert bytecode_path.is_file()
+        loader = importlib.machinery.SourcelessFileLoader(
+            "infernux_test_plain_web_jit", str(bytecode_path)
+        )
+        namespace = {}
+        exec(loader.get_code(loader.name), namespace)
+        assert namespace["square"](7) == 49
+        assert not hasattr(namespace["square"], "serial")
+
+    def test_compile_user_scripts_without_jit_ignores_native_parallel_policy(
+        self, tmp_path
+    ):
         output_dir = tmp_path / "build_output"
         assets_dir = output_dir / "Data" / "Assets"
         assets_dir.mkdir(parents=True)
@@ -7430,15 +7486,25 @@ class TestGameBuilderAutoParallelExport:
         )
 
         builder = _make_builder(tmp_path, output_dir)
-        builder.enable_jit = False
+        builder.include_jit_runtime = False
         _bind_staged_script_to_asset_index(
             builder,
             output_dir,
             assets_dir / "required.py",
             guid="required-parallel-script-guid",
         )
-        with pytest.raises(RuntimeError, match="CPU JIT requires.*fill"):
-            builder._compile_user_scripts(str(output_dir))
+        builder._compile_user_scripts(str(output_dir))
+
+        bytecode_path = (assets_dir / "required.pyc")
+        assert bytecode_path.is_file()
+        loader = importlib.machinery.SourcelessFileLoader(
+            "infernux_test_plain_web_required", str(bytecode_path)
+        )
+        namespace = {}
+        exec(loader.get_code(loader.name), namespace)
+        values = [0, 0, 0, 0]
+        namespace["fill"](values)
+        assert values == [0, 1, 2, 3]
 
     def test_collect_user_dependencies_detects_public_infernux_jit_api(self, tmp_path, monkeypatch):
         project_root = _make_project(tmp_path)
@@ -7448,7 +7514,7 @@ class TestGameBuilderAutoParallelExport:
             "from Infernux import jit\n@jit.compile\ndef run(value):\n    return value\n",
         )
         builder = GameBuilder(str(project_root), str(tmp_path / "build_output"), game_name="TestGame")
-        builder.enable_jit = True
+        builder.include_jit_runtime = True
 
         original_find_spec = importlib.util.find_spec
 
@@ -7467,7 +7533,7 @@ class TestGameBuilderAutoParallelExport:
         project_root = _make_project(tmp_path)
         _write_asset_script(project_root, "jit_user.py", "from Infernux import jit\n")
         builder = GameBuilder(str(project_root), str(tmp_path / "build_output"), game_name="TestGame")
-        builder.enable_jit = False
+        builder.include_jit_runtime = False
 
         original_find_spec = importlib.util.find_spec
 
@@ -7484,7 +7550,7 @@ class TestGameBuilderAutoParallelExport:
         project_root = _make_project(tmp_path)
         _write_asset_script(project_root, "jit_user.py", "import numba\n")
         builder = GameBuilder(str(project_root), str(tmp_path / "build_output"), game_name="TestGame")
-        builder.enable_jit = False
+        builder.include_jit_runtime = False
 
         with pytest.raises(RuntimeError, match="CPU JIT build capability"):
             builder._collect_user_dependencies()

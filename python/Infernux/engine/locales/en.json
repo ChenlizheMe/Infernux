@@ -657,7 +657,7 @@
   "build.game_name_hint": "(default: {name})",
   "build.debug_mode": "Debug Mode",
   "build.lto": "LTO (slower build, better perf)",
-  "build.enable_jit": "JIT compute (CPU and GPU)",
+  "build.jit_runtime_automatic": "JIT runtime: automatic for target platform",
   "build.output_directory": "Output Directory",
   "build.output_directory_hint": "Use an empty folder, or reuse this project's previous build folder.",
   "build.output_directory_error_title": "Invalid Build Output Directory",

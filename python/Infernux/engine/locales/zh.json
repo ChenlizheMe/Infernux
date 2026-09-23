@@ -657,7 +657,7 @@
   "build.game_name_hint": "(默认: {name})",
   "build.debug_mode": "调试模式",
   "build.lto": "LTO（编译更慢，性能更好）",
-  "build.enable_jit": "JIT 计算（CPU 与 GPU）",
+  "build.jit_runtime_automatic": "JIT 运行时：由目标平台自动决定",
   "build.output_directory": "输出目录",
   "build.output_directory_hint": "请使用空文件夹，或复用本项目上一次构建的目录。",
   "build.output_directory_error_title": "无效的构建输出目录",

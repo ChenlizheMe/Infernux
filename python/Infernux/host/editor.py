@@ -1024,7 +1024,6 @@ class EditorAutomationHost:
         game_name: str = "",
         debug_mode: bool | None = None,
         lto: bool | None = None,
-        enable_jit: bool | None = None,
         android_artifact: str = "",
         compress_resources: bool | None = None,
         persist_settings: bool = True,
@@ -1078,7 +1077,6 @@ class EditorAutomationHost:
             )
         final_debug = bool(settings.get("debug_mode", False)) if debug_mode is None else bool(debug_mode)
         final_lto = bool(settings.get("lto", True)) if lto is None else bool(lto)
-        final_jit = bool(settings.get("enable_jit", False)) if enable_jit is None else bool(enable_jit)
         final_artifact = str(
             android_artifact or settings.get("android_artifact", "apk") or "apk"
         ).strip().casefold()
@@ -1129,6 +1127,13 @@ class EditorAutomationHost:
                     ],
                 },
             )
+        selected_target = next(
+            item for item in available_targets if item.id == final_target
+        )
+        final_jit = bool(
+            selected_target.capabilities.cpu_jit
+            or "gpu-jit" in selected_target.capabilities.features
+        )
         final_compress = (
             not final_debug
             if compress_resources is None
@@ -1142,7 +1147,6 @@ class EditorAutomationHost:
                 "game_name": final_name,
                 "debug_mode": final_debug,
                 "lto": final_lto,
-                "enable_jit": final_jit,
             }
         )
         progress: list[dict[str, object]] = []
@@ -1289,7 +1293,7 @@ class EditorAutomationHost:
             "executable_exists": bool(executable and os.path.isfile(executable)),
             "debug_mode": final_debug,
             "lto": final_lto,
-            "enable_jit": final_jit,
+            "jit_enabled": final_jit,
             "compress_resources": final_compress,
             "android_artifact": final_artifact,
             "elapsed_seconds": result.elapsed_seconds,

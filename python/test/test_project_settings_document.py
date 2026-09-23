@@ -37,6 +37,12 @@ def test_build_settings_persist_platform_target_and_android_artifact():
     assert settings["android_artifact"] == "aab"
 
 
+def test_build_settings_current_schema_has_no_author_jit_toggle():
+    settings = normalize_build_settings({})
+
+    assert "enable_jit" not in settings
+
+
 def test_build_settings_reject_invalid_platform_target_and_artifact():
     import pytest
 
