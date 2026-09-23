@@ -277,7 +277,9 @@ jobs:
     env:
       INFERNUX_SOURCE_ROOT: ${{ github.workspace }}
       INFERNUX_WEB_TOOLCHAIN_ROOT: ${{ github.workspace }}/out/toolchains/web
+      INFERNUX_WEB_NUMPY_RUNTIME_ROOT: ${{ github.workspace }}/out/toolchains/web-numpy-static
       INFERNUX_WEB_BUILD_CACHE: ${{ github.workspace }}/out/cache/web
+      INFERNUX_WEB_WORK_PLUGIN_ROOT: ${{ github.workspace }}/out/work/web-plugin
     steps:
       - uses: actions/checkout@v4
         with:
@@ -294,9 +296,10 @@ jobs:
         with:
           path: |
             out/toolchains/web
+            out/toolchains/web-numpy-static
             out/cache/web
             out/build/linux-clang-headless
-          key: web-player-${{ runner.os }}-${{ hashFiles('scripts/setup/build_web_toolchain.sh', 'cmake/**', 'CMakeLists.txt') }}
+          key: web-player-${{ runner.os }}-${{ hashFiles('scripts/setup/build_web_toolchain.sh', 'external/plugins/infernux_web/native/python_runtime/**', 'external/plugins/infernux_web/package/editor/infernux_web/native_payload.py', 'cmake/**', 'CMakeLists.txt') }}
           restore-keys: |
             web-player-${{ runner.os }}-
 
@@ -322,17 +325,52 @@ jobs:
           echo "INFERNUX_WEB_CPYTHON_ROOT=$INFERNUX_WEB_TOOLCHAIN_ROOT/src/Python-3.13.15" >> "$GITHUB_ENV"
           echo "INFERNUX_WEB_TINT=$INFERNUX_WEB_TOOLCHAIN_ROOT/build/dawn-tint-31e25af254ab572c77054edec4946d2244e184dd/tint" >> "$GITHUB_ENV"
 
-      - name: Publish the precompiled Web plugin payload
+      - name: Prepare pinned Web NumPy runtime
+        run: |
+          conda activate infernux
+          manifest="$INFERNUX_WEB_NUMPY_RUNTIME_ROOT/runtime/runtime-manifest.json"
+          payload="$INFERNUX_WEB_NUMPY_RUNTIME_ROOT/runtime/payload"
+          if [[ -f "$manifest" ]]; then
+            python external/plugins/infernux_web/package/editor/infernux_web/native_payload.py \
+              --verify-python-package-payload "$payload" \
+              --runtime-manifest "$manifest" \
+              --package numpy
+          elif [[ -e "$INFERNUX_WEB_NUMPY_RUNTIME_ROOT" ]]; then
+            echo "Cached Web NumPy runtime is incomplete: $INFERNUX_WEB_NUMPY_RUNTIME_ROOT" >&2
+            exit 1
+          else
+            bash external/plugins/infernux_web/native/python_runtime/build_numpy_static_runtime.sh \
+              --root "$INFERNUX_WEB_NUMPY_RUNTIME_ROOT" \
+              --host-python "$CONDA_PREFIX/bin/python"
+          fi
+          echo "INFERNUX_WEB_PYTHON_RUNTIME_MANIFEST=$manifest" >> "$GITHUB_ENV"
+          echo "INFERNUX_WEB_NUMPY_PAYLOAD_ROOT=$payload" >> "$GITHUB_ENV"
+
+      - name: Publish the precompiled Web working plugin
         run: |
           conda activate infernux
           source "$INFERNUX_EMSDK_ROOT/emsdk_env.sh"
           python external/plugins/infernux_web/native/build.py \
             --emsdk "$INFERNUX_EMSDK_ROOT" \
             --cpython-source "$INFERNUX_WEB_CPYTHON_ROOT" \
-            --build-root "$INFERNUX_WEB_BUILD_CACHE/player"
+            --python-runtime-manifest "$INFERNUX_WEB_PYTHON_RUNTIME_MANIFEST" \
+            --numpy-payload-root "$INFERNUX_WEB_NUMPY_PAYLOAD_ROOT" \
+            --host-python "$CONDA_PREFIX/bin/python" \
+            --build-root "$INFERNUX_WEB_BUILD_CACHE/player" \
+            --player-output "$INFERNUX_WEB_BUILD_CACHE/player/publish/player"
+          rm -rf "$INFERNUX_WEB_WORK_PLUGIN_ROOT"
+          mkdir -p "$INFERNUX_WEB_WORK_PLUGIN_ROOT/package/editor"
+          cp -a external/plugins/infernux_web/package/editor/. \
+            "$INFERNUX_WEB_WORK_PLUGIN_ROOT/package/editor/"
+          rm -rf \
+            "$INFERNUX_WEB_WORK_PLUGIN_ROOT/package/editor/infernux_web/player" \
+            "$INFERNUX_WEB_WORK_PLUGIN_ROOT/package/editor/infernux_web/tools"
+          cp -a "$INFERNUX_WEB_BUILD_CACHE/player/publish/player" \
+            "$INFERNUX_WEB_WORK_PLUGIN_ROOT/package/editor/infernux_web/player"
           cmake -S external/plugins/infernux_web/native/tools \
             -B "$INFERNUX_WEB_BUILD_CACHE/shader-tools" -G Ninja \
-            "-DINFERNUX_DAWN_SOURCE=$INFERNUX_WEB_TOOLCHAIN_ROOT/src/dawn-31e25af254ab572c77054edec4946d2244e184dd"
+            "-DINFERNUX_DAWN_SOURCE=$INFERNUX_WEB_TOOLCHAIN_ROOT/src/dawn-31e25af254ab572c77054edec4946d2244e184dd" \
+            "-DINFERNUX_WEB_TOOLS_OUTPUT_DIR=$INFERNUX_WEB_WORK_PLUGIN_ROOT/package/editor/infernux_web/tools"
           cmake --build "$INFERNUX_WEB_BUILD_CACHE/shader-tools" --target prebuild_web_tools --parallel 2
 
       - name: Build Web Player fixture
@@ -344,6 +382,7 @@ jobs:
           python scripts/acceptance/build_player.py \
             out/ci-projects/web web-wasm32 out/acceptance/web \
             --report out/test-results/web-player-build.json \
+            --plugin-editor-root "$INFERNUX_WEB_WORK_PLUGIN_ROOT/package/editor" \
             --option "build_cache_root=\"$INFERNUX_WEB_BUILD_CACHE\""
 
       - name: Upload Web Player for visual acceptance
@@ -362,6 +401,7 @@ jobs:
           path: |
             out/test-results/web-*
             out/toolchains/web/infernux-web-toolchain.json
+            out/toolchains/web-numpy-static/runtime/runtime-manifest.json
           if-no-files-found: warn
 
   web-browser:
