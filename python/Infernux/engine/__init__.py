@@ -264,15 +264,16 @@ def _load_player_build_manifest(project_path: str) -> dict[str, object]:
         isinstance(item, dict) for item in splash_items
     ):
         raise TypeError("Player BuildManifest.json splash_items must contain objects")
-    scenes = manifest.get("scenes")
-    if not isinstance(scenes, list) or not all(
-        isinstance(scene, str) and bool(scene.strip()) for scene in scenes
+    scene_guids = manifest.get("scene_guids")
+    if not isinstance(scene_guids, list) or not all(
+        isinstance(scene_guid, str) and bool(scene_guid.strip())
+        for scene_guid in scene_guids
     ):
         raise TypeError(
-            "Player BuildManifest.json scenes must contain non-empty strings"
+            "Player BuildManifest.json scene_guids must contain non-empty strings"
         )
-    if not scenes:
-        raise ValueError("Player BuildManifest.json scenes must not be empty")
+    if not scene_guids:
+        raise ValueError("Player BuildManifest.json scene_guids must not be empty")
 
     icon_path = str(manifest["icon_path"])
     if icon_path:
@@ -321,7 +322,7 @@ def run_player(project_path: str, engine_log_level=LogLevel.Info):
         window_height = manifest["window_height"]
         window_resizable = manifest["window_resizable"]
         splash_items = manifest["splash_items"]
-        scenes = manifest["scenes"]
+        scene_guids = manifest["scene_guids"]
         build_icon_path = manifest["icon_path"]
         game_name = manifest["game_name"]
         title = game_name
@@ -343,7 +344,7 @@ def run_player(project_path: str, engine_log_level=LogLevel.Info):
 
         bootstrap = PlayerBootstrap(
             project_path, engine_log_level,
-            scenes=scenes,
+            scene_guids=scene_guids,
             display_mode=display_mode,
             window_width=window_width,
             window_height=window_height,
