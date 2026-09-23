@@ -107,6 +107,61 @@ def test_installed_acceptance_is_an_explicit_cli_mode():
     assert arguments.installed is True
 
 
+def test_source_acceptance_can_select_an_out_of_source_plugin_editor_root(
+    tmp_path, monkeypatch
+):
+    module = _module()
+    editor_root = tmp_path / "work-package" / "editor"
+    package_root = editor_root / "infernux_web"
+    package_root.mkdir(parents=True)
+    module_file = package_root / "__init__.py"
+    module_file.write_text("", encoding="utf-8")
+
+    class FakeExporter:
+        pass
+
+    imported = SimpleNamespace(
+        __file__=str(module_file),
+        WebPlatformExporter=FakeExporter,
+    )
+    stale = SimpleNamespace(__file__=str(tmp_path / "source" / "__init__.py"))
+    monkeypatch.setitem(module.sys.modules, "infernux_web", stale)
+    monkeypatch.setitem(module.sys.modules, "infernux_web.doctor", stale)
+
+    def _import(name):
+        assert "infernux_web" not in module.sys.modules
+        assert "infernux_web.doctor" not in module.sys.modules
+        return imported
+
+    monkeypatch.setattr(module.importlib, "import_module", _import)
+
+    exporter = module._load_exporter(
+        "web-wasm32", editor_root_override=editor_root
+    )
+
+    assert isinstance(exporter, FakeExporter)
+    assert module.sys.path[0] == str(editor_root.resolve())
+
+
+def test_source_plugin_editor_override_rejects_an_import_from_another_root(
+    tmp_path, monkeypatch
+):
+    module = _module()
+    editor_root = tmp_path / "selected" / "editor"
+    (editor_root / "infernux_web").mkdir(parents=True)
+    escaped = tmp_path / "other" / "infernux_web" / "__init__.py"
+    escaped.parent.mkdir(parents=True)
+    escaped.write_text("", encoding="utf-8")
+    imported = SimpleNamespace(
+        __file__=str(escaped),
+        WebPlatformExporter=object,
+    )
+    monkeypatch.setattr(module.importlib, "import_module", lambda name: imported)
+
+    with pytest.raises(RuntimeError, match="escaped the selected editor root"):
+        module._load_exporter("web-wasm32", editor_root_override=editor_root)
+
+
 def test_installed_preload_has_project_paths_and_mirrored_resources(tmp_path, monkeypatch):
     from Infernux.application import Application
     from Infernux.engine import library_sync, project_context

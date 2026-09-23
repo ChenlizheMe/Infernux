@@ -73,16 +73,39 @@ def _parse_option(value: str) -> tuple[str, object]:
     return key, decoded
 
 
-def _load_exporter(target: str):
+def _load_exporter(target: str, *, editor_root_override: Path | None = None):
     try:
         plugin, module_name, class_name = EXPORTERS[target]
     except KeyError as error:
         supported = ", ".join(SUPPORTED_TARGETS)
         raise ValueError(f"unsupported Player target {target!r}; choose {supported}") from error
-    editor_root = str(PLUGIN_EDITORS[plugin])
+    editor_path = (
+        editor_root_override.expanduser().resolve()
+        if editor_root_override is not None
+        else PLUGIN_EDITORS[plugin].resolve()
+    )
+    module_root = editor_path / module_name
+    if not module_root.is_dir():
+        raise ValueError(
+            f"Platform plugin editor root does not provide {module_name}: {editor_path}"
+        )
+    if editor_root_override is not None:
+        # An explicit release-engineering root is authoritative.  A caller may
+        # have inspected the source plugin earlier in this process; retaining
+        # any part of that package would silently assemble a mixed payload.
+        for loaded_name in tuple(sys.modules):
+            if loaded_name == module_name or loaded_name.startswith(module_name + "."):
+                del sys.modules[loaded_name]
+        importlib.invalidate_caches()
+    editor_root = str(editor_path)
     if editor_root not in sys.path:
         sys.path.insert(0, editor_root)
     module = importlib.import_module(module_name)
+    module_file = Path(module.__file__).resolve()
+    if not module_file.is_relative_to(module_root):
+        raise RuntimeError(
+            f"Platform plugin import escaped the selected editor root: {module_file}"
+        )
     return getattr(module, class_name)()
 
 
@@ -203,6 +226,14 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("output", type=Path, help="published Player output directory")
     parser.add_argument("--installed", action="store_true", help="Use only the installed wheel and project-installed platform plugins")
     parser.add_argument(
+        "--plugin-editor-root",
+        type=Path,
+        help=(
+            "Explicit editor root for the selected source platform plugin. "
+            "Release engineering uses this to consume an out-of-source working package."
+        ),
+    )
+    parser.add_argument(
         "--report",
         type=Path,
         help="JSON evidence path (default: <output>/build-evidence.json)",
@@ -228,7 +259,10 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    arguments = _parser().parse_args(argv)
+    parser = _parser()
+    arguments = parser.parse_args(argv)
+    if arguments.installed and arguments.plugin_editor_root is not None:
+        parser.error("--plugin-editor-root cannot be combined with --installed")
     project = arguments.project.expanduser().resolve()
     output = arguments.output.expanduser().resolve()
     report_path = (
@@ -313,7 +347,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         registry = _installed_exporter_registry(project)
     else:
         _prepare_project_registry(project)
-        exporter = _load_exporter(arguments.target)
+        exporter = _load_exporter(
+            arguments.target,
+            editor_root_override=arguments.plugin_editor_root,
+        )
         registry = BuildExporterRegistry()
         registry.register("scripts/acceptance/build-player", exporter)
     service = BuildService(registry)
