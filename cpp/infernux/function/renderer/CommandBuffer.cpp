@@ -12,10 +12,10 @@
 #include <atomic>
 #include <cmath>
 #include <core/log/InxLog.h>
-#include <function/resources/InxMaterial/InxMaterial.h>
-#include <function/resources/InxMesh/InxMesh.h>
 #include <function/renderer/rhi/RhiComputeBuffer.h>
 #include <function/renderer/shader/ShaderProgram.h>
+#include <function/resources/InxMaterial/InxMaterial.h>
+#include <function/resources/InxMesh/InxMesh.h>
 #include <stdexcept>
 
 namespace infernux
@@ -115,9 +115,8 @@ bool SamePropertyValue(const MaterialProperty &lhs, const MaterialProperty &rhs)
         const auto &a = std::get<std::vector<glm::vec4>>(lhs.value);
         const auto &b = std::get<std::vector<glm::vec4>>(rhs.value);
         return a.size() == b.size() &&
-               std::equal(a.begin(), a.end(), b.begin(), [&](const auto &left, const auto &right) {
-                   return sameVector(left, right);
-               });
+               std::equal(a.begin(), a.end(), b.begin(),
+                          [&](const auto &left, const auto &right) { return sameVector(left, right); });
     }
     }
     return false;
@@ -243,8 +242,7 @@ std::shared_ptr<const RendererParameterBlock> DrawParameterBlock::Capture(const 
         if (!ParameterTypeMatches(declared->type, supplied.type))
             throw std::invalid_argument("draw parameter '" + name + "' does not match the reflected shader type");
         if (declared->type == MaterialPropertyType::FloatArray &&
-            std::get<std::vector<float>>(declared->value).size() !=
-                std::get<std::vector<float>>(supplied.value).size())
+            std::get<std::vector<float>>(declared->value).size() != std::get<std::vector<float>>(supplied.value).size())
             throw std::invalid_argument("draw parameter '" + name + "' does not match the reflected array length");
         if (declared->type == MaterialPropertyType::Float4Array &&
             std::get<std::vector<glm::vec4>>(declared->value).size() !=

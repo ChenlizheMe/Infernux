@@ -75,10 +75,8 @@ int main()
 
     // The public CPU topology remains uint32 while Auto/UInt16 select the
     // actual GPU encoding. Explicit UInt16 is range-checked, never truncated.
-    assert(ResolveMeshIndexFormat(MeshIndexFormat::Auto, 3, recorded.geometry->indices) ==
-           MeshIndexFormat::UInt16);
-    assert(ResolveMeshIndexFormat(MeshIndexFormat::UInt32, 3, recorded.geometry->indices) ==
-           MeshIndexFormat::UInt32);
+    assert(ResolveMeshIndexFormat(MeshIndexFormat::Auto, 3, recorded.geometry->indices) == MeshIndexFormat::UInt16);
+    assert(ResolveMeshIndexFormat(MeshIndexFormat::UInt32, 3, recorded.geometry->indices) == MeshIndexFormat::UInt32);
     bool rejectedNarrowIndex = false;
     try {
         (void)ResolveMeshIndexFormat(MeshIndexFormat::UInt16, 65537, std::vector<uint32_t>{0, 65536, 0});
@@ -155,9 +153,9 @@ int main()
     const auto dynamicElapsed = std::chrono::steady_clock::now() - dynamicStart;
     assert(measureBatches(perDrawBatch) == measuredDrawCount);
     std::cout << "Renderer parameter frequency: stable="
-              << std::chrono::duration<double, std::milli>(stableElapsed).count() << "ms/1 batch, per-draw="
-              << std::chrono::duration<double, std::milli>(dynamicElapsed).count() << "ms/" << measuredDrawCount
-              << " batches\n";
+              << std::chrono::duration<double, std::milli>(stableElapsed).count()
+              << "ms/1 batch, per-draw=" << std::chrono::duration<double, std::milli>(dynamicElapsed).count() << "ms/"
+              << measuredDrawCount << " batches\n";
 
     // Failed writes do not poison the last complete publication.
     bool rejectedNonFinite = false;

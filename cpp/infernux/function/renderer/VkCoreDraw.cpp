@@ -398,8 +398,8 @@ void InxVkCoreModular::DrawFrame(const float *viewPos, const float *viewLookAt, 
         const auto compute = m_computeQueue.DependencyFor(residentWrite);
         externalSync.backgroundComputeTimeline = compute.completionTimeline;
         externalSync.backgroundComputeTimelineValue = compute.completionTimelineValue;
-        externalSync.backgroundComputeStages = residentReadStages != 0 ? residentReadStages
-                                                                       : VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT;
+        externalSync.backgroundComputeStages =
+            residentReadStages != 0 ? residentReadStages : VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT;
         m_frameSubmissionTelemetry.residentComputeWaitPending = compute.completionTimeline != VK_NULL_HANDLE;
     }
     externalSync.renderFinished = m_backend.Presentation().GetRenderFinishedSemaphore(imageIndex);
@@ -1582,8 +1582,8 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
         VkDescriptorSet descriptorSet = resolved.descriptorSet;
 
         const bool requiresMaterialBuffer =
-            std::any_of(resolved.program->GetDescriptorBindings().begin(), resolved.program->GetDescriptorBindings().end(),
-                        [](const MergedDescriptorBinding &binding) {
+            std::any_of(resolved.program->GetDescriptorBindings().begin(),
+                        resolved.program->GetDescriptorBindings().end(), [](const MergedDescriptorBinding &binding) {
                             return binding.set == 0 && binding.type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
                         });
         if (requiresMaterialBuffer &&

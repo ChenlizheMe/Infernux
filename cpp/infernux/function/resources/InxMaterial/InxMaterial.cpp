@@ -9,9 +9,9 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <function/renderer/rhi/RhiComputeBuffer.h>
 #include <function/resources/AssetDatabase/AssetDatabase.h>
 #include <function/resources/AssetDependencyGraph.h>
-#include <function/renderer/rhi/RhiComputeBuffer.h>
 #if !defined(INFERNUX_DISABLE_VULKAN_MATERIAL_RUNTIME)
 #include <function/renderer/shader/ShaderProgram.h>
 #endif
@@ -258,8 +258,8 @@ std::string ResolveEngineTextureGuid(const std::string &textureRef)
     throw std::invalid_argument("engine texture cannot be resolved: " + textureRef);
 }
 
-std::shared_ptr<InxMaterial>
-CreateTexturedComponentGizmoIconMaterial(const std::string &name, const std::string &textureRef)
+std::shared_ptr<InxMaterial> CreateTexturedComponentGizmoIconMaterial(const std::string &name,
+                                                                      const std::string &textureRef)
 {
     auto material = std::make_shared<InxMaterial>(name);
     material->SetShader("Gizmo Icon");
@@ -585,8 +585,8 @@ InxMaterial::InxMaterial(const InxMaterial &other)
       m_vertexShader(other.m_vertexShader), m_fragmentShader(other.m_fragmentShader), m_passTag(other.m_passTag),
       m_renderState(other.m_renderState), m_renderStateOverrides(other.m_renderStateOverrides),
       m_properties(other.m_properties), m_textureSamplers(other.m_textureSamplers), m_buffers(other.m_buffers),
-      m_shaderPropertyOrder(other.m_shaderPropertyOrder),
-      m_pipelineDirty(true), m_propertiesDirty(true), m_version(0), m_isDeleted(other.m_isDeleted)
+      m_shaderPropertyOrder(other.m_shaderPropertyOrder), m_pipelineDirty(true), m_propertiesDirty(true), m_version(0),
+      m_isDeleted(other.m_isDeleted)
 {
     // GPU-transient state must never be copied across logical material instances.
 }

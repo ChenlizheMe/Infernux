@@ -77,8 +77,8 @@ static VkPipeline CreateFullscreenPipeline(VkDevice device, VkShaderModule verte
     multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
     VkPipelineDepthStencilStateCreateInfo depth{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
     VkPipelineColorBlendAttachmentState colorAttachment{};
-    colorAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT |
-                                     VK_COLOR_COMPONENT_A_BIT;
+    colorAttachment.colorWriteMask =
+        VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
     VkPipelineColorBlendStateCreateInfo blend{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
     blend.attachmentCount = 1;
     blend.pAttachments = &colorAttachment;
@@ -125,8 +125,7 @@ static void CheckRendererParameterBuffer(vk::VkDeviceContext &context, vk::Vulka
     auto parameters = std::make_shared<rhi::ComputeBuffer>(
         computeHost, rhi::ComputeBufferDesc{2, rhi::ComputeScalarType::Float32, 4});
     const std::array<float, 8> authored = {
-        1.0f, 0.0f, 0.0f, 1.0f,
-        32.0f / 255.0f, 128.0f / 255.0f, 224.0f / 255.0f, 1.0f,
+        1.0f, 0.0f, 0.0f, 1.0f, 32.0f / 255.0f, 128.0f / 255.0f, 224.0f / 255.0f, 1.0f,
     };
     parameters->SetData(0, authored.data(), sizeof(authored));
     computeQueue.Wait(parameters->GetLastWriteSubmission());
@@ -172,8 +171,7 @@ static void CheckRendererParameterBuffer(vk::VkDeviceContext &context, vk::Vulka
     const auto computeLayout = device.CreateBindingLayout(computeLayoutDesc);
     rhi::BindGroupDesc groupDesc;
     groupDesc.layout = computeLayout;
-    groupDesc.buffers[0] = {0, rhi::BindingType::StorageBuffer, parameters->GetBuffer(), 0,
-                            parameters->GetByteSize()};
+    groupDesc.buffers[0] = {0, rhi::BindingType::StorageBuffer, parameters->GetBuffer(), 0, parameters->GetByteSize()};
     groupDesc.bufferCount = 1;
     const auto group = device.CreateBindGroup(groupDesc);
     const auto computeShader =
@@ -195,11 +193,9 @@ static void CheckRendererParameterBuffer(vk::VkDeviceContext &context, vk::Vulka
     computeDesc.bindingLayouts[0] = computeLayout;
     computeDesc.bindingLayoutCount = 1;
     const auto computePipeline = device.CreateComputePipeline(computeDesc);
-    const VkPipeline nativeGraphicsPipeline =
-        CreateFullscreenPipeline(context.GetDevice(), program->GetVertexModule(), program->GetFragmentModule(),
-                                 program->GetPipelineLayout());
-    const auto graphicsPipeline =
-        device.RegisterGraphicsPipeline(nativeGraphicsPipeline, program->GetPipelineLayout());
+    const VkPipeline nativeGraphicsPipeline = CreateFullscreenPipeline(
+        context.GetDevice(), program->GetVertexModule(), program->GetFragmentModule(), program->GetPipelineLayout());
+    const auto graphicsPipeline = device.RegisterGraphicsPipeline(nativeGraphicsPipeline, program->GetPipelineLayout());
     assert(computeLayout.IsValid() && group.IsValid() && computeShader.IsValid() && computePipeline.IsValid() &&
            graphicsPipeline.IsValid());
 
@@ -287,8 +283,8 @@ static void CheckRendererParameterBuffer(vk::VkDeviceContext &context, vk::Vulka
             vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
             vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
             const VkDescriptorSet set = rendererDescriptor->descriptorSet;
-            vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, program->GetPipelineLayout(), 0,
-                                    1, &set, 0, nullptr);
+            vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, program->GetPipelineLayout(), 0, 1,
+                                    &set, 0, nullptr);
             encoder.BindPipeline(graphicsPipeline);
             encoder.Draw(3);
         };
@@ -327,10 +323,9 @@ static void CheckRendererParameterBuffer(vk::VkDeviceContext &context, vk::Vulka
     const auto computeLane = queues.GetSnapshot(rhi::QueueRole::Compute).nativeLane;
     const auto graphicsLane = queues.GetSnapshot(rhi::QueueRole::Graphics).nativeLane;
     if (computeLane != graphicsLane) {
-        const auto graphicsBatch = std::find_if(graphPlan.batches.begin(), graphPlan.batches.end(),
-                                                [](const rhi::SubmissionBatch &batch) {
-                                                    return batch.queue == rhi::QueueRole::Graphics;
-                                                });
+        const auto graphicsBatch =
+            std::find_if(graphPlan.batches.begin(), graphPlan.batches.end(),
+                         [](const rhi::SubmissionBatch &batch) { return batch.queue == rhi::QueueRole::Graphics; });
         assert(graphicsBatch != graphPlan.batches.end());
         const auto &waits = graphicsBatch->waitsFor;
         assert(std::any_of(waits.begin(), waits.end(), [](const rhi::SubmissionBatchDependency &dependency) {
@@ -680,8 +675,8 @@ int main(int argc, char **argv)
     VkFenceCreateInfo info{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
     VkFence fence{};
     assert(vkCreateFence(context.GetDevice(), &info, nullptr, &fence) == VK_SUCCESS);
-    CheckRendererParameterBuffer(context, queues, executor, fence, rendererParameterCompute,
-                                 rendererParameterVertex, rendererParameterFragment);
+    CheckRendererParameterBuffer(context, queues, executor, fence, rendererParameterCompute, rendererParameterVertex,
+                                 rendererParameterFragment);
     for (auto kind : {ResourceKind::Color, ResourceKind::Buffer}) {
         for (auto producer : {rhi::QueueRole::Graphics, rhi::QueueRole::Compute, rhi::QueueRole::Transfer}) {
             for (auto consumer : {rhi::QueueRole::Graphics, rhi::QueueRole::Compute, rhi::QueueRole::Transfer})

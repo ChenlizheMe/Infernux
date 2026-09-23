@@ -227,8 +227,8 @@ class InxVkCoreModular
     [[nodiscard]] bool HasShaderProgramArtifact(const ShaderProgramKey &programKey) const;
     [[nodiscard]] std::shared_ptr<const ShaderProgramArtifact>
     CopyShaderProgramArtifact(const ShaderStagePair &stages) const;
-    [[nodiscard]] const ShaderProgramArtifact *ResolveShaderProgramArtifact(
-        const std::shared_ptr<InxMaterial> &material, const ShaderStagePair &stages);
+    [[nodiscard]] const ShaderProgramArtifact *
+    ResolveShaderProgramArtifact(const std::shared_ptr<InxMaterial> &material, const ShaderStagePair &stages);
     void SetShaderProgramArtifactResolver(std::function<void(const std::shared_ptr<InxMaterial> &)> resolver)
     {
         m_shaderProgramArtifactResolver = std::move(resolver);
@@ -690,7 +690,8 @@ class InxVkCoreModular
         if (!ticket.IsValid())
             return;
         if (ticket.device != m_backend.Device().GetDeviceId() || ticket.queue != rhi::QueueRole::Compute)
-            throw std::invalid_argument("Frame storage-buffer dependency does not belong to the renderer compute queue");
+            throw std::invalid_argument(
+                "Frame storage-buffer dependency does not belong to the renderer compute queue");
         if (!m_frameComputeReadTicket.IsValid() || ticket.serial > m_frameComputeReadTicket.serial)
             m_frameComputeReadTicket = ticket;
         m_frameComputeReadStages |= stages;

@@ -333,8 +333,7 @@ bool MaterialDescriptorManager::IsDescriptorSetComplete(VkDescriptorSet descript
     if (descriptorSet == VK_NULL_HANDLE)
         return false;
     const auto found = m_liveDescriptorHandles.find(reinterpret_cast<uint64_t>(descriptorSet));
-    const MaterialDescriptorSet *descriptor =
-        found == m_liveDescriptorHandles.end() ? nullptr : found->second;
+    const MaterialDescriptorSet *descriptor = found == m_liveDescriptorHandles.end() ? nullptr : found->second;
     return descriptor && descriptor->isValid && !descriptor->hasUnboundRequiredBuffers;
 }
 
@@ -975,8 +974,8 @@ bool MaterialDescriptorManager::UpdateDescriptorBindings(MaterialDescriptorSet &
             matDescSet.bufferBindings[binding.binding] = bufferInfo;
         } else if (binding.type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) {
             const auto storage = matDescSet.storageBufferBindings.find(binding.binding);
-            if (binding.descriptorCount != 1 || storage == matDescSet.storageBufferBindings.end() ||
-                !storage->second || !m_bufferResolver) {
+            if (binding.descriptorCount != 1 || storage == matDescSet.storageBufferBindings.end() || !storage->second ||
+                !m_bufferResolver) {
                 matDescSet.hasUnboundRequiredBuffers = true;
                 continue;
             }

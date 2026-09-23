@@ -16,8 +16,8 @@
 #include "VertexInputFilter.h"
 #include "gui/GPUMaterialPreview.h"
 #include "gui/GPUMeshPreview.h"
-#include "rhi/RhiRenderTexture.h"
 #include "rhi/RhiComputeBuffer.h"
+#include "rhi/RhiRenderTexture.h"
 #include "vk/DescriptorBindTrace.h"
 #include "vk/MaterialRenderStateVulkan.h"
 #include "vk/RhiVulkanTypes.h"
@@ -1628,7 +1628,7 @@ uint64_t InxVkCoreModular::GetMeshPreviewDisplayTextureId() const
 }
 
 uint64_t InxVkCoreModular::RenderModelAnimationPreview(const std::shared_ptr<InxMesh> &mesh, const std::string &take,
-                                                      float seconds, int size, uint64_t dependencyRevision)
+                                                       float seconds, int size, uint64_t dependencyRevision)
 {
     if (!m_materialPipelineManagerInitialized)
         return 0;

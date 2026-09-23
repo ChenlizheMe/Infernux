@@ -972,9 +972,9 @@ void InxRenderer::PreparePipeline()
                     return true;
                 graph->SetDrawViewMatrix(view);
                 vk::RenderGraph *compiled = graph->GetCompiledRenderGraph();
-                m_vkCore->RegisterFrameComputeReadDependency(
-                    graph->GetLatestMaterialBufferWriteSubmission(),
-                    VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+                m_vkCore->RegisterFrameComputeReadDependency(graph->GetLatestMaterialBufferWriteSubmission(),
+                                                             VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
+                                                                 VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
                 const auto &viewContext = graph->GetRenderViewContext();
                 std::vector<uint32_t> graphDependencies = predecessors;
                 if (particleComputeWorkItem != 0)
