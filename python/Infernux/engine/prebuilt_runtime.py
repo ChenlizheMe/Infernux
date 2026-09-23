@@ -71,7 +71,7 @@ def build_prebuilt_runtime(
             game_name="InfernuxPlayer",
             debug_mode=profile == "debug",
             lto=lto,
-            enable_jit=False,
+            include_jit_runtime=False,
         )
         boot_script = game_builder._generate_boot_script()
         default_icon = os.path.join(
@@ -116,7 +116,7 @@ def build_prebuilt_runtime(
         with open(manifest_path, "r", encoding="utf-8") as manifest_file:
             manifest = json.load(manifest_file)
         manifest.update({
-            "distribution": "wheel-package-data",
+            "distribution": "platform-build",
             "profile": profile,
             "engine_version": ENGINE_VERSION,
         })
@@ -131,7 +131,7 @@ def build_prebuilt_runtime(
         with open(module_manifest_path, "r", encoding="utf-8") as manifest_file:
             module_manifest = json.load(manifest_file)
         module_manifest.update({
-            "distribution": "wheel-package-data",
+            "distribution": "platform-build",
             "profile": profile,
             "engine_version": ENGINE_VERSION,
         })
@@ -150,7 +150,7 @@ def build_prebuilt_runtime(
             except (OSError, ValueError):
                 continue
             if (
-                candidate.get("distribution") == "wheel-package-data"
+                candidate.get("distribution") == "platform-build"
                 and candidate.get("profile") == profile
             ):
                 shutil.rmtree(candidate_root, ignore_errors=True)
@@ -164,7 +164,7 @@ def build_prebuilt_runtime(
             except (OSError, ValueError):
                 continue
             if (
-                candidate.get("distribution") == "wheel-package-data"
+                candidate.get("distribution") == "platform-build"
                 and candidate.get("profile") == profile
             ):
                 shutil.rmtree(candidate_root, ignore_errors=True)
@@ -209,8 +209,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--output-root",
-        default=str(Path(resolved_path(__file__)).parents[1] / "_runtime_packs"),
-        help="Directory embedded into the platform wheel as Infernux package data.",
+        required=True,
+        help="Explicit build-owned directory for the platform Player payload.",
     )
     parser.add_argument(
         "--build-cache-root",
