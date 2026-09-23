@@ -373,32 +373,6 @@ class RenderStack(PipelineReloadMixin, InxComponent):
         if selected_pipeline == self.pipeline_class_name:
             self.invalidate_graph()
 
-    def _deserialize_fields_document(
-        self,
-        data: dict,
-        *,
-        _skip_on_after_deserialize: bool = False,
-        repair: bool = False,
-    ) -> None:
-        if not isinstance(data, dict):
-            raise TypeError("RenderStack fields document must be an object")
-        obsolete = {"effect_stage_bindings_json", "mounted_passes_json"}.intersection(data)
-        if obsolete and not repair:
-            raise ValueError(
-                "RenderStack contains removed fields: " + ", ".join(sorted(obsolete))
-            )
-        if obsolete and repair:
-            data = {
-                key: value
-                for key, value in data.items()
-                if key not in obsolete
-            }
-        super()._deserialize_fields_document(
-            data,
-            _skip_on_after_deserialize=_skip_on_after_deserialize,
-            repair=repair,
-        )
-
     def on_after_deserialize(self) -> None:
         """Restore the canonical pipeline and EffectStage state."""
         # Normalize the removed empty-string sentinel at the component
@@ -423,14 +397,28 @@ class RenderStack(PipelineReloadMixin, InxComponent):
             data = _json.loads(self.pipeline_params_json)
             if type(data) is not dict:
                 raise TypeError("RenderStack pipeline parameters must be an object")
-            # Screen UI is part of the canonical render tail, not a pipeline
-            # option. Strip the removed field at the serialization boundary so
-            # old editor state cannot silently produce a different graph.
-            for params in data.values():
-                if isinstance(params, dict):
-                    params.pop("enable_screen_ui", None)
-            self._pipeline_param_store = data
-            self.pipeline_params_json = _json.dumps(data)
+            from Infernux.components.fields import get_serialized_fields
+            from Infernux.renderstack.default_forward_pipeline import (
+                DefaultForwardPipeline,
+            )
+
+            pipeline_types = {
+                "__default__": DefaultForwardPipeline,
+                **self.discover_pipelines(),
+            }
+            current = {}
+            for pipeline_name, params in data.items():
+                pipeline_type = pipeline_types.get(pipeline_name)
+                if pipeline_type is None or type(params) is not dict:
+                    continue
+                declared = get_serialized_fields(pipeline_type)
+                current[pipeline_name] = {
+                    name: value
+                    for name, value in params.items()
+                    if name in declared
+                }
+            self._pipeline_param_store = current
+            self.pipeline_params_json = _json.dumps(current)
 
         # Deserialization may be repeated on an existing editor component.
         # Recreate the selected pipeline only after its parameter store exists.

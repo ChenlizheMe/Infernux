@@ -20,68 +20,55 @@ RENDER_EFFECT_GROUP_SCHEMA = "infernux.render_effect_group"
 _TYPE_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+$")
 
 
-def _stamp_effect_asset_reference(guid: str, path_hint: str) -> tuple[str, str]:
-    """Resolve a path-only reference the same way materials stamp texture GUIDs.
+def _resolve_author_effect_asset_reference(path: str) -> str:
+    """Resolve an explicit authoring selection to its current GUID.
 
-    Identity lives in the target ``.meta``. ``path_hint`` is only a lookup key
-    used to find or import that identity; it is never a substitute for it.
+    The path exists only at this editor boundary. Serialized effect documents
+    retain the GUID, so moving the selected asset cannot rewrite their bytes.
     """
-    identity = str(guid or "").strip()
-    hint = portable_path(str(path_hint or "").strip())
-    if identity or not hint:
-        return identity, hint
+    hint = portable_path(str(path or "").strip())
+    if not hint:
+        return ""
 
-    try:
-        from Infernux.core.asset_reference_types import canonical_asset_reference_identity
+    from Infernux.core.assets import AssetManager
+    from Infernux.engine.project_context import get_project_root
 
-        stamped, recovered = canonical_asset_reference_identity("", hint)
-        if stamped:
-            return stamped, recovered or hint
-    except (ImportError, RuntimeError, TypeError, ValueError):
-        pass
-
-    try:
-        from Infernux.core.asset_types import read_meta_guid
-        from Infernux.engine.project_context import get_project_root
-
-        candidates = [hint]
-        project_root = str(get_project_root() or "")
-        if project_root and not os.path.isabs(hint):
-            candidates.insert(0, os.path.join(project_root, hint))
-        for candidate in candidates:
-            found = read_meta_guid(candidate)
-            if found:
-                return found, hint
-            if not os.path.isfile(candidate):
-                continue
-            from Infernux.core.assets import AssetManager
-
-            if getattr(AssetManager, "_asset_database", None) is None:
-                continue
-            imported = str(getattr(AssetManager.import_asset(candidate), "guid", "") or "")
-            if imported:
-                return imported, hint
-    except (ImportError, OSError, RuntimeError, TypeError, ValueError):
-        pass
-    return "", hint
+    database = getattr(AssetManager, "_asset_database", None)
+    resolve_guid = getattr(database, "get_guid_from_path", None)
+    if not callable(resolve_guid):
+        return ""
+    candidates = [hint]
+    project_root = str(get_project_root() or "")
+    if project_root and not os.path.isabs(hint):
+        candidates.insert(0, os.path.join(project_root, hint))
+    for candidate in candidates:
+        found = str(resolve_guid(candidate) or "").strip()
+        if found:
+            return found
+    return ""
 
 
 @dataclass(frozen=True)
 class EffectAssetReference:
-    """GUID-first reference with a readable and recoverable path hint."""
+    """Current asset reference whose sole identity is a non-empty GUID."""
 
-    guid: str = ""
-    path_hint: str = ""
-
+    guid: str
     def __post_init__(self) -> None:
-        guid, path_hint = _stamp_effect_asset_reference(self.guid, self.path_hint)
-        if not guid and not path_hint:
-            raise ValueError("effect asset reference requires guid or path_hint")
+        guid = str(self.guid or "").strip()
+        if not guid:
+            raise ValueError("effect asset reference requires a non-empty GUID")
         object.__setattr__(self, "guid", guid)
-        object.__setattr__(self, "path_hint", path_hint)
+
+    @classmethod
+    def from_author_path(cls, path: str) -> "EffectAssetReference":
+        """Resolve an editor-authored path through the current asset catalog."""
+        guid = _resolve_author_effect_asset_reference(path)
+        if not guid:
+            raise LookupError(f"effect asset path is not registered: {path}")
+        return cls(guid=guid)
 
     def to_dict(self) -> dict[str, str]:
-        return {"guid": self.guid, "path_hint": self.path_hint}
+        return {"guid": self.guid}
 
 
 @dataclass(frozen=True)
@@ -126,6 +113,8 @@ class RenderEffectGroupEntry:
         entry_id = str(self.entry_id or "").strip()
         if not entry_id:
             raise ValueError("effect group entry_id cannot be empty")
+        if not isinstance(self.asset, EffectAssetReference):
+            raise TypeError("effect group asset must be an EffectAssetReference")
         if not isinstance(self.enabled, bool):
             raise TypeError("effect group enabled must be a bool")
         _require_json_object(self.overrides, "overrides")
@@ -181,7 +170,7 @@ def parse_render_effect_document(value: str | bytes | Mapping[str, Any]) -> Rend
 
     schema = root.get("$schema")
     if schema == RENDER_EFFECT_SCHEMA:
-        _require_exact_keys(
+        _require_required_keys(
             root,
             {"$schema", "feature_type", "parameters", "dependencies"},
             "render effect",
@@ -193,7 +182,7 @@ def parse_render_effect_document(value: str | bytes | Mapping[str, Any]) -> Rend
             dependencies=dependencies,
         )
     if schema == RENDER_EFFECT_GROUP_SCHEMA:
-        _require_exact_keys(root, {"$schema", "entries"}, "render effect group")
+        _require_required_keys(root, {"$schema", "entries"}, "render effect group")
         raw_entries = root["entries"]
         if type(raw_entries) is not list:
             raise TypeError("entries must be an array")
@@ -201,15 +190,22 @@ def parse_render_effect_document(value: str | bytes | Mapping[str, Any]) -> Rend
         for index, raw_entry in enumerate(raw_entries):
             if type(raw_entry) is not dict:
                 raise TypeError(f"entries[{index}] must be an object")
-            _require_exact_keys(
-                raw_entry,
-                {"entry_id", "asset", "enabled", "overrides"},
-                f"entries[{index}]",
+            _require_required_keys(raw_entry, {"asset"}, f"entries[{index}]")
+            asset = _parse_reference(raw_entry["asset"], f"entries[{index}].asset")
+            if asset is None:
+                continue
+            _require_required_keys(
+                raw_entry, {"entry_id", "enabled", "overrides"}, f"entries[{index}]"
             )
+            if type(raw_entry["entry_id"]) is not str or not raw_entry["entry_id"].strip():
+                raise ValueError(f"entries[{index}].entry_id must be a non-empty string")
+            if type(raw_entry["enabled"]) is not bool:
+                raise TypeError(f"entries[{index}].enabled must be a bool")
+            _require_json_object(raw_entry["overrides"], f"entries[{index}].overrides")
             entries.append(
                 RenderEffectGroupEntry(
                     entry_id=raw_entry["entry_id"],
-                    asset=_parse_reference(raw_entry["asset"], f"entries[{index}].asset"),
+                    asset=asset,
                     enabled=raw_entry["enabled"],
                     overrides=raw_entry["overrides"],
                 )
@@ -235,24 +231,28 @@ def direct_effect_dependencies(document: RenderEffectDocument) -> tuple[EffectAs
 def _parse_references(value: Any, location: str) -> tuple[EffectAssetReference, ...]:
     if type(value) is not list:
         raise TypeError(f"{location} must be an array")
-    return tuple(_parse_reference(item, f"{location}[{index}]") for index, item in enumerate(value))
+    references = (
+        _parse_reference(item, f"{location}[{index}]")
+        for index, item in enumerate(value)
+    )
+    return tuple(reference for reference in references if reference is not None)
 
 
-def _parse_reference(value: Any, location: str) -> EffectAssetReference:
+def _parse_reference(value: Any, location: str) -> EffectAssetReference | None:
     if type(value) is not dict:
         raise TypeError(f"{location} must be an object")
-    _require_exact_keys(value, {"guid", "path_hint"}, location)
-    if type(value["guid"]) is not str or type(value["path_hint"]) is not str:
-        raise TypeError(f"{location}.guid and path_hint must be strings")
-    return EffectAssetReference(guid=value["guid"], path_hint=value["path_hint"])
+    guid = value.get("guid", "")
+    if type(guid) is not str:
+        raise TypeError(f"{location}.guid must be a string")
+    if not guid.strip():
+        return None
+    return EffectAssetReference(guid=guid)
 
 
-def _require_exact_keys(value: Mapping[str, Any], expected: set[str], location: str) -> None:
-    actual = set(value)
-    if actual != expected:
-        missing = sorted(expected - actual)
-        unknown = sorted(actual - expected)
-        raise ValueError(f"{location} keys mismatch; missing={missing}, unknown={unknown}")
+def _require_required_keys(value: Mapping[str, Any], expected: set[str], location: str) -> None:
+    missing = sorted(expected - set(value))
+    if missing:
+        raise ValueError(f"{location} is missing required keys: {missing}")
 
 
 def _require_json_object(value: Mapping[str, Any], location: str) -> None:

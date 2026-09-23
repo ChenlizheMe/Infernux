@@ -5,6 +5,7 @@ import pytest
 
 from Infernux.components.fields import FieldType, get_raw_field_value, get_serialized_fields
 from Infernux.core.asset_ref import RenderEffectRef
+from Infernux.core.assets import AssetManager
 from Infernux.renderstack.effect_slot import EffectSlot
 from Infernux.renderstack.render_effect import RenderEffect
 from Infernux.renderstack.render_effect_asset import (
@@ -22,6 +23,44 @@ from Infernux.renderstack.render_effect_compiler import (
 )
 from Infernux.renderstack.render_stack import RenderStack
 from Infernux.renderstack.render_pipeline import RenderPipeline
+
+
+@pytest.fixture
+def effect_catalog(monkeypatch):
+    """Small GUID catalog for managed RenderEffect references in unit tests."""
+    paths_by_guid = {}
+    guids_by_path = {}
+
+    class Catalog:
+        @staticmethod
+        def register(path):
+            resolved = str(Path(path).resolve())
+            existing = guids_by_path.get(resolved)
+            if existing:
+                return existing
+            guid = f"effect-{len(paths_by_guid) + 1:024x}"
+            paths_by_guid[guid] = resolved
+            guids_by_path[resolved] = guid
+            return guid
+
+        @staticmethod
+        def get_path_from_guid(guid):
+            return paths_by_guid.get(str(guid), "")
+
+        @staticmethod
+        def get_guid_from_path(path):
+            return guids_by_path.get(str(Path(path).resolve()), "")
+
+        @classmethod
+        def ref(cls, path):
+            return RenderEffectRef(guid=cls.register(path), path_hint=str(path))
+
+        @classmethod
+        def asset(cls, path):
+            return EffectAssetReference(guid=cls.register(path))
+
+    monkeypatch.setattr(AssetManager, "_asset_database", Catalog())
+    return Catalog
 
 
 class _SingleCameraPipeline(RenderPipeline):
@@ -714,6 +753,26 @@ def test_render_stack_structured_slots_round_trip_without_hidden_json():
     assert not hasattr(restored, "effect_stage_bindings_json")
 
 
+def test_render_stack_path_only_slot_deserializes_as_an_empty_reference():
+    stack = RenderStack()
+    stack.add_effect_slot(
+        "final",
+        RenderEffectRef(guid="effect-guid", path_hint="Assets/Effects/Bloom.effect"),
+    )
+    document = stack._serialize_fields_document()
+    persisted_ref = document["effect_slots"][0]["fields"]["effect"]
+    persisted_ref["guid"] = ""
+    persisted_ref["path_hint"] = "Assets/Effects/Legacy.effect"
+
+    restored = RenderStack()
+    restored._deserialize_fields_document(document)
+
+    slot = restored.get_effect_stage_slots("final")[0]
+    assert not slot.effect_ref
+    assert slot.effect_ref.path_hint == ""
+    assert "Legacy.effect" not in json.dumps(restored._serialize_fields_document())
+
+
 def test_render_stack_serializes_an_explicit_default_pipeline_name():
     stack = RenderStack()
 
@@ -732,10 +791,10 @@ def test_render_stack_normalizes_the_removed_empty_default_sentinel():
     assert stack.pipeline_class_name == "Default Forward"
 
 
-def test_render_stack_rejects_obsolete_json_binding_field():
+def test_render_stack_ignores_obsolete_json_binding_field():
     stack = RenderStack()
-    with pytest.raises(ValueError, match="removed fields"):
-        stack._deserialize_fields_document({"effect_stage_bindings_json": "{}"})
+    stack._deserialize_fields_document({"effect_stage_bindings_json": "{}"})
+    assert "effect_stage_bindings_json" not in stack._serialize_fields_document()
 
 
 @pytest.mark.parametrize(
@@ -745,13 +804,13 @@ def test_render_stack_rejects_obsolete_json_binding_field():
         "mounted_passes_json",
     ],
 )
-def test_render_stack_rejects_removed_storage_fields(removed_field):
+def test_render_stack_ignores_removed_storage_fields(removed_field):
     stack = RenderStack()
-    with pytest.raises(ValueError, match=removed_field):
-        stack._deserialize_fields_document({removed_field: "[]"})
+    stack._deserialize_fields_document({removed_field: "[]"})
+    assert removed_field not in stack._serialize_fields_document()
 
 
-def test_slot_effect_property_resolves_to_mutable_runtime_asset(tmp_path):
+def test_slot_effect_property_resolves_to_mutable_runtime_asset(tmp_path, effect_catalog):
     path = tmp_path / "Bloom.effect"
     path.write_text(
         json.dumps(
@@ -764,7 +823,7 @@ def test_slot_effect_property_resolves_to_mutable_runtime_asset(tmp_path):
         ),
         encoding="utf-8",
     )
-    slot = EffectSlot(stage_id="final", effect=RenderEffectRef(path_hint=str(path)))
+    slot = EffectSlot(stage_id="final", effect=effect_catalog.ref(path))
     raw_ref = get_raw_field_value(slot, "effect")
 
     effect = slot.effect
@@ -773,6 +832,43 @@ def test_slot_effect_property_resolves_to_mutable_runtime_asset(tmp_path):
     effect.set_float("intensity", 1.5)
 
     assert raw_ref.resolve().get_float("intensity") == pytest.approx(1.5)
+
+
+def test_path_hint_cannot_resolve_runtime_effect_reference(tmp_path):
+    path = tmp_path / "Legacy.effect"
+    path.write_text("{}", encoding="utf-8")
+    reference = RenderEffectRef(path_hint=str(path))
+
+    assert not reference
+    with pytest.raises(RenderEffectCompileError, match="GUID"):
+        expand_render_effect_reference(reference)
+
+
+def test_shader_dependency_does_not_fall_back_to_path_hint(
+    tmp_path, monkeypatch, effect_catalog
+):
+    from Infernux.renderstack.render_effect_compiler import (
+        _prepare_runtime_dependencies,
+    )
+
+    shader = tmp_path / "Legacy.frag"
+    shader.write_text("void main() {}", encoding="utf-8")
+    effect = RenderEffect(
+        RenderEffectAsset(
+            feature_type="infernux.post.bloom",
+            dependencies=(
+                EffectAssetReference(guid="missing-shader-guid"),
+            ),
+        )
+    )
+    monkeypatch.setattr(
+        AssetManager,
+        "_native_engine",
+        classmethod(lambda cls: type("Native", (), {"has_renderer": True})()),
+    )
+
+    with pytest.raises(RenderEffectCompileError, match="GUID is unavailable"):
+        _prepare_runtime_dependencies(effect)
 
 
 def test_default_pipeline_declares_effect_stages_in_topology_order():
@@ -799,7 +895,7 @@ def test_default_pipeline_declares_effect_stages_in_topology_order():
     )
 
 
-def test_render_stack_removes_obsolete_screen_ui_parameter_on_deserialize():
+def test_render_stack_keeps_only_current_pipeline_parameters_on_deserialize():
     stack = RenderStack()
     stack.pipeline_params_json = json.dumps(
         {
@@ -1128,7 +1224,7 @@ def test_render_stack_rebuilds_when_effect_topology_parameter_changes():
     assert stack._collect_effect_parameter_updates(Context()) == (True, [])
 
 
-def test_effect_group_expands_in_order_with_non_destructive_overrides(tmp_path):
+def test_effect_group_expands_in_order_with_non_destructive_overrides(tmp_path, effect_catalog):
     bloom_path = tmp_path / "Bloom.effect"
     tone_path = tmp_path / "Tone.effect"
     bloom_path.write_text(
@@ -1156,12 +1252,12 @@ def test_effect_group_expands_in_order_with_non_destructive_overrides(tmp_path):
                 entries=(
                     RenderEffectGroupEntry(
                         "bloom",
-                        EffectAssetReference(path_hint=bloom_path.name),
+                        effect_catalog.asset(bloom_path),
                         overrides={"intensity": 0.9},
                     ),
                     RenderEffectGroupEntry(
                         "tone",
-                        EffectAssetReference(path_hint=tone_path.name),
+                        effect_catalog.asset(tone_path),
                     ),
                 )
             )
@@ -1169,7 +1265,7 @@ def test_effect_group_expands_in_order_with_non_destructive_overrides(tmp_path):
         encoding="utf-8",
     )
 
-    effects = expand_render_effect_reference(RenderEffectRef(path_hint=str(group_path)))
+    effects = expand_render_effect_reference(effect_catalog.ref(group_path))
 
     assert [effect.feature_type for effect in effects] == [
         "infernux.post.bloom",
@@ -1178,7 +1274,7 @@ def test_effect_group_expands_in_order_with_non_destructive_overrides(tmp_path):
     assert effects[0].get_float("intensity") == pytest.approx(0.9)
 
 
-def test_effect_group_inline_parameter_edit_updates_group_and_live_projection(tmp_path):
+def test_effect_group_inline_parameter_edit_updates_group_and_live_projection(tmp_path, effect_catalog):
     from Infernux.engine.ui.render_effect_inspector import (
         apply_render_effect_parameter_edit,
     )
@@ -1199,7 +1295,7 @@ def test_effect_group_inline_parameter_edit_updates_group_and_live_projection(tm
         entries=(
             RenderEffectGroupEntry(
                 "bloom",
-                EffectAssetReference(path_hint=bloom_path.name),
+                effect_catalog.asset(bloom_path),
             ),
         )
     )
@@ -1208,7 +1304,7 @@ def test_effect_group_inline_parameter_edit_updates_group_and_live_projection(tm
         encoding="utf-8",
     )
     effect = expand_render_effect_reference(
-        RenderEffectRef(path_hint=str(group_path))
+        effect_catalog.ref(group_path)
     )[0]
     initial_revision = effect.revision
 
@@ -1234,7 +1330,7 @@ def test_effect_group_inline_parameter_edit_updates_group_and_live_projection(tm
     assert effect.group_resource.entries[0].overrides["intensity"] == pytest.approx(1.75)
 
 
-def test_effect_group_parameter_publication_preserves_projection_identity(tmp_path):
+def test_effect_group_parameter_publication_preserves_projection_identity(tmp_path, effect_catalog):
     RenderEffectArtifactRegistry.clear()
     bloom_path = tmp_path / "Bloom.effect"
     bloom_path.write_text(
@@ -1251,7 +1347,7 @@ def test_effect_group_parameter_publication_preserves_projection_identity(tmp_pa
         entries=(
             RenderEffectGroupEntry(
                 "bloom",
-                EffectAssetReference(path_hint=bloom_path.name),
+                effect_catalog.asset(bloom_path),
                 overrides={"intensity": 0.75},
             ),
         )
@@ -1260,7 +1356,7 @@ def test_effect_group_parameter_publication_preserves_projection_identity(tmp_pa
         dump_render_effect_document(original),
         encoding="utf-8",
     )
-    reference = RenderEffectRef(path_hint=str(group_path))
+    reference = effect_catalog.ref(group_path)
     effect = expand_render_effect_reference(reference)[0]
     old_revision = effect.revision
 
@@ -1268,7 +1364,7 @@ def test_effect_group_parameter_publication_preserves_projection_identity(tmp_pa
         entries=(
             RenderEffectGroupEntry(
                 "bloom",
-                EffectAssetReference(path_hint=bloom_path.name),
+                effect_catalog.asset(bloom_path),
                 overrides={"intensity": 1.25},
             ),
         )
@@ -1280,7 +1376,7 @@ def test_effect_group_parameter_publication_preserves_projection_identity(tmp_pa
     assert effect.revision > old_revision
 
 
-def test_effect_group_parameter_publication_reaches_compiled_render_stack(tmp_path):
+def test_effect_group_parameter_publication_reaches_compiled_render_stack(tmp_path, effect_catalog):
     RenderEffectArtifactRegistry.clear()
     bloom_path = tmp_path / "Bloom.effect"
     bloom_path.write_text(
@@ -1297,7 +1393,7 @@ def test_effect_group_parameter_publication_reaches_compiled_render_stack(tmp_pa
         entries=(
             RenderEffectGroupEntry(
                 "bloom",
-                EffectAssetReference(path_hint=bloom_path.name),
+                effect_catalog.asset(bloom_path),
                 overrides={"intensity": 0.75},
             ),
         )
@@ -1310,7 +1406,7 @@ def test_effect_group_parameter_publication_reaches_compiled_render_stack(tmp_pa
     stack = RenderStack()
     stack.add_effect_slot(
         "final",
-        RenderEffectRef(path_hint=str(group_path)),
+        effect_catalog.ref(group_path),
     )
     stack._graph_state.description = stack.build_graph()
 
@@ -1329,7 +1425,7 @@ def test_effect_group_parameter_publication_reaches_compiled_render_stack(tmp_pa
         entries=(
             RenderEffectGroupEntry(
                 "bloom",
-                EffectAssetReference(path_hint=bloom_path.name),
+                effect_catalog.asset(bloom_path),
                 overrides={"intensity": 1.5},
             ),
         )
@@ -1344,7 +1440,7 @@ def test_effect_group_parameter_publication_reaches_compiled_render_stack(tmp_pa
     )
 
 
-def test_pixelation_group_parameter_publication_reaches_compiled_render_stack(tmp_path):
+def test_pixelation_group_parameter_publication_reaches_compiled_render_stack(tmp_path, effect_catalog):
     RenderEffectArtifactRegistry.clear()
     pixelation_path = tmp_path / "Pixelation.effect"
     pixelation_path.write_text(
@@ -1363,7 +1459,7 @@ def test_pixelation_group_parameter_publication_reaches_compiled_render_stack(tm
                 entries=(
                     RenderEffectGroupEntry(
                         "pixel",
-                        EffectAssetReference(path_hint=pixelation_path.name),
+                        effect_catalog.asset(pixelation_path),
                         overrides={"intensity": 0.0, "pixel_size": 4},
                     ),
                 )
@@ -1373,7 +1469,7 @@ def test_pixelation_group_parameter_publication_reaches_compiled_render_stack(tm
     )
 
     stack = RenderStack()
-    stack.add_effect_slot("final", RenderEffectRef(path_hint=str(group_path)))
+    stack.add_effect_slot("final", effect_catalog.ref(group_path))
     stack._graph_state.description = stack.build_graph()
 
     class Context:
@@ -1392,7 +1488,7 @@ def test_pixelation_group_parameter_publication_reaches_compiled_render_stack(tm
         entries=(
             RenderEffectGroupEntry(
                 "pixel",
-                EffectAssetReference(path_hint=pixelation_path.name),
+                effect_catalog.asset(pixelation_path),
                 overrides={"intensity": 0.65, "pixel_size": 24},
             ),
         )
@@ -1411,6 +1507,7 @@ def test_pixelation_group_parameter_publication_reaches_compiled_render_stack(tm
 def test_effect_group_expansion_is_published_in_memory_until_asset_reimport(
     tmp_path,
     monkeypatch,
+    effect_catalog,
 ):
     RenderEffectArtifactRegistry.clear()
     bloom_path = tmp_path / "Bloom.effect"
@@ -1432,7 +1529,7 @@ def test_effect_group_expansion_is_published_in_memory_until_asset_reimport(
                     entries=(
                         RenderEffectGroupEntry(
                             "bloom",
-                            EffectAssetReference(path_hint=bloom_path.name),
+                            effect_catalog.asset(bloom_path),
                             overrides={"intensity": intensity},
                         ),
                     )
@@ -1452,8 +1549,8 @@ def test_effect_group_expansion_is_published_in_memory_until_asset_reimport(
 
     monkeypatch.setattr(Path, "read_text", count_group_reads)
 
-    first = expand_render_effect_reference(RenderEffectRef(path_hint=str(group_path)))
-    second = expand_render_effect_reference(RenderEffectRef(path_hint=str(group_path)))
+    first = expand_render_effect_reference(effect_catalog.ref(group_path))
+    second = expand_render_effect_reference(effect_catalog.ref(group_path))
 
     assert first[0] is second[0]
     assert first[0].get_float("intensity") == pytest.approx(0.75)
@@ -1461,13 +1558,15 @@ def test_effect_group_expansion_is_published_in_memory_until_asset_reimport(
 
     write_group(1.25)
     RenderEffectArtifactRegistry.compile_and_publish(str(group_path))
-    refreshed = expand_render_effect_reference(RenderEffectRef(path_hint=str(group_path)))
+    refreshed = expand_render_effect_reference(effect_catalog.ref(group_path))
 
     assert refreshed[0].get_float("intensity") == pytest.approx(1.25)
     assert len(group_reads) == 2
 
 
-def test_effect_group_compiles_without_reentering_its_own_asset_load(tmp_path, monkeypatch):
+def test_effect_group_compiles_without_reentering_its_own_asset_load(
+    tmp_path, monkeypatch, effect_catalog
+):
     from Infernux.engine import project_context
 
     RenderEffectArtifactRegistry.clear()
@@ -1491,7 +1590,7 @@ def test_effect_group_compiles_without_reentering_its_own_asset_load(tmp_path, m
                 entries=(
                     RenderEffectGroupEntry(
                         "bloom",
-                        EffectAssetReference(path_hint="Assets/Rendering/Bloom.effect"),
+                        effect_catalog.asset(bloom_path),
                     ),
                 )
             )
@@ -1527,7 +1626,7 @@ def test_effect_group_override_view_tracks_unoverridden_live_parameters():
     assert view.revision == source.revision
 
 
-def test_effect_group_cycle_is_rejected(tmp_path):
+def test_effect_group_cycle_is_rejected(tmp_path, effect_catalog):
     first = tmp_path / "First.effectgroup"
     second = tmp_path / "Second.effectgroup"
     first.write_text(
@@ -1536,7 +1635,7 @@ def test_effect_group_cycle_is_rejected(tmp_path):
                 entries=(
                     RenderEffectGroupEntry(
                         "second",
-                        EffectAssetReference(path_hint=second.name),
+                        effect_catalog.asset(second),
                     ),
                 )
             )
@@ -1549,7 +1648,7 @@ def test_effect_group_cycle_is_rejected(tmp_path):
                 entries=(
                     RenderEffectGroupEntry(
                         "first",
-                        EffectAssetReference(path_hint=first.name),
+                        effect_catalog.asset(first),
                     ),
                 )
             )
@@ -1558,7 +1657,7 @@ def test_effect_group_cycle_is_rejected(tmp_path):
     )
 
     with pytest.raises(RenderEffectCompileError, match="cycle"):
-        expand_render_effect_reference(RenderEffectRef(path_hint=str(first)))
+        expand_render_effect_reference(effect_catalog.ref(first))
 
 
 def test_failed_effect_compile_rolls_back_partial_graph_mutation():

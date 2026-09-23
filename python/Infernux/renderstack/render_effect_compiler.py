@@ -121,12 +121,12 @@ def _prepare_runtime_dependencies(source: RenderEffect) -> None:
         return
 
     for reference in source_asset.dependencies:
-        path = ""
-        if reference.guid:
-            path = AssetManager._get_path_from_guid(reference.guid) or ""
+        path = AssetManager._get_path_from_guid(reference.guid) or ""
         if not path:
-            path = reference.path_hint
-        if path and not os.path.isabs(path):
+            raise RenderEffectCompileError(
+                f"effect shader dependency GUID is unavailable: {reference.guid!r}"
+            )
+        if not os.path.isabs(path):
             path = os.path.join(project_root, path) if project_root else path
         path = resolved_path(path) if path else ""
         if not path or os.path.splitext(path)[1].lower() not in SHADER_EXTENSIONS:
@@ -843,7 +843,7 @@ def expand_render_effect_reference(
         return [cached]
 
     local_group = getattr(reference, "_group_expansion_cache", None)
-    local_identity = (reference.guid, reference.path_hint)
+    local_identity = reference.guid
     if (
         isinstance(local_group, tuple)
         and len(local_group) == 3
@@ -855,7 +855,7 @@ def expand_render_effect_reference(
     path = _resolve_reference_path(reference, _parent)
     if not path:
         raise RenderEffectCompileError(
-            f"effect reference cannot be resolved: {reference.path_hint or reference.guid!r}"
+            f"effect reference GUID cannot be resolved: {reference.guid!r}"
         )
     cycle_key = path_key(path)
     if cycle_key in _trail:
@@ -920,10 +920,7 @@ def _expand_render_effect_group_document(
     for entry in document.entries:
         if not entry.enabled:
             continue
-        child = RenderEffectRef(
-            guid=entry.asset.guid,
-            path_hint=entry.asset.path_hint,
-        )
+        child = RenderEffectRef(guid=entry.asset.guid)
         children = expand_render_effect_reference(
             child,
             _parent=os.path.dirname(path),
@@ -1087,21 +1084,10 @@ class _OverriddenRenderEffect(RenderEffect):
 
 
 def _resolve_reference_path(reference: RenderEffectRef, parent: str) -> str:
-    path = ""
-    if reference.guid:
-        from Infernux.core.assets import AssetManager
+    del parent
+    if not reference.guid:
+        return ""
+    from Infernux.core.assets import AssetManager
 
-        path = AssetManager._get_path_from_guid(reference.guid) or ""
-    if not path:
-        path = reference.path_hint
-    if path and not os.path.isabs(path) and not os.path.isfile(path):
-        from Infernux.engine.project_context import get_project_root
-
-        project_root = get_project_root()
-        project_path = os.path.join(project_root, path) if project_root else ""
-        parent_path = os.path.join(parent, path) if parent else ""
-        if project_path and os.path.isfile(project_path):
-            path = project_path
-        elif parent_path:
-            path = parent_path
+    path = AssetManager._get_path_from_guid(reference.guid) or ""
     return resolved_path(path) if path else ""

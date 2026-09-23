@@ -301,16 +301,11 @@ class RenderEffectRef(AssetRefBase):
             # GUID is the asset identity; never fall back to a path when the
             # GUID lookup fails.
             return AssetManager.load_by_guid(self._guid, asset_type=RenderEffect)
-        if self._path_hint:
-            # Code-authored RenderStack references (Python-first API) may name
-            # an .effect file directly; without a GUID the explicit path *is*
-            # the identity, not a fallback.
-            return AssetManager.load(self._path_hint, asset_type=RenderEffect)
         # Runtime-created effects carry no GUID; the live object is the identity.
         return self._cached
 
     def __bool__(self):
-        return bool(self._guid or self._path_hint or self._cached is not None)
+        return bool(self._guid or self._cached is not None)
 
     def __getattr__(self, name: str) -> Any:
         if name.startswith("_"):
