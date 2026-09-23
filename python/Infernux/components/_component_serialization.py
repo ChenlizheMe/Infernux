@@ -54,9 +54,9 @@ class ComponentSerializationMixin:
     ) -> None:
         """Restore fields from a typed document, transactionally per component.
 
-        ``repair=True`` is for scene and snapshot documents. The live editor
-        class is authoritative: unknown keys are dropped, and invalid values
-        keep the already-initialized field default instead of failing the load.
+        The current live class is authoritative. Unknown/removed keys are not
+        consumed. ``repair=True`` additionally keeps the initialized default
+        when a currently declared field contains an invalid value.
         """
         from .fields import (
             get_raw_field_value,
@@ -78,27 +78,21 @@ class ComponentSerializationMixin:
         metadata_keys = {"__type_name__"}
         if "__component_id__" in data:
             metadata_keys.add("__component_id__")
+        current_document = {
+            key: value
+            for key, value in data.items()
+            if key in fields or key in metadata_keys
+        }
         from .fields import validate_serialized_field_document
-        if repair:
-            unknown = sorted(
-                set(data) - set(fields) - metadata_keys
-            )
-            if unknown:
-                from Infernux.debug import Debug
-                Debug.log_warning(
-                    f"{self.__class__.__name__}: ignoring stale scene fields {unknown}; "
-                    "live editor schema is authoritative"
-                )
         validate_serialized_field_document(
-            data,
+            current_document,
             fields,
             owner_name=self.__class__.__name__,
             metadata_keys=metadata_keys,
             allow_missing=True,
-            allow_unknown=repair,
         )
 
-        saved_id = data.get("__component_id__")
+        saved_id = current_document.get("__component_id__")
         if saved_id is not None and (type(saved_id) is not int or saved_id <= 0):
             if not repair:
                 raise ValueError("__component_id__ must be a positive integer when present")
@@ -106,13 +100,13 @@ class ComponentSerializationMixin:
 
         from .value_codec import VALUE_CODECS
         present_fields = {
-            name: meta for name, meta in fields.items() if name in data
+            name: meta for name, meta in fields.items() if name in current_document
         }
         accepted = {}
         for name, meta in present_fields.items():
             path = f"{self.__class__.__name__}.{name}"
             try:
-                VALUE_CODECS.validate(data[name], meta, path)
+                VALUE_CODECS.validate(current_document[name], meta, path)
             except (TypeError, ValueError):
                 if not repair:
                     raise
@@ -127,7 +121,7 @@ class ComponentSerializationMixin:
         for name, meta in accepted.items():
             path = f"{self.__class__.__name__}.{name}"
             try:
-                decoded[name] = self._deserialize_value(data[name], meta)
+                decoded[name] = self._deserialize_value(current_document[name], meta)
             except (TypeError, ValueError):
                 if not repair:
                     raise

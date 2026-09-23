@@ -221,15 +221,6 @@ def test_custom_encoder_must_return_document_data():
             },
             "values must be strings",
         ),
-        (
-            {
-                TYPE_KEY: ASSET_REF,
-                "asset_type": "Texture",
-                "guid": "guid",
-                "path_hint": 42,
-            },
-            "values must be strings",
-        ),
     ],
 )
 def test_reference_documents_are_exact(document, error):
@@ -237,6 +228,171 @@ def test_reference_documents_are_exact(document, error):
 
     with pytest.raises((TypeError, ValueError), match=error):
         codec.decode(document, FieldType.UNKNOWN, "Target")
+
+
+def test_asset_reference_ignores_legacy_path_only_and_extra_fields():
+    codec = ValueCodecRegistry()
+    metadata = FieldMetadata(
+        name="image", field_type=FieldType.TEXTURE, default=None,
+    )
+
+    decoded = codec.decode(
+        {
+            TYPE_KEY: ASSET_REF,
+            "path": "Assets/Textures/legacy.png",
+            "deprecated": "ignored",
+        },
+        metadata,
+        "Target",
+    )
+
+    assert decoded.guid == ""
+    assert decoded.path_hint == ""
+
+
+def test_asset_reference_ignores_malformed_legacy_display_path():
+    codec = ValueCodecRegistry()
+    metadata = FieldMetadata(
+        name="image", field_type=FieldType.TEXTURE, default=None,
+    )
+
+    decoded = codec.decode(
+        {
+            TYPE_KEY: ASSET_REF,
+            "asset_type": "Texture",
+            "guid": "texture-guid",
+            "path_hint": 42,
+        },
+        metadata,
+        "Target",
+    )
+
+    assert decoded.guid == "texture-guid"
+    assert decoded.path_hint == ""
+
+
+def test_asset_reference_uses_declared_field_type_for_retired_type_tag():
+    codec = ValueCodecRegistry()
+    metadata = FieldMetadata(
+        name="image", field_type=FieldType.TEXTURE, default=None,
+    )
+
+    decoded = codec.decode(
+        {
+            TYPE_KEY: ASSET_REF,
+            "asset_type": "RetiredImageType",
+            "guid": "texture-guid",
+        },
+        metadata,
+        "Target",
+    )
+
+    assert decoded.guid == "texture-guid"
+    assert codec.encode(decoded) == {
+        TYPE_KEY: ASSET_REF,
+        "asset_type": "Texture",
+        "guid": "texture-guid",
+    }
+
+
+def test_asset_reference_path_hint_does_not_become_runtime_identity(monkeypatch):
+    from Infernux.core.assets import AssetManager
+    from Infernux.core.asset_ref import TextureRef
+
+    class Database:
+        def get_guid_from_path(self, _path):
+            raise AssertionError("path_hint must not recover a GUID")
+
+    monkeypatch.setattr(AssetManager, "_asset_database", Database())
+    reference = TextureRef(path_hint="Assets/Textures/legacy.png")
+
+    assert reference.guid == ""
+    assert reference.path_hint == "Assets/Textures/legacy.png"
+
+
+def test_asset_reference_clipboard_ignores_extra_fields_and_keeps_builtins():
+    from Infernux.core.asset_reference_types import AssetReferenceCodec
+
+    payload = AssetReferenceCodec.decode(
+        'infernux.asset_reference {"asset_type":"Texture","builtin":"white",'
+        '"guid":"","path_hint":"","legacy":"ignored"}'
+    )
+
+    assert payload == {
+        "asset_type": "Texture",
+        "builtin": "white",
+        "guid": "",
+        "path_hint": "",
+    }
+
+
+def test_structured_path_only_asset_reference_is_empty_and_cannot_select_union_type():
+    from Infernux.core.asset_reference_types import AssetReferenceCodec
+
+    payload = AssetReferenceCodec.normalize(
+        "Texture.Sampled",
+        {"path_hint": "Assets/Textures/legacy.rendertexture"},
+    )
+
+    assert payload["guid"] == ""
+    assert payload["path_hint"] == ""
+    assert payload["asset_type"] == "Texture.Sampled"
+
+
+def test_structured_asset_reference_keeps_explicit_concrete_type_without_path_inference():
+    from Infernux.core.asset_reference_types import AssetReferenceCodec
+
+    payload = AssetReferenceCodec.normalize(
+        "Texture.Sampled",
+        {
+            "asset_type": "RenderTexture",
+            "guid": "deleted-render-texture",
+            "path_hint": "Assets/Textures/not-the-truth.png",
+        },
+    )
+
+    assert payload["asset_type"] == "RenderTexture"
+    assert payload["guid"] == "deleted-render-texture"
+    assert payload["path_hint"] == ""
+
+
+def test_raw_editor_path_is_normalized_to_guid_when_imported(monkeypatch):
+    from Infernux.core.asset_reference_types import AssetReferenceCodec
+    from Infernux.core.assets import AssetManager
+
+    class Database:
+        def get_guid_from_path(self, path):
+            return "texture-guid" if path == "Assets/Textures/current.png" else ""
+
+        def get_path_from_guid(self, guid):
+            return "Assets/Textures/current.png" if guid == "texture-guid" else ""
+
+    monkeypatch.setattr(AssetManager, "_asset_database", Database())
+    payload = AssetReferenceCodec.normalize("Texture", "Assets/Textures/current.png")
+
+    assert payload["guid"] == "texture-guid"
+
+
+def test_raw_project_relative_editor_path_can_resolve_to_guid(monkeypatch):
+    from Infernux.core.asset_reference_types import AssetReferenceCodec
+    from Infernux.core.assets import AssetManager
+    import Infernux.engine.project_context as project_context
+    import os
+
+    class Database:
+        def get_guid_from_path(self, path):
+            expected = os.path.join("C:\\Project", "Assets/Textures/current.png")
+            return "texture-guid" if path == expected else ""
+
+        def get_path_from_guid(self, _guid):
+            return ""
+
+    monkeypatch.setattr(AssetManager, "_asset_database", Database())
+    monkeypatch.setattr(project_context, "get_project_root", lambda: "C:\\Project")
+
+    payload = AssetReferenceCodec.normalize("Texture", "Assets/Textures/current.png")
+
+    assert payload["guid"] == "texture-guid"
 
 
 def test_reserved_marker_documents_are_rejected():
@@ -294,7 +450,6 @@ def test_registered_asset_without_specialized_wrapper_roundtrips():
         TYPE_KEY: ASSET_REF,
         "asset_type": "Mesh",
         "guid": "mesh-guid",
-        "path_hint": "Assets/Models/Probe.fbx",
     }
     assert isinstance(decoded, GenericAssetRef)
     assert decoded.asset_type == "Mesh"
@@ -323,7 +478,7 @@ def test_asset_list_codec_preserves_parent_element_contract():
 
     assert len(decoded) == 1
     assert decoded[0].guid == "audio-guid"
-    assert decoded[0].path_hint == "Assets/Audio/Probe.wav"
+    assert decoded[0].path_hint == ""
 
 
 def test_asset_list_codec_rejects_wrong_element_type():

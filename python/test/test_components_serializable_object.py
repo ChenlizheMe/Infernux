@@ -201,7 +201,7 @@ class TestSerialization:
         data = s._serialize()
         assert data["$type"] == "serializable_object"
         assert data["type_id"] == get_serializable_type_id(Stats)
-        assert data["schema_version"] == 1
+        assert "schema_version" not in data
         assert data["fields"]["hp"] == 100
 
     def test_deserialize_restores_values(self):
@@ -246,28 +246,40 @@ class TestSerialization:
             class Unsupported(SerializableObject):
                 payload = serialized_field(default=None, field_type=FieldType.UNKNOWN)
 
-    @pytest.mark.parametrize(
-        "mutate, error",
-        [
-            (lambda data: data.__setitem__("unknown", 1), "invalid"),
-            (lambda data: data.__setitem__("type_id", "removed:Type"), "unknown"),
-        ],
-    )
-    def test_document_identity_and_fields_are_strict(self, mutate, error):
+    def test_document_identity_is_strict(self):
         data = Stats()._serialize()
-        mutate(data)
-        with pytest.raises(ValueError, match=error):
+        data["type_id"] = "removed:Type"
+        with pytest.raises(ValueError, match="unknown"):
             SerializableObject._deserialize(data)
 
-    def test_noncanonical_fields_are_rejected(self):
+    def test_extra_and_removed_document_fields_are_ignored(self):
+        data = Stats(hp=6, mp=9.0, name="current")._serialize()
+        data["schema_version"] = 99
+        data["removed_envelope_value"] = True
+        data["fields"].pop("name")
+        data["fields"]["old_name"] = "ignored"
+
+        restored = SerializableObject._deserialize(data)
+
+        assert restored.hp == 6
+        assert restored.mp == 9.0
+        assert restored.name == "default"
+        assert restored._serialize() == {
+            "$type": "serializable_object",
+            "type_id": get_serializable_type_id(Stats),
+            "fields": {"hp": 6, "mp": 9.0, "name": "default"},
+        }
+
+    def test_noncanonical_fields_are_ignored(self):
         class EvolvingStats(SerializableObject):
             health: int = serialized_field(default=100)
 
         data = EvolvingStats()._serialize()
         data["fields"] = {"hp": 42, "removed_debug_value": True}
 
-        with pytest.raises(ValueError, match="serialized fields mismatch"):
-            EvolvingStats._deserialize(data)
+        restored = EvolvingStats._deserialize(data)
+        assert restored.health == 100
+        assert restored._serialize()["fields"] == {"health": 100}
 
     def test_stable_type_id_rejects_an_old_type_name(self):
         class RenamedStats(SerializableObject):
@@ -282,7 +294,7 @@ class TestSerialization:
         with pytest.raises(ValueError, match="unknown SerializableObject type_id"):
             SerializableObject._deserialize(data)
 
-    def test_missing_current_field_is_rejected(self):
+    def test_missing_current_field_uses_current_default(self):
         class AdditiveDefaults(SerializableObject):
             hp: int = serialized_field(default=100)
             tags: list = serialized_field(
@@ -294,8 +306,9 @@ class TestSerialization:
         data = AdditiveDefaults(hp=42, tags=["saved"])._serialize()
         data["fields"].pop("tags")
 
-        with pytest.raises(ValueError, match="serialized fields mismatch"):
-            SerializableObject._deserialize(data)
+        restored = SerializableObject._deserialize(data)
+        assert restored.hp == 42
+        assert restored.tags == []
 
 
 # ══════════════════════════════════════════════════════════════════════

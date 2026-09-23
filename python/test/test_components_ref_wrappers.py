@@ -206,6 +206,34 @@ class TestPrefabRef:
 
         assert ref.game_object is ref
 
+    def test_path_hint_is_not_a_runtime_fallback(self, monkeypatch):
+        monkeypatch.setattr(
+            "Infernux.components.ref_wrappers._get_prefab_asset_database",
+            lambda: None,
+        )
+
+        ref = PrefabRef(guid="enemy-guid", path_hint="Assets/Legacy.prefab")
+
+        assert ref.path_hint == ""
+        assert ref.name == "enemy-gu"
+        assert ref._serialize() == {
+            "$type": "asset_ref",
+            "asset_type": "Prefab",
+            "guid": "enemy-guid",
+        }
+
+    def test_path_only_legacy_prefab_reference_is_empty(self, monkeypatch):
+        monkeypatch.setattr(
+            "Infernux.components.ref_wrappers._get_prefab_asset_database",
+            lambda: pytest.fail("path-only references must not consult the database"),
+        )
+
+        ref = PrefabRef._from_dict("", "Assets/Legacy.prefab")
+
+        assert not ref
+        assert ref.path_hint == ""
+        assert ref.name == "None"
+
 
 # ══════════════════════════════════════════════════════════════════════
 # ComponentRef

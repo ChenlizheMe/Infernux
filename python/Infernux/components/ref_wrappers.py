@@ -243,19 +243,22 @@ class PrefabRef:
     """Reference to a prefab asset stored on disk.
 
     Unlike ``GameObjectRef`` which points to a live scene object,
-    ``PrefabRef`` stores the asset GUID and file-path hint of a
-    ``.prefab`` file.  Use :meth:`instantiate` to create a new
-    scene object from the prefab.
+    ``PrefabRef`` stores only the asset GUID of a ``.prefab`` file.  The
+    editor may resolve that GUID to a current path for display, but a path is
+    never retained as identity or used as a runtime fallback.  Use
+    :meth:`instantiate` to create a new scene object from the prefab.
 
     Compatible with ``FieldType.GAME_OBJECT`` — a single field can
     hold either a ``GameObjectRef`` or a ``PrefabRef``.
     """
 
-    __slots__ = ("_guid", "_path_hint", "_name_cache", "_name_cache_path", "_name_cache_stamp")
+    __slots__ = ("_guid", "_name_cache", "_name_cache_path", "_name_cache_stamp")
 
     def __init__(self, guid: str = "", path_hint: str = ""):
-        self._guid: str = guid
-        self._path_hint: str = path_hint
+        self._guid: str = str(guid or "").strip()
+        # ``path_hint`` remains an accepted keyword so old documents and
+        # clipboard payloads are silently ignored.  Authoring entry points
+        # must resolve paths to a GUID before constructing the reference.
         self._name_cache: str = ""
         self._name_cache_path: str = ""
         self._name_cache_stamp: tuple[int, int] | None = None
@@ -263,16 +266,15 @@ class PrefabRef:
     # -- internal helpers --------------------------------------------------
 
     def _resolve_current_path(self) -> str:
-        if self._guid:
-            db = _get_prefab_asset_database()
-            if db is not None:
-                try:
-                    resolved = db.get_path_from_guid(self._guid) or ""
-                except Exception:
-                    resolved = ""
-                if resolved:
-                    self._path_hint = resolved
-        return self._path_hint
+        if not self._guid:
+            return ""
+        db = _get_prefab_asset_database()
+        if db is None:
+            return ""
+        try:
+            return str(db.get_path_from_guid(self._guid) or "")
+        except Exception:
+            return ""
 
     @staticmethod
     def _get_file_stamp(file_path: str) -> tuple[int, int] | None:
@@ -364,22 +366,22 @@ class PrefabRef:
 
     def _serialize(self) -> dict:
         from .value_document import make_asset_ref
-        return make_asset_ref("Prefab", self._guid, self._path_hint)
+        return make_asset_ref("Prefab", self._guid)
 
     @classmethod
     def _from_dict(cls, guid: str, path_hint: str = "") -> "PrefabRef":
-        return cls(guid=guid, path_hint=path_hint)
+        return cls(guid=guid)
 
     # -- dunder helpers ----------------------------------------------------
 
     def __bool__(self) -> bool:
-        return bool(self._guid or self._path_hint)
+        return bool(self._guid)
 
     def __copy__(self):
-        return type(self)(guid=self._guid, path_hint=self._path_hint)
+        return type(self)(guid=self._guid)
 
     def __deepcopy__(self, memo):
-        copied = type(self)(guid=self._guid, path_hint=self._path_hint)
+        copied = type(self)(guid=self._guid)
         memo[id(self)] = copied
         return copied
 
@@ -387,11 +389,11 @@ class PrefabRef:
         if other is None:
             return not self.__bool__()
         if isinstance(other, PrefabRef):
-            return self._guid == other._guid and self._path_hint == other._path_hint
+            return self._guid == other._guid
         return NotImplemented
 
     def __hash__(self):
-        return hash((self._guid, self._path_hint))
+        return hash(self._guid)
 
     def __repr__(self):
         return f"PrefabRef(guid='{self._guid}', path='{self.path_hint}')"

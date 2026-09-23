@@ -27,13 +27,13 @@ def _serialize_asset_ref(value: Any) -> Optional[dict]:
     from .value_document import make_asset_ref
 
     if isinstance(value, TextureRef):
-        return make_asset_ref("Texture", value.guid, value.path_hint)
+        return make_asset_ref("Texture", value.guid)
     if isinstance(value, ShaderRef):
-        return make_asset_ref("Shader", value.guid, value.path_hint)
+        return make_asset_ref("Shader", value.guid)
     if isinstance(value, AssetRefBase):
         asset_type = get_asset_type_for_ref(value)
         if asset_type is not None:
-            return make_asset_ref(asset_type, value.guid, value.path_hint)
+            return make_asset_ref(asset_type, value.guid)
 
     return None
 
@@ -60,7 +60,7 @@ def serialize_vec(value: Any) -> Optional[list]:
 # Typed value-document deserialization dispatch
 # ──────────────────────────────────────────────────────────────────────
 
-def deserialize_dict_ref(value: dict) -> Any:
+def deserialize_dict_ref(value: dict, *, fallback_asset_type: str = "") -> Any:
     """Attempt to deserialize a dict into the appropriate ref wrapper.
 
     Returns the deserialized ref object, or *value* unchanged if no
@@ -82,24 +82,39 @@ def deserialize_dict_ref(value: dict) -> Any:
         from .ref_wrappers import ComponentRef
         return ComponentRef._from_dict(value)
     if document_type == ASSET_REF:
-        asset_type = value["asset_type"]
-        guid = value["guid"]
-        path_hint = value["path_hint"]
+        # Persistence consumes only the current identity fields. Extra keys do
+        # not become identities, and a path-only payload remains an empty
+        # reference rather than a recovery request.
+        asset_type = value.get("asset_type")
+        from Infernux.core.asset_reference_types import asset_type_registry
+
+        # A retired type tag cannot override the current field declaration.
+        # Validation already checks that any recognized tag is compatible.
+        if (
+            type(asset_type) is not str
+            or not asset_type
+            or asset_type_registry.get(asset_type) is None
+        ):
+            asset_type = fallback_asset_type
+        guid = value.get("guid", "")
+        guid = guid if type(guid) is str else ""
+        if not asset_type:
+            return value
         if asset_type == "Prefab":
             from .ref_wrappers import PrefabRef
-            return PrefabRef(guid=guid, path_hint=path_hint)
+            return PrefabRef(guid=guid)
         if asset_type == "Material":
             from .ref_wrappers import MaterialRef
-            return MaterialRef(guid=guid, path_hint=path_hint)
+            return MaterialRef(guid=guid)
         if asset_type == "Texture":
             from Infernux.core.asset_ref import TextureRef
-            return TextureRef(guid=guid, path_hint=path_hint)
+            return TextureRef(guid=guid)
         if asset_type == "Shader":
             from Infernux.core.asset_ref import ShaderRef
-            return ShaderRef(guid=guid, path_hint=path_hint)
+            return ShaderRef(guid=guid)
         from Infernux.core.asset_ref import create_asset_ref
 
-        return create_asset_ref(asset_type, guid=guid, path_hint=path_hint)
+        return create_asset_ref(asset_type, guid=guid)
     if document_type == SERIALIZABLE_OBJECT:
         from .serializable_object import SerializableObject
         return SerializableObject._deserialize(value)

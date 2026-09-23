@@ -192,8 +192,18 @@ class TestBuildField:
         assert meta.field_type == FieldType.GAME_OBJECT
         assert isinstance(meta.default, PrefabRef)
 
-    def test_prefab_path_coerces_to_prefab_ref(self):
+    def test_prefab_path_coerces_to_guid_backed_prefab_ref(self, monkeypatch):
         meta = build_field_from_annotation(PrefabRef, default=_UNSET)
+        from Infernux.core.assets import AssetManager
+
+        class Database:
+            def get_guid_from_path(self, path):
+                return "prefab-guid" if path == "Assets/Prefabs/Coin.prefab" else ""
+
+            def get_path_from_guid(self, guid):
+                return "Assets/Prefabs/Coin.prefab" if guid == "prefab-guid" else ""
+
+        monkeypatch.setattr(AssetManager, "_asset_database", Database())
 
         value = coerce_serialized_field_input(
             "Assets/Prefabs/Coin.prefab",
@@ -202,6 +212,7 @@ class TestBuildField:
         )
 
         assert isinstance(value, PrefabRef)
+        assert value.guid == "prefab-guid"
         assert value.path_hint == "Assets/Prefabs/Coin.prefab"
 
     def test_asset_list_annotation_propagates_element_contract(self):
@@ -414,7 +425,6 @@ class TestStrictSerializationFailures:
     @pytest.mark.parametrize(
         "mutate, error",
         [
-            (lambda data: data.__setitem__("removed_field", 0), "fields mismatch"),
             (lambda data: data.__setitem__("__type_name__", "Other"), "type mismatch"),
             (lambda data: data.__setitem__("health", "bad"), "requires an integer"),
         ],
@@ -460,7 +470,7 @@ class TestStrictSerializationFailures:
         assert restored.health == 42
         assert restored.tags == []
 
-    def test_removed_and_renamed_fields_are_rejected(self):
+    def test_removed_and_renamed_fields_are_ignored(self):
         import json
 
         class EvolvingFields(InxComponent):
@@ -471,10 +481,12 @@ class TestStrictSerializationFailures:
         document["hp"] = 42
         document["removed_debug_value"] = True
 
-        with pytest.raises(ValueError, match="serialized fields mismatch"):
-            EvolvingFields()._deserialize_fields(json.dumps(document))
+        restored = EvolvingFields()
+        restored._deserialize_fields(json.dumps(document))
+        assert restored.health == 10
+        assert restored._serialize_fields_document()["health"] == 10
 
-    def test_unknown_metadata_is_rejected(self):
+    def test_unknown_metadata_is_ignored(self):
         import json
 
         class CurrentFields(InxComponent):
@@ -482,8 +494,10 @@ class TestStrictSerializationFailures:
 
         document = json.loads(CurrentFields()._serialize_fields())
         document["__unknown__"] = 1
-        with pytest.raises(ValueError, match="serialized fields mismatch"):
-            CurrentFields()._deserialize_fields(json.dumps(document))
+        restored = CurrentFields()
+        restored._deserialize_fields(json.dumps(document))
+        assert restored.value == 3
+        assert "__unknown__" not in restored._serialize_fields_document()
 
     def test_all_fields_validate_before_any_decode(self, monkeypatch):
         class ValidateFirst(InxComponent):

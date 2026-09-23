@@ -243,7 +243,7 @@ class FieldMetadata:
     curve_non_negative: bool = False             # For ANIMATION_CURVE: clamp edited values to >= 0
     asset_type: Optional[str] = None             # For ASSET: registered asset type name (e.g. "AudioClip", "AnimStateMachine")
     hidden: bool = False                         # Unity HideInInspector: serialized but not rendered
-    former_names: tuple[str, ...] = ()            # Explicit schema-migration sources; never runtime aliases.
+    former_names: tuple[str, ...] = ()            # Current-session hot-reload sources; never persisted aliases.
 
     # For internal use
     python_type: Optional[Type] = None
@@ -506,50 +506,21 @@ def _ensure_component_ref(value):
     return ComponentRef(value)
 
 
-def _get_asset_db():
-    try:
-        from Infernux.core.asset_ref import _get_asset_database
-        return _get_asset_database()
-    except ImportError:
-        # AssetManager is unavailable in standalone player builds where the
-        # editor-only asset database is excluded from the bundle.
-        return None
-
-
-def _guid_from_path(path: str) -> str:
-    if not path:
-        return ""
-    db = _get_asset_db()
-    if not db:
-        return ""
-    try:
-        candidates = [path]
-        if not os.path.isabs(path):
-            from Infernux.engine.project_context import get_project_root
-            from Infernux.engine.path_utils import resolved_path
-
-            project_root = get_project_root()
-            if project_root:
-                candidates.append(resolved_path(os.path.join(project_root, path)))
-        for candidate in candidates:
-            guid = db.get_guid_from_path(candidate)
-            if guid:
-                return guid
-        return ""
-    except Exception as exc:
-        Debug.log_suppressed("serialized_field._guid_for_path", exc)
-        return ""
-
-
 def _extract_guid_and_path(value, path_attrs: tuple[str, ...]) -> tuple[str, str]:
     if value is None:
         return "", ""
 
     if isinstance(value, str):
-        guid = _guid_from_path(value)
-        if guid:
-            return guid, value
-        return value, ""
+        token = value.strip()
+        # A bare token remains an explicit GUID. A raw path is an editor
+        # selection boundary, so resolve it now or drop it rather than
+        # constructing a path-only runtime reference.
+        if os.path.sep in token or "/" in token or "\\" in token or os.path.splitext(token)[1]:
+            from Infernux.core.asset_reference_types import _resolve_path_guid
+
+            guid = _resolve_path_guid(token)
+            return guid, token if guid else ""
+        return token, ""
 
     guid = getattr(value, 'guid', '') or getattr(getattr(value, 'native', None), 'guid', '') or ''
     path_hint = ''
@@ -558,8 +529,6 @@ def _extract_guid_and_path(value, path_attrs: tuple[str, ...]) -> tuple[str, str
         if path_hint:
             break
 
-    if not guid and path_hint:
-        guid = _guid_from_path(path_hint)
     return guid, path_hint
 
 
@@ -574,9 +543,10 @@ def _ensure_game_object_ref(value):
             value,
             ('path_hint', 'source_path', 'file_path'),
         )
-        candidate = path_hint or (value if value.lower().endswith('.prefab') else '')
-        if candidate or value.lower().endswith('.prefab'):
-            return PrefabRef(guid=guid, path_hint=candidate)
+        if guid:
+            return PrefabRef(guid=guid, path_hint=path_hint)
+        if os.path.sep in value or "/" in value or "\\" in value or os.path.splitext(value)[1]:
+            return PrefabRef()
     return GameObjectRef(value)
 
 
@@ -586,6 +556,9 @@ def _ensure_material_ref(value):
         return value
     if value is None:
         return MaterialRef(guid="")
+    if isinstance(value, str):
+        guid, path_hint = _extract_guid_and_path(value, ('source_path', 'file_path'))
+        return MaterialRef(guid=guid, path_hint=path_hint)
     return MaterialRef(value)
 
 
@@ -599,7 +572,7 @@ def _ensure_texture_ref(value):
     guid, path_hint = _extract_guid_and_path(value, ('source_path', 'file_path'))
     ref.guid = guid
     ref.path_hint = path_hint
-    ref._cached = value
+    ref._cached = None if isinstance(value, str) else value
     return ref
 
 
@@ -613,7 +586,7 @@ def _ensure_shader_ref(value):
     guid, path_hint = _extract_guid_and_path(value, ('source_path', 'file_path'))
     ref.guid = guid
     ref.path_hint = path_hint
-    ref._cached = value
+    ref._cached = None if isinstance(value, str) else value
     return ref
 
 
@@ -665,7 +638,7 @@ def _ensure_asset_ref(value, asset_type: str):
     guid, path_hint = _extract_guid_and_path(value, ('file_path', 'source_path'))
     ref.guid = guid
     ref.path_hint = path_hint
-    ref._cached = value
+    ref._cached = None if isinstance(value, str) else value
     return ref
 
 
@@ -904,10 +877,10 @@ def coerce_serialized_field_input(
             raise ValueError(f"{path}: ASSET field has no asset_type contract")
         reference_asset_types[FieldType.ASSET] = asset_type
     if field_type in reference_asset_types and isinstance(value, dict) and TYPE_KEY not in value:
-        if set(value) != {"guid", "path_hint"}:
-            raise ValueError(f"{path}: asset reference requires guid and path_hint")
+        guid = value.get("guid", "") if type(value.get("guid", "")) is str else ""
         value = make_asset_ref(
-            reference_asset_types[field_type], value["guid"], value["path_hint"]
+            reference_asset_types[field_type],
+            guid,
         )
     elif field_type == FieldType.GAME_OBJECT:
         if type(value) is int:
@@ -1616,9 +1589,9 @@ def serialized_field(
             values to be non-negative.
         hidden: Serialize the field without showing it in the Inspector.
         field_id: Stable type-local identity, independent of the Python name.
-            Omit to use the declaration name. Persisted document keys remain
-            authored names; FormerlySerializedAs declares name migrations,
-            separately from identity-based live reload.
+            Omit to use the declaration name. Persisted documents consume only
+            current authored names. FormerlySerializedAs applies solely to a
+            current-session hot reload and never reads old persisted keys.
     Returns:
         A descriptor that manages the field value and metadata
     

@@ -43,6 +43,7 @@ class AssetRefBase:
 
     @guid.setter
     def guid(self, value: str):
+        value = str(value or "").strip()
         if value != self._guid:
             self._guid = value
             self._cached = None
@@ -73,7 +74,7 @@ class AssetRefBase:
 
     @path_hint.setter
     def path_hint(self, value: str):
-        self._path_hint = value
+        self._path_hint = str(value or "").strip()
 
     # ── Resolution ─────────────────────────────────────────────────────
 
@@ -101,15 +102,18 @@ class AssetRefBase:
     # ── Serialization ──────────────────────────────────────────────────
 
     def to_dict(self) -> dict:
-        return {"guid": self._guid, "path_hint": self._path_hint}
+        return {"guid": self._guid}
 
     @classmethod
     def from_dict(cls, d: dict) -> "AssetRefBase":
-        if type(d) is not dict or set(d) != {"guid", "path_hint"}:
-            raise ValueError("asset reference must use the complete current field set")
-        if type(d["guid"]) is not str or type(d["path_hint"]) is not str:
-            raise TypeError("asset reference values must be strings")
-        return cls(guid=d["guid"], path_hint=d["path_hint"])
+        if type(d) is not dict:
+            return cls()
+        # Old path-only fields and unrelated legacy keys carry no runtime
+        # identity.  A persisted hint without its GUID is ignored rather than
+        # becoming a stale display value or a recovery request.
+        guid = d.get("guid", "")
+        guid = guid if type(guid) is str else ""
+        return cls(guid=guid)
 
     # ── Display ────────────────────────────────────────────────────────
 
@@ -532,6 +536,16 @@ class MaterialRef(AssetRefBase):
     """
 
     def __init__(self, material=None, *, guid: str = "", path_hint: str = ""):
+        if isinstance(material, str):
+            token = material.strip()
+            if os.path.sep in token or "/" in token or "\\" in token or os.path.splitext(token)[1]:
+                from .asset_reference_types import _resolve_path_guid
+
+                guid = _resolve_path_guid(token)
+                super().__init__(guid=guid, path_hint=token if guid else "")
+            else:
+                super().__init__(guid=token, path_hint=path_hint)
+            return
         if material is not None:
             extracted_guid = self._extract_guid(material)
             native = getattr(material, "native", material)
@@ -549,13 +563,6 @@ class MaterialRef(AssetRefBase):
         native = getattr(material, "native", material)
         if hasattr(native, "guid") and native.guid:
             return native.guid
-        file_path = getattr(native, "file_path", "") or ""
-        if file_path:
-            db = _get_asset_database()
-            if db:
-                g = db.get_guid_from_path(file_path)
-                if g:
-                    return g
         return ""
 
     def resolve(self):
@@ -589,8 +596,9 @@ class MaterialRef(AssetRefBase):
 
     @property
     def display_name(self) -> str:
-        if self._path_hint:
-            return os.path.basename(self._path_hint)
+        current_path = self.path_hint
+        if current_path:
+            return os.path.basename(current_path)
         if self._guid:
             return f"GUID:{self._guid[:8]}\u2026"
         # Runtime material — use its name directly
@@ -613,10 +621,10 @@ class MaterialRef(AssetRefBase):
         return getattr(mat, name)
 
     def __copy__(self):
-        return type(self)(guid=self._guid, path_hint=self._path_hint)
+        return type(self)(guid=self._guid)
 
     def __deepcopy__(self, memo):
-        copied = type(self)(guid=self._guid, path_hint=self._path_hint)
+        copied = type(self)(guid=self._guid)
         memo[id(self)] = copied
         return copied
 

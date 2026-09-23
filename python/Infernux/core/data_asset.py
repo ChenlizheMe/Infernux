@@ -22,8 +22,8 @@ _DATA_ASSET_ARTIFACT_HEADER = struct.Struct("<8sII")
 
 def encode_data_asset_artifact(document: dict[str, Any]) -> bytes:
     """Serialize one DataAsset document into the Player binary format."""
-    # Cook is the compatibility boundary: Player artifacts always contain the
-    # current schema even when the authored source predates versioned data.
+    # Cook normalizes the authored values to the fields declared by the current
+    # runtime type before writing the binary artifact.
     document = DataAsset.from_document(document).serialize_document()
     payload = json.dumps(
         document,
@@ -107,9 +107,7 @@ class DataAsset(SerializableObject):
     def from_document(cls, document: dict[str, Any]) -> "DataAsset":
         if not isinstance(document, dict):
             raise TypeError("DataAsset document must be an object")
-        legacy_keys = {"$type", "type_id", "fields"}
-        current_keys = legacy_keys | {"schema_version"}
-        if set(document) not in (legacy_keys, current_keys) or document.get("$type") != DATA_ASSET_DOCUMENT_TYPE:
+        if document.get("$type") != DATA_ASSET_DOCUMENT_TYPE:
             raise ValueError("invalid DataAsset document")
         nested = dict(document)
         nested["$type"] = "serializable_object"

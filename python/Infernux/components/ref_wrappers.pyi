@@ -44,7 +44,8 @@ from Infernux.core.asset_ref import MaterialRef as MaterialRef
 class PrefabRef:
     """Reference to a prefab asset stored on disk.
 
-    Stores the asset GUID and file-path hint of a ``.prefab`` file.
+    Stores the asset GUID of a ``.prefab`` file.  The editor resolves the
+    current path from its asset database for display only.
     Use :meth:`instantiate` to create a new scene object from the prefab.
     """
 
@@ -56,7 +57,7 @@ class PrefabRef:
         ...
     @property
     def path_hint(self) -> str:
-        """File path hint for locating the prefab."""
+        """Current editor display path resolved from the asset GUID."""
         ...
     @property
     def persistent_id(self) -> int:

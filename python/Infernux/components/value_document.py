@@ -53,18 +53,24 @@ def is_component_ref_document(value, component_type: str = "") -> bool:
 
 
 def make_asset_ref(asset_type: str, guid: str, path_hint: str = "") -> dict:
+    """Build the persistent form of an asset reference.
+
+    ``path_hint`` remains an accepted authoring argument so callers can pass
+    an editor projection without branching, but paths are not part of the
+    stored asset identity.  The Inspector resolves the current path from the
+    GUID whenever it needs display or navigation data.
+    """
+    del path_hint
     return make_document(
         ASSET_REF,
         asset_type=asset_type,
         guid=guid,
-        path_hint=path_hint,
     )
 
 
-def make_serializable_object(type_id: str, fields: dict, schema_version: int = 1) -> dict:
+def make_serializable_object(type_id: str, fields: dict) -> dict:
     return make_document(
         SERIALIZABLE_OBJECT,
         type_id=type_id,
-        schema_version=schema_version,
         fields=fields,
     )

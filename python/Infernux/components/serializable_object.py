@@ -94,15 +94,6 @@ def get_serializable_type_id(value: type | "SerializableObject") -> str:
     return f"{value_type.__module__}:{value_type.__qualname__}"
 
 
-def get_serializable_schema_version(value: type | "SerializableObject") -> int:
-    """Return the positive authored schema version for one data type."""
-    value_type = value if isinstance(value, type) else type(value)
-    version = getattr(value_type, "__serialized_schema_version__", 1)
-    if type(version) is not int or version < 1:
-        raise TypeError("__serialized_schema_version__ must be a positive integer")
-    return version
-
-
 def get_serializable_class(type_id: str) -> Optional[Type["SerializableObject"]]:
     """Look up a registered SerializableObject subclass by module:qualname."""
     candidate = _CANDIDATE_TYPES.get()
@@ -131,7 +122,6 @@ class SerializableObject:
 
     _serialized_fields_: Dict[str, "FieldMetadata"] = {}
     __serialized_type_id__ = ""
-    __serialized_schema_version__ = 1
 
     # ------------------------------------------------------------------
     # Metaclass-style auto-registration
@@ -143,7 +133,6 @@ class SerializableObject:
         current_type_id = get_serializable_type_id(cls)
         if not isinstance(current_type_id, str) or not current_type_id:
             raise ValueError("serialized type ID must be a non-empty string")
-        get_serializable_schema_version(cls)
         from .fields import _compile_serialized_fields
 
         _compile_serialized_fields(cls, descriptors=False)
@@ -216,26 +205,23 @@ class SerializableObject:
         return make_serializable_object(
             get_serializable_type_id(self),
             fields_document,
-            get_serializable_schema_version(self),
         )
 
     @classmethod
     def _prepare_document(cls, data: dict, path: str = "SerializableObject"):
-        """Validate identity and migrate one document to the current schema.
+        """Validate identity and normalize one document to current fields.
 
-        Documents written before schema versions existed are version zero.
-        Migration is declarative: current names and ``FormerlySerializedAs``
-        entries are the only accepted sources. The returned document has only
-        current names, so compatibility aliases do not leak into runtime.
+        The editor is intentionally forward-only while the data model is in
+        rapid development.  Only currently declared field names are consumed;
+        removed/renamed/extra keys are ignored and newly declared fields take
+        their current defaults.
         """
         from .fields import copy_serialized_field_default, get_serialized_fields
         from .value_document import TYPE_KEY, SERIALIZABLE_OBJECT
 
         if not isinstance(data, dict):
             raise TypeError(f"{path}: SerializableObject document must be an object")
-        legacy_keys = {TYPE_KEY, "type_id", "fields"}
-        current_keys = legacy_keys | {"schema_version"}
-        if set(data) not in (legacy_keys, current_keys) or data.get(TYPE_KEY) != SERIALIZABLE_OBJECT:
+        if data.get(TYPE_KEY) != SERIALIZABLE_OBJECT:
             raise ValueError(f"{path}: invalid SerializableObject typed document")
         type_id = data.get("type_id")
         if not isinstance(type_id, str) or not type_id:
@@ -248,55 +234,30 @@ class SerializableObject:
         fields_document = data.get("fields")
         if not isinstance(fields_document, dict):
             raise TypeError(f"{path}: SerializableObject fields must be an object")
-        source_version = data.get("schema_version", 0)
-        if type(source_version) is not int or (
-            "schema_version" in data and source_version < 1
-        ):
-            raise TypeError(f"{path}: schema_version must be a positive integer")
-        target_version = get_serializable_schema_version(actual_cls)
-        if source_version > target_version:
-            raise ValueError(
-                f"{path}: schema version {source_version} is newer than supported version {target_version}"
-            )
+        from .value_codec import VALUE_CODECS
 
-        if source_version == target_version:
-            migrated_fields = dict(fields_document)
-        else:
-            from .value_codec import VALUE_CODECS
-
-            migrated_fields = {}
-            for name, metadata in fields.items():
-                candidates = [
-                    candidate
-                    for candidate in (name, *metadata.former_names)
-                    if candidate in fields_document
-                ]
-                if len(candidates) > 1:
-                    raise ValueError(
-                        f"{path}.{name}: multiple serialized migration sources {candidates}"
-                    )
-                if candidates:
-                    migrated_fields[name] = fields_document[candidates[0]]
-                else:
-                    migrated_fields[name] = VALUE_CODECS.encode(
-                        copy_serialized_field_default(metadata),
-                        f"{path}.{name}.default",
-                    )
+        current_fields = {}
+        for name, metadata in fields.items():
+            if name in fields_document:
+                current_fields[name] = fields_document[name]
+            else:
+                current_fields[name] = VALUE_CODECS.encode(
+                    copy_serialized_field_default(metadata),
+                    f"{path}.{name}.default",
+                )
 
         from .fields import validate_serialized_field_document
-        validate_serialized_field_document(migrated_fields, fields, owner_name=type_id)
+        validate_serialized_field_document(current_fields, fields, owner_name=type_id)
 
-        from .value_codec import VALUE_CODECS
         for name, meta in fields.items():
-            VALUE_CODECS.validate(migrated_fields[name], meta, f"{path}.{name}")
+            VALUE_CODECS.validate(current_fields[name], meta, f"{path}.{name}")
         return (
             actual_cls,
             fields,
             {
                 TYPE_KEY: SERIALIZABLE_OBJECT,
                 "type_id": type_id,
-                "schema_version": target_version,
-                "fields": migrated_fields,
+                "fields": current_fields,
             },
         )
 
