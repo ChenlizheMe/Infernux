@@ -1097,13 +1097,13 @@ async function main() {
     await page.waitForTimeout(1000);
     let fixtureUiClick = null;
     if (verifyFixtureUiClick) {
-      // The fixture button occupies (512,20)..(768,84) in its 1280x720
-      // canvas. Its default CanvasScaler blends width and height equally.
+      // The fixture button occupies (512,260)..(768,324) in its 1280x720
+      // reference canvas. The live canvas stays centered as its aspect changes.
       const scale = Math.sqrt(
         (canvasBox.width / 1280) * (canvasBox.height / 720),
       );
-      const x = canvasBox.x + 640 * scale;
-      const y = canvasBox.y + 52 * scale;
+      const x = canvasBox.x + canvasBox.width * 0.5;
+      const y = canvasBox.y + canvasBox.height * 0.5 + (292 - 360) * scale;
       if (x >= canvasBox.x + canvasBox.width ||
           y >= canvasBox.y + canvasBox.height) {
         throw new Error("Fixture UI button is outside the Web Player canvas");

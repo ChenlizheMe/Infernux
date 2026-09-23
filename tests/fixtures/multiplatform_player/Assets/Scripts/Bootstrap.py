@@ -87,20 +87,14 @@ class PlatformFixtureBootstrap(inx.InxComponent):
         marker_owner = scene.create_game_object("Platform Fixture UI Marker")
         marker_owner.set_parent(canvas_owner, world_position_stays=False)
         marker = marker_owner.add_component(inx.ui.UIImage)
-        marker.x = 32.0
-        marker.y = 32.0
-        marker.width = 96.0
-        marker.height = 24.0
+        marker.set_rect(32.0, 32.0, 96.0, 24.0, 1280.0, 720.0)
         marker.color = [0.15, 0.95, 0.72, 1.0]
         marker.raycast_target = False
 
         text_button_owner = scene.create_game_object("Platform Fixture Text Input")
         text_button_owner.set_parent(canvas_owner, world_position_stays=False)
         self._text_input_button = text_button_owner.add_component(inx.ui.UIButton)
-        self._text_input_button.x = 512.0
-        self._text_input_button.y = 20.0
-        self._text_input_button.width = 256.0
-        self._text_input_button.height = 64.0
+        self._text_input_button.set_rect(512.0, 260.0, 256.0, 64.0, 1280.0, 720.0)
         self._text_input_button.label = "Open keyboard"
         self._text_input_button.background_color = [0.95, 0.28, 0.12, 1.0]
         self._text_input_button.on_click.add_listener(self._begin_text_input)
@@ -108,10 +102,7 @@ class PlatformFixtureBootstrap(inx.InxComponent):
         status_owner = scene.create_game_object("Platform Fixture Text Status")
         status_owner.set_parent(canvas_owner, world_position_stays=False)
         self._text_input_status = status_owner.add_component(inx.ui.UIText)
-        self._text_input_status.x = 400.0
-        self._text_input_status.y = 96.0
-        self._text_input_status.width = 480.0
-        self._text_input_status.height = 56.0
+        self._text_input_status.set_rect(400.0, 96.0, 480.0, 56.0, 1280.0, 720.0)
         self._text_input_status.text = "Text input idle"
         self._text_input_status.font_size = 24.0
         self._text_input_status.color = [0.92, 0.95, 1.0, 1.0]
@@ -135,10 +126,7 @@ class PlatformFixtureBootstrap(inx.InxComponent):
         )
         package_status_owner.set_parent(canvas_owner, world_position_stays=False)
         package_status = package_status_owner.add_component(inx.ui.UIText)
-        package_status.x = 256.0
-        package_status.y = 168.0
-        package_status.width = 768.0
-        package_status.height = 48.0
+        package_status.set_rect(256.0, 168.0, 768.0, 48.0, 1280.0, 720.0)
         package_status.text = package_message
         package_status.font_size = 20.0
         package_status.color = [0.25, 1.0, 0.68, 1.0]
