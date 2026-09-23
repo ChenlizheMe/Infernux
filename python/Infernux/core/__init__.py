@@ -36,7 +36,7 @@ from .audio_clip import AudioClip
 from .physic_material import PhysicMaterial
 from .data_asset import DataAsset
 from .animation_clip import AnimationClip, AnimationFrame
-from .animation_clip3d import AnimationClip3D
+from .animation_clip3d import AnimationClip3D, ImportedFloatCurve
 from .anim_state_machine import (
     AnimStateMachine,
     AnimState,
@@ -44,7 +44,8 @@ from .anim_state_machine import (
     AnimCondition,
     AnimParameter,
 )
-from .assets import AssetManager
+from .assets import AssetFile, AssetManager
+from .sandbox_files import SandboxPath
 from .parallel_backend import (
     ParallelBackend,
     ParallelBufferView,
@@ -93,12 +94,15 @@ __all__ = [
     "AnimationClip",
     "AnimationFrame",
     "AnimationClip3D",
+    "ImportedFloatCurve",
     "AnimStateMachine",
     "AnimState",
     "AnimTransition",
     "AnimCondition",
     "AnimParameter",
+    "AssetFile",
     "AssetManager",
+    "SandboxPath",
     "ParallelBackend",
     "ParallelBufferView",
     "ParallelCapabilities",

@@ -85,6 +85,18 @@ class PlayerRuntimeSession:
         """Return the shared on-demand phase-plan service for diagnostics."""
         return self._execution_scheduler
 
+    def get_asset_database(self) -> Any:
+        """Return the Player's already-published runtime asset database.
+
+        ``AssetManager.initialize`` consumes this narrow host contract in both
+        desktop and Web Players. The returned database is the immutable
+        runtime catalog view installed by the platform host; it is never an
+        Editor source database and cannot scan ``Assets``.
+        """
+        if self._asset_database is None:
+            raise RuntimeError("Player runtime asset database is not configured")
+        return self._asset_database
+
     @property
     def runtime_manifest(self) -> Optional[RuntimeProductManifest]:
         return self._runtime_manifest
@@ -126,9 +138,17 @@ class PlayerRuntimeSession:
         if not callable(bind_catalog):
             raise RuntimeError("Player scene service cannot bind RuntimeAssetCatalog")
         bind_catalog(runtime_catalog)
-        from Infernux.engine.project_context import set_runtime_asset_resolver
+        from Infernux.engine.project_context import (
+            set_runtime_asset_extension_resolver,
+            set_runtime_asset_query,
+            set_runtime_asset_resolver,
+            set_runtime_package_resolver,
+        )
 
-        set_runtime_asset_resolver(runtime_catalog.resolve_asset)
+        set_runtime_asset_resolver(runtime_catalog.resolve_guid)
+        set_runtime_asset_extension_resolver(runtime_catalog.source_extension_for_guid)
+        set_runtime_package_resolver(runtime_catalog.resolve_package)
+        set_runtime_asset_query(runtime_catalog.query_asset_guids)
         self._runtime_manifest = runtime_manifest
         self._runtime_catalog = runtime_catalog
         self._validate_player_boundary()
@@ -286,9 +306,17 @@ class PlayerRuntimeSession:
             except Exception as exc:
                 Debug.log_suppressed("PlayerRuntimeSession.remove_scene_service", exc)
             self._scene_service_installed = False
-        from Infernux.engine.project_context import set_runtime_asset_resolver
+        from Infernux.engine.project_context import (
+            set_runtime_asset_extension_resolver,
+            set_runtime_asset_query,
+            set_runtime_asset_resolver,
+            set_runtime_package_resolver,
+        )
 
         set_runtime_asset_resolver(None)
+        set_runtime_asset_extension_resolver(None)
+        set_runtime_package_resolver(None)
+        set_runtime_asset_query(None)
         self._state = "stopped"
 
     @staticmethod

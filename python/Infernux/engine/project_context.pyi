@@ -14,7 +14,12 @@ Example::
 
 from __future__ import annotations
 
-from typing import Optional
+from os import PathLike
+from typing import Callable, Optional
+
+RuntimeAssetResolver = Callable[[str], Optional[str]]
+RuntimeAssetQuery = Callable[[str], tuple[str, ...]]
+RuntimeAssetExtensionResolver = Callable[[str], str]
 
 
 def set_project_root(path: Optional[str]) -> None:
@@ -36,6 +41,25 @@ def get_project_script_roots(project_root: Optional[str] = ...) -> tuple[str, ..
 def is_editor_asset_path(project_relative_path: str) -> bool:
     """Return whether normalized Assets content is in an Editor directory."""
     ...
+
+def set_runtime_asset_resolver(resolver: Optional[RuntimeAssetResolver]) -> None: ...
+def set_runtime_package_resolver(resolver: Optional[Callable[..., Optional[str]]]) -> None: ...
+def set_runtime_asset_query(query: Optional[RuntimeAssetQuery]) -> None: ...
+def set_runtime_asset_extension_resolver(resolver: Optional[RuntimeAssetExtensionResolver]) -> None: ...
+def query_runtime_asset_guids(pattern: str) -> tuple[str, ...]: ...
+def runtime_asset_extension(guid: str) -> str: ...
+def resolve_asset_path(
+    path: str | PathLike[str],
+    *,
+    project_root: Optional[str] = ...,
+    allow_directory: bool = ...,
+) -> Optional[str]: ...
+def resolve_package_path(
+    path: str | PathLike[str],
+    *,
+    project_root: Optional[str] = ...,
+    allow_directory: bool = ...,
+) -> Optional[str]: ...
 
 def package_script_role(path: str, project_root: Optional[str] = ...) -> str:
     """Return the canonical role of an installed package script."""
@@ -67,7 +91,11 @@ def resolve_script_path(path: Optional[str]) -> Optional[str]:
     """
     ...
 
-def resolve_guid_to_path(guid: str) -> Optional[str]:
+def resolve_runtime_asset_guid(guid: str) -> Optional[str]:
+    """Resolve one managed GUID through the active Player catalog."""
+    ...
+
+def resolve_script_guid_to_path(guid: str) -> Optional[str]:
     """Resolve a script GUID using the build-time manifest.
 
     In packaged builds, ``_script_guid_map.json`` maps GUIDs to relative

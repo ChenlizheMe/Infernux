@@ -5,23 +5,45 @@ import sys
 from contextlib import contextmanager
 from typing import Iterator, Optional, Protocol
 from Infernux.debug import Debug
-from Infernux.engine.path_utils import is_path_within, portable_path, relative_path, resolved_path
+from Infernux.engine.path_utils import (
+    is_path_within,
+    portable_path,
+    portable_relative_path,
+    relative_path,
+    resolved_path,
+)
 
 class _RuntimeAssetResolver(Protocol):
+    def __call__(self, guid: str, /) -> Optional[str]: ...
+
+class _RuntimePackageResolver(Protocol):
     def __call__(self, path: str, /, *, allow_directory: bool = False) -> Optional[str]: ...
+
+class _RuntimeAssetQuery(Protocol):
+    def __call__(self, pattern: str, /) -> tuple[str, ...]: ...
+
+class _RuntimeAssetExtensionResolver(Protocol):
+    def __call__(self, guid: str, /) -> str: ...
 
 
 _project_root: Optional[str] = None
 _runtime_asset_resolver: Optional[_RuntimeAssetResolver] = None
+_runtime_package_resolver: Optional[_RuntimePackageResolver] = None
+_runtime_asset_query: Optional[_RuntimeAssetQuery] = None
+_runtime_asset_extension_resolver: Optional[_RuntimeAssetExtensionResolver] = None
 _guid_manifest: Optional[dict] = None
 _guid_manifest_loaded: bool = False
 _package_registry_cache: tuple[str, int, int, frozenset[str]] | None = None
 
 def set_project_root(path: Optional[str]) -> None:
     """Set the current project root for path normalization."""
-    global _project_root, _runtime_asset_resolver
+    global _project_root, _runtime_asset_resolver, _runtime_package_resolver
+    global _runtime_asset_query, _runtime_asset_extension_resolver
     _project_root = resolved_path(path) if path else None
     _runtime_asset_resolver = None
+    _runtime_package_resolver = None
+    _runtime_asset_query = None
+    _runtime_asset_extension_resolver = None
 
 
 def set_runtime_asset_resolver(
@@ -34,29 +56,127 @@ def set_runtime_asset_resolver(
     _runtime_asset_resolver = resolver
 
 
+def set_runtime_package_resolver(
+    resolver: Optional[_RuntimePackageResolver],
+) -> None:
+    """Install the package-scoped physical-path resolver for the active Player."""
+    global _runtime_package_resolver
+    if resolver is not None and not callable(resolver):
+        raise TypeError("runtime package resolver must be callable")
+    _runtime_package_resolver = resolver
+
+
+def set_runtime_asset_query(query: Optional[_RuntimeAssetQuery]) -> None:
+    """Install the build-frozen path/glob-to-GUID query for Player scripts."""
+    global _runtime_asset_query
+    if query is not None and not callable(query):
+        raise TypeError("runtime asset query must be callable")
+    _runtime_asset_query = query
+
+
+def set_runtime_asset_extension_resolver(
+    resolver: Optional[_RuntimeAssetExtensionResolver],
+) -> None:
+    """Install the build-frozen GUID-to-authored-suffix lookup."""
+    global _runtime_asset_extension_resolver
+    if resolver is not None and not callable(resolver):
+        raise TypeError("runtime asset extension resolver must be callable")
+    _runtime_asset_extension_resolver = resolver
+
+
+def query_runtime_asset_guids(pattern: str) -> tuple[str, ...]:
+    """Query Player asset identities without scanning its filesystem."""
+    if _runtime_asset_query is None:
+        raise RuntimeError("Player runtime asset query is not configured")
+    return tuple(_runtime_asset_query(str(pattern)))
+
+
+def runtime_asset_extension(guid: str) -> str:
+    """Return one authored suffix from the frozen Player catalog."""
+    if _runtime_asset_extension_resolver is None:
+        raise RuntimeError("Player runtime asset extension resolver is not configured")
+    return str(_runtime_asset_extension_resolver(str(guid)) or "").casefold()
+
+
+def resolve_runtime_asset_guid(guid: str) -> Optional[str]:
+    """Resolve one current Player managed GUID to its cooked payload."""
+    token = str(guid or "").strip()
+    if not token or _runtime_asset_resolver is None:
+        return None
+    return _runtime_asset_resolver(token)
+
+
 def resolve_asset_path(
     path: str,
     *,
     project_root: Optional[str] = None,
     allow_directory: bool = False,
 ) -> Optional[str]:
-    """Resolve one project asset in Editor or from the cooked Player catalog."""
+    """Resolve one authored ``Assets/...`` file through managed identity."""
     raw = os.fspath(path)
     if not raw:
         return None
-    if _runtime_asset_resolver is not None:
-        return _runtime_asset_resolver(raw, allow_directory=allow_directory)
+    try:
+        authored_path = portable_relative_path(raw)
+    except ValueError:
+        return None
+    if not authored_path.casefold().startswith("assets/"):
+        return None
+    from Infernux.application import Application
+
+    if (
+        Application.is_player()
+        or _runtime_asset_resolver is not None
+        or _runtime_asset_query is not None
+    ):
+        if allow_directory:
+            return None
+        guids = query_runtime_asset_guids(authored_path)
+        if len(guids) > 1:
+            raise RuntimeError(f"Player asset path is ambiguous: {raw}")
+        return resolve_runtime_asset_guid(guids[0]) if guids else None
+    if Application.is_editor():
+        if allow_directory:
+            return None
+        from Infernux.core.assets import AssetManager
+
+        guid = AssetManager._managed_guid(authored_path)
+        resolved = AssetManager._get_path_from_guid(guid) if guid else ""
+        return resolved if resolved and os.path.isfile(resolved) else None
     root = project_root or _project_root
     if not root:
         return None
-    candidate = resolved_path(
-        raw if os.path.isabs(raw) else os.path.join(root, raw)
-    )
-    asset_roots = get_project_script_roots(root)
-    if not any(
-        is_path_within(candidate, root, allow_root=False)
-        for root in asset_roots
-    ):
+    assets_root = resolved_path(os.path.join(root, "Assets"))
+    candidate = resolved_path(os.path.join(root, *authored_path.split("/")))
+    if not is_path_within(candidate, assets_root, allow_root=False):
+        return None
+    if os.path.isfile(candidate) or (allow_directory and os.path.isdir(candidate)):
+        return candidate
+    return None
+
+
+def resolve_package_path(
+    path: str,
+    *,
+    project_root: Optional[str] = None,
+    allow_directory: bool = False,
+) -> Optional[str]:
+    """Resolve one explicitly package-scoped file or directory."""
+    raw = os.fspath(path)
+    if not raw:
+        return None
+    if _runtime_package_resolver is not None:
+        return _runtime_package_resolver(raw, allow_directory=allow_directory)
+    from Infernux.application import Application
+
+    if Application.is_player():
+        return None
+    root = resolved_path(project_root or _project_root) if (project_root or _project_root) else ""
+    if not root:
+        return None
+    candidate = resolved_path(raw if os.path.isabs(raw) else os.path.join(root, raw))
+    packages_root = resolved_path(os.path.join(root, "Packages"))
+    if not is_path_within(candidate, packages_root, allow_root=False):
         return None
     if os.path.isfile(candidate) or (allow_directory and os.path.isdir(candidate)):
         return candidate
@@ -73,12 +193,18 @@ def using_project_root(path: Optional[str]) -> Iterator[Optional[str]]:
     """Bind ``get_project_root()`` for one compile or cook interval."""
     previous = get_project_root()
     previous_resolver = _runtime_asset_resolver
+    previous_package_resolver = _runtime_package_resolver
+    previous_query = _runtime_asset_query
+    previous_extension_resolver = _runtime_asset_extension_resolver
     set_project_root(path)
     try:
         yield get_project_root()
     finally:
         set_project_root(previous)
         set_runtime_asset_resolver(previous_resolver)
+        set_runtime_package_resolver(previous_package_resolver)
+        set_runtime_asset_query(previous_query)
+        set_runtime_asset_extension_resolver(previous_extension_resolver)
 
 
 def get_assets_root() -> Optional[str]:
@@ -477,7 +603,7 @@ def resolve_script_path(path: Optional[str]) -> Optional[str]:
     return resolved
 
 
-def resolve_guid_to_path(guid: str) -> Optional[str]:
+def resolve_script_guid_to_path(guid: str) -> Optional[str]:
     """Resolve a script GUID using the build-time manifest.
 
     In packaged builds the original ``.py`` sources are compiled to

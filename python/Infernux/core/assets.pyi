@@ -2,11 +2,19 @@
 
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, List, Optional, Type
+from typing import Any, Callable, Dict, List, Literal, Optional, Type, overload
 from Infernux.lib import AssetMutationResult
+from .sandbox_files import SandboxPath
 
 _META_SUPPRESSION_TIMEOUT: float
 _DEFAULT_DEBOUNCE_SEC: float
+
+class AssetFile:
+    """Opaque loadable managed-file handle returned by ``find_assets``."""
+    def __init__(self, _guid: str) -> None: ...
+    def load(self, asset_type: Optional[Type] = ...) -> Optional[Any]: ...
+    def read_bytes(self) -> bytes: ...
+    def read_text(self, encoding: str = ...) -> str: ...
 
 
 class AssetManager:
@@ -21,17 +29,57 @@ class AssetManager:
         """Return whether the native asset catalog is refreshing."""
         ...
     @classmethod
-    def load(cls, path: str, asset_type: Optional[Type] = ...) -> Optional[Any]:
-        """Load an asset from a file path."""
-        ...
+    @overload
+    def load(
+        cls,
+        path: str,
+        asset_type: Optional[Type] = ...,
+        *,
+        raw_filesystem: Literal[False] = ...,
+    ) -> Optional[Any]: ...
+    @classmethod
+    @overload
+    def load(cls, path: str, asset_type: None = ..., *, raw_filesystem: Literal[True]) -> SandboxPath: ...
+    @classmethod
+    @overload
+    def load(
+        cls,
+        path: str,
+        asset_type: Optional[Type] = ...,
+        *,
+        raw_filesystem: bool,
+    ) -> Optional[Any] | SandboxPath: ...
     @classmethod
     def load_by_guid(cls, guid: str, asset_type: Optional[Type] = ...) -> Optional[Any]:
         """Load an asset by its globally unique identifier."""
         ...
     @classmethod
-    def find_assets(cls, pattern: str, asset_type: Optional[Type] = ...) -> List[str]:
-        """Find asset paths matching a glob pattern."""
-        ...
+    @overload
+    def find_assets(
+        cls,
+        pattern: str,
+        asset_type: Optional[Type] = ...,
+        *,
+        raw_filesystem: Literal[False] = ...,
+    ) -> List[AssetFile]: ...
+    @classmethod
+    @overload
+    def find_assets(
+        cls,
+        pattern: str,
+        asset_type: None = ...,
+        *,
+        raw_filesystem: Literal[True],
+    ) -> List[SandboxPath]: ...
+    @classmethod
+    @overload
+    def find_assets(
+        cls,
+        pattern: str,
+        asset_type: Optional[Type] = ...,
+        *,
+        raw_filesystem: bool,
+    ) -> List[AssetFile] | List[SandboxPath]: ...
     @classmethod
     def invalidate(cls, guid: str) -> None:
         """Remove a cached asset by GUID, forcing reload on next access."""

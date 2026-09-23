@@ -138,6 +138,9 @@ from Infernux.components import ExecuteInEditMode as ExecuteInEditMode
 from Infernux.components import AddComponentMenu as AddComponentMenu
 from Infernux.components import HelpURL as HelpURL
 from Infernux.components import Icon as Icon
+from Infernux.components import DrivenTransformProperties as DrivenTransformProperties
+from Infernux.components import drives_transform as drives_transform
+from Infernux.components import DrivesTransform as DrivesTransform
 # Core assets
 from Infernux.core import Material as Material
 from Infernux.core import Texture as Texture
@@ -151,7 +154,9 @@ from Infernux.core import AnimState as AnimState
 from Infernux.core import AnimTransition as AnimTransition
 from Infernux.core import AnimCondition as AnimCondition
 from Infernux.core import AnimParameter as AnimParameter
+from Infernux.core import AssetFile as AssetFile
 from Infernux.core import AssetManager as AssetManager
+from Infernux.core import SandboxPath as SandboxPath
 from Infernux.core import TextureRef as TextureRef
 from Infernux.core import RenderTextureRef as RenderTextureRef
 from Infernux.core import ShaderRef as ShaderRef

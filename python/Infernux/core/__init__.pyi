@@ -11,7 +11,9 @@ from .audio_clip import AudioClip as AudioClip
 from .physic_material import PhysicMaterial as PhysicMaterial
 from .animation_clip import AnimationClip as AnimationClip, AnimationFrame as AnimationFrame
 from .data_asset import DataAsset as DataAsset
+from .assets import AssetFile as AssetFile
 from .assets import AssetManager as AssetManager
+from .sandbox_files import SandboxPath as SandboxPath
 from .parallel_backend import (
     ParallelBackend as ParallelBackend,
     ParallelBufferView as ParallelBufferView,
@@ -54,7 +56,9 @@ __all__ = [
     "AnimationClip",
     "AnimationFrame",
     "DataAsset",
+    "AssetFile",
     "AssetManager",
+    "SandboxPath",
     "ParallelBackend",
     "ParallelBufferView",
     "ParallelCapabilities",
