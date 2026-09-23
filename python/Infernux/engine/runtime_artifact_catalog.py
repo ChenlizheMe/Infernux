@@ -555,18 +555,16 @@ def _asset_refs(value: Any, field_name: str = "") -> Iterable[tuple[str, str]]:
         # several native/current documents (materials, effect groups and
         # renderer components) store the same GUID/path pair without it.
         # Both are durable asset identities and must contribute to the Player
-        # catalog dependency graph.
+        # catalog dependency graph.  Path hints are display-only and never
+        # identify a runtime dependency.
         if value.get("$type") == "asset_ref" or (
             "guid" in value and ("path_hint" in value or "asset_type" in value)
         ):
             guid = value.get("guid")
-            path_hint = value.get("path_hint")
             if not isinstance(guid, str):
                 guid = ""
-            if not isinstance(path_hint, str):
-                path_hint = ""
-            if guid or path_hint:
-                yield guid, path_hint
+            if guid:
+                yield guid, ""
         for key, item in value.items():
             yield from _asset_refs(item, str(key))
     elif isinstance(value, list):
@@ -591,7 +589,6 @@ def _asset_refs(value: Any, field_name: str = "") -> Iterable[tuple[str, str]]:
 
 def _dependencies(
     payload: bytes | None,
-    path_index: dict[str, str],
     guid_index: dict[str, str],
 ) -> tuple[list[str], list[dict[str, str]]]:
     if not payload:
@@ -602,20 +599,13 @@ def _dependencies(
         return [], []
     ids: set[str] = set()
     unresolved: set[tuple[str, str]] = set()
-    for guid, path_hint in _asset_refs(value):
+    for guid, _path_hint in _asset_refs(value):
         target = guid_index.get(guid) if guid else None
-        if target is None and path_hint:
-            normalized = path_hint.replace("\\", "/").lstrip("./").casefold()
-            target = path_index.get(normalized)
-            if target is None and normalized.startswith("assets/"):
-                target = path_index.get(normalized[7:])
         if target is not None:
             ids.add(target)
             continue
         if guid:
             unresolved.add(("guid", guid))
-        if path_hint:
-            unresolved.add(("path", path_hint))
     return sorted(ids), [
         {"kind": kind, "value": value}
         for kind, value in sorted(unresolved)
@@ -766,7 +756,6 @@ def build_catalog(
     for record in prepared:
         dependencies, unresolved = _dependencies(
             record.pop("_payload"),
-            path_index,
             guid_index,
         )
         binding = record.get("source_asset")
