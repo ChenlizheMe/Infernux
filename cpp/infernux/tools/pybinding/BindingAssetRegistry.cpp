@@ -203,6 +203,8 @@ void RegisterAssetRegistryBindings(py::module_ &m)
         .def("contains_path", &AssetDatabase::ContainsPath, py::arg("path"))
         .def("get_guid_from_path", &AssetDatabase::GetGuidFromPath, py::arg("path"))
         .def("get_path_from_guid", &AssetDatabase::GetPathFromGuid, py::arg("guid"))
+        .def("get_all_guids", &AssetDatabase::GetAllGuids, py::call_guard<py::gil_scoped_release>(),
+             "Get all cooked Player GUIDs in one published generation")
         .def("get_resource_type", &AssetDatabase::GetResourceTypeForPath, py::arg("file_path"))
         .def("get_runtime_artifact_path", &AssetDatabase::GetRuntimeArtifactPath, py::arg("guid"), py::arg("type"))
         .def_property_readonly("asset_count", &AssetDatabase::GetAssetCount)
