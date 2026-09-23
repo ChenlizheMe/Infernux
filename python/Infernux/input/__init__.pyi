@@ -30,6 +30,8 @@ class Touch:
     is_primary: bool
     cancel_reason: str
     phase: TouchPhase
+    began_this_frame: bool
+    begin_normalized_position: Tuple[float, float]
 
 
 class AccelerationEvent:

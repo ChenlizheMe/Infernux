@@ -34,6 +34,10 @@ void RegisterInputBindings(py::module_ &m)
         .def_readonly("contact_width", &TouchState::contactWidth, "Normalized contact width")
         .def_readonly("contact_height", &TouchState::contactHeight, "Normalized contact height")
         .def_readonly("is_primary", &TouchState::isPrimary, "True for the platform's primary contact")
+        .def_readonly("began_this_frame", &TouchState::beganThisFrame,
+                      "True if this contact began during the current input frame")
+        .def_readonly("begin_x", &TouchState::beginX, "Normalized horizontal position at contact start")
+        .def_readonly("begin_y", &TouchState::beginY, "Normalized vertical position at contact start")
         .def_readonly("cancel_reason", &TouchState::cancelReason, "Reason supplied for a canceled contact")
         .def_property_readonly("phase", [](const TouchState &touch) {
             switch (touch.phase) {

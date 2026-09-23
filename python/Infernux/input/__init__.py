@@ -72,6 +72,8 @@ class Touch:
     is_primary: bool
     cancel_reason: str
     phase: TouchPhase
+    began_this_frame: bool = False
+    begin_normalized_position: Tuple[float, float] = (0.0, 0.0)
 
 
 @dataclass(frozen=True, slots=True)
@@ -595,6 +597,11 @@ class Input(metaclass=_InputMeta):
             is_primary=bool(native_touch.is_primary),
             cancel_reason=str(native_touch.cancel_reason),
             phase=TouchPhase(str(native_touch.phase)),
+            began_this_frame=bool(native_touch.began_this_frame),
+            begin_normalized_position=(
+                float(native_touch.begin_x),
+                1.0 - float(native_touch.begin_y),
+            ),
         )
 
     @staticmethod

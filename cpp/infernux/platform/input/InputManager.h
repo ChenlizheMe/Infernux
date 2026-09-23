@@ -77,6 +77,10 @@ struct TouchState
     float contactWidth = 0.0f;
     float contactHeight = 0.0f;
     bool isPrimary = false;
+    // Preserve a press that begins and ends between two game frames.
+    bool beganThisFrame = false;
+    float beginX = 0.0f;
+    float beginY = 0.0f;
     std::string cancelReason;
     TouchPhase phase = TouchPhase::Stationary;
 };

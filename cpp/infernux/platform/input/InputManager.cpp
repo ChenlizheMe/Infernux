@@ -181,6 +181,7 @@ void InputManager::BeginFrame()
         touch.phase = TouchPhase::Stationary;
         touch.deltaX = 0.0f;
         touch.deltaY = 0.0f;
+        touch.beganThisFrame = false;
     }
     m_droppedFiles.clear();
     m_syntheticInputThisFrame = false;
@@ -362,6 +363,11 @@ void InputManager::ProcessTouchEvent(uint64_t touchId, uint64_t fingerId, uint64
     touch->contactWidth = contactWidth;
     touch->contactHeight = contactHeight;
     touch->isPrimary = touch->isPrimary || isPrimary;
+    if (phase == TouchPhase::Began) {
+        touch->beganThisFrame = true;
+        touch->beginX = x;
+        touch->beginY = y;
+    }
     touch->cancelReason = phase == TouchPhase::Canceled ? cancelReason : std::string{};
     touch->phase = phase;
 }
@@ -444,13 +450,13 @@ bool InputManager::StartTextInput()
     // emulator or attached physical keyboard makes SDL_HasKeyboard() true.
     SDL_SetHint(SDL_HINT_ENABLE_SCREEN_KEYBOARD, "1");
     const char *screenKeyboardHint = SDL_GetHint(SDL_HINT_ENABLE_SCREEN_KEYBOARD);
-    SDL_Log("INFERNUX_ANDROID_TEXT_INPUT_SDL_REQUEST keyboard=%d hint=%s",
-            SDL_HasKeyboard(), screenKeyboardHint != nullptr ? screenKeyboardHint : "unset");
+    SDL_Log("INFERNUX_ANDROID_TEXT_INPUT_SDL_REQUEST keyboard=%d hint=%s", SDL_HasKeyboard(),
+            screenKeyboardHint != nullptr ? screenKeyboardHint : "unset");
 #endif
     const bool started = SDL_StartTextInput(m_window);
 #if defined(__ANDROID__)
-    SDL_Log("INFERNUX_ANDROID_TEXT_INPUT_SDL_RESULT started=%d active=%d error=%s",
-            started, SDL_TextInputActive(m_window), started ? "none" : SDL_GetError());
+    SDL_Log("INFERNUX_ANDROID_TEXT_INPUT_SDL_RESULT started=%d active=%d error=%s", started,
+            SDL_TextInputActive(m_window), started ? "none" : SDL_GetError());
 #endif
     if (!started)
         return false;

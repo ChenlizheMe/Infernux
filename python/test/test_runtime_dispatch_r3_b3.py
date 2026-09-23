@@ -158,6 +158,41 @@ def test_ui_destroyed_target_is_not_called_during_reset():
         publication.rollback()
 
 
+@pytest.mark.parametrize(
+    ("press_position", "release_position", "canceled", "expected_clicks"),
+    [
+        ((0.0, 0.0), (0.0, 0.0), False, 1),
+        ((0.0, 0.0), (10.0, 0.0), False, 0),
+        ((10.0, 0.0), (0.0, 0.0), False, 0),
+        ((0.0, 0.0), (0.0, 0.0), True, 0),
+    ],
+)
+def test_ui_same_frame_touch_uses_press_location(
+    press_position, release_position, canceled, expected_clicks
+):
+    target = _make_pointer_target()
+    canvas = _Canvas(target)
+    canvas.raycast = lambda x, _y: target if x < 5.0 else None
+    publication = publish_runtime_dispatch_epoch((_PointerProbe,))
+    publication.commit()
+    try:
+        processor = UIEventProcessor()
+        processor.process_pointers([canvas], (
+            UIPointerFrame(
+                7, PointerType.Touch, (release_position,),
+                down=True, up=True, canceled=canceled,
+                press_canvas_positions=(press_position,),
+            ),
+        ), 0.016)
+        expected_press = int(press_position[0] < 5.0)
+        assert target.events.count("down") == expected_press
+        assert target.events.count("up") == expected_press
+        assert target.events.count("click") == expected_clicks
+        assert (PointerType.Touch, 7) not in processor._pointers
+    finally:
+        publication.rollback()
+
+
 def test_ui_process_routes_all_pointer_hooks_through_one_event_path():
     target = _make_pointer_target()
     canvas = _Canvas(target)

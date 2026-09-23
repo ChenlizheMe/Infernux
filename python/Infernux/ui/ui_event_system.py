@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import List, Optional, Sequence, Tuple, TYPE_CHECKING
 
 from Infernux.engine.runtime_dispatch import (
@@ -45,6 +45,7 @@ class UIPointerFrame:
     held: bool = False
     canceled: bool = False
     scroll_delta: Tuple[float, float] = (0.0, 0.0)
+    press_canvas_positions: Tuple[Tuple[float, float], ...] = ()
 
 
 @dataclass(slots=True)
@@ -120,6 +121,10 @@ class UIEventProcessor:
                 raise ValueError(
                     "UI pointer canvas position count does not match canvas count"
                 )
+            if pointer.press_canvas_positions and len(pointer.press_canvas_positions) != len(canvases):
+                raise ValueError(
+                    "UI pointer press position count does not match canvas count"
+                )
             seen.add(pointer_key)
             self._process_pointer(canvases, pointer, epoch)
 
@@ -132,6 +137,22 @@ class UIEventProcessor:
             self._cancel_pointer(pointer_key, epoch)
 
     def _process_pointer(self, canvases, pointer: UIPointerFrame, epoch) -> None:
+        if pointer.down and pointer.up:
+            # A short touch can begin and end between two game frames. Reuse
+            # the ordinary press/release path with its original press location.
+            self._process_pointer(
+                canvases,
+                replace(
+                    pointer,
+                    canvas_positions=pointer.press_canvas_positions or pointer.canvas_positions,
+                    up=False,
+                    held=False,
+                    canceled=False,
+                    press_canvas_positions=(),
+                ),
+                epoch,
+            )
+            pointer = replace(pointer, down=False, press_canvas_positions=())
         pointer_id = int(pointer.pointer_id)
         pointer_key = (pointer.pointer_type, pointer_id)
         state = self._pointers.get(pointer_key)

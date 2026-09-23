@@ -303,13 +303,29 @@ class PlayerGUI(InxGUIRenderable):
         touch_positions = map_runtime_ui_pointers(
             surfaces, camera, touch_points, game_w, game_h
         )
-        for touch, positions in zip(touches, touch_positions):
+        same_frame_terminal = tuple(
+            touch.began_this_frame and touch.phase in (TouchPhase.ENDED, TouchPhase.CANCELED)
+            for touch in touches
+        )
+        begin_positions = ()
+        if any(same_frame_terminal):
+            begin_points = tuple(
+                (
+                    float(touch.begin_normalized_position[0]) * float(game_w),
+                    (1.0 - float(touch.begin_normalized_position[1])) * float(game_h),
+                )
+                for touch in touches
+            )
+            begin_positions = map_runtime_ui_pointers(
+                surfaces, camera, begin_points, game_w, game_h
+            )
+        for index, (touch, positions) in enumerate(zip(touches, touch_positions)):
             pointers.append(
                 UIPointerFrame(
                     pointer_id=int(touch.finger_id),
                     pointer_type=PointerType.Touch,
                     canvas_positions=positions,
-                    down=touch.phase is TouchPhase.BEGAN,
+                    down=touch.phase is TouchPhase.BEGAN or same_frame_terminal[index],
                     up=touch.phase in (TouchPhase.ENDED, TouchPhase.CANCELED),
                     held=touch.phase
                     in (
@@ -318,6 +334,7 @@ class PlayerGUI(InxGUIRenderable):
                         TouchPhase.STATIONARY,
                     ),
                     canceled=touch.phase is TouchPhase.CANCELED,
+                    press_canvas_positions=(begin_positions[index] if same_frame_terminal[index] else ()),
                 )
             )
 
