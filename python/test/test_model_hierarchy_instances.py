@@ -8,6 +8,8 @@ import numpy as np
 import pytest
 
 import infernux as inx
+from Infernux.core.assets import AssetManager
+from Infernux.core.asset_types import read_mesh_import_settings
 from Infernux.lib import Physics, Vector3
 
 
@@ -20,6 +22,10 @@ def hierarchy_asset(engine, tmp_path):
     source.write_bytes(original.read_bytes())
     result = database.import_asset(str(source))
     assert result, result.error
+    settings = read_mesh_import_settings(str(source))
+    settings.is_readable = True
+    readable = AssetManager.reimport_asset(str(source), import_settings=settings.to_dict(), database=database)
+    assert readable, readable.error
     yield database, source, result.guid
     database.delete_asset(str(source))
     source.unlink(missing_ok=True)
@@ -51,6 +57,8 @@ def test_model_hierarchy_preserves_empty_pivots_local_geometry_and_roundtrip(sce
     assert objects['Empty pivot'].get_parent().name == 'Assembly'
     assert objects['Upper'].get_parent().name == 'Empty pivot'
     assert objects['Lower'].get_parent().name == 'Empty pivot'
+    assert objects['Upper'].get_component('MeshRenderer').enabled is True
+    assert objects['Lower'].get_component('MeshRenderer').enabled is False
     assert objects['Empty pivot'].get_component('MeshRenderer') is None
     matrices = []
     for node in mesh.model_nodes:
@@ -258,6 +266,7 @@ def test_removed_source_node_retains_author_owned_components(scene, hierarchy_as
     assert AssetManager.reimport_asset(str(source), database=database)
     retained = descendants(root)['Retained']
     retained.add_component('BoxCollider')
+    retained.add_component('MeshCollider')
 
     document['nodes'][0]['children'].remove(document['nodes'][0]['children'][-1])
     document['nodes'].pop()
@@ -265,6 +274,7 @@ def test_removed_source_node_retains_author_owned_components(scene, hierarchy_as
     assert AssetManager.reimport_asset(str(source), database=database)
     retained = descendants(root)['Retained']
     assert retained.get_component('MeshRenderer') is None
+    assert retained.get_component('MeshCollider') is None
     assert retained.get_component('BoxCollider') is not None
     assert retained.serialize_document().get('model_source') in (None, {'guid': '', 'path': []})
     assert any("Retained" in message and guid in message for message in warnings)
@@ -295,6 +305,79 @@ def test_external_source_node_motion_updates_new_instances_only(scene, hierarchy
     fresh = scene.create_from_model(guid, 'Fresh Assembly')
     fresh_upper = descendants(fresh)['Upper']
     assert tuple(round(float(v), 5) for v in fresh_upper.transform.local_position) == (9, 8, 7)
+
+
+def test_cold_scene_commit_atomically_reconciles_added_source_nodes(
+    scene, hierarchy_asset, engine, monkeypatch
+):
+    from Infernux.engine.runtime_scene_transaction import SceneDocumentTransaction
+
+    database, source, guid = hierarchy_asset
+    monkeypatch.setattr(AssetManager, '_engine', engine)
+    monkeypatch.setattr(AssetManager, '_asset_database', database)
+    root = scene.create_from_model(guid, 'Cold Assembly')
+    upper = descendants(root)['Upper']
+    upper.transform.local_position = Vector3(17, 18, 19)
+    cold_document = scene.serialize_document()
+
+    source_document = json.loads(source.read_text())
+    source_document['nodes'][0]['children'].append(len(source_document['nodes']))
+    source_document['nodes'].append({
+        'name': 'Cold Added', 'translation': [0, 6, 0], 'mesh': 0,
+    })
+    source.write_text(json.dumps(source_document))
+    settings = read_mesh_import_settings(str(source))
+    settings.generate_colliders = True
+    result = AssetManager.reimport_asset(
+        str(source), import_settings=settings.to_dict(), database=database
+    )
+    assert result, result.error
+
+    transaction = SceneDocumentTransaction(
+        scene,
+        document=cold_document,
+        asset_database=database,
+    )
+    assert transaction.run_to_completion() is True
+    restored_root = next(obj for obj in scene.get_root_objects() if obj.name == 'Cold Assembly')
+    restored = descendants(restored_root)
+    assert tuple(restored['Upper'].transform.local_position) == (17, 18, 19)
+    assert restored['Upper'].get_parent().name == 'Empty pivot'
+    assert restored['Cold Added'].get_parent().name == 'Assembly'
+    added_renderer = restored['Cold Added'].get_component('MeshRenderer')
+    assert added_renderer is not None
+    assert added_renderer.model_subresource_id
+    assert added_renderer.model_node_path == ['Assembly', 'Cold Added']
+    assert restored['Cold Added'].get_component('MeshCollider') is not None
+
+
+def test_scale_factor_resizes_compound_model_about_instance_root(
+    scene, hierarchy_asset, engine, monkeypatch
+):
+    """Import scale changes geometry and node offsets as one compound model."""
+    from Infernux.core.assets import AssetManager
+    from Infernux.core.asset_types import read_mesh_import_settings
+
+    database, source, guid = hierarchy_asset
+    monkeypatch.setattr(AssetManager, '_engine', engine)
+    monkeypatch.setattr(AssetManager, '_asset_database', database)
+    root = scene.create_from_model(guid, 'Scaled Assembly')
+    root.transform.local_position = Vector3(20, 30, 40)
+    upper = descendants(root)['Upper']
+    upper.transform.local_position = Vector3(3, 4, 5)
+    renderer = upper.get_component('MeshRenderer')._require_cpp_component()
+    before = np.asarray(renderer.get_positions()).copy()
+
+    settings = read_mesh_import_settings(str(source))
+    settings.scale_factor = 2.0
+    result = AssetManager.reimport_asset(
+        str(source), import_settings=settings.to_dict(), database=database
+    )
+    assert result, result.error
+
+    assert tuple(root.transform.local_position) == (20, 30, 40)
+    assert tuple(upper.transform.local_position) == (6, 8, 10)
+    np.testing.assert_allclose(renderer.get_positions(), before * 2.0)
 
 
 def test_source_reorder_keeps_node_binding_and_source_rename_reconciles_instance(scene, hierarchy_asset, engine, monkeypatch):

@@ -1131,6 +1131,7 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
                 path,
                 asset_guid=identity,
                 file_state=transaction.file_state,
+                document_reconciliation_count=transaction.document_reconciliation_count,
             )
             return True
         except Exception as exc:
@@ -1451,6 +1452,7 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
                 self._finish_open_scene(
                     path,
                     file_state=transaction.file_state,
+                    document_reconciliation_count=transaction.document_reconciliation_count,
                 )
             else:
                 self._scene_load_failed(path, transaction.error)
@@ -1474,6 +1476,7 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
                     path,
                     asset_guid=asset_guid,
                     file_state=transaction.file_state,
+                    document_reconciliation_count=transaction.document_reconciliation_count,
                 )
             else:
                 if scene is not None:
@@ -1658,6 +1661,7 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         *,
         asset_guid: str,
         file_state=None,
+        document_reconciliation_count: int = 0,
     ) -> None:
         """Publish one additive Scene after its owner-safe transaction commits."""
         canonical_path = self._scene_path_for_guid(asset_guid)
@@ -1674,6 +1678,14 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
             SpriteRenderer.init_all_in_scene(scene)
         except Exception as exc:
             Debug.log_internal(f"SpriteRenderer additive init: {exc}")
+        from Infernux.engine.model_instance_sync import (
+            _mark_scene_dirty,
+            synchronize_scene_model_instances,
+        )
+
+        synchronized = synchronize_scene_model_instances(scene, mark_dirty=False)
+        if synchronized or document_reconciliation_count:
+            _mark_scene_dirty(scene)
         from Infernux.gizmos.collector import notify_scene_changed
         notify_scene_changed()
         self._last_scene_load = {
@@ -1718,6 +1730,7 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         record_navigation: bool = True,
         preserve_document: bool = False,
         file_state=None,
+        document_reconciliation_count: int = 0,
     ) -> None:
         """Publish bookkeeping after a successful Scene transaction.
 
@@ -1765,9 +1778,14 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         # Model instances are source references too.  A scene opened after an
         # external Blender/FBX edit must reconcile added/removed source nodes
         # before it becomes visible, while preserving authored transforms.
-        from Infernux.engine.model_instance_sync import synchronize_scene_model_instances
+        from Infernux.engine.model_instance_sync import (
+            _mark_scene_dirty,
+            synchronize_scene_model_instances,
+        )
 
-        synchronize_scene_model_instances(scene)
+        synchronized = synchronize_scene_model_instances(scene, mark_dirty=False)
+        if not runtime_load and (synchronized or document_reconciliation_count):
+            _mark_scene_dirty(scene)
 
         if self._on_scene_changed:
             self._on_scene_changed()
@@ -1796,6 +1814,7 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
             record_navigation=record_navigation,
             preserve_document=preserve_document,
             file_state=transaction.file_state,
+            document_reconciliation_count=transaction.document_reconciliation_count,
         )
         return True
 

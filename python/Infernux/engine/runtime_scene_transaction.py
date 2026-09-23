@@ -108,6 +108,7 @@ class SceneDocumentTransaction:
         self._error = ""
         self._failure_exception: Optional[BaseException] = None
         self._phase_timings_ms: dict[str, float] = {}
+        self._document_reconciliation_count = 0
 
     @property
     def state(self) -> SceneDocumentTransactionState:
@@ -159,6 +160,10 @@ class SceneDocumentTransaction:
     def file_state(self):
         """Fingerprint of the exact bytes consumed by a path-backed read."""
         return self._file_state
+
+    @property
+    def document_reconciliation_count(self) -> int:
+        return int(self._document_reconciliation_count)
 
     def _require_owner_thread(self) -> None:
         if threading.get_ident() != self._owner_thread_id:
@@ -363,6 +368,16 @@ class SceneDocumentTransaction:
 
             if self._state is SceneDocumentTransactionState.DOCUMENT_READY:
                 assert self._document is not None
+                if isinstance(self._document, dict):
+                    from Infernux.engine.model_instance_sync import (
+                        reconcile_scene_document_model_instances,
+                    )
+
+                    self._document_reconciliation_count = (
+                        reconcile_scene_document_model_instances(
+                            self._document, self._asset_database
+                        )
+                    )
                 self._state = SceneDocumentTransactionState.RESOURCE_PREFLIGHTING
                 self._resource_preflight_started = time.perf_counter()
                 native_preflight = getattr(self._document, "_preflight_resource_dependencies", None)
@@ -397,8 +412,16 @@ class SceneDocumentTransaction:
 
             if self._state is SceneDocumentTransactionState.RESOURCES_READY:
                 from Infernux.engine.component_restore import preflight_scene_python_components
+                from Infernux.engine.model_instance_sync import (
+                    reconcile_scene_document_model_source_graphs,
+                )
 
                 assert self._document is not None
+                self._document_reconciliation_count += (
+                    reconcile_scene_document_model_source_graphs(
+                        self._document, self._asset_database
+                    )
+                )
                 self._state = SceneDocumentTransactionState.PREFLIGHTING
                 phase_started = time.perf_counter()
                 self._prepared_graph = preflight_scene_python_components(
