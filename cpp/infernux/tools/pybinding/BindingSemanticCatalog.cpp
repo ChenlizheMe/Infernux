@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <core/reflection/SemanticTypeRegistry.h>
 #include <function/scene/ComponentFactory.h>
-#include <limits>
 #include <pybind11/stl.h>
 
 namespace infernux
@@ -17,10 +16,6 @@ SemanticTypeDescriptor ParseType(const nlohmann::json &document)
     type.readableId = document.at("readable_id").get<std::string>();
     type.owner = document.at("owner").get<std::string>();
     type.origin = document.at("origin").get<std::string>();
-    const auto &version = document.at("schema_version");
-    if (!version.is_number_integer() || version <= 0 || version > std::numeric_limits<uint32_t>::max())
-        throw py::value_error("schema_version must be an integer in [1, 2**32 - 1]");
-    type.schemaVersion = version.get<uint32_t>();
     type.displayName = document.at("display_name").get<std::string>();
     type.baseTypeGuid = document.at("base_type_guid").get<std::string>();
     type.constructible = document.at("constructible").get<bool>();
@@ -50,7 +45,6 @@ nlohmann::json TypeDocument(const SemanticTypeDescriptor &type)
             {"readable_id", type.readableId},
             {"owner", type.owner},
             {"origin", type.origin},
-            {"schema_version", type.schemaVersion},
             {"revision", type.revision},
             {"display_name", type.displayName},
             {"base_type_guid", type.baseTypeGuid},
@@ -73,7 +67,6 @@ void RegisterSemanticCatalogBindings(py::module_ &module)
     ComponentFactory::PublishSemanticTypes();
     py::class_<SnapshotView>(module, "_SemanticCatalogSnapshot")
         .def_property_readonly("revision", [](const SnapshotView &view) { return view.snapshot->revision; })
-        .def_property_readonly("catalog_format", [](const SnapshotView &) { return SemanticCatalogSnapshot::Format; })
         .def_property_readonly("type_guids",
                                [](const SnapshotView &view) {
                                    std::vector<std::string> ids;

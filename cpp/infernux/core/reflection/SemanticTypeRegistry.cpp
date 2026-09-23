@@ -24,8 +24,8 @@ void RequireData(const nlohmann::json &value)
 
 void ValidateType(const SemanticTypeDescriptor &type, const std::string &owner)
 {
-    if (type.typeGuid.empty() || type.readableId.empty() || type.owner != owner || type.schemaVersion == 0)
-        throw std::invalid_argument("semantic type requires an identity, matching owner and schema version");
+    if (type.typeGuid.empty() || type.readableId.empty() || type.owner != owner)
+        throw std::invalid_argument("semantic type requires an identity and matching owner");
     if (type.origin != "native" && type.origin != "python")
         throw std::invalid_argument("semantic type origin must be native or python");
     std::unordered_set<std::string> fields;

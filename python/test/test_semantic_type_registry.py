@@ -20,7 +20,6 @@ def declaration(request):
         "readable_id": owner + ".probe",
         "owner": owner,
         "origin": "python",
-        "schema_version": 1,
         "display_name": "Catalog probe",
         "base_type_guid": "",
         "constructible": True,
@@ -85,15 +84,6 @@ def test_stale_publication_does_not_change_active_catalog(declaration):
     assert native._semantic_catalog_snapshot().type_document(declaration["type_guid"]) == active.type_document(declaration["type_guid"])
 
 
-@pytest.mark.parametrize("version", [-1, 0, 2**32, 1.5, True, "1"])
-def test_schema_version_cannot_be_narrowed_or_coerced(declaration, version):
-    declaration["schema_version"] = version
-    before = native._semantic_catalog_snapshot().revision
-    with pytest.raises(ValueError, match="schema_version"):
-        prepare(declaration)
-    assert native._semantic_catalog_snapshot().revision == before
-
-
 @pytest.mark.parametrize("key", ["fields", "types"])
 def test_descriptor_collections_must_be_arrays(declaration, key):
     edit = {"owner": declaration["owner"], "types": [declaration]}
@@ -105,13 +95,6 @@ def test_descriptor_collections_must_be_arrays(declaration, key):
     with pytest.raises(ValueError, match=key):
         native._semantic_catalog_prepare([edit])
     assert native._semantic_catalog_snapshot().revision == before
-
-
-@pytest.mark.parametrize("version", [1, 2**32 - 1])
-def test_schema_version_preserves_supported_integer_bounds(declaration, version):
-    declaration["schema_version"] = version
-    publication = prepare(declaration)
-    assert publication.candidate.type_document(declaration["type_guid"])["schema_version"] == version
 
 
 def test_engine_python_fields_survive_native_snapshot_roundtrip(declaration):

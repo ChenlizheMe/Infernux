@@ -27,7 +27,6 @@ struct SemanticTypeDescriptor
     std::string readableId;
     std::string owner;
     std::string origin;
-    uint32_t schemaVersion = 1;
     uint64_t revision = 0; // Assigned by publication, not by the producer.
     std::string displayName;
     std::string baseTypeGuid;
@@ -41,7 +40,6 @@ struct SemanticTypeDescriptor
 
 struct SemanticCatalogSnapshot
 {
-    static constexpr uint32_t Format = 1;
     uint64_t revision = 0;
     std::unordered_map<std::string, std::shared_ptr<const SemanticTypeDescriptor>> types;
     std::unordered_map<std::string, std::string> readableIds;
