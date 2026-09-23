@@ -3,6 +3,7 @@
 # ============================================================================
 /build/
 /out/
+/Library/
 /tests/fixtures/*/Cache/
 /tests/fixtures/*/Library/
 /tests/fixtures/*/Logs/
