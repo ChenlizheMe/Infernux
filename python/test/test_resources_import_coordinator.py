@@ -647,7 +647,7 @@ def test_dirty_asset_document_allows_external_reimport_before_publication(
     document = registry.create(
         DocumentKind.RENDER_EFFECT,
         "Dirty",
-        key=DocumentKey.resource(DocumentKind.RENDER_EFFECT, target_path),
+        key=DocumentKey.asset(DocumentKind.RENDER_EFFECT, "dirty-guid"),
         resource_path=target_path,
         revision=1,
         saved_revision=0,
@@ -699,7 +699,7 @@ def test_dirty_scene_still_blocks_external_reimport_for_user_arbitration(
     document = registry.create(
         DocumentKind.SCENE,
         "Dirty",
-        key=DocumentKey.resource(DocumentKind.SCENE, target_path),
+        key=DocumentKey.asset(DocumentKind.SCENE, "scene-guid"),
         resource_path=target_path,
         revision=1,
         saved_revision=0,
@@ -721,7 +721,12 @@ def test_dirty_scene_still_blocks_external_reimport_for_user_arbitration(
 def test_failed_external_import_retries_without_acknowledging_unpublished_bytes(
     monkeypatch, tmp_path, kind,
 ):
-    from Infernux.engine.interaction import DocumentKind, DocumentRegistry, DocumentState
+    from Infernux.engine.interaction import (
+        DocumentKey,
+        DocumentKind,
+        DocumentRegistry,
+        DocumentState,
+    )
     import json
 
     database = _AssetDatabaseProbe()
@@ -735,7 +740,9 @@ def test_failed_external_import_retries_without_acknowledging_unpublished_bytes(
     reloads = []
     registry = DocumentRegistry.instance()
     document = registry.create(
-        DocumentKind(kind), "Retry", resource_path=str(path),
+        DocumentKind(kind), "Retry",
+        key=DocumentKey.asset(DocumentKind(kind), "retry-guid"),
+        resource_path=str(path),
         controller=SimpleNamespace(reload_from_resource=lambda **_kwargs: reloads.append(True)),
     )
     loaded_baseline = document.durable_file_state
@@ -767,7 +774,10 @@ def test_failed_external_import_retries_without_acknowledging_unpublished_bytes(
     assert document.state is DocumentState.READY
     assert document.external_file_state is None
     assert document.external_revision == external_revision
-    assert registry.durable_resource_content_changed(str(path)) is False
+    assert registry.durable_resource_content_changed(
+        str(path),
+        guid="retry-guid",
+    ) is False
 
 
 def test_document_store_atomic_replace_does_not_delete_republished_target(monkeypatch, tmp_path):

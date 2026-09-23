@@ -384,7 +384,7 @@ class TestSceneLifecycle:
         manager.play()
         try:
             assert service.request_prepared_load(
-                "Assets/Scenes/PlayerCatalogAdditive.scene",
+                "player-additive-scene-guid",
                 mode="additive",
             ) is True
             deadline = time.monotonic() + 3.0
@@ -3014,6 +3014,7 @@ class TestSceneSerialization:
         monkeypatch,
         tmp_path,
     ):
+        from Infernux.core.assets import AssetManager
         from Infernux.engine.interaction import DocumentKey, DocumentKind, DocumentRegistry
         from Infernux.engine.path_utils import resolved_path
 
@@ -3027,9 +3028,28 @@ class TestSceneSerialization:
             registry = DocumentRegistry.instance()
             old_path = tmp_path / "Draft.scene"
             saved_path = tmp_path / "Saved.scene"
-            old_key = DocumentKey.resource(DocumentKind.SCENE, str(old_path))
-            saved_key = DocumentKey.resource(DocumentKind.SCENE, str(saved_path))
-            registry.rekey(manager.document_id, old_key, resource_path=str(old_path))
+            saved_key = DocumentKey.asset(DocumentKind.SCENE, "saved-guid")
+            replacement_key = DocumentKey.asset(DocumentKind.SCENE, "replacement-guid")
+
+            class _Database:
+                @staticmethod
+                def get_guid_from_path(path):
+                    return {
+                        str(saved_path): "saved-guid",
+                        str(old_path): "replacement-guid",
+                    }.get(str(path), "")
+
+                @staticmethod
+                def get_path_from_guid(guid):
+                    return {
+                        "saved-guid": str(saved_path),
+                        "replacement-guid": str(old_path),
+                    }.get(str(guid), "")
+
+            database = _Database()
+            manager.set_asset_database(database)
+            monkeypatch.setattr(AssetManager, "_asset_database", database)
+            registry.update_metadata(manager.document_id, resource_path=str(old_path))
             manager._current_scene_path = str(old_path)
 
             scene.create_game_object("SavedAsHistoryObject")
@@ -3043,7 +3063,7 @@ class TestSceneSerialization:
             manager._current_scene_path = str(saved_path)
             registry.unregister(manager.document_id)
             replacement, _ = registry.open_or_create(
-                old_key,
+                replacement_key,
                 "Replacement",
                 resource_path=str(old_path),
             )
@@ -3079,6 +3099,7 @@ class TestSceneSerialization:
             DocumentOpenStatus,
             DocumentRegistry,
         )
+        from Infernux.core.assets import AssetManager
 
         previous_manager = SceneFileManager._instance
         try:
@@ -3095,6 +3116,24 @@ class TestSceneSerialization:
                 tmp_path / name
                 for name in ("Menu.scene", "Results.scene", "Course.scene")
             )
+            guid_by_path = {
+                str(path): f"scene-guid-{index}"
+                for index, path in enumerate(paths)
+            }
+            path_by_guid = {guid: path for path, guid in guid_by_path.items()}
+
+            class _Database:
+                @staticmethod
+                def get_guid_from_path(path):
+                    return guid_by_path.get(str(path), "")
+
+                @staticmethod
+                def get_path_from_guid(guid):
+                    return path_by_guid.get(str(guid), "")
+
+            database = _Database()
+            manager.set_asset_database(database)
+            monkeypatch.setattr(AssetManager, "_asset_database", database)
             locators = {}
 
             # Match SceneFileManager's replacement ordering.  The departure

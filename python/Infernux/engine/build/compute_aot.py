@@ -9,6 +9,7 @@ from pathlib import Path
 import shutil
 import struct
 
+from Infernux.engine.path_utils import resolved_path
 from Infernux.engine.project_context import get_script_module_name
 
 
@@ -72,10 +73,10 @@ def declared_kernel_names(
 ) -> tuple[str, ...]:
     """Return runtime-qualified kernels in the selected Python closure."""
 
-    root = Path(project_root).expanduser().resolve()
+    root = Path(resolved_path(Path(project_root).expanduser()))
     names: set[str] = set()
     for source_path in sorted(
-        (Path(path).expanduser().resolve() for path in source_paths),
+        (Path(resolved_path(Path(path).expanduser())) for path in source_paths),
         key=lambda value: value.as_posix().casefold(),
     ):
         if not source_path.is_file() or source_path.suffix.casefold() != ".py":
@@ -168,10 +169,10 @@ def stage_compute_artifacts(
     Player recomputes that identity and opens the matching immutable file.
     """
 
-    root = Path(project_root).expanduser().resolve()
+    root = Path(resolved_path(Path(project_root).expanduser()))
     expected = declared_kernel_names(source_paths, root)
     destination = (
-        Path(data_directory).expanduser().resolve()
+        Path(resolved_path(Path(data_directory).expanduser()))
         / "Library"
         / "Artifacts"
         / "Compute"

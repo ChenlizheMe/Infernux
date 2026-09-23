@@ -267,11 +267,14 @@ def test_play_stop_restores_additive_scene_and_editor_document(scene, tmp_path):
     native.unload_scene(additive)
     runtime = native.create_scene("Runtime")
     native.set_active_scene(runtime)
+    runtime_world_id = int(runtime.world_id)
     assert play._restore_loaded_scenes_after_play()
 
     restored = files.scene_for_document(additive_id)
     assert restored is not None
-    assert restored.world_id != runtime.world_id
+    # The runtime Scene is destroyed by restoration.  Retain its scalar ID
+    # before the transition rather than dereferencing a retired pybind wrapper.
+    assert restored.world_id != runtime_world_id
     assert files.document_id == additive_id
     assert native.get_active_scene().world_id == restored.world_id
     assert files.scene_for_document(primary_id).world_id == scene.world_id
