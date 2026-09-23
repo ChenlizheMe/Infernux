@@ -275,7 +275,7 @@ def _make_project(tmp_path):
         encoding="utf-8",
     )
     (settings_dir / "BuildSettings.json").write_text(
-        json.dumps({"scenes": ["Assets/Main.scene"]}, ensure_ascii=False),
+        json.dumps({"scene_guids": ["scene-guid"]}, ensure_ascii=False),
         encoding="utf-8",
     )
     _write_asset_index(
@@ -362,7 +362,7 @@ def _prepare_runtime_catalog_inputs(
         if sys.platform != "win32":
             executable.chmod(executable.stat().st_mode | 0o111)
     (data_root / "BuildManifest.json").write_text(
-        json.dumps({"game_name": builder.project_name, "scenes": ["Assets/Main.scene"]}),
+        json.dumps({"game_name": builder.project_name, "scene_guids": ["scene-guid"]}),
         encoding="utf-8",
     )
     return data_root
@@ -1310,7 +1310,7 @@ class TestGameBuilderAnimationClipPreflight:
             builder._validate_animation_clip_assets()
 
 
-def test_validate_accepts_project_relative_build_scene_paths(tmp_path):
+def test_validate_accepts_build_scene_guids(tmp_path):
     project_root = tmp_path / "project"
     scene_path = project_root / "Assets" / "Acceptance" / "Burst Queue.scene"
     scene_path.parent.mkdir(parents=True)
@@ -1318,7 +1318,7 @@ def test_validate_accepts_project_relative_build_scene_paths(tmp_path):
     settings_dir = project_root / "ProjectSettings"
     settings_dir.mkdir()
     (settings_dir / "BuildSettings.json").write_text(
-        json.dumps({"scenes": ["Assets/Acceptance/Burst Queue.scene"]}),
+        json.dumps({"scene_guids": ["scene-guid"]}),
         encoding="utf-8",
     )
     _write_asset_index(
@@ -1340,15 +1340,18 @@ def test_build_scene_outside_assets_is_rejected(tmp_path):
         str(project_root), str(tmp_path / "build_output"), game_name="TestGame"
     )
 
+    builder.freeze_asset_index_entries([
+        _asset_index_entry(project_root, outside_scene, "outside-guid", "", "Scene")
+    ])
     with pytest.raises(ValueError, match="inside the project Assets folder"):
-        builder._resolve_build_scene_path("Outside.scene")
+        builder._resolve_build_scene_guid("outside-guid")
 
 
 def test_rewrite_build_settings_keeps_project_relative_scene_identity(tmp_path):
     project_root = _make_project(tmp_path)
     settings_path = project_root / "ProjectSettings" / "BuildSettings.json"
     settings_path.write_text(
-        json.dumps({"scenes": ["Assets/Main.scene"]}), encoding="utf-8"
+        json.dumps({"scene_guids": ["scene-guid"]}), encoding="utf-8"
     )
     final_settings = tmp_path / "dist" / "Data" / "ProjectSettings"
     final_settings.mkdir(parents=True)
@@ -1362,33 +1365,38 @@ def test_rewrite_build_settings_keeps_project_relative_scene_identity(tmp_path):
     rewritten = json.loads(
         (final_settings / "BuildSettings.json").read_text(encoding="utf-8")
     )
-    assert rewritten["scenes"] == ["Assets/Main.scene"]
+    assert rewritten["scene_guids"] == ["scene-guid"]
 
 
-def test_requested_build_scenes_override_disk_and_remain_a_snapshot(tmp_path):
+def test_requested_build_scene_guids_override_disk_and_remain_a_snapshot(tmp_path):
     project = _make_project(tmp_path)
-    selected = ["Assets/Requested.scene", "Assets/Main.scene"]
-    builder = GameBuilder(str(project), str(tmp_path / "output"), build_scenes=selected)
+    selected = ["requested-guid", "scene-guid"]
+    builder = GameBuilder(
+        str(project), str(tmp_path / "output"), build_scene_guids=selected
+    )
     selected.clear()
     final = tmp_path / "dist"
     settings = final / "Data/ProjectSettings/BuildSettings.json"
     settings.parent.mkdir(parents=True)
-    settings.write_text('{"scenes":["Assets/Main.scene"]}', encoding="utf-8")
+    settings.write_text('{"scene_guids":["scene-guid"]}', encoding="utf-8")
     builder._relativize_scenes(str(final))
     assert json.loads(settings.read_text(encoding="utf-8")) == {
-        "scenes": ["Assets/Requested.scene", "Assets/Main.scene"],
+        "scene_guids": ["requested-guid", "scene-guid"],
     }
     assert json.loads((project / "ProjectSettings/BuildSettings.json").read_text(encoding="utf-8")) == {
-        "scenes": ["Assets/Main.scene"],
+        "scene_guids": ["scene-guid"],
     }
 
 
-def test_requested_build_scenes_are_validated_instead_of_project_defaults(tmp_path):
+def test_requested_build_scene_guids_are_validated_instead_of_project_defaults(tmp_path):
     project = _make_project(tmp_path)
-    builder = GameBuilder(str(project), str(tmp_path / "output"), build_scenes=["Assets/Missing.scene"])
-    with pytest.raises(FileNotFoundError, match="Missing.scene"):
+    builder = GameBuilder(
+        str(project), str(tmp_path / "output"),
+        build_scene_guids=["missing-guid"],
+    )
+    with pytest.raises(ValueError, match="absent from AssetIndex"):
         builder._validate()
-    builder = GameBuilder(str(project), str(tmp_path / "output"), build_scenes=[])
+    builder = GameBuilder(str(project), str(tmp_path / "output"), build_scene_guids=[])
     with pytest.raises(ValueError, match="Build list is empty"):
         builder._validate()
 
@@ -1403,7 +1411,6 @@ def test_rewrite_build_settings_strips_authoring_only_fields(tmp_path):
             "icon_guid": "icon-guid",
             "debug_mode": False,
             "lto": True,
-            "enable_jit": False,
         }
     )
     settings_path.write_text(json.dumps(settings), encoding="utf-8")
@@ -1420,7 +1427,7 @@ def test_rewrite_build_settings_strips_authoring_only_fields(tmp_path):
     rewritten = json.loads(
         (final_settings / "BuildSettings.json").read_text(encoding="utf-8")
     )
-    assert rewritten == {"scenes": ["Assets/Main.scene"]}
+    assert rewritten == {"scene_guids": ["scene-guid"]}
 
 
 def test_build_cancellation_is_not_reported_as_a_build_failure(tmp_path, monkeypatch):
@@ -3295,7 +3302,7 @@ def test_build_branding_assets_are_manifested_and_packed(tmp_path):
     settings = final_dir / "Data" / "ProjectSettings"
     settings.mkdir(parents=True)
     (settings / "BuildSettings.json").write_text(
-        json.dumps({"scenes": ["Assets/Main.scene"]}), encoding="utf-8"
+        json.dumps({"scene_guids": ["scene-guid"]}), encoding="utf-8"
     )
 
     builder._process_build_icon(str(final_dir))
@@ -3342,7 +3349,7 @@ def test_build_branding_reuses_identical_icon_for_splash(tmp_path):
     settings = final_dir / "Data" / "ProjectSettings"
     settings.mkdir(parents=True)
     (settings / "BuildSettings.json").write_text(
-        json.dumps({"scenes": []}), encoding="utf-8"
+        json.dumps({"scene_guids": []}), encoding="utf-8"
     )
 
     builder._process_build_icon(str(final_dir))
@@ -3793,10 +3800,17 @@ def test_player_catalog_excludes_editor_assets_and_rejects_runtime_dependencies(
         builder._collect_library_asset_entries(entries, extra_roots=("tool",))
     assert builder._is_player_editor_path("Assets/Editor/Author.pyc")
     assert not builder._is_player_editor_path("Assets/Scripts/EditorHelper.pyc")
+    preview = project / "Assets/Editor/Preview.scene"
+    preview.parent.mkdir(parents=True, exist_ok=True)
+    preview.write_text("{}", encoding="utf8")
+    entries.append(
+        _asset_index_entry(project, preview, "preview-guid", "", "Scene")
+    )
     (project / "ProjectSettings/BuildSettings.json").write_text(
-        json.dumps({"scenes": ["Assets/Editor/Preview.scene"]}), encoding="utf8")
+        json.dumps({"scene_guids": ["preview-guid"]}), encoding="utf8")
     # A build freezes its scene list; changing author settings starts a new build.
     builder = GameBuilder(str(project), str(tmp_path / "preview_output"), game_name="TestGame")
+    builder.freeze_asset_index_entries(entries)
     with pytest.raises(RuntimeError, match="BuildSettings scene is editor-only"):
         builder._collect_library_asset_entries(entries)
 
@@ -4297,7 +4311,9 @@ def test_content_archive_replaces_loose_project_files(tmp_path):
     (runtime_assets / "Player.inxscript").write_bytes(b"compiled script")
     build_manifest = data / "BuildManifest.json"
     build_manifest.write_text('{"game_name": "TestGame"}', encoding="utf-8")
-    (settings / "BuildSettings.json").write_text('{"scenes": ["RuntimeAssets/Main.inxscene"]}', encoding="utf-8")
+    (settings / "BuildSettings.json").write_text(
+        '{"scene_guids": ["scene-guid"]}', encoding="utf-8"
+    )
     (settings / "mcp_capabilities.json").write_text('{"enabled": true}', encoding="utf-8")
     (settings / "agent_tools.json").write_text('{"tools": []}', encoding="utf-8")
 
@@ -4357,7 +4373,7 @@ def test_content_archive_excludes_editor_settings_and_metadata(tmp_path):
     settings.mkdir(parents=True)
     assets.mkdir(parents=True)
     (settings / "BuildSettings.json").write_text(
-        '{"scenes": []}', encoding="utf-8"
+        '{"scene_guids": []}', encoding="utf-8"
     )
     editor_files = (
         ".infernux-engine-lock.json",
@@ -4864,7 +4880,7 @@ def _write_scene_material_audio_reachability_fixture(
         )
     _write_asset_index(project, entries)
     (project / "ProjectSettings" / "BuildSettings.json").write_text(
-        json.dumps({"scenes": ["Assets/Main.scene"]}),
+        json.dumps({"scene_guids": ["scene-guid"]}),
         encoding="utf-8",
     )
     return {
@@ -4981,7 +4997,7 @@ def test_project_render_scripts_make_declared_shader_ids_reachable(tmp_path):
     ]
     _write_asset_index(project, entries)
     (project / "ProjectSettings" / "BuildSettings.json").write_text(
-        json.dumps({"scenes": ["Assets/Main.scene"]}),
+        json.dumps({"scene_guids": ["scene-guid"]}),
         encoding="utf-8",
     )
 
@@ -5153,7 +5169,7 @@ def test_package_resource_shader_keeps_guid_identity_in_headless_build(
     entries = [scene_entry, shader_entry]
     _write_asset_index(project, entries)
     (project / "ProjectSettings" / "BuildSettings.json").write_text(
-        json.dumps({"scenes": ["Assets/Main.scene"]}),
+        json.dumps({"scene_guids": ["scene-guid"]}),
         encoding="utf-8",
     )
 
@@ -5242,7 +5258,7 @@ def test_source_checkout_shader_keeps_identity_when_wheel_builds_project(
     entries = [scene_entry, shader_entry]
     _write_asset_index(project, entries)
     (project / "ProjectSettings" / "BuildSettings.json").write_text(
-        json.dumps({"scenes": ["Assets/Main.scene"]}),
+        json.dumps({"scene_guids": ["scene-guid"]}),
         encoding="utf-8",
     )
 
@@ -5307,7 +5323,7 @@ def test_cooked_python_component_keeps_script_and_runtime_guid_identity(tmp_path
         ],
     )
     (project / "ProjectSettings" / "BuildSettings.json").write_text(
-        json.dumps({"scenes": ["Assets/Main.scene"]}),
+        json.dumps({"scene_guids": ["scene-guid"]}),
         encoding="utf-8",
     )
     final_dir = tmp_path / "dist"
@@ -5455,7 +5471,7 @@ def test_cooked_python_component_includes_imported_project_helper(tmp_path):
         ],
     )
     (project / "ProjectSettings" / "BuildSettings.json").write_text(
-        json.dumps({"scenes": ["Assets/Main.scene"]}),
+        json.dumps({"scene_guids": ["scene-guid"]}),
         encoding="utf-8",
     )
 
@@ -5500,7 +5516,7 @@ def test_cooked_python_component_resolves_relative_helper_import(tmp_path):
         ],
     )
     (project / "ProjectSettings" / "BuildSettings.json").write_text(
-        json.dumps({"scenes": ["Assets/Main.scene"]}),
+        json.dumps({"scene_guids": ["scene-guid"]}),
         encoding="utf-8",
     )
 
@@ -5550,7 +5566,7 @@ def test_cooked_python_component_includes_literal_project_assets(tmp_path):
         ],
     )
     (project / "ProjectSettings" / "BuildSettings.json").write_text(
-        json.dumps({"scenes": ["Assets/Main.scene"]}),
+        json.dumps({"scene_guids": ["scene-guid"]}),
         encoding="utf-8",
     )
 
@@ -5591,7 +5607,7 @@ def test_complete_assets_cook_does_not_use_script_literals_as_content_roots(tmp_
         ],
     )
     (project / "ProjectSettings" / "BuildSettings.json").write_text(
-        json.dumps({"scenes": ["Assets/Main.scene"]}),
+        json.dumps({"scene_guids": ["scene-guid"]}),
         encoding="utf-8",
     )
 
@@ -5942,7 +5958,7 @@ def test_copy_stage_uses_all_indexed_assets_before_content_pack(tmp_path, monkey
     )
     builder._pack_content_archive(str(final_dir))
     (data_root / "BuildManifest.json").write_text(
-        json.dumps({"game_name": builder.project_name, "scenes": ["Assets/Main.scene"]}),
+        json.dumps({"game_name": builder.project_name, "scene_guids": ["scene-guid"]}),
         encoding="utf-8",
     )
 
@@ -6515,7 +6531,7 @@ def test_desktop_player_keeps_project_content_in_native_package(tmp_path):
         data_root / "Bootstrap.inxrt",
     )
     (data_root / "BuildManifest.json").write_text(
-        json.dumps({"scenes": ["Assets/Main.scene"]}), encoding="utf-8"
+        json.dumps({"scene_guids": ["scene-guid"]}), encoding="utf-8"
     )
     builder._write_payload_manifest(str(final_dir))
 
@@ -6540,7 +6556,7 @@ def test_desktop_player_keeps_project_content_in_native_package(tmp_path):
             data_root / builder._ASSET_CATALOG_ARCHIVE_FILENAME,
             "BuildManifest.json",
         ).decode("utf-8")
-    )["scenes"] == ["Assets/Main.scene"]
+    )["scene_guids"] == ["scene-guid"]
     assert len(catalog["packages"]) == 1
     assert Path(catalog["packages"][0]["path"]).name == "Content.inxpkg"
     manifest = json.loads(
@@ -6792,7 +6808,9 @@ class TestGameBuilderOutputSafety:
 
         settings = output_dir / "Data" / "ProjectSettings"
         settings.mkdir(parents=True)
-        (settings / "BuildSettings.json").write_text(json.dumps({"scenes": ["Assets/Main.scene"]}), encoding="utf-8")
+        (settings / "BuildSettings.json").write_text(
+            json.dumps({"scene_guids": ["scene-guid"]}), encoding="utf-8"
+        )
         builder._generate_manifest(str(output_dir))
         manifest = json.loads((output_dir / "Data" / "BuildManifest.json").read_text(encoding="utf-8"))
         assert manifest["debug_build"] is True
@@ -6962,7 +6980,7 @@ class TestGameBuilderDependencyCollection:
             ],
         )
         (project / "ProjectSettings" / "BuildSettings.json").write_text(
-            json.dumps({"scenes": ["Assets/Main.scene"]}), encoding="utf-8"
+            json.dumps({"scene_guids": ["scene-guid"]}), encoding="utf-8"
         )
 
         selected = builder._collect_library_asset_entries(builder._asset_index_entries())

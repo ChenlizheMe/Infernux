@@ -16,10 +16,8 @@ import copy
 from collections import deque
 from Infernux.engine.path_utils import (
     is_path_within,
-    portable_path,
     relative_path,
     resolved_path,
-    same_path,
 )
 from typing import Dict, List, Optional
 
@@ -290,7 +288,7 @@ class BuildSettingsPanel(EditorPanel):
         self._build_target = data["build_target"]
         self._android_artifact = data["android_artifact"]
         self._game_name = data["game_name"]
-        self._scenes = list(data["scenes"])
+        self._scenes = list(data["scene_guids"])
         self._output_dir = data["output_dir"]
         self._icon_guid = data["icon_guid"]
         self._display_mode_idx = _DISPLAY_MODE_KEYS.index(data["display_mode"])
@@ -307,7 +305,7 @@ class BuildSettingsPanel(EditorPanel):
             "build_target": self._build_target,
             "android_artifact": self._android_artifact,
             "game_name": self._game_name,
-            "scenes": self._scenes,
+            "scene_guids": self._scenes,
             "output_dir": self._output_dir,
             "icon_guid": self._icon_guid,
             "display_mode": _DISPLAY_MODE_KEYS[self._display_mode_idx],
@@ -1049,19 +1047,23 @@ class BuildSettingsPanel(EditorPanel):
         remove_idx: Optional[int] = None
         swap_pair: Optional[tuple] = None
 
-        for i, scene_path in enumerate(self._scenes):
-            name = os.path.splitext(os.path.basename(scene_path))[0]
-            root = get_project_root() or ""
-            absolute_scene = resolved_path(
-                scene_path
-                if os.path.isabs(scene_path) or not root
-                else os.path.join(root, scene_path)
+        for i, scene_guid in enumerate(self._scenes):
+            scene_path = str(
+                self.services.asset_database.get_path_from_guid(scene_guid) or ""
             )
-            try:
-                rel = relative_path(absolute_scene, root) if root else scene_path
-            except ValueError:
-                # Windows cannot compute a relative path across drive letters.
-                rel = absolute_scene
+            name = (
+                os.path.splitext(os.path.basename(scene_path))[0]
+                if scene_path
+                else scene_guid
+            )
+            root = get_project_root() or ""
+            absolute_scene = resolved_path(scene_path) if scene_path else ""
+            rel = scene_guid
+            if absolute_scene:
+                try:
+                    rel = relative_path(absolute_scene, root) if root else absolute_scene
+                except ValueError:
+                    rel = absolute_scene
 
             # Use a fixed row height so selectable and buttons align
             row_h = _metric(ctx, 24.0)
@@ -1071,7 +1073,7 @@ class BuildSettingsPanel(EditorPanel):
                 name,
                 True,
                 f"build_settings.scene.{i}.row",
-                string_value=portable_path(rel),
+                string_value=scene_guid,
             )
 
             # Drag source — reorder
@@ -1786,12 +1788,15 @@ class BuildSettingsPanel(EditorPanel):
                 f"Build scene must be inside the project Assets folder: {path}"
             )
             return
-        stored_path = relative_path(abs_path, root).replace("\\", "/")
-        for existing in self._scenes:
-            existing_path = resolved_path(
-                existing if os.path.isabs(existing) else os.path.join(root, existing)
+        scene_guid = str(
+            self.services.asset_database.get_guid_from_path(abs_path) or ""
+        ).strip()
+        if not scene_guid:
+            Debug.log_warning(
+                f"Build scene has not been imported into the Asset Database: {path}"
             )
-            if same_path(existing_path, abs_path):
-                return
-        self._scenes.append(stored_path)
+            return
+        if scene_guid in self._scenes:
+            return
+        self._scenes.append(scene_guid)
         self._save()
