@@ -45,8 +45,8 @@ class Renderer:
             return 'begin_world_element', (element.world_ui_matrix(), pivot_x, pivot_y, 1 << obj.layer), kwargs
         return command
 
-    def begin_world_object(self, obj, pivot_x, pivot_y):
-        command = ('world_object', (obj, pivot_x, pivot_y), {})
+    def begin_world_object(self, obj, pivot_x, pivot_y, always_on_top=False):
+        command = ('world_object', (obj, pivot_x, pivot_y), {'always_on_top': True} if always_on_top else {})
         if self.capture is None:
             self.commands.append(self.resolve(command))
         else:

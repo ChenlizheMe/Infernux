@@ -575,17 +575,16 @@ std::array<uint64_t, 3> InxScreenUIRenderer::GetCommandPacketEpoch() const
             static_cast<uint64_t>(reinterpret_cast<uintptr_t>(ImGui::GetFont()))};
 }
 
-void InxScreenUIRenderer::SetMaterialBinding(ScreenUIList list, const std::string &materialGuid,
-                                             uint64_t generation, const std::string &pipelineKey)
+void InxScreenUIRenderer::SetMaterialBinding(ScreenUIList list, const std::string &materialGuid, uint64_t generation,
+                                             const std::string &pipelineKey)
 {
-    SetMaterialBinding(list, materialGuid, generation, pipelineKey,
-                       std::array<float, 4>{1.0f, 1.0f, 1.0f, 1.0f}, false, 0.0f);
+    SetMaterialBinding(list, materialGuid, generation, pipelineKey, std::array<float, 4>{1.0f, 1.0f, 1.0f, 1.0f}, false,
+                       0.0f);
 }
 
-void InxScreenUIRenderer::SetMaterialBinding(ScreenUIList list, const std::string &materialGuid,
-                                             uint64_t generation, const std::string &pipelineKey,
-                                             const std::array<float, 4> &baseColor, bool alphaClipEnabled,
-                                             float alphaClipThreshold)
+void InxScreenUIRenderer::SetMaterialBinding(ScreenUIList list, const std::string &materialGuid, uint64_t generation,
+                                             const std::string &pipelineKey, const std::array<float, 4> &baseColor,
+                                             bool alphaClipEnabled, float alphaClipThreshold)
 {
     if (!m_recordingPacket)
         throw std::logic_error("UI material binding requires an active command packet");
@@ -693,8 +692,7 @@ void InxScreenUIRenderer::AppendCommandPackets(const std::vector<std::shared_ptr
             for (size_t i = 0; i < source.indices.size(); ++i)
                 destination.IdxBuffer.Data[indexStart + i] = static_cast<ImDrawIdx>(source.indices[i] + bias);
             if (!destination.CmdBuffer.empty() && !destination.CmdBuffer.back().ElemCount &&
-                !destination.CmdBuffer.back().UserCallback)
-            {
+                !destination.CmdBuffer.back().UserCallback) {
                 destination.CmdBuffer.pop_back();
                 if (m_commandBindings[index].size() > static_cast<size_t>(destination.CmdBuffer.Size))
                     m_commandBindings[index].pop_back();
@@ -703,8 +701,8 @@ void InxScreenUIRenderer::AppendCommandPackets(const std::vector<std::shared_ptr
             unsigned int lastBase = base;
             for (size_t sourceIndex = 0; sourceIndex < source.commands.size(); ++sourceIndex) {
                 auto command = source.commands[sourceIndex];
-                const auto sourceBinding = sourceIndex < source.bindings.size() ? source.bindings[sourceIndex]
-                                                                                 : UIShaderMaterialBinding{};
+                const auto sourceBinding =
+                    sourceIndex < source.bindings.size() ? source.bindings[sourceIndex] : UIShaderMaterialBinding{};
                 command.IdxOffset += indexStart;
                 command.VtxOffset += base;
                 lastBase = command.VtxOffset;
@@ -839,10 +837,12 @@ void InxScreenUIRenderer::Destroy()
         if (m_pipeline)
             vkDestroyPipeline(m_device, m_pipeline, nullptr);
         for (const auto &variant : m_worldPipelineVariants)
-            vkDestroyPipeline(m_device, variant.second, nullptr);
+            vkDestroyPipeline(m_device, variant.pipeline, nullptr);
         m_worldPipelineVariants.clear();
         if (m_worldPipeline)
             vkDestroyPipeline(m_device, m_worldPipeline, nullptr);
+        if (m_worldTopPipeline)
+            vkDestroyPipeline(m_device, m_worldTopPipeline, nullptr);
         if (m_pipelineLayout)
             vkDestroyPipelineLayout(m_device, m_pipelineLayout, nullptr);
         if (m_worldPipelineLayout)
@@ -867,6 +867,7 @@ void InxScreenUIRenderer::Destroy()
     m_commandBindings = {};
     m_pipeline = VK_NULL_HANDLE;
     m_worldPipeline = VK_NULL_HANDLE;
+    m_worldTopPipeline = VK_NULL_HANDLE;
     m_pipelineLayout = VK_NULL_HANDLE;
     m_worldPipelineLayout = VK_NULL_HANDLE;
     m_descriptorSetLayout = VK_NULL_HANDLE;
@@ -970,7 +971,7 @@ void InxScreenUIRenderer::PopClipRect(ScreenUIList list)
 }
 
 void InxScreenUIRenderer::BeginWorldElement(const std::array<float, 16> &localToWorld, float pivotX, float pivotY,
-                                            uint32_t layerMask)
+                                            uint32_t layerMask, bool alwaysOnTop)
 {
     auto *drawList = GetDrawList(ScreenUIList::World);
     if (m_worldElementStart >= 0)
@@ -992,6 +993,7 @@ void InxScreenUIRenderer::BeginWorldElement(const std::array<float, 16> &localTo
     m_pendingWorldElement.pivotX = pivotX;
     m_pendingWorldElement.pivotY = pivotY;
     m_pendingWorldElement.layerMask = layerMask;
+    m_pendingWorldElement.alwaysOnTop = alwaysOnTop;
 }
 
 void InxScreenUIRenderer::ResolveWorldPose(WorldElementSpan &span)
@@ -1007,11 +1009,11 @@ void InxScreenUIRenderer::ResolveWorldPose(WorldElementSpan &span)
     span.layerMask = uint32_t(1) << transform->GetGameObject()->GetLayer();
 }
 
-void InxScreenUIRenderer::BeginWorldObject(GameObject *object, float pivotX, float pivotY)
+void InxScreenUIRenderer::BeginWorldObject(GameObject *object, float pivotX, float pivotY, bool alwaysOnTop)
 {
     if (!object)
         throw std::invalid_argument("World UI geometry requires a scene object");
-    BeginWorldElement({1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1}, pivotX, pivotY);
+    BeginWorldElement({1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1}, pivotX, pivotY, 0xffffffffu, alwaysOnTop);
     m_pendingWorldElement.transform = object->GetTransform()->GetECSHandle();
     ResolveWorldPose(m_pendingWorldElement);
 }
@@ -1466,8 +1468,8 @@ void InxScreenUIRenderer::Render(VkCommandBuffer cmdBuf, ScreenUIList list, uint
                     m_textureColorSpaceQuery(static_cast<uint64_t>(reinterpret_cast<uintptr_t>(texDescSet)))
                 ? 1.0f
                 : 0.0f;
-        vkCmdPushConstants(cmdBuf, m_pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                           0, sizeof(pushConstants), &pushConstants);
+        vkCmdPushConstants(cmdBuf, m_pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                           sizeof(pushConstants), &pushConstants);
 
         vkCmdDrawIndexed(cmdBuf, cmd.ElemCount, 1, cmd.IdxOffset, static_cast<int32_t>(cmd.VtxOffset), 0);
         ++submittedDraws;
@@ -1597,10 +1599,11 @@ bool InxScreenUIRenderer::CreateWorldPipeline()
     target.colorFormats[0] = rhi::FromVkFormat(m_colorFormat);
     target.depthFormat = rhi::FromVkFormat(m_depthFormat);
     target.samples = rhi::FromVkSampleCount(m_msaaSamples);
-    return CreateWorldPipeline(target, m_worldPipeline);
+    return CreateWorldPipeline(target, m_worldPipeline) && CreateWorldPipeline(target, m_worldTopPipeline, true);
 }
 
-bool InxScreenUIRenderer::CreateWorldPipeline(const rhi::GraphicsRenderingSignature &target, VkPipeline &result)
+bool InxScreenUIRenderer::CreateWorldPipeline(const rhi::GraphicsRenderingSignature &target, VkPipeline &result,
+                                              bool alwaysOnTop)
 {
 
     const std::array<VkPipelineShaderStageCreateInfo, 2> stages = {
@@ -1631,7 +1634,11 @@ bool InxScreenUIRenderer::CreateWorldPipeline(const rhi::GraphicsRenderingSignat
     const VkPipelineMultisampleStateCreateInfo multisample = MakeMultisampleState(rhi::ToVkSampleCount(target.samples));
     const VkPipelineColorBlendAttachmentState blendAttachment = MakeAlphaBlendAttachment();
     const VkPipelineColorBlendStateCreateInfo blend = MakeColorBlendState(blendAttachment);
-    const VkPipelineDepthStencilStateCreateInfo depth = MakeWorldDepthStencilState();
+    VkPipelineDepthStencilStateCreateInfo depth = MakeWorldDepthStencilState();
+    // Keep the same attachment and no-write contract; only the explicit
+    // policy changes comparison so scene depth cannot reject this element.
+    if (alwaysOnTop)
+        depth.depthCompareOp = VK_COMPARE_OP_ALWAYS;
     const std::array<VkDynamicState, 2> dynamicStates = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
     const VkPipelineDynamicStateCreateInfo dynamic = MakeDynamicStateInfo(dynamicStates.data(), dynamicStates.size());
 
@@ -1660,22 +1667,22 @@ bool InxScreenUIRenderer::CreateWorldPipeline(const rhi::GraphicsRenderingSignat
     return vkCreateGraphicsPipelines(m_device, VK_NULL_HANDLE, 1, &pipeline, nullptr, &result) == VK_SUCCESS;
 }
 
-VkPipeline InxScreenUIRenderer::GetWorldPipeline(const rhi::GraphicsRenderingSignature &target)
+VkPipeline InxScreenUIRenderer::GetWorldPipeline(const rhi::GraphicsRenderingSignature &target, bool alwaysOnTop)
 {
     if (target.colorFormatCount != 1 || target.depthFormat == rhi::PixelFormat::Undefined)
         throw std::invalid_argument("World UI needs one color and one depth attachment");
     if (target.colorFormats[0] == rhi::FromVkFormat(m_colorFormat) &&
         target.depthFormat == rhi::FromVkFormat(m_depthFormat) && target.stencilFormat == rhi::PixelFormat::Undefined &&
         target.samples == rhi::FromVkSampleCount(m_msaaSamples))
-        return m_worldPipeline;
+        return alwaysOnTop ? m_worldTopPipeline : m_worldPipeline;
     for (const auto &variant : m_worldPipelineVariants) {
-        if (variant.first == target)
-            return variant.second;
+        if (variant.target == target && variant.alwaysOnTop == alwaysOnTop)
+            return variant.pipeline;
     }
     VkPipeline pipeline = VK_NULL_HANDLE;
-    if (!CreateWorldPipeline(target, pipeline))
+    if (!CreateWorldPipeline(target, pipeline, alwaysOnTop))
         throw std::runtime_error("Failed to create World UI pipeline for the actual target attachments");
-    m_worldPipelineVariants.emplace_back(target, pipeline);
+    m_worldPipelineVariants.push_back({target, alwaysOnTop, pipeline});
     return pipeline;
 }
 
@@ -1804,7 +1811,13 @@ void InxScreenUIRenderer::RenderWorld(VkCommandBuffer cmdBuf, uint32_t width, ui
     if (!UploadGeometry(buffers, list, vertices.data(), static_cast<size_t>(vertexBytes)))
         return;
 
-    vkCmdBindPipeline(cmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS, GetWorldPipeline(target));
+    // Resolve both immutable pipeline variants before recording draw commands.
+    const VkPipeline depthPipeline = GetWorldPipeline(target);
+    const bool hasTopElement = std::any_of(elementOrder.begin(), elementOrder.end(), [&](const ElementDepth &entry) {
+        return m_worldElementSpans[entry.index].alwaysOnTop;
+    });
+    const VkPipeline topPipeline = hasTopElement ? GetWorldPipeline(target, true) : VK_NULL_HANDLE;
+    VkPipeline lastPipeline = VK_NULL_HANDLE;
     const VkDeviceSize vertexOffset = 0;
     vkCmdBindVertexBuffers(cmdBuf, 0, 1, &buffers.vertexBuffer, &vertexOffset);
     vkCmdBindIndexBuffer(cmdBuf, buffers.indexBuffer, 0,
@@ -1822,18 +1835,26 @@ void InxScreenUIRenderer::RenderWorld(VkCommandBuffer cmdBuf, uint32_t width, ui
     // sorting at Python submission time would be incorrect. Sort elements
     // back-to-front in this camera's clip space, while preserving the authored
     // draw order inside each element.
-    std::stable_sort(elementOrder.begin(), elementOrder.end(),
-                     [](const ElementDepth &lhs, const ElementDepth &rhs) { return lhs.depth > rhs.depth; });
+    std::stable_sort(elementOrder.begin(), elementOrder.end(), [&](const ElementDepth &lhs, const ElementDepth &rhs) {
+        const bool lhsTop = m_worldElementSpans[lhs.index].alwaysOnTop;
+        const bool rhsTop = m_worldElementSpans[rhs.index].alwaysOnTop;
+        return lhsTop != rhsTop ? !lhsTop : lhs.depth > rhs.depth;
+    });
 
     // The camera matrix is shared by every draw, while authored material
     // values are command-local.  Push the complete block for each draw so
     // World UI consumes the same material contract as Screen UI.
-    const auto drawCommand = [&](const ImDrawCmd &command, int commandIndex) {
+    const auto drawCommand = [&](const ImDrawCmd &command, int commandIndex, bool alwaysOnTop) {
         if (command.ElemCount == 0)
             return;
         VkDescriptorSet descriptor = reinterpret_cast<VkDescriptorSet>(static_cast<uintptr_t>(command.GetTexID()));
         if (descriptor == VK_NULL_HANDLE)
             return;
+        const VkPipeline pipeline = alwaysOnTop ? topPipeline : depthPipeline;
+        if (pipeline != lastPipeline) {
+            vkCmdBindPipeline(cmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+            lastPipeline = pipeline;
+        }
         if (descriptor != m_fontDescriptorSet && m_textureUsageValidator &&
             !m_textureUsageValidator(static_cast<uint64_t>(reinterpret_cast<uintptr_t>(descriptor))))
             return;
@@ -1843,8 +1864,8 @@ void InxScreenUIRenderer::RenderWorld(VkCommandBuffer cmdBuf, uint32_t width, ui
                                                   &descriptor, 0, nullptr);
             lastDescriptor = descriptor;
         }
-        const auto binding = (commandIndex >= 0 &&
-                              static_cast<size_t>(commandIndex) < m_commandBindings[ListIndex(ScreenUIList::World)].size())
+        const auto binding = (commandIndex >= 0 && static_cast<size_t>(commandIndex) <
+                                                       m_commandBindings[ListIndex(ScreenUIList::World)].size())
                                  ? m_commandBindings[ListIndex(ScreenUIList::World)][static_cast<size_t>(commandIndex)]
                                  : UIShaderMaterialBinding{};
         WorldUIPushConstants constants{};
@@ -1865,6 +1886,7 @@ void InxScreenUIRenderer::RenderWorld(VkCommandBuffer cmdBuf, uint32_t width, ui
     ImDrawCmd pending{};
     int pendingCommandIndex = -1;
     UIShaderMaterialBinding pendingBinding{};
+    bool pendingAlwaysOnTop = false;
     for (const auto &entry : elementOrder) {
         const WorldElementSpan &element = m_worldElementSpans[entry.index];
         if (element.commandStart < 0 || element.commandEnd > drawList->CmdBuffer.Size)
@@ -1873,22 +1895,24 @@ void InxScreenUIRenderer::RenderWorld(VkCommandBuffer cmdBuf, uint32_t width, ui
             const auto &command = drawList->CmdBuffer[commandIndex];
             if (command.UserCallback || !command.ElemCount)
                 continue;
-            const auto binding = static_cast<size_t>(commandIndex) < m_commandBindings[ListIndex(ScreenUIList::World)].size()
-                                     ? m_commandBindings[ListIndex(ScreenUIList::World)][static_cast<size_t>(commandIndex)]
-                                     : UIShaderMaterialBinding{};
+            const auto binding =
+                static_cast<size_t>(commandIndex) < m_commandBindings[ListIndex(ScreenUIList::World)].size()
+                    ? m_commandBindings[ListIndex(ScreenUIList::World)][static_cast<size_t>(commandIndex)]
+                    : UIShaderMaterialBinding{};
             if (pending.ElemCount && pending.IdxOffset + pending.ElemCount == command.IdxOffset &&
                 pending.VtxOffset == command.VtxOffset && pending.GetTexID() == command.GetTexID() &&
-                pendingBinding == binding) {
+                pendingBinding == binding && pendingAlwaysOnTop == element.alwaysOnTop) {
                 pending.ElemCount += command.ElemCount;
             } else {
-                drawCommand(pending, pendingCommandIndex);
+                drawCommand(pending, pendingCommandIndex, pendingAlwaysOnTop);
                 pending = command;
                 pendingCommandIndex = commandIndex;
                 pendingBinding = binding;
+                pendingAlwaysOnTop = element.alwaysOnTop;
             }
         }
     }
-    drawCommand(pending, pendingCommandIndex);
+    drawCommand(pending, pendingCommandIndex, pendingAlwaysOnTop);
     m_lastSubmittedDrawCounts[listIndex] = submittedDraws;
     m_lastSubmittedIndexCounts[listIndex] = submittedIndices;
 }

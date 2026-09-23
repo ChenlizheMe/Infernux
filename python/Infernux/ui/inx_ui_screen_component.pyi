@@ -58,6 +58,7 @@ class InxUIScreenComponent(InxUIComponent):
     corner_radius: float
     material: Material | None
     raycast_target: bool
+    world_always_on_top: bool
 
     def get_canvas(self): ...
     def is_world_space(self) -> bool: ...

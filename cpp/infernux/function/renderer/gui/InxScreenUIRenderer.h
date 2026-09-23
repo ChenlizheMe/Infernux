@@ -23,10 +23,10 @@
 #include <function/scene/TransformECSStore.h>
 
 #include <array>
+#include <cstdint>
 #include <functional>
 #include <glm/mat4x4.hpp>
 #include <imgui.h>
-#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
@@ -191,12 +191,13 @@ class InxScreenUIRenderer
     void PopClipRect(ScreenUIList list);
 
     /// Begin one independent world UI element. Its geometry uses an ordinary
-    /// scene Transform; world UI has no Canvas, root plane, or authored range.
+    /// scene Transform; the default scene depth test is bypassed only when
+    /// alwaysOnTop is explicit. World UI has no Canvas or root plane.
     void BeginWorldElement(const std::array<float, 16> &localToWorld, float pivotX, float pivotY,
-                           uint32_t layerMask = 0xffffffffu);
+                           uint32_t layerMask = 0xffffffffu, bool alwaysOnTop = false);
     /// Retain local geometry while sampling this scene object's current pose
     /// at packet publication. UI ignores scale, but inherits parent motion.
-    void BeginWorldObject(GameObject *object, float pivotX, float pivotY);
+    void BeginWorldObject(GameObject *object, float pivotX, float pivotY, bool alwaysOnTop = false);
     void BeginScreenObject(GameObject *object, ScreenUIList list, float pivotX, float pivotY, float scaleX = 1.0f,
                            float scaleY = 1.0f);
     void EndScreenObject();
@@ -314,8 +315,9 @@ class InxScreenUIRenderer
      */
     bool CreatePipeline();
     bool CreateWorldPipeline();
-    bool CreateWorldPipeline(const rhi::GraphicsRenderingSignature &target, VkPipeline &pipeline);
-    VkPipeline GetWorldPipeline(const rhi::GraphicsRenderingSignature &target);
+    bool CreateWorldPipeline(const rhi::GraphicsRenderingSignature &target, VkPipeline &pipeline,
+                             bool alwaysOnTop = false);
+    VkPipeline GetWorldPipeline(const rhi::GraphicsRenderingSignature &target, bool alwaysOnTop = false);
 
     // Independent per-list buffers in each engine frame slot. Cameras share
     // immutable geometry within a frame; the next frame cannot overwrite it.
@@ -368,6 +370,7 @@ class InxScreenUIRenderer
         uint32_t layerMask = 0xffffffffu;
         float pivotX = 0.0f;
         float pivotY = 0.0f;
+        bool alwaysOnTop = false;
         TransformECSStore::Handle transform;
     };
 
@@ -431,7 +434,14 @@ class InxScreenUIRenderer
     VkShaderModule m_worldFragShader = VK_NULL_HANDLE;
     VkPipelineLayout m_worldPipelineLayout = VK_NULL_HANDLE;
     VkPipeline m_worldPipeline = VK_NULL_HANDLE;
-    std::vector<std::pair<rhi::GraphicsRenderingSignature, VkPipeline>> m_worldPipelineVariants;
+    VkPipeline m_worldTopPipeline = VK_NULL_HANDLE;
+    struct WorldPipelineVariant
+    {
+        rhi::GraphicsRenderingSignature target;
+        bool alwaysOnTop = false;
+        VkPipeline pipeline = VK_NULL_HANDLE;
+    };
+    std::vector<WorldPipelineVariant> m_worldPipelineVariants;
 
     // Font atlas descriptor (points to ImGui's font atlas)
     VkDescriptorSet m_fontDescriptorSet = VK_NULL_HANDLE;

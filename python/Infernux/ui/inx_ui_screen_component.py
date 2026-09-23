@@ -118,6 +118,11 @@ class InxUIScreenComponent(InxUIComponent):
 
     # ── Interaction ──
     raycast_target: bool = serialized_field(default=True, tooltip="Receive pointer events", group="Interaction")
+    world_always_on_top: bool = serialized_field(
+        default=False,
+        tooltip="World UI only: draw and receive pointers over scene occluders",
+        group="World UI",
+    )
 
     def _layout_reference(self):
         """Return the authored reference and parent rect for this UI element."""

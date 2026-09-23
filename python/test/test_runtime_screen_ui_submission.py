@@ -40,14 +40,15 @@ class _Renderer:
 
     @staticmethod
     def resolve_world(call):
-        if call[0] == 'object':
+        if call[0] in ('object', 'object_top'):
             _, obj, pivot_x, pivot_y = call
             element = next(c for c in obj.get_py_components() if hasattr(c, 'world_ui_matrix'))
-            return ('begin', element.world_ui_matrix(), pivot_x, pivot_y, 1 << obj.layer)
+            result = ('begin', element.world_ui_matrix(), pivot_x, pivot_y, 1 << obj.layer)
+            return result + (True,) if call[0] == 'object_top' else result
         return call
 
-    def begin_world_object(self, obj, pivot_x, pivot_y):
-        call = ('object', obj, pivot_x, pivot_y)
+    def begin_world_object(self, obj, pivot_x, pivot_y, always_on_top=False):
+        call = ('object_top' if always_on_top else 'object', obj, pivot_x, pivot_y)
         self.world_calls.append(call if self.capturing else self.resolve_world(call))
 
     def begin_frame(self, width: int, height: int) -> None:

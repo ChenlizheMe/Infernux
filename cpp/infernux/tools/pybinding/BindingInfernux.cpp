@@ -917,17 +917,15 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
         .def("command_packet_epoch", &InxScreenUIRenderer::GetCommandPacketEpoch)
         .def("set_material_binding",
              static_cast<void (InxScreenUIRenderer::*)(ScreenUIList, const std::string &, uint64_t,
-                                                        const std::string &)>(&InxScreenUIRenderer::SetMaterialBinding),
-             py::arg("list"),
-             py::arg("material_guid"), py::arg("generation"), py::arg("pipeline_key"),
+                                                       const std::string &)>(&InxScreenUIRenderer::SetMaterialBinding),
+             py::arg("list"), py::arg("material_guid"), py::arg("generation"), py::arg("pipeline_key"),
              "Bind a GUID-backed UI material contract to the next draw command")
         .def("set_material_binding",
-             static_cast<void (InxScreenUIRenderer::*)(ScreenUIList, const std::string &, uint64_t,
-                                                        const std::string &, const std::array<float, 4> &, bool,
-                                                        float)>(&InxScreenUIRenderer::SetMaterialBinding),
-             py::arg("list"),
-             py::arg("material_guid"), py::arg("generation"), py::arg("pipeline_key"), py::arg("base_color"),
-             py::arg("alpha_clip_enabled") = false, py::arg("alpha_clip_threshold") = 0.0f,
+             static_cast<void (InxScreenUIRenderer::*)(ScreenUIList, const std::string &, uint64_t, const std::string &,
+                                                       const std::array<float, 4> &, bool, float)>(
+                 &InxScreenUIRenderer::SetMaterialBinding),
+             py::arg("list"), py::arg("material_guid"), py::arg("generation"), py::arg("pipeline_key"),
+             py::arg("base_color"), py::arg("alpha_clip_enabled") = false, py::arg("alpha_clip_threshold") = 0.0f,
              "Bind authored UI material values consumed by the fixed UI shader")
         .def("command_bindings", &InxScreenUIRenderer::GetCommandBindings, py::arg("list"),
              py::return_value_policy::reference_internal,
@@ -942,10 +940,12 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
              "Restore the preceding Screen UI clip rectangle")
         .def("begin_world_element", &InxScreenUIRenderer::BeginWorldElement, py::arg("local_to_world"),
              py::arg("pivot_x"), py::arg("pivot_y"), py::arg("layer_mask") = 0xffffffffu,
-             "Begin one independent depth-tested world UI element")
+             py::arg("always_on_top") = false,
+             "Begin one independent world UI element with an explicit optional top policy")
         .def("end_world_element", &InxScreenUIRenderer::EndWorldElement, "Finish the current world UI element")
         .def("begin_world_object", &InxScreenUIRenderer::BeginWorldObject, py::arg("object"), py::arg("pivot_x"),
-             py::arg("pivot_y"), "Bind local world UI geometry to a live scene pose without rebuilding it on motion")
+             py::arg("pivot_y"), py::arg("always_on_top") = false,
+             "Bind local world UI geometry to a live scene pose without rebuilding it on motion")
         .def("begin_screen_object", &InxScreenUIRenderer::BeginScreenObject, py::arg("object"), py::arg("list"),
              py::arg("pivot_x"), py::arg("pivot_y"), py::arg("scale_x") = 1.0f, py::arg("scale_y") = 1.0f,
              "Bind retained screen UI geometry to a live scene pose")

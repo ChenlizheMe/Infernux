@@ -133,10 +133,9 @@ class WorldUIElementTarget:
         width, height = self.input_logical_size
         return 0.0, 0.0, width, height
 
-    @staticmethod
-    def input_priority(position, _order: int) -> tuple[int, int, float]:
+    def input_priority(self, position, _order: int) -> tuple[int, int, float]:
         distance = float(position[2]) if len(position) > 2 else float("inf")
-        return 0, 0, -distance
+        return 0, int(self.element.world_always_on_top), -distance
 
     def raycast(self, canvas_x: float, canvas_y: float):
         if not (canvas_x == canvas_x and canvas_y == canvas_y):
@@ -227,9 +226,9 @@ def pick_world_ui_object_ids(scene, ray_origin, ray_direction, persistent_scene=
             continue
         object_id = int(getattr(game_object, "id", 0) or 0)
         if object_id > 0:
-            hits.append((float(position[2]), object_id))
-    hits.sort(key=lambda item: item[0])
-    return tuple(object_id for _distance, object_id in hits)
+            hits.append((not element.world_always_on_top, float(position[2]), object_id))
+    hits.sort(key=lambda item: item[:2])
+    return tuple(object_id for _depth_policy, _distance, object_id in hits)
 
 
 def collect_runtime_ui_input_surfaces(scene, persistent_scene=None):
@@ -468,7 +467,8 @@ def map_runtime_ui_pointers(
         for pointer_index, occluder_distance in occluder_distances.items():
             positions, intersections, _origin, _direction, _screen_blocks = geometries[pointer_index]
             for surface_index, distance in intersections:
-                if occluder_distance + 1e-4 < distance:
+                if (not surfaces[surface_index].element.world_always_on_top
+                        and occluder_distance + 1e-4 < distance):
                     positions[surface_index] = (float("nan"), float("nan"), distance)
     return tuple(
         tuple(positions)
@@ -541,7 +541,8 @@ def map_runtime_ui_pointer(
         if occluder is not None:
             occluder_distance = float(occluder.distance)
             for index, distance in world_intersections:
-                if occluder_distance + 1e-4 < distance:
+                if (not surfaces[index].element.world_always_on_top
+                        and occluder_distance + 1e-4 < distance):
                     positions[index] = (float("nan"), float("nan"), distance)
 
     elif include_scene_hit and camera is not None and not screen_blocks_scene:
@@ -743,6 +744,7 @@ class RuntimeScreenUISubmission:
             game_object,
             logical_width * 0.5,
             logical_height * 0.5,
+            bool(element.world_always_on_top),
         )
         try:
             _ui_dispatch(

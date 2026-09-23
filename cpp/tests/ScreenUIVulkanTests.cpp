@@ -142,6 +142,7 @@ int main(int argc, char **argv)
         uint32_t frameSlot = 0;
         uint32_t cullingMask = 0xffffffffu;
         bool isolateSlots = false;
+        float clearDepth = 1.0f;
         double renderMs = 0;
         vk::RenderGraph graph;
         vk::ResourceHandle color;
@@ -154,7 +155,7 @@ int main(int argc, char **argv)
                 if (list == ScreenUIList::World)
                     builder.WriteDepth(attachments.depth);
                 builder.SetClearColor(0, 0, 0, 0);
-                builder.SetClearDepth(1, 0);
+                builder.SetClearDepth(clearDepth, 0);
                 builder.SetDepthTest(true);
                 builder.SetRenderArea(128, 128);
                 return [&](vk::RenderContext &ctx) {
@@ -247,6 +248,49 @@ int main(int argc, char **argv)
             assert(stats.preparations == 1 && stats.uploads == 4 && stats.uploadedBytes > 0);
         }
 
+        // The opt-in world policy bypasses scene depth without changing the
+        // default pipeline. Both variants are exercised by actual readback.
+        list = ScreenUIList::World;
+        glm::mat4 topPose(1.0f);
+        topPose[3].z = 0.5f;
+        std::array<float, 16> topMatrix{};
+        std::copy_n(glm::value_ptr(topPose), 16, topMatrix.begin());
+        constexpr size_t policySample = (64 * 128 + 64) * 4;
+        const auto drawWorldPolicy = [&](bool alwaysOnTop) {
+            renderer.BeginFrame(128, 128);
+            renderer.BeginWorldElement(topMatrix, 50, 50, 0xffffffffu, alwaysOnTop);
+            renderer.AddFilledRect(list, 0, 0, 100, 100, alwaysOnTop ? 0.f : 1.f, alwaysOnTop ? 1.f : 0.f, 0.f, 1.f);
+            renderer.EndWorldElement();
+            frame();
+            std::vector<uint8_t> readback(128 * 128 * 4);
+            assert(device.ReadBuffer(output, 0, readback.data(), readback.size()));
+            return std::array<uint8_t, 4>{readback[policySample], readback[policySample + 1],
+                                          readback[policySample + 2], readback[policySample + 3]};
+        };
+        clearDepth = 0.0f;
+        buildGraph();
+        const auto hiddenByScene = drawWorldPolicy(false);
+        const auto overScene = drawWorldPolicy(true);
+        assert(hiddenByScene[3] == 0);
+        assert(overScene[0] == 0 && overScene[1] == 255 && overScene[3] == 255);
+        clearDepth = 1.0f;
+        buildGraph();
+        const auto defaultAgain = drawWorldPolicy(false);
+        assert(defaultAgain[0] == 255 && defaultAgain[1] == 0 && defaultAgain[3] == 255);
+        // Submission order and a nearer default element cannot cover the
+        // special element; its policy defines a separate final UI stratum.
+        renderer.BeginFrame(128, 128);
+        renderer.BeginWorldElement(topMatrix, 50, 50, 0xffffffffu, true);
+        renderer.AddFilledRect(list, 0, 0, 100, 100, 0, 1, 0, 1);
+        renderer.EndWorldElement();
+        renderer.BeginWorldElement(topMatrix, 50, 50);
+        renderer.AddFilledRect(list, 0, 0, 100, 100, 1, 0, 0, 1);
+        renderer.EndWorldElement();
+        frame();
+        std::vector<uint8_t> topOverDefault(128 * 128 * 4);
+        assert(device.ReadBuffer(output, 0, topOverDefault.data(), topOverDefault.size()));
+        assert(topOverDefault[policySample] == 0 && topOverDefault[policySample + 1] == 255);
+
         // A retained UI packet carries an asset identity contract alongside
         // each draw command.  This is intentionally independent of the fixed
         // Screen/World depth pipelines and must not retain a path or pointer.
@@ -255,7 +299,8 @@ int main(int argc, char **argv)
         renderer.BeginCommandPacket();
         renderer.SetMaterialBinding(list, "ui-material-guid", 7, "ui|shader=Ui.vert:Ui.frag|state=1,6,7,0,0,0,7,0");
         renderer.AddFilledRect(list, 8, 8, 56, 56, 1, 1, 1, 1);
-        renderer.SetMaterialBinding(list, "ui-text-guid", 11, "ui|shader=UiText.vert:UiText.frag|state=1,6,7,0,0,0,7,0");
+        renderer.SetMaterialBinding(list, "ui-text-guid", 11,
+                                    "ui|shader=UiText.vert:UiText.frag|state=1,6,7,0,0,0,7,0");
         renderer.AddFilledRect(list, 60, 8, 112, 56, 1, 1, 1, 1);
         const auto contractPacket = renderer.EndCommandPacket();
         renderer.AppendCommandPackets({contractPacket});
@@ -272,8 +317,7 @@ int main(int argc, char **argv)
         // default label geometry. Clearing the binding must isolate the label.
         renderer.BeginFrame(128, 128);
         renderer.BeginCommandPacket();
-        renderer.SetMaterialBinding(list, "ui-background-guid", 2, "ui-background",
-                                    {0.25f, 0.5f, 0.75f, 1.0f});
+        renderer.SetMaterialBinding(list, "ui-background-guid", 2, "ui-background", {0.25f, 0.5f, 0.75f, 1.0f});
         renderer.AddFilledRect(list, 0, 0, 48, 48, 1, 1, 1, 1);
         renderer.SetMaterialBinding(list, "", 0, "");
         renderer.AddFilledRect(list, 64, 0, 112, 48, 1, 1, 1, 1);
@@ -282,9 +326,8 @@ int main(int argc, char **argv)
         assert(std::any_of(resetContracts.begin(), resetContracts.end(), [](const UIShaderMaterialBinding &binding) {
             return binding.materialGuid == "ui-background-guid";
         }));
-        assert(std::count_if(resetContracts.begin(), resetContracts.end(), [](const UIShaderMaterialBinding &binding) {
-            return binding.IsValid();
-        }) == 1);
+        assert(std::count_if(resetContracts.begin(), resetContracts.end(),
+                             [](const UIShaderMaterialBinding &binding) { return binding.IsValid(); }) == 1);
         buildGraph();
         frame();
         std::array<uint8_t, 128 * 128 * 4> resetObserved{};
