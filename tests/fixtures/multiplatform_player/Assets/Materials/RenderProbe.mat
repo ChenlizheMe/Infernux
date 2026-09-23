@@ -55,7 +55,7 @@
     "topology": 3
   },
   "shaders": {
-    "fragment": {"guid": "", "path_hint": "", "shader_id": "Lit"},
-    "vertex": {"guid": "", "path_hint": "", "shader_id": "Standard"}
+    "fragment": {"guid": "", "shader_id": "Lit"},
+    "vertex": {"guid": "", "shader_id": "Standard"}
   }
 }
