@@ -365,7 +365,7 @@ def _destroy_stale_geometry(
     return True
 
 
-def _sync_instance(scene: Any, root: Any, guid: str, mesh: Any) -> bool:
+def _sync_instance(scene: Any, root: Any, guid: str, mesh: Any, scale_ratio: float = 1.0) -> bool:
     source = _source_paths(mesh)
     changed = _migrate_source_paths_by_identity(scene, root, guid, _source_subresource_ids(guid))
     changed = _destroy_stale_geometry(scene, root, guid, source) or changed
@@ -376,6 +376,23 @@ def _sync_instance(scene: Any, root: Any, guid: str, mesh: Any) -> bool:
     }
     existing = source_bound or _object_path_map(root)
     missing = [path for path in source if path not in existing]
+    if abs(float(scale_ratio) - 1.0) > 1.0e-7:
+        from Infernux.lib import Vector3
+
+        # Scale Factor is an importer-space operation. Geometry was already
+        # republished at the new size, so apply the same ratio to every
+        # existing source-node offset. The scene-authored container remains
+        # the pivot and is deliberately not moved.
+        for path, obj in existing.items():
+            if not path or path in missing or str(getattr(obj, "_model_source_guid", "") or "") != guid:
+                continue
+            position = obj.transform.local_position
+            obj.transform.local_position = Vector3(
+                float(position.x) * scale_ratio,
+                float(position.y) * scale_ratio,
+                float(position.z) * scale_ratio,
+            )
+            changed = True
     if not missing:
         return changed
 
@@ -407,7 +424,7 @@ def _sync_instance(scene: Any, root: Any, guid: str, mesh: Any) -> bool:
     return changed
 
 
-def synchronize_model_instances(scene: Any, guid: str) -> int:
+def synchronize_model_instances(scene: Any, guid: str, *, scale_ratio: float = 1.0) -> int:
     """Reconcile every live instance of *guid* in one loaded scene.
 
     Returns the number of instance roots changed.  The function is intentionally
@@ -423,7 +440,7 @@ def synchronize_model_instances(scene: Any, guid: str) -> int:
         return 0
     changed = 0
     for root in _model_instance_roots(scene, guid):
-        if _sync_instance(scene, root, guid, mesh):
+        if _sync_instance(scene, root, guid, mesh, scale_ratio):
             changed += 1
     return changed
 
@@ -440,7 +457,7 @@ def _mark_scene_dirty(scene: Any) -> None:
         DocumentRegistry.instance().mark_changed(document_id)
 
 
-def synchronize_loaded_model_instances(guid: str) -> int:
+def synchronize_loaded_model_instances(guid: str, *, scale_ratio: float = 1.0) -> int:
     """Synchronize all currently resident editor scenes for one model GUID."""
     from Infernux.engine.scene_manager import SceneFileManager
     from Infernux.lib import SceneManager
@@ -452,7 +469,7 @@ def synchronize_loaded_model_instances(guid: str) -> int:
     total = 0
     for index in range(int(manager.scene_count)):
         scene = manager.get_scene_at(index)
-        changed = synchronize_model_instances(scene, guid)
+        changed = synchronize_model_instances(scene, guid, scale_ratio=scale_ratio)
         if changed:
             _mark_scene_dirty(scene)
         total += changed
