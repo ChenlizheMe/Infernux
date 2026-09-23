@@ -29,6 +29,7 @@ def player_native_library_filenames(platform_name: str | None = None) -> frozens
     if target == "win32":
         return frozenset({
             "InfernuxFoundation.dll",
+            "InfernuxAudioRuntime.dll",
             "InfernuxParticleRuntime.dll",
             "InfernuxRenderCore.dll",
             "InfernuxRendererRuntime.dll",
@@ -41,6 +42,7 @@ def player_native_library_filenames(platform_name: str | None = None) -> frozens
     if target.startswith("linux"):
         return frozenset({
             "libInfernuxFoundation.so",
+            "libInfernuxAudioRuntime.so",
             "libInfernuxParticleRuntime.so",
             "libInfernuxRenderCore.so",
             "libInfernuxRendererRuntime.so",

@@ -1,7 +1,6 @@
 # Source ownership for the native runtime and Python bindings.
 
 file(GLOB_RECURSE INFERNUX_RUNTIME_SOURCES CONFIGURE_DEPENDS cpp/*.cpp cpp/*.h)
-list(APPEND INFERNUX_RUNTIME_SOURCES "${CMAKE_SOURCE_DIR}/external/stb/stb_vorbis.c")
 list(APPEND INFERNUX_RUNTIME_SOURCES "${CMAKE_SOURCE_DIR}/external/MikkTSpace/mikktspace.c")
 
 # Runtime implementation and Python bindings are separate binary layers.
@@ -23,6 +22,14 @@ file(GLOB_RECURSE INFERNUX_FOUNDATION_SOURCES CONFIGURE_DEPENDS
 )
 list(APPEND INFERNUX_FOUNDATION_SOURCES
     "${CMAKE_SOURCE_DIR}/cpp/infernux/function/resources/InxTexture/StbImage.cpp"
+)
+
+# Decode and stream audio without pulling scene/component ownership into a DLL.
+set(INFERNUX_AUDIO_RUNTIME_SOURCES
+    "${CMAKE_SOURCE_DIR}/cpp/infernux/function/audio/AudioDecoders.cpp"
+    "${CMAKE_SOURCE_DIR}/cpp/infernux/function/audio/AudioStreamDecoder.cpp"
+    "${CMAKE_SOURCE_DIR}/cpp/infernux/function/audio/AudioStreamBuffer.cpp"
+    "${CMAKE_SOURCE_DIR}/external/stb/stb_vorbis.c"
 )
 
 set(INFERNUX_PARTICLE_RUNTIME_SOURCES
@@ -71,6 +78,7 @@ file(GLOB_RECURSE INFERNUX_VULKAN_BACKEND_SOURCES CONFIGURE_DEPENDS
 
 list(REMOVE_ITEM INFERNUX_RUNTIME_SOURCES
     ${INFERNUX_FOUNDATION_SOURCES}
+    ${INFERNUX_AUDIO_RUNTIME_SOURCES}
     ${INFERNUX_PARTICLE_RUNTIME_SOURCES}
     ${INFERNUX_SHADER_COMPILER_SOURCES}
     ${INFERNUX_RENDER_CORE_SOURCES}

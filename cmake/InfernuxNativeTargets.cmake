@@ -4,6 +4,7 @@
 # enabled explicitly below where the target's export strategy supports it, so
 # compile and link settings always agree.
 add_library(InfernuxFoundation SHARED ${INFERNUX_FOUNDATION_SOURCES})
+add_library(InfernuxAudioRuntime SHARED ${INFERNUX_AUDIO_RUNTIME_SOURCES})
 add_library(InfernuxParticleRuntime SHARED ${INFERNUX_PARTICLE_RUNTIME_SOURCES})
 add_library(InfernuxShaderCompiler SHARED ${INFERNUX_SHADER_COMPILER_SOURCES})
 add_library(InfernuxRenderCore SHARED ${INFERNUX_RENDER_CORE_SOURCES})
@@ -44,6 +45,7 @@ endif()
 # The composition library is private to the Python module in shipping builds.
 set(INFERNUX_RUNTIME_DLL_TARGETS
     InfernuxFoundation
+    InfernuxAudioRuntime
     InfernuxParticleRuntime
     InfernuxShaderCompiler
     InfernuxRenderCore
@@ -63,6 +65,7 @@ endforeach()
 
 set(INFERNUX_NATIVE_TARGETS
     InfernuxFoundation
+    InfernuxAudioRuntime
     InfernuxParticleRuntime
     InfernuxShaderCompiler
     InfernuxRenderCore
@@ -92,6 +95,8 @@ if(INFERNUX_VULKAN_LOADER_TARGET)
     endforeach()
 endif()
 
+target_link_libraries(InfernuxAudioRuntime PUBLIC InfernuxFoundation SDL3::SDL3)
+target_link_libraries(InfernuxAudioRuntime PRIVATE dr_libs)
 target_link_libraries(InfernuxParticleRuntime PUBLIC InfernuxFoundation)
 target_link_libraries(InfernuxShaderCompiler PUBLIC InfernuxFoundation)
 target_link_libraries(InfernuxRenderCore PUBLIC InfernuxFoundation)
@@ -99,6 +104,7 @@ target_link_libraries(InfernuxRendererRuntime PUBLIC InfernuxFoundation)
 target_link_libraries(InfernuxVulkanBackend PUBLIC InfernuxRenderCore)
 target_link_libraries(InfernuxRuntime PUBLIC
     InfernuxFoundation
+    InfernuxAudioRuntime
     InfernuxParticleRuntime
     InfernuxShaderCompiler
     InfernuxRenderCore
