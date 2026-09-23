@@ -39,7 +39,12 @@ def render_transform_component(ctx: InxGUIContext, trans: object) -> None:
     ...
 
 def render_builtin_via_setters(
-    ctx: InxGUIContext, comp: object, wrapper_cls: type,
+    ctx: InxGUIContext,
+    comp: object,
+    wrapper_cls: type,
+    *,
+    skip_fields: Optional[set[str]] = None,
+    custom_fields: Optional[dict[str, object]] = None,
 ) -> None:
     """Generic renderer for C++ components with Python property wrappers."""
     ...

@@ -313,7 +313,10 @@ def _record_profile_count(bucket: str, amount: float = 1.0) -> None:
         _inspector_support.record_inspector_profile_count(bucket, amount)
 
 
-def _build_builtin_cached_plan(ctx: InxGUIContext, comp, props, lw, skip_fields, cache_entry, refresh_values):
+def _build_builtin_cached_plan(
+    ctx: InxGUIContext, comp, props, lw, skip_fields,
+    cache_entry, refresh_values, custom_fields=None,
+):
     """Build a cached render plan for a BuiltinComponent inspector body."""
     from Infernux.components.fields import FieldType
 
@@ -345,6 +348,15 @@ def _build_builtin_cached_plan(ctx: InxGUIContext, comp, props, lw, skip_fields,
             continue
 
         if meta.visible_when is not None and not meta.visible_when(comp):
+            continue
+
+        custom_renderer = custom_fields.get(py_name) if custom_fields else None
+        if custom_renderer is not None:
+            _flush_batch()
+            ops.append({
+                "kind": "custom",
+                "renderer": custom_renderer,
+            })
             continue
 
         current = _get_cached_component_value(
@@ -445,6 +457,7 @@ def _build_builtin_cached_plan(ctx: InxGUIContext, comp, props, lw, skip_fields,
     return {
         "lw": lw,
         "skip_fields": tuple(sorted(skip_fields)) if skip_fields else (),
+        "custom_fields": tuple(custom_fields) if custom_fields else (),
         "semantic_capture": capture_semantics,
         "ops": ops,
     }
@@ -457,6 +470,10 @@ def _replay_builtin_cached_plan(ctx: InxGUIContext, comp, plan: dict, cache_entr
 
     for op in plan["ops"]:
         kind = op["kind"]
+
+        if kind == "custom":
+            op["renderer"](ctx, comp, lw)
+            continue
 
         if kind == "batch":
             values = []
@@ -1183,7 +1200,10 @@ def _collect_cpp_properties(wrapper_cls):
     return result
 
 
-def render_builtin_via_setters(ctx: InxGUIContext, comp, wrapper_cls, *, skip_fields=None):
+def render_builtin_via_setters(
+    ctx: InxGUIContext, comp, wrapper_cls, *, skip_fields=None,
+    custom_fields=None,
+):
     """Render a C++ component by iterating CppProperty descriptors.
 
     If *comp* is a raw C++ component, it is wrapped in a BuiltinComponent
@@ -1194,6 +1214,10 @@ def render_builtin_via_setters(ctx: InxGUIContext, comp, wrapper_cls, *, skip_fi
 
     Args:
         skip_fields: Optional set of Python attribute names to skip.
+        custom_fields: Optional mapping from a CppProperty name to a renderer
+            called as ``renderer(ctx, comp, label_width)`` at that property's
+            declaration position. The property's visibility predicate remains
+            authoritative and the generic widget is replaced.
     """
     from Infernux.components.fields import FieldType
     from Infernux.components.builtin_component import BuiltinComponent
@@ -1214,9 +1238,11 @@ def render_builtin_via_setters(ctx: InxGUIContext, comp, wrapper_cls, *, skip_fi
     lw = max_label_w(ctx, labels)
     cache_entry, rebuild_plan, refresh_values = _begin_component_value_cache("builtin", comp)
     skip_key = tuple(sorted(skip_fields)) if skip_fields else ()
+    custom_key = tuple(custom_fields) if custom_fields else ()
     capture_semantics = semantic_capture_enabled(ctx)
     plan = None if rebuild_plan else cache_entry.get("builtin_plan")
     if (plan is None or plan.get("skip_fields") != skip_key
+            or plan.get("custom_fields") != custom_key
             or plan.get("semantic_capture", False) != capture_semantics):
         if plan is None:
             _record_profile_count("bodyBuiltinPlanMiss_count")
@@ -1224,7 +1250,10 @@ def render_builtin_via_setters(ctx: InxGUIContext, comp, wrapper_cls, *, skip_fi
             _record_profile_count("bodyBuiltinPlanSkipMismatch_count")
         _record_profile_count("bodyBuiltinPlanBuild_count")
         _plan_t0 = _profile_start()
-        plan = _build_builtin_cached_plan(ctx, comp, props, lw, skip_fields, cache_entry, refresh_values)
+        plan = _build_builtin_cached_plan(
+            ctx, comp, props, lw, skip_fields, cache_entry, refresh_values,
+            custom_fields=custom_fields,
+        )
         _record_profile_timing("bodyBuiltinPlanBuild", _plan_t0)
         cache_entry["builtin_plan"] = plan
     else:

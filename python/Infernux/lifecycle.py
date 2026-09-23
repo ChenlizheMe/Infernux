@@ -43,9 +43,9 @@ def _resolve_package_path(
     target = resolved_path(os.path.join(package_root, *relative.split("/")))
     if not is_path_within(target, package_root, allow_root=False):
         raise ValueError(f"Package path escapes its package root: {relative_path!r}")
-    from Infernux.engine.project_context import resolve_asset_path
+    from Infernux.engine.project_context import resolve_package_path
 
-    resolved = resolve_asset_path(
+    resolved = resolve_package_path(
         target, project_root=project_root, allow_directory=True
     )
     if resolved is None:

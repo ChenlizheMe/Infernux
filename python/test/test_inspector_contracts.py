@@ -2451,6 +2451,40 @@ def test_builtin_list_field_is_planned_and_committed_generically(monkeypatch):
     ]
 
 
+def test_builtin_custom_field_keeps_cpp_property_declaration_order():
+    from Infernux.components.fields import FieldMetadata, FieldType
+    from Infernux.engine.ui import inspector_components as module
+
+    def _property(name):
+        return SimpleNamespace(
+            metadata=FieldMetadata(
+                name=name,
+                field_type=FieldType.FLOAT,
+                default=0.0,
+            ),
+            cpp_attr=name,
+        )
+
+    custom = lambda _ctx, _comp, _lw: None
+    ctx = SimpleNamespace(create_property_batch_plan=lambda descriptors: descriptors)
+    comp = SimpleNamespace(before=1.0, custom=2.0, after=3.0)
+    plan = module._build_builtin_cached_plan(
+        ctx,
+        comp,
+        [("before", _property("before")),
+         ("custom", _property("custom")),
+         ("after", _property("after"))],
+        80.0,
+        None,
+        {"values": {}, "field_revisions": {}},
+        True,
+        custom_fields={"custom": custom},
+    )
+
+    assert [op["kind"] for op in plan["ops"]] == ["batch", "custom", "batch"]
+    assert plan["ops"][1]["renderer"] is custom
+
+
 def test_builtin_field_visibility_failure_is_not_treated_as_visible():
     from Infernux.components.fields import FieldMetadata, FieldType
     from Infernux.engine.ui import inspector_components as module
