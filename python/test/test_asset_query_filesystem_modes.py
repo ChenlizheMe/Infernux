@@ -537,16 +537,33 @@ def test_raw_filesystem_handle_rechecks_redirect_before_every_io(
     assets.mkdir()
     target = assets / "config.txt"
     target.write_text("inside", encoding="utf-8")
+    outside = tmp_path / "outside.txt"
+    outside.write_text("outside", encoding="utf-8")
     _editor(monkeypatch, tmp_path)
     handle = AssetManager.load("config.txt", raw_filesystem=True)
-    original = sandbox_files._has_reparse_point
-    monkeypatch.setattr(
-        sandbox_files,
-        "_has_reparse_point",
-        lambda path: os.path.normcase(os.path.abspath(path))
-        == os.path.normcase(os.path.abspath(target))
-        or original(path),
-    )
+
+    if os.name == "nt":
+        original = sandbox_files._has_reparse_point
+        monkeypatch.setattr(
+            sandbox_files,
+            "_has_reparse_point",
+            lambda path: os.path.normcase(os.path.abspath(path))
+            == os.path.normcase(os.path.abspath(target))
+            or original(path),
+        )
+    else:
+        original_open = os.open
+        redirected = False
+
+        def redirect_before_open(path, flags, mode=0o777, *, dir_fd=None):
+            nonlocal redirected
+            if not redirected and path == "config.txt" and dir_fd is not None:
+                redirected = True
+                target.unlink()
+                target.symlink_to(outside)
+            return original_open(path, flags, mode, dir_fd=dir_fd)
+
+        monkeypatch.setattr(os, "open", redirect_before_open)
 
     with pytest.raises(PermissionError, match="links or junctions"):
         if operation == "read":
@@ -555,7 +572,11 @@ def test_raw_filesystem_handle_rechecks_redirect_before_every_io(
             handle.write_text("changed")
         else:
             handle.delete()
-    assert target.read_text(encoding="utf-8") == "inside"
+    if os.name == "nt":
+        assert target.read_text(encoding="utf-8") == "inside"
+    else:
+        assert redirected
+    assert outside.read_text(encoding="utf-8") == "outside"
 
 
 def test_raw_filesystem_query_ignores_a_redirected_subtree(monkeypatch, tmp_path):
