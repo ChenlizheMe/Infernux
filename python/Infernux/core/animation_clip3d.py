@@ -23,6 +23,53 @@ from Infernux.core.animation_event import AnimationEvent, events_from_list
 from Infernux.engine.path_utils import resolved_path
 
 
+@dataclass(frozen=True)
+class ImportedFloatCurve:
+    """A named scalar curve authored on an imported skeletal clip."""
+
+    name: str
+    keys: tuple[tuple[float, float], ...] = ()
+
+    def to_dict(self) -> dict:
+        return {"name": self.name, "keys": [
+            {"time_normalized": time, "value": value} for time, value in self.keys
+        ]}
+
+    @classmethod
+    def from_dict(cls, document: dict) -> "ImportedFloatCurve":
+        if type(document) is not dict or set(document) != {"name", "keys"}:
+            raise ValueError("imported float curve requires name and keys")
+        if type(document["name"]) is not str or not document["name"] or type(document["keys"]) is not list:
+            raise TypeError("imported float curve requires a non-empty name and key array")
+        keys = []
+        previous = -1.0
+        for key in document["keys"]:
+            if type(key) is not dict or set(key) != {"time_normalized", "value"}:
+                raise ValueError("imported float curve key requires time_normalized and value")
+            time, value = key["time_normalized"], key["value"]
+            if (isinstance(time, bool) or not isinstance(time, (int, float))
+                    or isinstance(value, bool) or not isinstance(value, (int, float))):
+                raise TypeError("imported float curve keys must be numeric")
+            time, value = float(time), float(value)
+            if not math.isfinite(time) or not math.isfinite(value) or not 0.0 <= time <= 1.0 or time <= previous:
+                raise ValueError("imported float curve keys must be finite, ordered and normalized")
+            previous = time
+            keys.append((time, value))
+        return cls(document["name"], tuple(keys))
+
+    def sample(self, normalized_time: float) -> float:
+        if not self.keys:
+            return 0.0
+        time = min(max(float(normalized_time), 0.0), 1.0)
+        if time <= self.keys[0][0]:
+            return self.keys[0][1]
+        for (left_time, left), (right_time, right) in zip(self.keys, self.keys[1:]):
+            if time <= right_time:
+                amount = (time - left_time) / (right_time - left_time)
+                return left + (right - left) * amount
+        return self.keys[-1][1]
+
+
 def is_asset_guid_string(s: str) -> bool:
     """Return whether *s* is a current 32-character lowercase asset GUID."""
     return (
@@ -61,11 +108,10 @@ def resolve_model_disk_path_from_virtual_base(base: str) -> Optional[str]:
 
 def embedded_take_descriptors(meta: dict) -> list[dict]:
     """Published clips, distinct from the source inventory and its ordering."""
-    if "model_animations" in meta:
-        return json.loads(meta["model_animations"])
-    # Explicit migration for models imported before stable clip identities.
-    return [{"id": str(i), "name": name, "duration": 0.0}
-            for i, name in enumerate(part.strip() for part in str(meta.get("animation_names_csv", "")).split(",") if part.strip())]
+    encoded = meta.get("model_animations")
+    if encoded is None:
+        return []
+    return json.loads(encoded)
 
 
 @dataclass
@@ -74,11 +120,10 @@ class AnimationClip3D:
 
     name: str = "New Animation Clip 3D"
 
-    # Source skeletal model (FBX/GLTF/etc.) — GUID is authoritative when present.
+    # Source skeletal model (FBX/GLTF/etc.).
     source_model_guid: str = ""
-    source_model_path: str = ""
 
-    # Stable imported clip ID, or an existing source take name for compatibility.
+    # Stable imported clip ID.
     take_name: str = ""
 
     # Optional: bind-pose bone names captured at import time (debug / tooling).
@@ -87,6 +132,15 @@ class AnimationClip3D:
 
     # Optional seconds (authoring or tooling); 0.0 = unknown. Embedded takes may be unknown.
     duration_hint: float = 0.0
+
+    # Import-authoritative playback semantics.  The FSM may stop a looping
+    # clip, but cannot force an imported non-looping clip to wrap.
+    default_loop: bool = True
+    apply_root_motion: bool = False
+    reference_pose: str = "bind_pose"
+
+    curves: List[ImportedFloatCurve] = field(default_factory=list)
+    bone_mask: List[str] = field(default_factory=list)
 
     # Animation events keyed by normalized time (0..1); dispatched at runtime.
     events: List[AnimationEvent] = field(default_factory=list)
@@ -99,11 +153,15 @@ class AnimationClip3D:
         return {
             "name": self.name,
             "source_model_guid": self.source_model_guid,
-            "source_model_path": self.source_model_path,
             "take_name": self.take_name,
             "bind_pose_bone_names": list(self.bind_pose_bone_names),
             "duration_hint": float(self.duration_hint),
+            "default_loop": bool(self.default_loop),
+            "apply_root_motion": bool(self.apply_root_motion),
+            "reference_pose": self.reference_pose,
+            "curves": [curve.to_dict() for curve in self.curves],
             "events": [e.to_dict() for e in self.events],
+            "bone_mask": list(self.bone_mask),
         }
 
     def serialize_document(self) -> dict:
@@ -118,11 +176,15 @@ class AnimationClip3D:
             return False
         self.name = replacement.name
         self.source_model_guid = replacement.source_model_guid
-        self.source_model_path = replacement.source_model_path
         self.take_name = replacement.take_name
         self.bind_pose_bone_names = replacement.bind_pose_bone_names
         self.duration_hint = replacement.duration_hint
+        self.default_loop = replacement.default_loop
+        self.apply_root_motion = replacement.apply_root_motion
+        self.reference_pose = replacement.reference_pose
+        self.curves = replacement.curves
         self.events = replacement.events
+        self.bone_mask = replacement.bone_mask
         return True
 
     @classmethod
@@ -130,43 +192,75 @@ class AnimationClip3D:
         expected = {
             "name",
             "source_model_guid",
-            "source_model_path",
             "take_name",
             "bind_pose_bone_names",
             "duration_hint",
+            "default_loop",
+            "apply_root_motion",
+            "reference_pose",
+            "curves",
             "events",
+            "bone_mask",
         }
-        if type(d) is not dict or set(d) != expected:
-            actual = set(d) if type(d) is dict else set()
+        if type(d) is not dict:
+            raise ValueError("animation clip 3D must be a document")
+        if not expected.issubset(d):
             raise ValueError(
                 f"animation clip 3D fields mismatch; "
-                f"missing={sorted(expected - actual)}, unknown={sorted(actual - expected)}"
+                f"missing={sorted(expected - set(d))}"
             )
-        string_fields = ("name", "source_model_guid", "source_model_path", "take_name")
-        if any(type(d[name]) is not str for name in string_fields):
+        document = {name: d[name] for name in expected}
+        string_fields = ("name", "source_model_guid", "take_name")
+        if any(type(document[name]) is not str for name in string_fields):
             raise TypeError("animation clip 3D identity fields must be strings")
-        source_model_guid = d["source_model_guid"]
+        source_model_guid = document["source_model_guid"]
         if source_model_guid and not is_asset_guid_string(source_model_guid):
             raise ValueError("source_model_guid must be a 32-character lowercase asset GUID")
-        bones = d["bind_pose_bone_names"]
+        bones = document["bind_pose_bone_names"]
         if type(bones) is not list or any(type(value) is not str for value in bones):
             raise TypeError("bind_pose_bone_names must be an array of strings")
-        if not isinstance(d["duration_hint"], (int, float)) or isinstance(d["duration_hint"], bool):
+        if not isinstance(document["duration_hint"], (int, float)) or isinstance(document["duration_hint"], bool):
             raise TypeError("duration_hint must be numeric")
-        duration_hint = float(d["duration_hint"])
+        duration_hint = float(document["duration_hint"])
         if not math.isfinite(duration_hint) or duration_hint < 0.0:
             raise ValueError("duration_hint must be finite and non-negative")
-        if type(d["events"]) is not list:
+        if type(document["events"]) is not list:
             raise TypeError("events must be an array")
+        raw_curves = document["curves"]
+        bone_mask = document["bone_mask"]
+        if type(raw_curves) is not list or type(bone_mask) is not list:
+            raise TypeError("curves and bone_mask must be arrays")
+        curves = [ImportedFloatCurve.from_dict(curve) for curve in raw_curves]
+        if len({curve.name for curve in curves}) != len(curves):
+            raise ValueError("imported float curve names must be unique")
+        if any(type(bone) is not str or not bone for bone in bone_mask) or len(set(bone_mask)) != len(bone_mask):
+            raise ValueError("bone_mask requires unique non-empty bone names")
+        default_loop = document["default_loop"]
+        apply_root_motion = document["apply_root_motion"]
+        reference_pose = document["reference_pose"]
+        if type(default_loop) is not bool or type(apply_root_motion) is not bool:
+            raise TypeError("3D animation loop and root-motion settings must be booleans")
+        if reference_pose not in {"bind_pose", "first_frame"}:
+            raise ValueError("reference_pose must be bind_pose or first_frame")
         return cls(
-            name=d["name"],
+            name=document["name"],
             source_model_guid=source_model_guid,
-            source_model_path=d["source_model_path"],
-            take_name=d["take_name"],
+            take_name=document["take_name"],
             bind_pose_bone_names=list(bones),
             duration_hint=duration_hint,
-            events=events_from_list(d["events"]),
+            default_loop=default_loop,
+            apply_root_motion=apply_root_motion,
+            reference_pose=reference_pose,
+            curves=curves,
+            events=events_from_list(document["events"]),
+            bone_mask=list(bone_mask),
         )
+
+    def sample_curve(self, name: str, normalized_time: float) -> float:
+        for curve in self.curves:
+            if curve.name == name:
+                return curve.sample(normalized_time)
+        raise KeyError(name)
 
     def copy(self) -> "AnimationClip3D":
         return AnimationClip3D.from_dict(self.to_dict())
@@ -178,7 +272,7 @@ class AnimationClip3D:
 
     @property
     def is_valid_reference(self) -> bool:
-        return bool((self.source_model_guid or "").strip() or (self.source_model_path or "").strip())
+        return bool((self.source_model_guid or "").strip())
 
     # ── File I/O ─────────────────────────────────────────────────────
 
@@ -216,24 +310,9 @@ class AnimationClip3D:
         except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
             return None
 
-    @staticmethod
-    def parse_embedded_take_index(virtual_path: str) -> Optional[int]:
-        """Return take index for ``*::subanim:<int>`` or None."""
-        token = "::subanim:"
-        if token not in virtual_path:
-            return None
-        _, _, rest = virtual_path.partition(token)
-        try:
-            idx = int(rest.strip())
-        except ValueError:
-            return None
-        if idx < 0 or idx >= 999999:
-            return None
-        return idx
-
     @classmethod
     def from_embedded_take_virtual_path(cls, virtual_path: str) -> Optional["AnimationClip3D"]:
-        """Resolve a published clip ID; legacy numeric source indices remain readable."""
+        """Resolve one published clip by its stable imported identity."""
         token = "::subanim:"
         if token not in virtual_path:
             return None
@@ -248,7 +327,6 @@ class AnimationClip3D:
             clip = cls.from_dict(json.loads(metadata["import_document"]))
             clip.file_path = virtual_path
             return clip
-        # Explicit compatibility for older model imports without owned clip GUIDs.
         model_disk = resolve_model_disk_path_from_virtual_base(base)
         if not model_disk:
             return None
@@ -259,17 +337,9 @@ class AnimationClip3D:
         identifier = rest.strip()
         published = embedded_take_descriptors(meta)
         selected = next((item for item in published if item["id"] == identifier), None)
-        if selected is None and identifier.isdecimal() and "model_animations" in meta:
-            # Resolve old index references by their source take, never by a new
-            # custom clip's array position.
-            names = [p.strip() for p in str(meta.get("animation_names_csv", "")).split(",") if p.strip()]
-            index = int(identifier)
-            if index < len(names):
-                source_id = "source-" + names[index].encode("utf-8").hex()
-                selected = next((item for item in published if item["id"] == source_id), None)
         if selected is None:
             return None
-        take_name = selected["id"] if "model_animations" in meta else selected["name"]
+        take_name = selected["id"]
         meta_guid = _read_asset_guid_from_meta_sidecar(model_disk)
         if is_asset_guid_string(base):
             source_guid = base
@@ -284,10 +354,15 @@ class AnimationClip3D:
         clip = cls(
             name=selected["name"],
             source_model_guid=source_guid,
-            source_model_path=model_disk,
             take_name=take_name,
             bind_pose_bone_names=bind_names,
             duration_hint=float(selected["duration"]),
+            default_loop=bool(selected.get("default_loop", True)),
+            apply_root_motion=bool(selected.get("apply_root_motion", False)),
+            reference_pose=str(selected.get("reference_pose", "bind_pose")),
+            curves=[ImportedFloatCurve.from_dict(curve) for curve in selected.get("curves", [])],
+            events=events_from_list(selected.get("events", [])),
+            bone_mask=list(selected.get("bone_mask", [])),
         )
         clip.file_path = virtual_path
         return clip
