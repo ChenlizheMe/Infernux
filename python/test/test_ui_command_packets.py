@@ -45,8 +45,16 @@ class Renderer:
             return 'begin_world_element', (element.world_ui_matrix(), pivot_x, pivot_y, 1 << obj.layer), kwargs
         return command
 
-    def begin_world_object(self, obj, pivot_x, pivot_y, always_on_top=False):
-        command = ('world_object', (obj, pivot_x, pivot_y), {'always_on_top': True} if always_on_top else {})
+    def begin_world_object(self, obj, pivot_x, pivot_y, always_on_top=False,
+                           billboard=False, constant_screen_size=False):
+        policies = {}
+        if always_on_top:
+            policies['always_on_top'] = True
+        if billboard:
+            policies['billboard'] = True
+        if constant_screen_size:
+            policies['constant_screen_size'] = True
+        command = ('world_object', (obj, pivot_x, pivot_y), policies)
         if self.capture is None:
             self.commands.append(self.resolve(command))
         else:

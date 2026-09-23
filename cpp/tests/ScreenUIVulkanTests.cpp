@@ -6,6 +6,7 @@
 #include <function/renderer/vk/VkDeviceContext.h>
 #include <function/renderer/vk/VulkanRhiDevice.h>
 #include <function/scene/SceneManager.h>
+#include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 #ifdef NDEBUG
 #undef NDEBUG
@@ -139,6 +140,8 @@ int main(int argc, char **argv)
         const auto output = device.CreateBuffer(readback);
         ScreenUIList list = ScreenUIList::Overlay;
         glm::mat4 camera(1.f);
+        glm::mat4 cameraView(1.f);
+        glm::mat4 cameraProjection(1.f);
         uint32_t frameSlot = 0;
         uint32_t cullingMask = 0xffffffffu;
         bool isolateSlots = false;
@@ -173,7 +176,7 @@ int main(int argc, char **argv)
                     }
                     if (list == ScreenUIList::World)
                         renderer.RenderWorld(ctx.GetCommandBuffer(), 128, 128, camera, signature, frameSlot,
-                                             cullingMask);
+                                             cullingMask, cameraView, cameraProjection);
                     else
                         renderer.Render(ctx.GetCommandBuffer(), list, 128, 128, frameSlot);
                     renderMs =
@@ -290,6 +293,59 @@ int main(int argc, char **argv)
         std::vector<uint8_t> topOverDefault(128 * 128 * 4);
         assert(device.ReadBuffer(output, 0, topOverDefault.data(), topOverDefault.size()));
         assert(topOverDefault[policySample] == 0 && topOverDefault[policySample + 1] == 255);
+
+        // Camera policies are opt-in, evaluated per camera, and preserve the
+        // same pixel footprint at different perspective depths.
+        const auto worldBounds = [&](const std::vector<uint8_t> &image) {
+            std::array<int, 4> result{128, 128, -1, -1};
+            for (int y = 0; y < 128; ++y)
+                for (int x = 0; x < 128; ++x)
+                    if (image[static_cast<size_t>((y * 128 + x) * 4 + 3)] != 0) {
+                        result[0] = std::min(result[0], x);
+                        result[1] = std::min(result[1], y);
+                        result[2] = std::max(result[2], x);
+                        result[3] = std::max(result[3], y);
+                    }
+            return result;
+        };
+        const auto cameraPolicyBounds = [&](float depth, bool billboard, bool constantSize, bool rotate) {
+            glm::mat4 pose =
+                rotate ? glm::rotate(glm::mat4(1.f), glm::radians(90.f), glm::vec3(0, 1, 0)) : glm::mat4(1.f);
+            pose[3].z = -depth;
+            std::array<float, 16> matrix{};
+            std::copy_n(glm::value_ptr(pose), 16, matrix.begin());
+            renderer.BeginFrame(128, 128);
+            renderer.BeginWorldElement(matrix, 10, 10, 0xffffffffu, false, billboard, constantSize);
+            renderer.AddFilledRect(list, 0, 0, 20, 20, 1, 1, 1, 1);
+            renderer.EndWorldElement();
+            frame();
+            std::vector<uint8_t> image(128 * 128 * 4);
+            assert(device.ReadBuffer(output, 0, image.data(), image.size()));
+            return worldBounds(image);
+        };
+        cameraProjection = glm::perspectiveRH_ZO(glm::radians(90.f), 1.f, .1f, 10.f);
+        camera = cameraProjection * cameraView;
+        buildGraph();
+        const auto nearPixels = cameraPolicyBounds(2.f, true, true, true);
+        const auto farPixels = cameraPolicyBounds(4.f, true, true, true);
+        assert(nearPixels == farPixels && nearPixels[2] - nearPixels[0] >= 18);
+        const auto authoredEdge = cameraPolicyBounds(2.f, false, false, true);
+        assert(authoredEdge[2] - authoredEdge[0] < nearPixels[2] - nearPixels[0]);
+        const auto perspectiveWorld = cameraPolicyBounds(2.f, false, false, false);
+        const auto perspectiveFixed = cameraPolicyBounds(2.f, false, true, false);
+        assert(perspectiveFixed[2] - perspectiveFixed[0] > perspectiveWorld[2] - perspectiveWorld[0]);
+        cameraView = glm::lookAtRH(glm::vec3(2.f, 0.f, -2.f), glm::vec3(0.f, 0.f, -2.f), glm::vec3(0.f, 1.f, 0.f));
+        camera = cameraProjection * cameraView;
+        buildGraph();
+        const auto sideCameraPixels = cameraPolicyBounds(2.f, true, true, true);
+        assert(sideCameraPixels == nearPixels);
+        cameraView = glm::mat4(1.f);
+        cameraProjection = glm::orthoRH_ZO(-1.f, 1.f, -1.f, 1.f, .1f, 10.f);
+        camera = cameraProjection * cameraView;
+        buildGraph();
+        assert(cameraPolicyBounds(2.f, true, true, true) == cameraPolicyBounds(4.f, true, true, true));
+        cameraProjection = camera = glm::mat4(1.f);
+        buildGraph();
 
         // A retained UI packet carries an asset identity contract alongside
         // each draw command.  This is intentionally independent of the fixed

@@ -1,5 +1,6 @@
 #include "BindingRegistration.h"
 #include "Infernux.h"
+#include "MatrixPyBridge.h"
 #include <function/renderer/rhi/RhiComputeBuffer.h>
 #include <function/renderer/rhi/RhiComputeHost.h>
 #include <function/renderer/rhi/RhiComputeKernel.h>
@@ -845,6 +846,17 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
                 return glm::vec3(0.0f);
             },
             "Camera position as Vector3")
+        .def_property_readonly("view_matrix",
+                               [](EditorCameraController &self) {
+                                   auto *camera = self.GetCamera();
+                                   return binding::Matrix4ToPython(camera ? camera->GetViewMatrix() : glm::mat4(1.0f));
+                               })
+        .def_property_readonly("projection_matrix",
+                               [](EditorCameraController &self) {
+                                   auto *camera = self.GetCamera();
+                                   return binding::Matrix4ToPython(camera ? camera->GetProjectionMatrix()
+                                                                          : glm::mat4(1.0f));
+                               })
         .def_property_readonly(
             "rotation",
             [](EditorCameraController &self) -> py::tuple { return py::make_tuple(self.GetYaw(), self.GetPitch()); },
@@ -940,11 +952,12 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
              "Restore the preceding Screen UI clip rectangle")
         .def("begin_world_element", &InxScreenUIRenderer::BeginWorldElement, py::arg("local_to_world"),
              py::arg("pivot_x"), py::arg("pivot_y"), py::arg("layer_mask") = 0xffffffffu,
-             py::arg("always_on_top") = false,
+             py::arg("always_on_top") = false, py::arg("billboard") = false, py::arg("constant_screen_size") = false,
              "Begin one independent world UI element with an explicit optional top policy")
         .def("end_world_element", &InxScreenUIRenderer::EndWorldElement, "Finish the current world UI element")
         .def("begin_world_object", &InxScreenUIRenderer::BeginWorldObject, py::arg("object"), py::arg("pivot_x"),
-             py::arg("pivot_y"), py::arg("always_on_top") = false,
+             py::arg("pivot_y"), py::arg("always_on_top") = false, py::arg("billboard") = false,
+             py::arg("constant_screen_size") = false,
              "Bind local world UI geometry to a live scene pose without rebuilding it on motion")
         .def("begin_screen_object", &InxScreenUIRenderer::BeginScreenObject, py::arg("object"), py::arg("list"),
              py::arg("pivot_x"), py::arg("pivot_y"), py::arg("scale_x") = 1.0f, py::arg("scale_y") = 1.0f,

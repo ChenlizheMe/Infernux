@@ -123,6 +123,14 @@ class InxUIScreenComponent(InxUIComponent):
         tooltip="World UI only: draw and receive pointers over scene occluders",
         group="World UI",
     )
+    world_billboard: bool = serialized_field(
+        default=False, tooltip="World UI only: face each rendering camera", group="World UI",
+    )
+    world_constant_screen_size: bool = serialized_field(
+        default=False,
+        tooltip="World UI only: keep logical pixel and text size constant on screen",
+        group="World UI",
+    )
 
     def _layout_reference(self):
         """Return the authored reference and parent rect for this UI element."""

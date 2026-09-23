@@ -1,7 +1,9 @@
 #pragma once
 
 #include "GameObject.h"
+#include "WorldUIProjection.h"
 #include <array>
+#include <glm/gtc/quaternion.hpp>
 #include <limits>
 #include <stdexcept>
 #include <vector>
@@ -113,6 +115,57 @@ class UITransformDependencies
             }
             result.push_back(hit);
         }
+        return result;
+    }
+
+    std::vector<std::array<double, 3>> ProjectWorldRayWithPolicies(const glm::vec3 &origin, const glm::vec3 &direction,
+                                                                   uint32_t layerMask,
+                                                                   const std::vector<uint8_t> &policies,
+                                                                   const glm::mat4 &view, const glm::mat4 &projection,
+                                                                   float viewportHeight)
+    {
+        Poll();
+        const auto nan = std::numeric_limits<double>::quiet_NaN();
+        const auto infinity = std::numeric_limits<double>::infinity();
+        const glm::mat4 viewProjection = projection * view;
+        std::vector<std::array<double, 3>> result;
+        result.reserve(policies.size());
+        size_t worldIndex = 0;
+        for (const auto &entry : m_entries) {
+            if (!entry.world)
+                continue;
+            if (worldIndex >= policies.size())
+                throw std::invalid_argument("World UI policy count does not match world dependencies");
+            const uint8_t policy = policies[worldIndex++];
+            std::array<double, 3> hit{nan, nan, infinity};
+            if ((layerMask & (uint32_t(1) << entry.layer)) != 0) {
+                glm::mat4 pose = glm::mat4_cast(entry.rotation);
+                pose[3] = glm::vec4(entry.position, 1.0f);
+                const glm::mat3 basis = WorldUIBasis(pose, view, (policy & WorldUIBillboard) != 0);
+                const glm::dvec3 right(basis[0]), up(basis[1]);
+                const glm::dvec3 normal = glm::cross(right, up);
+                const glm::dvec3 delta = glm::dvec3(entry.position) - glm::dvec3(origin);
+                const double denominator = glm::dot(normal, glm::dvec3(direction));
+                if (std::abs(denominator) > 1e-7) {
+                    const double distance = glm::dot(normal, delta) / denominator;
+                    if (distance > 0.0) {
+                        double scale = 1.0;
+                        if (policy & WorldUIConstantScreenSize)
+                            scale =
+                                double(WorldUIPixelScale(viewProjection, projection, entry.position, viewportHeight)) *
+                                100.0;
+                        if (scale > 1e-7) {
+                            const glm::dvec3 offset =
+                                glm::dvec3(origin) + glm::dvec3(direction) * distance - glm::dvec3(entry.position);
+                            hit = {glm::dot(offset, right) / scale, glm::dot(offset, up) / scale, distance};
+                        }
+                    }
+                }
+            }
+            result.push_back(hit);
+        }
+        if (worldIndex != policies.size())
+            throw std::invalid_argument("World UI policy count does not match world dependencies");
         return result;
     }
 

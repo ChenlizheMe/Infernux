@@ -2,6 +2,7 @@
 #include <function/scene/Scene.h>
 #include <function/scene/SceneManager.h>
 #include <function/scene/UITransformDependencies.h>
+#include <glm/gtc/matrix_transform.hpp>
 
 using namespace infernux;
 
@@ -73,6 +74,24 @@ int main()
     revision = mixed.Poll();
     assert(mixed.GetChangedEntries().empty());
     assert(mixed.Poll() == revision);
+    auto *cameraPolicyObject = scene->CreateGameObject("Billboard UI");
+    cameraPolicyObject->GetTransform()->SetPosition(0, 0, -2);
+    cameraPolicyObject->GetTransform()->SetLocalEulerAngles(0, 90, 0);
+    UITransformDependencies cameraPolicy({}, {cameraPolicyObject});
+    const glm::mat4 view(1.f);
+    const glm::mat4 perspective = glm::perspectiveRH_ZO(glm::radians(90.f), 1.f, .1f, 10.f);
+    const auto projected = [&](uint8_t flags, const glm::mat4 &projection) {
+        return cameraPolicy.ProjectWorldRayWithPolicies({0.1f, 0, 0}, {0, 0, -1}, 0xffffffffu, {flags}, view,
+                                                        projection, 100.f)[0];
+    };
+    assert(std::isnan(projected(0, perspective)[0]));
+    auto billboardHit = projected(WorldUIBillboard, perspective);
+    assert(std::abs(billboardHit[0] - .1) < 1e-5 && std::abs(billboardHit[2] - 2.) < 1e-5);
+    auto fixedHit = projected(WorldUIBillboard | WorldUIConstantScreenSize, perspective);
+    assert(std::abs(fixedHit[0] - .025) < 1e-5);
+    const glm::mat4 orthographic = glm::orthoRH_ZO(-1.f, 1.f, -1.f, 1.f, .1f, 10.f);
+    fixedHit = projected(WorldUIBillboard | WorldUIConstantScreenSize, orthographic);
+    assert(std::abs(fixedHit[0] - .05) < 1e-5);
     manager.UnloadAllScenes();
     bool stale = false;
     try {

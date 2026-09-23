@@ -59,6 +59,8 @@ class InxUIScreenComponent(InxUIComponent):
     material: Material | None
     raycast_target: bool
     world_always_on_top: bool
+    world_billboard: bool
+    world_constant_screen_size: bool
 
     def get_canvas(self): ...
     def is_world_space(self) -> bool: ...

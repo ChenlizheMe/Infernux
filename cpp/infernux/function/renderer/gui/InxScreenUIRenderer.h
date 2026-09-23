@@ -194,10 +194,12 @@ class InxScreenUIRenderer
     /// scene Transform; the default scene depth test is bypassed only when
     /// alwaysOnTop is explicit. World UI has no Canvas or root plane.
     void BeginWorldElement(const std::array<float, 16> &localToWorld, float pivotX, float pivotY,
-                           uint32_t layerMask = 0xffffffffu, bool alwaysOnTop = false);
+                           uint32_t layerMask = 0xffffffffu, bool alwaysOnTop = false, bool billboard = false,
+                           bool constantScreenSize = false);
     /// Retain local geometry while sampling this scene object's current pose
     /// at packet publication. UI ignores scale, but inherits parent motion.
-    void BeginWorldObject(GameObject *object, float pivotX, float pivotY, bool alwaysOnTop = false);
+    void BeginWorldObject(GameObject *object, float pivotX, float pivotY, bool alwaysOnTop = false,
+                          bool billboard = false, bool constantScreenSize = false);
     void BeginScreenObject(GameObject *object, ScreenUIList list, float pivotX, float pivotY, float scaleX = 1.0f,
                            float scaleY = 1.0f);
     void EndScreenObject();
@@ -302,7 +304,8 @@ class InxScreenUIRenderer
     /// Draw world-space UI against the current camera depth attachment.
     void RenderWorld(VkCommandBuffer cmdBuf, uint32_t width, uint32_t height, const glm::mat4 &viewProjection,
                      const rhi::GraphicsRenderingSignature &target, uint32_t frameSlot,
-                     uint32_t cullingMask = 0xffffffffu);
+                     uint32_t cullingMask = 0xffffffffu, const glm::mat4 &view = glm::mat4(1.0f),
+                     const glm::mat4 &projection = glm::mat4(1.0f));
 
   private:
     static constexpr int ListIndex(ScreenUIList list) noexcept
@@ -358,6 +361,9 @@ class InxScreenUIRenderer
         ImVec2 uv;
         float color[4];
         ImVec2 localPos;
+        float anchor[3];
+        ImVec2 localOffset;
+        float policy = 0.0f;
     };
 
     struct WorldElementSpan
@@ -371,6 +377,8 @@ class InxScreenUIRenderer
         float pivotX = 0.0f;
         float pivotY = 0.0f;
         bool alwaysOnTop = false;
+        bool billboard = false;
+        bool constantScreenSize = false;
         TransformECSStore::Handle transform;
     };
 

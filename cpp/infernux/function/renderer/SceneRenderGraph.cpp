@@ -1888,7 +1888,8 @@ void SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
                     m_screenUIRenderer->RenderWorld(
                         ctx.GetCommandBuffer(), w, h, m_cachedProj * m_drawView, materialPass.RenderingSignature(),
                         vkCore->GetCurrentFrameSlot(),
-                        worldUILayerMask & (m_cachedCamera ? m_cachedCamera->GetCullingMask() : 0xffffffffu));
+                        worldUILayerMask & (m_cachedCamera ? m_cachedCamera->GetCullingMask() : 0xffffffffu),
+                        m_drawView, m_cachedProj);
                 break;
             case GraphCommandType::DrawScreenUI:
                 if (m_screenUIRenderer && m_screenUIOutput && m_renderView.kind != rhi::RenderViewKind::Scene) {

@@ -92,7 +92,7 @@ def test_world_submission_publishes_explicit_depth_policy(scene, monkeypatch):
     )
     monkeypatch.setattr(runtime_ui, "_ui_dispatch", lambda *_args, **_kwargs: None)
     RuntimeScreenUISubmission._submit_world_element(element, renderer, lambda _: 0, ScreenUIList)
-    assert calls[-1][-1] is False
+    assert calls[-1][3] is False
     element.world_always_on_top = True
     RuntimeScreenUISubmission._submit_world_element(element, renderer, lambda _: 0, ScreenUIList)
-    assert calls[-1][-1] is True
+    assert calls[-1][3] is True

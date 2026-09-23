@@ -30,6 +30,7 @@
 #include <function/renderer/vk/VkRenderUtils.h>
 #include <function/resources/InxFileLoader/InxShaderLoader.hpp>
 #include <function/scene/GameObject.h>
+#include <function/scene/WorldUIProjection.h>
 #include <glm/gtc/type_ptr.hpp>
 #include <imgui_internal.h> // for ImGui::GetDrawListSharedData()
 #include <numeric>
@@ -115,12 +116,17 @@ layout(location = 0) in vec3 aPosition;
 layout(location = 1) in vec2 aUV;
 layout(location = 2) in vec4 aColor;
 layout(location = 3) in vec2 aLocalPosition;
+layout(location = 4) in vec3 aAnchor;
+layout(location = 5) in vec2 aLocalOffset;
+layout(location = 6) in float aPolicy;
 layout(push_constant) uniform WorldUIConstants {
     mat4 viewProjection;
     vec4 materialColor;
     float alphaClipThreshold;
     float alphaClipEnabled;
-    vec2 _padding;
+    vec2 screenScale;
+    vec4 cameraRight;
+    vec4 cameraUp;
 } pc;
 layout(location = 0) out vec4 outColor;
 layout(location = 1) out vec2 outUV;
@@ -129,7 +135,19 @@ void main() {
     outColor = aColor;
     outUV = aUV;
     outLocalPosition = aLocalPosition;
-    gl_Position = pc.viewProjection * vec4(aPosition, 1.0);
+    vec3 position = aPosition;
+    int policy = int(aPolicy + 0.5);
+    if (policy != 0) {
+        vec3 offset = aPosition - aAnchor;
+        if ((policy & 1) != 0)
+            offset = pc.cameraRight.xyz * aLocalOffset.x + pc.cameraUp.xyz * aLocalOffset.y;
+        if ((policy & 2) != 0) {
+            float clipW = (pc.viewProjection * vec4(aAnchor, 1.0)).w;
+            offset *= max(clipW, 0.0) * pc.screenScale.x * 100.0;
+        }
+        position = aAnchor + offset;
+    }
+    gl_Position = pc.viewProjection * vec4(position, 1.0);
 }
 )glsl";
 
@@ -143,7 +161,9 @@ layout(push_constant) uniform WorldUIConstants {
     vec4 materialColor;
     float alphaClipThreshold;
     float alphaClipEnabled;
-    vec2 _padding;
+    vec2 screenScale;
+    vec4 cameraRight;
+    vec4 cameraUp;
 } pc;
 layout(location = 0) out vec4 outColor;
 void main() {
@@ -177,10 +197,12 @@ struct alignas(16) WorldUIPushConstants
     glm::vec4 materialColor{1.0f};
     float alphaClipThreshold = 0.0f;
     float alphaClipEnabled = 0.0f;
-    std::array<float, 2> padding{};
+    std::array<float, 2> screenScale{};
+    glm::vec4 cameraRight{1.0f, 0.0f, 0.0f, 0.0f};
+    glm::vec4 cameraUp{0.0f, 1.0f, 0.0f, 0.0f};
 };
 
-static_assert(sizeof(WorldUIPushConstants) == 96);
+static_assert(sizeof(WorldUIPushConstants) == 128);
 
 struct VertexTransform
 {
@@ -971,7 +993,8 @@ void InxScreenUIRenderer::PopClipRect(ScreenUIList list)
 }
 
 void InxScreenUIRenderer::BeginWorldElement(const std::array<float, 16> &localToWorld, float pivotX, float pivotY,
-                                            uint32_t layerMask, bool alwaysOnTop)
+                                            uint32_t layerMask, bool alwaysOnTop, bool billboard,
+                                            bool constantScreenSize)
 {
     auto *drawList = GetDrawList(ScreenUIList::World);
     if (m_worldElementStart >= 0)
@@ -994,6 +1017,8 @@ void InxScreenUIRenderer::BeginWorldElement(const std::array<float, 16> &localTo
     m_pendingWorldElement.pivotY = pivotY;
     m_pendingWorldElement.layerMask = layerMask;
     m_pendingWorldElement.alwaysOnTop = alwaysOnTop;
+    m_pendingWorldElement.billboard = billboard;
+    m_pendingWorldElement.constantScreenSize = constantScreenSize;
 }
 
 void InxScreenUIRenderer::ResolveWorldPose(WorldElementSpan &span)
@@ -1009,11 +1034,13 @@ void InxScreenUIRenderer::ResolveWorldPose(WorldElementSpan &span)
     span.layerMask = uint32_t(1) << transform->GetGameObject()->GetLayer();
 }
 
-void InxScreenUIRenderer::BeginWorldObject(GameObject *object, float pivotX, float pivotY, bool alwaysOnTop)
+void InxScreenUIRenderer::BeginWorldObject(GameObject *object, float pivotX, float pivotY, bool alwaysOnTop,
+                                           bool billboard, bool constantScreenSize)
 {
     if (!object)
         throw std::invalid_argument("World UI geometry requires a scene object");
-    BeginWorldElement({1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1}, pivotX, pivotY, 0xffffffffu, alwaysOnTop);
+    BeginWorldElement({1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1}, pivotX, pivotY, 0xffffffffu, alwaysOnTop,
+                      billboard, constantScreenSize);
     m_pendingWorldElement.transform = object->GetTransform()->GetECSHandle();
     ResolveWorldPose(m_pendingWorldElement);
 }
@@ -1613,7 +1640,7 @@ bool InxScreenUIRenderer::CreateWorldPipeline(const rhi::GraphicsRenderingSignat
     VkVertexInputBindingDescription bindingDescription{};
     bindingDescription.stride = sizeof(WorldGPUVertex);
     bindingDescription.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
-    VkVertexInputAttributeDescription attributes[4]{};
+    VkVertexInputAttributeDescription attributes[7]{};
     attributes[0].location = 0;
     attributes[0].format = VK_FORMAT_R32G32B32_SFLOAT;
     attributes[0].offset = offsetof(WorldGPUVertex, pos);
@@ -1626,8 +1653,17 @@ bool InxScreenUIRenderer::CreateWorldPipeline(const rhi::GraphicsRenderingSignat
     attributes[3].location = 3;
     attributes[3].format = VK_FORMAT_R32G32_SFLOAT;
     attributes[3].offset = offsetof(WorldGPUVertex, localPos);
+    attributes[4].location = 4;
+    attributes[4].format = VK_FORMAT_R32G32B32_SFLOAT;
+    attributes[4].offset = offsetof(WorldGPUVertex, anchor);
+    attributes[5].location = 5;
+    attributes[5].format = VK_FORMAT_R32G32_SFLOAT;
+    attributes[5].offset = offsetof(WorldGPUVertex, localOffset);
+    attributes[6].location = 6;
+    attributes[6].format = VK_FORMAT_R32_SFLOAT;
+    attributes[6].offset = offsetof(WorldGPUVertex, policy);
 
-    const VkPipelineVertexInputStateCreateInfo vertexInput = MakeVertexInputState(bindingDescription, attributes, 4);
+    const VkPipelineVertexInputStateCreateInfo vertexInput = MakeVertexInputState(bindingDescription, attributes, 7);
     const VkPipelineInputAssemblyStateCreateInfo inputAssembly = MakeTriangleListInputAssembly();
     const VkPipelineViewportStateCreateInfo viewport = MakeDynamicViewportState();
     const VkPipelineRasterizationStateCreateInfo rasterization = MakeRasterizationState();
@@ -1725,7 +1761,8 @@ ImDrawList *InxScreenUIRenderer::GetDrawList(ScreenUIList list)
 
 void InxScreenUIRenderer::RenderWorld(VkCommandBuffer cmdBuf, uint32_t width, uint32_t height,
                                       const glm::mat4 &viewProjection, const rhi::GraphicsRenderingSignature &target,
-                                      uint32_t frameSlot, uint32_t cullingMask)
+                                      uint32_t frameSlot, uint32_t cullingMask, const glm::mat4 &view,
+                                      const glm::mat4 &projection)
 {
     constexpr ScreenUIList list = ScreenUIList::World;
     constexpr int listIndex = 2;
@@ -1794,6 +1831,13 @@ void InxScreenUIRenderer::RenderWorld(VkCommandBuffer cmdBuf, uint32_t width, ui
             target.pos[0] = world.x;
             target.pos[1] = world.y;
             target.pos[2] = world.z;
+            const glm::vec3 anchor = glm::vec3(element.localToWorld[3]);
+            target.anchor[0] = anchor.x;
+            target.anchor[1] = anchor.y;
+            target.anchor[2] = anchor.z;
+            target.localOffset = ImVec2(local.x, local.y);
+            target.policy = float((element.billboard ? WorldUIBillboard : 0u) |
+                                  (element.constantScreenSize ? WorldUIConstantScreenSize : 0u));
             target.uv = source.uv;
             target.localPos = source.pos;
             const ImVec4 color = ImGui::ColorConvertU32ToFloat4(source.col);
@@ -1844,6 +1888,17 @@ void InxScreenUIRenderer::RenderWorld(VkCommandBuffer cmdBuf, uint32_t width, ui
     // The camera matrix is shared by every draw, while authored material
     // values are command-local.  Push the complete block for each draw so
     // World UI consumes the same material contract as Screen UI.
+    const bool hasBillboard = std::any_of(elementOrder.begin(), elementOrder.end(), [&](const ElementDepth &entry) {
+        return m_worldElementSpans[entry.index].billboard;
+    });
+    const bool hasConstantSize = std::any_of(elementOrder.begin(), elementOrder.end(), [&](const ElementDepth &entry) {
+        return m_worldElementSpans[entry.index].constantScreenSize;
+    });
+    const glm::mat4 cameraToWorld = hasBillboard ? glm::inverse(view) : glm::mat4(1.0f);
+    const glm::vec4 cameraRight(glm::vec3(cameraToWorld[0]), 0.0f);
+    const glm::vec4 cameraUp(glm::vec3(cameraToWorld[1]), 0.0f);
+    const float screenPixelScale =
+        hasConstantSize ? 2.0f / (std::max(std::abs(projection[1][1]), 1e-6f) * float(height)) : 0.0f;
     const auto drawCommand = [&](const ImDrawCmd &command, int commandIndex, bool alwaysOnTop) {
         if (command.ElemCount == 0)
             return;
@@ -1874,6 +1929,9 @@ void InxScreenUIRenderer::RenderWorld(VkCommandBuffer cmdBuf, uint32_t width, ui
             glm::vec4(binding.baseColor[0], binding.baseColor[1], binding.baseColor[2], binding.baseColor[3]);
         constants.alphaClipEnabled = binding.alphaClipEnabled ? 1.0f : 0.0f;
         constants.alphaClipThreshold = binding.alphaClipThreshold;
+        constants.cameraRight = cameraRight;
+        constants.cameraUp = cameraUp;
+        constants.screenScale[0] = screenPixelScale;
         vkCmdPushConstants(cmdBuf, m_worldPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                            sizeof(constants), &constants);
         vkCmdDrawIndexed(cmdBuf, command.ElemCount, 1, command.IdxOffset, static_cast<int32_t>(command.VtxOffset), 0);

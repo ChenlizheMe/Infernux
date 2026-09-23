@@ -9,7 +9,6 @@
 
 #include "ComponentBindingRegistry.h"
 #include "JsonPyBridge.h"
-#include <function/resources/InxMesh/ModelMeshReference.h>
 #include "MatrixPyBridge.h"
 #include "core/log/InxLog.h"
 #include "core/threading/JobSystem.h"
@@ -45,6 +44,7 @@
 #include "function/scene/physics/PhysicsECSStore.h"
 #include <cctype>
 #include <cstring>
+#include <function/resources/InxMesh/ModelMeshReference.h>
 #include <functional>
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
@@ -682,13 +682,14 @@ static GameObject *CreateModelObject(Scene *scene, const std::string &guid, cons
             glm::vec4 perspective;
             if (!glm::decompose(node.localTransform, pose.scale, pose.rotation, pose.position, skew, perspective))
                 throw std::invalid_argument("Model node has a non-decomposable transform: " + node.name);
-            const glm::mat4 rebuilt = glm::translate(glm::mat4(1), pose.position) *
-                                      glm::mat4_cast(pose.rotation) * glm::scale(glm::mat4(1), pose.scale);
+            const glm::mat4 rebuilt = glm::translate(glm::mat4(1), pose.position) * glm::mat4_cast(pose.rotation) *
+                                      glm::scale(glm::mat4(1), pose.scale);
             for (int column = 0; column < 4; ++column)
                 for (int row = 0; row < 4; ++row)
                     if (std::abs(rebuilt[column][row] - node.localTransform[column][row]) >
                         1e-5f * std::max(1.0f, std::abs(node.localTransform[column][row])))
-                        throw std::invalid_argument("Model node shear requires baking before instantiation: " + node.name);
+                        throw std::invalid_argument("Model node shear requires baking before instantiation: " +
+                                                    node.name);
             poses.push_back(pose);
         }
         GameObject *container = scene->CreateGameObject(objName);
@@ -789,7 +790,17 @@ void RegisterSceneBindings(py::module_ &m)
         .def("poll", &UITransformDependencies::Poll)
         .def_property_readonly("changed_entries", &UITransformDependencies::GetChangedEntries)
         .def("project_world_ray", &UITransformDependencies::ProjectWorldRay, py::arg("origin"), py::arg("direction"),
-             py::arg("layer_mask"));
+             py::arg("layer_mask"))
+        .def(
+            "project_world_ray_with_policies",
+            [](UITransformDependencies &self, const glm::vec3 &origin, const glm::vec3 &direction, uint32_t layerMask,
+               const std::vector<uint8_t> &policies, py::object view, py::object projection, float viewportHeight) {
+                return self.ProjectWorldRayWithPolicies(
+                    origin, direction, layerMask, policies, binding::Matrix4FromPython(view, "view"),
+                    binding::Matrix4FromPython(projection, "projection"), viewportHeight);
+            },
+            py::arg("origin"), py::arg("direction"), py::arg("layer_mask"), py::arg("policies"), py::arg("view"),
+            py::arg("projection"), py::arg("viewport_height"));
 
     // ========================================================================
     // PrimitiveType enum
@@ -1369,16 +1380,18 @@ void RegisterSceneBindings(py::module_ &m)
         .def_property_readonly("model_node_path", &MeshRenderer::GetModelNodePath)
         .def_property_readonly("model_subresource_id", &MeshRenderer::GetModelSubresourceId)
         .def_property_readonly("model_node_group", &MeshRenderer::GetNodeGroup)
-        .def("set_model_mesh", [](MeshRenderer &renderer, const std::string &guid,
-                                   const std::vector<std::string> &path) {
-            auto mesh = AssetRegistry::Instance().LoadAsset<InxMesh>(guid, ResourceType::Mesh);
-            if (!mesh)
-                throw std::invalid_argument("Model mesh source cannot be loaded");
-            (void)mesh->RequireModelNode(path);
-            renderer.SetMeshAsset(guid, mesh);
-            renderer.SetModelNodePath(path);
-            renderer.SetModelSubresourceId(GetModelSubresourceId(GetModelMeta(guid, mesh), path));
-        }, py::arg("guid"), py::arg("node_path"))
+        .def(
+            "set_model_mesh",
+            [](MeshRenderer &renderer, const std::string &guid, const std::vector<std::string> &path) {
+                auto mesh = AssetRegistry::Instance().LoadAsset<InxMesh>(guid, ResourceType::Mesh);
+                if (!mesh)
+                    throw std::invalid_argument("Model mesh source cannot be loaded");
+                (void)mesh->RequireModelNode(path);
+                renderer.SetMeshAsset(guid, mesh);
+                renderer.SetModelNodePath(path);
+                renderer.SetModelSubresourceId(GetModelSubresourceId(GetModelMeta(guid, mesh), path));
+            },
+            py::arg("guid"), py::arg("node_path"))
 
         // ====================================================================
         // Mesh data access for scripting and inspection tools
@@ -1863,8 +1876,7 @@ void RegisterSceneBindings(py::module_ &m)
         .def_property("iso", &Camera::GetIso, &Camera::SetIso, "Physical camera sensor sensitivity")
         .def_property("shutter_speed", &Camera::GetShutterSpeed, &Camera::SetShutterSpeed,
                       "Physical camera exposure time in seconds")
-        .def_property("aperture", &Camera::GetAperture, &Camera::SetAperture,
-                      "Physical camera aperture in f-stops")
+        .def_property("aperture", &Camera::GetAperture, &Camera::SetAperture, "Physical camera aperture in f-stops")
         .def_property("focus_distance", &Camera::GetFocusDistance, &Camera::SetFocusDistance,
                       "Physical camera focus-plane distance")
         .def_property("blade_count", &Camera::GetBladeCount, &Camera::SetBladeCount,
@@ -1873,8 +1885,7 @@ void RegisterSceneBindings(py::module_ &m)
                       "Aperture range mapped to diaphragm blade curvature")
         .def_property("barrel_clipping", &Camera::GetBarrelClipping, &Camera::SetBarrelClipping,
                       "Optical-vignetting cat-eye strength")
-        .def_property("anamorphism", &Camera::GetAnamorphism, &Camera::SetAnamorphism,
-                      "Physical camera sensor stretch")
+        .def_property("anamorphism", &Camera::GetAnamorphism, &Camera::SetAnamorphism, "Physical camera sensor stretch")
         .def_property("focal_length", &Camera::GetFocalLength, &Camera::SetFocalLength,
                       "Physical camera focal length in millimetres")
         .def_property("sensor_type", &Camera::GetSensorType, &Camera::SetSensorType,
@@ -1883,8 +1894,7 @@ void RegisterSceneBindings(py::module_ &m)
                       "Physical camera sensor size in millimetres (width, height)")
         .def_property("lens_shift", &Camera::GetLensShift, &Camera::SetLensShift,
                       "Physical camera lens shift in normalized sensor units")
-        .def_property("gate_fit", &Camera::GetGateFit, &Camera::SetGateFit,
-                      "Physical camera film/resolution gate fit")
+        .def_property("gate_fit", &Camera::GetGateFit, &Camera::SetGateFit, "Physical camera film/resolution gate fit")
         .def_property("aspect_ratio", &Camera::GetAspectRatio, &Camera::SetAspectRatio, "Aspect ratio (width/height)")
         .def_property(
             "projection_matrix", [](const Camera &c) { return binding::Matrix4ToPython(c.GetProjectionMatrix()); },
@@ -2898,12 +2908,13 @@ void RegisterSceneBindings(py::module_ &m)
         .def("_create_preview_scene", &SceneManager::CreatePreviewScene, py::return_value_policy::reference,
              py::arg("name"))
         .def("_close_preview_scene", &SceneManager::ClosePreviewScene, py::arg("scene"))
-        .def("_get_preview_scenes", [](SceneManager &manager) {
-            py::list result;
-            for (const auto &scene : manager.GetPreviewScenes())
-                result.append(py::cast(scene.get(), py::return_value_policy::reference));
-            return result;
-        })
+        .def("_get_preview_scenes",
+             [](SceneManager &manager) {
+                 py::list result;
+                 for (const auto &scene : manager.GetPreviewScenes())
+                     result.append(py::cast(scene.get(), py::return_value_policy::reference));
+                 return result;
+             })
         .def("unload_scene", &SceneManager::UnloadScene, py::arg("scene"),
              "Unload and destroy a scene, removing all its GameObjects and physics bodies")
         .def("get_active_scene", &SceneManager::GetActiveScene, py::return_value_policy::reference,
@@ -2924,8 +2935,7 @@ void RegisterSceneBindings(py::module_ &m)
         .def("get_scene_at", &SceneManager::GetSceneAt, py::return_value_policy::reference, py::arg("index"),
              "Get a loaded scene by its stable loaded-list index, or None")
         .def("move_scene_adjacent", &SceneManager::MoveSceneAdjacent, py::arg("dragged_world_id"),
-             py::arg("target_world_id"), py::arg("after"),
-             "Move a loaded scene before or after another loaded scene")
+             py::arg("target_world_id"), py::arg("after"), "Move a loaded scene before or after another loaded scene")
         .def("find_runtime_object", &SceneManager::FindRuntimeObject, py::return_value_policy::reference,
              py::arg("name"), "Find the first named GameObject across loaded scenes")
         .def("find_runtime_object_with_tag", &SceneManager::FindRuntimeObjectWithTag,

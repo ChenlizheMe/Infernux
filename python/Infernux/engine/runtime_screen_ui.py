@@ -155,7 +155,8 @@ class WorldUIElementTarget:
         return element
 
 
-def _project_world_ui_targets(targets, ray_origin, ray_direction, layer_mask=0xffffffff):
+def _project_world_ui_targets(targets, ray_origin, ray_direction, layer_mask=0xffffffff,
+                              camera=None, viewport_height=None):
     """Cross the native boundary once per ray, not once per element/property."""
     global _world_projection_targets, _world_projection_geometry
     from Infernux.lib import Vector3
@@ -170,9 +171,22 @@ def _project_world_ui_targets(targets, ray_origin, ray_direction, layer_mask=0xf
         ray_origin = Vector3(*map(float, ray_origin))
     if not hasattr(ray_direction, "x"):
         ray_direction = Vector3(*map(float, ray_direction))
-    local = _world_projection_geometry.project_world_ray(
-        ray_origin, ray_direction, int(layer_mask),
+    policies = tuple(
+        int(bool(target.element.world_billboard)) |
+        (int(bool(target.element.world_constant_screen_size)) << 1)
+        for target in targets
     )
+    if any(policies):
+        if camera is None or viewport_height is None:
+            raise ValueError("World UI camera policies require a camera and viewport height")
+        local = _world_projection_geometry.project_world_ray_with_policies(
+            ray_origin, ray_direction, int(layer_mask), policies,
+            camera.view_matrix, camera.projection_matrix, float(viewport_height),
+        )
+    else:
+        local = _world_projection_geometry.project_world_ray(
+            ray_origin, ray_direction, int(layer_mask),
+        )
     positions = []
     for target, (x, y, distance) in zip(targets, local):
         width, height = target.input_logical_size
@@ -181,9 +195,10 @@ def _project_world_ui_targets(targets, ray_origin, ray_direction, layer_mask=0xf
     return tuple(positions)
 
 
-def map_world_ui_ray(target, ray_origin, ray_direction):
+def map_world_ui_ray(target, ray_origin, ray_direction, *, camera=None, viewport_height=None):
     """Map one world ray using the same projection as batched runtime input."""
-    position = _project_world_ui_targets((target,), ray_origin, ray_direction)[0]
+    position = _project_world_ui_targets((target,), ray_origin, ray_direction,
+                                         camera=camera, viewport_height=viewport_height)[0]
     return position if position[0] == position[0] else None
 
 
@@ -198,7 +213,8 @@ def _world_targets(elements):
     return tuple(targets)
 
 
-def pick_world_ui_object_ids(scene, ray_origin, ray_direction, persistent_scene=None):
+def pick_world_ui_object_ids(scene, ray_origin, ray_direction, persistent_scene=None,
+                             *, camera=None, viewport_height=None):
     """Return precise Canvas-free UI editor hits, nearest first.
 
     Scene selection follows visible authored geometry. Runtime pointer policy
@@ -209,7 +225,8 @@ def pick_world_ui_object_ids(scene, ray_origin, ray_direction, persistent_scene=
 
     hits = []
     targets = _world_targets(_collect_world_ui_elements(scene, persistent_scene))
-    positions = _project_world_ui_targets(targets, ray_origin, ray_direction)
+    positions = _project_world_ui_targets(targets, ray_origin, ray_direction,
+                                          camera=camera, viewport_height=viewport_height)
     for target, position in zip(targets, positions):
         element = target.element
         # UIFrame is a visual-neutral layout/grouping component.  Its authored
@@ -352,7 +369,8 @@ def _map_runtime_ui_pointer_geometry(
     )
     world_targets = tuple(surface for _index, surface in world_entries)
     projected = _project_world_ui_targets(
-        world_targets, ray_origin, ray_direction, camera.culling_mask
+        world_targets, ray_origin, ray_direction, camera.culling_mask,
+        camera, viewport_height,
     )
     for (index, _surface), position in zip(world_entries, projected):
         positions[index] = position
@@ -745,6 +763,8 @@ class RuntimeScreenUISubmission:
             logical_width * 0.5,
             logical_height * 0.5,
             bool(element.world_always_on_top),
+            bool(element.world_billboard),
+            bool(element.world_constant_screen_size),
         )
         try:
             _ui_dispatch(

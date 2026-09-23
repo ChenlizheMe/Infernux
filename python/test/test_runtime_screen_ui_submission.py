@@ -47,7 +47,8 @@ class _Renderer:
             return result + (True,) if call[0] == 'object_top' else result
         return call
 
-    def begin_world_object(self, obj, pivot_x, pivot_y, always_on_top=False):
+    def begin_world_object(self, obj, pivot_x, pivot_y, always_on_top=False,
+                           billboard=False, constant_screen_size=False):
         call = ('object_top' if always_on_top else 'object', obj, pivot_x, pivot_y)
         self.world_calls.append(call if self.capturing else self.resolve_world(call))
 
