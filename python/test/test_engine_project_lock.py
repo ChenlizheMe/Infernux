@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 
 import pytest
 
@@ -17,6 +18,30 @@ def test_engine_ready_file_is_a_required_handshake_when_configured(
 
     with pytest.raises(FileNotFoundError):
         engine_module._signal_engine_loaded()
+
+
+def test_engine_ready_signal_is_published_to_android_logcat(monkeypatch, capsys):
+    calls = []
+
+    class _AndroidLogWrite:
+        argtypes = None
+        restype = None
+
+        def __call__(self, priority, tag, message):
+            calls.append((priority, tag, message))
+            return 1
+
+    android_log = type("AndroidLog", (), {})()
+    setattr(android_log, "__android_log_write", _AndroidLogWrite())
+
+    monkeypatch.setattr(sys, "platform", "android")
+    monkeypatch.setattr("ctypes.CDLL", lambda _name: android_log)
+    monkeypatch.delenv("_INFERNUX_READY_FILE", raising=False)
+
+    engine_module._signal_engine_loaded()
+
+    assert calls == [(4, b"InfernuxPlayer", b"ENGINE_LOADED")]
+    assert capsys.readouterr().out == "ENGINE_LOADED\n"
 
 
 def test_current_process_is_running():

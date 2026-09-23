@@ -6,6 +6,7 @@ import atexit
 import importlib
 import json
 import os
+import sys
 import time
 import uuid
 
@@ -57,6 +58,13 @@ def _signal_engine_loaded() -> None:
             f.write("ENGINE_LOADED\n")
             f.flush()
             os.fsync(f.fileno())
+    if sys.platform == "android":
+        import ctypes
+
+        android_log_write = ctypes.CDLL("liblog.so").__android_log_write
+        android_log_write.argtypes = (ctypes.c_int, ctypes.c_char_p, ctypes.c_char_p)
+        android_log_write.restype = ctypes.c_int
+        android_log_write(4, b"InfernuxPlayer", b"ENGINE_LOADED")
     print("ENGINE_LOADED", flush=True)
 
 
