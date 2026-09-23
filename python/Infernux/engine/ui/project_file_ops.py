@@ -80,13 +80,11 @@ MATERIAL_TEMPLATE = '''{{
   "shaders": {{
     "vertex": {{
       "guid": "",
-      "shader_id": "Standard",
-      "path_hint": ""
+      "shader_id": "Standard"
     }},
     "fragment": {{
       "guid": "",
-      "shader_id": "Unlit",
-      "path_hint": ""
+      "shader_id": "Unlit"
     }}
   }},
   "renderState": {{

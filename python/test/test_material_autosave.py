@@ -14,8 +14,25 @@ def test_new_material_template_uses_native_color_semantics():
     native.set_color('baseColor', (1., .55, .12, 1.))
     expected = native.serialize_document()['properties']['baseColor']['type']
     document = json.loads(MATERIAL_TEMPLATE.format(material_name='Created'))
+    assert "path_hint" not in document["shaders"]["vertex"]
+    assert "path_hint" not in document["shaders"]["fragment"]
     assert document['properties']['baseColor']['type'] == expected
     assert native.deserialize_document(document)
+
+
+def test_builtin_unlit_material_does_not_persist_shader_paths():
+    import json
+    from pathlib import Path
+
+    from Infernux.resources import resources_path
+
+    document = json.loads(
+        (Path(resources_path) / "materials" / "default_unlit.mat").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert "path_hint" not in document["shaders"]["vertex"]
+    assert "path_hint" not in document["shaders"]["fragment"]
 
 
 class _NativeMaterial:

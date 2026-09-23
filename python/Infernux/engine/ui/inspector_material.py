@@ -447,12 +447,11 @@ _SURFACE_BATCH_SCHEMA = 2
 
 
 def _shader_value_token(value):
-    """Return a stable, value-only key for a serialized shader reference."""
+    """Return the durable identity key for a serialized shader reference."""
     if isinstance(value, dict):
         return (
             str(value.get("guid", "") or ""),
             str(value.get("shader_id", "") or ""),
-            str(value.get("path_hint", "") or ""),
             str(value.get("builtin", "") or ""),
         )
     return (type(value).__name__, str(value or ""))
@@ -1363,26 +1362,27 @@ def _render_material_top_native(ctx, panel, state, mat_data, section_readonly,
         nonlocal changed, requires_deserialize, requires_pipeline_refresh, change_key
         old_val = shaders.get(shader_key, "")
         ext = ".vert" if shader_key == "vertex" else ".frag"
-        if isinstance(new_value, dict):
-            new_value = (
-                new_value.get("path_hint")
-                or new_value.get("guid")
-                or new_value.get("builtin")
-                or ""
-            )
         new_ref = shader_utils.make_shader_reference(new_value, ext)
         if not new_ref["guid"] and not new_ref["shader_id"]:
             return
-        shaders[shader_key] = new_ref
-        if new_ref != old_val:
+        stored_ref = {
+            "guid": str(new_ref.get("guid") or ""),
+            "shader_id": str(new_ref.get("shader_id") or ""),
+        }
+        old_identity = {
+            "guid": str(old_val.get("guid") or "") if isinstance(old_val, dict) else "",
+            "shader_id": shader_utils.shader_ref_id(old_val),
+        }
+        shaders[shader_key] = stored_ref
+        if stored_ref != old_identity:
             _bump_material_schema_revision(state)
         changed = True
         change_key = f"shader.{shader_key}"
         requires_deserialize = True
         requires_pipeline_refresh = True
-        if new_ref != old_val:
+        if stored_ref != old_identity:
             other_id = shader_utils.shader_ref_id(shaders.get(other_key, ""))
-            new_id = shader_utils.shader_ref_id(new_ref)
+            new_id = shader_utils.shader_ref_id(stored_ref)
             vert_id, frag_id = ((new_id, other_id) if shader_key == "vertex"
                                 else (other_id, new_id))
             shader_utils.sync_all_shader_properties(

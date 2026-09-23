@@ -43,7 +43,7 @@ def test_asset_edits_reach_assigned_cube_and_cached_inline_inspector(engine, sce
     authored = extra["native_mat"]
     assert authored is bound
     document = authored.serialize_document()
-    document["shaders"]["fragment"] = {"guid": "", "shader_id": "Lit", "path_hint": ""}
+    document["shaders"]["fragment"] = {"guid": "", "shader_id": "Lit"}
     assert authored.deserialize_document(document)
     for color in ((0.9, 0.1, 0.2, 1), (0.2, 0.7, 0.1, 1)):
         authored.set_color("baseColor", color)

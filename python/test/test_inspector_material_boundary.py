@@ -99,3 +99,46 @@ def test_sampled_texture_clipboard_preserves_concrete_asset_type(extension, reso
     assert payload['asset_type'] == resource_type
     assert not asset_type_registry.require(resource_type).incompatibility(payload)
 
+
+def test_material_shader_reference_ignores_stale_structured_path(monkeypatch):
+    from types import SimpleNamespace
+    import Infernux.lib as lib
+    from Infernux.engine.ui import inspector_shader_utils
+
+    database = SimpleNamespace(
+        get_path_from_guid=lambda guid: (
+            'Assets/Shaders/Current.frag' if guid == 'shader-guid' else ''
+        ),
+        get_meta_by_path=lambda _path: None,
+        get_guid_from_path=lambda _path: (_ for _ in ()).throw(
+            AssertionError('structured path must not recover shader identity')
+        ),
+    )
+    monkeypatch.setattr(
+        lib,
+        'AssetRegistry',
+        SimpleNamespace(
+            instance=lambda: SimpleNamespace(get_asset_database=lambda: database)
+        ),
+    )
+    monkeypatch.setattr(
+        inspector_shader_utils,
+        '_read_compiled_shader_metadata',
+        lambda _path: {'shader_id': 'Current', 'guid': 'shader-guid'},
+    )
+
+    reference = inspector_shader_utils.make_shader_reference(
+        {
+            'guid': 'shader-guid',
+            'shader_id': 'Old',
+            'path_hint': 'Assets/Shaders/Stale.frag',
+        },
+        '.frag',
+    )
+
+    assert reference == {
+        'guid': 'shader-guid',
+        'shader_id': 'Current',
+        'path_hint': 'Assets/Shaders/Current.frag',
+    }
+
