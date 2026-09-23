@@ -1,4 +1,5 @@
 #include <function/audio/AudioClip.h>
+#include <platform/filesystem/InxPath.h>
 
 #include <array>
 #include <cassert>
@@ -52,7 +53,7 @@ int main()
     WriteStereoWave(path);
 
     infernux::AudioClip clip;
-    assert(clip.LoadFromFile(path.string()));
+    assert(clip.LoadFromFile(infernux::FromFsPath(path)));
     auto first = clip.AcquirePlaybackPcm(44100);
     auto second = clip.AcquirePlaybackPcm(44100);
     assert(first && first == second);
