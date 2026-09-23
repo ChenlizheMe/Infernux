@@ -7,7 +7,7 @@ from Infernux.lib import _Infernux as native
 
 
 def document():
-    return {"$type": "render_texture", "schema_version": 1,
+    return {"$type": "render_texture",
             "size": {"width": 641, "height": 401}, "format": "rgba8_unorm",
             "depth_format": "undefined", "samples": 1, "filter": "linear",
             "storage": False, "sampled_depth": False}
@@ -39,11 +39,11 @@ def test_inspector_attachment_choices_come_from_native_authoring_contract():
 
 
 @pytest.mark.parametrize("patch", [
-    {"samples": 3}, {"samples": True}, {"samples": 256}, {"schema_version": 2},
+    {"samples": 3}, {"samples": True}, {"samples": 256},
     {"size": {"width": 0, "height": 1}}, {"size": {"width": 1.5, "height": 3}},
     {"size": {"scale": [True, 1]}}, {"size": {"scale": [1e-100, 1]}},
     {"size": {"scale": [1e100, 1]}}, {"size": {"scale": [-1, 1]}},
-    {"size": {"width": 1, "height": 3, "scale": [1, 1]}}, {"extra": "typo"},
+    {"size": {"width": 1, "height": 3, "scale": [1, 1]}},
     {"format": "undefined"}, {"format": "d32_sfloat"}, {"depth_format": "rgba8_unorm"},
     {"sampled_depth": True}, {"storage": 1}, {"filter": "automatic"},
 ])
@@ -51,6 +51,14 @@ def test_authoring_errors_are_rejected_by_native_contract(patch):
     source = document() | patch
     with pytest.raises((ValueError, RuntimeError)):
         native._render_texture_description_from_json(json.dumps(source))
+
+
+def test_obsolete_or_unknown_fields_are_ignored_instead_of_migrated():
+    source = document() | {"schema_version": 99, "obsolete_path": "Assets/Old.rendertexture"}
+    source["size"]["obsolete_unit"] = "pixels"
+    description = native._render_texture_description_from_json(json.dumps(source))
+    current = json.loads(native._render_texture_description_to_json(description))
+    assert current == document()
 
 
 def test_binary_truncation_corruption_and_trailing_payload_are_rejected():

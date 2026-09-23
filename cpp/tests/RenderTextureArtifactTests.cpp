@@ -71,8 +71,6 @@ void TestCodec()
     Reject([&] { RenderTextureArtifact::Encode(desc, ""); });
     for (const auto &patch : std::vector<nlohmann::json>{{{"samples", 256}},
                                                          {{"samples", true}},
-                                                         {{"schema_version", 2}},
-                                                         {{"extra", true}},
                                                          {{"format", "d32_sfloat"}},
                                                          {{"sampled_depth", true}},
                                                          {{"filter", "unknown"}},
@@ -85,6 +83,12 @@ void TestCodec()
         invalid.update(patch);
         Reject([&] { RenderTextureArtifact::ParseDocument(invalid); });
     }
+    auto obsolete = doc;
+    obsolete["schema_version"] = 99;
+    obsolete["old_path"] = "Assets/Old.rendertexture";
+    obsolete["size"]["obsolete_unit"] = "pixels";
+    Require(RenderTextureArtifact::ParseDocument(obsolete).width == desc.width,
+            "obsolete RenderTexture fields were not ignored");
 }
 
 void TestImportAndReload()

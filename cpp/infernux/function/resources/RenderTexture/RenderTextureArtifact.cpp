@@ -80,21 +80,21 @@ std::vector<std::string> RenderTextureArtifact::FormatNames(bool depth)
 
 rhi::RenderTextureDesc RenderTextureArtifact::ParseDocument(const nlohmann::json &doc)
 {
-    constexpr std::array<std::string_view, 9> fields = {
-        "$type", "schema_version", "size", "format", "depth_format", "samples", "filter", "storage", "sampled_depth"};
-    if (!doc.is_object() || doc.size() != fields.size())
-        throw std::invalid_argument("RenderTexture document has an invalid field set");
+    constexpr std::array<std::string_view, 8> fields = {"$type",   "size",   "format",  "depth_format",
+                                                        "samples", "filter", "storage", "sampled_depth"};
+    if (!doc.is_object())
+        throw std::invalid_argument("RenderTexture document must be an object");
     for (const auto field : fields)
         if (!doc.contains(field))
             throw std::invalid_argument("RenderTexture document is missing " + std::string(field));
-    if (doc["$type"] != "render_texture" || !doc["schema_version"].is_number_integer() || doc["schema_version"] != 1)
-        throw std::invalid_argument("Unsupported RenderTexture document type/version");
+    if (doc["$type"] != "render_texture")
+        throw std::invalid_argument("Unsupported RenderTexture document type");
     rhi::RenderTextureDesc desc;
     const auto &size = doc["size"];
-    if (size.is_object() && size.size() == 2 && size.contains("width") && size.contains("height")) {
+    if (size.is_object() && size.contains("width") && size.contains("height") && !size.contains("scale")) {
         desc.width = PositiveInteger(size["width"]);
         desc.height = PositiveInteger(size["height"]);
-    } else if (size.is_object() && size.size() == 1 && size.contains("scale")) {
+    } else if (size.is_object() && size.contains("scale") && !size.contains("width") && !size.contains("height")) {
         const auto &scale = size["scale"];
         if (!scale.is_array() || scale.size() != 2 || !scale[0].is_number() || !scale[1].is_number())
             throw std::invalid_argument("RenderTexture scale requires two numbers");
@@ -133,7 +133,6 @@ nlohmann::json RenderTextureArtifact::SerializeDocument(const rhi::RenderTexture
     else
         size = {{"width", desc.width}, {"height", desc.height}};
     return {{"$type", "render_texture"},
-            {"schema_version", 1},
             {"size", std::move(size)},
             {"format", FormatName(desc.colorFormat)},
             {"depth_format", FormatName(desc.depthFormat)},

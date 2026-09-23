@@ -23,7 +23,7 @@ def test_project_file_manager_creates_render_texture_description(tmp_path):
     assert asset.is_file()
     document = json.loads(asset.read_text(encoding="utf-8"))
     assert document["$type"] == "render_texture"
-    assert document["schema_version"] == 1
+    assert "schema_version" not in document
     assert document["size"] == {"width": 256, "height": 256}
     assert document["depth_format"] == "d32_sfloat"
     ok, error = create_render_texture(str(tmp_path), "GameplayTarget")
