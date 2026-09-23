@@ -42,6 +42,15 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--startup-timeout", type=float, default=60.0)
     parser.add_argument("--transition-timeout", type=float, default=30.0)
     parser.add_argument(
+        "--discard-initial-untitled",
+        action="store_true",
+        help=(
+            "Explicitly discard the pathless Untitled Scene created while bootstrapping "
+            "a fresh acceptance project before opening --scene. This is intended only "
+            "for disposable generated fixtures; saved or path-backed Scenes are never discarded."
+        ),
+    )
+    parser.add_argument(
         "--capture",
         action="append",
         choices=("scene", "game", "editor"),
@@ -168,11 +177,33 @@ def _scene_manager_ready(manager: object) -> bool:
     """Return whether the editor's deferred initial scene load has settled.
 
     ``SceneFileManager.open_scene`` rejects requests while its deferred load is
-    active.  The automation host can observe the project document before that
+    active. The automation host can observe the project document before that
     load reaches the owner safe point, so checking only ``project-info`` races
-    with the manager.  A non-loading manager with a current scene path is the
-    stable state needed before deciding whether another open is necessary.
+    with the manager. A new project legitimately settles on an unsaved
+    ``Untitled Scene`` with no path; once loading is false that state is ready
+    for the requested scene to replace it.
     """
+
+    if isinstance(manager, dict):
+        is_loading = manager.get("is_loading", True)
+    else:
+        is_loading = getattr(manager, "is_loading", True)
+    return not bool(is_loading)
+
+
+def _project_has_active_scene(project_info: object) -> bool:
+    """Return whether native bootstrap has published any active Scene."""
+
+    if not isinstance(project_info, dict):
+        return False
+    active_scene = project_info.get("active_scene")
+    return isinstance(active_scene, dict) and bool(
+        str(active_scene.get("name", "") or "").strip()
+    )
+
+
+def _is_pathless_initial_scene(manager: object) -> bool:
+    """Return whether the settled editor document is the bootstrap Untitled Scene."""
 
     if isinstance(manager, dict):
         is_loading = manager.get("is_loading", True)
@@ -180,7 +211,7 @@ def _scene_manager_ready(manager: object) -> bool:
     else:
         is_loading = getattr(manager, "is_loading", True)
         current_scene_path = getattr(manager, "current_scene_path", "")
-    return not bool(is_loading) and bool(str(current_scene_path or "").strip())
+    return not bool(is_loading) and not str(current_scene_path or "").strip()
 
 
 def _run_smoke(
@@ -190,6 +221,7 @@ def _run_smoke(
     play_seconds: float,
     startup_timeout: float,
     transition_timeout: float,
+    discard_initial_untitled: bool,
     dialog_timeout: float,
     native_open_dialog: str,
     native_save_dialog: str,
@@ -220,7 +252,7 @@ def _run_smoke(
             return run("project-info", lambda: host.project_info(project))
 
         _wait_until(
-            lambda: project_info().get("active_scene", {}).get("path"),
+            lambda: _project_has_active_scene(project_info()),
             timeout=startup_timeout,
             label="initial scene",
         )
@@ -254,7 +286,37 @@ def _run_smoke(
         if not same_path(current_scene_path, scene_path):
             accepted = run("open-scene", lambda: manager.open_scene(scene_path))
             if not accepted:
-                raise RuntimeError(f"Editor rejected scene open: {scene_path}")
+                initial_state = scene_manager_state()
+                if not (
+                    discard_initial_untitled
+                    and _is_pathless_initial_scene(initial_state)
+                ):
+                    raise RuntimeError(f"Editor rejected scene open: {scene_path}")
+
+                # open_scene() has already opened the normal unsaved-changes
+                # transaction. The command-line flag is the caller's explicit
+                # authorization to answer Discard for this disposable,
+                # pathless bootstrap document. Never bypass the transaction or
+                # mark a document clean behind the editor's back.
+                from Infernux.engine.ui.dirty_panel_confirmation import (
+                    DirtyPanelConfirmationCoordinator,
+                )
+
+                def discard_bootstrap_document() -> bool:
+                    coordinator = DirtyPanelConfirmationCoordinator.instance()
+                    if not coordinator.is_active:
+                        return False
+                    coordinator.choose_discard()
+                    return True
+
+                discarded = run(
+                    "discard-initial-untitled",
+                    discard_bootstrap_document,
+                )
+                if not discarded:
+                    raise RuntimeError(
+                        "Editor did not present an unsaved pathless Untitled Scene to discard"
+                    )
 
             def requested_scene_ready() -> bool:
                 state = scene_manager_state()
@@ -397,6 +459,7 @@ def _run_smoke(
         run("close", host.request_editor_close)
     except BaseException as exc:
         outcome["error"] = f"{type(exc).__name__}: {exc}"
+        _emit("worker-failed", error=outcome["error"])
         try:
             queue.run_sync(
                 "editor-smoke.close-after-failure",
@@ -434,6 +497,7 @@ def main() -> int:
             "play_seconds": args.play_seconds,
             "startup_timeout": args.startup_timeout,
             "transition_timeout": args.transition_timeout,
+            "discard_initial_untitled": bool(args.discard_initial_untitled),
             "dialog_timeout": args.dialog_timeout,
             "native_open_dialog": resolved_path(args.native_open_dialog)
             if args.native_open_dialog

@@ -82,7 +82,7 @@ def test_editor_smoke_consumes_engine_and_explicit_process_logs(tmp_path: Path) 
     ("is_loading", "current_scene_path", "expected"),
     [
         (True, "/project/Assets/Scenes/Main.scene", False),
-        (False, "", False),
+        (False, "", True),
         (False, "/project/Assets/Scenes/Main.scene", True),
     ],
 )
@@ -97,6 +97,42 @@ def test_editor_smoke_waits_for_scene_manager_deferred_load(
     )
 
     assert _MODULE._scene_manager_ready(manager) is expected
+
+
+@pytest.mark.parametrize(
+    ("is_loading", "current_scene_path", "expected"),
+    [
+        (True, "", False),
+        (False, "", True),
+        (False, "/project/Assets/Scenes/Main.scene", False),
+    ],
+)
+def test_editor_smoke_identifies_only_settled_pathless_bootstrap_scene(
+    is_loading: bool,
+    current_scene_path: str,
+    expected: bool,
+) -> None:
+    manager = SimpleNamespace(
+        is_loading=is_loading,
+        current_scene_path=current_scene_path,
+    )
+
+    assert _MODULE._is_pathless_initial_scene(manager) is expected
+
+
+@pytest.mark.parametrize(
+    ("project_info", "expected"),
+    [
+        ({}, False),
+        ({"active_scene": {"name": "", "path": ""}}, False),
+        ({"active_scene": {"name": "Untitled Scene", "path": ""}}, True),
+        ({"active_scene": {"name": "Main", "path": "/Assets/Main.scene"}}, True),
+    ],
+)
+def test_editor_smoke_waits_for_active_scene_not_a_durable_path(
+    project_info: dict[str, object], expected: bool
+) -> None:
+    assert _MODULE._project_has_active_scene(project_info) is expected
 
 
 @pytest.mark.parametrize("log_kind", ["engine", "process"])

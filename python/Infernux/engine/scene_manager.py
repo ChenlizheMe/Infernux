@@ -741,6 +741,15 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
                 registry.establish_loaded_baseline(document.document_id)
         if previous_id and previous_id != document.document_id and not preserve_previous:
             previous = registry.get(previous_id)
+            if previous is not None:
+                # Single-scene replacement has already resolved Save/Discard
+                # for the retiring document. Move every authoring View to the
+                # committed document through the registry's destructive
+                # replacement primitive so the discarded session document
+                # cannot survive invisibly and block a later Editor exit.
+                for view_id in tuple(previous.view_ids):
+                    registry.replace_view_document(document.document_id, view_id)
+                previous = registry.get(previous_id)
             if previous is not None and not previous.view_ids:
                 # Scene history may reopen this document after several other
                 # scene transitions. Retire it to dormant state so its

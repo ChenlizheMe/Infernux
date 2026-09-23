@@ -204,7 +204,7 @@ the tracked fixture. Example on Windows:
 ```powershell
 New-Item -ItemType Directory out/ci-projects -Force
 Copy-Item tests/fixtures/multiplatform_player out/ci-projects/regression -Recurse
-python scripts/acceptance/editor_project_smoke.py out/ci-projects/regression --scene Assets/Scenes/Main.scene
+python scripts/acceptance/editor_project_smoke.py out/ci-projects/regression --scene Assets/Scenes/Main.scene --discard-initial-untitled
 python scripts/acceptance/build_player.py out/ci-projects/regression windows-x64 out/acceptance/regression-player --report out/acceptance/regression-build.json
 ```
 

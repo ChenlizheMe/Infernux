@@ -22,6 +22,63 @@ class _SceneAssetDatabase:
         return self.current_path if str(guid) == self.guid else ""
 
 
+def test_single_replace_retires_discarded_session_document_views(tmp_path):
+    from Infernux.engine.interaction import DocumentRegistry
+
+    class Database:
+        def __init__(self):
+            self.paths_by_guid = {}
+            self.guids_by_path = {}
+
+        def register(self, path, guid):
+            self.paths_by_guid[str(guid)] = str(path)
+            self.guids_by_path[str(path)] = str(guid)
+
+        def get_guid_from_path(self, path):
+            return self.guids_by_path.get(str(path), "")
+
+        def get_path_from_guid(self, guid):
+            return self.paths_by_guid.get(str(guid), "")
+
+    previous_registry = DocumentRegistry._instance
+    previous_manager = SceneFileManager._instance
+    try:
+        registry = DocumentRegistry()
+        manager = SceneFileManager()
+        database = Database()
+        initial_path = str(tmp_path / "Initial.scene")
+        replacement_path = str(tmp_path / "Replacement.scene")
+        database.register(initial_path, "initial-scene-guid")
+        database.register(replacement_path, "replacement-scene-guid")
+        manager.set_asset_database(database)
+
+        initial = manager._replace_scene_document(
+            kind="scene",
+            resource_path=initial_path,
+            title="Untitled Scene",
+            dirty=True,
+        )
+        for view_id in ("scene_view", "game_view", "ui_editor"):
+            registry.attach_view(initial.document_id, view_id)
+
+        replacement = manager._replace_scene_document(
+            kind="scene",
+            resource_path=replacement_path,
+            title="Replacement",
+            dirty=False,
+        )
+
+        assert registry.get(initial.document_id) is None
+        assert all(
+            registry.document_for_view(view_id) is replacement
+            for view_id in ("scene_view", "game_view", "ui_editor")
+        )
+        assert registry.dirty_documents() == ()
+    finally:
+        SceneFileManager._instance = previous_manager
+        DocumentRegistry._instance = previous_registry
+
+
 def test_additive_path_entry_resolves_guid_before_residency_dedup(tmp_path, monkeypatch):
     assets = tmp_path / "Project" / "Assets"
     assets.mkdir(parents=True)
