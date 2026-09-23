@@ -9,20 +9,38 @@ fi
 
 fail=0
 checked=0
+changed=$(mktemp)
+trap 'rm -f "$changed"' EXIT HUP INT TERM
+zero=0000000000000000000000000000000000000000
 
-while IFS= read -r file; do
+while read -r local_ref local_sha remote_ref remote_sha; do
+  if [ "$local_sha" = "$zero" ]; then
+    continue
+  fi
+  if [ "$remote_sha" = "$zero" ]; then
+    base=$(git hash-object -t tree /dev/null)
+  else
+    base=$remote_sha
+  fi
+  git diff --name-only --diff-filter=ACMR "$base" "$local_sha" |
+    while IFS= read -r file; do
+      printf '%s\t%s\n' "$local_sha" "$file"
+    done >>"$changed"
+done
+
+sort -u "$changed" -o "$changed"
+while IFS="$(printf '\t')" read -r sha file; do
   case "$file" in
     cpp/*.cpp|cpp/*.h|cpp/*.hpp)
       checked=$((checked + 1))
-      if ! clang-format --dry-run --Werror "$file" >/dev/null 2>&1; then
+      if ! git show "${sha}:${file}" |
+        clang-format --dry-run --Werror --assume-filename "$file" - >/dev/null 2>&1; then
         echo "[pre-push] Format check failed: $file"
         fail=1
       fi
       ;;
   esac
-done <<EOF
-$(git ls-files)
-EOF
+done <"$changed"
 
 if [ "$checked" -eq 0 ]; then
   exit 0
