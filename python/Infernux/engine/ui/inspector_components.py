@@ -921,25 +921,31 @@ def _declared_native_fields(comp):
         attributes = schema.attributes
         if bool(attributes["hidden"]):
             continue
+        if not bool(attributes.get("serialized", True)):
+            # Transient/derived native properties are rendered by their typed
+            # BuiltinComponent wrapper, never fabricated into JSON documents.
+            continue
         serialized_name = str(attributes["serialized_name"])
-        if serialized_name not in document:
-            raise RuntimeError(
-                f"{schema.property_path}: declared native field is absent from the component document"
-            )
         prop = CppProperty.from_native(type_name, str(attributes["field_id"]))
-        raw_value = document[serialized_name]
         if attributes.get("setter_owns_document_shape", False):
-            # GUID-only native storage is projected by the same adapter used
-            # by the ordinary built-in Inspector, not decoded as a Python ref.
+            # Derived/native-setter fields need not occupy a serialized slot.
+            # Project them through the wrapper instead of inventing document
+            # state (for example Camera.sensor_type and GUID-owned refs).
             wrapper_cls = BuiltinComponent._builtin_registry[type_name]
             wrapped = comp if isinstance(comp, wrapper_cls) else wrapper_cls._get_or_create_wrapper(
                 comp, comp.game_object,
             )
             current_value = getattr(wrapped, str(attributes["field_id"]))
-        elif prop.metadata.field_type is FieldType.ENUM:
-            current_value = prop.metadata.enum_type(int(raw_value))
         else:
-            current_value = VALUE_CODECS.decode(raw_value, prop.metadata, schema.property_path)
+            if serialized_name not in document:
+                raise RuntimeError(
+                    f"{schema.property_path}: declared native field is absent from the component document"
+                )
+            raw_value = document[serialized_name]
+            if prop.metadata.field_type is FieldType.ENUM:
+                current_value = prop.metadata.enum_type(int(raw_value))
+            else:
+                current_value = VALUE_CODECS.decode(raw_value, prop.metadata, schema.property_path)
         result.append((serialized_name, schema, prop.metadata, current_value))
     return result
 
