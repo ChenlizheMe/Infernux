@@ -280,6 +280,63 @@ def test_array_length_does_not_consume_specializations(monkeypatch):
     function.compile(function.signatures[0])
 
 
+def test_dtype_rank_and_layout_are_bounded_native_specializations(monkeypatch):
+    from Infernux import _jit_backend
+
+    monkeypatch.setattr(_jit_backend, "_MAX_CPU_SPECIALIZATIONS", 4)
+
+    @jit.compile(auto_parallel=False)
+    def first_value(values):
+        return values.flat[0]
+
+    variants = (
+        np.ones((2, 3), dtype=np.float32, order="C"),
+        np.ones((2, 3), dtype=np.float32, order="F"),
+        np.ones(6, dtype=np.float32),
+        np.ones((2, 3), dtype=np.float64, order="C"),
+    )
+    for values in variants:
+        assert first_value(values) == 1
+    assert len(first_value.signatures) == 4
+
+    # Extents are runtime values: different ordinary quantities reuse the
+    # existing dtype/rank/layout specialization instead of consuming code.
+    assert first_value(np.ones((9, 11), dtype=np.float32, order="C")) == 1
+    assert len(first_value.signatures) == 4
+
+    rejected = np.ones((2, 3), dtype=np.int32, order="C")
+    with pytest.raises(RuntimeError, match="specialization limit \\(4\\).*not compiled"):
+        first_value(rejected)
+    assert len(first_value.signatures) == 4
+
+
+def test_structured_field_schema_selects_native_specialization_before_writes(monkeypatch):
+    from Infernux import _jit_backend
+
+    monkeypatch.setattr(_jit_backend, "_MAX_CPU_SPECIALIZATIONS", 2)
+
+    @jit.compile(auto_parallel=False)
+    def increment_x(values):
+        values[0]["x"] += 1.0
+
+    compact = np.zeros(1, dtype=[("x", np.float32)])
+    padded = np.zeros(1, dtype=[("padding", np.float32), ("x", np.float32)])
+    rejected = np.zeros(
+        1,
+        dtype=[("padding", np.int32), ("x", np.float32)],
+    )
+
+    increment_x(compact)
+    increment_x(padded)
+    assert compact[0]["x"] == padded[0]["x"] == 1.0
+    assert len(increment_x.signatures) == 2
+
+    with pytest.raises(RuntimeError, match="specialization limit \\(2\\).*not compiled"):
+        increment_x(rejected)
+    assert rejected[0]["x"] == 0.0
+    assert len(increment_x.signatures) == 2
+
+
 def test_concurrent_new_types_share_specialization_capacity(monkeypatch):
     from concurrent.futures import ThreadPoolExecutor
     from threading import Barrier

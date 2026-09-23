@@ -17,7 +17,11 @@ from functools import lru_cache
 import os
 import sys
 
-from Infernux._jit_kernels import JIT_AVAILABLE, njit as _njit, warmup
+from Infernux._jit_kernels import (
+    JIT_AVAILABLE as _BACKEND_JIT_AVAILABLE,
+    njit as _njit,
+    warmup as _native_warmup,
+)
 from Infernux.jit_runtime import (
     CpuCompilationStatistics as Statistics,
     CpuPassTiming as PassTiming,
@@ -30,6 +34,22 @@ _VECTOR_FIELDS = {
     3: ("x", "y", "z"),
     4: ("x", "y", "z", "w"),
 }
+
+
+def _is_web_runtime() -> bool:
+    return os.environ.get("INFERNUX_WEB_RUNTIME") == "1" or sys.platform == "emscripten"
+
+
+def _jit_runtime_available() -> bool:
+    """Return whether this process may execute the native CPU JIT."""
+    # A host Python can have Numba installed while assembling a Web Player.
+    # The target capability, not merely the host backend, controls execution.
+    return _BACKEND_JIT_AVAILABLE and not _is_web_runtime()
+
+
+# Describe the active Player. A host Python used while assembling Web content
+# may have Numba installed, but the Web Player deliberately does not.
+JIT_AVAILABLE = _jit_runtime_available()
 
 
 @lru_cache(maxsize=1)
@@ -184,15 +204,7 @@ def compile(fn=None, **options):
     ``parallel_policy="required"`` rejects layouts without that proof. No
     partially executed call is replayed through another implementation.
     """
-    if not JIT_AVAILABLE:
-        if os.environ.get("INFERNUX_WEB_RUNTIME") == "1" or sys.platform == "emscripten":
-            if fn is None:
-                def decorate(function):
-                    return function
-                return decorate
-            if not callable(fn):
-                raise TypeError("inx.jit.compile expects a callable")
-            return fn
+    if not _jit_runtime_available():
         raise RuntimeError(
             "inx.jit.compile requires the bundled Numba/llvmlite CPU JIT runtime"
         )
@@ -204,6 +216,20 @@ def compile(fn=None, **options):
     if not callable(fn):
         raise TypeError("inx.jit.compile expects a callable")
     return _CompiledCpuFunction(_njit(fn, **options))
+
+
+def warmup(fn, *args, **kwargs):
+    """Prepare native CPU code without executing authored gameplay state.
+
+    Targets without a CPU compiler remove public warmup calls while cooking
+    project scripts. Reaching this runtime API therefore always requires the
+    bundled native JIT instead of silently changing execution semantics.
+    """
+    if not _jit_runtime_available():
+        raise RuntimeError(
+            "inx.jit.warmup requires the bundled Numba/llvmlite CPU JIT runtime"
+        )
+    return _native_warmup(fn, *args, **kwargs)
 
 
 def statistics(fn) -> Statistics:

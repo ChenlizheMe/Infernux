@@ -2,8 +2,8 @@
 
 The frontend owns legality while this module owns stable identities, bounded
 process caches, runtime signature buckets, and side-effect-safe comparison.
-It deliberately has no dependency on Numba so it is also usable by build
-tools and by the pure-Python fallback.
+It deliberately has no dependency on Numba so build tools can derive the same
+publication identities without loading the compiler backend.
 """
 
 from __future__ import annotations
@@ -219,9 +219,6 @@ def compiler_fingerprint(fn: Any, options: MutableMapping[str, Any] | None = Non
         runtime_versions["numba_threading_layer"] = "uninitialized"
 
     payload = {
-        # Revision 3 makes recursive cross-specialization dependencies explicit
-        # in each independently owned code library, including cached objects.
-        "compiler_revision": 3,
         "module": getattr(fn, "__module__", ""),
         "qualname": getattr(fn, "__qualname__", getattr(fn, "__name__", "")),
         "source_ast": source_ast,

@@ -207,6 +207,25 @@ class TestPublicJitCompile:
         assert first(3) == 6
 
     @pytest.mark.parametrize("auto_parallel", [False, True])
+    def test_republished_helper_body_selects_a_new_publication(self, auto_parallel):
+        def publish(increment):
+            namespace = {"__name__": "jit_helper_generation"}
+            exec(
+                f"def helper(value): return value + {increment}\n"
+                "def kernel(value): return helper(value)",
+                namespace,
+            )
+            return jit.compile(auto_parallel=auto_parallel)(namespace["kernel"])
+
+        first = publish(2)
+        assert first(3) == 5
+        second = publish(7)
+        assert second(3) == 10
+        # A dependency update publishes new code; it neither mutates nor
+        # redirects calls through the old specialization.
+        assert first(3) == 5
+
+    @pytest.mark.parametrize("auto_parallel", [False, True])
     def test_republished_array_constant_tracks_data_hidden_by_numpy_repr(self, auto_parallel):
         def publish(middle):
             values = np.zeros(4096, dtype=np.float64)
@@ -311,19 +330,23 @@ class TestPublicJitCompile:
             jit.compile(3)
 
     def test_missing_cpu_runtime_is_an_error_not_a_python_fallback(self, monkeypatch):
-        monkeypatch.setattr(jit, "JIT_AVAILABLE", False)
+        monkeypatch.setattr(jit, "_BACKEND_JIT_AVAILABLE", False)
         with pytest.raises(RuntimeError, match="bundled Numba/llvmlite"):
             jit.compile(lambda value: value)
 
-    def test_web_profile_uses_explicit_python_interpreter_path(self, monkeypatch):
-        monkeypatch.setattr(jit, "JIT_AVAILABLE", False)
+    def test_no_jit_runtime_rejects_uncooked_cpu_decorators(self, monkeypatch):
         monkeypatch.setenv("INFERNUX_WEB_RUNTIME", "1")
+        monkeypatch.setattr(jit, "_BACKEND_JIT_AVAILABLE", False)
 
-        @jit.compile
-        def advance(value):
+        def direct(value):
             return value + 1
 
-        assert advance(2) == 3
+        with pytest.raises(RuntimeError, match="bundled Numba/llvmlite"):
+            jit.compile(direct)
+        with pytest.raises(RuntimeError, match="bundled Numba/llvmlite"):
+            jit.compile(cache=True, parallel_policy="required")
+        with pytest.raises(RuntimeError, match="bundled Numba/llvmlite"):
+            jit.warmup(direct, 4)
 
     def test_web_import_does_not_require_numpy(self, monkeypatch):
         import builtins
@@ -344,7 +367,8 @@ class TestPublicJitCompile:
         monkeypatch.setenv("INFERNUX_WEB_RUNTIME", "1")
         loaded = runpy.run_path(jit.__file__)
         function = lambda value: value + 1
-        assert loaded["compile"](function) is function
+        with pytest.raises(RuntimeError, match="bundled Numba/llvmlite"):
+            loaded["compile"](function)
 
     def test_cpu_buffer_is_direct_jit_storage_and_gpu_is_explicitly_rejected(self):
         import Infernux as inx
@@ -524,17 +548,13 @@ class TestAutoParallelNjit:
             required._infernux_warmup(first, first)
         assert len(calls) == 5
 
-    def test_no_jit_build_exposes_stable_serial_metadata(self, monkeypatch):
+    def test_internal_adapter_has_no_hidden_python_fallback(self, monkeypatch):
         monkeypatch.setattr(jit_kernels, "_HAS_NUMBA", False)
 
-        @jit_kernels.njit(auto_parallel=True)
-        def kernel(value):
-            return value + 1
-
-        assert kernel(4) == 5
-        assert kernel.selected_mode == "serial"
-        assert kernel.serial is kernel.parallel is kernel
-        assert "unavailable" in kernel.last_diagnostic
+        with pytest.raises(RuntimeError, match="bundled Numba/llvmlite"):
+            jit_kernels.njit(auto_parallel=True)(lambda value: value + 1)
+        with pytest.raises(RuntimeError, match="bundled Numba/llvmlite"):
+            jit_kernels.warmup(lambda value: value + 1, 1)
 
     @staticmethod
     def _fake_numba_njit(*factory_args, **factory_kwargs):
