@@ -166,8 +166,6 @@ from .asset_mutations import (
     iter_asset_mutations,
 )
 from .asset_content import (
-    AssetReferenceContentPatch,
-    AssetReferenceRelocationPlanner,
     AssetRenameContentRegistry,
     AssetRenameTransform,
 )
@@ -295,8 +293,6 @@ __all__ = [
     "iter_asset_mutations",
     "AssetRenameContentRegistry",
     "AssetRenameTransform",
-    "AssetReferenceContentPatch",
-    "AssetReferenceRelocationPlanner",
     "CloseCoordinator",
     "CloseIntent",
     "CloseIntentKind",
