@@ -994,6 +994,7 @@ class SceneObjectCommandService:
         mode: str,
         target_id: int = 0,
         after: bool = False,
+        destination_world_id: int = 0,
     ) -> bool:
         """Apply one atomic multi-object hierarchy gesture.
 
@@ -1058,8 +1059,15 @@ class SceneObjectCommandService:
             return False
 
         target = self._world_object(int(target_id)) if int(target_id or 0) else None
-        if target is not None and getattr(target, "scene", None) is not scene:
-            return False
+        destination_scene = getattr(target, "scene", None) if target is not None else None
+        if destination_scene is None and int(destination_world_id or 0) > 0:
+            from Infernux.lib import SceneManager
+
+            destination_scene = SceneManager.instance().get_scene_by_world_id(
+                int(destination_world_id)
+            )
+        if destination_scene is None:
+            destination_scene = scene
         if operation == "parent":
             if target is None or int(target.id) in selected:
                 return False
@@ -1072,6 +1080,33 @@ class SceneObjectCommandService:
             destination_parent_id = self._parent_id(target)
         else:
             destination_parent_id = None
+
+        if destination_scene is not scene:
+            if operation == "adjacent":
+                destination_index = int(target.transform.get_sibling_index()) + (1 if after else 0)
+            elif destination_parent_id is None:
+                destination_index = len(destination_scene.get_root_objects())
+            else:
+                destination_index = len(target.get_children())
+            from Infernux.engine.undo import CrossSceneHierarchyMoveCommand
+
+            description = (
+                "Move GameObject Between Scenes"
+                if len(ids) == 1
+                else "Move GameObjects Between Scenes"
+            )
+            return bool(
+                manager.execute(
+                    CrossSceneHierarchyMoveCommand(
+                        ids,
+                        int(scene.world_id),
+                        int(destination_scene.world_id),
+                        destination_parent_id,
+                        destination_index,
+                        description,
+                    )
+                )
+            )
 
         affected_parent_ids = {
             self._parent_id(obj) for obj in objects

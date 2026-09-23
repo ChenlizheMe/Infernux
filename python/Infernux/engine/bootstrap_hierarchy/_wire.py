@@ -164,6 +164,15 @@ def wire_hierarchy_callbacks(bs: EditorBootstrap) -> None:
     hp.is_selection_empty = lambda: not selection.scene_object_ids()
     hp.set_ordered_ids = lambda ids: selection.set_ordered_scene_objects("hierarchy", ids)
 
+    from Infernux.engine.interaction import DocumentRegistry
+
+    def _is_scene_dirty(world_id):
+        document_id = bs.scene_file_manager.document_id_for_scene(int(world_id))
+        document = DocumentRegistry.instance().get(document_id) if document_id else None
+        return bool(document is not None and document.is_dirty)
+
+    hp.is_scene_dirty = _is_scene_dirty
+
     hp_ref = weakref.ref(hp)
 
     def _push_selection_snapshot(_change=None):
@@ -233,12 +242,13 @@ def wire_hierarchy_callbacks(bs: EditorBootstrap) -> None:
             }
         if command_id == "scene.move_hierarchy":
             parts = value.split("\t")
-            if len(parts) != 4:
+            if len(parts) != 5:
                 return {}
-            object_ids, mode, target_id, after = parts
+            object_ids, mode, target_id, after, destination_world_id = parts
             try:
                 resolved_ids = [int(item) for item in object_ids.split(",") if item]
                 resolved_target_id = int(target_id or 0)
+                resolved_destination_world_id = int(destination_world_id or 0)
             except ValueError:
                 return {}
             return {
@@ -246,6 +256,7 @@ def wire_hierarchy_callbacks(bs: EditorBootstrap) -> None:
                 "mode": mode,
                 "target_id": resolved_target_id,
                 "after": after == "1",
+                "destination_world_id": resolved_destination_world_id,
             }
         if command_id == "scene.set_active":
             try:

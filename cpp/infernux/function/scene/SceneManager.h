@@ -101,6 +101,12 @@ class SceneManager
     /// @brief Unload all scenes
     void UnloadAllScenes();
 
+    /// Reorder a loaded Scene relative to another loaded Scene.
+    /// This changes the single authoritative loaded-scene order used by the
+    /// Hierarchy, rendering, lifecycle dispatch, serialization and public
+    /// scene enumeration. Scene identities and the active Scene are preserved.
+    bool MoveSceneAdjacent(uint64_t draggedWorldId, uint64_t targetWorldId, bool after);
+
     /// @brief Full engine-shutdown teardown.
     ///
     /// Destroys every scene, persistent (DontDestroyOnLoad) object, and the

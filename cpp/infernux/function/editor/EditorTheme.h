@@ -28,6 +28,8 @@ constexpr ImVec4 LOG_DIM{0.133f, 0.133f, 0.133f, 0.6f};
 
 // ── Selection / Row colors ───────────────────────────────────────────
 constexpr ImVec4 SELECTION_BG{ACCENT_R, ACCENT_G, ACCENT_B, 1.0f};
+constexpr ImVec4 HIERARCHY_ROW_HOVER{0.28f, 0.28f, 0.28f, 1.0f};
+constexpr ImVec4 HIERARCHY_ROW_SELECTED{ACCENT_R, ACCENT_G, ACCENT_B, 0.22f};
 constexpr ImVec4 ROW_ALT{0.0f, 0.0f, 0.0f, 0.06f};
 constexpr ImVec4 ROW_NONE{0.0f, 0.0f, 0.0f, 0.0f};
 constexpr ImVec4 CONSOLE_SEGMENT_ACTIVE{0.23f, 0.23f, 0.25f, 1.0f};
@@ -98,11 +100,11 @@ constexpr float STATUS_BAR_BASE_HEIGHT = 24.0f;
 
 // ── Hierarchy / Tree ─────────────────────────────────────────────────
 constexpr ImVec2 TREE_ITEM_SPC{0.0f, 2.0f};  // ItemSpacing
-constexpr ImVec2 TREE_FRAME_PAD{2.0f, 3.0f}; // FramePadding
+constexpr ImVec2 TREE_FRAME_PAD{2.0f, 2.0f}; // FramePadding
 constexpr float TREE_INDENT = 14.0f;         // IndentSpacing per level
 constexpr ImVec4 PREFAB_TEXT{235.0f / 255.0f, 87.0f / 255.0f, 87.0f / 255.0f, 1.0f};
 constexpr ImVec4 TEXT_DISABLED{0.40f, 0.40f, 0.40f, 1.0f};
-constexpr ImVec4 DND_REORDER_LINE{1.0f, 1.0f, 1.0f, 0.90f};
+constexpr ImVec4 DND_REORDER_LINE{1.0f, 1.0f, 1.0f, 1.0f};
 constexpr ImVec4 DND_PARENT_OUTLINE{1.0f, 1.0f, 1.0f, 0.95f};
 
 // ── Project panel — model expand strip & embedded sub-assets ─────────
@@ -112,9 +114,10 @@ constexpr ImVec4 PROJECT_SUBASSET_CELL_BG{0.17f, 0.17f, 0.19f, 0.94f};
 constexpr ImVec4 PROJECT_SUBASSET_ACCENT{ACCENT_R * 0.70f, ACCENT_G * 0.70f, ACCENT_B * 0.70f, 0.90f};
 constexpr float PROJECT_SUBASSET_ACCENT_W = 3.0f;
 
-constexpr float DND_REORDER_LINE_THICKNESS = 2.0f;
+constexpr float DND_REORDER_LINE_THICKNESS = 1.0f;
 constexpr float DND_PARENT_OUTLINE_THICKNESS = 1.5f;
-constexpr float DND_REORDER_SEPARATOR_H = 6.0f;
+constexpr float DND_REORDER_SEPARATOR_H = 8.0f;
+constexpr float DND_REORDER_HIT_ABOVE = 4.0f;
 constexpr const char *PREFAB_ICON = "\xe2\x97\x86"; // ◆ U+25C6
 
 // ── Icons (Unicode glyphs) ───────────────────────────────────────────

@@ -256,6 +256,31 @@ void SceneManager::UnloadScene(Scene *scene)
     }
 }
 
+bool SceneManager::MoveSceneAdjacent(uint64_t draggedWorldId, uint64_t targetWorldId, bool after)
+{
+    if (draggedWorldId == 0 || targetWorldId == 0 || draggedWorldId == targetWorldId)
+        return false;
+
+    auto draggedIt = std::find_if(m_scenes.begin(), m_scenes.end(), [draggedWorldId](const auto &candidate) {
+        return candidate && candidate->GetWorldId() == draggedWorldId;
+    });
+    auto targetIt = std::find_if(m_scenes.begin(), m_scenes.end(), [targetWorldId](const auto &candidate) {
+        return candidate && candidate->GetWorldId() == targetWorldId;
+    });
+    if (draggedIt == m_scenes.end() || targetIt == m_scenes.end())
+        return false;
+
+    std::unique_ptr<Scene> dragged = std::move(*draggedIt);
+    m_scenes.erase(draggedIt);
+    targetIt = std::find_if(m_scenes.begin(), m_scenes.end(), [targetWorldId](const auto &candidate) {
+        return candidate && candidate->GetWorldId() == targetWorldId;
+    });
+    if (after)
+        ++targetIt;
+    m_scenes.insert(targetIt, std::move(dragged));
+    return true;
+}
+
 void SceneManager::Shutdown()
 {
     // Mesh cooking uses immutable snapshots, but Jolt's geometry helpers must

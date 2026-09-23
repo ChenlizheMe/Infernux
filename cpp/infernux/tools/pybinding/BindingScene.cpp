@@ -2923,6 +2923,9 @@ void RegisterSceneBindings(py::module_ &m)
              py::arg("world_id"), "Get a loaded scene by its stable runtime World identity")
         .def("get_scene_at", &SceneManager::GetSceneAt, py::return_value_policy::reference, py::arg("index"),
              "Get a loaded scene by its stable loaded-list index, or None")
+        .def("move_scene_adjacent", &SceneManager::MoveSceneAdjacent, py::arg("dragged_world_id"),
+             py::arg("target_world_id"), py::arg("after"),
+             "Move a loaded scene before or after another loaded scene")
         .def("find_runtime_object", &SceneManager::FindRuntimeObject, py::return_value_policy::reference,
              py::arg("name"), "Find the first named GameObject across loaded scenes")
         .def("find_runtime_object_with_tag", &SceneManager::FindRuntimeObjectWithTag,

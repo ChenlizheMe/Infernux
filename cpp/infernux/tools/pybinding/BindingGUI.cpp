@@ -1393,6 +1393,7 @@ void RegisterGUIBindings(py::module_ &m)
         .def_readwrite("get_scene_display_name", &HierarchyPanel::getSceneDisplayName)
         .def_readwrite("is_prefab_mode", &HierarchyPanel::isPrefabMode)
         .def_readwrite("get_prefab_display_name", &HierarchyPanel::getPrefabDisplayName)
+        .def_readwrite("is_scene_dirty", &HierarchyPanel::isSceneDirty)
         // Runtime hidden
         .def_readwrite("get_runtime_hidden_ids", &HierarchyPanel::getRuntimeHiddenIds)
         // UI structure queries

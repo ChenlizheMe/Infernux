@@ -132,6 +132,7 @@ def hierarchy_panel_interaction(
         try:
             object_ids = tuple(int(value) for value in payload.get("object_ids", ()))
             target_id = int(payload.get("target_id", 0) or 0)
+            destination_world_id = int(payload.get("destination_world_id", 0) or 0)
         except (TypeError, ValueError):
             return None
         mode = str(payload.get("mode", "") or "").strip().lower()
@@ -141,7 +142,13 @@ def hierarchy_panel_interaction(
             return None
         if mode != "root" and target_id <= 0:
             return None
-        return object_ids, mode, target_id, bool(payload.get("after", False))
+        return (
+            object_ids,
+            mode,
+            target_id,
+            bool(payload.get("after", False)),
+            destination_world_id,
+        )
 
     def expanded_args(context: CommandContext):
         try:

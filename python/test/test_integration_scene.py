@@ -2293,6 +2293,48 @@ class TestInstantiate:
             manager.set_active_scene(scene)
             manager.unload_scene(additive)
 
+    def test_hierarchy_move_transfers_ownership_between_loaded_scenes_and_undoes(
+        self, scene, editor_history
+    ):
+        from Infernux.engine.interaction import (
+            ClipboardService,
+            SceneObjectCommandService,
+            SelectionService,
+        )
+
+        manager = SceneManager.instance()
+        additive = manager.create_scene("CrossSceneDestination")
+        destination_parent = additive.create_game_object("DestinationParent")
+        source_parent = scene.create_game_object("SourceParent")
+        moved = scene.create_game_object("MovedBetweenScenes")
+        moved.set_parent(source_parent)
+        moved.transform.set_sibling_index(0)
+        commands = SceneObjectCommandService(SelectionService(), ClipboardService())
+        try:
+            assert commands.move_hierarchy(
+                [moved.id],
+                "parent",
+                destination_parent.id,
+                False,
+                additive.world_id,
+            ) is True
+            assert moved.scene is additive
+            assert moved.get_parent() is destination_parent
+
+            editor_history.undo()
+            assert moved.scene is scene
+            assert moved.get_parent() is source_parent
+
+            editor_history.redo()
+            assert moved.scene is additive
+            assert moved.get_parent() is destination_parent
+        finally:
+            if moved.scene is additive:
+                moved.set_parent(None)
+                manager.move_game_object_to_scene(moved, scene)
+            manager.set_active_scene(scene)
+            manager.unload_scene(additive)
+
     def test_additive_scene_document_owns_dirty_revision_and_save_target(
         self,
         scene,
@@ -2318,6 +2360,25 @@ class TestInstantiate:
         try:
             set_project_root(str(project_root))
             manager = SceneFileManager()
+
+            class _AssetDatabase:
+                @staticmethod
+                def get_guid_from_path(path):
+                    paths = {
+                        str(primary_path): "primary-scene-guid",
+                        str(additive_path): "additive-scene-guid",
+                    }
+                    return paths.get(str(path), "")
+
+                @staticmethod
+                def get_path_from_guid(guid):
+                    paths = {
+                        "primary-scene-guid": str(primary_path),
+                        "additive-scene-guid": str(additive_path),
+                    }
+                    return paths.get(str(guid), "")
+
+            manager.set_asset_database(_AssetDatabase())
             monkeypatch.setattr(manager, "_save_camera_state", lambda _path: None)
             monkeypatch.setattr(manager, "_remember_last_scene", lambda _path: None)
             manager._current_scene_path = str(primary_path)
@@ -4397,3 +4458,25 @@ class TestSceneSerialization:
 
         with pytest.raises(ValueError, match="owned by this Scene"):
             scene.main_camera = foreign
+def test_loaded_scene_order_is_authoritative_and_reorderable():
+    manager = SceneManager.instance()
+    original_active = manager.get_active_scene()
+    first = manager.create_scene("SceneOrderFirst")
+    middle = manager.create_scene("SceneOrderMiddle")
+    last = manager.create_scene("SceneOrderLast")
+    try:
+        manager.set_active_scene(middle)
+        assert manager.move_scene_adjacent(last.world_id, first.world_id, False) is True
+        order = [manager.get_scene_at(index) for index in range(manager.scene_count)]
+        assert order.index(last) + 1 == order.index(first)
+        assert manager.get_active_scene() is middle
+
+        assert manager.move_scene_adjacent(first.world_id, middle.world_id, True) is True
+        order = [manager.get_scene_at(index) for index in range(manager.scene_count)]
+        assert order.index(first) == order.index(middle) + 1
+        assert manager.get_active_scene() is middle
+    finally:
+        if original_active is not None:
+            manager.set_active_scene(original_active)
+        for scene in (first, middle, last):
+            manager.unload_scene(scene)

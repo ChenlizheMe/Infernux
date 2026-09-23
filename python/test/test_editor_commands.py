@@ -151,11 +151,11 @@ class _SceneCommandStub:
         panel = self._panel_getter()
         return bool(panel and panel.rename_object(object_id, new_name))
 
-    def move_hierarchy(self, object_ids, mode, target_id, after):
+    def move_hierarchy(self, object_ids, mode, target_id, after, destination_world_id=0):
         panel = self._panel_getter()
         return bool(
             panel
-            and panel.move_hierarchy(object_ids, mode, target_id, after)
+            and panel.move_hierarchy(object_ids, mode, target_id, after, destination_world_id)
         )
 
 
@@ -850,8 +850,8 @@ def test_hierarchy_and_scene_edit_shortcuts_share_command_handlers():
         rename_object=lambda object_id, new_name: calls.append(
             ("rename_object", object_id, new_name)
         ) or True,
-        move_hierarchy=lambda object_ids, mode, target_id, after: calls.append(
-            ("move_hierarchy", tuple(object_ids), mode, target_id, after)
+        move_hierarchy=lambda object_ids, mode, target_id, after, destination_world_id=0: calls.append(
+            ("move_hierarchy", tuple(object_ids), mode, target_id, after, destination_world_id)
         ) or True,
         get_expanded_object_ids=lambda: [],
         set_expanded_object_ids=lambda ids: calls.append(
@@ -1007,7 +1007,7 @@ def test_hierarchy_and_scene_edit_shortcuts_share_command_handlers():
             "after": False,
         },
     ).accepted
-    assert calls[-1] == ("move_hierarchy", (42,), "parent", 7, False)
+    assert calls[-1] == ("move_hierarchy", (42,), "parent", 7, False, 0)
     assert core.focus.snapshot.active_view_id == "project"
 
     assert core.commands.execute(

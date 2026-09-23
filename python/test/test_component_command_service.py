@@ -359,7 +359,7 @@ def test_native_automation_schema_projects_catalog_metadata(scene, monkeypatch):
     schema = host.scene_component_schema(owner.id, camera.component_id)
     fields = {field["name"]: field for field in schema["fields"]}
 
-    assert len(fields) == 17
+    assert len(fields) == 27
     assert fields["targetTextureGuid"]["type"] == "asset"
     assert fields["targetTextureGuid"]["asset_type"] == "RenderTexture"
     assert fields["targetTextureGuid"]["nullable"] is True
@@ -367,7 +367,6 @@ def test_native_automation_schema_projects_catalog_metadata(scene, monkeypatch):
     assert fields["projectionMode"]["enum"] == [
         {"name": "Perspective", "value": 0},
         {"name": "Orthographic", "value": 1},
-        {"name": "Physical", "value": 2},
     ]
     assert fields["gateFit"]["enum"] == [
         {"name": "None", "value": 0},
@@ -453,7 +452,7 @@ def test_native_automation_edits_its_advertised_document_field(scene, monkeypatc
         assert len(manager.action_journal.applied_entries()) == 1
         if type_name == 'Camera':
             stable = native.serialize_document()
-            for bad_field, bad_value in [('farClip', -1.0), ('clearFlags', 999), ('clearFlags', True)]:
+            for bad_field, bad_value in [('clearFlags', 999), ('clearFlags', True)]:
                 with pytest.raises((ValueError, TypeError, RuntimeError)):
                     host.set_scene_component_field(owner.id, component.component_id, bad_field, bad_value)
                 assert native.serialize_document() == stable

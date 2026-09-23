@@ -40,7 +40,7 @@ static std::string TreeExpandedCommandArgument(uint64_t objectId, bool expanded)
 }
 
 static std::string MoveCommandArgument(const std::vector<uint64_t> &objectIds, const std::string &mode,
-                                       uint64_t targetId, bool after)
+                                       uint64_t targetId, bool after, uint64_t destinationWorldId = 0)
 {
     std::string ids;
     for (const uint64_t objectId : objectIds) {
@@ -48,7 +48,8 @@ static std::string MoveCommandArgument(const std::vector<uint64_t> &objectIds, c
             ids.push_back(',');
         ids += std::to_string(objectId);
     }
-    return ids + "\t" + mode + "\t" + std::to_string(targetId) + "\t" + (after ? "1" : "0");
+    return ids + "\t" + mode + "\t" + std::to_string(targetId) + "\t" + (after ? "1" : "0") + "\t" +
+           std::to_string(destinationWorldId);
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -162,6 +163,10 @@ void HierarchyPanel::SetSelectedObjectById(uint64_t id, bool clearSearchFirst)
         m_selCount = 0;
     }
     m_selPrimary = id;
+    if (id) {
+        m_selectedSceneWorldId = 0;
+        m_pendingSceneSelectWorldId = 0;
+    }
 
     // Always expand the parent chain
     if (id) {
@@ -220,6 +225,10 @@ void HierarchyPanel::SyncSelectionCache()
     }
     m_selPrimary = getPrimary ? getPrimary() : 0;
     m_selCount = selectionCount ? selectionCount() : 0;
+    if (m_selCount > 0) {
+        m_selectedSceneWorldId = 0;
+        m_pendingSceneSelectWorldId = 0;
+    }
 }
 
 void HierarchyPanel::SetSelectionSnapshot(const std::vector<uint64_t> &ids, uint64_t primary)
@@ -230,6 +239,10 @@ void HierarchyPanel::SetSelectionSnapshot(const std::vector<uint64_t> &ids, uint
     m_selIds.insert(ids.begin(), ids.end());
     m_selPrimary = primary;
     m_selCount = static_cast<int>(ids.size());
+    if (!ids.empty()) {
+        m_selectedSceneWorldId = 0;
+        m_pendingSceneSelectWorldId = 0;
+    }
 }
 
 std::vector<uint64_t> HierarchyPanel::GetExpandedObjectIds() const
@@ -310,6 +323,8 @@ void HierarchyPanel::RefreshRootObjects(Scene *scene, bool allowStale, bool forc
         m_cachedRoots.clear();
         m_cachedScenes.clear();
         m_cachedRawRootCount = 0;
+        m_selectedSceneWorldId = 0;
+        m_pendingSceneSelectWorldId = 0;
         return;
     }
 
@@ -324,6 +339,11 @@ void HierarchyPanel::RefreshRootObjects(Scene *scene, bool allowStale, bool forc
                 scenes.push_back(loadedScene.get());
         }
     }
+    if (m_selectedSceneWorldId != 0 &&
+        std::none_of(scenes.begin(), scenes.end(), [this](Scene *loadedScene) {
+            return loadedScene && loadedScene->GetWorldId() == m_selectedSceneWorldId;
+        }))
+        m_selectedSceneWorldId = 0;
 
     std::string sceneKey;
     size_t rawRootCount = 0;
@@ -430,6 +450,8 @@ void HierarchyPanel::BuildFlatVisibleList(const std::vector<GameObject *> &roots
             if (HasActiveSearch() && !hasVisibleRoot)
                 continue;
             m_flatItems.push_back({nullptr, 0, hasVisibleRoot, scene, true});
+            if (m_collapsedSceneWorldIds.count(scene->GetWorldId()) != 0 && !HasActiveSearch())
+                continue;
             for (GameObject *root : roots) {
                 if (root && root->GetScene() == scene)
                     BuildFlatListRecurse(root, 1);
@@ -646,7 +668,10 @@ void HierarchyPanel::ReparentObject(uint64_t draggedId, uint64_t newParentId)
     GameObject *newParent = SceneManager::Instance().FindRuntimeObjectByID(newParentId);
     if (!newParent)
         return;
-    Scene *scene = newParent->GetScene();
+    GameObject *dragged = SceneManager::Instance().FindRuntimeObjectByID(draggedId);
+    if (!dragged || !dragged->GetScene())
+        return;
+    Scene *scene = dragged->GetScene();
 
     auto dragIds = GetDragIds(draggedId);
     auto sorted = TopoSortIds(scene, dragIds);
@@ -658,7 +683,7 @@ void HierarchyPanel::ReparentObject(uint64_t draggedId, uint64_t newParentId)
         auto *obj = SceneManager::Instance().FindRuntimeObjectByID(did);
         if (!obj)
             continue;
-        if (obj->GetScene() != newParent->GetScene())
+        if (obj->GetScene() != scene)
             continue;
         if (IsDescendantOf(newParent, obj))
             continue;
@@ -668,7 +693,9 @@ void HierarchyPanel::ReparentObject(uint64_t draggedId, uint64_t newParentId)
         validIds.push_back(did);
     }
     if (!validIds.empty() &&
-        ExecuteEditorCommand("scene.move_hierarchy", MoveCommandArgument(validIds, "parent", newParentId, false),
+        ExecuteEditorCommand("scene.move_hierarchy",
+                             MoveCommandArgument(validIds, "parent", newParentId, false,
+                                                 newParent->GetScene()->GetWorldId()),
                              "drag_drop"))
         m_pendingExpandId = newParentId;
 }
@@ -678,7 +705,10 @@ void HierarchyPanel::MoveObjectAdjacent(uint64_t draggedId, uint64_t targetId, b
     auto *targetObj = SceneManager::Instance().FindRuntimeObjectByID(targetId);
     if (!targetObj)
         return;
-    Scene *scene = targetObj->GetScene();
+    GameObject *dragged = SceneManager::Instance().FindRuntimeObjectByID(draggedId);
+    if (!dragged || !dragged->GetScene())
+        return;
+    Scene *scene = dragged->GetScene();
 
     auto *newParent = targetObj->GetParent();
     uint64_t newParentId = newParent ? newParent->GetID() : 0;
@@ -693,7 +723,7 @@ void HierarchyPanel::MoveObjectAdjacent(uint64_t draggedId, uint64_t targetId, b
         auto *obj = SceneManager::Instance().FindRuntimeObjectByID(did);
         if (!obj)
             continue;
-        if (obj->GetScene() != targetObj->GetScene())
+        if (obj->GetScene() != scene)
             continue;
         if (IsDescendantOf(targetObj, obj))
             continue;
@@ -704,13 +734,15 @@ void HierarchyPanel::MoveObjectAdjacent(uint64_t draggedId, uint64_t targetId, b
     if (validIds.empty())
         return;
 
-    if (ExecuteEditorCommand("scene.move_hierarchy", MoveCommandArgument(validIds, "adjacent", targetId, after),
+    if (ExecuteEditorCommand("scene.move_hierarchy",
+                             MoveCommandArgument(validIds, "adjacent", targetId, after,
+                                                 targetObj->GetScene()->GetWorldId()),
                              "drag_drop") &&
         newParentId != 0)
         m_pendingExpandId = newParentId;
 }
 
-void HierarchyPanel::ReparentToRoot(uint64_t draggedId)
+void HierarchyPanel::ReparentToRoot(uint64_t draggedId, uint64_t destinationWorldId)
 {
     GameObject *dragged = SceneManager::Instance().FindRuntimeObjectByID(draggedId);
     if (!dragged)
@@ -734,8 +766,12 @@ void HierarchyPanel::ReparentToRoot(uint64_t draggedId)
 
         validIds.push_back(did);
     }
-    if (!validIds.empty())
-        ExecuteEditorCommand("scene.move_hierarchy", MoveCommandArgument(validIds, "root", 0, false), "drag_drop");
+    if (!validIds.empty()) {
+        if (destinationWorldId == 0)
+            destinationWorldId = scene->GetWorldId();
+        ExecuteEditorCommand("scene.move_hierarchy",
+                             MoveCommandArgument(validIds, "root", 0, false, destinationWorldId), "drag_drop");
+    }
 }
 
 void HierarchyPanel::HandleExternalDrop(const std::string &dropType, uint64_t payload, uint64_t parentId)
@@ -841,9 +877,10 @@ void HierarchyPanel::CancelRename()
 // ════════════════════════════════════════════════════════════════════
 
 void HierarchyPanel::RenderReorderSep(InxGUIContext *ctx, const char *sepId, std::function<void(uint64_t)> onDrop,
-                                      float indentPx, bool consumeSpace)
+                                       float indentPx, bool consumeSpace)
 {
-    if (ImGui::GetDragDropPayload() == nullptr)
+    const ImGuiPayload *activePayload = ImGui::GetDragDropPayload();
+    if (activePayload == nullptr || !activePayload->IsDataType(DRAG_DROP_TYPE))
         return;
 
     float savedY = ctx->GetCursorPosY();
@@ -855,18 +892,19 @@ void HierarchyPanel::RenderReorderSep(InxGUIContext *ctx, const char *sepId, std
     }
     ctx->SetNextItemAllowOverlap();
     const float dpi = ctx->GetDpiScale();
+    ctx->SetCursorPosY(savedY - EditorTheme::DND_REORDER_HIT_ABOVE * dpi);
     ctx->InvisibleButton(sepId, availW, EditorTheme::DND_REORDER_SEPARATOR_H * dpi);
     ctx->PushStyleColor(ImGuiCol_DragDropTarget, 0.0f, 0.0f, 0.0f, 0.0f);
     if (ctx->BeginDragDropTarget()) {
-        // Draw separator line at midpoint
-        float minY = ctx->GetItemRectMinY();
-        float maxY = ctx->GetItemRectMaxY();
-        float midY = (minY + maxY) * 0.5f;
+        // A filled rectangle produces one exact solid-white line. AddLine is
+        // anti-aliased and creates the gray fringe visible around thin lines.
+        const float lineY = ctx->GetItemRectMinY() + EditorTheme::DND_REORDER_HIT_ABOVE * dpi;
         float x1 = ctx->GetItemRectMinX();
         float x2 = x1 + availW;
-        ctx->DrawLine(x1, midY, x2, midY, EditorTheme::DND_REORDER_LINE.x, EditorTheme::DND_REORDER_LINE.y,
-                      EditorTheme::DND_REORDER_LINE.z, EditorTheme::DND_REORDER_LINE.w,
-                      EditorTheme::DND_REORDER_LINE_THICKNESS * dpi);
+        const float lineH = EditorTheme::DND_REORDER_LINE_THICKNESS * dpi;
+        ctx->DrawFilledRect(x1, std::floor(lineY), x2, std::floor(lineY) + lineH,
+                            EditorTheme::DND_REORDER_LINE.x, EditorTheme::DND_REORDER_LINE.y,
+                            EditorTheme::DND_REORDER_LINE.z, EditorTheme::DND_REORDER_LINE.w, 0.0f);
         uint64_t payload = 0;
         if (ctx->AcceptDragDropPayload(DRAG_DROP_TYPE, &payload)) {
             if (onDrop)
@@ -891,9 +929,6 @@ void HierarchyPanel::RenderMultiDropTarget(InxGUIContext *ctx, uint64_t parentId
 
     ctx->PushStyleColor(ImGuiCol_DragDropTarget, 0.0f, 0.0f, 0.0f, 0.0f);
     if (ctx->BeginDragDropTarget()) {
-        // Unity-style drag feedback is a single target row.  Do not paint a
-        // second translucent rectangle over the row; the row hover state is
-        // the parent cue and the insertion separator is the sibling cue.
         // Accept HIERARCHY_GAMEOBJECT (uint64_t payload)
         uint64_t payload = 0;
         if (ctx->AcceptDragDropPayload(DRAG_DROP_TYPE, &payload)) {
@@ -965,6 +1000,14 @@ void HierarchyPanel::RenderRenameInput(InxGUIContext *ctx, GameObject *obj)
 // reference but no longer called from OnRenderContent).
 // ════════════════════════════════════════════════════════════════════
 
+void HierarchyPanel::MoveSceneAdjacent(uint64_t draggedWorldId, uint64_t targetWorldId, bool after)
+{
+    if (SceneManager::Instance().MoveSceneAdjacent(draggedWorldId, targetWorldId, after)) {
+        m_forceRootRefresh = true;
+        m_flatListDirty = true;
+    }
+}
+
 void HierarchyPanel::RenderSceneHeader(InxGUIContext *ctx, Scene *scene)
 {
     if (!scene)
@@ -977,11 +1020,22 @@ void HierarchyPanel::RenderSceneHeader(InxGUIContext *ctx, Scene *scene)
     // Inspector component headers, while the hierarchy tree below remains
     // unchanged.
     const float dpi = ctx->GetDpiScale();
-    const ImVec4 &header = active ? EditorTheme::INSPECTOR_HEADER_SELECTED : EditorTheme::INSPECTOR_HEADER_PRIMARY;
-    const ImVec4 &hovered = active ? EditorTheme::INSPECTOR_HEADER_SELECTED_HOVERED
-                                   : EditorTheme::INSPECTOR_HEADER_PRIMARY_HOVERED;
-    const ImVec4 &pressed = active ? EditorTheme::INSPECTOR_HEADER_SELECTED_ACTIVE
-                                   : EditorTheme::INSPECTOR_HEADER_PRIMARY_ACTIVE;
+    const bool dragged = m_draggedSceneWorldId == worldId;
+    const bool selectedOrDragged = m_selectedSceneWorldId == worldId || dragged;
+    const ImVec2 sceneRowMin = ImGui::GetCursorScreenPos();
+    const float sceneRowHeight = ImGui::GetFontSize() * EditorTheme::INSPECTOR_HEADER_PRIMARY_FONT_SCALE +
+                                 2.0f * EditorTheme::INSPECTOR_HEADER_PRIMARY_FRAME_PAD.y * dpi;
+    const ImVec2 sceneRowMax{sceneRowMin.x + ImGui::GetContentRegionAvail().x,
+                             sceneRowMin.y + sceneRowHeight};
+    const bool dragTargetHovered = ImGui::GetDragDropPayload() != nullptr &&
+                                   ImGui::IsMouseHoveringRect(sceneRowMin, sceneRowMax, false);
+    const ImVec4 &header = selectedOrDragged ? EditorTheme::HIERARCHY_ROW_SELECTED
+                            : dragTargetHovered ? EditorTheme::HIERARCHY_ROW_HOVER
+                                                : EditorTheme::INSPECTOR_HEADER_PRIMARY;
+    const ImVec4 &hovered = selectedOrDragged ? EditorTheme::HIERARCHY_ROW_SELECTED
+                                              : EditorTheme::HIERARCHY_ROW_HOVER;
+    const ImVec4 &pressed = selectedOrDragged ? EditorTheme::HIERARCHY_ROW_SELECTED
+                                              : EditorTheme::HIERARCHY_ROW_HOVER;
     ctx->PushStyleColor(ImGuiCol_Header, header.x, header.y, header.z, header.w);
     ctx->PushStyleColor(ImGuiCol_HeaderHovered, hovered.x, hovered.y, hovered.z, hovered.w);
     ctx->PushStyleColor(ImGuiCol_HeaderActive, pressed.x, pressed.y, pressed.z, pressed.w);
@@ -992,28 +1046,61 @@ void HierarchyPanel::RenderSceneHeader(InxGUIContext *ctx, Scene *scene)
                           EditorTheme::INSPECTOR_HEADER_ITEM_SPC.x * dpi,
                           EditorTheme::INSPECTOR_HEADER_ITEM_SPC.y * dpi);
     ctx->PushStyleVarFloat(ImGuiStyleVar_FrameBorderSize, EditorTheme::INSPECTOR_HEADER_BORDER_SIZE * dpi);
-    ctx->PushStyleVarFloat(ImGuiStyleVar_FrameRounding, 3.0f * dpi);
+    ImGui::SetWindowFontScale(EditorTheme::INSPECTOR_HEADER_PRIMARY_FONT_SCALE);
 
-    const float originalX = ctx->GetCursorPosX();
-    const float inset = 4.0f * dpi;
-    ctx->SetCursorPosX(originalX + inset);
+    const bool wasOpen = m_collapsedSceneWorldIds.count(worldId) == 0;
+    ctx->SetNextItemOpen(wasOpen, ImGuiCond_Always);
     std::string label = scene->GetName();
+    if (isSceneDirty && isSceneDirty(worldId))
+        label += " *";
     label += "###HierarchySceneHeader";
-    if (ctx->Selectable(label, active, ImGuiSelectableFlags_SpanAllColumns, 0.0f,
-                        m_cachedItemHeight + 4.0f * dpi))
+    // Unity semantics: the header body selects the scene; only the disclosure
+    // arrow changes the expanded state.
+    const bool isOpen = ImGui::CollapsingHeader(
+        label.c_str(), ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_OpenOnArrow);
+    const bool leftClicked = ImGui::IsItemClicked(ImGuiMouseButton_Left);
+    if (leftClicked) {
+        m_pendingSceneSelectWorldId = worldId;
         ExecuteEditorCommand("scene.set_active", std::to_string(worldId), "pointer");
+    }
+    if (isOpen != wasOpen) {
+        if (isOpen)
+            m_collapsedSceneWorldIds.erase(worldId);
+        else
+            m_collapsedSceneWorldIds.insert(worldId);
+        m_flatListDirty = true;
+    }
 
-    // Component headers use a quiet accent edge rather than a full saturated
-    // row.  It gives the scene boundary a clear visual identity without
-    // changing the styling of any GameObject row beneath it.
-    const float minX = ctx->GetItemRectMinX();
-    const float minY = ctx->GetItemRectMinY();
-    const float maxY = ctx->GetItemRectMaxY();
-    const ImVec4 &accent = active ? EditorTheme::SELECTION_BG : EditorTheme::PREFAB_TEXT;
-    ctx->DrawFilledRect(minX, minY, minX + 3.0f * dpi, maxY, accent.x, accent.y, accent.z, accent.w, 2.0f * dpi);
+    if (ctx->BeginDragDropSource(0)) {
+        m_pendingSceneSelectWorldId = 0;
+        m_draggedSceneWorldId = worldId;
+        ctx->SetDragDropPayload(SCENE_DRAG_DROP_TYPE, worldId);
+        ctx->Label(scene->GetName());
+        ctx->EndDragDropSource();
+    }
 
-    // Do not carry the scene inset into the first GameObject row.
-    ctx->SetCursorPosX(originalX);
+    ctx->PushStyleColor(ImGuiCol_DragDropTarget, 0.0f, 0.0f, 0.0f, 0.0f);
+    if (ctx->BeginDragDropTarget()) {
+        const ImGuiPayload *payloadType = ImGui::GetDragDropPayload();
+        if (payloadType && payloadType->IsDataType(SCENE_DRAG_DROP_TYPE)) {
+            const bool after = ImGui::GetMousePos().y >=
+                               (ctx->GetItemRectMinY() + ctx->GetItemRectMaxY()) * 0.5f;
+            const float lineY = after ? ctx->GetItemRectMaxY() : ctx->GetItemRectMinY();
+            ctx->DrawFilledRect(ctx->GetItemRectMinX(), std::floor(lineY), ctx->GetItemRectMaxX(),
+                                std::floor(lineY) + EditorTheme::DND_REORDER_LINE_THICKNESS * dpi,
+                                EditorTheme::DND_REORDER_LINE.x, EditorTheme::DND_REORDER_LINE.y,
+                                EditorTheme::DND_REORDER_LINE.z, EditorTheme::DND_REORDER_LINE.w, 0.0f);
+            uint64_t draggedWorldId = 0;
+            if (ctx->AcceptDragDropPayload(SCENE_DRAG_DROP_TYPE, &draggedWorldId))
+                MoveSceneAdjacent(draggedWorldId, worldId, after);
+        } else {
+            uint64_t payload = 0;
+            if (ctx->AcceptDragDropPayload(DRAG_DROP_TYPE, &payload))
+                ReparentToRoot(payload, worldId);
+        }
+        ctx->EndDragDropTarget();
+    }
+    ctx->PopStyleColor(1);
     if (ctx->BeginPopupContextItem("##HierarchySceneContext", 1)) {
         if (ctx->MenuItem(Tr("hierarchy.scene.set_active").c_str(), "", active, true))
             ExecuteEditorCommand("scene.set_active", std::to_string(worldId), "context_menu");
@@ -1027,8 +1114,9 @@ void HierarchyPanel::RenderSceneHeader(InxGUIContext *ctx, Scene *scene)
     if (InxGUISemantics::IsCaptureEnabled())
         ctx->RecordSemanticItem("hierarchy_scene", scene->GetName(), true, "hierarchy.scene." + std::to_string(worldId),
                                 active);
+    ImGui::SetWindowFontScale(1.0f);
     ctx->PopID();
-    ctx->PopStyleVar(4);
+    ctx->PopStyleVar(3);
     ctx->PopStyleColor(3);
 }
 
@@ -1057,7 +1145,8 @@ void HierarchyPanel::RenderFlatItem(InxGUIContext *ctx, const FlatItem &item, fl
     int nodeFlags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_SpanAvailWidth |
                     ImGuiTreeNodeFlags_FramePadding | ImGuiTreeNodeFlags_NoTreePushOnOpen;
 
-    if (m_selIds.count(objId))
+    const bool selectedOrDragged = m_selIds.count(objId) != 0 || m_draggedObjectId == objId;
+    if (selectedOrDragged)
         nodeFlags |= ImGuiTreeNodeFlags_Selected;
 
     bool isLeaf = !item.hasVisibleChildren;
@@ -1106,7 +1195,27 @@ void HierarchyPanel::RenderFlatItem(InxGUIContext *ctx, const FlatItem &item, fl
     stableLabel = *displayName;
     stableLabel += "###HierarchyObject_";
     stableLabel += std::to_string(objId);
+    // A drag blocks ImGui's ordinary hover detection. Resolve the prospective
+    // parent under the pointer before submitting the row and feed it through
+    // the exact same Header color as an ordinary mouse hover. Drawing a drop
+    // overlay afterward would tint or cover the row text.
+    const ImVec2 rowMin = ImGui::GetCursorScreenPos();
+    const ImVec2 rowMax{rowMin.x + ImGui::GetContentRegionAvail().x,
+                        rowMin.y + ImGui::GetFrameHeight()};
+    const bool dragBodyHovered = ImGui::GetDragDropPayload() != nullptr &&
+                                 ImGui::IsMouseHoveringRect(rowMin, rowMax, false);
+    if (dragBodyHovered && !selectedOrDragged)
+        nodeFlags |= ImGuiTreeNodeFlags_Selected;
+    const ImVec4 &rowBase = selectedOrDragged ? EditorTheme::HIERARCHY_ROW_SELECTED
+                            : dragBodyHovered ? EditorTheme::HIERARCHY_ROW_HOVER
+                                              : EditorTheme::ROW_NONE;
+    const ImVec4 &rowHover = selectedOrDragged ? EditorTheme::HIERARCHY_ROW_SELECTED
+                                               : EditorTheme::HIERARCHY_ROW_HOVER;
+    ctx->PushStyleColor(ImGuiCol_Header, rowBase.x, rowBase.y, rowBase.z, rowBase.w);
+    ctx->PushStyleColor(ImGuiCol_HeaderHovered, rowHover.x, rowHover.y, rowHover.z, rowHover.w);
+    ctx->PushStyleColor(ImGuiCol_HeaderActive, rowHover.x, rowHover.y, rowHover.z, rowHover.w);
     bool isOpen = ctx->TreeNodeEx(stableLabel, nodeFlags);
+    ctx->PopStyleColor(3);
     if (InxGUISemantics::IsCaptureEnabled())
         ctx->RecordSemanticItem("hierarchy_object", objectName, true, "hierarchy.object." + std::to_string(objId),
                                 m_selIds.count(objId) > 0);
@@ -1125,6 +1234,8 @@ void HierarchyPanel::RenderFlatItem(InxGUIContext *ctx, const FlatItem &item, fl
 
     // ── Selection ───────────────────────────────────────────────
     if (ctx->IsItemClicked(0)) {
+        m_selectedSceneWorldId = 0;
+        m_pendingSceneSelectWorldId = 0;
         if (m_renameId && m_renameId != objId)
             CancelRename();
         m_pendingSelectId = objId;
@@ -1132,6 +1243,8 @@ void HierarchyPanel::RenderFlatItem(InxGUIContext *ctx, const FlatItem &item, fl
         m_pendingShift = IsShift(ctx);
     }
     if (ctx->IsItemClicked(1)) {
+        m_selectedSceneWorldId = 0;
+        m_pendingSceneSelectWorldId = 0;
         if (!m_selIds.count(objId)) {
             if (selectId)
                 selectId(objId);
@@ -1155,6 +1268,18 @@ void HierarchyPanel::RenderFlatItem(InxGUIContext *ctx, const FlatItem &item, fl
 
     // ── Drag source ─────────────────────────────────────────────
     if (ctx->BeginDragDropSource(0)) {
+        // Unity selects an unselected row when its drag actually begins. This
+        // clears a stale selection on the prospective parent, so that row can
+        // display the ordinary neutral hover while the source owns the muted
+        // accent selection.
+        if (m_selIds.count(objId) == 0) {
+            m_selectedSceneWorldId = 0;
+            m_pendingSceneSelectWorldId = 0;
+            if (selectId)
+                selectId(objId);
+            SyncSelectionCache();
+        }
+        m_draggedObjectId = objId;
         ctx->SetDragDropPayload(DRAG_DROP_TYPE, objId);
         int n = m_selIds.count(objId) ? m_selCount : 1;
         if (n > 1)
@@ -1244,6 +1369,21 @@ void HierarchyPanel::VisiblePreRender(InxGUIContext *ctx)
             m_pendingShift = false;
         }
     }
+
+    // Scene Header selection is also release-driven so beginning a drag does
+    // not leave the header selected after the reorder gesture completes.
+    if (m_pendingSceneSelectWorldId != 0) {
+        if (!ctx->IsMouseButtonDown(0)) {
+            if (!ctx->IsMouseDragging(0)) {
+                const uint64_t worldId = m_pendingSceneSelectWorldId;
+                ClearSelectionAndNotify();
+                m_selectedSceneWorldId = worldId;
+            }
+            m_pendingSceneSelectWorldId = 0;
+        } else if (ctx->IsMouseDragging(0)) {
+            m_pendingSceneSelectWorldId = 0;
+        }
+    }
     m_subPrePendingSelect += msSince(pendingStart);
 }
 
@@ -1258,6 +1398,11 @@ void HierarchyPanel::OnRenderContent(InxGUIContext *ctx)
         return std::chrono::duration<double, std::milli>(Clock::now() - start).count();
     };
     const float dpi = ctx->GetDpiScale();
+    const ImGuiPayload *framePayload = ImGui::GetDragDropPayload();
+    if (framePayload == nullptr) {
+        m_draggedObjectId = 0;
+        m_draggedSceneWorldId = 0;
+    }
     if (std::abs(dpi - m_lastDpiScale) >= 0.01f) {
         m_lastDpiScale = dpi;
         m_cachedItemHeight = 18.0f * dpi;
@@ -1360,9 +1505,12 @@ void HierarchyPanel::OnRenderContent(InxGUIContext *ctx)
         }
         int nItems = static_cast<int>(m_flatItems.size());
 
-        // Root-level insertion line before first root (only when dragging)
-        bool hasDrag = (ImGui::GetDragDropPayload() != nullptr);
-        if (hasDrag && IsPrefabModeActive()) {
+        const ImGuiPayload *activePayload = ImGui::GetDragDropPayload();
+        const bool hasObjectDrag = activePayload && activePayload->IsDataType(DRAG_DROP_TYPE);
+        const bool hasAnyDrag = activePayload != nullptr;
+        // Prefab mode has no Scene Header, so its first-root insertion target
+        // remains at the top of the flat tree.
+        if (hasObjectDrag && IsPrefabModeActive()) {
             if (nRoots > 0) {
                 uint64_t firstRootId = visibleRoots[0]->GetID();
                 RenderReorderSep(ctx, "##sep_before_first_root", [this, firstRootId](uint64_t payload) {
@@ -1424,31 +1572,85 @@ void HierarchyPanel::OnRenderContent(InxGUIContext *ctx)
                 ctx->Dummy(availW, static_cast<float>(firstVis) * itemH);
 
             float baseIndentX = ctx->GetCursorPosX();
+            const float baseIndentScreenX = ImGui::GetCursorScreenPos().x;
             for (int i = firstVis; i <= lastVis; i++) {
                 float beforeY = ctx->GetCursorPosY();
                 const FlatItem &currentItem = m_flatItems[i];
 
                 if (currentItem.sceneHeader) {
                     RenderSceneHeader(ctx, currentItem.scene);
+                    if (hasObjectDrag && i + 1 < nItems) {
+                        const bool firstRootVisible = i + 1 < nItems && !m_flatItems[i + 1].sceneHeader &&
+                                                      m_flatItems[i + 1].scene == currentItem.scene;
+                        const uint64_t destinationWorldId = currentItem.scene->GetWorldId();
+                        if (firstRootVisible) {
+                            const uint64_t firstRootId = m_flatItems[i + 1].obj->GetID();
+                            const float rootIndent = static_cast<float>(m_flatItems[i + 1].depth) * indentStep;
+                            const std::string separatorId =
+                                "##scene_first_root_" + std::to_string(destinationWorldId);
+                            RenderReorderSep(
+                                ctx, separatorId.c_str(),
+                                [this, firstRootId](uint64_t payload) {
+                                    MoveObjectAdjacent(payload, firstRootId, false);
+                                },
+                                rootIndent);
+                        } else {
+                            const std::string separatorId =
+                                "##scene_empty_root_" + std::to_string(destinationWorldId);
+                            RenderReorderSep(
+                                ctx, separatorId.c_str(),
+                                [this, destinationWorldId](uint64_t payload) {
+                                    ReparentToRoot(payload, destinationWorldId);
+                                },
+                                indentStep);
+                        }
+                    }
                     continue;
                 }
 
                 RenderFlatItem(ctx, currentItem, baseIndentX, indentStep);
 
-                // Reorder separator after each item (only when dragging)
-                if (hasDrag) {
-                    uint64_t afterObjId = currentItem.obj->GetID();
-                    std::string sepAfterId = "##sep_a_" + std::to_string(afterObjId);
-                    RenderReorderSep(
-                        ctx, sepAfterId.c_str(),
-                        [this, afterObjId](uint64_t payload) { MoveObjectAdjacent(payload, afterObjId, true); },
-                        static_cast<float>(currentItem.depth) * indentStep);
+                // One visual boundary owns one insertion target. If the next
+                // row is a child, this object's "after" location belongs below
+                // that complete subtree and is intentionally not drawn here.
+                // At a closing subtree boundary, horizontal pointer position
+                // selects the desired ancestor depth, yielding exactly one
+                // line aligned to the intended parent level.
+                if (hasObjectDrag && i + 1 < nItems) {
+                    const int rootDepth = IsPrefabModeActive() ? 0 : 1;
+                    int minimumDepth = rootDepth;
+                    if (i + 1 < nItems && !m_flatItems[i + 1].sceneHeader &&
+                        m_flatItems[i + 1].scene == currentItem.scene)
+                        minimumDepth = m_flatItems[i + 1].depth;
 
+                    if (minimumDepth <= currentItem.depth) {
+                        const float relativeMouseX = ImGui::GetMousePos().x - baseIndentScreenX;
+                        const int pointerDepth = static_cast<int>(std::floor(relativeMouseX / indentStep + 0.5f));
+                        const int desiredDepth =
+                            (std::max)(minimumDepth, (std::min)(currentItem.depth, pointerDepth));
+                        GameObject *afterObject = currentItem.obj;
+                        int afterDepth = currentItem.depth;
+                        while (afterObject && afterDepth > desiredDepth) {
+                            afterObject = afterObject->GetParent();
+                            --afterDepth;
+                        }
+                        if (afterObject) {
+                            const uint64_t afterObjectId = afterObject->GetID();
+                            const std::string separatorId = "##boundary_after_" +
+                                                            std::to_string(currentItem.obj->GetID());
+                            RenderReorderSep(
+                                ctx, separatorId.c_str(),
+                                [this, afterObjectId](uint64_t payload) {
+                                    MoveObjectAdjacent(payload, afterObjectId, true);
+                                },
+                                static_cast<float>(desiredDepth) * indentStep);
+                        }
+                    }
                 }
 
                 float afterY = ctx->GetCursorPosY();
                 float actualH = afterY - beforeY;
-                if (!hasDrag && actualH > 1.0f && !m_itemHeightMeasured) {
+                if (!hasAnyDrag && actualH > 1.0f && !m_itemHeightMeasured) {
                     m_cachedItemHeight = actualH;
                     itemH = actualH;
                     m_itemHeightMeasured = true;
@@ -1510,6 +1712,8 @@ void HierarchyPanel::OnRenderContent(InxGUIContext *ctx)
 
             if (ctx->IsItemClicked(0)) {
                 CancelRename();
+                m_selectedSceneWorldId = 0;
+                m_pendingSceneSelectWorldId = 0;
                 ClearSelectionAndNotify();
             }
             if (ctx->IsItemClicked(1))
@@ -1519,16 +1723,48 @@ void HierarchyPanel::OnRenderContent(InxGUIContext *ctx)
             ctx->PushStyleColor(ImGuiCol_DragDropTarget, 0.0f, 0.0f, 0.0f, 0.0f);
             if (ctx->BeginDragDropTarget()) {
                 float lineY = ctx->GetItemRectMinY();
-                float lineX1 = ctx->GetItemRectMinX();
-                float lineX2 = lineX1 + tailW;
-                ctx->DrawLine(lineX1, lineY, lineX2, lineY, EditorTheme::DND_REORDER_LINE.x,
-                              EditorTheme::DND_REORDER_LINE.y, EditorTheme::DND_REORDER_LINE.z,
-                              EditorTheme::DND_REORDER_LINE.w, EditorTheme::DND_REORDER_LINE_THICKNESS * dpi);
+                const float tailMinX = ctx->GetItemRectMinX();
+                float lineX1 = tailMinX;
+                float lineX2 = tailMinX + tailW;
+                GameObject *tailAfterObject = nullptr;
+                const ImGuiPayload *tailPayload = ImGui::GetDragDropPayload();
+                if (tailPayload && tailPayload->IsDataType(DRAG_DROP_TYPE) && nItems > 0 &&
+                    !m_flatItems.back().sceneHeader && m_flatItems.back().obj) {
+                    const FlatItem &lastItem = m_flatItems.back();
+                    const int rootDepth = IsPrefabModeActive() ? 0 : 1;
+                    const int pointerDepth = static_cast<int>(
+                        std::floor((ImGui::GetMousePos().x - tailMinX) / (EditorTheme::TREE_INDENT * dpi) + 0.5f));
+                    const int desiredDepth =
+                        (std::max)(rootDepth, (std::min)(lastItem.depth, pointerDepth));
+                    tailAfterObject = lastItem.obj;
+                    int afterDepth = lastItem.depth;
+                    while (tailAfterObject && afterDepth > desiredDepth) {
+                        tailAfterObject = tailAfterObject->GetParent();
+                        --afterDepth;
+                    }
+                    lineX1 += static_cast<float>(desiredDepth) * EditorTheme::TREE_INDENT * dpi;
+                }
+                ctx->DrawFilledRect(lineX1, std::floor(lineY), lineX2,
+                                    std::floor(lineY) + EditorTheme::DND_REORDER_LINE_THICKNESS * dpi,
+                                    EditorTheme::DND_REORDER_LINE.x, EditorTheme::DND_REORDER_LINE.y,
+                                    EditorTheme::DND_REORDER_LINE.z, EditorTheme::DND_REORDER_LINE.w, 0.0f);
                 // Accept uint64_t payload
                 uint64_t payload = 0;
                 bool accepted = false;
                 if (ctx->AcceptDragDropPayload(DRAG_DROP_TYPE, &payload)) {
-                    HandleExternalDrop(DRAG_DROP_TYPE, payload, 0);
+                    if (tailAfterObject)
+                        MoveObjectAdjacent(payload, tailAfterObject->GetID(), true);
+                    else {
+                        const uint64_t lastWorldId =
+                            m_cachedScenes.empty() ? 0 : m_cachedScenes.back()->GetWorldId();
+                        ReparentToRoot(payload, lastWorldId);
+                    }
+                    accepted = true;
+                }
+                uint64_t draggedWorldId = 0;
+                if (!accepted && ctx->AcceptDragDropPayload(SCENE_DRAG_DROP_TYPE, &draggedWorldId)) {
+                    if (!m_cachedScenes.empty())
+                        MoveSceneAdjacent(draggedWorldId, m_cachedScenes.back()->GetWorldId(), true);
                     accepted = true;
                 }
                 if (!accepted) {
@@ -1556,6 +1792,8 @@ void HierarchyPanel::OnRenderContent(InxGUIContext *ctx)
         if (ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem) &&
             ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !ImGui::IsAnyItemHovered()) {
             CancelRename();
+            m_selectedSceneWorldId = 0;
+            m_pendingSceneSelectWorldId = 0;
             ClearSelectionAndNotify();
         }
         m_subTailDrop += msSince(tailDropStart);

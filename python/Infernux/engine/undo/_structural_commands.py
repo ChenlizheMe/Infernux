@@ -565,6 +565,162 @@ class SceneHierarchyLayoutCommand(UndoCommand):
         self._transition(self._after_layout, self._before_layout)
 
 
+class CrossSceneHierarchyMoveCommand(UndoCommand):
+    """Move root ownership between two loaded Scenes as one atomic edit."""
+
+    def __init__(
+        self,
+        object_ids,
+        source_world_id: int,
+        destination_world_id: int,
+        destination_parent_id: Optional[int],
+        destination_sibling_index: int,
+        description: str = "Move GameObject Between Scenes",
+    ) -> None:
+        super().__init__(description)
+        self._object_ids = tuple(int(value) for value in object_ids)
+        self._source_world_id = int(source_world_id)
+        self._destination_world_id = int(destination_world_id)
+        self._destination_parent_id = (
+            None if destination_parent_id in {None, 0} else int(destination_parent_id)
+        )
+        self._destination_sibling_index = max(0, int(destination_sibling_index))
+        if (
+            not self._object_ids
+            or self._source_world_id <= 0
+            or self._destination_world_id <= 0
+            or self._source_world_id == self._destination_world_id
+        ):
+            raise ValueError("cross-Scene move requires two distinct loaded Scenes")
+
+        source = _get_scene_by_world_id(self._source_world_id)
+        destination = _get_scene_by_world_id(self._destination_world_id)
+        if source is None or destination is None:
+            raise RuntimeError("cross-Scene move owner is unavailable")
+        self._source_locations = []
+        roots = []
+        for object_id in self._object_ids:
+            obj = source.find_by_id(object_id)
+            if obj is None:
+                raise RuntimeError(f"cross-Scene move object is unavailable: {object_id}")
+            parent = obj.get_parent()
+            transform = getattr(obj, "transform", None)
+            self._source_locations.append(
+                (
+                    object_id,
+                    int(parent.id) if parent is not None else None,
+                    int(transform.get_sibling_index()) if transform is not None else 0,
+                )
+            )
+            roots.append(obj)
+        self._prefab_links = _capture_prefab_parent_links(roots)
+
+    def scene_world_ids(self) -> tuple[int, ...]:
+        return self._source_world_id, self._destination_world_id
+
+    @staticmethod
+    def _move_roots(object_ids, source, destination) -> list:
+        from Infernux.lib import SceneManager
+
+        manager = SceneManager.instance()
+        moved = []
+        for object_id in object_ids:
+            obj = source.find_by_id(object_id)
+            if obj is None:
+                raise RuntimeError(f"cross-Scene move object is unavailable: {object_id}")
+            old_parent = obj.get_parent()
+            if old_parent is not None:
+                obj.set_parent(None)
+                _invalidate_canvas_caches(old_parent)
+            manager.move_game_object_to_scene(obj, destination)
+            moved.append(obj)
+        return moved
+
+    def _move_to_destination(self) -> None:
+        source = _get_scene_by_world_id(self._source_world_id)
+        destination = _get_scene_by_world_id(self._destination_world_id)
+        if source is None or destination is None:
+            raise RuntimeError("cross-Scene move owner is unavailable")
+        parent = (
+            destination.find_by_id(self._destination_parent_id)
+            if self._destination_parent_id is not None
+            else None
+        )
+        if self._destination_parent_id is not None and parent is None:
+            raise RuntimeError("cross-Scene destination parent is unavailable")
+        moved = self._move_roots(self._object_ids, source, destination)
+        for obj in moved:
+            if parent is not None:
+                obj.set_parent(parent)
+        for offset, obj in enumerate(moved):
+            transform = getattr(obj, "transform", None)
+            if transform is not None:
+                transform.set_sibling_index(self._destination_sibling_index + offset)
+        _invalidate_canvas_caches(parent)
+        _notify_gizmos_scene_changed()
+
+    def _move_to_source(self) -> None:
+        source = _get_scene_by_world_id(self._source_world_id)
+        destination = _get_scene_by_world_id(self._destination_world_id)
+        if source is None or destination is None:
+            raise RuntimeError("cross-Scene move owner is unavailable")
+        moved = self._move_roots(self._object_ids, destination, source)
+        moved_by_id = {int(obj.id): obj for obj in moved}
+        for object_id, parent_id, _index in self._source_locations:
+            parent = source.find_by_id(parent_id) if parent_id is not None else None
+            if parent_id is not None and parent is None:
+                raise RuntimeError("cross-Scene source parent is unavailable")
+            if parent is not None:
+                moved_by_id[object_id].set_parent(parent)
+        for object_id, _parent_id, sibling_index in sorted(
+            self._source_locations,
+            key=lambda value: (value[1] or 0, value[2]),
+        ):
+            transform = getattr(moved_by_id[object_id], "transform", None)
+            if transform is not None:
+                transform.set_sibling_index(sibling_index)
+        _restore_prefab_parent_links(source, self._prefab_links)
+        _notify_gizmos_scene_changed()
+
+    def execute(self) -> None:
+        self._move_to_destination()
+
+    def undo(self) -> None:
+        self._move_to_source()
+
+    def redo(self) -> None:
+        self._move_to_destination()
+
+
+class AdditiveSceneResidencyCommand(UndoCommand):
+    """Undo/redo one additive Scene residency change through its owner-safe queue."""
+
+    marks_dirty = False
+    separates_history = True
+    preserves_explicit_context = True
+
+    def __init__(self, scene_files, asset_guid: str, description: str) -> None:
+        super().__init__(description)
+        self._scene_files = scene_files
+        self._asset_guid = str(asset_guid or "").strip().casefold()
+        if not self._asset_guid:
+            raise ValueError("additive Scene history requires an asset GUID")
+
+    def execute(self) -> None:
+        if not self._scene_files.open_scene_additive_guid(
+            self._asset_guid,
+            record_history=False,
+        ):
+            raise RuntimeError("additive Scene could not be restored")
+
+    def undo(self) -> None:
+        if not self._scene_files.request_unload_scene_guid(self._asset_guid):
+            raise RuntimeError("additive Scene could not be unloaded")
+
+    def redo(self) -> None:
+        self.execute()
+
+
 class GlobalSelectionCommand(UndoCommand):
     """Record a typed selection transition without replay side effects."""
 
