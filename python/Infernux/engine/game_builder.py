@@ -63,7 +63,7 @@ from Infernux.engine.path_utils import (
     resolved_path,
     same_path,
 )
-from Infernux.engine.build_settings import load_build_settings
+from Infernux.engine.build_settings import load_build_settings_for_build
 from Infernux.engine.filesystem import replace_path
 from Infernux.engine.runtime_artifact_catalog import (
     RUNTIME_JSON_DOCUMENT_SUFFIXES,
@@ -324,9 +324,6 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
             "gizmo_camera.png",
             "gizmo_light.png",
             "gizmo_particle.png",
-            # The light billboard uses the authored component icon rather than
-            # the legacy solid-square gizmo_light payload.
-            "component_light.png",
         }
     )
 
@@ -393,10 +390,9 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
         splash_items: Optional[List[Dict]] = None,
         debug_mode: bool = False,
         lto: bool = True,
-        enable_jit: bool = False,
-        allow_python_jit_fallback: bool = False,
+        include_jit_runtime: bool = False,
         player_runtime_root: str = "",
-        build_scenes: Optional[List[str]] = None,
+        build_scene_guids: Optional[List[str]] = None,
     ):
         self.project_path = resolved_path(project_path)
         self.project_name = game_name.strip() if game_name.strip() else os.path.basename(self.project_path)
@@ -410,12 +406,7 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
         self.splash_items = list(splash_items) if splash_items else []
         self.debug_mode = debug_mode
         self.lto = lto
-        self.enable_jit = enable_jit
-        # Browser/WASM has no native Numba/LLVM payload.  Its platform host
-        # may explicitly opt into the deterministic interpreter path for
-        # ``inx.jit.compile``; desktop and native players keep the strict
-        # compile-time contract and never silently fall back.
-        self.allow_python_jit_fallback = bool(allow_python_jit_fallback)
+        self.include_jit_runtime = bool(include_jit_runtime)
         host_platform = "windows" if sys.platform == "win32" else "linux"
         self.player_runtime_root = resolved_path(player_runtime_root or os.path.join(
             self.project_path, "Packages", "infernux", f"platform-{host_platform}",
@@ -425,13 +416,14 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
         self._runtime_type_records: list[dict[str, object]] = []
         self._build_output_transaction: dict[str, str] | None = None
         self._asset_index_entries_snapshot: list[dict] | None = None
-        self._build_scenes_snapshot = copy.deepcopy(build_scenes)
+        self._build_scene_guids_snapshot = copy.deepcopy(build_scene_guids)
 
-    def _build_scenes(self) -> list[str]:
-        """Use one ordered scene selection throughout this build transaction."""
-        if self._build_scenes_snapshot is None:
-            self._build_scenes_snapshot = load_build_settings(self.project_path)["scenes"]
-        return self._build_scenes_snapshot
+    def _build_scene_guids(self) -> list[str]:
+        """Use one ordered scene identity selection throughout this build."""
+        if self._build_scene_guids_snapshot is None:
+            settings = load_build_settings_for_build(self.project_path)
+            self._build_scene_guids_snapshot = settings["scene_guids"]
+        return self._build_scene_guids_snapshot
 
     def _player_inxpack_profile(self) -> str:
         """Return the compression profile for this concrete Player build."""
@@ -853,22 +845,27 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
     # Validation
     # ------------------------------------------------------------------
 
-    def _resolve_build_scene_path(self, scene_path: str) -> str:
-        if type(scene_path) is not str or not scene_path.strip():
-            raise ValueError("BuildSettings scenes must contain non-empty strings")
-        candidate = (
-            scene_path
-            if os.path.isabs(scene_path)
-            else os.path.join(self.project_path, scene_path)
+    def _resolve_build_scene_guid(self, scene_guid: str) -> str:
+        if type(scene_guid) is not str or not scene_guid.strip():
+            raise ValueError("BuildSettings scene_guids must contain non-empty strings")
+        entry = next(
+            (
+                item
+                for item in self._asset_index_entries()
+                if str(item.get("guid", "")) == scene_guid
+            ),
+            None,
         )
-        absolute = resolved_path(candidate)
+        if entry is None:
+            raise ValueError(f"Build scene GUID is absent from AssetIndex: {scene_guid}")
+        absolute = self._library_source_entry_path(entry)
         assets_root = resolved_path(os.path.join(self.project_path, "Assets"))
         if not is_path_within(absolute, assets_root, allow_root=False):
             raise ValueError(
-                f"Build scene must be inside the project Assets folder: {scene_path}"
+                f"Build scene must be inside the project Assets folder: {scene_guid}"
             )
         if not absolute.lower().endswith(".scene"):
-            raise ValueError(f"Build scene must use the .scene extension: {scene_path}")
+            raise ValueError(f"Build scene GUID must identify a .scene asset: {scene_guid}")
         return absolute
 
     def _validate(self):
@@ -876,17 +873,20 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
         bs = os.path.join(
             self.project_path, "ProjectSettings", "BuildSettings.json"
         )
-        if self._build_scenes_snapshot is None and not os.path.isfile(bs):
+        if self._build_scene_guids_snapshot is None and not os.path.isfile(bs):
             raise FileNotFoundError(
                 "BuildSettings.json not found. "
                 "Open Build Settings in the editor and add at least one scene."
             )
-        scenes = self._build_scenes()
-        if type(scenes) is not list or not scenes:
+        scene_guids = self._build_scene_guids()
+        if type(scene_guids) is not list or not scene_guids:
             raise ValueError(
                 "Build list is empty. Add at least one scene in Build Settings."
             )
-        resolved_scenes = [self._resolve_build_scene_path(scene) for scene in scenes]
+        resolved_scenes = [
+            self._resolve_build_scene_guid(scene_guid)
+            for scene_guid in scene_guids
+        ]
         missing = [scene for scene in resolved_scenes if not os.path.isfile(scene)]
         if missing:
             names = ", ".join(os.path.basename(m) for m in missing)
@@ -1175,24 +1175,11 @@ _DLL_DIR_HANDLES = []
 # sealed avoids duplicating the archive's expanded payload in every build.
 _PARALLEL_ARCHIVE = os.path.join(_DATA_ROOT, "Modules", "Parallel.inxmod")
 if os.path.isfile(_PARALLEL_ARCHIVE) and not os.path.isdir(_RUNTIME_MODULE_DIR):
-    import tempfile as _player_tempfile
-    from Infernux.engine.player_package_native import extract_pack as _extract_pack
-    _parallel_cache = os.path.join(
-        _PLAYER_STATE_ROOT, "Cache", "parallel-" + str(os.path.getsize(_PARALLEL_ARCHIVE))
+    from Infernux.engine.platform_player_bootstrap import _parallel_module_cache
+    _RUNTIME_MODULE_DIR = _parallel_module_cache(
+        _DATA_ROOT,
+        os.path.join(_PLAYER_STATE_ROOT, "Cache"),
     )
-    os.makedirs(os.path.dirname(_parallel_cache), exist_ok=True)
-    if not os.path.isdir(_parallel_cache):
-        _parallel_tmp = _player_tempfile.mkdtemp(
-            prefix=".parallel-", dir=os.path.dirname(_parallel_cache)
-        )
-        try:
-            _extract_pack(_PARALLEL_ARCHIVE, _parallel_tmp)
-            os.replace(_parallel_tmp, _parallel_cache)
-        except Exception:
-            from shutil import rmtree as _player_rmtree
-            _player_rmtree(_parallel_tmp, ignore_errors=True)
-            raise
-    _RUNTIME_MODULE_DIR = _parallel_cache
 
 def _register_player_dll_directory(_dll_dir):
     if sys.platform != "win32" or not os.path.isdir(_dll_dir):
@@ -1319,7 +1306,7 @@ finally:
         dist_dir = stage_desktop_runtime(
             self.player_runtime_root,
             os.path.join(self.project_path, "Cache", "Build", "Desktop"),
-            parallel=self.enable_jit,
+            parallel=self.include_jit_runtime,
         )
         try:
             additional = sorted(set(user_packages or ()) - {"numpy", "packaging", "numba", "llvmlite"})
@@ -1446,6 +1433,7 @@ finally:
         """Copy authored data and selected runtime artifacts to Data/."""
         self._runtime_artifact_bindings = {}
         self._runtime_artifact_source_paths = set()
+        self._player_python_source_paths: set[str] = set()
         data_dir = os.path.join(final_dir, "Data")
         # Runtime settings are an explicit whitelist. Recursively copying the
         # authoring ProjectSettings directory would make every future Editor
@@ -1471,6 +1459,23 @@ finally:
         self._copy_particle_data_interface_artifacts(data_dir)
 
         self._filter_shipped_requirements(data_dir)
+
+    def cooked_python_source_paths(self) -> tuple[str, ...]:
+        """Return Python sources selected by this build's frozen cook closure.
+
+        Dependency and target policy checks must inspect the same GUID-owned
+        files that were staged for the Player.  In particular, walking the
+        authoring ``Assets`` tree would incorrectly include Editor-only files
+        and miss enabled package Runtime scripts.  This method is valid only
+        after the selected Assets and package scripts have been compiled.
+        """
+
+        cooked_sources = getattr(self, "_player_python_source_paths", None)
+        if cooked_sources is None:
+            raise RuntimeError(
+                "Player Python source closure is unavailable before content cook"
+            )
+        return tuple(sorted(cooked_sources, key=path_key))
 
     def _stage_player_plugins(self, data_dir: str) -> None:
         """Stage enabled package files by GUID and structural Runtime policy."""
@@ -1676,6 +1681,8 @@ finally:
     def _compile_player_plugin_scripts(self, final_dir: str) -> None:
         """Compile exported package scripts without exposing source."""
 
+        if not hasattr(self, "_player_python_source_paths"):
+            self._player_python_source_paths = set()
         data_root = os.path.join(final_dir, "Data")
         root = os.path.join(data_root, "Packages")
         if not os.path.isdir(root):
@@ -1696,6 +1703,10 @@ finally:
             if isinstance(item, dict)
         }
         registry_changed = False
+        cooked_sources_by_guid = {
+            str(guid).casefold(): self._library_source_entry_path(entry)
+            for guid, entry in getattr(self, "_cooked_asset_entries", {}).items()
+        }
         for directory, _folders, filenames in os.walk(root):
             for filename in filenames:
                 if not filename.endswith(".py"):
@@ -1703,20 +1714,34 @@ finally:
                 source = os.path.join(directory, filename)
                 relative_source = portable_path(relative_path(source, data_root))
                 record = file_records.get(relative_source.casefold())
+                if record is None:
+                    raise RuntimeError(
+                        "Player plugin script has no frozen package file record: "
+                        f"{relative_source}"
+                    )
                 try:
-                    if record is not None:
-                        from Infernux.plugins.preload import _read_declarations
+                    source_guid = str(record.get("guid", "")).casefold()
+                    authored_source = cooked_sources_by_guid.get(source_guid, "")
+                    if not authored_source:
+                        raise RuntimeError(
+                            "Player plugin script has no source in the frozen "
+                            f"cook closure: {relative_source}"
+                        )
+                    self._player_python_source_paths.add(
+                        resolved_path(authored_source)
+                    )
+                    from Infernux.plugins.preload import _read_declarations
 
-                        declarations = _read_declarations(source, data_root)
-                        record["compiled_path_hint"] = relative_source + "c"
-                        record["preload_declarations"] = [
-                            {
-                                "name": declaration.name,
-                                "bases": list(declaration.bases),
-                            }
-                            for declaration in declarations
-                        ]
-                        registry_changed = True
+                    declarations = _read_declarations(source, data_root)
+                    record["compiled_path_hint"] = relative_source + "c"
+                    record["preload_declarations"] = [
+                        {
+                            "name": declaration.name,
+                            "bases": list(declaration.bases),
+                        }
+                        for declaration in declarations
+                    ]
+                    registry_changed = True
                     source_text = Path(source).read_text(encoding="utf-8")
                     cooked_source = self._cook_compute_source(source_text)
                     if cooked_source != source_text:
@@ -1889,8 +1914,20 @@ finally:
             if value.get("$type") == "asset_ref":
                 guid = value.get("guid", "")
                 path_hint = value.get("path_hint", "")
-                if isinstance(guid, str) and isinstance(path_hint, str) and (guid or path_hint):
-                    yield guid, path_hint
+                # A persisted asset reference contributes to the cook closure
+                # only through its GUID.  ``path_hint`` is mutable editor
+                # display metadata: path-only documents are deliberately
+                # ignored, while a current GUID remains valid even when no
+                # hint was serialized.
+                if isinstance(guid, str) and guid.strip():
+                    yield (
+                        guid.strip(),
+                        path_hint if isinstance(path_hint, str) else "",
+                    )
+                # ``asset_ref`` is one typed leaf. Recursing into its GUID and
+                # path fields would publish the same dependency a second time
+                # through the compact native-GUID scanner below.
+                return
             for nested in value.values():
                 yield from GameBuilder._asset_reference_values(nested, known_guids)
         elif isinstance(value, list):
@@ -2009,14 +2046,14 @@ finally:
             path_key(self._library_source_entry_path(entry))
             for entry in entries
         }
-        for configured_scene in self._build_scenes():
-            scene_path = self._resolve_build_scene_path(configured_scene)
+        for scene_guid in self._build_scene_guids():
+            scene_path = self._resolve_build_scene_guid(scene_guid)
             if is_editor_asset_path(relative_path(scene_path, self.project_path)):
-                raise RuntimeError(f"BuildSettings scene is editor-only: {configured_scene}")
+                raise RuntimeError(f"BuildSettings scene is editor-only: {scene_guid}")
             if path_key(scene_path) not in indexed_source_paths:
                 raise RuntimeError(
                     "BuildSettings scene is absent from the current AssetIndex: "
-                    f"{configured_scene}"
+                    f"{scene_guid}"
                 )
         roots = {
             str(entry["guid"])
@@ -2112,9 +2149,7 @@ finally:
                 raise RuntimeError("Particle RuntimeIndex contains an invalid entry")
             guid = item["guid"].strip()
             if not guid:
-                raise RuntimeError(
-                    "Particle RuntimeIndex entries must declare a non-empty GUID"
-                )
+                continue
             if guid in result:
                 raise RuntimeError(
                     f"Particle RuntimeIndex contains duplicate GUID: {guid}"
@@ -2371,8 +2406,8 @@ finally:
 
     def _collect_reachable_particle_artifacts(self) -> list[dict[str, str]]:
         references: set[tuple[str, str]] = set()
-        for configured_scene in self._build_scenes():
-            scene_path = self._resolve_build_scene_path(configured_scene)
+        for scene_guid in self._build_scene_guids():
+            scene_path = self._resolve_build_scene_guid(scene_guid)
             try:
                 with open(scene_path, "r", encoding="utf-8") as stream:
                     scene = json.load(stream)
@@ -2456,14 +2491,8 @@ finally:
             ):
                 guid = value.get("guid", "")
                 path_hint = value.get("path_hint", "")
-                if type(guid) is not str or type(path_hint) is not str:
-                    raise RuntimeError("ParticleGraph asset references must use string identity")
-                guid = guid.strip()
-                if not guid:
-                    raise RuntimeError(
-                        "ParticleGraph asset references must declare a non-empty GUID"
-                    )
-                references.add((guid, path_hint))
+                if type(guid) is str and guid.strip():
+                    references.add((guid.strip(), path_hint if type(path_hint) is str else ""))
             for nested in value.values():
                 cls._collect_particle_asset_references(nested, references)
         elif type(value) is list:
@@ -2633,7 +2662,7 @@ finally:
         def _keep(line: str) -> bool:
             if self._is_game_build_excluded_requirement(line):
                 return False
-            if not self.enable_jit and re.match(r"^\s*(?:numba|llvmlite)\b", line, re.IGNORECASE):
+            if not self.include_jit_runtime and re.match(r"^\s*(?:numba|llvmlite)\b", line, re.IGNORECASE):
                 return False
             return True
 
@@ -2757,22 +2786,14 @@ finally:
         return records
 
     def _cook_compute_source(self, source_text: str) -> str:
-        """Embed CPU JIT transforms and source-less GPU kernel metadata."""
+        """Freeze the target's CPU model and source-less GPU kernel metadata."""
         from Infernux._compiler.source_metadata import embed_compute_sources
 
         cooked = source_text
-        if not self.enable_jit:
-            cpu_jit = _jit_kernels.cpu_jit_declarations(source_text)
-            if cpu_jit and not self.allow_python_jit_fallback:
-                raise RuntimeError("CPU JIT requires the Numba/llvmlite build runtime: "
-                                   + ", ".join(cpu_jit))
-            required = [name for name, policy in _jit_kernels.auto_parallel_declarations(source_text)
-                        if policy == "required"]
-            if required:
-                raise RuntimeError("parallel_policy='required' needs the Auto Parallel build option: "
-                                   + ", ".join(required))
-        else:
+        if self.include_jit_runtime:
             cooked = _jit_kernels.build_auto_parallel_embedded_source(cooked) or cooked
+        else:
+            cooked = _jit_kernels.build_interpreted_cpu_source(cooked)
         return embed_compute_sources(cooked)
 
     @staticmethod
@@ -2812,7 +2833,6 @@ finally:
                 "readable_id": str(record["type_id"]),
                 "owner": owner,
                 "origin": "python",
-                "schema_version": 1,
                 "display_name": qualname,
                 "base_type_guid": next(
                     (published_types[base] for base in component_type.__mro__[1:] if base in published_types),
@@ -2848,7 +2868,6 @@ finally:
         from Infernux.components.serializable_object import (
             SerializableObject,
             get_registered_serializable_types,
-            get_serializable_schema_version,
         )
         from Infernux.core.data_asset import DataAsset
 
@@ -2889,7 +2908,6 @@ finally:
                 "readable_id": f"python:data:{type_id}",
                 "owner": f"script:{script_guid}",
                 "origin": "python",
-                "schema_version": get_serializable_schema_version(value_type),
                 "display_name": value_type.__qualname__,
                 "base_type_guid": base_type_guid,
                 "constructible": True,
@@ -2924,6 +2942,8 @@ finally:
         assets_dir = os.path.join(final_dir, "Data", "Assets")
         if not os.path.isdir(assets_dir):
             return
+        if not hasattr(self, "_player_python_source_paths"):
+            self._player_python_source_paths = set()
 
         data_dir = os.path.join(final_dir, "Data")
         guid_map: dict[str, str] = {}
@@ -2965,6 +2985,13 @@ finally:
                             f"current AssetIndex identity: {staged_relative}"
                         )
                     guid_map[indexed_guid] = relative_path(py_path + "c", data_dir)
+                    self._player_python_source_paths.add(
+                        resolved_path(
+                            self._library_source_entry_path(
+                                self._cooked_asset_entries[indexed_guid]
+                            )
+                        )
+                    )
 
         # Second pass: compile and remove originals
         guid_by_runtime_path = {
@@ -3546,14 +3573,6 @@ finally:
                         continue
                     source_path = os.path.join(root, filename)
                     portable_source = relative_path(source_path, final_dir)
-                    if portable_source.startswith(
-                        "Infernux/resources/player_runtime/"
-                    ):
-                        # The platform host is the package's one visible entry
-                        # point.  The wheel keeps a build-time copy here for
-                        # exporters, but Runtime.inxrt must never embed it as a
-                        # second executable (Linux hosts have no .exe suffix).
-                        continue
                     if (
                         portable_source.startswith(
                             "Infernux/resources/official_packages/"
@@ -3749,7 +3768,7 @@ finally:
 
         source = os.path.join(final_dir, self._PARALLEL_ARCHIVE_FILENAME)
         if not os.path.isfile(source):
-            if self.enable_jit:
+            if self.include_jit_runtime:
                 raise RuntimeError(
                     "Parallel module was requested but Parallel.inxmod was not staged"
                 )
@@ -3925,11 +3944,18 @@ finally:
         except FileNotFoundError:
             pass
 
-        index_records = []
-        for kind, archive in (
+        indexed_archives = [
             ("content", content_archive),
             ("catalog", catalog_archive),
-        ):
+        ]
+        parallel_archive = (
+            data_root / "Modules" / self._PARALLEL_ARCHIVE_FILENAME
+        )
+        if parallel_archive.is_file():
+            indexed_archives.append(("parallel", parallel_archive))
+
+        index_records = []
+        for kind, archive in indexed_archives:
             package_manifest = read_manifest(archive)
             index_records.append(
                 "\t".join(
@@ -4000,7 +4026,10 @@ finally:
             line.split("\t", 1)[0]
             for line in package_index.read_text(encoding="ascii").splitlines()[1:]
         }
-        if package_index_kinds != {"content", "catalog"}:
+        expected_package_index_kinds = {"content", "catalog"}
+        if (data_root / "Modules" / self._PARALLEL_ARCHIVE_FILENAME).is_file():
+            expected_package_index_kinds.add("parallel")
+        if package_index_kinds != expected_package_index_kinds:
             raise RuntimeError("Desktop Player package index exposes stale archives")
         content_entries = {
             str(entry["path"])
@@ -4027,7 +4056,7 @@ finally:
             )
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise RuntimeError("Desktop Player catalog contract is unreadable") from exc
-        if not isinstance(build_manifest, dict) or not build_manifest.get("scenes"):
+        if not isinstance(build_manifest, dict) or not build_manifest.get("scene_guids"):
             raise RuntimeError("Desktop Player catalog has no build presentation contract")
         packages = catalog.get("packages")
         if (
@@ -4630,8 +4659,8 @@ finally:
             else RuntimeFlavor.PLAYER_RELEASE
         )
         features = RuntimeFeatureSet(
-            jit=bool(self.enable_jit),
-            parallel=bool(self.enable_jit),
+            jit=self.include_jit_runtime,
+            parallel=self.include_jit_runtime,
             optional_subsystems=("splash",) if self.splash_items else (),
         )
         runtime_contract = player_runtime_contract_sections(flavor, features)
@@ -4723,16 +4752,12 @@ finally:
         bs = os.path.join(
             final_dir, "Data", "ProjectSettings", "BuildSettings.json"
         )
-        rel_scenes = []
-        for scene_path in self._build_scenes():
-            absolute = self._resolve_build_scene_path(scene_path)
-            rel = relative_path(absolute, self.project_path)
-            rel_scenes.append(portable_path(rel))
+        scene_guids = list(self._build_scene_guids())
         # BuildSettings is an authoring document.  The Player needs only the
-        # ordered scene list; output paths, compiler switches, editor icon
+        # ordered scene identities; output paths, compiler switches, editor icon
         # sources and cook roots belong to BuildManifest/catalog generation
         # and must never leak workstation paths into the shipped content.
-        _write_json_atomic(bs, {"scenes": rel_scenes})
+        _write_json_atomic(bs, {"scene_guids": scene_guids})
 
     # ------------------------------------------------------------------
     # Generate BuildManifest.json
@@ -4743,10 +4768,10 @@ finally:
         bs = os.path.join(
             final_dir, "Data", "ProjectSettings", "BuildSettings.json"
         )
-        scenes = []
+        scene_guids = []
         if os.path.isfile(bs):
             with open(bs, "r", encoding="utf-8", errors="replace") as f:
-                scenes = json.load(f).get("scenes", [])
+                scene_guids = json.load(f).get("scene_guids", [])
 
         splash_runtime = []
         for item in self.splash_items:
@@ -4768,8 +4793,8 @@ finally:
             else RuntimeFlavor.PLAYER_RELEASE
         )
         features = RuntimeFeatureSet(
-            jit=bool(self.enable_jit),
-            parallel=bool(self.enable_jit),
+            jit=self.include_jit_runtime,
+            parallel=self.include_jit_runtime,
             optional_subsystems=("splash",) if splash_runtime else (),
         )
 
@@ -4781,7 +4806,7 @@ finally:
             "window_width": self.window_width,
             "window_height": self.window_height,
             "window_resizable": self.window_resizable,
-            "scenes": scenes,
+            "scene_guids": scene_guids,
             "splash_items": splash_runtime,
             "runtime_contract": player_runtime_contract_sections(flavor, features),
             "build_output": {

@@ -44,10 +44,9 @@ class GameBuilder:
         splash_items: Optional[List[dict]] = ...,
         debug_mode: bool = ...,
         lto: bool = ...,
-        enable_jit: bool = ...,
-        allow_python_jit_fallback: bool = ...,
+        include_jit_runtime: bool = ...,
         player_runtime_root: str = ...,
-        build_scenes: Optional[List[str]] = ...,
+        build_scene_guids: Optional[List[str]] = ...,
     ) -> None: ...
 
     def build(
