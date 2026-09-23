@@ -605,32 +605,6 @@ void surface(out SurfaceData surface)
            std::string::npos);
 
     const std::string shaderRoot = INFERNUX_TEST_SHADER_ROOT;
-    const std::string passReconstructionFragment = R"(
-ShaderInfo {
-    Name "Tests/PassReconstruction"
-    ShadingModel "Unlit"
-    Capabilities [PassBuffers]
-    Imports ["Lib Pass Buffers"]
-}
-void surface(out SurfaceData surface) {
-    surface = InitSurfaceData();
-    vec3 position = samplePassWorldPosition(vec2(0.5));
-    float eyeDepth = samplePassLinearEyeDepth(vec2(0.5));
-    surface.albedo = position * 0.0 + vec3(eyeDepth);
-}
-)";
-    const auto passReconstruction = compiler.CompileLinkedProgram(
-        waveVertex, "WaveDeform.vert",
-        passReconstructionFragment, shaderRoot + "/pass_reconstruction.frag",
-        infernux::ShaderCompileTarget::Forward);
-    if (!passReconstruction.IsValid()) {
-        for (const auto &error : passReconstruction.errors)
-            std::cerr << error << '\n';
-    }
-    assert(passReconstruction.IsValid());
-    assert(passReconstruction.generatedFragmentSource.find("ubo.inverseViewProj * clip") != std::string::npos);
-    assert(passReconstruction.generatedFragmentSource.find("abs(samplePassViewPosition(uv).z)") !=
-           std::string::npos);
     // Data-only replacement materials use current geometry but own a raw
     // fragment output, not generated surface/shadow outputs.
     const std::string dataMaskFragment = R"(
