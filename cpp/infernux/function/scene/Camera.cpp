@@ -187,7 +187,7 @@ SemanticTypeDescriptor DescribeCamera()
     add("dithering", "dithering", "BOOL", false);
     add("stop_nans", "stopNaNs", "BOOL", false)["header"] = "camera.section.output";
     auto &target = add("target_texture", "targetTextureGuid", "ASSET",
-                       {{"$type", "asset_ref"}, {"asset_type", "RenderTexture"}, {"guid", ""}, {"path_hint", ""}});
+                       {{"$type", "asset_ref"}, {"asset_type", "RenderTexture"}, {"guid", ""}});
     target["asset_type"] = "RenderTexture";
     target["nullable"] = true;
     target["setter_owns_document_shape"] = true;

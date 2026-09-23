@@ -209,7 +209,12 @@ def test_import_scope_and_single_sample_attachment_identity(graphical_applicatio
 
 @pytest.mark.parametrize('samples', [1, 2, 4])
 def test_import_msaa_depth_and_resolve_descriptions(graphical_application, samples):
-    target = RenderTexture(37, 23, samples=samples, depth_format=PixelFormat.D32_SFLOAT)
+    try:
+        target = RenderTexture(37, 23, samples=samples, depth_format=PixelFormat.D32_SFLOAT)
+    except ValueError as exc:
+        if samples == 1 or "does not support the requested sample count" not in str(exc):
+            raise
+        pytest.skip(f"GPU does not support {samples} samples for this RenderTexture format")
     graph = RenderGraph()
     color = graph.import_texture('color', target)
     depth = graph.import_texture('depth', target, attachment='depth')
