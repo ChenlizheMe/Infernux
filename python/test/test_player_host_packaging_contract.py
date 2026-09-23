@@ -61,6 +61,12 @@ def test_source_wheel_recursively_includes_both_native_extensions():
     assert '"**/_Infernux*.dylib"' in packaging
 
 
+def test_source_wheel_includes_builtin_shader_sources():
+    packaging = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+
+    assert '"resources/shaders/**/*"' in packaging
+
+
 def test_prebuilt_runtime_requires_an_explicit_build_output():
     source = (ROOT / "python/Infernux/engine/prebuilt_runtime.py").read_text(
         encoding="utf-8"
