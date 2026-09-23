@@ -11,7 +11,7 @@ from Infernux import _jit_cache
 from Infernux.engine.project_context import using_project_root
 
 
-def test_cpu_and_gpu_cache_roots_share_project_and_player_ownership(tmp_path, monkeypatch):
+def test_player_gpu_artifacts_are_shipped_while_cpu_cache_remains_writable(tmp_path, monkeypatch):
     project = tmp_path / "project"
     player = tmp_path / "player"
     monkeypatch.setattr(Application, "is_player", staticmethod(lambda: False))
@@ -21,7 +21,7 @@ def test_cpu_and_gpu_cache_roots_share_project_and_player_ownership(tmp_path, mo
         assert _jit_cache.cpu_cache_root() == project / "Library/Artifacts/Compute/CPU"
         monkeypatch.setattr(Application, "is_player", staticmethod(lambda: True))
         monkeypatch.setattr(Application, "persistent_data_path", staticmethod(lambda: str(player)))
-        assert compiler_cache_root() == player / "Cache/Compute"
+        assert compiler_cache_root() == project / "Library/Artifacts/Compute"
         assert _jit_cache.cpu_cache_root() == player / "Cache/Compute/CPU"
 
 

@@ -32,7 +32,7 @@ _VENDOR_NAME = "Infernux._compiler.taichi._vendor.taichi"
 _lock = threading.RLock()
 _vendor = None
 _CACHE_MAGIC = b"INXGPU\x01"
-_CACHE_ABI = "infernux-gpu-kernel-v1"
+_CACHE_ABI = "infernux-gpu-kernel-contract"
 _CACHE_FILE_LIMIT = 128
 _CACHE_BYTE_LIMIT = 256 * 1024 * 1024
 
@@ -221,6 +221,8 @@ class CompilerArtifact:
     task_metadata: tuple[dict, ...]
     domain_parameter: int
     argument_layout: dict
+    required_capabilities: dict
+    diagnostic_locations: tuple[dict, ...]
 
     def argument_bytes(self, params) -> bytes:
         from Infernux.compute import Buffer
@@ -294,6 +296,10 @@ def _load_artifact(key: str) -> CompilerArtifact | None:
         task_metadata=tuple(dict(item) for item in header["task_metadata"]),
         domain_parameter=int(header["domain_parameter"]),
         argument_layout=dict(header["argument_layout"]),
+        required_capabilities=dict(header["required_capabilities"]),
+        diagnostic_locations=tuple(
+            dict(item) for item in header["diagnostic_locations"]
+        ),
     )
 
 
@@ -306,6 +312,8 @@ def _store_artifact(key: str, artifact: CompilerArtifact) -> None:
         "task_metadata": artifact.task_metadata,
         "domain_parameter": artifact.domain_parameter,
         "argument_layout": artifact.argument_layout,
+        "required_capabilities": artifact.required_capabilities,
+        "diagnostic_locations": artifact.diagnostic_locations,
     }, sort_keys=True, separators=(",", ":")).encode("utf-8")
     payload = _CACHE_MAGIC + struct.pack("<I", len(header)) + header + b"".join(artifact.spirv_tasks)
     temporary = path.with_suffix(".tmp")
@@ -379,6 +387,11 @@ def compile_kernel(function, params) -> CompilerArtifact:
     cached = _load_artifact(artifact_key)
     if cached is not None:
         return cached
+    if (_cache_root() / "AotOnly").is_file():
+        raise RuntimeError(
+            "Player GPU AOT artifact is missing for "
+            f"{function.__module__}.{function.__qualname__}"
+        )
 
     generated_name = f"_infernux_kernel_{function.__name__}_{id(function):x}"
     definition.name = generated_name
@@ -429,6 +442,14 @@ def compile_kernel(function, params) -> CompilerArtifact:
                 task_metadata=tuple(dict(item) for item in compiled._infernux_task_metadata),
                 domain_parameter=domain_parameter,
                 argument_layout=dict(kernel._infernux_argument_layout),
+                required_capabilities=dict(compiled._infernux_required_capabilities),
+                diagnostic_locations=tuple({
+                    "entry_point": str(item["entry_point"]),
+                    "path": str(function.__code__.co_filename),
+                    "line": int(function.__code__.co_firstlineno),
+                    "column": 0,
+                    "function": f"{function.__module__}.{function.__qualname__}",
+                } for item in compiled._infernux_task_metadata),
             )
         finally:
             # exec-created functions refer back to this request-local globals

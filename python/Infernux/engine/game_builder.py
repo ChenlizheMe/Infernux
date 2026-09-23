@@ -501,6 +501,7 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
         package_root: str,
         *,
         platform_host: dict[str, object],
+        gpu_compute_aot: bool = False,
         on_progress: Optional[Callable[[str, float], None]] = None,
         cancel_event: Optional[threading.Event] = None,
     ) -> str:
@@ -544,6 +545,14 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
             report("Compiling project scripts", 0.45)
             self._compile_user_scripts(final_dir)
             self._compile_player_plugin_scripts(final_dir)
+            if gpu_compute_aot:
+                from Infernux.engine.build.compute_aot import stage_compute_artifacts
+
+                stage_compute_artifacts(
+                    self.project_path,
+                    self.cooked_python_source_paths(),
+                    os.path.join(final_dir, "Data"),
+                )
             self._write_runtime_asset_records(
                 final_dir,
                 package_builtin_resources=True,

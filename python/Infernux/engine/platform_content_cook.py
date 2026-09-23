@@ -99,6 +99,7 @@ def cook_platform_content(
     output_root: str | Path,
     *,
     platform_host: Mapping[str, object],
+    gpu_compute_aot: bool = False,
 ) -> PlatformContentCookResult:
     """Cook one immutable Player content closure for a native platform host."""
 
@@ -145,6 +146,7 @@ def cook_platform_content(
         builder.cook_platform_content(
             str(root),
             platform_host=dict(platform_host),
+            gpu_compute_aot=gpu_compute_aot,
             on_progress=report,
         )
     )

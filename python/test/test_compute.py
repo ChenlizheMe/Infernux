@@ -610,6 +610,14 @@ def test_gpu_compiler_artifact_cache_is_engine_owned_binary(tmp_path, monkeypatc
                 {"kind": "float32", "offset": 4},
             ],
         },
+        required_capabilities={"spirv_version": 0x10300},
+        diagnostic_locations=({
+            "entry_point": "first",
+            "path": "Assets/Scripts/Kernel.py",
+            "line": 17,
+            "column": 0,
+            "function": "game.Kernel.integrate",
+        },),
     )
     monkeypatch.setattr(frontend, "_cache_root", lambda: tmp_path)
     frontend._store_artifact("a" * 64, artifact)
@@ -621,6 +629,8 @@ def test_gpu_compiler_artifact_cache_is_engine_owned_binary(tmp_path, monkeypatc
     assert restored.spirv_tasks == artifact.spirv_tasks
     assert restored.domain_parameter == 1
     assert restored.argument_layout == artifact.argument_layout
+    assert restored.required_capabilities == artifact.required_capabilities
+    assert restored.diagnostic_locations == artifact.diagnostic_locations
 
 
 def test_gpu_compiler_artifact_cache_uses_project_library_and_player_data(
@@ -636,10 +646,8 @@ def test_gpu_compiler_artifact_cache_uses_project_library_and_player_data(
     assert frontend._cache_root() == project_root / "Library" / "Artifacts" / "Compute"
 
     monkeypatch.setattr(Application, "is_player", staticmethod(lambda: True))
-    monkeypatch.setattr(
-        Application, "persistent_data_path", staticmethod(lambda: str(player_root))
-    )
-    assert frontend._cache_root() == player_root / "Cache" / "Compute"
+    monkeypatch.setattr(Application, "data_path", staticmethod(lambda: str(player_root)))
+    assert frontend._cache_root() == player_root / "Library" / "Artifacts" / "Compute"
 
 
 def test_gpu_compute_function_is_an_explicit_kernel_only_declaration():

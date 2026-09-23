@@ -7,7 +7,7 @@ def compiler_cache_root() -> Path:
     from Infernux.application import Application
 
     if Application.is_player():
-        return Path(Application.persistent_data_path()) / "Cache" / "Compute"
+        return Path(Application.data_path()) / "Library" / "Artifacts" / "Compute"
     root = Application.data_path()
     if not root:
         raise RuntimeError("Compiler caching requires an active project")

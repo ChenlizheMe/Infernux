@@ -364,6 +364,46 @@ def test_android_exporter_doctor_validates_target_python_runtime(
     assert report.details["python_prefix"] == str(prefix.resolve())
 
 
+def test_android_compute_aot_is_requested_from_shared_cook(monkeypatch, tmp_path):
+    _android_module(monkeypatch)
+    exporter_module = importlib.import_module("infernux_android.exporter")
+    platform_cook = importlib.import_module("Infernux.engine.platform_content_cook")
+    project = tmp_path / "project"
+    captured = {}
+    request = BuildRequest(
+        str(project),
+        "android-arm64",
+        str(tmp_path / "output"),
+        BuildProfile(options={"build_settings": {}}),
+    )
+    cooked = platform_cook.PlatformContentCookResult(
+        "TestGame",
+        tmp_path / "cooked",
+        {},
+    )
+    cooked.data_directory.mkdir(parents=True)
+    (cooked.data_directory / "Content.inxpkg").write_bytes(b"content")
+    (cooked.data_directory / "AssetCatalog.inxcat").write_bytes(b"catalog")
+    (cooked.data_directory / "PackageIndex.inxmanifest").write_text(
+        "INFERNUX_PLAYER_PACKAGE_INDEX\n", encoding="ascii"
+    )
+    def cook(*args, **kwargs):
+        captured.update(kwargs)
+        return cooked
+    monkeypatch.setattr(platform_cook, "cook_platform_content", cook)
+    monkeypatch.setattr(platform_cook, "read_cooked_player_icon", lambda *args, **kwargs: b"icon")
+    monkeypatch.setattr(exporter_module, "_stage_android_launcher_icons", lambda *args: None)
+
+    exporter_module._cook_player_content(
+        request,
+        tmp_path / "staging",
+        tmp_path / "engine-package",
+        "arm64-v8a",
+    )
+
+    assert captured["gpu_compute_aot"] is True
+
+
 def test_android_exporter_doctor_rejects_wrong_runtime_abi(monkeypatch, tmp_path):
     module = _android_module(monkeypatch)
     for name, value in _toolchain(tmp_path).items():
