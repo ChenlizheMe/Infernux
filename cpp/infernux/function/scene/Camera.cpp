@@ -28,8 +28,7 @@ void RequireProjectionMode(int mode)
 
 void RequireGateFit(int mode)
 {
-    if (mode < static_cast<int>(PhysicalGateFit::None) ||
-        mode > static_cast<int>(PhysicalGateFit::Overscan))
+    if (mode < static_cast<int>(PhysicalGateFit::None) || mode > static_cast<int>(PhysicalGateFit::Overscan))
         throw std::invalid_argument("Camera.gateFit is unsupported");
 }
 
@@ -150,12 +149,12 @@ SemanticTypeDescriptor DescribeCamera()
     add("anamorphism", "anamorphism", "FLOAT", 0.0)["range"] = {-1.0, 1.0};
     add("focal_length", "focalLength", "FLOAT", 50.0)["range"] = {1.0, 1000.0};
     enumeration("sensor_type", "sensorType", "CameraSensorType",
-                {"Film8mm", "Super8mm", "Film16mm", "Super16mm", "Film35mm2Perf", "Film35mmAcademy",
-                 "Super35", "Film35mmTVProjection", "Film35mmFullAperture", "Film35mm185Projection",
-                 "Film35mmAnamorphic", "Film65mmAlexa", "Film70mm", "Film70mmImax", "Custom"},
+                {"Film8mm", "Super8mm", "Film16mm", "Super16mm", "Film35mm2Perf", "Film35mmAcademy", "Super35",
+                 "Film35mmTVProjection", "Film35mmFullAperture", "Film35mm185Projection", "Film35mmAnamorphic",
+                 "Film65mmAlexa", "Film70mm", "Film70mmImax", "Custom"},
                 {"8mm", "Super 8mm", "16mm", "Super 16mm", "35mm 2-perf", "35mm Academy", "Super-35",
-                 "35mm TV Projection", "35mm Full Aperture", "35mm 1.85 Projection", "35mm Anamorphic",
-                 "65mm ALEXA", "70mm", "70mm IMAX", "Custom"});
+                 "35mm TV Projection", "35mm Full Aperture", "35mm 1.85 Projection", "35mm Anamorphic", "65mm ALEXA",
+                 "70mm", "70mm IMAX", "Custom"});
     type.fields.back().attributes["serialized"] = false;
     type.fields.back().attributes["setter_owns_document_shape"] = true;
     type.fields.back().attributes["default"]["name"] = "Custom";
@@ -163,7 +162,8 @@ SemanticTypeDescriptor DescribeCamera()
     add("sensor_size", "sensorSize", "VEC2", {36.0, 24.0});
     add("lens_shift", "lensShift", "VEC2", {0.0, 0.0});
     enumeration("gate_fit", "gateFit", "PhysicalGateFit", {"None", "Vertical", "Horizontal", "Fill", "Overscan"},
-                {"camera.gate.none", "camera.gate.vertical", "camera.gate.horizontal", "camera.gate.fill", "camera.gate.overscan"});
+                {"camera.gate.none", "camera.gate.vertical", "camera.gate.horizontal", "camera.gate.fill",
+                 "camera.gate.overscan"});
     // The native Camera defaults to the Unity-compatible Horizontal gate fit.
     // Keep the semantic catalog's default in lockstep with the actual C++
     // object rather than inheriting the first enum member (None).
@@ -187,7 +187,7 @@ SemanticTypeDescriptor DescribeCamera()
     add("dithering", "dithering", "BOOL", false);
     add("stop_nans", "stopNaNs", "BOOL", false)["header"] = "camera.section.output";
     auto &target = add("target_texture", "targetTextureGuid", "ASSET",
-                       {{"$type", "asset_ref"}, {"asset_type", "RenderTexture"}, {"guid", ""}});
+                       {{"$type", "asset_ref"}, {"asset_type", "RenderTexture"}, {"guid", ""}, {"path_hint", ""}});
     target["asset_type"] = "RenderTexture";
     target["nullable"] = true;
     target["setter_owns_document_shape"] = true;
@@ -316,8 +316,7 @@ void Camera::SetFocalLength(float value)
 CameraSensorType Camera::GetSensorType() const
 {
     for (const auto &preset : SensorPresets)
-        if (std::abs(m_sensorSize.x - preset.size.x) <= 0.0005f &&
-            std::abs(m_sensorSize.y - preset.size.y) <= 0.0005f)
+        if (std::abs(m_sensorSize.x - preset.size.x) <= 0.0005f && std::abs(m_sensorSize.y - preset.size.y) <= 0.0005f)
             return preset.type;
     return CameraSensorType::Custom;
 }
@@ -436,10 +435,29 @@ void Camera::ValidateSerializedDocument(const nlohmann::json &j)
 {
     using namespace component_document_validation;
     ValidateComponentDocument(j, "Camera",
-                              {"projectionMode", "fov", "aspectRatio", "orthoSize", "nearClip", "farClip", "depth",
-                               "cullingMask", "clearFlags", "backgroundColor", "usePhysicalProperties", "iso",
-                               "shutterSpeed", "aperture", "focusDistance", "focalLength", "bladeCount", "curvature",
-                               "barrelClipping", "anamorphism", "sensorSize", "lensShift", "gateFit"},
+                              {"projectionMode",
+                               "fov",
+                               "aspectRatio",
+                               "orthoSize",
+                               "nearClip",
+                               "farClip",
+                               "depth",
+                               "cullingMask",
+                               "clearFlags",
+                               "backgroundColor",
+                               "usePhysicalProperties",
+                               "iso",
+                               "shutterSpeed",
+                               "aperture",
+                               "focusDistance",
+                               "focalLength",
+                               "bladeCount",
+                               "curvature",
+                               "barrelClipping",
+                               "anamorphism",
+                               "sensorSize",
+                               "lensShift",
+                               "gateFit"},
                               {"dithering", "stopNaNs", "targetTextureGuid"});
     const int projectionMode = RequireInteger(j, "projectionMode", "Camera");
     const float fov = RequireFiniteFloat(j, "fov", "Camera");
@@ -642,18 +660,25 @@ glm::mat4 Camera::BuildProjectionMatrix(float aspect) const
         const float sensorAspect = sensorWidth / sensorHeight;
         bool fitVertical = false;
         switch (m_gateFit) {
-        case PhysicalGateFit::Vertical: fitVertical = true; break;
-        case PhysicalGateFit::Horizontal: fitVertical = false; break;
-        case PhysicalGateFit::Fill: fitVertical = aspect < sensorAspect; break;
-        case PhysicalGateFit::Overscan: fitVertical = aspect >= sensorAspect; break;
-        case PhysicalGateFit::None: fitVertical = true; break;
+        case PhysicalGateFit::Vertical:
+            fitVertical = true;
+            break;
+        case PhysicalGateFit::Horizontal:
+            fitVertical = false;
+            break;
+        case PhysicalGateFit::Fill:
+            fitVertical = aspect < sensorAspect;
+            break;
+        case PhysicalGateFit::Overscan:
+            fitVertical = aspect >= sensorAspect;
+            break;
+        case PhysicalGateFit::None:
+            fitVertical = true;
+            break;
         }
-        const float gateWidth = m_gateFit == PhysicalGateFit::None
-                                    ? sensorWidth
-                                    : (fitVertical ? sensorHeight * aspect : sensorWidth);
-        const float gateHeight = m_gateFit == PhysicalGateFit::None
-                                     ? sensorHeight
-                                     : gateWidth / aspect;
+        const float gateWidth =
+            m_gateFit == PhysicalGateFit::None ? sensorWidth : (fitVertical ? sensorHeight * aspect : sensorWidth);
+        const float gateHeight = m_gateFit == PhysicalGateFit::None ? sensorHeight : gateWidth / aspect;
         const float fovRad = 2.0f * std::atan(gateHeight / (2.0f * m_focalLength));
         projection = glm::perspective(fovRad, aspect, m_nearClip, m_farClip);
         projection[2][0] += m_lensShift.x * 2.0f * sensorWidth / gateWidth;
