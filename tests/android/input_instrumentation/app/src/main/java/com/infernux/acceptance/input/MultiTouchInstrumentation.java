@@ -11,6 +11,7 @@ import android.graphics.Rect;
 import android.os.Bundle;
 import android.os.ParcelFileDescriptor;
 import android.os.SystemClock;
+import android.util.Log;
 import android.view.InputDevice;
 import android.view.MotionEvent;
 import android.view.Surface;
@@ -26,6 +27,7 @@ import java.nio.charset.StandardCharsets;
 
 /** Injects two simultaneous contacts through Android's system input test boundary. */
 public final class MultiTouchInstrumentation extends Instrumentation {
+    private static final String LOG_TAG = "InfernuxInputTest";
     private static final String EXPECTED_TEXT = "输入测试中文🙂";
     private static final float FIXTURE_REFERENCE_WIDTH = 1280.0f;
     private static final float FIXTURE_REFERENCE_HEIGHT = 720.0f;
@@ -129,12 +131,23 @@ public final class MultiTouchInstrumentation extends Instrumentation {
                     10000L);
             orientationPassed = true;
             stage = "text-input-button";
+            final float buttonX = fixtureButtonCenterX(
+                    reverseLandscape.width, reverseLandscape.height);
+            final float buttonY = fixtureButtonCenterY(
+                    reverseLandscape.width, reverseLandscape.height);
+            Log.i(LOG_TAG, "INFERNUX_ANDROID_IME_TAP "
+                    + "rotation=" + reverseLandscape.rotation
+                    + " viewport=" + reverseLandscape.width + "x" + reverseLandscape.height
+                    + " normalized=" + buttonX + "," + buttonY
+                    + " pixel=" + buttonX * reverseLandscape.width
+                    + "," + buttonY * reverseLandscape.height
+                    + " safeInsets=" + formatInsets(reverseLandscape.safeInsets));
             injectTap(
                     automation,
                     reverseLandscape.width,
                     reverseLandscape.height,
-                    fixtureButtonCenterX(reverseLandscape.width, reverseLandscape.height),
-                    fixtureButtonCenterY(reverseLandscape.width, reverseLandscape.height));
+                    buttonX,
+                    buttonY);
             stage = "ime-visible";
             final ImeSnapshot visibleIme = waitForIme(targetActivity, true, 10000L);
             if (!visibleIme.editorFocused) {

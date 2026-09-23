@@ -116,6 +116,8 @@ def test_parser_uses_current_android_fixture_contract():
         "value=Package resource reached UIText on every Player target.",
         "INFERNUX_PLATFORM_FIXTURE_PRELOAD_RESOURCE_READY "
         "value=Package resource reached UIText on every Player target.",
+        "INFERNUX_PLATFORM_FIXTURE_MANAGED_GUID_READ_READY "
+        "guid=8b7148eba8303c90b0589315c16f7cba",
         "INFERNUX_PLATFORM_FIXTURE_MULTITOUCH_READY",
         "INFERNUX_PLATFORM_FIXTURE_UNITY_TOUCH_READY",
         "INFERNUX_PLATFORM_FIXTURE_TOUCH_CANCELED",
@@ -155,8 +157,9 @@ def test_probe_launches_the_target_through_uiautomation_shell():
     assert 'shell(automation, "input keyevent KEYCODE_BACK")' in source
     assert "reverseLandscape.width" in source
     assert "reverseLandscape.height" in source
-    assert "fixtureButtonCenterX(reverseLandscape.width" in source
-    assert "fixtureButtonCenterY(reverseLandscape.width" in source
+    assert "fixtureButtonCenterX(" in source
+    assert "fixtureButtonCenterY(" in source
+    assert "INFERNUX_ANDROID_IME_TAP" in source
     assert "Math.sqrt(widthScale * heightScale)" in source
     assert "BUTTON_PRESS_MILLISECONDS = 500L" in source
     assert "TOUCH_PHASE_MILLISECONDS = 500L" in source

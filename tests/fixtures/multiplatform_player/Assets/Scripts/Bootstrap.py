@@ -15,6 +15,8 @@ class PlatformFixtureBootstrap(inx.InxComponent):
     PACKAGE_REFERENCE = "infernux/multiplatform_probe"
     PACKAGE_MESSAGE_PATH = "runtime/message.txt"
     PACKAGE_MESSAGE = "Package resource reached UIText on every Player target."
+    MANAGED_MESSAGE_GUID = "8b7148eba8303c90b0589315c16f7cba"
+    MANAGED_MESSAGE = "Cooked asset reached the package preload."
 
     def awake(self):
         self._probe = None
@@ -31,6 +33,7 @@ class PlatformFixtureBootstrap(inx.InxComponent):
         self._committed_text = ""
         self._text_input_button = None
         self._text_input_status = None
+        self._canvas = None
         self._last_screen_view = None
         self._back_reported = False
 
@@ -39,6 +42,20 @@ class PlatformFixtureBootstrap(inx.InxComponent):
             "Local author package reached Player preload."
         ):
             raise RuntimeError("Local author package preload did not complete")
+        managed_files = inx.AssetManager.find_assets(self.MANAGED_MESSAGE_GUID)
+        if len(managed_files) != 1:
+            raise RuntimeError(
+                "Managed GUID query did not resolve exactly one cooked asset"
+            )
+        managed_message = managed_files[0].read_text().strip()
+        if managed_message != self.MANAGED_MESSAGE:
+            raise RuntimeError(
+                f"Unexpected managed GUID payload: {managed_message!r}"
+            )
+        inx.Debug.log(
+            "INFERNUX_PLATFORM_FIXTURE_MANAGED_GUID_READ_READY "
+            f"guid={self.MANAGED_MESSAGE_GUID}"
+        )
         scene = inx.SceneManager.get_active_scene()
         if scene is None:
             raise RuntimeError("Multiplatform fixture requires an active scene")
@@ -65,6 +82,7 @@ class PlatformFixtureBootstrap(inx.InxComponent):
         canvas = canvas_owner.add_component(inx.ui.UICanvas)
         canvas.reference_width = 1280
         canvas.reference_height = 720
+        self._canvas = canvas
 
         marker_owner = scene.create_game_object("Platform Fixture UI Marker")
         marker_owner.set_parent(canvas_owner, world_position_stays=False)
@@ -207,9 +225,15 @@ class PlatformFixtureBootstrap(inx.InxComponent):
             inx.Debug.log("INFERNUX_PLATFORM_FIXTURE_BACK_READY")
 
     def _begin_text_input(self):
+        inx.Debug.log("INFERNUX_PLATFORM_FIXTURE_TEXT_INPUT_ENTRY")
         if self._text_input_requested:
             return
-        if not inx.input.Input.begin_text_input():
+        accepted = inx.input.Input.begin_text_input()
+        inx.Debug.log(
+            "INFERNUX_PLATFORM_FIXTURE_TEXT_INPUT_REQUEST "
+            f"accepted={accepted} active={inx.input.Input.is_text_input_active()}"
+        )
+        if not accepted:
             raise RuntimeError("Platform text input service rejected the request")
         self._text_input_requested = True
         self._text_input_button.label = "Keyboard active"
@@ -264,6 +288,29 @@ class PlatformFixtureBootstrap(inx.InxComponent):
             raise RuntimeError("Input.touch_count disagrees with Input.touches")
 
         for index, touch in enumerate(touches):
+            if self._multitouch_reported and touch.phase in (
+                inx.input.TouchPhase.BEGAN,
+                inx.input.TouchPhase.ENDED,
+            ):
+                width, height = inx.Screen.size
+                pixel_x = float(touch.normalized_position[0]) * width
+                pixel_y = (1.0 - float(touch.normalized_position[1])) * height
+                scale_x, scale_y, _ = self._canvas.compute_scale(width, height)
+                canvas_x = pixel_x / scale_x
+                canvas_y = pixel_y / scale_y
+                hit = self._canvas.raycast(canvas_x, canvas_y)
+                target_object = getattr(hit, "game_object", None)
+                target = getattr(target_object, "name", "none")
+                button_rect = self._text_input_button.get_rect(
+                    *self._canvas.compute_logical_size(width, height)
+                )
+                inx.Debug.log(
+                    "INFERNUX_PLATFORM_FIXTURE_TOUCH_HIT "
+                    f"phase={touch.phase.value} finger={touch.finger_id} "
+                    f"pixel={pixel_x:.1f},{pixel_y:.1f} "
+                    f"canvas={canvas_x:.1f},{canvas_y:.1f} "
+                    f"target={target} button_rect={button_rect}"
+                )
             indexed = inx.input.Input.get_touch(index)
             if (
                 indexed.touch_id != touch.touch_id

@@ -14,9 +14,14 @@ def test_multiplatform_player_fixture_has_a_buildable_camera_scene():
             encoding="utf-8"
         )
     )
-    assert settings["scenes"] == ["Assets/Scenes/Main.scene"]
+    assert settings["scene_guids"] == ["04000000000000000000000000000001"]
+    scene_path = FIXTURE / "Assets" / "Scenes" / "Main.scene"
+    scene_meta = json.loads(
+        scene_path.with_suffix(".scene.meta").read_text(encoding="utf-8")
+    )
+    assert scene_meta["metadata"]["guid"]["value"] == settings["scene_guids"][0]
     scene = json.loads(
-        (FIXTURE / settings["scenes"][0]).read_text(encoding="utf-8")
+        scene_path.read_text(encoding="utf-8")
     )
 
     assert scene["mainCameraComponentId"] > 0
@@ -86,6 +91,17 @@ def test_multiplatform_player_fixture_has_a_buildable_camera_scene():
     assert "self._trail.set_positions" in source
     assert "Application.package_path" in source
     assert "add_component(inx.ui.UIText)" in source
+    managed_message = FIXTURE / "Assets" / "Data" / "preload_message.txt"
+    managed_meta = json.loads(
+        managed_message.with_suffix(".txt.meta").read_text(encoding="utf-8")
+    )
+    assert managed_meta["metadata"]["guid"]["value"] == (
+        "8b7148eba8303c90b0589315c16f7cba"
+    )
+    assert managed_message.read_text(encoding="utf-8").strip() == (
+        "Cooked asset reached the package preload."
+    )
+    assert "AssetManager.find_assets(self.MANAGED_MESSAGE_GUID)" in source
     package_message = (
         FIXTURE
         / "Packages"

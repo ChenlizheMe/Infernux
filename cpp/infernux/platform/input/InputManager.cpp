@@ -437,7 +437,22 @@ bool InputManager::StartTextInput()
     m_textInputActive = true;
     return true;
 #else
-    if (m_window == nullptr || !SDL_StartTextInput(m_window))
+    if (m_window == nullptr)
+        return false;
+#if defined(__ANDROID__)
+    // An explicit text-input request needs the software editor even when an
+    // emulator or attached physical keyboard makes SDL_HasKeyboard() true.
+    SDL_SetHint(SDL_HINT_ENABLE_SCREEN_KEYBOARD, "1");
+    const char *screenKeyboardHint = SDL_GetHint(SDL_HINT_ENABLE_SCREEN_KEYBOARD);
+    SDL_Log("INFERNUX_ANDROID_TEXT_INPUT_SDL_REQUEST keyboard=%d hint=%s",
+            SDL_HasKeyboard(), screenKeyboardHint != nullptr ? screenKeyboardHint : "unset");
+#endif
+    const bool started = SDL_StartTextInput(m_window);
+#if defined(__ANDROID__)
+    SDL_Log("INFERNUX_ANDROID_TEXT_INPUT_SDL_RESULT started=%d active=%d error=%s",
+            started, SDL_TextInputActive(m_window), started ? "none" : SDL_GetError());
+#endif
+    if (!started)
         return false;
     m_textInputActive = true;
     return true;
