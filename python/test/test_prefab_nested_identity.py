@@ -338,6 +338,7 @@ def test_regular_prefab_child_crossing_scope_becomes_private_and_undo_restores_l
 
 
 def test_prefab_mode_repeated_save_preserves_nested_namespace(scene, tmp_path, monkeypatch):
+    from Infernux.core.assets import AssetManager
     from types import SimpleNamespace
     from Infernux.engine.scene_manager import SceneFileManager
     from Infernux.engine.interaction import EditorInteractionCore, SelectionDomain
@@ -349,10 +350,26 @@ def test_prefab_mode_repeated_save_preserves_nested_namespace(scene, tmp_path, m
     core = EditorInteractionCore()
     core.panels.register_selection_authority("hierarchy", (SelectionDomain.SCENE_OBJECT,))
     manager = SceneFileManager()
-    manager._asset_database = SimpleNamespace(get_path_from_guid=lambda guid: inner_path if guid == "inner-guid" else path)
+    database = SimpleNamespace(
+        get_path_from_guid=lambda guid: (
+            inner_path if guid == "inner-guid" else path if guid == "outer-guid" else ""
+        ),
+        get_guid_from_path=lambda candidate: (
+            "inner-guid" if str(candidate).casefold() == inner_path.casefold()
+            else "outer-guid" if str(candidate).casefold() == path.casefold()
+            else ""
+        ),
+    )
+    manager._asset_database = database
+    monkeypatch.setattr(
+        AssetManager,
+        "import_asset",
+        classmethod(lambda cls, candidate, **_kwargs: SimpleNamespace(
+            guid=database.get_guid_from_path(candidate)
+        )),
+    )
     try:
         assert manager.open_prefab_mode(path)
-        manager._asset_database = None  # Asset import bookkeeping is not this test's subject.
         root = SceneManager.instance().get_active_scene().get_root_objects()[0]
         root.name = "Edited Outer Root"
         assert manager._save_prefab()

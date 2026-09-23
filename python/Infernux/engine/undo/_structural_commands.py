@@ -350,8 +350,9 @@ class ReparentCommand(UndoCommand):
             return
         new_parent = scene.find_by_id(parent_id) if parent_id is not None else None
         old_parent = obj.get_parent()
-        _preserve_ui_world_position(obj, new_parent)
+        restore_ui_rect = _preserve_ui_world_position(obj, new_parent)
         obj.set_parent(new_parent)
+        restore_ui_rect()
         _invalidate_canvas_caches(old_parent)
         _invalidate_canvas_caches(new_parent)
 
@@ -395,8 +396,9 @@ class MoveGameObjectCommand(UndoCommand):
         parent = scene.find_by_id(parent_id) if parent_id is not None else None
         current_parent = obj.get_parent()
         if current_parent is not parent:
-            _preserve_ui_world_position(obj, parent)
+            restore_ui_rect = _preserve_ui_world_position(obj, parent)
             obj.set_parent(parent)
+            restore_ui_rect()
             _invalidate_canvas_caches(current_parent)
             _invalidate_canvas_caches(parent)
         transform = getattr(obj, "transform", None)
@@ -516,8 +518,9 @@ class SceneHierarchyLayoutCommand(UndoCommand):
             if current_parent_id == parent_id:
                 continue
             parent = scene.find_by_id(parent_id) if parent_id is not None else None
-            _preserve_ui_world_position(obj, parent)
+            restore_ui_rect = _preserve_ui_world_position(obj, parent)
             obj.set_parent(parent)
+            restore_ui_rect()
             _invalidate_canvas_caches(current_parent)
             _invalidate_canvas_caches(parent)
 

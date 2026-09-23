@@ -133,16 +133,19 @@ def test_prefab_rejects_invalid_allocator_watermark(scene, tmp_path, invalid):
         _read_prefab_document(str(bad_path))
 
 
-def test_prefab_legacy_watermark_is_imported_from_existing_ids(scene, tmp_path):
+@pytest.mark.parametrize("field", ["next_local_id", "next_component_id"])
+def test_prefab_rejects_missing_allocator_watermark(scene, tmp_path, field):
     path, _, _ = _make_prefab(scene, tmp_path)
     document = copy.deepcopy(_read_prefab_document(path))
-    document.pop("next_local_id")
-    legacy = tmp_path / "legacy.prefab"
-    legacy.write_text(json.dumps(document), encoding="utf-8")
-    assert _read_prefab_document(str(legacy))["next_local_id"] == 3
+    document.pop(field)
+    invalid = tmp_path / "missing-watermark.prefab"
+    invalid.write_text(json.dumps(document), encoding="utf-8")
+    with pytest.raises(PrefabDocumentError, match="missing or unknown envelope fields"):
+        _read_prefab_document(str(invalid))
 
 
 def test_prefab_mode_save_exit_preserves_instance_overrides_and_identities(scene, tmp_path, monkeypatch):
+    from Infernux.core.assets import AssetManager
     from Infernux.engine.scene_manager import SceneFileManager
     from Infernux.engine.interaction import EditorInteractionCore, DocumentRegistry, SelectionDomain
     from Infernux.lib import SceneManager
@@ -164,6 +167,18 @@ def test_prefab_mode_save_exit_preserves_instance_overrides_and_identities(scene
     core = EditorInteractionCore()
     core.panels.register_selection_authority("hierarchy", (SelectionDomain.SCENE_OBJECT,))
     manager = SceneFileManager()
+    database = SimpleNamespace(
+        get_guid_from_path=lambda candidate: (
+            "structural-guid" if str(candidate).casefold() == path.casefold() else ""
+        ),
+        get_path_from_guid=lambda guid: path if guid == "structural-guid" else "",
+    )
+    manager._asset_database = database
+    monkeypatch.setattr(
+        AssetManager,
+        "import_asset",
+        classmethod(lambda cls, _path, **_kwargs: SimpleNamespace(guid="structural-guid")),
+    )
     original_document_id = manager.document_id
     original_scene_count = SceneManager.instance().scene_count
     try:
@@ -183,9 +198,6 @@ def test_prefab_mode_save_exit_preserves_instance_overrides_and_identities(scene
 
         # Only path resolution is isolated; graph publication and file saving
         # use the real native Scene and bound document controller throughout.
-        manager._asset_database = SimpleNamespace(
-            get_guid_from_path=lambda _: "structural-guid", get_path_from_guid=lambda _: path,
-        )
         assert manager._do_exit_prefab_mode()
         restored = SceneManager.instance().get_active_scene()
         assert restored is scene
@@ -200,7 +212,6 @@ def test_prefab_mode_save_exit_preserves_instance_overrides_and_identities(scene
         assert restored.find_by_id(watcher_id).get_py_component(_StructuralReferences).target.id == original_id
         # A no-edit second visit must not make a clean scene dirty, and the
         # already-saved node must retain the same source identity.
-        manager._asset_database = None
         registry = DocumentRegistry.instance()
         registry.restore_saved_revision(original_document_id)
         assert manager.open_prefab_mode(path)
@@ -257,17 +268,12 @@ def test_scene_reopen_merges_updated_source_and_keeps_instance_references(scene,
     assert not ScenePrefabMixin._refresh_prefab_instances(scene, "structural-guid", path)
 
 
-def test_legacy_scene_baseline_adoption_does_not_destroy_authored_overrides(scene, tmp_path):
-    from Infernux.engine._scene_prefab import ScenePrefabMixin
-    path, first, _ = _make_prefab(scene, tmp_path)
-    first._prefab_source_document = None
-    child = first.get_child(0)
-    child_id = child.id
-    child.name = "Legacy Override"
-    assert ScenePrefabMixin._refresh_prefab_instances(scene, "structural-guid", path)
-    assert first.get_child(0).id == child_id
-    assert first.get_child(0).name == "Legacy Override"
-    assert first._prefab_source_document == _make_prefab_baseline(_read_prefab_document(path)["root_object"])
+def test_prefab_rejects_unversioned_scene_baseline(scene, tmp_path):
+    from Infernux.engine.prefab_manager import _prefab_baseline_root
+    path, _, _ = _make_prefab(scene, tmp_path)
+    baseline = _read_prefab_document(path)["root_object"]
+    with pytest.raises(PrefabDocumentError, match="Unsupported prefab component identity baseline"):
+        _prefab_baseline_root(baseline)
 
 
 def test_player_cook_strips_only_objectgraph_prefab_baselines(tmp_path):

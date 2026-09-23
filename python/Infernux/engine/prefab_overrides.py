@@ -6,11 +6,10 @@ to compute property-level overrides. Supports apply (write overrides back
 to the .prefab file) and revert (reset instance to match the prefab).
 
 Nodes retain their asset-local source identity independently of scene IDs.
-Name/occurrence matching is limited to legacy instances without source IDs.
 """
 
 import copy
-from collections import defaultdict, deque
+from collections import defaultdict
 from dataclasses import dataclass
 import json
 import os
@@ -820,9 +819,6 @@ def _snapshot_linked_instances(scene, prefab_guid: str, *, base_root,
             )
         local_document = copy.deepcopy(runtime_document)
         ids = source_ids if obj is instance_root else None
-        if ids is None and not runtime_document.get("prefab_source_id"):
-            ids = {}
-            _match_object_ids(runtime_document, base_root, ids)
         component_map = component_ids if obj is instance_root and component_ids is not None else _instance_component_ids(runtime_document, base_root)
         object_ids, _, component_map, _ = _localize_prefab_snapshot(
             local_document, source=base_root, instance_snapshot=True, object_id_map=ids,
@@ -1022,9 +1018,11 @@ def _merge_prefab_instance_document(runtime_document, local_document, object_ids
         _stamp_prefab_guid, _validate_game_object_document, _make_prefab_baseline, _prefab_baseline_root,
     )
 
-    # A legacy scene has no historical baseline. Preserve authored values as
-    # overrides on first adoption rather than guessing what the old source was.
-    baseline = base_root if base_root is not None else _prefab_baseline_root(runtime_document.get("prefab_source", updated_root))
+    baseline = (
+        base_root
+        if base_root is not None
+        else _prefab_baseline_root(runtime_document["prefab_source"])
+    )
     _validate_game_object_document(baseline)
     merged = _merge_prefab_hierarchy(baseline, local_document, updated_root)
     source_ids = {node["local_id"] for node in _object_nodes(updated_root)}
@@ -1094,12 +1092,8 @@ def resolve_scene_prefab_documents(document: dict, load_source, *, reserve_ids=N
             expected = _make_prefab_baseline(updated_root, outer_source_id=node.get("prefab_source", {}).get("outer_source_id", 0))
             if node.get("prefab_source") != expected:
                 local = copy.deepcopy(node)
-                ids = None
-                if not node.get("prefab_source_id"):
-                    ids = {}
-                    _match_object_ids(node, updated_root, ids)
                 object_ids, _, component_ids, _ = _localize_prefab_snapshot(
-                    local, source=updated_root, instance_snapshot=True, object_id_map=ids,
+                    local, source=updated_root, instance_snapshot=True,
                     component_id_map=_instance_component_ids(node, updated_root),
                 )
                 node = _merge_prefab_instance_document(
@@ -1188,46 +1182,16 @@ def _serialize_obj(obj) -> Optional[dict]:
     return serialize_game_object_document_authoritatively(obj)
 
 
-def _match_records(instances: list, sources: list, key: str):
-    """Match each record once, retaining occurrence order for duplicate names/types."""
-    remaining = defaultdict(deque)
-    for source in sources:
-        remaining[source[key]].append(source)
-    for instance in instances:
-        matches = remaining[instance[key]]
-        yield instance, matches.popleft() if matches else None
-    for matches in remaining.values():
-        for source in matches:
-            yield None, source
-
-
 def _instance_component_ids(instance, source):
-    """Project components by persisted identity; only old scenes need adoption.
-
-    A versioned baseline distinguishes a new private component from a legacy
-    unlinked component, even after the author deletes every source component.
-    """
+    """Project components by their persisted source identities."""
     from Infernux.engine.prefab_manager import _prefab_baseline_root, _nested_source_projection
     if any(node.get("prefab_root") for child in instance["children"] for node in _object_nodes(child)):
         return _nested_source_projection(instance, source)[1]
-    baseline = instance.get("prefab_source", {})
+    baseline = instance.get("prefab_source")
+    if baseline:
+        _prefab_baseline_root(baseline)
     result = {component["component_id"]: component.get("prefab_source_id", -component["component_id"])
               for node in _object_nodes(instance) for component in node["components"]}
-    if "component_identity_version" in baseline:
-        _prefab_baseline_root(baseline)
-        return result
-    previous = _prefab_baseline_root(baseline) if baseline else source
-    if previous is None:
-        return result
-    objects = {}
-    _match_object_ids(instance, previous, objects)
-    sources = {node["local_id"]: node for node in _object_nodes(previous)}
-    for node in _object_nodes(instance):
-        old = sources.get(objects.get(node["id"]))
-        if old is not None:
-            for component, original in _match_records(node["components"], old["components"], "type_id"):
-                if component is not None and original is not None and not component.get("prefab_source_id"):
-                    result[component["component_id"]] = original["component_id"]
     return result
 
 
@@ -1243,16 +1207,9 @@ def _match_object_ids(instance: dict, prefab: dict, object_ids: dict):
             source_id = node.get("prefab_source_id", 0)
             if source_id in sources:
                 object_ids[node["id"]] = source_id
-        return
-    for child, source in _match_records(instance["children"], prefab["children"], "name"):
-        if child is not None and source is not None:
-            _match_object_ids(child, source, object_ids)
 
 
 def _match_child_nodes(instance, prefab, object_ids):
-    if not instance.get("prefab_source_id"):
-        yield from _match_records(instance["children"], prefab["children"], "name")
-        return
     sources = {child["local_id"]: child for child in prefab["children"]}
     for child in instance["children"]:
         yield child, sources.pop(object_ids.get(child["id"], 0), None)

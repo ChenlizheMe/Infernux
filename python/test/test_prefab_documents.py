@@ -496,6 +496,8 @@ def test_prefab_save_is_strict_typed_and_atomic(scene, tmp_path):
 
 
 def test_canvas_free_world_ui_uses_normal_clone_save_and_prefab_lifecycle(scene, tmp_path):
+    from Infernux.components.fields import get_raw_field_value
+    from Infernux.core.asset_ref import TextureRef
     from Infernux.ui import UIButton, UICanvas, UIFrame
 
     root = scene.create_game_object("WorldPanel")
@@ -510,11 +512,13 @@ def test_canvas_free_world_ui_uses_normal_clone_save_and_prefab_lifecycle(scene,
     child = scene.create_game_object("WorldButton")
     child.set_parent(root)
     button = UIButton()
-    button.x = 120.0
-    button.y = 214.0
     button.width = 400.0
     button.height = 82.0
     button.label = "INTERACT WITH THE WORLD"
+    button.background_texture = TextureRef(
+        guid="world-button-texture-guid",
+        path_hint="Assets/Textures/world-button.png",
+    )
     child.add_py_component(button)
 
     clone = clone_game_object_transactionally(scene, root)
@@ -524,6 +528,9 @@ def test_canvas_free_world_ui_uses_normal_clone_save_and_prefab_lifecycle(scene,
     clone_button = clone.get_child(0).get_py_component(UIButton)
     assert (clone_frame.width, clone_frame.height) == (640.0, 360.0)
     assert clone_button.label == "INTERACT WITH THE WORLD"
+    assert get_raw_field_value(clone_button, "background_texture").guid == (
+        "world-button-texture-guid"
+    )
     assert [clone.transform.position[index] for index in range(3)] == pytest.approx([2.0, 3.0, 4.0])
 
     path = tmp_path / "world_ui.prefab"
@@ -537,6 +544,9 @@ def test_canvas_free_world_ui_uses_normal_clone_save_and_prefab_lifecycle(scene,
     instance_button = instance.get_child(0).get_py_component(UIButton)
     assert (instance_frame.width, instance_frame.height) == (640.0, 360.0)
     assert instance_button.label == "INTERACT WITH THE WORLD"
+    assert get_raw_field_value(instance_button, "background_texture").guid == (
+        "world-button-texture-guid"
+    )
 
 
 def test_prefab_remaps_internal_python_references(scene, tmp_path):

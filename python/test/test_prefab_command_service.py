@@ -38,8 +38,8 @@ class _DocumentOpenProbe:
     def __init__(self) -> None:
         self.calls = []
 
-    def open_resource(self, kind, path):
-        self.calls.append((kind, path))
+    def open_resource(self, kind, path, **kwargs):
+        self.calls.append((kind, path, kwargs))
         return DocumentOpenResult(DocumentOpenStatus.READY)
 
 
@@ -148,15 +148,18 @@ def test_can_execute_resolves_each_prefab_action(prefab_service, tmp_path, monke
 
 
 def test_locate_delegates_to_navigation_service(prefab_service, tmp_path):
-    service, _selection, navigation, _documents, _assets = prefab_service
+    service, _selection, navigation, _documents, assets = prefab_service
     prefab_path = tmp_path / "Located.prefab"
     prefab_path.write_text("{}", encoding="utf-8")
+    assets.asset_database = SimpleNamespace(
+        get_guid_from_path=lambda path: "located-guid" if same_path(path, str(prefab_path)) else ""
+    )
 
     assert service.locate(path=str(prefab_path), record_history=False)
     assert len(navigation.calls) == 1
     target, options = navigation.calls[0]
     assert target.domain is SelectionDomain.ASSET
-    assert same_path(target.target_id, str(prefab_path))
+    assert target.target_id == "located-guid"
     assert options == {
         "owner_id": "prefab",
         "reason": "prefab_locate",
@@ -283,10 +286,13 @@ def test_open_enters_prefab_mode_and_opens_prefab_document(
     from Infernux.engine.scene_manager import SceneFileManager
     from Infernux.engine.undo import UndoManager
 
-    service, _selection, _navigation, documents, _assets = prefab_service
+    service, _selection, _navigation, documents, assets = prefab_service
     prefab_path = tmp_path / "Opened.prefab"
     prefab_path.write_text("{}", encoding="utf-8")
-    scene_files = SimpleNamespace(is_prefab_mode=False, prefab_mode_path="")
+    assets.asset_database = SimpleNamespace(
+        get_guid_from_path=lambda path: "opened-guid" if same_path(path, str(prefab_path)) else ""
+    )
+    scene_files = SimpleNamespace(is_prefab_mode=False, prefab_mode_path="", prefab_mode_guid="")
     monkeypatch.setattr(SceneFileManager, "instance", staticmethod(lambda: scene_files))
     monkeypatch.setattr(
         undo_module,
@@ -304,13 +310,40 @@ def test_open_enters_prefab_mode_and_opens_prefab_document(
     assert len(manager.calls) == 1
     command, origin = manager.calls[0]
     assert command.kind == "open"
-    assert same_path(command.arguments[0], str(prefab_path))
+    assert command.arguments[0] == "opened-guid"
     assert command.options == {"enter_mode": True}
     assert origin is ActionOrigin.AUTOMATION
     assert len(documents.calls) == 1
-    kind, opened_path = documents.calls[0]
+    kind, opened_path, options = documents.calls[0]
     assert kind is DocumentKind.PREFAB
     assert same_path(opened_path, str(prefab_path))
+    assert options == {"guid": "opened-guid"}
+
+
+def test_open_recognizes_active_prefab_by_guid_after_asset_move(
+    prefab_service,
+    tmp_path,
+    monkeypatch,
+):
+    from Infernux.engine.scene_manager import SceneFileManager
+
+    service, _selection, _navigation, documents, assets = prefab_service
+    moved_path = tmp_path / "Moved.prefab"
+    moved_path.write_text("{}", encoding="utf-8")
+    assets.asset_database = SimpleNamespace(
+        get_guid_from_path=lambda path: "stable-prefab-guid"
+        if same_path(path, str(moved_path))
+        else ""
+    )
+    scene_files = SimpleNamespace(
+        is_prefab_mode=True,
+        prefab_mode_path=str(tmp_path / "BeforeMove.prefab"),
+        prefab_mode_guid="stable-prefab-guid",
+    )
+    monkeypatch.setattr(SceneFileManager, "instance", staticmethod(lambda: scene_files))
+
+    assert service.open(path=str(moved_path))
+    assert documents.calls == []
 
 
 def test_prefab_commands_have_no_panel_or_event_bus_authority():

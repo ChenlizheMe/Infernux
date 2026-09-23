@@ -68,7 +68,9 @@ def _validate_nested_prefab(node, location):
         raise PrefabDocumentError(f"{location}.nested_prefab has invalid fields")
     if not isinstance(link["guid"], str) or not link["guid"]:
         raise PrefabDocumentError(f"{location}.nested_prefab requires a source GUID")
-    _validate_prefab_document({"root_object": link["baseline"]}, location + ".nested_prefab.baseline")
+    _validate_game_object_document(
+        link["baseline"], location + ".nested_prefab.baseline", local_ids=set()
+    )
     for key in ("object_sources", "component_sources"):
         pairs = link[key]
         if not isinstance(pairs, list) or any(
@@ -86,7 +88,7 @@ def _validate_prefab_document(document: dict, file_path: str = "<memory>") -> No
     if not isinstance(document, dict):
         raise PrefabDocumentError(f"Prefab '{file_path}' must contain an object")
     allowed = {"root_object", "source_canvas_name", "next_local_id", "next_component_id", "variant"}
-    required = {"root_object"}
+    required = {"root_object", "next_local_id", "next_component_id"}
     if not required.issubset(document) or not set(document).issubset(allowed):
         raise PrefabDocumentError(f"Prefab '{file_path}' has missing or unknown envelope fields")
     if "source_canvas_name" in document and not isinstance(document["source_canvas_name"], str):
@@ -97,31 +99,19 @@ def _validate_prefab_document(document: dict, file_path: str = "<memory>") -> No
                      for component in node["components"]]
     if any(type(value) is not int or value <= 0 for value in component_ids) or len(component_ids) != len(set(component_ids)):
         raise PrefabDocumentError(f"Prefab '{file_path}' component IDs must be unique positive integers")
-    if "next_component_id" in document:
-        value = document["next_component_id"]
-        if type(value) is not int or value <= max(component_ids, default=0):
-            raise PrefabDocumentError(f"Prefab '{file_path}' next_component_id must exceed every component ID")
-    if "next_local_id" in document:
-        next_id = document["next_local_id"]
-        if type(next_id) is not int or next_id <= max(local_ids):
-            raise PrefabDocumentError(f"Prefab '{file_path}' next_local_id must exceed every source node ID")
+    value = document["next_component_id"]
+    if type(value) is not int or value <= max(component_ids, default=0):
+        raise PrefabDocumentError(f"Prefab '{file_path}' next_component_id must exceed every component ID")
+    next_id = document["next_local_id"]
+    if type(next_id) is not int or next_id <= max(local_ids):
+        raise PrefabDocumentError(f"Prefab '{file_path}' next_local_id must exceed every source node ID")
     if "variant" in document:
         from Infernux.engine.prefab_variant import validate_variant_definition, variant_definition
         validate_variant_definition(variant_definition(document))
 
 
 def _prefab_next_local_id(document):
-    """Older assets acquire an allocator watermark at their next authored save."""
-    if "next_local_id" in document:
-        return document["next_local_id"]
-
-    highest = 0
-    pending = [document["root_object"]]
-    while pending:
-        node = pending.pop()
-        highest = max(highest, node["local_id"])
-        pending.extend(node["children"])
-    return highest + 1
+    return document["next_local_id"]
 
 
 def _prefab_nodes(root):
@@ -131,10 +121,7 @@ def _prefab_nodes(root):
 
 
 def _prefab_next_component_id(document):
-    if "next_component_id" in document:
-        return document["next_component_id"]
-    return max((component["component_id"] for node in _prefab_nodes(document["root_object"])
-                for component in node["components"]), default=0) + 1
+    return document["next_component_id"]
 
 
 def _make_prefab_baseline(root, *, outer_source_id=0):
@@ -145,9 +132,6 @@ def _make_prefab_baseline(root, *, outer_source_id=0):
 
 
 def _prefab_baseline_root(baseline):
-    # Bare ObjectGraphs are the pre-component-identity scene format.
-    if "component_identity_version" not in baseline:
-        return baseline
     if set(baseline) - {"outer_source_id"} != {"component_identity_version", "root_object"} or type(baseline["component_identity_version"]) is not int or baseline["component_identity_version"] != 1:
         raise PrefabDocumentError("Unsupported prefab component identity baseline")
     if "outer_source_id" in baseline and (type(baseline["outer_source_id"]) is not int or baseline["outer_source_id"] <= 0):
@@ -170,19 +154,13 @@ def _read_prefab_document(file_path: str) -> dict:
     with open(file_path, "r", encoding="utf-8") as file:
         document = json.load(file)
     _validate_prefab_document(document, file_path)
-    document["next_local_id"] = _prefab_next_local_id(document)
-    document["next_component_id"] = _prefab_next_component_id(document)
     return document
 
 
 def _invalidate_prefab_template_cache(file_path: str = None, guid: str = ""):
-    keys_to_remove = set()
+    del file_path  # File paths locate bytes; only the GUID can own a cache entry.
     if guid:
-        keys_to_remove.add(guid)
-    if file_path:
-        keys_to_remove.add(path_key(file_path))
-    for key in keys_to_remove:
-        _PREFAB_TEMPLATE_CACHE.pop(key, None)
+        _PREFAB_TEMPLATE_CACHE.pop(guid, None)
 
 
 def _get_file_stamp(file_path: str):
@@ -288,7 +266,12 @@ def _get_cached_prefab_template(file_path: str, resolved_guid: str, asset_databa
         Debug.log_warning(f"Prefab file not found: {file_path}")
         return None
 
-    cache_key = resolved_guid or path_key(file_path)
+    if not resolved_guid:
+        # Explicit unregistered authoring inputs may still be loaded by low-level
+        # tooling, but a filesystem path is never promoted to cache identity.
+        return _load_prefab_template_payload(file_path, "", asset_database, {})
+
+    cache_key = resolved_guid
     cached = _PREFAB_TEMPLATE_CACHE.get(cache_key)
     if cached and cached.get("stamp") == stamp and all(
         _get_file_stamp(path) == previous for path, previous in cached["dependencies"].items()
@@ -453,8 +436,19 @@ def _strip_prefab_runtime_fields(obj_data: dict, *, next_local_id=1, instance_sn
 def read_prefab_source_canvas(file_path: str = None, guid: str = None,
                               asset_database=None) -> str:
     """Return the ``source_canvas_name`` stored in a prefab, or ``""``."""
-    if not file_path and guid and asset_database:
-        file_path = asset_database.get_path_from_guid(guid)
+    if asset_database is not None:
+        resolved_guid = str(guid or "").strip()
+        if not resolved_guid and file_path:
+            try:
+                resolved_guid = str(asset_database.get_guid_from_path(file_path) or "").strip()
+            except Exception:
+                resolved_guid = ""
+        if not resolved_guid:
+            return ""
+        try:
+            file_path = str(asset_database.get_path_from_guid(resolved_guid) or "").strip()
+        except Exception:
+            return ""
     if not file_path or not os.path.isfile(file_path):
         return ""
     try:
@@ -682,21 +676,27 @@ def instantiate_prefab(file_path: str = None, guid: str = None,
     Supply either *file_path* or *guid* (GUID is resolved via asset_database).
     Returns the root GameObject, or None on failure.
     """
-    # Resolve path from GUID if needed
-    resolved_guid = guid or ""
-    if not file_path and guid and asset_database:
-        file_path = asset_database.get_path_from_guid(guid)
+    resolved_guid = str(guid or "").strip()
+    if asset_database is not None:
+        # ``file_path`` is accepted only as an editor authoring boundary. Once
+        # selected, immediately collapse it to the registered GUID and resolve
+        # the current location back from that GUID. A stale supplied path never
+        # participates in runtime identity or cache selection.
+        if not resolved_guid and file_path:
+            try:
+                resolved_guid = str(asset_database.get_guid_from_path(file_path) or "").strip()
+            except Exception:
+                resolved_guid = ""
+        if not resolved_guid:
+            return None
+        try:
+            file_path = str(asset_database.get_path_from_guid(resolved_guid) or "").strip()
+        except Exception:
+            file_path = ""
 
     if not file_path or not os.path.isfile(file_path):
         Debug.log_warning(f"Prefab file not found: {file_path}")
         return None
-
-    # If we have a path but no GUID, try to resolve GUID from the asset database
-    if not resolved_guid and asset_database:
-        try:
-            resolved_guid = asset_database.get_guid_from_path(file_path) or ""
-        except Exception:
-            resolved_guid = ""
 
     if scene is None:
         from Infernux.lib import SceneManager

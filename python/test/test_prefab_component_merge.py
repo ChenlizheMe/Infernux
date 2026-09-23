@@ -4,7 +4,7 @@ import pytest
 
 from Infernux.engine.component_restore import deserialize_game_object_document_transactionally
 from Infernux.engine.prefab_manager import (
-    _read_prefab_document, instantiate_prefab, save_prefab, _make_prefab_baseline,
+    PrefabDocumentError, _read_prefab_document, instantiate_prefab, save_prefab,
 )
 from Infernux.engine.prefab_overrides import (
     apply_overrides_to_prefab, build_prefab_apply_command, compute_overrides,
@@ -85,7 +85,7 @@ def test_private_same_type_component_does_not_replace_deleted_source(scene, tmp_
     assert len({record["component_id"] for record in records}) == 2
 
 
-def test_old_scene_component_links_adopt_once_then_cook_by_identity(scene, tmp_path):
+def test_unversioned_scene_component_baseline_is_rejected(scene, tmp_path):
     path, (first, _) = _pair(scene, tmp_path)
     source = _read_prefab_document(path)["root_object"]
     document = {"objects": [first.serialize_document()]}
@@ -93,18 +93,8 @@ def test_old_scene_component_links_adopt_once_then_cook_by_identity(scene, tmp_p
     root["prefab_source"] = copy.deepcopy(source)
     for record in root["components"]:
         record.pop("prefab_source_id")
-    adopted = resolve_scene_prefab_documents(document, lambda _: source)
-    baseline = adopted["objects"][0]
-    assert baseline["prefab_source"] == _make_prefab_baseline(source)
-    assert [record["prefab_source_id"] for record in baseline["components"]] == [1, 2]
-    survivor = baseline["components"][1]["component_id"]
-    baseline["components"].pop(0)
-    updated = copy.deepcopy(source)
-    updated["components"][1]["data"]["size"] = [8.0, 8.0, 8.0]
-    cooked = resolve_scene_prefab_documents(adopted, lambda _: updated)["objects"][0]
-    assert len(cooked["components"]) == 1
-    assert cooked["components"][0]["component_id"] == survivor
-    assert cooked["components"][0]["data"]["size"] == [8.0, 8.0, 8.0]
+    with pytest.raises(PrefabDocumentError, match="Unsupported prefab component identity baseline"):
+        resolve_scene_prefab_documents(document, lambda _: source)
 
 
 def test_component_source_metadata_is_not_author_data(scene, tmp_path):

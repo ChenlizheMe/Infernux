@@ -208,8 +208,8 @@ class ScenePrefabMixin:
         authored["prefab_source"] = _make_prefab_baseline(self.prefab_envelope["root_object"])
         document, objects, components = _serialize_prefab_snapshot(
             authored, source_canvas_name=self.prefab_envelope.get("source_canvas_name", ""),
-            next_local_id=self.prefab_envelope.get("next_local_id", 1),
-            next_component_id=self.prefab_envelope.get("next_component_id", 1))
+            next_local_id=self.prefab_envelope["next_local_id"],
+            next_component_id=self.prefab_envelope["next_component_id"])
         if "variant" in self.prefab_envelope:
             previous = copy.deepcopy(self.prefab_envelope)
             previous["variant"]["property_overrides"] = copy.deepcopy(self._prefab_variant_overrides)

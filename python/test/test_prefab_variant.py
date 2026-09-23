@@ -273,9 +273,11 @@ def test_rebased_variant_instantiates_through_native_prefab_path(engine, scene, 
     changed["root_object"]["layer"] = 5
     updated = rebase_variant_definition(definition, changed)
     path = str(tmp_path / "Resolved.prefab")
-    assert save_prefab_document(updated["document"], path)
-    instance = instantiate_prefab(file_path=path, guid="variant-guid", scene=scene,
-                                  asset_database=engine.get_asset_database())
+    asset_database = engine.get_asset_database()
+    assert save_prefab_document(updated["document"], path, asset_database=asset_database)
+    guid = str(asset_database.get_guid_from_path(path) or "")
+    assert guid
+    instance = instantiate_prefab(guid=guid, scene=scene, asset_database=asset_database)
     assert instance is not None
     assert instance.name == "Variant collider (Clone)"
     assert instance.layer == 5

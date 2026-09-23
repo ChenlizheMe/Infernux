@@ -290,6 +290,49 @@ class TestInstantiateOverloads:
 
         assert GameObject.instantiate(prefab_ref) is clone
 
+    def test_prefab_reference_without_guid_ignores_legacy_path_hint(self, monkeypatch):
+        class LegacyPathOnlyReference:
+            guid = ""
+
+            @property
+            def path_hint(self):
+                raise AssertionError("legacy prefab path_hint must not be read")
+
+        monkeypatch.setattr(
+            "Infernux.engine.prefab_manager.instantiate_prefab",
+            lambda **_kwargs: pytest.fail("path-only PrefabRef must not be instantiated"),
+        )
+
+        assert lib_module._instantiate_prefab_reference(LegacyPathOnlyReference()) is None
+
+    def test_prefab_reference_does_not_fallback_to_path_after_guid_failure(self, monkeypatch):
+        class GuidReference:
+            guid = " prefab-guid "
+
+            @property
+            def path_hint(self):
+                raise AssertionError("prefab path_hint must not be read")
+
+        database = object()
+        registry = type("Registry", (), {"get_asset_database": lambda self: database})()
+        monkeypatch.setattr(lib_module.AssetRegistry, "instance", staticmethod(lambda: registry))
+        calls = []
+
+        def instantiate_prefab(**kwargs):
+            calls.append(kwargs)
+            return None
+
+        monkeypatch.setattr(
+            "Infernux.engine.prefab_manager.instantiate_prefab",
+            instantiate_prefab,
+        )
+
+        assert lib_module._instantiate_prefab_reference(GuidReference()) is None
+        assert len(calls) == 1
+        assert calls[0]["guid"] == "prefab-guid"
+        assert calls[0]["asset_database"] is database
+        assert "file_path" not in calls[0]
+
     def test_game_object_instantiate_applies_position_rotation_and_parent(self, monkeypatch):
         clone = _FakeClone()
         source = object()

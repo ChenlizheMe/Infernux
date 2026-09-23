@@ -791,37 +791,21 @@ def _instantiate_prefab_reference(
     instantiate_in_world_space=False,
     configure_created=None,
 ):
-    current_path = getattr(prefab_ref, "path_hint", "")
-    guid = getattr(prefab_ref, "guid", "")
-    if not guid and not current_path:
+    guid = str(getattr(prefab_ref, "guid", "") or "").strip()
+    if not guid:
         return None
 
     from Infernux.engine.prefab_manager import instantiate_prefab
 
-    if guid:
-        adb = None
-        registry = AssetRegistry.instance()
-        if registry:
-            adb = registry.get_asset_database()
-        result = instantiate_prefab(
-            guid=guid,
-            parent=parent,
-            asset_database=adb,
-            instantiate_in_world_space=instantiate_in_world_space,
-            configure_created=configure_created,
-        )
-        if result is not None:
-            return result
-
-    if current_path and os.path.isfile(current_path):
-        return instantiate_prefab(
-            file_path=current_path,
-            parent=parent,
-            instantiate_in_world_space=instantiate_in_world_space,
-            configure_created=configure_created,
-        )
-
-    return None
+    registry = AssetRegistry.instance()
+    asset_database = registry.get_asset_database() if registry else None
+    return instantiate_prefab(
+        guid=guid,
+        parent=parent,
+        asset_database=asset_database,
+        instantiate_in_world_space=instantiate_in_world_space,
+        configure_created=configure_created,
+    )
 
 
 def _parse_instantiate_arguments(args, kwargs):
