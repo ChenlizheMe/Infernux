@@ -1263,9 +1263,9 @@ def _transform_anchor_points(domain, values,
                              npx, npy, npz, nqx, nqy, nqz, nqw, nsx, nsy, nsz):
     """Apply ``new TRS * inverse(old TRS)`` to resident world-space points."""
     i = index(domain)
-    dx = values[i, 0] - opx
-    dy = values[i, 1] - opy
-    dz = values[i, 2] - opz
+    dx = values[i][0] - opx
+    dy = values[i][1] - opy
+    dz = values[i][2] - opz
     or00 = 1.0 - 2.0 * (oqy * oqy + oqz * oqz)
     or01 = 2.0 * (oqx * oqy - oqz * oqw)
     or02 = 2.0 * (oqx * oqz + oqy * oqw)
@@ -1290,9 +1290,9 @@ def _transform_anchor_points(domain, values,
     nr20 = 2.0 * (nqx * nqz - nqy * nqw)
     nr21 = 2.0 * (nqy * nqz + nqx * nqw)
     nr22 = 1.0 - 2.0 * (nqx * nqx + nqy * nqy)
-    values[i, 0] = npx + nr00 * lx + nr01 * ly + nr02 * lz
-    values[i, 1] = npy + nr10 * lx + nr11 * ly + nr12 * lz
-    values[i, 2] = npz + nr20 * lx + nr21 * ly + nr22 * lz
+    values[i][0] = npx + nr00 * lx + nr01 * ly + nr02 * lz
+    values[i][1] = npy + nr10 * lx + nr11 * ly + nr12 * lz
+    values[i][2] = npz + nr20 * lx + nr21 * ly + nr22 * lz
 
 
 @kernel
@@ -1301,9 +1301,9 @@ def _transform_anchor_vectors(domain, values,
                               nqx, nqy, nqz, nqw, nsx, nsy, nsz):
     """Apply the rotational/scale part of an authored TRS delta to vectors."""
     i = index(domain)
-    dx = values[i, 0]
-    dy = values[i, 1]
-    dz = values[i, 2]
+    dx = values[i][0]
+    dy = values[i][1]
+    dz = values[i][2]
     or00 = 1.0 - 2.0 * (oqy * oqy + oqz * oqz)
     or01 = 2.0 * (oqx * oqy - oqz * oqw)
     or02 = 2.0 * (oqx * oqz + oqy * oqw)
@@ -1325,9 +1325,9 @@ def _transform_anchor_vectors(domain, values,
     nr20 = 2.0 * (nqx * nqz - nqy * nqw)
     nr21 = 2.0 * (nqy * nqz + nqx * nqw)
     nr22 = 1.0 - 2.0 * (nqx * nqx + nqy * nqy)
-    values[i, 0] = nr00 * lx + nr01 * ly + nr02 * lz
-    values[i, 1] = nr10 * lx + nr11 * ly + nr12 * lz
-    values[i, 2] = nr20 * lx + nr21 * ly + nr22 * lz
+    values[i][0] = nr00 * lx + nr01 * ly + nr02 * lz
+    values[i][1] = nr10 * lx + nr11 * ly + nr12 * lz
+    values[i][2] = nr20 * lx + nr21 * ly + nr22 * lz
 
 
 def _apply_transform_delta(domain, points, vectors, old: TransformPose,

@@ -133,6 +133,66 @@ def verify_transform_write_tracking() -> None:
         pose.close()
 
 
+def verify_transform_resident_vector_state() -> None:
+    """Compile and execute the real vector3 resident-state transform kernels."""
+    transform = SimpleNamespace(
+        position=inx.vector3(10, 20, 30), rotation=inx.quaternion.identity,
+        local_scale=inx.vector3(2, 3, 4),
+    )
+
+    class Owner:
+        game_object = SimpleNamespace(id=43, handle=object())
+
+    owner = Owner()
+    initial = inx.compute.TransformPose(
+        position=(0.0, 0.0, 0.0),
+        rotation=(0.0, 0.0, 0.0, 1.0),
+        scale=(1.0, 1.0, 1.0),
+    )
+    pose = inx.buffer(
+        shape=3,
+        dtype=inx.vector4,
+        device="gpu",
+        data=np.asarray(
+            ((0, 0, 0, 1), (0, 0, 0, 1), (1, 1, 1, 1)),
+            dtype=np.float32,
+        ),
+    )
+    domain = inx.buffer(
+        shape=2, dtype=np.int32, device="gpu", data=np.asarray((0, 1), dtype=np.int32),
+    )
+    point_source = np.asarray(((1, 2, 3), (-1, -2, -3)), dtype=np.float32)
+    vector_source = np.asarray(((1, 2, 3), (-1, -2, -3)), dtype=np.float32)
+    points = inx.buffer(shape=2, dtype=inx.vector3, device="gpu", data=point_source)
+    vectors = inx.buffer(shape=2, dtype=inx.vector3, device="gpu", data=vector_source)
+    binding = None
+    try:
+        with patch.object(inx.compute, "_resolve_bound_transform", return_value=transform):
+            binding = inx.compute.bind_transform(
+                owner,
+                pose=pose,
+                initial_pose=initial,
+                domain=domain,
+                points=(points,),
+                vectors=(vectors,),
+            )
+        np.testing.assert_allclose(
+            points.get_data().numpy(),
+            np.asarray(((12, 26, 42), (8, 14, 18)), dtype=np.float32),
+        )
+        np.testing.assert_allclose(
+            vectors.get_data().numpy(),
+            np.asarray(((2, 6, 12), (-2, -6, -12)), dtype=np.float32),
+        )
+    finally:
+        if binding is not None:
+            binding.close()
+        vectors.close()
+        points.close()
+        domain.close()
+        pose.close()
+
+
 def main() -> int:
     with tempfile.TemporaryDirectory(prefix="infernux-compute-buffer-") as root:
         project = Path(root)
@@ -155,6 +215,7 @@ def main() -> int:
 
             verify_async_readback()
             verify_transform_write_tracking()
+            verify_transform_resident_vector_state()
             expected = np.arange(36, dtype=np.float32).reshape(12, 3)
             values = inx.buffer(shape=12, dtype=inx.vector3, device="gpu", data=expected)
             assert values.nbytes == expected.nbytes
