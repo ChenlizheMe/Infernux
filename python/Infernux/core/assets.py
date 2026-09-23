@@ -790,9 +790,14 @@ class AssetManager:
         }.get(origin_value, "editor")
         manager = ResourcesManager.instance()
         if manager is not None:
-            from Infernux.engine.project_context import get_project_root, package_script_role
+            from Infernux.engine.project_context import package_script_role
 
-            if package_script_role(path, get_project_root()) == "editor":
+            project_root = (
+                manager.project_path
+                if isinstance(manager, ResourcesManager)
+                else None
+            )
+            if project_root and package_script_role(path, project_root) == "editor":
                 # Editor package code belongs to the package preload lifetime.
                 # Sending it through the gameplay component frontend rejects
                 # legitimate lifecycle declarations (threads, sockets, and

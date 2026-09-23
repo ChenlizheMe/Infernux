@@ -29,6 +29,9 @@ class ResourcesManager:
 
     def __init__(self, project_path: str, engine: object) -> None: ...
 
+    @property
+    def project_path(self) -> str: ...
+
     def start(self, *, skip_initial_scan: bool = ...) -> None:
         """Start the file-system observer thread."""
         ...

@@ -1880,32 +1880,35 @@ class TestMaterial:
         removed_version = json.loads(json.dumps(document))
         removed_version["material_version"] = 4
         removed_version["name"] = "PartialMutation"
-        assert mat.deserialize(json.dumps(removed_version)) is False
-        assert mat.name == "StableMaterial"
+        assert mat.deserialize(json.dumps(removed_version)) is True
+        assert mat.name == "PartialMutation"
         assert mat.get_float("testValue", 0.0) == pytest.approx(0.25)
+        assert "material_version" not in json.loads(mat.serialize())
 
         invalid_render_state = json.loads(json.dumps(document))
         invalid_render_state["renderState"]["lineWidth"] = 0.0
         invalid_render_state["name"] = "InvalidPipelineState"
         assert mat.deserialize(json.dumps(invalid_render_state)) is False
-        assert mat.name == "StableMaterial"
+        assert mat.name == "PartialMutation"
 
         invalid_property = json.loads(json.dumps(document))
         invalid_property["properties"]["testValue"]["type"] = 99
         invalid_property["name"] = "AnotherPartialMutation"
         assert mat.deserialize(json.dumps(invalid_property)) is False
-        assert mat.name == "StableMaterial"
+        assert mat.name == "PartialMutation"
         assert mat.get_float("testValue", 0.0) == pytest.approx(0.25)
 
         unknown_field = json.loads(json.dumps(document))
         unknown_field["unexpectedPath"] = "Assets/Materials/unexpected.mat"
-        assert mat.deserialize(json.dumps(unknown_field)) is False
+        assert mat.deserialize(json.dumps(unknown_field)) is True
         assert mat.name == "StableMaterial"
+        assert "unexpectedPath" not in json.loads(mat.serialize())
 
         unknown_property_field = json.loads(json.dumps(document))
         unknown_property_field["properties"]["testValue"]["unexpected"] = True
-        assert mat.deserialize(json.dumps(unknown_property_field)) is False
+        assert mat.deserialize(json.dumps(unknown_property_field)) is True
         assert mat.get_float("testValue", 0.0) == pytest.approx(0.25)
+        assert "unexpected" not in json.loads(mat.serialize())["properties"]["testValue"]
 
     def test_material_save_is_atomic(self, engine, tmp_path):
         mat = InxMaterial.create_default_unlit()

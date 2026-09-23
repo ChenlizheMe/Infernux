@@ -1582,6 +1582,11 @@ class ResourcesManager:
         self._startup_prepared = False
         self._skip_initial_scan = False
 
+    @property
+    def project_path(self) -> str:
+        """Return the authoritative root owned by this resource session."""
+        return self._project_path
+
     def _shutdown_observer(self, *, join_timeout: float = 5.0) -> bool:
         """Stop and join the currently published watchdog observer."""
         with self._observer_lock:

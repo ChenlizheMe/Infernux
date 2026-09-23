@@ -1444,6 +1444,30 @@ def test_internal_asset_script_ingress_uses_collector_and_origin_mapping(
     assert third[0].change.origin == "editor"
 
 
+def test_internal_editor_package_script_bypasses_gameplay_frontend(
+    monkeypatch, tmp_path
+):
+    package = tmp_path / "Packages" / "infernux" / "mcp"
+    editor = package / "editor" / "infernux_mcp"
+    editor.mkdir(parents=True)
+    (package / "InxPackage.json").write_text("{}", encoding="utf-8")
+    script = editor / "server.py"
+    script.write_text("import threading\nlock = threading.RLock()\n", encoding="utf-8")
+    database = _AssetDatabaseProbe()
+    manager = ResourcesManager(str(tmp_path), _EngineProbe(database))
+    publications = []
+    manager.register_script_catalog_callback(
+        lambda path, event: publications.append((path, event))
+    )
+
+    AssetManager._submit_internal_script_change(
+        str(script), catalog_event="modified"
+    )
+
+    assert publications == [(str(script), "modified")]
+    assert manager._event_handler is None
+
+
 def test_internal_script_ingress_and_watcher_echo_publish_once(monkeypatch, tmp_path):
     assets = tmp_path / "Assets"
     assets.mkdir()
