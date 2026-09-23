@@ -48,6 +48,42 @@ def test_project_relative_asset_path_is_resolved_before_guid_lookup(monkeypatch,
     assert path_hint == "Assets/VFX/Ribbon.particlegraph"
 
 
+def test_readonly_serialized_field_is_runtime_writable_but_remains_authoring_readonly():
+    class Telemetry(InxComponent):
+        frames: int = serialized_field(default=0, readonly=True)
+
+    component = Telemetry()
+    component.frames = 7
+
+    assert component.frames == 7
+    assert get_serialized_fields(Telemetry)["frames"].readonly is True
+
+
+def test_unknown_raw_path_does_not_create_path_only_reference(monkeypatch):
+    from Infernux.components import fields as serialized_field_module
+    from Infernux.core.assets import AssetManager
+
+    class Database:
+        def get_guid_from_path(self, _path):
+            return ""
+
+    monkeypatch.setattr(AssetManager, "_asset_database", Database())
+
+    texture = serialized_field_module._ensure_texture_ref("Assets/Textures/missing.png")
+    shader = serialized_field_module._ensure_shader_ref("Assets/Shaders/missing.frag")
+    material = serialized_field_module._ensure_material_ref("Assets/Materials/missing.mat")
+    from Infernux.core.asset_ref import MaterialRef
+    direct_material = MaterialRef("Assets/Materials/missing.mat")
+    asset = serialized_field_module._ensure_asset_ref(
+        "Assets/VFX/missing.particlegraph", "ParticleGraph"
+    )
+
+    for reference in (texture, shader, material, direct_material, asset):
+        assert reference.guid == ""
+        assert reference.path_hint == ""
+        assert not reference
+
+
 # ══════════════════════════════════════════════════════════════════════
 # FieldType enum completeness
 # ══════════════════════════════════════════════════════════════════════

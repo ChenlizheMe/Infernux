@@ -371,9 +371,9 @@ class SerializedFieldDescriptor:
         return resolve_runtime_field_value(value, self.metadata)
     
     def __set__(self, instance: 'InxComponent', value: Any):
-        if self.metadata.readonly and not getattr(instance, '_inf_deserializing', False):
-            raise AttributeError(f"Field '{self.metadata.name}' is readonly")
-
+        # ``readonly`` is an authoring/Inspector contract.  Runtime component
+        # code must still be able to publish counters and other observed state
+        # through the same serialized descriptor.
         value = normalize_runtime_field_value(value, self.metadata)
 
         # CDS fast path for numeric fields.
