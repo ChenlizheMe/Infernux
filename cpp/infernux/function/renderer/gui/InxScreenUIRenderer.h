@@ -200,8 +200,7 @@ class InxScreenUIRenderer
     /// Retain local geometry while sampling this scene object's current pose
     /// at packet publication. UI ignores scale, but inherits parent motion.
     void BeginWorldObject(GameObject *object, float pivotX, float pivotY, bool alwaysOnTop = false,
-                          bool billboard = false, bool constantScreenSize = false,
-                          uint64_t ignoredOccluderId = 0);
+                          bool billboard = false, bool constantScreenSize = false, uint64_t ignoredOccluderId = 0);
     void BeginScreenObject(GameObject *object, ScreenUIList list, float pivotX, float pivotY, float scaleX = 1.0f,
                            float scaleY = 1.0f);
     void EndScreenObject();

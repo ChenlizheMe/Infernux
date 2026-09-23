@@ -997,7 +997,8 @@ void InxScreenUIRenderer::PopClipRect(ScreenUIList list)
 }
 
 void InxScreenUIRenderer::BeginWorldElement(const std::array<float, 16> &localToWorld, float pivotX, float pivotY,
-                                            uint32_t layerMask, bool alwaysOnTop, bool billboard, bool constantScreenSize)
+                                            uint32_t layerMask, bool alwaysOnTop, bool billboard,
+                                            bool constantScreenSize)
 {
     auto *drawList = GetDrawList(ScreenUIList::World);
     if (m_worldElementStart >= 0)
@@ -1043,8 +1044,8 @@ void InxScreenUIRenderer::BeginWorldObject(GameObject *object, float pivotX, flo
 {
     if (!object)
         throw std::invalid_argument("World UI geometry requires a scene object");
-    BeginWorldElement({1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1}, pivotX, pivotY, 0xffffffffu,
-                      alwaysOnTop, billboard, constantScreenSize);
+    BeginWorldElement({1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1}, pivotX, pivotY, 0xffffffffu, alwaysOnTop,
+                      billboard, constantScreenSize);
     m_pendingWorldElement.transform = object->GetTransform()->GetECSHandle();
     m_pendingWorldElement.ignoredOccluderId = ignoredOccluderId;
     ResolveWorldPose(m_pendingWorldElement);
@@ -1772,13 +1773,12 @@ bool InxScreenUIRenderer::HasSelectiveWorldOcclusion(uint32_t cullingMask) const
     if (!m_initialized || !m_hasSelectiveWorldOcclusion)
         return false;
     return std::any_of(m_worldElementSpans.begin(), m_worldElementSpans.end(), [cullingMask](const auto &element) {
-        return element.ignoredOccluderId != 0 && !element.alwaysOnTop &&
-               (element.layerMask & cullingMask) != 0;
+        return element.ignoredOccluderId != 0 && !element.alwaysOnTop && (element.layerMask & cullingMask) != 0;
     });
 }
 
-std::vector<InxScreenUIRenderer::WorldDepthRun>
-InxScreenUIRenderer::GetWorldDepthRuns(const glm::mat4 &viewProjection, uint32_t cullingMask) const
+std::vector<InxScreenUIRenderer::WorldDepthRun> InxScreenUIRenderer::GetWorldDepthRuns(const glm::mat4 &viewProjection,
+                                                                                       uint32_t cullingMask) const
 {
     struct OrderedElement
     {
@@ -1954,9 +1954,8 @@ void InxScreenUIRenderer::RenderWorld(VkCommandBuffer cmdBuf, uint32_t width, ui
     const glm::mat4 cameraToWorld = hasBillboard ? glm::inverse(view) : glm::mat4(1.0f);
     const glm::vec4 cameraRight(glm::vec3(cameraToWorld[0]), 0.0f);
     const glm::vec4 cameraUp(glm::vec3(cameraToWorld[1]), 0.0f);
-    const float screenPixelScale = hasConstantSize
-                                       ? 2.0f / (std::max(std::abs(projection[1][1]), 1e-6f) * float(height))
-                                       : 0.0f;
+    const float screenPixelScale =
+        hasConstantSize ? 2.0f / (std::max(std::abs(projection[1][1]), 1e-6f) * float(height)) : 0.0f;
     const auto drawCommand = [&](const ImDrawCmd &command, int commandIndex, bool alwaysOnTop) {
         if (command.ElemCount == 0)
             return;

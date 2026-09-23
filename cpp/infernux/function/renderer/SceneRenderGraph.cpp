@@ -2218,20 +2218,20 @@ void SceneRenderGraph::EnsureGraphBuilt()
                 if (!state.depthWriteEnable)
                     continue;
                 ShaderStagePair stages{material->GetVertShaderName(), material->GetFragShaderName()};
-                if (const auto *committed = m_vkCore->GetMaterialPipelineManager().GetRenderData(
-                        material->GetMaterialKey()))
+                if (const auto *committed =
+                        m_vkCore->GetMaterialPipelineManager().GetRenderData(material->GetMaterialKey()))
                     stages = committed->programKey.stages;
                 const auto *artifact = m_vkCore->GetShaderCache().FindProgramArtifact(stages);
                 if (!artifact) {
-                    m_vkCore->RefreshMaterialPipeline(
-                        material, material->GetVertShaderName(), material->GetFragShaderName());
-                    if (const auto *committed = m_vkCore->GetMaterialPipelineManager().GetRenderData(
-                            material->GetMaterialKey()))
+                    m_vkCore->RefreshMaterialPipeline(material, material->GetVertShaderName(),
+                                                      material->GetFragShaderName());
+                    if (const auto *committed =
+                            m_vkCore->GetMaterialPipelineManager().GetRenderData(material->GetMaterialKey()))
                         stages = committed->programKey.stages;
                     artifact = m_vkCore->GetShaderCache().FindProgramArtifact(stages);
                 }
-                if (!state.depthTestEnable || state.stencilTestEnable ||
-                    !artifact || !artifact->FindVariant(ShaderCompileTarget::Depth)) {
+                if (!state.depthTestEnable || state.stencilTestEnable || !artifact ||
+                    !artifact->FindVariant(ShaderCompileTarget::Depth)) {
                     INXLOG_ERROR("Selective World UI occlusion cannot replay depth-writing material '",
                                  material->GetName(),
                                  "': it requires ordinary depth testing, no stencil test, and a Depth shader variant");
@@ -3381,14 +3381,14 @@ void SceneRenderGraph::BuildRenderGraph()
         }
         const bool hasSelectiveWorldUI =
             m_screenUIRenderer && m_screenUIRenderer->HasSelectiveWorldOcclusion(worldUIMask);
-        const auto worldUIDepthRuns = hasSelectiveWorldUI
-                                          ? m_screenUIRenderer->GetWorldDepthRuns(m_cachedProj * m_drawView, worldUIMask)
-                                          : std::vector<InxScreenUIRenderer::WorldDepthRun>{};
+        const auto worldUIDepthRuns =
+            hasSelectiveWorldUI ? m_screenUIRenderer->GetWorldDepthRuns(m_cachedProj * m_drawView, worldUIMask)
+                                : std::vector<InxScreenUIRenderer::WorldDepthRun>{};
         const GraphPassDesc *worldUIOpaqueSource = nullptr;
         if (hasSelectiveWorldUI) {
             bool seenWorldUI = false;
-            bool invalidDepthWriter = m_pythonGraphDesc.name != "Default Forward" ||
-                                      m_cameraClearFlags == CameraClearFlags::DontClear;
+            bool invalidDepthWriter =
+                m_pythonGraphDesc.name != "Default Forward" || m_cameraClearFlags == CameraClearFlags::DontClear;
             for (const auto &candidate : sortedPasses) {
                 const auto *candidateCommand = PrimaryCommand(candidate);
                 if (candidateCommand && candidateCommand->type == GraphCommandType::DrawWorldUI) {
@@ -3400,9 +3400,8 @@ void SceneRenderGraph::BuildRenderGraph()
                 if (candidate.name == "OpaquePass" && candidateCommand &&
                     candidateCommand->type == GraphCommandType::DrawRenderers &&
                     candidateCommand->shaderTarget == ShaderCompileTarget::Forward &&
-                    candidate.type == GraphPassType::Raster && candidate.commands.size() == 1 &&
-                    candidate.clearDepth && candidate.clearDepthValue == 1.0f &&
-                    !candidateCommand->rendererSelection &&
+                    candidate.type == GraphPassType::Raster && candidate.commands.size() == 1 && candidate.clearDepth &&
+                    candidate.clearDepthValue == 1.0f && !candidateCommand->rendererSelection &&
                     candidateCommand->overrideMaterial.empty() &&
                     candidateCommand->materialFilter == GraphMaterialFilter::All) {
                     worldUIOpaqueSource = &candidate;
@@ -4601,8 +4600,8 @@ void SceneRenderGraph::BuildRenderGraph()
                     for (const auto &generation : inputs->second) {
                         const auto resources = m_renderGraph->ImportRenderTexture(
                             "__DrawTexture/" + generation->sampledColor->GetSourceId(), generation);
-                        replayTextureReads.push_back(
-                            generation->multisampleColor ? resources.resolve : resources.color);
+                        replayTextureReads.push_back(generation->multisampleColor ? resources.resolve
+                                                                                  : resources.color);
                     }
                 }
                 std::unordered_map<uint64_t, vk::ResourceHandle> alternateDepths;
@@ -4611,13 +4610,14 @@ void SceneRenderGraph::BuildRenderGraph()
                     if (!excludedId || alternateDepths.count(excludedId))
                         continue;
                     const std::string replayName = passDesc.name + "/Exclude/" + std::to_string(excludedId);
-                    auto alternateDepth = m_renderGraph->RegisterTransientTexture(
-                        replayName + "/Depth", width, height, depthFormat, msaaSamples);
+                    auto alternateDepth = m_renderGraph->RegisterTransientTexture(replayName + "/Depth", width, height,
+                                                                                  depthFormat, msaaSamples);
                     vk::ResourceHandle writtenAlternateDepth;
                     m_renderGraph->AddPass(replayName, [=, &writtenAlternateDepth](vk::PassBuilder &builder) {
                         builder.ReadRendererList(m_visibleRendererList);
                         for (const auto texture : replayTextureReads)
-                            builder.Read(texture, rhi::PipelineStage::VertexShader | rhi::PipelineStage::FragmentShader);
+                            builder.Read(texture,
+                                         rhi::PipelineStage::VertexShader | rhi::PipelineStage::FragmentShader);
                         writtenAlternateDepth = builder.WriteDepth(alternateDepth);
                         builder.SetRenderArea(width, height);
                         builder.SetClearDepth(1.0f, 0);
@@ -4627,11 +4627,11 @@ void SceneRenderGraph::BuildRenderGraph()
                             const auto *draws = list ? &list->DrawCalls() : nullptr;
                             if (!vkCore->UsesDrawCalls(draws))
                                 vkCore->SetDrawCalls(draws);
-                            vkCore->DrawSceneFiltered(
-                                ctx.GetCommandBuffer(), width, height, GetPerViewBindGroup(), m_drawView,
-                                opaqueCommand->queueMin, opaqueCommand->queueMax, opaqueCommand->sortMode,
-                                "", opaqueCommand->passTag, &replayPipeline, opaqueCommand->materialFilter,
-                                nullptr, excludedId, true);
+                            vkCore->DrawSceneFiltered(ctx.GetCommandBuffer(), width, height, GetPerViewBindGroup(),
+                                                      m_drawView, opaqueCommand->queueMin, opaqueCommand->queueMax,
+                                                      opaqueCommand->sortMode, "", opaqueCommand->passTag,
+                                                      &replayPipeline, opaqueCommand->materialFilter, nullptr,
+                                                      excludedId, true);
                         };
                     });
                     alternateDepths.emplace(excludedId, writtenAlternateDepth);
@@ -4640,9 +4640,8 @@ void SceneRenderGraph::BuildRenderGraph()
                 vk::ResourceHandle currentColor = primaryColorTarget;
                 for (size_t runIndex = 0; runIndex < worldUIDepthRuns.size(); ++runIndex) {
                     const auto run = worldUIDepthRuns[runIndex];
-                    const auto runDepth = run.ignoredOccluderId
-                                              ? alternateDepths.at(run.ignoredOccluderId)
-                                              : sharedDepth;
+                    const auto runDepth =
+                        run.ignoredOccluderId ? alternateDepths.at(run.ignoredOccluderId) : sharedDepth;
                     const std::string runName = passDesc.name + "/Run/" + std::to_string(runIndex);
                     const bool lastRun = runIndex + 1 == worldUIDepthRuns.size();
                     vk::ResourceHandle writtenColor;
@@ -4651,7 +4650,8 @@ void SceneRenderGraph::BuildRenderGraph()
                         builder.SetSideEffect(passDesc.sideEffect || writesPersistent);
                         builder.ReadDepth(runDepth);
                         for (const auto texture : drawTextureReads)
-                            builder.Read(texture, rhi::PipelineStage::VertexShader | rhi::PipelineStage::FragmentShader);
+                            builder.Read(texture,
+                                         rhi::PipelineStage::VertexShader | rhi::PipelineStage::FragmentShader);
                         writtenColor = builder.WriteColor(currentColor, 0);
                         if (lastRun && resolveTarget.IsValid())
                             writtenResolve = builder.WriteResolve(resolveTarget);
@@ -4661,8 +4661,7 @@ void SceneRenderGraph::BuildRenderGraph()
                             m_screenUIRenderer->RenderWorld(
                                 ctx.GetCommandBuffer(), width, height, m_cachedProj * m_drawView,
                                 uiMaterialPass.RenderingSignature(), vkCore->GetCurrentFrameSlot(),
-                                worldUILayerMask & (m_cachedCamera ? m_cachedCamera->GetCullingMask()
-                                                                   : 0xffffffffu),
+                                worldUILayerMask & (m_cachedCamera ? m_cachedCamera->GetCullingMask() : 0xffffffffu),
                                 m_drawView, m_cachedProj, run.firstOrdinal, run.endOrdinal);
                         };
                     });

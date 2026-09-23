@@ -956,9 +956,8 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
              "Begin one independent world UI element with an explicit optional top policy")
         .def("end_world_element", &InxScreenUIRenderer::EndWorldElement, "Finish the current world UI element")
         .def("begin_world_object", &InxScreenUIRenderer::BeginWorldObject, py::arg("object"), py::arg("pivot_x"),
-             py::arg("pivot_y"), py::arg("always_on_top") = false,
-             py::arg("billboard") = false, py::arg("constant_screen_size") = false,
-             py::arg("ignored_occluder_id") = uint64_t{0},
+             py::arg("pivot_y"), py::arg("always_on_top") = false, py::arg("billboard") = false,
+             py::arg("constant_screen_size") = false, py::arg("ignored_occluder_id") = uint64_t{0},
              "Bind local world UI geometry to a live scene pose without rebuilding it on motion")
         .def("begin_screen_object", &InxScreenUIRenderer::BeginScreenObject, py::arg("object"), py::arg("list"),
              py::arg("pivot_x"), py::arg("pivot_y"), py::arg("scale_x") = 1.0f, py::arg("scale_y") = 1.0f,

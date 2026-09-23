@@ -14,7 +14,14 @@ int main()
     // Repeated A after B retains one alternate depth for A, while the UI
     // remains in the original transparent draw order.
     const auto interleaved = BuildWorldUIOcclusionPlan({
-        {11, false}, {11, false}, {22, false}, {11, false}, {}, {}, {22, false}, {0, true},
+        {11, false},
+        {11, false},
+        {22, false},
+        {11, false},
+        {},
+        {},
+        {22, false},
+        {0, true},
     });
     assert((interleaved.uniqueIgnoredObjectIds == std::vector<uint64_t>{11, 22}));
     assert(interleaved.runs.size() == 6);

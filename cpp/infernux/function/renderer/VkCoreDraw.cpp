@@ -1554,8 +1554,7 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
         // Resolve pending textures above before deciding readiness. A default
         // white descriptor is Vulkan-valid but not an uploaded icon alpha mask.
         // Skipping this transient draw must not prevent its upload from advancing.
-        if (dedicatedMaterial &&
-            m_materialPipelineManager.HasPendingTextureProperties(matRaw->GetMaterialKey())) {
+        if (dedicatedMaterial && m_materialPipelineManager.HasPendingTextureProperties(matRaw->GetMaterialKey())) {
             emitBatch();
             continue;
         }

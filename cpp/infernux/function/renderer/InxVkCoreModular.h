@@ -913,8 +913,8 @@ class InxVkCoreModular
     /// the preview target is recreated; callers caching an id must validate it
     /// against this before reuse.
     [[nodiscard]] uint64_t GetMeshPreviewDisplayTextureId() const;
-    uint64_t RenderModelAnimationPreview(const std::shared_ptr<InxMesh> &mesh, const std::string &take,
-                                         float seconds, int size, uint64_t dependencyRevision);
+    uint64_t RenderModelAnimationPreview(const std::shared_ptr<InxMesh> &mesh, const std::string &take, float seconds,
+                                         int size, uint64_t dependencyRevision);
 
     /// @brief Release GPU preview resources while the ImGui Vulkan backend is still alive.
     void ReleaseGpuPreviews();
