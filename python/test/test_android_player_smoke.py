@@ -320,6 +320,34 @@ def test_required_runtime_logs_wait_for_every_marker(monkeypatch):
     assert "ANIMATION_READY" in log
 
 
+def test_surface_destroy_wait_is_observed_before_resume(monkeypatch):
+    module = _module()
+    logs = iter(
+        (
+            "INFERNUX_ANDROID_SURFACE_DESTROY_WAIT_COMPLETE",
+            "INFERNUX_ANDROID_SURFACE_DESTROY_WAIT_COMPLETE\n"
+            "INFERNUX_ANDROID_SURFACE_DESTROY_WAIT_COMPLETE",
+        )
+    )
+
+    class FakeAdb:
+        def run(self, *arguments, **options):
+            assert arguments == ("logcat", "-d", "-v", "brief")
+            assert options == {"check": False}
+            return next(logs)
+
+    monkeypatch.setattr(module.time, "sleep", lambda _seconds: None)
+
+    log = module._wait_for_log_count(
+        FakeAdb(),
+        "INFERNUX_ANDROID_SURFACE_DESTROY_WAIT_COMPLETE",
+        2,
+        5.0,
+    )
+
+    assert log.count("INFERNUX_ANDROID_SURFACE_DESTROY_WAIT_COMPLETE") == 2
+
+
 def test_wait_for_player_pid_accepts_a_legal_activity_restart(monkeypatch):
     module = _module()
 

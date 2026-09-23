@@ -560,6 +560,30 @@ def _wait_for_required_logs(
     )
 
 
+def _wait_for_log_count(
+    adb: Adb,
+    marker: str,
+    expected_count: int,
+    timeout: float,
+) -> str:
+    """Wait for an exact lifecycle boundary before issuing its inverse action."""
+
+    deadline = time.monotonic() + timeout
+    last_log = ""
+    observed = 0
+    while time.monotonic() < deadline:
+        last_log = adb.run("logcat", "-d", "-v", "brief", check=False)
+        observed = last_log.count(marker)
+        if observed >= expected_count:
+            return last_log
+        time.sleep(0.25)
+    raise RuntimeError(
+        f"Android Player published {observed}/{expected_count} {marker!r} "
+        f"markers within {timeout:.1f}s\n"
+        + "\n".join(last_log.splitlines()[-120:])
+    )
+
+
 def _wait_for_foreground(adb: Adb, package: str, timeout: float = 10.0) -> None:
     deadline = time.monotonic() + timeout
     last_state = ""
@@ -701,9 +725,14 @@ def run_smoke(arguments: argparse.Namespace) -> SmokeResult:
                 + repr(arguments.expect_back_log)
             )
 
-    for _ in range(arguments.resume_cycles):
+    for cycle in range(1, arguments.resume_cycles + 1):
         adb.run("shell", "input", "keyevent", "3")
-        time.sleep(0.75)
+        _wait_for_log_count(
+            adb,
+            "INFERNUX_ANDROID_SURFACE_DESTROY_WAIT_COMPLETE",
+            cycle,
+            arguments.startup_timeout,
+        )
         adb.run("shell", "am", "start", "-n", arguments.activity)
         _wait_for_foreground(adb, arguments.package)
         pid = _wait_for_player_pid(adb, arguments.package, expected=pid)
