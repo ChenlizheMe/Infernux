@@ -725,12 +725,16 @@ def run_smoke(arguments: argparse.Namespace) -> SmokeResult:
                 + repr(arguments.expect_back_log)
             )
 
+    surface_destroy_marker = "INFERNUX_ANDROID_SURFACE_DESTROY_WAIT_COMPLETE"
+    surface_destroy_baseline = adb.run(
+        "logcat", "-d", "-v", "brief", check=False
+    ).count(surface_destroy_marker)
     for cycle in range(1, arguments.resume_cycles + 1):
         adb.run("shell", "input", "keyevent", "3")
         _wait_for_log_count(
             adb,
-            "INFERNUX_ANDROID_SURFACE_DESTROY_WAIT_COMPLETE",
-            cycle,
+            surface_destroy_marker,
+            surface_destroy_baseline + cycle,
             arguments.startup_timeout,
         )
         adb.run("shell", "am", "start", "-n", arguments.activity)
@@ -779,8 +783,9 @@ def run_smoke(arguments: argparse.Namespace) -> SmokeResult:
     presentation_resume_count = log.count(
         "INFERNUX_ANDROID_PRESENTATION_RESUMED"
     )
-    surface_destroy_wait_count = log.count(
-        "INFERNUX_ANDROID_SURFACE_DESTROY_WAIT_COMPLETE"
+    surface_destroy_wait_count = max(
+        0,
+        log.count(surface_destroy_marker) - surface_destroy_baseline,
     )
     if arguments.require_presentation_markers:
         if presentation_suspend_count < arguments.resume_cycles:
