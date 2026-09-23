@@ -639,10 +639,12 @@ def test_world_ui_empty_texture_coverage_cannot_write_depth() -> None:
 
     world_fragment = screen_ui.split('constexpr const char *kWorldFragmentShader', 1)[1]
     world_fragment = world_fragment.split(')glsl";', 1)[0]
-    assert "outColor = inColor * texture(uiTexture, inUV);" in world_fragment
-    assert "if (outColor.a <= 0.0)" in world_fragment
-    assert world_fragment.index("outColor = inColor * texture(uiTexture, inUV);") < world_fragment.index(
-        "if (outColor.a <= 0.0)"
+    shade = "outColor = inColor * texture(uiTexture, inUV) * pc.materialColor;"
+    coverage = "|| outColor.a <= 0.0"
+    assert shade in world_fragment
+    assert coverage in world_fragment
+    assert world_fragment.index(shade) < world_fragment.index(
+        coverage
     )
 
 
@@ -1224,16 +1226,18 @@ def test_mobile_lifecycle_suspends_and_rebinds_vulkan_presentation() -> None:
 
     assert "SDL_AddEventWatch(&InxView::WatchApplicationEvents" in view
     assert "SDL_EVENT_WILL_ENTER_BACKGROUND" in view
-    assert "m_applicationInBackground.store(true" in view
+    assert "m_applicationInBackground.exchange(true" in view
     assert "m_surfaceRecreationPending.store(true" in view
     assert "SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED" in view
     assert "m_hasCreatedSurface.load" in view
     assert "NeedsSurfaceRecreation()" in renderer
     assert "RecreatePresentationSurface" in renderer
-    assert core.index("m_backend.Presentation().Destroy()") < core.index(
+    suspend = _function_body(core, "void InxVkCoreModular::SuspendPresentationSurface")
+    recreate = _function_body(core, "bool InxVkCoreModular::RecreatePresentationSurface")
+    assert suspend.index("presentation.Destroy()") < suspend.index(
         "SDL_Vulkan_DestroySurface"
     )
-    assert core.index("SDL_Vulkan_DestroySurface") < core.index(
+    assert recreate.index("SuspendPresentationSurface()") < recreate.index(
         "createSurface(m_instance"
     )
 
