@@ -510,25 +510,31 @@ def test_android_host_template_disables_opengl_and_configures_vulkan(
     assert "android:windowSplashScreenAnimatedIcon" in splash_style
     assert "android:windowSplashScreenBackground" in splash_style
     assert "Infernux Player" in strings
-    assert "if (mScreenKeyboardShown)" in activity
+    assert "if (isKeyboardVisible())" in activity
     assert "registerOnBackInvokedCallback" in activity
     assert "OnBackInvokedDispatcher.PRIORITY_OVERLAY" in activity
     assert "this::dispatchInfernuxBack" in activity
+    assert "public void onBackPressed() {\n        dispatchInfernuxBack();" in activity
     assert "sendCommand(COMMAND_TEXTEDIT_HIDE, null)" in activity
-    assert "onNativeKeyDown(KeyEvent.KEYCODE_BACK)" in activity
-    assert "onNativeKeyUp(KeyEvent.KEYCODE_BACK)" in activity
+    assert "onNativeKeyDown(KeyEvent.KEYCODE_ESCAPE)" in activity
+    assert "onNativeKeyUp(KeyEvent.KEYCODE_ESCAPE)" in activity
     back_handler = activity.split("private void dispatchInfernuxBack()", 1)[1].split(
         "private File prepareVersionedAssets", 1
     )[0]
-    assert back_handler.index("if (mScreenKeyboardShown)") < back_handler.index(
-        "onNativeKeyDown(KeyEvent.KEYCODE_BACK)"
+    assert back_handler.index("if (isKeyboardVisible())") < back_handler.index(
+        "onNativeKeyDown(KeyEvent.KEYCODE_ESCAPE)"
     )
     assert "onNativeKeyboardFocusLost();\n            return;" in back_handler
+    assert "KeyEvent.KEYCODE_BACK" not in back_handler
+    assert back_handler.count("onNativeKeyDown(KeyEvent.KEYCODE_ESCAPE)") == 1
+    assert back_handler.count("onNativeKeyUp(KeyEvent.KEYCODE_ESCAPE)") == 1
     assert "super.onBackPressed()" not in activity
     assert "setOnApplyWindowInsetsListener" in activity
     assert "setWindowInsetsAnimationCallback" in activity
     assert "DISPATCH_MODE_CONTINUE_ON_SUBTREE" in activity
     assert "WindowInsets.Type.ime()" in activity
+    assert "lastPublishedKeyboardInset" in activity
+    assert "mScreenKeyboardShown" not in activity
     assert "WindowInsets.Type.systemBars()" in activity
     assert 'Os.setenv("INFERNUX_ANDROID_KEYBOARD_INSET"' in activity
     assert 'Os.setenv("INFERNUX_ANDROID_KEYBOARD_INSET_KNOWN", "1"' in activity
