@@ -2323,13 +2323,22 @@ def test_release_engineering_explicitly_compiles_player_payload(tmp_path, monkey
     assert compiled == [True]
 
 
-def test_linux_release_payload_strips_only_elf_files(tmp_path, monkeypatch):
+def test_linux_release_payload_strips_only_engine_owned_elf_files(tmp_path, monkeypatch):
     strip_tool = tmp_path / "strip"
     strip_tool.write_bytes(b"tool")
     payload = tmp_path / "runtime"
     payload.mkdir()
     library = payload / "libEngine.so"
     library.write_bytes(b"\x7fELFpayload")
+    binding = payload / "Infernux" / "lib" / "_Infernux.so"
+    binding.parent.mkdir(parents=True)
+    binding.write_bytes(b"\x7fELFbinding")
+    numpy = payload / "numpy" / "_core" / "_multiarray_umath.so"
+    numpy.parent.mkdir(parents=True)
+    numpy.write_bytes(b"\x7fELFnumpy")
+    llvmlite = payload / "llvmlite" / "binding" / "libllvmlite.so"
+    llvmlite.parent.mkdir(parents=True)
+    llvmlite.write_bytes(b"\x7fELFllvmlite")
     (payload / "config.json").write_text("{}", encoding="utf-8")
     link = payload / "libEngine.so.1"
     try:
@@ -2349,7 +2358,15 @@ def test_linux_release_payload_strips_only_elf_files(tmp_path, monkeypatch):
     NuitkaBuilder._strip_linux_release_payload(payload)
 
     assert commands == [
-        ([str(strip_tool), "--strip-unneeded", str(library)], {"check": True})
+        (
+            [
+                str(strip_tool),
+                "--strip-unneeded",
+                str(binding),
+                str(library),
+            ],
+            {"check": True},
+        )
     ]
 
 

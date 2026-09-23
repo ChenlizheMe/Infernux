@@ -1873,6 +1873,14 @@ print(json.dumps({{
         for candidate in sorted(payload_root.rglob("*")):
             if not candidate.is_file() or candidate.is_symlink():
                 continue
+            relative = candidate.relative_to(payload_root)
+            # Strip only binaries produced and owned by Infernux.  Native
+            # extensions copied from third-party wheels (NumPy, llvmlite,
+            # Numba, and future runtime dependencies) retain their publisher's
+            # ELF layout; rewriting those binaries can invalidate LOAD segment
+            # alignment even when llvm-strip exits successfully.
+            if len(relative.parts) > 1 and relative.parts[0] != "Infernux":
+                continue
             try:
                 with candidate.open("rb") as source:
                     if source.read(4) != b"\x7fELF":
