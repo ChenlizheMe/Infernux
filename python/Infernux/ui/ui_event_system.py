@@ -23,37 +23,14 @@ _MOUSE_POINTER_ID = -1
 
 
 def _canvas_raycast(canvas, canvas_x: float, canvas_y: float):
-    """Raycast a screen canvas, including a short-lived legacy module object.
-
-    Web Player scene publication can retain a Canvas whose class predates the
-    current ``raycast`` method.  Reuse its element list and the public element
-    hit contract at this boundary rather than dropping the whole input frame.
-    """
+    """Raycast through the current authoritative Canvas contract."""
     raycast = getattr(canvas, "raycast", None)
-    if callable(raycast):
-        return raycast(canvas_x, canvas_y)
-    from .ui_render_dispatch import canvas_elements
-    logical_size = getattr(canvas, "input_logical_size", (1920.0, 1080.0))
-    try:
-        layout_width, layout_height = logical_size
-    except (TypeError, ValueError):
-        layout_width, layout_height = 1920.0, 1080.0
-    for element in reversed(canvas_elements(canvas)):
-        if not getattr(element, "enabled", True):
-            continue
-        if not getattr(element, "raycast_target", True):
-            continue
-        contains_point = getattr(element, "contains_point", None)
-        if callable(contains_point) and contains_point(
-            canvas_x, canvas_y, float(layout_width), float(layout_height), 0.0
-        ):
-            return element
-        get_rect = getattr(element, "get_rect", None)
-        if callable(get_rect):
-            left, top, width, height = get_rect(float(layout_width), float(layout_height))
-            if left <= canvas_x <= left + width and top <= canvas_y <= top + height:
-                return element
-    return None
+    if not callable(raycast):
+        raise RuntimeError(
+            "The active UICanvas does not provide raycast(); reload the scene "
+            "with the current Infernux runtime"
+        )
+    return raycast(canvas_x, canvas_y)
 
 
 @dataclass(frozen=True, slots=True)

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Callable, Tuple
 
+from Infernux.core.asset_types import FontAssetInfo
+
 from Infernux.ui.inx_ui_screen_component import InxUIScreenComponent
 from Infernux.ui.enums import TextAlignH, TextAlignV, TextOverflow, TextResizeMode
 
@@ -11,11 +13,13 @@ from Infernux.ui.enums import TextAlignH, TextAlignV, TextOverflow, TextResizeMo
 class UIText(InxUIScreenComponent):
     """Figma-style text label rendered with ImGui draw primitives.
 
-    Inherits ``x``, ``y``, ``width``, ``height`` from ``InxUIScreenComponent``.
+    Inherits ``width`` and ``height`` from ``InxUIScreenComponent``; position
+    and rotation come from the GameObject Transform.
 
     Attributes:
         text: Display string.
-        font_path: Optional font asset path (``.ttf`` / ``.otf``).
+        font: Optional imported Font asset (``.ttf`` / ``.otf``), persisted by GUID.
+        fallback_fonts: Ordered fallback Font assets, persisted by GUID.
         font_size: Font size in canvas pixels.
         line_height: Line height multiplier.
         letter_spacing: Extra letter spacing in pixels.
@@ -34,8 +38,8 @@ class UIText(InxUIScreenComponent):
     """
 
     text: str
-    font_path: str
-    fallback_font_paths: list[str]
+    font: FontAssetInfo | None
+    fallback_fonts: list[FontAssetInfo | None]
     font_size: float
     line_height: float
     letter_spacing: float

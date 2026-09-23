@@ -53,7 +53,18 @@ constexpr const char *kScreenVertexShader = R"glsl(
 layout(location = 0) in vec2 aPosition;
 layout(location = 1) in vec2 aUV;
 layout(location = 2) in vec4 aColor;
-layout(push_constant) uniform ScreenUIConstants { vec2 scale; vec2 translate; } pc;
+layout(push_constant) uniform ScreenUIConstants {
+    vec2 scale;
+    vec2 translate;
+    float encodeSample;
+    float _materialPadding0;
+    float _materialPadding1;
+    float _materialPadding2;
+    vec4 materialColor;
+    float alphaClipThreshold;
+    float alphaClipEnabled;
+    vec2 _tailPadding;
+} pc;
 layout(location = 0) out vec4 outColor;
 layout(location = 1) out vec2 outUV;
 void main() {
@@ -68,7 +79,18 @@ constexpr const char *kScreenFragmentShader = R"glsl(
 layout(location = 0) in vec4 inColor;
 layout(location = 1) in vec2 inUV;
 layout(set = 0, binding = 0) uniform sampler2D uiTexture;
-layout(push_constant) uniform ScreenUIConstants { layout(offset = 16) float encodeSample; } pc;
+layout(push_constant) uniform ScreenUIConstants {
+    vec2 scale;
+    vec2 translate;
+    float encodeSample;
+    float _materialPadding0;
+    float _materialPadding1;
+    float _materialPadding2;
+    vec4 materialColor;
+    float alphaClipThreshold;
+    float alphaClipEnabled;
+    vec2 _tailPadding;
+} pc;
 layout(location = 0) out vec4 outColor;
 void main() {
     vec4 sampleColor = texture(uiTexture, inUV);
@@ -77,7 +99,9 @@ void main() {
         sampleColor.rgb = mix(1.055 * pow(rgb, vec3(1.0 / 2.4)) - 0.055,
                              12.92 * rgb, lessThanEqual(rgb, vec3(0.0031308)));
     }
-    outColor = inColor * sampleColor;
+    outColor = inColor * sampleColor * pc.materialColor;
+    if (pc.alphaClipEnabled > 0.5 && outColor.a < pc.alphaClipThreshold)
+        discard;
 }
 )glsl";
 
@@ -93,6 +117,10 @@ layout(location = 2) in vec4 aColor;
 layout(location = 3) in vec2 aLocalPosition;
 layout(push_constant) uniform WorldUIConstants {
     mat4 viewProjection;
+    vec4 materialColor;
+    float alphaClipThreshold;
+    float alphaClipEnabled;
+    vec2 _padding;
 } pc;
 layout(location = 0) out vec4 outColor;
 layout(location = 1) out vec2 outUV;
@@ -112,22 +140,47 @@ layout(location = 1) in vec2 inUV;
 layout(set = 0, binding = 0) uniform sampler2D uiTexture;
 layout(push_constant) uniform WorldUIConstants {
     mat4 viewProjection;
+    vec4 materialColor;
+    float alphaClipThreshold;
+    float alphaClipEnabled;
+    vec2 _padding;
 } pc;
 layout(location = 0) out vec4 outColor;
 void main() {
-    outColor = inColor * texture(uiTexture, inUV);
+    outColor = inColor * texture(uiTexture, inUV) * pc.materialColor;
     // World UI participates in the scene depth buffer. Fully transparent
     // glyph/image texels therefore must not publish depth for their quad.
     // Keep partially covered antialiased pixels; only empty coverage is cut.
-    if (outColor.a <= 0.0)
+    if ((pc.alphaClipEnabled > 0.5 && outColor.a < pc.alphaClipThreshold) || outColor.a <= 0.0)
         discard;
 }
 )glsl";
 
-struct WorldUIPushConstants
+struct alignas(16) ScreenUIPushConstants
+{
+    std::array<float, 2> scale{};
+    std::array<float, 2> translate{};
+    float encodeSample = 0.0f;
+    std::array<float, 3> materialPadding{};
+    std::array<float, 4> materialColor{1.0f, 1.0f, 1.0f, 1.0f};
+    float alphaClipThreshold = 0.0f;
+    float alphaClipEnabled = 0.0f;
+    std::array<float, 2> tailPadding{};
+};
+
+static_assert(offsetof(ScreenUIPushConstants, materialColor) == 32);
+static_assert(sizeof(ScreenUIPushConstants) == 64);
+
+struct alignas(16) WorldUIPushConstants
 {
     glm::mat4 viewProjection{1.0f};
+    glm::vec4 materialColor{1.0f};
+    float alphaClipThreshold = 0.0f;
+    float alphaClipEnabled = 0.0f;
+    std::array<float, 2> padding{};
 };
+
+static_assert(sizeof(WorldUIPushConstants) == 96);
 
 struct VertexTransform
 {
@@ -279,14 +332,12 @@ VkViewport MakeViewport(uint32_t width, uint32_t height)
     return viewport;
 }
 
-std::array<float, 4> MakeOrthoPushConstants(uint32_t width, uint32_t height)
+ScreenUIPushConstants MakeOrthoPushConstants(uint32_t width, uint32_t height)
 {
-    return {
-        2.0f / static_cast<float>(width),
-        2.0f / static_cast<float>(height),
-        -1.0f,
-        -1.0f,
-    };
+    ScreenUIPushConstants constants{};
+    constants.scale = {2.0f / static_cast<float>(width), 2.0f / static_cast<float>(height)};
+    constants.translate = {-1.0f, -1.0f};
+    return constants;
 }
 
 bool MakeClampedScissor(const ImDrawCmd &cmd, float frameWidth, float frameHeight, VkRect2D &outScissor)
@@ -504,6 +555,8 @@ struct InxScreenUIRenderer::CommandPacket::Data
         std::vector<ImDrawVert> vertices;
         std::vector<ImDrawIdx> indices;
         std::vector<ImDrawCmd> commands;
+        std::vector<UIShaderMaterialBinding> bindings;
+        std::vector<InxScreenUIRenderer::CommandBindingEvent> bindingEvents;
         std::vector<HDRColorRange> hdr;
     };
     std::array<List, 3> lists;
@@ -520,6 +573,50 @@ std::array<uint64_t, 3> InxScreenUIRenderer::GetCommandPacketEpoch() const
 {
     return {textlayout::FontCacheGeneration(), static_cast<uint64_t>(ImGui::GetIO().Fonts->TexRef.GetTexID()),
             static_cast<uint64_t>(reinterpret_cast<uintptr_t>(ImGui::GetFont()))};
+}
+
+void InxScreenUIRenderer::SetMaterialBinding(ScreenUIList list, const std::string &materialGuid,
+                                             uint64_t generation, const std::string &pipelineKey)
+{
+    SetMaterialBinding(list, materialGuid, generation, pipelineKey,
+                       std::array<float, 4>{1.0f, 1.0f, 1.0f, 1.0f}, false, 0.0f);
+}
+
+void InxScreenUIRenderer::SetMaterialBinding(ScreenUIList list, const std::string &materialGuid,
+                                             uint64_t generation, const std::string &pipelineKey,
+                                             const std::array<float, 4> &baseColor, bool alphaClipEnabled,
+                                             float alphaClipThreshold)
+{
+    if (!m_recordingPacket)
+        throw std::logic_error("UI material binding requires an active command packet");
+    const bool clearBinding = materialGuid.empty() && generation == 0 && pipelineKey.empty();
+    if (!clearBinding && (materialGuid.empty() || generation == 0 || pipelineKey.empty()))
+        throw std::invalid_argument("UI material binding requires GUID, generation, and pipeline key");
+    const int index = ListIndex(list);
+    auto *drawList = GetDrawList(list);
+    if (!drawList)
+        throw std::logic_error("UI material binding list is not initialized");
+    if (drawList->CmdBuffer.empty())
+        drawList->AddDrawCmd();
+    if (drawList->CmdBuffer.back().ElemCount != 0)
+        drawList->AddDrawCmd();
+    const int commandIndex = drawList->CmdBuffer.Size - 1;
+    auto &events = m_recordingPacket->m_data->lists[index].bindingEvents;
+    UIShaderMaterialBinding binding{};
+    binding.materialGuid = materialGuid;
+    binding.generation = generation;
+    binding.pipelineKey = pipelineKey;
+    binding.baseColor = baseColor;
+    binding.alphaClipEnabled = alphaClipEnabled;
+    binding.alphaClipThreshold = std::clamp(alphaClipThreshold, 0.0f, 1.0f);
+    if (!events.empty() && events.back().commandIndex == commandIndex && events.back().binding == binding)
+        return;
+    events.push_back({commandIndex, binding});
+}
+
+const std::vector<UIShaderMaterialBinding> &InxScreenUIRenderer::GetCommandBindings(ScreenUIList list) const
+{
+    return m_commandBindings[ListIndex(list)];
 }
 
 void InxScreenUIRenderer::BeginCommandPacket()
@@ -555,6 +652,11 @@ std::shared_ptr<InxScreenUIRenderer::CommandPacket> InxScreenUIRenderer::EndComm
         for (auto &command : output.commands) {
             command.TexRef = ImTextureRef(command.GetTexID());
             output.hasVertexOffsets |= command.VtxOffset != 0;
+        }
+        output.bindings.assign(output.commands.size(), {});
+        for (const auto &event : output.bindingEvents) {
+            if (event.commandIndex >= 0 && static_cast<size_t>(event.commandIndex) < output.bindings.size())
+                output.bindings[static_cast<size_t>(event.commandIndex)] = event.binding;
         }
         ++m_geometryStats[index].packetCaptures;
     }
@@ -592,24 +694,37 @@ void InxScreenUIRenderer::AppendCommandPackets(const std::vector<std::shared_ptr
                 destination.IdxBuffer.Data[indexStart + i] = static_cast<ImDrawIdx>(source.indices[i] + bias);
             if (!destination.CmdBuffer.empty() && !destination.CmdBuffer.back().ElemCount &&
                 !destination.CmdBuffer.back().UserCallback)
+            {
                 destination.CmdBuffer.pop_back();
+                if (m_commandBindings[index].size() > static_cast<size_t>(destination.CmdBuffer.Size))
+                    m_commandBindings[index].pop_back();
+            }
             const int commandStart = destination.CmdBuffer.Size;
             unsigned int lastBase = base;
-            for (auto command : source.commands) {
+            for (size_t sourceIndex = 0; sourceIndex < source.commands.size(); ++sourceIndex) {
+                auto command = source.commands[sourceIndex];
+                const auto sourceBinding = sourceIndex < source.bindings.size() ? source.bindings[sourceIndex]
+                                                                                 : UIShaderMaterialBinding{};
                 command.IdxOffset += indexStart;
                 command.VtxOffset += base;
                 lastBase = command.VtxOffset;
                 if (index != 2 && !destination.CmdBuffer.empty()) {
                     auto &previous = destination.CmdBuffer.back();
+                    const auto previousBinding =
+                        m_commandBindings[index].size() > static_cast<size_t>(destination.CmdBuffer.Size - 1)
+                            ? m_commandBindings[index][static_cast<size_t>(destination.CmdBuffer.Size - 1)]
+                            : UIShaderMaterialBinding{};
                     if (!previous.UserCallback && !command.UserCallback &&
                         previous.IdxOffset + previous.ElemCount == command.IdxOffset &&
                         previous.VtxOffset == command.VtxOffset && previous.GetTexID() == command.GetTexID() &&
-                        std::memcmp(&previous.ClipRect, &command.ClipRect, sizeof(ImVec4)) == 0) {
+                        std::memcmp(&previous.ClipRect, &command.ClipRect, sizeof(ImVec4)) == 0 &&
+                        previousBinding == sourceBinding) {
                         previous.ElemCount += command.ElemCount;
                         continue;
                     }
                 }
                 destination.CmdBuffer.push_back(command);
+                m_commandBindings[index].push_back(sourceBinding);
             }
             for (auto range : source.hdr) {
                 range.vertexStart += vertexStart;
@@ -639,6 +754,7 @@ void InxScreenUIRenderer::AppendCommandPackets(const std::vector<std::shared_ptr
             destination._VtxWritePtr = destination.VtxBuffer.end();
             destination._IdxWritePtr = destination.IdxBuffer.end();
             destination.AddDrawCmd();
+            m_commandBindings[index].push_back({});
             ++m_geometryRevision[index];
             ++m_geometryStats[index].packetAppends;
         }
@@ -748,6 +864,7 @@ void InxScreenUIRenderer::Destroy()
     m_geometryStats = {};
     m_screenVertices = {};
     m_worldVertices.clear();
+    m_commandBindings = {};
     m_pipeline = VK_NULL_HANDLE;
     m_worldPipeline = VK_NULL_HANDLE;
     m_pipelineLayout = VK_NULL_HANDLE;
@@ -784,11 +901,16 @@ void InxScreenUIRenderer::BeginFrame(uint32_t width, uint32_t height)
     m_worldElementStart = -1;
     m_commandCacheValid = false;
 
+    for (auto &bindings : m_commandBindings)
+        bindings.clear();
+
     for (auto &revision : m_geometryRevision)
         ++revision;
     ResetDrawListForFrame(*m_cameraDrawList, width, height);
     ResetDrawListForFrame(*m_overlayDrawList, width, height);
     ResetDrawListForFrame(*m_worldDrawList, width, height, false);
+    for (auto &bindings : m_commandBindings)
+        bindings.push_back({}); // ImDrawList starts with one empty command.
 }
 
 bool InxScreenUIRenderer::BeginFrameCached(uint32_t width, uint32_t height, uint64_t contentRevision)
@@ -1249,11 +1371,11 @@ void InxScreenUIRenderer::Render(VkCommandBuffer cmdBuf, ScreenUIList list, uint
     const VkViewport viewport = MakeViewport(width, height);
     vkCmdSetViewport(cmdBuf, 0, 1, &viewport);
 
-    // ---- Push constants: ortho projection (scale + translate) ----
-    // Maps [0, width] x [0, height] → [-1, 1] x [-1, 1]
-    const auto pushConstants = MakeOrthoPushConstants(width, height);
-    vkCmdPushConstants(cmdBuf, m_pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
-                       sizeof(pushConstants), pushConstants.data());
+    // The projection is shared by every draw, while authored material values
+    // are command-local.  The complete block is pushed per draw so the
+    // fragment shader consumes the same GUID-backed material contract that
+    // produced the retained command.
+    const ScreenUIPushConstants projection = MakeOrthoPushConstants(width, height);
 
     // ---- Bind font atlas descriptor set ----
     {
@@ -1330,15 +1452,22 @@ void InxScreenUIRenderer::Render(VkCommandBuffer cmdBuf, ScreenUIList list, uint
 
         vkCmdSetScissor(cmdBuf, 0, 1, &scissor);
 
+        const auto binding = (static_cast<size_t>(cmdI) < m_commandBindings[listIndex].size())
+                                 ? m_commandBindings[listIndex][static_cast<size_t>(cmdI)]
+                                 : UIShaderMaterialBinding{};
+        ScreenUIPushConstants pushConstants = projection;
+        pushConstants.materialColor = binding.baseColor;
+        pushConstants.alphaClipEnabled = binding.alphaClipEnabled ? 1.0f : 0.0f;
+        pushConstants.alphaClipThreshold = binding.alphaClipThreshold;
         // Camera UI is drawn in linear space; Overlay is after display encoding.
         // Font alpha and display-space uploads must not be gamma transformed.
-        const float encodeSample =
+        pushConstants.encodeSample =
             list == ScreenUIList::Overlay && m_textureColorSpaceQuery &&
                     m_textureColorSpaceQuery(static_cast<uint64_t>(reinterpret_cast<uintptr_t>(texDescSet)))
                 ? 1.0f
                 : 0.0f;
         vkCmdPushConstants(cmdBuf, m_pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                           sizeof(float) * 4, sizeof(encodeSample), &encodeSample);
+                           0, sizeof(pushConstants), &pushConstants);
 
         vkCmdDrawIndexed(cmdBuf, cmd.ElemCount, 1, cmd.IdxOffset, static_cast<int32_t>(cmd.VtxOffset), 0);
         ++submittedDraws;
@@ -1378,7 +1507,7 @@ bool InxScreenUIRenderer::CreatePipeline()
         return false;
 
     // Ortho projection plus the sampled texture's display-encoding flag.
-    auto pushConstRange = MakeVertexPushConstantRange(sizeof(float) * 5);
+    auto pushConstRange = MakeVertexPushConstantRange(sizeof(ScreenUIPushConstants));
     pushConstRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
     if (!CreatePipelineLayout(m_device, m_descriptorSetLayout, pushConstRange, m_pipelineLayout))
         return false;
@@ -1696,13 +1825,10 @@ void InxScreenUIRenderer::RenderWorld(VkCommandBuffer cmdBuf, uint32_t width, ui
     std::stable_sort(elementOrder.begin(), elementOrder.end(),
                      [](const ElementDepth &lhs, const ElementDepth &rhs) { return lhs.depth > rhs.depth; });
 
-    // This matrix belongs to the camera replay, not to individual UI draws.
-    WorldUIPushConstants constants{};
-    constants.viewProjection = viewProjection;
-    vkCmdPushConstants(cmdBuf, m_worldPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
-                       sizeof(constants), &constants);
-
-    const auto drawCommand = [&](const ImDrawCmd &command) {
+    // The camera matrix is shared by every draw, while authored material
+    // values are command-local.  Push the complete block for each draw so
+    // World UI consumes the same material contract as Screen UI.
+    const auto drawCommand = [&](const ImDrawCmd &command, int commandIndex) {
         if (command.ElemCount == 0)
             return;
         VkDescriptorSet descriptor = reinterpret_cast<VkDescriptorSet>(static_cast<uintptr_t>(command.GetTexID()));
@@ -1717,6 +1843,18 @@ void InxScreenUIRenderer::RenderWorld(VkCommandBuffer cmdBuf, uint32_t width, ui
                                                   &descriptor, 0, nullptr);
             lastDescriptor = descriptor;
         }
+        const auto binding = (commandIndex >= 0 &&
+                              static_cast<size_t>(commandIndex) < m_commandBindings[ListIndex(ScreenUIList::World)].size())
+                                 ? m_commandBindings[ListIndex(ScreenUIList::World)][static_cast<size_t>(commandIndex)]
+                                 : UIShaderMaterialBinding{};
+        WorldUIPushConstants constants{};
+        constants.viewProjection = viewProjection;
+        constants.materialColor =
+            glm::vec4(binding.baseColor[0], binding.baseColor[1], binding.baseColor[2], binding.baseColor[3]);
+        constants.alphaClipEnabled = binding.alphaClipEnabled ? 1.0f : 0.0f;
+        constants.alphaClipThreshold = binding.alphaClipThreshold;
+        vkCmdPushConstants(cmdBuf, m_worldPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                           sizeof(constants), &constants);
         vkCmdDrawIndexed(cmdBuf, command.ElemCount, 1, command.IdxOffset, static_cast<int32_t>(command.VtxOffset), 0);
         ++submittedDraws;
         submittedIndices += command.ElemCount;
@@ -1725,6 +1863,8 @@ void InxScreenUIRenderer::RenderWorld(VkCommandBuffer cmdBuf, uint32_t width, ui
     // base vertex remain identical; primitive/blend order is preserved. World
     // UI ignores canvas clips, so ClipRect cannot be a batch boundary here.
     ImDrawCmd pending{};
+    int pendingCommandIndex = -1;
+    UIShaderMaterialBinding pendingBinding{};
     for (const auto &entry : elementOrder) {
         const WorldElementSpan &element = m_worldElementSpans[entry.index];
         if (element.commandStart < 0 || element.commandEnd > drawList->CmdBuffer.Size)
@@ -1733,16 +1873,22 @@ void InxScreenUIRenderer::RenderWorld(VkCommandBuffer cmdBuf, uint32_t width, ui
             const auto &command = drawList->CmdBuffer[commandIndex];
             if (command.UserCallback || !command.ElemCount)
                 continue;
+            const auto binding = static_cast<size_t>(commandIndex) < m_commandBindings[ListIndex(ScreenUIList::World)].size()
+                                     ? m_commandBindings[ListIndex(ScreenUIList::World)][static_cast<size_t>(commandIndex)]
+                                     : UIShaderMaterialBinding{};
             if (pending.ElemCount && pending.IdxOffset + pending.ElemCount == command.IdxOffset &&
-                pending.VtxOffset == command.VtxOffset && pending.GetTexID() == command.GetTexID()) {
+                pending.VtxOffset == command.VtxOffset && pending.GetTexID() == command.GetTexID() &&
+                pendingBinding == binding) {
                 pending.ElemCount += command.ElemCount;
             } else {
-                drawCommand(pending);
+                drawCommand(pending, pendingCommandIndex);
                 pending = command;
+                pendingCommandIndex = commandIndex;
+                pendingBinding = binding;
             }
         }
     }
-    drawCommand(pending);
+    drawCommand(pending, pendingCommandIndex);
     m_lastSubmittedDrawCounts[listIndex] = submittedDraws;
     m_lastSubmittedIndexCounts[listIndex] = submittedIndices;
 }

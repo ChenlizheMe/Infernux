@@ -89,6 +89,27 @@ def test_direct_ui_resize_makes_layout_axes_authoritative():
     assert text.resize_mode == TextResizeMode.FixedSize
 
 
+def test_shared_layout_size_commit_updates_only_touched_axes():
+    from Infernux.engine.ui.ui_rect_manipulation import apply_layout_size
+    from Infernux.ui import UIText
+    from Infernux.ui.enums import TextResizeMode, UILayoutSizing
+
+    text = UIText()
+    text.width = 120.0
+    text.height = 48.0
+    text.width_sizing = UILayoutSizing.Fill
+    text.height_sizing = UILayoutSizing.Hug
+    text.resize_mode = TextResizeMode.AutoHeight
+
+    apply_layout_size(text, width=260.0)
+
+    assert text.width == 260.0
+    assert text.height == 48.0
+    assert text.width_sizing == UILayoutSizing.Fixed
+    assert text.height_sizing == UILayoutSizing.Hug
+    assert text.resize_mode == TextResizeMode.FixedSize
+
+
 def test_button_render_color_consumes_selectable_state_tint():
     from Infernux.ui import UIButton
     from Infernux.ui.ui_render_dispatch import _get_button_bg
@@ -746,7 +767,7 @@ class TestWindowManager:
             document = _reset_editor_interaction_state.create(
                 DocumentKind.PARTICLE_GRAPH,
                 "Smoke",
-                key=DocumentKey.resource(DocumentKind.PARTICLE_GRAPH, str(path)),
+                key=DocumentKey.asset(DocumentKind.PARTICLE_GRAPH, "particle-guid"),
                 resource_path=str(path),
                 revision=1,
                 saved_revision=0,
@@ -757,7 +778,11 @@ class TestWindowManager:
 
             manager.on_asset_mutation(
                 AssetContentChange(
-                    AssetMutation(AssetMutationKind.DELETED, str(path)),
+                    AssetMutation(
+                        AssetMutationKind.DELETED,
+                        str(path),
+                        guid="particle-guid",
+                    ),
                     1,
                 )
             )
@@ -2584,8 +2609,8 @@ class TestUICanvasRaycast:
             obj.set_parent(root)
             button = UIButton()
             obj.add_py_component(button)
-            button.x = button.y = 0
             button.width = button.height = 100
+            button.set_rect(0, 0, 100, 100, 1920, 1080)
             controls.append(button)
         visible, hidden_on_top = controls
         hidden_on_top.game_object.active = False
@@ -2900,8 +2925,11 @@ def test_text_overflow_clip_reaches_runtime_draw_packet():
     assert renderer.text_calls[-1][-1] is True
 
 
-def test_explicit_fallback_font_chain_reaches_runtime_draw_packet():
+def test_explicit_fallback_font_chain_reaches_runtime_draw_packet(monkeypatch):
     import Infernux.ui.ui_render_dispatch as dispatch_module
+    from Infernux.application import Application
+    from Infernux.core.asset_ref import create_asset_ref
+    from Infernux.engine.project_context import set_runtime_asset_resolver
     from Infernux.ui import UIText, TextOverflow
 
     class Renderer:
@@ -2913,24 +2941,36 @@ def test_explicit_fallback_font_chain_reaches_runtime_draw_packet():
 
     element = UIText()
     element.overflow = TextOverflow.Clip
-    element.fallback_font_paths = ["Assets/Fonts/CJK.ttf", "Assets/Fonts/Emoji.ttf"]
+    paths = {
+        "font-cjk": "Assets/Fonts/CJK.ttf",
+        "font-emoji": "Assets/Fonts/Emoji.ttf",
+    }
+    monkeypatch.setattr(Application, "is_player", staticmethod(lambda: True))
+    set_runtime_asset_resolver(lambda guid: paths.get(guid))
+    element.fallback_fonts = [
+        create_asset_ref("Font", guid=guid, path_hint="stale/path.ttf")
+        for guid in paths
+    ]
     renderer = Renderer()
-    assert dispatch_module.dispatch(
-        element,
-        "runtime",
-        renderer=renderer,
-        ui_list=0,
-        sx=10.0,
-        sy=20.0,
-        sw=160.0,
-        sh=40.0,
-        ref_w=1920.0,
-        ref_h=1080.0,
-        scale_x=1.0,
-        scale_y=1.0,
-        text_scale=1.0,
-        get_tex_id=lambda _path: 0,
-    )
+    try:
+        assert dispatch_module.dispatch(
+            element,
+            "runtime",
+            renderer=renderer,
+            ui_list=0,
+            sx=10.0,
+            sy=20.0,
+            sw=160.0,
+            sh=40.0,
+            ref_w=1920.0,
+            ref_h=1080.0,
+            scale_x=1.0,
+            scale_y=1.0,
+            text_scale=1.0,
+            get_tex_id=lambda _path: 0,
+        )
+    finally:
+        set_runtime_asset_resolver(None)
     assert renderer.text_calls[-1][-2] is True
     assert renderer.text_calls[-1][-1] == [
         "Assets/Fonts/CJK.ttf",
@@ -2938,26 +2978,68 @@ def test_explicit_fallback_font_chain_reaches_runtime_draw_packet():
     ]
 
 
-def test_text_font_aliases_resolve_through_active_player_catalog():
+def test_text_font_guids_resolve_through_active_player_catalog(monkeypatch):
     import Infernux.ui.ui_render_dispatch as dispatch_module
+    from Infernux.application import Application
+    from Infernux.core.asset_ref import create_asset_ref
     from Infernux.engine.project_context import set_runtime_asset_resolver
     from Infernux.ui import UIText
 
     resolved = {
-        "Assets/Fonts/Primary.ttf": "Player/Library/Artifacts/Blob/primary.ttf",
-        "Assets/Fonts/CJK.ttf": "Player/Library/Artifacts/Blob/cjk.ttf",
+        "font-primary": "Player/Library/Artifacts/Blob/primary.ttf",
+        "font-cjk": "Player/Library/Artifacts/Blob/cjk.ttf",
     }
-    set_runtime_asset_resolver(lambda path, allow_directory=False: resolved.get(path))
+    monkeypatch.setattr(Application, "is_player", staticmethod(lambda: True))
+    set_runtime_asset_resolver(lambda guid: resolved.get(guid))
     try:
         element = UIText()
-        element.font_path = "Assets/Fonts/Primary.ttf"
-        element.fallback_font_paths = ["Assets/Fonts/CJK.ttf"]
+        element.font = create_asset_ref(
+            "Font", guid="font-primary", path_hint="Assets/Fonts/Old.ttf"
+        )
+        element.fallback_fonts = [
+            create_asset_ref(
+                "Font", guid="font-cjk", path_hint="Assets/Fonts/OldCJK.ttf"
+            )
+        ]
         attrs = dispatch_module._extract_text_attrs(element)
     finally:
         set_runtime_asset_resolver(None)
 
-    assert attrs["font_path"] == resolved["Assets/Fonts/Primary.ttf"]
-    assert attrs["fallback_font_paths"] == [resolved["Assets/Fonts/CJK.ttf"]]
+    assert attrs["font_path"] == resolved["font-primary"]
+    assert attrs["fallback_font_paths"] == [resolved["font-cjk"]]
+
+
+@pytest.mark.parametrize("component_type", ["UIText", "UIButton"])
+def test_ui_font_fields_serialize_guid_references_and_ignore_path_schema(component_type):
+    from Infernux.core.asset_ref import create_asset_ref
+    from Infernux.ui import UIButton, UIText
+
+    component = {"UIText": UIText, "UIButton": UIButton}[component_type]()
+    component.font = create_asset_ref(
+        "Font", guid="font-primary", path_hint="Assets/Fonts/Primary.ttf"
+    )
+    component.fallback_fonts = [
+        create_asset_ref(
+            "Font", guid="font-cjk", path_hint="Assets/Fonts/CJK.ttf"
+        )
+    ]
+
+    document = component._serialize_fields_document()
+    assert document["font"] == {
+        "$type": "asset_ref",
+        "asset_type": "Font",
+        "guid": "font-primary",
+    }
+    assert document["fallback_fonts"][0]["guid"] == "font-cjk"
+    assert "path_hint" not in document["fallback_fonts"][0]
+    assert "font_path" not in document
+    assert "fallback_font_paths" not in document
+
+    component._deserialize_fields_document({
+        "font_path": "Assets/Fonts/Old.ttf",
+        "fallback_font_paths": ["Assets/Fonts/OldFallback.ttf"],
+    })
+    assert component._serialize_fields_document() == document
 
 
 def test_runtime_ui_revision_is_stable_and_tracks_visual_state(scene):
@@ -3181,8 +3263,8 @@ class TestPanelFocusEvents:
             def __init__(self):
                 self.bound = []
 
-            def bind_document(self, document_id):
-                self.bound.append(document_id)
+            def bind_document(self, document_id, **options):
+                self.bound.append((document_id, options))
 
         bootstrap = EditorBootstrap.__new__(EditorBootstrap)
         bootstrap.scene_file_manager = SceneFiles()
@@ -4510,6 +4592,7 @@ def test_ui_editor_nudge_executes_before_recording_and_replays_through_history()
 
     from Infernux.engine.ui.ui_editor_panel import UIEditorPanel
     from Infernux.engine.undo import UndoManager
+    from Infernux.lib import Vector3
 
     class ProbePanel(UIEditorPanel):
         def __init__(self, element):
@@ -4522,18 +4605,109 @@ def test_ui_editor_nudge_executes_before_recording_and_replays_through_history()
 
     previous_manager = UndoManager.instance()
     manager = UndoManager()
-    panel = ProbePanel(SimpleNamespace(x=12.0, y=24.0))
+    transform = SimpleNamespace(local_position=Vector3(12.0, -24.0, 3.0))
+    game_object = SimpleNamespace(transform=transform)
+    panel = ProbePanel(SimpleNamespace(_try_get_game_object=lambda: game_object))
     try:
         assert panel.command_nudge_selected(-1, 10)
-        assert (panel.element.x, panel.element.y) == (11.0, 34.0)
+        assert tuple(transform.local_position) == pytest.approx((11.0, -34.0, 3.0))
         assert manager.undo_description == "Nudge UI Element"
 
         manager.undo()
-        assert (panel.element.x, panel.element.y) == (12.0, 24.0)
+        assert tuple(transform.local_position) == pytest.approx((12.0, -24.0, 3.0))
         manager.redo()
-        assert (panel.element.x, panel.element.y) == (11.0, 34.0)
+        assert tuple(transform.local_position) == pytest.approx((11.0, -34.0, 3.0))
     finally:
         UndoManager._instance = previous_manager
+
+
+def test_ui_reparent_preserves_canvas_rect_after_parent_change_and_undo_redo(
+    scene, monkeypatch,
+):
+    from Infernux.engine.undo import ReparentCommand
+    from Infernux.engine.undo import _structural_commands
+    from Infernux.ui import UICanvas, UIFrame, UIImage
+
+    canvas_a_object = scene.create_game_object("Canvas A")
+    canvas_a = UICanvas()
+    canvas_a.reference_width = 1000
+    canvas_a.reference_height = 500
+    canvas_a_object.add_py_component(canvas_a)
+
+    canvas_b_object = scene.create_game_object("Canvas B")
+    canvas_b = UICanvas()
+    canvas_b.reference_width = 2400
+    canvas_b.reference_height = 1350
+    canvas_b_object.add_py_component(canvas_b)
+
+    parent_a_object = scene.create_game_object("Parent A")
+    parent_a_object.set_parent(canvas_a_object, False)
+    parent_a = UIFrame()
+    parent_a_object.add_py_component(parent_a)
+    parent_a.set_rect(120.0, 70.0, 420.0, 230.0, 1000.0, 500.0)
+
+    parent_b_object = scene.create_game_object("Parent B")
+    parent_b_object.set_parent(canvas_b_object, False)
+    parent_b = UIFrame()
+    parent_b_object.add_py_component(parent_b)
+    parent_b.set_rect(760.0, 410.0, 680.0, 360.0, 2400.0, 1350.0)
+
+    child_object = scene.create_game_object("Image")
+    child_object.set_parent(parent_a_object, False)
+    child = UIImage()
+    child_object.add_py_component(child)
+    child.set_rect(205.0, 126.0, 96.0, 54.0, 1000.0, 500.0)
+    expected_rect = child.get_rect(1000.0, 500.0)
+
+    monkeypatch.setattr(
+        _structural_commands, "_find_runtime_object", scene.find_by_id,
+    )
+    monkeypatch.setattr(
+        _structural_commands, "_get_scene_by_world_id", lambda _world_id: scene,
+    )
+    command = ReparentCommand(
+        child_object.id, parent_a_object.id, parent_b_object.id,
+    )
+
+    command.execute()
+    assert child_object.get_parent() is parent_b_object
+    assert child.get_rect(2400.0, 1350.0) == pytest.approx(expected_rect)
+
+    command.undo()
+    assert child_object.get_parent() is parent_a_object
+    assert child.get_rect(1000.0, 500.0) == pytest.approx(expected_rect)
+
+    command.redo()
+    assert child_object.get_parent() is parent_b_object
+    assert child.get_rect(2400.0, 1350.0) == pytest.approx(expected_rect)
+
+
+def test_ui_editor_rotation_geometry_reads_transform_authority(scene):
+    from Infernux.engine.ui._ui_editor_alignment import UIEditorAlignmentMixin
+    from Infernux.engine.ui._ui_editor_geometry import UIEditorGeometryMixin
+    from Infernux.lib import Vector3
+    from Infernux.ui import UIImage
+
+    owner = scene.create_game_object("Rotated UI")
+    image = UIImage()
+    owner.add_py_component(image)
+    owner.transform.local_euler_angles = Vector3(0.0, 0.0, 37.0)
+
+    geometry = UIEditorGeometryMixin()
+    geometry._zoom = 1.0
+    geometry._pan_x = 0.0
+    geometry._pan_y = 0.0
+    oriented = geometry._get_oriented_box_screen(
+        image, 1920.0, 1080.0, 0.0, 0.0,
+    )
+    assert len(oriented["corners"]) == 4
+
+    alignment = UIEditorAlignmentMixin()
+    alignment._active_alignment_guides = [("stale",)]
+    assert alignment._apply_resize_alignment_snapping(
+        None, image, 100.0, 50.0, 1, 1, 0, 1920.0, 1080.0,
+    ) == (100.0, 50.0)
+    assert alignment._active_alignment_guides == []
 
 
 def test_ui_editor_selection_identity_uses_game_object_id_not_wrapper_identity():
@@ -4551,8 +4725,8 @@ def test_ui_editor_selection_identity_uses_game_object_id_not_wrapper_identity()
 
 
 def test_runtime_image_packet_refreshes_when_async_texture_becomes_ready():
-    from types import SimpleNamespace
-
+    from Infernux.core.asset_ref import TextureRef
+    from Infernux.ui import UIImage
     from Infernux.ui.ui_render_dispatch import _runtime_render_image
 
     class Renderer:
@@ -4567,18 +4741,17 @@ def test_runtime_image_packet_refreshes_when_async_texture_becomes_ready():
             self.images.append(arguments)
 
     renderer = Renderer()
-    element = SimpleNamespace(
-        texture_path="Assets/Textures/hud.png",
-        color=[1.0, 1.0, 1.0, 1.0],
-        opacity=1.0,
-        rotation=0.0,
-        mirror_x=False,
-        mirror_y=False,
-        corner_radius=0.0,
-        get_layout_rotation=lambda: 0.0,
-        get_effective_group_state=lambda: (1.0, True, True),
+    element = UIImage()
+    texture = TextureRef(
+        guid="texture-guid", path_hint="Assets/Textures/hud.png",
     )
+    element.texture = texture
     texture_id = [0]
+    requested_sources = []
+
+    def get_texture_id(source):
+        requested_sources.append(source)
+        return texture_id[0]
 
     def render():
         _runtime_render_image(
@@ -4591,7 +4764,7 @@ def test_runtime_image_packet_refreshes_when_async_texture_becomes_ready():
             50.0,
             1.0,
             1.0,
-            lambda _path: texture_id[0],
+            get_texture_id,
         )
 
     render()
@@ -4603,6 +4776,53 @@ def test_runtime_image_packet_refreshes_when_async_texture_becomes_ready():
     assert len(renderer.rects) == 1
     assert len(renderer.images) == 1
     assert renderer.images[0][1] == 73
+    assert requested_sources == [texture, texture]
+
+
+def test_image_and_button_texture_sources_use_only_their_current_contracts():
+    from Infernux.core.asset_ref import TextureRef
+    from Infernux.engine.ui.inspector_ui_components import _has_native_size_texture
+    from Infernux.ui import UIButton, UIImage
+    from Infernux.ui.ui_render_dispatch import image_texture_source
+
+    material_state = {"texture": None, "texture_guid": ""}
+    image = UIImage()
+    image_texture = TextureRef(
+        guid="image-texture-guid", path_hint="Assets/Textures/image.png",
+    )
+    image.texture = image_texture
+    button = UIButton()
+    button_texture = TextureRef(
+        guid="button-texture-guid", path_hint="Assets/Textures/button.png",
+    )
+    button.background_texture = button_texture
+
+    assert image_texture_source(image, material_state) is image_texture
+    assert image_texture_source(button, material_state) is button_texture
+    assert _has_native_size_texture(image)
+    assert _has_native_size_texture(button)
+
+    material_texture = object()
+    material_state["texture"] = material_texture
+    button.background_texture = None
+    assert image_texture_source(button, material_state) is material_texture
+
+
+def test_button_obsolete_texture_path_is_ignored_in_favor_of_current_slot():
+    from Infernux.components.fields import get_raw_field_value
+    from Infernux.core.asset_ref import TextureRef
+    from Infernux.ui import UIButton
+
+    button = UIButton()
+    current = TextureRef(
+        guid="button-current-guid", path_hint="Assets/Textures/current.png",
+    )
+    button.background_texture = current
+    button._deserialize_fields_document({
+        "texture_path": "Assets/Textures/legacy.png",
+        "background_texture": None,
+    })
+    assert get_raw_field_value(button, "background_texture") is None
 
 
 def test_runtime_text_packet_refreshes_when_transform_rotation_changes(scene):
@@ -4668,7 +4888,7 @@ def test_runtime_text_packet_refreshes_when_transform_rotation_changes(scene):
     assert renderer.text_calls[-1][14] == 0.0
 
 
-def test_ui_editor_continuous_manipulation_is_core_owned_and_fail_closed():
+def test_ui_editor_continuous_manipulation_rejects_non_transform_targets():
     from types import SimpleNamespace
 
     from Infernux.engine.interaction import (
@@ -4702,41 +4922,13 @@ def test_ui_editor_continuous_manipulation_is_core_owned_and_fail_closed():
         capture_context=lambda: EditorContextSnapshot(focus=focus.snapshot),
     )
     EditorInteractionCore._instance = core
-    element = SimpleNamespace(x=12.0, y=24.0, rotation=0.0)
+    element = SimpleNamespace()
     panel = ProbePanel(element)
     try:
-        assert panel._begin_element_manipulation("drag", element)
-        assert focus.snapshot.capture_owner_id == "ui_editor.manipulation"
-        assert edits.active_count == 1
-        assert panel._mutate_element_manipulation(
-            lambda: (setattr(element, "x", 32.0), setattr(element, "y", 44.0))
-        )
-        assert panel._finish_element_manipulation(commit=True)
+        with pytest.raises(RuntimeError, match="current screen component"):
+            panel._begin_element_manipulation("drag", element)
         assert edits.active_count == 0
         assert focus.snapshot.capture_owner_id == ""
-        assert manager.undo_description == "Move UI Element"
-        entry = manager.action_journal.peek_undo()
-        assert entry is not None
-        assert entry.after_context.focus.capture_owner_id == ""
-
-        manager.undo()
-        assert (element.x, element.y) == (12.0, 24.0)
-        manager.redo()
-        assert (element.x, element.y) == (32.0, 44.0)
-
-        assert panel._begin_element_manipulation("rotate", element)
-        assert panel._mutate_element_manipulation(
-            lambda: setattr(element, "rotation", 90.0)
-        )
-        assert panel._finish_element_manipulation(commit=False)
-        assert element.rotation == 0.0
-        assert manager.undo_description == "Move UI Element"
-
-        manager.enabled = False
-        before = (element.x, element.y)
-        assert not panel._begin_element_manipulation("drag", element)
-        assert not panel._apply_drag_suppressed(100.0, 200.0, 800.0, 600.0)
-        assert (element.x, element.y) == before
     finally:
         UndoManager._instance = previous_manager
         EditorInteractionCore._instance = previous_core

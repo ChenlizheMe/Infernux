@@ -18,7 +18,11 @@ def control(scene, parent, kind=UIButton, x=0., y=0., width=100., height=40.):
     item = kind()
     item.width, item.height = width, height
     obj.add_py_component(item)
-    item.x, item.y = x, y
+    if not item.is_world_space():
+        parent_ui = item._get_parent_ui_component()
+        base_x, base_y = (parent_ui.get_rect(1920, 1080)[:2]
+                          if parent_ui is not None else (0.0, 0.0))
+        item.set_rect(base_x + x, base_y + y, width, height, 1920, 1080)
     return item
 
 
@@ -88,7 +92,7 @@ def test_group_policy_clip_rotation_tolerance_and_draw_order(scene):
     assert canvas.raycast(90, 10) is underneath
     group.blocks_raycast = True
     assert canvas.raycast(90, 10) is top
-    top.rotation = 90
+    top.set_layout_rotation(90)
     # Rotated 100x40 rectangle around (130,20) has x=[110,150], y=[-30,70].
     assert canvas.raycast(130, 60) is top
     assert canvas.raycast(105, 20) is underneath
@@ -120,10 +124,11 @@ def test_stationary_mouse_refreshes_hover_after_motion_and_disable(scene):
     tick()
     pointer = next(iter(processor._pointers.values()))
     assert pointer.hover_target is button
-    button.x = 200
+    position = button.game_object.transform.local_position
+    button.game_object.transform.local_position = Vector3(position.x + 200, position.y, position.z)
     tick()
     assert pointer.hover_target is None
-    button.x = 0
+    button.game_object.transform.local_position = position
     tick()
     assert pointer.hover_target is button
     button.enabled = False

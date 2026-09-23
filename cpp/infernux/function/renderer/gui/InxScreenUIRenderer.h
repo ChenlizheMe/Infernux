@@ -26,6 +26,8 @@
 #include <functional>
 #include <glm/mat4x4.hpp>
 #include <imgui.h>
+#include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 #include <vk_mem_alloc.h>
@@ -42,6 +44,42 @@ enum class ScreenUIList
     Camera,  ///< Rendered before post-processing
     Overlay, ///< Rendered after post-processing
     World    ///< Local UI geometry transformed into the camera's 3D world
+};
+
+/**
+ * Stable material contract attached to one retained UI draw command.
+ *
+ * This is deliberately an asset identity contract, not a path or a native
+ * pointer.  The current fixed UI pipelines still own the actual screen/world
+ * depth rules; consumers must not infer a new depth policy from this record.
+ */
+struct UIShaderMaterialBinding
+{
+    std::string materialGuid;
+    uint64_t generation = 0;
+    std::string pipelineKey;
+    // The fixed UI shader consumes the standard authored material contract
+    // directly in its fragment stage.  Keeping these values command-aligned
+    // makes retained packets deterministic and avoids a second material ABI.
+    std::array<float, 4> baseColor{1.0f, 1.0f, 1.0f, 1.0f};
+    float alphaClipThreshold = 0.0f;
+    bool alphaClipEnabled = false;
+
+    [[nodiscard]] bool IsValid() const noexcept
+    {
+        return !materialGuid.empty() && generation != 0 && !pipelineKey.empty();
+    }
+
+    bool operator==(const UIShaderMaterialBinding &other) const noexcept
+    {
+        return materialGuid == other.materialGuid && generation == other.generation &&
+               pipelineKey == other.pipelineKey && baseColor == other.baseColor &&
+               alphaClipThreshold == other.alphaClipThreshold && alphaClipEnabled == other.alphaClipEnabled;
+    }
+    bool operator!=(const UIShaderMaterialBinding &other) const noexcept
+    {
+        return !(*this == other);
+    }
 };
 
 /**
@@ -135,6 +173,18 @@ class InxScreenUIRenderer
     void AbortCommandPacket();
     void AppendCommandPackets(const std::vector<std::shared_ptr<CommandPacket>> &packets);
     std::array<uint64_t, 3> GetCommandPacketEpoch() const;
+
+    /// Attach a GUID-backed material contract to subsequent commands in a
+    /// packet. The binding is copied into the packet and aligned with its
+    /// ImDrawCmd entries; no path or native pointer is retained. An empty
+    /// GUID/generation/key triple restores the engine default material.
+    void SetMaterialBinding(ScreenUIList list, const std::string &materialGuid, uint64_t generation,
+                            const std::string &pipelineKey);
+    void SetMaterialBinding(ScreenUIList list, const std::string &materialGuid, uint64_t generation,
+                            const std::string &pipelineKey, const std::array<float, 4> &baseColor,
+                            bool alphaClipEnabled = false, float alphaClipThreshold = 0.0f);
+    /// Inspect the command-aligned contracts published for the current frame.
+    const std::vector<UIShaderMaterialBinding> &GetCommandBindings(ScreenUIList list) const;
 
     /// Intersect subsequent commands with a screen-space clip rectangle.
     void PushClipRect(ScreenUIList list, float minX, float minY, float maxX, float maxY);
@@ -352,6 +402,12 @@ class InxScreenUIRenderer
         float rgbScale = 1.0f;
     };
 
+    struct CommandBindingEvent
+    {
+        int commandIndex = -1;
+        UIShaderMaterialBinding binding;
+    };
+
     void TrackHDRColorRange(ScreenUIList list, int vertexStart, int vertexEnd, float rgbScale);
     std::vector<HDRColorRange> &GetHDRRanges(ScreenUIList list);
     const std::vector<HDRColorRange> &GetHDRRanges(ScreenUIList list) const;
@@ -395,6 +451,7 @@ class InxScreenUIRenderer
     ImDrawList *m_overlayDrawList = nullptr;
     ImDrawList *m_worldDrawList = nullptr;
     std::array<ImDrawList *, 3> m_packetDrawLists{};
+    std::array<std::vector<UIShaderMaterialBinding>, 3> m_commandBindings;
     std::shared_ptr<CommandPacket> m_recordingPacket;
     std::vector<HDRColorRange> m_cameraHDRRanges;
     std::vector<HDRColorRange> m_overlayHDRRanges;

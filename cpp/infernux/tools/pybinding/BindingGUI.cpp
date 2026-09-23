@@ -1474,6 +1474,7 @@ void RegisterGUIBindings(py::module_ &m)
         .def_readwrite("prefab_guid", &InspectorPanel::ObjectInfo::prefabGuid)
         .def_readwrite("hide_transform", &InspectorPanel::ObjectInfo::hideTransform)
         .def_readwrite("hide_transform_scale", &InspectorPanel::ObjectInfo::hideTransformScale)
+        .def_readwrite("driven_transform_properties", &InspectorPanel::ObjectInfo::drivenTransformProperties)
         .def_readwrite("transform_component_id", &InspectorPanel::ObjectInfo::transformComponentId);
 
     py::class_<InspectorPanel::TransformData>(m, "InspectorTransformData")

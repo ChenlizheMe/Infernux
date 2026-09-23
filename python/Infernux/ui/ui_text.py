@@ -11,7 +11,7 @@ from .enums import TextAlignH, TextAlignV, TextOverflow, TextResizeMode
 
 
 _TEXT_MEASURE_FIELDS = frozenset({
-    "text", "font_path", "fallback_font_paths", "font_size", "line_height", "letter_spacing",
+    "text", "font", "fallback_fonts", "font_size", "line_height", "letter_spacing",
     "resize_mode", "width",
 })
 
@@ -20,7 +20,8 @@ _TEXT_MEASURE_FIELDS = frozenset({
 class UIText(InxUIScreenComponent):
     """Figma-style text label rendered with ImGui draw primitives.
 
-    Inherits x, y, width, height from InxUIScreenComponent.
+    Inherits width and height from InxUIScreenComponent; position and rotation
+    come from the GameObject Transform.
     All fields carry ``group`` metadata so the generic inspector renderer
     displays them in collapsible sections automatically.
     """
@@ -32,14 +33,13 @@ class UIText(InxUIScreenComponent):
     )
 
     # ── Typography ──
-    font_path: str = serialized_field(
-        default="", tooltip="Optional font asset path (.ttf/.otf)",
-        group="Typography",
+    font = serialized_field(
+        default=None, field_type=FieldType.ASSET, asset_type="Font",
+        tooltip="Optional imported Font asset (.ttf/.otf)", group="Typography",
     )
-    fallback_font_paths: list = list_field(
-        element_type=FieldType.STRING,
-        tooltip="Ordered fallback font asset paths (.ttf/.otf)",
-        group="Typography",
+    fallback_fonts: list = list_field(
+        element_type=FieldType.ASSET, asset_type="Font",
+        tooltip="Ordered fallback Font assets (.ttf/.otf)", group="Typography",
     )
     font_size: float = serialized_field(
         default=18.0, tooltip="Font size in canvas pixels",
@@ -98,6 +98,13 @@ class UIText(InxUIScreenComponent):
 
                 _invalidate_rect_cache()
 
+    def _deserialize_fields_document(self, data, **kwargs):
+        if isinstance(data, dict):
+            data = dict(data)
+            data.pop("font_path", None)
+            data.pop("fallback_font_paths", None)
+        super()._deserialize_fields_document(data, **kwargs)
+
     def is_auto_width(self) -> bool:
         return self.resize_mode == TextResizeMode.AutoWidth
 
@@ -122,28 +129,25 @@ class UIText(InxUIScreenComponent):
         """
         scale = max(1e-6, float(scale))
         wrap_width = self.get_wrap_width()
+        from .ui_font_asset import ui_font_paths, ui_font_signature
+
         key = (
-            str(self.text), str(self.font_path or ""), tuple(self.fallback_font_paths or ()), float(self.font_size),
+            str(self.text), ui_font_signature(self), float(self.font_size),
             float(self.line_height), float(self.letter_spacing),
             float(wrap_width), scale,
         )
         if getattr(self, "_text_layout_key", None) == key:
             return False
 
-        from .ui_render_dispatch import _resolve_font_asset_path
-
+        font_path, fallback_paths = ui_font_paths(self)
         arguments = (
             str(self.text),
             max(1.0, float(self.font_size) * scale),
             0.0 if wrap_width <= 0.0 else wrap_width * scale,
-            _resolve_font_asset_path(self.font_path),
+            font_path,
             float(self.line_height),
             float(self.letter_spacing) * scale,
         )
-        fallback_paths = [
-            _resolve_font_asset_path(path)
-            for path in (self.fallback_font_paths or ())
-        ]
         measured_width, measured_height = (
             measure_text(*arguments, fallback_paths)
             if fallback_paths

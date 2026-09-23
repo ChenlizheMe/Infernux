@@ -55,8 +55,7 @@ def test_slider_pointer_updates_value_and_emits_only_real_changes(scene):
     slider = _screen_slider(scene)
     slider.width = 100.0
     slider.height = 40.0
-    slider.x = 10.0
-    slider.y = 0.0
+    slider.set_rect(10.0, 0.0, 100.0, 40.0, 1920.0, 1080.0)
     slider.minimum = 0.0
     slider.maximum = 10.0
     values = []
@@ -82,13 +81,14 @@ def test_slider_silent_set_preserves_clamping_without_event():
     assert values == []
 
 
-def test_legacy_ui_layout_fields_migrate_to_the_attached_transform(scene):
+def test_obsolete_ui_layout_fields_are_ignored_without_mutating_transform(scene):
     root = scene.create_game_object("Legacy Canvas")
     root.add_py_component(UICanvas())
     obj = scene.create_game_object("Legacy Label")
     obj.set_parent(root)
     text = UISlider()
     obj.add_py_component(text)
+    before_transform = obj.transform.serialize_document()
     text._deserialize_fields_document({
         "x": 120.0,
         "y": 80.0,
@@ -96,22 +96,46 @@ def test_legacy_ui_layout_fields_migrate_to_the_attached_transform(scene):
         "width": 100.0,
         "height": 40.0,
     })
+    assert obj.transform.serialize_document() == before_transform
+    assert text.width == pytest.approx(100.0)
+    assert text.height == pytest.approx(40.0)
+    for name in ("x", "y", "rotation"):
+        with pytest.raises(AttributeError, match="use the GameObject Transform"):
+            setattr(text, name, 1.0)
 
-    position = obj.transform.local_position
-    angles = obj.transform.local_euler_angles
-    rect_x, rect_y, rect_w, rect_h = text.get_rect(1920.0, 1080.0)
-    assert position.x == pytest.approx(rect_x + rect_w * 0.5 - 960.0)
-    assert position.y == pytest.approx(-(rect_y + rect_h * 0.5 - 540.0))
-    assert angles.z == pytest.approx(25.0)
+
+@pytest.mark.parametrize("world", [False, True])
+def test_current_ui_scene_roundtrip_uses_transform_as_sole_pose(scene, world):
+    from Infernux.lib import Vector3
+
+    parent = None
+    if not world:
+        parent = scene.create_game_object("Current Canvas")
+        parent.add_py_component(UICanvas())
+    obj = scene.create_game_object("Current UI")
+    if parent is not None:
+        obj.set_parent(parent)
+    slider = UISlider()
+    obj.add_py_component(slider)
+    obj.transform.local_position = Vector3(12.0, -34.0, 5.0)
+    obj.transform.local_euler_angles = Vector3(6.0, 7.0, 28.0)
+
+    fields = slider._serialize_fields_document()
+    assert {"x", "y", "rotation"}.isdisjoint(fields)
+    document = scene.serialize_document()
+    assert scene._commit_document(document)
+
+    restored = next(item for item in scene.get_all_objects() if item.name == "Current UI")
+    assert tuple(restored.transform.local_position) == pytest.approx((12.0, -34.0, 5.0))
+    assert tuple(restored.transform.local_euler_angles) == pytest.approx((6.0, 7.0, 28.0))
 
 
 def test_slider_pointer_mapping_respects_rotation_and_fill_direction(scene):
     slider = _screen_slider(scene)
     slider.width = 100.0
     slider.height = 40.0
-    slider.x = 10.0
-    slider.y = 0.0
-    slider.rotation = 90.0
+    slider.set_rect(10.0, 0.0, 100.0, 40.0, 1920.0, 1080.0)
+    slider.set_layout_rotation(90.0)
     slider.minimum = 0.0
     slider.maximum = 1.0
 

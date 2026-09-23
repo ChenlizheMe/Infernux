@@ -277,10 +277,12 @@ def _wire_object_info(ctx):
         info.prefab_guid = getattr(obj, 'prefab_guid', '') or ''
         info.hide_transform = bool(getattr(obj, 'hide_transform', False))
         from Infernux.ui.inx_ui_screen_component import InxUIScreenComponent
+        from Infernux.components.transform_authoring import driven_transform_properties
         info.hide_transform_scale = any(
             isinstance(component, InxUIScreenComponent)
             for component in obj.get_py_components()
         )
+        info.driven_transform_properties = int(driven_transform_properties(obj))
         transform = obj.get_transform()
         info.transform_component_id = int(
             getattr(transform, 'component_id', 0) or 0

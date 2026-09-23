@@ -6,7 +6,7 @@ inherit from this class instead of InxComponent directly.
 Hierarchy:
     InxComponent
         └─ InxUIComponent
-             ├─ InxUIScreenComponent   (2D screen-space rect: x, y, w, h)
+             ├─ InxUIScreenComponent   (Transform-backed 2D rect: w, h)
              └─ InxUIWorldComponent    (3D world-space UI — future)
 """
 

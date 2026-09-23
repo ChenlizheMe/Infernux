@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import weakref
 import math
+import threading
 from Infernux.engine.ui.runtime_canvas_snapshot import (
     collect_sorted_runtime_canvas_snapshot,
     runtime_canvas_snapshot_token,
@@ -39,6 +40,7 @@ _input_canvas_token = None
 _input_surfaces = ()
 _world_projection_targets = ()
 _world_projection_geometry = None
+_pointer_batch_local = threading.local()
 
 
 def _canvas_metrics(canvas, viewport_width: float, viewport_height: float):
@@ -250,6 +252,230 @@ def collect_runtime_ui_input_surfaces(scene, persistent_scene=None):
     return _input_surfaces
 
 
+def _screen_ui_blocks_scene_query(surfaces, positions) -> bool:
+    """Return whether the front-most screen/camera Canvas owns this point.
+
+    Physics queries are only useful behind Canvas-free world UI. A blocking
+    screen-space target is already authoritative for the pointer, so walking
+    the 3D broad phase cannot affect this frame's event result. Reuse the UI
+    event system's exact raycast contract so this early decision cannot drift
+    from the target selected during dispatch.
+    """
+    if len(surfaces) != len(positions):
+        raise ValueError("UI surface and pointer position counts must match")
+    from Infernux.ui.ui_event_system import _canvas_raycast
+
+    screen_indices = tuple(
+        index for index, surface in enumerate(surfaces)
+        if not isinstance(surface, WorldUIElementTarget)
+    )
+    if not screen_indices:
+        return False
+
+    def surface_priority(index):
+        getter = getattr(surfaces[index], "input_priority", None)
+        return getter(positions[index], index) if callable(getter) else (1, index, 0.0)
+
+    order = (
+        screen_indices if len(screen_indices) < 2
+        else sorted(screen_indices, key=surface_priority, reverse=True)
+    )
+    for index in order:
+        surface = surfaces[index]
+        game_object = getattr(surface, "game_object", None)
+        if game_object is not None and not game_object.active_in_hierarchy:
+            continue
+        if not getattr(surface, "enabled", True):
+            continue
+        position = positions[index]
+        if _canvas_raycast(surface, position[0], position[1]) is not None:
+            return True
+    return False
+
+
+def _map_runtime_ui_pointer_geometry(
+    surfaces,
+    camera,
+    screen_x: float,
+    screen_y: float,
+    viewport_width: float,
+    viewport_height: float,
+    *,
+    check_screen_block: bool = False,
+):
+    # Screen-space UI always sorts in front of Canvas-free world UI. Resolve
+    # its coordinates and authoritative hit first: when it blocks this point,
+    # neither world projection nor the physical broad phase can affect the
+    # event result. This is also materially cheaper than projecting every
+    # world target only to discard those positions afterwards.
+    positions = [None] * len(surfaces)
+    world_intersections = []
+    ray_origin = ray_direction = None
+    world_entries = []
+    for index, surface in enumerate(surfaces):
+        if isinstance(surface, WorldUIElementTarget):
+            positions[index] = (float("nan"), float("nan"), float("inf"))
+            world_entries.append((index, surface))
+            continue
+
+        surface_object = getattr(surface, "game_object", None)
+        if (
+            (surface_object is not None and not surface_object.active_in_hierarchy)
+            or not getattr(surface, "enabled", True)
+        ):
+            # Keep the surface/position index contract without recalculating
+            # viewport metrics for a Canvas that event dispatch will reject.
+            # Multi-touch otherwise repeats this native property walk once per
+            # pointer even though the result can never become a target.
+            positions[index] = (float("nan"), float("nan"))
+            continue
+
+        scale_x, scale_y, _, logical_width, logical_height = _canvas_metrics(
+            surface, viewport_width, viewport_height
+        )
+        set_input_logical_size = getattr(surface, "set_input_logical_size", None)
+        if callable(set_input_logical_size):
+            set_input_logical_size(logical_width, logical_height)
+        positions[index] = (
+            float(screen_x) / max(scale_x, 1e-6),
+            float(screen_y) / max(scale_y, 1e-6),
+        )
+
+    screen_blocks_scene = check_screen_block and _screen_ui_blocks_scene_query(
+        surfaces, positions
+    )
+    if screen_blocks_scene or not world_entries or camera is None:
+        return positions, world_intersections, ray_origin, ray_direction, screen_blocks_scene
+
+    ray_origin, ray_direction = camera.screen_point_to_ray(
+        float(screen_x), float(screen_y),
+        float(viewport_width), float(viewport_height),
+    )
+    world_targets = tuple(surface for _index, surface in world_entries)
+    projected = _project_world_ui_targets(
+        world_targets, ray_origin, ray_direction, camera.culling_mask
+    )
+    for (index, _surface), position in zip(world_entries, projected):
+        positions[index] = position
+        if position[0] == position[0]:
+            world_intersections.append((index, position[2]))
+    return positions, world_intersections, ray_origin, ray_direction, False
+
+
+def _pointer_batch_storage(count: int):
+    capacity = int(getattr(_pointer_batch_local, "capacity", 0))
+    if count <= capacity:
+        return (
+            _pointer_batch_local.origins,
+            _pointer_batch_local.directions,
+            _pointer_batch_local.output,
+        )
+
+    import numpy as np
+
+    capacity = 1
+    while capacity < count:
+        capacity *= 2
+    _pointer_batch_local.capacity = capacity
+    _pointer_batch_local.origins = np.empty((capacity, 3), dtype=np.float32)
+    _pointer_batch_local.directions = np.empty((capacity, 3), dtype=np.float32)
+    _pointer_batch_local.output = {
+        "hit": np.zeros(capacity, dtype=np.uint8),
+        "point": np.zeros((capacity, 3), dtype=np.float32),
+        "normal": np.zeros((capacity, 3), dtype=np.float32),
+        "distance": np.zeros(capacity, dtype=np.float32),
+        "body_id": np.zeros(capacity, dtype=np.uint32),
+        "sub_shape_id": np.zeros(capacity, dtype=np.uint32),
+        "triangle_index": np.zeros(capacity, dtype=np.uint32),
+        "collider_id": np.zeros(capacity, dtype=np.uint64),
+        "game_object_id": np.zeros(capacity, dtype=np.uint64),
+    }
+    return (
+        _pointer_batch_local.origins,
+        _pointer_batch_local.directions,
+        _pointer_batch_local.output,
+    )
+
+
+def _vector_xyz(value):
+    if hasattr(value, "x"):
+        return float(value.x), float(value.y), float(value.z)
+    return float(value[0]), float(value[1]), float(value[2])
+
+
+def map_runtime_ui_pointers(
+    surfaces,
+    camera,
+    screen_positions,
+    viewport_width: float,
+    viewport_height: float,
+):
+    """Map multiple UI-only pointers with one physical occlusion query batch.
+
+    Touch contacts never synthesize ``on_mouse_*`` callbacks, so they only
+    need the closest non-trigger occluder for Canvas-free world UI. All rays
+    read one Physics query generation and reuse retained SoA storage.
+    """
+    points = tuple(screen_positions)
+    if not points:
+        return ()
+    has_world_surfaces = any(
+        isinstance(surface, WorldUIElementTarget) for surface in surfaces
+    )
+    geometries = tuple(
+        _map_runtime_ui_pointer_geometry(
+            surfaces, camera, point[0], point[1], viewport_width, viewport_height,
+            check_screen_block=has_world_surfaces,
+        )
+        for point in points
+    )
+    candidates = []
+    for pointer_index, (positions, intersections, origin, direction, screen_blocks) in enumerate(geometries):
+        if screen_blocks or not intersections:
+            continue
+        candidates.append((pointer_index, max(distance for _, distance in intersections), origin, direction))
+
+    if candidates:
+        from Infernux.physics import Physics
+
+        occluder_distances = {}
+        if len(candidates) == 1:
+            pointer_index, furthest, origin, direction = candidates[0]
+            hit = Physics.raycast(
+                origin, direction, max_distance=furthest,
+                layer_mask=int(camera.culling_mask), query_triggers=False,
+            )
+            if hit is not None:
+                occluder_distances[pointer_index] = float(hit.distance)
+        else:
+            origins, directions, output = _pointer_batch_storage(len(candidates))
+            max_distance = max(candidate[1] for candidate in candidates)
+            for row, (_pointer_index, _furthest, origin, direction) in enumerate(candidates):
+                origins[row] = _vector_xyz(origin)
+                directions[row] = _vector_xyz(direction)
+            Physics.raycast_batch(
+                origins[:len(candidates)],
+                directions[:len(candidates)],
+                output,
+                max_distance=max_distance,
+                layer_mask=int(camera.culling_mask),
+                query_triggers=False,
+            )
+            for row, (pointer_index, furthest, _origin, _direction) in enumerate(candidates):
+                hit_distance = float(output["distance"][row])
+                if output["hit"][row] and hit_distance <= furthest:
+                    occluder_distances[pointer_index] = hit_distance
+        for pointer_index, occluder_distance in occluder_distances.items():
+            positions, intersections, _origin, _direction, _screen_blocks = geometries[pointer_index]
+            for surface_index, distance in intersections:
+                if occluder_distance + 1e-4 < distance:
+                    positions[surface_index] = (float("nan"), float("nan"), distance)
+    return tuple(
+        tuple(positions)
+        for positions, _intersections, _origin, _direction, _screen_blocks in geometries
+    )
+
+
 def map_runtime_ui_pointer(
     surfaces,
     camera,
@@ -266,45 +492,15 @@ def map_runtime_ui_pointer(
     world-UI occlusion and ordinary GameObject mouse callbacks.  The default
     return remains the historical positions tuple for UI-only callers.
     """
-    positions = []
-    world_intersections = []
-    ray_origin = ray_direction = None
-    world_targets = tuple(s for s in surfaces if isinstance(s, WorldUIElementTarget))
-    projected = ()
-    if world_targets:
-        if camera is not None:
-            ray_origin, ray_direction = camera.screen_point_to_ray(
-                float(screen_x), float(screen_y),
-                float(viewport_width), float(viewport_height),
-            )
-            projected = _project_world_ui_targets(world_targets, ray_origin, ray_direction, camera.culling_mask)
-    world_positions = iter(projected)
-
-    for surface in surfaces:
-        if isinstance(surface, WorldUIElementTarget):
-            position = (float("nan"), float("nan"), float("inf"))
-            if ray_origin is not None:
-                position = next(world_positions)
-                if position[0] == position[0]:
-                    world_intersections.append((len(positions), position[2]))
-            positions.append(position)
-            continue
-
-        scale_x, scale_y, _, logical_width, logical_height = _canvas_metrics(
-            surface, viewport_width, viewport_height
-        )
-        set_input_logical_size = getattr(surface, "set_input_logical_size", None)
-        if callable(set_input_logical_size):
-            set_input_logical_size(logical_width, logical_height)
-        positions.append(
-            (
-                float(screen_x) / max(scale_x, 1e-6),
-                float(screen_y) / max(scale_y, 1e-6),
-            )
-        )
+    positions, world_intersections, ray_origin, ray_direction, screen_blocks_scene = _map_runtime_ui_pointer_geometry(
+        surfaces, camera, screen_x, screen_y, viewport_width, viewport_height,
+        check_screen_block=include_scene_hit or any(
+            isinstance(surface, WorldUIElementTarget) for surface in surfaces
+        ),
+    )
 
     scene_hit = None
-    if world_intersections:
+    if world_intersections and not screen_blocks_scene:
         from Infernux.physics import Physics
 
         furthest = max(distance for _, distance in world_intersections)
@@ -348,7 +544,7 @@ def map_runtime_ui_pointer(
                 if occluder_distance + 1e-4 < distance:
                     positions[index] = (float("nan"), float("nan"), distance)
 
-    elif include_scene_hit and camera is not None:
+    elif include_scene_hit and camera is not None and not screen_blocks_scene:
         # Ordinary Collider input does not depend on there being world UI,
         # or on the pointer intersecting one of its planes.
         from Infernux.physics import Physics

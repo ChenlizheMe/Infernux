@@ -51,3 +51,27 @@ def test_direct_mouse_query_respects_camera_mask_and_ignore_raycast(monkeypatch)
     MouseEventDispatcher().process(SimpleNamespace(culling_mask=5), (1, 2), (100, 100),
                                    button_state=(False, False, False))
     assert calls == [dict(layer_mask=1, query_triggers=True)]
+
+
+def test_stationary_hover_and_drag_capture_use_one_query_per_frame(monkeypatch):
+    calls = []
+    hit = SimpleNamespace(game_object=SimpleNamespace(id=23, get_py_components=lambda: ()))
+    monkeypatch.setattr(
+        "Infernux.engine.runtime_mouse_events.Physics.raycast_screen",
+        lambda *args, **kwargs: calls.append((args, kwargs)) or hit,
+    )
+    dispatcher = MouseEventDispatcher()
+    camera = SimpleNamespace(culling_mask=0xffffffff)
+    frames = (
+        (False, False, False),  # stationary hover
+        (False, False, False),
+        (True, True, False),    # capture
+        (True, False, False),   # captured drag
+        (True, False, False),
+        (False, False, True),   # release still resolves up-as-button
+    )
+    for button_state in frames:
+        before = len(calls)
+        dispatcher.process(camera, (1, 2), (100, 100), button_state=button_state)
+        assert len(calls) == before + 1
+    assert len(calls) == len(frames)

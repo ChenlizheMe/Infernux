@@ -8,7 +8,7 @@ from Infernux.lib import Vector3
 from Infernux.ui import UIText, UIButton, UISlider, UICanvas, UIGroup, TextResizeMode
 from Infernux.engine.runtime_screen_ui import (
     WorldUIElementTarget, collect_runtime_ui_input_surfaces, map_runtime_ui_pointer,
-    map_world_ui_ray, pick_world_ui_object_ids,
+    map_runtime_ui_pointers, map_world_ui_ray, pick_world_ui_object_ids,
 )
 from Infernux.ui.ui_event_system import UIEventProcessor, UIPointerFrame
 from Infernux.ui.ui_event_data import PointerType
@@ -85,6 +85,198 @@ def test_no_scene_query_when_input_disabled_or_camera_absent(monkeypatch):
     monkeypatch.setattr(Physics, 'raycast', unexpected)
     assert map_runtime_ui_pointer((), camera(), 0, 0, 1920, 1080) == ()
     assert map_runtime_ui_pointer((), None, 0, 0, 1920, 1080, include_scene_hit=True) == ((), None)
+
+
+def test_blocking_screen_ui_skips_the_hidden_scene_query(scene, monkeypatch):
+    from Infernux.physics import Physics
+
+    canvas_object = scene.create_game_object('Screen Canvas')
+    canvas = UICanvas()
+    canvas_object.add_py_component(canvas)
+    _, button = control(scene)
+    button.game_object.set_parent(canvas_object)
+    button.set_rect(0.0, 0.0, button.width, button.height, 1920.0, 1080.0)
+    surfaces = collect_runtime_ui_input_surfaces(scene)
+
+    def unexpected(*_args, **_kwargs):
+        pytest.fail('Blocking screen UI must not query hidden 3D geometry')
+
+    monkeypatch.setattr(Physics, 'raycast', unexpected)
+    monkeypatch.setattr(Physics, 'raycast_all', unexpected)
+    positions, hit = map_runtime_ui_pointer(
+        surfaces, camera(mask=5), 10, 10, 1920, 1080,
+        include_scene_hit=True,
+    )
+    assert len(positions) == 1
+    assert hit is None
+
+
+def test_nonblocking_screen_ui_preserves_the_scene_query(scene, monkeypatch):
+    from Infernux.physics import Physics
+
+    canvas_object = scene.create_game_object('Screen Canvas')
+    canvas = UICanvas()
+    canvas_object.add_py_component(canvas)
+    _, button = control(scene)
+    button.game_object.set_parent(canvas_object)
+    button.set_rect(0.0, 0.0, button.width, button.height, 1920.0, 1080.0)
+    button.raycast_target = False
+    surfaces = collect_runtime_ui_input_surfaces(scene)
+    expected = SimpleNamespace(game_object=object())
+    calls = []
+
+    def query(*_args, **kwargs):
+        calls.append(kwargs)
+        return expected
+
+    monkeypatch.setattr(Physics, 'raycast', query)
+    positions, hit = map_runtime_ui_pointer(
+        surfaces, camera(mask=5), 10, 10, 1920, 1080,
+        include_scene_hit=True,
+    )
+    assert len(positions) == 1
+    assert hit is expected
+    assert calls == [dict(max_distance=1000.0, layer_mask=1, query_triggers=True)]
+
+
+def test_blocking_screen_ui_skips_world_ui_occlusion_and_scene_query(scene, monkeypatch):
+    from Infernux.physics import Physics
+
+    control(scene, position=(0, 0, 0))
+    canvas_object = scene.create_game_object('Screen Canvas')
+    canvas = UICanvas()
+    canvas_object.add_py_component(canvas)
+    _, button = control(scene)
+    button.game_object.set_parent(canvas_object)
+    button.set_rect(0.0, 0.0, button.width, button.height, 1920.0, 1080.0)
+    surfaces = collect_runtime_ui_input_surfaces(scene)
+
+    def unexpected(*_args, **_kwargs):
+        pytest.fail('Front-most screen UI must skip all hidden physics queries')
+
+    monkeypatch.setattr(Physics, 'raycast', unexpected)
+    monkeypatch.setattr(Physics, 'raycast_all', unexpected)
+    projection_calls = []
+    view = camera(mask=5)
+    view.screen_point_to_ray = lambda *_args: projection_calls.append(1) or pytest.fail(
+        'Blocking screen UI must not project hidden world UI')
+    positions, hit = map_runtime_ui_pointer(
+        surfaces, view, 10, 10, 1920, 1080,
+        include_scene_hit=True,
+    )
+    assert len(positions) == 2
+    assert hit is None
+    assert projection_calls == []
+
+
+def test_world_ui_touch_contacts_share_one_physics_query_batch(scene, monkeypatch):
+    from Infernux.physics import Physics
+
+    control(scene, position=(0, 0, 0))
+    surfaces = collect_runtime_ui_input_surfaces(scene)
+    calls = []
+
+    def batch(origins, directions, output, **kwargs):
+        calls.append((origins.copy(), directions.copy(), kwargs))
+        count = origins.shape[0]
+        output['hit'][:count] = 1
+        output['distance'][:count] = 1.0
+        return output
+
+    monkeypatch.setattr(Physics, 'raycast_batch', batch)
+    monkeypatch.setattr(Physics, 'raycast', lambda *_args, **_kwargs: pytest.fail(
+        'Batched touch mapping must not issue per-pointer raycasts'))
+    mapped = map_runtime_ui_pointers(
+        surfaces,
+        camera(),
+        tuple((index, index) for index in range(8)),
+        1920,
+        1080,
+    )
+    assert len(mapped) == 8
+    assert all(math.isnan(positions[0][0]) for positions in mapped)
+    assert len(calls) == 1
+    origins, directions, kwargs = calls[0]
+    assert origins.shape == directions.shape == (8, 3)
+    assert kwargs == dict(max_distance=5.0, layer_mask=0xffffffff, query_triggers=False)
+
+
+def test_touch_batch_keeps_each_pointers_own_max_distance(scene, monkeypatch):
+    from Infernux.physics import Physics
+
+    _, element = control(scene, position=(0, 0, 0))
+    element.width = element.height = 2000.0
+    surfaces = collect_runtime_ui_input_surfaces(scene)
+    view = SimpleNamespace(
+        culling_mask=0xffffffff,
+        screen_point_to_ray=lambda screen_x, *_args: (
+            Vector3(0, 0, 5 if screen_x == 0 else 10),
+            Vector3(0, 0, -1),
+        ),
+    )
+
+    def batch(origins, _directions, output, **_kwargs):
+        assert origins[:, 2].tolist() == [5.0, 10.0]
+        output['hit'][:2] = 1
+        # The same closest Collider is behind pointer 0's 5 m UI plane but
+        # in front of pointer 1's 10 m plane. The shared 10 m batch distance
+        # must not leak into pointer 0's shorter query contract.
+        output['distance'][:2] = 6.0
+        return output
+
+    monkeypatch.setattr(Physics, 'raycast_batch', batch)
+    mapped = map_runtime_ui_pointers(
+        surfaces, view, ((0, 0), (1, 0)), 1920, 1080,
+    )
+    assert mapped[0][0][0] == pytest.approx(1000.0)
+    assert math.isnan(mapped[1][0][0])
+
+
+def test_screen_ui_blocks_the_whole_touch_query_batch(scene, monkeypatch):
+    from Infernux.physics import Physics
+
+    control(scene, position=(0, 0, 0))
+    canvas_object = scene.create_game_object('Screen Canvas')
+    canvas = UICanvas()
+    canvas_object.add_py_component(canvas)
+    _, button = control(scene)
+    button.game_object.set_parent(canvas_object)
+    button.set_rect(0.0, 0.0, button.width, button.height, 1920.0, 1080.0)
+    surfaces = collect_runtime_ui_input_surfaces(scene)
+    monkeypatch.setattr(Physics, 'raycast_batch', lambda *_args, **_kwargs: pytest.fail(
+        'Blocking screen UI must skip the hidden touch batch'))
+    mapped = map_runtime_ui_pointers(
+        surfaces, camera(), ((10, 10), (20, 20)), 1920, 1080,
+    )
+    assert len(mapped) == 2
+    assert all(len(positions) == 2 for positions in mapped)
+
+
+def test_disabled_screen_ui_does_not_block_or_recompute_touch_mapping(scene, monkeypatch):
+    from Infernux.physics import Physics
+
+    control(scene, position=(0, 0, 0))
+    canvas_object = scene.create_game_object('Disabled Screen Canvas')
+    canvas = UICanvas()
+    canvas_object.add_py_component(canvas)
+    _, button = control(scene)
+    button.game_object.set_parent(canvas_object)
+    button.set_rect(0.0, 0.0, button.width, button.height, 1920.0, 1080.0)
+    canvas.enabled = False
+    surfaces = collect_runtime_ui_input_surfaces(scene)
+    calls = []
+
+    def batch(origins, _directions, output, **_kwargs):
+        calls.append(origins.shape[0])
+        output['hit'][:origins.shape[0]] = 0
+        return output
+
+    monkeypatch.setattr(Physics, 'raycast_batch', batch)
+    mapped = map_runtime_ui_pointers(
+        surfaces, camera(), ((10, 10), (20, 20)), 1920, 1080,
+    )
+    assert calls == [2]
+    assert all(math.isnan(positions[1][0]) for positions in mapped)
 
 
 def test_ignore_raycast_solid_occludes_world_ui_but_is_not_mouse_target(scene, monkeypatch):
@@ -171,7 +363,7 @@ def test_world_pointer_nearest_hit_screen_priority_and_live_policy(scene):
     canvas_obj.add_py_component(canvas)
     _, screen = control(scene)
     screen.game_object.set_parent(canvas_obj)
-    screen.x, screen.y = 0, 0
+    screen.set_rect(0.0, 0.0, screen.width, screen.height, 1920.0, 1080.0)
     assert frame() is screen
     canvas.enabled = False
     assert frame() is near

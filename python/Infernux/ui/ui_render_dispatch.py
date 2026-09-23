@@ -84,9 +84,10 @@ def material_visual_state(elem, slot: str = "material") -> dict:
     if native is None:
         return {
             "color": [1.0, 1.0, 1.0, 1.0],
-            "texture_path": "",
+            "texture_guid": "",
             "texture": None,
             "signature": (None, 0),
+            "_native": None,
         }
     runtime_texture = native._get_render_texture('texSampler')
     signature = _material_signature(native, runtime_texture)
@@ -97,35 +98,107 @@ def material_visual_state(elem, slot: str = "material") -> dict:
     )
     texture_guid = (
         str(native.get_texture("texSampler") or "")
-        if runtime_texture is None and native.has_property("texSampler")
+        if native.has_property("texSampler")
         else ""
     )
-    texture_path = ""
-    if texture_guid:
-        from Infernux.core.assets import AssetManager
+    texture = runtime_texture
+    if texture is None and texture_guid:
+        from Infernux.core.asset_ref import TextureRef
 
-        texture_path = str(
-            AssetManager.require_asset_database().get_path_from_guid(texture_guid) or ""
-        )
+        texture = TextureRef(guid=texture_guid)
     return {
         "color": _pad_rgba(color),
-        "texture_path": texture_path,
-        "texture": runtime_texture,
+        "texture_guid": texture_guid,
+        "texture": texture,
         "signature": signature,
+        "_native": native,
     }
 
 
+def _ui_material_pipeline_key(native) -> str:
+    """Return the deterministic pipeline identity for one UI material.
+
+    This is intentionally a descriptive key, not a process-randomized hash or
+    a path.  The native renderer will later use it to select a UI shader
+    variant; until then it is retained as an explicit per-command contract.
+    """
+    shader = str(getattr(native, "shader_name", "") or "")
+    vert = str(getattr(native, "vert_shader_name", "") or "")
+    frag = str(getattr(native, "frag_shader_name", "") or "")
+    try:
+        state = native.get_render_state()
+        state_fields = (
+            int(getattr(state, "blend_enable", False)),
+            int(getattr(state, "src_color_blend_factor", 0)),
+            int(getattr(state, "dst_color_blend_factor", 0)),
+            int(getattr(state, "color_blend_op", 0)),
+            int(getattr(state, "depth_test_enable", False)),
+            int(getattr(state, "depth_write_enable", False)),
+            int(getattr(state, "depth_compare_op", 7)),
+            int(getattr(state, "alpha_clip_enabled", False)),
+        )
+    except (AttributeError, TypeError, RuntimeError):
+        state_fields = ()
+    return "ui|shader=" + ":".join((shader, vert, frag)) + "|state=" + ",".join(
+        str(value) for value in state_fields
+    )
+
+
+def _bind_runtime_material(renderer, ui_list, material_state: dict) -> None:
+    """Publish the GUID/generation contract before emitting UI geometry.
+
+    A missing GUID denotes the engine-owned default UI material and therefore
+    has no asset binding to publish. No path is consulted. A renderer that
+    receives an authored material must expose the native binding ABI; silently
+    dropping the contract would make the material appear supported while it is
+    not consumed.
+    """
+    native = material_state.get("_native")
+    if native is None:
+        # A button may draw an authored background and a default text label
+        # inside one retained packet. Reset the command-local binding before
+        # the label so it cannot inherit the background material.
+        bind = getattr(renderer, "set_material_binding", None)
+        if callable(bind):
+            bind(ui_list, "", 0, "")
+        return
+    guid = str(getattr(native, "guid", "") or "").strip()
+    if not guid:
+        return
+    generation = int(native.get_version())
+    if generation <= 0:
+        raise RuntimeError("UI material binding requires a positive material generation")
+    bind = getattr(renderer, "set_material_binding", None)
+    if not callable(bind):
+        raise RuntimeError("UI material binding ABI is unavailable on this renderer")
+    render_state = native.get_render_state()
+    alpha_clip_enabled = bool(getattr(render_state, "alpha_clip_enabled", False))
+    alpha_clip_threshold = float(getattr(render_state, "alpha_clip_threshold", 0.0))
+    bind(
+        ui_list,
+        guid,
+        generation,
+        _ui_material_pipeline_key(native),
+        tuple(_pad_rgba(material_state.get("color"))),
+        alpha_clip_enabled,
+        alpha_clip_threshold,
+    )
+
+
 def image_texture_source(elem, material_state):
-    if hasattr(elem, '_image_texture_source'):
+    from .ui_button import UIButton
+    from .ui_image import UIImage
+
+    if isinstance(elem, UIImage):
         source = elem._image_texture_source()
-        # Missing GUIDs do not turn path hints into a second loading route.
-        return source if source is not None else (material_state.get('texture') or
-                                                   material_state['texture_path'] or '')
-    source = getattr(elem, 'texture', None)
-    if source is not None and not isinstance(source, str):
-        return source
-    return (source or material_state.get('texture') or
-            material_state['texture_path'] or getattr(elem, 'texture_path', '') or '')
+    elif isinstance(elem, UIButton):
+        source = elem._image_texture_source()
+    else:
+        raise TypeError(
+            f"image texture source requires UIImage or UIButton, got {type(elem).__name__}"
+        )
+    # Missing GUIDs do not turn path hints into a second loading route.
+    return source if source is not None else (material_state.get("texture") or "")
 
 
 def extract_common(
@@ -133,12 +206,13 @@ def extract_common(
     *,
     world_transform_owned: bool = False,
     material_state: dict | None = None,
+    material_in_shader: bool = False,
 ) -> dict:
     """Extract shared visual attributes from any InxUIScreenComponent."""
     material_state = material_state or material_visual_state(elem)
-    color = _multiply_rgba(
-        _pad_rgba(getattr(elem, "color", None)), material_state["color"]
-    )
+    color = _pad_rgba(getattr(elem, "color", None))
+    if not material_in_shader:
+        color = _multiply_rgba(color, material_state["color"])
     opacity = max(0.0, min(1.0, float(getattr(elem, "opacity", 1.0))))
     group_state = getattr(elem, "get_effective_group_state", None)
     if callable(group_state):
@@ -152,7 +226,7 @@ def extract_common(
         "mirror_h": bool(getattr(elem, "mirror_x", False)),
         "mirror_v": bool(getattr(elem, "mirror_y", False)),
         "corner_radius": float(getattr(elem, "corner_radius", 0.0)),
-        "material_texture_path": material_state["texture_path"],
+        "material_texture_guid": material_state["texture_guid"],
         "material_signature": material_state["signature"],
     }
 
@@ -166,11 +240,9 @@ def _extract_text_attrs(elem, scale: float = 1.0) -> dict:
     ah = getattr(elem, "text_align_h", TextAlignH.Left)
     av = getattr(elem, "text_align_v", TextAlignV.Top)
     ax, ay = text_align_to_float(ah, av)
-    font_path = _resolve_font_asset_path(getattr(elem, "font_path", ""))
-    fallback_font_paths = [
-        _resolve_font_asset_path(path)
-        for path in (getattr(elem, "fallback_font_paths", None) or ())
-    ]
+    from .ui_font_asset import ui_font_paths
+
+    font_path, fallback_font_paths = ui_font_paths(elem)
     return {
         "font_path": font_path,
         "fallback_font_paths": fallback_font_paths,
@@ -180,24 +252,6 @@ def _extract_text_attrs(elem, scale: float = 1.0) -> dict:
         "align_x": ax,
         "align_y": ay,
     }
-
-
-def _resolve_font_asset_path(path) -> str:
-    """Resolve one authored font alias through the active asset catalog.
-
-    Editor projects resolve ``Assets/...`` and ``Packages/...`` against their
-    source roots. Players resolve the same authoring alias to the extracted
-    GUID-owned blob from ``Content.inxpkg``. Absolute tool/test paths outside
-    a project are retained for the editor only; a packaged scene never emits
-    those because the cook rewrites project-owned absolute paths.
-    """
-    authored = str(path or "")
-    if not authored:
-        return ""
-    from Infernux.engine.project_context import resolve_asset_path
-
-    return resolve_asset_path(authored) or authored
-
 
 def text_align_to_float(align_h, align_v) -> tuple[float, float]:
     """Convert TextAlignH/V enums to (0.0/0.5/1.0) floats."""
@@ -319,6 +373,9 @@ class _UICommandDependencies:
             self.geometry_revision = geometry_revision
         bindings_revision = _get_resource_binding_revision()
         if bindings_revision != self.bindings_revision:
+            from .ui_button import UIButton
+            from .ui_image import UIImage
+
             materials = []
             images = []
             for element in self.elements:
@@ -329,7 +386,12 @@ class _UICommandDependencies:
                     reference = field.get_raw(element) if field is not None else None
                     if reference is not None and (reference.guid or reference._cached is not None):
                         materials.append((element, slot, reference))
-                texture = getattr(type(element), "texture", None)
+                texture = (
+                    type(element).texture if isinstance(element, UIImage)
+                    else type(element).background_texture
+                    if isinstance(element, UIButton)
+                    else None
+                )
                 if texture is not None and (
                     bool(texture.get_raw(element)) or
                     element.__dict__.get("_render_texture") is not None
@@ -556,6 +618,7 @@ def _runtime_render_text(elem, renderer, ui_list, sx, sy, sw, sh,
         elem,
         world_transform_owned=world_transform_owned,
         material_state=material_state,
+        material_in_shader=True,
     )
     color = attrs["color"]
     ta = _extract_text_attrs(elem, scale=text_scale)
@@ -579,6 +642,7 @@ def _runtime_render_text(elem, renderer, ui_list, sx, sy, sw, sh,
     )
     if ta["fallback_font_paths"]:
         arguments += (ta["fallback_font_paths"],)
+    _bind_runtime_material(renderer, ui_list, material_state)
     renderer.add_text(*arguments)
 
 
@@ -594,6 +658,7 @@ def _runtime_render_image(elem, renderer, ui_list, sx, sy, sw, sh,
         elem,
         world_transform_owned=world_transform_owned,
         material_state=material_state,
+        material_in_shader=True,
     )
     color = attrs["color"]
     cr, cg, cb = color[0], color[1], color[2]
@@ -618,8 +683,10 @@ def _runtime_render_image(elem, renderer, ui_list, sx, sy, sw, sh,
             rounding,
         )
     if kind == "image":
+        _bind_runtime_material(renderer, ui_list, material_state)
         renderer.add_image(*arguments)
     else:
+        _bind_runtime_material(renderer, ui_list, material_state)
         renderer.add_filled_rect(*arguments)
 
 
@@ -635,29 +702,32 @@ register_ui_renderer("UIImage", "runtime", _runtime_render_image)
 #  UIButton renderers — shared helpers + per-backend glue
 # ══════════════════════════════════════════════════════════════════════
 
-def _get_button_bg(elem, material_state=None):
+def _get_button_bg(elem, material_state=None, *, apply_material=True):
     """Return the button's background colour as a 4-element list."""
     material_state = material_state or material_visual_state(elem)
     background = _pad_rgba(elem.background_color)
     tint = _pad_rgba(elem.get_current_tint())
-    return _multiply_rgba(_multiply_rgba(background, tint), material_state["color"])
+    value = _multiply_rgba(background, tint)
+    return _multiply_rgba(value, material_state["color"]) if apply_material else value
 
 
-def _get_label_attrs(elem, scale: float, material_state=None):
+def _get_label_attrs(elem, scale: float, material_state=None, *, material_in_shader=False):
     """Return (label, color, text_attrs) for a button's label text."""
     label = elem.label or ""
     material_state = material_state or material_visual_state(elem, "text_material")
-    lc = _multiply_rgba(_pad_rgba(elem.label_color), material_state["color"])
+    lc = _pad_rgba(elem.label_color)
+    if not material_in_shader:
+        lc = _multiply_rgba(lc, material_state["color"])
     # Buttons default to Center/Center alignment
     ah = getattr(elem, "text_align_h", TextAlignH.Center)
     av = getattr(elem, "text_align_v", TextAlignV.Center)
     ax, ay = text_align_to_float(ah, av)
+    from .ui_font_asset import ui_font_paths
+
+    font_path, fallback_font_paths = ui_font_paths(elem)
     ta = {
-        "font_path": _resolve_font_asset_path(getattr(elem, "font_path", "")),
-        "fallback_font_paths": [
-            _resolve_font_asset_path(path)
-            for path in (getattr(elem, "fallback_font_paths", None) or ())
-        ],
+        "font_path": font_path,
+        "fallback_font_paths": fallback_font_paths,
         "font_size": float(elem.font_size),
         "line_height": float(elem.line_height),
         "letter_spacing": float(elem.letter_spacing) * scale,
@@ -727,8 +797,9 @@ def _runtime_render_button(elem, renderer, ui_list, sx, sy, sw, sh,
         elem,
         world_transform_owned=world_transform_owned,
         material_state=background_material,
+        material_in_shader=True,
     )
-    bg = _get_button_bg(elem, background_material)
+    bg = _get_button_bg(elem, background_material, apply_material=False)
     r, g, b = bg[0], bg[1], bg[2]
     a = bg[3] * attrs["opacity"]
     rounding = attrs["corner_radius"] * min(scale_x, scale_y)
@@ -750,7 +821,7 @@ def _runtime_render_button(elem, renderer, ui_list, sx, sy, sw, sh,
 
     # Label
     label, lc, ta = _get_label_attrs(
-        elem, scale=text_scale, material_state=text_material
+        elem, scale=text_scale, material_state=text_material, material_in_shader=True
     )
     if label:
         font_size = max(1.0, ta["font_size"] * text_scale)
@@ -770,10 +841,13 @@ def _runtime_render_button(elem, renderer, ui_list, sx, sy, sw, sh,
 
     for kind, arguments in commands:
         if kind == "image":
+            _bind_runtime_material(renderer, ui_list, background_material)
             renderer.add_image(*arguments)
         elif kind == "rect":
+            _bind_runtime_material(renderer, ui_list, background_material)
             renderer.add_filled_rect(*arguments)
         else:
+            _bind_runtime_material(renderer, ui_list, text_material)
             renderer.add_text(*arguments)
 
 
@@ -816,13 +890,17 @@ def _editor_render_progress(elem, ctx, base_sx, base_sy, base_sw, base_sh, zoom,
 
 def _runtime_render_progress(elem, renderer, ui_list, sx, sy, sw, sh,
                              scale_x, scale_y, **_kw):
+    material_state = material_visual_state(elem)
     attrs = extract_common(
         elem,
         world_transform_owned=bool(_kw.get("world_transform_owned", False)),
+        material_state=material_state,
+        material_in_shader=True,
     )
     background = _multiply_rgba(_pad_rgba(elem.background_color), attrs["color"])
     fill = _multiply_rgba(_pad_rgba(elem.fill_color), attrs["color"])
     rounding = attrs["corner_radius"] * min(scale_x, scale_y)
+    _bind_runtime_material(renderer, ui_list, material_state)
     renderer.add_filled_rect(
         ui_list, sx, sy, sx + sw, sy + sh,
         background[0], background[1], background[2],
@@ -830,6 +908,7 @@ def _runtime_render_progress(elem, renderer, ui_list, sx, sy, sw, sh,
     )
     x, y, width, height = _value_fill_rect(elem, sx, sy, sw, sh)
     if width > 0.0 and height > 0.0:
+        _bind_runtime_material(renderer, ui_list, material_state)
         renderer.add_filled_rect(
             ui_list, x, y, x + width, y + height,
             fill[0], fill[1], fill[2], fill[3] * attrs["opacity"], rounding,
@@ -861,9 +940,12 @@ def _runtime_render_slider(elem, renderer, ui_list, sx, sy, sw, sh,
     _runtime_render_progress(
         elem, renderer, ui_list, sx, sy, sw, sh, scale_x, scale_y, **kwargs
     )
+    material_state = material_visual_state(elem)
     attrs = extract_common(
         elem,
         world_transform_owned=bool(kwargs.get("world_transform_owned", False)),
+        material_state=material_state,
+        material_in_shader=True,
     )
     handle = _multiply_rgba(_pad_rgba(elem.handle_color), attrs["color"])
     x, y, width, height = _value_fill_rect(elem, sx, sy, sw, sh)
@@ -875,6 +957,7 @@ def _runtime_render_slider(elem, renderer, ui_list, sx, sy, sw, sh,
     else:
         center_x = sx + sw * 0.5
         center_y = y if elem.fill_direction == UIFillDirection.BottomToTop else y + height
+    _bind_runtime_material(renderer, ui_list, material_state)
     renderer.add_filled_rect(
         ui_list,
         center_x - size * 0.5, center_y - size * 0.5,

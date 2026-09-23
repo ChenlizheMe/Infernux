@@ -333,14 +333,12 @@ def test_canvas_free_ui_submits_each_element_as_transform_owned_world_geometry(m
     root.clip_content = True
     root_object.add_py_component(root)
     authored_transform = root_object.transform.serialize_document()
-    authored_layout = (root.x, root.y, root.width, root.height)
+    authored_layout = (root.width, root.height)
 
     child_object = scene.create_game_object("World image")
     child_object.set_parent(root_object)
     child_object.layer = 30
     child = UIImage()
-    child.x = 25.0
-    child.y = 10.0
     child.width = 40.0
     child.height = 30.0
     child_object.add_py_component(child)
@@ -395,7 +393,7 @@ def test_canvas_free_ui_submits_each_element_as_transform_owned_world_geometry(m
     assert dispatches[1][2]["sy"] == 0.0
     assert renderer.clip_calls == []
     assert root_object.transform.serialize_document() == authored_transform
-    assert (root.x, root.y, root.width, root.height) == authored_layout
+    assert (root.width, root.height) == authored_layout
 
     engine._render_submission_frame += 1
     assert submission.submit() is False  # Unchanged world UI reuses native commands.

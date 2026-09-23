@@ -8,7 +8,7 @@ Hierarchy:
 
 import math
 
-from Infernux.components import serialized_field
+from Infernux.components import DrivenTransformProperties, serialized_field
 from Infernux.components.fields import FieldType
 from .inx_ui_component import InxUIComponent
 from .enums import ScreenAlignH, ScreenAlignV, UILayoutPosition, UILayoutSizing
@@ -49,39 +49,35 @@ def _get_layout_revision() -> int:
 class InxUIScreenComponent(InxUIComponent):
     """2D screen-space UI element with a canvas-pixel rectangle.
 
-    Attributes:
-        x: Horizontal position in canvas pixels (from canvas left edge).
-        y: Vertical position in canvas pixels (from canvas top edge).
-        width: Width in canvas pixels (unrotated content size).
-        height: Height in canvas pixels (unrotated content size).
-        rotation: Visual rotation in degrees (any angle).
-
-    Position and rotation are owned by the GameObject Transform.  ``x``,
-    ``y`` and ``rotation`` remain hidden only so 0.4.0 scenes can migrate
-    without a second runtime authority.
+    Position and rotation are owned exclusively by the GameObject Transform.
+    This component owns only the element's logical width and height.
     """
 
     _hide_transform_: bool = False
+    _driven_transform_properties_ = DrivenTransformProperties.SCALE
     _GEOMETRY_FIELDS = frozenset({
-        "align_h", "align_v", "x", "y", "width", "height", "rotation",
+        "align_h", "align_v", "width", "height",
         "layout_position", "width_sizing", "height_sizing", "min_width",
         "min_height", "max_width", "max_height", "layout_weight",
     })
     _HIT_POLICY_FIELDS = frozenset({"raycast_target", "clip_content"})
 
     def __setattr__(self, name, value):
+        if name in {"x", "y", "rotation"}:
+            raise AttributeError(
+                f"{type(self).__name__}.{name} was removed; use the GameObject Transform"
+            )
         if name.startswith("_"):
             super().__setattr__(name, value)
             return
         unchanged = is_unchanged_ui_scalar(self, name, value)
         super().__setattr__(name, value)
-        if name in {"x", "y", "rotation"} and not getattr(
-            self, "_syncing_legacy_layout", False
-        ):
-            self._publish_legacy_layout_value_to_transform(name)
         if unchanged:
             return
-        mark_runtime_ui_dirty(self, binding=name in ("material", "text_material", "texture"))
+        mark_runtime_ui_dirty(
+            self,
+            binding=name in ("material", "text_material", "texture", "background_texture"),
+        )
         if name in self._GEOMETRY_FIELDS:
             _invalidate_rect_cache()
         if name in self._HIT_POLICY_FIELDS:
@@ -91,11 +87,6 @@ class InxUIScreenComponent(InxUIComponent):
 
     align_h: ScreenAlignH = serialized_field(default=ScreenAlignH.Left, tooltip="Horizontal anchor", group="Position")
     align_v: ScreenAlignV = serialized_field(default=ScreenAlignV.Top, tooltip="Vertical anchor", group="Position")
-    # Hidden compatibility storage for 0.4.0 documents. Geometry reads the
-    # GameObject Transform as its sole position/rotation authority.
-    x: float = serialized_field(default=0.0, hidden=True)
-    y: float = serialized_field(default=0.0, hidden=True)
-    rotation: float = serialized_field(default=0.0, hidden=True)
     mirror_x: bool = serialized_field(default=False, tooltip="Mirror horizontally", group="Position")
     mirror_y: bool = serialized_field(default=False, tooltip="Mirror vertically", group="Position")
 
@@ -128,12 +119,6 @@ class InxUIScreenComponent(InxUIComponent):
     # ── Interaction ──
     raycast_target: bool = serialized_field(default=True, tooltip="Receive pointer events", group="Interaction")
 
-    def _set_game_object(self, game_object):
-        previous = self.__dict__.get("_game_object")
-        super()._set_game_object(game_object)
-        if game_object is not None and previous is not game_object:
-            self._publish_legacy_layout_value_to_transform("layout")
-
     def _layout_reference(self):
         """Return the authored reference and parent rect for this UI element."""
         canvas = self.get_canvas()
@@ -150,34 +135,10 @@ class InxUIScreenComponent(InxUIComponent):
             height = max(1.0, float(parent.height))
         return width, height, (0.0, 0.0, width, height), WORLD_UI_PIXELS_PER_UNIT
 
-    def _publish_legacy_layout_value_to_transform(self, changed_name: str) -> None:
-        game_object = self._try_get_game_object()
-        if game_object is None or self.is_world_space():
-            return
-        from Infernux.lib import Vector3
-
-        transform = game_object.transform
-        if changed_name in {"x", "y", "layout"}:
-            _cw, _ch, (px, py, pw, ph), units = self._layout_reference()
-            anchor_x, anchor_y = self._anchor_origin(pw, ph)
-            center_x = px + anchor_x + float(self.x) + float(self.width) * 0.5
-            center_y = py + anchor_y + float(self.y) + float(self.height) * 0.5
-            position = transform.local_position
-            transform.local_position = Vector3(
-                (center_x - (px + pw * 0.5)) / units,
-                -((center_y - (py + ph * 0.5)) / units),
-                0.0 if changed_name == "layout" else float(position.z),
-            )
-        if changed_name in {"rotation", "layout"}:
-            angles = transform.local_euler_angles
-            transform.local_euler_angles = Vector3(
-                float(angles.x), float(angles.y), float(self.rotation)
-            )
-
     def _layout_offset(self, reference_width=None, reference_height=None) -> tuple[float, float]:
         game_object = self._try_get_game_object()
         if game_object is None:
-            return float(self.x), float(self.y)
+            raise RuntimeError("UI layout requires an attached GameObject Transform")
         if self.is_world_space() and self._get_parent_ui_component() is None:
             return 0.0, 0.0
         position = game_object.transform.local_position
@@ -196,21 +157,12 @@ class InxUIScreenComponent(InxUIComponent):
                                 canvas_width: float, canvas_height: float) -> None:
         """Move the authoritative Transform so the UI rect starts at x/y."""
         game_object = self._try_get_game_object()
-        if game_object is None or (
-            self.is_world_space() and self._get_parent_ui_component() is None
-        ):
-            self._sync_legacy_layout(rect_x, rect_y, 0.0, 0.0)
-            return
-        px, py, pw, ph = self._get_parent_world_rect(canvas_width, canvas_height)
+        if game_object is None:
+            raise RuntimeError("UI layout edits require an attached GameObject Transform")
+        if self.is_world_space() and self._get_parent_ui_component() is None:
+            raise RuntimeError("World UI position is authored through its GameObject Transform")
         game_object.transform.local_position = self._local_position_for_rect_origin(
             rect_x, rect_y, canvas_width, canvas_height
-        )
-        anchor_x, anchor_y = self._anchor_origin(pw, ph)
-        self._sync_legacy_layout(
-            float(rect_x) - px - anchor_x,
-            float(rect_y) - py - anchor_y,
-            px,
-            py,
         )
         _invalidate_rect_cache()
         mark_runtime_ui_dirty()
@@ -247,56 +199,32 @@ class InxUIScreenComponent(InxUIComponent):
             rect_x, rect_y, canvas_width, canvas_height
         )
 
-    def _sync_legacy_layout(self, x: float, y: float, _px=0.0, _py=0.0) -> None:
-        object.__setattr__(self, "_syncing_legacy_layout", True)
-        try:
-            super().__setattr__("x", float(x))
-            super().__setattr__("y", float(y))
-        finally:
-            object.__setattr__(self, "_syncing_legacy_layout", False)
-
     def get_layout_rotation(self) -> float:
         game_object = self._try_get_game_object()
         if game_object is None:
-            return float(self.rotation)
+            return 0.0
         return float(game_object.transform.local_euler_angles.z)
 
     def set_layout_rotation(self, degrees: float) -> None:
         game_object = self._try_get_game_object()
         if game_object is None:
-            self.rotation = float(degrees)
-            return
+            raise RuntimeError("UI rotation requires an attached GameObject Transform")
         from Infernux.lib import Vector3
 
         angles = game_object.transform.local_euler_angles
         game_object.transform.local_euler_angles = Vector3(
             float(angles.x), float(angles.y), float(degrees)
         )
-        object.__setattr__(self, "_syncing_legacy_layout", True)
-        try:
-            super().__setattr__("rotation", float(degrees))
-        finally:
-            object.__setattr__(self, "_syncing_legacy_layout", False)
         _invalidate_rect_cache()
         mark_runtime_ui_dirty()
 
-    def _serialize_fields_document(self):
-        game_object = self._try_get_game_object()
-        if game_object is not None:
-            if not self.is_world_space():
-                cw, ch, (px, py, pw, ph), _units = self._layout_reference()
-                rect_x, rect_y, _width, _height = self.get_rect(cw, ch)
-                anchor_x, anchor_y = self._anchor_origin(pw, ph)
-                self._sync_legacy_layout(
-                    rect_x - px - anchor_x,
-                    rect_y - py - anchor_y,
-                )
-            object.__setattr__(self, "_syncing_legacy_layout", True)
-            try:
-                super().__setattr__("rotation", self.get_layout_rotation())
-            finally:
-                object.__setattr__(self, "_syncing_legacy_layout", False)
-        return super()._serialize_fields_document()
+    def _deserialize_fields_document(self, data, **kwargs):
+        if isinstance(data, dict):
+            data = dict(data)
+            data.pop("x", None)
+            data.pop("y", None)
+            data.pop("rotation", None)
+        super()._deserialize_fields_document(data, **kwargs)
 
     def get_canvas(self):
         """Return the nearest Canvas, or None when this is ordinary world UI."""
@@ -479,7 +407,7 @@ class InxUIScreenComponent(InxUIComponent):
         position = transform.local_position if transform is not None else None
         if canvas_width is None or canvas_height is None:
             if position is None:
-                return (float(self.x), float(self.y), self.width, self.height)
+                return (0.0, 0.0, self.width, self.height)
             return (
                 float(position.x) - float(self.width) * 0.5,
                 -float(position.y) - float(self.height) * 0.5,
@@ -636,13 +564,8 @@ class InxUIScreenComponent(InxUIComponent):
         game_object = self._try_get_game_object()
         if game_object is not None and position is not None:
             game_object.transform.local_position = position
-            rect_x = float(vis_x) + (self.calc_visual_size(self.width, self.height)[0] - self.width) * 0.5
-            rect_y = float(vis_y) + (self.calc_visual_size(self.width, self.height)[1] - self.height) * 0.5
-            px, py, pw, ph = self._get_parent_world_rect(cw, ch)
-            anchor_x, anchor_y = self._anchor_origin(pw, ph)
-            self._sync_legacy_layout(rect_x - px - anchor_x, rect_y - py - anchor_y)
         else:
-            self._sync_legacy_layout(float(vis_x), float(vis_y))
+            raise RuntimeError("UI position is authored through its GameObject Transform")
         _invalidate_rect_cache()
         mark_runtime_ui_dirty()
 

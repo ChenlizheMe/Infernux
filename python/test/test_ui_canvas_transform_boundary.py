@@ -24,7 +24,8 @@ def _button(scene, parent):
     button = UIButton()
     owner.add_py_component(button)
     button.width, button.height = 100, 40
-    button.x, button.y = 20, 30
+    if not button.is_world_space():
+        button.set_rect(20, 30, 100, 40, 800, 600)
     return button
 
 
@@ -58,7 +59,7 @@ def test_canvas_stops_ancestor_layout_and_clipping(scene):
     frame = UIFrame()
     frame_owner.add_py_component(frame)
     frame.width, frame.height = 10, 10
-    frame.x, frame.y = 500, 300
+    frame.set_rect(500, 300, 10, 10, 800, 600)
     frame.clip_content = True
     inner_owner, inner_canvas = _canvas(scene, frame_owner)
     button = _button(scene, inner_owner)

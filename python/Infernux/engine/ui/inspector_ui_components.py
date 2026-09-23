@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import math
-import os
 import copy
 
 from Infernux.ui import UICanvas, UIFrame, UIText, UIImage, UIButton
@@ -18,18 +17,15 @@ from Infernux.ui.enums import (
     UILayoutPosition,
     UILayoutSizing,
 )
-from Infernux.engine.project_context import get_project_root
-from Infernux.engine.path_utils import relative_path, resolved_path
-
 from ._inspector_undo import (
     _component_service,
     _record_property,
     _record_python_component_document_edit,
 )
 from .inspector_components import _render_list_field, register_py_component_renderer
-from Infernux.components.fields import get_serialized_fields
+from ._inspector_references import _render_asset_reference_field
+from Infernux.components.fields import FieldType, get_raw_field_value, get_serialized_fields
 from Infernux.engine.i18n import t
-from Infernux.engine.texture_task_bridge import texture_stamp, query_or_schedule_texture
 from .inspector_utils import (
     field_label, max_label_w, render_compact_section_header,
     render_compact_section_title, _render_color_bar, render_inspector_checkbox,
@@ -83,34 +79,6 @@ def _render_color_field(ctx, comp, field_name: str, label: str, lw: float,
         _apply_if_changed(comp, field_name, cur[:4], new_color)
 
 
-def _render_texture_picker(ctx, comp, field_name: str, label: str, lw: float,
-                           imgui_id: str):
-    """Render a texture object-field picker and apply changes."""
-    IGUI = _igui()
-    tex_path = str(getattr(comp, field_name, "") or "")
-    display = os.path.basename(tex_path) if tex_path else t("igui.none")
-
-    def _assign(payload):
-        new_path = _project_asset_reference_path("Texture", payload)
-        if new_path != tex_path:
-            _apply_if_changed(comp, field_name, tex_path, new_path)
-
-    def _on_clear():
-        if tex_path:
-            _apply_if_changed(comp, field_name, tex_path, "")
-
-    field_label(ctx, label, lw)
-    IGUI.asset_reference_field(
-        ctx, imgui_id, display, "Texture",
-        asset_type="Texture", accept="TEXTURE_FILE",
-        on_assign=_assign, on_clear=_on_clear,
-        ping_path=tex_path or None,
-        has_value=bool(tex_path),
-        reference_value={"asset_type": "Texture", "path_hint": tex_path},
-    )
-    _record_field(ctx, comp, field_name, "object_field", label)
-
-
 def _get_serializable_raw_field(obj, field_name: str, default=None):
     data = object.__getattribute__(obj, "__dict__")
     if field_name in data:
@@ -120,17 +88,6 @@ def _get_serializable_raw_field(obj, field_name: str, default=None):
     if meta is not None:
         return meta.default
     return default
-
-
-def _project_asset_reference_path(asset_type: str, payload) -> str:
-    from Infernux.core.asset_reference_types import resolve_asset_reference_path
-
-    path = resolve_asset_reference_path(asset_type, payload)
-    root = get_project_root()
-    if not root:
-        return str(path).replace("\\", "/")
-    absolute = path if os.path.isabs(path) else os.path.join(root, path)
-    return relative_path(absolute, root)
 
 
 def _find_canvas(comp):
@@ -239,48 +196,21 @@ def _set_native_size(comp):
         canvas, _, _ = _canvas_dims(comp)
         _apply_size_preserve_top_left(comp, texture.width, texture.height, canvas)
         return
-    tex_path = getattr(comp, "texture_path", "") or ""
-    if not tex_path:
+    if not isinstance(comp, UIButton):
+        raise TypeError("native size is supported only for UIImage and UIButton")
+    texture = comp.background_texture
+    if texture is None:
         return
-    project_root = get_project_root()
-    if not project_root:
-        return
-    abs_path = resolved_path(os.path.join(project_root, tex_path))
-    if not os.path.isfile(abs_path):
-        return
-
-    try:
-        from .editor_services import EditorServices
-        svc = EditorServices.instance()
-        native = svc.native_engine if svc else None
-    except Exception:
-        native = None
-    if not native:
-        return
-
-    stamp = texture_stamp(abs_path, "ui_native_size")
-    if stamp == 0:
-        return
-
-    _, tex_w, tex_h = query_or_schedule_texture(
-        native,
-        f"ui_native_size|{resolved_path(tex_path)}",
-        abs_path,
-        int(stamp),
-        nearest=False,
-        srgb=False,
-        pump=True,
-    )
-    if tex_w <= 0 or tex_h <= 0:
-        return
-
     canvas, _, _ = _canvas_dims(comp)
-    w, h = float(tex_w), float(tex_h)
-    if canvas is not None:
-        _apply_size_preserve_top_left(comp, w, h, canvas)
-    else:
-        _apply_if_changed(comp, "width", comp.width, w)
-        _apply_if_changed(comp, "height", comp.height, h)
+    _apply_size_preserve_top_left(comp, texture.width, texture.height, canvas)
+
+
+def _has_native_size_texture(comp) -> bool:
+    if isinstance(comp, UIImage):
+        return comp._image_texture_source() is not None
+    if isinstance(comp, UIButton):
+        return comp._image_texture_source() is not None
+    return False
 
 
 def _align_component(comp, axis: str, mode: str):
@@ -561,10 +491,9 @@ def _render_common_layout(ctx, comp):
     field_label(ctx, t("ui_comp.modify"), section_lw)
 
     # Build button list: Lock is always present;
-    # Set Native Size appears for UIImage / UIButton with texture_path.
+    # Set Native Size appears for UIImage / UIButton with a current texture.
     modify_buttons = [("lock", t("ui_comp.lock"))]
-    has_texture = (comp._image_texture_source() is not None if isinstance(comp, UIImage)
-                   else bool(getattr(comp, "texture_path", "") or ""))
+    has_texture = _has_native_size_texture(comp)
     if has_texture:
         modify_buttons.append(("native_size", t("ui_comp.set_native_size")))
 
@@ -688,50 +617,29 @@ def _render_common_appearance(ctx, comp):
 
 
 def _render_font_picker(ctx, comp, field_name: str, lw: float, imgui_id: str):
-    """Render the shared Font resource field and apply one Undo command."""
-    IGUI = _igui()
-    font_path = str(getattr(comp, field_name, "") or "")
-    changed = False
-
-    def _assign(payload):
-        nonlocal changed
-        new_path = _project_asset_reference_path("Font", payload)
-        if new_path != font_path:
-            _apply_if_changed(comp, field_name, font_path, new_path)
-            changed = True
-
-    def _clear():
-        nonlocal changed
-        if font_path:
-            _apply_if_changed(comp, field_name, font_path, "")
-            changed = True
-
-    IGUI.asset_reference_field(
-        ctx,
-        imgui_id,
-        os.path.basename(font_path) if font_path else t("ui_comp.default_font"),
-        "Font",
-        asset_type="Font",
-        on_assign=_assign,
-        on_clear=_clear,
-        ping_path=font_path or None,
-        has_value=bool(font_path),
-        reference_value={"asset_type": "Font", "path_hint": font_path},
+    """Render one GUID-backed Font resource field through shared Inspector logic."""
+    del imgui_id
+    metadata = get_serialized_fields(type(comp)).get(field_name)
+    if metadata is None or metadata.field_type != FieldType.ASSET:
+        raise ValueError(f"{type(comp).__name__}.{field_name} is not a Font asset field")
+    previous = get_raw_field_value(comp, field_name)
+    _render_asset_reference_field(
+        ctx, comp, field_name, metadata, previous, FieldType.ASSET, lw,
+        label_override=t("ui_comp.font"),
     )
-    _record_field(ctx, comp, field_name, "object_field", t("ui_comp.font"))
-    return changed
+    return previous != get_raw_field_value(comp, field_name)
 
 
 def _render_fallback_font_list(ctx, comp, *, on_change=None):
-    metadata = get_serialized_fields(type(comp)).get("fallback_font_paths")
+    metadata = get_serialized_fields(type(comp)).get("fallback_fonts")
     if metadata is None:
         return
     _render_list_field(
         ctx,
         comp,
-        "fallback_font_paths",
+        "fallback_fonts",
         metadata,
-        list(getattr(comp, "fallback_font_paths", None) or ()),
+        list(get_raw_field_value(comp, "fallback_fonts") or ()),
         0.0,
         display_name=t("ui_comp.fallback_fonts"),
         on_change=on_change,
@@ -804,8 +712,7 @@ def _render_text_typography(ctx, text_comp: UIText):
         _apply_if_changed(text_comp, "text", current_text, new_text)
         _sync_text_layout_from_ctx(ctx, text_comp)
 
-    field_label(ctx, t("ui_comp.font"), section_lw)
-    if _render_font_picker(ctx, text_comp, "font_path", section_lw, "ui_text_font_path"):
+    if _render_font_picker(ctx, text_comp, "font", section_lw, "ui_text_font"):
         _sync_text_layout_from_ctx(ctx, text_comp)
 
     def _set_text_fallbacks(comp, field_name, previous, value):
@@ -1076,8 +983,7 @@ def _render_button_inspector(ctx, btn_comp: UIButton):
         _record_field(ctx, btn_comp, "label", "text_input", t("ui_comp.label"))
         _apply_if_changed(btn_comp, "label", btn_comp.label, new_label)
 
-        field_label(ctx, t("ui_comp.font"), lw)
-        _render_font_picker(ctx, btn_comp, "font_path", lw, "btn_font_path")
+        _render_font_picker(ctx, btn_comp, "font", lw, "btn_font")
         _render_fallback_font_list(ctx, btn_comp)
 
         field_label(ctx, t("ui_comp.font_size"), lw)
@@ -1126,8 +1032,18 @@ def _render_button_inspector(ctx, btn_comp: UIButton):
     if render_compact_section_header(ctx, t("ui_comp.fill"), level="primary"):
         lw = max_label_w(ctx, [t("ui_comp.texture"), t("ui_comp.background")])
 
-        _render_texture_picker(ctx, btn_comp, "texture_path", t("ui_comp.texture"),
-                               lw, "btn_texture")
+        from Infernux.components.fields import FieldType, get_raw_field_value
+        from ._inspector_references import _render_asset_reference_field
+        _render_asset_reference_field(
+            ctx,
+            btn_comp,
+            "background_texture",
+            get_serialized_fields(type(btn_comp))["background_texture"],
+            get_raw_field_value(btn_comp, "background_texture"),
+            FieldType.ASSET,
+            lw,
+            label_override=t("ui_comp.texture"),
+        )
 
         _render_color_field(ctx, btn_comp, "background_color", t("ui_comp.background"), lw,
                             "##btn_bg_color", default=list(Theme.UI_DEFAULT_BUTTON_BG))

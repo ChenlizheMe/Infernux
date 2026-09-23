@@ -27,6 +27,7 @@ from Infernux.ui.ui_event_system import UIEventProcessor, UIPointerFrame
 from Infernux.engine.runtime_screen_ui import (
     collect_runtime_ui_input_surfaces,
     map_runtime_ui_pointer,
+    map_runtime_ui_pointers,
 )
 from Infernux.engine.runtime_mouse_events import MouseEventDispatcher
 
@@ -280,11 +281,6 @@ class PlayerGUI(InxGUIRenderable):
         )
         self._has_shared_scene_query = True
 
-        def canvas_positions(screen_x: float, screen_y: float):
-            return map_runtime_ui_pointer(
-                surfaces, camera, screen_x, screen_y, game_w, game_h
-            )
-
         pointers = [
             UIPointerFrame(
                 pointer_id=-1,
@@ -296,14 +292,23 @@ class PlayerGUI(InxGUIRenderable):
                 scroll_delta=(scroll_x, scroll_y),
             )
         ]
-        for touch in Input.touches:
-            touch_x = float(touch.normalized_position[0]) * float(game_w)
-            touch_y = (1.0 - float(touch.normalized_position[1])) * float(game_h)
+        touches = tuple(Input.touches)
+        touch_points = tuple(
+            (
+                float(touch.normalized_position[0]) * float(game_w),
+                (1.0 - float(touch.normalized_position[1])) * float(game_h),
+            )
+            for touch in touches
+        )
+        touch_positions = map_runtime_ui_pointers(
+            surfaces, camera, touch_points, game_w, game_h
+        )
+        for touch, positions in zip(touches, touch_positions):
             pointers.append(
                 UIPointerFrame(
                     pointer_id=int(touch.finger_id),
                     pointer_type=PointerType.Touch,
-                    canvas_positions=canvas_positions(touch_x, touch_y),
+                    canvas_positions=positions,
                     down=touch.phase is TouchPhase.BEGAN,
                     up=touch.phase in (TouchPhase.ENDED, TouchPhase.CANCELED),
                     held=touch.phase

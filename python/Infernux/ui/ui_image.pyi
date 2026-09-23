@@ -10,23 +10,20 @@ from Infernux.core.texture import Texture
 class UIImage(InxUIScreenComponent):
     """Screen or world image using a texture asset or live camera output.
 
-    Inherits ``x``, ``y``, ``width``, ``height``, ``opacity``,
-    ``corner_radius``, ``rotation``, ``mirror_x``, ``mirror_y``
-    from ``InxUIScreenComponent``.
+    Position and rotation come from the GameObject Transform. The component
+    inherits size, opacity, corner radius and mirroring fields.
 
     Attributes:
         texture: Imported Texture/RenderTexture, or a runtime RenderTexture override.
-        texture_path: Legacy authoring shorthand; saves the texture GUID.
         color: Tint color as ``[R, G, B, A]`` (0–1 each).
 
     Example::
 
         img = game_object.add_component(UIImage)
-        img.texture_path = "Assets/Textures/logo.png"
+        img.texture = texture_asset
         img.color = [1.0, 1.0, 1.0, 0.8]
     """
 
-    texture_path: str
     texture: Texture | RenderTexture | None
     color: list
 

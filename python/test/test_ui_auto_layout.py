@@ -2,6 +2,7 @@
 
 import pytest
 
+from Infernux.lib import Vector3
 from Infernux.ui import (
     UIFrame,
     UIGroup,
@@ -39,11 +40,13 @@ def _screen_root(scene, name, size=(1920, 1080)):
     return root
 
 
+def _place(component, x=0.0, y=0.0, canvas_size=(1920.0, 1080.0)):
+    component.set_rect(x, y, component.width, component.height, *canvas_size)
+
+
 def test_horizontal_frame_resolves_fixed_fill_padding_and_gap(scene):
     frame_object = _screen_root(scene, "Horizontal Frame")
     frame = UIFrame()
-    frame.x = 100
-    frame.y = 50
     frame.width = 300
     frame.height = 100
     frame.layout_direction = UILayoutDirection.Horizontal
@@ -51,6 +54,7 @@ def test_horizontal_frame_resolves_fixed_fill_padding_and_gap(scene):
     frame.padding_top = frame.padding_bottom = 10
     frame.gap = 5
     frame_object.add_py_component(frame)
+    _place(frame, 100, 50)
 
     fixed = _child(scene, frame_object, "Fixed", 50, 20)
     fill = _child(scene, frame_object, "Fill", 10, 10)
@@ -71,6 +75,7 @@ def test_vertical_frame_distributes_fill_by_weight_and_centers_cross_axis(scene)
     frame.padding_top = frame.padding_bottom = 10
     frame.gap = 10
     frame_object.add_py_component(frame)
+    _place(frame)
 
     first = _child(scene, frame_object, "First", 40, 10)
     second = _child(scene, frame_object, "Second", 60, 10)
@@ -91,6 +96,7 @@ def test_main_axis_justify_and_space_between(scene):
     frame.justify_content = UILayoutJustify.Center
     frame.gap = 10
     frame_object.add_py_component(frame)
+    _place(frame, canvas_size=(800, 600))
 
     first = _child(scene, frame_object, "First", 50, 20)
     second = _child(scene, frame_object, "Second", 50, 20)
@@ -114,6 +120,7 @@ def test_fill_constraints_redistribute_remaining_main_axis_space(scene):
     frame.height = 60
     frame.layout_direction = UILayoutDirection.Horizontal
     frame_object.add_py_component(frame)
+    _place(frame, canvas_size=(800, 600))
 
     first = _child(scene, frame_object, "First", 10, 40)
     second = _child(scene, frame_object, "Second", 10, 40)
@@ -130,8 +137,6 @@ def test_fill_constraints_redistribute_remaining_main_axis_space(scene):
 def test_hug_frame_and_absolute_child_use_one_parent_rect(scene):
     frame_object = _screen_root(scene, "Hug Frame")
     frame = UIFrame()
-    frame.x = 20
-    frame.y = 30
     frame.width_sizing = UILayoutSizing.Hug
     frame.height_sizing = UILayoutSizing.Hug
     frame.layout_direction = UILayoutDirection.Horizontal
@@ -140,13 +145,13 @@ def test_hug_frame_and_absolute_child_use_one_parent_rect(scene):
     frame.padding_top = frame.padding_bottom = 5
     frame.gap = 10
     frame_object.add_py_component(frame)
+    _place(frame, 20, 30)
 
     first = _child(scene, frame_object, "First", 40, 20)
     second = _child(scene, frame_object, "Second", 60, 30)
     absolute = _child(scene, frame_object, "Absolute", 10, 12)
     absolute.layout_position = UILayoutPosition.Absolute
-    absolute.x = 7
-    absolute.y = 8
+    _place(absolute, 27, 38)
 
     assert frame.get_rect(1920, 1080) == pytest.approx((20, 30, 120, 40))
     assert first.get_rect(1920, 1080) == pytest.approx((24, 35, 40, 20))
@@ -201,22 +206,20 @@ def test_ui_group_multiplies_alpha_and_independently_gates_raycast(scene):
 def test_nested_frame_clip_rects_intersect_in_canvas_space(scene):
     outer_object = _screen_root(scene, "Outer Clip")
     outer = UIFrame()
-    outer.x = 10
-    outer.y = 20
     outer.width = 100
     outer.height = 80
     outer.clip_content = True
     outer_object.add_py_component(outer)
+    _place(outer, 10, 20)
 
     inner_object = scene.create_game_object("Inner Clip")
     inner_object.set_parent(outer_object)
     inner = UIFrame()
-    inner.x = 50
-    inner.y = 30
     inner.width = 100
     inner.height = 100
     inner.clip_content = True
     inner_object.add_py_component(inner)
+    _place(inner, 60, 50)
 
     image = _child(scene, inner_object, "Clipped Image", 200, 200)
 
@@ -248,6 +251,8 @@ def test_text_intrinsic_layout_is_derived_and_shared_with_hit_testing(scene, wor
     text.width = 17.0
     text.height = 29.0
     root.add_py_component(text)
+    if not world:
+        _place(text)
     text.resize_mode = TextResizeMode.AutoWidth
     measurements = []
 
@@ -302,10 +307,22 @@ def test_auto_height_measurement_uses_authored_wrap_width():
     assert (text.width, text.height) == (240.0, 12.0)
 
 
-def test_text_intrinsic_layout_forwards_explicit_font_chain():
+def test_text_intrinsic_layout_forwards_explicit_font_chain(monkeypatch):
+    from Infernux.application import Application
+    from Infernux.core.asset_ref import create_asset_ref
+    from Infernux.engine.project_context import set_runtime_asset_resolver
     from Infernux.ui.inx_ui_screen_component import _get_layout_revision
     text = UIText()
-    text.fallback_font_paths = ["Assets/Fonts/CJK.ttf", "Assets/Fonts/Emoji.ttf"]
+    paths = {
+        "font-cjk": "Assets/Fonts/CJK.ttf",
+        "font-emoji": "Assets/Fonts/Emoji.ttf",
+    }
+    monkeypatch.setattr(Application, "is_player", staticmethod(lambda: True))
+    set_runtime_asset_resolver(lambda guid: paths.get(guid))
+    text.fallback_fonts = [
+        create_asset_ref("Font", guid=guid, path_hint="stale.ttf")
+        for guid in paths
+    ]
     received = []
 
     def measure(*arguments):
@@ -314,9 +331,12 @@ def test_text_intrinsic_layout_forwards_explicit_font_chain():
 
     before = _get_layout_revision()
     # A fixed text box measures glyphs without moving sibling layout bounds.
-    assert text.resolve_text_layout(measure) is False
-    assert _get_layout_revision() == before
-    assert received[0][-1] == ["Assets/Fonts/CJK.ttf", "Assets/Fonts/Emoji.ttf"]
+    try:
+        assert text.resolve_text_layout(measure) is False
+        assert _get_layout_revision() == before
+        assert received[0][-1] == ["Assets/Fonts/CJK.ttf", "Assets/Fonts/Emoji.ttf"]
+    finally:
+        set_runtime_asset_resolver(None)
 
 
 @pytest.mark.parametrize('direction', [UILayoutDirection.Horizontal, UILayoutDirection.Vertical])
@@ -421,7 +441,8 @@ def test_batched_flow_matches_fresh_layout_after_mutation(scene, mutation):
         last.layout_weight = 3.
     elif mutation == 'absolute':
         first.layout_position = UILayoutPosition.Absolute
-        first.x = 101.
+        position = first.game_object.transform.local_position
+        first.game_object.transform.local_position = Vector3(101., position.y, position.z)
     elif mutation == 'intrinsic':
         text.text = 'new content'
         text.resolve_text_layout(lambda *_: (150., 30.))

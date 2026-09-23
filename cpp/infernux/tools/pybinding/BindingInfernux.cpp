@@ -897,6 +897,16 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
         .value("Overlay", ScreenUIList::Overlay)
         .value("World", ScreenUIList::World);
 
+    py::class_<UIShaderMaterialBinding>(m, "UIShaderMaterialBinding")
+        .def(py::init<>())
+        .def_readonly("material_guid", &UIShaderMaterialBinding::materialGuid)
+        .def_readonly("generation", &UIShaderMaterialBinding::generation)
+        .def_readonly("pipeline_key", &UIShaderMaterialBinding::pipelineKey)
+        .def_readonly("base_color", &UIShaderMaterialBinding::baseColor)
+        .def_readonly("alpha_clip_threshold", &UIShaderMaterialBinding::alphaClipThreshold)
+        .def_readonly("alpha_clip_enabled", &UIShaderMaterialBinding::alphaClipEnabled)
+        .def("is_valid", &UIShaderMaterialBinding::IsValid);
+
     py::class_<InxScreenUIRenderer::CommandPacket, std::shared_ptr<InxScreenUIRenderer::CommandPacket>>(
         m, "_UICommandPacket");
     py::class_<InxScreenUIRenderer>(m, "InxScreenUIRenderer")
@@ -905,6 +915,23 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
         .def("abort_command_packet", &InxScreenUIRenderer::AbortCommandPacket)
         .def("append_command_packets", &InxScreenUIRenderer::AppendCommandPackets)
         .def("command_packet_epoch", &InxScreenUIRenderer::GetCommandPacketEpoch)
+        .def("set_material_binding",
+             static_cast<void (InxScreenUIRenderer::*)(ScreenUIList, const std::string &, uint64_t,
+                                                        const std::string &)>(&InxScreenUIRenderer::SetMaterialBinding),
+             py::arg("list"),
+             py::arg("material_guid"), py::arg("generation"), py::arg("pipeline_key"),
+             "Bind a GUID-backed UI material contract to the next draw command")
+        .def("set_material_binding",
+             static_cast<void (InxScreenUIRenderer::*)(ScreenUIList, const std::string &, uint64_t,
+                                                        const std::string &, const std::array<float, 4> &, bool,
+                                                        float)>(&InxScreenUIRenderer::SetMaterialBinding),
+             py::arg("list"),
+             py::arg("material_guid"), py::arg("generation"), py::arg("pipeline_key"), py::arg("base_color"),
+             py::arg("alpha_clip_enabled") = false, py::arg("alpha_clip_threshold") = 0.0f,
+             "Bind authored UI material values consumed by the fixed UI shader")
+        .def("command_bindings", &InxScreenUIRenderer::GetCommandBindings, py::arg("list"),
+             py::return_value_policy::reference_internal,
+             "Return command-aligned UI material contracts published for the current frame")
         .def("begin_frame", &InxScreenUIRenderer::BeginFrame, py::arg("width"), py::arg("height"),
              "Reset draw lists for a new frame")
         .def("begin_frame_cached", &InxScreenUIRenderer::BeginFrameCached, py::arg("width"), py::arg("height"),
@@ -1264,6 +1291,11 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
         .def("_get_render_texture_ui_texture_id", [](Infernux &engine, const std::shared_ptr<rhi::RenderTexture> &texture) {
             return engine.GetRenderer()->GetRenderTextureUITextureId(texture);
         }, py::arg("texture"))
+        .def("_get_imported_texture_ui_texture_id", [](Infernux &engine, const std::string &name,
+                                                       const std::string &textureGuid) {
+            auto *renderer = engine.GetRenderer();
+            return renderer ? renderer->QueryImportedTextureForImGui(name, textureGuid) : uint64_t{0};
+        }, py::arg("name"), py::arg("texture_guid"))
         .def("begin_prepare_linked_shader_programs", &Infernux::BeginPrepareLinkedShaderPrograms,
              py::arg("material_guids"),
              "Compile linked shader programs for loaded materials on the engine JobSystem")

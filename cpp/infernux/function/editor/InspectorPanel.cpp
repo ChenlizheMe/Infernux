@@ -21,6 +21,10 @@
 
 namespace
 {
+constexpr uint32_t DRIVEN_TRANSFORM_POSITION = 1u << 0u;
+constexpr uint32_t DRIVEN_TRANSFORM_ROTATION = 1u << 1u;
+constexpr uint32_t DRIVEN_TRANSFORM_SCALE = 1u << 2u;
+
 template <typename Callback> class InspectorScopeExit final
 {
   public:
@@ -588,7 +592,7 @@ void InspectorPanel::RenderSingleObject(InxGUIContext *ctx, uint64_t objId)
                 ImGui::Dummy(ImVec2(0.0f, m_cachedTransformBodyHeight));
             } else {
                 const float bodyStartY = ImGui::GetCursorPosY();
-                RenderTransform(ctx, objId, info.hideTransformScale);
+                RenderTransform(ctx, objId, info.hideTransformScale, info.drivenTransformProperties);
                 const float bodyHeight = ImGui::GetCursorPosY() - bodyStartY;
                 if (bodyHeight > 0.0f)
                     m_cachedTransformBodyHeight = bodyHeight;
@@ -887,12 +891,19 @@ void InspectorPanel::RenderMultiEdit(InxGUIContext *ctx, const std::vector<uint6
         auto transformStart = clock::now();
 #endif
         bool hideTransformScale = !ids.empty() && static_cast<bool>(getObjectInfo);
+        uint32_t drivenTransformProperties = 0;
         if (hideTransformScale) {
+            for (uint64_t id : ids) {
+                const auto objectInfo = getObjectInfo(id);
+                hideTransformScale = hideTransformScale && objectInfo.hideTransformScale;
+                drivenTransformProperties |= objectInfo.drivenTransformProperties;
+            }
+        } else if (getObjectInfo) {
             for (uint64_t id : ids)
-                hideTransformScale = hideTransformScale && getObjectInfo(id).hideTransformScale;
+                drivenTransformProperties |= getObjectInfo(id).drivenTransformProperties;
         }
         if (transformHeader.open)
-            RenderMultiTransform(ctx, ids, hideTransformScale);
+            RenderMultiTransform(ctx, ids, hideTransformScale, drivenTransformProperties);
 #if INFERNUX_FRAME_PROFILE
         auto transformEnd = clock::now();
         m_subTransform += std::chrono::duration<double, std::milli>(transformEnd - transformStart).count();
@@ -1133,7 +1144,8 @@ void InspectorPanel::FinishTransformGesture(size_t rowIndex, uint32_t lifecycleF
         m_transformGestureIds[rowIndex].clear();
 }
 
-void InspectorPanel::RenderTransform(InxGUIContext *ctx, uint64_t objId, bool hideScale)
+void InspectorPanel::RenderTransform(InxGUIContext *ctx, uint64_t objId, bool hideScale,
+                                     uint32_t drivenProperties)
 {
     if (!getTransformData)
         return;
@@ -1158,24 +1170,40 @@ void InspectorPanel::RenderTransform(InxGUIContext *ctx, uint64_t objId, bool hi
     const std::string rotationSemanticId = captureSemantics ? transformBase + "rotation" : std::string{};
     const std::string scaleSemanticId = captureSemantics ? transformBase + "scale" : std::string{};
 
+    const bool positionDriven = (drivenProperties & DRIVEN_TRANSFORM_POSITION) != 0u;
+    const bool rotationDriven = (drivenProperties & DRIVEN_TRANSFORM_ROTATION) != 0u;
+    const bool scaleDriven = (drivenProperties & DRIVEN_TRANSFORM_SCALE) != 0u;
+
+    if (positionDriven)
+        ImGui::BeginDisabled();
     ctx->Vector3Control(Tr("Position"), pos, DRAG_SPEED_DEFAULT, labelW, positionSemanticId);
+    if (positionDriven)
+        ImGui::EndDisabled();
     const uint32_t positionLifecycle = ctx->GetLastEditLifecycleFlags();
     const std::string positionGesture = UpdateTransformGesture(0, positionLifecycle);
     if (captureSemantics)
-        ctx->RecordSemanticItem("inspector_transform", Tr("Position"), true, positionSemanticId);
+        ctx->RecordSemanticItem("inspector_transform", Tr("Position"), !positionDriven, positionSemanticId);
+    if (rotationDriven)
+        ImGui::BeginDisabled();
     ctx->Vector3Control(Tr("Rotation"), rot, DRAG_SPEED_DEFAULT, labelW, rotationSemanticId);
+    if (rotationDriven)
+        ImGui::EndDisabled();
     const uint32_t rotationLifecycle = ctx->GetLastEditLifecycleFlags();
     const std::string rotationGesture = UpdateTransformGesture(1, rotationLifecycle);
     if (captureSemantics)
-        ctx->RecordSemanticItem("inspector_transform", Tr("Rotation"), true, rotationSemanticId);
+        ctx->RecordSemanticItem("inspector_transform", Tr("Rotation"), !rotationDriven, rotationSemanticId);
     uint32_t scaleLifecycle = 0;
     std::string scaleGesture;
     if (!hideScale) {
+        if (scaleDriven)
+            ImGui::BeginDisabled();
         ctx->Vector3Control(Tr("Scale"), scl, DRAG_SPEED_FINE, labelW, scaleSemanticId);
+        if (scaleDriven)
+            ImGui::EndDisabled();
         scaleLifecycle = ctx->GetLastEditLifecycleFlags();
         scaleGesture = UpdateTransformGesture(2, scaleLifecycle);
         if (captureSemantics)
-            ctx->RecordSemanticItem("inspector_transform", Tr("Scale"), true, scaleSemanticId);
+            ctx->RecordSemanticItem("inspector_transform", Tr("Scale"), !scaleDriven, scaleSemanticId);
     }
 
     bool changed = false;
@@ -1209,7 +1237,8 @@ void InspectorPanel::RenderTransform(InxGUIContext *ctx, uint64_t objId, bool hi
     FinishTransformGesture(2, scaleLifecycle);
 }
 
-void InspectorPanel::RenderMultiTransform(InxGUIContext *ctx, const std::vector<uint64_t> &ids, bool hideScale)
+void InspectorPanel::RenderMultiTransform(InxGUIContext *ctx, const std::vector<uint64_t> &ids, bool hideScale,
+                                          uint32_t drivenProperties)
 {
     if (!getTransformData || ids.empty())
         return;
@@ -1229,7 +1258,9 @@ void InspectorPanel::RenderMultiTransform(InxGUIContext *ctx, const std::vector<
     uint32_t rowLifecycle[3] = {};
 
     auto renderRow = [&](const std::string &label, const char *rowId, float *values, const float *originalValues,
-                         const bool *rowMixed, int baseIndex, float speed) {
+                         const bool *rowMixed, int baseIndex, float speed, bool driven) {
+        if (driven)
+            ImGui::BeginDisabled();
         ImGui::TextUnformatted(label.c_str());
         ImGui::SameLine(labelW);
 
@@ -1272,16 +1303,21 @@ void InspectorPanel::RenderMultiTransform(InxGUIContext *ctx, const std::vector<
             ImGui::PopID();
         }
         ImGui::PopID();
+        if (driven)
+            ImGui::EndDisabled();
     };
 
     const float originalPos[3] = {first.px, first.py, first.pz};
     const float originalRot[3] = {first.rx, first.ry, first.rz};
     const float originalScale[3] = {first.sx, first.sy, first.sz};
 
-    renderRow(Tr("Position"), "position", pos, originalPos, mixed, 0, DRAG_SPEED_DEFAULT);
-    renderRow(Tr("Rotation"), "rotation", rot, originalRot, mixed + 3, 3, DRAG_SPEED_DEFAULT);
+    renderRow(Tr("Position"), "position", pos, originalPos, mixed, 0, DRAG_SPEED_DEFAULT,
+              (drivenProperties & DRIVEN_TRANSFORM_POSITION) != 0u);
+    renderRow(Tr("Rotation"), "rotation", rot, originalRot, mixed + 3, 3, DRAG_SPEED_DEFAULT,
+              (drivenProperties & DRIVEN_TRANSFORM_ROTATION) != 0u);
     if (!hideScale)
-        renderRow(Tr("Scale"), "scale", scl, originalScale, mixed + 6, 6, DRAG_SPEED_FINE);
+        renderRow(Tr("Scale"), "scale", scl, originalScale, mixed + 6, 6, DRAG_SPEED_FINE,
+                  (drivenProperties & DRIVEN_TRANSFORM_SCALE) != 0u);
 
     const std::array<std::string, 3> gestureIds = {
         UpdateTransformGesture(0, rowLifecycle[0]),

@@ -21,9 +21,12 @@ from Infernux.engine.texture_task_bridge import texture_stamp, query_or_schedule
 
 
 class UITextureCache:
-    """GUID-keyed texture-path → ImGui-texture-ID cache.
+    """GUID-keyed texture-resource → ImGui-texture-ID cache.
 
-    Call ``get(engine, tex_path)`` from any panel.  The cache is shared
+    Runtime UI should pass a :class:`TextureRef`; its GUID is resolved by the
+    native imported-texture path, including cooked Player artifacts.
+    String paths remain an explicit editor-preview boundary and are converted
+    to a GUID exactly once.  The cache is shared
     as a module-level singleton via ``get_shared_cache()``.
     """
 
@@ -49,24 +52,46 @@ class UITextureCache:
         self._path_to_key[tex_path] = guid
         return guid
 
+    def _resolve_asset(self, identifier) -> tuple[str, str]:
+        """Resolve an explicit editor preview path to its project GUID."""
+        tex_path = os.fspath(identifier)
+        return self._resolve_key(tex_path), tex_path
+
     # ── public API ───────────────────────────────────────────────────
 
     def get(self, engine, tex_path) -> int:
-        """Resolve an asset path or publish a live RenderTexture GPU descriptor."""
+        """Resolve a texture GUID reference or publish a live RenderTexture."""
         from Infernux.core.render_texture import RenderTexture
         from Infernux.core.asset_ref import TextureRef
-        from Infernux.core import AssetManager
         from Infernux.lib import _Infernux
-        if isinstance(tex_path, TextureRef):
-            # The hint is for authoring only. Imported/cooked identity is GUID.
-            tex_path = AssetManager._get_path_from_guid(tex_path.guid) if tex_path.guid else ""
         if isinstance(tex_path, RenderTexture):
             tex_path = tex_path._native
         if isinstance(tex_path, _Infernux._RenderTexture):
             return int(engine.get_native_engine()._get_render_texture_ui_texture_id(tex_path))
         if not tex_path:
             return 0
-        key = self._resolve_key(tex_path)
+        if isinstance(tex_path, TextureRef):
+            guid = str(tex_path.guid or "")
+            if not guid:
+                raise ValueError("UI TextureRef requires a non-empty GUID")
+            if engine is None or engine.get_native_engine() is None:
+                return 0
+            native = engine.get_native_engine()
+            query = getattr(native, "_get_imported_texture_ui_texture_id", None)
+            if not callable(query):
+                raise RuntimeError("The current engine lacks GUID-backed UI texture binding")
+            key = f"ui_img|{guid}"
+            tid = int(query(key, guid))
+            if tid != self._cache.get(guid, 0):
+                self._generation += 1
+            if tid:
+                self._cache[guid] = tid
+                self._pending_keys.discard(guid)
+            else:
+                self._cache.pop(guid, None)
+                self._pending_keys.add(guid)
+            return tid
+        key, tex_path = self._resolve_asset(tex_path)
         cached = self._cache.get(key)
         if engine is None:
             return 0
@@ -75,7 +100,7 @@ class UITextureCache:
             return 0
         from Infernux.engine.project_context import get_project_root
         project_root = get_project_root()
-        if not project_root:
+        if not project_root and not os.path.isabs(tex_path):
             return 0
         abs_path = resolved_path(tex_path if os.path.isabs(tex_path) else os.path.join(project_root, tex_path))
         if not os.path.isfile(abs_path):

@@ -194,13 +194,19 @@ class UIEditorPanel(UIEditorCanvasOps, UIEditorGeometryMixin, UIEditorAlignmentM
 
         from Infernux.engine.interaction import ComponentCommandService
 
-        changes = []
-        if dx:
-            old_x = float(elem.x)
-            changes.append((elem, "x", old_x, old_x + dx, "Set x"))
-        if dy:
-            old_y = float(elem.y)
-            changes.append((elem, "y", old_y, old_y + dy, "Set y"))
+        game_object = elem._try_get_game_object()
+        if game_object is None:
+            raise RuntimeError("UI nudge requires an attached GameObject Transform")
+        from Infernux.lib import Vector3
+
+        transform = game_object.transform
+        old_position = transform.local_position
+        new_position = Vector3(
+            float(old_position.x) + dx,
+            float(old_position.y) - dy,
+            float(old_position.z),
+        )
+        changes = [(transform, "local_position", old_position, new_position, "Nudge UI Element")]
         return ComponentCommandService.require().execute_property_changes(
             changes,
             description="Nudge UI Element",
@@ -1314,53 +1320,39 @@ class UIEditorPanel(UIEditorCanvasOps, UIEditorGeometryMixin, UIEditorAlignmentM
     @staticmethod
     def _element_manipulation_snapshot(kind: str, elem) -> dict:
         try_get_game_object = getattr(elem, "_try_get_game_object", None)
-        game_object = try_get_game_object() if callable(try_get_game_object) else None
-        if game_object is None and not callable(try_get_game_object):
-            game_object = getattr(elem, "game_object", None)
+        if not callable(try_get_game_object):
+            raise RuntimeError("UI manipulation requires a current screen component")
+        game_object = try_get_game_object()
+        if game_object is None:
+            raise RuntimeError("UI manipulation requires an attached GameObject Transform")
         transform = getattr(game_object, "transform", None)
-        if transform is not None:
-            if kind == "drag":
-                fields = ()
-                transform_fields = ("local_position",)
-            elif kind == "rotate":
-                fields = ()
-                transform_fields = ("local_euler_angles",)
-            elif kind == "resize":
-                fields = (
-                    "resize_mode", "width", "height",
-                    "width_sizing", "height_sizing",
-                )
-                transform_fields = ("local_position",)
-            else:
-                raise ValueError(f"unsupported UI element manipulation '{kind}'")
-            snapshot = {
-                f"component.{field}": getattr(elem, field)
-                for field in fields
-                if hasattr(elem, field)
-            }
-            for field in transform_fields:
-                value = getattr(transform, field)
-                snapshot[f"transform.{field}"] = (
-                    float(value.x), float(value.y), float(value.z)
-                )
-            return snapshot
-
+        if transform is None:
+            raise RuntimeError("UI manipulation requires an attached GameObject Transform")
         if kind == "drag":
-            fields = ("x", "y")
+            fields = ()
+            transform_fields = ("local_position",)
         elif kind == "rotate":
-            fields = ("rotation",)
+            fields = ()
+            transform_fields = ("local_euler_angles",)
         elif kind == "resize":
             fields = (
-                "resize_mode", "x", "y", "width", "height",
+                "resize_mode", "width", "height",
                 "width_sizing", "height_sizing",
             )
+            transform_fields = ("local_position",)
         else:
             raise ValueError(f"unsupported UI element manipulation '{kind}'")
-        return {
+        snapshot = {
             f"component.{field}": getattr(elem, field)
             for field in fields
             if hasattr(elem, field)
         }
+        for field in transform_fields:
+            value = getattr(transform, field)
+            snapshot[f"transform.{field}"] = (
+                float(value.x), float(value.y), float(value.z)
+            )
+        return snapshot
 
     @staticmethod
     def _element_manipulation_property(elem, key: str, value):

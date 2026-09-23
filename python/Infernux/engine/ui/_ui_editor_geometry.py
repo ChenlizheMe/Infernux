@@ -86,7 +86,7 @@ class UIEditorGeometryMixin:
         rx, ry, rw, rh = elem.get_rect(ref_w, ref_h)
         cx = rx + rw * 0.5
         cy = ry + rh * 0.5
-        rot = math.radians(float(getattr(elem, 'rotation', 0.0)))
+        rot = math.radians(float(elem.get_layout_rotation()))
         cos_a = math.cos(rot)
         sin_a = math.sin(rot)
 

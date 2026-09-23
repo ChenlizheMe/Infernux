@@ -246,6 +246,91 @@ int main(int argc, char **argv)
             const auto stats = renderer.GetGeometryStats(list);
             assert(stats.preparations == 1 && stats.uploads == 4 && stats.uploadedBytes > 0);
         }
+
+        // A retained UI packet carries an asset identity contract alongside
+        // each draw command.  This is intentionally independent of the fixed
+        // Screen/World depth pipelines and must not retain a path or pointer.
+        list = ScreenUIList::Overlay;
+        renderer.BeginFrame(128, 128);
+        renderer.BeginCommandPacket();
+        renderer.SetMaterialBinding(list, "ui-material-guid", 7, "ui|shader=Ui.vert:Ui.frag|state=1,6,7,0,0,0,7,0");
+        renderer.AddFilledRect(list, 8, 8, 56, 56, 1, 1, 1, 1);
+        renderer.SetMaterialBinding(list, "ui-text-guid", 11, "ui|shader=UiText.vert:UiText.frag|state=1,6,7,0,0,0,7,0");
+        renderer.AddFilledRect(list, 60, 8, 112, 56, 1, 1, 1, 1);
+        const auto contractPacket = renderer.EndCommandPacket();
+        renderer.AppendCommandPackets({contractPacket});
+        const auto &contracts = renderer.GetCommandBindings(list);
+        assert(std::any_of(contracts.begin(), contracts.end(), [](const UIShaderMaterialBinding &binding) {
+            return binding.IsValid() && binding.materialGuid == "ui-material-guid" && binding.generation == 7 &&
+                   binding.pipelineKey.rfind("ui|shader=", 0) == 0;
+        }));
+        assert(std::any_of(contracts.begin(), contracts.end(), [](const UIShaderMaterialBinding &binding) {
+            return binding.IsValid() && binding.materialGuid == "ui-text-guid" && binding.generation == 11;
+        }));
+
+        // One button packet can contain an authored background followed by
+        // default label geometry. Clearing the binding must isolate the label.
+        renderer.BeginFrame(128, 128);
+        renderer.BeginCommandPacket();
+        renderer.SetMaterialBinding(list, "ui-background-guid", 2, "ui-background",
+                                    {0.25f, 0.5f, 0.75f, 1.0f});
+        renderer.AddFilledRect(list, 0, 0, 48, 48, 1, 1, 1, 1);
+        renderer.SetMaterialBinding(list, "", 0, "");
+        renderer.AddFilledRect(list, 64, 0, 112, 48, 1, 1, 1, 1);
+        renderer.AppendCommandPackets({renderer.EndCommandPacket()});
+        const auto &resetContracts = renderer.GetCommandBindings(list);
+        assert(std::any_of(resetContracts.begin(), resetContracts.end(), [](const UIShaderMaterialBinding &binding) {
+            return binding.materialGuid == "ui-background-guid";
+        }));
+        assert(std::count_if(resetContracts.begin(), resetContracts.end(), [](const UIShaderMaterialBinding &binding) {
+            return binding.IsValid();
+        }) == 1);
+        buildGraph();
+        frame();
+        std::array<uint8_t, 128 * 128 * 4> resetObserved{};
+        assert(device.ReadBuffer(output, 0, resetObserved.data(), resetObserved.size()));
+        const size_t defaultSample = (24 * 128 + 88) * 4;
+        assert(resetObserved[defaultSample] == 255 && resetObserved[defaultSample + 1] == 255 &&
+               resetObserved[defaultSample + 2] == 255 && resetObserved[defaultSample + 3] == 255);
+
+        // Authored values must reach the fragment stage, not merely survive in
+        // packet metadata. White geometry isolates material modulation; an
+        // alpha-clipped material must leave the cleared target untouched.
+        for (auto kind : {ScreenUIList::Camera, ScreenUIList::Overlay, ScreenUIList::World}) {
+            list = kind;
+            buildGraph();
+            for (bool clip : {false, true}) {
+                renderer.BeginFrame(128, 128);
+                renderer.BeginCommandPacket();
+                renderer.SetMaterialBinding(list, "ui-authored-guid", 1, "ui-authored",
+                                            {0.25f, 0.75f, 0.5f, clip ? 0.25f : 1.f}, clip, 0.5f);
+                if (list == ScreenUIList::World) {
+                    glm::mat4 matrix(1.f);
+                    matrix[3].z = .5f;
+                    std::array<float, 16> pose{};
+                    std::copy_n(glm::value_ptr(matrix), 16, pose.begin());
+                    renderer.BeginWorldElement(pose, 50, 50);
+                }
+                renderer.AddFilledRect(list, 0, 0, 100, 100, 1, 1, 1, 1);
+                if (list == ScreenUIList::World)
+                    renderer.EndWorldElement();
+                const auto packet = renderer.EndCommandPacket();
+                renderer.AppendCommandPackets({packet});
+                frame();
+                std::array<uint8_t, 128 * 128 * 4> observed{};
+                assert(device.ReadBuffer(output, 0, observed.data(), observed.size()));
+                const size_t sample = (64 * 128 + 64) * 4;
+                if (clip) {
+                    assert(observed[sample + 3] == 0);
+                } else {
+                    assert(observed[sample] >= 63 && observed[sample] <= 64);
+                    assert(observed[sample + 1] >= 191 && observed[sample + 1] <= 192);
+                    assert(observed[sample + 2] >= 127 && observed[sample + 2] <= 128);
+                    assert(observed[sample + 3] == 255);
+                }
+            }
+        }
+
         // Changed content forces a real rebuild, unlike the static benchmark.
         // Distinct descriptor sets deliberately prevent texture batching.
         std::vector<rhi::BindGroupHandle> imageGroups;

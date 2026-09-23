@@ -2,6 +2,15 @@
 import pytest
 
 
+def test_ui_dependencies_require_current_native_host(monkeypatch):
+    from Infernux.lib import _Infernux as native
+    from Infernux.ui.ui_transform_dependencies import create_ui_transform_dependencies
+
+    monkeypatch.setattr(native, "_UITransformDependencies", None)
+    with pytest.raises(RuntimeError, match="current Infernux host"):
+        create_ui_transform_dependencies([], [])
+
+
 @pytest.mark.parametrize("world", [False, True])
 def test_static_ui_dependencies_do_not_enumerate_python_geometry(scene, monkeypatch, world):
     from Infernux.lib import Vector3

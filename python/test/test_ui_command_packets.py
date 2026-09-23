@@ -76,6 +76,44 @@ class Renderer:
         return emit
 
 
+def test_runtime_ui_material_contract_uses_guid_generation_and_pipeline_key():
+    from Infernux.ui.ui_render_dispatch import _bind_runtime_material
+
+    calls = []
+    native = SimpleNamespace(
+        guid="ui-material-guid",
+        get_version=lambda: 9,
+        shader_name="UiSurface",
+        vert_shader_name="Ui.vert",
+        frag_shader_name="Ui.frag",
+        get_render_state=lambda: SimpleNamespace(
+            blend_enable=True,
+            src_color_blend_factor=6,
+            dst_color_blend_factor=7,
+            color_blend_op=0,
+            depth_test_enable=False,
+            depth_write_enable=False,
+            depth_compare_op=7,
+            alpha_clip_enabled=False,
+        ),
+    )
+    renderer = SimpleNamespace(set_material_binding=lambda *args: calls.append(args))
+    _bind_runtime_material(renderer, "Overlay", {"_native": native})
+    assert calls == [
+        (
+            "Overlay",
+            "ui-material-guid",
+            9,
+            "ui|shader=UiSurface:Ui.vert:Ui.frag|state=1,6,7,0,0,0,7,0",
+            (1.0, 1.0, 1.0, 1.0),
+            False,
+            0.0,
+        )
+    ]
+    _bind_runtime_material(renderer, "Overlay", {"_native": None})
+    assert calls[-1] == ("Overlay", "", 0, "")
+
+
 @pytest.fixture(params=[False, True], ids=['screen', 'world'])
 def ui(scene, monkeypatch, request):
     from Infernux.ui import UICanvas, UIText
@@ -530,6 +568,22 @@ def test_render_texture_resize_reextracts_only_its_images(ui):
     _assert_current_commands_match_fresh(ui, actual)
 
 
+def test_button_render_texture_assignment_tracks_later_target_revision(ui):
+    from Infernux.core.render_texture import RenderTexture
+    from Infernux.ui import UIButton
+
+    button = ui.add(UIButton)
+    ui.frame()
+    target = RenderTexture.__new__(RenderTexture)
+    target._native = SimpleNamespace(revision=1, asset_guid='')
+    button.background_texture = target
+    ui.frame()
+    target._native.revision += 1
+    _, actual = ui.frame()
+    assert ui.extracted == [button]
+    _assert_current_commands_match_fresh(ui, actual)
+
+
 def test_renderer_replacement_releases_old_bound_calls(ui):
     label = ui.add()
     ui.frame()
@@ -557,19 +611,36 @@ def test_destroyed_element_packets_do_not_survive_membership_change(ui):
     assert sum(name == 'add_text' for name, _, _ in commands) == 2
 
 
-def test_explicit_font_chain_and_measured_size_publication(ui):
+def test_explicit_font_chain_and_measured_size_publication(ui, monkeypatch):
+    from Infernux.application import Application
+    from Infernux.core.asset_ref import create_asset_ref
+    from Infernux.engine.project_context import set_runtime_asset_resolver
     from Infernux.ui import TextResizeMode
     from Infernux.ui.ui_render_revision import mark_runtime_ui_dirty
+    paths = {
+        "font-cjk": "Assets/Fonts/CJK.ttf",
+        "font-emoji": "Assets/Fonts/Emoji.ttf",
+    }
+    monkeypatch.setattr(Application, "is_player", staticmethod(lambda: True))
+    set_runtime_asset_resolver(lambda guid: paths.get(guid))
     label = ui.add()
     label.resize_mode = TextResizeMode.AutoWidth
     ui.frame()
-    label.fallback_font_paths = ['Assets/Fonts/CJK.ttf']
-    commands = ui.matches_fresh()
-    assert next(args[-1] for name, args, _ in commands if name == 'add_text') == ['Assets/Fonts/CJK.ttf']
-    label.fallback_font_paths.append('Assets/Fonts/Emoji.ttf')
-    mark_runtime_ui_dirty()
-    commands = ui.matches_fresh()
-    assert len(next(args[-1] for name, args, _ in commands if name == 'add_text')) == 2
+    try:
+        label.fallback_fonts = [
+            create_asset_ref("Font", guid="font-cjk", path_hint="stale.ttf")
+        ]
+        commands = ui.matches_fresh()
+        assert next(args[-1] for name, args, _ in commands if name == 'add_text') == ['Assets/Fonts/CJK.ttf']
+        label.fallback_fonts = [
+            create_asset_ref("Font", guid="font-cjk", path_hint="stale.ttf"),
+            create_asset_ref("Font", guid="font-emoji", path_hint="stale.ttf"),
+        ]
+        mark_runtime_ui_dirty()
+        commands = ui.matches_fresh()
+        assert len(next(args[-1] for name, args, _ in commands if name == 'add_text')) == 2
+    finally:
+        set_runtime_asset_resolver(None)
 
 
 def test_custom_renderer_keeps_its_native_renderer_contract(ui, monkeypatch):
