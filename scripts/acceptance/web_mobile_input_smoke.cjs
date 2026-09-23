@@ -2,7 +2,7 @@
 
 const fs = require("fs");
 const path = require("path");
-const { chromium } = require("playwright");
+const { chromium, firefox } = require("playwright");
 const { PNG } = require("pngjs");
 
 function writeJsonAtomic(outputPath, payload) {
@@ -14,11 +14,11 @@ function writeJsonAtomic(outputPath, payload) {
   fs.renameSync(temporary, resolved);
 }
 
-function resolveBrowserExecutable() {
+function resolveBrowserExecutable(browserEngine) {
   if (process.env.INFERNUX_WEB_BROWSER) {
     return process.env.INFERNUX_WEB_BROWSER;
   }
-  if (process.platform !== "win32") {
+  if (browserEngine !== "chromium" || process.platform !== "win32") {
     return undefined;
   }
 
@@ -246,6 +246,23 @@ async function main() {
   const verifyParticleBloom = process.argv.includes("--verify-particle-bloom");
   const verifyNativeMultitouch = process.argv.includes("--verify-native-multitouch");
   const verifyMobileIme = process.argv.includes("--verify-mobile-ime");
+  const browserEngine = (
+    process.env.INFERNUX_WEB_BROWSER_ENGINE?.trim() || "chromium"
+  ).toLowerCase();
+  if (!["chromium", "firefox"].includes(browserEngine)) {
+    throw new Error(
+      "INFERNUX_WEB_BROWSER_ENGINE must be 'chromium' or 'firefox'",
+    );
+  }
+  if (cdpEndpoint && browserEngine !== "chromium") {
+    throw new Error("--cdp-endpoint is only supported by the Chromium engine");
+  }
+  if (browserEngine !== "chromium" && (movementTouch || verifyNativeMultitouch)) {
+    throw new Error(
+      "--movement-touch and --verify-native-multitouch require the Chromium " +
+      "CDP input path; use keyboard and generic pointer checks for Firefox",
+    );
+  }
   if (verifyMobileIme && !cdpEndpoint) {
     throw new Error("--verify-mobile-ime requires a physical browser through --cdp-endpoint");
   }
@@ -327,7 +344,7 @@ async function main() {
       pages[0] ||
       await contexts[0].newPage();
   } else {
-    const executablePath = resolveBrowserExecutable();
+    const executablePath = resolveBrowserExecutable(browserEngine);
     const configuredBrowserChannel =
       process.env.INFERNUX_WEB_BROWSER_CHANNEL?.trim();
     if (
@@ -337,6 +354,11 @@ async function main() {
     ) {
       throw new Error(
         "INFERNUX_WEB_BROWSER_CHANNEL must be 'chromium' or 'msedge'",
+      );
+    }
+    if (browserEngine !== "chromium" && configuredBrowserChannel) {
+      throw new Error(
+        "INFERNUX_WEB_BROWSER_CHANNEL only applies to the Chromium engine",
       );
     }
     const browserArgs = [
@@ -351,20 +373,28 @@ async function main() {
       "--use-gpu-in-tests",
       "--enable-accelerated-2d-canvas",
     ];
-    const browserSelection = configuredBrowserChannel
-      ? { channel: configuredBrowserChannel }
-      : executablePath
-        ? { executablePath }
-      // Playwright's explicit Chromium channel selects the full browser and
-      // its new headless implementation. The legacy headless shell can
-      // destroy a SwiftShader WebGPU device after the first rendered frame.
-        : { channel: "chromium" };
-    browser = await chromium.launch({
-      ...browserSelection,
-      headless: true,
-      timeout: 30000,
-      args: browserArgs,
-    });
+    if (browserEngine === "firefox") {
+      browser = await firefox.launch({
+        ...(executablePath ? { executablePath } : {}),
+        headless: true,
+        timeout: 30000,
+      });
+    } else {
+      const browserSelection = configuredBrowserChannel
+        ? { channel: configuredBrowserChannel }
+        : executablePath
+          ? { executablePath }
+        // Playwright's explicit Chromium channel selects the full browser and
+        // its new headless implementation. The legacy headless shell can
+        // destroy a SwiftShader WebGPU device after the first rendered frame.
+          : { channel: "chromium" };
+      browser = await chromium.launch({
+        ...browserSelection,
+        headless: true,
+        timeout: 30000,
+        args: browserArgs,
+      });
+    }
     page = await browser.newPage({
       viewport: { width: viewportWidth, height: viewportHeight },
       deviceScaleFactor,
@@ -576,6 +606,8 @@ async function main() {
         ]),
       );
       const result = {
+        browserEngine,
+        browserVersion: browser.version(),
         state: await canvas.getAttribute("data-infernux-state"),
         captureOnly: true,
         fixedDeltaSeconds: fixedDelta,
@@ -1141,6 +1173,8 @@ async function main() {
       orders: requiredDiagnosticOrders,
       forbidden: forbiddenDiagnostics,
     });
+    result.browserEngine = browserEngine;
+    result.browserVersion = browser.version();
     result.frameBeforeActivation = frameBeforeActivation;
     result.sceneFrame = sceneFrame;
     result.shadowDifference = shadowDifference;
