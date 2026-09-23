@@ -60,7 +60,7 @@ def _resident_line_vertex_kernel(domain, positions, vertices, red, green, blue):
     vertices[i, 10] = red
     vertices[i, 11] = green
     vertices[i, 12] = blue
-    for lane in range(13, 23):
+    for lane in range(13, 25):
         vertices[i, lane] = 0.0
 
 
@@ -229,7 +229,7 @@ class Gizmos:
                 identity=next(_resident_identity),
                 indices=indices,
                 domain=buffer(shape=position_count, dtype=np.int32, device="gpu"),
-                vertices=buffer(shape=(position_count, 23), dtype=np.float32, device="gpu"),
+                vertices=buffer(shape=(position_count, 25), dtype=np.float32, device="gpu"),
             )
             states[key] = state
             positions._retain_dependent(state)

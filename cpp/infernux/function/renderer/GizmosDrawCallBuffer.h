@@ -21,8 +21,9 @@ class ComputeBuffer;
  * @brief Buffer that receives packed gizmo geometry from Python and produces DrawCalls.
  *
  * Python-side Gizmos/GizmosCollector packs all per-frame gizmo primitives
- * into flat vertex/index arrays plus a descriptor list, then uploads them
- * in a single call via SetData().  The C++ side stores the data and
+ * into flat vertex/index arrays plus a descriptor list, then publishes them
+ * in a single call via SetData(). The C++ side retains unchanged geometry,
+ * advances an explicit generation only for vertex/topology changes, and
  * produces DrawCall entries consumed by ScriptableRenderContext::SubmitCulling().
  *
  * Queue range: 10000-20000 (_ComponentGizmos pass, depth-tested).
@@ -50,8 +51,12 @@ class GizmosDrawCallBuffer
     static constexpr uint32_t ICON_KIND_LIGHT = 2;
     static constexpr uint32_t ICON_KIND_PARTICLE = 3;
 
-    /// Billboard materials for the built-in icon kinds. Any missing entry falls
-    /// back to @c fallback.
+    /// Billboard materials for the built-in icon kinds.
+    ///
+    /// A known icon kind must never fall back to the generic material.  The
+    /// generic material deliberately samples the built-in white texture, so a
+    /// transiently unpublished camera/light material would otherwise render a
+    /// solid white quad instead of the authored alpha silhouette.
     struct IconMaterials
     {
         std::shared_ptr<InxMaterial> fallback;
@@ -63,21 +68,14 @@ class GizmosDrawCallBuffer
         {
             switch (iconKind) {
             case ICON_KIND_CAMERA:
-                if (camera)
-                    return camera;
-                break;
+                return camera;
             case ICON_KIND_LIGHT:
-                if (light)
-                    return light;
-                break;
+                return light;
             case ICON_KIND_PARTICLE:
-                if (particle)
-                    return particle;
-                break;
+                return particle;
             default:
-                break;
+                return fallback;
             }
-            return fallback;
         }
     };
 
@@ -172,7 +170,7 @@ class GizmosDrawCallBuffer
      * Each DrawDescriptor becomes one DrawCall with:
      *   - material = gizmoMaterial (unlit vertex-color)
      *   - objectId = OBJECT_ID_PREFIX | descriptorIndex
-     *   - forceBufferUpdate = true (immediate-mode: data changes every frame)
+     *   - meshRuntimeVersion advances only when immediate geometry changes
      *
      * @param gizmoMaterial  Material for gizmo rendering (vertex-color, unlit)
      * @return DrawCallResult containing all gizmo draw calls
@@ -207,7 +205,8 @@ class GizmosDrawCallBuffer
      * Each IconEntry becomes one DrawCall with:
      *   - 4 vertices forming a camera-facing diamond quad
      *   - material = iconMaterial (TRIANGLE_LIST, unlit vertex-color)
-     *   - objectId = IconEntry::objectId (the actual GameObject ID)
+     *   - objectId = renderer-private icon buffer identity
+     *   - pickingObjectId = IconEntry::objectId (the actual GameObject ID)
      *   - Constant angular size relative to distance from camera
      *
      * @param materials     Per-kind icon billboard materials
@@ -243,6 +242,7 @@ class GizmosDrawCallBuffer
     mutable std::vector<std::vector<Vertex>> m_slicedVertices;
     mutable std::vector<std::vector<uint32_t>> m_slicedIndices;
     mutable bool m_slicesDirty = true;
+    uint64_t m_cpuGeometryRevision = 1;
 
     struct ResidentDraw
     {
@@ -258,10 +258,14 @@ class GizmosDrawCallBuffer
     void RebuildSlices() const;
 
     // ---- Icon billboard data ----
+    struct IconGeometryState
+    {
+        std::vector<Vertex> vertices;
+        std::vector<uint32_t> indices;
+        uint64_t revision = 0;
+    };
     std::vector<IconEntry> m_iconEntries;
-    mutable std::vector<std::vector<Vertex>> m_iconSlicedVertices;
-    mutable std::vector<std::vector<uint32_t>> m_iconSlicedIndices;
-    mutable bool m_iconSlicesDirty = true;
+    mutable std::unordered_map<uint64_t, IconGeometryState> m_iconGeometryStates;
 };
 
 } // namespace infernux

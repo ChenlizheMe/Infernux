@@ -4,6 +4,7 @@
 #include <function/resources/InxMaterial/InxMaterial.h>
 #include <function/scene/MeshRenderer.h>
 #include <function/scene/Scene.h>
+#include <function/scene/SceneManager.h>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
 #include <limits>
@@ -669,7 +670,7 @@ DrawCallResult EditorTools::GetDrawCalls(std::shared_ptr<InxMaterial> material, 
 {
     DrawCallResult result;
 
-    if (m_mode == ToolMode::None || selectedObjId == 0 || !activeScene) {
+    if (m_mode == ToolMode::None || selectedObjId == 0) {
         return result;
     }
 
@@ -677,7 +678,15 @@ DrawCallResult EditorTools::GetDrawCalls(std::shared_ptr<InxMaterial> material, 
         RebuildActiveMeshes();
     }
 
-    GameObject *selectedObj = activeScene->FindByID(selectedObjId);
+    // All additively loaded scenes form one editor world.  The active scene
+    // controls creation/save context; it must not gate tools for a selection
+    // owned by another loaded scene.
+    GameObject *selectedObj = SceneManager::Instance().FindRuntimeObjectByID(selectedObjId);
+    // Preview/test scenes may be intentionally detached from SceneManager but
+    // still invoke the renderer with an explicit owner.  Registered additive
+    // scenes remain the primary lookup so active-scene focus never gates tools.
+    if (!selectedObj && activeScene)
+        selectedObj = activeScene->FindByID(selectedObjId);
     if (!selectedObj || !selectedObj->IsActiveInHierarchy()) {
         return result;
     }
