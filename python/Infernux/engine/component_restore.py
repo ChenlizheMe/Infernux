@@ -7,7 +7,7 @@ import os
 import copy
 from dataclasses import dataclass
 from typing import Optional, Any
-from Infernux.engine.project_context import resolve_script_path, resolve_guid_to_path
+from Infernux.engine.project_context import resolve_script_guid_to_path, resolve_script_path
 
 
 class PythonComponentRestoreError(RuntimeError):
@@ -1296,7 +1296,7 @@ def resolve_script_from_guid(
             script_path = resolve_script_path(raw)
 
     if not script_path and script_guid:
-        script_path = resolve_guid_to_path(script_guid)
+        script_path = resolve_script_guid_to_path(script_guid)
 
     return script_path
 
