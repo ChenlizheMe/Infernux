@@ -19,15 +19,36 @@ using infernux::ShaderProgramArtifact;
 using infernux::ShaderProgramPropertyBinding;
 using infernux::ShaderProgramStageMask;
 
-void VerifyRemovedFieldRejection()
+void VerifyRetiredFieldsAreIgnored()
 {
     InxMaterial material("Current", "Lit");
-    auto invalid = material.SerializeDocument();
-    invalid["material_version"] = 4;
+    auto document = material.SerializeDocument();
+    document["material_version"] = 4;
+    document["shaders"]["vertex"]["path_hint"] = "Assets/Shaders/Stale.vert";
+    document["shaders"]["vertex"]["unexpected"] = true;
 
-    const auto before = material.SerializeDocument();
-    assert(!material.DeserializeDocument(invalid));
-    assert(material.SerializeDocument() == before);
+    assert(material.DeserializeDocument(document));
+    const auto current = material.SerializeDocument();
+    assert(!current.contains("material_version"));
+    assert(!current["shaders"]["vertex"].contains("path_hint"));
+    assert(!current["shaders"]["vertex"].contains("unexpected"));
+}
+
+void VerifyGizmoIconPreservesAuthoredAlpha()
+{
+    // Every built-in icon uses this same material factory; only its texture
+    // differs. Transparent interiors must blend, not become binary holes.
+    const auto material = InxMaterial::CreateComponentGizmoIconMaterial();
+    const auto &state = material->GetRenderState();
+    assert(state.blendEnable);
+    assert(state.srcColorBlendFactor == MaterialBlendFactor::SourceAlpha);
+    assert(state.dstColorBlendFactor == MaterialBlendFactor::OneMinusSourceAlpha);
+    assert(!state.alphaClipEnabled);
+    assert(state.alphaClipThreshold == 0.0f);
+    assert(state.depthTestEnable && !state.depthWriteEnable);
+    // Shader defaults cannot turn the explicitly authored blend into a mask.
+    material->ApplyShaderRenderMeta("", "", "", "", 2000, "", "", "0.5");
+    assert(!material->GetRenderState().alphaClipEnabled);
 }
 
 void VerifyStableReferencesAndClone()
@@ -71,16 +92,6 @@ void VerifyTransactionalFailure()
         {"shader_id", ""},
         {"path_hint", "Assets/Shaders/Missing.frag"},
     };
-    assert(!material.DeserializeDocument(invalid));
-    assert(material.SerializeDocument() == before);
-
-    invalid = before;
-    invalid["shaders"]["vertex"]["path_hint"] = "Assets/Shaders/Stale.vert";
-    assert(!material.DeserializeDocument(invalid));
-    assert(material.SerializeDocument() == before);
-
-    invalid = before;
-    invalid["shaders"]["vertex"]["unexpected"] = true;
     assert(!material.DeserializeDocument(invalid));
     assert(material.SerializeDocument() == before);
 }
@@ -388,7 +399,8 @@ void VerifyColorVectorShaderTransitionsPreserveAuthoredValues()
 
 int main()
 {
-    VerifyRemovedFieldRejection();
+    VerifyGizmoIconPreservesAuthoredAlpha();
+    VerifyRetiredFieldsAreIgnored();
     VerifyStableReferencesAndClone();
     VerifyMaterialIdentityIsNotSourceProvenance();
     VerifyTransactionalFailure();

@@ -20,19 +20,13 @@ using json = nlohmann::json;
     throw std::invalid_argument(std::string(path) + ": " + message);
 }
 
-void RequireExactFields(const json &document, const std::unordered_set<std::string> &required,
-                        const std::unordered_set<std::string> &optional, std::string_view path)
+void RequireFields(const json &document, const std::unordered_set<std::string> &required, std::string_view path)
 {
     if (!document.is_object())
         Fail(path, "must be an object");
     for (const auto &field : required) {
         if (!document.contains(field))
             Fail(path, "missing required field '" + field + "'");
-    }
-    for (const auto &[field, value] : document.items()) {
-        (void)value;
-        if (required.find(field) == required.end() && optional.find(field) == optional.end())
-            Fail(path, "contains unknown field '" + field + "'");
     }
 }
 
@@ -79,7 +73,7 @@ void ValidateStencil(const json &document, std::string_view path)
     static const std::unordered_set<std::string> required = {
         "failOp", "passOp", "depthFailOp", "compareOp", "compareMask", "writeMask", "reference",
     };
-    RequireExactFields(document, required, {}, path);
+    RequireFields(document, required, path);
     RequireIntegerRange(document, "failOp", static_cast<int>(MaterialStencilOp::Keep),
                         static_cast<int>(MaterialStencilOp::DecrementAndWrap), path);
     RequireIntegerRange(document, "passOp", static_cast<int>(MaterialStencilOp::Keep),
@@ -120,8 +114,7 @@ void ValidateRenderState(const json &document, std::string_view path)
         "renderQueue",
         "stencilTestEnable",
     };
-    static const std::unordered_set<std::string> optional = {"stencilFront", "stencilBack"};
-    RequireExactFields(document, required, optional, path);
+    RequireFields(document, required, path);
 
     for (const char *field : {"depthBiasEnable", "depthTestEnable", "depthWriteEnable", "blendEnable",
                               "alphaClipEnabled", "stencilTestEnable"}) {
@@ -176,7 +169,6 @@ void ValidateProperty(const std::string &name, const json &document, std::string
 {
     static const std::unordered_set<std::string> textureFields = {"type", "guid"};
     static const std::unordered_set<std::string> valueFields = {"type", "value"};
-    static const std::unordered_set<std::string> metadataFields = {"hdr", "range"};
     if (name.empty())
         Fail(path, "property name must not be empty");
     if (!document.is_object() || !document.contains("type") || !document["type"].is_number_integer())
@@ -204,13 +196,13 @@ void ValidateProperty(const std::string &name, const json &document, std::string
             Fail(path, "Int property range bounds must be integers");
     }
     if (propertyType == MaterialPropertyType::Texture2D) {
-        RequireExactFields(document, textureFields, metadataFields, path);
+        RequireFields(document, textureFields, path);
         if (!document["guid"].is_string())
             Fail(path, "guid must be a string");
         return;
     }
 
-    RequireExactFields(document, valueFields, metadataFields, path);
+    RequireFields(document, valueFields, path);
     if (propertyType == MaterialPropertyType::Int) {
         RequireInteger(document, "value", path);
         return;
@@ -252,7 +244,7 @@ void ValidateProperty(const std::string &name, const json &document, std::string
 void ValidateShaderReference(const json &document, std::string_view path)
 {
     static const std::unordered_set<std::string> fields = {"guid", "shader_id"};
-    RequireExactFields(document, fields, {}, path);
+    RequireFields(document, fields, path);
     for (const char *field : {"guid", "shader_id"}) {
         if (!document[field].is_string())
             Fail(path, std::string(field) + " must be a string");
@@ -270,20 +262,15 @@ void ValidateMaterialDocument(const nlohmann::json &document, std::string_view p
     static const std::unordered_set<std::string> required = {
         "name", "builtin", "shaders", "renderState", "properties",
     };
-    static const std::unordered_set<std::string> optional = {
-        "passTag",
-        "renderStateOverrides",
-        "_shader_property_order",
-    };
     static const std::unordered_set<std::string> shaderFields = {"vertex", "fragment"};
-    RequireExactFields(document, required, optional, path);
+    RequireFields(document, required, path);
     if (!document["name"].is_string())
         Fail(path, "name must be a string");
     if (!document["builtin"].is_boolean())
         Fail(path, "builtin must be a boolean");
 
     const std::string shadersPath = std::string(path) + ".shaders";
-    RequireExactFields(document["shaders"], shaderFields, {}, shadersPath);
+    RequireFields(document["shaders"], shaderFields, shadersPath);
     ValidateShaderReference(document["shaders"]["vertex"], shadersPath + ".vertex");
     ValidateShaderReference(document["shaders"]["fragment"], shadersPath + ".fragment");
 
