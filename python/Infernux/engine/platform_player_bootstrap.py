@@ -34,6 +34,7 @@ _CONTENT_ROOTS = {
 }
 _CONTENT_CACHE_PREFIX = "content-"
 _CONTENT_CACHE_DIGEST_LENGTH = 24
+_PARALLEL_CACHE_PREFIX = "parallel-"
 
 
 def _package_index(data_root: Path) -> dict[str, tuple[str, int]]:
@@ -183,6 +184,66 @@ def _prune_content_caches(
         if not name.startswith(_CONTENT_CACHE_PREFIX):
             continue
         digest = name[len(_CONTENT_CACHE_PREFIX) :]
+        if (
+            len(digest) != _CONTENT_CACHE_DIGEST_LENGTH
+            or any(character not in "0123456789abcdef" for character in digest)
+        ):
+            continue
+        shutil.rmtree(child)
+
+
+def _parallel_module_cache(data_root: str | Path, cache_root: str | Path) -> str:
+    """Validate and materialize the indexed Parallel module generation."""
+
+    root = Path(resolved_path(data_root))
+    cache = Path(resolved_path(cache_root))
+    archive, manifest = _validate_indexed_archive(
+        root,
+        "parallel",
+        "Modules/Parallel.inxmod",
+    )
+    expected_hash = str(manifest["archive_sha256"])
+    destination = cache / f"{_PARALLEL_CACHE_PREFIX}{expected_hash[:24]}"
+    ready = destination / ".ready"
+    try:
+        if ready.read_text(encoding="ascii").strip() == expected_hash:
+            _prune_parallel_caches(cache, destination)
+            return str(destination)
+    except OSError:
+        pass
+
+    cache.mkdir(parents=True, exist_ok=True)
+    temporary = Path(
+        tempfile.mkdtemp(
+            prefix=f".{destination.name}-",
+            dir=cache,
+        )
+    )
+    try:
+        extract_pack(archive, temporary)
+        (temporary / ".ready").write_text(
+            expected_hash + "\n", encoding="ascii", newline="\n"
+        )
+        if destination.exists():
+            shutil.rmtree(destination)
+        replace_path(temporary, destination)
+    finally:
+        if temporary.exists():
+            shutil.rmtree(temporary, ignore_errors=True)
+    _prune_parallel_caches(cache, destination)
+    return str(destination)
+
+
+def _prune_parallel_caches(cache_root: Path, active: Path) -> None:
+    """Keep only the active engine-owned Parallel module generation."""
+
+    for child in tuple(cache_root.iterdir()):
+        if child == active or not child.is_dir():
+            continue
+        name = child.name
+        if not name.startswith(_PARALLEL_CACHE_PREFIX):
+            continue
+        digest = name[len(_PARALLEL_CACHE_PREFIX) :]
         if (
             len(digest) != _CONTENT_CACHE_DIGEST_LENGTH
             or any(character not in "0123456789abcdef" for character in digest)
