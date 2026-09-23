@@ -194,11 +194,7 @@ _IMAGE_FILE_DLL = 0x2000
 def _is_format_marker_group(paths) -> bool:
     """Package-local format/type declarations are not duplicated game payloads."""
     entries = [path.split("::", 1)[-1] for path in paths]
-    return all(
-        entry.endswith("/py.typed")
-        or (entry.startswith("Library/Compute/") and entry.rsplit("/", 1)[-1] in {"__content__", "__version__"})
-        for entry in entries
-    )
+    return all(entry.endswith("/py.typed") for entry in entries)
 
 
 def _is_runtime_license_group(paths) -> bool:
@@ -293,7 +289,26 @@ def _read_text(path: Path) -> str:
 
 
 def _contains_absolute_author_path(text: str) -> bool:
-    return ABSOLUTE_PATH_RE.search(text) is not None
+    # JSON escaping is not a filesystem path.  In particular, an embedded
+    # JSON string such as ``[\"driver\"]`` produces adjacent backslashes in
+    # the outer document and used to be mistaken for a UNC prefix.  Inspect
+    # decoded string values when the payload is JSON; plain text still goes
+    # through the strict drive/POSIX/UNC expression unchanged.
+    try:
+        document = json.loads(text)
+    except (TypeError, json.JSONDecodeError):
+        return ABSOLUTE_PATH_RE.search(text) is not None
+
+    pending = [document]
+    while pending:
+        value = pending.pop()
+        if isinstance(value, dict):
+            pending.extend(value.values())
+        elif isinstance(value, list):
+            pending.extend(value)
+        elif isinstance(value, str) and ABSOLUTE_PATH_RE.search(value) is not None:
+            return True
+    return False
 
 
 def _is_safe_native_entry_path(entry_name: str) -> bool:

@@ -99,6 +99,40 @@ def test_player_audit_does_not_treat_uri_schemes_as_windows_paths(text):
     assert not player_package_audit_module._contains_absolute_author_path(text)
 
 
+def test_player_audit_does_not_treat_nested_json_escaping_as_a_unc_path():
+    document = {
+        "metadata": {
+            "blender_import_diagnostics": {
+                "type": "string",
+                "value": json.dumps(
+                    [{"code": "unsupported_driver", "detail": '["driver_probe"]'}],
+                    separators=(",", ":"),
+                ),
+            }
+        }
+    }
+
+    assert not player_package_audit_module._contains_absolute_author_path(
+        json.dumps(document, separators=(",", ":"))
+    )
+
+
+@pytest.mark.parametrize(
+    "absolute_path",
+    (
+        r"C:\Users\Author\Project\Assets\Main.scene",
+        r"\\server\share\Project\Assets\Main.scene",
+        "/home/author/project/Assets/Main.scene",
+    ),
+)
+def test_player_audit_rejects_absolute_paths_inside_json_values(absolute_path):
+    document = {"metadata": {"file_path": absolute_path}}
+
+    assert player_package_audit_module._contains_absolute_author_path(
+        json.dumps(document, separators=(",", ":"))
+    )
+
+
 @pytest.mark.parametrize(
     "text",
     (
