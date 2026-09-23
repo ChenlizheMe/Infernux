@@ -345,25 +345,30 @@ class AnimationClip3D:
             source_guid = base
         else:
             source_guid = meta_guid
+        if not is_asset_guid_string(source_guid):
+            return None
         bind_csv = (meta.get("bone_names_csv") or "")
         if isinstance(bind_csv, str):
             bind_names = [p.strip() for p in bind_csv.split(",") if p.strip()]
         else:
             bind_names = []
 
-        clip = cls(
-            name=selected["name"],
-            source_model_guid=source_guid,
-            take_name=take_name,
-            bind_pose_bone_names=bind_names,
-            duration_hint=float(selected["duration"]),
-            default_loop=bool(selected.get("default_loop", True)),
-            apply_root_motion=bool(selected.get("apply_root_motion", False)),
-            reference_pose=str(selected.get("reference_pose", "bind_pose")),
-            curves=[ImportedFloatCurve.from_dict(curve) for curve in selected.get("curves", [])],
-            events=events_from_list(selected.get("events", [])),
-            bone_mask=list(selected.get("bone_mask", [])),
-        )
+        try:
+            clip = cls.from_dict({
+                "name": selected["name"],
+                "source_model_guid": source_guid,
+                "take_name": take_name,
+                "bind_pose_bone_names": bind_names,
+                "duration_hint": selected["duration"],
+                "default_loop": selected["default_loop"],
+                "apply_root_motion": selected["apply_root_motion"],
+                "reference_pose": selected["reference_pose"],
+                "curves": selected["curves"],
+                "events": selected["events"],
+                "bone_mask": selected["bone_mask"],
+            })
+        except (KeyError, TypeError, ValueError):
+            return None
         clip.file_path = virtual_path
         return clip
 
