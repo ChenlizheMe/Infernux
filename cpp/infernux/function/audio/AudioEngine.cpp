@@ -1,10 +1,10 @@
 #include "AudioEngine.h"
 
 #include "AudioClip.h"
-#include "AudioStreamBuffer.h"
 #include "AudioListener.h"
 #include "AudioMixer.h"
 #include "AudioSource.h"
+#include "AudioStreamBuffer.h"
 
 #include <core/log/InxLog.h>
 #include <function/scene/GameObject.h>
@@ -128,6 +128,7 @@ bool AudioEngine::Initialize()
     }
 
     m_busMailbox.Publish(m_busEnvelopes);
+    m_outputDsp.ResetDeviceSession();
     if (!SDL_SetAudioPostmixCallback(m_deviceId, &AudioEngine::ProcessOutput, this) ||
         !SDL_ResumeAudioDevice(m_deviceId)) {
         INXLOG_ERROR("Failed to resume audio device: ", SDL_GetError());
@@ -202,6 +203,7 @@ void AudioEngine::Shutdown()
         SDL_CloseAudioDevice(m_deviceId);
         m_deviceId = 0;
     }
+    m_outputDsp.ResetDeviceSession();
 
     SDL_QuitSubSystem(SDL_INIT_AUDIO);
 
@@ -243,15 +245,11 @@ void SDLCALL AudioEngine::ProcessOutput(void *userdata, const SDL_AudioSpec *spe
     for (size_t slot = 1; slot < buses.size(); ++slot)
         engine.m_audioBusGains[slot].store(buses[slot].muted ? 0.0f : masterGain * buses[slot].VolumeAt(end),
                                            std::memory_order_relaxed);
-    float peak = 0.0f;
-    uint64_t saturated = 0;
-    for (int sample = 0; sample < frames * spec->channels; ++sample) {
-        const float magnitude = std::abs(buffer[sample]);
-        peak = std::max(peak, magnitude);
-        saturated += magnitude >= 1.0f;
-    }
-    engine.m_outputPeak.store(peak, std::memory_order_relaxed);
-    engine.m_saturatedSamples.fetch_add(saturated, std::memory_order_relaxed);
+    const size_t sampleCount = static_cast<size_t>(frames) * static_cast<size_t>(spec->channels);
+    engine.m_outputDsp.Process(buffer, sampleCount, spec->channels);
+    const auto meter = audio_mixer::MeasureOutput(buffer, sampleCount);
+    engine.m_outputPeak.store(meter.peak, std::memory_order_relaxed);
+    engine.m_saturatedSamples.fetch_add(meter.saturatedSamples, std::memory_order_relaxed);
     engine.m_outputTime.store(end, std::memory_order_relaxed);
 }
 
@@ -292,7 +290,8 @@ void SDLCALL AudioEngine::FeedVoiceStream(void *userdata, SDL_AudioStream *strea
     const size_t frameCount = voice->frameCount;
     std::array<float, 2048> output{};
     while (remainingFrames > 0 && !finished) {
-        if (voice->streaming) voice->streaming->Request(static_cast<uint64_t>(voice->cursor));
+        if (voice->streaming)
+            voice->streaming->Request(static_cast<uint64_t>(voice->cursor));
         const int chunkFrames = std::min(remainingFrames, static_cast<int>(output.size() / 2));
         int writtenFrames = 0;
         for (; writtenFrames < chunkFrames; ++writtenFrames) {
@@ -322,8 +321,10 @@ void SDLCALL AudioEngine::FeedVoiceStream(void *userdata, SDL_AudioStream *strea
                 }
             } else {
                 const auto &pcmFrames = voice->pcm->stereoFrames;
-                l0 = pcmFrames[index0 * 2]; r0 = pcmFrames[index0 * 2 + 1];
-                l1 = pcmFrames[index1 * 2]; r1 = pcmFrames[index1 * 2 + 1];
+                l0 = pcmFrames[index0 * 2];
+                r0 = pcmFrames[index0 * 2 + 1];
+                l1 = pcmFrames[index1 * 2];
+                r1 = pcmFrames[index1 * 2 + 1];
             }
             const float left = l0 + (l1 - l0) * fraction;
             const float right = r0 + (r1 - r0) * fraction;
@@ -460,7 +461,8 @@ SDL_AudioStream *AudioEngine::CreateVoice(AudioSource * /*source*/, AudioClip *c
     playbackSpec.channels = 2;
     playbackSpec.freq = m_deviceSpec.freq > 0 ? m_deviceSpec.freq : 44100;
 
-    if (clip->IsStreaming()) playbackSpec.freq = clip->GetSampleRate();
+    if (clip->IsStreaming())
+        playbackSpec.freq = clip->GetSampleRate();
     auto pcm = clip->IsStreaming() ? nullptr : clip->AcquirePlaybackPcm(playbackSpec.freq);
     if (!clip->IsStreaming() && (!pcm || pcm->frameCount == 0)) {
         INXLOG_ERROR("Failed to acquire prepared audio clip for playback");
@@ -631,8 +633,8 @@ double AudioEngine::VoiceCursorAt(const AudioVoiceState &state, double time) con
 {
     double cursor = state.cursor;
     if (state.virtualized && !state.paused)
-        cursor += std::max(0.0, time - state.virtualSince) * state.sampleRate *
-                  state.pitch.load(std::memory_order_relaxed);
+        cursor +=
+            std::max(0.0, time - state.virtualSince) * state.sampleRate * state.pitch.load(std::memory_order_relaxed);
     const double count = static_cast<double>(state.frameCount);
     return state.loop.load(std::memory_order_relaxed) ? std::fmod(cursor, count) : std::min(cursor, count);
 }

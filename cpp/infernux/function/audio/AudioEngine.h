@@ -1,6 +1,7 @@
 #pragma once
 
 #include "AudioBusAutomation.h"
+#include "AudioMixer.h"
 
 #include <cstddef>
 
@@ -246,6 +247,9 @@ class AudioEngine
     // before SDL sums/clamps voices, preserving output headroom.
     audio_mixer::BusEnvelopes m_busEnvelopes{};
     audio_mixer::BusEnvelopeMailbox m_busMailbox;
+    // Reserved postmix slot. No product DSP is installed in 041; the only
+    // producer is the engine owner and the callback always starts bypassed.
+    audio_mixer::OutputDspStage<audio_mixer::BypassOutputDsp> m_outputDsp;
     std::array<std::atomic<float>, 5> m_audioBusGains{1.0f, 1.0f, 1.0f, 1.0f, 1.0f};
     std::atomic<double> m_outputTime{0.0};
     std::atomic<float> m_outputPeak{0.0f};
