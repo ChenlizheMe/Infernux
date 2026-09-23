@@ -20,6 +20,11 @@ set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
 set(ASSIMP_BUILD_ASSIMP_TOOLS OFF CACHE BOOL "" FORCE)
 set(ASSIMP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(ASSIMP_NO_EXPORT ON CACHE BOOL "" FORCE)
+# Assimp owns compiler-warning portability for its source tree.  The current
+# release emits a Clang-version-specific suppression flag, so promoting
+# third-party diagnostics to errors makes an otherwise valid engine build
+# depend on the host runner's exact Clang revision.
+set(ASSIMP_WARNINGS_AS_ERRORS OFF CACHE BOOL "" FORCE)
 # IFC importer triggers a spurious MSVC /MP parallel compilation error
 # (C2065 "_Ty1" in <map> from IFCUtil.h) — disable it; IFC (building
 # CAD) is not needed for game asset pipelines.

@@ -482,6 +482,11 @@ jobs:
           java-version: "17"
 
       - uses: android-actions/setup-android@v3
+        with:
+          # The legacy SDK "tools" package was removed from Google's current
+          # repository.  setup-android defaults to requesting it, which now
+          # fails before our explicitly pinned SDK packages are installed.
+          packages: platform-tools
 
       - name: Install pinned Android SDK
         run: |
