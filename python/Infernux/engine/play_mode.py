@@ -1754,9 +1754,9 @@ class PlayModeManager(PlayModeSerializationMixin):
         active_scene = restored_scenes[active_backup.world_id]
         if not sfm.activate_loaded_scene(active_scene):
             raise RuntimeError("Cannot restore the active Scene document after Play Mode")
-        if active_backup.resource_path:
-            sfm._restore_camera_state(active_backup.resource_path)
-            sfm._remember_last_scene(active_backup.resource_path)
+        if sfm.current_scene_path:
+            sfm._restore_camera_state(sfm.current_scene_path)
+            sfm._remember_last_scene(sfm.current_scene_path)
 
     def _restore_scene_file_path(self):
         """Restore the exact editor Scene document identity after Play Mode."""
@@ -1766,12 +1766,21 @@ class PlayModeManager(PlayModeSerializationMixin):
         sfm = SceneFileManager.instance()
         if sfm is None:
             raise RuntimeError("Cannot restore Play Mode scene without SceneFileManager")
-        path_changed = sfm.current_scene_path != self._scene_path_backup
-        sfm._current_scene_path = self._scene_path_backup
-        from Infernux.engine.interaction import DocumentRegistry, DocumentState
+        from Infernux.engine.interaction import (
+            DocumentIdentityKind,
+            DocumentRegistry,
+            DocumentState,
+        )
 
         registry = DocumentRegistry.instance()
         document = registry.require(self._scene_document_id_backup)
+        current_path = (
+            sfm._scene_path_for_guid(document.key.identity)
+            if document.key.identity_kind is DocumentIdentityKind.ASSET_GUID
+            else self._scene_path_backup
+        )
+        path_changed = sfm.current_scene_path != current_path
+        sfm._current_scene_path = current_path
         sfm._scene_document_id = document.document_id
         registry.restore_revision_state(
             document.document_id,
@@ -1780,14 +1789,14 @@ class PlayModeManager(PlayModeSerializationMixin):
             state=self._scene_document_state_backup or DocumentState.READY,
         )
         if path_changed:
-            if self._scene_path_backup:
-                sfm._restore_camera_state(self._scene_path_backup)
+            if sfm.current_scene_path:
+                sfm._restore_camera_state(sfm.current_scene_path)
             if sfm._on_scene_changed:
                 sfm._on_scene_changed()
         # Reassert the authored scene at the Stop boundary so the next Editor
         # launch returns to the pre-play document.
-        if self._scene_path_backup:
-            sfm._remember_last_scene(self._scene_path_backup)
+        if sfm.current_scene_path:
+            sfm._remember_last_scene(sfm.current_scene_path)
     
     # ========================================================================
     # Event System

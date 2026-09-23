@@ -153,10 +153,15 @@ def test_project_asset_service_selects_renamed_asset_or_folder(
     )
 
     snapshot = selection.snapshot
-    target = SelectionTarget.asset(destination)
-    assert snapshot.targets == (target,)
-    assert snapshot.primary == target
-    assert snapshot.owner_id == "project"
+    if is_directory:
+        # Directories are navigation/view state, not registered asset identity.
+        assert snapshot.targets == ()
+        assert snapshot.primary is None
+    else:
+        target = SelectionTarget.asset("registered-guid")
+        assert snapshot.targets == (target,)
+        assert snapshot.primary == target
+        assert snapshot.owner_id == "project"
 
 
 def test_project_asset_interactions_own_clipboard_transfer_and_delete(

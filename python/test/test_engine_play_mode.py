@@ -693,7 +693,7 @@ class TestPlayModeManager:
 
         restored_material = get_raw_field_value(restored, "material")
         assert restored_material.guid == "material-guid"
-        assert restored_material.path_hint == "Assets/Test.mat"
+        assert restored_material.path_hint == ""
         assert restored._enabled is False
         assert restored._awake_called is True
         assert restored._has_started is True

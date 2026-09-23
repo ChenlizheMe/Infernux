@@ -298,7 +298,6 @@ class ProjectAssetCommandService:
 
         self._require_configured()
         normalized = self.preflight_delete(paths)
-
         def on_deleted() -> None:
             if clear_asset_selection:
                 self._clear_project_selection_if_needed(normalized)
@@ -334,12 +333,17 @@ class ProjectAssetCommandService:
         from .documents import DocumentKind, DocumentRegistry
 
         registry = DocumentRegistry._instance
-        opened = tuple(
-            document
+        registered_guids = self._registered_guids_under(normalized)
+        opened_by_id = {
+            document.document_id: document
             for root in normalized
             if registry is not None
-            for document in registry.documents_under_resource(root)
-        )
+            for document in registry.documents_under_resource(
+                root,
+                guids=registered_guids,
+            )
+        }
+        opened = tuple(opened_by_id.values())
         opened_scene = next(
             (
                 document
@@ -702,6 +706,24 @@ class ProjectAssetCommandService:
             primary=targets[-1],
             reason=reason,
             record_history=False,
+        )
+
+    def _registered_guids_under(self, paths: tuple[str, ...]) -> frozenset[str]:
+        database = self._asset_database
+        if database is None:
+            return frozenset()
+        candidates: list[str] = []
+        for path in paths:
+            if os.path.isdir(path):
+                for root, _directories, files in os.walk(path):
+                    candidates.extend(os.path.join(root, name) for name in files)
+            else:
+                candidates.append(path)
+        return frozenset(
+            guid.casefold()
+            for candidate in candidates
+            if not candidate.lower().endswith(".meta")
+            if (guid := str(database.get_guid_from_path(candidate) or "").strip())
         )
 
     def _clear_project_selection_if_needed(self, paths: tuple[str, ...]) -> None:

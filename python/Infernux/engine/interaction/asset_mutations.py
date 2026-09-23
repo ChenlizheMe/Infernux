@@ -322,7 +322,8 @@ class AssetMutationService:
         if len(source_keys) != len(mutations) or len(destination_keys) != len(mutations):
             raise ValueError("asset relocation contains duplicate source or destination paths")
         self._documents.preflight_resource_remaps(
-            (mutation.source_path, mutation.destination_path) for mutation in mutations
+            (mutation.source_path, mutation.destination_path, mutation.guid)
+            for mutation in mutations
         )
         if operation in self._prepared:
             raise RuntimeError(f"asset relocation operation is already prepared: {operation}")
@@ -350,11 +351,7 @@ class AssetMutationService:
                     guid=mutation.guid,
                     title=os.path.splitext(os.path.basename(mutation.destination_path))[0],
                 )
-                selection_changed = self._selection.remap_asset_path(
-                    mutation.source_path,
-                    mutation.destination_path,
-                    reason="asset_moved",
-                )
+                selection_changed = False
                 changes.append(AssetMutationChange(mutation, document_ids, selection_changed))
                 applied.append(mutation)
         except Exception:
@@ -364,11 +361,6 @@ class AssetMutationService:
                     mutation.source_path,
                     guid=mutation.guid,
                     title=os.path.splitext(os.path.basename(mutation.source_path))[0],
-                )
-                self._selection.remap_asset_path(
-                    mutation.destination_path,
-                    mutation.source_path,
-                    reason="asset_move_rollback",
                 )
                 if mutation.guid:
                     self._paths_by_guid[mutation.guid] = mutation.source_path
@@ -415,6 +407,7 @@ class AssetMutationService:
         ):
             self._documents.publish_external_resource_change(
                 mutation.path,
+                guid=mutation.guid,
                 deleted=mutation.kind is AssetMutationKind.DELETED,
             )
         self._revision += 1

@@ -49,7 +49,7 @@ class _Controller:
         self.registry.complete_save(
             ticket.ticket_id,
             success=True,
-            key=DocumentKey.resource(DocumentKind.SCENE, "copy.scene"),
+            key=DocumentKey.asset(DocumentKind.SCENE, "copy-scene-guid"),
             resource_path="copy.scene",
             title="Copy",
         )
@@ -68,9 +68,9 @@ def _conflicted_document(
     document = registry.create(
         DocumentKind.SCENE,
         title,
-        key=DocumentKey.resource(
+        key=DocumentKey.asset(
             DocumentKind.SCENE,
-            str(path),
+            f"{title.casefold()}-scene-guid",
         ),
         resource_path=str(path),
         revision=1,
@@ -131,13 +131,27 @@ def test_scene_conflict_reload_stops_play_and_waits_for_edit_restore(
     manager = SceneFileManager()
     path = tmp_path / "PlayConflict.scene"
     path.write_text("disk-version", encoding="utf-8")
+    resolved = str(path.resolve())
+    manager.set_asset_database(SimpleNamespace(
+        get_guid_from_path=lambda candidate: (
+            "play-conflict-guid" if str(candidate) == resolved else ""
+        ),
+        get_path_from_guid=lambda guid: (
+            resolved if guid == "play-conflict-guid" else ""
+        ),
+    ))
+    registry.rekey(
+        manager.document_id,
+        DocumentKey.asset(DocumentKind.SCENE, "play-conflict-guid"),
+        resource_path=resolved,
+    )
     registry.update_metadata(
         manager.document_id,
-        resource_path=str(path),
+        resource_path=resolved,
         controller=manager,
     )
     document = registry.require(manager.document_id)
-    manager._current_scene_path = str(path)
+    manager._current_scene_path = resolved
     registry.mark_changed(document.document_id, view_id="scene_view")
     registry.mark_conflict(document.document_id)
 
@@ -237,10 +251,7 @@ def test_non_scene_conflict_never_opens_the_external_change_dialog():
     document = registry.create(
         DocumentKind.PARTICLE_GRAPH,
         "Smoke",
-        key=DocumentKey.resource(
-            DocumentKind.PARTICLE_GRAPH,
-            "Smoke.particlegraph",
-        ),
+            key=DocumentKey.asset(DocumentKind.PARTICLE_GRAPH, "particle-guid"),
         resource_path="Smoke.particlegraph",
         revision=1,
         saved_revision=0,
@@ -268,7 +279,10 @@ def test_stale_conflict_revision_cannot_resolve_a_new_external_change(tmp_path, 
     assert conflict is not None
 
     path.write_text("external-change", encoding="utf-8")
-    registry.publish_external_resource_change(document.resource_path)
+    registry.publish_external_resource_change(
+        document.resource_path,
+        guid=document.key.identity,
+    )
     result = getattr(service, choice)(conflict.conflict_id)
 
     assert result.status is DocumentActionStatus.REJECTED

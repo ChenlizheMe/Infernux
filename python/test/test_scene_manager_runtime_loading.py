@@ -310,18 +310,24 @@ def test_wait_for_load_scene_delegates_to_player_preparation_service(monkeypatch
             calls.append(path)
             return True
 
+    class Database:
+        @staticmethod
+        def get_path_from_guid(guid):
+            return "/project/Scenes/Main.scene" if guid == "main-scene-guid" else ""
+
     monkeypatch.setattr(SceneManager, "_runtime_scene_service", RuntimeService())
+    monkeypatch.setattr("Infernux.core.assets.AssetManager._asset_database", Database())
     monkeypatch.setattr(
         SceneManager,
         "_load_build_list",
-        staticmethod(lambda: ["/project/Scenes/Main.scene"]),
+        staticmethod(lambda: ["main-scene-guid"]),
     )
     # Packaged builds do not retain the authoring scene at this logical path;
     # the Player service resolves it through RuntimeAssetCatalog instead.
     monkeypatch.setattr("Infernux.scene.os.path.isfile", lambda _path: False)
 
     assert SceneManager.wait_for_load_scene("Main") is True
-    assert calls == ["/project/Scenes/Main.scene"]
+    assert calls == ["main-scene-guid"]
 
 
 def test_load_scene_delegates_missing_authoring_path_to_player_catalog(monkeypatch):
@@ -335,16 +341,24 @@ def test_load_scene_delegates_missing_authoring_path_to_player_catalog(monkeypat
             calls.append(path)
             return True
 
+    class Database:
+        @staticmethod
+        def get_path_from_guid(guid):
+            if guid == "main-scene-guid":
+                return "/packaged/Data/Assets/Scenes/Main.scene"
+            return ""
+
     monkeypatch.setattr(SceneManager, "_runtime_scene_service", RuntimeService())
+    monkeypatch.setattr("Infernux.core.assets.AssetManager._asset_database", Database())
     monkeypatch.setattr(
         SceneManager,
         "_load_build_list",
-        staticmethod(lambda: ["/packaged/Data/Assets/Scenes/Main.scene"]),
+        staticmethod(lambda: ["main-scene-guid"]),
     )
     monkeypatch.setattr("Infernux.scene.os.path.isfile", lambda _path: False)
 
     assert SceneManager.load_scene("Main") is True
-    assert calls == ["/packaged/Data/Assets/Scenes/Main.scene"]
+    assert calls == ["main-scene-guid"]
 
 
 def test_prepare_scene_holds_ready_transaction_until_explicit_activation(monkeypatch):

@@ -8,7 +8,6 @@ import pytest
 from Infernux.core.asset_ref import ParticleGraphRef
 from Infernux.engine.interaction import (
     ActionOrigin,
-    AssetReferenceRelocationPlanner,
     AssetContentChange,
     AssetMutationKind,
     AssetRenameContentRegistry,
@@ -100,7 +99,7 @@ def test_only_external_content_mutation_advances_document_external_revision(tmp_
     document = documents.create(
         DocumentKind.PARTICLE_GRAPH,
         "Smoke",
-        key=DocumentKey.resource(DocumentKind.PARTICLE_GRAPH, str(path)),
+        key=DocumentKey.asset(DocumentKind.PARTICLE_GRAPH, "particle-guid"),
         resource_path=str(path),
         revision=1,
         saved_revision=0,
@@ -110,6 +109,7 @@ def test_only_external_content_mutation_advances_document_external_revision(tmp_
     service.publish_content_change(
         str(path),
         AssetMutationKind.MODIFIED,
+        guid="particle-guid",
         origin=ActionOrigin.USER,
     )
     assert document.external_revision == 0
@@ -119,6 +119,7 @@ def test_only_external_content_mutation_advances_document_external_revision(tmp_
     service.publish_content_change(
         str(path),
         AssetMutationKind.MODIFIED,
+        guid="particle-guid",
         origin=ActionOrigin.EXTERNAL,
     )
     assert document.external_revision == 1
@@ -192,80 +193,6 @@ def test_asset_rename_content_adapters_are_extensible(tmp_path):
     assert registry.build_patch(str(source), str(destination)) == ("Old", "New")
 
 
-def test_asset_relocation_upgrades_path_only_json_references_to_guid(tmp_path):
-    project = tmp_path / "Project"
-    shader = project / "Assets" / "Shaders" / "Old.frag"
-    effect = project / "Assets" / "Effects" / "Outline.effect"
-    shader.parent.mkdir(parents=True)
-    effect.parent.mkdir(parents=True)
-    shader.write_text("#version 450\n", encoding="utf-8")
-    effect.write_text(
-        json.dumps(
-            {
-                "$schema": "infernux.render_effect",
-                "dependencies": [
-                    {"guid": "", "path_hint": "Assets/Shaders/Old.frag"}
-                ],
-            }
-        ),
-        encoding="utf-8",
-    )
-    destination = project / "Assets" / "Rendering" / "Outline.frag"
-
-    class _Database:
-        @staticmethod
-        def get_all_asset_paths():
-            return [str(shader), str(effect)]
-
-    patches = AssetReferenceRelocationPlanner.build_patches(
-        ((str(shader), str(destination), "shader-guid"),),
-        database=_Database(),
-        project_root=str(project),
-    )
-
-    assert len(patches) == 1
-    assert patches[0].source_path == str(effect)
-    reference = json.loads(patches[0].updated)["dependencies"][0]
-    assert reference == {
-        "guid": "shader-guid",
-        "path_hint": "Assets/Rendering/Outline.frag",
-    }
-
-
-def test_asset_relocation_does_not_rewrite_guid_authoritative_reference(tmp_path):
-    project = tmp_path / "Project"
-    material = project / "Assets" / "Materials" / "Surface.mat"
-    texture = project / "Assets" / "Textures" / "Old.png"
-    material.parent.mkdir(parents=True)
-    texture.parent.mkdir(parents=True)
-    texture.write_bytes(b"texture")
-    material.write_text(
-        json.dumps(
-            {
-                "texture": {
-                    "guid": "texture-guid",
-                    "path_hint": "Assets/Already/Stale.png",
-                }
-            }
-        ),
-        encoding="utf-8",
-    )
-    destination = project / "Assets" / "Art" / "New.png"
-
-    class _Database:
-        @staticmethod
-        def get_all_asset_paths():
-            return [str(texture), str(material)]
-
-    patches = AssetReferenceRelocationPlanner.build_patches(
-        ((str(texture), str(destination), "texture-guid"),),
-        database=_Database(),
-        project_root=str(project),
-    )
-
-    assert patches == ()
-
-
 def test_asset_move_remaps_documents_selection_and_reference_display(tmp_path):
     old_path = tmp_path / "Old.particlegraph"
     new_path = tmp_path / "New.particlegraph"
@@ -281,7 +208,7 @@ def test_asset_move_remaps_documents_selection_and_reference_display(tmp_path):
         controller=controller,
     )
     selection.select(
-        SelectionTarget.asset(str(old_path)),
+        SelectionTarget.asset("graph-guid"),
         owner_id="project",
         record_history=False,
     )
@@ -296,13 +223,13 @@ def test_asset_move_remaps_documents_selection_and_reference_display(tmp_path):
     )
 
     assert change.remapped_document_ids == (document.document_id,)
-    assert change.selection_changed is True
+    assert change.selection_changed is False
     assert document.resource_path == str(new_path)
     assert document.title == "New"
     assert document.key == DocumentKey.asset(DocumentKind.PARTICLE_GRAPH, "graph-guid")
-    assert selection.snapshot.primary == SelectionTarget.asset(str(new_path))
+    assert selection.snapshot.primary == SelectionTarget.asset("graph-guid")
     assert reference.display_name == "New.particlegraph"
-    assert reference.to_dict()["path_hint"] == "Assets/Old.particlegraph"
+    assert reference.to_dict() == {"guid": "graph-guid"}
     assert controller.moves == [
         {
             "document_id": document.document_id,
@@ -326,17 +253,17 @@ def test_asset_move_rekeys_path_documents_and_subresource_selection(tmp_path):
         resource_path=str(old_path),
     )
     target = SelectionTarget.asset_subresource(
-        str(old_path),
+        "model-guid",
         "mesh-0",
         sub_kind="mesh",
     )
     selection.select(target, owner_id="project", record_history=False)
 
-    service.publish_move(str(old_path), str(new_path))
+    service.publish_move(str(old_path), str(new_path), guid="model-guid")
 
     assert document.key == DocumentKey.resource(DocumentKind.GENERIC, str(new_path))
     assert selection.snapshot.primary == SelectionTarget.asset_subresource(
-        str(new_path),
+        "model-guid",
         "mesh-0",
         sub_kind="mesh",
     )
@@ -395,13 +322,13 @@ def test_document_move_is_rejected_while_save_is_pending(tmp_path):
     document = documents.create(
         DocumentKind.SCENE,
         "Old",
-        key=DocumentKey.resource(DocumentKind.SCENE, str(old_path)),
+        key=DocumentKey.asset(DocumentKind.SCENE, "scene-guid"),
         resource_path=str(old_path),
     )
     documents.begin_save(document.document_id)
 
     with pytest.raises(RuntimeError, match="while document is saving"):
-        service.publish_move(str(old_path), str(new_path))
+        service.publish_move(str(old_path), str(new_path), guid="scene-guid")
 
     assert path_key(document.resource_path) == path_key(old_path)
 

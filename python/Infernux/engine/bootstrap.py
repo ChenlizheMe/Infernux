@@ -363,7 +363,6 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
         native = engine.get_native_engine() if engine else None
         if native:
             tb.is_show_grid = lambda: native.is_show_grid()
-
         def _sync_camera():
             cam = engine.editor_camera if engine else None
             if not cam:
@@ -487,7 +486,7 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
             document_id = self.scene_file_manager.document_id
             if document_id:
                 for view in (self.scene_view, self.game_view, self.ui_editor):
-                    view.bind_document(document_id)
+                    view.bind_document(document_id, preserve_previous=True)
             from Infernux.engine.interaction import SelectionService
             SelectionService.instance().clear(
                 reason="scene_changed",

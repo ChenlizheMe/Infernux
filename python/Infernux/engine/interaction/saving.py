@@ -71,6 +71,49 @@ class EditorSaveService:
 
         ContinuousEditService.instance().commit_document(document.document_id)
         dirty_before = bool(document.is_dirty)
+        if document.kind is DocumentKind.SCENE and not save_as:
+            from Infernux.engine.scene_manager import SceneFileManager
+
+            scene_files = SceneFileManager.instance()
+            if scene_files is None:
+                raise RuntimeError("Scene save requires an active SceneFileManager")
+            scene_document_ids = scene_files.loaded_scene_document_ids()
+
+            resident_documents = tuple(
+                candidate
+                for identifier in scene_document_ids
+                if (candidate := self._registry.get(identifier)) is not None
+                and candidate.kind is DocumentKind.SCENE
+            )
+            continuous_edits = ContinuousEditService.instance()
+            for candidate in resident_documents:
+                continuous_edits.commit_document(candidate.document_id)
+            dirty_documents = tuple(
+                candidate for candidate in resident_documents if candidate.is_dirty
+            )
+            if not dirty_documents:
+                return FocusedSaveResult(
+                    DocumentActionResult(DocumentActionStatus.NO_OP),
+                    target="scenes",
+                    document_id=document.document_id,
+                    dirty_before=False,
+                )
+            for candidate in dirty_documents:
+                result = self._registry.defer_save(candidate.document_id)
+                if not result.accepted:
+                    return FocusedSaveResult(
+                        result,
+                        target="scenes",
+                        document_id=candidate.document_id,
+                        dirty_before=True,
+                    )
+            return FocusedSaveResult(
+                DocumentActionResult(DocumentActionStatus.PENDING),
+                target="scenes",
+                document_id=document.document_id,
+                dirty_before=True,
+            )
+
         result = self._registry.defer_save(document.document_id, save_as=save_as)
         return FocusedSaveResult(
             result,

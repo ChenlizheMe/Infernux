@@ -397,6 +397,18 @@ class SceneSaveMixin:
         )
         if ok:
             normalized = resolved_path(target_path)
+            key = self._document_key("scene", normalized)
+            from Infernux.engine.interaction import DocumentIdentityKind
+
+            if key.identity_kind is not DocumentIdentityKind.ASSET_GUID:
+                registry.complete_save(
+                    active_ticket_id,
+                    success=False,
+                    message="saved scene was not registered",
+                )
+                self._pending_save_ticket_id = ""
+                self._pending_save_document_id = ""
+                return False
             current_token = None
             try:
                 from Infernux.lib import SceneManager
@@ -409,7 +421,7 @@ class SceneSaveMixin:
             registry.complete_save(
                 active_ticket_id,
                 success=True,
-                key=self._document_key("scene", normalized),
+                key=key,
                 resource_path=normalized,
                 title=os.path.splitext(os.path.basename(normalized))[0],
                 content_token=current_token,
@@ -872,10 +884,20 @@ class SceneSaveMixin:
                 AssetManager.import_asset(target, database=self._asset_database)
             except Exception as exc:
                 Debug.log_warning(f"Scene saved but asset registration is pending: {exc}")
+        key = self._document_key("scene", target)
+        from Infernux.engine.interaction import DocumentIdentityKind
+
+        if key.identity_kind is not DocumentIdentityKind.ASSET_GUID:
+            registry.complete_save(
+                ticket_id,
+                success=False,
+                message="saved scene was not registered",
+            )
+            return False
         registry.complete_save(
             ticket_id,
             success=True,
-            key=self._document_key("scene", target),
+            key=key,
             resource_path=target,
             title=os.path.splitext(os.path.basename(target))[0],
             content_token=serialized_token,

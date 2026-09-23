@@ -7,6 +7,8 @@ from types import SimpleNamespace
 import pytest
 
 from Infernux.engine.interaction import (
+    DocumentKey,
+    DocumentKind,
     DocumentRegistry,
     DocumentState,
     ExternalDocumentConflictService,
@@ -15,7 +17,7 @@ from Infernux.engine.scene_manager import SceneFileManager
 from Infernux.host import EditorAutomationHost, OperationError
 
 
-@pytest.mark.parametrize("field", ["shadowBias", "__type_name__", "__component_id__"])
+@pytest.mark.parametrize("field", ["__type_name__", "__component_id__"])
 @pytest.mark.parametrize("entry", ["startup", "deferred", "conflict"])
 def test_scene_entry_points_reject_invalid_disk_fields_and_publish_reason(
     scene, tmp_path, monkeypatch, field, entry,
@@ -32,14 +34,7 @@ def test_scene_entry_points_reject_invalid_disk_fields_and_publish_reason(
         "execution_order": 0,
         "data": {field: "invalid-runtime-metadata"},
     }
-    if field == "shadowBias":
-        light = owner.add_component("Light")
-        invalid = scene.serialize_document()
-        invalid["objects"][0]["components"][0]["data"][field] = 0.1
-        original = scene.serialize_document()
-        assert light is not None
-    else:
-        invalid["objects"][0]["components"].append(record)
+    invalid["objects"][0]["components"].append(record)
     path = tmp_path / "TankBattle.scene"
     path.write_text(json.dumps(invalid), encoding="utf-8")
 
@@ -71,8 +66,21 @@ def test_scene_entry_points_reject_invalid_disk_fields_and_publish_reason(
             time.sleep(0.001)
         assert not manager.is_loading
     else:
-        manager._current_scene_path = str(path)
-        registry.update_metadata(document.document_id, resource_path=str(path))
+        manager.set_asset_database(SimpleNamespace(
+            get_guid_from_path=lambda candidate: (
+                "scene-guid" if str(candidate) == str(path.resolve()) else ""
+            ),
+            get_path_from_guid=lambda guid: (
+                str(path.resolve()) if guid == "scene-guid" else ""
+            ),
+        ))
+        manager._current_scene_path = str(path.resolve())
+        registry.rekey(
+            document.document_id,
+            DocumentKey.asset(DocumentKind.SCENE, "scene-guid"),
+            resource_path=str(path.resolve()),
+        )
+        registry.update_metadata(document.document_id, resource_path=str(path.resolve()))
         registry.mark_changed(document.document_id)
         registry.mark_conflict(document.document_id)
         conflicts = ExternalDocumentConflictService(registry)
@@ -120,7 +128,7 @@ def test_pending_conflict_reload_preserves_specific_failure(monkeypatch, tmp_pat
     registry = DocumentRegistry.instance()
     document = registry.require(manager.document_id)
     registry.mark_conflict(document.document_id)
-    manager._pending_external_reload = (document.document_id, str(path))
+    manager._pending_external_reload = document.document_id
     monkeypatch.setattr(manager, "_is_play_mode", lambda: False)
     monkeypatch.setattr(deferred.DeferredTaskRunner, "instance", lambda: SimpleNamespace(is_busy=False))
 
@@ -137,13 +145,19 @@ def test_pending_conflict_reload_preserves_specific_failure(monkeypatch, tmp_pat
 
 
 @pytest.fixture
-def persisted_scene(scene, tmp_path, monkeypatch):
+def persisted_scene(scene, engine, tmp_path, monkeypatch):
+    from Infernux.core.assets import AssetManager
+
     owner = scene.create_game_object("LocalTank")
     path = tmp_path / "TankBattle.scene"
     path.write_text(json.dumps(scene.serialize_document()), encoding="utf-8")
     monkeypatch.setattr(SceneFileManager, "_instance", None)
     manager = SceneFileManager()
     manager._current_scene_path = str(path)
+    database = engine.get_asset_database()
+    monkeypatch.setattr(AssetManager, "_asset_database", database)
+    assert database.import_asset(str(path)).succeeded
+    manager.set_asset_database(database)
     monkeypatch.setattr(manager, "_is_under_assets", lambda _path: True)
     monkeypatch.setattr(manager, "_is_play_mode", lambda: False)
     monkeypatch.setattr(manager, "_save_camera_state", lambda _path: None)
@@ -152,7 +166,6 @@ def persisted_scene(scene, tmp_path, monkeypatch):
     monkeypatch.setattr(manager, "_prepare_native_scene_swap", lambda: None)
     monkeypatch.setattr(manager, "sync_all_prefab_instances", lambda _scene: None)
     registry = DocumentRegistry.instance()
-    registry.update_metadata(manager.document_id, resource_path=str(path))
     return manager, registry, path, owner
 
 

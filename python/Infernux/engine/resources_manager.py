@@ -1,4 +1,5 @@
 import os
+import re
 import threading
 import time
 import types
@@ -135,6 +136,22 @@ def _is_particle_script_path(file_path: str) -> bool:
     return str(file_path or "").lower().endswith(".particle.py")
 
 
+_BLENDER_BACKUP_PATTERN = re.compile(r"\.blend\d+$", re.IGNORECASE)
+
+
+def _is_blender_backup_path(file_path: str) -> bool:
+    """Return whether *file_path* is Blender's numbered save backup.
+
+    Blender normally publishes ``Model.blend`` by first moving the previous
+    generation to ``Model.blend1`` (and may keep higher numbered generations).
+    Those files are not project assets.  Treating that rename as an author
+    asset move transfers the stable GUID away from ``Model.blend`` exactly
+    when an artist saves in Blender.
+    """
+    basename = os.path.basename(os.fspath(file_path or ""))
+    return _BLENDER_BACKUP_PATTERN.search(basename) is not None
+
+
 class ResourceChangeHandler(FileSystemEventHandler):
 
     def __init__(
@@ -246,6 +263,7 @@ class ResourceChangeHandler(FileSystemEventHandler):
             lower.endswith(".meta")
             or lower.endswith(".meta.tmp")
             or lower.endswith(".tmp")
+            or _is_blender_backup_path(file_path)
             or is_document_store_temporary_path(file_path)
         ):
             return True
@@ -261,10 +279,14 @@ class ResourceChangeHandler(FileSystemEventHandler):
             return
         lower = str(event.src_path or "").lower()
         script_change = lower.endswith(".py") and not _is_particle_script_path(lower)
+        registered_guid = self._asset_database.get_guid_from_path(event.src_path)
         self._coordinator.submit(
-            AssetFsEventKind.CREATED,
+            # Atomic external writers can report a replacement at an already
+            # registered path as CREATED. The existing GUID makes this a
+            # content revision, never a second asset identity.
+            AssetFsEventKind.MODIFIED if registered_guid else AssetFsEventKind.CREATED,
             event.src_path,
-            guid_hint=read_meta_guid(event.src_path),
+            guid_hint=registered_guid or read_meta_guid(event.src_path),
             debounce_seconds=0.0 if script_change else None,
         )
         if script_change:
@@ -1061,12 +1083,28 @@ class ResourceChangeHandler(FileSystemEventHandler):
                 return
             if AssetManager.is_meta_watcher_suppressed(event.path):
                 return
-        elif AssetManager.is_watcher_echo_suppressed(
-            event.kind.value,
-            event.path,
-            event.destination,
-        ):
-            return
+        else:
+            watcher_echo = AssetManager.is_watcher_echo_suppressed(
+                event.kind.value,
+                event.path,
+                event.destination,
+            )
+            # A create notification at an already registered path is
+            # normalized to MODIFIED above.  Preserve exact self-write echo
+            # suppression for an explicit import which registered that path
+            # immediately before its watcher notification arrived.
+            if (
+                not watcher_echo
+                and event.kind is AssetFsEventKind.MODIFIED
+                and AssetManager.is_watcher_echo_suppressed(
+                    AssetFsEventKind.CREATED.value,
+                    event.path,
+                    event.destination,
+                )
+            ):
+                watcher_echo = True
+            if watcher_echo:
+                return
         from Infernux.engine.interaction import ActionOrigin, action_origin_scope
 
         with action_origin_scope(ActionOrigin.EXTERNAL):
@@ -1127,6 +1165,7 @@ class ResourceChangeHandler(FileSystemEventHandler):
         from Infernux.engine.interaction import DocumentRegistry
 
         documents = DocumentRegistry.instance()
+        asset_guid = str(self._asset_database.get_guid_from_path(path) or "").strip()
         # A self-write watcher event may arrive before AssetManager has polled
         # its ticket. Acknowledge an exact committed fingerprint and defer an
         # incomplete write; neither path is an external edit.
@@ -1137,14 +1176,17 @@ class ResourceChangeHandler(FileSystemEventHandler):
             raise _AssetLocalWritePending(
                 f"local document write is still pending: {path}"
             )
-        durable_change = documents.durable_resource_content_changed(path)
+        durable_change = documents.durable_resource_content_changed(
+            path,
+            guid=asset_guid,
+        )
         if durable_change is None:
             raise _AssetImportNotReady(
                 f"durable resource identity is not ready: {path}"
             )
         if durable_change is False:
             return
-        if not documents.preflight_external_resource_change(path):
+        if not documents.preflight_external_resource_change(path, guid=asset_guid):
             return
         script_change = path.lower().endswith(".py") and not _is_particle_script_path(path)
         was_registered = self._asset_database.contains_path(path)
@@ -1178,10 +1220,21 @@ class ResourceChangeHandler(FileSystemEventHandler):
             # AssetMutationService normally consumes this preflight while
             # publishing a registered reimport. If it did not, finalize the
             # same successful external change here for both branches.
-            if documents.has_pending_external_change_preflight(path):
-                documents.publish_external_resource_change(path)
+            published_guid = str(getattr(result, "guid", "") or asset_guid).strip()
+            if documents.has_pending_external_change_preflight(
+                path,
+                guid=published_guid,
+            ):
+                documents.publish_external_resource_change(
+                    path,
+                    guid=published_guid,
+                )
         except Exception as exc:
-            documents.fail_external_resource_change(path, message=str(exc))
+            documents.fail_external_resource_change(
+                path,
+                guid=asset_guid,
+                message=str(exc),
+            )
             raise
         if script_change:
             if is_project_component_script(path, self._dependency_graph.project_root):
@@ -1210,8 +1263,12 @@ class ResourceChangeHandler(FileSystemEventHandler):
         from Infernux.engine.interaction import DocumentRegistry
 
         documents = DocumentRegistry.instance()
+        asset_guid = str(
+            guid_hint or self._asset_database.get_guid_from_path(path) or ""
+        ).strip()
         durable_change = documents.durable_resource_content_changed(
             path,
+            guid=asset_guid,
             deleted=True,
         )
         if durable_change is None:
@@ -1220,6 +1277,7 @@ class ResourceChangeHandler(FileSystemEventHandler):
             )
         if not durable_change or not documents.preflight_external_resource_change(
             path,
+            guid=asset_guid,
             deleted=True,
         ):
             return

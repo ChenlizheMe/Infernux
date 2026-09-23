@@ -16,7 +16,7 @@ This module orchestrates those primitives into a complete workflow.
 """
 
 import os
-from Infernux.engine.path_utils import is_path_within, path_key, resolved_path
+from Infernux.engine.path_utils import is_path_within, resolved_path
 import json
 from dataclasses import dataclass
 from typing import Any, Optional, Callable
@@ -53,6 +53,7 @@ class _LoadedSceneDocument:
     """Authoring identity for one native Scene resident in the Editor."""
 
     scene: Any
+    asset_guid: str
     resource_path: str
     document_id: str
 
@@ -182,7 +183,8 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         # Additive scene opens use the same owner-safe transaction path as
         # regular scene replacement.  Never mutate the native SceneManager
         # from a drag/drop command while a frame is active.
-        self._deferred_additive_path: Optional[str] = None
+        self._deferred_additive_guid: Optional[str] = None
+        self._deferred_additive_record_history: bool = False
         self._deferred_unload_world_id: Optional[int] = None
         self._deferred_new_scene: bool = False            # True → new scene pending
         self._deferred_exit_prefab: bool = False           # True → exit prefab mode task pending
@@ -191,9 +193,10 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         self._scene_transaction_path: Optional[str] = None
         self._additive_scene_transaction = None
         self._additive_scene_transaction_path: Optional[str] = None
+        self._additive_scene_transaction_guid: Optional[str] = None
         self._last_scene_load = {"status": "idle", "path": "", "error": ""}
         self._last_loaded_file_state = None
-        self._pending_external_reload: Optional[tuple[str, str]] = None
+        self._pending_external_reload: Optional[str] = None
         self._scene_restore_snapshots: dict[str, _SceneRestoreSnapshot] = {}
         self._pending_scene_before_context = None
         self._loaded_scene_documents: dict[int, _LoadedSceneDocument] = {}
@@ -208,6 +211,7 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
 
         # Prefab Mode state
         self.is_prefab_mode = False
+        self.prefab_mode_guid = ""
         self.prefab_mode_path = None
         self.prefab_envelope = {}
         self._prefab_variant_overrides = []
@@ -231,13 +235,18 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         """Set the AssetDatabase for GUID→path resolution during scene load."""
         self._asset_database = asset_db
         if self._current_scene_path and self._scene_document_id:
-            from Infernux.engine.interaction import DocumentRegistry
-
-            DocumentRegistry.instance().rekey(
-                self._scene_document_id,
-                self._document_key("scene", self._current_scene_path),
-                resource_path=self._current_scene_path,
+            from Infernux.engine.interaction import (
+                DocumentIdentityKind,
+                DocumentRegistry,
             )
+
+            key = self._document_key("scene", self._current_scene_path)
+            if key.identity_kind is DocumentIdentityKind.ASSET_GUID:
+                DocumentRegistry.instance().rekey(
+                    self._scene_document_id,
+                    key,
+                    resource_path=self._current_scene_path,
+                )
 
     def set_engine(self, engine):
         """Set the native Infernux reference (for close-request handling)."""
@@ -313,6 +322,43 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
                 return binding
         return None
 
+    def _scene_asset_from_path(self, resource_path: str) -> tuple[str, str]:
+        """Resolve a user-facing Scene path into its registered asset identity."""
+        path = resolved_path(resource_path) if resource_path else ""
+        database = self._asset_database
+        get_guid = getattr(database, "get_guid_from_path", None)
+        get_path = getattr(database, "get_path_from_guid", None)
+        if not path or not callable(get_guid) or not callable(get_path):
+            return "", ""
+        guid = str(get_guid(path) or "").strip().casefold()
+        if not guid:
+            return "", ""
+        current_path = str(get_path(guid) or "").strip()
+        if not current_path:
+            return "", ""
+        return guid, resolved_path(current_path)
+
+    def _scene_path_for_guid(self, asset_guid: str) -> str:
+        resolver = getattr(self._asset_database, "get_path_from_guid", None)
+        if not callable(resolver):
+            return ""
+        identity = str(asset_guid or "").strip().casefold()
+        path = str(resolver(identity) or "").strip() if identity else ""
+        return resolved_path(path) if path else ""
+
+    def _binding_for_scene_guid(self, asset_guid: str) -> Optional[_LoadedSceneDocument]:
+        identity = str(asset_guid or "").strip().casefold()
+        if not identity:
+            return None
+        return next(
+            (
+                binding
+                for binding in self._loaded_scene_documents.values()
+                if binding.asset_guid.casefold() == identity
+            ),
+            None,
+        )
+
     def register_loaded_scene(
         self,
         scene,
@@ -325,11 +371,17 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         if world_id <= 0:
             raise ValueError("loaded Scene requires a stable World identity")
         path = resolved_path(resource_path) if resource_path else ""
+        asset_guid, canonical_path = self._scene_asset_from_path(path)
+        if asset_guid:
+            path = canonical_path
         existing = self._loaded_scene_documents.get(world_id)
         if existing is not None:
-            if path and existing.resource_path and path_key(path) != path_key(existing.resource_path):
+            if asset_guid and existing.asset_guid and asset_guid != existing.asset_guid:
                 raise RuntimeError("loaded Scene is already bound to another resource")
             return existing.document_id
+        duplicate = self._binding_for_scene_guid(asset_guid)
+        if duplicate is not None:
+            raise RuntimeError("Scene asset is already resident in another World")
 
         from Infernux.engine.interaction import DocumentCapability, DocumentRegistry
 
@@ -353,6 +405,7 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         )
         self._loaded_scene_documents[world_id] = _LoadedSceneDocument(
             scene=scene,
+            asset_guid=asset_guid,
             resource_path=path,
             document_id=document.document_id,
         )
@@ -382,10 +435,27 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
                 raise RuntimeError("two restored Scenes share one World identity")
             if identifier in document_ids:
                 raise RuntimeError("two restored Scenes share one editor document")
-            registry.require(identifier)
-            path = resolved_path(resource_path) if resource_path else ""
+            document = registry.require(identifier)
+            from Infernux.engine.interaction import DocumentIdentityKind
+            asset_guid = (
+                document.key.identity
+                if document.key.identity_kind is DocumentIdentityKind.ASSET_GUID
+                else ""
+            )
+            path = (
+                self._scene_path_for_guid(asset_guid)
+                if asset_guid
+                else resolved_path(resource_path) if resource_path else ""
+            )
+            if asset_guid and not path:
+                raise RuntimeError("restored Scene asset GUID is no longer registered")
+            if asset_guid and any(
+                binding.asset_guid == asset_guid for binding in restored.values()
+            ):
+                raise RuntimeError("two restored Scenes share one asset GUID")
             restored[world_id] = _LoadedSceneDocument(
                 scene=scene,
+                asset_guid=asset_guid,
                 resource_path=path,
                 document_id=identifier,
             )
@@ -434,7 +504,13 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         if document is not None:
             locator = registry.locate(binding.document_id)
             self._scene_restore_snapshots[locator.stable_id] = _SceneRestoreSnapshot(
-                locator, binding.scene.serialize_document(), binding.resource_path,
+                locator,
+                binding.scene.serialize_document(),
+                (
+                    ""
+                    if locator.key_hint.identity_kind.value == "asset_guid"
+                    else binding.resource_path
+                ),
                 document.title, document.revision, document.saved_revision,
             )
         del self._loaded_scene_documents[world_id]
@@ -463,6 +539,10 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         if self.is_loading or self.is_prefab_mode or self._is_play_mode():
             raise RuntimeError("Scene history restoration requires idle Edit Mode")
         canonical = registry.canonical_locator(locator)
+        resource_path = self._locator_resource_path(
+            canonical,
+            snapshot.resource_path,
+        )
         manager = SceneManager.instance()
         scene = manager.create_scene(snapshot.title)
         try:
@@ -473,7 +553,7 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
             transaction.run_to_completion(raise_on_failure=True)
             document, _ = registry.open_or_create(
                 canonical.key_hint, snapshot.title, stable_id=locator.stable_id,
-                resource_path=canonical.resource_path or snapshot.resource_path,
+                resource_path=resource_path,
                 revision=snapshot.revision, saved_revision=snapshot.saved_revision,
                 capabilities=DocumentCapability.SAVE | DocumentCapability.SAVE_AS | DocumentCapability.DISCARD,
                 controller=self,
@@ -482,7 +562,14 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
             manager.unload_scene(scene)
             raise
         self._loaded_scene_documents[int(scene.world_id)] = _LoadedSceneDocument(
-            scene, document.resource_path, document.document_id,
+            scene,
+            (
+                document.key.identity
+                if document.key.identity_kind.value == "asset_guid"
+                else ""
+            ),
+            document.resource_path,
+            document.document_id,
         )
         from Infernux.renderstack.render_stack import RenderStack
         from Infernux.gizmos.collector import notify_scene_changed
@@ -507,6 +594,10 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         if self._scene_document_id and self._scene_document_id not in result:
             result.append(self._scene_document_id)
         return tuple(result)
+
+    def loaded_scene_document_ids(self) -> tuple[str, ...]:
+        """Return every resident authored Scene document in display order."""
+        return self._loaded_scene_document_ids()
 
     def _unload_non_active_scenes(self) -> None:
         """Complete an Editor Single replacement after its document commit."""
@@ -540,7 +631,7 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
             self._scene_transaction is not None
             or self._additive_scene_transaction is not None
             or self._deferred_load_path is not None
-            or self._deferred_additive_path is not None
+            or self._deferred_additive_guid is not None
             or self._deferred_unload_world_id is not None
             or self._deferred_new_scene
             or self._deferred_exit_prefab
@@ -579,9 +670,17 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
                 guid = ""
             if guid:
                 return DocumentKey.asset(document_kind, guid)
-        if path:
-            return DocumentKey.resource(document_kind, path)
         return DocumentKey.session(document_kind)
+
+    def _locator_resource_path(self, locator, session_fallback: str = "") -> str:
+        from Infernux.engine.interaction import DocumentIdentityKind
+
+        if locator.key_hint.identity_kind is DocumentIdentityKind.ASSET_GUID:
+            resolver = getattr(self._asset_database, "get_path_from_guid", None)
+            if not callable(resolver):
+                return ""
+            return str(resolver(locator.key_hint.identity) or "").strip()
+        return str(locator.resource_path or session_fallback or "").strip()
 
     def _replace_scene_document(
         self,
@@ -675,6 +774,11 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
             if world_id > 0:
                 self._loaded_scene_documents[world_id] = _LoadedSceneDocument(
                     scene=scene,
+                    asset_guid=(
+                        document.key.identity
+                        if document.key.identity_kind.value == "asset_guid"
+                        else ""
+                    ),
                     resource_path=path,
                     document_id=document.document_id,
                 )
@@ -688,14 +792,16 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         destination_path: str,
         guid: str,
     ) -> None:
-        del guid
-        if document_id != self._scene_document_id:
-            return
-        if (
-            self._current_scene_path
-            and path_key(self._current_scene_path) == path_key(source_path)
-        ):
-            self._current_scene_path = resolved_path(destination_path)
+        del source_path
+        destination = resolved_path(destination_path)
+        for binding in self._loaded_scene_documents.values():
+            if binding.document_id == document_id:
+                if binding.asset_guid and binding.asset_guid != str(guid or "").strip():
+                    raise RuntimeError("Scene move GUID does not match the resident Scene")
+                binding.resource_path = destination
+                break
+        if document_id == self._scene_document_id:
+            self._current_scene_path = destination
             self._remember_last_scene(self._current_scene_path)
 
     def save_session_state(self) -> dict:
@@ -710,10 +816,23 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         except Exception as exc:
             Debug.log_suppressed("SceneFileManager.save_session_state", exc)
             document = None
-        state = {
-            "dirty": True,
-            "current_scene_path": self._current_scene_path or "",
-        }
+        asset_guid = ""
+        try:
+            from Infernux.engine.interaction import (
+                DocumentIdentityKind,
+                DocumentRegistry,
+            )
+
+            editor_document = DocumentRegistry.instance().get(self._scene_document_id)
+            if (
+                editor_document is not None
+                and editor_document.key.identity_kind
+                is DocumentIdentityKind.ASSET_GUID
+            ):
+                asset_guid = editor_document.key.identity
+        except (AttributeError, ImportError, RuntimeError):
+            pass
+        state = {"dirty": True, "asset_guid": asset_guid}
         if isinstance(document, dict):
             state["document"] = document
         return state
@@ -722,6 +841,18 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         """Restore the previous session's scene draft without writing an asset."""
         if not isinstance(data, dict) or not bool(data.get("dirty")):
             return False
+        asset_guid = str(data.get("asset_guid") or "").strip().casefold()
+        legacy_path = str(data.get("current_scene_path") or "").strip()
+        if legacy_path and not asset_guid:
+            return False
+        path = ""
+        if asset_guid:
+            resolver = getattr(self._asset_database, "get_path_from_guid", None)
+            if not callable(resolver):
+                return False
+            path = str(resolver(asset_guid) or "").strip()
+            if not path or not os.path.isfile(path):
+                return False
         document = data.get("document")
         if isinstance(document, dict):
             try:
@@ -746,8 +877,7 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
                 Debug.log_suppressed("SceneFileManager.restore_session_state", exc)
                 return False
 
-        path = str(data.get("current_scene_path") or "").strip()
-        self._current_scene_path = resolved_path(path) if path and os.path.isfile(path) else None
+        self._current_scene_path = resolved_path(path) if path else None
         self._replace_scene_document(
             kind="scene",
             resource_path=self._current_scene_path or "",
@@ -784,7 +914,11 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
             return _SceneRestoreSnapshot(
                 locator=locator,
                 document=payload,
-                resource_path=self._current_scene_path or "",
+                resource_path=(
+                    ""
+                    if locator.key_hint.identity_kind.value == "asset_guid"
+                    else self._current_scene_path or ""
+                ),
                 title=document.title,
                 revision=document.revision,
                 saved_revision=document.saved_revision,
@@ -874,7 +1008,7 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
 
         return self._continue_open_scene(path)
 
-    def open_scene_additive(self, path: str) -> bool:
+    def open_scene_additive(self, path: str, *, record_history: bool = True) -> bool:
         """Open an authored Scene beside the current editor Scenes.
 
         This is the editor equivalent of Unity's ``Open Scene Additive``.  The
@@ -882,28 +1016,139 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         unloaded from its Hierarchy header; the active Scene and its objects
         remain untouched.
         """
-        path = resolved_path(path)
+        asset_guid, path = self._scene_asset_from_path(path)
         if self.is_loading or self.is_prefab_mode or self._is_play_mode():
             return False
-        if not path or not os.path.isfile(path) or not self._is_under_assets(path):
+        if (
+            not asset_guid
+            or not path
+            or not os.path.isfile(path)
+            or not self._is_under_assets(path)
+        ):
             return False
-        from Infernux.lib import SceneManager
+        return self.open_scene_additive_guid(
+            asset_guid,
+            record_history=record_history,
+        )
 
-        native = SceneManager.instance()
-        for index in range(int(native.scene_count)):
-            loaded = native.get_scene_at(index)
-            binding = self._loaded_scene_documents.get(self._world_id(loaded))
-            if binding is not None and path_key(binding.resource_path) == path_key(path):
-                return self.activate_loaded_scene(loaded)
+    def open_scene_additive_guid(
+        self, asset_guid: str, *, record_history: bool = True
+    ) -> bool:
+        """Queue an additive Scene load by registered asset identity."""
+        identity = str(asset_guid or "").strip().casefold()
+        path = self._scene_path_for_guid(identity)
+        if self.is_loading or self.is_prefab_mode or self._is_play_mode():
+            return False
+        if not identity or not path or not os.path.isfile(path) or not self._is_under_assets(path):
+            return False
+        resident = self._binding_for_scene_guid(identity)
+        if resident is not None:
+            return self.activate_loaded_scene(resident.scene)
 
         # The command is dispatched from the native frame.  Queue the actual
         # Scene creation/read for poll_deferred_load(), which is the owner
         # safe point used by normal scene loads.
-        self._deferred_additive_path = path
+        if record_history:
+            self._stage_scene_navigation()
+        self._deferred_additive_record_history = bool(record_history)
+        self._deferred_additive_guid = identity
         self._last_scene_load = {
             "status": "pending_additive", "path": path, "error": "",
         }
         return True
+
+    def load_scene_additive_immediate(
+        self, path: str, *, record_history: bool = True
+    ) -> bool:
+        """Load one authored Scene additively at the owner safe point.
+
+        Host commands are drained before the native frame begins, so they can
+        complete the transaction synchronously and return the committed World
+        to their caller.  Hierarchy and Project-window commands continue to
+        use :meth:`open_scene_additive`, which advances the same transaction
+        over subsequent editor ticks.  Both routes publish through
+        ``_finish_open_scene_additive`` and therefore share document ownership,
+        undo history, selection, and dirty-state semantics.
+        """
+        asset_guid, path = self._scene_asset_from_path(path)
+        if self.is_loading or self.is_prefab_mode or self._is_play_mode():
+            return False
+        if (
+            not asset_guid
+            or not path
+            or not os.path.isfile(path)
+            or not self._is_under_assets(path)
+        ):
+            return False
+
+        return self.load_scene_additive_guid_immediate(
+            asset_guid,
+            record_history=record_history,
+        )
+
+    def load_scene_additive_guid_immediate(
+        self, asset_guid: str, *, record_history: bool = True
+    ) -> bool:
+        """Load one registered Scene asset immediately at an owner safe point."""
+        identity = str(asset_guid or "").strip().casefold()
+        path = self._scene_path_for_guid(identity)
+        if self.is_loading or self.is_prefab_mode or self._is_play_mode():
+            return False
+        if not identity or not path or not os.path.isfile(path) or not self._is_under_assets(path):
+            return False
+
+        from Infernux.lib import SceneManager
+
+        native = SceneManager.instance()
+        resident = self._binding_for_scene_guid(identity)
+        if resident is not None:
+            return self.activate_loaded_scene(resident.scene)
+
+        if record_history:
+            self._stage_scene_navigation()
+        self._deferred_additive_record_history = bool(record_history)
+        scene = native.create_scene(os.path.splitext(os.path.basename(path))[0])
+        try:
+            from Infernux.engine.scene_document_transaction import (
+                SceneDocumentTransaction,
+            )
+
+            transaction = SceneDocumentTransaction(
+                scene,
+                path=path,
+                asset_database=self._asset_database,
+                native_engine=self._native_engine_for_close(),
+                clear_registries=False,
+            )
+            if not transaction.run_to_completion(raise_on_failure=False):
+                native.unload_scene(scene)
+                self._scene_load_failed(path, transaction.error)
+                self._deferred_additive_record_history = False
+                self._cancel_scene_navigation()
+                return False
+            self._finish_open_scene_additive(
+                scene,
+                path,
+                asset_guid=identity,
+                file_state=transaction.file_state,
+            )
+            return True
+        except Exception as exc:
+            native.unload_scene(scene)
+            self._scene_load_failed(path, str(exc))
+            self._deferred_additive_record_history = False
+            self._cancel_scene_navigation()
+            return False
+
+    def request_unload_scene_path(self, path: str) -> bool:
+        """Queue unload for the resident Scene identified by its source path."""
+        identity, _current_path = self._scene_asset_from_path(path)
+        return self.request_unload_scene_guid(identity)
+
+    def request_unload_scene_guid(self, asset_guid: str) -> bool:
+        """Queue unload for a resident Scene by registered asset identity."""
+        binding = self._binding_for_scene_guid(asset_guid)
+        return bool(binding is not None and self.request_unload_scene(binding.scene))
 
     def request_unload_scene(self, scene_or_world_id) -> bool:
         """Queue an authored Scene unload for the post-frame owner safe point.
@@ -1163,6 +1408,23 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
                 )
                 if replacement is not None:
                     self.activate_loaded_scene(replacement)
+            else:
+                # The native active Scene and the editor document can briefly
+                # diverge while a Scene Header activation and an Undo unload
+                # are both queued in the same frame.  Rebind the views to the
+                # authoritative native active Scene before retiring the target
+                # document.  Otherwise the final scene-changed notification
+                # can ask Scene/Game/UI views to bind a document that has just
+                # become dormant ("unknown editor document").
+                active = native.get_active_scene()
+                active_binding = self._loaded_scene_documents.get(
+                    self._world_id(active)
+                )
+                if (
+                    active_binding is not None
+                    and self._scene_document_id != active_binding.document_id
+                ):
+                    self.activate_loaded_scene(active)
             self.unregister_loaded_scene(target)
             native.unload_scene(target)
             try:
@@ -1186,7 +1448,10 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
             self._scene_transaction_path = None
             self._load_in_progress = False
             if transaction.succeeded:
-                self._finish_open_scene(path, file_state=transaction.file_state)
+                self._finish_open_scene(
+                    path,
+                    file_state=transaction.file_state,
+                )
             else:
                 self._scene_load_failed(path, transaction.error)
                 self._cancel_scene_navigation()
@@ -1197,13 +1462,18 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
             if not transaction.poll():
                 return
             path = self._additive_scene_transaction_path
+            asset_guid = self._additive_scene_transaction_guid
             scene = getattr(transaction, "_scene", None)
             self._additive_scene_transaction = None
             self._additive_scene_transaction_path = None
+            self._additive_scene_transaction_guid = None
             self._load_in_progress = False
             if transaction.succeeded and scene is not None:
                 self._finish_open_scene_additive(
-                    scene, path, file_state=transaction.file_state
+                    scene,
+                    path,
+                    asset_guid=asset_guid,
+                    file_state=transaction.file_state,
                 )
             else:
                 if scene is not None:
@@ -1213,6 +1483,8 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
                     except Exception as exc:
                         Debug.log_error(f"Additive scene cleanup failed: {exc}")
                 self._scene_load_failed(path or "", transaction.error)
+                self._deferred_additive_record_history = False
+                self._cancel_scene_navigation()
             return
 
         if self._load_in_progress:
@@ -1234,9 +1506,10 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
                 self._scene_load_failed(path, str(exc))
                 self._load_in_progress = False
                 self._cancel_scene_navigation()
-        elif self._deferred_additive_path is not None:
-            path = self._deferred_additive_path
-            self._deferred_additive_path = None
+        elif self._deferred_additive_guid is not None:
+            asset_guid = self._deferred_additive_guid
+            self._deferred_additive_guid = None
+            path = self._scene_path_for_guid(asset_guid)
             self._load_in_progress = True
             scene = None
             try:
@@ -1246,15 +1519,17 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
                 )
 
                 native = SceneManager.instance()
-                # A second request may have loaded the same path before this
+                if not path or not os.path.isfile(path) or not self._is_under_assets(path):
+                    raise RuntimeError("Scene asset GUID is no longer registered")
+                # A second request may have loaded the same asset before this
                 # owner-safe point (for example, automation double-clicking).
-                for index in range(int(native.scene_count)):
-                    loaded = native.get_scene_at(index)
-                    binding = self._loaded_scene_documents.get(self._world_id(loaded))
-                    if binding is not None and path_key(binding.resource_path) == path_key(path):
-                        self._load_in_progress = False
-                        self.activate_loaded_scene(loaded)
-                        return
+                resident = self._binding_for_scene_guid(asset_guid)
+                if resident is not None:
+                    self._load_in_progress = False
+                    self._deferred_additive_record_history = False
+                    self._cancel_scene_navigation()
+                    self.activate_loaded_scene(resident.scene)
+                    return
                 scene = native.create_scene(os.path.splitext(os.path.basename(path))[0])
                 transaction = SceneDocumentTransaction(
                     scene,
@@ -1266,6 +1541,7 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
                 transaction.start()
                 self._additive_scene_transaction = transaction
                 self._additive_scene_transaction_path = resolved_path(path)
+                self._additive_scene_transaction_guid = asset_guid
             except Exception as exc:
                 if scene is not None:
                     try:
@@ -1274,6 +1550,8 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
                         pass
                 self._scene_load_failed(path, str(exc))
                 self._load_in_progress = False
+                self._deferred_additive_record_history = False
+                self._cancel_scene_navigation()
         elif self._deferred_new_scene:
             self._deferred_new_scene = False
             self._load_in_progress = True
@@ -1373,9 +1651,19 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
             before_commit=before_commit,
         )
 
-    def _finish_open_scene_additive(self, scene, path: str, *, file_state=None) -> None:
+    def _finish_open_scene_additive(
+        self,
+        scene,
+        path: str,
+        *,
+        asset_guid: str,
+        file_state=None,
+    ) -> None:
         """Publish one additive Scene after its owner-safe transaction commits."""
-        self.register_loaded_scene(scene, path)
+        canonical_path = self._scene_path_for_guid(asset_guid)
+        if not canonical_path:
+            raise RuntimeError("Scene asset GUID is no longer registered")
+        self.register_loaded_scene(scene, canonical_path)
         self.activate_loaded_scene(scene)
         self._last_loaded_file_state = file_state
 
@@ -1391,6 +1679,36 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         self._last_scene_load = {
             "status": "loaded_additive", "path": resolved_path(path), "error": "",
         }
+        record_history = self._deferred_additive_record_history
+        self._deferred_additive_record_history = False
+        before = self._pending_scene_before_context
+        self._pending_scene_before_context = None
+        if record_history and before is not None:
+            try:
+                from Infernux.engine.undo import (
+                    AdditiveSceneResidencyCommand,
+                    UndoManager,
+                )
+
+                manager = UndoManager.instance()
+                if manager is not None and not manager.is_executing:
+                    manager.record(
+                        AdditiveSceneResidencyCommand(
+                            self,
+                            asset_guid,
+                            f"Open Scene {os.path.splitext(os.path.basename(path))[0]} Additively",
+                        ),
+                        before_context=before,
+                        # Residency history deliberately keeps the prior Scene
+                        # as its replay barrier.  Redo queues the additive load;
+                        # the completed load then activates the new Scene.  A
+                        # locator for the not-yet-resident Scene would make the
+                        # generic context restorer take its Single-scene path
+                        # before that owner-safe load can finish.
+                        after_context=before,
+                    )
+            except Exception as exc:
+                Debug.log_error(f"Failed to publish additive Scene history: {exc}")
 
     def _finish_open_scene(
         self,
@@ -1497,30 +1815,36 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
             return False
         if self.is_prefab_mode or self._is_play_mode() or self.is_loading:
             return False
-        # ``_do_open_scene`` constructs SceneDocumentTransaction(path=target),
-        # which reads the current bytes on disk on every call.  Keep this
-        # explicit check close to the public durable-reload contract so a
-        # missing/replaced target cannot fall through to a stale active scene.
-        if self._current_scene_path and path_key(target) != path_key(self._current_scene_path):
+        from Infernux.engine.interaction import (
+            DocumentIdentityKind,
+            DocumentRegistry,
+        )
+
+        registry = DocumentRegistry.instance()
+        document = registry.get(document_id)
+        if (
+            document is None
+            or document.key.identity_kind is not DocumentIdentityKind.ASSET_GUID
+        ):
+            return False
+        target_guid, current_path = self._scene_asset_from_path(target)
+        if target_guid != document.key.identity or not current_path:
             return False
         reloaded = self._do_open_scene(
-            target,
+            current_path,
             record_navigation=False,
             preserve_document=True,
         )
         if not reloaded:
             return False
-        from Infernux.engine.interaction import (
-            DocumentActionResult, DocumentActionStatus, DocumentRegistry,
-        )
+        from Infernux.engine.interaction import DocumentActionResult, DocumentActionStatus
 
-        registry = DocumentRegistry.instance()
         document = registry.get(document_id)
         if document is None:
             return False
         registry.update_metadata(
             document.document_id,
-            resource_path=target,
+            resource_path=current_path,
             controller=self,
         )
         return DocumentActionResult(
@@ -1552,15 +1876,28 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
                 DocumentActionStatus.FAILED,
                 "the scene file no longer exists on disk",
             )
+        from Infernux.engine.interaction import DocumentIdentityKind, DocumentRegistry
+
+        document = DocumentRegistry.instance().get(identifier)
+        target_guid, _current_path = self._scene_asset_from_path(target)
+        if (
+            document is None
+            or document.key.identity_kind is not DocumentIdentityKind.ASSET_GUID
+            or target_guid != document.key.identity
+        ):
+            return DocumentActionResult(
+                DocumentActionStatus.REJECTED,
+                "the scene reload target is not the registered Scene asset",
+            )
         pending = self._pending_external_reload
-        if pending is not None and pending != (identifier, target):
+        if pending is not None and pending != identifier:
             return DocumentActionResult(
                 DocumentActionStatus.REJECTED,
                 "another scene durable reload is already pending",
             )
 
         if self._is_play_mode() or self.is_loading or self.is_prefab_mode:
-            self._pending_external_reload = (identifier, target)
+            self._pending_external_reload = identifier
             self._advance_pending_external_reload()
             return DocumentActionResult(DocumentActionStatus.PENDING)
 
@@ -1601,8 +1938,17 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
                 self._request_prefab_exit()
             return 0
 
-        document_id, target = pending
+        document_id = pending
         self._pending_external_reload = None
+        from Infernux.engine.interaction import DocumentIdentityKind, DocumentRegistry
+
+        document = DocumentRegistry.instance().get(document_id)
+        target = (
+            self._scene_path_for_guid(document.key.identity)
+            if document is not None
+            and document.key.identity_kind is DocumentIdentityKind.ASSET_GUID
+            else ""
+        )
         message = ""
         file_state = None
         try:
@@ -1621,8 +1967,6 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         except Exception as exc:
             success = False
             message = str(exc)
-
-        from Infernux.engine.interaction import DocumentRegistry
 
         DocumentRegistry.instance().complete_external_reload(
             document_id,
@@ -1655,13 +1999,10 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         # original stable identity instead of creating a duplicate document.
         history_locator = snapshot.locator if snapshot is not None else locator
         canonical_locator = registry.canonical_locator(history_locator)
-        path = str(
-            (
-                canonical_locator.resource_path
-                or (snapshot.resource_path if snapshot is not None else "")
-            )
-            or ""
-        ).strip()
+        path = self._locator_resource_path(
+            canonical_locator,
+            snapshot.resource_path if snapshot is not None else "",
+        )
         if snapshot is None and (not path or not os.path.isfile(path)):
             return False
 
