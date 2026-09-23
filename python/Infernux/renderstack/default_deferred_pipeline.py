@@ -170,6 +170,7 @@ class DefaultDeferredPipeline(RenderPipeline):
                 "base_color": graph.get_texture(GBUFFER_ALBEDO_TEXTURE),
                 "normal": graph.get_texture(GBUFFER_NORMAL_TEXTURE),
                 "depth": graph.get_texture(DEPTH_TEXTURE),
+                "shadow_map": graph.get_texture(SHADOW_MAP_TEXTURE),
                 "material": graph.get_texture(GBUFFER_MATERIAL_TEXTURE),
                 "emission": graph.get_texture(GBUFFER_EMISSION_TEXTURE),
                 "object": graph.get_texture(GBUFFER_OBJECT_TEXTURE),

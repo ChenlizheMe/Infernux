@@ -8,7 +8,11 @@ from Infernux.renderstack.geometry_buffers import (
     geometry_buffer,
 )
 from Infernux.renderstack.render_pipeline import RenderPipeline
+from Infernux.renderstack.default_forward_pipeline import DefaultForwardPipeline
+from Infernux.renderstack.default_deferred_pipeline import DefaultDeferredPipeline
+from Infernux.renderstack.fullscreen_effect import FullScreenEffect
 from Infernux.renderstack.pipeline_dsl import PipelineBuilder
+from Infernux.renderstack.resource_bus import ResourceBus
 
 
 def test_pass_result_write_preserves_parent_revision():
@@ -59,6 +63,51 @@ def test_pass_resources_reject_foreign_graph_handles_even_with_matching_names():
     view.add_pass("Read Local Lighting").read_buffer(local_buffer)
     with pytest.raises(ValueError, match="does not belong"):
         view.append_pass(other_view.add_pass("Foreign Pass"))
+
+
+@pytest.mark.parametrize(
+    ("pipeline_type", "producer"),
+    [(DefaultForwardPipeline, "opaque"), (DefaultDeferredPipeline, "gbuffer")],
+)
+def test_builtin_pipeline_publishes_view_shadow_map_to_effects(pipeline_type, producer):
+    graph = RenderGraph("Shadow Consumer")
+    observed = {}
+
+    def capture_stage(stage):
+        if stage.stable_id == "after_opaque":
+            observed["result"] = graph.current_pass_result
+            observed["inputs"] = stage.contract.inputs
+
+    graph._effect_stage_callback = capture_stage
+    pipeline_type().define_topology(graph)
+    result = graph.get_pass_result(producer)
+    assert result.sample("shadow_map") is graph.get_texture("shadow_map")
+    assert "shadow_map" in observed["inputs"]
+    assert observed["result"].sample("shadow_map") is result.sample("shadow_map")
+    with graph.add_pass("Sample Shadow") as render_pass:
+        render_pass.set_texture("shadowMap", result.sample("shadow_map"))
+        render_pass.write_color(graph.create_texture("shadow_preview"))
+        render_pass.fullscreen_quad("Shadow Preview")
+    assert render_pass._input_bindings == {"shadowMap": "shadow_map"}
+
+
+def test_fullscreen_effect_shadow_binding_reports_missing_source():
+    class ShadowEffect(FullScreenEffect):
+        name = "shadow_sample"
+        injection_point = "after_opaque"
+        requires = {"shadow_map"}
+        modifies = set()
+
+    class RecordingPass:
+        def set_textures(self, bindings):
+            self.bindings = bindings
+
+    shadow = object()
+    render_pass = RecordingPass()
+    ShadowEffect().bind_buffers(render_pass, ResourceBus({"shadow_map": shadow}))
+    assert render_pass.bindings == {"shadowMap": shadow}
+    with pytest.raises(RuntimeError, match="unavailable buffers.*shadow_map"):
+        ShadowEffect().bind_buffers(render_pass, ResourceBus())
 
 
 def test_custom_geometry_buffer_dependencies_are_topologically_sorted():

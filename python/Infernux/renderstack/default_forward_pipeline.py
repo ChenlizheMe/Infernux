@@ -35,6 +35,7 @@ from Infernux.renderstack._platform_quality import (
 from Infernux.components.fields import serialized_field
 from Infernux.renderstack._pipeline_common import (
     COLOR_TEXTURE,
+    SHADOW_MAP_TEXTURE,
     add_forward_opaque_pass,
     add_shadow_caster_pass,
     add_skybox_pass,
@@ -137,6 +138,7 @@ class DefaultForwardPipeline(RenderPipeline):
             buffers={
                 "color": graph.get_texture("color"),
                 "depth": graph.get_texture("depth"),
+                "shadow_map": graph.get_texture(SHADOW_MAP_TEXTURE),
             },
             queue_range=opaque_queue_range(),
             msaa_samples=msaa_samples,
