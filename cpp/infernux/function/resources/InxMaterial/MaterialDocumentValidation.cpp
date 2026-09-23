@@ -251,19 +251,15 @@ void ValidateProperty(const std::string &name, const json &document, std::string
 
 void ValidateShaderReference(const json &document, std::string_view path)
 {
-    static const std::unordered_set<std::string> fields = {"guid", "shader_id", "path_hint"};
+    static const std::unordered_set<std::string> fields = {"guid", "shader_id"};
     RequireExactFields(document, fields, {}, path);
-    for (const char *field : {"guid", "shader_id", "path_hint"}) {
+    for (const char *field : {"guid", "shader_id"}) {
         if (!document[field].is_string())
             Fail(path, std::string(field) + " must be a string");
     }
     if (document["guid"].get_ref<const std::string &>().empty() &&
         document["shader_id"].get_ref<const std::string &>().empty()) {
         Fail(path, "requires guid or shader_id");
-    }
-    if (document["guid"].get_ref<const std::string &>().empty() &&
-        !document["path_hint"].get_ref<const std::string &>().empty()) {
-        Fail(path, "path_hint is non-authoritative and cannot replace a shader asset GUID");
     }
 }
 

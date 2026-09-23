@@ -62,7 +62,9 @@ if(INFERNUX_BUILD_TESTS)
         target_compile_options(infernux_audio_playback_tests PRIVATE -UNDEBUG)
     endif()
     add_test(NAME infernux.audio_playback COMMAND infernux_audio_playback_tests)
-    set_tests_properties(infernux.audio_playback PROPERTIES TIMEOUT 20)
+    set_tests_properties(infernux.audio_playback PROPERTIES
+        TIMEOUT 20
+        ENVIRONMENT "SDL_AUDIODRIVER=dummy")
 
     add_executable(infernux_inxpack_tests
         cpp/tests/InxPackTests.cpp
@@ -1218,7 +1220,9 @@ if(INFERNUX_BUILD_TESTS)
     if(TARGET infernux_gpu_jit_compiler)
         foreach(contract compiler bit)
             add_test(NAME infernux.compute_${contract}_contract
-                COMMAND ${INFERNUX_GPU_JIT_BINARY_DIR}/tests/$<CONFIG>/infernux_${contract}_contract_tests${CMAKE_EXECUTABLE_SUFFIX})
+                # The nested compiler project uses its own explicit configuration,
+                # which can differ from the outer multi-config tree.
+                COMMAND ${INFERNUX_GPU_JIT_BINARY_DIR}/tests/${INFERNUX_GPU_JIT_BUILD_CONFIG}/infernux_${contract}_contract_tests${CMAKE_EXECUTABLE_SUFFIX})
             set_tests_properties(infernux.compute_${contract}_contract PROPERTIES
                 LABELS "compiler" TIMEOUT 30)
         endforeach()

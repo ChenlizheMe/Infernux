@@ -71,7 +71,6 @@ template <typename Predicate> void WaitForAt(Predicate predicate, unsigned line)
 
 int main()
 {
-    assert(SDL_SetHint(SDL_HINT_AUDIO_DRIVER, "dummy"));
     auto &engine = infernux::AudioEngine::Instance();
     assert(engine.Initialize());
     const auto path = std::filesystem::temp_directory_path() /

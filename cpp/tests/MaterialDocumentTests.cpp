@@ -39,10 +39,14 @@ void VerifyStableReferencesAndClone()
     material.SetFragShaderReference(fragment);
 
     const auto document = material.SerializeDocument();
+    assert(!document["shaders"]["vertex"].contains("path_hint"));
+    assert(!document["shaders"]["fragment"].contains("path_hint"));
     InxMaterial restored;
     assert(restored.DeserializeDocument(document));
     assert(restored.GetVertShaderReference() == vertex);
     assert(restored.GetFragShaderReference() == fragment);
+    assert(restored.GetVertShaderReference().pathHint.empty());
+    assert(restored.GetFragShaderReference().pathHint.empty());
     assert(restored.GetShaderId() == "vertex-guid|fragment-guid");
 
     const std::shared_ptr<InxMaterial> clone = restored.Clone();
@@ -65,6 +69,11 @@ void VerifyTransactionalFailure()
         {"shader_id", ""},
         {"path_hint", "Assets/Shaders/Missing.frag"},
     };
+    assert(!material.DeserializeDocument(invalid));
+    assert(material.SerializeDocument() == before);
+
+    invalid = before;
+    invalid["shaders"]["vertex"]["path_hint"] = "Assets/Shaders/Stale.vert";
     assert(!material.DeserializeDocument(invalid));
     assert(material.SerializeDocument() == before);
 

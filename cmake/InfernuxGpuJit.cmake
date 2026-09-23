@@ -33,9 +33,11 @@ set(INFERNUX_GPU_JIT_BINARY_DIR
     "${CMAKE_BINARY_DIR}/taichi-for-infernux")
 set(INFERNUX_GPU_JIT_INSTALL_ROOT
     "${CMAKE_BINARY_DIR}/gpu-jit-wheel")
+set(INFERNUX_GPU_JIT_BUILD_CONFIG "Release" CACHE INTERNAL
+    "Configuration used by the isolated GPU JIT compiler project")
 
 set(_infernux_gpu_jit_cmake_args
-    "-DCMAKE_BUILD_TYPE=Release"
+    "-DCMAKE_BUILD_TYPE=${INFERNUX_GPU_JIT_BUILD_CONFIG}"
     "-DCMAKE_INSTALL_PREFIX=${INFERNUX_GPU_JIT_INSTALL_ROOT}"
     "-DPython_EXECUTABLE=${Python3_EXECUTABLE}"
     "-DTI_WITH_PYTHON=ON"
@@ -68,6 +70,21 @@ if(CMAKE_CXX_COMPILER)
     list(APPEND _infernux_gpu_jit_cmake_args
         "-DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}")
 endif()
+# ExternalProject configures Taichi as an independent CMake project.  Keep
+# the nested project on the exact generator tool selected by the root build;
+# relying on PATH makes Linux/CI configurations fail when Ninja is managed by
+# Conda rather than installed system-wide.
+if(CMAKE_MAKE_PROGRAM)
+    list(APPEND _infernux_gpu_jit_cmake_args
+        "-DCMAKE_MAKE_PROGRAM=${CMAKE_MAKE_PROGRAM}")
+endif()
+
+set(_infernux_gpu_jit_build_targets _infernux_gpu_compiler)
+if(INFERNUX_BUILD_TESTS)
+    list(APPEND _infernux_gpu_jit_build_targets
+        infernux_compiler_contract_tests
+        infernux_bit_contract_tests)
+endif()
 
 ExternalProject_Add(infernux_gpu_jit_compiler
     SOURCE_DIR "${INFERNUX_GPU_JIT_SOURCE_DIR}"
@@ -75,11 +92,12 @@ ExternalProject_Add(infernux_gpu_jit_compiler
     CMAKE_ARGS ${_infernux_gpu_jit_cmake_args}
     BUILD_COMMAND
         "${CMAKE_COMMAND}" --build <BINARY_DIR>
-        --config Release --target _infernux_gpu_compiler --parallel 4
+        --config ${INFERNUX_GPU_JIT_BUILD_CONFIG}
+        --target ${_infernux_gpu_jit_build_targets} --parallel 4
     INSTALL_COMMAND
         "${CMAKE_COMMAND}" -E rm -rf "${INFERNUX_GPU_JIT_INSTALL_ROOT}"
     COMMAND "${CMAKE_COMMAND}" --install <BINARY_DIR>
-        --config Release
+        --config ${INFERNUX_GPU_JIT_BUILD_CONFIG}
         --prefix "${INFERNUX_GPU_JIT_INSTALL_ROOT}"
         --component infernux_compiler
     BUILD_ALWAYS TRUE
