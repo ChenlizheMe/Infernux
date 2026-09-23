@@ -298,9 +298,11 @@ class ProjectAssetCommandService:
 
         self._require_configured()
         normalized = self.preflight_delete(paths)
+        deleted_guids = self._registered_guids_under(normalized)
+
         def on_deleted() -> None:
             if clear_asset_selection:
-                self._clear_project_selection_if_needed(normalized)
+                self._clear_project_selection_if_needed(deleted_guids)
             self._notify_changed()
 
         command = ProjectAssetDeleteCommand(
@@ -697,7 +699,13 @@ class ProjectAssetCommandService:
     ) -> None:
         from .descriptors import SelectionTarget
 
-        targets = tuple(SelectionTarget.asset(path) for path in paths)
+        database = self._asset_database
+        targets = tuple(
+            SelectionTarget.asset(guid)
+            for path in paths
+            if database is not None
+            if (guid := str(database.get_guid_from_path(path) or "").strip())
+        )
         if not targets:
             return
         self._selection.replace(
@@ -726,9 +734,11 @@ class ProjectAssetCommandService:
             if (guid := str(database.get_guid_from_path(candidate) or "").strip())
         )
 
-    def _clear_project_selection_if_needed(self, paths: tuple[str, ...]) -> None:
+    def _clear_project_selection_if_needed(self, guids: frozenset[str]) -> None:
         from .descriptors import SelectionDomain
 
+        if not guids:
+            return
         snapshot = self._selection.snapshot
         if snapshot.domain not in {
             SelectionDomain.ASSET,
@@ -736,8 +746,8 @@ class ProjectAssetCommandService:
         }:
             return
         for target in snapshot.targets:
-            target_path = target.document_id or target.target_id
-            if any(is_path_within(target_path, path, allow_root=True) for path in paths):
+            target_guid = (target.document_id or target.target_id).casefold()
+            if target_guid in guids:
                 self._selection.clear(
                     reason="project_asset_delete",
                     record_history=False,

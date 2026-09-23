@@ -164,6 +164,32 @@ def test_project_asset_service_selects_renamed_asset_or_folder(
         assert snapshot.owner_id == "project"
 
 
+@pytest.mark.parametrize("subresource", (False, True))
+def test_deleting_folder_clears_selected_child_guid(
+    project_asset_commands,
+    subresource,
+):
+    service, _manager, _journal, assets = project_asset_commands
+    folder = assets / "ToDelete"
+    folder.mkdir()
+    child = folder / "Mesh.fbx"
+    child.write_text("mesh", encoding="utf-8")
+    selection = SelectionService.instance()
+    target = (
+        SelectionTarget.asset_subresource(
+            "registered-guid", "mesh-id", sub_kind="mesh"
+        )
+        if subresource
+        else SelectionTarget.asset("registered-guid")
+    )
+    selection.select(target, owner_id="project", record_history=False)
+
+    service.delete((str(folder),))
+
+    assert not folder.exists()
+    assert selection.snapshot.primary is None
+
+
 def test_project_asset_interactions_own_clipboard_transfer_and_delete(
     project_asset_commands,
 ):

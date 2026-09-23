@@ -358,13 +358,13 @@ def test_render_effect_import_tracks_group_dependencies(engine, tmp_path: Path):
                     "entries": [
                         {
                             "entry_id": "bloom",
-                            "asset": {"guid": bloom_result.guid, "path_hint": str(bloom)},
+                            "asset": {"guid": bloom_result.guid},
                             "enabled": True,
                             "overrides": {"intensity": 0.8},
                         },
                         {
                             "entry_id": "tonemapping",
-                            "asset": {"guid": tone_result.guid, "path_hint": str(tone)},
+                            "asset": {"guid": tone_result.guid},
                             "enabled": True,
                             "overrides": {},
                         },
@@ -388,7 +388,7 @@ def test_render_effect_import_tracks_group_dependencies(engine, tmp_path: Path):
                 asset_db.delete_asset(str(path))
 
 
-def test_render_effect_import_rejects_path_only_dependency(engine, tmp_path: Path):
+def test_render_effect_import_ignores_path_only_dependency(engine, tmp_path: Path):
     asset_db = engine.get_asset_database()
     source = tmp_path / "Path Only.effectgroup"
     source.write_text(
@@ -413,13 +413,12 @@ def test_render_effect_import_rejects_path_only_dependency(engine, tmp_path: Pat
 
     result = asset_db.import_asset(str(source))
 
-    assert not result
-    assert "must provide a GUID" in result.error
-    assert "path_hint is non-authoritative" in result.error
-    assert not asset_db.contains_path(str(source))
+    assert result
+    assert asset_db.contains_path(str(source))
+    assert AssetDependencyGraph.instance().get_dependencies(result.guid) == set()
 
 
-def test_render_effect_import_rejects_mount_scope_in_asset(engine, tmp_path: Path):
+def test_render_effect_import_does_not_consume_mount_scope_in_asset(engine, tmp_path: Path):
     asset_db = engine.get_asset_database()
     source = tmp_path / "InvalidScope.effect"
     source.write_text(
@@ -437,9 +436,9 @@ def test_render_effect_import_rejects_mount_scope_in_asset(engine, tmp_path: Pat
 
     result = asset_db.import_asset(str(source))
 
-    assert not result
-    assert not asset_db.contains_path(str(source))
-    assert asset_db.get_guid_from_path(str(source)) == ""
+    assert result
+    assert asset_db.contains_path(str(source))
+    assert asset_db.get_guid_from_path(str(source)) == result.guid
 
 
 def test_particle_graph_import_compiles_and_publishes_aot(engine, tmp_path: Path):
@@ -963,7 +962,7 @@ def test_project_directory_relocation_is_one_editor_and_catalog_transaction(
 
     selection = SelectionService()
     selection.select(
-        SelectionTarget.asset(str(source_a)),
+        SelectionTarget.asset(imported_a.guid),
         owner_id="project",
         record_history=False,
     )
@@ -987,7 +986,7 @@ def test_project_directory_relocation_is_one_editor_and_catalog_transaction(
         assert asset_db.query_generation == generation_before + 1
         assert asset_db.get_guid_from_path(str(moved_a)) == imported_a.guid
         assert asset_db.get_guid_from_path(str(moved_b)) == imported_b.guid
-        assert selection.snapshot.primary == SelectionTarget.asset(str(moved_a))
+        assert selection.snapshot.primary == SelectionTarget.asset(imported_a.guid)
         assert len(published) == 1
         assert published[0].operation_id == "directory-transaction"
         assert len(published[0].changes) == 2
@@ -1001,80 +1000,50 @@ def test_project_directory_relocation_is_one_editor_and_catalog_transaction(
                 asset_db.delete_asset(str(path))
 
 
-def test_project_shader_move_migrates_material_reference_and_reimports(
+def test_project_shader_move_preserves_material_guid_reference_without_rewrite(
     engine, tmp_path: Path
 ):
     from Infernux.engine.ui import project_file_ops
 
-    asset_db = engine.get_asset_database()
+    database = engine.get_asset_database()
     graph = AssetDependencyGraph.instance()
-    shader_dir = tmp_path / "Shaders"
-    moved_dir = tmp_path / "Rendering"
-    shader_dir.mkdir()
-    moved_dir.mkdir()
-    vertex = shader_dir / "surface.vert"
-    fragment = shader_dir / "surface.frag"
+    source_dir = tmp_path / "Shaders"
+    destination_dir = tmp_path / "Rendering"
+    source_dir.mkdir()
+    destination_dir.mkdir()
+    vertex = source_dir / "surface.vert"
+    fragment = source_dir / "surface.frag"
     material = tmp_path / "Surface.mat"
     vertex.write_text("void main() {}", encoding="utf-8")
     fragment.write_text("void main() {}", encoding="utf-8")
-    vertex_guid = asset_db.import_asset(str(vertex)).guid
-    fragment_guid = asset_db.import_asset(str(fragment)).guid
+    vertex_guid = database.import_asset(str(vertex)).guid
+    fragment_guid = database.import_asset(str(fragment)).guid
     assert vertex_guid and fragment_guid
-
     document = json.loads(InxMaterial.create_default_lit().serialize())
     document["shaders"] = {
-        "vertex": {
-            "guid": vertex_guid,
-            "shader_id": "surface-vertex",
-            "path_hint": str(vertex),
-        },
-        "fragment": {
-            "guid": fragment_guid,
-            "shader_id": "surface-fragment",
-            "path_hint": str(fragment),
-        },
+        "vertex": {"guid": vertex_guid, "shader_id": "surface-vertex"},
+        "fragment": {"guid": fragment_guid, "shader_id": "surface-fragment"},
     }
-    material.write_text(json.dumps(document), encoding="utf-8")
-    material_guid = asset_db.import_asset(str(material)).guid
+    original = json.dumps(document)
+    material.write_text(original, encoding="utf-8")
+    material_guid = database.import_asset(str(material)).guid
     assert material_guid
-    document["shaders"]["fragment"]["guid"] = ""
-    material.write_text(json.dumps(document), encoding="utf-8")
-    destination = moved_dir / fragment.name
+    destination = destination_dir / fragment.name
 
     try:
         result = project_file_ops.move_path(
-            str(fragment),
-            str(destination),
-            asset_db,
-            origin="user",
-            operation_id="shader-reference-relocation",
+            str(fragment), str(destination), database,
+            origin="user", operation_id="shader-guid-relocation",
         )
 
         assert same_path(result, str(destination))
-        migrated = json.loads(material.read_text(encoding="utf-8"))
-        assert migrated["shaders"]["fragment"] == {
-            "guid": fragment_guid,
-            "shader_id": "surface-fragment",
-            "path_hint": str(destination).replace("\\", "/"),
-        }
+        assert material.read_text(encoding="utf-8") == original
+        assert database.get_guid_from_path(str(destination)) == fragment_guid
         assert fragment_guid in set(graph.get_dependencies(material_guid))
-        assert asset_db.get_guid_from_path(str(destination)) == fragment_guid
-
-        restored = project_file_ops.move_path(
-            str(destination),
-            str(fragment),
-            asset_db,
-            origin="user",
-            operation_id="shader-reference-relocation-undo",
-        )
-        assert same_path(restored, str(fragment))
-        restored_document = json.loads(material.read_text(encoding="utf-8"))
-        assert restored_document["shaders"]["fragment"]["guid"] == fragment_guid
-        assert same_path(asset_db.get_path_from_guid(fragment_guid), str(fragment))
     finally:
         for path in (material, fragment, destination, vertex):
-            if asset_db.contains_path(str(path)):
-                asset_db.delete_asset(str(path))
+            if database.contains_path(str(path)):
+                database.delete_asset(str(path))
             path.unlink(missing_ok=True)
             Path(f"{path}.meta").unlink(missing_ok=True)
 
