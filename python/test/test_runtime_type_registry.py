@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 
 import pytest
 
@@ -11,7 +12,6 @@ def _semantic(script_guid: str, type_guid: str, readable_id: str, lifecycle=()):
         "readable_id": readable_id,
         "owner": f"script:{script_guid}",
         "origin": "python",
-        "schema_version": 1,
         "display_name": readable_id,
         "base_type_guid": "",
         "constructible": True,
@@ -21,6 +21,33 @@ def _semantic(script_guid: str, type_guid: str, readable_id: str, lifecycle=()):
         "lifecycle": list(lifecycle),
         "fields": [],
     }
+
+
+def test_android_runtime_registry_does_not_require_editor_semantic_catalog(
+    monkeypatch, tmp_path
+):
+    from Infernux.engine import runtime_type_registry as registry
+
+    path = tmp_path / "RuntimeTypeRegistry.json"
+    path.write_text(
+        json.dumps({"$schema": "infernux.runtime_type_registry", "types": []}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(sys, "platform", "android")
+    monkeypatch.setattr(registry, "_runtime_semantic_owners", {"script:old"})
+
+    class NativeWithoutEditorCatalog:
+        pass
+
+    import Infernux.lib
+
+    monkeypatch.setattr(Infernux.lib, "_Infernux", NativeWithoutEditorCatalog())
+    try:
+        assert registry.install_runtime_type_registry(str(path)) == 0
+    finally:
+        registry._runtime_types = {}
+        registry._runtime_registry_installed = False
+        registry._runtime_semantic_owners = set()
 
 
 def test_runtime_type_registry_binds_declared_phase_contract(tmp_path):

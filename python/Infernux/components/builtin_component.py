@@ -131,11 +131,11 @@ class CppProperty:
                     get_converter=None, set_converter=None,
                     native_getter=None, native_setter=None) -> CppProperty:
         """Project a native declaration into the existing Inspector descriptor."""
-        if os.environ.get("INFERNUX_WEB_RUNTIME") == "1" or sys.platform == "emscripten":
-            # Web Player has no Inspector.  Its Python wrappers only need the
+        if os.environ.get("INFERNUX_WEB_RUNTIME") == "1" or sys.platform in {"emscripten", "android"}:
+            # Web and Android Players have no Inspector. Their Python wrappers only need the
             # direct native property bridge, while the native scene loader owns
             # validation and serialization.  Do not couple a published wasm
-            # runtime to the editor-only semantic catalog revision.
+            # or mobile runtime to the editor-only semantic catalog.
             return cls(
                 field_id,
                 visible_when=visible_when,

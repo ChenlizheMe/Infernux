@@ -34,13 +34,11 @@ _RUNTIME_LIFECYCLE_METHODS = frozenset(
 
 
 def _publish_semantic_edits(edits: list[dict[str, Any]]) -> None:
-    """Publish Player semantic edits when the native catalog is available.
+    """Publish semantic edits for desktop Players with the editor catalog ABI.
 
-    The precompiled Web Player shipped with older native bindings predates the
-    semantic-catalog transaction methods.  Web keeps the cooked runtime type
-    registry as its authority, so it can continue without attempting to call
-    an ABI that is not present.  Desktop/native builds stay strict: a missing
-    catalog method remains an integration error instead of being hidden.
+    Web and Android Players use the cooked runtime type registry directly.
+    Their minimal native runtimes intentionally do not ship the editor-only
+    semantic catalog transaction ABI.
     """
     if not edits:
         return
@@ -48,7 +46,10 @@ def _publish_semantic_edits(edits: list[dict[str, Any]]) -> None:
 
     prepare = getattr(native, "_semantic_catalog_prepare", None)
     if prepare is None:
-        if os.environ.get("INFERNUX_WEB_RUNTIME") == "1" or os.sys.platform == "emscripten":
+        if os.environ.get("INFERNUX_WEB_RUNTIME") == "1" or os.sys.platform in {
+            "emscripten",
+            "android",
+        }:
             return
         raise AttributeError("native semantic catalog transaction is unavailable")
     prepare(edits).publish()
