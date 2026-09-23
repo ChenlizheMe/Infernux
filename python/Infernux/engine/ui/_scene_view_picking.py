@@ -509,7 +509,7 @@ class SceneViewPickingMixin:
                 (float(ray[0]), float(ray[1]), float(ray[2])),
                 (float(ray[3]), float(ray[4]), float(ray[5])),
                 manager.get_runtime_persistent_scene(),
-                camera=self._engine.editor_camera,
+                camera=getattr(self._engine, "editor_camera", None),
                 viewport_height=vp.height,
             )
             self._last_world_ui_pick_ids = tuple(world_ui_ids)
