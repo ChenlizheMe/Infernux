@@ -396,60 +396,12 @@ def test_project_settings_derived_update_does_not_publish_a_second_user_action(t
     controller.document_id = document.document_id
     try:
         build = controller.section("build")
-        build["scenes"] = ["Assets/Renamed.scene"]
-
+        build["scene_guids"] = ["scene-guid"]
         assert controller.apply_derived_section("build", build)
-        assert controller.section("build")["scenes"] == ["Assets/Renamed.scene"]
+        assert controller.section("build")["scene_guids"] == ["scene-guid"]
         assert len(manager.action_journal.entries) == 0
         assert document.is_dirty
         assert len(submitter.calls) == 3
     finally:
         DocumentRegistry._instance = previous_registry
         UndoManager._instance = previous_manager
-
-
-def test_scene_asset_move_updates_live_build_document_with_portable_path(
-    tmp_path,
-    monkeypatch,
-):
-    from Infernux.engine.ui import project_file_ops
-
-    assets = tmp_path / "Assets"
-    assets.mkdir()
-    old_scene = assets / "Old.scene"
-    new_scene = assets / "Renamed.scene"
-    old_scene.write_text("{}", encoding="utf-8")
-
-    class Controller:
-        def __init__(self):
-            self.build = copy.deepcopy(BUILD_SETTINGS_DEFAULTS)
-            self.build["scenes"] = ["Assets/Old.scene"]
-            self.calls = []
-
-        def section(self, name):
-            assert name == "build"
-            return copy.deepcopy(self.build)
-
-        def apply_derived_section(self, name, value):
-            self.calls.append((name, copy.deepcopy(value)))
-            self.build = copy.deepcopy(value)
-            return True
-
-    controller = Controller()
-    monkeypatch.setattr(
-        "Infernux.engine.project_context.get_project_root",
-        lambda: str(tmp_path),
-    )
-    monkeypatch.setattr(
-        "Infernux.engine.interaction.ensure_project_settings_document",
-        lambda _root: controller,
-    )
-
-    project_file_ops._update_build_settings_scene_path(
-        str(old_scene),
-        str(new_scene),
-    )
-
-    assert controller.calls == [
-        ("build", {**BUILD_SETTINGS_DEFAULTS, "scenes": ["Assets/Renamed.scene"]})
-    ]
