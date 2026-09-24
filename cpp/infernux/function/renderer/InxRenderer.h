@@ -341,6 +341,9 @@ class InxRenderer
                                  std::optional<ShaderProgramDomain> expectedDomain);
     void SetShaderProgramArtifactResolver(
         std::function<void(const std::shared_ptr<InxMaterial> &, std::optional<ShaderProgramDomain>)> resolver);
+    void SetMaterialShaderDomainInspector(
+        std::function<std::optional<ShaderProgramDomain>(const std::shared_ptr<InxMaterial> &)> inspector);
+    [[nodiscard]] bool CanPreviewMaterialOnMesh(const std::shared_ptr<InxMaterial> &material) const;
     void SetUIMaterialShaderValidator(
         std::function<bool(const std::shared_ptr<InxMaterial> &, ShaderProgramDomain)> validator);
     bool HasShader(const std::string &name, const std::string &type) const;
@@ -715,6 +718,8 @@ class InxRenderer
     size_t m_computeHostLeases = 0;
     std::function<void(const std::shared_ptr<InxMaterial> &, std::optional<ShaderProgramDomain>)>
         m_shaderProgramArtifactResolver;
+    std::function<std::optional<ShaderProgramDomain>(const std::shared_ptr<InxMaterial> &)>
+        m_materialShaderDomainInspector;
     std::function<bool(const std::shared_ptr<InxMaterial> &, ShaderProgramDomain)> m_uiMaterialShaderValidator;
     std::unique_ptr<InxGUI> m_gui;
     std::unique_ptr<InxView> m_view;

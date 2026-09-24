@@ -20,6 +20,7 @@
 
 #include "../rhi/GpuRetirementQueue.h"
 #include "../rhi/RhiRenderTexture.h"
+#include "../MaterialDescriptor.h"
 #include "WorldUIOcclusionPlan.h"
 #include <core/types/ShaderProgramArtifact.h>
 #include <function/scene/TransformECSStore.h>
@@ -152,6 +153,18 @@ class InxScreenUIRenderer
     void SetMaterialProgramReleaseSweep(std::function<void()> sweep)
     {
         m_materialProgramReleaseSweep = std::move(sweep);
+    }
+    void SetMaterialAssetResolver(std::function<std::shared_ptr<const InxMaterial>(const std::string &, uint64_t)> resolver)
+    {
+        m_materialAssetResolver = std::move(resolver);
+    }
+    void SetMaterialTextureResolver(TextureResolver resolver)
+    {
+        m_materialTextureResolver = std::move(resolver);
+    }
+    void SetMaterialTextureGenerationResolver(std::function<uint64_t(const std::string &)> resolver)
+    {
+        m_materialTextureGenerationResolver = std::move(resolver);
     }
     void InvalidateMaterialProgram(const ShaderStagePair &stages);
     [[nodiscard]] size_t GetMaterialPipelineVariantCount() const noexcept
@@ -363,6 +376,9 @@ class InxScreenUIRenderer
     VkPipeline GetWorldPipeline(const rhi::GraphicsRenderingSignature &target, bool alwaysOnTop = false);
     VkPipeline GetMaterialPipeline(const UIShaderMaterialBinding &binding, ShaderProgramDomain domain,
                                    const rhi::GraphicsRenderingSignature *target = nullptr, bool alwaysOnTop = false);
+    VkDescriptorSet GetMaterialDescriptor(const UIShaderMaterialBinding &binding,
+                                          const ShaderProgramArtifact &artifact);
+    void RetireMaterialDescriptor(const std::string &guid);
     void RetireMaterialPipelineVariants(const ShaderProgramKey &key);
     void PruneUnusedMaterialPrograms();
 
@@ -481,6 +497,7 @@ class InxScreenUIRenderer
     VkShaderModule m_vertShader = VK_NULL_HANDLE;
     VkShaderModule m_fragShader = VK_NULL_HANDLE;
     VkDescriptorSetLayout m_descriptorSetLayout = VK_NULL_HANDLE;
+    VkDescriptorSetLayout m_materialDescriptorSetLayout = VK_NULL_HANDLE;
     VkPipelineLayout m_pipelineLayout = VK_NULL_HANDLE;
     VkPipeline m_pipeline = VK_NULL_HANDLE;
     VkShaderModule m_worldVertShader = VK_NULL_HANDLE;
@@ -519,6 +536,8 @@ class InxScreenUIRenderer
         std::shared_ptr<const ShaderProgramArtifact> artifact;
     };
     std::unordered_map<std::string, ResolvedMaterialProgram> m_resolvedMaterialPrograms;
+    struct UIMaterialDescriptor;
+    std::unordered_map<std::string, std::shared_ptr<UIMaterialDescriptor>> m_materialDescriptors;
     std::unordered_set<ShaderProgramKey, ShaderProgramKeyHash> m_ownedMaterialPrograms;
     std::function<std::shared_ptr<const ShaderProgramArtifact>(const std::string &, uint64_t, ShaderProgramDomain)>
         m_materialProgramResolver;
@@ -526,6 +545,9 @@ class InxScreenUIRenderer
     std::function<void(const ShaderProgramKey &)> m_materialProgramRelease;
     std::function<void(const ShaderProgramKey &)> m_materialProgramAcquire;
     std::function<void()> m_materialProgramReleaseSweep;
+    std::function<std::shared_ptr<const InxMaterial>(const std::string &, uint64_t)> m_materialAssetResolver;
+    TextureResolver m_materialTextureResolver;
+    std::function<uint64_t(const std::string &)> m_materialTextureGenerationResolver;
     uint64_t m_materialRenderSerial = 0;
     uint64_t m_materialBindingsRevision = 0;
     uint64_t m_prunedMaterialBindingsRevision = 0;

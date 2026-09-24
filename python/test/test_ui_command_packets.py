@@ -122,6 +122,37 @@ def test_runtime_ui_material_contract_uses_guid_generation_and_pipeline_key():
     assert calls[-1] == ("Overlay", "", 0, "")
 
 
+def test_ui_material_generation_rebuilds_screen_and_world_packets(ui):
+    from Infernux.core.asset_ref import MaterialRef
+
+    element = ui.add()
+    revision = [3]
+    native = SimpleNamespace(
+        guid='ui-authored-guid', name='Authored UI', _texture_assets_pending=False,
+        get_version=lambda: revision[0],
+        _get_render_texture=lambda _name: None,
+        has_property=lambda _name: False,
+        shader_name='Authored UI', vert_shader_name='ui-vertex-guid',
+        frag_shader_name='ui-fragment-guid',
+        get_render_state=lambda: SimpleNamespace(alpha_clip_enabled=False, alpha_clip_threshold=0.0),
+    )
+    element.material = MaterialRef(guid='ui-authored-guid')
+    type(element).material.get_raw(element)._cached = native
+    def set_binding(*args):
+        output = ui.renderer.commands if ui.renderer.capture is None else ui.renderer.capture
+        output.append(('set_material_binding', args, {}))
+    ui.renderer.set_material_binding = set_binding
+    rebuilt, commands = ui.frame()
+    assert rebuilt
+    assert any(command[0] == 'set_material_binding' and command[1][1:3] == ('ui-authored-guid', 3)
+               for command in commands)
+    revision[0] = 4
+    rebuilt, commands = ui.frame()
+    assert rebuilt
+    assert any(command[0] == 'set_material_binding' and command[1][1:3] == ('ui-authored-guid', 4)
+               for command in commands)
+
+
 @pytest.fixture(params=[False, True], ids=['screen', 'world'])
 def ui(scene, monkeypatch, request):
     from Infernux.ui import UICanvas, UIText

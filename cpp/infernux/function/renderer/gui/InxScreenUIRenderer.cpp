@@ -48,6 +48,7 @@ constexpr float kTransformRotationEpsilon = 0.001f;
 constexpr float kPi = 3.14159265358979f;
 constexpr const char *kShaderEntryPoint = "main";
 constexpr uint32_t kFontTextureBinding = 0;
+constexpr uint32_t kUIMaterialTextureCapacity = 12;
 constexpr float kWorldUILogicalPixelsPerUnit = 100.0f;
 
 constexpr const char *kScreenVertexShader = R"glsl(
@@ -392,12 +393,14 @@ bool CreateShaderModule(VkDevice device, const uint32_t *code, size_t codeSize, 
 }
 
 bool CreatePipelineLayout(VkDevice device, VkDescriptorSetLayout descriptorSetLayout,
+                          VkDescriptorSetLayout materialDescriptorSetLayout,
                           const VkPushConstantRange &pushConstantRange, VkPipelineLayout &outLayout)
 {
+    const std::array<VkDescriptorSetLayout, 2> setLayouts{descriptorSetLayout, materialDescriptorSetLayout};
     VkPipelineLayoutCreateInfo createInfo{};
     createInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    createInfo.setLayoutCount = 1;
-    createInfo.pSetLayouts = &descriptorSetLayout;
+    createInfo.setLayoutCount = static_cast<uint32_t>(setLayouts.size());
+    createInfo.pSetLayouts = setLayouts.data();
     createInfo.pushConstantRangeCount = 1;
     createInfo.pPushConstantRanges = &pushConstantRange;
 
@@ -568,6 +571,25 @@ bool EnsureHostVisibleBuffer(VmaAllocator allocator, GpuRetirementQueue *deletio
     return true;
 }
 } // namespace
+
+struct InxScreenUIRenderer::UIMaterialDescriptor
+{
+    VkDevice device = VK_NULL_HANDLE;
+    VkDescriptorPool pool = VK_NULL_HANDLE;
+    VkDescriptorSet set = VK_NULL_HANDLE;
+    std::unique_ptr<MaterialUBO> buffer;
+    std::vector<MaterialDescriptorSet::TextureBinding> textures;
+    std::vector<std::pair<std::string, uint64_t>> textureVersions;
+    ShaderProgramKey program;
+    uint64_t generation = 0;
+    uint64_t validatedRender = 0;
+
+    ~UIMaterialDescriptor()
+    {
+        if (pool != VK_NULL_HANDLE)
+            vkDestroyDescriptorPool(device, pool, nullptr);
+    }
+};
 
 struct InxScreenUIRenderer::CommandPacket::Data
 {
@@ -859,6 +881,11 @@ void InxScreenUIRenderer::Destroy()
     for (const auto &key : ownedPrograms)
         RetireMaterialPipelineVariants(key);
     m_resolvedMaterialPrograms.clear();
+    for (const auto &entry : m_materialDescriptors) {
+        const auto resource = entry.second;
+        m_deletionQueue->Retire([resource] {});
+    }
+    m_materialDescriptors.clear();
 
     if (m_device != VK_NULL_HANDLE) {
         for (auto &frame : m_frameBuffers) {
@@ -888,6 +915,8 @@ void InxScreenUIRenderer::Destroy()
             vkDestroyPipelineLayout(m_device, m_worldPipelineLayout, nullptr);
         if (m_descriptorSetLayout)
             vkDestroyDescriptorSetLayout(m_device, m_descriptorSetLayout, nullptr);
+        if (m_materialDescriptorSetLayout)
+            vkDestroyDescriptorSetLayout(m_device, m_materialDescriptorSetLayout, nullptr);
         if (m_vertShader)
             vkDestroyShaderModule(m_device, m_vertShader, nullptr);
         if (m_worldVertShader)
@@ -910,6 +939,7 @@ void InxScreenUIRenderer::Destroy()
     m_pipelineLayout = VK_NULL_HANDLE;
     m_worldPipelineLayout = VK_NULL_HANDLE;
     m_descriptorSetLayout = VK_NULL_HANDLE;
+    m_materialDescriptorSetLayout = VK_NULL_HANDLE;
     m_fontDescriptorSet = VK_NULL_HANDLE;
     m_vertShader = VK_NULL_HANDLE;
     m_worldVertShader = VK_NULL_HANDLE;
@@ -1451,6 +1481,7 @@ void InxScreenUIRenderer::Render(VkCommandBuffer cmdBuf, ScreenUIList list, uint
                                           VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipelineLayout, 0, 1, &m_fontDescriptorSet,
                                           0, nullptr);
     VkDescriptorSet lastBoundDescSet = m_fontDescriptorSet;
+    VkDescriptorSet lastMaterialDescSet = VK_NULL_HANDLE;
 
     // ---- Issue draw commands ----
     const float frameWidth = static_cast<float>(width);
@@ -1469,6 +1500,15 @@ void InxScreenUIRenderer::Render(VkCommandBuffer cmdBuf, ScreenUIList list, uint
                                  ? m_commandBindings[listIndex][static_cast<size_t>(cmdI)]
                                  : UIShaderMaterialBinding{};
         const VkPipeline pipeline = GetMaterialPipeline(binding, ShaderProgramDomain::ScreenUI);
+        VkDescriptorSet materialDescSet = VK_NULL_HANDLE;
+        if (!binding.materialGuid.empty()) {
+            const auto &artifact = m_resolvedMaterialPrograms.at(binding.materialGuid).artifact;
+            if (artifact && !artifact->properties.empty()) {
+                materialDescSet = GetMaterialDescriptor(binding, *artifact);
+                if (materialDescSet == VK_NULL_HANDLE)
+                    continue;
+            }
+        }
         if (pipeline != lastPipeline) {
             vkCmdBindPipeline(cmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
             lastPipeline = pipeline;
@@ -1506,6 +1546,12 @@ void InxScreenUIRenderer::Render(VkCommandBuffer cmdBuf, ScreenUIList list, uint
                                                   VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipelineLayout, 0, 1, &texDescSet,
                                                   0, nullptr);
             lastBoundDescSet = texDescSet;
+        }
+        if (materialDescSet != VK_NULL_HANDLE && materialDescSet != lastMaterialDescSet) {
+            vkdebug::CmdBindDescriptorSetsTracked("InxScreenUIRenderer.Render.Set1Material", cmdBuf,
+                                                  VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipelineLayout, 1, 1,
+                                                  &materialDescSet, 0, nullptr);
+            lastMaterialDescSet = materialDescSet;
         }
 
         // Scissor rect from ImDrawCmd clip rect — clamped to render area
@@ -1570,7 +1616,19 @@ bool InxScreenUIRenderer::CreatePipeline()
     // Ortho projection plus the sampled texture's display-encoding flag.
     auto pushConstRange = MakeVertexPushConstantRange(sizeof(ScreenUIPushConstants));
     pushConstRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
-    if (!CreatePipelineLayout(m_device, m_descriptorSetLayout, pushConstRange, m_pipelineLayout))
+    std::array<VkDescriptorSetLayoutBinding, kUIMaterialTextureCapacity + 1> materialBindings{};
+    materialBindings[0] = vkrender::MakeDescriptorSetLayoutBinding(
+        0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT);
+    for (uint32_t slot = 0; slot < kUIMaterialTextureCapacity; ++slot)
+        materialBindings[slot + 1] = vkrender::MakeDescriptorSetLayoutBinding(
+            slot + 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT);
+    if (!vkrender::CreateDescriptorSetLayout(m_device, materialBindings.data(),
+                                             static_cast<uint32_t>(materialBindings.size()),
+                                             m_materialDescriptorSetLayout))
+        return false;
+    if (!CreatePipelineLayout(m_device, m_descriptorSetLayout, m_materialDescriptorSetLayout, pushConstRange,
+                              m_pipelineLayout))
         return false;
 
     return CreateScreenPipeline(m_vertShader, m_fragShader, m_pipeline);
@@ -1655,7 +1713,8 @@ bool InxScreenUIRenderer::CreateWorldPipeline()
 
     VkPushConstantRange pushConstants = MakeVertexPushConstantRange(sizeof(WorldUIPushConstants));
     pushConstants.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
-    if (!CreatePipelineLayout(m_device, m_descriptorSetLayout, pushConstants, m_worldPipelineLayout))
+    if (!CreatePipelineLayout(m_device, m_descriptorSetLayout, m_materialDescriptorSetLayout, pushConstants,
+                              m_worldPipelineLayout))
         return false;
 
     rhi::GraphicsRenderingSignature target;
@@ -1798,12 +1857,23 @@ void InxScreenUIRenderer::RetireMaterialPipelineVariants(const ShaderProgramKey 
         m_materialProgramRelease(key);
 }
 
+void InxScreenUIRenderer::RetireMaterialDescriptor(const std::string &guid)
+{
+    const auto found = m_materialDescriptors.find(guid);
+    if (found == m_materialDescriptors.end())
+        return;
+    auto resource = std::move(found->second);
+    m_materialDescriptors.erase(found);
+    m_deletionQueue->Retire([resource = std::move(resource)] {});
+}
+
 void InxScreenUIRenderer::InvalidateMaterialProgram(const ShaderStagePair &stages)
 {
     for (auto it = m_resolvedMaterialPrograms.begin(); it != m_resolvedMaterialPrograms.end();) {
-        if (!it->second.artifact || it->second.artifact->key.stages == stages)
+        if (!it->second.artifact || it->second.artifact->key.stages == stages) {
+            RetireMaterialDescriptor(it->first);
             it = m_resolvedMaterialPrograms.erase(it);
-        else
+        } else
             ++it;
     }
     std::vector<ShaderProgramKey> staleKeys;
@@ -1842,6 +1912,7 @@ void InxScreenUIRenderer::PruneUnusedMaterialPrograms()
         }
         if (it->second.artifact)
             removedKeys.push_back(it->second.artifact->key);
+        RetireMaterialDescriptor(it->first);
         it = m_resolvedMaterialPrograms.erase(it);
     }
     for (const auto &key : removedKeys) {
@@ -1869,10 +1940,8 @@ VkPipeline InxScreenUIRenderer::GetMaterialPipeline(const UIShaderMaterialBindin
             throw std::runtime_error("UI material shader domain mismatch for GUID " + binding.materialGuid +
                                      ": expected " + ShaderProgramDomainName(domain) + ", got " +
                                      ShaderProgramDomainName(artifact->domain));
-        if (artifact &&
-            (!artifact->properties.empty() || artifact->materialBufferSize != 0 || artifact->usesBindlessTextureABI))
-            throw std::runtime_error("UI material shader declares unsupported descriptors for GUID " +
-                                     binding.materialGuid);
+        if (artifact && artifact->usesBindlessTextureABI)
+            throw std::runtime_error("UI material shader cannot use the scene bindless texture ABI");
         return artifact;
     };
 
@@ -1880,6 +1949,7 @@ VkPipeline InxScreenUIRenderer::GetMaterialPipeline(const UIShaderMaterialBindin
     // immutable artifact once per material generation, not once per draw.
     auto cached = m_resolvedMaterialPrograms.find(binding.materialGuid);
     if (cached != m_resolvedMaterialPrograms.end() && cached->second.generation != binding.generation) {
+        RetireMaterialDescriptor(binding.materialGuid);
         const ShaderProgramKey previousKey =
             cached->second.artifact ? cached->second.artifact->key : ShaderProgramKey{};
         m_resolvedMaterialPrograms.erase(cached);
@@ -1914,6 +1984,7 @@ VkPipeline InxScreenUIRenderer::GetMaterialPipeline(const UIShaderMaterialBindin
     }
     if (m_materialIdentityValidator && cached->second.validatedRender != m_materialRenderSerial) {
         if (!m_materialIdentityValidator(binding.materialGuid, binding.generation)) {
+            RetireMaterialDescriptor(binding.materialGuid);
             const ShaderProgramKey staleKey =
                 cached->second.artifact ? cached->second.artifact->key : ShaderProgramKey{};
             m_resolvedMaterialPrograms.erase(cached);
@@ -1934,9 +2005,8 @@ VkPipeline InxScreenUIRenderer::GetMaterialPipeline(const UIShaderMaterialBindin
         throw std::runtime_error("UI material shader domain mismatch for GUID " + binding.materialGuid + ": expected " +
                                  ShaderProgramDomainName(domain) + ", got " +
                                  ShaderProgramDomainName(artifact->domain));
-    if (!artifact->properties.empty() || artifact->materialBufferSize != 0 || artifact->usesBindlessTextureABI)
-        throw std::runtime_error("UI material shader declares unsupported descriptors for GUID " +
-                                 binding.materialGuid);
+    if (artifact->usesBindlessTextureABI)
+        throw std::runtime_error("UI material shader cannot use the scene bindless texture ABI");
     if (m_ownedMaterialPrograms.insert(artifact->key).second && m_materialProgramAcquire) {
         try {
             m_materialProgramAcquire(artifact->key);
@@ -1978,6 +2048,176 @@ VkPipeline InxScreenUIRenderer::GetMaterialPipeline(const UIShaderMaterialBindin
     }
     m_materialPipelineVariants.emplace(std::move(pipelineKey), pipeline);
     return pipeline;
+}
+
+VkDescriptorSet InxScreenUIRenderer::GetMaterialDescriptor(const UIShaderMaterialBinding &binding,
+                                                            const ShaderProgramArtifact &artifact)
+{
+    if (artifact.properties.empty())
+        return VK_NULL_HANDLE;
+    if (!m_materialAssetResolver || !m_materialTextureResolver || !m_materialTextureGenerationResolver ||
+        !m_deletionQueue)
+        throw std::logic_error("UI material descriptors require GUID asset, texture, and GPU retirement owners");
+    const auto previous = m_materialDescriptors.find(binding.materialGuid);
+    if (previous != m_materialDescriptors.end() && previous->second->generation == binding.generation &&
+        previous->second->program == artifact.key) {
+        auto &cached = *previous->second;
+        if (cached.validatedRender == m_materialRenderSerial)
+            return cached.set;
+        const bool texturesUnchanged = std::all_of(
+            cached.textureVersions.begin(), cached.textureVersions.end(), [&](const auto &entry) {
+                return entry.second != 0 && m_materialTextureGenerationResolver(entry.first) == entry.second;
+            });
+        if (texturesUnchanged) {
+            cached.validatedRender = m_materialRenderSerial;
+            return cached.set;
+        }
+    }
+
+    const auto material = m_materialAssetResolver(binding.materialGuid, binding.generation);
+    if (!material || material->IsDeleted() || material->GetVersion() != binding.generation)
+        throw std::runtime_error("UI material generation changed before descriptor publication: " +
+                                 binding.materialGuid);
+
+    uint32_t textureCount = 0;
+    for (const auto &property : artifact.properties)
+        if (property.textureSlot)
+            textureCount = std::max(textureCount, *property.textureSlot + 1);
+    if (textureCount > kUIMaterialTextureCapacity)
+        throw std::runtime_error("UI material exceeds the fixed texture descriptor capacity");
+    std::vector<MaterialDescriptorSet::TextureBinding> textures(textureCount);
+    std::vector<std::pair<std::string, uint64_t>> textureVersions;
+    textureVersions.reserve(textureCount);
+    for (const auto &property : artifact.properties) {
+        const MaterialProperty *authored = material->GetProperty(property.name);
+        if (!authored)
+            throw std::runtime_error("UI material is missing shader property '" + property.name + "'");
+        const auto expectedType = [&]() -> MaterialPropertyType {
+            const auto &type = property.type;
+            if (type == "Float") return MaterialPropertyType::Float;
+            if (type == "Float2") return MaterialPropertyType::Float2;
+            if (type == "Float3") return MaterialPropertyType::Float3;
+            if (type == "Float4") return MaterialPropertyType::Float4;
+            if (type == "Color") return MaterialPropertyType::Color;
+            if (type == "Int") return MaterialPropertyType::Int;
+            if (type == "Mat4") return MaterialPropertyType::Mat4;
+            if (type == "Texture2D") return MaterialPropertyType::Texture2D;
+            throw std::runtime_error("Unsupported UI material property type: " + type);
+        }();
+        if (authored->type != expectedType)
+            throw std::runtime_error("UI material property has a mismatched type: " + property.name);
+        if (!property.textureSlot)
+            continue;
+        const auto *textureGuid = std::get_if<std::string>(&authored->value);
+        if (!textureGuid || textureGuid->empty())
+            throw std::runtime_error("UI material texture property requires an asset GUID: " + property.name);
+        auto resolved = m_materialTextureResolver(*textureGuid, property.name);
+        if (resolved.status == TextureResolveStatus::Pending) {
+            m_commandCacheValid = false;
+            if (previous != m_materialDescriptors.end() && previous->second->generation == binding.generation &&
+                previous->second->program == artifact.key) {
+                previous->second->validatedRender = m_materialRenderSerial;
+                return previous->second->set;
+            }
+            return VK_NULL_HANDLE;
+        }
+        if (resolved.status != TextureResolveStatus::Ready || !resolved.binding.gpuView ||
+            resolved.binding.imageView == VK_NULL_HANDLE || resolved.binding.sampler == VK_NULL_HANDLE)
+            throw std::runtime_error("UI material texture GUID did not publish a GPU image: " + *textureGuid);
+        const uint64_t textureVersion = m_materialTextureGenerationResolver(*textureGuid);
+        if (textureVersion == 0)
+            throw std::runtime_error("UI material texture GUID has no published asset generation: " + *textureGuid);
+        textures[*property.textureSlot] = std::move(resolved.binding);
+        textureVersions.emplace_back(*textureGuid, textureVersion);
+    }
+
+    if (previous != m_materialDescriptors.end()) {
+        auto &resource = *previous->second;
+        bool sameTextures = resource.textures.size() == textures.size();
+        if (sameTextures) for (size_t slot = 0; slot < textures.size(); ++slot) {
+            const auto &a = resource.textures[slot];
+            const auto &b = textures[slot];
+            sameTextures = sameTextures && a.gpuView == b.gpuView && a.imageView == b.imageView &&
+                           a.sampler == b.sampler;
+        }
+        if (resource.generation == binding.generation && resource.program == artifact.key && sameTextures) {
+            resource.textureVersions = std::move(textureVersions);
+            resource.validatedRender = m_materialRenderSerial;
+            return resource.set;
+        }
+    }
+
+    auto resource = std::make_shared<UIMaterialDescriptor>();
+    resource->device = m_device;
+    resource->generation = binding.generation;
+    resource->program = artifact.key;
+    resource->validatedRender = m_materialRenderSerial;
+    resource->textures = std::move(textures);
+    resource->textureVersions = std::move(textureVersions);
+    if (artifact.materialBufferSize) {
+        MaterialUBOLayout layout{0, artifact.materialBufferSize, {}};
+        for (const auto &property : artifact.properties) {
+            if (property.bufferOffset)
+                layout.members.push_back({property.name, *property.bufferOffset, property.byteSize, 1,
+                                          VK_FORMAT_UNDEFINED});
+        }
+        resource->buffer = std::make_unique<MaterialUBO>();
+        if (!resource->buffer->Create(m_allocator, m_device, layout))
+            throw std::runtime_error("UI material UBO allocation failed");
+        resource->buffer->Update(*material);
+    }
+
+    const std::array<VkDescriptorPoolSize, 2> poolSizes{{
+        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1},
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, kUIMaterialTextureCapacity},
+    }};
+    VkDescriptorPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+    poolInfo.maxSets = 1;
+    poolInfo.poolSizeCount = static_cast<uint32_t>(poolSizes.size());
+    poolInfo.pPoolSizes = poolSizes.data();
+    if (vkCreateDescriptorPool(m_device, &poolInfo, nullptr, &resource->pool) != VK_SUCCESS)
+        throw std::runtime_error("UI material descriptor pool allocation failed");
+    VkDescriptorSetAllocateInfo allocate{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+    allocate.descriptorPool = resource->pool;
+    allocate.descriptorSetCount = 1;
+    allocate.pSetLayouts = &m_materialDescriptorSetLayout;
+    if (vkAllocateDescriptorSets(m_device, &allocate, &resource->set) != VK_SUCCESS)
+        throw std::runtime_error("UI material descriptor allocation failed");
+
+    VkDescriptorBufferInfo bufferInfo{};
+    VkWriteDescriptorSet bufferWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    std::vector<VkDescriptorImageInfo> imageInfos(resource->textures.size());
+    std::vector<VkWriteDescriptorSet> writes;
+    writes.reserve(imageInfos.size() + 1);
+    if (resource->buffer) {
+        bufferInfo.buffer = resource->buffer->GetBuffer();
+        bufferInfo.range = resource->buffer->GetSize();
+        bufferWrite.dstSet = resource->set;
+        bufferWrite.dstBinding = 0;
+        bufferWrite.descriptorCount = 1;
+        bufferWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        bufferWrite.pBufferInfo = &bufferInfo;
+        writes.push_back(bufferWrite);
+    }
+    for (uint32_t slot = 0; slot < resource->textures.size(); ++slot) {
+        const auto &texture = resource->textures[slot];
+        if (!texture.gpuView)
+            continue;
+        imageInfos[slot] = {texture.sampler, texture.imageView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+        VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        write.dstSet = resource->set;
+        write.dstBinding = 1 + slot;
+        write.descriptorCount = 1;
+        write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        write.pImageInfo = &imageInfos[slot];
+        writes.push_back(write);
+    }
+    vkUpdateDescriptorSets(m_device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+    if (previous != m_materialDescriptors.end())
+        RetireMaterialDescriptor(binding.materialGuid);
+    const VkDescriptorSet set = resource->set;
+    m_materialDescriptors.emplace(binding.materialGuid, std::move(resource));
+    return set;
 }
 
 // ============================================================================
@@ -2173,6 +2413,7 @@ void InxScreenUIRenderer::RenderWorld(VkCommandBuffer cmdBuf, uint32_t width, ui
     const VkRect2D scissor{{0, 0}, {width, height}};
     vkCmdSetScissor(cmdBuf, 0, 1, &scissor);
     VkDescriptorSet lastDescriptor = VK_NULL_HANDLE;
+    VkDescriptorSet lastMaterialDescriptor = VK_NULL_HANDLE;
     uint32_t submittedDraws = 0;
     uint64_t submittedIndices = 0;
 
@@ -2221,6 +2462,15 @@ void InxScreenUIRenderer::RenderWorld(VkCommandBuffer cmdBuf, uint32_t width, ui
             binding.materialGuid.empty()
                 ? (alwaysOnTop ? topPipeline : depthPipeline)
                 : GetMaterialPipeline(binding, ShaderProgramDomain::WorldUI, &target, alwaysOnTop);
+        VkDescriptorSet materialDescriptor = VK_NULL_HANDLE;
+        if (!binding.materialGuid.empty()) {
+            const auto &artifact = m_resolvedMaterialPrograms.at(binding.materialGuid).artifact;
+            if (artifact && !artifact->properties.empty()) {
+                materialDescriptor = GetMaterialDescriptor(binding, *artifact);
+                if (materialDescriptor == VK_NULL_HANDLE)
+                    return; // Skip only this drawCommand; later World UI elements remain visible.
+            }
+        }
         if (pipeline != lastPipeline) {
             vkCmdBindPipeline(cmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
             lastPipeline = pipeline;
@@ -2233,6 +2483,12 @@ void InxScreenUIRenderer::RenderWorld(VkCommandBuffer cmdBuf, uint32_t width, ui
                                                   VK_PIPELINE_BIND_POINT_GRAPHICS, m_worldPipelineLayout, 0, 1,
                                                   &descriptor, 0, nullptr);
             lastDescriptor = descriptor;
+        }
+        if (materialDescriptor != VK_NULL_HANDLE && materialDescriptor != lastMaterialDescriptor) {
+            vkdebug::CmdBindDescriptorSetsTracked("InxScreenUIRenderer.RenderWorld.Set1Material", cmdBuf,
+                                                  VK_PIPELINE_BIND_POINT_GRAPHICS, m_worldPipelineLayout, 1, 1,
+                                                  &materialDescriptor, 0, nullptr);
+            lastMaterialDescriptor = materialDescriptor;
         }
         WorldUIPushConstants constants{};
         constants.viewProjection = viewProjection;

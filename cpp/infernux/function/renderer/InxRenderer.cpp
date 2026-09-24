@@ -2615,6 +2615,20 @@ void InxRenderer::SetShaderProgramArtifactResolver(
         m_vkCore->SetShaderProgramArtifactResolver(m_shaderProgramArtifactResolver);
 }
 
+void InxRenderer::SetMaterialShaderDomainInspector(
+    std::function<std::optional<ShaderProgramDomain>(const std::shared_ptr<InxMaterial> &)> inspector)
+{
+    m_materialShaderDomainInspector = std::move(inspector);
+}
+
+bool InxRenderer::CanPreviewMaterialOnMesh(const std::shared_ptr<InxMaterial> &material) const
+{
+    if (!material)
+        return false;
+    const auto domain = m_materialShaderDomainInspector ? m_materialShaderDomainInspector(material) : std::nullopt;
+    return !domain || *domain == ShaderProgramDomain::Mesh;
+}
+
 void InxRenderer::SetUIMaterialShaderValidator(
     std::function<bool(const std::shared_ptr<InxMaterial> &, ShaderProgramDomain)> validator)
 {
@@ -4102,6 +4116,11 @@ InxRenderer::BeginMaterialPreviewGPU(const std::shared_ptr<InxMaterial> &materia
         *texturePending = false;
     if (!m_vkCore || !material)
         return nullptr;
+    // A material sphere is mesh geometry. UI and particle programs have their
+    // own vertex/descriptor contract and are represented by the static CPU
+    // thumbnail instead of being published into a mesh preview pipeline.
+    if (!CanPreviewMaterialOnMesh(material))
+        return nullptr;
     if (m_shaderProgramArtifactResolver)
         m_shaderProgramArtifactResolver(material, ShaderProgramDomain::Mesh);
     return m_vkCore->BeginMaterialPreviewGPU(material, size, texturePending);
@@ -4717,6 +4736,34 @@ void InxRenderer::SetSceneViewVisible(bool visible)
 
 void InxRenderer::ConfigureScreenUIMaterialResolver(InxScreenUIRenderer &renderer)
 {
+    renderer.SetMaterialAssetResolver([](const std::string &guid, uint64_t generation) {
+        auto material = AssetRegistry::Instance().GetAsset<InxMaterial>(guid);
+        if (!material || material->IsDeleted() || material->GetVersion() != generation)
+            throw std::runtime_error("UI material GUID is missing or its retained generation is stale: " + guid);
+        return std::shared_ptr<const InxMaterial>(std::move(material));
+    });
+    renderer.SetMaterialTextureResolver([this](const std::string &textureGuid, const std::string &bindingName) {
+        if (!m_vkCore)
+            throw std::logic_error("UI material texture resolver requires a live Vulkan core");
+        if (textureGuid == "white" || textureGuid == "black" || textureGuid == "normal") {
+            const bool normal = textureGuid == "normal" || bindingName.find("normal") != std::string::npos ||
+                                bindingName.find("Normal") != std::string::npos;
+            auto slot = m_vkCore->GetTextureCache().Find(normal ? "_default_normal" : "white");
+            auto view = slot ? slot->Acquire() : nullptr;
+            if (!view || !view->IsValid())
+                return TextureResolveResult{TextureResolveStatus::Pending, {}};
+            auto &device = m_vkCore->GetDeviceContext().GetRhiDevice();
+            return TextureResolveResult{
+                TextureResolveStatus::Ready,
+                {device.Resolve(view->GetView()), device.Resolve(view->GetSampler()), std::move(slot), std::move(view)}};
+        }
+        return m_vkCore->ResolveTextureForMaterial(textureGuid, bindingName);
+    });
+    renderer.SetMaterialTextureGenerationResolver([](const std::string &textureGuid) -> uint64_t {
+        if (textureGuid == "white" || textureGuid == "black" || textureGuid == "normal")
+            return 1;
+        return AssetRegistry::Instance().GetAssetVersion(textureGuid);
+    });
     renderer.SetMaterialProgramAcquire([this](const ShaderProgramKey &key) {
         if (m_vkCore)
             m_vkCore->AcquireUIShaderProgramOwner(key);

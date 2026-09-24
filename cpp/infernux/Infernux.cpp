@@ -920,6 +920,8 @@ Infernux::Infernux(std::string dllPath, RuntimeMode mode) : m_runtimeMode(mode),
     if (m_runtimeMode == RuntimeMode::Graphical) {
         INXLOG_DEBUG("Create Infernux Renderer.");
         m_renderer = std::make_unique<InxRenderer>();
+        m_renderer->SetMaterialShaderDomainInspector(
+            [this](const std::shared_ptr<InxMaterial> &material) { return InspectMaterialShaderDomain(material); });
         m_renderer->SetShaderProgramArtifactResolver([this](const std::shared_ptr<InxMaterial> &material,
                                                             std::optional<ShaderProgramDomain> expectedDomain) {
             const auto declaredDomain = InspectMaterialShaderDomain(material);
@@ -1728,8 +1730,11 @@ int Infernux::PumpMaterialPreviewUploads(int uploadBudget, bool ignoreCooldown)
         return consumed;
     }
 
+    const bool meshPreviewApplicable = m_renderer->CanPreviewMaterialOnMesh(material);
     bool texturePending = false;
-    auto ticket = m_renderer->BeginMaterialPreviewGPU(material, kMaterialPreviewSize, &texturePending);
+    auto ticket = meshPreviewApplicable
+                      ? m_renderer->BeginMaterialPreviewGPU(material, kMaterialPreviewSize, &texturePending)
+                      : nullptr;
     if (texturePending) {
         std::lock_guard<std::mutex> lock(m_previewResultMutex);
         auto it = m_materialPreviewStates.find(request.resourceKey);
@@ -1749,7 +1754,7 @@ int Infernux::PumpMaterialPreviewUploads(int uploadBudget, bool ignoreCooldown)
         return consumed;
     }
     if (!ticket) {
-        if (request.transientGpuFailures < kMaxTransientGpuPreviewFailures) {
+        if (meshPreviewApplicable && request.transientGpuFailures < kMaxTransientGpuPreviewFailures) {
             std::lock_guard<std::mutex> lock(m_previewResultMutex);
             auto it = m_materialPreviewStates.find(request.resourceKey);
             if (it != m_materialPreviewStates.end() && it->second.generation == request.generation) {

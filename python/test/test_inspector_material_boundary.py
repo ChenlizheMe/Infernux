@@ -90,6 +90,29 @@ def test_texture_slot_uses_descriptor_drag_types_including_render_targets(monkey
     assert 'TEXTURE_FILE' in models[0].accept
 
 
+def test_ui_shader_properties_use_shared_material_inspector_order(monkeypatch):
+    from types import SimpleNamespace
+    from Infernux.engine.ui import inspector_material
+
+    class Context:
+        @staticmethod
+        def calc_text_width(label):
+            return float(len(label))
+
+    monkeypatch.setattr(inspector_material, 'get_locale', lambda: 'en')
+    document = {
+        '_shader_property_order': ['gain', 'tint', 'detailTex'],
+        'properties': {
+            'gain': {'type': 0, 'value': 0.5},
+            'tint': {'type': 7, 'value': [0.2, 0.3, 0.4, 1.0]},
+            'detailTex': {'type': 6, 'guid': '44444444444444444444444444444444'},
+        },
+    }
+    state = SimpleNamespace(extra={'_material_schema_revision': 0})
+    layout = inspector_material._get_material_property_layout_cache(Context(), state, document)
+    assert layout['property_names'] == ('gain', 'tint', 'detailTex')
+
+
 @pytest.mark.parametrize('extension,resource_type', [('png', 'Texture'), ('rendertexture', 'RenderTexture')])
 def test_sampled_texture_clipboard_preserves_concrete_asset_type(extension, resource_type):
     from Infernux.core.asset_reference_types import AssetReferenceCodec, asset_type_registry

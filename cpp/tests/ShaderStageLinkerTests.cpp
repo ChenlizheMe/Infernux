@@ -4,7 +4,9 @@
 #include <function/renderer/particle/ParticleGpuRibbonRenderer.h>
 #include <function/renderer/particle/ParticleGpuRibbonTopology.h>
 #include <function/renderer/particle/ParticleGpuSorter.h>
+#include <function/renderer/InxRenderer.h>
 #include <function/renderer/shader/ShaderReflection.h>
+#include <function/resources/InxMaterial/InxMaterial.h>
 #include <function/resources/InxFileLoader/InxShaderLoader.hpp>
 #include <function/resources/ShaderAsset/ShaderPassVariantPlanner.h>
 #include <function/resources/ShaderAsset/ShaderStageLinker.h>
@@ -61,6 +63,22 @@ std::string ReadText(const std::string &path)
 
 int main()
 {
+    {
+        infernux::InxRenderer renderer;
+        auto material = std::make_shared<infernux::InxMaterial>("UI thumbnail", "Unlit");
+        renderer.SetMaterialShaderDomainInspector([](const auto &) {
+            return std::optional<infernux::ShaderProgramDomain>{infernux::ShaderProgramDomain::ScreenUI};
+        });
+        renderer.SetShaderProgramArtifactResolver([](const auto &, const auto &) {
+            throw std::runtime_error("UI shader must not be published for a mesh thumbnail");
+        });
+        assert(!renderer.CanPreviewMaterialOnMesh(material));
+        assert(!renderer.BeginMaterialPreviewGPU(material, 64));
+        renderer.SetMaterialShaderDomainInspector([](const auto &) {
+            return std::optional<infernux::ShaderProgramDomain>{infernux::ShaderProgramDomain::Mesh};
+        });
+        assert(renderer.CanPreviewMaterialOnMesh(material));
+    }
     infernux::ShaderDescriptor meshVertex;
     infernux::ShaderDescriptor meshFragment;
     assert(infernux::ShaderStageLinker::ShouldPrewarmSceneMaterial(meshVertex, meshFragment));

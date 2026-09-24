@@ -308,14 +308,6 @@ ShaderProgramInterfaceArtifact ShaderStageLinker::Link(const ShaderDescriptor &v
                                "UI shader stages require explicit main() and fixed engine vertex/varying locations",
                                fragment.filePath, {}));
         }
-        if (!vertex.properties.empty() || !vertex.textureProperties.empty() || !fragment.properties.empty() ||
-            !fragment.textureProperties.empty()) {
-            artifact.diagnostics.push_back(
-                MakeDiagnostic(ShaderLinkDiagnosticCode::UnsupportedUIProperty,
-                               "UI shader properties use the fixed push-constant and set 0 image contract; "
-                               "ShaderInfo Properties are not supported by this UI domain",
-                               fragment.filePath, {}));
-        }
     }
     artifact.shadingModel = fragment.shadingModel;
     artifact.firstUserVaryingLocation = options.firstUserVaryingLocation;
@@ -467,7 +459,9 @@ ShaderProgramInterfaceArtifact ShaderStageLinker::Link(const ShaderDescriptor &v
     std::unordered_map<std::string, size_t> propertyIndices;
     AppendStageProperties(artifact, vertex, ShaderStageVisibility::Vertex, propertyIndices);
     AppendStageProperties(artifact, fragment, ShaderStageVisibility::Fragment, propertyIndices);
-    AssignPropertyLayout(artifact, fragment.hasSurfaceFunc, options.maximumMaterialTextures);
+    const bool uiDomain = artifact.domain == ShaderProgramDomain::ScreenUI ||
+                          artifact.domain == ShaderProgramDomain::WorldUI;
+    AssignPropertyLayout(artifact, !uiDomain && fragment.hasSurfaceFunc, options.maximumMaterialTextures);
 
     uint64_t compatibility = FnvOffset;
     compatibility = HashNumber(compatibility, static_cast<uint8_t>(artifact.domain));

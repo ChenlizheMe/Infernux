@@ -6407,6 +6407,48 @@ def test_cooked_catalog_discovers_native_and_effect_group_asset_references():
     assert group["dependencies"] == [effect["runtime_artifact_id"]]
 
 
+def test_cooked_catalog_keeps_ui_material_shader_and_texture_guids():
+    material_guid = "11111111111111111111111111111111"
+    vertex_guid = "22222222222222222222222222222222"
+    fragment_guid = "33333333333333333333333333333333"
+    texture_guid = "44444444444444444444444444444444"
+    payloads = {
+        f"Library/Artifacts/Document/{material_guid}.mat": json.dumps({
+            "shaders": {
+                "vertex": {"guid": vertex_guid, "shader_id": "UI/Vertex"},
+                "fragment": {"guid": fragment_guid, "shader_id": "UI/Fragment"},
+            },
+            "properties": {
+                "gain": {"type": "Float", "value": 0.5},
+                "detailTex": {"type": "Texture2D", "guid": texture_guid},
+            },
+        }).encode("utf-8"),
+        f"Library/Artifacts/Document/{vertex_guid}.vert": b"#version 450\n",
+        f"Library/Artifacts/Document/{fragment_guid}.frag": b"#version 450\n",
+        f"Library/Artifacts/Textures/{texture_guid}.inxtex": b"texture artifact",
+    }
+    catalog = build_catalog(
+        [
+            {
+                "package": "Content.inxpkg",
+                "runtime_path": path,
+                "bytes": len(payload),
+                "payload": payload,
+                "asset_binding": {"source_guid": Path(path).stem, "source_path": f"Assets/{Path(path).name}",
+                                  "dependencies": []},
+            }
+            for path, payload in payloads.items()
+        ],
+        player_host={"executable": "Game.exe"},
+        package_records=[],
+    )
+    by_path = {item["runtime_path"]: item for item in catalog["artifacts"]}
+    material = by_path[f"Library/Artifacts/Document/{material_guid}.mat"]
+    expected = {by_path[path]["runtime_artifact_id"] for path in payloads if not path.endswith(".mat")}
+    assert set(material["dependencies"]) == expected
+    assert material["unresolved_dependencies"] == []
+
+
 def test_payload_manifest_rejects_source_replaced_by_current_library_artifact(tmp_path):
     builder = _make_builder(tmp_path, tmp_path / "build_output")
     final_dir = tmp_path / "dist"

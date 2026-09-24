@@ -33,10 +33,18 @@ struct ScreenUIVulkanTestAccess
     {
         return renderer.GetMaterialPipeline(binding, domain, target);
     }
+
+    static VkDescriptorSet ResolveMaterialDescriptor(InxScreenUIRenderer &renderer,
+                                                     const UIShaderMaterialBinding &binding,
+                                                     const ShaderProgramArtifact &artifact)
+    {
+        return renderer.GetMaterialDescriptor(binding, artifact);
+    }
 };
 } // namespace infernux
 
-static std::shared_ptr<const ShaderProgramArtifact> CompileUiProgram(bool world, bool alternate, bool reload = false)
+static std::shared_ptr<const ShaderProgramArtifact> CompileUiProgram(bool world, bool alternate, bool reload = false,
+                                                                      bool materialProperties = false)
 {
     const std::string domain = world ? "WorldUI" : "ScreenUI";
     const std::string vertex = "ShaderInfo { Name \"Tests/" + domain + "Vertex\" Capabilities [" + domain + "] }\n" +
@@ -148,6 +156,36 @@ void main() {
 }
 )glsl");
     std::string authoredFragment = fragment;
+    if (materialProperties) {
+        const std::string capability = "Capabilities [" + domain + "] }";
+        const size_t info = authoredFragment.find(capability);
+        assert(info != std::string::npos);
+        authoredFragment.replace(info, capability.size(),
+                                 "Capabilities [" + domain + R"(]
+    Properties {
+        Float gain = 1.0
+        Float2 offset = [0.0, 0.0]
+        Float3 axis = [0.0, 0.0, 0.0]
+        Float4 channel = [0.0, 0.0, 0.0, 0.0]
+        Color tint = [1.0, 1.0, 1.0, 1.0]
+        Int mode = 1
+        Mat4 matrix = [1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]
+        Texture2D detailTex = white
+    }
+})");
+        const std::string plainSample = "texture(uiTexture, inUV)";
+        const size_t sample = authoredFragment.find(plainSample);
+        assert(sample != std::string::npos);
+        authoredFragment.replace(sample, plainSample.size(),
+                                 "texture(uiTexture, inUV) * texture(detailTex, inUV)");
+        const std::string plainMultiplier = "vec4(MULTIPLIER, 1.0)";
+        const size_t factor = authoredFragment.find(plainMultiplier);
+        assert(factor != std::string::npos);
+        authoredFragment.replace(factor, plainMultiplier.size(),
+                                 plainMultiplier + " * vec4(vec3((material.gain + material.offset.x + "
+                                                   "material.axis.x + material.channel.x + material.tint.r + "
+                                                   "float(material.mode) + material.matrix[0][0]) / 7.0), 1.0)");
+    }
     const size_t multiplier = authoredFragment.find("MULTIPLIER");
     assert(multiplier != std::string::npos);
     authoredFragment.replace(multiplier, sizeof("MULTIPLIER") - 1, alternate ? "0.125, 0.5, 1.0" : "1.0, 1.0, 1.0");
@@ -162,6 +200,12 @@ void main() {
     auto artifact = std::make_shared<ShaderProgramArtifact>(compiled.CreateRuntimeArtifact());
     assert(artifact->IsValid());
     assert(artifact->domain == (world ? ShaderProgramDomain::WorldUI : ShaderProgramDomain::ScreenUI));
+    if (materialProperties) {
+        assert(artifact->properties.size() == 8);
+        assert(artifact->materialBufferSize >= 128);
+        assert(std::count_if(artifact->properties.begin(), artifact->properties.end(),
+                             [](const auto &property) { return property.textureSlot.has_value(); }) == 1);
+    }
     assert(!ShaderStageLinker::ShouldPublishScenePrewarmArtifact(*artifact));
     if (!alternate) {
         auto conflictingFragment = authoredFragment;
@@ -199,7 +243,7 @@ void main() {
             compiler.CompileLinkedProgramArtifact(vertex, "UITest.vert", badFragment, "UITest.frag");
         assert(!inputAttachment.IsValid());
         assert(std::any_of(inputAttachment.errors.begin(), inputAttachment.errors.end(), [](const auto &error) {
-            return error.find("descriptors outside the UI image ABI") != std::string::npos;
+            return error.find("descriptors outside the UI material ABI") != std::string::npos;
         }));
 
         badFragment = authoredFragment;
@@ -422,6 +466,56 @@ int main(int argc, char **argv)
         const auto screenAlternate = CompileUiProgram(false, true);
         const auto worldProgram = CompileUiProgram(true, false);
         const auto worldAlternate = CompileUiProgram(true, true);
+        const auto screenProperties = CompileUiProgram(false, false, false, true);
+        const auto worldProperties = CompileUiProgram(true, false, false, true);
+        auto screenPropertyMaterial = std::make_shared<InxMaterial>("UIScreenProperties");
+        auto worldPropertyMaterial = std::make_shared<InxMaterial>("UIWorldProperties");
+        screenPropertyMaterial->SetGuid("ui-screen-properties-guid");
+        worldPropertyMaterial->SetGuid("ui-world-properties-guid");
+        const auto initializePropertyMaterial = [](InxMaterial &material, const ShaderProgramArtifact &program) {
+            assert(material.SynchronizeShaderPropertyDefaults(program));
+            material.SetFloat("gain", 0.25f);
+            material.SetVector2("offset", glm::vec2(1.0f, 0.0f));
+            material.SetVector3("axis", glm::vec3(1.0f, 0.0f, 0.0f));
+            material.SetVector4("channel", glm::vec4(1.0f, 0.0f, 0.0f, 0.0f));
+            material.SetColor("tint", glm::vec4(1.0f));
+            material.SetInt("mode", 1);
+            material.SetMatrix("matrix", glm::mat4(1.0f));
+            material.SetTextureGuid("detailTex", "white");
+        };
+        initializePropertyMaterial(*screenPropertyMaterial, *screenProperties);
+        initializePropertyMaterial(*worldPropertyMaterial, *worldProperties);
+        auto whitePublication = std::make_shared<rhi::TextureGpuView>(
+            "ui-white-guid", 1, white, view, sampler, 4, std::make_shared<int>(1), rhi::PixelFormat::RGBA8UNorm);
+        assert(whitePublication->IsValid());
+        uint64_t textureGeneration = 1;
+        size_t textureResolutions = 0;
+        size_t pendingTextureResolutions = 0;
+        bool texturePending = false;
+        renderer.SetMaterialAssetResolver([&](const std::string &guid, uint64_t generation) {
+            const auto material = guid == "ui-screen-properties-guid" ? screenPropertyMaterial : worldPropertyMaterial;
+            assert(material->GetVersion() == generation);
+            return std::shared_ptr<const InxMaterial>(material);
+        });
+        renderer.SetMaterialTextureResolver([&](const std::string &guid, const std::string &name) {
+            assert(guid == "white" && name == "detailTex");
+            ++textureResolutions;
+            TextureResolveResult result;
+            if (texturePending) {
+                ++pendingTextureResolutions;
+                result.status = TextureResolveStatus::Pending;
+                return result;
+            }
+            result.status = TextureResolveStatus::Ready;
+            result.binding.imageView = device.Resolve(view);
+            result.binding.sampler = device.Resolve(sampler);
+            result.binding.gpuView = whitePublication;
+            return result;
+        });
+        renderer.SetMaterialTextureGenerationResolver([&](const std::string &guid) {
+            assert(guid == "white");
+            return textureGeneration;
+        });
         // Both cross-domain first draws reject before publication and before
         // an artifact can enter the material resolver's retained cache.
         for (const auto &declaredProgram : {screenProgram, worldProgram}) {
@@ -592,6 +686,10 @@ int main(int argc, char **argv)
             ++materialResolutions;
             if (guid == "ui-ordinary-guid")
                 return std::shared_ptr<const ShaderProgramArtifact>{};
+            if (guid == "ui-screen-properties-guid")
+                return screenProperties;
+            if (guid == "ui-world-properties-guid")
+                return worldProperties;
             const bool alternate = guid == "ui-alternate-guid" || guid == "world-ui-alternate-guid";
             if (requestedDomain == ShaderProgramDomain::WorldUI)
                 return alternate ? worldAlternate : worldProgram;
@@ -957,6 +1055,65 @@ int main(int argc, char **argv)
                 }
             }
         }
+
+        // ShaderInfo values and a GUID-resolved Texture2D must reach both UI
+        // domains through set 1. The readback depends on all seven UBO types.
+        const auto renderPropertyList = [&](ScreenUIList kind) {
+            list = kind;
+            buildGraph();
+            renderer.BeginFrame(128, 128);
+            renderer.BeginCommandPacket();
+            const auto &material = list == ScreenUIList::World ? worldPropertyMaterial : screenPropertyMaterial;
+            renderer.SetMaterialBinding(list, material->GetGuid(), material->GetVersion(), "ui-property-program");
+            if (list == ScreenUIList::World) {
+                glm::mat4 matrix(1.f);
+                matrix[3].z = .5f;
+                std::array<float, 16> pose{};
+                std::copy_n(glm::value_ptr(matrix), 16, pose.begin());
+                renderer.BeginWorldElement(pose, 50, 50);
+            }
+            renderer.AddFilledRect(list, 0, 0, 100, 100, 1, 1, 1, 1);
+            if (list == ScreenUIList::World)
+                renderer.EndWorldElement();
+            renderer.AppendCommandPackets({renderer.EndCommandPacket()});
+            frame();
+            std::vector<uint8_t> pixels(128 * 128 * 4);
+            assert(device.ReadBuffer(output, 0, pixels.data(), pixels.size()));
+            const size_t sample = (64 * 128 + 64) * 4;
+            assert(pixels[sample] >= 226 && pixels[sample] <= 229);
+            assert(pixels[sample + 1] >= 226 && pixels[sample + 1] <= 229);
+            assert(pixels[sample + 2] >= 226 && pixels[sample + 2] <= 229);
+            assert(pixels[sample + 3] == 255);
+        };
+        for (auto kind : {ScreenUIList::Camera, ScreenUIList::Overlay, ScreenUIList::World})
+            renderPropertyList(kind);
+        // Stable generations reuse the descriptor without repeating texture
+        // resolution. A texture reimport changes its GPU publication even
+        // while the owning material generation and retained command stay put.
+        assert(textureResolutions == 2);
+        const size_t retiredBeforeReimport = retirement.GetStats().pushed;
+        UIShaderMaterialBinding propertyBinding;
+        propertyBinding.materialGuid = screenPropertyMaterial->GetGuid();
+        propertyBinding.generation = screenPropertyMaterial->GetVersion();
+        propertyBinding.pipelineKey = "ui-property-program";
+        const VkDescriptorSet descriptorBeforeReimport = ScreenUIVulkanTestAccess::ResolveMaterialDescriptor(
+            renderer, propertyBinding, *screenProperties);
+        assert(descriptorBeforeReimport != VK_NULL_HANDLE);
+        ++textureGeneration;
+        texturePending = true;
+        renderPropertyList(ScreenUIList::Overlay);
+        const VkDescriptorSet descriptorWhilePending = ScreenUIVulkanTestAccess::ResolveMaterialDescriptor(
+            renderer, propertyBinding, *screenProperties);
+        assert(descriptorWhilePending == descriptorBeforeReimport);
+        assert(pendingTextureResolutions == 1);
+        const size_t resolutionsWhilePending = textureResolutions;
+        texturePending = false;
+        whitePublication = std::make_shared<rhi::TextureGpuView>(
+            "ui-white-guid", textureGeneration, white, view, sampler, 4, std::make_shared<int>(1),
+            rhi::PixelFormat::RGBA8UNorm);
+        renderPropertyList(ScreenUIList::Overlay);
+        assert(textureResolutions == resolutionsWhilePending + 1);
+        assert(retirement.GetStats().pushed > retiredBeforeReimport);
 
         // A retained command resolves once per GUID/generation, not per draw.
         list = ScreenUIList::Overlay;

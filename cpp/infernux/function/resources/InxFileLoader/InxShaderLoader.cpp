@@ -365,9 +365,10 @@ void ValidateReflectedMaterial(const ShaderReflection &reflection, const ShaderP
     }
 }
 
-void ValidateReflectedUIStage(const ShaderReflection &reflection, ShaderProgramDomain domain,
+void ValidateReflectedUIStage(const ShaderReflection &reflection, const ShaderProgramInterfaceArtifact &artifact,
                               ShaderStageVisibility stage, std::vector<std::string> &errors)
 {
+    const auto domain = artifact.domain;
     const bool world = domain == ShaderProgramDomain::WorldUI;
     const bool vertex = stage == ShaderStageVisibility::Vertex;
     const std::string stageName = vertex ? "vertex" : "fragment";
@@ -404,17 +405,58 @@ void ValidateReflectedUIStage(const ShaderReflection &reflection, ShaderProgramD
         if (reflection.GetInputs().size() != (world ? 3u : 2u) || reflection.GetOutputs().size() != 1u)
             errors.push_back("UI fragment declares locations outside the fixed UI varying/output ABI");
     }
-    if (!reflection.GetUniformBuffers().empty() || !reflection.GetStorageBuffers().empty() ||
-        !reflection.GetStorageImages().empty() || !reflection.GetUnsupportedDescriptorResources().empty())
-        errors.push_back("UI " + stageName + " declares descriptors outside the UI image ABI");
+    if (!reflection.GetStorageBuffers().empty() || !reflection.GetStorageImages().empty() ||
+        !reflection.GetUnsupportedDescriptorResources().empty())
+        errors.push_back("UI " + stageName + " declares descriptors outside the UI material ABI");
+    const bool usesMaterialBuffer = std::any_of(artifact.properties.begin(), artifact.properties.end(),
+                                               [&](const LinkedShaderProperty &property) {
+                                                   return property.bufferOffset && HasVisibility(property.visibility, stage);
+                                               });
+    const auto &buffers = reflection.GetUniformBuffers();
+    if (usesMaterialBuffer && !buffers.empty()) {
+        if (buffers.size() != 1 || buffers[0].name != "MaterialProperties" || buffers[0].set != 1 ||
+            buffers[0].binding != 0 || buffers[0].size > artifact.materialBufferSize)
+            errors.push_back("UI " + stageName + " MaterialProperties must use the linked set 1 binding 0 ABI");
+        else for (const auto &member : buffers[0].members) {
+            const auto property = std::find_if(artifact.properties.begin(), artifact.properties.end(),
+                                               [&](const LinkedShaderProperty &candidate) {
+                                                   return candidate.schema.name == member.name &&
+                                                          candidate.bufferOffset &&
+                                                          HasVisibility(candidate.visibility, stage);
+                                               });
+            if (property == artifact.properties.end() || member.offset != *property->bufferOffset)
+                errors.push_back("UI " + stageName + " material property '" + member.name +
+                                 "' differs from the linked buffer layout");
+        }
+    } else if (!buffers.empty()) {
+        errors.push_back("UI " + stageName + " declares an undeclared material UBO");
+    }
     const auto &images = reflection.GetSampledImages();
-    if (vertex ? !images.empty()
-               : images.size() != 1 || images[0].set != 0 || images[0].binding != 0 ||
-                     images[0].descriptorType != VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER ||
-                     images[0].arraySize != 1 || images[0].hasArrayDimension || images[0].multisampled ||
-                     images[0].dimension != ReflectedImageDimension::D2 || images[0].arrayed)
-        errors.push_back("UI " + stageName +
-                         " must sample only one non-arrayed 2D non-multisampled engine image at set 0 binding 0");
+    const auto validImage = [](const SampledImageInfo &image) {
+        return image.descriptorType == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER && image.arraySize == 1 &&
+               !image.hasArrayDimension && !image.multisampled && image.dimension == ReflectedImageDimension::D2 &&
+               !image.arrayed;
+    };
+    const auto elementImage = std::find_if(images.begin(), images.end(), [](const SampledImageInfo &image) {
+        return image.set == 0 && image.binding == 0;
+    });
+    if (!vertex && (elementImage == images.end() || !validImage(*elementImage)))
+        errors.push_back("UI fragment requires one non-arrayed 2D engine image at set 0 binding 0");
+    for (const auto &image : images) {
+        if (!vertex && image.set == 0 && image.binding == 0) {
+            if (!validImage(image))
+                errors.push_back("UI fragment engine image must be a non-arrayed 2D image");
+            continue;
+        }
+        const auto property = std::find_if(artifact.properties.begin(), artifact.properties.end(),
+                                           [&](const LinkedShaderProperty &candidate) {
+                                               return candidate.schema.name == image.name && candidate.textureSlot &&
+                                                      HasVisibility(candidate.visibility, stage);
+                                           });
+        if (property == artifact.properties.end() || image.set != 1 ||
+            image.binding != 1 + *property->textureSlot || !validImage(image))
+            errors.push_back("UI " + stageName + " declares a texture outside the linked set 1 texture ABI");
+    }
     const auto &push = reflection.GetPushConstants();
     if (push.size() != 1 || push[0].offset != 0 || push[0].size != (world ? 128u : 64u)) {
         errors.push_back("UI " + stageName + " push constants do not match the engine UI ABI");
@@ -998,10 +1040,31 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
                             linkedInterface->domain == ShaderProgramDomain::WorldUI)) {
         if (target != ShaderCompileTarget::Forward)
             return {};
-        // UI stages provide the fixed engine vertex, push-constant and image
-        // declarations explicitly. Reflection below validates that ABI before
-        // the program may be published; no geometry/lighting injection applies.
-        return resolvedSource;
+        // UI stages own geometry and push constants. Material declarations are
+        // generated from the same linked offsets and slots consumed by Vulkan.
+        const ShaderStageVisibility stage = desc.isVertexShader ? ShaderStageVisibility::Vertex
+                                                                 : ShaderStageVisibility::Fragment;
+        std::string declarations;
+        const bool hasBuffer = std::any_of(linkedInterface->properties.begin(), linkedInterface->properties.end(),
+                                           [&](const LinkedShaderProperty &property) {
+                                               return property.bufferOffset && HasVisibility(property.visibility, stage);
+                                           });
+        if (hasBuffer)
+            declarations += "\nlayout(std140, set = 1, binding = 0) uniform MaterialProperties {\n" +
+                            GlslStageInterfaceEmitter::EmitMaterialBlockMembers(*linkedInterface) +
+                            "} material;\n";
+        declarations += GlslStageInterfaceEmitter::EmitTextureDeclarations(*linkedInterface, stage, 1, 1);
+        if (declarations.empty())
+            return resolvedSource;
+        const auto version = resolvedSource.find("#version");
+        if (version == std::string::npos)
+            throw std::runtime_error("UI shader requires a #version declaration");
+        const auto lineEnd = resolvedSource.find('\n', version);
+        if (lineEnd == std::string::npos)
+            throw std::runtime_error("UI shader requires source after #version");
+        std::string generated = resolvedSource;
+        generated.insert(lineEnd + 1, declarations);
+        return generated;
     }
     const auto hasCapability = [&](std::string_view capability) { return DescriptorHasCapability(desc, capability); };
     const bool particleSpriteDomain =
@@ -2026,7 +2089,7 @@ InxShaderLoader::CompileLinkedProgramVariant(const std::string &vertexSource, co
     if (!vertexReflection.Reflect(compilation.vertexSpirv, VK_SHADER_STAGE_VERTEX_BIT)) {
         compilation.errors.push_back("failed to reflect linked vertex SPIR-V");
     } else if (uiDomain) {
-        ValidateReflectedUIStage(vertexReflection, interfaceArtifact.domain, ShaderStageVisibility::Vertex,
+        ValidateReflectedUIStage(vertexReflection, interfaceArtifact, ShaderStageVisibility::Vertex,
                                  compilation.errors);
     } else {
         ValidateReflectedVaryings(vertexReflection.GetOutputs(), compilation.interfaceArtifact, "vertex",
@@ -2037,7 +2100,7 @@ InxShaderLoader::CompileLinkedProgramVariant(const std::string &vertexSource, co
     if (!fragmentReflection.Reflect(compilation.fragmentSpirv, VK_SHADER_STAGE_FRAGMENT_BIT)) {
         compilation.errors.push_back("failed to reflect linked fragment SPIR-V");
     } else if (uiDomain) {
-        ValidateReflectedUIStage(fragmentReflection, interfaceArtifact.domain, ShaderStageVisibility::Fragment,
+        ValidateReflectedUIStage(fragmentReflection, interfaceArtifact, ShaderStageVisibility::Fragment,
                                  compilation.errors);
     } else {
         ValidateReflectedVaryings(fragmentReflection.GetInputs(), compilation.interfaceArtifact, "fragment",
