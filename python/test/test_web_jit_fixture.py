@@ -34,13 +34,20 @@ def test_web_fixture_public_jit_cooks_to_an_executable_python_function():
     assert namespace["cpu_jit_probe"](7) == 84
 
 
-def _sealed_fixture(tmp_path: Path, source: str) -> tuple[Path, Path]:
+def _sealed_fixture(
+    tmp_path: Path, source: str, *, content_files: tuple[str, ...] = ()
+) -> tuple[Path, Path]:
     script = tmp_path / "Bootstrap.py"
     bytecode = tmp_path / "Bootstrap.pyc"
     script.write_text(source, encoding="utf-8")
     py_compile.compile(str(script), cfile=str(bytecode), doraise=True)
     content = tmp_path / "Content.inxpkg"
-    write_pack(((SCRIPT_BYTECODE, bytecode),), content)
+    entries = [(SCRIPT_BYTECODE, bytecode)]
+    for index, path in enumerate(content_files):
+        payload = tmp_path / f"content-{index}.bin"
+        payload.write_bytes(b"compiler payload")
+        entries.append((path, payload))
+    write_pack(entries, content)
     output = tmp_path / "web"
     output.mkdir()
     write_pack(
@@ -79,4 +86,25 @@ def test_web_jit_fixture_verifier_rejects_live_warmup(tmp_path):
         "inx.jit.warmup(cpu_jit_probe, 7)\n",
     )
     with pytest.raises(RuntimeError, match="retained a CPU compiler or warmup call"):
+        verify_web_jit_fixture(output, report)
+
+
+@pytest.mark.parametrize(
+    "payload_path",
+    (
+        "Assets/numba/__init__.pyc",
+        "Packages/llvmlite/binding/__init__.pyc",
+        "Library/LLVM/compiler.bin",
+        "Library/Parallel.inxmod",
+    ),
+)
+def test_web_jit_fixture_verifier_rejects_nested_compiler_payload(
+    tmp_path, payload_path
+):
+    output, report = _sealed_fixture(
+        tmp_path,
+        "def cpu_jit_probe(count):\n    return count * 12\n",
+        content_files=(payload_path,),
+    )
+    with pytest.raises(RuntimeError, match="content contains a CPU compiler payload"):
         verify_web_jit_fixture(output, report)

@@ -30,6 +30,14 @@ def _code_objects(code: CodeType):
             yield from _code_objects(value)
 
 
+def _forbidden_compiler_payloads(paths: set[str]) -> list[str]:
+    forbidden_parts = {"numba", "llvmlite", "llvm", "parallel.inxmod"}
+    return sorted(
+        path for path in paths
+        if any(part.casefold() in forbidden_parts for part in path.split("/"))
+    )
+
+
 def verify_web_jit_fixture(output: Path, build_report: Path) -> dict[str, object]:
     report = json.loads(build_report.read_text(encoding="utf-8"))
     if report.get("status") != "passed" or report.get("target") != "web-wasm32":
@@ -49,11 +57,7 @@ def verify_web_jit_fixture(output: Path, build_report: Path) -> dict[str, object
         raise RuntimeError("Web fixture must publish exactly one Player package")
     outer = outer_packages[0]
     outer_paths = {record["path"] for record in read_manifest(outer)["files"]}
-    forbidden = sorted(
-        path for path in outer_paths
-        if any(part.casefold() in {"numba", "llvmlite", "llvm", "parallel.inxmod"}
-               for part in Path(path).parts)
-    )
+    forbidden = _forbidden_compiler_payloads(outer_paths)
     if forbidden:
         raise RuntimeError(f"Web fixture contains a CPU compiler payload: {forbidden}")
 
@@ -64,6 +68,11 @@ def verify_web_jit_fixture(output: Path, build_report: Path) -> dict[str, object
         content = Path(temporary) / "Content.inxpkg"
         content.write_bytes(read_entry(outer, content_path))
         content_paths = {record["path"] for record in read_manifest(content)["files"]}
+        forbidden = _forbidden_compiler_payloads(content_paths)
+        if forbidden:
+            raise RuntimeError(
+                f"Web fixture content contains a CPU compiler payload: {forbidden}"
+            )
         if SCRIPT_BYTECODE not in content_paths:
             raise RuntimeError(f"Web fixture has no cooked script: {SCRIPT_BYTECODE}")
         if "Assets/Scripts/Bootstrap.py" in content_paths:
