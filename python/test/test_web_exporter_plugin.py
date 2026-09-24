@@ -46,7 +46,8 @@ def test_web_exporter_contributes_only_webgpu_target(monkeypatch):
     assert not capabilities.threads
     assert not capabilities.dynamic_loading
     assert not capabilities.python_native_modules
-    assert not capabilities.numba
+    assert not capabilities.cpu_jit
+    assert "gpu-jit" not in capabilities.features
     assert not capabilities.network
     assert capabilities.audio
     assert capabilities.text_input
