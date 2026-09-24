@@ -137,9 +137,9 @@ TextureResolveResult InxVkCoreModular::ResolveTextureForVectorField(const std::s
 TextureResolveResult InxVkCoreModular::ResolveTextureForGraph(const std::string &textureGuid, bool volume,
                                                               bool waitForPreparation)
 {
-    return ResolveTextureAsset(textureGuid, "RenderGraph", volume ? TextureDimension::Texture3D
-                                                                  : TextureDimension::Texture2D,
-                               nullptr, nullptr, waitForPreparation);
+    return ResolveTextureAsset(textureGuid, "RenderGraph",
+                               volume ? TextureDimension::Texture3D : TextureDimension::Texture2D, nullptr, nullptr,
+                               waitForPreparation);
 }
 
 TextureResolveResult InxVkCoreModular::ResolveTextureAsset(const std::string &textureGuid,

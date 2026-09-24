@@ -13,8 +13,8 @@
 #undef NDEBUG
 #endif
 #include <algorithm>
-#include <cassert>
 #include <array>
+#include <cassert>
 #include <cmath>
 #include <fstream>
 #include <iostream>
@@ -705,8 +705,8 @@ static void CheckFullscreenVolumeRead(vk::VkDeviceContext &context, VkCommandBuf
     barrier.srcQueueFamilyIndex = barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.image = device.Resolve(volume);
     barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                         0, 0, nullptr, 0, nullptr, 1, &barrier);
+    vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0,
+                         nullptr, 1, &barrier);
     VkBufferImageCopy copy{};
     copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
     copy.imageExtent = {width, height, depth};
@@ -716,8 +716,8 @@ static void CheckFullscreenVolumeRead(vk::VkDeviceContext &context, VkCommandBuf
     barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
     barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-    vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                         0, 0, nullptr, 0, nullptr, 1, &barrier);
+    vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr,
+                         0, nullptr, 1, &barrier);
     assert(vkEndCommandBuffer(command) == VK_SUCCESS);
     assert(vkResetFences(context.GetDevice(), 1, &fence) == VK_SUCCESS);
     VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
@@ -756,8 +756,8 @@ static void CheckFullscreenVolumeRead(vk::VkDeviceContext &context, VkCommandBuf
 
     vk::RenderGraph graph;
     graph.Initialize(&context);
-    const auto input = graph.ImportTexture("volume", volume, volumeView, VK_FORMAT_R8G8B8A8_UNORM,
-                                           width, height, VK_SAMPLE_COUNT_1_BIT, depth, true);
+    const auto input = graph.ImportTexture("volume", volume, volumeView, VK_FORMAT_R8G8B8A8_UNORM, width, height,
+                                           VK_SAMPLE_COUNT_1_BIT, depth, true);
     assert(input.IsValid());
     graph.SetResourceInitialState(input, rhi::TextureLayout::ShaderReadOnly, rhi::Access::ShaderRead,
                                   rhi::PipelineStage::FragmentShader);
@@ -772,8 +772,8 @@ static void CheckFullscreenVolumeRead(vk::VkDeviceContext &context, VkCommandBuf
             resource.view = render.GetTextureView(input);
             resource.format = rhi::PixelFormat::RGBA8UNorm;
             resource.sampler = sampler;
-            const auto group = renderer.AllocateBindGroup(pipeline.inputLayout, &resource, 1,
-                                                          renderer.GetLinearSampler());
+            const auto group =
+                renderer.AllocateBindGroup(pipeline.inputLayout, &resource, 1, renderer.GetLinearSampler());
             assert(group.IsValid());
             renderer.Draw(render.GetGraphicsCommandEncoder(), pipeline, group, {}, {}, 0);
         };
@@ -801,8 +801,8 @@ static void CheckFullscreenVolumeRead(vk::VkDeviceContext &context, VkCommandBuf
     readbackBarrier.srcQueueFamilyIndex = readbackBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     readbackBarrier.buffer = device.Resolve(readback);
     readbackBarrier.size = readbackDesc.byteSize;
-    vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT,
-                         0, 0, nullptr, 1, &readbackBarrier, 0, nullptr);
+    vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 0, nullptr, 1,
+                         &readbackBarrier, 0, nullptr);
     assert(vkEndCommandBuffer(command) == VK_SUCCESS);
     assert(vkResetFences(context.GetDevice(), 1, &fence) == VK_SUCCESS);
     assert(vkQueueSubmit(context.GetGraphicsQueue(), 1, &submit, fence) == VK_SUCCESS);
@@ -812,13 +812,12 @@ static void CheckFullscreenVolumeRead(vk::VkDeviceContext &context, VkCommandBuf
     for (uint32_t y = 0; y < height; ++y) {
         for (uint32_t x = 0; x < width; ++x) {
             const size_t offset = (y * width + x) * 4;
-            const std::array<uint8_t, 4> expected = x == 0
-                ? std::array<uint8_t, 4>{255, 0, 0, 255}
-                : std::array<uint8_t, 4>{0, 0, 255, 255};
+            const std::array<uint8_t, 4> expected =
+                x == 0 ? std::array<uint8_t, 4>{255, 0, 0, 255} : std::array<uint8_t, 4>{0, 0, 255, 255};
             if (!std::equal(expected.begin(), expected.end(), pixels.begin() + offset))
                 std::cerr << "Volume pixel (" << x << ',' << y << ")=" << int(pixels[offset]) << ','
-                          << int(pixels[offset + 1]) << ',' << int(pixels[offset + 2]) << ','
-                          << int(pixels[offset + 3]) << '\n';
+                          << int(pixels[offset + 1]) << ',' << int(pixels[offset + 2]) << ',' << int(pixels[offset + 3])
+                          << '\n';
             assert(std::equal(expected.begin(), expected.end(), pixels.begin() + offset));
         }
     }

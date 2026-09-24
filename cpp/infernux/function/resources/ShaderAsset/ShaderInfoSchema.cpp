@@ -453,8 +453,7 @@ class Parser final
         while (m_current.kind != TokenKind::RightBrace && m_current.kind != TokenKind::End) {
             const Token begin = m_current;
             if (m_current.kind != TokenKind::Identifier ||
-                (m_current.text != "Texture2D" && m_current.text != "Texture3D" &&
-                 m_current.text != "Texture2DUInt" &&
+                (m_current.text != "Texture2D" && m_current.text != "Texture3D" && m_current.text != "Texture2DUInt" &&
                  m_current.text != "Texture2DMS" && m_current.text != "Texture2DMSUInt" &&
                  m_current.text != "BufferUInt")) {
                 Error(m_current,

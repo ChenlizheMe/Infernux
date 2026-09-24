@@ -1250,7 +1250,8 @@ ResourceHandle RenderGraph::ImportTexture(const std::string &name, rhi::TextureH
     if (image == VK_NULL_HANDLE || imageView == VK_NULL_HANDLE)
         return {};
 
-    const ResourceHandle handle = ImportTexture(name, image, imageView, format, width, height, samples, depth, isVolume);
+    const ResourceHandle handle =
+        ImportTexture(name, image, imageView, format, width, height, samples, depth, isVolume);
     if (Owns(handle))
         m_resources[handle.id].concurrentQueueSharing = m_rhiDevice->UsesConcurrentQueueSharing(texture);
     return handle;
