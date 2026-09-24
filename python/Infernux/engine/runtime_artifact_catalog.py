@@ -62,6 +62,10 @@ _BINARY_ARTIFACT_MAGIC = {
     ".inxskin": b"INXSKINAR",
     ".inxrtex": b"INXRTEX1",
 }
+_BINARY_ARTIFACT_SCHEMA = {
+    ".inxmesh": b"MSH1",
+    ".inxskin": b"SKN1",
+}
 _ARTIFACT_SUFFIXES = frozenset(_BINARY_ARTIFACT_MAGIC) | frozenset(
     {".inxparticle", ".inxeffect"}
 )
@@ -300,6 +304,13 @@ def artifact_source_hash(path: str | os.PathLike[str]) -> str:
     if raw[marker_offset : marker_offset + 4] != b"\x04\x03\x02\x01":
         raise RuntimeArtifactError(f"Library artifact has an invalid endian marker: {artifact}")
     hash_size_offset = marker_offset + 4
+    schema = _BINARY_ARTIFACT_SCHEMA.get(suffix)
+    if schema is not None:
+        if raw[hash_size_offset : hash_size_offset + len(schema)] != schema:
+            raise RuntimeArtifactError(
+                f"Library artifact has an invalid current format marker: {artifact}"
+            )
+        hash_size_offset += len(schema)
     hash_offset = hash_size_offset + 4
     hash_size = int.from_bytes(
         raw[hash_size_offset:hash_offset], "little", signed=False
