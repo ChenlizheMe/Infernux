@@ -18,6 +18,7 @@
 #include "gui/InxGUIContext.h"
 #include "gui/InxGUISemantics.h"
 #include "gui/InxScreenUIRenderer.h"
+#include "gui/UIMaterialTextureResolver.h"
 #include "particle/ParticleGpuBounds.h"
 #include "particle/ParticleGpuCollisionScene.h"
 #include "particle/ParticleGpuCuller.h"
@@ -4776,13 +4777,8 @@ void InxRenderer::ConfigureScreenUIMaterialResolver(InxScreenUIRenderer &rendere
                 const bool normal = textureGuid == "normal" || bindingName.find("normal") != std::string::npos ||
                                     bindingName.find("Normal") != std::string::npos;
                 auto slot = m_vkCore->GetTextureCache().Find(normal ? "_default_normal" : "white");
-                auto view = slot ? slot->Acquire() : nullptr;
-                if (!view || !view->IsValid())
-                    return TextureResolveResult{TextureResolveStatus::Pending, {}};
                 auto &device = m_vkCore->GetDeviceContext().GetRhiDevice();
-                return TextureResolveResult{TextureResolveStatus::Ready,
-                                            {device.Resolve(view->GetView()), device.Resolve(view->GetSampler()),
-                                             std::move(slot), std::move(view)}};
+                return ResolveBuiltinUIMaterialTexture(slot, device, sampler);
             }
             return m_vkCore->ResolveTextureForMaterial(textureGuid, bindingName, sampler);
         });

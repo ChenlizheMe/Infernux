@@ -3,6 +3,7 @@
 #include <function/renderer/VkShaderCache.h>
 #include <function/renderer/gui/InxScreenUIRenderer.h>
 #include <function/renderer/gui/InxTextLayout.h>
+#include <function/renderer/gui/UIMaterialTextureResolver.h>
 #include <function/renderer/rhi/RhiRenderTexture.h>
 #include <function/renderer/vk/RenderGraph.h>
 #include <function/renderer/vk/VkDeviceContext.h>
@@ -44,7 +45,8 @@ struct ScreenUIVulkanTestAccess
 } // namespace infernux
 
 static std::shared_ptr<const ShaderProgramArtifact> CompileUiProgram(bool world, bool alternate, bool reload = false,
-                                                                     bool materialProperties = false)
+                                                                     bool materialProperties = false,
+                                                                     bool dualTextureBindings = false)
 {
     const std::string domain = world ? "WorldUI" : "ScreenUI";
     const std::string vertex = "ShaderInfo { Name \"Tests/" + domain + "Vertex\" Capabilities [" + domain + "] }\n" +
@@ -172,10 +174,19 @@ void main() {
         Texture2D detailTex = white
     }
 })");
+        if (dualTextureBindings) {
+            const std::string textureProperty = "Texture2D detailTex = white";
+            const size_t property = authoredFragment.find(textureProperty);
+            assert(property != std::string::npos);
+            authoredFragment.insert(property + textureProperty.size(), "\n        Texture2D iconTex = white");
+        }
         const std::string plainSample = "texture(uiTexture, inUV)";
         const size_t sample = authoredFragment.find(plainSample);
         assert(sample != std::string::npos);
-        authoredFragment.replace(sample, plainSample.size(), "texture(uiTexture, inUV) * texture(detailTex, inUV)");
+        authoredFragment.replace(sample, plainSample.size(),
+                                 dualTextureBindings
+                                     ? "texture(uiTexture, inUV) * texture(detailTex, inUV) * texture(iconTex, inUV)"
+                                     : "texture(uiTexture, inUV) * texture(detailTex, inUV)");
         const std::string plainMultiplier = "vec4(MULTIPLIER, 1.0)";
         const size_t factor = authoredFragment.find(plainMultiplier);
         assert(factor != std::string::npos);
@@ -199,10 +210,11 @@ void main() {
     assert(artifact->IsValid());
     assert(artifact->domain == (world ? ShaderProgramDomain::WorldUI : ShaderProgramDomain::ScreenUI));
     if (materialProperties) {
-        assert(artifact->properties.size() == 8);
+        assert(artifact->properties.size() == (dualTextureBindings ? 9 : 8));
         assert(artifact->materialBufferSize >= 128);
-        assert(std::count_if(artifact->properties.begin(), artifact->properties.end(),
-                             [](const auto &property) { return property.textureSlot.has_value(); }) == 1);
+        assert(std::count_if(artifact->properties.begin(), artifact->properties.end(), [](const auto &property) {
+                   return property.textureSlot.has_value();
+               }) == (dualTextureBindings ? 2 : 1));
     }
     assert(!ShaderStageLinker::ShouldPublishScenePrewarmArtifact(*artifact));
     if (!alternate) {
@@ -506,31 +518,34 @@ int main(int argc, char **argv)
         size_t textureResolutions = 0;
         size_t pendingTextureResolutions = 0;
         bool texturePending = false;
-        renderer.SetMaterialAssetResolver([&](const std::string &guid, uint64_t generation) {
+        const auto propertyMaterialResolver = [&](const std::string &guid, uint64_t generation) {
             const auto material = guid == "ui-screen-properties-guid" ? screenPropertyMaterial : worldPropertyMaterial;
             assert(material->GetVersion() == generation);
             return std::shared_ptr<const InxMaterial>(material);
-        });
-        renderer.SetMaterialTextureResolver(
-            [&](const std::string &guid, const std::string &name, const MaterialTextureSampler *) {
-                assert(guid == "white" && name == "detailTex");
-                ++textureResolutions;
-                TextureResolveResult result;
-                if (texturePending) {
-                    ++pendingTextureResolutions;
-                    result.status = TextureResolveStatus::Pending;
-                    return result;
-                }
-                result.status = TextureResolveStatus::Ready;
-                result.binding.imageView = device.Resolve(view);
-                result.binding.sampler = device.Resolve(sampler);
-                result.binding.gpuView = whitePublication;
+        };
+        renderer.SetMaterialAssetResolver(propertyMaterialResolver);
+        const auto propertyTextureResolver = [&](const std::string &guid, const std::string &name,
+                                                 const MaterialTextureSampler *) {
+            assert(guid == "white" && name == "detailTex");
+            ++textureResolutions;
+            TextureResolveResult result;
+            if (texturePending) {
+                ++pendingTextureResolutions;
+                result.status = TextureResolveStatus::Pending;
                 return result;
-            });
-        renderer.SetMaterialTextureGenerationResolver([&](const std::string &guid) {
+            }
+            result.status = TextureResolveStatus::Ready;
+            result.binding.imageView = device.Resolve(view);
+            result.binding.sampler = device.Resolve(sampler);
+            result.binding.gpuView = whitePublication;
+            return result;
+        };
+        renderer.SetMaterialTextureResolver(propertyTextureResolver);
+        const auto propertyTextureGenerationResolver = [&](const std::string &guid) {
             assert(guid == "white");
             return textureGeneration;
-        });
+        };
+        renderer.SetMaterialTextureGenerationResolver(propertyTextureGenerationResolver);
         // Both cross-domain first draws reject before publication and before
         // an artifact can enter the material resolver's retained cache.
         for (const auto &declaredProgram : {screenProgram, worldProgram}) {
@@ -1129,6 +1144,105 @@ int main(int argc, char **argv)
         renderPropertyList(ScreenUIList::Overlay);
         assert(textureResolutions == resolutionsWhilePending + 1);
         assert(retirement.GetStats().pushed > retiredBeforeReimport);
+
+        // UI material samplers are authored per texture binding, including
+        // when two bindings reference the same texture. The builtin resolver
+        // must retain a distinct overridden sampler with each view.
+        const auto dualScreenProperties = CompileUiProgram(false, false, false, true, true);
+        const auto dualWorldProperties = CompileUiProgram(true, false, false, true, true);
+        auto dualScreenMaterial = std::make_shared<InxMaterial>("DualScreenSampler");
+        auto dualWorldMaterial = std::make_shared<InxMaterial>("DualWorldSampler");
+        dualScreenMaterial->SetGuid("dual-screen-sampler-guid");
+        dualWorldMaterial->SetGuid("dual-world-sampler-guid");
+        assert(dualScreenMaterial->SynchronizeShaderPropertyDefaults(*dualScreenProperties));
+        assert(dualWorldMaterial->SynchronizeShaderPropertyDefaults(*dualWorldProperties));
+        MaterialTextureSampler detailSampler;
+        detailSampler.minFilter = MaterialSamplerFilter::Nearest;
+        detailSampler.addressU = MaterialSamplerAddress::Clamp;
+        MaterialTextureSampler iconSampler;
+        iconSampler.magFilter = MaterialSamplerFilter::Nearest;
+        iconSampler.addressV = MaterialSamplerAddress::Mirror;
+        dualScreenMaterial->SetTextureGuid("detailTex", "white");
+        dualScreenMaterial->SetTextureGuid("iconTex", "white");
+        dualWorldMaterial->SetTextureGuid("detailTex", "white");
+        dualWorldMaterial->SetTextureGuid("iconTex", "normal");
+        for (const auto &material : {dualScreenMaterial, dualWorldMaterial}) {
+            material->SetTextureSampler("detailTex", detailSampler);
+            material->SetTextureSampler("iconTex", iconSampler);
+        }
+        auto builtinSlot = std::make_shared<rhi::TextureGpuViewSlot>("ui-sampler-test");
+        assert(builtinSlot->TryPublish(whitePublication));
+        const auto inherited = ResolveBuiltinUIMaterialTexture(builtinSlot, device, nullptr);
+        assert(inherited.status == TextureResolveStatus::Ready && inherited.binding.gpuView == whitePublication);
+        std::unordered_map<std::string, std::shared_ptr<InxMaterial>> samplerMaterials = {
+            {dualScreenMaterial->GetGuid(), dualScreenMaterial}, {dualWorldMaterial->GetGuid(), dualWorldMaterial}};
+        renderer.SetMaterialAssetResolver([&](const std::string &guid, uint64_t generation) {
+            const auto material = samplerMaterials.at(guid);
+            assert(material->GetVersion() == generation);
+            return std::shared_ptr<const InxMaterial>(material);
+        });
+        struct SamplerResolution
+        {
+            std::string guid;
+            std::string name;
+            MaterialDescriptorSet::TextureBinding binding;
+        };
+        std::vector<SamplerResolution> samplerResolutions;
+        renderer.SetMaterialTextureResolver(
+            [&](const std::string &guid, const std::string &name, const MaterialTextureSampler *authoredSampler) {
+                assert(guid == "white" || guid == "normal" || guid == "black");
+                assert(authoredSampler);
+                assert(*authoredSampler == (name == "detailTex" ? detailSampler : iconSampler));
+                auto resolved = ResolveBuiltinUIMaterialTexture(builtinSlot, device, authoredSampler);
+                samplerResolutions.push_back({guid, name, resolved.binding});
+                return resolved;
+            });
+        renderer.SetMaterialTextureGenerationResolver([](const std::string &) { return uint64_t{1}; });
+        const auto textureSlot = [](const ShaderProgramArtifact &artifact, const std::string &name) {
+            for (const auto &property : artifact.properties)
+                if (property.name == name && property.textureSlot)
+                    return *property.textureSlot;
+            assert(false && "UI texture property has no reflected slot");
+            return uint32_t{0};
+        };
+        const auto verifyDualMaterial = [&](const std::shared_ptr<InxMaterial> &material,
+                                            const ShaderProgramArtifact &artifact) {
+            const size_t firstResolution = samplerResolutions.size();
+            UIShaderMaterialBinding binding;
+            binding.materialGuid = material->GetGuid();
+            binding.generation = material->GetVersion();
+            binding.pipelineKey = "ui-dual-sampler-program";
+            assert(ScreenUIVulkanTestAccess::ResolveMaterialDescriptor(renderer, binding, artifact) != VK_NULL_HANDLE);
+            assert(samplerResolutions.size() == firstResolution + 2);
+            assert(textureSlot(artifact, "detailTex") != textureSlot(artifact, "iconTex"));
+            const auto first = samplerResolutions.begin() + firstResolution;
+            const auto last = samplerResolutions.end();
+            const auto detailEntry =
+                std::find_if(first, last, [](const auto &entry) { return entry.name == "detailTex"; });
+            const auto iconEntry = std::find_if(first, last, [](const auto &entry) { return entry.name == "iconTex"; });
+            assert(detailEntry != last && iconEntry != last);
+            const auto &detail = detailEntry->binding;
+            const auto &icon = iconEntry->binding;
+            assert(detail.imageView == icon.imageView);
+            assert(detail.sampler != icon.sampler);
+            assert(detail.gpuView->GetSampler() != icon.gpuView->GetSampler());
+        };
+        verifyDualMaterial(dualScreenMaterial, *dualScreenProperties);
+        verifyDualMaterial(dualWorldMaterial, *dualWorldProperties);
+        dualWorldMaterial->SetTextureGuid("iconTex", "black");
+        verifyDualMaterial(dualWorldMaterial, *dualWorldProperties);
+        assert(samplerResolutions.size() == 6);
+        const auto resolutionCount = [&](const std::string &guid, const std::string &name) {
+            return std::count_if(samplerResolutions.begin(), samplerResolutions.end(),
+                                 [&](const auto &entry) { return entry.guid == guid && entry.name == name; });
+        };
+        assert(resolutionCount("white", "detailTex") == 3);
+        assert(resolutionCount("white", "iconTex") == 1);
+        assert(resolutionCount("normal", "iconTex") == 1);
+        assert(resolutionCount("black", "iconTex") == 1);
+        renderer.SetMaterialAssetResolver(propertyMaterialResolver);
+        renderer.SetMaterialTextureResolver(propertyTextureResolver);
+        renderer.SetMaterialTextureGenerationResolver(propertyTextureGenerationResolver);
 
         // A retained command resolves once per GUID/generation, not per draw.
         list = ScreenUIList::Overlay;

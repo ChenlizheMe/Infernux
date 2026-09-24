@@ -2118,7 +2118,8 @@ VkDescriptorSet InxScreenUIRenderer::GetMaterialDescriptor(const UIShaderMateria
         const auto *textureGuid = std::get_if<std::string>(&authored->value);
         if (!textureGuid || textureGuid->empty())
             throw std::runtime_error("UI material texture property requires an asset GUID: " + property.name);
-        auto resolved = m_materialTextureResolver(*textureGuid, property.name, nullptr);
+        auto resolved =
+            m_materialTextureResolver(*textureGuid, property.name, material->GetTextureSampler(property.name));
         if (resolved.status == TextureResolveStatus::Pending) {
             m_commandCacheValid = false;
             if (previous != m_materialDescriptors.end() && previous->second->generation == binding.generation &&
