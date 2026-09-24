@@ -98,6 +98,11 @@ A fullscreen shader that declares `Requires [Lighting]` receives the current
 camera/View's lighting UBO, scoped Forward+ light list, shadow atlas, and camera
 position through descriptor set 1. The shadow texture still has to be declared
 as an explicit `shadow_map` pass dependency so graph scheduling remains visible.
+In a declarative Deferred route, each GBuffer geometry pass declares
+`set_texture("shadowMap", shadow_map)` when shadows are enabled. This publishes
+the same View's shadow image to the per-view lighting descriptor and keeps the
+shadow caster pass ordered before lighting. A route without shadows declares no
+`shadowMap` binding.
 
 <!-- USER CONTENT END -->
 

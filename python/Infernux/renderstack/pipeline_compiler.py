@@ -523,6 +523,7 @@ def _compile_route(
             depth,
             motion,
             motion_draw,
+            shadow_map,
         )
         original_color = None
         if policy is RoutePolicy.ADDITIVE_EXTRACT:
@@ -641,6 +642,7 @@ def _draw_deferred_route(
     depth,
     motion,
     motion_draw,
+    shadow_map,
 ):
     """Rasterize one opaque route into the canonical GBuffer and light it."""
     from Infernux.rendergraph.graph import Format
@@ -677,6 +679,10 @@ def _draw_deferred_route(
                 geometry_pass.write_color(emission, slot=3)
                 geometry_pass.write_color(object_data, slot=4)
                 geometry_pass.write_depth(depth)
+                if shadow_map is not None:
+                    # Publish the View's shadow image for the per-view lighting
+                    # descriptor and retain the shadow caster in this graph.
+                    geometry_pass.set_texture("shadowMap", shadow_map)
                 geometry_pass.draw_renderers(
                     queue_range=selector.as_tuple(),
                     sort_mode="front_to_back",

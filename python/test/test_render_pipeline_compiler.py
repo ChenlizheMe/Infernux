@@ -307,6 +307,46 @@ def test_compiler_emits_true_deferred_geometry_and_lighting_passes():
     }
 
 
+@pytest.mark.parametrize("with_shadows", [False, True])
+def test_deferred_only_route_publishes_its_view_shadow_image(with_shadows):
+    pipeline = PipelineBuilder()
+    if with_shadows:
+        pipeline.shadows(resolution=1024)
+    pipeline.opaque().deferred(fallback=Path.FORWARD_PLUS)
+
+    graph = RenderGraph("Deferred shadow contract")
+    compile_pipeline_definition(pipeline.build(), graph)
+    geometry = [
+        render_pass
+        for render_pass in graph._passes
+        if render_pass._material_pass == "gbuffer"
+    ]
+    assert geometry
+    has_shadow_caster = any(
+        render_pass.name == "ShadowCasterPass" for render_pass in graph._passes
+    )
+    assert has_shadow_caster == with_shadows
+    for render_pass in geometry:
+        assert render_pass._input_bindings.get("shadowMap") == (
+            "shadow_map" if with_shadows else None
+        )
+        assert ("shadow_map" in render_pass._reads) == with_shadows
+
+    description = graph.build()
+    geometry_names = {render_pass.name for render_pass in geometry}
+    native_geometry = [
+        render_pass
+        for render_pass in description.passes
+        if render_pass.commands and render_pass.name in geometry_names
+    ]
+    assert len(native_geometry) == len(geometry)
+    for render_pass in native_geometry:
+        binding_published = (
+            "shadowMap", "shadow_map"
+        ) in render_pass.commands[0].input_bindings
+        assert binding_published == with_shadows
+
+
 def test_deferred_msaa_requires_and_uses_explicit_forward_plus_fallback():
     pipeline = PipelineBuilder()
     pipeline.frame(msaa=4)

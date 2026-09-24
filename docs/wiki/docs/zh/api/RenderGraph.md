@@ -96,6 +96,10 @@ Copy 目标、颜色/深度附件或 Resolve 目标。冷加载资产不会阻�
 声明 `Requires [Lighting]` 的 fullscreen shader 会通过描述符 set 1 获得当前
 Camera/View 独立的 Lighting UBO、Forward+ 灯光列表、阴影图集和相机位置。
 阴影纹理仍必须作为显式 `shadow_map` Pass 依赖声明，保证调度关系可见。
+声明式 Deferred route 在开启阴影时，会在每个 GBuffer 几何 Pass 上声明
+`set_texture("shadowMap", shadow_map)`。这会将同一 View 的阴影图像发布给
+per-view 灯光描述符，并保证阴影投射 Pass 排在光照之前。未开启阴影时，
+route 不声明 `shadowMap` 绑定。
 
 <!-- USER CONTENT END -->
 
