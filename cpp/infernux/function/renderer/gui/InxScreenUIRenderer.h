@@ -33,6 +33,11 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+
+namespace infernux::vk
+{
+class VkDescriptorManager;
+}
 #include <unordered_set>
 #include <vector>
 #include <vk_mem_alloc.h>
@@ -112,8 +117,8 @@ class InxScreenUIRenderer
      * @param msaaSamples Scene MSAA sample count (e.g. 4x)
      * @return true if successful
      */
-    bool Initialize(VkDevice device, VmaAllocator allocator, VkFormat colorFormat, VkFormat depthFormat,
-                    VkSampleCountFlagBits msaaSamples, uint32_t frameCount);
+    bool Initialize(VkDevice device, VmaAllocator allocator, vk::VkDescriptorManager &descriptorManager,
+                    VkFormat colorFormat, VkFormat depthFormat, VkSampleCountFlagBits msaaSamples, uint32_t frameCount);
 
     void SetRetirementQueue(GpuRetirementQueue *queue)
     {
@@ -488,6 +493,7 @@ class InxScreenUIRenderer
     // Device
     VkDevice m_device = VK_NULL_HANDLE;
     VmaAllocator m_allocator = VK_NULL_HANDLE;
+    vk::VkDescriptorManager *m_descriptorManager = nullptr;
 
     // Formats
     VkFormat m_colorFormat = VK_FORMAT_UNDEFINED;

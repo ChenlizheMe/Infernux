@@ -26,6 +26,7 @@
 #include <cstring>
 #include <function/renderer/vk/DescriptorBindTrace.h>
 #include <function/renderer/vk/RhiVulkanTypes.h>
+#include <function/renderer/vk/VkDescriptorManager.h>
 #include <function/renderer/vk/VkPipelineHelpers.h>
 #include <function/renderer/vk/VkRenderUtils.h>
 #include <function/resources/InxFileLoader/InxShaderLoader.hpp>
@@ -574,8 +575,7 @@ bool EnsureHostVisibleBuffer(VmaAllocator allocator, GpuRetirementQueue *deletio
 
 struct InxScreenUIRenderer::UIMaterialDescriptor
 {
-    VkDevice device = VK_NULL_HANDLE;
-    VkDescriptorPool pool = VK_NULL_HANDLE;
+    vk::DescriptorLease descriptorLease;
     VkDescriptorSet set = VK_NULL_HANDLE;
     std::unique_ptr<MaterialUBO> buffer;
     std::vector<MaterialDescriptorSet::TextureBinding> textures;
@@ -583,12 +583,6 @@ struct InxScreenUIRenderer::UIMaterialDescriptor
     ShaderProgramKey program;
     uint64_t generation = 0;
     uint64_t validatedRender = 0;
-
-    ~UIMaterialDescriptor()
-    {
-        if (pool != VK_NULL_HANDLE)
-            vkDestroyDescriptorPool(device, pool, nullptr);
-    }
 };
 
 struct InxScreenUIRenderer::CommandPacket::Data
@@ -821,7 +815,8 @@ InxScreenUIRenderer::~InxScreenUIRenderer()
 // Initialization
 // ============================================================================
 
-bool InxScreenUIRenderer::Initialize(VkDevice device, VmaAllocator allocator, VkFormat colorFormat,
+bool InxScreenUIRenderer::Initialize(VkDevice device, VmaAllocator allocator,
+                                     vk::VkDescriptorManager &descriptorManager, VkFormat colorFormat,
                                      VkFormat depthFormat, VkSampleCountFlagBits msaaSamples, uint32_t frameCount)
 {
     if (m_initialized)
@@ -829,6 +824,7 @@ bool InxScreenUIRenderer::Initialize(VkDevice device, VmaAllocator allocator, Vk
 
     m_device = device;
     m_allocator = allocator;
+    m_descriptorManager = &descriptorManager;
     m_colorFormat = colorFormat;
     m_depthFormat = depthFormat;
     m_msaaSamples = msaaSamples;
@@ -883,6 +879,7 @@ void InxScreenUIRenderer::Destroy()
     m_resolvedMaterialPrograms.clear();
     for (const auto &entry : m_materialDescriptors) {
         const auto resource = entry.second;
+        m_descriptorManager->Retire(resource->descriptorLease);
         m_deletionQueue->Retire([resource] {});
     }
     m_materialDescriptors.clear();
@@ -947,6 +944,7 @@ void InxScreenUIRenderer::Destroy()
     m_fragShader = VK_NULL_HANDLE;
     m_device = VK_NULL_HANDLE;
     m_allocator = VK_NULL_HANDLE;
+    m_descriptorManager = nullptr;
     m_initialized = false;
 }
 
@@ -1864,6 +1862,7 @@ void InxScreenUIRenderer::RetireMaterialDescriptor(const std::string &guid)
         return;
     auto resource = std::move(found->second);
     m_materialDescriptors.erase(found);
+    m_descriptorManager->Retire(resource->descriptorLease);
     m_deletionQueue->Retire([resource = std::move(resource)] {});
 }
 
@@ -2056,7 +2055,7 @@ VkDescriptorSet InxScreenUIRenderer::GetMaterialDescriptor(const UIShaderMateria
     if (artifact.properties.empty())
         return VK_NULL_HANDLE;
     if (!m_materialAssetResolver || !m_materialTextureResolver || !m_materialTextureGenerationResolver ||
-        !m_deletionQueue)
+        !m_deletionQueue || !m_descriptorManager)
         throw std::logic_error("UI material descriptors require GUID asset, texture, and GPU retirement owners");
     const auto previous = m_materialDescriptors.find(binding.materialGuid);
     if (previous != m_materialDescriptors.end() && previous->second->generation == binding.generation &&
@@ -2157,7 +2156,6 @@ VkDescriptorSet InxScreenUIRenderer::GetMaterialDescriptor(const UIShaderMateria
     }
 
     auto resource = std::make_shared<UIMaterialDescriptor>();
-    resource->device = m_device;
     resource->generation = binding.generation;
     resource->program = artifact.key;
     resource->validatedRender = m_materialRenderSerial;
@@ -2176,22 +2174,11 @@ VkDescriptorSet InxScreenUIRenderer::GetMaterialDescriptor(const UIShaderMateria
         resource->buffer->Update(*material);
     }
 
-    const std::array<VkDescriptorPoolSize, 2> poolSizes{{
-        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1},
-        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, kUIMaterialTextureCapacity},
-    }};
-    VkDescriptorPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-    poolInfo.maxSets = 1;
-    poolInfo.poolSizeCount = static_cast<uint32_t>(poolSizes.size());
-    poolInfo.pPoolSizes = poolSizes.data();
-    if (vkCreateDescriptorPool(m_device, &poolInfo, nullptr, &resource->pool) != VK_SUCCESS)
-        throw std::runtime_error("UI material descriptor pool allocation failed");
-    VkDescriptorSetAllocateInfo allocate{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
-    allocate.descriptorPool = resource->pool;
-    allocate.descriptorSetCount = 1;
-    allocate.pSetLayouts = &m_materialDescriptorSetLayout;
-    if (vkAllocateDescriptorSets(m_device, &allocate, &resource->set) != VK_SUCCESS)
+    resource->descriptorLease =
+        m_descriptorManager->Allocate(m_materialDescriptorSetLayout, vk::DescriptorArena::Persistent);
+    if (!resource->descriptorLease.IsValid())
         throw std::runtime_error("UI material descriptor allocation failed");
+    resource->set = resource->descriptorLease.set;
 
     VkDescriptorBufferInfo bufferInfo{};
     VkWriteDescriptorSet bufferWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};

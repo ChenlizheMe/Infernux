@@ -454,8 +454,8 @@ int main(int argc, char **argv)
     io.Fonts->SetTexID(static_cast<ImTextureID>(reinterpret_cast<uintptr_t>(device.Resolve(group))));
     ImGui::NewFrame();
     InxScreenUIRenderer renderer;
-    assert(renderer.Initialize(context.GetDevice(), context.GetVmaAllocator(), VK_FORMAT_R8G8B8A8_UNORM,
-                               VK_FORMAT_D32_SFLOAT, VK_SAMPLE_COUNT_1_BIT, 4));
+    assert(renderer.Initialize(context.GetDevice(), context.GetVmaAllocator(), device.GetDescriptorManager(),
+                               VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_D32_SFLOAT, VK_SAMPLE_COUNT_1_BIT, 4));
     renderer.SetRetirementQueue(&retirement);
     std::vector<ShaderProgramKey> releasedProgramKeys;
     renderer.SetMaterialProgramRelease([&](const ShaderProgramKey &key) { releasedProgramKeys.push_back(key); });
@@ -1715,8 +1715,8 @@ int main(int argc, char **argv)
         assert(uiOwners.at(sharedKey) == 1);
 
         auto replacementUI = std::make_unique<InxScreenUIRenderer>();
-        assert(replacementUI->Initialize(context.GetDevice(), context.GetVmaAllocator(), VK_FORMAT_R8G8B8A8_UNORM,
-                                         VK_FORMAT_D32_SFLOAT, VK_SAMPLE_COUNT_1_BIT, 4));
+        assert(replacementUI->Initialize(context.GetDevice(), context.GetVmaAllocator(), device.GetDescriptorManager(),
+                                         VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_D32_SFLOAT, VK_SAMPLE_COUNT_1_BIT, 4));
         replacementUI->SetRetirementQueue(&retirement);
         replacementUI->SetMaterialProgramAcquire(acquireUI);
         replacementUI->SetMaterialProgramRelease(releaseUI);
