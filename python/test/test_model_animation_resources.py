@@ -31,9 +31,9 @@ def test_imported_clip_guid_picker_fsm_and_cook(model, tmp_path, monkeypatch):
     panel._fsm.mode = "3d"
     state = panel._fsm.add_state("Imported")
     panel._assign_clip_to_state(state, virtual, record_undo=False)
-    assert state.clip_guid == guid and state.clip_path == ""
+    assert state.clip_guid == guid
     panel._assign_clip_b_to_state(state, virtual, record_undo=False)
-    assert state.clip_b_guid == guid and state.clip_b_path == ""
+    assert state.clip_b_guid == guid
     animator = SkeletalAnimator()
     animator._clip_cache = {}
     clip = animator._resolve_clip(state)
@@ -61,7 +61,7 @@ def test_imported_clip_guid_picker_fsm_and_cook(model, tmp_path, monkeypatch):
     runtime = f"Library/Artifacts/Document/{guid}.animclip3d"
     cooked = AnimationClip3D.load(str(data / runtime))
     assert cooked.take_name == record["id"] and cooked.source_model_guid == model_guid
-    assert cooked.source_model_path == ""
+    assert not hasattr(cooked, "source_model_path")
     assert not (data / "Assets").exists()
     catalog = build_catalog([
         {"package": "Content.inxpkg", "runtime_path": runtime,

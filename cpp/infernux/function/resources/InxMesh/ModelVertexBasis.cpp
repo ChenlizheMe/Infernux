@@ -86,6 +86,18 @@ void ExpandCorners(aiMesh &mesh)
 
 void CalculateNormals(aiMesh &mesh, const MeshImportSettings &settings)
 {
+    std::vector<aiVector3D> sourceNormals;
+    if (settings.normalSmoothingSource == "source") {
+        if (!mesh.HasNormals())
+            throw std::runtime_error("source smoothing requires authored source normals");
+        sourceNormals.assign(mesh.mNormals, mesh.mNormals + mesh.mNumVertices);
+        for (auto &normal : sourceNormals) {
+            if (!std::isfinite(normal.x) || !std::isfinite(normal.y) || !std::isfinite(normal.z) ||
+                normal.SquareLength() <= std::numeric_limits<ai_real>::epsilon())
+                throw std::runtime_error("source smoothing requires finite non-zero authored normals");
+            normal.Normalize();
+        }
+    }
     std::vector<aiVector3D> directions(mesh.mNumVertices);
     std::vector<double> weights(mesh.mNumVertices, 0.0);
     const bool area = settings.normalWeighting == "area" || settings.normalWeighting == "area_angle";
@@ -108,8 +120,8 @@ void CalculateNormals(aiMesh &mesh, const MeshImportSettings &settings)
             if (angle) {
                 const auto first = mesh.mVertices[face.mIndices[(corner + 1) % 3]] - mesh.mVertices[index];
                 const auto second = mesh.mVertices[face.mIndices[(corner + 2) % 3]] - mesh.mVertices[index];
-                weight *= std::atan2(static_cast<double>((first ^ second).Length()),
-                                     static_cast<double>(first * second));
+                weight *=
+                    std::atan2(static_cast<double>((first ^ second).Length()), static_cast<double>(first * second));
             }
             directions[index] = direction;
             weights[index] = weight;
@@ -138,12 +150,15 @@ void CalculateNormals(aiMesh &mesh, const MeshImportSettings &settings)
         else
             spatial.FindIdenticalPositions(mesh.mVertices[i], neighbors);
         aiVector3D sum;
-        for (const auto other : neighbors)
-            if (smoothAll || other == i || directions[i] * directions[other] >= limit)
+        for (const auto other : neighbors) {
+            const bool sameSourceGroup = sourceNormals.empty() || sourceNormals[i] * sourceNormals[other] >= 0.99999f;
+            const bool withinAngle = smoothAll || other == i || directions[i] * directions[other] >= limit;
+            if (sameSourceGroup && (settings.normalSmoothingSource == "source" || withinAngle))
                 sum += directions[other] * static_cast<ai_real>(weights[other]);
+        }
         sum.NormalizeSafe();
         normals[i] = sum;
-        if (smoothAll)
+        if (smoothAll && settings.normalSmoothingSource != "source")
             for (const auto other : neighbors) {
                 normals[other] = sum;
                 assigned[other] = true;
@@ -180,22 +195,29 @@ void CalculateMikkTangents(aiMesh &mesh)
     mesh.mTangents = new aiVector3D[mesh.mNumVertices];
     mesh.mBitangents = new aiVector3D[mesh.mNumVertices];
     SMikkTSpaceInterface interface{};
-    interface.m_getNumFaces = [](const SMikkTSpaceContext *c) { return static_cast<int>(MikkMesh::Get(c).triangles.size()); };
+    interface.m_getNumFaces = [](const SMikkTSpaceContext *c) {
+        return static_cast<int>(MikkMesh::Get(c).triangles.size());
+    };
     interface.m_getNumVerticesOfFace = [](const SMikkTSpaceContext *, int) { return 3; };
     interface.m_getPosition = [](const SMikkTSpaceContext *c, float out[], int f, int v) {
         const auto &m = MikkMesh::Get(c);
         const auto &p = m.mesh.mVertices[m.Vertex(f, v)];
-        out[0] = p.x; out[1] = p.y; out[2] = p.z;
+        out[0] = p.x;
+        out[1] = p.y;
+        out[2] = p.z;
     };
     interface.m_getNormal = [](const SMikkTSpaceContext *c, float out[], int f, int v) {
         const auto &m = MikkMesh::Get(c);
         const auto &n = m.mesh.mNormals[m.Vertex(f, v)];
-        out[0] = n.x; out[1] = n.y; out[2] = n.z;
+        out[0] = n.x;
+        out[1] = n.y;
+        out[2] = n.z;
     };
     interface.m_getTexCoord = [](const SMikkTSpaceContext *c, float out[], int f, int v) {
         const auto &m = MikkMesh::Get(c);
         const auto &uv = m.mesh.mTextureCoords[0][m.Vertex(f, v)];
-        out[0] = uv.x; out[1] = uv.y;
+        out[0] = uv.x;
+        out[1] = uv.y;
     };
     interface.m_setTSpaceBasic = [](const SMikkTSpaceContext *c, const float tangent[], float sign, int f, int v) {
         auto &m = MikkMesh::Get(c);
@@ -207,7 +229,7 @@ void CalculateMikkTangents(aiMesh &mesh)
     if (!genTangSpaceDefault(&context))
         throw std::runtime_error("MikkTSpace could not calculate the model tangent basis");
 }
-}
+} // namespace
 
 void BuildModelVertexBasis(const aiScene &scene, const MeshImportSettings &settings)
 {
@@ -215,10 +237,13 @@ void BuildModelVertexBasis(const aiScene &scene, const MeshImportSettings &setti
         auto &mesh = *scene.mMeshes[index];
         if (!mesh.mNumVertices || !(mesh.mPrimitiveTypes & aiPrimitiveType_TRIANGLE))
             continue;
-        const bool normals = !mesh.HasNormals() && (settings.normalMode == "import" || settings.normalMode == "calculate");
+        const bool wantsNormals = settings.normalMode == "import" || settings.normalMode == "calculate";
+        if (wantsNormals && settings.normalSmoothingSource == "source" && !mesh.HasNormals())
+            throw std::runtime_error("source smoothing requires authored source normals");
+        const bool normals = settings.normalMode == "calculate" || (!mesh.HasNormals() && wantsNormals);
         const bool tangents = settings.tangentAlgorithm == "mikktspace" && !mesh.HasTangentsAndBitangents() &&
-            (mesh.HasNormals() || normals) && mesh.HasTextureCoords(0) &&
-            (settings.tangentMode == "import" || settings.tangentMode == "calculate");
+                              (mesh.HasNormals() || normals) && mesh.HasTextureCoords(0) &&
+                              (settings.tangentMode == "import" || settings.tangentMode == "calculate");
         if (!normals && !tangents)
             continue;
         ExpandCorners(mesh);
@@ -228,4 +253,4 @@ void BuildModelVertexBasis(const aiScene &scene, const MeshImportSettings &setti
             CalculateMikkTangents(mesh);
     }
 }
-}
+} // namespace infernux

@@ -1,13 +1,15 @@
 #pragma once
 
 #include <function/renderer/InxRenderStruct.h>
+#include <function/resources/InxMaterial/MaterialProperty.h>
 
 #include <glm/glm.hpp>
 
-#include <cstdint>
 #include <array>
+#include <cstdint>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace infernux
@@ -53,8 +55,39 @@ enum class ModelAlphaMode : uint32_t
     Blend,
 };
 
-enum class ModelTexture : uint32_t { BaseColor, Normal, Metallic, Roughness, Occlusion, Emission, Count };
+enum class ModelTexture : uint32_t
+{
+    BaseColor,
+    Normal,
+    Metallic,
+    Roughness,
+    Occlusion,
+    Emission,
+    Count
+};
 inline constexpr size_t ModelTextureCount = static_cast<size_t>(ModelTexture::Count);
+
+enum class MeshCompression : uint32_t
+{
+    Off,
+    Low,
+    Medium,
+    High,
+};
+
+/// One imported blend-shape target in the same vertex domain as its owning
+/// MeshGeometry.  Values are deltas rather than replacement attributes so the
+/// target remains valid when the model hierarchy is baked into the combined
+/// preview geometry. Empty normal/tangent streams mean that the source target
+/// did not author those channels; they are never synthesized silently.
+struct MeshMorphTarget
+{
+    std::string name;
+    float defaultWeight = 0.0f;
+    std::vector<glm::vec3> positionDeltas;
+    std::vector<glm::vec3> normalDeltas;
+    std::vector<glm::vec3> tangentDeltas;
+};
 
 struct MaterialSlotData
 {
@@ -69,8 +102,13 @@ struct MaterialSlotData
     // Import-local material identity: kind + unique authored source name.
     // Empty for unnamed/ambiguous materials; never substitute a slot index.
     std::string sourceId;
-    std::string materialGuid; ///< Optional importer-level external material binding.
+    std::string materialGuid;                                ///< Optional importer-level external material binding.
     std::array<std::string, ModelTextureCount> textureGuids; ///< Imported identities, never source paths.
+    /// Source UV set selected independently by each texture binding.  The
+    /// current runtime vertex contract exposes UV0 and UV1; import rejects
+    /// larger indices instead of silently sampling UV0.
+    std::array<uint8_t, ModelTextureCount> textureUvSets{};
+    std::array<MaterialTextureSampler, ModelTextureCount> textureSamplers{};
     float normalScale = 1.0f;
     float occlusionStrength = 1.0f;
     bool packedMetallicRoughness = false; ///< glTF: metallic B, roughness G; otherwise scalar R.
@@ -85,6 +123,7 @@ struct ImportedModelNode
     std::string name;
     int32_t parentIndex = -1;
     int32_t nodeGroup = -1;         ///< -1 for nodes without geometry
+    bool visible = true;            ///< Imported renderer visibility after parent inheritance
     glm::mat4 localTransform{1.0f}; ///< In engine units, relative to parent
 };
 
@@ -94,8 +133,13 @@ struct MeshGeometry
     std::vector<Vertex> vertices;
     std::vector<uint32_t> indices;
     std::vector<SubMesh> subMeshes;
+    std::vector<MeshMorphTarget> morphTargets;
     glm::vec3 boundsMin{0.0f};
     glm::vec3 boundsMax{0.0f};
+    // Counts survive removal of CPU staging arrays.  Render/culling metadata
+    // remains authoritative after a non-readable mesh becomes GPU resident.
+    uint32_t vertexCount = 0;
+    uint32_t indexCount = 0;
 };
 
 /**
@@ -171,11 +215,37 @@ class InxMesh
 
     [[nodiscard]] uint32_t GetVertexCount() const
     {
-        return static_cast<uint32_t>(m_geometry->vertices.size());
+        return m_geometry->vertexCount;
     }
     [[nodiscard]] uint32_t GetIndexCount() const
     {
-        return static_cast<uint32_t>(m_geometry->indices.size());
+        return m_geometry->indexCount;
+    }
+
+    /// CPU Read/Write is an import contract, not a request to silently read
+    /// GPU memory back.  Internal upload/cook consumers may use the staging
+    /// generation until ReleaseCpuGeometry() is called.
+    void SetCpuReadable(bool readable) noexcept
+    {
+        m_cpuReadable = readable;
+    }
+    [[nodiscard]] bool IsCpuReadable() const noexcept
+    {
+        return m_cpuReadable;
+    }
+    [[nodiscard]] bool HasCpuGeometry() const noexcept
+    {
+        return m_geometry->vertices.size() == m_geometry->vertexCount &&
+               m_geometry->indices.size() == m_geometry->indexCount;
+    }
+    void RequireCpuReadable(std::string_view operation) const;
+    /// Drop only recreatable CPU vertex/index/morph staging. Submesh ranges,
+    /// bounds, hierarchy and counts remain available. Returns bytes released.
+    size_t ReleaseCpuGeometry();
+
+    [[nodiscard]] const std::vector<MeshMorphTarget> &GetMorphTargets() const noexcept
+    {
+        return m_geometry->morphTargets;
     }
 
     // ── SubMesh access ───────────────────────────────────────────────────
@@ -214,6 +284,23 @@ class InxMesh
         return m_generation;
     }
 
+    void SetIndexFormat(MeshIndexFormat format) noexcept
+    {
+        m_indexFormat = format;
+    }
+    [[nodiscard]] MeshIndexFormat GetIndexFormat() const noexcept
+    {
+        return m_indexFormat;
+    }
+    void SetCompression(MeshCompression compression) noexcept
+    {
+        m_compression = compression;
+    }
+    [[nodiscard]] MeshCompression GetCompression() const noexcept
+    {
+        return m_compression;
+    }
+
     // ── Material slot names (extracted from model file) ──────────────────
 
     [[nodiscard]] const std::vector<std::string> &GetMaterialSlotNames() const
@@ -239,7 +326,6 @@ class InxMesh
     /// and editor extraction use the same conversion; this does not save an asset.
     [[nodiscard]] std::shared_ptr<InxMaterial> CreateMaterialCopy(uint32_t slot) const;
     [[nodiscard]] std::vector<std::string> GetModelNodePath(size_t index) const;
-    void UpgradeLegacyModelNodePath(std::vector<std::string> &path) const;
     [[nodiscard]] int32_t RequireModelNode(const std::vector<std::string> &path) const;
     // Detached compact local geometry for previews/tools. Scene renderers share
     // the source asset and persist its GUID + node path instead of this copy.
@@ -274,7 +360,7 @@ class InxMesh
         return m_modelSourceGeometry;
     }
     void SetModelData(std::vector<Vertex> vertices, std::vector<uint32_t> indices, std::vector<SubMesh> subMeshes,
-                      std::vector<ImportedModelNode> nodes);
+                      std::vector<ImportedModelNode> nodes, std::vector<MeshMorphTarget> morphTargets = {});
     void ReplaceImportedContent(const InxMesh &source);
 
     // ── Builder API (called by MeshLoader during import) ─────────────────
@@ -285,7 +371,8 @@ class InxMesh
      * Takes ownership of the data via move.  Recomputes the overall AABB
      * from the vertex positions.
      */
-    void SetData(std::vector<Vertex> vertices, std::vector<uint32_t> indices, std::vector<SubMesh> subMeshes);
+    void SetData(std::vector<Vertex> vertices, std::vector<uint32_t> indices, std::vector<SubMesh> subMeshes,
+                 std::vector<MeshMorphTarget> morphTargets = {});
 
     /// Replace a vertex range and publish a new geometry generation. Recompute
     /// overall/submesh bounds; topology and other vertex attributes are caller-owned.
@@ -328,6 +415,9 @@ class InxMesh
     std::vector<std::string> m_nodeNames; ///< Node names indexed by nodeGroup
     std::vector<ImportedModelNode> m_modelNodes;
     std::shared_ptr<const InxSkinnedMesh> m_skinnedData;
+    MeshIndexFormat m_indexFormat = MeshIndexFormat::Auto;
+    MeshCompression m_compression = MeshCompression::Off;
+    bool m_cpuReadable = true;
     uint64_t m_generation = 0;
 };
 

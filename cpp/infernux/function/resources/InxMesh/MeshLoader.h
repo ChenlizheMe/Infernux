@@ -1,6 +1,7 @@
 #pragma once
 
 #include <function/resources/AssetRegistry/AssetRegistry.h>
+#include <function/resources/InxMaterial/MaterialProperty.h>
 
 #include <cstdint>
 #include <memory>
@@ -16,12 +17,22 @@ class InxSkinnedMesh;
 
 struct MeshSourceImportResult
 {
+    struct MaterialDiagnostic
+    {
+        std::string code;
+        std::string material;
+        std::string property;
+        std::string detail;
+    };
+
     struct TextureSource
     {
         uint32_t materialSlot;
         std::string path;
         uint32_t channel = 0; // ModelTexture index, shared with MaterialSlotData.
         int32_t embeddedIndex = -1;
+        uint8_t uvSet = 0;
+        MaterialTextureSampler sampler;
     };
     struct EmbeddedImage
     {
@@ -32,12 +43,15 @@ struct MeshSourceImportResult
         uint32_t height = 0;
     };
     std::vector<TextureSource> textureSources;
+    std::vector<MaterialDiagnostic> materialDiagnostics;
     std::vector<EmbeddedImage> embeddedImages;
     std::shared_ptr<InxMesh> mesh;
     std::shared_ptr<InxSkinnedMesh> skinnedMesh;
     uint64_t meshCount = 0;
     uint64_t vertexCount = 0;
     uint64_t indexCount = 0;
+    float sourceUnitScale = 1.0f;
+    float effectiveScale = 1.0f;
     std::vector<std::string> materialSlots;
     std::vector<std::string> boneNames;
     std::vector<std::string> animationNames;
@@ -65,8 +79,10 @@ struct MeshSourceImportResult
 class MeshLoader final : public IAssetLoader
 {
   public:
-    [[nodiscard]] static MeshSourceImportResult
-    ImportSourceDetailed(const std::string &filePath, const std::string &guid, const InxResourceMeta &metadata);
+    [[nodiscard]] static MeshSourceImportResult ImportSourceDetailed(const std::string &filePath,
+                                                                     const std::string &guid,
+                                                                     const InxResourceMeta &metadata,
+                                                                     const InxSkinnedMesh *copiedDefinition = nullptr);
     [[nodiscard]] static std::shared_ptr<InxMesh> ImportSource(const std::string &filePath, const std::string &guid,
                                                                const InxResourceMeta &metadata);
 

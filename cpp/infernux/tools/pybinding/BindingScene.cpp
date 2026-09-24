@@ -620,7 +620,7 @@ static GameObject *CreateModelObject(Scene *scene, const std::string &guid, cons
         auto source = registry.LoadAsset<InxMesh>(sourceGuid, ResourceType::Mesh);
         if (!source)
             throw std::invalid_argument("Model mesh source cannot be loaded");
-        (void)source->RequireModelNode(nodePath);
+        const int32_t sourceNode = source->RequireModelNode(nodePath);
         const auto metadata = GetModelMeta(sourceGuid, source);
         const bool generateCollider = !ShouldUseSkinnedRenderer(sourceGuid, source) && metadata &&
                                       metadata->HasKey("generate_colliders") &&
@@ -633,6 +633,7 @@ static GameObject *CreateModelObject(Scene *scene, const std::string &guid, cons
             renderer->SetMeshAsset(sourceGuid, source);
             renderer->SetModelNodePath(nodePath);
             renderer->SetModelSubresourceId(GetModelSubresourceId(metadata, nodePath));
+            renderer->SetEnabled(source->GetModelNodes().at(static_cast<size_t>(sourceNode)).visible);
             if (generateCollider)
                 object->AddComponent<MeshCollider>();
         } catch (...) {
@@ -717,6 +718,7 @@ static GameObject *CreateModelObject(Scene *scene, const std::string &guid, cons
                     renderer->SetMeshAsset(guid, mesh);
                     renderer->SetModelNodePath(paths[index]);
                     renderer->SetModelSubresourceId(GetModelSubresourceId(metadata, paths[index]));
+                    renderer->SetEnabled(node.visible);
                     if (generateColliders)
                         child->AddComponent<MeshCollider>();
                 }

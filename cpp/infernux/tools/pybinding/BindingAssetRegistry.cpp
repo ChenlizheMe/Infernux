@@ -40,6 +40,7 @@ py::array_t<float> MeshVec3Array(const std::vector<Vertex> &vertices, const glm:
 
 py::dict MeshVertexData(const InxMesh &mesh)
 {
+    mesh.RequireCpuReadable("Mesh.vertex_buffer");
     const auto &vertices = mesh.GetVertices();
     py::dict result;
     result["positions"] = MeshVec3Array(vertices, &Vertex::pos);
@@ -48,8 +49,10 @@ py::dict MeshVertexData(const InxMesh &mesh)
 
     py::array_t<float> tangents({static_cast<py::ssize_t>(vertices.size()), py::ssize_t{4}});
     py::array_t<float> uvs({static_cast<py::ssize_t>(vertices.size()), py::ssize_t{2}});
+    py::array_t<float> uvs1({static_cast<py::ssize_t>(vertices.size()), py::ssize_t{2}});
     auto tangentOutput = tangents.mutable_unchecked<2>();
     auto uvOutput = uvs.mutable_unchecked<2>();
+    auto uv1Output = uvs1.mutable_unchecked<2>();
     for (py::ssize_t row = 0; row < static_cast<py::ssize_t>(vertices.size()); ++row) {
         const auto &vertex = vertices[static_cast<size_t>(row)];
         tangentOutput(row, 0) = vertex.tangent.x;
@@ -58,9 +61,12 @@ py::dict MeshVertexData(const InxMesh &mesh)
         tangentOutput(row, 3) = vertex.tangent.w;
         uvOutput(row, 0) = vertex.texCoord.x;
         uvOutput(row, 1) = vertex.texCoord.y;
+        uv1Output(row, 0) = vertex.texCoord1.x;
+        uv1Output(row, 1) = vertex.texCoord1.y;
     }
     result["tangents"] = std::move(tangents);
     result["uvs"] = std::move(uvs);
+    result["uvs1"] = std::move(uvs1);
     return result;
 }
 
@@ -252,6 +258,7 @@ void RegisterAssetRegistryBindings(py::module_ &m)
                     item["name"] = node.name;
                     item["parent_index"] = node.parentIndex;
                     item["node_group"] = node.nodeGroup;
+                    item["visible"] = node.visible;
                     py::list rows;
                     for (glm::length_t row = 0; row < 4; ++row) {
                         py::list values;
@@ -274,6 +281,59 @@ void RegisterAssetRegistryBindings(py::module_ &m)
                                    const auto &skinned = mesh.GetSkinnedData();
                                    return skinned ? skinned->skeleton.bones.size() : size_t{0};
                                })
+        .def_property_readonly(
+            "skeleton_definition",
+            [](const InxMesh &mesh) -> py::dict {
+                py::dict result;
+                const auto &skinned = mesh.GetSkinnedData();
+                if (!skinned)
+                    return result;
+                result["guid"] = skinned->skeletonDefinitionGuid;
+                result["subresource_id"] = skinned->skeletonDefinitionId;
+                result["root_node_index"] = skinned->skeletonRootNodeIndex;
+                return result;
+            },
+            "GUID-backed skeleton definition identity")
+        .def_property_readonly(
+            "exposed_skeleton_nodes",
+            [](const InxMesh &mesh) {
+                std::vector<std::string> result;
+                const auto &skinned = mesh.GetSkinnedData();
+                if (!skinned)
+                    return result;
+                for (const int index : skinned->exposedSkeletonNodeIndices)
+                    if (index >= 0 && static_cast<size_t>(index) < skinned->skeleton.nodes.size())
+                        result.push_back(skinned->skeleton.nodes[static_cast<size_t>(index)].name);
+                return result;
+            },
+            "Published script-visible skeleton attachment nodes")
+        .def_property_readonly(
+            "humanoid_rig",
+            [](const InxMesh &mesh) -> py::dict {
+                py::dict result;
+                const auto &skinned = mesh.GetSkinnedData();
+                if (!skinned || !skinned->humanoid.enabled)
+                    return result;
+                py::dict mapping;
+                for (const auto &[slot, nodeIndex] : skinned->humanoid.bones)
+                    mapping[py::str(slot)] = skinned->skeleton.nodes.at(static_cast<size_t>(nodeIndex)).name;
+                py::list issues;
+                for (const auto &issue : skinned->humanoid.issues) {
+                    py::dict item;
+                    item["code"] = issue.code;
+                    item["bone"] = issue.bone;
+                    item["detail"] = issue.detail;
+                    issues.append(std::move(item));
+                }
+                result["valid"] = skinned->humanoid.IsValid();
+                result["required_bones_valid"] = skinned->humanoid.requiredBonesValid;
+                result["hierarchy_valid"] = skinned->humanoid.hierarchyValid;
+                result["reference_pose_valid"] = skinned->humanoid.referencePoseValid;
+                result["mapping"] = std::move(mapping);
+                result["issues"] = std::move(issues);
+                return result;
+            },
+            "Resolved humanoid mapping and import-time validity report")
         .def_property_readonly("skinned_animation_count",
                                [](const InxMesh &mesh) {
                                    const auto &skinned = mesh.GetSkinnedData();
@@ -302,16 +362,34 @@ void RegisterAssetRegistryBindings(py::module_ &m)
                     d["metallic"] = sd.metallic;
                     d["smoothness"] = sd.smoothness;
                     d["opacity"] = sd.opacity;
-                    d["alpha_mode"] = sd.alphaMode == ModelAlphaMode::Mask ? "mask" :
-                                      sd.alphaMode == ModelAlphaMode::Blend ? "blend" : "opaque";
+                    d["alpha_mode"] = sd.alphaMode == ModelAlphaMode::Mask    ? "mask"
+                                      : sd.alphaMode == ModelAlphaMode::Blend ? "blend"
+                                                                              : "opaque";
                     d["alpha_cutoff"] = sd.alphaCutoff;
                     d["double_sided"] = sd.doubleSided;
                     d["source_id"] = sd.sourceId;
                     d["material_guid"] = sd.materialGuid;
                     constexpr const char *keys[] = {"base_color_texture_guid", "normal_texture_guid",
-                        "metallic_texture_guid", "roughness_texture_guid", "occlusion_texture_guid", "emission_texture_guid"};
-                    for (size_t index = 0; index < ModelTextureCount; ++index)
+                                                    "metallic_texture_guid",   "roughness_texture_guid",
+                                                    "occlusion_texture_guid",  "emission_texture_guid"};
+                    constexpr const char *uvKeys[] = {"base_color_uv_set", "normal_uv_set",    "metallic_uv_set",
+                                                      "roughness_uv_set",  "occlusion_uv_set", "emission_uv_set"};
+                    constexpr const char *samplerKeys[] = {"base_color_sampler", "normal_sampler",
+                                                           "metallic_sampler",   "roughness_sampler",
+                                                           "occlusion_sampler",  "emission_sampler"};
+                    for (size_t index = 0; index < ModelTextureCount; ++index) {
                         d[keys[index]] = sd.textureGuids[index];
+                        d[uvKeys[index]] = sd.textureUvSets[index];
+                        const auto &sampler = sd.textureSamplers[index];
+                        py::dict samplerData;
+                        samplerData["min_filter"] = static_cast<uint8_t>(sampler.minFilter);
+                        samplerData["mag_filter"] = static_cast<uint8_t>(sampler.magFilter);
+                        samplerData["mip_filter"] = static_cast<uint8_t>(sampler.mipFilter);
+                        samplerData["address_u"] = static_cast<uint8_t>(sampler.addressU);
+                        samplerData["address_v"] = static_cast<uint8_t>(sampler.addressV);
+                        samplerData["address_w"] = static_cast<uint8_t>(sampler.addressW);
+                        d[samplerKeys[index]] = std::move(samplerData);
+                    }
                     d["normal_scale"] = sd.normalScale;
                     d["occlusion_strength"] = sd.occlusionStrength;
                     d["packed_metallic_roughness"] = sd.packedMetallicRoughness;

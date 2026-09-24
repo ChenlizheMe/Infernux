@@ -41,6 +41,38 @@ bool MeshDataEquals(const std::shared_ptr<InxMesh> &mesh, const std::vector<Vert
     return sameVertices && sameIndices;
 }
 
+std::vector<std::string> ResolveModelNodePathBySubresourceId(const std::string &meshGuid,
+                                                             const std::string &subresourceId,
+                                                             std::vector<std::string> serializedPath)
+{
+    if (subresourceId.empty())
+        return serializedPath;
+
+    auto *assetDb = AssetRegistry::Instance().GetAssetDatabase();
+    const auto meta = assetDb ? assetDb->GetMetaByGuid(meshGuid) : nullptr;
+    if (!meta || !meta->HasKey("model_meshes"))
+        throw std::invalid_argument("Model mesh identity manifest is unavailable");
+
+    const auto manifest = nlohmann::json::parse(meta->GetDataAs<std::string>("model_meshes"));
+    if (!manifest.is_array())
+        throw std::invalid_argument("Model mesh identity manifest must be an array");
+
+    std::vector<std::string> resolvedPath;
+    size_t matches = 0;
+    for (const auto &entry : manifest) {
+        if (!entry.is_object() || entry.value("subresource_id", std::string{}) != subresourceId)
+            continue;
+        if (!entry.contains("path") || !entry["path"].is_array())
+            throw std::invalid_argument("Model mesh identity has no node path");
+        resolvedPath = entry["path"].get<std::vector<std::string>>();
+        ++matches;
+    }
+    if (matches != 1 || resolvedPath.empty())
+        throw std::invalid_argument(matches == 0 ? "Model mesh identity no longer exists"
+                                                 : "Model mesh identity is ambiguous");
+    return resolvedPath;
+}
+
 std::string FindMatchingMeshAssetGuid(const std::vector<Vertex> &vertices, const std::vector<uint32_t> &indices,
                                       const std::string &preferredName)
 {
@@ -1254,7 +1286,6 @@ void MeshRenderer::ResolveModelNodeBinding()
     if (!mesh)
         return;
     const auto &nodes = mesh->GetModelNodes();
-    mesh->UpgradeLegacyModelNodePath(m_modelNodePath);
     bool matched = false;
     for (size_t index = 0; index < nodes.size(); ++index) {
         if (nodes[index].nodeGroup < 0)
@@ -1506,10 +1537,10 @@ void MeshRenderer::ValidateSerializedDocumentForType(const nlohmann::json &j, st
     using namespace component_document_validation;
     std::vector<std::string_view> required = {"meshId",    "materials", "castShadows",  "receivesShadows",
                                               "boundsMin", "boundsMax", "useInlineMesh"};
-    std::vector<std::string_view> optional = {"meshAssetGuid",   "submeshIndex",   "nodeGroup",
-                                              "meshPivotOffset", "inlineMeshName", "inlineMeshBuiltin",
-                                              "inlineVertices",  "inlineIndices",  "parameterOverrides", "modelNodePath",
-                                              "modelSubresourceId"};
+    std::vector<std::string_view> optional = {"meshAssetGuid",   "submeshIndex",      "nodeGroup",
+                                              "meshPivotOffset", "inlineMeshName",    "inlineMeshBuiltin",
+                                              "inlineVertices",  "inlineIndices",     "parameterOverrides",
+                                              "modelNodePath",   "modelSubresourceId"};
     if (expectedType == "SpriteRenderer") {
         required.insert(required.end(), {"frameId", "spriteColor", "flipX", "flipY"});
         optional.push_back("spriteGuid");
@@ -1780,9 +1811,14 @@ bool MeshRenderer::DeserializeDocument(const nlohmann::json &j)
         if (!meshGuid.empty()) {
             stagedMesh = registry.LoadAsset<InxMesh>(meshGuid, ResourceType::Mesh);
         }
+        const std::string stagedSubresourceId = j.value("modelSubresourceId", std::string{});
+        const auto stagedPath = ResolveModelNodePathBySubresourceId(
+            meshGuid, stagedSubresourceId, j.value("modelNodePath", std::vector<std::string>{}));
         const bool meshAssetResolved = static_cast<bool>(stagedMesh);
-        if (j.contains("modelNodePath") && stagedMesh && !stagedMesh->GetModelSourceGeometry())
+        if (!stagedPath.empty() && stagedMesh && !stagedMesh->GetModelSourceGeometry())
             throw std::invalid_argument("Model node binding requires node-local source geometry");
+        if (stagedMesh && !stagedPath.empty())
+            static_cast<void>(stagedMesh->RequireModelNode(stagedPath));
 
         const auto &materialsDocument = j["materials"];
         std::vector<AssetRef<InxMaterial>> stagedMaterials(materialsDocument.size());
@@ -1848,8 +1884,8 @@ bool MeshRenderer::DeserializeDocument(const nlohmann::json &j)
 
         // Restore the view after assigning the source. Ordinary mesh changes
         // clear the previous model binding, while a scene document owns both.
-        m_modelNodePath = j.value("modelNodePath", std::vector<std::string>{});
-        m_modelSubresourceId = j.value("modelSubresourceId", std::string{});
+        m_modelNodePath = stagedPath;
+        m_modelSubresourceId = stagedSubresourceId;
         ResolveModelNodeBinding();
         if (const auto mesh = m_meshAsset.Get())
             UpdateBoundsForMeshSelection(mesh);
@@ -1966,6 +2002,10 @@ bool MeshRenderer::DeserializeDocument(const nlohmann::json &j)
         }
 
         ++m_inlineMeshVersion;
+
+        // Component deserialization is order-independent. A MeshCollider may
+        // have been deserialized before the complete model binding was ready.
+        NotifyCollisionGeometryChanged(this);
 
         return true;
     } catch (const std::exception &e) {

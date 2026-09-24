@@ -8,14 +8,15 @@ namespace infernux
 {
 namespace
 {
-constexpr std::array<const char *, ModelTextureCount> TextureProperties{
-    "texSampler", "normalMap", "metallicMap", "smoothnessMap", "aoMap", "emissionMap"};
+constexpr std::array<const char *, ModelTextureCount> TextureProperties{"texSampler",    "normalMap", "metallicMap",
+                                                                        "smoothnessMap", "aoMap",     "emissionMap"};
+constexpr std::array<const char *, ModelTextureCount> TextureUvProperties{
+    "baseColorUvSet", "normalUvSet", "metallicUvSet", "smoothnessUvSet", "occlusionUvSet", "emissionUvSet"};
 
 std::string TextureIdentity(const MaterialSlotData &data, size_t index)
 {
-    return data.textureGuids[index].empty()
-               ? (index == static_cast<size_t>(ModelTexture::Normal) ? "normal" : "white")
-               : data.textureGuids[index];
+    return data.textureGuids[index].empty() ? (index == static_cast<size_t>(ModelTexture::Normal) ? "normal" : "white")
+                                            : data.textureGuids[index];
 }
 
 glm::vec4 MetallicChannels(const MaterialSlotData &data)
@@ -70,17 +71,26 @@ bool InxMesh::MatchesMaterialCopy(uint32_t slot, const InxMaterial &material) co
     auto state = material.GetRenderState();
     ApplySourceSurface(state, data);
     const auto name = slot < m_materialSlotNames.size() && !m_materialSlotNames[slot].empty()
-                          ? m_materialSlotNames[slot] : "EmbeddedMaterial_" + std::to_string(slot);
+                          ? m_materialSlotNames[slot]
+                          : "EmbeddedMaterial_" + std::to_string(slot);
     const auto path = m_filePath.empty() ? std::string() : m_filePath + "::submat:" + std::to_string(slot);
-    for (size_t index = 0; index < ModelTextureCount; ++index)
+    for (size_t index = 0; index < ModelTextureCount; ++index) {
         if (!matches(TextureProperties[index], TextureIdentity(data, index)))
             return false;
+        if (!matches(TextureUvProperties[index], static_cast<int>(data.textureUvSets[index])))
+            return false;
+        const auto *sampler = material.GetTextureSampler(TextureProperties[index]);
+        if ((sampler == nullptr) != !data.textureSamplers[index].HasOverrides() ||
+            (sampler && *sampler != data.textureSamplers[index]))
+            return false;
+    }
     return material.GetName() == name && material.GetFilePath() == path && state == material.GetRenderState() &&
            matches("baseColor", SourceBaseColor(data)) && matches("emissionColor", data.emissionColor) &&
            matches("normalScale", data.normalScale) && matches("occlusionStrength", data.occlusionStrength) &&
-           matches("metallicChannels", MetallicChannels(data)) && matches("smoothnessChannels", RoughnessChannels(data)) &&
-           matches("smoothnessFromRoughness", UsesRoughnessMap(data)) &&
-           matches("metallic", data.metallic) && matches("smoothness", data.smoothness);
+           matches("metallicChannels", MetallicChannels(data)) &&
+           matches("smoothnessChannels", RoughnessChannels(data)) &&
+           matches("smoothnessFromRoughness", UsesRoughnessMap(data)) && matches("metallic", data.metallic) &&
+           matches("smoothness", data.smoothness);
 }
 
 std::shared_ptr<InxMaterial> InxMesh::CreateMaterialCopy(uint32_t slot) const
@@ -96,8 +106,11 @@ std::shared_ptr<InxMaterial> InxMesh::CreateMaterialCopy(uint32_t slot) const
     material->SetColor("emissionColor", data.emissionColor);
     material->SetFloat("metallic", data.metallic);
     material->SetFloat("smoothness", data.smoothness);
-    for (size_t index = 0; index < ModelTextureCount; ++index)
+    for (size_t index = 0; index < ModelTextureCount; ++index) {
         material->SetTextureGuid(TextureProperties[index], TextureIdentity(data, index));
+        material->SetInt(TextureUvProperties[index], static_cast<int>(data.textureUvSets[index]));
+        material->SetTextureSampler(TextureProperties[index], data.textureSamplers[index]);
+    }
     material->SetFloat("normalScale", data.normalScale);
     material->SetFloat("occlusionStrength", data.occlusionStrength);
     material->SetVector4("metallicChannels", MetallicChannels(data));

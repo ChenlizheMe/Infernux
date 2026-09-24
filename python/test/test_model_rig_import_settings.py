@@ -9,7 +9,7 @@ import pytest
 
 from Infernux.core.assets import AssetManager
 from Infernux.core.asset_types import read_mesh_import_settings
-from Infernux.lib import AssetRegistry
+from Infernux.lib import AssetDependencyGraph, AssetRegistry
 
 
 @pytest.mark.parametrize("key, value", [
@@ -26,18 +26,59 @@ def test_skin_settings_reject_invalid_author_values(key, value):
         MeshImportSettings.from_dict(data)
 
 
-def test_skin_settings_legacy_defaults_and_inspector_projection():
+def test_skin_settings_require_complete_current_contract_and_inspector_projection():
     from Infernux.core.asset_types import MeshImportSettings
     from Infernux.engine.ui import asset_details_renderer as renderer
     data = MeshImportSettings().to_dict()
     del data["min_bone_weight"], data["max_bones_per_vertex"]
-    settings = MeshImportSettings.from_dict(data)
-    assert settings.max_bones_per_vertex == 4 and settings.min_bone_weight == 0
+    with pytest.raises(ValueError, match="complete current field set"):
+        MeshImportSettings.from_dict(data)
     renderer._ensure_categories()
     fields = {f.key: f for f in renderer._categories["mesh"].editable_fields}
     assert fields["max_bones_per_vertex"].field_type == renderer.WidgetType.INT
     assert fields["max_bones_per_vertex"].float_range == (1, 4)
     assert fields["max_bones_per_vertex"].page == fields["min_bone_weight"].page == "rig"
+
+
+def test_rig_definition_settings_are_guid_backed_and_validate_exposed_nodes():
+    from Infernux.core.asset_types import MeshImportSettings
+    data = MeshImportSettings().to_dict()
+    data.update({
+        "rig_root_node": "Root",
+        "skeleton_definition_mode": "copy",
+        "skeleton_definition_guid": "a" * 32,
+        "skeleton_definition_id": "skeleton",
+        "optimize_bone_hierarchy": True,
+        "exposed_bones": ["WeaponSocket", "Root"],
+    })
+    settings = MeshImportSettings.from_dict(data)
+    assert settings.rig_root_node == "Root"
+    assert settings.skeleton_definition_guid == "a" * 32
+    assert settings.skeleton_definition_mode == "copy"
+    assert settings.exposed_bones == ["WeaponSocket", "Root"]
+    data["exposed_bones"] = ["Root", "Root"]
+    with pytest.raises(ValueError, match="exposed_bones"):
+        MeshImportSettings.from_dict(data)
+    data["exposed_bones"] = []
+    data["skeleton_definition_id"] = ""
+    with pytest.raises(ValueError, match="skeleton_definition_id"):
+        MeshImportSettings.from_dict(data)
+
+
+def test_humanoid_settings_use_sparse_strict_pythonic_overrides():
+    from Infernux.core.asset_types import MeshImportSettings
+    data = MeshImportSettings().to_dict()
+    data["rig_type"] = "humanoid"
+    data["humanoid_bone_overrides"] = {"hips": "mixamorig:Hips", "head": "mixamorig:Head"}
+    settings = MeshImportSettings.from_dict(data)
+    assert settings.rig_type == "humanoid"
+    assert settings.humanoid_bone_overrides == data["humanoid_bone_overrides"]
+    data["humanoid_bone_overrides"] = {"pelvis": "Hips"}
+    with pytest.raises(ValueError, match="humanoid_bone_overrides"):
+        MeshImportSettings.from_dict(data)
+    data["humanoid_bone_overrides"] = {"hips": "Same", "head": "Same"}
+    with pytest.raises(ValueError, match="humanoid_bone_overrides"):
+        MeshImportSettings.from_dict(data)
 
 
 def test_model_data_refresh_preserves_tab_but_selection_change_resets_it(tmp_path, monkeypatch):
@@ -116,6 +157,88 @@ def test_skin_settings_publish_companion_and_reject_empty_weights(engine, tmp_pa
         assert saved.max_bones_per_vertex == 4 and saved.min_bone_weight == 0
     finally:
         registry.invalidate_asset(guid)
+        database.delete_asset(str(source))
+
+
+def test_generic_skeleton_definition_copy_resolves_guid_artifact_and_is_atomic(engine, tmp_path, monkeypatch):
+    """Copy consumes the published definition entity, never a source path."""
+    database = engine.get_asset_database()
+    registry = AssetRegistry.instance()
+    monkeypatch.setattr(AssetManager, "_engine", engine)
+    monkeypatch.setattr(AssetManager, "_asset_database", database)
+    folder = Path(database.assets_root) / tmp_path.name
+    folder.mkdir()
+    fixture = Path(__file__).resolve().parents[2] / "external/assimp/test/models/FBX/animation_with_skeleton.fbx"
+    definition_source, copy_source = folder / "Definition.fbx", folder / "Copy.fbx"
+    definition_source.write_bytes(fixture.read_bytes())
+    copy_source.write_bytes(fixture.read_bytes())
+    definition_import = AssetManager.import_asset(str(definition_source), database=database)
+    copy_import = AssetManager.import_asset(str(copy_source), database=database)
+    assert definition_import and copy_import
+    try:
+        definition_mesh = registry.load_mesh(str(definition_source))
+        identity = definition_mesh.skeleton_definition
+        assert identity["guid"] == definition_import.guid and identity["subresource_id"] == "skeleton"
+        settings = read_mesh_import_settings(str(copy_source))
+        settings.skeleton_definition_mode = "copy"
+        settings.skeleton_definition_guid = identity["guid"]
+        settings.skeleton_definition_id = identity["subresource_id"]
+        settings.rig_root_node = ""
+        result = AssetManager.reimport_asset(str(copy_source), import_settings=settings.to_dict(), database=database)
+        assert result, result.error
+        registry.invalidate_asset(copy_import.guid)
+        copied_mesh = registry.load_mesh(str(copy_source))
+        assert copied_mesh.skeleton_definition == identity
+        assert AssetDependencyGraph.instance().has_dependency(copy_import.guid, identity["guid"])
+
+        sidecar_before = Path(str(copy_source) + ".meta").read_bytes()
+        settings.skeleton_definition_id = "missing"
+        rejected = AssetManager.reimport_asset(str(copy_source), import_settings=settings.to_dict(), database=database)
+        assert not rejected and "Copy skeleton definition" in rejected.error
+        assert Path(str(copy_source) + ".meta").read_bytes() == sidecar_before
+        assert registry.load_mesh(str(copy_source)).skeleton_definition == identity
+    finally:
+        registry.invalidate_asset(definition_import.guid)
+        registry.invalidate_asset(copy_import.guid)
+        database.delete_asset(str(definition_source))
+        database.delete_asset(str(copy_source))
+
+
+def test_humanoid_apply_publishes_runtime_report_and_rejects_bad_override_atomically(
+    engine, tmp_path, monkeypatch,
+):
+    database = engine.get_asset_database()
+    registry = AssetRegistry.instance()
+    monkeypatch.setattr(AssetManager, "_engine", engine)
+    monkeypatch.setattr(AssetManager, "_asset_database", database)
+    source = Path(database.assets_root) / tmp_path.name / "Humanoid.fbx"
+    source.parent.mkdir()
+    fixture = Path(__file__).resolve().parents[2] / "external/assimp/test/models/FBX/animation_with_skeleton.fbx"
+    source.write_bytes(fixture.read_bytes())
+    imported = AssetManager.import_asset(str(source), database=database)
+    assert imported, imported.error
+    try:
+        settings = read_mesh_import_settings(str(source))
+        settings.rig_type = "humanoid"
+        applied = AssetManager.reimport_asset(str(source), import_settings=settings.to_dict(), database=database)
+        assert applied, applied.error
+        registry.invalidate_asset(imported.guid)
+        mesh = registry.load_mesh(str(source))
+        report = mesh.humanoid_rig
+        assert set(report) == {"valid", "required_bones_valid", "hierarchy_valid",
+                               "reference_pose_valid", "mapping", "issues"}
+        assert isinstance(report["mapping"], dict) and isinstance(report["issues"], list)
+        meta = database.get_meta_by_guid(imported.guid).serialize_document()["metadata"]
+        assert json.loads(meta["published_humanoid_rig"]["value"]) == report
+
+        sidecar_before = Path(str(source) + ".meta").read_bytes()
+        settings.humanoid_bone_overrides = {"hips": "node-that-does-not-exist"}
+        rejected = AssetManager.reimport_asset(str(source), import_settings=settings.to_dict(), database=database)
+        assert not rejected and "humanoid override" in rejected.error
+        assert Path(str(source) + ".meta").read_bytes() == sidecar_before
+        assert registry.load_mesh(str(source)).humanoid_rig == report
+    finally:
+        registry.invalidate_asset(imported.guid)
         database.delete_asset(str(source))
 
 

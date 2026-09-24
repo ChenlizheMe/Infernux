@@ -3,8 +3,8 @@
 #include <function/resources/AssetFormatRegistry.h>
 
 #include <function/resources/AssetDependencyGraph.h>
-#include <function/resources/AssetRegistry/AssetRegistry.h>
 #include <function/resources/AssetImporter/ConcreteImporters.h>
+#include <function/resources/AssetRegistry/AssetRegistry.h>
 #include <function/resources/InxMesh/MeshArtifact.h>
 #include <function/resources/InxMesh/MeshImportSettings.h>
 #include <function/resources/InxSkinnedMesh/SkinnedMeshArtifact.h>
@@ -56,7 +56,8 @@ std::function<std::string(const std::string &, bool)> ModelTextureResolver(std::
         if (metadata == snapshot->metas.end() || metadata->second->GetResourceType() != ResourceType::Texture)
             throw std::invalid_argument("model texture path does not identify a Texture asset: " + path);
         if (linear && (!metadata->second->HasKey("srgb") || metadata->second->template GetDataAs<bool>("srgb")))
-            throw std::invalid_argument("model data texture requires linear sampling; disable sRGB in its import settings: " + path);
+            throw std::invalid_argument(
+                "model data texture requires linear sampling; disable sRGB in its import settings: " + path);
         return found->second;
     };
 }
@@ -139,8 +140,8 @@ void ExpandModelSubAssets(Paths &guidToPath, Paths &pathToGuid, Metas &metas, St
                 if (!IsCanonicalAssetGuid(guid) || guid == owner || metas.find(guid) != metas.end())
                     throw std::invalid_argument("model sub-asset identity collides with another asset: " + guid);
                 const auto path = metadata->HasKey("import_document")
-                    ? sourcePath + "::subanim:" + record.at("id").template get<std::string>()
-                    : sourcePath + "::subtex:" + guid;
+                                      ? sourcePath + "::subanim:" + record.at("id").template get<std::string>()
+                                      : sourcePath + "::subtex:" + guid;
                 metadata->UpdateFilePath(path);
                 metadata->AddMetadata("import_owner_guid", owner);
                 guidToPath.emplace(guid, path);
@@ -329,11 +330,12 @@ TakeRuntimeArtifactWrites(std::vector<ImportArtifact::RuntimeCpuArtifact> &artif
         if (!artifact.guid.empty()) {
             if (requestedType != ResourceType::Mesh || artifact.resourceType != ResourceType::Texture ||
                 artifact.kind != ImportArtifact::RuntimeArtifactKind::Primary || artifact.bytes.empty() ||
-                !IsCanonicalAssetGuid(artifact.guid) || artifact.guid == guid || !ownedTextures.insert(artifact.guid).second)
+                !IsCanonicalAssetGuid(artifact.guid) || artifact.guid == guid ||
+                !ownedTextures.insert(artifact.guid).second)
                 throw std::logic_error("Importer produced an invalid owned Texture artifact");
-            writes.push_back({FromFsPath(ToFsPath(projectRoot) /
-                std::filesystem::u8path(RuntimeArtifactRelativePath(artifact.guid, ResourceType::Texture))),
-                std::move(artifact.bytes)});
+            writes.push_back({FromFsPath(ToFsPath(projectRoot) / std::filesystem::u8path(RuntimeArtifactRelativePath(
+                                                                     artifact.guid, ResourceType::Texture))),
+                              std::move(artifact.bytes)});
             continue;
         }
         if (artifact.resourceType != requestedType || artifact.bytes.empty())
@@ -607,7 +609,7 @@ void AssetDatabase::PublishModelSubAssetEvents(const std::shared_ptr<const Query
 {
     for (const auto &[guid, metadata] : m_metas)
         if (metadata->HasKey("import_document") && !AssetDependencyGraph::Instance().HasDependency(
-                guid, metadata->GetDataAs<std::string>("import_owner_guid")))
+                                                       guid, metadata->GetDataAs<std::string>("import_owner_guid")))
             AssetDependencyGraph::Instance().SetAssetDependencies(
                 guid, {metadata->GetDataAs<std::string>("import_owner_guid")});
     if (!previous)
@@ -637,7 +639,8 @@ void AssetDatabase::PublishQuerySnapshotForPaths(const std::vector<std::string> 
         const auto current = m_pathToGuid.find(key);
         const auto old = previous ? previous->pathToGuid.find(key) : m_pathToGuid.end();
         if ((current != m_pathToGuid.end() && m_metas.at(current->second)->HasKey("model_textures")) ||
-            (previous && old != previous->pathToGuid.end() && previous->metas.at(old->second)->HasKey("model_textures"))) {
+            (previous && old != previous->pathToGuid.end() &&
+             previous->metas.at(old->second)->HasKey("model_textures"))) {
             PublishQuerySnapshot();
             return;
         }
@@ -826,8 +829,8 @@ void AssetDatabase::InitializeRuntime(const std::string &projectRoot)
     m_assetTransactionJournalPath = FromFsPath(ToFsPath(m_projectRoot) / "Library" / "AssetRefresh.transaction");
     m_ownerThread = std::this_thread::get_id();
     m_initialized = true;
-    InstallQuerySnapshot(BuildQuerySnapshotArtifact(m_guidToPath, m_pathToGuid, m_metas, m_fileStates,
-                                                    m_queryGeneration + 1, false));
+    InstallQuerySnapshot(
+        BuildQuerySnapshotArtifact(m_guidToPath, m_pathToGuid, m_metas, m_fileStates, m_queryGeneration + 1, false));
 }
 
 void AssetDatabase::AddScanRoot(const std::string &path)
@@ -1100,8 +1103,8 @@ void AssetDatabase::InstallRuntimeAssetCatalog(const std::string &catalogPath, b
 
     // Player has no Project/FileManager panel. Keep GUID/path/metadata queries,
     // but do not expand source-model children over cooked artifact identities.
-    InstallQuerySnapshot(BuildQuerySnapshotArtifact(m_guidToPath, m_pathToGuid, m_metas, m_fileStates,
-                                                     m_queryGeneration + 1, false));
+    InstallQuerySnapshot(
+        BuildQuerySnapshotArtifact(m_guidToPath, m_pathToGuid, m_metas, m_fileStates, m_queryGeneration + 1, false));
     reportPhase("publish_snapshot");
     INXLOG_INFO("AssetDatabase: installed ", entries->size(), " cooked Player asset identities");
 }
@@ -1359,8 +1362,8 @@ bool AssetDatabase::IsRefreshPending() const
 
 void AssetDatabase::WaitForPendingWork() const noexcept
 {
-    if (const auto pending = m_pendingModelReimport; pending && pending->job.IsValid() &&
-        !pending->job.IsComplete() && JobSystem::IsAvailable()) {
+    if (const auto pending = m_pendingModelReimport;
+        pending && pending->job.IsValid() && !pending->job.IsComplete() && JobSystem::IsAvailable()) {
         try {
             JobSystem::Get().WaitPassive(pending->job);
         } catch (...) {
@@ -1465,6 +1468,8 @@ void AssetDatabase::PrepareMetadata(WorkerMetadataPrepare &item)
             metadata.AddMetadata("guid", MakeReadOnlyGuid(item.file.identityKey));
             metadata.AddMetadata("read_only", true);
         }
+        if (metadata.GetResourceType() == ResourceType::Mesh && !previousMetadataLoaded)
+            MeshImportSettings::InitializeDefaults(metadata);
 
         if (metadata.GetGuid().empty())
             throw std::runtime_error("metadata preparation produced an empty GUID");
@@ -2044,7 +2049,8 @@ void AssetDatabase::BeginPendingIndexBuild(const std::shared_ptr<PendingRefreshC
         throw std::logic_error("AssetDatabase index build phase has invalid state");
 
     auto &working = state->stagedWorkingSet;
-    ExpandModelSubAssets(working.guidToPath, working.pathToGuid, working.metas, working.fileStates, working.importResults);
+    ExpandModelSubAssets(working.guidToPath, working.pathToGuid, working.metas, working.fileStates,
+                         working.importResults);
     for (const auto &[guid, metadata] : working.metas)
         if (metadata->HasKey("import_document"))
             state->committedDependencies[guid] = {metadata->GetDataAs<std::string>("import_owner_guid")};
@@ -2312,7 +2318,8 @@ AssetMutationResult AssetDatabase::ReimportAsset(const std::string &path, const 
         result.error = "model Texture reimport requires settings; reimport its owner to refresh source content";
         return result;
     }
-    const auto sourcePath = ownedTexture ? GetPathFromGuid(selected->GetDataAs<std::string>("import_owner_guid")) : path;
+    const auto sourcePath =
+        ownedTexture ? GetPathFromGuid(selected->GetDataAs<std::string>("import_owner_guid")) : path;
     if (!PrepareReimportInput(sourcePath, candidate, result) ||
         !PrepareReimportMetadata(candidate, ownedTexture ? nlohmann::json{} : settings, result))
         return result;
@@ -2424,8 +2431,8 @@ void AssetDatabase::BeginModelReimport(const std::string &path, const nlohmann::
     if (selected && selected->HasKey("import_document"))
         throw std::invalid_argument("model animation clips are edited through their model import settings");
     const auto textureGuid = selected && selected->HasKey("import_owner_guid") ? selected->GetGuid() : std::string{};
-    const auto sourcePath = textureGuid.empty() ? path :
-        GetPathFromGuid(selected->GetDataAs<std::string>("import_owner_guid"));
+    const auto sourcePath =
+        textureGuid.empty() ? path : GetPathFromGuid(selected->GetDataAs<std::string>("import_owner_guid"));
     if (GetResourceTypeForPath(sourcePath) != ResourceType::Mesh || !settings.is_object())
         throw std::invalid_argument("Model Apply requires a model path and settings object");
 
@@ -2436,7 +2443,12 @@ void AssetDatabase::BeginModelReimport(const std::string &path, const nlohmann::
     worker.importer = m_importerRegistry.GetImporterForExtension(FromFsPath(ToFsPath(sourcePath).extension()));
     if (!worker.importer)
         throw std::logic_error("Model Apply has no registered importer");
-    worker.request = MakeImportRequest(pending->result.guid, sourcePath, true, *m_metas.at(pending->result.guid));
+    // Capture any external definition against the settings to be applied by
+    // the worker, while the owner catalog and artifacts are still stable.
+    InxResourceMeta requestMetadata = *m_metas.at(pending->result.guid);
+    if (textureGuid.empty())
+        MeshImportSettings::ApplyPatch(requestMetadata, settings);
+    worker.request = MakeImportRequest(pending->result.guid, sourcePath, true, requestMetadata);
     worker.expectedSource = pending->metadata.file.source;
     pending->settings = settings;
     pending->metadataExists =
@@ -2445,7 +2457,8 @@ void AssetDatabase::BeginModelReimport(const std::string &path, const nlohmann::
         auto &worker = pending->worker;
         worker.producerThread = std::this_thread::get_id();
         try {
-            if (!PrepareReimportMetadata(pending->metadata, textureGuid.empty() ? pending->settings : nlohmann::json{}, pending->result))
+            if (!PrepareReimportMetadata(pending->metadata, textureGuid.empty() ? pending->settings : nlohmann::json{},
+                                         pending->result))
                 throw std::runtime_error(pending->result.error);
             if (!textureGuid.empty())
                 ApplyModelTextureSettings(*pending->metadata.metadata, textureGuid, pending->settings);
@@ -2949,8 +2962,8 @@ bool AssetDatabase::RunImporter(const std::string &guid, const std::string &path
     if (metaIt == m_metas.end() || !metaIt->second)
         throw std::logic_error("AssetDatabase importer request has no metadata snapshot");
 
-    const ImportRequest request = MakeImportRequest(guid, path, isReimport,
-                                                     candidateMetadata ? *candidateMetadata : *metaIt->second);
+    const ImportRequest request =
+        MakeImportRequest(guid, path, isReimport, candidateMetadata ? *candidateMetadata : *metaIt->second);
 
     std::string error;
     try {
@@ -2985,13 +2998,43 @@ ImportRequest AssetDatabase::MakeImportRequest(const std::string &guid, const st
     request.resourceType = GetResourceTypeForPath(path);
     request.metadata = metadata;
     request.isReimport = isReimport;
-    if (request.resourceType == ResourceType::Mesh)
+    if (request.resourceType == ResourceType::Mesh) {
         request.resolveTextureGuid = ModelTextureResolver(LoadQuerySnapshot());
+        const MeshImportSettings settings = MeshImportSettings::Read(metadata);
+        if (settings.skeletonDefinitionMode == "copy") {
+            if (!IsCanonicalAssetGuid(settings.skeletonDefinitionGuid) || settings.skeletonDefinitionGuid == guid)
+                throw std::invalid_argument("copied skeleton definition must reference another mesh asset GUID");
+            const auto definitionMeta = m_metas.find(settings.skeletonDefinitionGuid);
+            const auto definitionPath = m_guidToPath.find(settings.skeletonDefinitionGuid);
+            if (definitionMeta == m_metas.end() || !definitionMeta->second || definitionPath == m_guidToPath.end() ||
+                GetResourceTypeForPath(definitionPath->second) != ResourceType::Mesh ||
+                !definitionMeta->second->HasKey("content_hash"))
+                throw std::invalid_argument("copied skeleton definition asset is unavailable");
+            const std::string artifactPath = GetSkinnedMeshArtifactPath(settings.skeletonDefinitionGuid);
+            std::ifstream stream(ToFsPath(artifactPath), std::ios::binary);
+            if (!stream)
+                throw std::invalid_argument("copied skeleton definition has no current skinned artifact");
+            stream.seekg(0, std::ios::end);
+            const std::streamoff size = stream.tellg();
+            if (size <= 0 || static_cast<uintmax_t>(size) > std::numeric_limits<size_t>::max())
+                throw std::invalid_argument("copied skeleton definition artifact is invalid");
+            stream.seekg(0, std::ios::beg);
+            SkeletonDefinitionSnapshot snapshot;
+            snapshot.ownerGuid = settings.skeletonDefinitionGuid;
+            snapshot.sourceContentHash = definitionMeta->second->GetDataAs<std::string>("content_hash");
+            snapshot.artifactBytes.resize(static_cast<size_t>(size));
+            stream.read(snapshot.artifactBytes.data(), size);
+            if (!stream)
+                throw std::invalid_argument("copied skeleton definition artifact could not be read");
+            request.skeletonDefinition = std::move(snapshot);
+        }
+    }
     return request;
 }
 
 void AssetDatabase::PublishImportArtifact(const ImportRequest &request, ImportArtifact artifact, bool persistMetadata)
 {
+    const auto prepareStart = std::chrono::steady_clock::now();
     const auto &guid = request.guid;
     const auto &path = request.sourcePath;
     const auto metaIt = m_metas.find(guid);
@@ -3199,6 +3242,8 @@ std::string AssetDatabase::CreateOrLoadMetadata(const std::string &filePath, Res
             if (!preservedGuid.empty())
                 metaFile.AddMetadata("guid", preservedGuid);
         }
+        if (type == ResourceType::Mesh)
+            MeshImportSettings::InitializeDefaults(metaFile);
         if (!readOnly && persistMetadata) {
             if (!metaFile.SaveToFile(metaFilePath))
                 throw std::runtime_error("Failed to persist asset metadata: " + metaFilePath);

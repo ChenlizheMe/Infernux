@@ -502,8 +502,11 @@ void MeshCollider::AutoFitToMesh()
 
 void MeshCollider::CaptureMeshGeometry() const
 {
-    CollectMeshGeometry(m_sourceVertices, m_sourceIndices);
-    m_hasGeometrySnapshot = true;
+    // Asset-backed MeshRenderers can publish their GUID before the registry
+    // has resolved the actual mesh. Do not turn that transient state into a
+    // permanent empty snapshot: the next physics safe point must be allowed
+    // to discover the now-ready sibling geometry.
+    m_hasGeometrySnapshot = CollectMeshGeometry(m_sourceVertices, m_sourceIndices);
 }
 
 bool MeshCollider::CollectMeshGeometry(std::vector<glm::vec3> &outVertices, std::vector<uint32_t> &outIndices) const

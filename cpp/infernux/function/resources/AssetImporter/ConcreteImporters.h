@@ -21,8 +21,14 @@ namespace infernux
 class PrefabImporter final : public AssetImporter
 {
   public:
-    [[nodiscard]] ResourceType GetResourceType() const override { return ResourceType::DefaultText; }
-    [[nodiscard]] std::vector<std::string> GetSupportedExtensions() const override { return {".prefab"}; }
+    [[nodiscard]] ResourceType GetResourceType() const override
+    {
+        return ResourceType::DefaultText;
+    }
+    [[nodiscard]] std::vector<std::string> GetSupportedExtensions() const override
+    {
+        return {".prefab"};
+    }
     [[nodiscard]] ImportArtifact Import(const ImportRequest &request) const override;
 };
 
@@ -313,11 +319,6 @@ class ModelImporter final : public AssetImporter
     }
 
     [[nodiscard]] ImportArtifact Import(const ImportRequest &request) const override;
-
-    void EnsureDefaultSettings(InxResourceMeta &meta) const override
-    {
-        MeshImportSettings::EnsureDefaults(meta);
-    }
 };
 
 } // namespace infernux

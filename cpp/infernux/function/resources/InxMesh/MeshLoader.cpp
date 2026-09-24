@@ -48,6 +48,59 @@ glm::vec4 FallbackTangent(const glm::vec3 &normal)
         std::abs(unitNormal.y) < 0.999f ? glm::vec3(0.0f, 1.0f, 0.0f) : glm::vec3(1.0f, 0.0f, 0.0f);
     return glm::vec4(glm::normalize(glm::cross(reference, unitNormal)), 1.0f);
 }
+
+MaterialSamplerAddress ConvertAddressMode(aiTextureMapMode mode)
+{
+    switch (mode) {
+    case aiTextureMapMode_Wrap:
+        return MaterialSamplerAddress::Repeat;
+    case aiTextureMapMode_Clamp:
+        return MaterialSamplerAddress::Clamp;
+    case aiTextureMapMode_Mirror:
+        return MaterialSamplerAddress::Mirror;
+    default:
+        return MaterialSamplerAddress::Inherit;
+    }
+}
+
+void ApplyGltfFilter(int value, MaterialTextureSampler &sampler, bool magnification)
+{
+    if (magnification) {
+        if (value == 9728)
+            sampler.magFilter = MaterialSamplerFilter::Nearest;
+        else if (value == 9729)
+            sampler.magFilter = MaterialSamplerFilter::Linear;
+        else
+            throw std::invalid_argument("unsupported glTF magnification filter: " + std::to_string(value));
+        return;
+    }
+    switch (value) {
+    case 9728:
+        sampler.minFilter = MaterialSamplerFilter::Nearest;
+        break;
+    case 9729:
+        sampler.minFilter = MaterialSamplerFilter::Linear;
+        break;
+    case 9984:
+        sampler.minFilter = MaterialSamplerFilter::Nearest;
+        sampler.mipFilter = MaterialSamplerFilter::Nearest;
+        break;
+    case 9985:
+        sampler.minFilter = MaterialSamplerFilter::Linear;
+        sampler.mipFilter = MaterialSamplerFilter::Nearest;
+        break;
+    case 9986:
+        sampler.minFilter = MaterialSamplerFilter::Nearest;
+        sampler.mipFilter = MaterialSamplerFilter::Linear;
+        break;
+    case 9987:
+        sampler.minFilter = MaterialSamplerFilter::Linear;
+        sampler.mipFilter = MaterialSamplerFilter::Linear;
+        break;
+    default:
+        throw std::invalid_argument("unsupported glTF minification filter: " + std::to_string(value));
+    }
+}
 } // namespace
 
 // ============================================================================
@@ -92,7 +145,8 @@ static void PrepareVertexBasis(const aiScene &scene, const MeshImportSettings &s
                 mesh.mBitangents[vertex] *= -1.0f;
     };
     const auto prepare = [&](auto &mesh) {
-        if (settings.normalMode == "none" || settings.normalMode == "calculate") {
+        if (settings.normalMode == "none" ||
+            (settings.normalMode == "calculate" && settings.normalSmoothingSource != "source")) {
             delete[] mesh.mNormals;
             mesh.mNormals = nullptr;
         }
@@ -142,8 +196,9 @@ static void PrepareVertexBasis(const aiScene &scene, const MeshImportSettings &s
  */
 struct CollectedMesh
 {
-    uint32_t meshIndex; ///< Index into aiScene::mMeshes
-    uint32_t nodeGroup; ///< Source node group (for per-object splitting)
+    uint32_t meshIndex;          ///< Index into aiScene::mMeshes
+    uint32_t nodeGroup;          ///< Source node group (for per-object splitting)
+    glm::mat4 sourceBasis{1.0f}; ///< Root basis baked into root-owned geometry only
 };
 
 static glm::mat4 AiToGlm(const aiMatrix4x4 &m)
@@ -157,16 +212,111 @@ static glm::mat4 AiToGlm(const aiMatrix4x4 &m)
     );
 }
 
+static float ResolveSourceUnitScale(const aiScene &scene, std::string_view extension,
+                                    const MeshImportSettings &settings)
+{
+    if (!settings.convertUnits || extension != "fbx" || !scene.mMetaData)
+        return 1.0f;
+    double centimeters = 0.0;
+    bool found = false;
+    for (unsigned int index = 0; index < scene.mMetaData->mNumProperties; ++index) {
+        if (std::string_view(scene.mMetaData->mKeys[index].C_Str()) != "UnitScaleFactor")
+            continue;
+        const auto &entry = scene.mMetaData->mValues[index];
+        if (entry.mType == AI_FLOAT) {
+            centimeters = *static_cast<const float *>(entry.mData);
+            found = true;
+        } else if (entry.mType == AI_DOUBLE) {
+            centimeters = *static_cast<const double *>(entry.mData);
+            found = true;
+        }
+        break;
+    }
+    if (!found)
+        throw std::runtime_error("FBX model does not declare UnitScaleFactor");
+    if (!std::isfinite(centimeters) || centimeters <= 0.0)
+        throw std::runtime_error("FBX model declares an invalid UnitScaleFactor");
+    const double meters = centimeters / 100.0;
+    if (!std::isfinite(meters) || meters <= 0.0 || meters > std::numeric_limits<float>::max())
+        throw std::runtime_error("FBX model unit conversion is outside the supported range");
+    return static_cast<float>(meters);
+}
+
+static bool ReadNodeVisibility(const aiNode &node)
+{
+    if (!node.mMetaData)
+        return true;
+    for (unsigned int index = 0; index < node.mMetaData->mNumProperties; ++index) {
+        const std::string_view key = node.mMetaData->mKeys[index].C_Str();
+        if (key != "infernux_source_visible" && key != "Visibility" && key != "visibility")
+            continue;
+        const aiMetadataEntry &entry = node.mMetaData->mValues[index];
+        switch (entry.mType) {
+        case AI_BOOL:
+            return *static_cast<const bool *>(entry.mData);
+        case AI_INT32:
+            return *static_cast<const int32_t *>(entry.mData) != 0;
+        case AI_UINT32:
+            return *static_cast<const uint32_t *>(entry.mData) != 0;
+        case AI_INT64:
+            return *static_cast<const int64_t *>(entry.mData) != 0;
+        case AI_UINT64:
+            return *static_cast<const uint64_t *>(entry.mData) != 0;
+        case AI_FLOAT:
+            return *static_cast<const float *>(entry.mData) != 0.0f;
+        case AI_DOUBLE:
+            return *static_cast<const double *>(entry.mData) != 0.0;
+        default:
+            return true;
+        }
+    }
+    return true;
+}
+
+static std::unordered_set<const aiNode *> NonModelNodes(const aiScene &scene)
+{
+    std::unordered_set<const aiNode *> nodes;
+    nodes.reserve(scene.mNumCameras + scene.mNumLights);
+    for (unsigned int index = 0; index < scene.mNumCameras; ++index)
+        if (scene.mCameras[index]) {
+            if (const auto *node = scene.mRootNode->FindNode(scene.mCameras[index]->mName))
+                nodes.insert(node);
+        }
+    for (unsigned int index = 0; index < scene.mNumLights; ++index)
+        if (scene.mLights[index]) {
+            if (const auto *node = scene.mRootNode->FindNode(scene.mLights[index]->mName))
+                nodes.insert(node);
+        }
+    return nodes;
+}
+
 static void CollectMeshes(const aiNode *node, std::vector<CollectedMesh> &outMeshes,
                           std::vector<std::string> &outNodeNames, std::vector<ImportedModelNode> &outNodes,
-                          int32_t parentIndex, float scale)
+                          int32_t parentIndex, float scale, const MeshImportSettings &settings,
+                          const std::unordered_set<const aiNode *> &nonModelNodes,
+                          const glm::mat4 &inheritedTransform = glm::mat4(1.0f), bool inheritedVisible = true,
+                          bool sourceRoot = true)
 {
-    const glm::mat4 localTransform = AiToGlm(node->mTransformation);
+    const glm::mat4 authoredTransform = AiToGlm(node->mTransformation);
+    const bool bakeRootBasis = sourceRoot && settings.bakeAxisConversion;
+    const glm::mat4 localTransform = bakeRootBasis ? glm::mat4(1.0f) : inheritedTransform * authoredTransform;
+    const bool visible = inheritedVisible && (!settings.importVisibility || ReadNodeVisibility(*node));
+    // Cameras and lights are scene-authoring objects, not model nodes in the
+    // current Infernux product boundary. If a DCC placed model descendants
+    // below one, retain their world-equivalent local transform while removing
+    // only the unsupported scene node.
+    if (node->mNumMeshes == 0 && nonModelNodes.find(node) != nonModelNodes.end()) {
+        for (unsigned int index = 0; index < node->mNumChildren; ++index)
+            CollectMeshes(node->mChildren[index], outMeshes, outNodeNames, outNodes, parentIndex, scale, settings,
+                          nonModelNodes, localTransform, visible, false);
+        return;
+    }
     const int32_t nodeIndex = static_cast<int32_t>(outNodes.size());
     ImportedModelNode importedNode;
     importedNode.name = node->mName.C_Str();
     importedNode.parentIndex = parentIndex;
     importedNode.localTransform = localTransform;
+    importedNode.visible = visible;
     // Unit conversion is applied to translations once, not as a scale at
     // every ancestor. Geometry below remains in the existing model space.
     importedNode.localTransform[3] = glm::vec4(glm::vec3(localTransform[3]) * scale, 1.0f);
@@ -176,24 +326,33 @@ static void CollectMeshes(const aiNode *node, std::vector<CollectedMesh> &outMes
         importedNode.nodeGroup = static_cast<int32_t>(group);
         outNodeNames.push_back(node->mName.C_Str());
         for (unsigned int i = 0; i < node->mNumMeshes; ++i) {
-            outMeshes.push_back({node->mMeshes[i], group});
+            outMeshes.push_back({node->mMeshes[i], group, bakeRootBasis ? authoredTransform : glm::mat4(1.0f)});
         }
     }
 
     outNodes.push_back(std::move(importedNode));
 
-    for (unsigned int i = 0; i < node->mNumChildren; ++i) {
-        CollectMeshes(node->mChildren[i], outMeshes, outNodeNames, outNodes, nodeIndex, scale);
-    }
+    std::vector<const aiNode *> children;
+    children.reserve(node->mNumChildren);
+    for (unsigned int index = 0; index < node->mNumChildren; ++index)
+        children.push_back(node->mChildren[index]);
+    if (settings.sortHierarchyByName)
+        std::stable_sort(children.begin(), children.end(), [](const aiNode *left, const aiNode *right) {
+            return std::string_view(left->mName.C_Str()) < std::string_view(right->mName.C_Str());
+        });
+    for (const aiNode *child : children)
+        CollectMeshes(child, outMeshes, outNodeNames, outNodes, nodeIndex, scale, settings, nonModelNodes,
+                      bakeRootBasis ? authoredTransform : glm::mat4(1.0f), visible, false);
 }
 
 // ============================================================================
 // Core conversion: aiScene → InxMesh
 // ============================================================================
 
-static std::shared_ptr<InxMesh> ConvertScene(const aiScene *scene, const MeshImportSettings &settings,
-                                             const std::string &name,
-                                             std::vector<MeshSourceImportResult::TextureSource> &textureSources)
+static std::shared_ptr<InxMesh>
+ConvertScene(const aiScene *scene, const MeshImportSettings &settings, const std::string &name,
+             std::vector<MeshSourceImportResult::TextureSource> &textureSources,
+             std::vector<MeshSourceImportResult::MaterialDiagnostic> &materialDiagnostics)
 {
     auto mesh = std::make_shared<InxMesh>(name);
 
@@ -202,7 +361,9 @@ static std::shared_ptr<InxMesh> ConvertScene(const aiScene *scene, const MeshImp
     std::vector<std::string> nodeNames;
     std::vector<ImportedModelNode> modelNodes;
     collectedMeshes.reserve(scene->mNumMeshes);
-    CollectMeshes(scene->mRootNode, collectedMeshes, nodeNames, modelNodes, -1, settings.scaleFactor);
+    const auto nonModelNodes = NonModelNodes(*scene);
+    CollectMeshes(scene->mRootNode, collectedMeshes, nodeNames, modelNodes, -1, settings.scaleFactor, settings,
+                  nonModelNodes);
 
     if (collectedMeshes.empty()) {
         mesh->SetModelNodes(std::move(modelNodes));
@@ -215,6 +376,8 @@ static std::shared_ptr<InxMesh> ConvertScene(const aiScene *scene, const MeshImp
     uint32_t totalIndices = 0;
     for (const auto &cm : collectedMeshes) {
         const aiMesh *aiM = scene->mMeshes[cm.meshIndex];
+        if (!(aiM->mPrimitiveTypes & aiPrimitiveType_TRIANGLE))
+            continue;
         totalVertices += aiM->mNumVertices;
         for (unsigned int f = 0; f < aiM->mNumFaces; ++f)
             totalIndices += aiM->mFaces[f].mNumIndices;
@@ -223,6 +386,8 @@ static std::shared_ptr<InxMesh> ConvertScene(const aiScene *scene, const MeshImp
     std::vector<Vertex> vertices;
     std::vector<uint32_t> indices;
     std::vector<SubMesh> subMeshes;
+    std::vector<MeshMorphTarget> morphTargets;
+    std::unordered_map<std::string, size_t> morphTargetByName;
     vertices.reserve(totalVertices);
     indices.reserve(totalIndices);
     subMeshes.reserve(collectedMeshes.size());
@@ -257,6 +422,16 @@ static std::shared_ptr<InxMesh> ConvertScene(const aiScene *scene, const MeshImp
         const bool hasTangents = aiM->HasTangentsAndBitangents();
         const bool hasUVs = aiM->HasTextureCoords(0);
         const bool hasColors = aiM->HasVertexColors(0);
+        const glm::mat3 sourceLinear(cm.sourceBasis);
+        const float sourceOrientation = glm::determinant(sourceLinear) < 0.0f ? -1.0f : 1.0f;
+        const glm::mat3 sourceNormals(glm::cross(sourceLinear[1], sourceLinear[2]) * sourceOrientation,
+                                      glm::cross(sourceLinear[2], sourceLinear[0]) * sourceOrientation,
+                                      glm::cross(sourceLinear[0], sourceLinear[1]) * sourceOrientation);
+        const auto normalizeOrZero = [](const glm::vec3 &value) {
+            const float lengthSquared = glm::dot(value, value);
+            return std::isfinite(lengthSquared) && lengthSquared > 1.e-12f ? value * glm::inversesqrt(lengthSquared)
+                                                                           : glm::vec3(0.0f);
+        };
 
         // ── Vertices ────────────────────────────────────────────────
         for (unsigned int v = 0; v < aiM->mNumVertices; ++v) {
@@ -264,14 +439,15 @@ static std::shared_ptr<InxMesh> ConvertScene(const aiScene *scene, const MeshImp
 
             // Retain authored local geometry. Unit conversion is shared with
             // node translations, never baked a second time at each parent.
-            vert.pos = glm::vec3(aiM->mVertices[v].x, aiM->mVertices[v].y, aiM->mVertices[v].z);
+            vert.pos = glm::vec3(cm.sourceBasis *
+                                 glm::vec4(aiM->mVertices[v].x, aiM->mVertices[v].y, aiM->mVertices[v].z, 1.0f));
             if (applyScale)
                 vert.pos *= scale;
 
             // Normal
             if (hasNormals) {
                 glm::vec3 n(aiM->mNormals[v].x, aiM->mNormals[v].y, aiM->mNormals[v].z);
-                vert.normal = n;
+                vert.normal = normalizeOrZero(sourceNormals * n);
             } else
                 vert.normal = glm::vec3(0.0f);
 
@@ -282,21 +458,24 @@ static std::shared_ptr<InxMesh> ConvertScene(const aiScene *scene, const MeshImp
                 glm::vec3 b(aiM->mBitangents[v].x, aiM->mBitangents[v].y, aiM->mBitangents[v].z);
 
                 // Compute handedness: sign of dot(cross(N,T), B)
-                float handedness = (glm::dot(glm::cross(vert.normal, t), b) < 0.0f) ? -1.0f : 1.0f;
-                vert.tangent = glm::vec4(t, handedness);
+                const glm::vec3 sourceNormal(aiM->mNormals[v].x, aiM->mNormals[v].y, aiM->mNormals[v].z);
+                float handedness = (glm::dot(glm::cross(sourceNormal, t), b) < 0.0f) ? -1.0f : 1.0f;
+                vert.tangent = glm::vec4(normalizeOrZero(sourceLinear * t), handedness * sourceOrientation);
             } else if (settings.tangentMode != "none" && settings.tangentMode != "source_only" &&
                        settings.normalMode != "none") {
                 // A source can legitimately omit UVs and tangents while still
                 // using a Lit material with the built-in flat normal texture.
                 // A zero tangent makes the shader's TBN basis undefined and
-                // turns otherwise valid geometry black. Publish a stable
+                // turns otherwise valid geometry black.  Publish a stable
                 // orthogonal frame; authored/calculated tangents still win.
                 vert.tangent = FallbackTangent(vert.normal);
             } else {
                 vert.tangent = glm::vec4(0.0f);
             }
 
-            // UV (channel 0 only for now)
+            // Preserve the authored primary and secondary channels. UV1 is
+            // the runtime lightmap-coordinate contract; missing data remains
+            // explicit zero rather than being guessed from positions.
             if (hasUVs) {
                 vert.texCoord = glm::vec2(aiM->mTextureCoords[0][v].x, aiM->mTextureCoords[0][v].y);
             } else {
@@ -312,6 +491,11 @@ static std::shared_ptr<InxMesh> ConvertScene(const aiScene *scene, const MeshImp
                 else
                     vert.texCoord = glm::vec2(p.x, p.y); // project along Z
             }
+            if (aiM->HasTextureCoords(1))
+                vert.texCoord1 = glm::vec2(aiM->mTextureCoords[1][v].x, aiM->mTextureCoords[1][v].y);
+            if (!std::isfinite(vert.texCoord.x) || !std::isfinite(vert.texCoord.y) ||
+                !std::isfinite(vert.texCoord1.x) || !std::isfinite(vert.texCoord1.y))
+                throw std::runtime_error("model contains non-finite UV coordinates");
 
             // Vertex colour
             if (hasColors) {
@@ -321,6 +505,72 @@ static std::shared_ptr<InxMesh> ConvertScene(const aiScene *scene, const MeshImp
             }
 
             vertices.push_back(vert);
+        }
+
+        if (settings.importBlendShapes) {
+            std::unordered_set<std::string> meshTargetNames;
+            for (unsigned int morphIndex = 0; morphIndex < aiM->mNumAnimMeshes; ++morphIndex) {
+                const aiAnimMesh *sourceTarget = aiM->mAnimMeshes[morphIndex];
+                if (!sourceTarget || sourceTarget->mNumVertices != aiM->mNumVertices)
+                    throw std::runtime_error("model blend shape has an invalid vertex domain");
+                if (!std::isfinite(sourceTarget->mWeight))
+                    throw std::runtime_error("model blend shape has a non-finite default weight");
+                std::string targetName = sourceTarget->mName.C_Str();
+                if (targetName.empty())
+                    targetName = nodeNames.at(cm.nodeGroup) + "/" + std::string(aiM->mName.C_Str()) + "/Morph_" +
+                                 std::to_string(morphIndex);
+                if (!meshTargetNames.insert(targetName).second)
+                    throw std::runtime_error("model mesh contains duplicate blend shape names: " + targetName);
+                auto [found, inserted] = morphTargetByName.emplace(targetName, morphTargets.size());
+                if (inserted) {
+                    MeshMorphTarget target;
+                    target.name = targetName;
+                    target.defaultWeight = static_cast<float>(sourceTarget->mWeight);
+                    target.positionDeltas.resize(totalVertices, glm::vec3(0.0f));
+                    morphTargets.push_back(std::move(target));
+                } else if (std::abs(morphTargets[found->second].defaultWeight -
+                                    static_cast<float>(sourceTarget->mWeight)) > kEpsilon) {
+                    throw std::runtime_error("model blend shape parts disagree on the default weight: " + targetName);
+                }
+                auto &target = morphTargets[found->second];
+                if (sourceTarget->mNormals && target.normalDeltas.empty())
+                    target.normalDeltas.resize(totalVertices, glm::vec3(0.0f));
+                if (sourceTarget->mTangents && target.tangentDeltas.empty())
+                    target.tangentDeltas.resize(totalVertices, glm::vec3(0.0f));
+                for (unsigned int vertexIndex = 0; vertexIndex < aiM->mNumVertices; ++vertexIndex) {
+                    const size_t outputIndex = static_cast<size_t>(currentVertexOffset) + vertexIndex;
+                    if (sourceTarget->mVertices) {
+                        const glm::vec3 targetPosition(sourceTarget->mVertices[vertexIndex].x,
+                                                       sourceTarget->mVertices[vertexIndex].y,
+                                                       sourceTarget->mVertices[vertexIndex].z);
+                        const glm::vec3 basePosition(aiM->mVertices[vertexIndex].x, aiM->mVertices[vertexIndex].y,
+                                                     aiM->mVertices[vertexIndex].z);
+                        target.positionDeltas[outputIndex] = sourceLinear * (targetPosition - basePosition) * scale;
+                    }
+                    if (sourceTarget->mNormals) {
+                        const glm::vec3 targetNormal(sourceTarget->mNormals[vertexIndex].x,
+                                                     sourceTarget->mNormals[vertexIndex].y,
+                                                     sourceTarget->mNormals[vertexIndex].z);
+                        const glm::vec3 baseNormal =
+                            aiM->mNormals ? glm::vec3(aiM->mNormals[vertexIndex].x, aiM->mNormals[vertexIndex].y,
+                                                      aiM->mNormals[vertexIndex].z)
+                                          : glm::vec3(0.0f);
+                        target.normalDeltas[outputIndex] =
+                            normalizeOrZero(sourceNormals * targetNormal) - normalizeOrZero(sourceNormals * baseNormal);
+                    }
+                    if (sourceTarget->mTangents) {
+                        const glm::vec3 targetTangent(sourceTarget->mTangents[vertexIndex].x,
+                                                      sourceTarget->mTangents[vertexIndex].y,
+                                                      sourceTarget->mTangents[vertexIndex].z);
+                        const glm::vec3 baseTangent =
+                            aiM->mTangents ? glm::vec3(aiM->mTangents[vertexIndex].x, aiM->mTangents[vertexIndex].y,
+                                                       aiM->mTangents[vertexIndex].z)
+                                           : glm::vec3(0.0f);
+                        target.tangentDeltas[outputIndex] =
+                            normalizeOrZero(sourceLinear * targetTangent) - normalizeOrZero(sourceLinear * baseTangent);
+                    }
+                }
+            }
         }
 
         // ── Indices ─────────────────────────────────────────────────
@@ -354,16 +604,65 @@ static std::shared_ptr<InxMesh> ConvertScene(const aiScene *scene, const MeshImp
                     slotData.sourceId = "material/" + matName;
 
                 if (settings.materialImportMode != "none" && !settings.materialRemaps.contains(slotData.sourceId)) {
+                    const auto reportMaterialProperty = [&](std::string code, std::string property,
+                                                            std::string detail) {
+                        materialDiagnostics.push_back({std::move(code),
+                                                       matName.empty() ? "Material_" + std::to_string(slot) : matName,
+                                                       std::move(property), std::move(detail)});
+                    };
                     const auto readTexture = [&](aiTextureType semantic, ModelTexture channel) {
                         if (!aiMat->GetTextureCount(semantic))
                             return;
                         aiString texturePath;
+                        aiTextureMapping mapping = aiTextureMapping_UV;
                         unsigned int uvChannel = 0;
-                        if (aiMat->GetTexture(semantic, 0, &texturePath, nullptr, &uvChannel) != AI_SUCCESS)
+                        ai_real blend = 1.0f;
+                        aiTextureOp operation = aiTextureOp_Multiply;
+                        aiTextureMapMode addressModes[3] = {aiTextureMapMode_Wrap, aiTextureMapMode_Wrap,
+                                                            aiTextureMapMode_Wrap};
+                        if (aiMat->GetTexture(semantic, 0, &texturePath, &mapping, &uvChannel, &blend, &operation,
+                                              addressModes) != AI_SUCCESS)
                             throw std::runtime_error("model material texture could not be read");
+                        const std::string property = std::string("texture/") + aiTextureTypeToString(semantic);
+                        if (mapping != aiTextureMapping_UV) {
+                            reportMaterialProperty("unsupported_texture_mapping", property,
+                                                   std::to_string(static_cast<int>(mapping)));
+                            return;
+                        }
+                        if (uvChannel > 1) {
+                            reportMaterialProperty("unsupported_uv_set", property, std::to_string(uvChannel));
+                            return;
+                        }
+                        if (std::abs(blend - 1.0f) > kEpsilon)
+                            reportMaterialProperty("unsupported_texture_blend", property, std::to_string(blend));
+                        if (operation != aiTextureOp_Multiply)
+                            reportMaterialProperty("unsupported_texture_operation", property,
+                                                   std::to_string(static_cast<int>(operation)));
+                        if (addressModes[0] == aiTextureMapMode_Decal || addressModes[1] == aiTextureMapMode_Decal ||
+                            addressModes[2] == aiTextureMapMode_Decal)
+                            reportMaterialProperty("unsupported_sampler_address", property,
+                                                   std::to_string(static_cast<int>(addressModes[0])) + "," +
+                                                       std::to_string(static_cast<int>(addressModes[1])) + "," +
+                                                       std::to_string(static_cast<int>(addressModes[2])));
+                        aiUVTransform transform;
+                        if (aiMat->Get(AI_MATKEY_UVTRANSFORM(semantic, 0), transform) == AI_SUCCESS &&
+                            (glm::length(glm::vec2(transform.mTranslation.x, transform.mTranslation.y)) > kEpsilon ||
+                             glm::length(glm::vec2(transform.mScaling.x - 1.0f, transform.mScaling.y - 1.0f)) >
+                                 kEpsilon ||
+                             std::abs(transform.mRotation) > kEpsilon))
+                            reportMaterialProperty("unsupported_uv_transform", property, "source transform");
+                        for (unsigned int layer = 1; layer < aiMat->GetTextureCount(semantic); ++layer)
+                            reportMaterialProperty("unsupported_texture_layer", property, std::to_string(layer));
                         if (texturePath.length) {
-                            if (uvChannel != 0)
-                                throw std::invalid_argument("model material texture currently requires UV channel 0");
+                            MaterialTextureSampler sampler;
+                            sampler.addressU = ConvertAddressMode(addressModes[0]);
+                            sampler.addressV = ConvertAddressMode(addressModes[1]);
+                            sampler.addressW = ConvertAddressMode(addressModes[2]);
+                            int filter = 0;
+                            if (aiMat->Get(AI_MATKEY_GLTF_MAPPINGFILTER_MAG(semantic, 0), filter) == AI_SUCCESS)
+                                ApplyGltfFilter(filter, sampler, true);
+                            if (aiMat->Get(AI_MATKEY_GLTF_MAPPINGFILTER_MIN(semantic, 0), filter) == AI_SUCCESS)
+                                ApplyGltfFilter(filter, sampler, false);
                             int32_t embeddedIndex = -1;
                             if (const auto *image = scene->GetEmbeddedTexture(texturePath.C_Str())) {
                                 for (unsigned int index = 0; index < scene->mNumTextures; ++index)
@@ -372,21 +671,50 @@ static std::shared_ptr<InxMesh> ConvertScene(const aiScene *scene, const MeshImp
                                         break;
                                     }
                             }
-                            textureSources.push_back(
-                                {slot, texturePath.C_Str(), static_cast<uint32_t>(channel), embeddedIndex});
+                            textureSources.push_back({slot, texturePath.C_Str(), static_cast<uint32_t>(channel),
+                                                      embeddedIndex, static_cast<uint8_t>(uvChannel), sampler});
                         }
                     };
                     readTexture(aiMat->GetTextureCount(aiTextureType_BASE_COLOR) ? aiTextureType_BASE_COLOR
                                                                                  : aiTextureType_DIFFUSE,
                                 ModelTexture::BaseColor);
-                    readTexture(aiTextureType_NORMALS, ModelTexture::Normal);
-                    readTexture(aiTextureType_METALNESS, ModelTexture::Metallic);
-                    readTexture(aiTextureType_DIFFUSE_ROUGHNESS, ModelTexture::Roughness);
+                    readTexture(aiMat->GetTextureCount(aiTextureType_NORMALS) ? aiTextureType_NORMALS
+                                                                              : aiTextureType_NORMAL_CAMERA,
+                                ModelTexture::Normal);
+                    readTexture(aiMat->GetTextureCount(aiTextureType_METALNESS) ? aiTextureType_METALNESS
+                                                                                : aiTextureType_GLTF_METALLIC_ROUGHNESS,
+                                ModelTexture::Metallic);
+                    readTexture(aiMat->GetTextureCount(aiTextureType_DIFFUSE_ROUGHNESS)
+                                    ? aiTextureType_DIFFUSE_ROUGHNESS
+                                    : aiTextureType_GLTF_METALLIC_ROUGHNESS,
+                                ModelTexture::Roughness);
                     readTexture(aiMat->GetTextureCount(aiTextureType_AMBIENT_OCCLUSION)
                                     ? aiTextureType_AMBIENT_OCCLUSION
                                     : aiTextureType_LIGHTMAP,
                                 ModelTexture::Occlusion);
-                    readTexture(aiTextureType_EMISSIVE, ModelTexture::Emission);
+                    readTexture(aiMat->GetTextureCount(aiTextureType_EMISSION_COLOR) ? aiTextureType_EMISSION_COLOR
+                                                                                     : aiTextureType_EMISSIVE,
+                                ModelTexture::Emission);
+                    const std::unordered_set<unsigned int> mappedTextureTypes = {aiTextureType_DIFFUSE,
+                                                                                 aiTextureType_EMISSIVE,
+                                                                                 aiTextureType_LIGHTMAP,
+                                                                                 aiTextureType_BASE_COLOR,
+                                                                                 aiTextureType_NORMALS,
+                                                                                 aiTextureType_NORMAL_CAMERA,
+                                                                                 aiTextureType_EMISSION_COLOR,
+                                                                                 aiTextureType_METALNESS,
+                                                                                 aiTextureType_DIFFUSE_ROUGHNESS,
+                                                                                 aiTextureType_AMBIENT_OCCLUSION,
+                                                                                 aiTextureType_GLTF_METALLIC_ROUGHNESS};
+                    for (unsigned int textureType = 1; textureType <= AI_TEXTURE_TYPE_MAX; ++textureType) {
+                        if (mappedTextureTypes.find(textureType) != mappedTextureTypes.end())
+                            continue;
+                        const auto semantic = static_cast<aiTextureType>(textureType);
+                        for (unsigned int layer = 0; layer < aiMat->GetTextureCount(semantic); ++layer)
+                            reportMaterialProperty("unsupported_texture_semantic",
+                                                   std::string("texture/") + aiTextureTypeToString(semantic),
+                                                   std::to_string(layer));
+                    }
                     aiString packedTexture;
                     slotData.packedMetallicRoughness =
                         aiMat->GetTexture(AI_MATKEY_GLTF_PBRMETALLICROUGHNESS_METALLICROUGHNESS_TEXTURE,
@@ -452,6 +780,16 @@ static std::shared_ptr<InxMesh> ConvertScene(const aiScene *scene, const MeshImp
             materialSlotDataVec.push_back(slotData);
         }
 
+        for (const auto &texture : textureSources) {
+            // UV0 has a defined zero-filled representation in Vertex and has
+            // historically been legal on unwrapped meshes. Secondary UVs are
+            // opt-in authored data and must exist when a material selects one.
+            if (texture.materialSlot == slot && texture.uvSet != 0 && !aiM->HasTextureCoords(texture.uvSet))
+                throw std::invalid_argument("model material selects UV" + std::to_string(texture.uvSet) +
+                                            " but mesh '" + std::string(aiM->mName.C_Str()) +
+                                            "' does not provide that channel");
+        }
+
         // ── SubMesh ─────────────────────────────────────────────────
         SubMesh sub;
         sub.indexStart = submeshIndexStart;
@@ -495,7 +833,8 @@ static std::shared_ptr<InxMesh> ConvertScene(const aiScene *scene, const MeshImp
     mesh->SetMaterialSlotNames(std::move(materialSlotNames));
     mesh->SetMaterialSlotData(std::move(materialSlotDataVec));
     mesh->SetNodeNames(std::move(nodeNames));
-    mesh->SetModelData(std::move(vertices), std::move(indices), std::move(subMeshes), std::move(modelNodes));
+    mesh->SetModelData(std::move(vertices), std::move(indices), std::move(subMeshes), std::move(modelNodes),
+                       std::move(morphTargets));
 
     return mesh;
 }
@@ -505,7 +844,8 @@ static std::shared_ptr<InxMesh> ConvertScene(const aiScene *scene, const MeshImp
 // ============================================================================
 
 MeshSourceImportResult MeshLoader::ImportSourceDetailed(const std::string &filePath, const std::string &guid,
-                                                        const InxResourceMeta &metadata)
+                                                        const InxResourceMeta &metadata,
+                                                        const InxSkinnedMesh *copiedDefinition)
 {
     auto fsPath = ToFsPath(filePath);
     if (!std::filesystem::is_regular_file(fsPath))
@@ -524,6 +864,13 @@ MeshSourceImportResult MeshLoader::ImportSourceDetailed(const std::string &fileP
         throw std::runtime_error("MeshLoader failed to read source file: " + filePath);
 
     MeshImportSettings settings = MeshImportSettings::Read(metadata);
+    const MeshCompression compression = settings.meshCompression == "low"      ? MeshCompression::Low
+                                        : settings.meshCompression == "medium" ? MeshCompression::Medium
+                                        : settings.meshCompression == "high"   ? MeshCompression::High
+                                                                               : MeshCompression::Off;
+    const MeshIndexFormat indexFormat = settings.indexFormat == "uint16"   ? MeshIndexFormat::UInt16
+                                        : settings.indexFormat == "uint32" ? MeshIndexFormat::UInt32
+                                                                           : MeshIndexFormat::Auto;
     unsigned int flags = BuildAssimpFlags(settings);
 
     // Derive extension hint for Assimp (e.g. "fbx")
@@ -540,6 +887,10 @@ MeshSourceImportResult MeshLoader::ImportSourceDetailed(const std::string &fileP
             throw std::invalid_argument("material import remaps require a source model, not an authored .inxmesh");
         MeshSourceImportResult result;
         result.mesh = MeshArtifact::DeserializeSource(std::string_view(fileData.data(), fileData.size()));
+        (void)ResolveMeshIndexFormat(indexFormat, result.mesh->GetVertexCount(), result.mesh->GetIndices());
+        result.mesh->SetIndexFormat(indexFormat);
+        result.mesh->SetCompression(compression);
+        result.mesh->SetCpuReadable(settings.isReadable);
         result.mesh->SetGuid(guid);
         result.mesh->SetFilePath(filePath);
         result.meshCount = result.mesh->GetSubMeshCount();
@@ -575,9 +926,23 @@ MeshSourceImportResult MeshLoader::ImportSourceDetailed(const std::string &fileP
         throw std::runtime_error("MeshLoader Assimp import failed for '" + filePath +
                                  "': " + importer.GetErrorString());
 
+    const float sourceUnitScale = ResolveSourceUnitScale(*scene, ext, settings);
+    MeshImportSettings conversionSettings = settings;
+    conversionSettings.scaleFactor *= sourceUnitScale;
+    if (!std::isfinite(conversionSettings.scaleFactor) || conversionSettings.scaleFactor <= 0.0f)
+        throw std::runtime_error("model effective import scale is outside the supported range");
+
     std::string name = FromFsPath(fsPath.stem());
     MeshSourceImportResult result;
-    auto mesh = ConvertScene(scene, settings, name, result.textureSources);
+    result.sourceUnitScale = sourceUnitScale;
+    result.effectiveScale = conversionSettings.scaleFactor;
+    auto mesh = ConvertScene(scene, conversionSettings, name, result.textureSources, result.materialDiagnostics);
+    mesh->SetCompression(compression);
+    mesh->SetCpuReadable(settings.isReadable);
+    // Validate explicit UInt16 atomically at import publication. Auto remains
+    // a policy until Cook/GPU publication resolves it from this geometry.
+    (void)ResolveMeshIndexFormat(indexFormat, mesh->GetVertexCount(), mesh->GetIndices());
+    mesh->SetIndexFormat(indexFormat);
     result.embeddedImages.resize(scene->mNumTextures);
     std::unordered_map<std::string, size_t> imageNameCounts;
     for (unsigned int index = 0; index < scene->mNumTextures; ++index)
@@ -654,11 +1019,19 @@ MeshSourceImportResult MeshLoader::ImportSourceDetailed(const std::string &fileP
     // Animation-only FBX files are first-class sources: their skeleton and
     // tracks can drive a compatible render model even when they have no mesh.
     if (settings.rigType != "none" && SkinnedModelImporter::HasSkinningData(*scene, settings.importAnimations))
-        result.skinnedMesh =
-            SkinnedModelImporter::ConvertScene(*scene, guid, filePath, settings.scaleFactor, settings.importAnimations,
-                                               settings.maxBonesPerVertex, settings.minBoneWeight);
+        result.skinnedMesh = SkinnedModelImporter::ConvertScene(
+            *scene, guid, filePath, conversionSettings.scaleFactor, settings.importAnimations,
+            settings.maxBonesPerVertex, settings.minBoneWeight,
+            settings.tangentMode != "none" && settings.normalMode != "none" &&
+                !(settings.normalMode == "calculate" && settings.tangentMode == "source_only"),
+            settings.importBlendShapes, settings.bakeAxisConversion);
     if (result.skinnedMesh) {
+        result.skinnedMesh->compression = compression;
+        (void)ResolveMeshIndexFormat(indexFormat, result.skinnedMesh->baseVertices.size(), result.skinnedMesh->indices);
+        result.skinnedMesh->indexFormat = indexFormat;
         SkinnedModelImporter::ApplyAnimationClips(*result.skinnedMesh, settings);
+        SkinnedModelImporter::ApplyRigSettings(*result.skinnedMesh, settings, copiedDefinition);
+        SkinnedModelImporter::ApplyAnimationSettings(*result.skinnedMesh, settings);
         if (!result.skinnedMesh->IsAssetPayloadValid())
             result.skinnedMesh.reset();
     }

@@ -8,6 +8,7 @@ state and pushing playback time to native code for an upcoming skinning path.
 
 from __future__ import annotations
 
+import math
 from typing import Dict, Optional
 
 from Infernux.components.component import InxComponent
@@ -64,6 +65,16 @@ def _clip_duration_hint(clip: Optional[AnimationClip3D]) -> float:
     return max(float(clip.duration_hint), 0.0)
 
 
+def _clip_should_loop(state: Optional[AnimState], clip: Optional[AnimationClip3D]) -> bool:
+    """Combine the imported clip contract with the FSM's stop override."""
+    imported = bool(getattr(clip, "default_loop", True)) if clip is not None else True
+    return imported and (bool(state.loop) if state is not None else True)
+
+
+def _clip_bone_mask(clip: Optional[AnimationClip3D]) -> list[str]:
+    return list(getattr(clip, "bone_mask", ()) or ()) if clip is not None else []
+
+
 # When importer/meta leaves duration unknown (e.g. embedded FBX takes), use this for
 # normalized_time and looping so native/runtime hooks see monotonic [0,1) progress.
 _DEFAULT_PLAYBACK_SEC_WHEN_UNKNOWN_DURATION = 1.0
@@ -98,6 +109,7 @@ class SkeletalAnimator(InxComponent):
     )
 
     _parameters: Dict[str, object] = {}
+    _curve_values: Dict[str, float] = {}
 
     _fsm: Optional[AnimStateMachine] = None
     _skinned_renderer: Optional[SkinnedMeshRenderer] = None
@@ -123,6 +135,7 @@ class SkeletalAnimator(InxComponent):
 
     def awake(self):
         self._parameters = {}
+        self._curve_values = {}
         self._clip_cache = {}
         self._duration_cache = {}
         self._timeline_cache = {}
@@ -166,17 +179,20 @@ class SkeletalAnimator(InxComponent):
         state = self._get_current_state()
         clip = self._current_clip
         speed = self.playback_speed * (state.speed if state else 1.0)
+        previous_elapsed = self._elapsed
         self._elapsed += delta_time * speed
         self._advance_blend(delta_time)
 
         prev_norm = getattr(self, "_prev_event_norm", 0.0)
         duration = self._clip_duration(clip)
         if duration > 0.0 and self._elapsed >= duration:
-            should_loop = state.loop if state else True
+            should_loop = _clip_should_loop(state, clip)
+            self._apply_imported_root_motion(clip, previous_elapsed, self._elapsed, should_loop)
             if should_loop:
                 post = self._elapsed % duration
                 post_norm = post / duration
-                self._dispatch_clip_events(clip, prev_norm, post_norm, True)
+                wrap_count = max(1, math.floor(self._elapsed / duration))
+                self._dispatch_clip_events_wrapped(clip, prev_norm, post_norm, wrap_count)
                 self._prev_event_norm = post_norm
                 self._try_auto_transition()
                 if self._current_clip is clip and self._playing:
@@ -186,17 +202,44 @@ class SkeletalAnimator(InxComponent):
                 self._dispatch_clip_events(clip, prev_norm, 1.0, False)
                 self._prev_event_norm = 1.0
                 self._playing = False
+                self._sample_imported_curves(clip, 1.0)
                 self._try_auto_transition()
                 self._sync_native_runtime_playback()
                 return
         else:
+            self._apply_imported_root_motion(clip, previous_elapsed, self._elapsed, _clip_should_loop(state, clip))
             curr_norm = (self._elapsed / duration) if duration > 0.0 else 0.0
             self._dispatch_clip_events(clip, prev_norm, curr_norm, False)
             self._prev_event_norm = curr_norm
 
+        self._sample_imported_curves(clip, self.normalized_time)
+
         self._apply_active_take()
         self._try_auto_transition()
         self._sync_native_runtime_playback()
+
+    def _apply_imported_root_motion(
+        self, clip: AnimationClip3D, previous_time: float, current_time: float, loop: bool,
+    ) -> None:
+        if not bool(getattr(clip, "apply_root_motion", False)) or current_time == previous_time:
+            return
+        renderers = self._resolve_skinned_renderers()
+        if not renderers:
+            return
+        getter = getattr(renderers[0], "_get_bound_native_component", None)
+        cpp = getter() if callable(getter) else getattr(renderers[0], "_cpp_component", None)
+        if cpp is None:
+            return
+        translation, rotation = cpp.get_root_motion_delta(
+            self.current_take_name,
+            float(previous_time),
+            float(current_time),
+            bool(loop),
+            _animation_source_guid(clip),
+        )
+        transform = self.game_object.transform
+        transform.translate_local(translation)
+        transform.local_rotation = transform.local_rotation * rotation
 
     def _dispatch_clip_events(self, clip, prev_norm: float, curr_norm: float, looped: bool):
         """Fire any animation events on *clip* crossed this frame."""
@@ -208,6 +251,24 @@ class SkeletalAnimator(InxComponent):
             dispatch_animation_events(self.game_object, events, prev_norm, curr_norm, looped)
         except Exception as exc:
             Debug.log_warning(f"[SkeletalAnimator] event dispatch error: {exc}")
+
+    def _dispatch_clip_events_wrapped(
+        self, clip, prev_norm: float, curr_norm: float, wrap_count: int,
+    ) -> None:
+        """Dispatch every crossed occurrence, including multiple wraps in one update."""
+        self._dispatch_clip_events(clip, prev_norm, curr_norm, True)
+        for _ in range(max(int(wrap_count) - 1, 0)):
+            # (1, 1] with looped=True denotes one complete additional cycle
+            # and includes normalized-time zero exactly once.
+            self._dispatch_clip_events(clip, 1.0, 1.0, True)
+
+    def _sample_imported_curves(self, clip: Optional[AnimationClip3D], normalized_time: float) -> None:
+        curves = getattr(clip, "curves", ()) if clip is not None else ()
+        self._curve_values = {curve.name: float(curve.sample(normalized_time)) for curve in curves}
+
+    def get_curve_value(self, name: str, default: float = 0.0) -> float:
+        """Return the current value of an import-authored scalar curve."""
+        return float(self._curve_values.get(str(name), default))
 
     @property
     def current_state(self) -> str:
@@ -284,6 +345,10 @@ class SkeletalAnimator(InxComponent):
         self._parameters[name] = bool(value)
 
     def get_float(self, name: str) -> float:
+        # Unity-compatible imported float curves drive Animator float
+        # parameters while their clip is active.
+        if name in self._curve_values:
+            return float(self._curve_values[name])
         return float(self._parameters.get(name, 0.0))
 
     def set_float(self, name: str, value: float):
@@ -312,6 +377,7 @@ class SkeletalAnimator(InxComponent):
         self._last_native_take_name = ""
         self._last_native_pose_key = None
         self._parameters = {}
+        self._curve_values = {}
         self._clear_blend_state()
 
     def _load_controller(self):
@@ -353,10 +419,10 @@ class SkeletalAnimator(InxComponent):
             if clip is None:
                 Debug.log_warning(f"[SkeletalAnimator] Failed to load clip for state '{state.name}': {clip_path}")
         else:
-            if state.clip_guid or state.clip_path:
+            if state.clip_guid:
                 Debug.log_warning(
                     f"[SkeletalAnimator] Clip not found for state '{state.name}' "
-                    f"(guid='{state.clip_guid}', path='{state.clip_path}')"
+                    f"(guid='{state.clip_guid}')"
                 )
         self._clip_cache[key] = clip
         return clip
@@ -466,7 +532,7 @@ class SkeletalAnimator(InxComponent):
         if not take_a and not take_b:
             return False
         lerp = self._blend_state_lerp(state)
-        loop = bool(getattr(state, "loop", True))
+        loop = _clip_should_loop(state, clip_a)
         t = float(self._elapsed)
         normalized = float(self.normalized_time)
 
@@ -474,7 +540,8 @@ class SkeletalAnimator(InxComponent):
         if not native_renderers:
             return False
         if take_a and take_b:
-            pose_key = ("stack", self._playing, take_a, source_a, take_b, source_b, t, lerp, loop)
+            pose_key = ("stack", self._playing, take_a, source_a, take_b, source_b, t, lerp, loop,
+                        tuple(_clip_bone_mask(clip_a)), tuple(_clip_bone_mask(clip_b)))
             if pose_key == self._last_native_pose_key:
                 return True
             layers = [
@@ -483,6 +550,10 @@ class SkeletalAnimator(InxComponent):
                 {"take_name": take_b, "source_model_guid": source_b,
                  "time": t, "weight": lerp, "loop": loop},
             ]
+            for layer, clip in zip(layers, (clip_a, clip_b)):
+                mask = _clip_bone_mask(clip)
+                if mask:
+                    layer["bone_mask"] = mask
             for cpp in native_renderers:
                 cpp.submit_pose_stack(layers)
             self._last_native_take_name = take_a
@@ -492,21 +563,34 @@ class SkeletalAnimator(InxComponent):
         pose_key = (
             "blend", self._playing, take_a or take_b, t, normalized,
             "", 0.0, 0.0, loop, source_a if take_a else source_b, "",
+            tuple(_clip_bone_mask(clip_a if take_a else clip_b)),
         )
         if pose_key == self._last_native_pose_key:
             return True
+        active_clip = clip_a if take_a else clip_b
+        mask = _clip_bone_mask(active_clip)
         for cpp in native_renderers:
-            cpp.submit_animation_pose(
-                take_a or take_b,
-                t,
-                normalized,
-                "",
-                0.0,
-                0.0,
-                loop,
-                source_a if take_a else source_b,
-                "",
-            )
+            if mask:
+                cpp.submit_pose_stack([{
+                    "take_name": take_a or take_b,
+                    "source_model_guid": source_a if take_a else source_b,
+                    "time": t,
+                    "weight": 1.0,
+                    "loop": loop,
+                    "bone_mask": mask,
+                }])
+            else:
+                cpp.submit_animation_pose(
+                    take_a or take_b,
+                    t,
+                    normalized,
+                    "",
+                    0.0,
+                    0.0,
+                    loop,
+                    source_a if take_a else source_b,
+                    "",
+                )
         self._last_native_take_name = take_a or take_b
         self._last_native_pose_key = pose_key
         return True
@@ -567,6 +651,7 @@ class SkeletalAnimator(InxComponent):
         self._elapsed = next_elapsed
         self._prev_event_norm = (next_elapsed / self._clip_duration(clip)) if next_elapsed > 0.0 else 0.0
         self._playing = True
+        self._sample_imported_curves(clip, self.normalized_time)
         self._apply_active_take()
         self._sync_native_runtime_playback()
         return True
@@ -734,7 +819,7 @@ class SkeletalAnimator(InxComponent):
         take_name = self.current_take_name if has_clip else ""
         source_guid = _animation_source_guid(self._current_clip) if take_name else ""
         state = self._get_current_state()
-        loop = bool(state.loop) if state is not None else True
+        loop = _clip_should_loop(state, self._current_clip)
         normalized = float(self.normalized_time) if take_name else 0.0
         blend_take = ""
         blend_time = 0.0
@@ -745,24 +830,39 @@ class SkeletalAnimator(InxComponent):
             blend_time = float(self._blend_from_elapsed)
             blend_weight = float(1.0 - progress)
         blend_source_guid = _animation_source_guid(self._blend_from_clip) if blend_take else ""
+        current_mask = _clip_bone_mask(self._current_clip)
+        blend_mask = _clip_bone_mask(self._blend_from_clip) if blend_take else []
         pose_key = (
             "clip", self._playing, take_name, float(self._elapsed), normalized,
             blend_take, blend_time, blend_weight, loop, source_guid, blend_source_guid,
+            tuple(current_mask), tuple(blend_mask),
         )
         if pose_key == self._last_native_pose_key:
             return
         for cpp in native_renderers:
-            cpp.submit_animation_pose(
-                take_name,
-                float(self._elapsed) if take_name else 0.0,
-                normalized,
-                blend_take,
-                blend_time,
-                blend_weight,
-                loop,
-                source_guid,
-                blend_source_guid,
-            )
+            if current_mask or blend_mask:
+                layers = []
+                if blend_take and blend_weight > 0.0:
+                    layers.append({"take_name": blend_take, "source_model_guid": blend_source_guid,
+                                   "time": blend_time, "weight": blend_weight, "loop": loop,
+                                   "bone_mask": blend_mask})
+                if take_name:
+                    layers.append({"take_name": take_name, "source_model_guid": source_guid,
+                                   "time": float(self._elapsed), "weight": 1.0 - blend_weight,
+                                   "loop": loop, "bone_mask": current_mask})
+                cpp.submit_pose_stack(layers)
+            else:
+                cpp.submit_animation_pose(
+                    take_name,
+                    float(self._elapsed) if take_name else 0.0,
+                    normalized,
+                    blend_take,
+                    blend_time,
+                    blend_weight,
+                    loop,
+                    source_guid,
+                    blend_source_guid,
+                )
         self._last_native_take_name = take_name
         self._last_native_pose_key = pose_key
 
@@ -810,7 +910,7 @@ class SkeletalAnimator(InxComponent):
             if duration <= 0.0:
                 return False
             state = self._get_current_state()
-            should_loop = state.loop if state else True
+            should_loop = _clip_should_loop(state, self._current_clip)
             if self._current_clip and not should_loop:
                 return self._elapsed >= duration
             return False

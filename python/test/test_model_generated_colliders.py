@@ -24,12 +24,14 @@ def test_collider_option_defaults_validation_and_model_page():
     from Infernux.engine.ui import asset_details_renderer as renderer
     settings = MeshImportSettings()
     assert not settings.generate_colliders
-    old = settings.to_dict()
-    del old['generate_colliders']
-    assert not MeshImportSettings.from_dict(old).generate_colliders
+    current = settings.to_dict()
+    incomplete = dict(current)
+    del incomplete['generate_colliders']
+    with pytest.raises(ValueError, match='complete current field set'):
+        MeshImportSettings.from_dict(incomplete)
     for value in (1, 'true', None):
         with pytest.raises(TypeError, match='generate_colliders'):
-            MeshImportSettings.from_dict({**old, 'generate_colliders': value})
+            MeshImportSettings.from_dict({**current, 'generate_colliders': value})
     renderer._ensure_categories()
     field = next(f for f in renderer._categories['mesh'].editable_fields if f.key == 'generate_colliders')
     assert field.page == 'model'
@@ -69,6 +71,41 @@ def test_static_colliders_preserve_selection_transform_and_scene_roundtrip(scene
     assert descendants(restored)['Upper'].get_component('MeshCollider')
     Physics.sync_transforms()
     assert Physics.raycast(Vector3(*(point + [20, 0, 5])), Vector3(0, 0, -1), 10) is not None
+
+
+def test_model_collider_rebinds_after_renderer_deserializes_last(
+        scene, hierarchy_asset, engine, monkeypatch):
+    """MeshCollider must use the renderer's selected model node, not load order.
+
+    Scene documents are user-editable and component order is not a contract.
+    Keep the generated collider before MeshRenderer in the serialized record to
+    exercise the cold-load path that previously left the collider uncooked (or
+    cooked against the complete source model).
+    """
+    database, source, guid = hierarchy_asset
+    enable_colliders(engine, monkeypatch, database, source)
+    root = scene.create_from_model(guid, 'Reversed component order')
+    document = scene.serialize_document()
+
+    def visit(node):
+        components = node.get('components') or []
+        if any(item.get('type_id') == 'native:infernux.MeshRenderer' for item in components):
+            node['components'] = sorted(
+                components,
+                key=lambda item: item.get('type_id') != 'native:infernux.MeshCollider',
+            )
+        for child in node.get('children') or []:
+            visit(child)
+
+    for node in document.get('objects') or []:
+        visit(node)
+    assert scene._commit_document(document)
+    Physics.sync_transforms()
+    restored = next(obj for obj in scene.get_root_objects() if obj.name == 'Reversed component order')
+    for obj in (restored, *descendants(restored).values()):
+        collider = obj.get_component('MeshCollider')
+        if collider is not None:
+            assert not collider.shape_error
 
 
 @pytest.mark.parametrize('child_only', [False, True])

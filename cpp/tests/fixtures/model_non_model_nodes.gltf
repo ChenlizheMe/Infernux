@@ -1,13 +1,21 @@
 {
-  "asset": {"version": "2.0", "generator": "Infernux model hierarchy regression"},
+  "asset": {"version": "2.0", "generator": "Infernux model node boundary regression"},
+  "extensionsUsed": ["KHR_lights_punctual"],
+  "extensions": {
+    "KHR_lights_punctual": {
+      "lights": [{"name": "Source Light", "type": "point"}]
+    }
+  },
+  "cameras": [
+    {"name": "Source Camera", "type": "perspective", "perspective": {"yfov": 0.7, "znear": 0.1}}
+  ],
   "scene": 0,
   "scenes": [{"nodes": [0]}],
   "nodes": [
-    {"name": "Assembly", "translation": [2, 3, 4], "children": [1]},
-    {"name": "Empty pivot", "translation": [0, 5, 0], "scale": [-2, 3, 1], "children": [2, 3]},
-    {"name": "Upper", "translation": [1, 0, 0], "mesh": 0},
-    {"name": "Lower", "translation": [0, 0, 2], "rotation": [0, 0, 0.7071067811865476, 0.7071067811865476], "mesh": 0,
-     "extras": {"infernux_source_visible": false}}
+    {"name": "Assembly", "children": [1, 2, 3]},
+    {"name": "Geometry", "mesh": 0},
+    {"name": "Authored Camera", "camera": 0},
+    {"name": "Authored Light", "extensions": {"KHR_lights_punctual": {"light": 0}}}
   ],
   "meshes": [{"primitives": [{"attributes": {"POSITION": 0}, "indices": 1}]}],
   "buffers": [{"byteLength": 42, "uri": "data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAABAAIA"}],

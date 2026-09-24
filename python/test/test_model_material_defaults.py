@@ -234,6 +234,7 @@ def test_material_copy_matches_renderer_without_sharing_edits(imported_model):
 @pytest.mark.parametrize("alpha_mode", ["OPAQUE", "MASK", "BLEND"])
 @pytest.mark.parametrize("double_sided", [False, True])
 def test_source_surface_survives_import_copy_and_binary_reload(imported_model, alpha_mode, double_sided):
+    from Infernux.core.asset_types import read_mesh_import_settings
     from Infernux.core.material import Material
     from Infernux.lib import AssetRegistry, InxMaterial
 
@@ -242,7 +243,11 @@ def test_source_surface_survives_import_copy_and_binary_reload(imported_model, a
     authored.update(alphaMode=alpha_mode, alphaCutoff=0.37, doubleSided=double_sided)
     authored["pbrMetallicRoughness"]["baseColorFactor"][3] = 0.4
     source.write_text(json.dumps(document), encoding="utf-8")
-    result = AssetManager.reimport_asset(str(source), database=database)
+    settings = read_mesh_import_settings(str(source))
+    settings.is_readable = True
+    result = AssetManager.reimport_asset(
+        str(source), import_settings=settings.to_dict(), database=database
+    )
     assert result, result.error
     registry = AssetRegistry.instance()
     mesh = registry.load_mesh(str(source))
@@ -551,7 +556,7 @@ def test_invalid_model_remap_does_not_publish_settings_or_geometry(imported_mode
     assert mesh.generation == original_generation
 
 
-def test_material_remap_settings_copy_and_legacy_defaults():
+def test_material_remap_settings_copy_and_complete_contract():
     from Infernux.core.asset_types import MeshImportSettings
 
     settings = MeshImportSettings()
@@ -559,6 +564,7 @@ def test_material_remap_settings_copy_and_legacy_defaults():
     clone.material_remaps["material/Unique"] = "f" * 32
     assert settings.material_remaps == {}
     assert MeshImportSettings.from_dict(clone.to_dict()).material_remaps == clone.material_remaps
-    legacy = settings.to_dict()
-    del legacy["material_remaps"]
-    assert MeshImportSettings.from_dict(legacy).material_remaps == {}
+    incomplete = settings.to_dict()
+    del incomplete["material_remaps"]
+    with pytest.raises(ValueError, match="complete current field set"):
+        MeshImportSettings.from_dict(incomplete)

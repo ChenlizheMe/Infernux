@@ -64,7 +64,6 @@ class AnimationClip:
 
     name: str = "New Animation Clip"
     authoring_texture_guid: str = ""
-    authoring_texture_path: str = ""
     frames: List[AnimationFrame] = field(default_factory=list)
     fps: float = 12.0
     loop: bool = True
@@ -84,7 +83,6 @@ class AnimationClip:
         d: dict = {
             "name": self.name,
             "authoring_texture_guid": self.authoring_texture_guid,
-            "authoring_texture_path": self.authoring_texture_path,
             "frames": frame_documents,
             "fps": self.fps,
             "loop": self.loop,
@@ -104,7 +102,6 @@ class AnimationClip:
             return False
         self.name = replacement.name
         self.authoring_texture_guid = replacement.authoring_texture_guid
-        self.authoring_texture_path = replacement.authoring_texture_path
         self.frames = replacement.frames
         self.fps = replacement.fps
         self.loop = replacement.loop
@@ -114,32 +111,34 @@ class AnimationClip:
     @classmethod
     def from_dict(cls, d: dict) -> AnimationClip:
         expected = {
-            "name", "authoring_texture_guid", "authoring_texture_path",
+            "name", "authoring_texture_guid",
             "frames", "fps", "loop", "events",
         }
-        if type(d) is not dict or set(d) != expected:
+        if type(d) is not dict:
+            raise ValueError("animation clip must be a document")
+        if not expected.issubset(d):
             raise ValueError("animation clip must use the complete current field set")
-        string_fields = ("name", "authoring_texture_guid", "authoring_texture_path")
-        if any(type(d[field]) is not str for field in string_fields):
+        document = {name: d[name] for name in expected}
+        string_fields = ("name", "authoring_texture_guid")
+        if any(type(document[field]) is not str for field in string_fields):
             raise TypeError("animation clip identity fields must be strings")
-        if type(d["frames"]) is not list:
+        if type(document["frames"]) is not list:
             raise TypeError("animation clip frames must be an array")
-        frames = [AnimationFrame.from_dict(item) for item in d["frames"]]
+        frames = [AnimationFrame.from_dict(item) for item in document["frames"]]
         if len({frame.stable_id for frame in frames}) != len(frames):
             raise ValueError("animation clip frame stable_id values must be unique")
-        fps = d["fps"]
+        fps = document["fps"]
         if isinstance(fps, bool) or not isinstance(fps, (int, float)) or not math.isfinite(fps) or fps <= 0.0:
             raise ValueError("animation clip fps must be a positive finite number")
-        if type(d["loop"]) is not bool:
+        if type(document["loop"]) is not bool:
             raise TypeError("animation clip loop must be a bool")
         return cls(
-            name=d["name"],
-            authoring_texture_guid=d["authoring_texture_guid"],
-            authoring_texture_path=d["authoring_texture_path"],
+            name=document["name"],
+            authoring_texture_guid=document["authoring_texture_guid"],
             frames=frames,
             fps=float(fps),
-            loop=d["loop"],
-            events=events_from_list(d["events"]),
+            loop=document["loop"],
+            events=events_from_list(document["events"]),
         )
 
     def copy(self) -> AnimationClip:

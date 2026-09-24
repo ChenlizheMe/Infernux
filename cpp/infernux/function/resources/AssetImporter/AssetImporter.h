@@ -5,12 +5,22 @@
 
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
 
 namespace infernux
 {
+
+/// Immutable companion artifact captured before an import worker starts.
+/// Runtime identity is owner GUID + stable local id, never this artifact's path.
+struct SkeletonDefinitionSnapshot
+{
+    std::string ownerGuid;
+    std::string sourceContentHash;
+    std::string artifactBytes;
+};
 
 /**
  * @brief Immutable input captured before importer execution.
@@ -30,6 +40,7 @@ struct ImportRequest
     // Native immutable catalog lookup, captured before worker execution.
     // No AssetDatabase mutation or Python callback is permitted here.
     std::function<std::string(const std::string &, bool linear)> resolveTextureGuid;
+    std::optional<SkeletonDefinitionSnapshot> skeletonDefinition;
 };
 
 /**

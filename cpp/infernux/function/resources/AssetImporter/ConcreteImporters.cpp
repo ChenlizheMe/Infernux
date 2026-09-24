@@ -45,8 +45,8 @@ class BlenderSource
     explicit BlenderSource(const ImportRequest &request)
     {
         if (request.blenderExecutable.empty() || request.blenderExportScript.empty())
-            throw std::runtime_error(
-                "Blender 5.2 model import is not configured; install Model Authoring in Infernux Hub or select Blender in editor preferences");
+            throw std::runtime_error("Blender 5.2 model import is not configured; install Model Authoring in Infernux "
+                                     "Hub or select Blender in editor preferences");
         if (request.projectRoot.empty())
             throw std::logic_error("Blender import requires a project Library directory");
         const auto parent = ToFsPath(request.projectRoot) / "Library" / "ModelImport";
@@ -72,6 +72,7 @@ class BlenderSource
         throw std::runtime_error("Blender source import is available only in desktop editors");
 #else
         const std::string output = FromFsPath(directory / "model.glb");
+        const std::string report = FromFsPath(directory / "report.json");
         const char *args[] = {request.blenderExecutable.c_str(),
                               "--background",
                               "--factory-startup",
@@ -83,6 +84,7 @@ class BlenderSource
                               "--",
                               request.sourcePath.c_str(),
                               output.c_str(),
+                              report.c_str(),
                               nullptr};
         const SDL_PropertiesID props = SDL_CreateProperties();
         SDL_SetPointerProperty(props, SDL_PROP_PROCESS_CREATE_ARGS_POINTER, const_cast<char **>(args));
@@ -122,16 +124,37 @@ class BlenderSource
             SDL_Delay(10);
         }
         drain();
-        if (timedOut || exitCode != 0 || !std::filesystem::is_regular_file(ToFsPath(output))) {
+        if (timedOut || exitCode != 0 || !std::filesystem::is_regular_file(ToFsPath(output)) ||
+            !std::filesystem::is_regular_file(ToFsPath(report))) {
             throw std::runtime_error(std::string(timedOut ? "Blender import timed out" : "Blender import failed") +
                                      " for '" + request.sourcePath + "':\n" + detail);
         }
+        std::ifstream reportFile(ToFsPath(report));
+        reportFile >> reportDocument;
+        if (!reportDocument.is_object() || !reportDocument.contains("diagnostics") ||
+            !reportDocument.at("diagnostics").is_array() || !reportDocument.contains("external_images") ||
+            !reportDocument.at("external_images").is_array())
+            throw std::runtime_error("Blender import report is malformed for '" + request.sourcePath + "'");
         return output;
 #endif
     }
 
+    [[nodiscard]] const nlohmann::json &Diagnostics() const noexcept
+    {
+        return reportDocument.at("diagnostics");
+    }
+
+    [[nodiscard]] std::string ExternalImagePath(std::string_view name) const
+    {
+        for (const auto &image : reportDocument.at("external_images"))
+            if (image.at("name").get<std::string>() == name)
+                return image.at("path").get<std::string>();
+        return {};
+    }
+
   private:
     std::filesystem::path directory;
+    mutable nlohmann::json reportDocument;
 };
 
 bool IsBuiltinTextureToken(const std::string &value)
@@ -234,6 +257,45 @@ std::string ModelNodeIdentityKey(const InxMesh &mesh, size_t nodeIndex, const st
     }
     std::ostringstream result;
     result << (includeParentPath ? "v2/" : "g2/") << std::hex << std::setw(16) << std::setfill('0') << hash;
+    return result.str();
+}
+
+// A topology signature deliberately excludes positions, normals, tangents,
+// UVs and material assignments.  Those are ordinary artwork edits, not a new
+// source object.  It is only used by the one-to-one matcher below, so two
+// equally plausible meshes never inherit one another's identity.
+std::string ModelNodeTopologyKey(const InxMesh &mesh, size_t nodeIndex)
+{
+    const auto &nodes = mesh.GetModelNodes();
+    if (nodeIndex >= nodes.size() || nodes[nodeIndex].nodeGroup < 0)
+        return {};
+    const auto geometry = mesh.GetModelSourceGeometry();
+    if (!geometry)
+        return {};
+
+    uint64_t hash = 14695981039346656037ull;
+    const auto mix = [&hash](const void *data, size_t size) {
+        const auto *bytes = static_cast<const unsigned char *>(data);
+        for (size_t index = 0; index < size; ++index) {
+            hash ^= bytes[index];
+            hash *= 1099511628211ull;
+        }
+    };
+    uint32_t submeshCount = 0;
+    for (const auto &submesh : geometry->subMeshes) {
+        if (static_cast<int32_t>(submesh.nodeGroup) != nodes[nodeIndex].nodeGroup)
+            continue;
+        ++submeshCount;
+        mix(&submesh.vertexCount, sizeof(submesh.vertexCount));
+        mix(&submesh.indexCount, sizeof(submesh.indexCount));
+        for (uint32_t index = 0; index < submesh.indexCount; ++index) {
+            const uint32_t local = geometry->indices.at(submesh.indexStart + index) - submesh.vertexStart;
+            mix(&local, sizeof(local));
+        }
+    }
+    mix(&submeshCount, sizeof(submeshCount));
+    std::ostringstream result;
+    result << "topology/" << std::hex << std::setw(16) << std::setfill('0') << hash;
     return result.str();
 }
 
@@ -734,7 +796,17 @@ ImportArtifact ModelImporter::Import(const ImportRequest &request) const
         blender = std::make_unique<BlenderSource>(request);
         sourcePath = blender->Convert(request);
     }
-    auto imported = MeshLoader::ImportSourceDetailed(sourcePath, request.guid, artifact.metadata);
+    std::shared_ptr<InxSkinnedMesh> copiedDefinition;
+    if (request.skeletonDefinition) {
+        const auto &snapshot = *request.skeletonDefinition;
+        if (snapshot.ownerGuid.empty() || snapshot.sourceContentHash.empty() || snapshot.artifactBytes.empty())
+            throw std::invalid_argument("copied skeleton definition snapshot is incomplete");
+        copiedDefinition = SkinnedMeshArtifact::Deserialize(snapshot.artifactBytes, snapshot.sourceContentHash);
+        if (!copiedDefinition || copiedDefinition->skeletonDefinitionGuid != snapshot.ownerGuid)
+            throw std::invalid_argument("copied skeleton definition artifact does not match its GUID owner");
+    }
+    auto imported =
+        MeshLoader::ImportSourceDetailed(sourcePath, request.guid, artifact.metadata, copiedDefinition.get());
     if (!imported.mesh)
         throw std::logic_error("ModelImporter detailed source import returned no runtime mesh");
     imported.mesh->SetFilePath(request.sourcePath);
@@ -758,8 +830,9 @@ ImportArtifact ModelImporter::Import(const ImportRequest &request) const
         InxResourceMeta metadata;
         metadata.Init("", 0, request.sourcePath, ResourceType::Texture);
         metadata.AddMetadata("srgb", semantic == "color");
-        metadata.AddMetadata("texture_type", semantic == "normal" ? std::string("normal_map") :
-            semantic == "color" ? std::string("default") : semantic);
+        metadata.AddMetadata("texture_type", semantic == "normal"  ? std::string("normal_map")
+                                             : semantic == "color" ? std::string("default")
+                                                                   : semantic);
         for (const auto &previous : previousTextures)
             if (previous.at("key") == key) {
                 metadata.DeserializeDocument(previous.at("metadata"));
@@ -772,27 +845,44 @@ ImportArtifact ModelImporter::Import(const ImportRequest &request) const
         metadata.AddMetadata("resource_name", image.name);
         const auto sourceHash = request.metadata.GetDataAs<std::string>("content_hash");
         metadata.AddMetadata("content_hash", sourceHash);
-        const auto pixels = image.height
-            ? TextureDecoder::DecodeRgba8(image.bytes, image.width, image.height, metadata)
-            : TextureDecoder::DecodeMemory(image.bytes, metadata, image.name);
+        const auto pixels = image.height ? TextureDecoder::DecodeRgba8(image.bytes, image.width, image.height, metadata)
+                                         : TextureDecoder::DecodeMemory(image.bytes, metadata, image.name);
         metadata.AddMetadata("artifact_width", static_cast<int>(pixels->mipLevels.front().width));
         metadata.AddMetadata("artifact_height", static_cast<int>(pixels->mipLevels.front().height));
         metadata.AddMetadata("artifact_depth", 1);
-        modelTextures.push_back({{"key", key}, {"guid", guid}, {"name", image.name},
-                                 {"semantic", semantic}, {"metadata", metadata.SerializeDocument()}});
-        artifact.runtimeCpuArtifacts.push_back({ImportArtifact::RuntimeArtifactKind::Primary,
-            ResourceType::Texture, TextureArtifact::Serialize(*pixels, sourceHash), guid});
+        modelTextures.push_back({{"key", key},
+                                 {"guid", guid},
+                                 {"name", image.name},
+                                 {"semantic", semantic},
+                                 {"metadata", metadata.SerializeDocument()}});
+        artifact.runtimeCpuArtifacts.push_back({ImportArtifact::RuntimeArtifactKind::Primary, ResourceType::Texture,
+                                                TextureArtifact::Serialize(*pixels, sourceHash), guid});
         embeddedGuids.emplace(key, guid);
         return guid;
     };
     auto materials = imported.mesh->GetMaterialSlotData();
     for (const auto &texture : imported.textureSources) {
-        auto &guid = materials.at(texture.materialSlot).textureGuids.at(texture.channel);
+        auto &material = materials.at(texture.materialSlot);
+        auto &guid = material.textureGuids.at(texture.channel);
+        material.textureUvSets.at(texture.channel) = texture.uvSet;
+        material.textureSamplers.at(texture.channel) = texture.sampler;
         const bool linear = texture.channel != static_cast<uint32_t>(ModelTexture::BaseColor) &&
                             texture.channel != static_cast<uint32_t>(ModelTexture::Emission);
         if (texture.embeddedIndex >= 0) {
+            const auto &image = imported.embeddedImages.at(static_cast<size_t>(texture.embeddedIndex));
+            const std::string externalPath = blender ? blender->ExternalImagePath(image.name) : std::string{};
+            if (!externalPath.empty()) {
+                if (!request.resolveTextureGuid)
+                    throw std::logic_error("Blender external texture import requires an immutable asset catalog");
+                const auto normalizedPath = NormalizeFilesystemPathLexically(externalPath);
+                guid = request.resolveTextureGuid(normalizedPath, linear);
+                artifact.resolvedTextureSources.emplace_back(normalizedPath, guid);
+                continue;
+            }
             guid = publishEmbedded(static_cast<size_t>(texture.embeddedIndex),
-                texture.channel == static_cast<uint32_t>(ModelTexture::Normal) ? "normal" : linear ? "data" : "color");
+                                   texture.channel == static_cast<uint32_t>(ModelTexture::Normal) ? "normal"
+                                   : linear                                                       ? "data"
+                                                                                                  : "color");
             continue;
         }
         std::string path = texture.path;
@@ -810,15 +900,20 @@ ImportArtifact ModelImporter::Import(const ImportRequest &request) const
     }
     // Keep previously published views while the image exists: other materials
     // can reference them independently of this model's current material remaps.
-    for (size_t index = 0; index < imported.embeddedImages.size(); ++index)
+    for (size_t index = 0; index < imported.embeddedImages.size(); ++index) {
+        if (blender && !blender->ExternalImagePath(imported.embeddedImages[index].name).empty())
+            continue;
         for (const auto &previous : previousTextures) {
             const auto semantic = previous.at("semantic").get<std::string>();
             if (previous.at("key") == imported.embeddedImages[index].key + "/" + semantic)
                 (void)publishEmbedded(index, semantic);
         }
+    }
     // Images unused by the current material remaps remain available to authors.
     for (size_t index = 0; index < imported.embeddedImages.size(); ++index) {
         const auto &image = imported.embeddedImages[index];
+        if (blender && !blender->ExternalImagePath(image.name).empty())
+            continue;
         if (!embeddedGuids.count(image.key + "/color") && !embeddedGuids.count(image.key + "/data") &&
             !embeddedGuids.count(image.key + "/normal"))
             (void)publishEmbedded(index, "color");
@@ -846,12 +941,24 @@ ImportArtifact ModelImporter::Import(const ImportRequest &request) const
     artifact.metadata.AddMetadata("mesh_count", checkedMetadataInt(imported.meshCount, "mesh_count"));
     artifact.metadata.AddMetadata("vertex_count", checkedMetadataInt(imported.vertexCount, "vertex_count"));
     artifact.metadata.AddMetadata("index_count", checkedMetadataInt(imported.indexCount, "index_count"));
+    artifact.metadata.AddMetadata("source_unit_scale", imported.sourceUnitScale);
+    artifact.metadata.AddMetadata("effective_scale", imported.effectiveScale);
     artifact.metadata.AddMetadata("material_slot_count",
                                   checkedMetadataInt(imported.materialSlots.size(), "material_slot_count"));
 
     // Store material slot names as a comma-separated string for .meta
     // (InxResourceMeta uses std::any; a string is the simplest portable choice)
     artifact.metadata.AddMetadata("material_slots", joinCsv(imported.materialSlots));
+    nlohmann::json materialDiagnostics = nlohmann::json::array();
+    for (const auto &diagnostic : imported.materialDiagnostics) {
+        materialDiagnostics.push_back({{"code", diagnostic.code},
+                                       {"material", diagnostic.material},
+                                       {"property", diagnostic.property},
+                                       {"detail", diagnostic.detail}});
+    }
+    artifact.metadata.AddMetadata("model_material_diagnostics", materialDiagnostics.dump());
+    artifact.metadata.AddMetadata("blender_import_diagnostics",
+                                  blender ? blender->Diagnostics().dump() : nlohmann::json::array().dump());
 
     // Model mesh children are addressable sub-resources.  Their identity is
     // persisted by canonical source path rather than by the node array index,
@@ -869,9 +976,13 @@ ImportArtifact ModelImporter::Import(const ImportRequest &request) const
         const auto path = imported.mesh->GetModelNodePath(i);
         const std::string identityKey = ModelNodeIdentityKey(*imported.mesh, i, path, true);
         const std::string geometryKey = ModelNodeIdentityKey(*imported.mesh, i, path, false);
-        modelMeshes.push_back({{"name", modelNodes[i].name}, {"path", path},
-                               {"subresource_id", ""}, {"identity_key", identityKey},
-                               {"geometry_key", geometryKey}});
+        const std::string topologyKey = ModelNodeTopologyKey(*imported.mesh, i);
+        modelMeshes.push_back({{"name", modelNodes[i].name},
+                               {"path", path},
+                               {"subresource_id", ""},
+                               {"identity_key", identityKey},
+                               {"geometry_key", geometryKey},
+                               {"topology_key", topologyKey}});
     }
     std::unordered_set<std::string> consumedSubresourceIds;
     // Reserve every exact path before considering renames. Otherwise a new
@@ -903,11 +1014,11 @@ ImportArtifact ModelImporter::Import(const ImportRequest &request) const
     matchUnique("path");
     matchUnique("identity_key");
     matchUnique("geometry_key");
+    matchUnique("topology_key");
     for (auto &entry : modelMeshes) {
         if (entry["subresource_id"] == "") {
             InxResourceMeta subresource;
-            subresource.Init(nullptr, 0, request.sourcePath + "::submesh:" + entry["path"].dump(),
-                             ResourceType::Mesh);
+            subresource.Init(nullptr, 0, request.sourcePath + "::submesh:" + entry["path"].dump(), ResourceType::Mesh);
             entry["subresource_id"] = subresource.GetGuid();
         }
     }
@@ -915,16 +1026,55 @@ ImportArtifact ModelImporter::Import(const ImportRequest &request) const
 
     artifact.metadata.AddMetadata("bone_count", checkedMetadataInt(imported.boneNames.size(), "bone_count"));
     artifact.metadata.AddMetadata("bone_names_csv", joinCsv(imported.boneNames));
+    artifact.metadata.AddMetadata("published_humanoid_rig", nlohmann::json::object().dump());
+    if (imported.skinnedMesh) {
+        std::vector<std::string> skeletonNodes;
+        skeletonNodes.reserve(imported.skinnedMesh->skeleton.nodes.size());
+        for (const auto &node : imported.skinnedMesh->skeleton.nodes)
+            skeletonNodes.push_back(node.name);
+        artifact.metadata.AddMetadata("skeleton_node_names", nlohmann::json(skeletonNodes).dump());
+    } else {
+        artifact.metadata.AddMetadata("skeleton_node_names", nlohmann::json::array().dump());
+    }
 
     artifact.metadata.AddMetadata("animation_count",
                                   checkedMetadataInt(imported.animationNames.size(), "animation_count"));
     artifact.metadata.AddMetadata("animation_names_csv", joinCsv(imported.animationNames));
     artifact.metadata.AddMetadata("source_animations", imported.sourceAnimations.dump());
+    if (imported.skinnedMesh) {
+        artifact.metadata.AddMetadata("published_skeleton_definition_guid",
+                                      imported.skinnedMesh->skeletonDefinitionGuid);
+        artifact.metadata.AddMetadata("published_skeleton_definition_id", imported.skinnedMesh->skeletonDefinitionId);
+        artifact.metadata.AddMetadata("published_skeleton_root_node_index",
+                                      imported.skinnedMesh->skeletonRootNodeIndex);
+        nlohmann::json exposed = nlohmann::json::array();
+        for (const int nodeIndex : imported.skinnedMesh->exposedSkeletonNodeIndices)
+            if (nodeIndex >= 0 && static_cast<size_t>(nodeIndex) < imported.skinnedMesh->skeleton.nodes.size())
+                exposed.push_back(imported.skinnedMesh->skeleton.nodes[static_cast<size_t>(nodeIndex)].name);
+        artifact.metadata.AddMetadata("published_exposed_bones", exposed.dump());
+        nlohmann::json humanoid = nlohmann::json::object();
+        if (imported.skinnedMesh->humanoid.enabled) {
+            auto mapping = nlohmann::json::object();
+            for (const auto &[slot, nodeIndex] : imported.skinnedMesh->humanoid.bones)
+                mapping[slot] = imported.skinnedMesh->skeleton.nodes.at(static_cast<size_t>(nodeIndex)).name;
+            auto issues = nlohmann::json::array();
+            for (const auto &issue : imported.skinnedMesh->humanoid.issues)
+                issues.push_back({{"code", issue.code}, {"bone", issue.bone}, {"detail", issue.detail}});
+            humanoid = {{"valid", imported.skinnedMesh->humanoid.IsValid()},
+                        {"required_bones_valid", imported.skinnedMesh->humanoid.requiredBonesValid},
+                        {"hierarchy_valid", imported.skinnedMesh->humanoid.hierarchyValid},
+                        {"reference_pose_valid", imported.skinnedMesh->humanoid.referencePoseValid},
+                        {"mapping", std::move(mapping)},
+                        {"issues", std::move(issues)}};
+        }
+        artifact.metadata.AddMetadata("published_humanoid_rig", humanoid.dump());
+    }
     // Local clip IDs describe source takes / authored slices. Asset GUIDs belong
     // to this model and survive temporarily disabling an output clip.
-    auto animationIdentities = artifact.metadata.HasKey("model_animation_identities")
-        ? nlohmann::json::parse(artifact.metadata.GetDataAs<std::string>("model_animation_identities"))
-        : nlohmann::json::object();
+    auto animationIdentities =
+        artifact.metadata.HasKey("model_animation_identities")
+            ? nlohmann::json::parse(artifact.metadata.GetDataAs<std::string>("model_animation_identities"))
+            : nlohmann::json::object();
     auto modelAnimations = nlohmann::json::array();
     if (imported.skinnedMesh) {
         for (const auto &animation : imported.skinnedMesh->animations) {
@@ -935,18 +1085,47 @@ ImportArtifact ModelImporter::Import(const ImportRequest &request) const
             const auto guid = metadata.GetGuid();
             animationIdentities[animation.id] = guid;
             const double duration = animation.durationTicks / animation.ticksPerSecond;
-            const nlohmann::json document = {
-                {"name", animation.name}, {"source_model_guid", request.guid}, {"source_model_path", ""},
-                {"take_name", animation.id}, {"bind_pose_bone_names", imported.boneNames},
-                {"duration_hint", duration}, {"events", nlohmann::json::array()}};
+            auto curves = nlohmann::json::array();
+            for (const auto &curve : animation.curves) {
+                auto keys = nlohmann::json::array();
+                for (const auto &[time, value] : curve.keys)
+                    keys.push_back({{"time_normalized", time}, {"value", value}});
+                curves.push_back({{"name", curve.name}, {"keys", std::move(keys)}});
+            }
+            auto events = nlohmann::json::array();
+            for (const auto &event : animation.events)
+                events.push_back({{"time_normalized", event.normalizedTime},
+                                  {"function", event.function},
+                                  {"string_arg", event.stringArgument},
+                                  {"number_arg", event.numberArgument}});
+            const nlohmann::json document = {{"name", animation.name},
+                                             {"source_model_guid", request.guid},
+                                             {"take_name", animation.id},
+                                             {"bind_pose_bone_names", imported.boneNames},
+                                             {"duration_hint", duration},
+                                             {"curves", std::move(curves)},
+                                             {"events", std::move(events)},
+                                             {"bone_mask", animation.boneMask},
+                                             {"default_loop", animation.defaultLoop},
+                                             {"apply_root_motion", animation.rootMotionNodeIndex >= 0},
+                                             {"reference_pose", animation.rootMotionReferencePose}};
             metadata.UpdateFilePath(request.sourcePath + "::subanim:" + animation.id);
             metadata.AddMetadata("import_owner_guid", request.guid);
             metadata.AddMetadata("resource_name", animation.name);
             metadata.AddMetadata("file_extension", std::string(".animclip3d"));
             metadata.AddMetadata("content_hash", request.metadata.GetDataAs<std::string>("content_hash"));
             metadata.AddMetadata("import_document", document.dump());
-            modelAnimations.push_back({{"id", animation.id}, {"guid", guid}, {"name", animation.name},
-                                       {"duration", duration}, {"metadata", metadata.SerializeDocument()}});
+            modelAnimations.push_back({{"id", animation.id},
+                                       {"guid", guid},
+                                       {"name", animation.name},
+                                       {"duration", duration},
+                                       {"default_loop", animation.defaultLoop},
+                                       {"apply_root_motion", animation.rootMotionNodeIndex >= 0},
+                                       {"reference_pose", animation.rootMotionReferencePose},
+                                       {"curves", document.at("curves")},
+                                       {"events", document.at("events")},
+                                       {"bone_mask", animation.boneMask},
+                                       {"metadata", metadata.SerializeDocument()}});
         }
     }
     artifact.metadata.AddMetadata("model_animation_identities", animationIdentities.dump());
@@ -965,6 +1144,9 @@ ImportArtifact ModelImporter::Import(const ImportRequest &request) const
             if (!textureGuid.empty())
                 materialDependencies.insert(textureGuid);
     }
+    if (const MeshImportSettings settings = MeshImportSettings::Read(artifact.metadata);
+        settings.skeletonDefinitionMode == "copy")
+        materialDependencies.insert(settings.skeletonDefinitionGuid);
     artifact.dependencies.assign(materialDependencies.begin(), materialDependencies.end());
 
     if (!artifact.metadata.HasKey("content_hash"))

@@ -764,7 +764,9 @@ def _ensure_categories():
                      float_speed=spec.get("step", 0.001),
                      float_range=tuple(spec["display_range"]) if "display_range" in spec else None)
             for spec in mesh_import_settings_schema()["fields"]
-            if spec["type"] not in {"material_remaps", "animation_clips"}
+            if spec["type"] not in {"material_remaps", "animation_clips", "animation_clip_extras",
+                                    "rig_root_node", "rig_definition_guid", "rig_definition_id", "exposed_bones",
+                                    "humanoid_bone_overrides"}
         ],
         custom_header_fn=_render_mesh_header,
         custom_body_fn=_render_model_import_pages,
@@ -772,9 +774,13 @@ def _ensure_categories():
             "mesh_count",
             "vertex_count",
             "index_count",
+            "source_unit_scale",
+            "effective_scale",
             "material_slot_count",
             "bone_count",
             "bone_names_csv",
+            "skeleton_node_names",
+            "published_humanoid_rig",
             "animation_count",
             "animation_names_csv",
         ],
@@ -1499,8 +1505,6 @@ def _render_animclip_body(ctx: InxGUIContext, panel, state: _State):
         display = os.path.basename(authoring_path)
     elif clip.authoring_texture_guid:
         display = "(missing) " + clip.authoring_texture_guid[:8] + "…"
-    elif clip.authoring_texture_path:
-        display = "(missing) " + os.path.basename(clip.authoring_texture_path)
     else:
         display = "None (Texture)"
 
@@ -1513,12 +1517,12 @@ def _render_animclip_body(ctx: InxGUIContext, panel, state: _State):
         asset_type="Texture",
         ping_path=authoring_path or None,
         has_value=bool(
-            clip.authoring_texture_guid or clip.authoring_texture_path
+            clip.authoring_texture_guid
         ),
         reference_value={
             "asset_type": "Texture",
             "guid": str(clip.authoring_texture_guid or ""),
-            "path_hint": str(authoring_path or clip.authoring_texture_path or ""),
+            "path_hint": str(authoring_path or ""),
         },
         read_only=True,
     )
@@ -1662,8 +1666,8 @@ def _render_animclip3d_body(ctx: InxGUIContext, panel, state: _State):
     ctx.end_disabled()
 
     # ── Source model reference ────────────────────────────────────
-    model_path = (clip.source_model_path or "").strip()
-    if not model_path and (clip.source_model_guid or "").strip():
+    model_path = ""
+    if (clip.source_model_guid or "").strip():
         try:
             adb = getattr(AssetManager, "_asset_database", None)
             if adb:
@@ -1675,8 +1679,6 @@ def _render_animclip3d_body(ctx: InxGUIContext, panel, state: _State):
         model_display = os.path.basename(model_path)
     elif clip.source_model_guid:
         model_display = "(missing) " + clip.source_model_guid[:8] + "…"
-    elif clip.source_model_path:
-        model_display = "(missing) " + os.path.basename(clip.source_model_path)
     else:
         model_display = "None (Model)"
 
@@ -1712,7 +1714,6 @@ def _render_animclip3d_body(ctx: InxGUIContext, panel, state: _State):
         if csv:
             bone_names = [x.strip() for x in csv.split(",") if x.strip()]
         document = _clip.serialize_document()
-        document["source_model_path"] = p
         document["source_model_guid"] = model_guid
         document["bind_pose_bone_names"] = bone_names
         _apply_editable_resource_document(
@@ -1725,7 +1726,6 @@ def _render_animclip3d_body(ctx: InxGUIContext, panel, state: _State):
     def _on_model_clear(_clip=clip):
         document = _clip.serialize_document()
         document["source_model_guid"] = ""
-        document["source_model_path"] = ""
         document["bind_pose_bone_names"] = []
         _apply_editable_resource_document(
             state,
@@ -1744,11 +1744,11 @@ def _render_animclip3d_body(ctx: InxGUIContext, panel, state: _State):
         on_assign=_on_model_pick,
         on_clear=_on_model_clear,
         ping_path=model_path or None,
-        has_value=bool(clip.source_model_guid or clip.source_model_path),
+        has_value=bool(clip.source_model_guid),
         reference_value={
             "asset_type": "Mesh",
             "guid": str(clip.source_model_guid or ""),
-            "path_hint": str(model_path or clip.source_model_path or ""),
+            "path_hint": str(model_path or ""),
         },
     )
 
@@ -1785,8 +1785,6 @@ def _render_animclip3d_body(ctx: InxGUIContext, panel, state: _State):
 
 def _resolve_authoring_texture_path(clip) -> str:
     """Resolve the actual file path for the clip's authoring texture."""
-    if clip.authoring_texture_path and os.path.isfile(clip.authoring_texture_path):
-        return clip.authoring_texture_path
     if clip.authoring_texture_guid:
         try:
             from Infernux.engine.bootstrap import EditorBootstrap
@@ -1941,7 +1939,7 @@ def _render_animclip_preview(ctx: InxGUIContext, clip, state: _State):
 
     if not tex_file:
         from .inspector_utils import render_info_text
-        if clip.authoring_texture_guid or clip.authoring_texture_path:
+        if clip.authoring_texture_guid:
             render_info_text(ctx, t("asset.animclip_texture_missing"))
         return
 
@@ -2145,8 +2143,6 @@ def _render_animfsm_body(ctx: InxGUIContext, panel, state: _State):
                         clip_path = adb.get_path_from_guid(s.clip_guid) or ""
                 except Exception:
                     pass
-            if not clip_path:
-                clip_path = s.clip_path
             if clip_path:
                 ctx.same_line()
                 ctx.label(f"  [{os.path.basename(clip_path)}]")
@@ -2716,6 +2712,7 @@ def _render_model_import_pages(ctx: InxGUIContext, panel, state: _State):
 def _render_model_animation_clips(ctx: InxGUIContext, state: _State):
     sources = json.loads((state.meta or {}).get("source_animations", "[]"))
     if not state.settings.custom_animation_clips:
+        _render_model_animation_clip_extras(ctx, state)
         return
     ctx.text_wrapped(t("asset.animation_clips_hint"))
     names = [source["name"] for source in sources]
@@ -2745,8 +2742,11 @@ def _render_model_animation_clips(ctx: InxGUIContext, state: _State):
         clicked = ctx.button(f"{t('asset.clip_remove')}##remove_clip_{identity}")
         ctx.record_semantic_item("button", t('asset.clip_remove'), True, f"asset.mesh.clip.{identity}.remove")
         if clicked:
-            _edit_import_settings(state, "animation_clips", lambda s, key=identity: setattr(
-                s, "animation_clips", [entry for entry in s.animation_clips if entry["id"] != key]), "Remove Imported Clip")
+            def remove_clip(settings, key=identity):
+                settings.animation_clips = [entry for entry in settings.animation_clips if entry["id"] != key]
+                settings.animation_clip_extras = [entry for entry in settings.animation_clip_extras
+                                                   if entry["clip_id"] != key]
+            _edit_import_settings(state, "animation_clips", remove_clip, "Remove Imported Clip")
     timed_sources = [source for source in sources if source["duration"] > 0]
     if timed_sources:
         clicked = ctx.button(t("asset.clip_add") + "##add_imported_clip")
@@ -2759,6 +2759,111 @@ def _render_model_animation_clips(ctx: InxGUIContext, state: _State):
             clip = {"id": uuid.uuid4().hex, "name": f"Clip {suffix}", "source_take": timed_sources[0]["name"],
                     "start": 0.0, "end": float(timed_sources[0]["duration"])}
             _edit_import_settings(state, "animation_clips", lambda s: s.animation_clips.append(clip), "Add Imported Clip")
+    _render_model_animation_clip_extras(ctx, state)
+
+
+def _render_model_animation_clip_extras(ctx: InxGUIContext, state: _State):
+    """Author import-owned curves/events/masks against stable published clip IDs."""
+    published = json.loads((state.meta or {}).get("model_animations", "[]"))
+    if not published:
+        return
+    ctx.separator()
+    ctx.text_wrapped(t("asset.animation_clip_extras_hint"))
+
+    def mutate_extra(clip_id, edit_key, description, callback):
+        def mutate(settings):
+            extra = next(item for item in settings.animation_clip_extras if item["clip_id"] == clip_id)
+            callback(extra)
+        _edit_import_settings(state, f"animation_clip_extras.{clip_id}.{edit_key}", mutate, description)
+
+    for descriptor in published:
+        clip_id = str(descriptor.get("id", ""))
+        if not clip_id:
+            continue
+        extra = next((item for item in state.settings.animation_clip_extras
+                      if item["clip_id"] == clip_id), None)
+        ctx.label(str(descriptor.get("name") or clip_id))
+        if extra is None:
+            if ctx.button(f"{t('asset.animation_extras_add')}##extras_add_{clip_id}"):
+                blank = {"clip_id": clip_id, "curves": [], "events": [], "bone_mask": []}
+                _edit_import_settings(state, "animation_clip_extras", lambda s, item=blank:
+                                      s.animation_clip_extras.append(item), "Add Animation Clip Extras")
+            continue
+
+        mask_text = ", ".join(extra["bone_mask"])
+        next_mask = ctx.text_input(f"{t('asset.animation_bone_mask')}##mask_{clip_id}", mask_text, 4096)
+        if next_mask != mask_text:
+            bones = list(dict.fromkeys(part.strip() for part in next_mask.split(",") if part.strip()))
+            mutate_extra(clip_id, "bone_mask", "Edit Animation Bone Mask",
+                         lambda item, value=bones: item.__setitem__("bone_mask", value))
+
+        for curve_index, curve in enumerate(tuple(extra["curves"])):
+            curve_name = ctx.text_input(
+                f"{t('asset.animation_curve_name')}##curve_name_{clip_id}_{curve_index}", curve["name"], 256)
+            if curve_name and curve_name != curve["name"]:
+                mutate_extra(clip_id, f"curves.{curve_index}.name", "Rename Animation Curve",
+                             lambda item, i=curve_index, value=curve_name:
+                             item["curves"][i].__setitem__("name", value))
+            for key_index, key in enumerate(tuple(curve["keys"])):
+                time = ctx.drag_float(
+                    f"{t('asset.animation_key_time')}##curve_time_{clip_id}_{curve_index}_{key_index}",
+                    float(key["time_normalized"]), .005, 0.0, 1.0)
+                value = ctx.drag_float(
+                    f"{t('asset.animation_key_value')}##curve_value_{clip_id}_{curve_index}_{key_index}",
+                    float(key["value"]), .01, 0.0, 0.0)
+                if time != key["time_normalized"] or value != key["value"]:
+                    def edit_key(item, ci=curve_index, ki=key_index, ti=time, va=value):
+                        item["curves"][ci]["keys"][ki] = {"time_normalized": ti, "value": va}
+                        item["curves"][ci]["keys"].sort(key=lambda entry: entry["time_normalized"])
+                    mutate_extra(clip_id, f"curves.{curve_index}.keys.{key_index}",
+                                 "Edit Animation Curve Key", edit_key)
+            if ctx.button(f"{t('asset.animation_curve_remove')}##curve_remove_{clip_id}_{curve_index}"):
+                mutate_extra(clip_id, f"curves.{curve_index}", "Remove Animation Curve",
+                             lambda item, i=curve_index: item["curves"].pop(i))
+        if ctx.button(f"{t('asset.animation_curve_add')}##curve_add_{clip_id}"):
+            used = {curve["name"] for curve in extra["curves"]}
+            suffix = 1
+            while f"Curve {suffix}" in used:
+                suffix += 1
+            curve = {"name": f"Curve {suffix}", "keys": [
+                {"time_normalized": 0.0, "value": 0.0}, {"time_normalized": 1.0, "value": 1.0}]}
+            mutate_extra(clip_id, "curves", "Add Animation Curve",
+                         lambda item, value=curve: item["curves"].append(value))
+
+        for event_index, event in enumerate(tuple(extra["events"])):
+            time = ctx.drag_float(
+                f"{t('asset.animation_event_time')}##event_time_{clip_id}_{event_index}",
+                float(event["time_normalized"]), .005, 0.0, 1.0)
+            function = ctx.text_input(
+                f"{t('asset.animation_event_function')}##event_fn_{clip_id}_{event_index}",
+                event["function"], 256)
+            string_arg = ctx.text_input(
+                f"{t('asset.animation_event_string')}##event_string_{clip_id}_{event_index}",
+                event["string_arg"], 512)
+            number_arg = ctx.drag_float(
+                f"{t('asset.animation_event_number')}##event_number_{clip_id}_{event_index}",
+                float(event["number_arg"]), .01, 0.0, 0.0)
+            if function and (time, function, string_arg, number_arg) != (
+                    event["time_normalized"], event["function"], event["string_arg"], event["number_arg"]):
+                def edit_event(item, i=event_index, ti=time, fn=function, text=string_arg, number=number_arg):
+                    item["events"][i] = {"time_normalized": ti, "function": fn,
+                                         "string_arg": text, "number_arg": number}
+                    item["events"].sort(key=lambda entry: entry["time_normalized"])
+                mutate_extra(clip_id, f"events.{event_index}", "Edit Animation Event", edit_event)
+            if ctx.button(f"{t('asset.animation_event_remove')}##event_remove_{clip_id}_{event_index}"):
+                mutate_extra(clip_id, f"events.{event_index}", "Remove Animation Event",
+                             lambda item, i=event_index: item["events"].pop(i))
+        if ctx.button(f"{t('asset.animation_event_add')}##event_add_{clip_id}"):
+            event = {"time_normalized": 0.5, "function": "on_animation_event",
+                     "string_arg": "", "number_arg": 0.0}
+            mutate_extra(clip_id, "events", "Add Animation Event",
+                         lambda item, value=event: item["events"].append(value))
+        if ctx.button(f"{t('asset.animation_extras_remove')}##extras_remove_{clip_id}"):
+            _edit_import_settings(state, "animation_clip_extras", lambda s, identity=clip_id: setattr(
+                s, "animation_clip_extras", [item for item in s.animation_clip_extras
+                                              if item["clip_id"] != identity]),
+                                  "Remove Animation Clip Extras")
+        ctx.separator()
 
 
 def _render_model_material_search(ctx, state, mesh, slot_data, set_remap):

@@ -6,12 +6,46 @@
 
 #include <algorithm>
 #include <cmath>
-#include <cctype>
 #include <limits>
 #include <stdexcept>
+#include <unordered_set>
 
 namespace infernux
 {
+
+void InxMesh::RequireCpuReadable(std::string_view operation) const
+{
+    if (!m_cpuReadable)
+        throw std::runtime_error(std::string(operation) +
+                                 " requires Model Importer Read/Write to be enabled; GPU readback is not implicit");
+    if (!HasCpuGeometry())
+        throw std::runtime_error(std::string(operation) + " cannot access released mesh CPU geometry");
+}
+
+size_t InxMesh::ReleaseCpuGeometry()
+{
+    if (m_cpuReadable || !HasCpuGeometry())
+        return 0;
+    const size_t before = GetRuntimeMemoryBytes();
+    const auto stripStreams = [](const std::shared_ptr<const MeshGeometry> &source) {
+        if (!source)
+            return std::shared_ptr<const MeshGeometry>{};
+        auto metadata = std::make_shared<MeshGeometry>();
+        metadata->subMeshes = source->subMeshes;
+        metadata->boundsMin = source->boundsMin;
+        metadata->boundsMax = source->boundsMax;
+        metadata->vertexCount = source->vertexCount;
+        metadata->indexCount = source->indexCount;
+        metadata->morphTargets.reserve(source->morphTargets.size());
+        for (const auto &target : source->morphTargets)
+            metadata->morphTargets.push_back({target.name, target.defaultWeight, {}, {}, {}});
+        return std::shared_ptr<const MeshGeometry>(std::move(metadata));
+    };
+    m_geometry = stripStreams(m_geometry);
+    m_modelSourceGeometry = stripStreams(m_modelSourceGeometry);
+    const size_t after = GetRuntimeMemoryBytes();
+    return before > after ? before - after : 0;
+}
 
 std::vector<std::string> InxMesh::GetModelNodePath(size_t index) const
 {
@@ -22,29 +56,11 @@ std::vector<std::string> InxMesh::GetModelNodePath(size_t index) const
     return path;
 }
 
-void InxMesh::UpgradeLegacyModelNodePath(std::vector<std::string> &path) const
-{
-    // Early 041 OBJ references persisted Assimp's synthetic memory-IO root.
-    // Migrate that exact root once; authored child names remain authoritative.
-    if (path.empty() || path.front() != "$$$___magic___$$$.obj" || m_modelNodes.empty())
-        return;
-    const auto &root = m_modelNodes.front();
-    if (root.parentIndex >= 0 || root.name.size() < 4)
-        return;
-    auto extension = root.name.substr(root.name.size() - 4);
-    std::transform(extension.begin(), extension.end(), extension.begin(),
-                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    if (extension == ".obj")
-        path.front() = root.name;
-}
-
 int32_t InxMesh::RequireModelNode(const std::vector<std::string> &path) const
 {
-    auto canonical = path;
-    UpgradeLegacyModelNodePath(canonical);
     int32_t found = -1;
     for (size_t i = 0; i < m_modelNodes.size(); ++i) {
-        if (m_modelNodes[i].nodeGroup < 0 || GetModelNodePath(i) != canonical)
+        if (m_modelNodes[i].nodeGroup < 0 || GetModelNodePath(i) != path)
             continue;
         if (found >= 0)
             throw std::invalid_argument("Ambiguous model mesh node path");
@@ -57,11 +73,25 @@ int32_t InxMesh::RequireModelNode(const std::vector<std::string> &path) const
 
 std::shared_ptr<InxMesh> InxMesh::CreateModelNodeCopy(const std::vector<std::string> &path) const
 {
+    // This is an internal authoring/preview extraction path, not the public
+    // Read/Write scripting surface. It may consume import staging while that
+    // staging is resident, but it must never slice streams after Player has
+    // released them.
+    if (!HasCpuGeometry())
+        throw std::runtime_error("Mesh.create_model_node_copy cannot access released mesh CPU geometry");
     const auto &node = m_modelNodes[RequireModelNode(path)];
     const auto &source = *m_modelSourceGeometry;
     std::vector<Vertex> vertices;
     std::vector<uint32_t> indices;
     std::vector<SubMesh> subMeshes;
+    std::vector<MeshMorphTarget> morphTargets;
+    morphTargets.reserve(source.morphTargets.size());
+    for (const auto &sourceTarget : source.morphTargets) {
+        MeshMorphTarget target;
+        target.name = sourceTarget.name;
+        target.defaultWeight = sourceTarget.defaultWeight;
+        morphTargets.push_back(std::move(target));
+    }
     for (const auto &sub : source.subMeshes) {
         if (sub.nodeGroup != static_cast<uint32_t>(node.nodeGroup))
             continue;
@@ -71,13 +101,30 @@ std::shared_ptr<InxMesh> InxMesh::CreateModelNodeCopy(const std::vector<std::str
         copy.nodeGroup = 0;
         vertices.insert(vertices.end(), source.vertices.begin() + sub.vertexStart,
                         source.vertices.begin() + sub.vertexStart + sub.vertexCount);
+        for (size_t targetIndex = 0; targetIndex < source.morphTargets.size(); ++targetIndex) {
+            const auto &sourceTarget = source.morphTargets[targetIndex];
+            auto &target = morphTargets[targetIndex];
+            target.positionDeltas.insert(target.positionDeltas.end(),
+                                         sourceTarget.positionDeltas.begin() + sub.vertexStart,
+                                         sourceTarget.positionDeltas.begin() + sub.vertexStart + sub.vertexCount);
+            if (!sourceTarget.normalDeltas.empty())
+                target.normalDeltas.insert(target.normalDeltas.end(),
+                                           sourceTarget.normalDeltas.begin() + sub.vertexStart,
+                                           sourceTarget.normalDeltas.begin() + sub.vertexStart + sub.vertexCount);
+            if (!sourceTarget.tangentDeltas.empty())
+                target.tangentDeltas.insert(target.tangentDeltas.end(),
+                                            sourceTarget.tangentDeltas.begin() + sub.vertexStart,
+                                            sourceTarget.tangentDeltas.begin() + sub.vertexStart + sub.vertexCount);
+        }
         for (uint32_t i = 0; i < sub.indexCount; ++i)
             indices.push_back(source.indices[sub.indexStart + i] - sub.vertexStart + copy.vertexStart);
         subMeshes.push_back(std::move(copy));
     }
     auto result = std::make_shared<InxMesh>();
     result->SetName(node.name);
-    result->SetData(std::move(vertices), std::move(indices), std::move(subMeshes));
+    result->SetData(std::move(vertices), std::move(indices), std::move(subMeshes), std::move(morphTargets));
+    result->SetIndexFormat(m_indexFormat);
+    result->SetCompression(m_compression);
     result->SetMaterialSlotNames(m_materialSlotNames);
     result->SetMaterialSlotData(m_materialSlotData);
     return result;
@@ -92,12 +139,21 @@ size_t InxMesh::GetRuntimeMemoryBytes() const noexcept
     bytes += m_geometry->subMeshes.capacity() * sizeof(SubMesh);
     for (const auto &subMesh : m_geometry->subMeshes)
         bytes += subMesh.name.capacity();
+    for (const auto &target : m_geometry->morphTargets)
+        bytes +=
+            sizeof(MeshMorphTarget) + target.name.capacity() + target.positionDeltas.capacity() * sizeof(glm::vec3) +
+            target.normalDeltas.capacity() * sizeof(glm::vec3) + target.tangentDeltas.capacity() * sizeof(glm::vec3);
     if (m_modelSourceGeometry) {
         bytes += sizeof(MeshGeometry) + m_modelSourceGeometry->vertices.capacity() * sizeof(Vertex) +
                  m_modelSourceGeometry->indices.capacity() * sizeof(uint32_t) +
                  m_modelSourceGeometry->subMeshes.capacity() * sizeof(SubMesh);
         for (const auto &subMesh : m_modelSourceGeometry->subMeshes)
             bytes += subMesh.name.capacity();
+        for (const auto &target : m_modelSourceGeometry->morphTargets)
+            bytes += sizeof(MeshMorphTarget) + target.name.capacity() +
+                     target.positionDeltas.capacity() * sizeof(glm::vec3) +
+                     target.normalDeltas.capacity() * sizeof(glm::vec3) +
+                     target.tangentDeltas.capacity() * sizeof(glm::vec3);
     }
     bytes += m_materialSlotNames.capacity() * sizeof(std::string);
     for (const auto &name : m_materialSlotNames)
@@ -120,7 +176,7 @@ void InxMesh::SetModelNodes(std::vector<ImportedModelNode> nodes)
 {
     if (m_modelSourceGeometry) {
         SetModelData(m_modelSourceGeometry->vertices, m_modelSourceGeometry->indices, m_modelSourceGeometry->subMeshes,
-                     std::move(nodes));
+                     std::move(nodes), m_modelSourceGeometry->morphTargets);
         return;
     }
     std::vector<bool> assignedGroups(m_nodeNames.size(), false);
@@ -155,17 +211,18 @@ void InxMesh::SetSkinnedData(std::shared_ptr<const InxSkinnedMesh> skinnedData)
 }
 
 void InxMesh::SetModelData(std::vector<Vertex> vertices, std::vector<uint32_t> indices, std::vector<SubMesh> subMeshes,
-                           std::vector<ImportedModelNode> nodes)
+                           std::vector<ImportedModelNode> nodes, std::vector<MeshMorphTarget> morphTargets)
 {
     // Validate and derive away from the published generation. Neither source
     // geometry nor its model-space view may be partially replaced on failure.
     InxMesh candidate;
     candidate.SetNodeNames(m_nodeNames);
     candidate.SetModelNodes(std::move(nodes));
-    candidate.SetData(std::move(vertices), std::move(indices), std::move(subMeshes));
+    candidate.SetData(std::move(vertices), std::move(indices), std::move(subMeshes), std::move(morphTargets));
     const auto source = candidate.GetGeometrySnapshot();
     auto bakedVertices = source->vertices;
     auto bakedSubMeshes = source->subMeshes;
+    auto bakedMorphTargets = source->morphTargets;
     std::vector<glm::mat4> world(candidate.m_modelNodes.size());
     std::vector<int32_t> groupNodes(m_nodeNames.size(), -1);
     for (size_t index = 0; index < candidate.m_modelNodes.size(); ++index) {
@@ -207,6 +264,20 @@ void InxMesh::SetModelData(std::vector<Vertex> vertices, std::vector<uint32_t> i
                 glm::vec4(normalized(linear * glm::vec3(original.tangent)), original.tangent.w * orientation);
             sub.boundsMin = glm::min(sub.boundsMin, vertex.pos);
             sub.boundsMax = glm::max(sub.boundsMax, vertex.pos);
+            for (auto &target : bakedMorphTargets) {
+                const glm::vec3 sourcePositionDelta = target.positionDeltas[index];
+                target.positionDeltas[index] = linear * sourcePositionDelta;
+                if (!target.normalDeltas.empty()) {
+                    const glm::vec3 sourceNormal = original.normal;
+                    const glm::vec3 targetNormal = sourceNormal + target.normalDeltas[index];
+                    target.normalDeltas[index] = normalized(normals * targetNormal) - vertex.normal;
+                }
+                if (!target.tangentDeltas.empty()) {
+                    const glm::vec3 sourceTangent = glm::vec3(original.tangent);
+                    const glm::vec3 targetTangent = sourceTangent + target.tangentDeltas[index];
+                    target.tangentDeltas[index] = normalized(linear * targetTangent) - glm::vec3(vertex.tangent);
+                }
+            }
         }
         for (size_t offset = 0; offset < sub.indexCount; ++offset) {
             const uint32_t vertex = source->indices[sub.indexStart + offset];
@@ -216,7 +287,8 @@ void InxMesh::SetModelData(std::vector<Vertex> vertices, std::vector<uint32_t> i
     }
     if (std::find(vertexGroups.begin(), vertexGroups.end(), -1) != vertexGroups.end())
         throw std::invalid_argument("Model source vertices must belong to a node space");
-    candidate.SetData(std::move(bakedVertices), source->indices, std::move(bakedSubMeshes));
+    candidate.SetData(std::move(bakedVertices), source->indices, std::move(bakedSubMeshes),
+                      std::move(bakedMorphTargets));
     m_geometry = candidate.m_geometry;
     m_modelSourceGeometry = source;
     m_modelNodes = std::move(candidate.m_modelNodes);
@@ -231,12 +303,30 @@ void InxMesh::ReplaceImportedContent(const InxMesh &source)
     *this = std::move(replacement);
 }
 
-void InxMesh::SetData(std::vector<Vertex> vertices, std::vector<uint32_t> indices, std::vector<SubMesh> subMeshes)
+void InxMesh::SetData(std::vector<Vertex> vertices, std::vector<uint32_t> indices, std::vector<SubMesh> subMeshes,
+                      std::vector<MeshMorphTarget> morphTargets)
 {
+    std::unordered_set<std::string> morphNames;
+    const auto finite = [](const glm::vec3 &value) {
+        return std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z);
+    };
+    for (const auto &target : morphTargets) {
+        if (target.name.empty() || !morphNames.insert(target.name).second || !std::isfinite(target.defaultWeight) ||
+            target.positionDeltas.size() != vertices.size() ||
+            (!target.normalDeltas.empty() && target.normalDeltas.size() != vertices.size()) ||
+            (!target.tangentDeltas.empty() && target.tangentDeltas.size() != vertices.size()) ||
+            !std::all_of(target.positionDeltas.begin(), target.positionDeltas.end(), finite) ||
+            !std::all_of(target.normalDeltas.begin(), target.normalDeltas.end(), finite) ||
+            !std::all_of(target.tangentDeltas.begin(), target.tangentDeltas.end(), finite))
+            throw std::invalid_argument("Mesh morph targets require unique names and finite vertex-aligned deltas");
+    }
     auto geometry = std::make_shared<MeshGeometry>();
     geometry->vertices = std::move(vertices);
     geometry->indices = std::move(indices);
     geometry->subMeshes = std::move(subMeshes);
+    geometry->morphTargets = std::move(morphTargets);
+    geometry->vertexCount = static_cast<uint32_t>(geometry->vertices.size());
+    geometry->indexCount = static_cast<uint32_t>(geometry->indices.size());
     if (!geometry->vertices.empty()) {
         constexpr float INF = std::numeric_limits<float>::max();
         geometry->boundsMin = glm::vec3(INF);
@@ -253,6 +343,7 @@ void InxMesh::SetData(std::vector<Vertex> vertices, std::vector<uint32_t> indice
 
 void InxMesh::UpdateVertexRange(size_t first, const std::vector<Vertex> &replacement)
 {
+    RequireCpuReadable("Mesh.update_vertices");
     if (first > m_geometry->vertices.size() || replacement.size() > m_geometry->vertices.size() - first)
         throw std::invalid_argument("Mesh vertex update exceeds the existing vertex range");
     if (replacement.empty())
@@ -274,7 +365,7 @@ void InxMesh::UpdateVertexRange(size_t first, const std::vector<Vertex> &replace
             subMesh.boundsMax = glm::max(subMesh.boundsMax, position);
         }
     }
-    SetData(std::move(vertices), m_geometry->indices, std::move(subMeshes));
+    SetData(std::move(vertices), m_geometry->indices, std::move(subMeshes), m_geometry->morphTargets);
 }
 
 } // namespace infernux

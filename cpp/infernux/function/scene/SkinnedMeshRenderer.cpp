@@ -153,7 +153,7 @@ SkinnedMeshRenderer::LoadCompatibleAnimationSource(const std::string &guid, cons
         throw std::invalid_argument("animation source has no takes: " + guid);
 
     std::string reason;
-    if (!target->skeleton.IsAnimationCompatible(source->skeleton, *animation, &reason))
+    if (!target->IsAnimationCompatible(*source, *animation, &reason))
         throw std::invalid_argument("animation source skeleton is incompatible with render model: " + reason);
     if (!reason.empty()) {
         const std::string warningKey = GetSourceModelGuid() + "\n" + guid + "\n" + reason;
@@ -314,6 +314,13 @@ float SkinnedMeshRenderer::GetAnimationDurationSeconds(const std::string &takeNa
 {
     auto model = LoadCompatibleAnimationSource(animationSourceGuid, takeName);
     return model ? model->GetAnimationDurationSeconds(takeName) : 0.0f;
+}
+
+RootMotionDelta SkinnedMeshRenderer::GetRootMotionDelta(const std::string &takeName, float fromSeconds, float toSeconds,
+                                                        bool loop, const std::string &animationSourceGuid) const
+{
+    auto model = LoadCompatibleAnimationSource(animationSourceGuid, takeName);
+    return model ? model->SampleRootMotionDelta(takeName, fromSeconds, toSeconds, loop) : RootMotionDelta{};
 }
 
 void SkinnedMeshRenderer::ReloadSourceModel()

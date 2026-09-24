@@ -754,9 +754,14 @@ class MeshImportSettings:
     normal_smoothing_angle: float = field(default_factory=lambda: _mesh_import_fields()["normal_smoothing_angle"]["default"])
     max_bones_per_vertex: int = field(default_factory=lambda: _mesh_import_fields()["max_bones_per_vertex"]["default"])
     min_bone_weight: float = field(default_factory=lambda: _mesh_import_fields()["min_bone_weight"]["default"])
+    animation_sample_rate: float = field(default_factory=lambda: _mesh_import_fields()["animation_sample_rate"]["default"])
+    animation_position_error: float = field(default_factory=lambda: _mesh_import_fields()["animation_position_error"]["default"])
+    animation_rotation_error: float = field(default_factory=lambda: _mesh_import_fields()["animation_rotation_error"]["default"])
+    animation_scale_error: float = field(default_factory=lambda: _mesh_import_fields()["animation_scale_error"]["default"])
     normal_mode: str = field(default_factory=lambda: _mesh_import_fields()["normal_mode"]["default"])
     tangent_mode: str = field(default_factory=lambda: _mesh_import_fields()["tangent_mode"]["default"])
     normal_weighting: str = field(default_factory=lambda: _mesh_import_fields()["normal_weighting"]["default"])
+    normal_smoothing_source: str = field(default_factory=lambda: _mesh_import_fields()["normal_smoothing_source"]["default"])
     tangent_algorithm: str = field(default_factory=lambda: _mesh_import_fields()["tangent_algorithm"]["default"])
     # DCC-authored meshes keep model/textures aligned without per-asset UV flipping.
     flip_uvs: bool = field(default_factory=lambda: _mesh_import_fields()["flip_uvs"]["default"])
@@ -764,12 +769,31 @@ class MeshImportSettings:
     swap_uv_channels: bool = field(default_factory=lambda: _mesh_import_fields()["swap_uv_channels"]["default"])
     optimize_mesh: bool = field(default_factory=lambda: _mesh_import_fields()["optimize_mesh"]["default"])
     weld_vertices: bool = field(default_factory=lambda: _mesh_import_fields()["weld_vertices"]["default"])
+    sort_hierarchy_by_name: bool = field(default_factory=lambda: _mesh_import_fields()["sort_hierarchy_by_name"]["default"])
+    import_visibility: bool = field(default_factory=lambda: _mesh_import_fields()["import_visibility"]["default"])
+    convert_units: bool = field(default_factory=lambda: _mesh_import_fields()["convert_units"]["default"])
+    bake_axis_conversion: bool = field(default_factory=lambda: _mesh_import_fields()["bake_axis_conversion"]["default"])
+    is_readable: bool = field(default_factory=lambda: _mesh_import_fields()["is_readable"]["default"])
     generate_colliders: bool = field(default_factory=lambda: _mesh_import_fields()["generate_colliders"]["default"])
+    import_blend_shapes: bool = field(default_factory=lambda: _mesh_import_fields()["import_blend_shapes"]["default"])
     rig_type: str = field(default_factory=lambda: _mesh_import_fields()["rig_type"]["default"])
+    skeleton_definition_mode: str = field(default_factory=lambda: _mesh_import_fields()["skeleton_definition_mode"]["default"])
+    rig_root_node: str = field(default_factory=lambda: _mesh_import_fields()["rig_root_node"]["default"])
+    skeleton_definition_guid: str = field(default_factory=lambda: _mesh_import_fields()["skeleton_definition_guid"]["default"])
+    skeleton_definition_id: str = field(default_factory=lambda: _mesh_import_fields()["skeleton_definition_id"]["default"])
+    optimize_bone_hierarchy: bool = field(default_factory=lambda: _mesh_import_fields()["optimize_bone_hierarchy"]["default"])
+    exposed_bones: List[str] = field(default_factory=list)
+    humanoid_bone_overrides: Dict[str, str] = field(default_factory=dict)
     import_animations: bool = field(default_factory=lambda: _mesh_import_fields()["import_animations"]["default"])
+    animation_loop_time: bool = field(default_factory=lambda: _mesh_import_fields()["animation_loop_time"]["default"])
+    animation_apply_root_motion: bool = field(default_factory=lambda: _mesh_import_fields()["animation_apply_root_motion"]["default"])
+    animation_reference_pose: str = field(default_factory=lambda: _mesh_import_fields()["animation_reference_pose"]["default"])
     custom_animation_clips: bool = field(default_factory=lambda: _mesh_import_fields()["custom_animation_clips"]["default"])
     animation_clips: List[Dict[str, Any]] = field(default_factory=list)
+    animation_clip_extras: List[Dict[str, Any]] = field(default_factory=list)
     material_import_mode: str = field(default_factory=lambda: _mesh_import_fields()["material_import_mode"]["default"])
+    mesh_compression: str = field(default_factory=lambda: _mesh_import_fields()["mesh_compression"]["default"])
+    index_format: str = field(default_factory=lambda: _mesh_import_fields()["index_format"]["default"])
     material_remaps: Dict[str, str] = field(default_factory=lambda: dict(_mesh_import_fields()["material_remaps"]["default"]))
 
     def to_dict(self) -> Dict[str, Any]:
@@ -778,19 +802,12 @@ class MeshImportSettings:
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "MeshImportSettings":
         fields = _mesh_import_fields()
-        required = {name for name, spec in fields.items() if not spec.get("legacy_optional", False)}
-        if type(d) is not dict or not required.issubset(d):
+        if type(d) is not dict or not set(fields).issubset(d):
             raise ValueError("mesh import settings must use the complete current field set")
-        # Old models were always welded. Preserve that explicit import policy
-        # when upgrading sidecars authored before this option was exposed.
-        values = {name: d[name] if name in d else spec.get("legacy_default", spec["default"])
-                  for name, spec in fields.items()}
+        # Unknown keys are deliberately ignored; current fields are the sole
+        # import contract and no old-format migration is performed here.
+        values = {name: d[name] for name in fields}
         for name, spec in fields.items():
-            legacy = spec.get("legacy_flag")
-            if name not in d and legacy in d:
-                if type(d[legacy]) is not bool:
-                    raise TypeError(f"mesh {legacy} must be a bool")
-                values[name] = "import" if d[legacy] else "source_only"
             if spec["type"] == "animation_clips":
                 clips = values[name]
                 if type(clips) is not list:
@@ -810,6 +827,67 @@ class MeshImportSettings:
                             or not 0 <= clip["start"] < clip["end"]):
                         raise ValueError("animation_clips require finite 0 <= start < end")
                 values[name] = [dict(clip) for clip in clips]
+            if spec["type"] == "animation_clip_extras":
+                extras = values[name]
+                if type(extras) is not list:
+                    raise ValueError("animation_clip_extras must be an array")
+                clip_ids = set()
+                normalized = []
+                for extra in extras:
+                    if type(extra) is not dict or set(extra) != {"clip_id", "curves", "events", "bone_mask"}:
+                        raise ValueError("animation_clip_extras require clip_id, curves, events and bone_mask")
+                    clip_id = extra["clip_id"]
+                    if type(clip_id) is not str or not clip_id or clip_id in clip_ids:
+                        raise ValueError("animation_clip_extras require unique non-empty clip ids")
+                    clip_ids.add(clip_id)
+                    if any(type(extra[key]) is not list for key in ("curves", "events", "bone_mask")):
+                        raise ValueError("animation clip curves, events and bone_mask must be arrays")
+                    curve_names = set()
+                    curves = []
+                    for curve in extra["curves"]:
+                        if (type(curve) is not dict or set(curve) != {"name", "keys"}
+                                or type(curve["name"]) is not str or not curve["name"]
+                                or curve["name"] in curve_names or type(curve["keys"]) is not list):
+                            raise ValueError("animation curves require unique non-empty names and key arrays")
+                        curve_names.add(curve["name"])
+                        previous = -1.0
+                        keys = []
+                        for key in curve["keys"]:
+                            if type(key) is not dict or set(key) != {"time_normalized", "value"}:
+                                raise ValueError("animation curve keys require time_normalized and value")
+                            time, value = key["time_normalized"], key["value"]
+                            if (isinstance(time, bool) or not isinstance(time, (int, float))
+                                    or isinstance(value, bool) or not isinstance(value, (int, float))
+                                    or not math.isfinite(time) or not math.isfinite(value)
+                                    or not 0.0 <= time <= 1.0 or time <= previous):
+                                raise ValueError("animation curve keys must be finite, ordered and normalized")
+                            previous = float(time)
+                            keys.append({"time_normalized": float(time), "value": float(value)})
+                        curves.append({"name": curve["name"], "keys": keys})
+                    previous = -1.0
+                    events = []
+                    for event in extra["events"]:
+                        if type(event) is not dict or set(event) != {
+                            "time_normalized", "function", "string_arg", "number_arg"
+                        }:
+                            raise ValueError("animation events require the complete field set")
+                        time, number = event["time_normalized"], event["number_arg"]
+                        if (isinstance(time, bool) or not isinstance(time, (int, float))
+                                or isinstance(number, bool) or not isinstance(number, (int, float))
+                                or not math.isfinite(time) or not math.isfinite(number)
+                                or not 0.0 <= time <= 1.0 or time < previous
+                                or type(event["function"]) is not str or not event["function"]
+                                or type(event["string_arg"]) is not str):
+                            raise ValueError("animation events must be finite, ordered and callable")
+                        previous = float(time)
+                        events.append({"time_normalized": float(time), "function": event["function"],
+                                       "string_arg": event["string_arg"], "number_arg": float(number)})
+                    bones = extra["bone_mask"]
+                    if any(type(bone) is not str or not bone for bone in bones) or len(set(bones)) != len(bones):
+                        raise ValueError("animation bone masks require unique non-empty bone names")
+                    normalized.append({"clip_id": clip_id, "curves": curves, "events": events,
+                                       "bone_mask": list(bones)})
+                values[name] = normalized
             if spec["type"] == "enum" and values[name] not in [choice["value"] for choice in spec["choices"]]:
                 raise ValueError(f"mesh {name} must be one of its declared choices")
             if spec["type"] == "material_remaps":
@@ -819,6 +897,31 @@ class MeshImportSettings:
                     or not isinstance(guid, str) or not guid for key, guid in value.items()
                 ):
                     raise ValueError("mesh material_remaps require source material identifiers and GUIDs")
+                values[name] = dict(value)
+            if spec["type"] in {"rig_root_node", "rig_definition_guid", "rig_definition_id"}:
+                value = values[name]
+                if type(value) is not str or len(value) > 1024 or (name == "skeleton_definition_id" and not value):
+                    raise ValueError(f"mesh {name} must be a bounded string")
+            if spec["type"] == "exposed_bones":
+                value = values[name]
+                if (type(value) is not list or any(type(node) is not str or not node or len(node) > 1024 for node in value)
+                        or len(set(value)) != len(value)):
+                    raise ValueError("mesh exposed_bones require unique non-empty node identities")
+                values[name] = list(value)
+            if spec["type"] == "humanoid_bone_overrides":
+                value = values[name]
+                allowed = {
+                    "hips", "spine", "chest", "upper_chest", "neck", "head",
+                    "left_shoulder", "left_upper_arm", "left_lower_arm", "left_hand",
+                    "right_shoulder", "right_upper_arm", "right_lower_arm", "right_hand",
+                    "left_upper_leg", "left_lower_leg", "left_foot", "left_toes",
+                    "right_upper_leg", "right_lower_leg", "right_foot", "right_toes",
+                }
+                if (type(value) is not dict or any(
+                    type(slot) is not str or slot not in allowed or type(node) is not str
+                    or not node or len(node) > 1024 for slot, node in value.items()
+                ) or len(set(value.values())) != len(value)):
+                    raise ValueError("mesh humanoid_bone_overrides require known slots and unique node identities")
                 values[name] = dict(value)
             if spec["type"] == "bool" and type(values[name]) is not bool:
                 raise TypeError(f"mesh {name} must be a bool")
@@ -838,7 +941,10 @@ class MeshImportSettings:
 
     def copy(self) -> "MeshImportSettings":
         return replace(self, material_remaps=dict(self.material_remaps),
-                       animation_clips=[dict(clip) for clip in self.animation_clips])
+                       animation_clips=[dict(clip) for clip in self.animation_clips],
+                       animation_clip_extras=json.loads(json.dumps(self.animation_clip_extras)),
+                       exposed_bones=list(self.exposed_bones),
+                       humanoid_bone_overrides=dict(self.humanoid_bone_overrides))
 
 
 def read_mesh_import_settings(asset_path: str) -> MeshImportSettings:

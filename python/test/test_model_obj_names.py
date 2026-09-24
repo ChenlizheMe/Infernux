@@ -8,7 +8,7 @@ from Infernux.lib._Infernux import make_model_mesh_reference
 
 
 @pytest.mark.parametrize('filename', ['Bridge.obj', '模型 试验.OBJ'])
-def test_obj_root_name_authored_children_and_legacy_references(engine, scene, tmp_path, filename):
+def test_obj_root_name_authored_children_and_current_references(engine, scene, tmp_path, filename):
     database = engine.get_asset_database()
     source = Path(database.assets_root) / tmp_path.name / filename
     source.parent.mkdir()
@@ -24,18 +24,24 @@ def test_obj_root_name_authored_children_and_legacy_references(engine, scene, tm
         root = scene.create_from_model(result.guid)
         assert root.name == source.stem
         assert root.get_children()[0].name == filename
-        # Existing scene/picker references upgrade only the synthetic first element.
-        path = ['$$$___magic___$$$.obj', '$$$___magic___$$$.obj']
-        obj = scene.create_from_model(make_model_mesh_reference(result.guid, path), 'Legacy child')
-        renderer = obj.get_component('MeshRenderer')
         canonical = [filename, '$$$___magic___$$$.obj']
+        obj = scene.create_from_model(make_model_mesh_reference(result.guid, canonical), 'Authored child')
+        renderer = obj.get_component('MeshRenderer')
         assert renderer.serialize_document()['modelNodePath'] == canonical
-        saved = renderer.serialize_document()
-        saved['modelNodePath'] = path
+        legacy = ['$$$___magic___$$$.obj', '$$$___magic___$$$.obj']
+        with pytest.raises(ValueError, match='no longer exists'):
+            scene.create_from_model(make_model_mesh_reference(result.guid, legacy), 'Stale child')
+        before_stale_load = renderer.serialize_document()
+        saved = dict(before_stale_load)
+        saved['modelNodePath'] = legacy
         assert renderer.deserialize_document(saved)
         assert renderer.serialize_document()['modelNodePath'] == canonical
+        path_only_stale = dict(saved)
+        path_only_stale.pop('modelSubresourceId')
+        assert not renderer.deserialize_document(path_only_stale)
+        assert renderer.serialize_document()['modelNodePath'] == canonical
         assert scene._commit_document(scene.serialize_document())
-        restored = next(o for o in scene.get_root_objects() if o.name == 'Legacy child')
+        restored = next(o for o in scene.get_root_objects() if o.name == 'Authored child')
         assert restored.get_component('MeshRenderer').serialize_document()['modelNodePath'] == canonical
         assert registry.reload_asset(result.guid)
         assert mesh.get_model_nodes()[0]['name'] == filename

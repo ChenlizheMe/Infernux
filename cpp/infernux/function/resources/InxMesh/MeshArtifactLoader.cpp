@@ -68,6 +68,7 @@ RuntimeAssetPayload MeshLoader::Load(const std::string &filePath, const std::str
                                  "'");
 
     auto mesh = MeshArtifact::Deserialize(ReadArtifactBytes(artifactPath, "Mesh artifact"), sourceHash);
+    mesh->SetCpuReadable(MeshImportSettings::Read(*metadata).isReadable);
     auto skinned = SkinnedMeshArtifact::Deserialize(
         ReadArtifactBytes(skinnedArtifactPath, "skinned Mesh companion artifact"), sourceHash);
     if (skinned) {

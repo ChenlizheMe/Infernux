@@ -28,6 +28,7 @@ def test_basis_apply_publishes_and_reloads(engine, tmp_path, monkeypatch, asynch
     mesh = inx.Mesh.load_guid(imported.guid)
     node_names = [node["name"] for node in mesh.model_nodes]
     settings = read_mesh_import_settings(str(source))
+    settings.is_readable = True
     for normal_mode, tangent_mode in (("none", "import"), ("calculate", "calculate"),
                                      ("import", "none"), ("source_only", "source_only"), ("import", "import")):
         settings.normal_mode, settings.tangent_mode = normal_mode, tangent_mode
@@ -55,7 +56,7 @@ def test_basis_apply_publishes_and_reloads(engine, tmp_path, monkeypatch, asynch
             np.testing.assert_array_equal(mesh.vertex_buffer[key], values)
 
 
-def test_old_basis_sidecar_migrates_on_reimport(engine, tmp_path):
+def test_extra_old_basis_keys_do_not_override_current_fields(engine, tmp_path):
     database = engine.get_asset_database()
     source = Path(database.assets_root) / tmp_path.name / "Legacy.obj"
     source.parent.mkdir(parents=True)
@@ -65,18 +66,41 @@ def test_old_basis_sidecar_migrates_on_reimport(engine, tmp_path):
     sidecar = Path(str(source) + ".meta")
     document = json.loads(sidecar.read_text(encoding="utf-8"))
     for channel in ("normal", "tangent"):
-        del document["metadata"][channel + "_mode"]
         document["metadata"]["generate_" + channel + "s"] = {"type": "bool", "value": False}
     sidecar.write_text(json.dumps(document), encoding="utf-8")
     result = database.reimport_asset(str(source))
     assert result, result.error
     assert result.guid == first.guid
     settings = read_mesh_import_settings(str(source))
-    assert settings.normal_mode == settings.tangent_mode == "source_only"
-    migrated = json.loads(sidecar.read_text(encoding="utf-8"))["metadata"]
-    assert "generate_normals" not in migrated and "generate_tangents" not in migrated
+    assert settings.normal_mode == settings.tangent_mode == "import"
+    settings.is_readable = True
+    readable = AssetManager.reimport_asset(str(source), import_settings=settings.to_dict(), database=database)
+    assert readable, readable.error
     mesh = inx.Mesh.load_guid(first.guid)
     np.testing.assert_allclose(mesh.vertex_buffer["normals"], np.tile([1, 0, 0], (mesh.vertex_count, 1)))
+
+
+def test_lit_mesh_without_uvs_publishes_a_valid_tangent_frame(engine, tmp_path):
+    """A flat default normal texture must not turn a no-UV model black."""
+    database = engine.get_asset_database()
+    source = Path(database.assets_root) / tmp_path.name / "NoUv.obj"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        "v 0 0 0\nv 1 0 0\nv 0 1 0\n"
+        "vn 0 0 1\n"
+        "f 1//1 2//1 3//1\n",
+        encoding="utf-8",
+    )
+    imported = database.import_asset(str(source))
+    assert imported, imported.error
+    settings = read_mesh_import_settings(str(source))
+    settings.is_readable = True
+    readable = AssetManager.reimport_asset(str(source), import_settings=settings.to_dict(), database=database)
+    assert readable, readable.error
+    mesh = inx.Mesh.load_guid(imported.guid)
+    tangents = mesh.vertex_buffer["tangents"]
+    np.testing.assert_allclose(np.linalg.norm(tangents[:, :3], axis=1), 1, atol=1.e-5)
+    np.testing.assert_allclose(tangents[:, 3], 1, atol=1.e-5)
 
 
 def test_calculate_tangents_replaces_authored_uv_basis(engine, tmp_path):
@@ -95,8 +119,11 @@ def test_calculate_tangents_replaces_authored_uv_basis(engine, tmp_path):
     imported = database.import_asset(str(source))
     assert imported, imported.error
     mesh = inx.Mesh.load_guid(imported.guid)
-    authored = mesh.vertex_buffer["tangents"].copy()
     settings = read_mesh_import_settings(str(source))
+    settings.is_readable = True
+    readable = AssetManager.reimport_asset(str(source), import_settings=settings.to_dict(), database=database)
+    assert readable, readable.error
+    authored = mesh.vertex_buffer["tangents"].copy()
     settings.tangent_mode = "calculate"
     result = AssetManager.reimport_asset(str(source), import_settings=settings.to_dict(), database=database)
     assert result, result.error
@@ -111,6 +138,61 @@ def test_calculate_tangents_replaces_authored_uv_basis(engine, tmp_path):
     np.testing.assert_allclose(mesh.vertex_buffer["tangents"], authored, atol=1.e-5)
 
 
+def test_secondary_uv_is_runtime_visible_swappable_and_cooked(engine, tmp_path):
+    database = engine.get_asset_database()
+    fixture = Path(__file__).resolve().parents[2] / "cpp/tests/fixtures/model_uv_basis.gltf"
+    source = Path(database.assets_root) / tmp_path.name / fixture.name
+    source.parent.mkdir(parents=True)
+    source.write_bytes(fixture.read_bytes())
+    imported = database.import_asset(str(source))
+    assert imported, imported.error
+    settings = read_mesh_import_settings(str(source))
+    settings.is_readable = True
+    published = AssetManager.reimport_asset(str(source), import_settings=settings.to_dict(), database=database)
+    assert published, published.error
+    mesh = inx.Mesh.load_guid(imported.guid)
+    primary = mesh.vertex_buffer["uvs"].copy()
+    secondary = mesh.vertex_buffer["uvs1"].copy()
+    assert primary.shape == secondary.shape == (mesh.vertex_count, 2)
+    assert not np.array_equal(primary, secondary)
+    assert AssetRegistry.instance().reload_asset(imported.guid)
+    np.testing.assert_array_equal(mesh.vertex_buffer["uvs1"], secondary)
+
+    settings.swap_uv_channels = True
+    swapped = AssetManager.reimport_asset(str(source), import_settings=settings.to_dict(), database=database)
+    assert swapped, swapped.error
+    np.testing.assert_array_equal(mesh.vertex_buffer["uvs"], secondary)
+    np.testing.assert_array_equal(mesh.vertex_buffer["uvs1"], primary)
+
+
+def test_source_smoothing_requires_and_consumes_authored_normals(engine, tmp_path):
+    database = engine.get_asset_database()
+    fixtures = Path(__file__).resolve().parents[2] / "cpp/tests/fixtures"
+    authored = Path(database.assets_root) / tmp_path.name / "Authored.obj"
+    authored.parent.mkdir(parents=True)
+    authored.write_bytes((fixtures / "model_authored_smoothing.obj").read_bytes())
+    imported = database.import_asset(str(authored))
+    assert imported, imported.error
+    settings = read_mesh_import_settings(str(authored))
+    settings.is_readable = True
+    settings.normal_mode = "calculate"
+    settings.normal_smoothing_source = "source"
+    published = AssetManager.reimport_asset(str(authored), import_settings=settings.to_dict(), database=database)
+    assert published, published.error
+    mesh = inx.Mesh.load_guid(imported.guid)
+    origin = mesh.vertex_buffer["normals"][np.all(mesh.vertex_buffer["positions"] == 0, axis=1)]
+    assert origin.shape == (2, 3)
+    assert np.dot(origin[0], origin[1]) < .1
+
+    missing = authored.with_name("Missing.obj")
+    missing.write_bytes((fixtures / "model_smoothing.obj").read_bytes())
+    missing_import = database.import_asset(str(missing))
+    assert missing_import, missing_import.error
+    rejected = AssetManager.reimport_asset(str(missing), import_settings=settings.to_dict(), database=database)
+    assert not rejected
+    assert "source normals" in rejected.error
+
+
 @pytest.mark.parametrize("asynchronous", [False, True])
 def test_normal_weighting_apply_and_binary_reload(engine, tmp_path, monkeypatch, asynchronous):
     database = engine.get_asset_database()
@@ -123,6 +205,7 @@ def test_normal_weighting_apply_and_binary_reload(engine, tmp_path, monkeypatch,
     assert imported, imported.error
     mesh = inx.Mesh.load_guid(imported.guid)
     settings = read_mesh_import_settings(str(source))
+    settings.is_readable = True
     assert settings.tangent_algorithm == "mikktspace"
     for mode, ratio in (("unweighted", 1), ("area", 2), ("angle", 2), ("area_angle", 4)):
         settings.normal_weighting = mode

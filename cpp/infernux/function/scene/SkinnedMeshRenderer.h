@@ -114,6 +114,8 @@ class SkinnedMeshRenderer : public MeshRenderer
     }
     [[nodiscard]] float GetAnimationDurationSeconds(const std::string &takeName,
                                                     const std::string &animationSourceGuid = {}) const;
+    [[nodiscard]] RootMotionDelta GetRootMotionDelta(const std::string &takeName, float fromSeconds, float toSeconds,
+                                                     bool loop, const std::string &animationSourceGuid = {}) const;
 
     void ReloadSourceModel();
     [[nodiscard]] bool ReferencesModelGuid(const std::string &guid) const;
