@@ -140,13 +140,6 @@ from Infernux import LayerMask as LayerMask
 from Infernux import SceneManager as SceneManager
 from Infernux import Time as Time
 from Infernux import Mathf as Mathf
-from Infernux import Ease as Ease
-from Infernux import LoopMode as LoopMode
-from Infernux import Sequence as Sequence
-from Infernux import Tween as Tween
-from Infernux import UpdateMode as UpdateMode
-from Infernux import clear_tweens as clear_tweens
-from Infernux import kill_tweens as kill_tweens
 from Infernux import Coroutine as Coroutine
 from Infernux import WaitForSeconds as WaitForSeconds
 from Infernux import WaitForSecondsRealtime as WaitForSecondsRealtime

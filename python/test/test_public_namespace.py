@@ -196,6 +196,7 @@ def test_lowercase_type_stub_explicitly_covers_runtime_exports() -> None:
         if node.module == "Infernux":
             explicit.update(alias.asname or alias.name for alias in node.names)
     assert set(inx.__all__) <= explicit
+    assert not [name for name in explicit if not hasattr(inx, name)]
 
 
 def test_lowercase_namespace_reload_preserves_runtime_type_identity() -> None:
