@@ -141,12 +141,16 @@ class ComponentNativeMixin:
 
     def _bind_native_component(self, cpp_component, game_object=None):
         """Bind this Python instance to its native lifecycle authority."""
+        # DontDestroyOnLoad refreshes world-scoped handles by rebinding the
+        # same proxy.  Registered callbacks still belong to this component.
+        same_native_proxy = self._cpp_component is cpp_component and cpp_component is not None
         self._cpp_component = cpp_component
         self._native_handle = getattr(cpp_component, "handle", None) if cpp_component is not None else None
         self._native_scene = getattr(game_object, "scene", None) if game_object is not None else None
         self._capture_bound_structure_version()
         self._native_game_object_handle = getattr(game_object, "handle", None) if game_object is not None else None
-        self._native_generation += 1
+        if not same_native_proxy:
+            self._native_generation += 1
         if cpp_component is not None:
             self._is_destroyed = False
         if game_object is not None:

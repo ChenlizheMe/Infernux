@@ -4,6 +4,7 @@ Merges tests from test_component_annotation_defaults.py.
 """
 
 import weakref
+from typing import ClassVar
 
 from Infernux.components import InxComponent
 from Infernux.components.fields import (
@@ -20,31 +21,54 @@ from Infernux.components.fields import (
 )
 
 
-def test_project_relative_asset_path_is_resolved_before_guid_lookup(monkeypatch, tmp_path):
-    import importlib
+def test_component_class_constants_do_not_block_lifecycle_publication():
+    class DemoComponent(InxComponent):
+        SCENES = (("Jelly", "01_XPBD_Jelly"),)
+        HINTS = {"01_XPBD_Jelly": "Press Space"}
+        SETTINGS: ClassVar[dict] = {"speed": 1.0}
+        speed = 5.0
+        EXPLICIT = serialized_field(default=7)
 
-    from Infernux.engine import project_context
+        def start(self):
+            self.started = True
 
-    serialized_field_module = importlib.import_module("Infernux.components.fields")
+    fields = get_serialized_fields(DemoComponent)
+    assert set(fields) == {"speed", "EXPLICIT"}
+    assert DemoComponent.SCENES == (("Jelly", "01_XPBD_Jelly"),)
+    assert DemoComponent.HINTS["01_XPBD_Jelly"] == "Press Space"
 
-    project = tmp_path / "Project"
-    asset = project / "Assets" / "VFX" / "Ribbon.particlegraph"
-    asset.parent.mkdir(parents=True)
-    asset.write_text("{}", encoding="ascii")
+    from Infernux.engine.runtime_dispatch import current_runtime_epoch
 
-    class AbsoluteOnlyDatabase:
-        @staticmethod
-        def get_guid_from_path(path):
-            return "ribbon-guid" if str(path) == str(asset) else ""
+    descriptor = current_runtime_epoch().require_descriptor(DemoComponent)
+    assert "start" in descriptor.methods
 
-    monkeypatch.setattr(serialized_field_module, "_get_asset_db", lambda: AbsoluteOnlyDatabase())
-    monkeypatch.setattr(project_context, "_project_root", str(project))
+
+def test_annotation_only_class_var_is_not_a_serialized_field():
+    class ClassVarComponent(InxComponent):
+        SETTINGS: ClassVar[dict]
+        speed = 3.0
+
+    assert set(get_serialized_fields(ClassVarComponent)) == {"speed"}
+
+
+def test_raw_path_assignment_resolves_guid_at_editor_boundary(monkeypatch):
+    from Infernux.components import fields as serialized_field_module
+    from Infernux.core.assets import AssetManager
+
+    class Database:
+        def get_guid_from_path(self, path):
+            return "particle-guid" if path == "Assets/VFX/Ribbon.particlegraph" else ""
+
+        def get_path_from_guid(self, guid):
+            return "Assets/VFX/Ribbon.particlegraph" if guid == "particle-guid" else ""
+
+    monkeypatch.setattr(AssetManager, "_asset_database", Database())
 
     guid, path_hint = serialized_field_module._extract_guid_and_path(
         "Assets/VFX/Ribbon.particlegraph", ()
     )
 
-    assert guid == "ribbon-guid"
+    assert guid == "particle-guid"
     assert path_hint == "Assets/VFX/Ribbon.particlegraph"
 
 

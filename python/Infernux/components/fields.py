@@ -12,7 +12,7 @@ Usage:
 """
 
 from enum import Enum, auto
-from typing import Any, Tuple, Optional, Type, Dict, Callable, TYPE_CHECKING, List, Union
+from typing import Any, Tuple, Optional, Type, Dict, Callable, TYPE_CHECKING, List, Union, ClassVar, get_origin
 from dataclasses import dataclass
 import copy
 import os
@@ -1772,6 +1772,14 @@ def _compile_serialized_fields(cls, *, descriptors: bool = True) -> None:
     def _annotation_for(name):
         return resolved_hints.get(name, own_annotations.get(name))
 
+    def _is_class_var(annotation) -> bool:
+        if get_origin(annotation) is ClassVar:
+            return True
+        if isinstance(annotation, str):
+            compact = annotation.replace(" ", "")
+            return compact.startswith(("ClassVar[", "typing.ClassVar["))
+        return False
+
     # ── Pass 1: attributes with a class-level value ──────────────────
     for attr_name in list(cls.__dict__):
         # Raw attribute from class __dict__ (avoids descriptor protocol)
@@ -1791,6 +1799,14 @@ def _compile_serialized_fields(cls, *, descriptors: bool = True) -> None:
             continue
 
         ann = _annotation_for(attr_name)
+        if _is_class_var(ann):
+            continue
+        # Public uppercase names are Python constants, not per-instance
+        # Inspector fields.  An explicit field declaration still opts in.
+        if attr_name.isupper() and not isinstance(
+            attr, (SerializedFieldDescriptor, FieldMetadata)
+        ):
+            continue
 
         # CppProperty — delegates to a C++ component attribute.
         if getattr(attr, '_is_cpp_property', False):
@@ -1851,6 +1867,8 @@ def _compile_serialized_fields(cls, *, descriptors: bool = True) -> None:
         if attr_name in cls.__dict__ or attr_name in cls._serialized_fields_:
             continue
         ann = _annotation_for(attr_name)
+        if _is_class_var(ann):
+            continue
 
         if attr_name.startswith('_'):
             default_value = get_annotation_default(ann)
