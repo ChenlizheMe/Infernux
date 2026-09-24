@@ -765,7 +765,9 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
     assert "INFERNUX_WEBGPU_FULLSCREEN_RHI_READY" in main
     assert "g_sceneRenderer.Render" in main
     assert "!g_webGpuValidationFailed && g_sceneRenderer.Prepare" in main
-    assert "scenePrepared && g_sceneRenderer.HasDepthTarget()" in main
+    assert main.index("g_sceneRenderer.Prepare(encoder, g_width, g_height)") < main.index(
+        "passDescriptor.depthStencilAttachment = &depthAttachment"
+    ) < main.index("scenePrepared && g_sceneRenderer.RenderPrepared(pass)")
     assert "INFERNUX_WEB_SCENE_RENDER_READY" in scene_renderer
     assert "INFERNUX_WEB_SKY_READY" in scene_renderer
     assert "INFERNUX_WEB_SHADOW_READY" in scene_renderer
@@ -1020,7 +1022,12 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
     assert "WebScreenUIRenderer.cpp" in cmake
     assert 'set(ZSTD_LEGACY_SUPPORT OFF CACHE BOOL "" FORCE)' in cmake
     assert "INFERNUX_WEB_SCREEN_UI_READY" in screen_ui_renderer
-    assert "descriptor.depthStencil" not in screen_ui_renderer
+    screen_pipeline = screen_ui_renderer[
+        screen_ui_renderer.index("bool WebScreenUIRenderer::CreatePipelineAndFontAtlas()") :
+        screen_ui_renderer.index("bool WebScreenUIRenderer::CreateWorldPipelines()")
+    ]
+    assert "descriptor.depthStencil" not in screen_pipeline
+    assert "descriptor.depthStencil = &depth;" in screen_ui_renderer
     assert "INFERNUX_WEB_SCREEN_UI_TEXTURE_READY" in host_module
     assert "screen_ui_resolve_texture" in host_module
     assert '"screen_ui_upload_image", ScreenUIUploadImage' in host_module
