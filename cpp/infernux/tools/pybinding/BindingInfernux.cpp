@@ -2706,6 +2706,9 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
         .def("pick_scene_object_ids", &Infernux::PickSceneObjectIds, py::arg("screen_x"), py::arg("screen_y"),
              py::arg("viewport_width"), py::arg("viewport_height"),
              "Pick ordered scene object candidate IDs from screen coordinates")
+        .def("pick_scene_icon_object_ids", &Infernux::PickSceneIconObjectIds, py::arg("screen_x"), py::arg("screen_y"),
+             py::arg("viewport_width"), py::arg("viewport_height"),
+             "Pick projected component icon quads and return their owner IDs")
         .def(
             "request_scene_object_pick",
             [](Infernux &self, float x, float y, float viewportWidth, float viewportHeight) {

@@ -13,9 +13,13 @@
 #include <function/scene/SceneManager.h>
 #include <function/scene/SceneRenderBridge.h>
 #include <function/scene/SceneRenderExtractor.h>
+#include <function/scene/SkinnedMeshRenderer.h>
 
 #include <algorithm>
 #include <cassert>
+#include <cmath>
+#include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtc/quaternion.hpp>
 #include <limits>
 #include <memory>
 
@@ -376,8 +380,76 @@ int main()
         assert(contains(additiveObjectId));
     }
 
+    // Each imported skinned child draws only its node group. Its selection
+    // bound must follow that same group after import scaling and the full
+    // parent/child affine transform, including rotation and negative scale.
+    auto importedMesh = registry.CreateRuntimeMesh("ImportedSkinnedBounds");
+    const std::string importedGuid = importedMesh->GetGuid();
+    auto skin = std::make_shared<InxSkinnedMesh>();
+    skin->scaleFactor = 0.1f;
+    const glm::vec3 authoredPositions[] = {{-1.0f, -2.0f, 0.0f},  {1.0f, -2.0f, 0.0f},   {0.0f, 2.0f, 0.0f},
+                                           {100.0f, -2.0f, 0.0f}, {102.0f, -2.0f, 0.0f}, {101.0f, 2.0f, 0.0f}};
+    std::vector<Vertex> scaledVertices(6);
+    for (size_t index = 0; index < scaledVertices.size(); ++index) {
+        skin->baseVertices.push_back(Vertex::Create(authoredPositions[index], {0.0f, 0.0f, 1.0f}, {0.0f, 0.0f}));
+        scaledVertices[index] = skin->baseVertices.back();
+        scaledVertices[index].pos *= skin->scaleFactor;
+    }
+    skin->indices = {0, 1, 2, 3, 4, 5};
+    SubMesh nearGroup{};
+    nearGroup.vertexCount = nearGroup.indexCount = 3;
+    nearGroup.nodeGroup = 0;
+    nearGroup.boundsMin = {-0.1f, -0.2f, 0.0f};
+    nearGroup.boundsMax = {0.1f, 0.2f, 0.0f};
+    SubMesh farGroup = nearGroup;
+    farGroup.vertexStart = farGroup.indexStart = 3;
+    farGroup.nodeGroup = 1;
+    farGroup.boundsMin = {10.0f, -0.2f, 0.0f};
+    farGroup.boundsMax = {10.2f, 0.2f, 0.0f};
+    skin->subMeshes = {nearGroup, farGroup};
+    InxMesh importedReplacement("ImportedSkinnedBounds");
+    importedReplacement.SetData(std::move(scaledVertices), skin->indices, skin->subMeshes);
+    importedReplacement.SetSkinnedData(skin);
+    registry.PublishMesh(importedGuid, std::move(importedReplacement));
+
+    GameObject *importParent = scene->CreateGameObject("ImportedParent");
+    importParent->GetTransform()->SetPosition({3.0f, -4.0f, 2.0f});
+    importParent->GetTransform()->SetLocalRotation(
+        glm::angleAxis(glm::radians(37.0f), glm::normalize(glm::vec3(0.0f, 1.0f, 1.0f))));
+    importParent->GetTransform()->SetLocalScale({-2.0f, 3.0f, 0.5f});
+    GameObject *importChild = scene->CreateGameObject("ImportedNearNode");
+    importChild->SetParent(importParent, false);
+    importChild->GetTransform()->SetLocalPosition({1.0f, 0.5f, -0.25f});
+    importChild->GetTransform()->SetLocalRotation(glm::angleAxis(glm::radians(-21.0f), glm::vec3(0.0f, 0.0f, 1.0f)));
+    auto *skinnedRenderer = importChild->AddComponent<SkinnedMeshRenderer>();
+    skinnedRenderer->SetSourceModelGuid(importedGuid);
+    skinnedRenderer->SetNodeGroup(0);
+    glm::vec3 nearMin, nearMax;
+    skinnedRenderer->GetWorldBounds(nearMin, nearMax);
+    glm::vec3 expectedMin(std::numeric_limits<float>::max());
+    glm::vec3 expectedMax(std::numeric_limits<float>::lowest());
+    for (int x = 0; x < 2; ++x)
+        for (int y = 0; y < 2; ++y)
+            for (int z = 0; z < 2; ++z) {
+                const glm::vec3 corner(x ? nearGroup.boundsMax.x : nearGroup.boundsMin.x,
+                                       y ? nearGroup.boundsMax.y : nearGroup.boundsMin.y,
+                                       z ? nearGroup.boundsMax.z : nearGroup.boundsMin.z);
+                const glm::vec3 position =
+                    glm::vec3(importChild->GetTransform()->GetWorldMatrix() * glm::vec4(corner, 1.0f));
+                expectedMin = glm::min(expectedMin, position);
+                expectedMax = glm::max(expectedMax, position);
+            }
+    assert(glm::length(nearMin - expectedMin) < 1.0e-4f);
+    assert(glm::length(nearMax - expectedMax) < 1.0e-4f);
+    skinnedRenderer->SetSubmeshIndex(1);
+    glm::vec3 farMin, farMax;
+    skinnedRenderer->GetWorldBounds(farMin, farMax);
+    assert(glm::length(farMin - nearMin) > 1.0f);
+    assert(glm::length(farMax - nearMax) > 1.0f);
+
     manager.UnloadAllScenes();
     registry.DestroyRuntimeMesh(twoSlotMeshGuid);
+    registry.DestroyRuntimeMesh(importedGuid);
     registry.Shutdown();
     return 0;
 }

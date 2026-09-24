@@ -3768,6 +3768,9 @@ class Infernux:
     def pick_scene_object_ids(
         self, screen_x: float, screen_y: float, viewport_width: float, viewport_height: float
     ) -> List[int]: ...
+    def pick_scene_icon_object_ids(
+        self, screen_x: float, screen_y: float, viewport_width: float, viewport_height: float
+    ) -> List[int]: ...
     def request_scene_object_pick(
         self, screen_x: float, screen_y: float, viewport_width: float, viewport_height: float
     ) -> int: ...

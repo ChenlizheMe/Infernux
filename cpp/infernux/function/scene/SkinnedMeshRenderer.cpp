@@ -94,7 +94,8 @@ void SkinnedMeshRenderer::ComputeWorldBounds(const glm::mat4 &worldMatrix, glm::
     const auto palette = m_skinPoseHistory.Current();
     glm::vec3 localMin;
     glm::vec3 localMax;
-    if (model && palette && model->ComputeSkinnedBounds(*palette, localMin, localMax)) {
+    if (model && palette &&
+        model->ComputeSkinnedBounds(*palette, localMin, localMax, GetNodeGroup(), GetSubmeshIndex())) {
         TransformBounds(worldMatrix, localMin, localMax, outMin, outMax);
         return;
     }

@@ -54,6 +54,21 @@ if(INFERNUX_BUILD_TESTS)
     endif()
     add_test(NAME infernux.gizmo_draw_buffer COMMAND infernux_gizmo_draw_buffer_tests)
 
+    add_executable(infernux_scene_icon_picking_tests
+        cpp/tests/SceneIconPickingTests.cpp
+    )
+    target_include_directories(infernux_scene_icon_picking_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/cpp/infernux
+        ${CMAKE_SOURCE_DIR}/external
+    )
+    target_link_libraries(infernux_scene_icon_picking_tests PRIVATE infernux_runtime_test_support)
+    if(MSVC)
+        target_compile_options(infernux_scene_icon_picking_tests PRIVATE /utf-8 /UNDEBUG)
+    else()
+        target_compile_options(infernux_scene_icon_picking_tests PRIVATE -UNDEBUG)
+    endif()
+    add_test(NAME infernux.scene_icon_picking COMMAND infernux_scene_icon_picking_tests)
+
     set(_material_texture_readiness_vert "${CMAKE_CURRENT_BINARY_DIR}/MaterialTextureReadiness.vert.spv")
     set(_material_texture_readiness_frag "${CMAKE_CURRENT_BINARY_DIR}/MaterialTextureReadiness.frag.spv")
     foreach(_stage IN ITEMS vert frag)

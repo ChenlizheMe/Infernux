@@ -268,8 +268,8 @@ class InxSkinnedMesh
     /// palette already contains the model import scale, so the result is in
     /// the same space as the rendered vertices rather than the unscaled FBX
     /// bind-pose stream.
-    [[nodiscard]] bool ComputeSkinnedBounds(const std::vector<glm::mat4> &palette, glm::vec3 &outMin,
-                                            glm::vec3 &outMax) const;
+    [[nodiscard]] bool ComputeSkinnedBounds(const std::vector<glm::mat4> &palette, glm::vec3 &outMin, glm::vec3 &outMax,
+                                            int32_t nodeGroup = -1, int32_t submeshIndex = -1) const;
 
     /// Build bone matrices from a multi-layer pose stack (N-way weighted +
     /// additive blending with optional per-layer bone masks). Used by the

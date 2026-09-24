@@ -291,7 +291,11 @@ std::shared_ptr<InxMaterial> CreateTexturedComponentGizmoIconMaterial(const std:
     MaterialTextureSampler iconSampler;
     iconSampler.minFilter = MaterialSamplerFilter::Linear;
     iconSampler.magFilter = MaterialSamplerFilter::Linear;
-    iconSampler.mipFilter = MaterialSamplerFilter::Linear;
+    // Preserve smooth within-mip filtering, but never blend two downsampled
+    // alpha masks together. The shader's small negative LOD bias selects the
+    // next finer authored mip and nearest-mip selection keeps thin icon
+    // strokes crisp at their 40-60 px Scene-view size.
+    iconSampler.mipFilter = MaterialSamplerFilter::Nearest;
     iconSampler.addressU = MaterialSamplerAddress::Clamp;
     iconSampler.addressV = MaterialSamplerAddress::Clamp;
     material->SetTextureSampler("texSampler", iconSampler);

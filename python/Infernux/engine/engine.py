@@ -1455,6 +1455,12 @@ class Engine():
             return []
         return list(self._engine.pick_scene_object_ids(screen_x, screen_y, viewport_width, viewport_height))
 
+    def pick_scene_icon_object_ids(self, screen_x: float, screen_y: float, viewport_width: float, viewport_height: float):
+        """Return component icon owners beneath a Scene-view pixel."""
+        if self._engine is None:
+            return []
+        return list(self._engine.pick_scene_icon_object_ids(screen_x, screen_y, viewport_width, viewport_height))
+
     def request_scene_object_pick(self, screen_x: float, screen_y: float, viewport_width: float, viewport_height: float) -> int:
         if self._engine is None:
             return 0

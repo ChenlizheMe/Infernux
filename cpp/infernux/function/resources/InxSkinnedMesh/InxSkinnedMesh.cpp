@@ -1051,15 +1051,15 @@ std::vector<Vertex> InxSkinnedMesh::SampleVertices(const SkinnedSampleRequest &r
     return outVertices;
 }
 
-bool InxSkinnedMesh::ComputeSkinnedBounds(const std::vector<glm::mat4> &palette, glm::vec3 &outMin,
-                                          glm::vec3 &outMax) const
+bool InxSkinnedMesh::ComputeSkinnedBounds(const std::vector<glm::mat4> &palette, glm::vec3 &outMin, glm::vec3 &outMax,
+                                          int32_t nodeGroup, int32_t submeshIndex) const
 {
     if (baseVertices.empty())
         return false;
 
     outMin = glm::vec3(std::numeric_limits<float>::max());
     outMax = glm::vec3(std::numeric_limits<float>::lowest());
-    for (size_t vertexIndex = 0; vertexIndex < baseVertices.size(); ++vertexIndex) {
+    const auto includeVertex = [&](size_t vertexIndex) {
         const glm::vec3 basePosition = baseVertices[vertexIndex].pos;
         glm::vec4 skinnedPosition(0.0f);
         float totalWeight = 0.0f;
@@ -1077,9 +1077,29 @@ bool InxSkinnedMesh::ComputeSkinnedBounds(const std::vector<glm::mat4> &palette,
         const glm::vec3 position =
             totalWeight > kEpsilon ? glm::vec3(skinnedPosition) / totalWeight : basePosition * scaleFactor;
         if (!std::isfinite(position.x) || !std::isfinite(position.y) || !std::isfinite(position.z))
-            continue;
+            return;
         outMin = glm::min(outMin, position);
         outMax = glm::max(outMax, position);
+    };
+
+    // The renderer draws only one submesh or node group for imported hierarchy
+    // children. A whole-model bound here makes every child pickable across the
+    // entire asset, even where that child's triangles are nowhere near the ray.
+    const bool selectedSubmesh = submeshIndex >= 0 && static_cast<size_t>(submeshIndex) < subMeshes.size();
+    if (selectedSubmesh || (nodeGroup >= 0 && !subMeshes.empty())) {
+        for (size_t index = 0; index < subMeshes.size(); ++index) {
+            const auto &submesh = subMeshes[index];
+            if (selectedSubmesh ? index != static_cast<size_t>(submeshIndex)
+                                : static_cast<int32_t>(submesh.nodeGroup) != nodeGroup)
+                continue;
+            const size_t end =
+                (std::min)(baseVertices.size(), static_cast<size_t>(submesh.vertexStart) + submesh.vertexCount);
+            for (size_t vertexIndex = submesh.vertexStart; vertexIndex < end; ++vertexIndex)
+                includeVertex(vertexIndex);
+        }
+    } else {
+        for (size_t vertexIndex = 0; vertexIndex < baseVertices.size(); ++vertexIndex)
+            includeVertex(vertexIndex);
     }
     return outMin.x <= outMax.x && outMin.y <= outMax.y && outMin.z <= outMax.z;
 }

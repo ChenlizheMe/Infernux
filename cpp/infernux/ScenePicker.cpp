@@ -9,10 +9,10 @@
  *     only physics colliders. We therefore combine collider hits with a
  *     lightweight MeshRenderer bounds test.
  *   - Component icon billboards (lights, cameras, particles, etc.) are
- *     pickable via a screen-space proximity test ranked at the billboard
- *     sphere entry, so they compete equally with nearby mesh AABBs.
- *   - Gizmo handles (translate/rotate/scale) are picked via a dedicated
- *     lightweight `PickGizmoAxis()` that tests both axes and plane squares.
+ *     picked against their projected Scene-view
+ * quads.
+ *   - Gizmo handles (translate/rotate/scale) are picked via a dedicated lightweight `PickGizmoAxis()` that
+ * tests both axes and plane squares.
  *
  * Contains: CollectIconHits,
  *           Infernux::PickSceneObjectId, Infernux::PickSceneObjectIds,
@@ -28,6 +28,8 @@
 #include <function/renderer/EditorTools.h>
 #include <function/renderer/GizmosDrawCallBuffer.h>
 #include <function/renderer/InxRenderer.h>
+#include <function/renderer/SceneIconPicking.h>
+#include <function/renderer/SceneRenderGraph.h>
 #include <function/scene/MeshRenderer.h>
 #include <function/scene/SceneRenderBridge.h>
 #include <function/scene/physics/PhysicsWorld.h>
@@ -44,11 +46,12 @@ namespace infernux
 // Shared picking helpers
 // ----------------------------------
 
-/// Collect all icon hits within icon radius, appending to `hits`.
-static void CollectIconHits(InxRenderer *rendererPtr, const glm::vec3 &rayOrigin, const glm::vec3 &rayDirection,
-                            Camera *camera, float viewportHeight, std::vector<std::pair<float, uint64_t>> &hits)
+/// Collect icon hits using the same projected quad size as the render pass.
+static void CollectIconHits(InxRenderer *rendererPtr, const glm::vec2 &screenPoint, const glm::vec2 &displayedSize,
+                            const glm::vec3 &rayOrigin, const glm::vec3 &rayDirection, Camera *camera,
+                            std::vector<std::pair<float, uint64_t>> &hits)
 {
-    if (!rendererPtr || !camera || viewportHeight <= 0.0f)
+    if (!rendererPtr || !camera || displayedSize.x <= 0.0f || displayedSize.y <= 0.0f)
         return;
     GizmosDrawCallBuffer *buf = rendererPtr->GetGizmosDrawCallBuffer();
     if (!buf || !buf->HasIconData())
@@ -56,25 +59,24 @@ static void CollectIconHits(InxRenderer *rendererPtr, const glm::vec3 &rayOrigin
 
     const auto &icons = buf->GetIconEntries();
     const glm::mat4 cameraToWorld = camera->GetCameraToWorldMatrix();
-    const glm::vec3 cameraPos(cameraToWorld[3]);
-    const glm::vec3 cameraForward = -glm::normalize(glm::vec3(cameraToWorld[2]));
+    const glm::mat4 view = camera->GetViewMatrix();
     const glm::mat4 projection = camera->GetProjectionMatrix();
+    uint32_t renderHeight = static_cast<uint32_t>(displayedSize.y);
+    if (SceneRenderGraph *graph = rendererPtr->GetSceneRenderGraph()) {
+        const uint32_t graphHeight = graph->GetRenderViewContext().height;
+        if (graphHeight != 0)
+            renderHeight = graphHeight;
+    }
+    const float displayScale = rendererPtr->GetDisplayScale();
     for (const auto &icon : icons) {
-        float t = glm::dot(icon.position - rayOrigin, rayDirection);
+        const float t = glm::dot(icon.position - rayOrigin, rayDirection);
         if (t < 0.0f)
             continue;
-        glm::vec3 closestOnRay = rayOrigin + rayDirection * t;
-        float dist = glm::length(closestOnRay - icon.position);
-        const float iconRadius = GizmosDrawCallBuffer::ComputeIconHalfWorldSize(
-            icon.position, cameraPos, cameraForward, projection, static_cast<uint32_t>(viewportHeight),
-            rendererPtr->GetDisplayScale());
-        if (dist >= iconRadius)
+        const auto projected =
+            ProjectSceneIcon(icon.position, cameraToWorld, view, projection, renderHeight, displayScale, displayedSize);
+        if (!projected || !SceneIconContains(*projected, screenPoint))
             continue;
-        // Rank icons by the ray's entry into the screen-space billboard
-        // sphere. Using the center put particle/light icons behind nearby
-        // mesh AABBs, so a click on the icon selected the cube behind it.
-        const float halfChord = std::sqrt(std::max(0.0f, iconRadius * iconRadius - dist * dist));
-        hits.emplace_back(std::max(0.0f, t - halfChord), icon.objectId);
+        hits.emplace_back(t, icon.objectId);
     }
 }
 
@@ -483,7 +485,8 @@ uint64_t Infernux::PickSceneObjectId(float screenX, float screenY, float viewpor
     // =========================================================================
     if (m_renderer) {
         std::vector<std::pair<float, uint64_t>> iconHits;
-        CollectIconHits(m_renderer.get(), rayOrigin, rayDirection, camera, viewportHeight, iconHits);
+        CollectIconHits(m_renderer.get(), {screenX, screenY}, {viewportWidth, viewportHeight}, rayOrigin, rayDirection,
+                        camera, iconHits);
         for (const auto &[dist, objId] : iconHits) {
             if (dist < closestDistance) {
                 closestDistance = dist;
@@ -539,7 +542,8 @@ std::vector<uint64_t> Infernux::PickSceneObjectIds(float screenX, float screenY,
     CollectMeshRendererHits(rayOrigin, rayDirection, hits);
 
     // Icon candidates
-    CollectIconHits(m_renderer.get(), rayOrigin, rayDirection, camera, viewportHeight, hits);
+    CollectIconHits(m_renderer.get(), {screenX, screenY}, {viewportWidth, viewportHeight}, rayOrigin, rayDirection,
+                    camera, hits);
 
     if (hits.empty()) {
         return orderedIds;
@@ -561,6 +565,33 @@ std::vector<uint64_t> Infernux::PickSceneObjectIds(float screenX, float screenY,
     }
 
     return orderedIds;
+}
+
+std::vector<uint64_t> Infernux::PickSceneIconObjectIds(float screenX, float screenY, float viewportWidth,
+                                                       float viewportHeight)
+{
+    if (!CheckEngineValid("pick scene icons") || !m_renderer || viewportWidth <= 0.0f || viewportHeight <= 0.0f)
+        return {};
+
+    Camera *camera = SceneRenderBridge::Instance().GetEditorCamera();
+    if (!camera)
+        return {};
+
+    const auto [rayOrigin, rayDirection] =
+        camera->ScreenPointToRay(glm::vec2(screenX, screenY), viewportWidth, viewportHeight);
+    std::vector<std::pair<float, uint64_t>> hits;
+    CollectIconHits(m_renderer.get(), {screenX, screenY}, {viewportWidth, viewportHeight}, rayOrigin, rayDirection,
+                    camera, hits);
+    std::sort(hits.begin(), hits.end(),
+              [](const auto &a, const auto &b) { return std::tie(a.first, a.second) < std::tie(b.first, b.second); });
+    std::vector<uint64_t> ids;
+    std::unordered_set<uint64_t> seen;
+    for (const auto &[distance, objectId] : hits) {
+        (void)distance;
+        if (objectId != 0 && seen.insert(objectId).second)
+            ids.push_back(objectId);
+    }
+    return ids;
 }
 
 // ============================================================================

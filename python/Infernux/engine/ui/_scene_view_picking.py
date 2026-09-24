@@ -111,10 +111,12 @@ class SceneViewPickingMixin:
             world_ui_pick = picked_id in getattr(
                 self, "_last_world_ui_pick_ids", ()
             )
+            icon_pick = picked_id in getattr(self, "_last_scene_icon_pick_ids", ())
             defer_mesh_selection = (
                 not ctrl
                 and picked_id > 0
                 and not world_ui_pick
+                and not icon_pick
                 and _has_mesh_pick_geometry(picked_id)
             )
             if self._on_object_picked and not defer_mesh_selection:
@@ -183,7 +185,10 @@ class SceneViewPickingMixin:
         self._pending_scene_pick = None
         # Additive picking builds a multi-selection; a deferred correction would
         # have to guess what to replace, so leave Ctrl-clicks to the ray path.
-        if not self._engine or ctrl:
+        # The GPU object-ID pass contains scene geometry, not editor-only icon
+        # billboards. A native-confirmed icon click is final, even when its
+        # owner also has a MeshRenderer.
+        if not self._engine or ctrl or cpu_picked_id in getattr(self, "_last_scene_icon_pick_ids", ()):
             return
 
         local_x, local_y = vp.mouse_local(ctx)
@@ -487,6 +492,7 @@ class SceneViewPickingMixin:
     def _pick_scene_object(self, ctx: InxGUIContext, vp: ViewportInfo) -> int:
         """Pick scene object under mouse cursor with repeated-click cycling."""
         self._last_world_ui_pick_ids = ()
+        self._last_scene_icon_pick_ids = ()
         if not self._engine:
             return 0
 
@@ -496,8 +502,9 @@ class SceneViewPickingMixin:
         if local_x < 0 or local_y < 0 or local_x > vp.width or local_y > vp.height:
             return 0
 
+        icon_ids = tuple(self._engine.pick_scene_icon_object_ids(local_x, local_y, vp.width, vp.height))
+        self._last_scene_icon_pick_ids = icon_ids
         candidates = self._engine.pick_scene_object_ids(local_x, local_y, vp.width, vp.height)
-
         ray = self._engine.screen_to_world_ray(local_x, local_y, vp.width, vp.height)
         if ray is not None:
             from Infernux.engine.runtime_screen_ui import pick_world_ui_object_ids
@@ -516,6 +523,21 @@ class SceneViewPickingMixin:
             candidates = self._insert_ids_by_depth(
                 candidates, world_ui_ids, local_x, local_y, vp.width, vp.height
             )
+
+        # Scene icons are rendered as editor overlays, while mesh candidates
+        # below are conservative world-space AABBs.  A large AABB can cross an
+        # otherwise empty icon pixel and must not steal the click merely
+        # because its near face is closer to the camera.  Keep native icon
+        # depth ordering, then retain the remaining candidates so repeated
+        # clicks can still cycle through overlapping scene objects.  Apply
+        # this after world-UI insertion as well: the icon is still the visible
+        # editor overlay at that pixel.
+        if icon_ids:
+            icon_id_set = set(icon_ids)
+            candidates = [
+                *icon_ids,
+                *(candidate for candidate in candidates if candidate not in icon_id_set),
+            ]
 
         # Filter invalid IDs and gizmo axis pseudo-IDs.
         ids = []

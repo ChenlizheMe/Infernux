@@ -3975,6 +3975,104 @@ class TestSceneViewPicking:
         finally:
             selection.apply_snapshot(previous, record_history=False)
 
+    def test_scene_icon_owner_with_mesh_selects_without_gpu_overwrite(self, monkeypatch):
+        from Infernux.engine.ui import _scene_view_picking as picking
+
+        class Context:
+            @staticmethod
+            def is_mouse_button_clicked(_button):
+                return True
+
+            @staticmethod
+            def is_key_down(_key):
+                return False
+
+        class Viewport:
+            width = 100.0
+            height = 80.0
+
+        class Engine:
+            def __init__(self):
+                self.requests = []
+
+            def request_scene_object_pick(self, *args):
+                self.requests.append(args)
+                return 7
+
+        class PickingProbe(picking.SceneViewPickingMixin):
+            def __init__(self):
+                self._engine = Engine()
+                self._box_select_active = False
+                self._pending_scene_pick = None
+                self._pick_cycle_candidates = [42, 7]
+                self._pick_cycle_index = 0
+                self._last_scene_icon_pick_ids = (42,)
+                self.picked = []
+                self._on_object_picked = lambda object_id, ctrl: self.picked.append((object_id, ctrl))
+
+            def _pick_scene_object(self, _ctx, _viewport):
+                self._last_scene_icon_pick_ids = (42,)
+                return 42
+
+        monkeypatch.setattr(picking, "_has_mesh_pick_geometry", lambda object_id: object_id == 42)
+        probe = PickingProbe()
+        probe._handle_picking_and_selection(
+            Context(), Viewport(), gizmo_consumed=False, overlay_hovered=False,
+            is_scene_hovered=True, play_border_clr=None,
+        )
+        assert probe.picked == [(42, False)]
+        assert probe._engine.requests == []
+        assert probe._pending_scene_pick is None
+
+    def test_scene_icon_precedes_conservative_mesh_bounds_at_same_pixel(self):
+        from Infernux.engine.ui._scene_view_picking import SceneViewPickingMixin
+
+        class Context:
+            @staticmethod
+            def get_mouse_pos_x():
+                return 421.0
+
+            @staticmethod
+            def get_mouse_pos_y():
+                return 130.0
+
+        class Viewport:
+            image_min_x = 0.0
+            image_min_y = 0.0
+            width = 975.0
+            height = 587.0
+
+            @staticmethod
+            def mouse_local(ctx):
+                return ctx.get_mouse_pos_x(), ctx.get_mouse_pos_y()
+
+        class Engine:
+            @staticmethod
+            def pick_scene_icon_object_ids(*_args):
+                return [411]
+
+            @staticmethod
+            def pick_scene_object_ids(*_args):
+                # Large imported-mesh AABBs cross this pixel even though the
+                # light icon is the visible editor overlay under the cursor.
+                return [290, 291, 292, 293, 294, 411]
+
+            @staticmethod
+            def screen_to_world_ray(*_args):
+                return None
+
+        class PickingProbe(SceneViewPickingMixin):
+            def __init__(self):
+                self._engine = Engine()
+                self._pick_cycle_candidates = []
+                self._pick_cycle_index = -1
+                self._pick_cycle_last_mouse = (-100.0, -100.0)
+                self._pick_cycle_last_viewport = (0, 0)
+
+        probe = PickingProbe()
+        assert probe._pick_scene_object(Context(), Viewport()) == 411
+        assert probe._pick_cycle_candidates == [411, 290, 291, 292, 293, 294]
+
     def test_deferred_mesh_selection_falls_back_when_gpu_pick_fails(self):
         from Infernux.engine.ui import _scene_view_picking as picking
         from Infernux.engine.interaction import SelectionService
@@ -4180,6 +4278,10 @@ class TestSceneViewPicking:
         from Infernux.engine.interaction import SelectionService
 
         class Engine:
+            @staticmethod
+            def pick_scene_icon_object_ids(*_args):
+                return []
+
             @staticmethod
             def pick_scene_object_ids(*_args):
                 return [7, 99]
@@ -4418,6 +4520,10 @@ class TestSceneViewPicking:
         from Infernux.engine.ui import _scene_view_picking as picking
 
         class Engine:
+            @staticmethod
+            def pick_scene_icon_object_ids(*_args):
+                return []
+
             @staticmethod
             def pick_scene_object_ids(*_args):
                 return [42, 7]

@@ -172,6 +172,12 @@ class Infernux
     /// @return Ordered candidate GameObject IDs (nearest first), deduplicated.
     std::vector<uint64_t> PickSceneObjectIds(float screenX, float screenY, float viewportWidth, float viewportHeight);
 
+    /// @brief Return the icon owners whose rendered Scene-view quads contain
+    /// the cursor, nearest first. This lets asynchronous GPU mesh picking
+    /// preserve an intentional click on a component icon owned by a mesh.
+    std::vector<uint64_t> PickSceneIconObjectIds(float screenX, float screenY, float viewportWidth,
+                                                 float viewportHeight);
+
     /// @brief Lightweight gizmo-only handle proximity test (no scene raycast).
     /// Used every frame for hover highlighting — tests axis and plane handles.
     /// @return Gizmo handle ID, or 0 if not hovering any handle.

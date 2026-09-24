@@ -49,6 +49,11 @@ void VerifyGizmoIconPreservesAuthoredAlpha()
     assert(!state.alphaClipEnabled);
     assert(state.alphaClipThreshold == 0.0f);
     assert(state.depthTestEnable && !state.depthWriteEnable);
+    const auto *sampler = material->GetTextureSampler("texSampler");
+    assert(sampler != nullptr);
+    assert(sampler->minFilter == MaterialSamplerFilter::Linear);
+    assert(sampler->magFilter == MaterialSamplerFilter::Linear);
+    assert(sampler->mipFilter == MaterialSamplerFilter::Nearest);
     // Shader defaults cannot turn the explicitly authored blend into a mask.
     material->ApplyShaderRenderMeta("", "", "", "", 2000, "", "", "0.5");
     assert(!material->GetRenderState().alphaClipEnabled);
