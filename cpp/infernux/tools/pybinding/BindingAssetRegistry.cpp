@@ -246,6 +246,19 @@ void RegisterAssetRegistryBindings(py::module_ &m)
         .def_property_readonly("vertex_count", &InxMesh::GetVertexCount, "Total vertex count")
         .def_property_readonly("index_count", &InxMesh::GetIndexCount, "Total index count")
         .def_property_readonly("submesh_count", &InxMesh::GetSubMeshCount, "Number of submeshes")
+        .def_property_readonly(
+            "morph_target_count", [](const InxMesh &mesh) { return mesh.GetMorphTargets().size(); },
+            "Number of imported blend-shape targets")
+        .def_property_readonly(
+            "morph_target_names",
+            [](const InxMesh &mesh) {
+                std::vector<std::string> names;
+                names.reserve(mesh.GetMorphTargets().size());
+                for (const auto &target : mesh.GetMorphTargets())
+                    names.push_back(target.name);
+                return names;
+            },
+            "Imported blend-shape target names in source order")
         .def_property_readonly("material_slot_count", &InxMesh::GetMaterialSlotCount, "Number of material slots")
         .def_property_readonly("material_slot_names", &InxMesh::GetMaterialSlotNames,
                                "Material slot names from model file")
