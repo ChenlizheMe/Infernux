@@ -96,6 +96,7 @@ struct FullscreenRenderer::Impl
                                                                       : rhi::BindingType::CombinedTextureSampler;
             binding.visibility = rhi::ShaderStage::Fragment;
             binding.depthRead = (key.depthInputMask & (1u << index)) != 0;
+            binding.readOnlyStorage = binding.type == rhi::BindingType::StorageBuffer;
         }
         entry.rhi.inputLayout = device->CreateBindingLayout(inputLayoutDesc);
         if (!entry.rhi.inputLayout.IsValid())

@@ -235,15 +235,19 @@ struct ShaderModuleDesc
     ShaderSourceLanguage language = ShaderSourceLanguage::SpirV;
     const void *code = nullptr;
     size_t byteSize = 0;
+    // Explicitly opt in only for compute kernels whose existing layout grants
+    // write access to every storage buffer. Graphics inputs retain WGSL access.
+    bool widenReadOnlyStorage = false;
 
     [[nodiscard]] static constexpr ShaderModuleDesc FromSpirV(const uint32_t *words, size_t wordCount) noexcept
     {
         return {ShaderSourceLanguage::SpirV, words, wordCount * sizeof(uint32_t)};
     }
 
-    [[nodiscard]] static constexpr ShaderModuleDesc FromWgsl(const char *text, size_t byteSize) noexcept
+    [[nodiscard]] static constexpr ShaderModuleDesc FromWgsl(const char *text, size_t byteSize,
+                                                             bool widenReadOnlyStorage = false) noexcept
     {
-        return {ShaderSourceLanguage::Wgsl, text, byteSize};
+        return {ShaderSourceLanguage::Wgsl, text, byteSize, widenReadOnlyStorage};
     }
 };
 
@@ -270,6 +274,9 @@ struct BindingLayoutEntry
     /// immutable bind-group layout. Vulkan does not need this bit, but keeping
     /// it in the shared contract lets both backends consume the same layout.
     bool depthRead = false;
+    // Storage-buffer access is part of the immutable WebGPU binding layout.
+    // Vulkan uses the same descriptor type for both access modes.
+    bool readOnlyStorage = false;
 };
 
 struct TextureBinding
