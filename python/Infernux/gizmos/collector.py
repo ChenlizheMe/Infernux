@@ -128,11 +128,15 @@ class GizmosCollector:
         # to be active for object creation.
         self._last_structure_signature = ()
         self._builtin_registry = None
+        self._builtin_plan = None
         # The selected-object subtree is stable until the scene structure or
         # selection changes.  Keep only its IDs: component state and Gizmo
         # geometry are still evaluated every frame.
         self._selection_cache_key = None
+        self._selected_context_key = None
         self._selected_ancestor_ids = frozenset()
+        self._selected_scene = None
+        self._selected_matches = ()
         self._cache_generation = 0
         # Native clears are transition based. Empty frames must not cross the
         # Python/C++ boundary merely to clear buffers that are already empty.
@@ -151,7 +155,10 @@ class GizmosCollector:
         self._cache_built.clear()
         self._cache_generation += 1
         self._selection_cache_key = None
+        self._selected_context_key = None
         self._selected_ancestor_ids = frozenset()
+        self._selected_scene = None
+        self._selected_matches = ()
 
     @property
     def last_observation(self) -> GizmoCollectionObservation:
@@ -183,7 +190,8 @@ class GizmosCollector:
         """Walk the scene, invoke callbacks, upload geometry to C++."""
         global _scene_dirty
 
-        frame_started = time.perf_counter()
+        timing_enabled = _GEOMETRY_PROFILE_COMPILED
+        frame_started = time.perf_counter() if timing_enabled else 0.0
         python_callbacks = 0
         builtin_callbacks = 0
         callback_ms = 0.0
@@ -192,7 +200,6 @@ class GizmosCollector:
         skipped_disabled = 0
 
         from Infernux.lib import SceneManager as _SM
-        timing_enabled = _GEOMETRY_PROFILE_COMPILED
         # Ensure built-in wrapper classes (Camera, Light, etc.) have run their
         # BuiltinComponent.__init_subclass__ registration before we snapshot
         # _builtin_registry. Without this prewarm, icon-only gizmos can appear
@@ -259,19 +266,45 @@ class GizmosCollector:
         # Build the selected subtree only when its inputs changed.  The set is
         # used for membership tests below, while all component enabled checks,
         # callbacks, transforms, and uploads remain per-frame.
-        selected_scene = next(
-            (scene for scene in scenes if scene.find_by_id(selected_id) is not None),
-            None,
-        ) if selected_id else None
-        selected_ancestors = self._get_selected_ancestor_ids(
-            selected_scene, selected_id
-        )
+        selection_key = (self._cache_generation, int(selected_id or 0))
+        if selection_key != self._selected_context_key:
+            selected_scene = next(
+                (scene for scene in scenes if scene.find_by_id(selected_id) is not None),
+                None,
+            ) if selected_id else None
+            selected_ancestors = self._get_selected_ancestor_ids(selected_scene, selected_id)
+            self._selected_scene = selected_scene
+            self._selected_matches = tuple(
+                go for gid in selected_ancestors if gid
+                if (go := selected_scene.find_by_id(gid)) is not None
+            ) if selected_scene is not None else ()
+            self._selected_context_key = selection_key
+        else:
+            selected_scene = self._selected_scene
+            selected_ancestors = self._selected_ancestor_ids
 
-        # Builtin wrapper registration is process-stable after the import above;
-        # copying this dictionary for every scene frame was needless work.
+        # The registry may gain or replace a wrapper when plugins load. Compare
+        # against its last snapshot in C and rebuild the draw plan only then.
         if self._builtin_registry is None:
-            self._builtin_registry = dict(BuiltinComponent._builtin_registry)
-        builtin_registry = self._builtin_registry
+            self._builtin_registry = BuiltinComponent._builtin_registry
+        if self._builtin_plan is None or self._builtin_plan[0] != self._builtin_registry:
+            plan = []
+            for type_name, wrapper_cls in self._builtin_registry.items():
+                icon_color = self._resolve_class_value(wrapper_cls, '_gizmo_icon_color', None)
+                has_gizmos = (
+                    wrapper_cls.on_draw_gizmos is not InxComponent.on_draw_gizmos
+                    or wrapper_cls.on_draw_gizmos_selected is not InxComponent.on_draw_gizmos_selected
+                )
+                if icon_color is None and not has_gizmos:
+                    continue
+                plan.append((
+                    type_name, wrapper_cls, icon_color,
+                    self._resolve_class_value(wrapper_cls, '_gizmo_icon_kind', ICON_KIND_DEFAULT),
+                    has_gizmos,
+                    bool(self._resolve_class_value(wrapper_cls, '_always_show', True)),
+                ))
+            self._builtin_plan = (dict(self._builtin_registry), tuple(plan))
+        builtin_plan = self._builtin_plan[1]
 
         # ====================================================================
         # Pass 1: Python component gizmos
@@ -337,18 +370,7 @@ class GizmosCollector:
         #      builds a per-type GO list once and reuses it every subsequent
         #      frame (~O(1) after first build, O(N) on cache miss).
         # ====================================================================
-        for type_name, wrapper_cls in builtin_registry.items():
-
-            # --- a) Pre-filter: does this type contribute anything visible? ---
-            icon_color = self._resolve_class_value(wrapper_cls, '_gizmo_icon_color', None)
-            has_gizmos = (
-                wrapper_cls.on_draw_gizmos is not InxComponent.on_draw_gizmos
-                or wrapper_cls.on_draw_gizmos_selected is not InxComponent.on_draw_gizmos_selected
-            )
-            if icon_color is None and not has_gizmos:
-                continue  # Nothing to draw (Rigidbody, MeshRenderer, …)
-
-            always_show_cls = bool(self._resolve_class_value(wrapper_cls, '_always_show', True))
+        for type_name, wrapper_cls, icon_color, icon_kind, has_gizmos, always_show_cls in builtin_plan:
 
             # --- b) Skip selection-only types when nothing is selected ---
             if icon_color is None and not always_show_cls and not selected_ancestors:
@@ -360,11 +382,7 @@ class GizmosCollector:
                 matching = self._get_icon_instances(scenes, type_name)
             elif not always_show_cls and selected_ancestors:
                 # Selection-only gizmos: only visit selected + descendant objects
-                matching = [
-                    selected_scene.find_by_id(gid)
-                    for gid in selected_ancestors if gid
-                ]
-                matching = [go for go in matching if go is not None]
+                matching = self._selected_matches
             else:
                 # Always-visible gizmos span the complete loaded editor world.
                 matching = [
@@ -407,7 +425,6 @@ class GizmosCollector:
                     transform = go.get_transform()
                     if transform is not None:
                         pos = transform.position
-                        icon_kind = self._resolve_class_value(wrapper_cls, '_gizmo_icon_kind', ICON_KIND_DEFAULT)
                         if timing_enabled:
                             invoke_geometry(
                                 Gizmos.draw_icon,
@@ -417,7 +434,10 @@ class GizmosCollector:
                                 (pos.x, pos.y, pos.z), go_id, icon_color, icon_kind=icon_kind)
 
                 # ---- Gizmo lifecycle ----
-                if not has_gizmos:
+                if not has_gizmos or (
+                    not is_selected
+                    and wrapper_cls.on_draw_gizmos is InxComponent.on_draw_gizmos
+                ):
                     continue
 
                 try:
@@ -462,13 +482,13 @@ class GizmosCollector:
         handles_ms = (time.perf_counter() - handles_started) * 1000.0 if timing_enabled else 0.0
         geometry_build_ms = Gizmos._geometry_build_ms
 
-        collect_finished = time.perf_counter()
+        collect_finished = time.perf_counter() if timing_enabled else 0.0
 
         # ---- Pack and upload line gizmo data ----
         packed = Gizmos._get_packed_data()
         resident = Gizmos._get_resident_data()
         icon_packed = Gizmos._get_packed_icon_data()
-        pack_finished = time.perf_counter()
+        pack_finished = time.perf_counter() if timing_enabled else 0.0
 
         cpu_vertices = 0
         cpu_line_indices = 0
@@ -504,7 +524,7 @@ class GizmosCollector:
             native.clear_component_gizmo_icons()
             self._icons_uploaded = False
 
-        upload_finished = time.perf_counter()
+        upload_finished = time.perf_counter() if timing_enabled else 0.0
         self._last_observation = GizmoCollectionObservation(
             scene_count=len(scenes),
             python_callbacks=python_callbacks,

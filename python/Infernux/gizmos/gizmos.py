@@ -179,6 +179,7 @@ class Gizmos:
         0, 0, 1, 0,
         0, 0, 0, 1,
     ]
+    _identity_matrix_key = tuple(_identity_matrix)
 
     @classmethod
     def _begin_frame(cls):
@@ -196,6 +197,12 @@ class Gizmos:
     def _current_matrix(cls) -> List[float]:
         return cls.matrix if cls.matrix is not None else cls._identity_matrix
 
+    @classmethod
+    def _snapshot_matrix(cls) -> List[float]:
+        # The identity is immutable engine state. Custom matrices remain
+        # snapshots because scripts may edit their matrix after a draw call.
+        return cls._identity_matrix if cls.matrix is None else list(cls.matrix)
+
     # ====================================================================
     # Primitive: line
     # ====================================================================
@@ -210,7 +217,7 @@ class Gizmos:
             [end[0], end[1], end[2], c[0], c[1], c[2]],
         ]
         indices = [0, 1]
-        cls._draw_batches.append((verts, indices, list(cls._current_matrix())))
+        cls._draw_batches.append((verts, indices, cls._snapshot_matrix()))
 
     @classmethod
     @_profile_geometry_helper
@@ -235,7 +242,7 @@ class Gizmos:
         vertices[:,:3] = positions
         vertices[:,3:] = cls.color
         cls._draw_batches.append((vertices, indices.astype(np.uint32,copy=True).ravel(),
-                                  list(cls._current_matrix())))
+                                  cls._snapshot_matrix()))
 
     @classmethod
     def _draw_resident_lines(cls, positions: Buffer, indices) -> None:
@@ -274,7 +281,7 @@ class Gizmos:
             _resident_line_vertex_kernel,
             params=(state.domain, positions, state.vertices, red, green, blue),
         )
-        cls._resident_draw_batches.append((state, list(cls._current_matrix())))
+        cls._resident_draw_batches.append((state, cls._snapshot_matrix()))
 
     # ====================================================================
     # Primitive: ray
@@ -346,7 +353,7 @@ class Gizmos:
 
         c = cls.color
         verts = [[p[0], p[1], p[2], c[0], c[1], c[2]] for p in corners]
-        cls._draw_batches.append((verts, edges, list(cls._current_matrix())))
+        cls._draw_batches.append((verts, edges, cls._snapshot_matrix()))
 
     # ====================================================================
     # Primitive: wire sphere
@@ -358,7 +365,7 @@ class Gizmos:
         """Draw a wireframe sphere as three axis-aligned circles."""
         c = cls.color
         cx, cy, cz = center
-        mat = list(cls._current_matrix())
+        mat = cls._snapshot_matrix()
 
         if _HAS_CPP_GIZMOS:
             vert_flat, vert_count, idx_flat = _cpp_wire_sphere(
@@ -533,7 +540,7 @@ class Gizmos:
 
         c = cls.color
         verts = [[p[0], p[1], p[2], c[0], c[1], c[2]] for p in corners]
-        cls._draw_batches.append((verts, edges, list(cls._current_matrix())))
+        cls._draw_batches.append((verts, edges, cls._snapshot_matrix()))
 
     # ====================================================================
     # Primitive: wire arc / circle
@@ -546,7 +553,7 @@ class Gizmos:
                       segments: int = 32):
         """Draw a wireframe arc (or full circle) in a plane defined by *normal*."""
         c = cls.color
-        mat = list(cls._current_matrix())
+        mat = cls._snapshot_matrix()
 
         if _HAS_CPP_GIZMOS:
             vert_flat, vert_count, idx_flat = _cpp_wire_arc(
@@ -603,7 +610,7 @@ class Gizmos:
                 indices.append(i - 1)
                 indices.append(i)
 
-        cls._draw_batches.append((verts, indices, list(cls._current_matrix())))
+        cls._draw_batches.append((verts, indices, cls._snapshot_matrix()))
 
     # ====================================================================
     # Utility: get packed data for upload
@@ -641,7 +648,10 @@ class Gizmos:
             target_indices = indices_out[idx_offset:idx_offset + n_indices]
             target_indices[:] = indices
             target_indices += vert_offset
-            matrix_key = tuple(matrix)
+            matrix_key = (
+                cls._identity_matrix_key if matrix is cls._identity_matrix
+                else tuple(matrix)
+            )
             if descriptor_rows and descriptor_rows[-1][2] == matrix_key:
                 descriptor_rows[-1][1] += n_indices
             else:

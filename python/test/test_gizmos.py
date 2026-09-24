@@ -217,6 +217,19 @@ class TestCustomMatrix:
         _, _, matrix = Gizmos._draw_batches[0]
         assert matrix == custom
 
+    def test_custom_matrix_is_snapshotted_between_draws(self):
+        Gizmos._begin_frame()
+        matrix = list(Gizmos._identity_matrix)
+        Gizmos.matrix = matrix
+        Gizmos.draw_line((0, 0, 0), (1, 0, 0))
+        matrix[12] = 5.0
+        Gizmos.draw_line((0, 1, 0), (1, 1, 0))
+
+        _, _, first = Gizmos._draw_batches[0]
+        _, _, second = Gizmos._draw_batches[1]
+        assert first[12] == 0.0
+        assert second[12] == 5.0
+
 
 class TestParticleEmitterShapes:
     def test_authored_shapes_generate_distinct_gizmo_geometry(self):
@@ -445,6 +458,146 @@ class TestGizmosCollectorWorkGates:
                 )
 
         monkeypatch.setattr(lib, "SceneManager", SceneManager)
+
+    def test_unselected_icon_only_gizmo_never_creates_wrapper(self, monkeypatch):
+        from Infernux.components.component import InxComponent
+
+        created = []
+        callbacks = []
+
+        class Wrapper:
+            _gizmo_icon_color = (1.0, 1.0, 1.0)
+            _gizmo_icon_kind = 1
+            _always_show = False
+            on_draw_gizmos = InxComponent.on_draw_gizmos
+
+            def on_draw_gizmos_selected(self):
+                pass
+
+            @classmethod
+            def _get_or_create_wrapper(cls, _component, _game_object):
+                created.append(True)
+                return SimpleNamespace(
+                    _always_show=False,
+                    _call_on_draw_gizmos=lambda: None,
+                    _call_on_draw_gizmos_selected=lambda: callbacks.append(True),
+                    _invalidate_native_binding=lambda: None,
+                )
+
+        game_object = SimpleNamespace(
+            id=73,
+            active_in_hierarchy=True,
+            get_cpp_component=lambda name: SimpleNamespace(enabled=True)
+            if name == "Light" else None,
+            get_transform=lambda: SimpleNamespace(
+                position=SimpleNamespace(x=0.0, y=1.0, z=0.0)
+            ),
+            get_children=lambda: [],
+        )
+        scene = SimpleNamespace(
+            world_id=3,
+            structure_version=1,
+            find_by_id=lambda object_id: game_object if object_id == 73 else None,
+            get_all_objects=lambda: [game_object],
+        )
+        self._scene_manager(monkeypatch, scene)
+
+        class Native:
+            def __init__(self):
+                self.icon_uploads = 0
+
+            def upload_component_gizmo_icons(self, *_args):
+                self.icon_uploads += 1
+
+        native = Native()
+        selected = [0]
+        collector = GizmosCollector()
+        collector._builtin_registry = {"Light": Wrapper}
+        engine = SimpleNamespace(
+            get_native_engine=lambda: native,
+            get_selected_object_id=lambda: selected[0],
+        )
+
+        collector.collect_and_upload(engine)
+        assert native.icon_uploads == 1
+        assert created == []
+        assert callbacks == []
+
+        selected[0] = 73
+        collector.collect_and_upload(engine)
+        assert native.icon_uploads == 2
+        assert created == [True]
+        assert callbacks == [True]
+
+        class Replacement(Wrapper):
+            @classmethod
+            def _get_or_create_wrapper(cls, _component, _game_object):
+                return SimpleNamespace(
+                    _always_show=False,
+                    _call_on_draw_gizmos=lambda: None,
+                    _call_on_draw_gizmos_selected=lambda: callbacks.append("reloaded"),
+                    _invalidate_native_binding=lambda: None,
+                )
+
+        collector._builtin_registry["Light"] = Replacement
+        collector.collect_and_upload(engine)
+        assert callbacks == [True, "reloaded"]
+
+    def test_selected_scene_lookup_reuses_structure_and_refreshes_after_change(
+        self, monkeypatch
+    ):
+        lookups = []
+        game_object = SimpleNamespace(id=73, get_children=lambda: [])
+        scene = SimpleNamespace(world_id=3, structure_version=1)
+
+        def find_by_id(object_id):
+            lookups.append(object_id)
+            return game_object if object_id == 73 else None
+
+        scene.find_by_id = find_by_id
+        self._scene_manager(monkeypatch, scene)
+        native = SimpleNamespace()
+        engine = SimpleNamespace(
+            get_native_engine=lambda: native,
+            get_selected_object_id=lambda: 73,
+        )
+        collector = GizmosCollector()
+        collector._builtin_registry = {}
+
+        collector.collect_and_upload(engine)
+        initial_lookups = len(lookups)
+        assert initial_lookups > 0
+        collector.collect_and_upload(engine)
+        assert len(lookups) == initial_lookups
+
+        scene.structure_version += 1
+        collector.collect_and_upload(engine)
+        assert len(lookups) > initial_lookups
+
+    def test_release_profile_off_skips_timers_and_helper_wrapping(self, monkeypatch):
+        import Infernux.gizmos.collector as collector_module
+        import Infernux.gizmos.gizmos as gizmo_module
+
+        monkeypatch.setattr(collector_module, "_GEOMETRY_PROFILE_COMPILED", False)
+        monkeypatch.setattr(gizmo_module, "_GEOMETRY_PROFILE_COMPILED", False)
+
+        def no_clock():
+            raise AssertionError("profile-off collection read a CPU timer")
+
+        monkeypatch.setattr(collector_module.time, "perf_counter", no_clock)
+        original = lambda: None
+        assert gizmo_module._profile_geometry_helper(original) is original
+
+        scene = SimpleNamespace(world_id=3, structure_version=1)
+        self._scene_manager(monkeypatch, scene)
+        collector = GizmosCollector()
+        collector._builtin_registry = {}
+        collector.collect_and_upload(SimpleNamespace(
+            get_native_engine=lambda: SimpleNamespace(),
+            get_selected_object_id=lambda: 0,
+        ))
+        assert collector.last_observation.total_ms == 0.0
+        assert not collector.last_observation.timing_enabled
 
     def test_disabled_large_python_gizmo_stops_geometry_and_upload_work(
         self, monkeypatch
