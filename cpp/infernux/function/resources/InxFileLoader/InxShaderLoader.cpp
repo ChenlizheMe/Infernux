@@ -1186,6 +1186,8 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
     if (deferredLightingDomain) {
         result << "#define INX_DEFERRED_LIGHTING_PASS 1\n";
         result << "#define INX_FORWARD_PLUS_PASS 1\n";
+    } else if (fullscreenDomain && needsLightingUBO) {
+        result << "#define INX_FORWARD_PLUS_PASS 1\n";
     }
     // Every geometry surface may use camera helpers, including an Unlit
     // surface that calls getViewDir() directly. The engine globals set is
@@ -1226,6 +1228,13 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
     // ================================================================
     if (!userHasLayoutDecls && deferredLightingDomain && desc.isFragmentShader) {
         result << "\n// Canonical per-view lighting resources for deferred evaluation\n";
+        result << LoadTemplate("lighting_ubo.glsl") << "\n";
+        result << LoadTemplate("forward_plus_lighting.glsl") << "\n";
+        result << "uint _inx_ObjectLayerMask = 0xffffffffu;\n";
+    }
+    if (!userHasLayoutDecls && fullscreenDomain && !deferredLightingDomain && desc.isFragmentShader &&
+        needsLightingUBO) {
+        result << "\n// Canonical camera-local lighting resources for fullscreen evaluation\n";
         result << LoadTemplate("lighting_ubo.glsl") << "\n";
         result << LoadTemplate("forward_plus_lighting.glsl") << "\n";
         result << "uint _inx_ObjectLayerMask = 0xffffffffu;\n";

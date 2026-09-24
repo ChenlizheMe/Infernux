@@ -94,6 +94,11 @@ assets cannot be graph outputs, copy destinations, color attachments, depth
 attachments, or resolve targets. A cold asset remains pending without blocking
 the editor frame; the graph retries publication when the asset is ready.
 
+A fullscreen shader that declares `Requires [Lighting]` receives the current
+camera/View's lighting UBO, scoped Forward+ light list, shadow atlas, and camera
+position through descriptor set 1. The shadow texture still has to be declared
+as an explicit `shadow_map` pass dependency so graph scheduling remains visible.
+
 <!-- USER CONTENT END -->
 
 ## Example

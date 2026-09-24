@@ -93,6 +93,10 @@
 Copy 目标、颜色/深度附件或 Resolve 目标。冷加载资产不会阻塞编辑器帧；资源
 准备完成后，渲染图会重新尝试发布。
 
+声明 `Requires [Lighting]` 的 fullscreen shader 会通过描述符 set 1 获得当前
+Camera/View 独立的 Lighting UBO、Forward+ 灯光列表、阴影图集和相机位置。
+阴影纹理仍必须作为显式 `shadow_map` Pass 依赖声明，保证调度关系可见。
+
 <!-- USER CONTENT END -->
 
 ## 示例

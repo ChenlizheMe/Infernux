@@ -489,6 +489,32 @@ void main() {
     assert(volumeGlsl.find("uniform sampler3D density") != std::string::npos);
     RequireCompiles(compiler, volumeInputSource, "VolumeInput.frag");
 
+    const std::string fullscreenLightingSource = R"(
+#version 450
+ShaderInfo {
+    Name "Tests/FullscreenLighting"
+    Capabilities [Fullscreen]
+    Imports ["Lighting"]
+    Requires [Lighting]
+    Outputs { Float4 outColor }
+}
+void main() {
+    Light mainLight = getMainLight(vec3(0.0), vec3(0.0, 1.0, 0.0), 0.0);
+    outColor = vec4(lighting.ambientColor.rgb +
+                    mainLight.color * mainLight.attenuation * mainLight.shadow, 1.0);
+}
+)";
+    const auto fullscreenLightingSchema = infernux::ParseShaderInfo(fullscreenLightingSource);
+    assert(fullscreenLightingSchema.IsValid());
+    const auto fullscreenLightingGlsl =
+        compiler.PrepareAuthoredStageGlsl(fullscreenLightingSource, "FullscreenLighting.frag");
+    assert(fullscreenLightingGlsl.find("set = 1, binding = 0") != std::string::npos);
+    assert(fullscreenLightingGlsl.find("set = 1, binding = 4") != std::string::npos);
+    assert(fullscreenLightingGlsl.find("CanonicalLightBuffer") != std::string::npos);
+    assert(fullscreenLightingGlsl.find("ForwardPlusTileMaskBuffer") != std::string::npos);
+    assert(fullscreenLightingGlsl.find("INX_SHADING_CAMERA_POSITION lighting.cameraPos.xyz") != std::string::npos);
+    RequireCompiles(compiler, fullscreenLightingSource, "FullscreenLighting.frag");
+
     const auto invalid =
         infernux::ParseShaderInfo("ShaderInfo { UnexpectedField 2 Properties { Float x = 1.0 Float x = 2.0 } }");
     assert(!invalid.IsValid());
