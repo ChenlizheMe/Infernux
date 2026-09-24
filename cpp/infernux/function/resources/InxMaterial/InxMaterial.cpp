@@ -752,6 +752,7 @@ void InxMaterial::SetBuffer(const std::string &name, std::shared_ptr<rhi::Comput
         }
         return;
     }
+#if !defined(INFERNUX_DISABLE_VULKAN_MATERIAL_RUNTIME)
     const ShaderProgram *program = GetPassShaderProgram(ShaderCompileTarget::Forward);
     if (program) {
         const auto binding =
@@ -763,6 +764,9 @@ void InxMaterial::SetBuffer(const std::string &name, std::shared_ptr<rhi::Comput
         if (binding == program->GetDescriptorBindings().end())
             throw std::invalid_argument("material shader has no storage buffer named '" + name + "'");
     }
+#else
+    throw std::logic_error("material storage buffers require a renderer with material buffer support");
+#endif
     m_buffers[name] = std::move(buffer);
     m_propertiesDirty = true;
     ++m_version;
