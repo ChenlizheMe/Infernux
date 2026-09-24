@@ -116,7 +116,9 @@ from Infernux import AnimState as AnimState
 from Infernux import AnimTransition as AnimTransition
 from Infernux import AnimCondition as AnimCondition
 from Infernux import AnimParameter as AnimParameter
+from Infernux import AssetFile as AssetFile
 from Infernux import AssetManager as AssetManager
+from Infernux import SandboxPath as SandboxPath
 from Infernux import TextureRef as TextureRef
 from Infernux import ShaderRef as ShaderRef
 from Infernux import AudioClipRef as AudioClipRef
