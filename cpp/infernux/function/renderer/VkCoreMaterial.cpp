@@ -1425,6 +1425,14 @@ VkDescriptorSet InxVkCoreModular::EnsureMaterialShadowPipeline(const std::shared
 
     MaterialRenderData *forwardRenderData = m_materialPipelineManager.GetRenderData(materialKey);
     MaterialDescriptorSet *forwardMaterialDesc = forwardRenderData ? forwardRenderData->materialDescSet : nullptr;
+    if ((!forwardRenderData || !forwardRenderData->isValid || !forwardMaterialDesc || !forwardMaterialDesc->isValid) &&
+        RefreshMaterialPipeline(material, vertShaderName, fragShaderName)) {
+        // Shadow passes can execute before the first Forward draw after a
+        // scene switch. Publish the authoritative Forward material resources
+        // here so the linked Shadow variant never depends on draw order.
+        forwardRenderData = m_materialPipelineManager.GetRenderData(materialKey);
+        forwardMaterialDesc = forwardRenderData ? forwardRenderData->materialDescSet : nullptr;
+    }
     const ShaderProgram *forwardProgram = forwardRenderData ? forwardRenderData->shaderProgram.get() : nullptr;
     const ShaderStagePair stagePair{vertShaderName, fragShaderName};
     const ShaderProgramArtifact *linkedArtifact = m_shaderCache.FindProgramArtifact(stagePair);
