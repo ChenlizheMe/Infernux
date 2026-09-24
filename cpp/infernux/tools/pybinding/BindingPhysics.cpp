@@ -35,6 +35,7 @@
 #include <glm/gtc/quaternion.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -131,8 +132,14 @@ py::array_t<T> RaycastBatchOutput(py::dict &output, const char *name, py::ssize_
 }
 
 py::dict RaycastBatch(py::array origins, py::array directions, py::dict output, float maxDistance, uint32_t layerMask,
-                      bool queryTriggers)
+                      bool queryTriggers, bool profileEnabled)
 {
+    const auto profileNowNs = []() noexcept {
+        return static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch())
+                .count());
+    };
+    const uint64_t validationStartNs = profileEnabled ? profileNowNs() : 0;
     RequireRaycastBatchInput(origins, "origins");
     RequireRaycastBatchInput(directions, "directions");
     if (origins.shape(0) != directions.shape(0))
@@ -143,12 +150,36 @@ py::dict RaycastBatch(py::array origins, py::array directions, py::dict output, 
     const py::ssize_t count = origins.shape(0);
     const auto *originData = static_cast<const float *>(origins.data());
     const auto *directionData = static_cast<const float *>(directions.data());
+    static thread_local std::vector<float> normalizedDirections;
+    bool directionsAlreadyNormalized = true;
     for (py::ssize_t index = 0; index < count; ++index) {
         const py::ssize_t offset = index * 3;
         const glm::vec3 origin(originData[offset], originData[offset + 1], originData[offset + 2]);
         const glm::vec3 direction(directionData[offset], directionData[offset + 1], directionData[offset + 2]);
         RequireFinite(origin, "origins");
-        RequireDirectionAndDistance(direction, maxDistance);
+        RequireFinite(direction, "direction");
+        const double lengthSq = static_cast<double>(direction.x) * direction.x +
+                                static_cast<double>(direction.y) * direction.y +
+                                static_cast<double>(direction.z) * direction.z;
+        if (!std::isfinite(lengthSq) || lengthSq <= 1e-12)
+            throw std::invalid_argument("direction must be non-zero");
+        directionsAlreadyNormalized = directionsAlreadyNormalized && lengthSq == 1.0;
+    }
+    const float *normalizedDirectionData = directionData;
+    if (!directionsAlreadyNormalized) {
+        normalizedDirections.resize(static_cast<size_t>(count) * 3u);
+        for (py::ssize_t index = 0; index < count; ++index) {
+            const py::ssize_t offset = index * 3;
+            const glm::vec3 direction(directionData[offset], directionData[offset + 1], directionData[offset + 2]);
+            const double lengthSq = static_cast<double>(direction.x) * direction.x +
+                                    static_cast<double>(direction.y) * direction.y +
+                                    static_cast<double>(direction.z) * direction.z;
+            const double inverseLength = 1.0 / std::sqrt(lengthSq);
+            normalizedDirections[static_cast<size_t>(offset)] = direction.x * inverseLength;
+            normalizedDirections[static_cast<size_t>(offset + 1)] = direction.y * inverseLength;
+            normalizedDirections[static_cast<size_t>(offset + 2)] = direction.z * inverseLength;
+        }
+        normalizedDirectionData = normalizedDirections.data();
     }
 
     auto hit = RaycastBatchOutput<uint8_t>(output, "hit", count);
@@ -160,23 +191,42 @@ py::dict RaycastBatch(py::array origins, py::array directions, py::dict output, 
     auto triangleIndex = RaycastBatchOutput<uint32_t>(output, "triangle_index", count);
     auto colliderId = RaycastBatchOutput<uint64_t>(output, "collider_id", count);
     auto gameObjectId = RaycastBatchOutput<uint64_t>(output, "game_object_id", count);
+    const uint64_t validationEndNs = profileEnabled ? profileNowNs() : 0;
 
     static thread_local std::vector<RaycastHit> nativeHits;
     static thread_local std::vector<uint8_t> nativeMask;
     nativeHits.resize(static_cast<size_t>(count));
     nativeMask.resize(static_cast<size_t>(count));
     uint64_t queryGeneration = 0;
-    // The native batch query owns the authoritative physics snapshot and does
-    // not touch Python objects.  Release the interpreter lock for the whole
-    // query so background Python work cannot serialize behind a large ray
-    // batch; reacquire it only when publishing into the caller's arrays.
-    {
+    RaycastBatchProfile nativeProfile;
+    PhysicsWorld &physics = PhysicsWorld::Instance();
+    const uint64_t syncStartNs = profileEnabled ? profileNowNs() : 0;
+    const bool synchronizedOnOwner = physics.PrepareRaycastBatchQuery();
+    const uint64_t syncNs = profileEnabled && synchronizedOnOwner ? profileNowNs() - syncStartNs : 0;
+    // Owner-thread authored state was published above while the GIL and engine
+    // owner context were intact. Background Python threads deliberately skip
+    // that step and consume the last complete epoch. The native batch below
+    // touches neither Python nor SceneManager, so releasing the GIL is safe.
+    const auto dispatchNative = [&] {
+        physics.RaycastBatchPublished(originData, normalizedDirectionData, static_cast<size_t>(count), maxDistance,
+                                      nativeHits.data(), nativeMask.data(), layerMask, queryTriggers, &queryGeneration,
+                                      profileEnabled ? &nativeProfile : nullptr, true);
+    };
+    // Short/medium batches already fan out through the native JobSystem.
+    // Retaining the caller's GIL avoids a second, scheduler-dependent wait to
+    // reacquire it after sub-millisecond native work. Very large calls still
+    // release it so unrelated Python services remain responsive.
+    constexpr py::ssize_t kReleaseGilRayCount = 65'536;
+    if (count >= kReleaseGilRayCount) {
         py::gil_scoped_release release;
-        PhysicsWorld::Instance().RaycastBatch(originData, directionData, static_cast<size_t>(count), maxDistance,
-                                              nativeHits.data(), nativeMask.data(), layerMask, queryTriggers,
-                                              &queryGeneration);
+        dispatchNative();
+    } else {
+        dispatchNative();
     }
+    if (profileEnabled)
+        nativeProfile.snapshotSyncNs = syncNs;
 
+    const uint64_t publishStartNs = profileEnabled ? profileNowNs() : 0;
     auto *hitData = hit.mutable_data();
     auto *pointData = point.mutable_data();
     auto *normalData = normal.mutable_data();
@@ -201,10 +251,38 @@ py::dict RaycastBatch(py::array origins, py::array directions, py::dict output, 
         bodyIdData[index] = native.bodyId;
         subShapeIdData[index] = native.subShapeId;
         triangleIndexData[index] = native.triangleIndex;
-        colliderIdData[index] = native.collider ? native.collider->GetComponentID() : 0;
-        gameObjectIdData[index] = native.gameObject ? native.gameObject->GetID() : 0;
+        // The native query epoch has ended before Python publication.  Raw
+        // pointers are convenience handles for synchronous C++ callers and
+        // may already be retired by another thread; publish identities that
+        // were frozen while the synchronized query epoch was held.
+        colliderIdData[index] = native.colliderId;
+        gameObjectIdData[index] = native.gameObjectId;
     }
     output[py::str("query_generation")] = py::int_(queryGeneration);
+    if (profileEnabled) {
+        const uint64_t publishNs = profileNowNs() - publishStartNs;
+        const uint64_t broadphaseNs = nativeProfile.joltQueryCpuNs > nativeProfile.narrowPhaseCpuNs
+                                          ? nativeProfile.joltQueryCpuNs - nativeProfile.narrowPhaseCpuNs
+                                          : 0;
+        constexpr double kNsToMs = 1.0 / 1'000'000.0;
+        py::dict profile;
+        profile["input_validation_ms"] = py::float_((validationEndNs - validationStartNs) * kNsToMs);
+        profile["snapshot_sync_ms"] = py::float_(nativeProfile.snapshotSyncNs * kNsToMs);
+        profile["snapshot_lock_wait_ms"] = py::float_(nativeProfile.snapshotLockWaitNs * kNsToMs);
+        profile["dispatch_wall_ms"] = py::float_(nativeProfile.dispatchWallNs * kNsToMs);
+        profile["jolt_query_cpu_ms"] = py::float_(nativeProfile.joltQueryCpuNs * kNsToMs);
+        profile["broadphase_filter_lock_cpu_ms"] = py::float_(broadphaseNs * kNsToMs);
+        profile["narrowphase_cpu_ms"] = py::float_(nativeProfile.narrowPhaseCpuNs * kNsToMs);
+        profile["result_sort_filter_cpu_ms"] = py::float_(nativeProfile.sortFilterCpuNs * kNsToMs);
+        profile["hit_publish_cpu_ms"] = py::float_(nativeProfile.hitPublishCpuNs * kNsToMs);
+        profile["output_publish_ms"] = py::float_(publishNs * kNsToMs);
+        profile["broadphase_candidates"] = py::int_(nativeProfile.broadphaseCandidates);
+        profile["narrowphase_hits"] = py::int_(nativeProfile.narrowphaseHits);
+        profile["published_hits"] = py::int_(nativeProfile.publishedHits);
+        output[py::str("profile")] = std::move(profile);
+    } else {
+        output.attr("pop")(py::str("profile"), py::none());
+    }
     return output;
 }
 
@@ -905,6 +983,9 @@ void RegisterPhysicsBindings(py::module_ &m)
                                "Last mesh cooking error; empty after successful shape creation")
         .def_property_readonly("is_cooking", &MeshCollider::IsCooking,
                                "Whether immutable collision geometry is currently cooking on a worker")
+        .def_property_readonly(
+            "collision_geometry_revision", &MeshCollider::GetCollisionGeometryRevision,
+            "Monotonic revision of collision geometry that has been atomically published to the physics world")
         .def_static("clear_cooking_cache", &MeshCollider::ClearCookingCache,
                     "Clear cached CPU mesh-cooking payloads and reset hit/miss counters")
         .def_static(
@@ -1225,7 +1306,7 @@ void RegisterPhysicsBindings(py::module_ &m)
             "Cast a ray. Returns RaycastHit or None.")
         .def_static("raycast_batch", &RaycastBatch, "origins"_a.noconvert(), "directions"_a.noconvert(), "output"_a,
                     "max_distance"_a = 1000.0f, "layer_mask"_a = EngineConfig::Get().defaultQueryLayerMask,
-                    "query_triggers"_a = true,
+                    "query_triggers"_a = true, "profile"_a = false,
                     "Cast float32 (N, 3) rays into caller-owned numeric result arrays without per-hit Python objects.")
         .def_static(
             "raycast_all",

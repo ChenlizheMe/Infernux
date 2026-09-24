@@ -9,6 +9,7 @@
 // Jolt includes (order matters)
 #include <Jolt/Core/Factory.h>
 #include <Jolt/Core/TempAllocator.h>
+#include <Jolt/Geometry/AABox.h>
 #include <Jolt/Physics/Body/BodyActivationListener.h>
 #include <Jolt/Physics/Body/BodyCreationSettings.h>
 #include <Jolt/Physics/Body/BodyInterface.h>
@@ -36,6 +37,7 @@
 #include <Jolt/RegisterTypes.h>
 
 #include <limits>
+#include <mutex>
 
 #include "InfernuxJoltJobSystemAdapter.h"
 #include "PhysicsContactListener.h"
@@ -63,10 +65,12 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdarg>
 #include <glm/gtc/constants.hpp>
 #include <stdexcept>
+#include <tuple>
 #include <unordered_set>
 
 namespace infernux
@@ -211,6 +215,234 @@ class LayerMaskObjectFilter final : public JPH::ObjectLayerFilter
     uint32_t m_layerMask;
 };
 
+class DeterministicClosestShapeRayCollector final : public JPH::CastRayCollector
+{
+  public:
+    DeterministicClosestShapeRayCollector(JPH::BodyID bodyId, float parentEarlyOut) : m_bodyId(bodyId)
+    {
+        ResetEarlyOutFraction(parentEarlyOut);
+    }
+
+    void AddHit(const JPH::RayCastResult &candidate) override
+    {
+        JPH::RayCastResult result = candidate;
+        result.mBodyID = m_bodyId;
+        const auto key = std::tuple(result.mFraction, result.mSubShapeID2.GetValue());
+        if (!m_hadHit || key < std::tuple(m_hit.mFraction, m_hit.mSubShapeID2.GetValue())) {
+            m_hit = result;
+            m_hadHit = true;
+        }
+        // Jolt's BVHs compare with strict '<'. Keep exactly equal fractions
+        // visible so sub-shape identity, rather than traversal order, resolves
+        // a tie without opening the search to a meaningfully farther hit.
+        UpdateEarlyOutFraction(
+            std::min(GetEarlyOutFraction(), std::nextafter(result.mFraction, std::numeric_limits<float>::infinity())));
+    }
+
+    [[nodiscard]] bool HadHit() const noexcept
+    {
+        return m_hadHit;
+    }
+
+    [[nodiscard]] const JPH::RayCastResult &Hit() const noexcept
+    {
+        return m_hit;
+    }
+
+  private:
+    JPH::BodyID m_bodyId;
+    JPH::RayCastResult m_hit{};
+    bool m_hadHit = false;
+};
+
+struct RaycastPublishedBodyCache
+{
+    uint64_t generation = std::numeric_limits<uint64_t>::max();
+    uint32_t bodyId = 0xFFFFFFFFu;
+    const JPH::Body *body = nullptr;
+    std::optional<JPH::TransformedShape> transformedShape;
+};
+
+// Closest-hit batches do not need Jolt's general multi-body hit collector.
+// Drive the broad phase directly and use each shape's optimized single-hit
+// path instead. The published query epoch makes the no-lock body view stable;
+// the one-ULP early-out margin keeps equal-distance bodies visible so the
+// numeric body/sub-shape tie break remains deterministic.
+class DeterministicClosestRayBodyCollector final : public JPH::RayCastBodyCollector
+{
+  public:
+    DeterministicClosestRayBodyCollector(const JPH::RRayCast &ray, const JPH::BodyLockInterface &bodyLocks,
+                                         RaycastBatchProfile *profile = nullptr,
+                                         RaycastPublishedBodyCache *publishedCache = nullptr,
+                                         uint64_t queryGeneration = 0)
+        : m_ray(ray), m_bodyLocks(bodyLocks), m_profile(profile), m_publishedCache(publishedCache),
+          m_queryGeneration(queryGeneration)
+    {
+    }
+
+    void Reset() override
+    {
+        JPH::RayCastBodyCollector::Reset();
+        m_hit = {};
+        m_hitBody = nullptr;
+        m_hadHit = false;
+    }
+
+    void AddHit(const JPH::BroadPhaseCastResult &broadphaseHit) override
+    {
+        if (m_profile)
+            ++m_profile->broadphaseCandidates;
+
+        const uint32_t bodyId = broadphaseHit.mBodyID.GetIndexAndSequenceNumber();
+        if (m_publishedCache && m_publishedCache->generation == m_queryGeneration &&
+            m_publishedCache->bodyId == bodyId && m_publishedCache->body &&
+            m_publishedCache->transformedShape.has_value()) {
+            AddBody(*m_publishedCache->body, *m_publishedCache->transformedShape);
+            return;
+        }
+
+        JPH::BodyLockRead lock(m_bodyLocks, broadphaseHit.mBodyID);
+        if (!lock.SucceededAndIsInBroadPhase())
+            return;
+        const JPH::Body &body = lock.GetBody();
+        const JPH::TransformedShape transformedShape = body.GetTransformedShape();
+        if (m_publishedCache) {
+            m_publishedCache->generation = m_queryGeneration;
+            m_publishedCache->bodyId = bodyId;
+            m_publishedCache->body = &body;
+            m_publishedCache->transformedShape = transformedShape;
+        }
+        AddBody(body, transformedShape);
+    }
+
+  private:
+    void AddBody(const JPH::Body &body, const JPH::TransformedShape &transformedShape)
+    {
+        JPH::RayCastResult result;
+        result.mFraction = GetEarlyOutFraction();
+        const uint64_t narrowStartNs = m_profile ? ProfileNowNs() : 0;
+        bool hit = false;
+        const JPH::EShapeType shapeType = body.GetShape()->GetType();
+        if (shapeType == JPH::EShapeType::Convex && body.GetShape()->GetSubType() != JPH::EShapeSubType::Triangle) {
+            // The single-result path is substantially cheaper for ordinary
+            // solid colliders and its inside-volume behavior is the public
+            // contract expected for convex shapes.
+            hit = transformedShape.CastRay(m_ray, result);
+        } else if (shapeType == JPH::EShapeType::Mesh && transformedShape.GetShapeScale().GetX() > 0.0f &&
+                   transformedShape.GetShapeScale().GetY() > 0.0f && transformedShape.GetShapeScale().GetZ() > 0.0f) {
+            JPH::RayCast localRay(m_ray.Transformed(transformedShape.GetInverseCenterOfMassTransform()));
+            const JPH::Vec3 inverseScale = transformedShape.GetShapeScale().Reciprocal();
+            localRay.mOrigin *= inverseScale;
+            localRay.mDirection *= inverseScale;
+            hit = static_cast<const JPH::MeshShape *>(body.GetShape())
+                      ->CastRayIgnoreBackFaces(localRay, JPH::SubShapeIDCreator(), result);
+            if (hit)
+                result.mBodyID = body.GetID();
+        } else {
+            // Jolt's single-result shape path reports triangle back faces and
+            // cannot continue to a later valid front face. Non-convex,
+            // compound and decorated shapes therefore keep RayCastSettings'
+            // one-sided semantics while still collecting only the closest
+            // valid hit for this broadphase candidate.
+            DeterministicClosestShapeRayCollector closest(body.GetID(), GetEarlyOutFraction());
+            transformedShape.CastRay(m_ray, JPH::RayCastSettings(), closest);
+            if (closest.HadHit()) {
+                result = closest.Hit();
+                hit = true;
+            }
+        }
+        if (m_profile) {
+            m_profile->narrowPhaseCpuNs += ProfileNowNs() - narrowStartNs;
+            if (hit)
+                ++m_profile->narrowphaseHits;
+        }
+        if (!hit)
+            return;
+
+        const auto key =
+            std::tuple(result.mFraction, result.mBodyID.GetIndexAndSequenceNumber(), result.mSubShapeID2.GetValue());
+        if (!m_hadHit || key < std::tuple(m_hit.mFraction, m_hit.mBodyID.GetIndexAndSequenceNumber(),
+                                          m_hit.mSubShapeID2.GetValue())) {
+            m_hit = result;
+            m_hitBody = &body;
+            m_hadHit = true;
+            UpdateEarlyOutFraction(std::min(GetEarlyOutFraction(),
+                                            std::nextafter(result.mFraction, std::numeric_limits<float>::infinity())));
+        }
+    }
+
+  public:
+    [[nodiscard]] bool HadHit() const noexcept
+    {
+        return m_hadHit;
+    }
+
+    [[nodiscard]] const JPH::RayCastResult &Hit() const noexcept
+    {
+        return m_hit;
+    }
+
+    [[nodiscard]] const JPH::Body &HitBody() const noexcept
+    {
+        return *m_hitBody;
+    }
+
+    static uint64_t ProfileNowNs() noexcept
+    {
+        return static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch())
+                .count());
+    }
+
+    JPH::RRayCast m_ray;
+    const JPH::BodyLockInterface &m_bodyLocks;
+    JPH::RayCastResult m_hit{};
+    const JPH::Body *m_hitBody = nullptr;
+    RaycastBatchProfile *m_profile = nullptr;
+    RaycastPublishedBodyCache *m_publishedCache = nullptr;
+    uint64_t m_queryGeneration = 0;
+    bool m_hadHit = false;
+};
+
+class ProfiledAllHitRayCollector final : public JPH::AllHitCollisionCollector<JPH::CastRayCollector>
+{
+  public:
+    explicit ProfiledAllHitRayCollector(RaycastBatchProfile *profile) : m_profile(profile)
+    {
+    }
+
+    void OnBody(const JPH::Body &) override
+    {
+        ++m_profile->broadphaseCandidates;
+        m_narrowStartNs = ProfileNowNs();
+    }
+
+    void OnBodyEnd() override
+    {
+        if (m_narrowStartNs != 0) {
+            m_profile->narrowPhaseCpuNs += ProfileNowNs() - m_narrowStartNs;
+            m_narrowStartNs = 0;
+        }
+    }
+
+    void AddHit(const JPH::RayCastResult &result) override
+    {
+        ++m_profile->narrowphaseHits;
+        JPH::AllHitCollisionCollector<JPH::CastRayCollector>::AddHit(result);
+    }
+
+  private:
+    static uint64_t ProfileNowNs() noexcept
+    {
+        return static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch())
+                .count());
+    }
+
+    RaycastBatchProfile *m_profile;
+    uint64_t m_narrowStartNs = 0;
+};
+
 static JPH::RefConst<JPH::Shape> BuildShapeForColliderSet(GameObject *go, const Collider *exclude,
                                                           size_t *outShapeCount = nullptr)
 {
@@ -331,8 +563,13 @@ PhysicsWorld::~PhysicsWorld()
 
 void PhysicsWorld::Initialize()
 {
+    std::unique_lock snapshotWrite(m_querySnapshotMutex);
     if (m_initialized)
         return;
+
+    // Initialize is an engine-owner operation. Batch queries issued from any
+    // other thread must never walk SceneManager authoring state.
+    m_ownerThreadId = std::this_thread::get_id();
 
     // Register Jolt allocation hooks (use default malloc)
     JPH::RegisterDefaultAllocator();
@@ -435,6 +672,7 @@ void PhysicsWorld::Initialize()
 
 void PhysicsWorld::Shutdown()
 {
+    std::unique_lock snapshotWrite(m_querySnapshotMutex);
     if (!m_initialized)
         return;
 
@@ -465,12 +703,14 @@ void PhysicsWorld::Shutdown()
     }
     m_bodyToCollider.clear();
     m_bodyColliders.clear();
+    m_bodyQueryIdentities.clear();
     m_poseReadbackBodyIds.clear();
     m_staticContinuousBodyIds.clear();
     m_continuousBodyIds.clear();
     m_kinematicMoveStates.clear();
     m_nextConstraintId = 1;
     m_lastDynamicCCDSplitCount = 0;
+    m_ownerThreadId = {};
 
     // Step 2: tear down subsystems in dependency order (newest first).
     m_contactListener.reset();
@@ -705,6 +945,7 @@ void PhysicsWorld::SettleKinematicMoves()
 
 void PhysicsWorld::Step(float deltaTime)
 {
+    std::unique_lock snapshotWrite(m_querySnapshotMutex);
     m_poseReadbackBodyIds.clear();
     m_contactImpulses.clear();
     m_lastDynamicCCDSplitCount = 0;
@@ -828,6 +1069,13 @@ void PhysicsWorld::Step(float deltaTime)
         JPH::BodyInterface &bi = m_physicsSystem->GetBodyInterface();
         m_contactListener->ResolveEvents(bi);
     }
+
+    // A completed fixed step publishes one new synchronized query epoch. Body
+    // poses may have changed even when membership and authored transforms did
+    // not, so generation changes at this publication boundary rather than per
+    // solver write.
+    if (!activeBefore.empty() || !activeAfter.empty())
+        m_queryGeneration.fetch_add(1, std::memory_order_release);
 }
 
 static void PublishRaycastSubShape(const JPH::Body &body, const JPH::SubShapeID &subShapeId, RaycastHit &outHit)
@@ -1052,6 +1300,7 @@ size_t PhysicsWorld::DispatchContactEvents()
 
 uint32_t PhysicsWorld::CreateBody(Collider *collider, bool isStatic, bool isTrigger)
 {
+    std::unique_lock snapshotWrite(m_querySnapshotMutex);
     if (!m_initialized || !collider)
         return 0xFFFFFFFF;
 
@@ -1102,12 +1351,14 @@ uint32_t PhysicsWorld::CreateBody(Collider *collider, bool isStatic, bool isTrig
     uint32_t id = bodyId.GetIndexAndSequenceNumber();
     m_bodyToCollider[id] = collider;
     m_bodyColliders[id] = go->GetComponents<Collider>();
+    PublishBodyQueryIdentitiesUnlocked(id);
     m_queryGeneration.fetch_add(1, std::memory_order_release);
     return id;
 }
 
 void PhysicsWorld::DestroyBody(Collider *collider)
 {
+    std::unique_lock snapshotWrite(m_querySnapshotMutex);
     if (!m_initialized || !collider)
         return;
 
@@ -1131,6 +1382,7 @@ void PhysicsWorld::DestroyBody(Collider *collider)
 
     m_bodyToCollider.erase(id);
     m_bodyColliders.erase(id);
+    m_bodyQueryIdentities.erase(id);
     m_staticContinuousBodyIds.erase(id);
     m_continuousBodyIds.erase(id);
     m_kinematicMoveStates.erase(id);
@@ -1140,6 +1392,12 @@ void PhysicsWorld::DestroyBody(Collider *collider)
 }
 
 void PhysicsWorld::SetBodyPosition(uint32_t bodyId, const glm::vec3 &pos, const glm::quat &rot)
+{
+    std::unique_lock snapshotWrite(m_querySnapshotMutex);
+    SetBodyPositionUnlocked(bodyId, pos, rot);
+}
+
+void PhysicsWorld::SetBodyPositionUnlocked(uint32_t bodyId, const glm::vec3 &pos, const glm::quat &rot)
 {
     if (!m_initialized || bodyId == 0xFFFFFFFF)
         return;
@@ -1154,6 +1412,7 @@ void PhysicsWorld::SetBodyPosition(uint32_t bodyId, const glm::vec3 &pos, const 
 
 void PhysicsWorld::SetBodyPositionsBatch(const std::vector<PhysicsBodyPoseUpdate> &updates)
 {
+    std::unique_lock snapshotWrite(m_querySnapshotMutex);
     if (!m_initialized || updates.empty())
         return;
 
@@ -1188,6 +1447,7 @@ void PhysicsWorld::SetBodyPositionsBatch(const std::vector<PhysicsBodyPoseUpdate
 
 void PhysicsWorld::UpdateBodyShape(Collider *collider, const Collider *exclude)
 {
+    std::unique_lock snapshotWrite(m_querySnapshotMutex);
     if (!m_initialized || !collider)
         return;
 
@@ -1202,20 +1462,27 @@ void PhysicsWorld::UpdateBodyShape(Collider *collider, const Collider *exclude)
 
     JPH::BodyInterface &bodyInterface = m_physicsSystem->GetBodyInterface();
     bodyInterface.SetUseManifoldReduction(JPH::BodyID(id), shapeCount <= 1);
+    // SetShape takes Jolt's body write lock and Body owns a RefConst<Shape>.
+    // Queries that already hold the read side therefore finish against the
+    // previously published immutable shape; its BVH is retired only after
+    // the last reference is released.  Never mutate a published mesh shape.
     bodyInterface.SetShape(JPH::BodyID(id), newShape, true, JPH::EActivation::Activate);
     if (auto *go = collider->GetGameObject())
         m_bodyColliders[id] = go->GetComponents<Collider>();
+    PublishBodyQueryIdentitiesUnlocked(id);
     m_queryGeneration.fetch_add(1, std::memory_order_release);
 }
 
 void PhysicsWorld::SetBodyIsSensor(uint32_t bodyId, bool isSensor)
 {
+    std::unique_lock snapshotWrite(m_querySnapshotMutex);
     if (!m_initialized || bodyId == 0xFFFFFFFF)
         return;
 
     JPH::BodyLockWrite lock(m_physicsSystem->GetBodyLockInterface(), JPH::BodyID(bodyId));
     if (lock.Succeeded()) {
         lock.GetBody().SetIsSensor(isSensor);
+        PublishBodyQueryIdentitiesUnlocked(bodyId);
         m_queryGeneration.fetch_add(1, std::memory_order_release);
     }
 }
@@ -1230,6 +1497,7 @@ void PhysicsWorld::InvalidateContactPairsForBody(uint32_t bodyId)
 
 void PhysicsWorld::AddBodyToBroadphase(uint32_t bodyId, bool isStatic)
 {
+    std::unique_lock snapshotWrite(m_querySnapshotMutex);
     if (!m_initialized || bodyId == 0xFFFFFFFF)
         return;
 
@@ -1240,6 +1508,7 @@ void PhysicsWorld::AddBodyToBroadphase(uint32_t bodyId, bool isStatic)
 
 void PhysicsWorld::AddBodiesBatch(const std::vector<std::pair<uint32_t, bool>> &bodies)
 {
+    std::unique_lock snapshotWrite(m_querySnapshotMutex);
     if (!m_initialized || bodies.empty())
         return;
 
@@ -1276,6 +1545,7 @@ void PhysicsWorld::AddBodiesBatch(const std::vector<std::pair<uint32_t, bool>> &
 
 void PhysicsWorld::RemoveBodyFromBroadphase(uint32_t bodyId)
 {
+    std::unique_lock snapshotWrite(m_querySnapshotMutex);
     if (!m_initialized || bodyId == 0xFFFFFFFF)
         return;
 
@@ -1290,6 +1560,7 @@ void PhysicsWorld::RemoveBodyFromBroadphase(uint32_t bodyId)
 
 void PhysicsWorld::SetBodyMotionType(uint32_t bodyId, int motionType)
 {
+    std::unique_lock snapshotWrite(m_querySnapshotMutex);
     if (!m_initialized || bodyId == 0xFFFFFFFF)
         return;
 
@@ -1331,6 +1602,7 @@ void PhysicsWorld::SetBodyMotionType(uint32_t bodyId, int motionType)
 
 void PhysicsWorld::SetBodyGameLayer(uint32_t bodyId, int gameLayer)
 {
+    std::unique_lock snapshotWrite(m_querySnapshotMutex);
     if (!m_initialized || bodyId == 0xFFFFFFFF)
         return;
 
@@ -1604,6 +1876,13 @@ void PhysicsWorld::SetBodyMaxLinearVelocity(uint32_t bodyId, float maxVel)
 void PhysicsWorld::MoveBodyKinematic(uint32_t bodyId, const glm::vec3 &targetPos, const glm::quat &targetRot,
                                      float deltaTime, float maxSpeed)
 {
+    std::unique_lock snapshotWrite(m_querySnapshotMutex);
+    MoveBodyKinematicUnlocked(bodyId, targetPos, targetRot, deltaTime, maxSpeed);
+}
+
+void PhysicsWorld::MoveBodyKinematicUnlocked(uint32_t bodyId, const glm::vec3 &targetPos, const glm::quat &targetRot,
+                                             float deltaTime, float maxSpeed)
+{
     if (!m_initialized || bodyId == 0xFFFFFFFF)
         return;
 
@@ -1612,6 +1891,7 @@ void PhysicsWorld::MoveBodyKinematic(uint32_t bodyId, const glm::vec3 &targetPos
     const JPH::RVec3 target(targetPos.x, targetPos.y, targetPos.z);
     const JPH::Quat targetQuat = ToJoltQuat(targetRot);
 
+    bool posePublished = false;
     if (maxSpeed > 0.0f && deltaTime > 0.0f) {
         // Cap the contact velocity the move can impart (matches PhysX's
         // default maxDepenetrationVelocity). Excess displacement — a scripted
@@ -1625,6 +1905,7 @@ void PhysicsWorld::MoveBodyKinematic(uint32_t bodyId, const glm::vec3 &targetPos
         if (distance > maxStepDistance) {
             const JPH::RVec3 nearTarget = target - JPH::RVec3(delta * (maxStepDistance / distance));
             bi.SetPositionAndRotation(id, nearTarget, targetQuat, JPH::EActivation::Activate);
+            posePublished = true;
         }
     }
 
@@ -1635,11 +1916,14 @@ void PhysicsWorld::MoveBodyKinematic(uint32_t bodyId, const glm::vec3 &targetPos
     auto &state = m_kinematicMoveStates[bodyId];
     state.movedThisStep = true;
     state.idleSteps = 0;
+    if (posePublished)
+        m_queryGeneration.fetch_add(1, std::memory_order_release);
 }
 
 void PhysicsWorld::MoveStaticBodyWithVelocity(uint32_t bodyId, const glm::vec3 &targetPos, const glm::quat &targetRot,
                                               float deltaTime)
 {
+    std::unique_lock snapshotWrite(m_querySnapshotMutex);
     if (!m_initialized || bodyId == 0xFFFFFFFF || deltaTime <= 0.0f)
         return;
 
@@ -1649,7 +1933,7 @@ void PhysicsWorld::MoveStaticBodyWithVelocity(uint32_t bodyId, const glm::vec3 &
     const JPH::EMotionType motionType = bi.GetMotionType(id);
     if (motionType == JPH::EMotionType::Dynamic) {
         // A Rigidbody took ownership of this body mid-drag — plain teleport.
-        SetBodyPosition(bodyId, targetPos, targetRot);
+        SetBodyPositionUnlocked(bodyId, targetPos, targetRot);
         return;
     }
 
@@ -1660,7 +1944,7 @@ void PhysicsWorld::MoveStaticBodyWithVelocity(uint32_t bodyId, const glm::vec3 &
         bi.SetMotionType(id, JPH::EMotionType::Kinematic, JPH::EActivation::Activate);
     }
 
-    MoveBodyKinematic(bodyId, targetPos, targetRot, deltaTime, kMaxTransformDriveSpeed);
+    MoveBodyKinematicUnlocked(bodyId, targetPos, targetRot, deltaTime, kMaxTransformDriveSpeed);
     m_kinematicMoveStates[bodyId].restoreStatic = true;
 }
 
@@ -1988,6 +2272,7 @@ std::optional<PhysicsPenetrationResult> PhysicsWorld::ComputePenetration(const C
                                                                          const glm::vec3 &positionB,
                                                                          const glm::quat &rotationB) const
 {
+    std::shared_lock snapshotRead(m_querySnapshotMutex);
     if (!m_initialized)
         throw std::logic_error("compute_penetration requires initialized physics");
     const auto shapeForQuery = [](const Collider &collider) -> JPH::RefConst<JPH::Shape> {
@@ -2068,35 +2353,81 @@ bool PhysicsWorld::Raycast(const glm::vec3 &origin, const glm::vec3 &direction, 
                            uint32_t layerMask, bool queryTriggers) const
 {
     SceneManager::Instance().EnsurePhysicsQueriesCurrent();
+    std::shared_lock snapshotRead(m_querySnapshotMutex);
     return RaycastCurrent(origin, direction, maxDistance, outHit, layerMask, queryTriggers);
 }
 
 void PhysicsWorld::RaycastBatch(const float *originsXYZ, const float *directionsXYZ, size_t count, float maxDistance,
                                 RaycastHit *outHits, uint8_t *outHitMask, uint32_t layerMask, bool queryTriggers,
-                                uint64_t *outQueryGeneration) const
+                                uint64_t *outQueryGeneration, RaycastBatchProfile *outProfile) const
+{
+    const auto profileNowNs = []() noexcept {
+        return static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch())
+                .count());
+    };
+    const uint64_t syncStartNs = outProfile ? profileNowNs() : 0;
+    const bool synchronized = PrepareRaycastBatchQuery();
+    const uint64_t syncNs = outProfile && synchronized ? profileNowNs() - syncStartNs : 0;
+    RaycastBatchPublished(originsXYZ, directionsXYZ, count, maxDistance, outHits, outHitMask, layerMask, queryTriggers,
+                          outQueryGeneration, outProfile);
+    if (outProfile)
+        outProfile->snapshotSyncNs = syncNs;
+}
+
+bool PhysicsWorld::PrepareRaycastBatchQuery() const
+{
+    {
+        std::shared_lock snapshotRead(m_querySnapshotMutex);
+        if (std::this_thread::get_id() != m_ownerThreadId)
+            return false;
+    }
+    SceneManager::Instance().EnsurePhysicsQueriesCurrent();
+    return true;
+}
+
+void PhysicsWorld::RaycastBatchPublished(const float *originsXYZ, const float *directionsXYZ, size_t count,
+                                         float maxDistance, RaycastHit *outHits, uint8_t *outHitMask,
+                                         uint32_t layerMask, bool queryTriggers, uint64_t *outQueryGeneration,
+                                         RaycastBatchProfile *outProfile, bool directionsNormalized) const
 {
     if ((count != 0 && (!originsXYZ || !directionsXYZ || !outHits || !outHitMask)))
         throw std::invalid_argument("raycast batch requires non-null storage");
 
-    SceneManager::Instance().EnsurePhysicsQueriesCurrent();
+    const auto profileNowNs = []() noexcept {
+        return static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch())
+                .count());
+    };
+    if (outProfile)
+        *outProfile = {};
+    const uint64_t lockStartNs = outProfile ? profileNowNs() : 0;
+    std::shared_lock snapshotRead(m_querySnapshotMutex, std::defer_lock);
+    snapshotRead.lock();
+    if (outProfile) {
+        const uint64_t lockedNs = profileNowNs();
+        outProfile->snapshotLockWaitNs = lockedNs - lockStartNs;
+    }
     const uint64_t queryGeneration = GetQueryGeneration();
     if (outQueryGeneration)
         *outQueryGeneration = queryGeneration;
-    // The physics snapshot is immutable for the duration of this call.  Keep
+    // The synchronized live-world query epoch is stable for this call. Keep
     // one native query boundary, then fan out large batches through the
     // engine JobSystem instead of making the caller serialize thousands of
     // independent narrow-phase casts on the owner thread.  Small batches stay
     // inline: scheduling overhead is larger than the query itself there.
-    const auto castOne = [&](uint32_t index) {
+    const auto castOne = [&](uint32_t index, RaycastBatchProfile *profile) {
         const size_t offset = index * 3;
         const glm::vec3 origin(originsXYZ[offset], originsXYZ[offset + 1], originsXYZ[offset + 2]);
         const glm::vec3 direction(directionsXYZ[offset], directionsXYZ[offset + 1], directionsXYZ[offset + 2]);
         outHits[index] = RaycastHit{};
-        outHitMask[index] = RaycastCurrent(origin, direction, maxDistance, outHits[index], layerMask, queryTriggers)
+        outHitMask[index] = RaycastCurrent(origin, direction, maxDistance, outHits[index], layerMask, queryTriggers,
+                                           true, profile, directionsNormalized, queryGeneration)
                                 ? uint8_t{1}
                                 : uint8_t{0};
     };
 
+    const uint64_t dispatchStartNs = outProfile ? profileNowNs() : 0;
     constexpr size_t kParallelRaycastThreshold = 256;
     if (count >= kParallelRaycastThreshold && count <= std::numeric_limits<uint32_t>::max() &&
         JobSystem::IsAvailable() && !JobSystem::Get().IsInline() && JobSystem::Get().GetWorkerCount() > 1) {
@@ -2105,98 +2436,182 @@ void PhysicsWorld::RaycastBatch(const float *originsXYZ, const float *directions
         // per worker so Jolt's narrow-phase work remains parallel without
         // turning the batch into thousands of tiny scheduler operations.
         const uint32_t workerCount = JobSystem::Get().GetWorkerCount();
-        const uint32_t targetWorkerCount = std::min<uint32_t>(workerCount, std::numeric_limits<uint32_t>::max() / 4u);
-        const uint32_t targetChunks = std::max<uint32_t>(targetWorkerCount * 4u, 1u);
+        // Dense ray batches have near-uniform work per ray. One contiguous
+        // chunk per worker avoids allocating and queueing 4x as many tiny
+        // std::function jobs on every gameplay query while the waiting owner
+        // thread can still help execute a queued chunk.
+        const uint32_t targetChunks = workerCount == std::numeric_limits<uint32_t>::max()
+                                          ? workerCount
+                                          : std::max<uint32_t>(workerCount + 1u, 1u);
         const uint32_t chunkSize = std::max<uint32_t>(64, 1u + (static_cast<uint32_t>(count) - 1u) / targetChunks);
+        std::vector<RaycastBatchProfile> chunkProfiles;
+        if (outProfile)
+            chunkProfiles.resize(1u + ((static_cast<uint32_t>(count) - 1u) / chunkSize));
         JobSystem::Get().ParallelForChunks(
             static_cast<uint32_t>(count), chunkSize,
             [&](uint32_t begin, uint32_t end) {
+                RaycastBatchProfile *profile = outProfile ? &chunkProfiles[begin / chunkSize] : nullptr;
                 for (uint32_t index = begin; index < end; ++index) {
-                    castOne(index);
+                    castOne(index, profile);
                 }
             },
-            JobDomain::Physics, JobPriority::Normal);
+            JobDomain::Physics, JobPriority::Critical);
+        if (outProfile) {
+            outProfile->dispatchWallNs = profileNowNs() - dispatchStartNs;
+            for (const auto &profile : chunkProfiles) {
+                outProfile->joltQueryCpuNs += profile.joltQueryCpuNs;
+                outProfile->narrowPhaseCpuNs += profile.narrowPhaseCpuNs;
+                outProfile->sortFilterCpuNs += profile.sortFilterCpuNs;
+                outProfile->hitPublishCpuNs += profile.hitPublishCpuNs;
+                outProfile->broadphaseCandidates += profile.broadphaseCandidates;
+                outProfile->narrowphaseHits += profile.narrowphaseHits;
+                outProfile->publishedHits += profile.publishedHits;
+            }
+        }
         if (GetQueryGeneration() != queryGeneration)
             throw std::logic_error("physics query world changed during raycast batch");
         return;
     }
 
     for (size_t index = 0; index < count; ++index) {
-        castOne(static_cast<uint32_t>(index));
+        castOne(static_cast<uint32_t>(index), outProfile);
     }
+    if (outProfile)
+        outProfile->dispatchWallNs = profileNowNs() - dispatchStartNs;
     if (GetQueryGeneration() != queryGeneration)
         throw std::logic_error("physics query world changed during raycast batch");
 }
 
 bool PhysicsWorld::RaycastCurrent(const glm::vec3 &origin, const glm::vec3 &direction, float maxDistance,
-                                  RaycastHit &outHit, uint32_t layerMask, bool queryTriggers) const
+                                  RaycastHit &outHit, uint32_t layerMask, bool queryTriggers, bool queryEpochHeld,
+                                  RaycastBatchProfile *profile, bool directionNormalized,
+                                  uint64_t queryGeneration) const
 {
     if (!m_initialized || layerMask == 0 || !IsFinite(origin))
         return false;
 
-    glm::vec3 normalizedDirection(0.0f);
-    if (!NormalizeQueryDirection(direction, maxDistance, normalizedDirection))
+    glm::vec3 normalizedDirection = direction;
+    if (!directionNormalized && !NormalizeQueryDirection(direction, maxDistance, normalizedDirection))
         return false;
 
     const JPH::RRayCast ray(JPH::RVec3(origin.x, origin.y, origin.z),
                             JPH::Vec3(normalizedDirection.x * maxDistance, normalizedDirection.y * maxDistance,
                                       normalizedDirection.z * maxDistance));
-    const JPH::NarrowPhaseQuery &query = m_physicsSystem->GetNarrowPhaseQuery();
+    // The batch owns the engine query epoch across every worker. All Jolt
+    // pose/shape/body/broadphase publication takes the write side of that
+    // epoch, so taking Jolt's striped body lock again per candidate is
+    // redundant. Single casts retain the ordinary locking interfaces.
+    const JPH::NarrowPhaseQuery &query =
+        queryEpochHeld ? m_physicsSystem->GetNarrowPhaseQueryNoLock() : m_physicsSystem->GetNarrowPhaseQuery();
+    const JPH::BodyLockInterface &bodyLocks =
+        queryEpochHeld ? static_cast<const JPH::BodyLockInterface &>(m_physicsSystem->GetBodyLockInterfaceNoLock())
+                       : static_cast<const JPH::BodyLockInterface &>(m_physicsSystem->GetBodyLockInterface());
     LayerMaskObjectFilter objectFilter(layerMask);
+    const auto profileNowNs = []() noexcept {
+        return static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch())
+                .count());
+    };
 
-    const auto publish = [&](const JPH::RayCastResult &result, bool filterTriggers) {
+    const auto publishBody = [&](const JPH::RayCastResult &result, const JPH::Body &body, bool filterTriggers) {
         outHit.distance = result.mFraction * maxDistance;
         outHit.point = origin + normalizedDirection * outHit.distance;
         outHit.bodyId = result.mBodyID.GetIndexAndSequenceNumber();
         outHit.collider = nullptr;
         outHit.gameObject = nullptr;
+        outHit.colliderId = 0;
+        outHit.gameObjectId = 0;
 
-        JPH::BodyLockRead lock(m_physicsSystem->GetBodyLockInterface(), result.mBodyID);
-        if (lock.Succeeded()) {
-            const JPH::Body &body = lock.GetBody();
-            // Resolve the owning collider while the body lock is already held.
-            // The previous path acquired a second BodyLockRead for every hit,
-            // which made large raycast batches needlessly serialize on Jolt's
-            // body-lock table.
-            Collider *collider = ResolveColliderForSubShape(body, result.mBodyID.GetIndexAndSequenceNumber(),
-                                                            result.mSubShapeID2.GetValue());
-            if (filterTriggers && (body.IsSensor() || (collider && collider->IsTrigger()))) {
-                return false;
-            }
-            outHit.collider = collider;
-            outHit.gameObject = collider ? collider->GetGameObject() : nullptr;
-            const JPH::Vec3 normal = body.GetWorldSpaceSurfaceNormal(
-                result.mSubShapeID2, JPH::RVec3(outHit.point.x, outHit.point.y, outHit.point.z));
-            outHit.normal = glm::vec3(normal.GetX(), normal.GetY(), normal.GetZ());
-            PublishRaycastSubShape(body, result.mSubShapeID2, outHit);
-        }
+        // Resolve application identity from the immutable data published
+        // with this query epoch. Collider properties are owner-authored
+        // mutable state and must never be read by parallel query workers.
+        const QueryColliderIdentity *identity = ResolvePublishedQueryIdentity(
+            body, result.mBodyID.GetIndexAndSequenceNumber(), result.mSubShapeID2.GetValue());
+        if (filterTriggers && (body.IsSensor() || (identity && identity->isTrigger)))
+            return false;
+        outHit.collider = identity ? identity->collider : nullptr;
+        outHit.gameObject = identity ? identity->gameObject : nullptr;
+        outHit.colliderId = identity ? identity->colliderId : 0;
+        outHit.gameObjectId = identity ? identity->gameObjectId : 0;
+        const JPH::Vec3 normal = body.GetWorldSpaceSurfaceNormal(
+            result.mSubShapeID2, JPH::RVec3(outHit.point.x, outHit.point.y, outHit.point.z));
+        outHit.normal = glm::vec3(normal.GetX(), normal.GetY(), normal.GetZ());
+        PublishRaycastSubShape(body, result.mSubShapeID2, outHit);
         return true;
     };
 
+    const auto publish = [&](const JPH::RayCastResult &result, bool filterTriggers) {
+        JPH::BodyLockRead lock(bodyLocks, result.mBodyID);
+        return lock.Succeeded() && publishBody(result, lock.GetBody(), filterTriggers);
+    };
+
     if (queryTriggers) {
-        JPH::ClosestHitCollisionCollector<JPH::CastRayCollector> collector;
-        query.CastRay(ray, JPH::RayCastSettings(), collector, JPH::BroadPhaseLayerFilter(), objectFilter);
+        static thread_local RaycastPublishedBodyCache publishedBodyCache;
+        DeterministicClosestRayBodyCollector collector(ray, bodyLocks, profile,
+                                                       queryEpochHeld ? &publishedBodyCache : nullptr, queryGeneration);
+        const uint64_t queryStartNs = profile ? profileNowNs() : 0;
+        if (queryEpochHeld) {
+            m_physicsSystem->GetBroadPhaseNoLock().CastRayNoLock(static_cast<JPH::RayCast>(ray), collector,
+                                                                 JPH::BroadPhaseLayerFilter(), objectFilter);
+        } else {
+            m_physicsSystem->GetBroadPhaseQuery().CastRay(static_cast<JPH::RayCast>(ray), collector,
+                                                          JPH::BroadPhaseLayerFilter(), objectFilter);
+        }
+        if (profile)
+            profile->joltQueryCpuNs += profileNowNs() - queryStartNs;
         if (!collector.HadHit())
             return false;
-        return publish(collector.mHit, false);
+        const uint64_t publishStartNs = profile ? profileNowNs() : 0;
+        const bool accepted = publishBody(collector.Hit(), collector.HitBody(), false);
+        if (profile) {
+            profile->hitPublishCpuNs += profileNowNs() - publishStartNs;
+            profile->publishedHits += accepted ? 1u : 0u;
+        }
+        return accepted;
     }
 
-    JPH::AllHitCollisionCollector<JPH::CastRayCollector> collector;
-    query.CastRay(ray, JPH::RayCastSettings(), collector, JPH::BroadPhaseLayerFilter(), objectFilter);
-    if (!collector.HadHit())
+    const auto consumeAllHits = [&](auto &collector) {
+        const uint64_t queryStartNs = profile ? profileNowNs() : 0;
+        query.CastRay(ray, JPH::RayCastSettings(), collector, JPH::BroadPhaseLayerFilter(), objectFilter);
+        if (profile)
+            profile->joltQueryCpuNs += profileNowNs() - queryStartNs;
+        if (!collector.HadHit())
+            return false;
+        const uint64_t sortStartNs = profile ? profileNowNs() : 0;
+        std::sort(collector.mHits.begin(), collector.mHits.end(), [](const auto &left, const auto &right) {
+            return std::tuple(left.mFraction, left.mBodyID.GetIndexAndSequenceNumber(), left.mSubShapeID2.GetValue()) <
+                   std::tuple(right.mFraction, right.mBodyID.GetIndexAndSequenceNumber(),
+                              right.mSubShapeID2.GetValue());
+        });
+        if (profile)
+            profile->sortFilterCpuNs += profileNowNs() - sortStartNs;
+        const uint64_t publishStartNs = profile ? profileNowNs() : 0;
+        for (const JPH::RayCastResult &result : collector.mHits) {
+            if (publish(result, true)) {
+                if (profile) {
+                    profile->hitPublishCpuNs += profileNowNs() - publishStartNs;
+                    ++profile->publishedHits;
+                }
+                return true;
+            }
+        }
+        if (profile)
+            profile->hitPublishCpuNs += profileNowNs() - publishStartNs;
         return false;
-    collector.Sort();
-    for (const JPH::RayCastResult &result : collector.mHits) {
-        if (publish(result, true))
-            return true;
+    };
+    if (profile) {
+        ProfiledAllHitRayCollector collector(profile);
+        return consumeAllHits(collector);
     }
-    return false;
+    JPH::AllHitCollisionCollector<JPH::CastRayCollector> collector;
+    return consumeAllHits(collector);
 }
 
 bool PhysicsWorld::RaycastCollider(const Collider &collider, const glm::vec3 &origin, const glm::vec3 &direction,
                                    float maxDistance, RaycastHit &outHit) const
 {
     SceneManager::Instance().EnsurePhysicsQueriesCurrent();
+    std::shared_lock snapshotRead(m_querySnapshotMutex);
     if (!m_initialized || !IsFinite(origin))
         return false;
 
@@ -2222,7 +2637,10 @@ bool PhysicsWorld::RaycastCollider(const Collider &collider, const glm::vec3 &or
     if (!collector.HadHit())
         return false;
 
-    collector.Sort();
+    std::sort(collector.mHits.begin(), collector.mHits.end(), [](const auto &left, const auto &right) {
+        return std::tuple(left.mFraction, left.mBodyID.GetIndexAndSequenceNumber(), left.mSubShapeID2.GetValue()) <
+               std::tuple(right.mFraction, right.mBodyID.GetIndexAndSequenceNumber(), right.mSubShapeID2.GetValue());
+    });
     for (const JPH::RayCastResult &result : collector.mHits) {
         if (ResolveColliderForSubShape(bodyId, result.mSubShapeID2.GetValue()) != &collider)
             continue;
@@ -2232,6 +2650,8 @@ bool PhysicsWorld::RaycastCollider(const Collider &collider, const glm::vec3 &or
         outHit.bodyId = bodyId;
         outHit.collider = const_cast<Collider *>(&collider);
         outHit.gameObject = collider.GetGameObject();
+        outHit.colliderId = collider.GetComponentID();
+        outHit.gameObjectId = outHit.gameObject ? outHit.gameObject->GetID() : 0;
         const JPH::Vec3 normal = transformedShape.GetWorldSpaceSurfaceNormal(
             result.mSubShapeID2, JPH::RVec3(outHit.point.x, outHit.point.y, outHit.point.z));
         outHit.normal = glm::vec3(normal.GetX(), normal.GetY(), normal.GetZ());
@@ -2244,6 +2664,7 @@ bool PhysicsWorld::RaycastCollider(const Collider &collider, const glm::vec3 &or
 glm::vec3 PhysicsWorld::ClosestPointOnCollider(const Collider &collider, const glm::vec3 &point) const
 {
     SceneManager::Instance().EnsurePhysicsQueriesCurrent();
+    std::shared_lock snapshotRead(m_querySnapshotMutex);
     if (!m_initialized)
         throw std::logic_error("closest_point requires initialized physics");
 
@@ -2319,6 +2740,7 @@ std::vector<RaycastHit> PhysicsWorld::RaycastAll(const glm::vec3 &origin, const 
                                                  uint32_t layerMask, bool queryTriggers) const
 {
     SceneManager::Instance().EnsurePhysicsQueriesCurrent();
+    std::shared_lock snapshotRead(m_querySnapshotMutex);
     std::vector<RaycastHit> hits;
     if (!m_initialized || layerMask == 0 || !IsFinite(origin))
         return hits;
@@ -2340,7 +2762,10 @@ std::vector<RaycastHit> PhysicsWorld::RaycastAll(const glm::vec3 &origin, const 
         return hits;
     }
 
-    collector.Sort();
+    std::sort(collector.mHits.begin(), collector.mHits.end(), [](const auto &left, const auto &right) {
+        return std::tuple(left.mFraction, left.mBodyID.GetIndexAndSequenceNumber(), left.mSubShapeID2.GetValue()) <
+               std::tuple(right.mFraction, right.mBodyID.GetIndexAndSequenceNumber(), right.mSubShapeID2.GetValue());
+    });
     hits.reserve(static_cast<size_t>(collector.mHits.size()));
 
     for (const JPH::RayCastResult &result : collector.mHits) {
@@ -2357,6 +2782,8 @@ std::vector<RaycastHit> PhysicsWorld::RaycastAll(const glm::vec3 &origin, const 
         if (hit.collider && hit.collider->GetGameObject()) {
             hit.gameObject = hit.collider->GetGameObject();
         }
+        hit.colliderId = hit.collider ? hit.collider->GetComponentID() : 0;
+        hit.gameObjectId = hit.gameObject ? hit.gameObject->GetID() : 0;
 
         JPH::BodyLockRead lock(m_physicsSystem->GetBodyLockInterface(), result.mBodyID);
         if (lock.Succeeded()) {
@@ -2370,6 +2797,15 @@ std::vector<RaycastHit> PhysicsWorld::RaycastAll(const glm::vec3 &origin, const 
         hits.push_back(hit);
     }
 
+    // Jolt's broadphase traversal order is deliberately unspecified.  Keep
+    // the public result stable for equal-distance surfaces so Scene picking,
+    // MCP observation and gameplay do not change merely because a tree was
+    // rebuilt.  Geometry identity is the final deterministic tie-breaker.
+    std::sort(hits.begin(), hits.end(), [](const RaycastHit &left, const RaycastHit &right) {
+        return std::tie(left.distance, left.bodyId, left.subShapeId, left.triangleIndex) <
+               std::tie(right.distance, right.bodyId, right.subShapeId, right.triangleIndex);
+    });
+
     return hits;
 }
 
@@ -2382,6 +2818,7 @@ std::vector<Collider *> PhysicsWorld::OverlapShapeImpl(const JPH::Shape &shape, 
                                                        bool queryTriggers) const
 {
     SceneManager::Instance().EnsurePhysicsQueriesCurrent();
+    std::shared_lock snapshotRead(m_querySnapshotMutex);
     std::vector<Collider *> results;
     JPH::CollideShapeSettings settings;
     JPH::RMat44 transform =
@@ -2407,6 +2844,11 @@ std::vector<Collider *> PhysicsWorld::OverlapShapeImpl(const JPH::Shape &shape, 
             results.push_back(col);
         }
     }
+    std::sort(results.begin(), results.end(), [](const Collider *left, const Collider *right) {
+        const uint64_t leftId = left ? left->GetComponentID() : 0;
+        const uint64_t rightId = right ? right->GetComponentID() : 0;
+        return leftId < rightId;
+    });
     return results;
 }
 
@@ -2415,6 +2857,7 @@ bool PhysicsWorld::ShapeCastImpl(const JPH::Shape &shape, const glm::vec3 &origi
                                  bool queryTriggers) const
 {
     SceneManager::Instance().EnsurePhysicsQueriesCurrent();
+    std::shared_lock snapshotRead(m_querySnapshotMutex);
     glm::vec3 dir(0.0f);
     if (!NormalizeQueryDirection(direction, maxDistance, dir))
         return false;
@@ -2435,7 +2878,10 @@ bool PhysicsWorld::ShapeCastImpl(const JPH::Shape &shape, const glm::vec3 &origi
     if (!collector.HadHit())
         return false;
 
-    collector.Sort();
+    std::sort(collector.mHits.begin(), collector.mHits.end(), [](const auto &left, const auto &right) {
+        return std::tuple(left.mFraction, left.mBodyID2.GetIndexAndSequenceNumber(), left.mSubShapeID2.GetValue()) <
+               std::tuple(right.mFraction, right.mBodyID2.GetIndexAndSequenceNumber(), right.mSubShapeID2.GetValue());
+    });
     const JPH::ShapeCastResult *selected = nullptr;
     Collider *selectedCollider = nullptr;
     for (const auto &candidate : collector.mHits) {
@@ -2465,6 +2911,8 @@ bool PhysicsWorld::ShapeCastImpl(const JPH::Shape &shape, const glm::vec3 &origi
     outHit.collider = selectedCollider;
     if (outHit.collider && outHit.collider->GetGameObject())
         outHit.gameObject = outHit.collider->GetGameObject();
+    outHit.colliderId = outHit.collider ? outHit.collider->GetComponentID() : 0;
+    outHit.gameObjectId = outHit.gameObject ? outHit.gameObject->GetID() : 0;
 
     return true;
 }
@@ -2497,6 +2945,7 @@ std::vector<Rigidbody *> PhysicsWorld::QueryRigidbodiesInBounds(const glm::vec3 
                                                                 uint32_t layerMask, bool queryTriggers) const
 {
     SceneManager::Instance().EnsurePhysicsQueriesCurrent();
+    std::shared_lock snapshotRead(m_querySnapshotMutex);
     std::vector<Rigidbody *> results;
     if (!m_initialized || layerMask == 0 || !IsFinite(minimum) || !IsFinite(maximum) || minimum.x > maximum.x ||
         minimum.y > maximum.y || minimum.z > maximum.z)
@@ -2519,6 +2968,11 @@ std::vector<Rigidbody *> PhysicsWorld::QueryRigidbodiesInBounds(const glm::vec3 
         if (rigidbody && rigidbody->IsEnabled() && seen.insert(rigidbody).second)
             results.push_back(rigidbody);
     }
+    std::sort(results.begin(), results.end(), [](const Rigidbody *left, const Rigidbody *right) {
+        const uint64_t leftId = left ? left->GetComponentID() : 0;
+        const uint64_t rightId = right ? right->GetComponentID() : 0;
+        return leftId < rightId;
+    });
     return results;
 }
 
@@ -2593,6 +3047,74 @@ Collider *PhysicsWorld::FindColliderByBodyId(uint32_t bodyId) const
     return (it != m_bodyToCollider.end()) ? it->second : nullptr;
 }
 
+void PhysicsWorld::PublishBodyQueryIdentitiesUnlocked(uint32_t bodyId)
+{
+    auto &published = m_bodyQueryIdentities[bodyId];
+    published.clear();
+
+    const auto append = [&published](Collider *collider) {
+        if (!collider)
+            return;
+        if (std::any_of(published.begin(), published.end(),
+                        [collider](const QueryColliderIdentity &identity) { return identity.collider == collider; }))
+            return;
+        GameObject *gameObject = collider->GetGameObject();
+        QueryColliderIdentity identity;
+        identity.collider = collider;
+        identity.gameObject = gameObject;
+        identity.colliderId = collider->GetComponentID();
+        identity.gameObjectId = gameObject ? gameObject->GetID() : 0;
+        identity.isTrigger = collider->IsTrigger();
+        published.push_back(identity);
+    };
+
+    // Primary first gives non-compound/failure paths a fallback that is also
+    // part of this immutable publication. Query workers do not consult the
+    // mutable body-to-component maps at all.
+    const auto primary = m_bodyToCollider.find(bodyId);
+    if (primary != m_bodyToCollider.end())
+        append(primary->second);
+
+    const auto colliders = m_bodyColliders.find(bodyId);
+    if (colliders != m_bodyColliders.end()) {
+        published.reserve(published.size() + colliders->second.size());
+        for (Collider *collider : colliders->second)
+            append(collider);
+    }
+}
+
+const PhysicsWorld::QueryColliderIdentity *
+PhysicsWorld::ResolvePublishedQueryIdentity(const JPH::Body &body, uint32_t bodyId, uint32_t subShapeIdValue) const
+{
+    const auto published = m_bodyQueryIdentities.find(bodyId);
+    if (published == m_bodyQueryIdentities.end() || published->second.empty())
+        return nullptr;
+
+    const QueryColliderIdentity *fallback = &published->second.front();
+
+    const JPH::Shape *shape = body.GetShape();
+    if (!shape || shape->GetType() != JPH::EShapeType::Compound)
+        return fallback;
+
+    const auto *compound = static_cast<const JPH::CompoundShape *>(shape);
+    JPH::SubShapeID subShapeId;
+    subShapeId.SetValue(subShapeIdValue);
+    if (!compound->IsSubShapeIDValid(subShapeId))
+        return fallback;
+
+    JPH::SubShapeID remainder;
+    const uint32_t subShapeIndex = compound->GetSubShapeIndexFromID(subShapeId, remainder);
+    const uint32_t componentId = compound->GetCompoundUserData(subShapeIndex);
+    if (componentId == 0)
+        return fallback;
+
+    const auto match = std::find_if(published->second.begin(), published->second.end(),
+                                    [componentId](const QueryColliderIdentity &identity) {
+                                        return static_cast<uint32_t>(identity.colliderId) == componentId;
+                                    });
+    return match != published->second.end() ? &*match : fallback;
+}
+
 Collider *PhysicsWorld::ResolveColliderForSubShape(uint32_t bodyId, uint32_t subShapeIdValue) const
 {
     Collider *fallback = FindColliderByBodyId(bodyId);
@@ -2661,11 +3183,14 @@ Collider *PhysicsWorld::ResolveColliderForSubShape(const JPH::Body &body, uint32
 
 void PhysicsWorld::RebindBodyCollider(uint32_t bodyId, Collider *collider)
 {
+    std::unique_lock snapshotWrite(m_querySnapshotMutex);
     if (!m_initialized || bodyId == 0xFFFFFFFF || !collider) {
         return;
     }
     m_bodyToCollider[bodyId] = collider;
     m_physicsSystem->GetBodyInterface().SetUserData(JPH::BodyID(bodyId), reinterpret_cast<uint64_t>(collider));
+    PublishBodyQueryIdentitiesUnlocked(bodyId);
+    m_queryGeneration.fetch_add(1, std::memory_order_release);
 }
 
 void PhysicsWorld::EnsureSceneBodiesRegistered(Scene *scene)
@@ -2720,12 +3245,13 @@ void PhysicsWorld::EnsureSceneBodiesRegistered(Scene *scene)
     }
 
     if (anyRegistered) {
-        m_physicsSystem->OptimizeBroadPhase();
+        OptimizeBroadPhase();
     }
 }
 
 void PhysicsWorld::OptimizeBroadPhase()
 {
+    std::unique_lock snapshotWrite(m_querySnapshotMutex);
     if (m_initialized && m_physicsSystem) {
         m_physicsSystem->OptimizeBroadPhase();
     }

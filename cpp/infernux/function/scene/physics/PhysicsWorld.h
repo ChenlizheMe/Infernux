@@ -8,13 +8,15 @@
  * and raycast queries. Integrated with SceneManager::FixedUpdate.
  */
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
-#include <atomic>
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
 #include <memory>
 #include <optional>
+#include <shared_mutex>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -98,6 +100,28 @@ struct RaycastHit
     uint32_t triangleIndex = 0xFFFFFFFF; ///< Cooked triangle index for non-convex mesh hits
     GameObject *gameObject = nullptr;    ///< Hit GameObject
     Collider *collider = nullptr;        ///< Hit Collider component
+    // Stable numeric identities captured while the published query epoch
+    // is held.  Batch bindings must use these rather than dereferencing the
+    // raw convenience pointers after the native query boundary has ended.
+    uint64_t gameObjectId = 0;
+    uint64_t colliderId = 0;
+};
+
+/// Optional diagnostic counters for one RaycastBatch call. Timings inside
+/// parallel workers are summed CPU time; dispatchWallNs is caller wall time.
+/// A null profile pointer keeps the hot path free of clock reads.
+struct RaycastBatchProfile
+{
+    uint64_t snapshotSyncNs = 0;
+    uint64_t snapshotLockWaitNs = 0;
+    uint64_t dispatchWallNs = 0;
+    uint64_t joltQueryCpuNs = 0;
+    uint64_t narrowPhaseCpuNs = 0;
+    uint64_t sortFilterCpuNs = 0;
+    uint64_t hitPublishCpuNs = 0;
+    uint64_t broadphaseCandidates = 0;
+    uint64_t narrowphaseHits = 0;
+    uint64_t publishedHits = 0;
 };
 
 /**
@@ -121,8 +145,9 @@ class PhysicsWorld
     ///   4. Jolt globals (Factory, registered types) torn down.
     /// Idempotent: subsequent calls are no-ops.
     void Shutdown();
-    [[nodiscard]] size_t GetBodyCount() const noexcept
+    [[nodiscard]] size_t GetBodyCount() const
     {
+        std::shared_lock lock(m_querySnapshotMutex);
         return m_bodyToCollider.size();
     }
 
@@ -361,15 +386,32 @@ class PhysicsWorld
     bool Raycast(const glm::vec3 &origin, const glm::vec3 &direction, float maxDistance, RaycastHit &outHit,
                  uint32_t layerMask = (0xFFFFFFFFu & ~(1u << 2)), bool queryTriggers = true) const;
 
-    /// Cast a contiguous batch of XYZ float rays after one world synchronization.
-    /// Large batches fan out through the engine JobSystem while the published
-    /// physics snapshot is held stable; callers must not mutate collider state
-    /// concurrently with this call.
+    /// Cast a contiguous batch of XYZ float rays against one stable world epoch.
+    /// The owner thread first publishes pending authoring state; worker callers
+    /// consume the last complete published epoch. Large batches fan out through
+    /// the engine JobSystem. Fixed-step and collider mutation publication wait
+    /// until the batch releases its epoch.
     /// Every input row produces one mask entry and one initialized result row;
     /// caller-owned storage must contain @p count elements.
     void RaycastBatch(const float *originsXYZ, const float *directionsXYZ, size_t count, float maxDistance,
                       RaycastHit *outHits, uint8_t *outHitMask, uint32_t layerMask = (0xFFFFFFFFu & ~(1u << 2)),
-                      bool queryTriggers = true, uint64_t *outQueryGeneration = nullptr) const;
+                      bool queryTriggers = true, uint64_t *outQueryGeneration = nullptr,
+                      RaycastBatchProfile *outProfile = nullptr) const;
+
+    /// Publish pending authored collider state only when called by the physics
+    /// owner thread. Worker threads deliberately consume the last complete
+    /// query epoch and never touch SceneManager-owned authoring state.
+    /// @return true when owner-thread synchronization was performed.
+    bool PrepareRaycastBatchQuery() const;
+
+    /// Consume the last complete published query epoch without touching
+    /// SceneManager. Call PrepareRaycastBatchQuery first on the owner thread;
+    /// background workers call this method directly.
+    void RaycastBatchPublished(const float *originsXYZ, const float *directionsXYZ, size_t count, float maxDistance,
+                               RaycastHit *outHits, uint8_t *outHitMask,
+                               uint32_t layerMask = (0xFFFFFFFFu & ~(1u << 2)), bool queryTriggers = true,
+                               uint64_t *outQueryGeneration = nullptr, RaycastBatchProfile *outProfile = nullptr,
+                               bool directionsNormalized = false) const;
 
     /// Monotonic identity of the currently published query world. The value
     /// changes whenever body membership, pose, layer/trigger state, or a
@@ -478,8 +520,33 @@ class PhysicsWorld
     }
 
   private:
+    // Callers must hold m_querySnapshotMutex exclusively. Keeping the lock at
+    // the public-operation boundary lets compound mutations publish as one
+    // query epoch without recursively locking std::shared_mutex.
+    void SetBodyPositionUnlocked(uint32_t bodyId, const glm::vec3 &pos, const glm::quat &rot);
+    void MoveBodyKinematicUnlocked(uint32_t bodyId, const glm::vec3 &targetPos, const glm::quat &targetRot,
+                                   float deltaTime, float maxSpeed);
+
+    struct QueryColliderIdentity
+    {
+        Collider *collider = nullptr;
+        GameObject *gameObject = nullptr;
+        uint64_t colliderId = 0;
+        uint64_t gameObjectId = 0;
+        bool isTrigger = false;
+    };
+
+    /// Rebuild immutable application identity/trigger data while holding the
+    /// query epoch write lock. Query workers never dereference mutable
+    /// Collider or GameObject state.
+    void PublishBodyQueryIdentitiesUnlocked(uint32_t bodyId);
+    [[nodiscard]] const QueryColliderIdentity *ResolvePublishedQueryIdentity(const JPH::Body &body, uint32_t bodyId,
+                                                                             uint32_t subShapeIdValue) const;
+
     bool RaycastCurrent(const glm::vec3 &origin, const glm::vec3 &direction, float maxDistance, RaycastHit &outHit,
-                        uint32_t layerMask, bool queryTriggers) const;
+                        uint32_t layerMask, bool queryTriggers, bool queryEpochHeld = false,
+                        RaycastBatchProfile *profile = nullptr, bool directionNormalized = false,
+                        uint64_t queryGeneration = 0) const;
 
     PhysicsWorld() = default;
     ~PhysicsWorld();
@@ -521,7 +588,15 @@ class PhysicsWorld
     // hit publication can resolve sub-shapes without allocating a fresh
     // GameObject component list for every ray.
     std::unordered_map<uint32_t, std::vector<Collider *>> m_bodyColliders;
+    std::unordered_map<uint32_t, std::vector<QueryColliderIdentity>> m_bodyQueryIdentities;
+    // Queries acquire the read side after SceneManager has published pending
+    // transforms.  Fixed steps and every operation that changes query-visible
+    // body membership, pose, layer, sensor or shape acquire the write side.
+    // This turns query_generation into an epoch boundary rather than a
+    // best-effort before/after race detector.
+    mutable std::shared_mutex m_querySnapshotMutex;
     std::atomic<uint64_t> m_queryGeneration{1};
+    std::thread::id m_ownerThreadId{};
 
     enum class ConstraintKind : uint8_t
     {

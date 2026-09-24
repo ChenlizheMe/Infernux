@@ -604,6 +604,8 @@ class TestColliderRaycast:
         body = obj.add_component("Rigidbody")
         body.is_kinematic = True
         Physics.sync_transforms()
+        initial_collision_revision = int(mesh.collision_geometry_revision)
+        assert initial_collision_revision > 0
 
         first = PublicPhysics.raycast(Vector3(0, 5, 0), Vector3(0, -1, 0), 20)
         assert first is not None
@@ -619,12 +621,17 @@ class TestColliderRaycast:
         # explicitly publishes a new immutable cooking generation.
         positions[:, 1] = 1.0
         renderer.set_inline_mesh_data(positions, normals, uvs, indices)
+        # Worker completion is not publication.  Until the owner reaches an
+        # explicit physics barrier the previously published geometry remains
+        # the authoritative query generation.
+        assert int(mesh.collision_geometry_revision) == initial_collision_revision
         Physics.sync_transforms()
         unchanged = PublicPhysics.raycast(Vector3(0, 5, 0), Vector3(0, -1, 0), 20)
         assert unchanged is not None
         assert unchanged.point.y == pytest.approx(2.0, abs=1e-3)
         mesh.recook()
         Physics.sync_transforms()
+        assert int(mesh.collision_geometry_revision) > initial_collision_revision
         recooked = PublicPhysics.raycast(Vector3(0, 5, 0), Vector3(0, -1, 0), 20)
         assert recooked is not None
         assert recooked.point.y == pytest.approx(3.0, abs=1e-3)
@@ -1769,6 +1776,37 @@ class TestContinuousCollisionDetection:
 # ═══════════════════════════════════════════════════════════════════════════
 
 class TestRaycast:
+    @pytest.mark.parametrize(
+        ("shape_name", "convex"),
+        [
+            ("BoxCollider", None),
+            ("SphereCollider", None),
+            ("CapsuleCollider", None),
+            ("CylinderCollider", None),
+            ("MeshCollider", True),
+            ("MeshCollider", False),
+        ],
+    )
+    def test_world_query_shape_matrix_returns_finite_upward_surface(
+            self, scene, shape_name, convex):
+        target = scene.create_primitive(PrimitiveType.Cube, f"Raycast {shape_name} {convex}")
+        authored_box = target.get_component("BoxCollider")
+        if shape_name == "BoxCollider":
+            collider = authored_box
+        else:
+            assert target.remove_component(authored_box) is True
+            collider = target.add_component(shape_name)
+        if convex is not None:
+            collider.convex = convex
+        Physics.sync_transforms()
+
+        hit = Physics.raycast(Vector3(0, 5, 0), Vector3(0, -1, 0), 10.0)
+
+        assert hit is not None
+        assert hit.collider.component_id == collider.component_id
+        assert math.isfinite(hit.distance)
+        assert (hit.normal.x, hit.normal.y, hit.normal.z) == pytest.approx((0, 1, 0), abs=2e-2)
+
     def test_raycast_hits_ground(self, scene):
         _make_ground(scene)
 
@@ -1810,6 +1848,26 @@ class TestRaycast:
         distances = [hit.distance for hit in hits]
         assert distances == sorted(distances)
 
+    def test_raycast_all_equal_distance_order_is_stable(self, scene):
+        first = scene.create_game_object("EqualDistanceA")
+        first.add_component("BoxCollider")
+        second = scene.create_game_object("EqualDistanceB")
+        second.add_component("BoxCollider")
+        Physics.sync_transforms()
+
+        observed = []
+        closest = []
+        for _ in range(8):
+            hits = Physics.raycast_all(Vector3(0, 5, 0), Vector3(0, -1, 0), 10.0)
+            matching = [hit for hit in hits if hit.game_object.id in {first.id, second.id}]
+            assert len(matching) == 2
+            observed.append([(hit.distance, hit.body_id, hit.sub_shape_id) for hit in matching])
+            closest.append(Physics.raycast(Vector3(0, 5, 0), Vector3(0, -1, 0), 10.0).body_id)
+
+        assert all(order == observed[0] for order in observed)
+        assert [entry[1:] for entry in observed[0]] == sorted(entry[1:] for entry in observed[0])
+        assert closest == [min(entry[1] for entry in observed[0])] * len(closest)
+
     def test_static_non_convex_mesh_returns_triangle_identity(self, scene):
         mesh_object = scene.create_primitive(PrimitiveType.Cube, "RaycastTriangleMesh")
         primitive_collider = mesh_object.get_component("BoxCollider")
@@ -1826,6 +1884,57 @@ class TestRaycast:
         assert hit.sub_shape_id >= 0
         assert hit.triangle_index is not None
         assert 0 <= hit.triangle_index < 12
+
+    def test_static_triangle_mesh_ignores_backfaces_and_keeps_edge_normal_finite(self, scene):
+        import numpy as np
+
+        target = scene.create_game_object("OneSidedTriangleSurface")
+        renderer = target.add_component("MeshRenderer")
+        positions = np.array(
+            [[-1, 0, -1], [-1, 0, 1], [1, 0, -1], [1, 0, 1]], dtype=np.float32
+        )
+        normals = np.tile([0, 1, 0], (4, 1)).astype(np.float32)
+        uvs = np.zeros((4, 2), dtype=np.float32)
+        indices = np.array([0, 1, 2, 2, 1, 3], dtype=np.uint32)
+        renderer.set_inline_mesh_data(positions, normals, uvs, indices)
+        collider = target.add_component("MeshCollider")
+        Physics.sync_transforms()
+
+        front = Physics.raycast(Vector3(0.999, 5, 0), Vector3(0, -1, 0), 10.0)
+        back = Physics.raycast(Vector3(0, -5, 0), Vector3(0, 1, 0), 10.0)
+
+        assert front is not None
+        assert front.collider.component_id == collider.component_id
+        assert front.normal.y == pytest.approx(1, abs=2e-3)
+        assert all(math.isfinite(value) for value in (front.normal.x, front.normal.y, front.normal.z))
+        assert back is None
+
+    def test_parent_scale_layer_trigger_and_destroy_share_published_query_state(self, scene):
+        parent = scene.create_game_object("ScaledRaycastParent")
+        child = scene.create_game_object("FilteredRaycastChild")
+        child.set_parent(parent)
+        # SetParent preserves world pose like Unity. Change the authored parent
+        # scale afterwards so this specifically exercises hierarchy scale
+        # propagation into the published collider shape.
+        parent.transform.local_scale = Vector3(2, 3, 4)
+        child.layer = 6
+        collider = child.add_component("BoxCollider")
+        collider.is_trigger = True
+        Physics.sync_transforms()
+
+        origin = Vector3(0, 10, 0)
+        direction = Vector3(0, -1, 0)
+        assert Physics.raycast(origin, direction, 20, layer_mask=1 << 5) is None
+        assert Physics.raycast(origin, direction, 20, layer_mask=1 << 6, query_triggers=False) is None
+        hit = Physics.raycast(origin, direction, 20, layer_mask=1 << 6, query_triggers=True)
+        assert hit is not None
+        assert hit.collider.component_id == collider.component_id
+        assert hit.point.y == pytest.approx(1.5, abs=2e-3)
+
+        scene.destroy_game_object(child)
+        scene.process_pending_destroys()
+        Physics.sync_transforms()
+        assert Physics.raycast(origin, direction, 20, layer_mask=1 << 6, query_triggers=True) is None
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -2156,6 +2265,158 @@ class TestRaycastBatch:
             if isinstance(value, np.ndarray):
                 assert np.all(value[2:] == 77)
 
+    def test_closest_batch_equal_distance_tie_break_is_stable(self, scene):
+        """The optimized closest path must not inherit broadphase traversal order."""
+        import numpy as np
+
+        first = scene.create_game_object("BatchEqualDistanceA")
+        first.add_component("BoxCollider")
+        second = scene.create_game_object("BatchEqualDistanceB")
+        second.add_component("BoxCollider")
+        Physics.sync_transforms()
+
+        origins = np.zeros((64, 3), dtype=np.float32)
+        origins[:, 1] = 5.0
+        directions = np.zeros_like(origins)
+        directions[:, 1] = -1.0
+        output = self._output(64)
+        expected_body = min(
+            hit.body_id
+            for hit in Physics.raycast_all(Vector3(0, 5, 0), Vector3(0, -1, 0), 10.0)
+            if hit.game_object.id in {first.id, second.id}
+        )
+
+        observed = []
+        for _ in range(8):
+            PublicPhysics.raycast_batch(origins, directions, output, max_distance=10.0)
+            assert np.all(output["hit"] == 1)
+            observed.append(output["body_id"].copy())
+
+        for body_ids in observed:
+            np.testing.assert_array_equal(body_ids, expected_body)
+
+    def test_closest_batch_equal_compound_members_choose_lowest_subshape(self, scene):
+        """Equal hits inside one body use sub-shape identity, not BVH order."""
+        import numpy as np
+
+        target = scene.create_game_object("BatchEqualCompoundMembers")
+        first = target.add_component("BoxCollider")
+        second = target.add_component("BoxCollider")
+        first.size = Vector3(2, 1, 2)
+        second.size = Vector3(2, 1, 2)
+        Physics.sync_transforms()
+
+        all_hits = [
+            hit for hit in Physics.raycast_all(Vector3(0, 5, 0), Vector3(0, -1, 0), 10.0)
+            if hit.game_object.id == target.id
+        ]
+        assert len(all_hits) == 2
+        expected_subshape = min(hit.sub_shape_id for hit in all_hits)
+
+        origins = np.zeros((64, 3), dtype=np.float32)
+        origins[:, 1] = 5.0
+        directions = np.zeros_like(origins)
+        directions[:, 1] = -1.0
+        output = self._output(64)
+        for _ in range(8):
+            PublicPhysics.raycast_batch(origins, directions, output, max_distance=10.0)
+            assert np.all(output["hit"] == 1)
+            np.testing.assert_array_equal(output["sub_shape_id"], expected_subshape)
+
+    def test_closest_batch_skips_near_backface_and_hits_later_frontface(self, scene):
+        """The packed mesh fast path must continue after a rejected backface."""
+        import numpy as np
+
+        target = scene.create_game_object("BatchBackfaceBeforeFrontface")
+        renderer = target.add_component("MeshRenderer")
+        positions = np.array(
+            [
+                [-1, 1, -1], [-1, 1, 1], [1, 1, -1], [1, 1, 1],
+                [-1, 0, -1], [-1, 0, 1], [1, 0, -1], [1, 0, 1],
+                [99, 1, -1], [99, 1, 1], [101, 1, -1], [101, 1, 1],
+            ],
+            dtype=np.float32,
+        )
+        normals = np.array(
+            [[0, -1, 0]] * 4 + [[0, 1, 0]] * 8, dtype=np.float32
+        )
+        uvs = np.zeros((12, 2), dtype=np.float32)
+        # The upper quad is deliberately reversed (back-facing to a downward
+        # ray); the lower quad has the accepted winding.
+        indices = np.array(
+            [
+                0, 2, 1, 2, 3, 1,
+                4, 5, 6, 6, 5, 7,
+                # Cancel the open-mesh signed-volume heuristic without
+                # intersecting the query ray, preserving both windings.
+                8, 9, 10, 10, 9, 11,
+            ],
+            dtype=np.uint32,
+        )
+        renderer.set_inline_mesh_data(positions, normals, uvs, indices)
+        collider = target.add_component("MeshCollider")
+        Physics.sync_transforms()
+
+        origins = np.zeros((64, 3), dtype=np.float32)
+        origins[:, 1] = 5.0
+        directions = np.zeros_like(origins)
+        directions[:, 1] = -1.0
+        output = self._output(64)
+        PublicPhysics.raycast_batch(origins, directions, output, max_distance=10.0)
+
+        assert np.all(output["hit"] == 1)
+        np.testing.assert_array_equal(output["collider_id"], collider.component_id)
+        np.testing.assert_allclose(output["distance"], 5.0, atol=1e-4)
+        assert np.all(output["triangle_index"] >= 2)
+
+    def test_closest_batch_normalizes_non_unit_directions_and_keeps_body_identity(self, scene):
+        """The unit fast path and cached-body path preserve public ray semantics."""
+        import numpy as np
+
+        left = scene.create_game_object("BatchDirectionLeft")
+        left.transform.position = Vector3(-2, 0, 0)
+        left_collider = left.add_component("BoxCollider")
+        right = scene.create_game_object("BatchDirectionRight")
+        right.transform.position = Vector3(2, 0, 0)
+        right_collider = right.add_component("BoxCollider")
+        Physics.sync_transforms()
+
+        # Revisit the left body after querying the right one. This exercises
+        # cache replacement while non-unit inputs take the normalization path.
+        origins = np.array([[-2, 5, 0], [2, 5, 0], [-2, 5, 0]], dtype=np.float32)
+        directions = np.array([[0, -2, 0], [0, -4, 0], [0, -3, 0]], dtype=np.float32)
+        output = self._output(3)
+        PublicPhysics.raycast_batch(origins, directions, output, max_distance=10.0)
+
+        np.testing.assert_array_equal(output["hit"], 1)
+        np.testing.assert_allclose(output["distance"], 4.5, atol=1e-4)
+        np.testing.assert_array_equal(
+            output["collider_id"],
+            [left_collider.component_id, right_collider.component_id, left_collider.component_id],
+        )
+        np.testing.assert_array_equal(
+            output["game_object_id"], [left.id, right.id, left.id]
+        )
+
+    def test_closest_batch_normalizes_finite_extreme_direction_without_overflow(self, scene):
+        import numpy as np
+
+        target = scene.create_game_object("BatchExtremeDirection")
+        collider = target.add_component("BoxCollider")
+        Physics.sync_transforms()
+
+        origins = np.array([[0, 5, 0]], dtype=np.float32)
+        directions = np.array(
+            [[0, -np.finfo(np.float32).max, 0]], dtype=np.float32
+        )
+        output = self._output(1)
+
+        PublicPhysics.raycast_batch(origins, directions, output, max_distance=10.0)
+
+        assert output["hit"][0] == 1
+        assert output["distance"][0] == pytest.approx(4.5, abs=1e-4)
+        assert output["collider_id"][0] == collider.component_id
+
     def test_rejects_insufficient_capacity_before_writing(self, scene):
         import numpy as np
 
@@ -2222,6 +2483,231 @@ class TestRaycastBatch:
         assert int(PublicPhysics.query_generation) == moved
         assert result["query_generation"] == moved
         assert output["hit"][0] == 1
+
+    def test_worker_consumes_published_epoch_and_owner_query_publishes_authored_changes(self, scene):
+        """Workers are snapshot-only; the owner query is an authoring safe point."""
+        import threading
+
+        import numpy as np
+
+        target = scene.create_game_object("PublishedBatchGround")
+        target_collider = target.add_component("BoxCollider")
+        target_collider.size = Vector3(2, 1, 2)
+        Physics.sync_transforms()
+        published_generation = int(PublicPhysics.query_generation)
+
+        # This authored move is intentionally left pending. A Python worker is
+        # not an engine safe point and must neither walk SceneManager nor make
+        # the pending Transform visible to physics.
+        target.transform.position = Vector3(20, 0, 0)
+        origins = np.array([[0, 5, 0]], dtype=np.float32)
+        directions = np.array([[0, -1, 0]], dtype=np.float32)
+        worker_output = self._output(1)
+        launch = threading.Event()
+        failure = []
+
+        def query():
+            try:
+                assert launch.wait(timeout=2)
+                PublicPhysics.raycast_batch(
+                    origins, directions, worker_output, max_distance=10, profile=True
+                )
+            except BaseException as exc:
+                failure.append(exc)
+
+        worker = threading.Thread(target=query, name="physics-published-epoch")
+        worker.start()
+        launch.set()
+        worker.join(timeout=10)
+        assert not worker.is_alive()
+        assert failure == []
+        assert worker_output["query_generation"] == published_generation
+        assert int(PublicPhysics.query_generation) == published_generation
+        assert int(worker_output["hit"][0]) == 1
+        assert int(worker_output["collider_id"][0]) == target_collider.component_id
+        assert int(worker_output["game_object_id"][0]) == target.id
+        assert worker_output["profile"]["snapshot_sync_ms"] == 0.0
+
+        # The same API on the owner thread publishes the pending move before
+        # entering the native batch. The old ray now misses in a newer epoch.
+        owner_output = self._output(1)
+        PublicPhysics.raycast_batch(origins, directions, owner_output, max_distance=10)
+        assert owner_output["query_generation"] > published_generation
+        assert int(PublicPhysics.query_generation) == owner_output["query_generation"]
+        assert int(owner_output["hit"][0]) == 0
+
+    def test_large_batch_epoch_serializes_owner_mutation_step_and_destroy(self, scene):
+        """A GIL-released batch keeps one coherent epoch while writers make progress."""
+        import threading
+        import time
+
+        import numpy as np
+
+        target = scene.create_game_object("ConcurrentBatchTarget")
+        collider = target.add_component("BoxCollider")
+        collider.size = Vector3(2, 1, 2)
+        collider_id = collider.component_id
+        game_object_id = target.id
+        Physics.sync_transforms()
+        published_generation = int(PublicPhysics.query_generation)
+
+        count = 262_144
+        origins = np.zeros((count, 3), dtype=np.float32)
+        origins[:, 1] = 5.0
+        directions = np.zeros_like(origins)
+        directions[:, 1] = -1.0
+        output = self._output(count)
+        entered = threading.Event()
+        failure = []
+
+        def query():
+            try:
+                entered.set()
+                PublicPhysics.raycast_batch(
+                    origins, directions, output, max_distance=10.0, profile=True
+                )
+            except BaseException as exc:
+                failure.append(exc)
+
+        worker = threading.Thread(target=query, name="physics-large-published-epoch")
+        worker.start()
+        assert entered.wait(timeout=2.0)
+
+        # Once the worker enters the >= 65,536-ray native path it releases the
+        # GIL and holds the published epoch read lock. These owner writes must
+        # wait for that complete epoch instead of mutating Jolt underneath it.
+        writer_started = time.perf_counter()
+        target.transform.position = Vector3(20, 0, 0)
+        Physics.sync_transforms()
+        SceneManager.instance().step(1.0 / 60.0)
+        assert target.remove_component(collider) is True
+        Physics.sync_transforms()
+        writer_elapsed = time.perf_counter() - writer_started
+
+        worker.join(timeout=20.0)
+        assert not worker.is_alive()
+        assert failure == []
+        assert writer_elapsed < 10.0
+        assert output["query_generation"] >= published_generation
+        assert output["query_generation"] <= int(PublicPhysics.query_generation)
+
+        # One batch may observe either side of the owner mutation, but never a
+        # mixture. Published numeric identities remain valid after destruction.
+        hit_values = np.unique(output["hit"])
+        assert len(hit_values) == 1
+        if int(hit_values[0]) == 1:
+            np.testing.assert_array_equal(output["collider_id"], collider_id)
+            np.testing.assert_array_equal(output["game_object_id"], game_object_id)
+        else:
+            np.testing.assert_array_equal(output["collider_id"], 0)
+            np.testing.assert_array_equal(output["game_object_id"], 0)
+
+        final_output = self._output(1)
+        PublicPhysics.raycast_batch(
+            origins[:1], directions[:1], final_output, max_distance=10.0
+        )
+        assert int(final_output["hit"][0]) == 0
+
+    def test_compound_trigger_filter_uses_published_subshape_identity(self, scene):
+        import numpy as np
+
+        target = scene.create_game_object("PublishedCompoundIdentity")
+        solid = target.add_component("BoxCollider")
+        solid.center = Vector3(0, 0, 0)
+        trigger = target.add_component("BoxCollider")
+        trigger.center = Vector3(0, 2, 0)
+        trigger.is_trigger = True
+        Physics.sync_transforms()
+
+        origins = np.array([[0, 5, 0]], dtype=np.float32)
+        directions = np.array([[0, -1, 0]], dtype=np.float32)
+        output = self._output(1)
+        PublicPhysics.raycast_batch(
+            origins, directions, output, max_distance=10, query_triggers=False
+        )
+
+        # The mixed compound is not a body-level sensor. Filtering therefore
+        # depends on the immutable per-subshape trigger/identity publication,
+        # not a parallel read of mutable Collider fields.
+        assert int(output["hit"][0]) == 1
+        assert int(output["collider_id"][0]) == solid.component_id
+        assert int(output["game_object_id"][0]) == target.id
+        assert output["distance"][0] == pytest.approx(4.5, abs=1e-4)
+
+    def test_profile_contract_and_disabled_profile_cleanup(self, scene):
+        import numpy as np
+
+        target = scene.create_game_object("ProfileBatchGround")
+        target.add_component("BoxCollider")
+        Physics.sync_transforms()
+        origins = np.array([[0, 5, 0], [50, 5, 0]], dtype=np.float32)
+        directions = np.array([[0, -1, 0], [0, -1, 0]], dtype=np.float32)
+        output = self._output(2)
+
+        result = PublicPhysics.raycast_batch(origins, directions, output, max_distance=10, profile=True)
+        profile = result["profile"]
+        timing_fields = {
+            "input_validation_ms", "snapshot_sync_ms", "snapshot_lock_wait_ms",
+            "dispatch_wall_ms", "jolt_query_cpu_ms", "broadphase_filter_lock_cpu_ms",
+            "narrowphase_cpu_ms", "result_sort_filter_cpu_ms", "hit_publish_cpu_ms",
+            "output_publish_ms",
+        }
+        count_fields = {"broadphase_candidates", "narrowphase_hits", "published_hits"}
+        assert set(profile) == timing_fields | count_fields
+        assert all(isinstance(profile[name], float) and profile[name] >= 0.0 for name in timing_fields)
+        assert all(isinstance(profile[name], int) and profile[name] >= 0 for name in count_fields)
+        assert profile["published_hits"] == int(output["hit"].sum()) == 1
+        assert profile["narrowphase_hits"] >= profile["published_hits"]
+        assert profile["broadphase_candidates"] >= 1
+
+        PublicPhysics.raycast_batch(origins, directions, output, max_distance=10, profile=False)
+        assert "profile" not in output
+
+    def test_collision_callback_queries_after_fixed_epoch_publication(self, scene):
+        """Script contact callbacks run after Step releases the write epoch."""
+        ground = _make_ground(scene)
+        ball, rigidbody = _make_ball(scene, pos=Vector3(0, 0.75, 0))
+        rigidbody.use_gravity = False
+
+        class QueryFromContact(InxComponent):
+            def awake(self):
+                self.hit = None
+
+            def on_collision_enter(self, _collision):
+                self.hit = PublicPhysics.raycast(
+                    Vector3(0, 5, 0), Vector3(0, -1, 0), 10
+                )
+
+        probe = ball.add_component(QueryFromContact)
+        manager = SceneManager.instance()
+        manager.play()
+        manager.pause()
+        manager.step()
+
+        assert probe.hit is not None
+        assert probe.hit.game_object.id in {ground.id, ball.id}
+
+    def test_disable_and_reenable_publish_distinct_query_epochs(self, scene):
+        target = scene.create_game_object("QueryEpochDisableTarget")
+        collider = target.add_component("BoxCollider")
+        Physics.sync_transforms()
+        origin = Vector3(0, 5, 0)
+        direction = Vector3(0, -1, 0)
+        enabled_generation = int(PublicPhysics.query_generation)
+        assert PublicPhysics.raycast(origin, direction, 10) is not None
+
+        collider.enabled = False
+        Physics.sync_transforms()
+        disabled_generation = int(PublicPhysics.query_generation)
+        assert disabled_generation > enabled_generation
+        assert PublicPhysics.raycast(origin, direction, 10) is None
+
+        collider.enabled = True
+        Physics.sync_transforms()
+        assert int(PublicPhysics.query_generation) > disabled_generation
+        hit = PublicPhysics.raycast(origin, direction, 10)
+        assert hit is not None
+        assert hit.collider.component_id == collider.component_id
 
 class TestIncrementalTransformSync:
     def test_mesh_cooking_cache_reuses_identical_geometry(self, scene):
