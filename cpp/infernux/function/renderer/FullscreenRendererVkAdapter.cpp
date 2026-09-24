@@ -52,7 +52,7 @@ class VulkanFullscreenRendererHost final : public FullscreenRendererHost
     }
 
     [[nodiscard]] rhi::ShaderModuleHandle AcquireShaderModule(const std::string &name, rhi::ShaderStage stage,
-                                                              uint32_t inputTextureCount) override
+                                                              uint32_t inputCount, uint32_t inputBufferMask) override
     {
         const char *type = stage == rhi::ShaderStage::Vertex     ? "vertex"
                            : stage == rhi::ShaderStage::Fragment ? "fragment"
@@ -72,10 +72,13 @@ class VulkanFullscreenRendererHost final : public FullscreenRendererHost
                 return {};
             }
             for (const auto &binding : reflection.GetDescriptorSetLayoutBindings(0)) {
-                if (binding.descriptorType != VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER ||
-                    binding.descriptorCount != 1 || binding.binding >= inputTextureCount) {
+                const bool storageBuffer = binding.binding < 32 && (inputBufferMask & (1u << binding.binding)) != 0;
+                const VkDescriptorType expected =
+                    storageBuffer ? VK_DESCRIPTOR_TYPE_STORAGE_BUFFER : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                if (binding.descriptorType != expected || binding.descriptorCount != 1 ||
+                    binding.binding >= inputCount) {
                     ReportError("Fullscreen shader '" + name + "' has an incompatible input layout at binding " +
-                                std::to_string(binding.binding) + "; update the graph's texture inputs");
+                                std::to_string(binding.binding) + "; update the graph's resource inputs");
                     return {};
                 }
             }

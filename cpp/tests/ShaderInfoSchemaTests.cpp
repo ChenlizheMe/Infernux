@@ -450,6 +450,26 @@ void main() {
     assert(multisampledSchema.resources[1].type == "Texture2DMSUInt");
     RequireCompiles(compiler, multisampledSource, "MultisampledInputs.frag");
 
+    const std::string storageInputSource = R"(
+#version 450
+ShaderInfo {
+    Name "Tests/StorageInput"
+    Capabilities [Fullscreen]
+    Resources { BufferUInt values Texture2D sourceTexture }
+    Outputs { Float4 outColor }
+}
+void main() {
+    outColor = vec4(float(values.data[0]) / 255.0) * texture(sourceTexture, vec2(0.5));
+}
+)";
+    const auto storageSchema = infernux::ParseShaderInfo(storageInputSource);
+    assert(storageSchema.IsValid() && storageSchema.resources.size() == 2);
+    assert(storageSchema.resources[0].type == "BufferUInt");
+    const auto storageGlsl = compiler.PrepareAuthoredStageGlsl(storageInputSource, "StorageInput.frag");
+    assert(storageGlsl.find("readonly buffer InxBuffer0") != std::string::npos);
+    assert(storageGlsl.find("uniform sampler2D sourceTexture") != std::string::npos);
+    RequireCompiles(compiler, storageInputSource, "StorageInput.frag");
+
     const auto invalid =
         infernux::ParseShaderInfo("ShaderInfo { UnexpectedField 2 Properties { Float x = 1.0 Float x = 2.0 } }");
     assert(!invalid.IsValid());

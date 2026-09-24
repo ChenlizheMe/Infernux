@@ -19,6 +19,7 @@
 #include "particle/ParticleGpuCuller.h"
 #include "particle/ParticleGpuDrawRegistry.h"
 #include "particle/ParticleGpuSorter.h"
+#include "rhi/RhiComputeBuffer.h"
 #include "shader/ShaderReflection.h"
 #include "vk/RhiVulkanTypes.h"
 #include "vk/VkDeviceContext.h"
@@ -136,7 +137,7 @@ bool PassWritesTexture(const GraphPassDesc &pass, const std::string &name)
 
 bool BufferDescEquals(const GraphBufferDesc &a, const GraphBufferDesc &b)
 {
-    return a.name == b.name && a.byteSize == b.byteSize && a.usage == b.usage;
+    return a.name == b.name && a.byteSize == b.byteSize && a.usage == b.usage && a.computeBuffer == b.computeBuffer;
 }
 
 bool BufferAccessEquals(const GraphBufferAccessDesc &a, const GraphBufferAccessDesc &b)
@@ -460,6 +461,12 @@ bool ValidatePythonGraphDescription(const RenderGraphDescription &desc, uint32_t
             INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: invalid buffer description for '", buffer.name, "'");
             return false;
         }
+        if (buffer.computeBuffer &&
+            (buffer.computeBuffer->GetByteSize() != buffer.byteSize || !buffer.computeBuffer->GetBuffer().IsValid())) {
+            INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: imported buffer '", buffer.name,
+                         "' has no live allocation of the declared size");
+            return false;
+        }
     }
 
     std::unordered_set<std::string> passNames;
@@ -589,6 +596,12 @@ bool ValidatePythonGraphDescription(const RenderGraphDescription &desc, uint32_t
                              "' does not declare the required usage");
                 return false;
             }
+            if (buffer->second->computeBuffer && (access.type == GraphBufferAccessType::StorageWrite ||
+                                                  access.type == GraphBufferAccessType::TransferWrite)) {
+                INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: imported buffer '", access.resource,
+                             "' is read-only in the render graph");
+                return false;
+            }
         }
         if (command && command->type == GraphCommandType::CopyTexture) {
             const auto source = textures.find(command->sourceResource);
@@ -616,6 +629,11 @@ bool ValidatePythonGraphDescription(const RenderGraphDescription &desc, uint32_t
                 (destination->second->usage & transferDestination) == 0) {
                 INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: buffer copy pass '", pass.name,
                              "' resources do not declare transfer usage");
+                return false;
+            }
+            if (destination->second->computeBuffer) {
+                INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: imported buffer '", command->destinationResource,
+                             "' cannot be a copy destination");
                 return false;
             }
         } else if (command && command->type == GraphCommandType::Present &&
@@ -834,9 +852,10 @@ bool ValidatePythonGraphDescription(const RenderGraphDescription &desc, uint32_t
         if (!command)
             continue;
         for (const auto &[samplerName, textureName] : command->inputBindings) {
-            if (textures.find(textureName) == textures.end()) {
+            if (textures.find(textureName) == textures.end() &&
+                (command->type != GraphCommandType::FullscreenQuad || buffers.find(textureName) == buffers.end())) {
                 INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: pass '", pass.name, "' input '", samplerName,
-                             "' references unknown texture '", textureName, "'");
+                             "' references unknown resource '", textureName, "'");
                 return false;
             }
         }
@@ -2201,13 +2220,20 @@ void SceneRenderGraph::RefreshMaterialTextureReads()
     }
 }
 
-rhi::SubmissionTicket SceneRenderGraph::GetLatestMaterialBufferWriteSubmission() const noexcept
+rhi::SubmissionTicket SceneRenderGraph::GetLatestComputeBufferWriteSubmission() const noexcept
 {
     rhi::SubmissionTicket latest{};
     for (const auto &read : m_materialBufferReads) {
         if (!read.buffer)
             continue;
         const auto ticket = read.buffer->GetLastWriteSubmission();
+        if (ticket.IsValid() && (!latest.IsValid() || ticket.serial > latest.serial))
+            latest = ticket;
+    }
+    for (const auto &buffer : m_pythonGraphDesc.buffers) {
+        if (!buffer.computeBuffer)
+            continue;
+        const auto ticket = buffer.computeBuffer->GetLastWriteSubmission();
         if (ticket.IsValid() && (!latest.IsValid() || ticket.serial > latest.serial))
             latest = ticket;
     }
@@ -3509,8 +3535,21 @@ void SceneRenderGraph::BuildRenderGraph()
         // available before passes reference them.
         RegisterTransientTextures(width, height, customRTHandles);
         for (const auto &buffer : m_pythonGraphDesc.buffers) {
-            bufferHandles[buffer.name] =
-                m_renderGraph->RegisterTransientBuffer(buffer.name, buffer.byteSize, ToVkBufferUsage(buffer.usage));
+            if (buffer.computeBuffer) {
+                const auto owner = buffer.computeBuffer;
+                m_renderGraph->AddPass("__ImportGraphBuffer/" + buffer.name, [&](vk::PassBuilder &builder) {
+                    bufferHandles[buffer.name] =
+                        builder.ImportBuffer(buffer.name, owner->GetBuffer(), owner->GetByteSize());
+                    return [](vk::RenderContext &) {};
+                });
+                if (!bufferHandles[buffer.name].IsValid()) {
+                    INXLOG_ERROR("SceneRenderGraph: imported buffer '", buffer.name, "' is unavailable");
+                    return;
+                }
+            } else {
+                bufferHandles[buffer.name] =
+                    m_renderGraph->RegisterTransientBuffer(buffer.name, buffer.byteSize, ToVkBufferUsage(buffer.usage));
+            }
         }
 
         struct ParticleGraphResources
@@ -4148,6 +4187,9 @@ void SceneRenderGraph::BuildRenderGraph()
             };
             std::vector<InputBindingHandle> inputBindingHandles;
             for (const auto &[samplerName, textureName] : commandInputBindings) {
+                if (command && command->type == GraphCommandType::FullscreenQuad &&
+                    bufferHandles.find(textureName) != bufferHandles.end())
+                    continue;
                 auto texIt = texDescMap.find(textureName);
                 if (texIt != texDescMap.end() && texIt->second->isBackbuffer) {
                     // Backbuffer texture — use the imported color target
@@ -4327,11 +4369,42 @@ void SceneRenderGraph::BuildRenderGraph()
                     vk::ResourceHandle handle;
                     rhi::PixelFormat format = rhi::PixelFormat::Undefined;
                     bool depthRead = false;
+                    bool storageBuffer = false;
+                    uint64_t byteSize = 0;
                 };
                 std::vector<FullscreenReadResource> fsReadInputs;
                 std::string temporalHistoryKey;
                 for (uint32_t binding = 0; binding < inputNames.size(); ++binding) {
                     const auto &name = inputNames[binding];
+                    if (const auto buffer = bufferHandles.find(name); buffer != bufferHandles.end()) {
+                        const auto reflected = std::find_if(inputReflection.GetStorageBuffers().begin(),
+                                                            inputReflection.GetStorageBuffers().end(),
+                                                            [binding](const StorageBufferInfo &item) {
+                                                                return item.set == 0 && item.binding == binding;
+                                                            });
+                        if (reflected == inputReflection.GetStorageBuffers().end() || !reflected->readOnly ||
+                            reflected->arraySize != 1) {
+                            INXLOG_ERROR("Fullscreen pass '", passDesc.name, "' input '", name,
+                                         "' requires a read-only scalar storage-buffer declaration at binding ",
+                                         binding);
+                            return;
+                        }
+                        const auto description =
+                            std::find_if(m_pythonGraphDesc.buffers.begin(), m_pythonGraphDesc.buffers.end(),
+                                         [&name](const GraphBufferDesc &item) { return item.name == name; });
+                        if (description == m_pythonGraphDesc.buffers.end())
+                            return;
+                        const auto maxRange =
+                            m_vkCore->GetDeviceContext().GetDeviceProperties().limits.maxStorageBufferRange;
+                        if (description->byteSize > maxRange) {
+                            INXLOG_ERROR("Fullscreen pass '", passDesc.name, "' buffer '", name, "' size ",
+                                         description->byteSize, " exceeds Vulkan maxStorageBufferRange ", maxRange);
+                            return;
+                        }
+                        fsReadInputs.push_back(
+                            {buffer->second, rhi::PixelFormat::Undefined, false, true, description->byteSize});
+                        continue;
+                    }
                     const auto &texture = *texDescMap.at(name);
                     if (texture.role == GraphTextureRole::TemporalRead)
                         temporalHistoryKey = texture.temporalKey;
@@ -4498,7 +4571,9 @@ void SceneRenderGraph::BuildRenderGraph()
                     builder.SetSideEffect(passDesc.sideEffect || writesPersistent);
                     // Declare read dependencies for DAG edges + barriers
                     for (const auto &input : fsReadInputs) {
-                        if (input.depthRead) {
+                        if (input.storageBuffer) {
+                            builder.ReadStorageBuffer(input.handle, rhi::PipelineStage::FragmentShader);
+                        } else if (input.depthRead) {
                             builder.ReadSampledDepth(input.handle);
                         } else {
                             builder.Read(input.handle);
@@ -4528,15 +4603,25 @@ void SceneRenderGraph::BuildRenderGraph()
                     builder.SetRenderArea(fsPassWidth, fsPassHeight);
                     return [=](vk::RenderContext &ctx) {
                         // Resolve input texture views using a stack path for the common case.
-                        FullscreenTextureInput inputsStack[8] = {};
-                        std::vector<FullscreenTextureInput> inputsHeap;
-                        FullscreenTextureInput *inputs = inputsStack;
+                        FullscreenResourceInput inputsStack[8] = {};
+                        std::vector<FullscreenResourceInput> inputsHeap;
+                        FullscreenResourceInput *inputs = inputsStack;
                         if (fsReadInputs.size() > 8) {
                             inputsHeap.resize(fsReadInputs.size());
                             inputs = inputsHeap.data();
                         }
                         const uint32_t inputCount = static_cast<uint32_t>(fsReadInputs.size());
                         for (uint32_t i = 0; i < inputCount; ++i) {
+                            if (fsReadInputs[i].storageBuffer) {
+                                inputs[i].buffer = ctx.GetBufferHandle(fsReadInputs[i].handle);
+                                inputs[i].byteSize = fsReadInputs[i].byteSize;
+                                if (!inputs[i].buffer.IsValid()) {
+                                    INXLOG_ERROR("FullscreenQuad '", shaderName,
+                                                 "': input buffer is unavailable at binding ", i);
+                                    return;
+                                }
+                                continue;
+                            }
                             inputs[i].view = ctx.GetTextureView(fsReadInputs[i].handle);
                             inputs[i].format = fsReadInputs[i].format;
                             inputs[i].depthRead = fsReadInputs[i].depthRead;
@@ -4555,8 +4640,10 @@ void SceneRenderGraph::BuildRenderGraph()
                         key.shaderName = shaderName;
                         key.samples = fsSamples;
                         key.colorFormat = fsColorFormat;
-                        key.inputTextureCount = inputCount;
+                        key.inputResourceCount = inputCount;
                         for (uint32_t i = 0; i < inputCount && i < 32; ++i) {
+                            if (inputs[i].buffer.IsValid())
+                                key.inputBufferMask |= 1u << i;
                             if (inputs[i].depthRead)
                                 key.depthInputMask |= 1u << i;
                         }

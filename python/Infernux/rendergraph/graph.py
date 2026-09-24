@@ -103,12 +103,13 @@ class TextureHandle:
 
 
 class BufferHandle:
-    """Opaque handle to a transient graph buffer."""
+    """Opaque handle to a graph buffer."""
 
     def __init__(self, name: str, byte_size: int, usage: int):
         self.name = name
         self.byte_size = byte_size
         self.usage = usage
+        self.compute_buffer = None
 
     def __repr__(self) -> str:
         return f"<BufferHandle '{self.name}' {self.byte_size} bytes>"
@@ -162,7 +163,7 @@ class RenderPassBuilder:
         self._pass_tag = ""
         self._override_material = ""
         self._renderer_selection = None
-        self._input_bindings: Dict[str, str] = {}  # sampler -> texture_name
+        self._input_bindings: Dict[str, str] = {}  # shader resource -> graph resource
         self._light_index = 0
         self._screen_ui_list = 0
         self._world_ui_layer_mask = 0xffffffff
@@ -281,6 +282,8 @@ class RenderPassBuilder:
     def write_buffer(self, buffer, usage: str = "storage") -> "RenderPassBuilder":
         """Declare a storage or transfer buffer write."""
         handle = self._resolve_buffer(buffer)
+        if handle.compute_buffer is not None:
+            raise ValueError(f"Imported buffer '{handle.name}' is read-only in the render graph")
         access = {
             "storage": "storage_write",
             "transfer": "transfer_write",
@@ -336,6 +339,18 @@ class RenderPassBuilder:
         """
         for sampler_name, texture in bindings.items():
             self.set_texture(sampler_name, texture)
+        return self
+
+    def set_buffer(self, resource_name: str, buffer) -> "RenderPassBuilder":
+        """Bind a read-only graph buffer to a fullscreen shader ``BufferUInt`` resource.
+
+        Shader Resources and the pass's input calls use the same binding order.
+        """
+        handle = self._resolve_buffer(buffer)
+        if resource_name in self._input_bindings:
+            raise ValueError(f"Shader input '{resource_name}' is already bound")
+        self._input_bindings[resource_name] = handle.name
+        self.read_buffer(handle)
         return self
 
     # ---- Clear settings ----
@@ -597,6 +612,8 @@ class RenderPassBuilder:
             raise ValueError("byte_count must be >= 0")
         source_handle = self._resolve_buffer(source)
         destination_handle = self._resolve_buffer(destination)
+        if destination_handle.compute_buffer is not None:
+            raise ValueError(f"Imported buffer '{destination_handle.name}' cannot be a copy destination")
         source_handle.usage |= int(GraphBufferUsage.TRANSFER_SOURCE)
         destination_handle.usage |= int(GraphBufferUsage.TRANSFER_DESTINATION)
         self._action = "copy_buffer"
@@ -1164,6 +1181,28 @@ class RenderGraph:
         if usage == int(GraphBufferUsage.NONE):
             raise ValueError(f"Buffer '{name}' must declare at least one usage")
         handle = BufferHandle(resource_name, int(byte_size), usage)
+        self._buffers.append(handle)
+        return handle
+
+    def import_buffer(self, name: str, buffer) -> BufferHandle:
+        """Import an engine-owned uint32 GPU buffer into this view graph.
+
+        The caller retains the ``inx.buffer`` object. The graph retains its
+        native allocation until its last submitted frame has retired.
+        """
+        resource_name = self._scoped_name(name)
+        if (self._find_texture_exact(resource_name) is not None
+                or self._find_buffer_exact(resource_name) is not None):
+            raise ValueError(f"Resource '{resource_name}' already exists in graph '{self._name}'")
+        if (getattr(buffer, "device", None) != "gpu"
+                or getattr(buffer, "dtype", None) != "uint32"
+                or getattr(buffer, "closed", True)
+                or getattr(buffer, "_native", None) is None):
+            raise ValueError("import_buffer requires an open uint32 GPU inx.buffer")
+        if buffer._byte_offset != 0 or buffer.nbytes != buffer._native.byte_size:
+            raise ValueError("import_buffer requires the complete GPU allocation, not a buffer view")
+        handle = BufferHandle(resource_name, buffer.nbytes, int(GraphBufferUsage.STORAGE))
+        handle.compute_buffer = buffer._native
         self._buffers.append(handle)
         return handle
 
@@ -1786,10 +1825,12 @@ class RenderGraph:
                 )
 
         for sampler_name, tex_name in p._input_bindings.items():
-            if tex_name not in texture_map:
+            if tex_name not in texture_map and tex_name not in buffer_map:
                 raise ValueError(
-                    f"Pass '{p._name}' input '{sampler_name}' references unknown texture '{tex_name}'"
+                    f"Pass '{p._name}' input '{sampler_name}' references unknown resource '{tex_name}'"
                 )
+            if tex_name in buffer_map and p._action != "fullscreen_quad":
+                raise ValueError(f"Pass '{p._name}' binds a buffer outside a fullscreen pass")
 
         if p._action == "draw_shadow_casters" and p._write_depth is None:
             raise ValueError(
@@ -1881,6 +1922,7 @@ class RenderGraph:
             bd.name = buffer.name
             bd.byte_size = buffer.byte_size
             bd.usage = buffer.usage
+            bd.compute_buffer = buffer.compute_buffer
             buffer_list.append(bd)
         desc.buffers = buffer_list
 

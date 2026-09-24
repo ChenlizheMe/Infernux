@@ -12,6 +12,7 @@
 #ifdef NDEBUG
 #undef NDEBUG
 #endif
+#include <array>
 #include <cassert>
 #include <cmath>
 #include <fstream>
@@ -247,7 +248,8 @@ class FullscreenTestHost final : public FullscreenRendererHost
     {
         return {};
     }
-    rhi::ShaderModuleHandle AcquireShaderModule(const std::string &, rhi::ShaderStage stage, uint32_t) override
+    rhi::ShaderModuleHandle AcquireShaderModule(const std::string &, rhi::ShaderStage stage, uint32_t,
+                                                uint32_t) override
     {
         std::ifstream file(stage == rhi::ShaderStage::Vertex ? vertex : fragment, std::ios::binary | std::ios::ate);
         assert(file);
@@ -469,7 +471,7 @@ static void CheckFullscreenSamples(vk::VkDeviceContext &context, VkCommandBuffer
     key.colorFormat = desc.colorFormat;
     key.depthFormat = rhi::PixelFormat::Undefined;
     key.depth = {};
-    key.inputTextureCount = 2;
+    key.inputResourceCount = 2;
     key.depthInputMask = 2;
     const auto readPipeline = reader.EnsurePipeline(key);
     assert(readPipeline.pipeline.IsValid());
@@ -481,8 +483,9 @@ static void CheckFullscreenSamples(vk::VkDeviceContext &context, VkCommandBuffer
         builder.SetClearColor(0, 0, 0, 0);
         builder.SetRenderArea(desc.width, desc.height);
         return [&, readPipeline](vk::RenderContext &ctx) {
-            const FullscreenTextureInput inputs[] = {{ctx.GetTextureView(color), rhi::PixelFormat::RGBA32SFloat, false},
-                                                     {ctx.GetTextureView(depth), rhi::PixelFormat::D32SFloat, true}};
+            const FullscreenResourceInput inputs[] = {
+                {ctx.GetTextureView(color), rhi::PixelFormat::RGBA32SFloat, false},
+                {ctx.GetTextureView(depth), rhi::PixelFormat::D32SFloat, true}};
             const auto group = reader.AllocateBindGroup(readPipeline.inputLayout, inputs, 2, reader.GetLinearSampler());
             assert(group.IsValid());
             reader.Draw(ctx.GetGraphicsCommandEncoder(), readPipeline, group, {}, {}, 0);
@@ -547,9 +550,115 @@ static void CheckFullscreenSamples(vk::VkDeviceContext &context, VkCommandBuffer
     std::cout << "PASS per-sample owner/depth identity -> per-sample color -> 4x coverage resolve\n";
 }
 
+static void CheckFullscreenStorageRead(vk::VkDeviceContext &context, VkCommandBuffer command, VkFence fence,
+                                       const char *vertex, const char *fragment, rhi::SubmissionSerial &epoch)
+{
+    std::ifstream shaderInput(fragment, std::ios::binary);
+    const std::vector<char> shaderCode{std::istreambuf_iterator<char>(shaderInput), std::istreambuf_iterator<char>()};
+    ShaderReflection reflection;
+    assert(reflection.Reflect(shaderCode, VK_SHADER_STAGE_FRAGMENT_BIT));
+    assert(reflection.GetStorageBuffers().size() == 1);
+    assert(reflection.GetStorageBuffers()[0].set == 0 && reflection.GetStorageBuffers()[0].binding == 0 &&
+           reflection.GetStorageBuffers()[0].readOnly);
+    auto &device = context.GetRhiDevice();
+    rhi::BufferDesc sourceDesc;
+    sourceDesc.byteSize = sizeof(uint32_t);
+    sourceDesc.usage = rhi::BufferUsageFlags::Storage;
+    sourceDesc.memory = rhi::BufferMemory::Upload;
+    assert(sourceDesc.byteSize <= context.GetDeviceProperties().limits.maxStorageBufferRange);
+    const auto source = device.CreateBuffer(sourceDesc);
+    const uint32_t value = 128;
+    assert(source.IsValid() && device.WriteBuffer(source, 0, &value, sizeof(value)));
+
+    rhi::RenderTextureDesc imageDesc;
+    imageDesc.width = imageDesc.height = 2;
+    imageDesc.colorFormat = rhi::PixelFormat::RGBA8UNorm;
+    auto target = std::make_shared<rhi::RenderTexture>(device, "fullscreen-storage", imageDesc);
+    rhi::BufferDesc readbackDesc;
+    readbackDesc.byteSize = 16;
+    readbackDesc.usage = rhi::BufferUsageFlags::TransferDestination;
+    readbackDesc.memory = rhi::BufferMemory::Readback;
+    const auto readback = device.CreateBuffer(readbackDesc);
+    assert(readback.IsValid());
+
+    FullscreenRenderer renderer;
+    renderer.Initialize(std::make_shared<FullscreenTestHost>(device, vertex, fragment));
+    FullscreenPipelineKey key;
+    key.shaderName = "storage-read";
+    key.useDynamicRendering = true;
+    key.colorFormat = imageDesc.colorFormat;
+    key.inputResourceCount = 1;
+    key.inputBufferMask = 1;
+    auto textureInputKey = key;
+    textureInputKey.inputBufferMask = 0;
+    assert(!(key == textureInputKey));
+    const auto pipeline = renderer.EnsurePipeline(key);
+    assert(pipeline.pipeline.IsValid());
+
+    vk::RenderGraph graph;
+    graph.Initialize(&context);
+    auto color = graph.ImportRenderTexture("storage-result", target->Acquire()).color;
+    graph.AddPass("storage-fragment", [&](vk::PassBuilder &builder) {
+        const auto imported = builder.ImportBuffer("storage-source", source, sourceDesc.byteSize);
+        builder.ReadStorageBuffer(imported, rhi::PipelineStage::FragmentShader);
+        color = builder.WriteColor(color);
+        builder.SetClearColor(0, 0, 0, 1);
+        builder.SetRenderArea(2, 2);
+        return [&, imported, pipeline](vk::RenderContext &render) {
+            FullscreenResourceInput input{};
+            input.buffer = render.GetBufferHandle(imported);
+            input.byteSize = sourceDesc.byteSize;
+            const auto group = renderer.AllocateBindGroup(pipeline.inputLayout, &input, 1, renderer.GetLinearSampler());
+            assert(group.IsValid());
+            renderer.Draw(render.GetGraphicsCommandEncoder(), pipeline, group, {}, {}, 0);
+        };
+    });
+    graph.AddTransferPass("storage-readback", [&](vk::PassBuilder &builder) {
+        builder.SetQueueRole(rhi::QueueRole::Graphics);
+        builder.TransferRead(color);
+        builder.TransferWrite(builder.ImportBuffer("storage-pixels", readback, readbackDesc.byteSize));
+        builder.SetSideEffect();
+        return [&](vk::RenderContext &render) {
+            VkBufferImageCopy copy{};
+            copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+            copy.imageExtent = {2, 2, 1};
+            vkCmdCopyImageToBuffer(render.GetCommandBuffer(), device.Resolve(render.GetTextureHandle(color)),
+                                   VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, device.Resolve(readback), 1, &copy);
+        };
+    });
+    assert(graph.Compile());
+    assert(vkResetCommandBuffer(command, 0) == VK_SUCCESS);
+    VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    assert(vkBeginCommandBuffer(command, &begin) == VK_SUCCESS);
+    graph.Execute(command);
+    assert(vkEndCommandBuffer(command) == VK_SUCCESS);
+    assert(vkResetFences(context.GetDevice(), 1, &fence) == VK_SUCCESS);
+    VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+    submit.commandBufferCount = 1;
+    submit.pCommandBuffers = &command;
+    assert(vkQueueSubmit(context.GetGraphicsQueue(), 1, &submit, fence) == VK_SUCCESS);
+    assert(vkWaitForFences(context.GetDevice(), 1, &fence, VK_TRUE, 5'000'000'000ull) == VK_SUCCESS);
+    std::array<uint8_t, 16> pixels{};
+    assert(device.ReadBuffer(readback, 0, pixels.data(), pixels.size()));
+    for (size_t i = 0; i < pixels.size(); i += 4) {
+        if (std::abs(int(pixels[i]) - 128) > 1 || pixels[i + 1] || pixels[i + 2] || pixels[i + 3] != 255)
+            std::cerr << "Storage pixel=" << int(pixels[i]) << ',' << int(pixels[i + 1]) << ',' << int(pixels[i + 2])
+                      << ',' << int(pixels[i + 3]) << '\n';
+        assert(std::abs(int(pixels[i]) - 128) <= 1 && pixels[i + 1] == 0 && pixels[i + 2] == 0 && pixels[i + 3] == 255);
+    }
+    graph.Destroy();
+    renderer.Destroy();
+    target.reset();
+    device.Release(readback);
+    device.Release(source);
+    device.CollectDescriptorRetirements(epoch);
+    device.CollectResourceRetirements(epoch++);
+    std::cout << "PASS fullscreen storage-buffer GPU read -> color output\n";
+}
+
 int main(int argc, char **argv)
 {
-    assert(argc == 6);
+    assert(argc == 7);
     std::ifstream input(argv[1], std::ios::binary | std::ios::ate);
     assert(input);
     const auto bytes = static_cast<size_t>(input.tellg());
@@ -602,6 +711,7 @@ int main(int argc, char **argv)
     CheckDepthSamplingDeclaration(context);
     CheckFullscreenRasterState(context, command, fence, argv[2], argv[3], epoch);
     CheckFullscreenSamples(context, command, fence, argv[2], argv[4], argv[5], epoch);
+    CheckFullscreenStorageRead(context, command, fence, argv[2], argv[6], epoch);
 
     // Alternate independent targets and formats. Each recorded generation must
     // remain usable after resize and after both the target and graph are gone.

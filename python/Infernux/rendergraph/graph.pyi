@@ -48,7 +48,7 @@ class TextureHandle:
 
 
 class BufferHandle:
-    """A handle to a transient buffer resource in the render graph."""
+    """A handle to a buffer resource in the render graph."""
 
     name: str
     byte_size: int
@@ -95,6 +95,9 @@ class RenderPassBuilder:
         ...
     def set_texture(self, sampler_name: str, texture: str | TextureHandle) -> RenderPassBuilder:
         """Bind a texture to a sampler input for this pass."""
+        ...
+    def set_buffer(self, resource_name: str, buffer: str | BufferHandle) -> RenderPassBuilder:
+        """Bind a read-only graph buffer to a fullscreen BufferUInt resource."""
         ...
     def set_textures(self, bindings: Mapping[str, object]) -> RenderPassBuilder:
         """Bind multiple textures to sampler inputs for this pass."""
@@ -251,6 +254,9 @@ class RenderGraph:
         transfer_destination: bool = ...,
     ) -> BufferHandle:
         """Declare a transient buffer resource in the render graph."""
+        ...
+    def import_buffer(self, name: str, buffer) -> BufferHandle:
+        """Import an open uint32 GPU inx.buffer into the render graph."""
         ...
     def get_buffer(self, name: str) -> Optional[BufferHandle]:
         """Get a buffer handle by name, or None if not found."""

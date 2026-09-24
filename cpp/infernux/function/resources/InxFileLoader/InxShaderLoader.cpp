@@ -1419,6 +1419,9 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
             else if (resource.type == "Texture2DMSUInt")
                 result << "layout(set = 0, binding = " << binding << ") uniform usampler2DMS " << resource.name
                        << ";\n";
+            else if (resource.type == "BufferUInt")
+                result << "layout(std430, set = 0, binding = " << binding << ") readonly buffer InxBuffer" << binding
+                       << " { uint data[]; } " << resource.name << ";\n";
         }
     }
 

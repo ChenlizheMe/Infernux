@@ -10,6 +10,13 @@ Fluent builder for constructing a render pass.
 
 <!-- USER CONTENT START --> description
 
+For a fullscreen effect, `set_buffer("values", graph.import_buffer("values", gpu_buffer))`
+binds an open `inx.buffer(..., dtype="uint32", device="gpu")` to a shader
+`Resources { BufferUInt values }` declaration. Shader resources and the pass's
+`set_texture()`/`set_buffer()` calls must have the same order. In GLSL, read
+`values.data[index]`. This declares a fragment-stage storage read in the same
+render graph; the buffer remains owned by the existing compute runtime.
+
 <!-- USER CONTENT END -->
 
 ## Constructors
@@ -44,6 +51,7 @@ Fluent builder for constructing a render pass.
 | `write_buffer(buffer: str | BufferHandle, usage: str = ...) → RenderPassBuilder` | Declare a storage or transfer buffer write. |
 | `set_side_effect(enabled: bool = ...) → RenderPassBuilder` | Retain this pass for externally observable work. |
 | `set_texture(sampler_name: str, texture: str | TextureHandle) → RenderPassBuilder` | Bind a texture to a sampler input for this pass. |
+| `set_buffer(resource_name: str, buffer: str | BufferHandle) → RenderPassBuilder` | Bind a read-only uint32 GPU buffer to a fullscreen shader resource. |
 | `set_textures(bindings: Mapping[str, object]) → RenderPassBuilder` | Bind multiple textures to sampler inputs for this pass. |
 | `set_clear(color: Optional[Tuple[float, float, float, float]] = ..., depth: Optional[float] = ...) → RenderPassBuilder` | Set clear values for color and/or depth attachments. |
 | `draw_renderers(queue_range: Tuple[int, int] = ..., sort_mode: str = ..., pass_tag: str = ..., override_material: str = ..., material_pass: str = ...) → RenderPassBuilder` | Draw visible renderers filtered by queue range. |

@@ -2306,11 +2306,12 @@ class GraphParameterBlockUpdate:
 
 
 class GraphBufferDesc:
-    """Description of a transient buffer in the Python-defined graph."""
+    """Description of a transient or imported buffer in the Python-defined graph."""
 
     name: str
     byte_size: int
     usage: int
+    compute_buffer: Optional[_ComputeBuffer]
 
     def __init__(self) -> None: ...
 

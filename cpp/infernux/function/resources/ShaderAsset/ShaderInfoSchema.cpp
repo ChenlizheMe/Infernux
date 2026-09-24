@@ -454,8 +454,10 @@ class Parser final
             const Token begin = m_current;
             if (m_current.kind != TokenKind::Identifier ||
                 (m_current.text != "Texture2D" && m_current.text != "Texture2DUInt" &&
-                 m_current.text != "Texture2DMS" && m_current.text != "Texture2DMSUInt")) {
-                Error(m_current, "Resources supports Texture2D, Texture2DUInt, Texture2DMS and Texture2DMSUInt");
+                 m_current.text != "Texture2DMS" && m_current.text != "Texture2DMSUInt" &&
+                 m_current.text != "BufferUInt")) {
+                Error(m_current,
+                      "Resources supports Texture2D, Texture2DUInt, Texture2DMS, Texture2DMSUInt and BufferUInt");
                 SkipToPropertyBoundary();
                 continue;
             }

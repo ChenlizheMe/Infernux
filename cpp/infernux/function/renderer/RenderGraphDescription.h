@@ -31,6 +31,10 @@ namespace rhi
 class RenderTexture;
 }
 class RendererSelection;
+namespace rhi
+{
+class ComputeBuffer;
+}
 
 /**
  * @brief Backend-neutral command recorded by a graph pass.
@@ -191,6 +195,7 @@ struct GraphBufferDesc
     std::string name;
     uint64_t byteSize = 0;
     uint32_t usage = static_cast<uint32_t>(GraphBufferUsage::None);
+    std::shared_ptr<rhi::ComputeBuffer> computeBuffer; ///< Live GPU owner for an imported buffer.
 };
 
 struct GraphBufferAccessDesc

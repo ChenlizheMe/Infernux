@@ -972,7 +972,7 @@ void InxRenderer::PreparePipeline()
                     return true;
                 graph->SetDrawViewMatrix(view);
                 vk::RenderGraph *compiled = graph->GetCompiledRenderGraph();
-                m_vkCore->RegisterFrameComputeReadDependency(graph->GetLatestMaterialBufferWriteSubmission(),
+                m_vkCore->RegisterFrameComputeReadDependency(graph->GetLatestComputeBufferWriteSubmission(),
                                                              VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
                                                                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
                 const auto &viewContext = graph->GetRenderViewContext();

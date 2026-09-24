@@ -13,6 +13,7 @@
 #include "function/renderer/RenderGraphDescription.h"
 #include "function/renderer/RendererSelection.h"
 #include "function/renderer/SceneRenderGraph.h"
+#include "function/renderer/rhi/RhiComputeBuffer.h"
 #include "function/renderer/rhi/RhiRenderTexture.h"
 
 #include <pybind11/numpy.h>
@@ -157,7 +158,8 @@ void RegisterRenderGraphBindings(py::module_ &m)
         .def(py::init<>())
         .def_readwrite("name", &GraphBufferDesc::name)
         .def_readwrite("byte_size", &GraphBufferDesc::byteSize)
-        .def_readwrite("usage", &GraphBufferDesc::usage);
+        .def_readwrite("usage", &GraphBufferDesc::usage)
+        .def_readwrite("compute_buffer", &GraphBufferDesc::computeBuffer);
 
     py::class_<GraphBufferAccessDesc>(m, "GraphBufferAccessDesc", "Typed buffer access declared by a graph pass")
         .def(py::init<>())

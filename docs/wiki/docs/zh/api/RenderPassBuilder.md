@@ -10,6 +10,12 @@
 
 <!-- USER CONTENT START --> description
 
+全屏效果可用 `set_buffer("values", graph.import_buffer("values", gpu_buffer))`
+绑定现有 `inx.buffer(..., dtype="uint32", device="gpu")`。ShaderInfo 声明
+`Resources { BufferUInt values }`，GLSL 读取 `values.data[index]`。
+shader 资源声明与 `set_texture()`／`set_buffer()` 调用顺序应相同；此绑定会在同一
+RenderGraph 中声明 fragment 阶段的 storage 读取依赖，buffer 仍由计算运行时持有。
+
 <!-- USER CONTENT END -->
 
 ## 构造函数
@@ -44,6 +50,7 @@
 | `write_buffer(buffer: str | BufferHandle, usage: str = ...) → RenderPassBuilder` | Declare a storage or transfer buffer write. |
 | `set_side_effect(enabled: bool = ...) → RenderPassBuilder` | Retain this pass for externally observable work. |
 | `set_texture(sampler_name: str, texture: str | TextureHandle) → RenderPassBuilder` | Bind a texture to a sampler input for this pass. |
+| `set_buffer(resource_name: str, buffer: str | BufferHandle) → RenderPassBuilder` | 将只读 uint32 GPU buffer 绑定到全屏 shader 资源。 |
 | `set_textures(bindings: Mapping[str, object]) → RenderPassBuilder` | Bind multiple textures to sampler inputs for this pass. |
 | `set_clear(color: Optional[Tuple[float, float, float, float]] = ..., depth: Optional[float] = ...) → RenderPassBuilder` | Set clear values for color and/or depth attachments. |
 | `draw_renderers(queue_range: Tuple[int, int] = ..., sort_mode: str = ..., pass_tag: str = ..., override_material: str = ..., material_pass: str = ...) → RenderPassBuilder` | Draw visible renderers filtered by queue range. |
