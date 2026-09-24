@@ -101,6 +101,15 @@ Camera/View 独立的 Lighting UBO、Forward+ 灯光列表、阴影图集和相�
 per-view 灯光描述符，并保证阴影投射 Pass 排在光照之前。未开启阴影时，
 route 不声明 `shadowMap` 绑定。
 
+默认 Deferred 管线的 `gbuffer_normal` 是私有纹理：RGB 存编码后的世界法线，
+alpha 存供延迟光照使用的 smoothness。仅当消费者请求公开 `normal` 时，
+GBuffer 结果才生成独立的全分辨率 RGBA16 纹理：RGB 存当前 View 的编码法线，
+可见 DeferredCompatible 几何处 alpha 为 1，其余清空区域为 0。Forward+ 不兼容
+材质补绘之后，`opaque_lighting` 结果先复制当前公开 normal（包括
+`after_gbuffer` 效果的改写），再依据最终只读深度覆盖可见的
+DeferredUnsupported 几何；后续阶段继承这一结果。替换 `normal` 的效果必须
+保持 alpha 的 coverage 约定。
+
 <!-- USER CONTENT END -->
 
 ## 示例

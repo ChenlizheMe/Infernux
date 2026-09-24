@@ -104,6 +104,17 @@ the same View's shadow image to the per-view lighting descriptor and keeps the
 shadow caster pass ordered before lighting. A route without shadows declares no
 `shadowMap` binding.
 
+In the default Deferred pipeline, `gbuffer_normal` is private: RGB holds the
+encoded world normal and alpha holds smoothness for deferred lighting. When a
+consumer requests the public `normal` buffer, the GBuffer result publishes a
+separate full-resolution RGBA16 texture with encoded normal RGB and alpha 1
+for visible Deferred-compatible geometry, 0 elsewhere. After the Forward+
+opaque pass, the `opaque_lighting` result copies the current public normal
+(including `after_gbuffer` effect writes) and overlays visible
+Deferred-unsupported geometry against the final read-only depth. Later stages
+inherit that result. Effects that replace `normal` must preserve its coverage
+alpha contract.
+
 <!-- USER CONTENT END -->
 
 ## Example
