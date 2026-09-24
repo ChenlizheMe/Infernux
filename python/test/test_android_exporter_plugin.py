@@ -134,6 +134,7 @@ def _write_native_payload(root: Path, *, abi: str) -> Path:
     (root / abi / "Player.inxmanifest").write_text(json.dumps({
         "engine_version": "0.4.0", "platform": "android", "abi": abi,
         "python_abi": "cp313", "minimum_api": 26, "configuration": "Release",
+        "native_libraries": list(payload.NATIVE_LIBRARIES),
     }), encoding="utf-8")
     java = root / "java/org/libsdl/app/SDLActivity.java"
     java.parent.mkdir(parents=True)
@@ -152,6 +153,7 @@ def test_android_native_payload_stages_without_build_tools(monkeypatch, tmp_path
     native.mkdir(parents=True)
     (native / "libInfernuxOld.so").write_bytes(b"stale")
     (native / "libpython3.13.so").write_bytes(b"Hub-owned")
+    (source / "x86_64/jniLibs/libInfernuxOld.so").write_bytes(b"stale source")
     (source / "x86_64/jniLibs/libmain.so.meta").write_bytes(b"editor-only")
     module.stage_native_payload(source, staging, abi="x86_64")
     assert {p.name for p in native.iterdir()} == set(module.NATIVE_LIBRARIES) | {"libpython3.13.so"}
@@ -159,7 +161,10 @@ def test_android_native_payload_stages_without_build_tools(monkeypatch, tmp_path
     assert (staging / "app/src/main/java/org/libsdl/app/SDLActivity.java").is_file()
 
 
-@pytest.mark.parametrize("failure", ["abi", "engine", "missing_library", "missing_java"])
+@pytest.mark.parametrize("failure", [
+    "abi", "engine", "missing_library", "missing_asset_runtime",
+    "missing_manifest_asset_runtime", "missing_java",
+])
 def test_android_native_payload_rejects_incomplete_or_incompatible_plugin(monkeypatch, tmp_path, failure):
     _android_module(monkeypatch)
     module = importlib.import_module("infernux_android.native_payload")
@@ -172,6 +177,10 @@ def test_android_native_payload_rejects_incomplete_or_incompatible_plugin(monkey
         document["engine_version"] = "0.3.7"
     elif failure == "missing_library":
         (source / "x86_64/jniLibs/libmain.so").unlink()
+    elif failure == "missing_asset_runtime":
+        (source / "x86_64/jniLibs/libInfernuxAssetRuntime.so").unlink()
+    elif failure == "missing_manifest_asset_runtime":
+        document["native_libraries"].remove("libInfernuxAssetRuntime.so")
     else:
         (source / "java/org/libsdl/app/SDLActivity.java").unlink()
     manifest.write_text(json.dumps(document), encoding="utf-8")
