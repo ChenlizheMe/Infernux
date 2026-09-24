@@ -44,7 +44,7 @@ struct ScreenUIVulkanTestAccess
 } // namespace infernux
 
 static std::shared_ptr<const ShaderProgramArtifact> CompileUiProgram(bool world, bool alternate, bool reload = false,
-                                                                      bool materialProperties = false)
+                                                                     bool materialProperties = false)
 {
     const std::string domain = world ? "WorldUI" : "ScreenUI";
     const std::string vertex = "ShaderInfo { Name \"Tests/" + domain + "Vertex\" Capabilities [" + domain + "] }\n" +
@@ -160,8 +160,7 @@ void main() {
         const std::string capability = "Capabilities [" + domain + "] }";
         const size_t info = authoredFragment.find(capability);
         assert(info != std::string::npos);
-        authoredFragment.replace(info, capability.size(),
-                                 "Capabilities [" + domain + R"(]
+        authoredFragment.replace(info, capability.size(), "Capabilities [" + domain + R"(]
     Properties {
         Float gain = 1.0
         Float2 offset = [0.0, 0.0]
@@ -176,8 +175,7 @@ void main() {
         const std::string plainSample = "texture(uiTexture, inUV)";
         const size_t sample = authoredFragment.find(plainSample);
         assert(sample != std::string::npos);
-        authoredFragment.replace(sample, plainSample.size(),
-                                 "texture(uiTexture, inUV) * texture(detailTex, inUV)");
+        authoredFragment.replace(sample, plainSample.size(), "texture(uiTexture, inUV) * texture(detailTex, inUV)");
         const std::string plainMultiplier = "vec4(MULTIPLIER, 1.0)";
         const size_t factor = authoredFragment.find(plainMultiplier);
         assert(factor != std::string::npos);
@@ -1096,21 +1094,21 @@ int main(int argc, char **argv)
         propertyBinding.materialGuid = screenPropertyMaterial->GetGuid();
         propertyBinding.generation = screenPropertyMaterial->GetVersion();
         propertyBinding.pipelineKey = "ui-property-program";
-        const VkDescriptorSet descriptorBeforeReimport = ScreenUIVulkanTestAccess::ResolveMaterialDescriptor(
-            renderer, propertyBinding, *screenProperties);
+        const VkDescriptorSet descriptorBeforeReimport =
+            ScreenUIVulkanTestAccess::ResolveMaterialDescriptor(renderer, propertyBinding, *screenProperties);
         assert(descriptorBeforeReimport != VK_NULL_HANDLE);
         ++textureGeneration;
         texturePending = true;
         renderPropertyList(ScreenUIList::Overlay);
-        const VkDescriptorSet descriptorWhilePending = ScreenUIVulkanTestAccess::ResolveMaterialDescriptor(
-            renderer, propertyBinding, *screenProperties);
+        const VkDescriptorSet descriptorWhilePending =
+            ScreenUIVulkanTestAccess::ResolveMaterialDescriptor(renderer, propertyBinding, *screenProperties);
         assert(descriptorWhilePending == descriptorBeforeReimport);
         assert(pendingTextureResolutions == 1);
         const size_t resolutionsWhilePending = textureResolutions;
         texturePending = false;
-        whitePublication = std::make_shared<rhi::TextureGpuView>(
-            "ui-white-guid", textureGeneration, white, view, sampler, 4, std::make_shared<int>(1),
-            rhi::PixelFormat::RGBA8UNorm);
+        whitePublication =
+            std::make_shared<rhi::TextureGpuView>("ui-white-guid", textureGeneration, white, view, sampler, 4,
+                                                  std::make_shared<int>(1), rhi::PixelFormat::RGBA8UNorm);
         renderPropertyList(ScreenUIList::Overlay);
         assert(textureResolutions == resolutionsWhilePending + 1);
         assert(retirement.GetStats().pushed > retiredBeforeReimport);

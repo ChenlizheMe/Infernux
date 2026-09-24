@@ -459,8 +459,8 @@ ShaderProgramInterfaceArtifact ShaderStageLinker::Link(const ShaderDescriptor &v
     std::unordered_map<std::string, size_t> propertyIndices;
     AppendStageProperties(artifact, vertex, ShaderStageVisibility::Vertex, propertyIndices);
     AppendStageProperties(artifact, fragment, ShaderStageVisibility::Fragment, propertyIndices);
-    const bool uiDomain = artifact.domain == ShaderProgramDomain::ScreenUI ||
-                          artifact.domain == ShaderProgramDomain::WorldUI;
+    const bool uiDomain =
+        artifact.domain == ShaderProgramDomain::ScreenUI || artifact.domain == ShaderProgramDomain::WorldUI;
     AssignPropertyLayout(artifact, !uiDomain && fragment.hasSurfaceFunc, options.maximumMaterialTextures);
 
     uint64_t compatibility = FnvOffset;

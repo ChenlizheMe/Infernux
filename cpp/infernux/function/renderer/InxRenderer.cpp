@@ -4753,9 +4753,9 @@ void InxRenderer::ConfigureScreenUIMaterialResolver(InxScreenUIRenderer &rendere
             if (!view || !view->IsValid())
                 return TextureResolveResult{TextureResolveStatus::Pending, {}};
             auto &device = m_vkCore->GetDeviceContext().GetRhiDevice();
-            return TextureResolveResult{
-                TextureResolveStatus::Ready,
-                {device.Resolve(view->GetView()), device.Resolve(view->GetSampler()), std::move(slot), std::move(view)}};
+            return TextureResolveResult{TextureResolveStatus::Ready,
+                                        {device.Resolve(view->GetView()), device.Resolve(view->GetSampler()),
+                                         std::move(slot), std::move(view)}};
         }
         return m_vkCore->ResolveTextureForMaterial(textureGuid, bindingName);
     });

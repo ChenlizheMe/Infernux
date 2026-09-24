@@ -1,13 +1,13 @@
+#include <function/renderer/InxRenderer.h>
 #include <function/renderer/particle/ParticleGpuBounds.h>
 #include <function/renderer/particle/ParticleGpuCuller.h>
 #include <function/renderer/particle/ParticleGpuMigrator.h>
 #include <function/renderer/particle/ParticleGpuRibbonRenderer.h>
 #include <function/renderer/particle/ParticleGpuRibbonTopology.h>
 #include <function/renderer/particle/ParticleGpuSorter.h>
-#include <function/renderer/InxRenderer.h>
 #include <function/renderer/shader/ShaderReflection.h>
-#include <function/resources/InxMaterial/InxMaterial.h>
 #include <function/resources/InxFileLoader/InxShaderLoader.hpp>
+#include <function/resources/InxMaterial/InxMaterial.h>
 #include <function/resources/ShaderAsset/ShaderPassVariantPlanner.h>
 #include <function/resources/ShaderAsset/ShaderStageLinker.h>
 

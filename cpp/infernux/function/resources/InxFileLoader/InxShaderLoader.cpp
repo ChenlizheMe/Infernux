@@ -408,26 +408,26 @@ void ValidateReflectedUIStage(const ShaderReflection &reflection, const ShaderPr
     if (!reflection.GetStorageBuffers().empty() || !reflection.GetStorageImages().empty() ||
         !reflection.GetUnsupportedDescriptorResources().empty())
         errors.push_back("UI " + stageName + " declares descriptors outside the UI material ABI");
-    const bool usesMaterialBuffer = std::any_of(artifact.properties.begin(), artifact.properties.end(),
-                                               [&](const LinkedShaderProperty &property) {
-                                                   return property.bufferOffset && HasVisibility(property.visibility, stage);
-                                               });
+    const bool usesMaterialBuffer =
+        std::any_of(artifact.properties.begin(), artifact.properties.end(), [&](const LinkedShaderProperty &property) {
+            return property.bufferOffset && HasVisibility(property.visibility, stage);
+        });
     const auto &buffers = reflection.GetUniformBuffers();
     if (usesMaterialBuffer && !buffers.empty()) {
         if (buffers.size() != 1 || buffers[0].name != "MaterialProperties" || buffers[0].set != 1 ||
             buffers[0].binding != 0 || buffers[0].size > artifact.materialBufferSize)
             errors.push_back("UI " + stageName + " MaterialProperties must use the linked set 1 binding 0 ABI");
-        else for (const auto &member : buffers[0].members) {
-            const auto property = std::find_if(artifact.properties.begin(), artifact.properties.end(),
-                                               [&](const LinkedShaderProperty &candidate) {
-                                                   return candidate.schema.name == member.name &&
-                                                          candidate.bufferOffset &&
-                                                          HasVisibility(candidate.visibility, stage);
-                                               });
-            if (property == artifact.properties.end() || member.offset != *property->bufferOffset)
-                errors.push_back("UI " + stageName + " material property '" + member.name +
-                                 "' differs from the linked buffer layout");
-        }
+        else
+            for (const auto &member : buffers[0].members) {
+                const auto property = std::find_if(
+                    artifact.properties.begin(), artifact.properties.end(), [&](const LinkedShaderProperty &candidate) {
+                        return candidate.schema.name == member.name && candidate.bufferOffset &&
+                               HasVisibility(candidate.visibility, stage);
+                    });
+                if (property == artifact.properties.end() || member.offset != *property->bufferOffset)
+                    errors.push_back("UI " + stageName + " material property '" + member.name +
+                                     "' differs from the linked buffer layout");
+            }
     } else if (!buffers.empty()) {
         errors.push_back("UI " + stageName + " declares an undeclared material UBO");
     }
@@ -453,8 +453,8 @@ void ValidateReflectedUIStage(const ShaderReflection &reflection, const ShaderPr
                                                return candidate.schema.name == image.name && candidate.textureSlot &&
                                                       HasVisibility(candidate.visibility, stage);
                                            });
-        if (property == artifact.properties.end() || image.set != 1 ||
-            image.binding != 1 + *property->textureSlot || !validImage(image))
+        if (property == artifact.properties.end() || image.set != 1 || image.binding != 1 + *property->textureSlot ||
+            !validImage(image))
             errors.push_back("UI " + stageName + " declares a texture outside the linked set 1 texture ABI");
     }
     const auto &push = reflection.GetPushConstants();
@@ -1042,17 +1042,17 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
             return {};
         // UI stages own geometry and push constants. Material declarations are
         // generated from the same linked offsets and slots consumed by Vulkan.
-        const ShaderStageVisibility stage = desc.isVertexShader ? ShaderStageVisibility::Vertex
-                                                                 : ShaderStageVisibility::Fragment;
+        const ShaderStageVisibility stage =
+            desc.isVertexShader ? ShaderStageVisibility::Vertex : ShaderStageVisibility::Fragment;
         std::string declarations;
-        const bool hasBuffer = std::any_of(linkedInterface->properties.begin(), linkedInterface->properties.end(),
-                                           [&](const LinkedShaderProperty &property) {
-                                               return property.bufferOffset && HasVisibility(property.visibility, stage);
-                                           });
+        const bool hasBuffer =
+            std::any_of(linkedInterface->properties.begin(), linkedInterface->properties.end(),
+                        [&](const LinkedShaderProperty &property) {
+                            return property.bufferOffset && HasVisibility(property.visibility, stage);
+                        });
         if (hasBuffer)
             declarations += "\nlayout(std140, set = 1, binding = 0) uniform MaterialProperties {\n" +
-                            GlslStageInterfaceEmitter::EmitMaterialBlockMembers(*linkedInterface) +
-                            "} material;\n";
+                            GlslStageInterfaceEmitter::EmitMaterialBlockMembers(*linkedInterface) + "} material;\n";
         declarations += GlslStageInterfaceEmitter::EmitTextureDeclarations(*linkedInterface, stage, 1, 1);
         if (declarations.empty())
             return resolvedSource;

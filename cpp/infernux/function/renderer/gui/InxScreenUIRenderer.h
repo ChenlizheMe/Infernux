@@ -18,9 +18,9 @@
 
 #pragma once
 
+#include "../MaterialDescriptor.h"
 #include "../rhi/GpuRetirementQueue.h"
 #include "../rhi/RhiRenderTexture.h"
-#include "../MaterialDescriptor.h"
 #include "WorldUIOcclusionPlan.h"
 #include <core/types/ShaderProgramArtifact.h>
 #include <function/scene/TransformECSStore.h>
@@ -154,7 +154,8 @@ class InxScreenUIRenderer
     {
         m_materialProgramReleaseSweep = std::move(sweep);
     }
-    void SetMaterialAssetResolver(std::function<std::shared_ptr<const InxMaterial>(const std::string &, uint64_t)> resolver)
+    void
+    SetMaterialAssetResolver(std::function<std::shared_ptr<const InxMaterial>(const std::string &, uint64_t)> resolver)
     {
         m_materialAssetResolver = std::move(resolver);
     }

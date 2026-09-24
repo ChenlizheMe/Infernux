@@ -1620,9 +1620,9 @@ bool InxScreenUIRenderer::CreatePipeline()
     materialBindings[0] = vkrender::MakeDescriptorSetLayoutBinding(
         0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT);
     for (uint32_t slot = 0; slot < kUIMaterialTextureCapacity; ++slot)
-        materialBindings[slot + 1] = vkrender::MakeDescriptorSetLayoutBinding(
-            slot + 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT);
+        materialBindings[slot + 1] =
+            vkrender::MakeDescriptorSetLayoutBinding(slot + 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                                                     VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT);
     if (!vkrender::CreateDescriptorSetLayout(m_device, materialBindings.data(),
                                              static_cast<uint32_t>(materialBindings.size()),
                                              m_materialDescriptorSetLayout))
@@ -2051,7 +2051,7 @@ VkPipeline InxScreenUIRenderer::GetMaterialPipeline(const UIShaderMaterialBindin
 }
 
 VkDescriptorSet InxScreenUIRenderer::GetMaterialDescriptor(const UIShaderMaterialBinding &binding,
-                                                            const ShaderProgramArtifact &artifact)
+                                                           const ShaderProgramArtifact &artifact)
 {
     if (artifact.properties.empty())
         return VK_NULL_HANDLE;
@@ -2064,8 +2064,8 @@ VkDescriptorSet InxScreenUIRenderer::GetMaterialDescriptor(const UIShaderMateria
         auto &cached = *previous->second;
         if (cached.validatedRender == m_materialRenderSerial)
             return cached.set;
-        const bool texturesUnchanged = std::all_of(
-            cached.textureVersions.begin(), cached.textureVersions.end(), [&](const auto &entry) {
+        const bool texturesUnchanged =
+            std::all_of(cached.textureVersions.begin(), cached.textureVersions.end(), [&](const auto &entry) {
                 return entry.second != 0 && m_materialTextureGenerationResolver(entry.first) == entry.second;
             });
         if (texturesUnchanged) {
@@ -2094,14 +2094,22 @@ VkDescriptorSet InxScreenUIRenderer::GetMaterialDescriptor(const UIShaderMateria
             throw std::runtime_error("UI material is missing shader property '" + property.name + "'");
         const auto expectedType = [&]() -> MaterialPropertyType {
             const auto &type = property.type;
-            if (type == "Float") return MaterialPropertyType::Float;
-            if (type == "Float2") return MaterialPropertyType::Float2;
-            if (type == "Float3") return MaterialPropertyType::Float3;
-            if (type == "Float4") return MaterialPropertyType::Float4;
-            if (type == "Color") return MaterialPropertyType::Color;
-            if (type == "Int") return MaterialPropertyType::Int;
-            if (type == "Mat4") return MaterialPropertyType::Mat4;
-            if (type == "Texture2D") return MaterialPropertyType::Texture2D;
+            if (type == "Float")
+                return MaterialPropertyType::Float;
+            if (type == "Float2")
+                return MaterialPropertyType::Float2;
+            if (type == "Float3")
+                return MaterialPropertyType::Float3;
+            if (type == "Float4")
+                return MaterialPropertyType::Float4;
+            if (type == "Color")
+                return MaterialPropertyType::Color;
+            if (type == "Int")
+                return MaterialPropertyType::Int;
+            if (type == "Mat4")
+                return MaterialPropertyType::Mat4;
+            if (type == "Texture2D")
+                return MaterialPropertyType::Texture2D;
             throw std::runtime_error("Unsupported UI material property type: " + type);
         }();
         if (authored->type != expectedType)
@@ -2134,12 +2142,13 @@ VkDescriptorSet InxScreenUIRenderer::GetMaterialDescriptor(const UIShaderMateria
     if (previous != m_materialDescriptors.end()) {
         auto &resource = *previous->second;
         bool sameTextures = resource.textures.size() == textures.size();
-        if (sameTextures) for (size_t slot = 0; slot < textures.size(); ++slot) {
-            const auto &a = resource.textures[slot];
-            const auto &b = textures[slot];
-            sameTextures = sameTextures && a.gpuView == b.gpuView && a.imageView == b.imageView &&
-                           a.sampler == b.sampler;
-        }
+        if (sameTextures)
+            for (size_t slot = 0; slot < textures.size(); ++slot) {
+                const auto &a = resource.textures[slot];
+                const auto &b = textures[slot];
+                sameTextures =
+                    sameTextures && a.gpuView == b.gpuView && a.imageView == b.imageView && a.sampler == b.sampler;
+            }
         if (resource.generation == binding.generation && resource.program == artifact.key && sameTextures) {
             resource.textureVersions = std::move(textureVersions);
             resource.validatedRender = m_materialRenderSerial;
@@ -2158,8 +2167,8 @@ VkDescriptorSet InxScreenUIRenderer::GetMaterialDescriptor(const UIShaderMateria
         MaterialUBOLayout layout{0, artifact.materialBufferSize, {}};
         for (const auto &property : artifact.properties) {
             if (property.bufferOffset)
-                layout.members.push_back({property.name, *property.bufferOffset, property.byteSize, 1,
-                                          VK_FORMAT_UNDEFINED});
+                layout.members.push_back(
+                    {property.name, *property.bufferOffset, property.byteSize, 1, VK_FORMAT_UNDEFINED});
         }
         resource->buffer = std::make_unique<MaterialUBO>();
         if (!resource->buffer->Create(m_allocator, m_device, layout))
