@@ -1168,9 +1168,18 @@ bool InxVkCoreModular::RecordPresentationReadback(VkCommandBuffer commandBuffer,
 void InxVkCoreModular::WaitForCurrentFrame()
 {
     const uint32_t frameSlot = GetCurrentFrameSlot();
-    if (m_backend.Queues().WaitForGraphicsFrameSlot(frameSlot, [this, frameSlot](uint32_t elapsedMilliseconds) {
+#if INFERNUX_FRAME_PROFILE
+    const auto waitStarted = std::chrono::high_resolution_clock::now();
+#endif
+    const bool completed =
+        m_backend.Queues().WaitForGraphicsFrameSlot(frameSlot, [this, frameSlot](uint32_t elapsedMilliseconds) {
             m_submissionExecutor.LogFrameWaitDiagnostics(frameSlot, elapsedMilliseconds);
-        })) {
+        });
+#if INFERNUX_FRAME_PROFILE
+    m_drawSubMs[7] +=
+        std::chrono::duration<double, std::milli>(std::chrono::high_resolution_clock::now() - waitStarted).count();
+#endif
+    if (completed) {
         m_submissionExecutor.CompleteFrame(frameSlot);
         (void)m_backend.Queues().CompleteFrameSlot(frameSlot);
     }

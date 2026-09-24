@@ -1921,8 +1921,20 @@ void SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
     const auto editorOverlayPass = GetEditorOverlayMaterialPass();
     m_pythonCallbacks[kComponentGizmosPassName] = [this, vkCore, editorOverlayPass](vk::RenderContext &ctx, uint32_t w,
                                                                                     uint32_t h) {
+#if INFERNUX_FRAME_PROFILE
+        const auto region = vkCore->BeginGpuProfileRegion(ctx.GetCommandBuffer(), "_ComponentGizmos");
+        try {
+            vkCore->DrawSceneFiltered(ctx.GetCommandBuffer(), w, h, GetPerViewBindGroup(), m_drawView,
+                                      COMP_GIZMO_QUEUE_MIN, COMP_GIZMO_QUEUE_MAX, "", "", "", &editorOverlayPass);
+        } catch (...) {
+            vkCore->EndGpuProfileRegion(ctx.GetCommandBuffer(), region);
+            throw;
+        }
+        vkCore->EndGpuProfileRegion(ctx.GetCommandBuffer(), region);
+#else
         vkCore->DrawSceneFiltered(ctx.GetCommandBuffer(), w, h, GetPerViewBindGroup(), m_drawView, COMP_GIZMO_QUEUE_MIN,
                                   COMP_GIZMO_QUEUE_MAX, "", "", "", &editorOverlayPass);
+#endif
     };
 
     // ========================================================================

@@ -25,12 +25,15 @@ then the GizmosCollector packs everything and uploads to C++ in one batch.
 from __future__ import annotations
 
 import math
+import time
 from dataclasses import dataclass
+from functools import wraps
 from itertools import count
 from typing import Tuple, Optional, List
 import numpy as np
 
 from Infernux.compute import Buffer, buffer, index, kernel, launch
+from Infernux.lib import is_frame_profile_enabled as _is_frame_profile_enabled
 
 from Infernux.components._gizmo_ids import (
     ICON_KIND_CAMERA,
@@ -41,6 +44,31 @@ from Infernux.components._gizmo_ids import (
 
 # Type alias for 3-component tuples
 Vec3 = Tuple[float, float, float]
+_GEOMETRY_PROFILE_COMPILED = bool(_is_frame_profile_enabled())
+
+
+def _profile_geometry_helper(method):
+    """Time the outer public Gizmo helper without double-counting nested helpers."""
+
+    if not _GEOMETRY_PROFILE_COMPILED:
+        return method
+
+    @wraps(method)
+    def wrapped(cls, *args, **kwargs):
+        if not cls._geometry_profile_active:
+            return method(cls, *args, **kwargs)
+        outermost = cls._geometry_profile_depth == 0
+        cls._geometry_profile_depth += 1
+        if outermost:
+            started = time.perf_counter()
+        try:
+            return method(cls, *args, **kwargs)
+        finally:
+            cls._geometry_profile_depth -= 1
+            if outermost:
+                cls._geometry_build_ms += (time.perf_counter() - started) * 1000.0
+
+    return wrapped
 
 
 @kernel
@@ -140,6 +168,9 @@ class Gizmos:
 
     # Icon entries: (position_vec3, object_id_int, color_vec3, icon_kind_int)
     _icon_entries: List[Tuple[Vec3, int, Tuple[float, float, float], int]] = []
+    _geometry_profile_active = False
+    _geometry_profile_depth = 0
+    _geometry_build_ms = 0.0
 
     # ---- Internal ----
     _identity_matrix: List[float] = [
@@ -157,6 +188,9 @@ class Gizmos:
         cls._draw_batches.clear()
         cls._resident_draw_batches.clear()
         cls._icon_entries.clear()
+        cls._geometry_profile_active = False
+        cls._geometry_profile_depth = 0
+        cls._geometry_build_ms = 0.0
 
     @classmethod
     def _current_matrix(cls) -> List[float]:
@@ -167,6 +201,7 @@ class Gizmos:
     # ====================================================================
 
     @classmethod
+    @_profile_geometry_helper
     def draw_line(cls, start: Vec3, end: Vec3):
         """Draw a single line segment from *start* to *end*."""
         c = cls.color
@@ -178,6 +213,7 @@ class Gizmos:
         cls._draw_batches.append((verts, indices, list(cls._current_matrix())))
 
     @classmethod
+    @_profile_geometry_helper
     def draw_lines(cls, positions, indices):
         """Draw indexed line pairs in one batch from NumPy arrays.
 
@@ -245,6 +281,7 @@ class Gizmos:
     # ====================================================================
 
     @classmethod
+    @_profile_geometry_helper
     def draw_ray(cls, origin: Vec3, direction: Vec3):
         """Draw a ray from *origin* in *direction* (magnitude = length)."""
         end = (
@@ -259,6 +296,7 @@ class Gizmos:
     # ====================================================================
 
     @classmethod
+    @_profile_geometry_helper
     def draw_icon(cls, position: Vec3, object_id: int,
                   color: Optional[Tuple[float, float, float]] = None,
                   icon_kind: int = ICON_KIND_DEFAULT):
@@ -281,6 +319,7 @@ class Gizmos:
     # ====================================================================
 
     @classmethod
+    @_profile_geometry_helper
     def draw_wire_cube(cls, center: Vec3, size: Vec3):
         """Draw a wireframe axis-aligned box centered at *center* with *size*."""
         hx, hy, hz = size[0] * 0.5, size[1] * 0.5, size[2] * 0.5
@@ -314,6 +353,7 @@ class Gizmos:
     # ====================================================================
 
     @classmethod
+    @_profile_geometry_helper
     def draw_wire_sphere(cls, center: Vec3, radius: float, segments: int = 24):
         """Draw a wireframe sphere as three axis-aligned circles."""
         c = cls.color
@@ -355,6 +395,7 @@ class Gizmos:
         cls._draw_batches.append((verts, indices, mat))
 
     @classmethod
+    @_profile_geometry_helper
     def draw_wire_spheres(cls, centers: Buffer, radius: float, segments: int = 24,
                           center_indices: np.ndarray | None = None) -> None:
         """Draw many wire spheres directly from resident GPU centers.
@@ -432,6 +473,7 @@ class Gizmos:
     # ====================================================================
 
     @classmethod
+    @_profile_geometry_helper
     def draw_frustum(cls, position: Vec3, fov_deg: float, aspect: float,
                      near: float, far: float,
                      forward: Vec3 = (0, 0, -1),
@@ -498,6 +540,7 @@ class Gizmos:
     # ====================================================================
 
     @classmethod
+    @_profile_geometry_helper
     def draw_wire_arc(cls, center: Vec3, normal: Vec3, radius: float,
                       start_angle_deg: float = 0.0, arc_deg: float = 360.0,
                       segments: int = 32):

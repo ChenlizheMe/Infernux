@@ -79,6 +79,12 @@ std::vector<RenderGraph::PassCallbackProfileEntry> RenderGraph::GetTopCallbackPr
     return result;
 }
 
+RenderGraph::PassCallbackProfileEntry RenderGraph::GetCallbackProfile(std::string_view name)
+{
+    const auto it = s_callbackProfiles.find(std::string(name));
+    return it == s_callbackProfiles.end() ? PassCallbackProfileEntry{} : it->second;
+}
+
 std::vector<RenderGraph::ParticlePassProfileEntry> RenderGraph::GetParticlePassProfiles(size_t maxEntries)
 {
     std::vector<ParticlePassProfileEntry> result;

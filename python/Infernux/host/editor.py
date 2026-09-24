@@ -296,6 +296,19 @@ class EditorAutomationHost:
         }
         return result
 
+    def gizmo_collection_observation(self) -> dict[str, object]:
+        """Read the Editor's last completed Gizmo collection phases."""
+        from Infernux.engine.bootstrap import EditorBootstrap
+
+        bootstrap = EditorBootstrap.instance()
+        engine = bootstrap.engine if bootstrap is not None else None
+        if engine is None:
+            raise OperationError(
+                "editor.unavailable",
+                "A running graphical Editor session is required.",
+            )
+        return dict(engine.get_gizmo_collection_observation())
+
     def capture_status(self, capture_id: int) -> dict[str, object]:
         return dict(self._native_engine().query_capture(int(capture_id)))
 

@@ -212,6 +212,29 @@ def test_runtime_performance_operations_reuse_native_window(monkeypatch):
     assert not query.schema.side_effects
 
 
+def test_runtime_gizmo_statistics_reuses_editor_host(monkeypatch):
+    from infernux_mcp import runtime_operations
+
+    snapshot = {
+        "timing_enabled": True,
+        "callback_ms": 0.12,
+        "geometry_build_ms": 0.08,
+        "pack_ms": 0.03,
+        "upload_ms": 0.01,
+    }
+    host = SimpleNamespace(gizmo_collection_observation=lambda: snapshot)
+    monkeypatch.setattr(EditorAutomationHost, "instance", staticmethod(lambda: host))
+    monkeypatch.setattr(runtime_operations, "on_editor", lambda _name, callback: callback())
+
+    operation = {
+        item.schema.id: item for item in runtime_operations.build_runtime_operations()
+    }["infernux.runtime.gizmos.statistics"]
+
+    assert operation.handler() == snapshot
+    assert operation.schema.capabilities == ("runtime.read",)
+    assert not operation.schema.side_effects
+
+
 def test_loaded_scene_activation_routes_through_the_editor_host(monkeypatch):
     from Infernux.host import scene_operations
 

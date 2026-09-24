@@ -65,6 +65,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -1110,6 +1111,16 @@ class InxVkCoreModular
     }
 
 #if INFERNUX_FRAME_PROFILE
+    [[nodiscard]] rhi::TimestampRegionHandle BeginGpuProfileRegion(VkCommandBuffer commandBuffer, std::string_view name)
+    {
+        return m_gpuTimestampQueries.BeginRegion(commandBuffer, name, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT);
+    }
+
+    void EndGpuProfileRegion(VkCommandBuffer commandBuffer, rhi::TimestampRegionHandle region)
+    {
+        m_gpuTimestampQueries.EndRegion(commandBuffer, region, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+    }
+
     [[nodiscard]] const rhi::GpuTimestampFrame &GetLatestGpuTimestampFrame() const noexcept
     {
         return m_gpuTimestampQueries.LatestFrame();
@@ -1196,7 +1207,7 @@ class InxVkCoreModular
 
     // DrawFrame sub-timing accumulators
     // [0] Acquire  [1] Record(total)  [2] Submit  [3] Present
-    // Record breakdown: [4] UBO  [5] SceneGraph  [6] GUIGraph  [7] reserved
+    // Record breakdown: [4] UBO  [5] SceneGraph  [6] GUIGraph  [7] GPU frame-slot wait
     // Scene draw breakdown: [8] FilteredTotal  [9] Filter  [10] Sort  [11] Draw
     // Shadow breakdown: [12] ShadowTotal  [13] ShadowFilter  [14] ShadowDraw
     // Shadow sub-breakdown: [15] Sort  [16] Cull  [17] Upload  [18] Batch

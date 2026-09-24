@@ -867,6 +867,7 @@ class RenderGraph
 #if INFERNUX_FRAME_PROFILE
     static ExecuteProfileSnapshot GetExecuteProfileSnapshot();
     static std::vector<PassCallbackProfileEntry> GetTopCallbackProfiles(size_t maxEntries);
+    static PassCallbackProfileEntry GetCallbackProfile(std::string_view name);
     static std::vector<ParticlePassProfileEntry> GetParticlePassProfiles(size_t maxEntries);
     static void ResetExecuteProfileSnapshot();
 #endif

@@ -16,7 +16,11 @@ from dataclasses import dataclass
 import time
 from typing import Dict, List, TYPE_CHECKING
 
-from Infernux.gizmos.gizmos import Gizmos, ICON_KIND_DEFAULT
+from Infernux.gizmos.gizmos import (
+    Gizmos,
+    ICON_KIND_DEFAULT,
+    _GEOMETRY_PROFILE_COMPILED,
+)
 from Infernux.components.fields import SerializedFieldDescriptor
 from Infernux.debug import Debug
 from Infernux.engine.editor_visibility import (
@@ -62,6 +66,14 @@ class GizmoCollectionObservation:
     resident_vertices: int = 0
     resident_draws: int = 0
     icons: int = 0
+    timing_enabled: bool = False
+    # Callback time includes calls into Gizmos helpers. The non-helper value is
+    # exclusive of those helpers; it still includes user script logic.
+    callback_ms: float = 0.0
+    callback_non_helper_ms: float = 0.0
+    # Helper time includes CPU-side resident-kernel submission, not GPU work.
+    geometry_build_ms: float = 0.0
+    handles_ms: float = 0.0
     collect_ms: float = 0.0
     pack_ms: float = 0.0
     upload_ms: float = 0.0
@@ -174,10 +186,13 @@ class GizmosCollector:
         frame_started = time.perf_counter()
         python_callbacks = 0
         builtin_callbacks = 0
+        callback_ms = 0.0
+        callback_geometry_ms = 0.0
         skipped_inactive = 0
         skipped_disabled = 0
 
         from Infernux.lib import SceneManager as _SM
+        timing_enabled = _GEOMETRY_PROFILE_COMPILED
         # Ensure built-in wrapper classes (Camera, Light, etc.) have run their
         # BuiltinComponent.__init_subclass__ registration before we snapshot
         # _builtin_registry. Without this prewarm, icon-only gizmos can appear
@@ -193,6 +208,26 @@ class GizmosCollector:
         # Drop the previous frame's transient descriptors before any early
         # return. This is also the exact start of the new accumulation frame.
         Gizmos._begin_frame()
+
+        if timing_enabled:
+            def invoke_callback(callback):
+                nonlocal callback_ms, callback_geometry_ms
+                started = time.perf_counter()
+                geometry_started = Gizmos._geometry_build_ms
+                Gizmos._geometry_profile_active = True
+                try:
+                    callback()
+                finally:
+                    Gizmos._geometry_profile_active = False
+                    callback_ms += (time.perf_counter() - started) * 1000.0
+                    callback_geometry_ms += Gizmos._geometry_build_ms - geometry_started
+
+            def invoke_geometry(callback, *args, **kwargs):
+                Gizmos._geometry_profile_active = True
+                try:
+                    callback(*args, **kwargs)
+                finally:
+                    Gizmos._geometry_profile_active = False
 
         scene_manager = _SM.instance()
         scenes = tuple(
@@ -265,7 +300,10 @@ class GizmosCollector:
                     # C++ wrappers do, by declaring _gizmo_icon_color.
                     icon_color = getattr(comp, '_gizmo_icon_color', None)
                     if icon_color is not None:
-                        self._register_python_component_icon(comp, go_id, icon_color)
+                        if timing_enabled:
+                            invoke_geometry(self._register_python_component_icon, comp, go_id, icon_color)
+                        else:
+                            self._register_python_component_icon(comp, go_id, icon_color)
 
                     always_show = getattr(comp, '_always_show', True)
                     should_draw = always_show or is_selected
@@ -274,11 +312,17 @@ class GizmosCollector:
                         or type(comp).on_draw_gizmos_selected is not InxComponent.on_draw_gizmos_selected
                     )
                     if should_draw and has_gizmos:
-                        comp._call_on_draw_gizmos()
+                        if timing_enabled:
+                            invoke_callback(comp._call_on_draw_gizmos)
+                        else:
+                            comp._call_on_draw_gizmos()
                         python_callbacks += 1
 
                     if is_selected and has_gizmos:
-                        comp._call_on_draw_gizmos_selected()
+                        if timing_enabled:
+                            invoke_callback(comp._call_on_draw_gizmos_selected)
+                        else:
+                            comp._call_on_draw_gizmos_selected()
                         python_callbacks += 1
 
         # ====================================================================
@@ -364,8 +408,13 @@ class GizmosCollector:
                     if transform is not None:
                         pos = transform.position
                         icon_kind = self._resolve_class_value(wrapper_cls, '_gizmo_icon_kind', ICON_KIND_DEFAULT)
-                        Gizmos.draw_icon(
-                            (pos.x, pos.y, pos.z), go_id, icon_color, icon_kind=icon_kind)
+                        if timing_enabled:
+                            invoke_geometry(
+                                Gizmos.draw_icon,
+                                (pos.x, pos.y, pos.z), go_id, icon_color, icon_kind=icon_kind)
+                        else:
+                            Gizmos.draw_icon(
+                                (pos.x, pos.y, pos.z), go_id, icon_color, icon_kind=icon_kind)
 
                 # ---- Gizmo lifecycle ----
                 if not has_gizmos:
@@ -383,11 +432,17 @@ class GizmosCollector:
                     always_show_inst = getattr(wrapper, '_always_show', True)
                     should_draw = always_show_inst or is_selected
                     if should_draw:
-                        wrapper._call_on_draw_gizmos()
+                        if timing_enabled:
+                            invoke_callback(wrapper._call_on_draw_gizmos)
+                        else:
+                            wrapper._call_on_draw_gizmos()
                         builtin_callbacks += 1
 
                     if is_selected:
-                        wrapper._call_on_draw_gizmos_selected()
+                        if timing_enabled:
+                            invoke_callback(wrapper._call_on_draw_gizmos_selected)
+                        else:
+                            wrapper._call_on_draw_gizmos_selected()
                         builtin_callbacks += 1
                 except Exception as exc:
                     _log_gizmo_warning(f"Gizmo callback failed for '{type_name}': {exc}")
@@ -397,8 +452,15 @@ class GizmosCollector:
         # Their registry owns interaction/callback lifetimes; this collector
         # only appends the submitted geometry to the existing batch.
         from Infernux.engine.interaction.handles import EditorHandleRegistry
+        handles_started = time.perf_counter() if timing_enabled else 0.0
         if EditorHandleRegistry._instance is not None:
-            EditorHandleRegistry._instance.collect(engine)
+            Gizmos._geometry_profile_active = timing_enabled
+            try:
+                EditorHandleRegistry._instance.collect(engine)
+            finally:
+                Gizmos._geometry_profile_active = False
+        handles_ms = (time.perf_counter() - handles_started) * 1000.0 if timing_enabled else 0.0
+        geometry_build_ms = Gizmos._geometry_build_ms
 
         collect_finished = time.perf_counter()
 
@@ -455,6 +517,11 @@ class GizmosCollector:
             resident_vertices=sum(int(item[2]) for item in resident),
             resident_draws=len(resident),
             icons=icon_count,
+            timing_enabled=timing_enabled,
+            callback_ms=callback_ms,
+            callback_non_helper_ms=max(0.0, callback_ms - callback_geometry_ms),
+            geometry_build_ms=geometry_build_ms,
+            handles_ms=handles_ms,
             collect_ms=(collect_finished - frame_started) * 1000.0,
             pack_ms=(pack_finished - collect_finished) * 1000.0,
             upload_ms=(upload_finished - pack_finished) * 1000.0,

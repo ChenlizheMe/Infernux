@@ -55,6 +55,33 @@ def test_line_batch_only_splits_when_world_matrix_changes():
     Gizmos._begin_frame()
 
 
+def test_geometry_profile_counts_nested_helper_once(monkeypatch):
+    from Infernux.gizmos import gizmos as gizmo_module
+
+    if not gizmo_module._GEOMETRY_PROFILE_COMPILED:
+        pytest.skip("Gizmo helper profiling is compiled out of this native configuration")
+
+    clock = gizmo_module.time.perf_counter
+    ticks = iter((1.0, 1.005))
+    monkeypatch.setattr(gizmo_module.time, "perf_counter", lambda: next(ticks))
+    Gizmos._begin_frame()
+    Gizmos._geometry_profile_active = True
+    Gizmos.draw_ray((0, 0, 0), (1, 0, 0))
+
+    assert Gizmos._geometry_build_ms == pytest.approx(5.0)
+    assert len(Gizmos._draw_batches) == 1
+    Gizmos._begin_frame()
+    assert Gizmos._geometry_build_ms == 0.0
+    assert not Gizmos._geometry_profile_active
+
+    monkeypatch.setattr(gizmo_module.time, "perf_counter", clock)
+    Gizmos._geometry_profile_active = True
+    with pytest.raises(TypeError, match="NumPy"):
+        Gizmos.draw_lines([], [])
+    assert Gizmos._geometry_profile_depth == 0
+    Gizmos._begin_frame()
+
+
 # ══════════════════════════════════════════════════════════════════════
 # Per-frame state reset
 # ══════════════════════════════════════════════════════════════════════
@@ -425,6 +452,10 @@ class TestGizmosCollectorWorkGates:
         from Infernux.components.component import InxComponent
         import Infernux.gizmos.collector as collector_module
 
+        from Infernux.gizmos import gizmos as gizmo_module
+
+        profile_enabled = bool(gizmo_module._GEOMETRY_PROFILE_COMPILED)
+
         point_count = 4096
         points = np.zeros((point_count, 3), dtype=np.float32)
         points[:, 0] = np.arange(point_count, dtype=np.float32)
@@ -502,6 +533,17 @@ class TestGizmosCollectorWorkGates:
         first = collector.last_observation
         assert callback_count == 1
         assert first.python_callbacks == 1
+        assert first.timing_enabled is profile_enabled
+        if profile_enabled:
+            assert first.callback_ms >= first.geometry_build_ms > 0.0
+            assert first.callback_non_helper_ms == pytest.approx(
+                first.callback_ms - first.geometry_build_ms
+            )
+        else:
+            assert first.callback_ms == 0.0
+            assert first.callback_non_helper_ms == 0.0
+            assert first.geometry_build_ms == 0.0
+        assert not Gizmos._geometry_profile_active
         assert first.cpu_vertices == point_count
         assert first.cpu_line_indices == (point_count - 1) * 2
         assert first.cpu_draws == 1

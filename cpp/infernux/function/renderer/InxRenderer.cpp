@@ -1810,6 +1810,7 @@ void InxRenderer::DrawFrame()
                                                  shadowCalls, shadowEligible, shadowIssued, shadowActualDraws);
                     oss << "\n  DrawFrame: Acquire=" << (drawSub[0] / n) << "ms" << " Record=" << (drawSub[1] / n)
                         << "ms" << " Submit=" << (drawSub[2] / n) << "ms" << " Present=" << (drawSub[3] / n) << "ms"
+                        << " GPUFrameWait=" << (drawSub[7] / n) << "ms"
                         << "\n    Record: UBO=" << (drawSub[4] / n) << "ms" << " SceneGraph=" << (drawSub[5] / n)
                         << "ms" << " GUIGraph=" << (drawSub[6] / n) << "ms"
                         << "\n    Filtered: total=" << (drawSub[8] / n) << "ms" << " filter=" << (drawSub[9] / n)
@@ -1876,6 +1877,23 @@ void InxRenderer::DrawFrame()
                             const auto &sample = gpuTimestamps.samples[i];
                             oss << ' ' << sample.Name() << '=' << sample.milliseconds << "ms";
                         }
+                    }
+
+                    const auto gizmoPass = infernux::vk::RenderGraph::GetCallbackProfile("_ComponentGizmos");
+                    if (gizmoPass.calls != 0) {
+                        oss << "\n    ComponentGizmos: callback=" << (gizmoPass.totalMs / gizmoPass.calls)
+                            << "ms/call calls=" << gizmoPass.calls;
+                        double gpuGizmoMs = 0.0;
+                        uint32_t gpuGizmoRegions = 0;
+                        for (uint32_t i = 0; i < gpuTimestamps.sampleCount; ++i) {
+                            if (gpuTimestamps.samples[i].Name() == "_ComponentGizmos") {
+                                gpuGizmoMs += gpuTimestamps.samples[i].milliseconds;
+                                ++gpuGizmoRegions;
+                            }
+                        }
+                        if (gpuGizmoRegions != 0)
+                            oss << " gpu#" << gpuTimestamps.serial << '=' << gpuGizmoMs
+                                << "ms regions=" << gpuGizmoRegions;
                     }
 
                     if (!topPassProfiles.empty()) {
