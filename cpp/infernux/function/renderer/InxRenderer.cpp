@@ -440,17 +440,25 @@ std::unique_ptr<rhi::ComputeHost> InxRenderer::AcquireComputeHost()
     class Lease final : public rhi::ComputeHost
     {
       public:
-        Lease(rhi::Device &device, rhi::ComputeQueue &queue, size_t &count) : ComputeHost(device, queue), m_count(count)
+        Lease(rhi::Device &device, rhi::ComputeQueue &queue, size_t &count)
+            : ComputeHost(device, queue), m_count(&count)
         {
-            ++m_count;
+            ++*m_count;
         }
         ~Lease() override
         {
-            --m_count;
+            ReleaseLease();
+        }
+        void ReleaseLease() noexcept override
+        {
+            if (!m_count)
+                return;
+            --*m_count;
+            m_count = nullptr;
         }
 
       private:
-        size_t &m_count;
+        size_t *m_count;
     };
     return std::make_unique<Lease>(m_vkCore->GetDeviceContext().GetRhiDevice(), m_vkCore->PrepareComputeQueue(),
                                    m_computeHostLeases);

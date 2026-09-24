@@ -26,10 +26,15 @@ def _vendor_dir() -> Path:
         return packaged
 
     # A source checkout uses PYTHONPATH for the public package while CMake
-    # stages the private compiler payload in gpu-jit-wheel. Derive that one
-    # canonical sibling from the native module directory so a Release build
-    # can be launched without a second hand-written environment variable.
+    # stages the private compiler payload in gpu-jit-wheel. The native loader
+    # has already selected one ABI-compatible build directory; use that same
+    # authority instead of requiring launch scripts to duplicate it in an env
+    # variable.
     native_dir = os.environ.get("INFERNUX_NATIVE_MODULE_DIR", "").strip()
+    if not native_dir:
+        from Infernux import lib as engine_lib
+
+        native_dir = str(getattr(engine_lib, "native_dir", "") or "").strip()
     if native_dir:
         native_path = Path(native_dir)
         candidates = (

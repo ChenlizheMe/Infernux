@@ -19,6 +19,7 @@ import weakref
 import numpy as np
 
 _gpu_buffers = weakref.WeakSet()
+_readbacks = weakref.WeakSet()
 _kernel_declarations = weakref.WeakSet()
 _transform_bindings = weakref.WeakSet()
 _command_recording = threading.local()
@@ -673,6 +674,8 @@ class Readback:
         self._result = immediate
         self._host = host
         self._cancelled = False
+        if host is not None:
+            _readbacks.add(self)
 
     @property
     def done(self) -> bool:
@@ -693,6 +696,7 @@ class Readback:
         self._cancelled = True
         self._task = None
         self._host = None
+        _readbacks.discard(self)
         return True
 
     def get_data(self, out: Buffer | None = None) -> Buffer:
@@ -706,6 +710,7 @@ class Readback:
             self._result = result
             self._task = None
             self._host = None
+            _readbacks.discard(self)
         if out is None:
             return self._result
         if not isinstance(out, Buffer) or out.device != "cpu":
@@ -1136,7 +1141,7 @@ class Kernel:
         if not callable(function):
             raise TypeError("inx.compute.kernel requires a callable")
         self.function = function
-        self._executables = {}
+        self._executables = OrderedDict()
         self._lock = threading.RLock()
         for attribute in ("__name__", "__qualname__", "__module__", "__doc__"):
             setattr(self, attribute, getattr(function, attribute, None))
@@ -1160,7 +1165,7 @@ class Kernel:
             raise ValueError("GPU kernel buffers must belong to the same Infernux compute host")
         key = (host_identity, parameter_key(params))
         with self._lock:
-            executable = self._executables.get(key)
+            executable = self._executables.pop(key, None)
             if executable is None:
                 try:
                     artifact = compile_kernel(self.function, params)
@@ -1175,6 +1180,11 @@ class Kernel:
                         f"GPU kernel '{self.__qualname__}' compilation failed: {exception}"
                     ) from exception
                 executable = _KernelExecutable(artifact, host, params)
+                if len(self._executables) >= 64:
+                    _, retired = self._executables.popitem(last=False)
+                    retired.close()
+                self._executables[key] = executable
+            else:
                 self._executables[key] = executable
             return executable
 
@@ -1207,7 +1217,17 @@ class Function:
 
 def _release_engine_resources() -> None:
     """Release module-level GPU declarations before native renderer teardown."""
+    from Infernux.application import Application
+
+    engine = Application._current_engine()
+    host = getattr(engine, "_infernux_compute_host", None) if engine is not None else None
     _flush_commands()
+    # An asynchronous readback owns the compute-host lease until its result is
+    # consumed or abandoned. Components may intentionally leave a completed
+    # telemetry readback unread on the final frame, so teardown must retire
+    # those leases independently of component object lifetime.
+    for readback in tuple(_readbacks):
+        readback.cancel()
     for binding in tuple(_transform_bindings):
         binding.close()
     for declaration in tuple(_kernel_declarations):
@@ -1215,9 +1235,8 @@ def _release_engine_resources() -> None:
     for value in tuple(_gpu_buffers):
         value.close()
     _retiring_native_kernels.clear()
-    from Infernux.application import Application
-
-    engine = Application._current_engine()
+    if host is not None:
+        host._release_lease()
     if engine is not None:
         engine._infernux_compute_host = None
 

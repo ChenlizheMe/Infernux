@@ -21,7 +21,9 @@ _CACHE_BYTE_LIMIT = 256 * 1024 * 1024
 def cpu_cache_root() -> Path:
     from Infernux.application import Application
 
-    if Application.is_player() or Application.data_path():
+    if Application.is_player():
+        return Path(Application.persistent_data_path()) / "Cache" / "Compute" / "CPU"
+    if Application.data_path():
         return compiler_cache_root() / "CPU"
     # Standalone compiler tooling may explicitly choose its storage. An Editor
     # or Player always uses its owned root, never a process-wide override.

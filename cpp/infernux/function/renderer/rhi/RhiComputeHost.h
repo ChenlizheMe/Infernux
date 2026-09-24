@@ -18,6 +18,14 @@ class ComputeHost
     ComputeHost(const ComputeHost &) = delete;
     ComputeHost &operator=(const ComputeHost &) = delete;
 
+    // Engine-acquired host wrappers override this to surrender their teardown
+    // lease explicitly. Native buffers and kernels store ordinary borrowed
+    // service views, so releasing the wrapper does not invalidate resident
+    // resources that are already being retired by the compute queue.
+    virtual void ReleaseLease() noexcept
+    {
+    }
+
     [[nodiscard]] bool SharesServicesWith(const ComputeHost &other) const noexcept
     {
         return &device == &other.device && &queue == &other.queue;

@@ -1142,6 +1142,8 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
         .def("wait", &rhi::ComputeKernel::Wait);
 
     py::class_<rhi::ComputeHost>(m, "_ComputeHost")
+        .def("_release_lease", &rhi::ComputeHost::ReleaseLease,
+             "Release the engine teardown lease after all Python compute resources are closed")
         .def_property_readonly("identity",
                                [](rhi::ComputeHost &host) {
                                    // Leases acquired from one renderer are distinct wrapper objects,

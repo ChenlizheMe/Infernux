@@ -45,6 +45,31 @@ def _nested_helper_kernel(domain_values, output_values):
 
 
 @inx.compute.function
+def _dynamic_nested_term(value, limit, break_at):
+    result = value
+    for outer in range(limit):
+        for inner in range(limit):
+            if inner == 0 or inner == 3:
+                continue
+            result += outer + inner
+            if inner == break_at:
+                break
+        else:
+            result += 7
+        if outer == break_at:
+            break
+    else:
+        result += 11
+    return result
+
+
+@inx.compute.kernel
+def _dynamic_nested_helper_kernel(domain_values, output_values, limit, break_at):
+    i = inx.compute.index(domain_values)
+    output_values[i] = _dynamic_nested_term(domain_values[i], limit, break_at)
+
+
+@inx.compute.function
 def _recursive_helper(value):
     return _recursive_helper(value)
 
@@ -362,6 +387,75 @@ def main() -> int:
                 np.testing.assert_array_equal(local_loop_output.get_data().numpy(), expected_control)
 
             @inx.compute.kernel
+            def dynamic_integer_loops(domain_values, output_values, limit):
+                i = inx.compute.index(domain_values)
+                total = 0
+                for j in range(limit):
+                    if j == 1:
+                        continue
+                    total += i + j
+                    if j >= 4:
+                        break
+                cursor = 0
+                while cursor < limit:
+                    if cursor == 1 or cursor == 2:
+                        cursor += 1
+                        continue
+                    total += cursor
+                    if cursor >= 3:
+                        break
+                    cursor += 1
+                output_values[i] = total
+
+            for limit in (0, 1, 2, 3, 4, 5, 7):
+                inx.compute.launch(
+                    dynamic_integer_loops,
+                    params=(explicit_domain, local_loop_output, limit),
+                )
+                expected_dynamic = []
+                for i in range(17):
+                    total = 0
+                    for j in range(limit):
+                        if j == 1:
+                            continue
+                        total += i + j
+                        if j >= 4:
+                            break
+                    cursor = 0
+                    while cursor < limit:
+                        if cursor == 1 or cursor == 2:
+                            cursor += 1
+                            continue
+                        total += cursor
+                        if cursor >= 3:
+                            break
+                        cursor += 1
+                    expected_dynamic.append(total)
+                np.testing.assert_array_equal(
+                    local_loop_output.get_data().numpy(), expected_dynamic
+                )
+
+            @inx.compute.kernel
+            def dynamic_negative_range(domain_values, output_values, start, stop):
+                i = inx.compute.index(domain_values)
+                total = 0
+                for j in range(start, stop, -2):
+                    total += i + j
+                output_values[i] = total
+
+            for start, stop in ((7, -2), (2, 2), (-3, -8)):
+                inx.compute.launch(
+                    dynamic_negative_range,
+                    params=(explicit_domain, local_loop_output, start, stop),
+                )
+                expected_negative = np.asarray([
+                    sum(i + j for j in range(start, stop, -2)) for i in range(17)
+                ], dtype=np.int32)
+                np.testing.assert_array_equal(
+                    local_loop_output.get_data().numpy(), expected_negative
+                )
+
+            @inx.compute.kernel
             def invalid_return(domain_values):
                 i = inx.compute.index(domain_values)
                 return i
@@ -422,6 +516,31 @@ def main() -> int:
                 local_loop_output.get_data().numpy(),
                 np.abs(np.arange(17, dtype=np.int32) * -2 + 4) + 3,
             )
+            for limit, break_at in ((0, 2), (2, 5), (5, 2), (6, 5)):
+                inx.compute.launch(
+                    _dynamic_nested_helper_kernel,
+                    params=(explicit_domain, local_loop_output, limit, break_at),
+                )
+                expected_nested = []
+                for value in range(17):
+                    result = value
+                    for outer in range(limit):
+                        for inner in range(limit):
+                            if inner == 0 or inner == 3:
+                                continue
+                            result += outer + inner
+                            if inner == break_at:
+                                break
+                        else:
+                            result += 7
+                        if outer == break_at:
+                            break
+                    else:
+                        result += 11
+                    expected_nested.append(result)
+                np.testing.assert_array_equal(
+                    local_loop_output.get_data().numpy(), expected_nested
+                )
             # Intrinsics in helpers must resolve to the same private compiler,
             # including when a public Taichi namespace is already occupied.
             wave_source = np.linspace(-2.0, 2.0, 33, dtype=np.float32)

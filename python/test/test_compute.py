@@ -23,6 +23,91 @@ def test_gpu_index_declaration_accepts_public_and_imported_spellings():
         assert _index_declaration(statement) == ("i", "domain")
 
 
+def _execute_pair_lowered(source: str, *args):
+    from Infernux._compiler.taichi.frontend import _lower_serial_loops
+
+    module = ast.parse(source)
+    definition = module.body[0]
+    assert isinstance(definition, ast.FunctionDef)
+    _lower_serial_loops(definition)
+    ast.fix_missing_locations(module)
+    namespace = {}
+    exec(compile(module, "<pair-lowered-test>", "exec"), namespace)
+    return namespace[definition.name](*args)
+
+
+def test_gpu_dynamic_range_pair_lowering_preserves_control_and_else():
+    source = """
+def probe(limit):
+    values = []
+    for index in range(limit):
+        if index == 1:
+            continue
+        values.append(index)
+        if index == 4:
+            break
+    else:
+        values.append(99)
+    return values
+"""
+    for limit in (0, 1, 4, 8):
+        namespace = {}
+        exec(compile(source, "<ordinary-range-test>", "exec"), namespace)
+        expected = namespace["probe"](limit)
+        assert _execute_pair_lowered(source, limit) == expected
+
+
+def test_gpu_dynamic_negative_range_pair_lowering_preserves_order():
+    source = """
+def probe(start, stop):
+    values = []
+    for index in range(start, stop, -2):
+        values.append(index)
+    return values
+"""
+    for arguments in ((7, -2), (2, 2), (-3, -8)):
+        namespace = {}
+        exec(compile(source, "<ordinary-negative-range-test>", "exec"), namespace)
+        expected = namespace["probe"](*arguments)
+        assert _execute_pair_lowered(source, *arguments) == expected
+
+
+def test_gpu_dynamic_while_pair_lowering_preserves_control_and_else():
+    source = """
+def probe(limit):
+    index = -1
+    values = []
+    while index < limit:
+        index += 1
+        if index == 1:
+            continue
+        values.append(index)
+        if index == 4:
+            break
+    else:
+        values.append(99)
+    return values
+"""
+    for limit in (-2, 0, 3, 8):
+        namespace = {}
+        exec(compile(source, "<ordinary-while-test>", "exec"), namespace)
+        expected = namespace["probe"](limit)
+        assert _execute_pair_lowered(source, limit) == expected
+
+
+def test_gpu_dynamic_range_step_must_be_compile_time_nonzero():
+    from Infernux._compiler.taichi.frontend import _lower_serial_loops
+
+    for source, message in (
+        ("def probe(stop, step):\n    for i in range(0, stop, step):\n        pass\n",
+         "compile-time integer"),
+        ("def probe(stop):\n    for i in range(0, stop, 0):\n        pass\n", "cannot be zero"),
+    ):
+        definition = ast.parse(source).body[0]
+        with pytest.raises(TypeError, match=message):
+            _lower_serial_loops(definition)
+
+
 def test_buffer_cpu_typed_storage_and_explicit_snapshot():
     values = inx.buffer(shape=4, dtype=inx.vector3, device="cpu")
     values.set_data(np.arange(12, dtype=np.float32).reshape(4, 3))
@@ -391,6 +476,29 @@ def test_readback_cancel_abandons_without_polling_or_fetching():
         readback.get_data()
 
 
+def test_engine_resource_release_cancels_unconsumed_native_readbacks():
+    from Infernux.compute import Readback
+
+    class Pending:
+        @property
+        def done(self):
+            pytest.fail("engine teardown must not poll the GPU")
+
+        def get_bytes(self):
+            pytest.fail("engine teardown must not fetch the GPU result")
+
+    host = object()
+    values = inx.buffer(shape=1, dtype=np.int32, device="cpu")
+    readback = Readback(values._dtype, (1,), task=Pending(), host=host)
+
+    assert readback in inx.compute._readbacks
+    inx.compute._release_engine_resources()
+
+    assert readback.cancelled
+    assert readback._host is None
+    assert readback not in inx.compute._readbacks
+
+
 def test_native_readback_abandonment_and_source_release_preserve_gpu_data(engine):
     host = engine._acquire_compute_host()
     expected = np.arange(1024, dtype=np.int32).tobytes()
@@ -755,6 +863,40 @@ def test_engine_resource_release_closes_module_level_gpu_objects(monkeypatch):
     assert declared._executables == {}
 
 
+def test_gpu_kernel_specializations_are_bounded_and_retire_lru(monkeypatch):
+    from Infernux._compiler.taichi import frontend
+
+    class Host:
+        identity = 31
+
+    class CompilerBuffer:
+        device = "gpu"
+        _host = Host()
+
+    class Executable:
+        def __init__(self, artifact, host, _params):
+            self.artifact = artifact
+            self.host = host
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    monkeypatch.setattr(inx.compute, "Buffer", CompilerBuffer)
+    monkeypatch.setattr(inx.compute, "_KernelExecutable", Executable)
+    monkeypatch.setattr(frontend, "parameter_key", lambda params: params[1])
+    monkeypatch.setattr(frontend, "compile_kernel", lambda _fn, _params: object())
+
+    declaration = inx.compute.Kernel(lambda *_params: None)
+    first = declaration._executable((CompilerBuffer(), (0,)))
+    for index in range(1, 65):
+        declaration._executable((CompilerBuffer(), (index,)))
+
+    assert len(declaration._executables) == 64
+    assert first.closed
+    assert (31, (0,)) not in declaration._executables
+
+
 def test_engine_phase_records_launches_into_one_host_submission():
     submissions = []
 
@@ -968,6 +1110,265 @@ def test_compute_has_no_in_process_installer_or_second_device_array_api():
 def test_cpu_jit_declarations_are_recognized_without_importing_authored_code(imports, decorator):
     source = f"{imports}\n@{decorator}\ndef fill(values):\n    return values\n"
     assert kernels.cpu_jit_declarations(source) == ("fill",)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        (
+            "import infernux as inx\n"
+            "@inx.jit.compile(parallel_policy='required')\n"
+            "def fill(values):\n"
+            "    inx.jit.warmup(fill, values)\n"
+            "    for index in range(len(values)):\n"
+            "        values[index] = index\n"
+        ),
+        (
+            "from Infernux import jit as cpu\n"
+            "class Solver:\n"
+            "    @cpu.compile(\n"
+            "        cache=True,\n"
+            "    )\n"
+            "    def fill(self, values):\n"
+            "        cpu.warmup(self.fill, values)\n"
+            "        return [value + 1 for value in values]\n"
+        ),
+        (
+            "from Infernux.jit import compile as optimize, warmup as prepare\n"
+            "@optimize\n"
+            "def fill(values):\n"
+            "    marker = prepare(fill, values)\n"
+            "    return marker, [value * 2 for value in values]\n"
+        ),
+    ],
+)
+def test_no_jit_build_freezes_cpu_decorators_and_warmup_as_ordinary_python(source):
+    cooked = kernels.build_interpreted_cpu_source(source)
+
+    assert cooked.count("\n") == source.count("\n")
+    original_lines = [
+        node.lineno
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    ]
+    cooked_lines = [
+        node.lineno
+        for node in ast.walk(ast.parse(cooked))
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    ]
+    assert cooked_lines == original_lines
+    assert "@inx.jit.compile" not in cooked
+    assert "@cpu.compile" not in cooked
+    assert "@optimize" not in cooked
+    compile(cooked, "Assets/Scripts/Cpu.py", "exec")
+
+    namespace = {}
+    exec(cooked, namespace)
+    target = namespace.get("fill")
+    if target is None:
+        target = namespace["Solver"]().fill
+    values = [8, 9, 10]
+    result = target(values)
+    if result is None:
+        assert values == [0, 1, 2]
+    elif isinstance(result, tuple):
+        assert result == (None, [16, 18, 20])
+    else:
+        assert result == [9, 10, 11]
+
+
+def test_no_jit_build_follows_assigned_cpu_jit_aliases():
+    source = (
+        "import infernux as inx\n"
+        "cpu = inx.jit\n"
+        "decorator, prepare = cpu.compile, cpu.warmup\n"
+        "optimize = decorator\n"
+        "@optimize(parallel_policy='required')\n"
+        "def fill(values):\n"
+        "    prepared = prepare(fill, values)\n"
+        "    return prepared, [value + 1 for value in values]\n"
+    )
+
+    cooked = kernels.build_interpreted_cpu_source(source)
+
+    assert "@optimize" not in cooked
+    assert "prepared = prepare(" not in cooked
+    namespace = {}
+    exec(cooked, namespace)
+    assert namespace["fill"]([1, 2, 3]) == (None, [2, 3, 4])
+
+
+def test_no_jit_build_follows_public_jit_star_imports():
+    source = (
+        "from Infernux.jit import *\n"
+        "@compile(parallel_policy='required')\n"
+        "def fill(values):\n"
+        "    prepared = warmup(fill, values)\n"
+        "    return prepared, [value * 2 for value in values]\n"
+    )
+
+    cooked = kernels.build_interpreted_cpu_source(source)
+
+    assert "@compile" not in cooked
+    assert "prepared = warmup(" not in cooked
+    namespace = {}
+    exec(cooked, namespace)
+    assert namespace["fill"]([2, 4]) == (None, [4, 8])
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        (
+            "from Infernux import jit as cpu\n"
+            "events = []\n"
+            "class Ordinary:\n"
+            "    def compile(self, function):\n"
+            "        events.append('decorate')\n"
+            "        return function\n"
+            "    def warmup(self, *args):\n"
+            "        events.append('warmup')\n"
+            "        return 17\n"
+            "cpu = Ordinary()\n"
+            "@cpu.compile\n"
+            "def fill(values):\n"
+            "    return cpu.warmup(fill, values)\n"
+        ),
+        (
+            "from Infernux.jit import compile as optimize, warmup as prepare\n"
+            "events = []\n"
+            "def ordinary_decorator(function):\n"
+            "    events.append('decorate')\n"
+            "    return function\n"
+            "def ordinary_warmup(*args):\n"
+            "    events.append('warmup')\n"
+            "    return 17\n"
+            "optimize = ordinary_decorator\n"
+            "prepare = ordinary_warmup\n"
+            "@optimize\n"
+            "def fill(values):\n"
+            "    return prepare(fill, values)\n"
+        ),
+    ],
+)
+def test_no_jit_build_preserves_imported_names_rebound_to_ordinary_code(source):
+    cooked = kernels.build_interpreted_cpu_source(source)
+
+    assert cooked == source
+    namespace = {}
+    exec(cooked, namespace)
+    assert namespace["events"] == ["decorate"]
+    assert namespace["fill"]([]) == 17
+    assert namespace["events"] == ["decorate", "warmup"]
+
+
+def test_no_jit_build_applies_import_rebinding_in_source_order():
+    source = (
+        "from Infernux import jit as cpu\n"
+        "@cpu.compile(parallel_policy='required')\n"
+        "def cooked(values):\n"
+        "    return cpu.warmup(cooked, values)\n"
+        "events = []\n"
+        "class Ordinary:\n"
+        "    def compile(self, function):\n"
+        "        events.append('decorate')\n"
+        "        return function\n"
+        "    def warmup(self, *args):\n"
+        "        events.append('warmup')\n"
+        "        return 23\n"
+        "cpu = Ordinary()\n"
+        "@cpu.compile\n"
+        "def ordinary(values):\n"
+        "    return cpu.warmup(ordinary, values)\n"
+    )
+
+    cooked = kernels.build_interpreted_cpu_source(source)
+
+    assert "@cpu.compile(parallel_policy='required')" not in cooked
+    assert "return cpu.warmup(cooked, values)" not in cooked
+    assert "@cpu.compile\ndef ordinary" in cooked
+    assert "return cpu.warmup(ordinary, values)" in cooked
+    namespace = {}
+    exec(cooked, namespace)
+    assert namespace["cooked"]([]) is None
+    assert namespace["events"] == ["decorate"]
+    assert namespace["ordinary"]([]) == 23
+    assert namespace["events"] == ["decorate", "warmup"]
+
+
+def test_no_jit_build_rejects_control_flow_ambiguous_jit_binding():
+    source = (
+        "from Infernux import jit as cpu\n"
+        "if use_ordinary:\n"
+        "    cpu = ordinary_cpu\n"
+        "@cpu.compile\n"
+        "def fill(values):\n"
+        "    return values\n"
+    )
+
+    with pytest.raises(ValueError, match="ambiguous CPU JIT binding at line 4"):
+        kernels.build_interpreted_cpu_source(source)
+
+
+def test_no_jit_build_rejects_conditional_jit_alias_assignment():
+    source = (
+        "from Infernux import jit as cpu\n"
+        "optimize = cpu.compile if enable_jit else ordinary_decorator\n"
+        "@optimize\n"
+        "def fill(values):\n"
+        "    return values\n"
+    )
+
+    with pytest.raises(ValueError, match="ambiguous CPU JIT binding at line 3"):
+        kernels.build_interpreted_cpu_source(source)
+
+
+def test_no_jit_build_rejects_unknown_star_import_over_public_jit_alias():
+    source = (
+        "from Infernux.jit import compile as optimize\n"
+        "from authored_helpers import *\n"
+        "@optimize\n"
+        "def fill(values):\n"
+        "    return values\n"
+    )
+
+    with pytest.raises(ValueError, match="ambiguous CPU JIT binding at line 3"):
+        kernels.build_interpreted_cpu_source(source)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        (
+            "class Ordinary:\n"
+            "    def compile(self, function):\n"
+            "        return function\n"
+            "jit = Ordinary()\n"
+            "from Infernux import *\n"
+            "@jit.compile\n"
+            "def fill(values):\n"
+            "    return values\n"
+        ),
+        (
+            "from .Infernux.jit import compile as optimize\n"
+            "@optimize\n"
+            "def fill(values):\n"
+            "    return values\n"
+        ),
+    ],
+)
+def test_no_jit_build_does_not_infer_non_public_star_or_relative_imports(source):
+    assert kernels.build_interpreted_cpu_source(source) == source
+
+
+def test_no_jit_build_does_not_rewrite_gpu_execution_model():
+    source = (
+        "import infernux as inx\n"
+        "@inx.compute.kernel\n"
+        "def fill(values):\n"
+        "    values[inx.compute.index(values)] = 1\n"
+    )
+    assert kernels.build_interpreted_cpu_source(source) == source
 
 
 def test_gpu_kernel_is_not_rewritten_as_cpu_parallel_work():

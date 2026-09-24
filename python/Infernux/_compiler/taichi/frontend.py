@@ -9,6 +9,7 @@ private compiler namespace; unrelated packages keep their own module identity.
 from __future__ import annotations
 
 import ast
+import copy
 from dataclasses import dataclass
 import hashlib
 import importlib.util
@@ -66,6 +67,236 @@ class _IntrinsicLowering(ast.NodeTransformer):
                 ctx=ast.Load(),
             )
         return node
+
+
+def _constant_integer(node: ast.expr) -> int | None:
+    if isinstance(node, ast.Constant) and isinstance(node.value, int):
+        return int(node.value)
+    if (isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub))
+            and isinstance(node.operand, ast.Constant)
+            and isinstance(node.operand.value, int)):
+        value = int(node.operand.value)
+        return value if isinstance(node.op, ast.UAdd) else -value
+    return None
+
+
+class _OriginalLoopControl(ast.NodeTransformer):
+    """Retarget control statements from one logical iteration.
+
+    The iteration is placed inside a one-shot constant loop. ``continue`` then
+    naturally advances to the next logical iteration. ``break`` additionally
+    records that the surrounding author loop must stop. Nested author loops
+    have already been lowered and own their control flow, so they are opaque.
+    """
+
+    def __init__(self, break_name: str):
+        self._break_name = break_name
+
+    def visit_Break(self, node: ast.Break):
+        assignment = ast.Assign(
+            targets=[ast.Name(id=self._break_name, ctx=ast.Store())],
+            value=ast.Constant(value=True),
+        )
+        return [ast.copy_location(assignment, node), node]
+
+    def visit_For(self, node: ast.For):
+        return node
+
+    def visit_While(self, node: ast.While):
+        return node
+
+    def visit_FunctionDef(self, node: ast.FunctionDef):
+        return node
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef):
+        return node
+
+    def visit_Lambda(self, node: ast.Lambda):
+        return node
+
+
+class _SerialLoopPairLowering(ast.NodeTransformer):
+    """Canonicalize dynamic serial loops before SPIR-V generation.
+
+    Some Vulkan drivers miscompile a canonical signed-integer induction
+    reduction during pipeline creation. Executing at most two *logical*
+    iterations per physical loop is a standard partial-unroll form and avoids
+    that faulty recognizer. It does not change author types, dispatch size, or
+    the single-work-item contract. Constant ranges remain available to the
+    ordinary compiler unroller, and the generated dispatch range is added only
+    after this pass, so it can never be serialized here.
+    """
+
+    def __init__(self, definition: ast.FunctionDef):
+        self._counter = 0
+        self._used_names = {
+            node.id for node in ast.walk(definition) if isinstance(node, ast.Name)
+        }
+
+    def _fresh(self, role: str) -> str:
+        while True:
+            name = f"__inx_serial_{role}_{self._counter}"
+            self._counter += 1
+            if name not in self._used_names:
+                self._used_names.add(name)
+                return name
+
+    def _statements(self, statements: list[ast.stmt]) -> list[ast.stmt]:
+        result: list[ast.stmt] = []
+        for statement in statements:
+            visited = self.visit(statement)
+            if visited is None:
+                continue
+            if isinstance(visited, list):
+                result.extend(visited)
+            else:
+                result.append(visited)
+        return result
+
+    @staticmethod
+    def _name(name: str, context: ast.expr_context) -> ast.Name:
+        return ast.Name(id=name, ctx=context)
+
+    def _logical_iteration(self, body: list[ast.stmt], break_name: str) -> ast.For:
+        once_name = self._fresh("once")
+        copied = copy.deepcopy(body)
+        rewritten: list[ast.stmt] = []
+        control = _OriginalLoopControl(break_name)
+        for statement in copied:
+            value = control.visit(statement)
+            if isinstance(value, list):
+                rewritten.extend(value)
+            elif value is not None:
+                rewritten.append(value)
+        return ast.For(
+            target=self._name(once_name, ast.Store()),
+            iter=ast.Call(func=self._name("range", ast.Load()), args=[ast.Constant(value=1)], keywords=[]),
+            body=rewritten,
+            orelse=[],
+        )
+
+    def _guarded_second_iteration(
+        self, condition: ast.expr, body: list[ast.stmt], break_name: str,
+    ) -> ast.If:
+        return ast.If(
+            test=ast.BoolOp(op=ast.And(), values=[
+                condition,
+                ast.UnaryOp(op=ast.Not(), operand=self._name(break_name, ast.Load())),
+            ]),
+            body=[self._logical_iteration(body, break_name)],
+            orelse=[],
+        )
+
+    def visit_For(self, node: ast.For):
+        node.body = self._statements(node.body)
+        node.orelse = self._statements(node.orelse)
+        if (not isinstance(node.iter, ast.Call)
+                or not isinstance(node.iter.func, ast.Name)
+                or node.iter.func.id != "range"
+                or node.iter.keywords
+                or not 1 <= len(node.iter.args) <= 3):
+            return node
+
+        values = tuple(_constant_integer(argument) for argument in node.iter.args)
+        if all(value is not None for value in values):
+            return node
+
+        if len(node.iter.args) == 1:
+            start_expression = ast.Constant(value=0)
+            stop_expression = node.iter.args[0]
+            step = 1
+        else:
+            start_expression, stop_expression = node.iter.args[:2]
+            step = 1 if len(node.iter.args) == 2 else _constant_integer(node.iter.args[2])
+            if step is None:
+                raise TypeError("GPU dynamic range step must be a compile-time integer")
+            if step == 0:
+                raise TypeError("GPU range step cannot be zero")
+
+        start_name = self._fresh("start")
+        stop_name = self._fresh("stop")
+        cursor_name = self._fresh("cursor")
+        break_name = self._fresh("break")
+        prefix = [
+            ast.Assign(targets=[self._name(start_name, ast.Store())], value=start_expression),
+            ast.Assign(targets=[self._name(stop_name, ast.Store())], value=stop_expression),
+            ast.Assign(
+                targets=[self._name(cursor_name, ast.Store())],
+                value=self._name(start_name, ast.Load()),
+            ),
+            ast.Assign(targets=[self._name(break_name, ast.Store())], value=ast.Constant(value=False)),
+        ]
+
+        def condition() -> ast.expr:
+            return ast.Compare(
+                left=self._name(cursor_name, ast.Load()),
+                ops=[ast.Lt() if step > 0 else ast.Gt()],
+                comparators=[self._name(stop_name, ast.Load())],
+            )
+
+        def prepare_iteration() -> list[ast.stmt]:
+            return [
+                ast.Assign(targets=[copy.deepcopy(node.target)], value=self._name(cursor_name, ast.Load())),
+                ast.AugAssign(
+                    target=self._name(cursor_name, ast.Store()),
+                    op=ast.Add(),
+                    value=ast.Constant(value=step),
+                ),
+            ]
+
+        first = [*prepare_iteration(), self._logical_iteration(node.body, break_name)]
+        second = ast.If(
+            test=ast.BoolOp(op=ast.And(), values=[
+                condition(),
+                ast.UnaryOp(op=ast.Not(), operand=self._name(break_name, ast.Load())),
+            ]),
+            body=[*prepare_iteration(), self._logical_iteration(node.body, break_name)],
+            orelse=[],
+        )
+        physical_loop = ast.While(
+            test=ast.BoolOp(op=ast.And(), values=[
+                condition(),
+                ast.UnaryOp(op=ast.Not(), operand=self._name(break_name, ast.Load())),
+            ]),
+            body=[*first, second],
+            orelse=[],
+        )
+        suffix = [ast.If(
+            test=ast.UnaryOp(op=ast.Not(), operand=self._name(break_name, ast.Load())),
+            body=node.orelse,
+            orelse=[],
+        )] if node.orelse else []
+        return [*(ast.copy_location(statement, node) for statement in prefix),
+                ast.copy_location(physical_loop, node), *suffix]
+
+    def visit_While(self, node: ast.While):
+        node.body = self._statements(node.body)
+        node.orelse = self._statements(node.orelse)
+        break_name = self._fresh("break")
+        prefix = ast.Assign(
+            targets=[self._name(break_name, ast.Store())],
+            value=ast.Constant(value=False),
+        )
+        first = self._logical_iteration(node.body, break_name)
+        second = self._guarded_second_iteration(copy.deepcopy(node.test), node.body, break_name)
+        physical_loop = ast.While(
+            test=ast.BoolOp(op=ast.And(), values=[
+                node.test,
+                ast.UnaryOp(op=ast.Not(), operand=self._name(break_name, ast.Load())),
+            ]),
+            body=[first, second],
+            orelse=[],
+        )
+        suffix = [ast.If(
+            test=ast.UnaryOp(op=ast.Not(), operand=self._name(break_name, ast.Load())),
+            body=node.orelse,
+            orelse=[],
+        )] if node.orelse else []
+        return [ast.copy_location(prefix, node), ast.copy_location(physical_loop, node), *suffix]
+
+
+def _lower_serial_loops(definition: ast.FunctionDef) -> None:
+    definition.body = _SerialLoopPairLowering(definition)._statements(definition.body)
 
 
 def _load_vendor():
@@ -370,6 +601,13 @@ def compile_kernel(function, params) -> CompilerArtifact:
         body.pop(0)
         declaration_position -= 1
     body.pop(declaration_position)
+    definition.body = body
+    globals_map = dict(function.__globals__)
+    helpers = _helper_definitions(definition, globals_map)
+    _lower_serial_loops(definition)
+    for helper in helpers:
+        _lower_serial_loops(helper)
+    body = list(definition.body)
     definition.body = [ast.For(
         target=ast.Name(id=index_name, ctx=ast.Store()),
         iter=ast.Call(
@@ -381,8 +619,6 @@ def compile_kernel(function, params) -> CompilerArtifact:
         body=body,
         orelse=[],
     )]
-    globals_map = dict(function.__globals__)
-    helpers = _helper_definitions(definition, globals_map)
     artifact_key = _artifact_key(function, definition, helpers, params)
     cached = _load_artifact(artifact_key)
     if cached is not None:
