@@ -12,11 +12,40 @@
 
 #include <cstring>
 #include <stdexcept>
+#include <type_traits>
+#include <utility>
 
 namespace infernux
 {
 namespace
 {
+template <typename T, typename = void> struct HasGlPlainUniforms : std::false_type
+{
+};
+
+template <typename T>
+struct HasGlPlainUniforms<T, std::void_t<decltype(std::declval<const T &>().gl_plain_uniforms)>> : std::true_type
+{
+};
+
+template <typename T, typename = void> struct HasTensors : std::false_type
+{
+};
+
+template <typename T> struct HasTensors<T, std::void_t<decltype(std::declval<const T &>().tensors)>> : std::true_type
+{
+};
+
+template <typename T, typename = void> struct HasShaderRecordBuffers : std::false_type
+{
+};
+
+template <typename T>
+struct HasShaderRecordBuffers<T, std::void_t<decltype(std::declval<const T &>().shader_record_buffers)>>
+    : std::true_type
+{
+};
+
 ReflectedImageDimension ImageDimension(spv::Dim dimension)
 {
     switch (dimension) {
@@ -133,9 +162,16 @@ bool ShaderReflection::Reflect(const std::vector<uint32_t> &spirvCode, VkShaderS
         recordUnsupported(resources.subpass_inputs, "input attachment");
         recordUnsupported(resources.atomic_counters, "atomic counter");
         recordUnsupported(resources.acceleration_structures, "acceleration structure");
-        recordUnsupported(resources.gl_plain_uniforms, "plain uniform");
-        recordUnsupported(resources.tensors, "tensor");
-        recordUnsupported(resources.shader_record_buffers, "shader record buffer");
+        const auto recordExtendedUnsupported = [&recordUnsupported](const auto &resourceTable) {
+            using ResourceTable = std::decay_t<decltype(resourceTable)>;
+            if constexpr (HasGlPlainUniforms<ResourceTable>::value)
+                recordUnsupported(resourceTable.gl_plain_uniforms, "plain uniform");
+            if constexpr (HasTensors<ResourceTable>::value)
+                recordUnsupported(resourceTable.tensors, "tensor");
+            if constexpr (HasShaderRecordBuffers<ResourceTable>::value)
+                recordUnsupported(resourceTable.shader_record_buffers, "shader record buffer");
+        };
+        recordExtendedUnsupported(resources);
 
         // Process uniform buffers
         for (const auto &ubo : resources.uniform_buffers) {
