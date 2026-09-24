@@ -9,6 +9,7 @@
 #include "SceneRenderGraph.h"
 #include "Frustum.h"
 #include "FullscreenRenderer.h"
+#include "rhi/RhiComputeBuffer.h"
 #include "InxVkCoreModular.h"
 #include "MsaaPolicy.h"
 #include "OutlineRenderer.h"
@@ -19,7 +20,6 @@
 #include "particle/ParticleGpuCuller.h"
 #include "particle/ParticleGpuDrawRegistry.h"
 #include "particle/ParticleGpuSorter.h"
-#include "rhi/RhiComputeBuffer.h"
 #include "shader/ShaderReflection.h"
 #include "vk/RhiVulkanTypes.h"
 #include "vk/VkDeviceContext.h"
@@ -37,6 +37,7 @@
 #include <function/resources/AssetRegistry/AssetRegistry.h>
 #include <function/resources/InxFileLoader/InxShaderLoader.hpp>
 #include <function/resources/InxMaterial/InxMaterial.h>
+#include <function/resources/InxTexture/InxTexture.h>
 #include <function/scene/Camera.h>
 #include <function/scene/LightingData.h>
 #include <iterator>
@@ -112,7 +113,8 @@ bool TextureDescEquals(const GraphTextureDesc &a, const GraphTextureDesc &b)
     return a.name == b.name && a.format == b.format && a.isBackbuffer == b.isBackbuffer && a.isDepth == b.isDepth &&
            a.width == b.width && a.height == b.height && a.sizeDivisor == b.sizeDivisor && a.samples == b.samples &&
            a.role == b.role && a.temporalKey == b.temporalKey && a.renderTexture == b.renderTexture &&
-           a.attachment == b.attachment;
+           a.attachment == b.attachment && a.assetGuid == b.assetGuid && a.depth == b.depth &&
+           a.isVolume == b.isVolume;
 }
 
 uint32_t EffectiveTextureSamples(const GraphTextureDesc &texture, uint32_t frameSamples)
@@ -137,7 +139,8 @@ bool PassWritesTexture(const GraphPassDesc &pass, const std::string &name)
 
 bool BufferDescEquals(const GraphBufferDesc &a, const GraphBufferDesc &b)
 {
-    return a.name == b.name && a.byteSize == b.byteSize && a.usage == b.usage && a.computeBuffer == b.computeBuffer;
+    return a.name == b.name && a.byteSize == b.byteSize && a.usage == b.usage &&
+           a.computeBuffer == b.computeBuffer;
 }
 
 bool BufferAccessEquals(const GraphBufferAccessDesc &a, const GraphBufferAccessDesc &b)
@@ -287,11 +290,12 @@ bool ValidatePythonGraphDescription(const RenderGraphDescription &desc, uint32_t
                          "' must inherit the frame sample count");
             return false;
         }
-        if (!tex.isBackbuffer && !rhi::IsValidPixelFormat(tex.format)) {
+        if (!tex.isBackbuffer && tex.role != GraphTextureRole::Asset && !rhi::IsValidPixelFormat(tex.format)) {
             INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: texture '", tex.name, "' has an undefined pixel format");
             return false;
         }
-        if (!tex.isBackbuffer && tex.isDepth != rhi::IsDepthFormat(tex.format)) {
+        if (!tex.isBackbuffer && tex.role != GraphTextureRole::Asset &&
+            tex.isDepth != rhi::IsDepthFormat(tex.format)) {
             INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: texture '", tex.name,
                          "' depth flag does not match its pixel format");
             return false;
@@ -372,6 +376,22 @@ bool ValidatePythonGraphDescription(const RenderGraphDescription &desc, uint32_t
                                  tex.name);
                     return false;
                 }
+            }
+            continue;
+        }
+        if (tex.role == GraphTextureRole::Asset) {
+            if (tex.assetGuid.empty() || tex.renderTexture || tex.isBackbuffer || tex.isDepth || tex.sizeDivisor != 0 ||
+                !tex.temporalKey.empty() || tex.samples != 1 || tex.width == 0 || tex.height == 0 || tex.depth == 0 ||
+                (!tex.isVolume && tex.depth != 1)) {
+                INXLOG_ERROR("Sampled graph texture assets require a GUID, explicit dimensions, and one sample: ",
+                             tex.name);
+                return false;
+            }
+            const bool written = std::any_of(desc.passes.begin(), desc.passes.end(),
+                                             [&](const GraphPassDesc &pass) { return PassWritesTexture(pass, tex.name); });
+            if (written) {
+                INXLOG_ERROR("Sampled graph texture assets are read-only: ", tex.name);
+                return false;
             }
             continue;
         }
@@ -461,8 +481,8 @@ bool ValidatePythonGraphDescription(const RenderGraphDescription &desc, uint32_t
             INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: invalid buffer description for '", buffer.name, "'");
             return false;
         }
-        if (buffer.computeBuffer &&
-            (buffer.computeBuffer->GetByteSize() != buffer.byteSize || !buffer.computeBuffer->GetBuffer().IsValid())) {
+        if (buffer.computeBuffer && (buffer.computeBuffer->GetByteSize() != buffer.byteSize ||
+                                     !buffer.computeBuffer->GetBuffer().IsValid())) {
             INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: imported buffer '", buffer.name,
                          "' has no live allocation of the declared size");
             return false;
@@ -596,8 +616,9 @@ bool ValidatePythonGraphDescription(const RenderGraphDescription &desc, uint32_t
                              "' does not declare the required usage");
                 return false;
             }
-            if (buffer->second->computeBuffer && (access.type == GraphBufferAccessType::StorageWrite ||
-                                                  access.type == GraphBufferAccessType::TransferWrite)) {
+            if (buffer->second->computeBuffer &&
+                (access.type == GraphBufferAccessType::StorageWrite ||
+                 access.type == GraphBufferAccessType::TransferWrite)) {
                 INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: imported buffer '", access.resource,
                              "' is read-only in the render graph");
                 return false;
@@ -608,6 +629,8 @@ bool ValidatePythonGraphDescription(const RenderGraphDescription &desc, uint32_t
             const auto destination = textures.find(command->destinationResource);
             if (source == textures.end() || destination == textures.end() || source == destination ||
                 source->second->isBackbuffer || destination->second->isBackbuffer ||
+                source->second->role == GraphTextureRole::Asset ||
+                destination->second->role == GraphTextureRole::Asset ||
                 source->second->format != destination->second->format) {
                 INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: texture copy pass '", pass.name,
                              "' has incompatible resources");
@@ -757,6 +780,11 @@ bool ValidatePythonGraphDescription(const RenderGraphDescription &desc, uint32_t
                              textureName, "' as color slot ", slot);
                 return false;
             }
+            if (texIt->second->role == GraphTextureRole::Asset) {
+                INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: pass '", pass.name,
+                             "' cannot write sampled Texture asset '", textureName, "'");
+                return false;
+            }
             if (!acceptAttachmentSamples(*texIt->second)) {
                 INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: pass '", pass.name,
                              "' uses color and depth attachments with different sample counts");
@@ -781,6 +809,11 @@ bool ValidatePythonGraphDescription(const RenderGraphDescription &desc, uint32_t
             if (!texIt->second->isDepth) {
                 INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: pass '", pass.name, "' writes color texture '",
                              pass.writeDepth, "' as depth");
+                return false;
+            }
+            if (texIt->second->role == GraphTextureRole::Asset) {
+                INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: pass '", pass.name,
+                             "' cannot write sampled Texture asset '", pass.writeDepth, "'");
                 return false;
             }
             if (!acceptAttachmentSamples(*texIt->second)) {
@@ -821,6 +854,7 @@ bool ValidatePythonGraphDescription(const RenderGraphDescription &desc, uint32_t
                                     ? textures.find(pass.writeColors.front().second)
                                     : textures.end();
             if (resolve == textures.end() || source == textures.end() || resolve->second->isBackbuffer ||
+                resolve->second->role == GraphTextureRole::Asset ||
                 resolve->second->isDepth || pass.resolveColor == pass.writeColors.front().second ||
                 EffectiveTextureSamples(*source->second, frameSamples) <= 1 ||
                 EffectiveTextureSamples(*resolve->second, frameSamples) != 1 ||
@@ -863,6 +897,10 @@ bool ValidatePythonGraphDescription(const RenderGraphDescription &desc, uint32_t
 
     if (!desc.outputTexture.empty() && textures.find(desc.outputTexture) == textures.end()) {
         INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: output texture '", desc.outputTexture, "' is not declared");
+        return false;
+    }
+    if (!desc.outputTexture.empty() && textures.at(desc.outputTexture)->role == GraphTextureRole::Asset) {
+        INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: a sampled Texture asset cannot be the graph output");
         return false;
     }
 
@@ -1239,6 +1277,22 @@ void SceneRenderGraph::RetireTemporalHistoryResources()
     m_renderView.history = {};
 }
 
+void SceneRenderGraph::RetireImportedTextureAssets()
+{
+    m_graphTextureSamplers.clear();
+    m_graphTextureFormats.clear();
+    m_graphTextureAssetVersions.clear();
+    if (m_graphTexturePublications.empty())
+        return;
+    if (!m_vkCore) {
+        m_graphTexturePublications.clear();
+        return;
+    }
+    auto retired = std::move(m_graphTexturePublications);
+    m_vkCore->GetRetirementQueue().Retire(
+        [retired = std::move(retired)]() mutable { retired.clear(); });
+}
+
 void SceneRenderGraph::Destroy()
 {
     if (m_particleViewDiagnosticState) {
@@ -1254,6 +1308,7 @@ void SceneRenderGraph::Destroy()
     m_pendingParticleViewDiagnostics.clear();
     m_particleCullers.clear();
     m_particleSorters.clear();
+    RetireImportedTextureAssets();
     m_fullscreenRenderer.Destroy();
     RetireTemporalHistoryResources();
     m_sceneDepthResolver.Destroy();
@@ -2326,6 +2381,13 @@ void SceneRenderGraph::EnsureGraphBuilt()
     }
 
     for (auto &texture : m_pythonGraphDesc.textures) {
+        if (texture.role == GraphTextureRole::Asset) {
+            const uint64_t currentVersion = AssetRegistry::Instance().GetAssetVersion(texture.assetGuid);
+            const auto found = m_graphTextureAssetVersions.find(texture.assetGuid);
+            if (found == m_graphTextureAssetVersions.end() || found->second != currentVersion)
+                m_needsRebuild = true;
+            continue;
+        }
         if (texture.role != GraphTextureRole::Persistent)
             continue;
         const auto generation = texture.renderTexture->Acquire();
@@ -2369,6 +2431,21 @@ void SceneRenderGraph::EnsureGraphBuilt()
         m_needsRebuild = true;
     }
 
+    // Asset publication is asynchronous. Do not reset a working graph while a
+    // cold or reimported texture revision is still uploading; keep executing
+    // the last compiled graph and retry the rebuild on the next frame. A
+    // resolved error is handled by the ordinary rebuild path so invalid graph
+    // state still fails visibly instead of silently retaining stale content.
+    if (m_needsRebuild) {
+        for (const auto &texture : m_pythonGraphDesc.textures) {
+            if (texture.role != GraphTextureRole::Asset)
+                continue;
+            const auto resolved = m_vkCore->ResolveTextureForGraph(texture.assetGuid, texture.isVolume, false);
+            if (resolved.status == TextureResolveStatus::Pending)
+                return;
+        }
+    }
+
     if (m_needsRebuild)
         RefreshForwardPlusParticleRequirement();
 
@@ -2386,6 +2463,8 @@ void SceneRenderGraph::EnsureGraphBuilt()
         // to be republished after the rebuild.
         InvalidatePerViewShadowBindings();
         BuildRenderGraph();
+        if (!m_graphBuilt)
+            return;
         m_needsRebuild = false;
         m_needsCompile = true; // Need to compile after rebuild
     }
@@ -3053,7 +3132,7 @@ void SceneRenderGraph::UpdateMainPassClearSettings(CameraClearFlags clearFlags, 
 // BuildRenderGraph helpers
 // ---------------------------------------------------------------------------
 
-void SceneRenderGraph::RegisterTransientTextures(uint32_t width, uint32_t height,
+bool SceneRenderGraph::RegisterTransientTextures(uint32_t width, uint32_t height,
                                                  std::unordered_map<std::string, vk::ResourceHandle> &customRTHandles)
 {
     m_persistentTextureRevisions.clear();
@@ -3075,6 +3154,50 @@ void SceneRenderGraph::RegisterTransientTextures(uint32_t width, uint32_t height
             break;
         }
         m_persistentTextureRevisions[tex.renderTexture.get()] = generation->revision;
+    }
+    for (auto &tex : m_pythonGraphDesc.textures) {
+        if (tex.role != GraphTextureRole::Asset)
+            continue;
+        const auto resolved = m_vkCore->ResolveTextureForGraph(tex.assetGuid, tex.isVolume, false);
+        if (resolved.status == TextureResolveStatus::Pending) {
+            m_needsRebuild = true;
+            return false;
+        }
+        const auto &publication = resolved.binding.gpuView;
+        if (resolved.status != TextureResolveStatus::Ready || !publication || !publication->IsValid()) {
+            INXLOG_ERROR("SceneRenderGraph: Texture asset '", tex.name, "' (GUID ", tex.assetGuid,
+                         ") could not be resolved");
+            return false;
+        }
+        const bool publicationIsVolume =
+            publication->GetViewDesc().dimension == rhi::TextureViewDimension::Texture3D;
+        if (publicationIsVolume != tex.isVolume) {
+            INXLOG_ERROR("SceneRenderGraph: Texture asset '", tex.name,
+                         "' changed dimension after the graph was authored");
+            return false;
+        }
+        const auto asset = AssetRegistry::Instance().GetAsset<InxTexture>(tex.assetGuid);
+        if (!asset || asset->GetPixelWidth() == 0 || asset->GetPixelHeight() == 0 || asset->GetPixelDepth() == 0) {
+            INXLOG_ERROR("SceneRenderGraph: Texture asset '", tex.name, "' has no current dimensions");
+            return false;
+        }
+        tex.width = asset->GetPixelWidth();
+        tex.height = asset->GetPixelHeight();
+        tex.depth = asset->GetPixelDepth();
+        const auto handle = m_renderGraph->ImportTexture(
+            tex.name, publication->GetTexture(), publication->GetView(), rhi::ToVkFormat(publication->GetFormat()),
+            tex.width, tex.height, VK_SAMPLE_COUNT_1_BIT, tex.depth, tex.isVolume);
+        if (!handle.IsValid()) {
+            INXLOG_ERROR("SceneRenderGraph: Texture asset '", tex.name, "' could not be imported");
+            return false;
+        }
+        m_renderGraph->SetResourceInitialState(handle, rhi::TextureLayout::ShaderReadOnly, rhi::Access::ShaderRead,
+                                               rhi::PipelineStage::FragmentShader);
+        customRTHandles[tex.name] = handle;
+        m_graphTextureSamplers[tex.name] = publication->GetSampler();
+        m_graphTextureFormats[tex.name] = publication->GetFormat();
+        m_graphTextureAssetVersions[tex.assetGuid] = publication->GetRevision();
+        m_graphTexturePublications.push_back(publication);
     }
     for (const auto &read : m_materialTextureReads) {
         m_drawTextureInputs[read.passName].push_back(read.generation);
@@ -3099,6 +3222,7 @@ void SceneRenderGraph::RegisterTransientTextures(uint32_t width, uint32_t height
             customRTHandles[tex.name] = handle;
         }
     }
+    return true;
 }
 
 vk::ResourceHandle SceneRenderGraph::AppendAutoPass(const std::string &name, vk::ResourceHandle colorTarget,
@@ -3268,6 +3392,7 @@ void SceneRenderGraph::BuildRenderGraph()
         return;
     }
 
+    RetireImportedTextureAssets();
     auto retiredDepthResolveGroups = m_sceneDepthResolver.TakeBindGroups();
     if (!retiredDepthResolveGroups.empty()) {
         rhi::Device *device = &m_vkCore->GetDeviceContext().GetRhiDevice();
@@ -3533,7 +3658,8 @@ void SceneRenderGraph::BuildRenderGraph()
 
         // Pre-register transient textures so their ResourceHandles are
         // available before passes reference them.
-        RegisterTransientTextures(width, height, customRTHandles);
+        if (!RegisterTransientTextures(width, height, customRTHandles))
+            return;
         for (const auto &buffer : m_pythonGraphDesc.buffers) {
             if (buffer.computeBuffer) {
                 const auto owner = buffer.computeBuffer;
@@ -3547,8 +3673,8 @@ void SceneRenderGraph::BuildRenderGraph()
                     return;
                 }
             } else {
-                bufferHandles[buffer.name] =
-                    m_renderGraph->RegisterTransientBuffer(buffer.name, buffer.byteSize, ToVkBufferUsage(buffer.usage));
+                bufferHandles[buffer.name] = m_renderGraph->RegisterTransientBuffer(
+                    buffer.name, buffer.byteSize, ToVkBufferUsage(buffer.usage));
             }
         }
 
@@ -4347,8 +4473,12 @@ void SceneRenderGraph::BuildRenderGraph()
                 if (!fragmentCode || !inputReflection.Reflect(*fragmentCode, VK_SHADER_STAGE_FRAGMENT_BIT))
                     return;
                 std::unordered_set<uint32_t> multisampledBindings;
+                std::unordered_map<uint32_t, ReflectedImageDimension> sampledDimensions;
                 for (const auto &image : inputReflection.GetSampledImages()) {
-                    if (image.set == 0 && image.multisampled)
+                    if (image.set != 0)
+                        continue;
+                    sampledDimensions[image.binding] = image.dimension;
+                    if (image.multisampled)
                         multisampledBindings.insert(image.binding);
                 }
                 std::vector<std::string> inputNames;
@@ -4371,27 +4501,25 @@ void SceneRenderGraph::BuildRenderGraph()
                     bool depthRead = false;
                     bool storageBuffer = false;
                     uint64_t byteSize = 0;
+                    rhi::SamplerHandle sampler;
                 };
                 std::vector<FullscreenReadResource> fsReadInputs;
                 std::string temporalHistoryKey;
                 for (uint32_t binding = 0; binding < inputNames.size(); ++binding) {
                     const auto &name = inputNames[binding];
                     if (const auto buffer = bufferHandles.find(name); buffer != bufferHandles.end()) {
-                        const auto reflected = std::find_if(inputReflection.GetStorageBuffers().begin(),
-                                                            inputReflection.GetStorageBuffers().end(),
-                                                            [binding](const StorageBufferInfo &item) {
-                                                                return item.set == 0 && item.binding == binding;
-                                                            });
+                        const auto reflected = std::find_if(
+                            inputReflection.GetStorageBuffers().begin(), inputReflection.GetStorageBuffers().end(),
+                            [binding](const StorageBufferInfo &item) { return item.set == 0 && item.binding == binding; });
                         if (reflected == inputReflection.GetStorageBuffers().end() || !reflected->readOnly ||
                             reflected->arraySize != 1) {
                             INXLOG_ERROR("Fullscreen pass '", passDesc.name, "' input '", name,
-                                         "' requires a read-only scalar storage-buffer declaration at binding ",
-                                         binding);
+                                         "' requires a read-only scalar storage-buffer declaration at binding ", binding);
                             return;
                         }
-                        const auto description =
-                            std::find_if(m_pythonGraphDesc.buffers.begin(), m_pythonGraphDesc.buffers.end(),
-                                         [&name](const GraphBufferDesc &item) { return item.name == name; });
+                        const auto description = std::find_if(
+                            m_pythonGraphDesc.buffers.begin(), m_pythonGraphDesc.buffers.end(),
+                            [&name](const GraphBufferDesc &item) { return item.name == name; });
                         if (description == m_pythonGraphDesc.buffers.end())
                             return;
                         const auto maxRange =
@@ -4401,8 +4529,8 @@ void SceneRenderGraph::BuildRenderGraph()
                                          description->byteSize, " exceeds Vulkan maxStorageBufferRange ", maxRange);
                             return;
                         }
-                        fsReadInputs.push_back(
-                            {buffer->second, rhi::PixelFormat::Undefined, false, true, description->byteSize});
+                        fsReadInputs.push_back({buffer->second, rhi::PixelFormat::Undefined, false, true,
+                                                description->byteSize});
                         continue;
                     }
                     const auto &texture = *texDescMap.at(name);
@@ -4410,8 +4538,28 @@ void SceneRenderGraph::BuildRenderGraph()
                         temporalHistoryKey = texture.temporalKey;
                     const uint32_t samples = EffectiveTextureSamples(texture, static_cast<uint32_t>(msaaSamples));
                     auto source = texture.isBackbuffer ? m_importedColorTarget : customRTHandles.at(name);
-                    auto format =
-                        texture.isBackbuffer ? rhi::FromVkFormat(m_sceneTarget->GetColorFormat()) : texture.format;
+                    auto format = texture.isBackbuffer ? rhi::FromVkFormat(m_sceneTarget->GetColorFormat())
+                                                       : texture.format;
+                    rhi::SamplerHandle sampler;
+                    if (texture.role == GraphTextureRole::Asset) {
+                        const auto dimension = sampledDimensions.find(binding);
+                        const auto expected = texture.isVolume ? ReflectedImageDimension::D3
+                                                               : ReflectedImageDimension::D2;
+                        if (dimension == sampledDimensions.end() || dimension->second != expected) {
+                            INXLOG_ERROR("Fullscreen pass '", passDesc.name, "' binds Texture asset '", name,
+                                         "' to an incompatible shader resource dimension at binding ", binding);
+                            return;
+                        }
+                        const auto formatIt = m_graphTextureFormats.find(name);
+                        const auto samplerIt = m_graphTextureSamplers.find(name);
+                        if (formatIt == m_graphTextureFormats.end() || samplerIt == m_graphTextureSamplers.end()) {
+                            INXLOG_ERROR("Fullscreen pass '", passDesc.name, "' Texture asset '", name,
+                                         "' has no resident GPU publication");
+                            return;
+                        }
+                        format = formatIt->second;
+                        sampler = samplerIt->second;
+                    }
                     const bool rawSamples = multisampledBindings.count(binding) != 0;
                     if (rawSamples && samples == 1) {
                         INXLOG_ERROR("Fullscreen pass '", passDesc.name, "' binds single-sample texture '", name,
@@ -4419,7 +4567,7 @@ void SceneRenderGraph::BuildRenderGraph()
                         return;
                     }
                     if (rawSamples || samples == 1) {
-                        fsReadInputs.push_back({source, format, texture.isDepth});
+                        fsReadInputs.push_back({source, format, texture.isDepth, false, 0, sampler});
                         continue;
                     }
                     const uint32_t inputWidth =
@@ -4623,6 +4771,7 @@ void SceneRenderGraph::BuildRenderGraph()
                                 continue;
                             }
                             inputs[i].view = ctx.GetTextureView(fsReadInputs[i].handle);
+                            inputs[i].sampler = fsReadInputs[i].sampler;
                             inputs[i].format = fsReadInputs[i].format;
                             inputs[i].depthRead = fsReadInputs[i].depthRead;
                             if (!inputs[i].view.IsValid()) {

@@ -96,7 +96,8 @@ void RegisterRenderGraphBindings(py::module_ &m)
         .value("TRANSIENT", GraphTextureRole::Transient)
         .value("TEMPORAL_READ", GraphTextureRole::TemporalRead)
         .value("TEMPORAL_WRITE", GraphTextureRole::TemporalWrite)
-        .value("PERSISTENT", GraphTextureRole::Persistent);
+        .value("PERSISTENT", GraphTextureRole::Persistent)
+        .value("ASSET", GraphTextureRole::Asset);
 
     py::enum_<GraphTextureAttachment>(m, "GraphTextureAttachment")
         .value("COLOR", GraphTextureAttachment::Color)
@@ -152,7 +153,10 @@ void RegisterRenderGraphBindings(py::module_ &m)
         .def_readwrite("role", &GraphTextureDesc::role, "Transient, temporal read, or temporal write")
         .def_readwrite("temporal_key", &GraphTextureDesc::temporalKey, "Stable identity shared by a temporal pair")
         .def_readwrite("render_texture", &GraphTextureDesc::renderTexture, "Persistent RenderTexture owner")
-        .def_readwrite("attachment", &GraphTextureDesc::attachment);
+        .def_readwrite("attachment", &GraphTextureDesc::attachment)
+        .def_readwrite("asset_guid", &GraphTextureDesc::assetGuid, "GUID of a read-only imported Texture asset")
+        .def_readwrite("depth", &GraphTextureDesc::depth, "Imported Texture3D depth")
+        .def_readwrite("is_volume", &GraphTextureDesc::isVolume, "Whether the imported asset is a Texture3D");
 
     py::class_<GraphBufferDesc>(m, "GraphBufferDesc", "Description of a buffer resource in the graph")
         .def(py::init<>())

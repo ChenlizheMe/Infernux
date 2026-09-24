@@ -284,7 +284,8 @@ rhi::BindGroupHandle FullscreenRenderer::AllocateBindGroup(rhi::BindingLayoutHan
         texture.binding = i;
         texture.type = rhi::BindingType::CombinedTextureSampler;
         texture.texture = input.view;
-        texture.sampler = nearestSampling ? m_impl->nearestSampler : colorSampler;
+        texture.sampler = input.sampler.IsValid() ? input.sampler
+                                                  : (nearestSampling ? m_impl->nearestSampler : colorSampler);
         texture.depthRead = input.depthRead;
         if (!texture.texture.IsValid() || !texture.sampler.IsValid())
             return {};

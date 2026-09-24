@@ -2223,6 +2223,9 @@ class GraphTextureDesc:
     height: int
     size_divisor: int
     samples: int
+    asset_guid: str
+    depth: int
+    is_volume: bool
 
     def __init__(self) -> None: ...
 

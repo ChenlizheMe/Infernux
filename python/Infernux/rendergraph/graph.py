@@ -84,6 +84,9 @@ class TextureHandle:
         self.temporal_key = temporal_key
         self.render_texture = None
         self.attachment = GraphTextureAttachment.COLOR
+        self.asset_guid = ""
+        self.depth = 1
+        self.is_volume = False
 
     @property
     def is_depth(self) -> bool:
@@ -1060,9 +1063,13 @@ class RenderGraph:
         return handle
 
     def import_texture(self, name: str, texture, *, attachment: str = "color") -> TextureHandle:
-        """Import an attachment of a persistent RenderTexture into this graph.
+        """Import a persistent RenderTexture attachment or a sampled Texture asset.
 
-        ``color`` is the raster attachment; with MSAA, write it together with
+        A Texture asset is imported by GUID and is sample-only. Its sampler and
+        immutable GPU publication come from the asset import pipeline, including
+        Texture3D assets. ``attachment`` only applies to RenderTexture.
+
+        For RenderTexture, ``color`` is the raster attachment; with MSAA, write it together with
         ``resolve`` using ``write_resolve`` and sample the resolve handle.
         ``depth`` uses the target's depth format and raster sample count.
         At one sample, color and resolve are the same graph identity.
@@ -1074,9 +1081,43 @@ class RenderGraph:
         Resize is observed without re-authoring the pipeline.
         """
         from Infernux.core.render_texture import RenderTexture
+        from Infernux.lib import InxTexture
+
+        resource_name = self._scoped_name(name)
+        if isinstance(texture, InxTexture):
+            if attachment != "color":
+                raise ValueError("Texture assets are sample-only and do not expose attachments")
+            guid = str(texture.guid).strip()
+            if not guid:
+                raise ValueError("Cannot import a Texture asset without a GUID")
+            dimension = str(texture.dimension).lower()
+            if dimension not in {"2d", "3d"}:
+                raise ValueError(f"Unsupported Texture asset dimension '{texture.dimension}'")
+            width = int(texture.pixel_width)
+            height = int(texture.pixel_height)
+            depth = int(texture.pixel_depth)
+            if width <= 0 or height <= 0 or depth <= 0:
+                raise ValueError("Cannot import a Texture asset with empty dimensions")
+            occupied = self._find_texture_exact(resource_name) or self._find_buffer_exact(resource_name)
+            if occupied is not None and (
+                getattr(occupied, "asset_guid", "") != guid
+                or bool(getattr(occupied, "is_volume", False)) != (dimension == "3d")
+            ):
+                raise ValueError(f"Resource '{resource_name}' already exists in graph '{self._name}'")
+            if occupied is not None:
+                occupied.size = (width, height)
+                occupied.depth = depth
+                return occupied
+            handle = TextureHandle(resource_name, Format.UNDEFINED, size=(width, height), samples=1,
+                                   temporal_role=GraphTextureRole.ASSET)
+            handle.asset_guid = guid
+            handle.depth = depth
+            handle.is_volume = dimension == "3d"
+            self._textures.append(handle)
+            return handle
 
         if not isinstance(texture, RenderTexture):
-            raise TypeError("import_texture requires an Infernux RenderTexture")
+            raise TypeError("import_texture requires an Infernux RenderTexture or Texture asset")
         if not texture.is_valid:
             raise ValueError("Cannot import a RenderTexture whose device has been destroyed")
         attachments = {"color": GraphTextureAttachment.COLOR, "depth": GraphTextureAttachment.DEPTH,
@@ -1088,7 +1129,6 @@ class RenderGraph:
         if attachment == "resolve" and texture.samples == 1:
             attachment = "color"
         selected = attachments[attachment]
-        resource_name = self._scoped_name(name)
         occupied = self._find_texture_exact(resource_name) or self._find_buffer_exact(resource_name)
         if occupied is not None and (getattr(occupied, "render_texture", None) is not texture or
                                      occupied.attachment != selected):
@@ -1591,6 +1631,8 @@ class RenderGraph:
             raise ValueError(
                 f"Graph '{self._name}' output '{self._output}' does not exist"
             )
+        if self._output is not None and texture_map[self._output].temporal_role == GraphTextureRole.ASSET:
+            raise ValueError("A sampled Texture asset cannot be the graph output")
 
     def _validate_pass(
         self,
@@ -1718,6 +1760,9 @@ class RenderGraph:
                 raise ValueError(f"Copy pass '{p._name}' requires distinct textures")
             source = texture_map[p._source_resource]
             destination = texture_map[p._destination_resource]
+            if (source.temporal_role == GraphTextureRole.ASSET
+                    or destination.temporal_role == GraphTextureRole.ASSET):
+                raise ValueError(f"Copy pass '{p._name}' cannot use a sample-only Texture asset")
             if source.is_camera_target or destination.is_camera_target:
                 raise ValueError(
                     f"Copy pass '{p._name}' requires transient textures; use present() "
@@ -1757,6 +1802,8 @@ class RenderGraph:
                 raise ValueError(
                     f"Pass '{p._name}' writes depth texture '{tex_name}' as color[{slot}]"
                 )
+            if tex.temporal_role == GraphTextureRole.ASSET:
+                raise ValueError(f"Pass '{p._name}' cannot write sample-only Texture asset '{tex_name}'")
 
         if p._write_depth is not None:
             tex = texture_map.get(p._write_depth)
@@ -1768,6 +1815,8 @@ class RenderGraph:
                 raise ValueError(
                     f"Pass '{p._name}' writes color texture '{p._write_depth}' as depth"
                 )
+            if tex.temporal_role == GraphTextureRole.ASSET:
+                raise ValueError(f"Pass '{p._name}' cannot write sample-only Texture asset '{p._write_depth}'")
 
         attachment_names = list(p._write_colors.values())
         if p._write_depth is not None:
@@ -1797,6 +1846,8 @@ class RenderGraph:
                 raise ValueError(
                     f"Pass '{p._name}' resolve target must be a non-camera color texture"
                 )
+            if resolve.temporal_role == GraphTextureRole.ASSET:
+                raise ValueError(f"Pass '{p._name}' cannot resolve into a sample-only Texture asset")
             if sorted(p._write_colors) != [0]:
                 raise ValueError(
                     f"Pass '{p._name}' resolve requires exactly one color output at slot 0"
@@ -1913,6 +1964,10 @@ class RenderGraph:
                 td.render_texture = tex.render_texture._native
                 td.attachment = tex.attachment
                 td.width, td.height = tex.render_texture.width, tex.render_texture.height
+            if tex.asset_guid:
+                td.asset_guid = tex.asset_guid
+                td.depth = tex.depth
+                td.is_volume = tex.is_volume
             tex_list.append(td)
         desc.textures = tex_list
 

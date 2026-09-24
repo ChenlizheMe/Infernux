@@ -10,6 +10,7 @@ from Infernux.lib import (
     MaterialPassType,
     PixelFormat,
     DepthCompare as DepthCompare,
+    InxTexture,
 )
 from Infernux.renderstack.effect_stage import EffectScope, EffectStage
 from Infernux.renderstack.pass_result import PassResult
@@ -28,6 +29,9 @@ class TextureHandle:
     size: Optional[Tuple[int, int]]
     size_divisor: int
     samples: int
+    asset_guid: str
+    depth: int
+    is_volume: bool
 
     def __init__(
         self,
@@ -226,8 +230,8 @@ class RenderGraph:
     def get_texture(self, name: str) -> Optional[TextureHandle]:
         """Get a texture handle by name, or None if not found."""
         ...
-    def import_texture(self, name: str, texture: RenderTexture, *, attachment: str = "color") -> TextureHandle:
-        """Import the color, depth, or resolve attachment of a persistent target."""
+    def import_texture(self, name: str, texture: RenderTexture | InxTexture, *, attachment: str = "color") -> TextureHandle:
+        """Import a persistent target attachment or a GUID-backed sample-only Texture asset."""
         ...
     def create_temporal_history(self, name: str, *, format: Format = Format.RGBA16_SFLOAT,
                                 size: Optional[Tuple[int, int]] = None,

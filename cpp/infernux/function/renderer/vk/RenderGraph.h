@@ -88,6 +88,7 @@ enum class ResourceType
 {
     Buffer,
     Texture2D,
+    Texture3D,
     TextureCube,
     DepthStencil,
     RendererList,
@@ -815,12 +816,14 @@ class RenderGraph
     /// Import a persistent texture owned outside the graph.
     ResourceHandle ImportTexture(const std::string &name, VkImage image, VkImageView view, VkFormat format,
                                  uint32_t width, uint32_t height,
-                                 VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT);
+                                 VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT, uint32_t depth = 1,
+                                 bool isVolume = false);
 
     /// Import a persistent RHI texture while preserving its queue-sharing contract.
     ResourceHandle ImportTexture(const std::string &name, rhi::TextureHandle texture, rhi::TextureViewHandle view,
                                  VkFormat format, uint32_t width, uint32_t height,
-                                 VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT);
+                                 VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT, uint32_t depth = 1,
+                                 bool isVolume = false);
 
     struct RenderTextureResources
     {

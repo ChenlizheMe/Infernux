@@ -1412,6 +1412,8 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
             const size_t binding = index + (passBuffersDomain ? 4u : 0u);
             if (resource.type == "Texture2D")
                 result << "layout(set = 0, binding = " << binding << ") uniform sampler2D " << resource.name << ";\n";
+            else if (resource.type == "Texture3D")
+                result << "layout(set = 0, binding = " << binding << ") uniform sampler3D " << resource.name << ";\n";
             else if (resource.type == "Texture2DUInt")
                 result << "layout(set = 0, binding = " << binding << ") uniform usampler2D " << resource.name << ";\n";
             else if (resource.type == "Texture2DMS")

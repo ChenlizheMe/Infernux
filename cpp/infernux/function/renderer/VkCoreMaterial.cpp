@@ -134,6 +134,14 @@ TextureResolveResult InxVkCoreModular::ResolveTextureForVectorField(const std::s
                                linearFiltering ? "bilinear" : "point", repeat ? "repeat" : "clamp", waitForPreparation);
 }
 
+TextureResolveResult InxVkCoreModular::ResolveTextureForGraph(const std::string &textureGuid, bool volume,
+                                                              bool waitForPreparation)
+{
+    return ResolveTextureAsset(textureGuid, "RenderGraph", volume ? TextureDimension::Texture3D
+                                                                  : TextureDimension::Texture2D,
+                               nullptr, nullptr, waitForPreparation);
+}
+
 TextureResolveResult InxVkCoreModular::ResolveTextureAsset(const std::string &textureGuid,
                                                            const std::string &bindingName,
                                                            TextureDimension expectedDimension,

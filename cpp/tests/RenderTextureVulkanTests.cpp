@@ -12,8 +12,9 @@
 #ifdef NDEBUG
 #undef NDEBUG
 #endif
-#include <array>
+#include <algorithm>
 #include <cassert>
+#include <array>
 #include <cmath>
 #include <fstream>
 #include <iostream>
@@ -656,9 +657,187 @@ static void CheckFullscreenStorageRead(vk::VkDeviceContext &context, VkCommandBu
     std::cout << "PASS fullscreen storage-buffer GPU read -> color output\n";
 }
 
+static void CheckFullscreenVolumeRead(vk::VkDeviceContext &context, VkCommandBuffer command, VkFence fence,
+                                      const char *vertex, const char *fragment, rhi::SubmissionSerial &epoch)
+{
+    auto &device = context.GetRhiDevice();
+    constexpr uint32_t width = 2;
+    constexpr uint32_t height = 2;
+    constexpr uint32_t depth = 2;
+    std::array<uint8_t, width * height * depth * 4> texels{};
+    for (uint32_t z = 0; z < depth; ++z) {
+        for (uint32_t y = 0; y < height; ++y) {
+            for (uint32_t x = 0; x < width; ++x) {
+                const size_t offset = ((z * height + y) * width + x) * 4;
+                texels[offset + 0] = z == 0 ? 255 : 0;
+                texels[offset + 2] = z == 1 ? 255 : 0;
+                texels[offset + 3] = 255;
+            }
+        }
+    }
+    rhi::TextureDesc volumeDesc;
+    volumeDesc.dimension = rhi::TextureDimension::Texture3D;
+    volumeDesc.width = width;
+    volumeDesc.height = height;
+    volumeDesc.depthOrLayers = depth;
+    volumeDesc.format = rhi::PixelFormat::RGBA8UNorm;
+    volumeDesc.usage = rhi::TextureUsageFlags::Sampled | rhi::TextureUsageFlags::TransferDestination;
+    const auto volume = device.CreateTexture(volumeDesc);
+    rhi::TextureViewDesc viewDesc;
+    viewDesc.texture = volume;
+    viewDesc.dimension = rhi::TextureViewDimension::Texture3D;
+    const auto volumeView = device.CreateTextureView(viewDesc);
+    rhi::BufferDesc uploadDesc;
+    uploadDesc.byteSize = texels.size();
+    uploadDesc.usage = rhi::BufferUsageFlags::TransferSource;
+    uploadDesc.memory = rhi::BufferMemory::Upload;
+    const auto upload = device.CreateBuffer(uploadDesc);
+    assert(volume.IsValid() && volumeView.IsValid() && upload.IsValid());
+    assert(device.WriteBuffer(upload, 0, texels.data(), texels.size()));
+
+    assert(vkResetCommandBuffer(command, 0) == VK_SUCCESS);
+    VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    assert(vkBeginCommandBuffer(command, &begin) == VK_SUCCESS);
+    VkImageMemoryBarrier barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    barrier.srcQueueFamilyIndex = barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = device.Resolve(volume);
+    barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         0, 0, nullptr, 0, nullptr, 1, &barrier);
+    VkBufferImageCopy copy{};
+    copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    copy.imageExtent = {width, height, depth};
+    vkCmdCopyBufferToImage(command, device.Resolve(upload), device.Resolve(volume),
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+    barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                         0, 0, nullptr, 0, nullptr, 1, &barrier);
+    assert(vkEndCommandBuffer(command) == VK_SUCCESS);
+    assert(vkResetFences(context.GetDevice(), 1, &fence) == VK_SUCCESS);
+    VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+    submit.commandBufferCount = 1;
+    submit.pCommandBuffers = &command;
+    assert(vkQueueSubmit(context.GetGraphicsQueue(), 1, &submit, fence) == VK_SUCCESS);
+    assert(vkWaitForFences(context.GetDevice(), 1, &fence, VK_TRUE, 5'000'000'000ull) == VK_SUCCESS);
+
+    rhi::RenderTextureDesc targetDesc;
+    targetDesc.width = width;
+    targetDesc.height = height;
+    targetDesc.colorFormat = rhi::PixelFormat::RGBA8UNorm;
+    auto target = std::make_shared<rhi::RenderTexture>(device, "fullscreen-volume", targetDesc);
+    rhi::BufferDesc readbackDesc;
+    readbackDesc.byteSize = width * height * 4;
+    readbackDesc.usage = rhi::BufferUsageFlags::TransferDestination;
+    readbackDesc.memory = rhi::BufferMemory::Readback;
+    const auto readback = device.CreateBuffer(readbackDesc);
+    assert(readback.IsValid());
+    rhi::SamplerDesc samplerDesc;
+    samplerDesc.minFilter = rhi::FilterMode::Nearest;
+    samplerDesc.magFilter = rhi::FilterMode::Nearest;
+    samplerDesc.mipFilter = rhi::FilterMode::Nearest;
+    samplerDesc.addressU = samplerDesc.addressV = samplerDesc.addressW = rhi::AddressMode::ClampToEdge;
+    const auto sampler = device.CreateSampler(samplerDesc);
+    assert(sampler.IsValid());
+    FullscreenRenderer renderer;
+    renderer.Initialize(std::make_shared<FullscreenTestHost>(device, vertex, fragment));
+    FullscreenPipelineKey key;
+    key.shaderName = "volume-read";
+    key.useDynamicRendering = true;
+    key.colorFormat = targetDesc.colorFormat;
+    key.inputResourceCount = 1;
+    const auto pipeline = renderer.EnsurePipeline(key);
+    assert(pipeline.pipeline.IsValid());
+
+    vk::RenderGraph graph;
+    graph.Initialize(&context);
+    const auto input = graph.ImportTexture("volume", volume, volumeView, VK_FORMAT_R8G8B8A8_UNORM,
+                                           width, height, VK_SAMPLE_COUNT_1_BIT, depth, true);
+    assert(input.IsValid());
+    graph.SetResourceInitialState(input, rhi::TextureLayout::ShaderReadOnly, rhi::Access::ShaderRead,
+                                  rhi::PipelineStage::FragmentShader);
+    auto color = graph.ImportRenderTexture("volume-result", target->Acquire()).color;
+    graph.AddPass("sample-volume", [&](vk::PassBuilder &builder) {
+        builder.Read(input, rhi::PipelineStage::FragmentShader);
+        color = builder.WriteColor(color);
+        builder.SetClearColor(0, 0, 0, 1);
+        builder.SetRenderArea(width, height);
+        return [&, pipeline](vk::RenderContext &render) {
+            FullscreenResourceInput resource{};
+            resource.view = render.GetTextureView(input);
+            resource.format = rhi::PixelFormat::RGBA8UNorm;
+            resource.sampler = sampler;
+            const auto group = renderer.AllocateBindGroup(pipeline.inputLayout, &resource, 1,
+                                                          renderer.GetLinearSampler());
+            assert(group.IsValid());
+            renderer.Draw(render.GetGraphicsCommandEncoder(), pipeline, group, {}, {}, 0);
+        };
+    });
+    graph.AddTransferPass("volume-readback", [&](vk::PassBuilder &builder) {
+        builder.TransferRead(color);
+        builder.TransferWrite(builder.ImportBuffer("volume-pixels", readback, readbackDesc.byteSize));
+        builder.SetQueueRole(rhi::QueueRole::Graphics);
+        builder.SetSideEffect();
+        return [&](vk::RenderContext &render) {
+            VkBufferImageCopy resultCopy{};
+            resultCopy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+            resultCopy.imageExtent = {width, height, 1};
+            vkCmdCopyImageToBuffer(render.GetCommandBuffer(), device.Resolve(render.GetTextureHandle(color)),
+                                   VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, device.Resolve(readback), 1, &resultCopy);
+        };
+    });
+    assert(graph.Compile());
+    assert(vkResetCommandBuffer(command, 0) == VK_SUCCESS);
+    assert(vkBeginCommandBuffer(command, &begin) == VK_SUCCESS);
+    graph.Execute(command);
+    VkBufferMemoryBarrier readbackBarrier{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
+    readbackBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    readbackBarrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+    readbackBarrier.srcQueueFamilyIndex = readbackBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    readbackBarrier.buffer = device.Resolve(readback);
+    readbackBarrier.size = readbackDesc.byteSize;
+    vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT,
+                         0, 0, nullptr, 1, &readbackBarrier, 0, nullptr);
+    assert(vkEndCommandBuffer(command) == VK_SUCCESS);
+    assert(vkResetFences(context.GetDevice(), 1, &fence) == VK_SUCCESS);
+    assert(vkQueueSubmit(context.GetGraphicsQueue(), 1, &submit, fence) == VK_SUCCESS);
+    assert(vkWaitForFences(context.GetDevice(), 1, &fence, VK_TRUE, 5'000'000'000ull) == VK_SUCCESS);
+    std::array<uint8_t, width * height * 4> pixels{};
+    assert(device.ReadBuffer(readback, 0, pixels.data(), pixels.size()));
+    for (uint32_t y = 0; y < height; ++y) {
+        for (uint32_t x = 0; x < width; ++x) {
+            const size_t offset = (y * width + x) * 4;
+            const std::array<uint8_t, 4> expected = x == 0
+                ? std::array<uint8_t, 4>{255, 0, 0, 255}
+                : std::array<uint8_t, 4>{0, 0, 255, 255};
+            if (!std::equal(expected.begin(), expected.end(), pixels.begin() + offset))
+                std::cerr << "Volume pixel (" << x << ',' << y << ")=" << int(pixels[offset]) << ','
+                          << int(pixels[offset + 1]) << ',' << int(pixels[offset + 2]) << ','
+                          << int(pixels[offset + 3]) << '\n';
+            assert(std::equal(expected.begin(), expected.end(), pixels.begin() + offset));
+        }
+    }
+    graph.Destroy();
+    renderer.Destroy();
+    target.reset();
+    device.Release(sampler);
+    device.Release(readback);
+    device.Release(upload);
+    device.Release(volumeView);
+    device.Release(volume);
+    device.CollectDescriptorRetirements(epoch);
+    device.CollectResourceRetirements(epoch++);
+    std::cout << "PASS imported Texture3D -> fullscreen sampler3D -> two depth slices -> GPU readback\n";
+}
+
 int main(int argc, char **argv)
 {
-    assert(argc == 7);
+    assert(argc == 8);
     std::ifstream input(argv[1], std::ios::binary | std::ios::ate);
     assert(input);
     const auto bytes = static_cast<size_t>(input.tellg());
@@ -712,6 +891,7 @@ int main(int argc, char **argv)
     CheckFullscreenRasterState(context, command, fence, argv[2], argv[3], epoch);
     CheckFullscreenSamples(context, command, fence, argv[2], argv[4], argv[5], epoch);
     CheckFullscreenStorageRead(context, command, fence, argv[2], argv[6], epoch);
+    CheckFullscreenVolumeRead(context, command, fence, argv[2], argv[7], epoch);
 
     // Alternate independent targets and formats. Each recorded generation must
     // remain usable after resize and after both the target and graph are gone.

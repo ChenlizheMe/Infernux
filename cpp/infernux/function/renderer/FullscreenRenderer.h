@@ -86,6 +86,7 @@ struct FullscreenResourceInput
     bool depthRead = false;
     rhi::BufferHandle buffer;
     uint64_t byteSize = 0;
+    rhi::SamplerHandle sampler;
 };
 
 class FullscreenRenderer

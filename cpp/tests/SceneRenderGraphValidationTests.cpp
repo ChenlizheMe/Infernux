@@ -154,6 +154,62 @@ void CheckGraphBufferValidation()
     assert(!valid(broken));
 }
 
+void CheckSampledAssetTextureValidation()
+{
+    RenderGraphDescription graph;
+    graph.textures.push_back({"color", rhi::PixelFormat::RGBA8UNorm});
+    GraphTextureDesc volume;
+    volume.name = "density";
+    volume.role = GraphTextureRole::Asset;
+    volume.assetGuid = "0123456789abcdef0123456789abcdef";
+    volume.width = 8;
+    volume.height = 8;
+    volume.depth = 4;
+    volume.isVolume = true;
+    volume.samples = 1;
+    graph.textures.push_back(volume);
+    GraphPassDesc sample;
+    sample.name = "sample";
+    sample.writeColors = {{0, "color"}};
+    sample.clearColor = true;
+    GraphCommandDesc command;
+    command.type = GraphCommandType::FullscreenQuad;
+    command.shaderName = "Tests/VolumeInput";
+    command.inputBindings = {{"density", "density"}};
+    sample.commands.push_back(command);
+    graph.passes.push_back(sample);
+    graph.outputTexture = "color";
+
+    const auto valid = [](const auto &desc) { return SceneRenderGraph::ValidateGraphDescription(desc, 1); };
+    assert(valid(graph));
+    auto broken = graph;
+    broken.textures[1].assetGuid.clear();
+    assert(!valid(broken));
+    broken = graph;
+    broken.textures[1].depth = 0;
+    assert(!valid(broken));
+    broken = graph;
+    broken.textures[1].isVolume = false;
+    assert(!valid(broken));
+    broken = graph;
+    broken.textures[1].samples = 4;
+    assert(!valid(broken));
+    broken = graph;
+    broken.passes[0].writeColors[0].second = "density";
+    assert(!valid(broken));
+    broken = graph;
+    broken.passes[0].commands.clear();
+    broken.passes[0].readTextures.clear();
+    broken.passes[0].name = "copy";
+    broken.passes[0].type = GraphPassType::Copy;
+    GraphCommandDesc copy;
+    copy.type = GraphCommandType::CopyTexture;
+    copy.sourceResource = "density";
+    copy.destinationResource = "color";
+    broken.passes[0].commands.push_back(copy);
+    assert(!valid(broken));
+}
+
 void CheckWorldUIPassAttachments()
 {
     RenderGraphDescription graph;
@@ -460,6 +516,7 @@ int main(int argc, char **argv)
     CheckCameraHistoryResetIsolation();
     CheckFullscreenState();
     CheckGraphBufferValidation();
+    CheckSampledAssetTextureValidation();
     CheckWorldUIPassAttachments();
     CheckViewResourceSchedule();
     CheckViewMaterialContracts();

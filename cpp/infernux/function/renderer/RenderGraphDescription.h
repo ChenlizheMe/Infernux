@@ -97,7 +97,8 @@ enum class GraphTextureRole : uint8_t
     Transient,
     TemporalRead,
     TemporalWrite,
-    Persistent
+    Persistent,
+    Asset
 };
 
 enum class GraphTextureAttachment : uint8_t
@@ -180,6 +181,9 @@ struct GraphTextureDesc
     std::string temporalKey;                                ///< Stable per-view history identity for temporal resources
     std::shared_ptr<rhi::RenderTexture> renderTexture;      ///< Persistent owner; never a disk GUID
     GraphTextureAttachment attachment = GraphTextureAttachment::Color;
+    std::string assetGuid;                                  ///< GUID of a read-only imported Texture asset
+    uint32_t depth = 1;                                     ///< Imported Texture3D depth; 1 for ordinary textures
+    bool isVolume = false;                                  ///< True when the imported asset is a Texture3D
 
     /// The root pipeline's conventional depth resource shares its Camera target.
     /// Other names denote distinct images, even at the same viewport dimensions.

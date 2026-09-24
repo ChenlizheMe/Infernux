@@ -6,7 +6,7 @@
 
 ## 描述
 
-渲染图中的临时纹理句柄。
+渲染图中声明或导入的纹理资源句柄。
 
 <!-- USER CONTENT START --> description
 
@@ -32,6 +32,9 @@
 | size | `Optional[Tuple[int, int]]` |  |
 | size_divisor | `int` |  |
 | samples | `int` |  |
+| asset_guid | `str` | 导入纹理资产的 GUID；渲染图临时纹理和 RenderTexture 附件为空字符串。 |
+| depth | `int` | 纹理深度；2D 纹理为 `1`。 |
+| is_volume | `bool` | 该句柄是否引用 3D 纹理。 |
 | is_depth | `bool` | Returns True if this texture uses a depth format. *(只读)* |
 
 <!-- USER CONTENT START --> properties
@@ -53,7 +56,7 @@
 ## 示例
 
 <!-- USER CONTENT START --> example
-> **示例状态：** 当前尚未为此符号验证 0.4.0 示例。请以上方签名为准；不要根据其他引擎中的同名 API 推测行为。
+> **示例状态：** 当前尚未为此符号验证示例。请以上方签名为准；不要根据其他引擎中的同名 API 推测行为。
 <!-- USER CONTENT END -->
 
 ## 另请参阅

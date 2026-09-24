@@ -843,6 +843,11 @@ class InxVkCoreModular
     [[nodiscard]] std::shared_ptr<const rhi::TextureGpuView>
     ResolveTextureForEditorPreview(const std::string &textureGuid);
 
+    /// Resolve a GUID-backed texture for an explicit render-graph sample binding.
+    /// The returned immutable publication owns the texture, view, and authored sampler.
+    [[nodiscard]] TextureResolveResult ResolveTextureForGraph(const std::string &textureGuid, bool volume,
+                                                              bool waitForPreparation = false);
+
     // ========================================================================
     // Direct Vulkan Access (for compatibility)
     // ========================================================================

@@ -47,12 +47,12 @@
 
 | 方法 | 描述 |
 |------|------|
-| `set_msaa_samples(samples: int) → int` | 设置屏幕采样偏好并返回实际采样数；附件及 Resolve 拓扑使用该返回值。 |
-| `import_texture(name: str, texture: RenderTexture, *, attachment: str = "color") → TextureHandle` | 导入持久颜色、深度或 Resolve 附件，不转移资源所有权。 |
-| `create_temporal_history(name: str, *, format: Format = ..., size: tuple[int, int] \| None = None, size_divisor: int = 0) → tuple[TextureHandle, TextureHandle]` | 创建每个 View 独立的历史读写 Handle；失效后的首次读取为零。 |
-| `set_temporal_jitter(enabled: bool = True) → None` | 独立请求相机抖动；历史分配本身不启用抖动。 |
+| `set_temporal_jitter(enabled: bool = True) → None` |  |
+| `set_msaa_samples(samples: int) → int` | Set screen MSAA preference; return the effective Camera target sample count. |
 | `create_texture(name: str, format: Format = ..., camera_target: bool = ..., size: Optional[Tuple[int, int]] = ..., size_divisor: int = ..., samples: Optional[int] = ...) → TextureHandle` | 创建临时纹理。 |
 | `get_texture(name: str) → Optional[TextureHandle]` | Get a texture handle by name, or None if not found. |
+| `import_texture(name: str, texture: RenderTexture | InxTexture, attachment: str = 'color') → TextureHandle` | 导入持久 RenderTexture 附件或 GUID 管理的 2D/3D 纹理资产。资产纹理只读采样，重导入后无需重开场景即可更新。 |
+| `create_temporal_history(name: str, format: Format = Format.RGBA16_SFLOAT, size: Optional[Tuple[int, int]] = None, size_divisor: int = 0) → Tuple[TextureHandle, TextureHandle]` |  |
 | `name_scope(prefix: str) → AbstractContextManager[RenderGraph]` |  |
 | `effect_resources(resources: Mapping[str, TextureHandle]) → AbstractContextManager[RenderGraph]` |  |
 | `pass_result(result: PassResult) → AbstractContextManager[RenderGraph]` |  |
@@ -88,12 +88,17 @@
 
 <!-- USER CONTENT START --> public_methods
 
+导入 `InxTexture` 时，资源必须具有已发布的 GUID 和明确的 `2d` 或 `3d`
+维度元数据，shader 资源维度必须与之匹配。资产纹理不能作为渲染图输出、
+Copy 目标、颜色/深度附件或 Resolve 目标。冷加载资产不会阻塞编辑器帧；资源
+准备完成后，渲染图会重新尝试发布。
+
 <!-- USER CONTENT END -->
 
 ## 示例
 
 <!-- USER CONTENT START --> example
-> **示例状态：** 当前尚未为此符号验证 0.4.0 示例。请以上方签名为准；不要根据其他引擎中的同名 API 推测行为。
+> **示例状态：** 当前尚未为此符号验证示例。请以上方签名为准；不要根据其他引擎中的同名 API 推测行为。
 <!-- USER CONTENT END -->
 
 ## 另请参阅

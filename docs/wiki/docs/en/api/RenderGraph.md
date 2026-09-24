@@ -47,12 +47,12 @@ A declarative render graph that defines texture resources and render passes.
 
 | Method | Description |
 |------|------|
-| `set_msaa_samples(samples: int) → int` | Set the screen preference and return effective sampling. Use this value for attachments and resolve topology. |
-| `import_texture(name: str, texture: RenderTexture, *, attachment: str = "color") → TextureHandle` | Import a persistent color, depth or resolve attachment without transferring resource ownership. |
-| `create_temporal_history(name: str, *, format: Format = ..., size: tuple[int, int] \| None = None, size_divisor: int = 0) → tuple[TextureHandle, TextureHandle]` | Create per-view previous/current history handles. The first read after invalidation is zero. |
-| `set_temporal_jitter(enabled: bool = True) → None` | Request camera jitter separately from history allocation. |
+| `set_temporal_jitter(enabled: bool = True) → None` |  |
+| `set_msaa_samples(samples: int) → int` | Set screen MSAA preference; return the effective Camera target sample count. |
 | `create_texture(name: str, format: Format = ..., camera_target: bool = ..., size: Optional[Tuple[int, int]] = ..., size_divisor: int = ..., samples: Optional[int] = ...) → TextureHandle` | Declare a transient texture resource in the render graph. |
 | `get_texture(name: str) → Optional[TextureHandle]` | Get a texture handle by name, or None if not found. |
+| `import_texture(name: str, texture: RenderTexture | InxTexture, attachment: str = 'color') → TextureHandle` | Import a persistent render target attachment or a GUID-backed 2D/3D texture asset. Asset textures are sampled read-only and track reimports without rebuilding the scene. |
+| `create_temporal_history(name: str, format: Format = Format.RGBA16_SFLOAT, size: Optional[Tuple[int, int]] = None, size_divisor: int = 0) → Tuple[TextureHandle, TextureHandle]` |  |
 | `name_scope(prefix: str) → AbstractContextManager[RenderGraph]` |  |
 | `effect_resources(resources: Mapping[str, TextureHandle]) → AbstractContextManager[RenderGraph]` |  |
 | `pass_result(result: PassResult) → AbstractContextManager[RenderGraph]` |  |
@@ -88,12 +88,18 @@ A declarative render graph that defines texture resources and render passes.
 
 <!-- USER CONTENT START --> public_methods
 
+`InxTexture` imports require a published asset GUID and explicit `2d` or `3d`
+metadata. The shader resource dimension must match the asset dimension. Imported
+assets cannot be graph outputs, copy destinations, color attachments, depth
+attachments, or resolve targets. A cold asset remains pending without blocking
+the editor frame; the graph retries publication when the asset is ready.
+
 <!-- USER CONTENT END -->
 
 ## Example
 
 <!-- USER CONTENT START --> example
-> **Example status:** No curated example has been verified for this symbol in 0.4.0. Use the signatures above; do not infer behavior from similarly named APIs in other engines.
+> **Example status:** No curated example has been verified for this symbol. Use the signatures above; do not infer behavior from similarly named APIs in other engines.
 <!-- USER CONTENT END -->
 
 ## See Also

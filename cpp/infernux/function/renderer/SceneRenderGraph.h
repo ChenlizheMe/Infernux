@@ -50,6 +50,10 @@ class OutlineRenderer;
 class SceneRenderTarget;
 class Camera;
 class Scene;
+namespace rhi
+{
+class TextureGpuView;
+}
 namespace particle
 {
 class ParticleGpuDrawRegistry;
@@ -753,8 +757,9 @@ class SceneRenderGraph
      * @brief Pre-register all non-backbuffer transient textures so their
      * ResourceHandles are available before passes reference them.
      */
-    void RegisterTransientTextures(uint32_t width, uint32_t height,
+    bool RegisterTransientTextures(uint32_t width, uint32_t height,
                                    std::unordered_map<std::string, vk::ResourceHandle> &customRTHandles);
+    void RetireImportedTextureAssets();
 
     [[nodiscard]] MaterialPassPipelineDescriptor GetEditorOverlayMaterialPass() const;
 
@@ -884,6 +889,10 @@ class SceneRenderGraph
     };
     std::unordered_map<std::string, TemporalHistoryResource> m_temporalHistories;
     std::unordered_map<const rhi::RenderTexture *, uint64_t> m_persistentTextureRevisions;
+    std::vector<std::shared_ptr<const rhi::TextureGpuView>> m_graphTexturePublications;
+    std::unordered_map<std::string, rhi::SamplerHandle> m_graphTextureSamplers;
+    std::unordered_map<std::string, rhi::PixelFormat> m_graphTextureFormats;
+    std::unordered_map<std::string, uint64_t> m_graphTextureAssetVersions;
     std::vector<MaterialTextureRead> m_materialTextureReads;
     std::vector<MaterialBufferRead> m_materialBufferReads;
     std::unordered_map<std::string, std::vector<std::shared_ptr<const rhi::RenderTextureGeneration>>>

@@ -1205,7 +1205,8 @@ ResourceHandle RenderGraph::ImportResolveTarget(VkImage image, VkImageView view,
 }
 
 ResourceHandle RenderGraph::ImportTexture(const std::string &name, VkImage image, VkImageView view, VkFormat format,
-                                          uint32_t width, uint32_t height, VkSampleCountFlagBits samples)
+                                          uint32_t width, uint32_t height, VkSampleCountFlagBits samples,
+                                          uint32_t depth, bool isVolume)
 {
     ResourceHandle handle;
     handle.scope = m_identity.Current();
@@ -1215,10 +1216,11 @@ ResourceHandle RenderGraph::ImportTexture(const std::string &name, VkImage image
     ResourceData resource;
     resource.ownerDevice = m_deviceId;
     resource.name = name;
-    resource.type = ResourceType::Texture2D;
+    resource.type = isVolume ? ResourceType::Texture3D : ResourceType::Texture2D;
     resource.textureDesc.name = name;
     resource.textureDesc.width = width;
     resource.textureDesc.height = height;
+    resource.textureDesc.depth = isVolume ? depth : 1;
     resource.textureDesc.format = format;
     resource.textureDesc.samples = samples;
     resource.textureDesc.isTransient = false;
@@ -1238,7 +1240,7 @@ ResourceHandle RenderGraph::ImportTexture(const std::string &name, VkImage image
 
 ResourceHandle RenderGraph::ImportTexture(const std::string &name, rhi::TextureHandle texture,
                                           rhi::TextureViewHandle view, VkFormat format, uint32_t width, uint32_t height,
-                                          VkSampleCountFlagBits samples)
+                                          VkSampleCountFlagBits samples, uint32_t depth, bool isVolume)
 {
     if (!m_rhiDevice || !texture.IsValid() || !view.IsValid())
         return {};
@@ -1248,7 +1250,7 @@ ResourceHandle RenderGraph::ImportTexture(const std::string &name, rhi::TextureH
     if (image == VK_NULL_HANDLE || imageView == VK_NULL_HANDLE)
         return {};
 
-    const ResourceHandle handle = ImportTexture(name, image, imageView, format, width, height, samples);
+    const ResourceHandle handle = ImportTexture(name, image, imageView, format, width, height, samples, depth, isVolume);
     if (Owns(handle))
         m_resources[handle.id].concurrentQueueSharing = m_rhiDevice->UsesConcurrentQueueSharing(texture);
     return handle;

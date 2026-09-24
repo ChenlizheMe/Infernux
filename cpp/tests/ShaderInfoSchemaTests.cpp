@@ -470,6 +470,25 @@ void main() {
     assert(storageGlsl.find("uniform sampler2D sourceTexture") != std::string::npos);
     RequireCompiles(compiler, storageInputSource, "StorageInput.frag");
 
+    const std::string volumeInputSource = R"(
+#version 450
+ShaderInfo {
+    Name "Tests/VolumeInput"
+    Capabilities [Fullscreen]
+    Resources { Texture3D density }
+    Outputs { Float4 outColor }
+}
+void main() {
+    outColor = texture(density, vec3(0.5, 0.5, 0.5));
+}
+)";
+    const auto volumeSchema = infernux::ParseShaderInfo(volumeInputSource);
+    assert(volumeSchema.IsValid() && volumeSchema.resources.size() == 1);
+    assert(volumeSchema.resources[0].type == "Texture3D");
+    const auto volumeGlsl = compiler.PrepareAuthoredStageGlsl(volumeInputSource, "VolumeInput.frag");
+    assert(volumeGlsl.find("uniform sampler3D density") != std::string::npos);
+    RequireCompiles(compiler, volumeInputSource, "VolumeInput.frag");
+
     const auto invalid =
         infernux::ParseShaderInfo("ShaderInfo { UnexpectedField 2 Properties { Float x = 1.0 Float x = 2.0 } }");
     assert(!invalid.IsValid());

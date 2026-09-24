@@ -380,6 +380,67 @@ class TestRenderPassBuilder:
 # ══════════════════════════════════════════════════════════════════════
 
 class TestGraphTextures:
+    def test_imported_volume_asset_uses_guid_and_is_sample_only(self, monkeypatch):
+        class TextureAsset:
+            guid = "0123456789abcdef0123456789abcdef"
+            dimension = "3d"
+            pixel_width = 8
+            pixel_height = 6
+            pixel_depth = 4
+
+        monkeypatch.setattr(native, "InxTexture", TextureAsset)
+        graph = RenderGraph("VolumeAsset")
+        graph.create_texture("color", camera_target=True)
+        volume = graph.import_texture("density", TextureAsset())
+        alias = graph.import_texture("same_asset", TextureAsset())
+        assert alias is not volume
+        assert alias.name == "same_asset"
+        assert alias.asset_guid == volume.asset_guid
+        with graph.add_pass("SampleVolume") as render_pass:
+            render_pass.set_texture("density", volume)
+            render_pass.write_color("color")
+            render_pass.fullscreen_quad("Tests/VolumeInput")
+        graph.set_output("color")
+
+        description = graph.build()
+        imported = next(texture for texture in description.textures if texture.name == "density")
+        assert imported.role == GraphTextureRole.ASSET
+        assert imported.asset_guid == TextureAsset.guid
+        assert (imported.width, imported.height, imported.depth) == (8, 6, 4)
+        assert imported.is_volume
+        assert imported.samples == 1
+        assert imported.format == Format.UNDEFINED
+        assert description.passes[0].commands[0].input_bindings == [("density", "density")]
+
+        with graph.add_pass("InvalidAssetWriter") as writer:
+            writer.write_color(volume)
+            writer.draw_renderers()
+        with pytest.raises(ValueError, match="sample-only Texture asset"):
+            graph.build()
+
+    def test_imported_texture_asset_rejects_invalid_identity_and_dimensions(self, monkeypatch):
+        class TextureAsset:
+            guid = "0123456789abcdef0123456789abcdef"
+            dimension = "2d"
+            pixel_width = 8
+            pixel_height = 6
+            pixel_depth = 1
+
+        monkeypatch.setattr(native, "InxTexture", TextureAsset)
+        graph = RenderGraph("TextureAsset")
+        asset = TextureAsset()
+        handle = graph.import_texture("image", asset)
+        assert not handle.is_volume
+        assert handle.depth == 1
+
+        asset.guid = ""
+        with pytest.raises(ValueError, match="without a GUID"):
+            graph.import_texture("no_identity", asset)
+        asset.guid = TextureAsset.guid
+        asset.pixel_depth = 0
+        with pytest.raises(ValueError, match="empty dimensions"):
+            graph.import_texture("no_depth", asset)
+
     def test_build_assigns_a_new_nonzero_source_revision(self):
         graph = _make_graph()
         with graph.add_pass("Opaque") as render_pass:
