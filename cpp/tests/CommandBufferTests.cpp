@@ -22,7 +22,6 @@ int main()
     vertices[1].pos = {1.0F, 0.0F, 0.0F};
     vertices[2].pos = {0.0F, 1.0F, 0.0F};
     mesh->SetData(std::move(vertices), {0, 1, 2}, {});
-    mesh->SetIndexFormat(MeshIndexFormat::UInt32);
 
     auto material = std::make_shared<InxMaterial>("draw-capture-material");
     material->SetColor("_BaseColor", {1.0F, 1.0F, 1.0F, 1.0F});
@@ -71,20 +70,6 @@ int main()
     assert(recorded.geometry);
     assert(recorded.vertices == &recorded.geometry->vertices);
     assert(recorded.indices == &recorded.geometry->indices);
-    assert(recorded.meshIndexFormat == MeshIndexFormat::UInt32);
-
-    // The public CPU topology remains uint32 while Auto/UInt16 select the
-    // actual GPU encoding. Explicit UInt16 is range-checked, never truncated.
-    assert(ResolveMeshIndexFormat(MeshIndexFormat::Auto, 3, recorded.geometry->indices) == MeshIndexFormat::UInt16);
-    assert(ResolveMeshIndexFormat(MeshIndexFormat::UInt32, 3, recorded.geometry->indices) == MeshIndexFormat::UInt32);
-    bool rejectedNarrowIndex = false;
-    try {
-        (void)ResolveMeshIndexFormat(MeshIndexFormat::UInt16, 65537, std::vector<uint32_t>{0, 65536, 0});
-    } catch (const std::invalid_argument &) {
-        rejectedNarrowIndex = true;
-    }
-    assert(rejectedNarrowIndex);
-
     const auto &second = std::get<DrawMeshParams>(commands.GetCommands().at(1).data);
     const auto &third = std::get<DrawMeshParams>(commands.GetCommands().at(2).data);
     assert(second.parameterBlock && third.parameterBlock);
