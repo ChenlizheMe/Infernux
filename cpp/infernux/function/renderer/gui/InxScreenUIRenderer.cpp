@@ -871,8 +871,9 @@ void InxScreenUIRenderer::Destroy()
         }
         if (m_pipeline)
             vkDestroyPipeline(m_device, m_pipeline, nullptr);
-        for (const auto &[key, pipeline] : m_materialPipelineVariants)
-            m_deletionQueue->Retire([device = m_device, pipeline] { vkDestroyPipeline(device, pipeline, nullptr); });
+        for (const auto &variant : m_materialPipelineVariants)
+            m_deletionQueue->Retire(
+                [device = m_device, pipeline = variant.second] { vkDestroyPipeline(device, pipeline, nullptr); });
         m_materialPipelineVariants.clear();
         for (const auto &variant : m_worldPipelineVariants)
             vkDestroyPipeline(m_device, variant.pipeline, nullptr);
