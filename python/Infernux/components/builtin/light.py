@@ -106,8 +106,9 @@ class Light(BuiltinComponent):
     _component_category_ = "Rendering"
     _always_show = False
 
-    # Scene icon: yellow diamond shown at light position (Unity-style)
-    _gizmo_icon_color = (1.0, 0.92, 0.016)
+    # The Scene-view bulb is an authored pure-white alpha silhouette. Keep the
+    # vertex tint neutral so Inspector theme colours never leak into the world.
+    _gizmo_icon_color = (1.0, 1.0, 1.0)
     _gizmo_icon_kind = ICON_KIND_LIGHT
 
     # ---- Light type ----
