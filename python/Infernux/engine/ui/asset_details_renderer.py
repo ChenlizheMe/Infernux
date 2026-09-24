@@ -46,6 +46,7 @@ from Infernux.core.asset_types import (
     read_audio_import_settings,
     read_mesh_import_settings,
     mesh_import_settings_schema,
+    MESH_EXTENSIONS,
 )
 from .inspector_utils import max_label_w, field_label, render_apply_revert
 from .theme import Theme, ImGuiCol
@@ -363,8 +364,15 @@ class _ImportSettingsController:
             self.disk_settings = copy.deepcopy(snapshot)
             if self.state is not None and self.state.import_controller is self:
                 self.state.disk_settings = self.disk_settings
-        DocumentRegistry.instance().complete_save(
+        completed = DocumentRegistry.instance().complete_save(
             ticket_id, success=success, message=message, content_token=token if success else None,
+        )
+        from Infernux.engine.interaction import SaveTicketStatus
+
+        _ImportSettingsBatch.model_save_completed(
+            self.document_id,
+            completed.status is SaveTicketStatus.SUCCEEDED,
+            completed.message,
         )
         if not success:
             Debug.log_error(f"Model Apply failed for '{self.file_path}': {message}")
@@ -375,6 +383,7 @@ class _ImportSettingsController:
             database = self._pending_model_save[0]
             database.discard_model_reimport()
             self._pending_model_save = None
+            _ImportSettingsBatch.model_save_completed(self.document_id, False, "model Apply was cancelled")
 
     def discard(self, *, document_id: str):
         from Infernux.engine.interaction import DocumentRegistry
@@ -401,6 +410,170 @@ class _ImportSettingsController:
         self.file_path = str(destination_path)
         if self.exec_layer is not None:
             self.exec_layer.refresh_binding(self.category, self.file_path)
+
+
+class _ImportSettingsBatch:
+    """One shared authoring surface for several import-settings documents."""
+
+    _active_apply = None
+
+    def __init__(self, states: Tuple["_State", ...]) -> None:
+        if len(states) < 2:
+            raise ValueError("import-settings batch requires at least two assets")
+        controllers = tuple(state.import_controller for state in states)
+        if any(controller is None for controller in controllers):
+            raise RuntimeError("import-settings batch requires document-backed assets")
+        self.states = states
+        self.controllers = controllers
+
+    def values(self, key: str) -> Tuple[Any, ...]:
+        return tuple(getattr(controller.settings, key) for controller in self.controllers)
+
+    def is_mixed(self, key: str) -> bool:
+        values = self.values(key)
+        return any(value != values[0] for value in values[1:])
+
+    def apply_mutation(
+        self,
+        key: str,
+        mutator: Callable[[Any], None],
+        description: str,
+    ) -> bool:
+        from Infernux.engine.interaction import AuthoringMutationService
+        from Infernux.engine.undo import ImportSettingsDraftCommand
+
+        if self.is_applying():
+            return False
+        entries = []
+        for controller in self.controllers:
+            old_settings = copy.deepcopy(controller.settings)
+            new_settings = copy.deepcopy(controller.settings)
+            mutator(new_settings)
+            if new_settings == old_settings:
+                continue
+            entries.append((
+                controller.document_id,
+                lambda _before_revision, _after_revision,
+                       controller=controller, old_settings=old_settings,
+                       new_settings=new_settings: ImportSettingsDraftCommand(
+                    controller,
+                    old_settings,
+                    new_settings,
+                    edit_key=key,
+                    description=description,
+                ),
+            ))
+        return AuthoringMutationService.require().execute_command_batch(
+            tuple(entries),
+            view_id="inspector",
+            description=description,
+        ) if entries else False
+
+    def dirty_document_ids(self) -> Tuple[str, ...]:
+        from Infernux.engine.interaction import DocumentRegistry
+
+        registry = DocumentRegistry.instance()
+        return tuple(
+            controller.document_id
+            for controller in self.controllers
+            if registry.require(controller.document_id).is_dirty
+        )
+
+    def is_applying(self) -> bool:
+        active = type(self)._active_apply
+        return bool(active and any(controller.document_id == entry[0]
+                                   for controller in self.controllers for entry in active[0]))
+
+    @classmethod
+    def model_save_completed(cls, document_id: str, success: bool, message: str = "") -> None:
+        """Start the next model only after the previous owner commit completed."""
+        active = cls._active_apply
+        if active is None or active[0][active[1]][0] != document_id:
+            return
+        if not success:
+            cls._active_apply = None
+            Debug.log_error(f"Selected model Apply stopped at '{active[0][active[1]][2]}': {message}")
+            return
+        active[1] += 1
+        if active[1] == len(active[0]):
+            cls._active_apply = None
+            return
+        cls._start_next_model()
+
+    @classmethod
+    def _start_next_model(cls) -> bool:
+        from Infernux.engine.interaction import DocumentCapability, DocumentRegistry, DocumentState
+
+        active = cls._active_apply
+        if active is None:
+            return False
+        document_id, revision, path = active[0][active[1]]
+        registry = DocumentRegistry.instance()
+        document = registry.get(document_id)
+        if (document is None or document.revision != revision or not document.is_dirty
+                or not document.capabilities & DocumentCapability.SAVE
+                or document.state is DocumentState.CONFLICT
+                or registry.active_save_ticket(document_id) is not None):
+            cls._active_apply = None
+            Debug.log_error(f"Selected model Apply stopped at '{path}': its draft changed before publication")
+            return False
+        result = registry.request_save(document_id)
+        if not result.accepted or registry.active_save_ticket(document_id) is None:
+            cls._active_apply = None
+            Debug.log_error(f"Selected model Apply stopped at '{path}': {result.message or 'save did not start'}")
+            return False
+        return True
+
+    def request_apply(self) -> bool:
+        """Apply every dirty draft after validating the whole selected set."""
+        from Infernux.engine.interaction import (
+            DocumentCapability,
+            DocumentRegistry,
+            DocumentState,
+        )
+
+        registry = DocumentRegistry.instance()
+        document_ids = self.dirty_document_ids()
+        if not document_ids:
+            return False
+        documents = tuple(registry.require(document_id) for document_id in document_ids)
+        if any(not document.capabilities & DocumentCapability.SAVE for document in documents):
+            raise RuntimeError("selected import settings include a document that cannot be applied")
+        if any(document.state is DocumentState.CONFLICT for document in documents):
+            raise RuntimeError("selected import settings changed outside the Editor")
+        if type(self)._active_apply is not None:
+            return False
+        if any(registry.active_save_ticket(document.document_id) is not None for document in documents):
+            return False
+        type(self)._active_apply = [
+            tuple((document.document_id, document.revision, document.resource_path) for document in documents),
+            0,
+        ]
+        if not type(self)._start_next_model():
+            raise RuntimeError("the first selected model could not start Apply")
+        return True
+
+    def request_revert(self) -> bool:
+        from Infernux.engine.interaction import (
+            DocumentCapability,
+            DocumentRegistry,
+        )
+
+        registry = DocumentRegistry.instance()
+        document_ids = self.dirty_document_ids()
+        if not document_ids:
+            return False
+        documents = tuple(registry.require(document_id) for document_id in document_ids)
+        if any(not document.capabilities & DocumentCapability.DISCARD for document in documents):
+            raise RuntimeError("selected import settings include a document that cannot be reverted")
+        if self.is_applying() or any(registry.active_save_ticket(document.document_id) is not None for document in documents):
+            raise RuntimeError("selected import settings cannot be reverted while Apply is running")
+        if any(document.controller is None for document in documents):
+            raise RuntimeError("selected import settings include a document without an authoring controller")
+        results = tuple(registry.request_discard(document_id) for document_id in document_ids)
+        if any(not result.accepted for result in results):
+            raise RuntimeError("one or more selected import settings could not be reverted")
+        return True
 
 
 class _State:
@@ -477,11 +650,69 @@ class _State:
 
 
 _state = _State()
+_batch_import_states: Dict[str, _State] = {}
+
+
+def _configure_mesh_import_batch(
+    primary: _State,
+    selected_paths: Tuple[str, ...],
+    cat_def: AssetCategoryDef,
+) -> Optional[_ImportSettingsBatch]:
+    """Bind selected model sources to their durable draft documents."""
+    global _batch_import_states
+
+    ordered = []
+    for path in selected_paths:
+        value = str(path or "").strip()
+        if not value or any(token in value for token in ("::submesh:", "::submat:", "::subanim:", "::subtex:")):
+            continue
+        if os.path.splitext(value)[1].lower() not in MESH_EXTENSIONS | {".inxmesh"}:
+            continue
+        if not any(same_path(value, existing) for existing in ordered):
+            ordered.append(value)
+    if not any(same_path(primary.file_path, path) for path in ordered):
+        ordered.insert(0, primary.file_path)
+    if len(ordered) < 2:
+        for state in _batch_import_states.values():
+            if state.import_controller is not None:
+                state.import_controller.state = None
+        _batch_import_states = {}
+        return None
+
+    states = [primary]
+    next_states: Dict[str, _State] = {}
+    for path in ordered:
+        if same_path(path, primary.file_path):
+            continue
+        key = resolved_path(path)
+        state = _batch_import_states.get(key) or _State()
+        if not state.load(path, "mesh", cat_def):
+            continue
+        state.exec_layer = get_asset_execution_layer(
+            state.exec_layer,
+            "mesh",
+            path,
+            cat_def.access_mode,
+            autosave_debounce_sec=cat_def.autosave_debounce,
+        )
+        _bind_import_settings_document(state, cat_def, attach_view=False)
+        next_states[key] = state
+        states.append(state)
+
+    for key, state in _batch_import_states.items():
+        if (key not in next_states
+                and not same_path(state.file_path, primary.file_path)
+                and state.import_controller is not None):
+            state.import_controller.state = None
+    _batch_import_states = next_states
+    return _ImportSettingsBatch(tuple(states)) if len(states) > 1 else None
 
 
 def _bind_import_settings_document(
     state: _State,
     cat_def: AssetCategoryDef,
+    *,
+    attach_view: bool = True,
 ) -> None:
     """Project one editable source asset into DocumentRegistry."""
     from Infernux.engine.interaction import (
@@ -497,17 +728,18 @@ def _bind_import_settings_document(
         or not cat_def.editable_fields
         or state.settings is None
     ):
-        registry.detach_view("inspector")
+        if attach_view:
+            registry.detach_view("inspector")
         state.document_id = ""
         state.import_controller = None
         return
 
     guid = str((state.meta or {}).get("guid", "") or "").strip()
-    key = (
-        DocumentKey.asset(DocumentKind.IMPORT_SETTINGS, guid)
-        if guid
-        else DocumentKey.resource(DocumentKind.IMPORT_SETTINGS, state.file_path)
-    )
+    if not guid:
+        state.document_id = ""
+        state.import_controller = None
+        return
+    key = DocumentKey.asset(DocumentKind.IMPORT_SETTINGS, guid)
     title = f"{os.path.basename(state.file_path)} Import Settings"
     existing = registry.get_by_key(key)
     if existing is not None:
@@ -544,7 +776,8 @@ def _bind_import_settings_document(
     state.import_controller = controller
     state.settings = controller.settings
     state.disk_settings = controller.disk_settings
-    registry.attach_view(document.document_id, "inspector")
+    if attach_view:
+        registry.attach_view(document.document_id, "inspector")
 
 
 def _bind_editable_resource_document(
@@ -1162,7 +1395,12 @@ def _load_render_effect(path: str):
     if path.lower().endswith(".effect"):
         from Infernux.core.assets import AssetManager
 
-        effect = AssetManager.load(path, asset_type=RenderEffect)
+        database = AssetManager.require_asset_database()
+        guid = str(database.get_guid_from_path(path) or "")
+        effect = (
+            AssetManager.load_by_guid(guid, asset_type=RenderEffect)
+            if guid else None
+        )
         return (effect, {"document_kind": "effect"}) if effect is not None else None
 
     from pathlib import Path
@@ -1362,7 +1600,13 @@ def _render_variant_overrides(ctx, state):
 
     core = EditorInteractionCore.instance()
     files = SceneFileManager.instance()
-    editing_draft = bool(files and files.is_prefab_mode and same_path(files.prefab_mode_path, state.file_path))
+    asset_guid = str((state.meta or {}).get("guid", "") or "").strip()
+    editing_draft = bool(
+        files
+        and files.is_prefab_mode
+        and asset_guid
+        and asset_guid.casefold() == str(files.prefab_mode_guid or "").casefold()
+    )
     rows = state.extra["variant_modifications"]
     if editing_draft:
         from Infernux.engine.interaction import DocumentRegistry
@@ -2199,7 +2443,8 @@ def _sync_material_shader_metadata(mat_data: dict):
 
 
 def render_asset_inspector(ctx: InxGUIContext, panel,
-                           file_path: str, category: str):
+                           file_path: str, category: str,
+                           selected_paths: Tuple[str, ...] = ()):
     """Single entry point for all asset inspectors."""
     if "::subtex:" in file_path:
         category = "texture"
@@ -2229,6 +2474,18 @@ def render_asset_inspector(ctx: InxGUIContext, panel,
         autosave_debounce_sec=cat_def.autosave_debounce,
     )
     _bind_asset_document(_state, cat_def)
+    if category == "mesh":
+        batch = _configure_mesh_import_batch(
+            _state,
+            tuple(selected_paths),
+            cat_def,
+        )
+        if batch is None:
+            _state.extra.pop("import_batch", None)
+        else:
+            _state.extra["import_batch"] = batch
+            ctx.label(t("asset.model_multi_selection").format(count=len(batch.states)))
+            ctx.separator()
 
     # ── Header (shared for all categories) ─────────────────────────────
     if cat_def.show_header:
@@ -2249,12 +2506,22 @@ def render_asset_inspector(ctx: InxGUIContext, panel,
             and cat_def.editable_fields):
         from Infernux.engine.interaction import DocumentRegistry
 
-        saving = bool(_state.document_id and DocumentRegistry.instance().is_save_pending(_state.document_id))
+        registry = DocumentRegistry.instance()
+        batch = _state.extra.get("import_batch")
+        document_ids = (
+            tuple(controller.document_id for controller in batch.controllers)
+            if isinstance(batch, _ImportSettingsBatch)
+            else ((_state.document_id,) if _state.document_id else ())
+        )
+        saving = (isinstance(batch, _ImportSettingsBatch) and batch.is_applying()) or any(
+            registry.is_save_pending(document_id) for document_id in document_ids
+        )
+        dirty = bool(batch.dirty_document_ids()) if isinstance(batch, _ImportSettingsBatch) else _state.is_dirty()
         if saving:
             ctx.label(t("asset.import_progress.model_processing") if category == "mesh"
                       else t("asset.import_progress.processing"))
         render_apply_revert(
-            ctx, _state.is_dirty() and not saving,
+            ctx, dirty and not saving,
             on_apply=lambda: _on_apply(),
             on_revert=_on_revert,
             semantic_prefix=f"asset.{category}.import",
@@ -2287,6 +2554,10 @@ def invalidate():
             invalidate_live_material_preview(_state.file_path)
     if _state.category == "audio":
         _stop_audio_preview()
+    for state in _batch_import_states.values():
+        if state.import_controller is not None:
+            state.import_controller.state = None
+    _batch_import_states.clear()
     _state.reset()
     _sprite_state.reset()
 
@@ -2298,7 +2569,14 @@ def invalidate_asset(path: str, *, keep_view: bool = False):
     the same name performs a fresh load instead of reusing stale cached data.
     A MODIFIED notification keeps the current model tab while replacing data.
     """
-    if not _state.file_path or not path:
+    if not path:
+        return
+    for key, state in tuple(_batch_import_states.items()):
+        if same_path(state.file_path, path):
+            if state.import_controller is not None:
+                state.import_controller.state = None
+            _batch_import_states.pop(key, None)
+    if not _state.file_path:
         return
     if same_path(_state.file_path, path) or (
         _state.category == "prefab" and any(same_path(source, path)
@@ -2442,6 +2720,10 @@ def _render_import_fields(ctx: InxGUIContext, cat_def: AssetCategoryDef,
 
     if render_compact_section_header(ctx, t("asset.import_settings"), level="secondary"):
         fields = cat_def.editable_fields if fields is None else fields
+        batch = state.extra.get("import_batch")
+        if isinstance(batch, _ImportSettingsBatch):
+            _render_import_field_batch(ctx, state, batch, fields)
+            return
         labels = [t(f.label) for f in fields]
         lw = max_label_w(ctx, labels)
 
@@ -2543,6 +2825,84 @@ def _render_import_fields(ctx: InxGUIContext, cat_def: AssetCategoryDef,
                     )
 
 
+def _render_import_field_batch(
+    ctx: InxGUIContext,
+    state: _State,
+    batch: _ImportSettingsBatch,
+    fields: List[FieldDef],
+) -> None:
+    """Render common import fields with native mixed-value presentation."""
+    from .inspector_utils import PROP_BOOL, PROP_ENUM, PROP_FLOAT, PROP_INT
+
+    labels = [t(field.label) for field in fields]
+    label_width = max_label_w(ctx, labels) if labels else 0.0
+    descriptors = []
+    definitions = []
+    for field_def in fields:
+        values = batch.values(field_def.key)
+        current = values[0]
+        descriptor = {
+            "w": f"##batch_{field_def.key}",
+            "n": t(field_def.label),
+            "sid": f"asset.{state.category}.import.{field_def.key}",
+            "mix": any(value != current for value in values[1:]),
+        }
+        if field_def.field_type is WidgetType.CHECKBOX:
+            descriptor.update({"t": PROP_BOOL, "b": bool(current), "fl": True})
+        elif field_def.field_type is WidgetType.COMBO:
+            choices = list(field_def.combo_entries)
+            choice_values = [choice[1] for choice in choices]
+            try:
+                current_index = choice_values.index(current)
+            except ValueError:
+                current_index = 0
+            descriptor.update({
+                "t": PROP_ENUM,
+                "ei": current_index,
+                "en": [t(label) if label.startswith("asset.") else label for label, _value in choices],
+            })
+        elif field_def.field_type is WidgetType.INT:
+            descriptor.update({"t": PROP_INT, "i": int(current), "sp": field_def.float_speed})
+            if field_def.float_range:
+                descriptor.update({"mn": int(field_def.float_range[0]), "mx": int(field_def.float_range[1])})
+        elif field_def.field_type is WidgetType.FLOAT:
+            descriptor.update({"t": PROP_FLOAT, "f": float(current), "sp": field_def.float_speed})
+            if field_def.float_range:
+                descriptor.update({"mn": float(field_def.float_range[0]), "mx": float(field_def.float_range[1])})
+        else:
+            continue
+        descriptors.append(descriptor)
+        definitions.append(field_def)
+
+    if batch.is_applying():
+        ctx.begin_disabled(True)
+    try:
+        changes = ctx.render_property_batch(descriptors, label_width) if descriptors else {}
+    finally:
+        if batch.is_applying():
+            ctx.end_disabled()
+    for raw_index, raw_value in changes.items():
+        field_def = definitions[int(raw_index)]
+        value = raw_value
+        if field_def.field_type is WidgetType.COMBO:
+            choices = list(field_def.combo_entries)
+            index = int(raw_value)
+            if index < 0 or index >= len(choices):
+                raise ValueError(f"invalid import setting choice for {field_def.key}")
+            value = choices[index][1]
+        elif field_def.field_type is WidgetType.INT:
+            value = int(raw_value)
+        elif field_def.field_type is WidgetType.FLOAT:
+            value = float(raw_value)
+        elif field_def.field_type is WidgetType.CHECKBOX:
+            value = bool(raw_value)
+        batch.apply_mutation(
+            field_def.key,
+            lambda settings, key=field_def.key, value=value: setattr(settings, key, value),
+            f"Set {t(field_def.label)} on selected models",
+        )
+
+
 # ── Apply / Revert actions ─────────────────────────────────────────────
 
 
@@ -2575,10 +2935,18 @@ def _on_apply():
         return
     from Infernux.engine.interaction import DocumentRegistry
 
+    batch = _state.extra.get("import_batch")
+    if isinstance(batch, _ImportSettingsBatch):
+        batch.request_apply()
+        return
     DocumentRegistry.instance().request_save(_state.document_id)
 
 
 def _on_revert():
+    batch = _state.extra.get("import_batch")
+    if isinstance(batch, _ImportSettingsBatch):
+        batch.request_revert()
+        return
     if _state.document_id:
         from Infernux.engine.interaction import DocumentRegistry
 
@@ -2626,6 +2994,8 @@ def _render_model_mesh_resource(ctx, panel, file_path):
 
 def _render_mesh_header(ctx: InxGUIContext, panel, state: _State):
     """Render mesh preview + mesh metadata in inspector header."""
+    if isinstance(state.extra.get("import_batch"), _ImportSettingsBatch):
+        return
     if state.extra.get("model_active_page") == "animation":
         return
     avail_w = max(32.0, ctx.get_content_region_avail_width() - 8.0)
@@ -2646,10 +3016,13 @@ def _model_page_fields(page: str):
 
 
 def _render_model_import_pages(ctx: InxGUIContext, panel, state: _State):
+    batch = state.extra.get("import_batch")
+    is_batch = isinstance(batch, _ImportSettingsBatch)
     # Authored engine meshes have no source rig or animation import policy.
     if os.path.splitext(state.file_path)[1].lower() == ".inxmesh":
-        _render_mesh_info(ctx, panel, state)
-        _render_model_materials(ctx, state)
+        if not is_batch:
+            _render_mesh_info(ctx, panel, state)
+            _render_model_materials(ctx, state)
         _render_import_fields(ctx, _categories["mesh"], state, fields=[
             field for field in _model_page_fields("model")
             if field.key not in {"normal_mode", "tangent_mode", "normal_weighting", "tangent_algorithm"}
@@ -2672,15 +3045,17 @@ def _render_model_import_pages(ctx: InxGUIContext, panel, state: _State):
                 if page != "animation" and transport is not None:
                     transport.playing = False
                     transport.last_time = None
-                if page == "animation":
+                if page == "animation" and not is_batch:
                     from .model_animation_preview import render_model_animation_preview
                     render_model_animation_preview(ctx, panel, state,
                         json.loads((state.meta or {}).get("model_animations", "[]")))
-                if page == "model":
+                if page == "model" and not is_batch:
                     _render_mesh_info(ctx, panel, state)
                 if page == "materials":
                     _render_import_fields(ctx, _categories["mesh"], state, fields=_model_page_fields(page))
-                    if state.settings.material_import_mode == "none":
+                    if is_batch:
+                        ctx.text_wrapped(t("asset.model_multi_source_specific"))
+                    elif state.settings.material_import_mode == "none":
                         ctx.text_wrapped(t("asset.material_import_disabled"))
                     else:
                         _render_model_materials(ctx, state)
@@ -2690,9 +3065,13 @@ def _render_model_import_pages(ctx: InxGUIContext, panel, state: _State):
                     ctx.text_wrapped(t("asset.basis_modes_hint"))
                     if state.settings.generate_colliders:
                         ctx.text_wrapped(t("asset.generate_colliders_hint"))
-                if page == "animation":
+                if page == "animation" and is_batch:
+                    ctx.text_wrapped(t("asset.model_multi_source_specific"))
+                elif page == "animation":
                     _render_model_animation_clips(ctx, state)
-                if page in {"rig", "animation"}:
+                elif page == "rig" and not is_batch:
+                    _render_model_rig_definition(ctx, state)
+                if page in {"rig", "animation"} and not is_batch:
                     meta = state.meta or {}
                     count_key, names_key = (("bone_count", "bone_names_csv") if page == "rig"
                                             else ("animation_count", "animation_names_csv"))
@@ -2707,6 +3086,90 @@ def _render_model_import_pages(ctx: InxGUIContext, panel, state: _State):
                 ctx.end_tab_item()
     finally:
         ctx.end_tab_bar()
+
+
+def _render_model_rig_definition(ctx: InxGUIContext, state: _State) -> None:
+    """Render source-node choices without turning names or paths into asset identity."""
+    settings = state.settings
+    meta = state.meta or {}
+    nodes = json.loads(str(meta.get("skeleton_node_names", "[]")))
+    if settings.skeleton_definition_mode == "copy":
+        guid = ctx.text_input("Source Skeleton GUID##skeleton_definition_guid",
+                              settings.skeleton_definition_guid, 32)
+        if guid != settings.skeleton_definition_guid:
+            _edit_import_settings(state, "skeleton_definition_guid",
+                                  lambda value, guid=guid: setattr(value, "skeleton_definition_guid", guid),
+                                  "Set Skeleton Definition Source")
+        definition_id = ctx.text_input("Skeleton Subresource ID##skeleton_definition_id",
+                                       settings.skeleton_definition_id, 1024)
+        if definition_id != settings.skeleton_definition_id:
+            _edit_import_settings(state, "skeleton_definition_id",
+                                  lambda value, definition_id=definition_id:
+                                      setattr(value, "skeleton_definition_id", definition_id),
+                                  "Set Skeleton Definition ID")
+    else:
+        if nodes:
+            choices = ["<Source Root>", *nodes]
+            current = 0 if not settings.rig_root_node else (choices.index(settings.rig_root_node)
+                                                             if settings.rig_root_node in choices else 0)
+            new_index = ctx.combo("##rig_root_node", current, choices)
+            if new_index != current:
+                selected = "" if new_index == 0 else choices[new_index]
+                _edit_import_settings(state, "rig_root_node",
+                                      lambda value, selected=selected: setattr(value, "rig_root_node", selected),
+                                      "Set Rig Root Node")
+        for node in nodes:
+            exposed = node in settings.exposed_bones
+            checked = ctx.checkbox(f"Expose {node}##expose_rig_{node}", exposed)
+            if checked != exposed:
+                def _toggle(value, node=node, checked=checked):
+                    current_nodes = list(value.exposed_bones)
+                    if checked:
+                        current_nodes.append(node)
+                    else:
+                        current_nodes.remove(node)
+                    value.exposed_bones = current_nodes
+                _edit_import_settings(state, "exposed_bones", _toggle, f"Toggle exposed bone {node}")
+    if settings.rig_type == "humanoid":
+        _render_humanoid_mapping(ctx, state, nodes)
+
+
+_HUMANOID_BONES = (
+    "hips", "spine", "chest", "upper_chest", "neck", "head",
+    "left_shoulder", "left_upper_arm", "left_lower_arm", "left_hand",
+    "right_shoulder", "right_upper_arm", "right_lower_arm", "right_hand",
+    "left_upper_leg", "left_lower_leg", "left_foot", "left_toes",
+    "right_upper_leg", "right_lower_leg", "right_foot", "right_toes",
+)
+
+
+def _render_humanoid_mapping(ctx: InxGUIContext, state: _State, nodes: list[str]) -> None:
+    """Unity-style auto mapping with sparse, Pythonic explicit overrides."""
+    ctx.separator()
+    ctx.text_wrapped(t("asset.humanoid_mapping_hint"))
+    report = json.loads(str((state.meta or {}).get("published_humanoid_rig", "{}")))
+    resolved = report.get("mapping", {})
+    choices = [t("asset.humanoid_auto"), *nodes]
+    for slot in _HUMANOID_BONES:
+        override = state.settings.humanoid_bone_overrides.get(slot)
+        current = choices.index(override) if override in choices else 0
+        suffix = f" ({resolved[slot]})" if not override and slot in resolved else ""
+        new_index = ctx.combo(f"{slot}{suffix}##humanoid_{slot}", current, choices)
+        if new_index != current:
+            def set_override(settings, slot=slot, index=new_index):
+                overrides = dict(settings.humanoid_bone_overrides)
+                if index == 0:
+                    overrides.pop(slot, None)
+                else:
+                    overrides[slot] = choices[index]
+                settings.humanoid_bone_overrides = overrides
+            _edit_import_settings(state, f"humanoid_bone_overrides.{slot}", set_override,
+                                  f"Set Humanoid Bone {slot}")
+    if report:
+        status = t("asset.humanoid_valid") if report.get("valid") else t("asset.humanoid_invalid")
+        ctx.text_wrapped(status)
+        for issue in report.get("issues", []):
+            ctx.text_wrapped(f"{issue.get('bone') or 'rig'}: {issue.get('detail', issue.get('code', ''))}")
 
 
 def _render_model_animation_clips(ctx: InxGUIContext, state: _State):
@@ -2920,6 +3383,15 @@ def _render_model_material_search(ctx, state, mesh, slot_data, set_remap):
     ctx.separator()
 
 
+def _model_material_diagnostic_messages(meta) -> tuple[str, ...]:
+    diagnostics = json.loads((meta or {}).get("model_material_diagnostics", "[]"))
+    return tuple(
+        t(f"asset.model_material_diagnostic_{diagnostic['code']}").format(
+            material=diagnostic["material"], property=diagnostic["property"], detail=diagnostic["detail"])
+        for diagnostic in diagnostics
+    )
+
+
 def _render_model_materials(ctx: InxGUIContext, state: _State):
     from Infernux.lib import AssetRegistry
     from .inspector_utils import render_compact_section_header
@@ -2931,6 +3403,15 @@ def _render_model_materials(ctx: InxGUIContext, state: _State):
     mesh = AssetRegistry.instance().load_mesh(state.file_path)
     if mesh is None:
         return
+    diagnostic_messages = _model_material_diagnostic_messages(state.meta)
+    if diagnostic_messages:
+        ctx.push_style_color(ImGuiCol.Text, *Theme.WARNING_TEXT)
+        ctx.label(t("asset.model_material_import_report"))
+        ctx.pop_style_color(1)
+        for index, message in enumerate(diagnostic_messages):
+            ctx.text_wrapped(message)
+            ctx.record_semantic_item("label", message, True, f"asset.mesh.material.diagnostic.{index}")
+        ctx.separator()
     slot_data = mesh.get_material_slot_data()
     if not slot_data:
         ctx.text_wrapped(t("asset.material_import_apply_required"))
@@ -3032,6 +3513,8 @@ def _render_mesh_info(ctx: InxGUIContext, panel, state: _State):
             t("asset.mesh_meshes"),
             t("asset.mesh_vertices"),
             t("asset.mesh_indices"),
+            t("asset.source_unit_scale"),
+            t("asset.effective_scale"),
             t("asset.mesh_material_slots"),
             t("asset.mesh_bones"),
             t("asset.mesh_anims"),
@@ -3047,6 +3530,8 @@ def _render_mesh_info(ctx: InxGUIContext, panel, state: _State):
         mesh_count = meta.get("mesh_count", "?")
         vertex_count = meta.get("vertex_count", "?")
         index_count = meta.get("index_count", "?")
+        source_unit_scale = meta.get("source_unit_scale", "?")
+        effective_scale = meta.get("effective_scale", "?")
         mat_slots = meta.get("material_slot_count", "?")
         mat_names = meta.get("material_slots", "")
         bone_count = meta.get("bone_count", "?")
@@ -3061,6 +3546,10 @@ def _render_mesh_info(ctx: InxGUIContext, panel, state: _State):
         ctx.label(str(vertex_count))
         field_label(ctx, t("asset.mesh_indices"), lw)
         ctx.label(str(index_count))
+        field_label(ctx, t("asset.source_unit_scale"), lw)
+        ctx.label(str(source_unit_scale))
+        field_label(ctx, t("asset.effective_scale"), lw)
+        ctx.label(str(effective_scale))
         field_label(ctx, t("asset.mesh_material_slots"), lw)
         ctx.label(str(mat_slots))
         if mat_names:
@@ -3166,20 +3655,23 @@ def _sprite_selection_after(
         SelectionTarget,
     )
 
+    asset_guid = str((state.meta or {}).get("guid", "") or "").strip()
+    if not asset_guid:
+        return before
     valid_ids = {frame.stable_id for frame in settings.sprite_frames}
 
     def is_valid(target) -> bool:
         return not (
             target.domain is SelectionDomain.ASSET_SUBRESOURCE
             and target.sub_kind == "sprite_frame"
-            and same_path(target.document_id, state.file_path)
+            and target.document_id.casefold() == asset_guid.casefold()
             and target.target_id not in valid_ids
         )
 
     return SelectionService.reconciled_snapshot(
         before,
         is_valid,
-        fallback=SelectionTarget.asset(state.file_path),
+        fallback=SelectionTarget.asset(asset_guid),
         fallback_owner_id="inspector",
     )
 
@@ -3187,13 +3679,16 @@ def _sprite_selection_after(
 def _select_sprite_frame(state: _State, frame: Optional[SpriteFrame]) -> None:
     from Infernux.engine.interaction import SelectionService, SelectionTarget
 
+    asset_guid = str((state.meta or {}).get("guid", "") or "").strip()
+    if not asset_guid:
+        return
     selection = SelectionService.instance()
     if frame is None:
-        target = SelectionTarget.asset(state.file_path)
+        target = SelectionTarget.asset(asset_guid)
         reason = "sprite_frame_deselect"
     else:
         target = SelectionTarget.asset_subresource(
-            state.file_path,
+            asset_guid,
             frame.stable_id,
             sub_kind="sprite_frame",
         )
@@ -3997,13 +4492,13 @@ def _render_render_effect_body(ctx: InxGUIContext, panel, state: _State):
         )
 
     def assign_entry(index: int, payload) -> None:
-        guid, path_hint = _resolve_guid_and_path(payload)
-        if guid or path_hint:
-            replace_entry(index, asset={"guid": guid, "path_hint": path_hint})
+        guid, _path = _resolve_guid_and_path(payload)
+        if guid:
+            replace_entry(index, asset={"guid": guid})
 
     def append_entry(payload) -> None:
         guid, path_hint = _resolve_guid_and_path(payload)
-        if not guid and not path_hint:
+        if not guid:
             return
         document = resource.serialize_document()
         used_ids = {str(entry.get("entry_id", "")) for entry in document["entries"]}
@@ -4016,7 +4511,7 @@ def _render_render_effect_body(ctx: InxGUIContext, panel, state: _State):
         document["entries"].append(
             {
                 "entry_id": entry_id,
-                "asset": {"guid": guid, "path_hint": path_hint},
+                "asset": {"guid": guid},
                 "enabled": True,
                 "overrides": {},
             }
@@ -4033,6 +4528,7 @@ def _render_render_effect_body(ctx: InxGUIContext, panel, state: _State):
         ctx.label(t("asset.render_effect_group_empty"))
 
     for index, entry in enumerate(resource.entries):
+        entry_path = AssetManager._get_path_from_guid(entry.asset.guid) or ""
         label = entry.entry_id or f"Effect {index + 1}"
         if not render_compact_section_header(
             ctx,
@@ -4070,16 +4566,16 @@ def _render_render_effect_body(ctx: InxGUIContext, panel, state: _State):
         render_asset_reference_field(
             ctx,
             f"##effect_group_asset_{index}",
-            os.path.basename(entry.asset.path_hint) or entry.asset.guid or t("asset.none"),
+            os.path.basename(entry_path) or entry.asset.guid or t("asset.none"),
             "RenderEffect",
             asset_type="RenderEffect",
             on_assign=lambda payload, _index=index: assign_entry(_index, payload),
-            ping_path=entry.asset.path_hint or None,
+            ping_path=entry_path or None,
             has_value=True,
             reference_value={
                 "asset_type": "RenderEffect",
                 "guid": entry.asset.guid,
-                "path_hint": entry.asset.path_hint,
+                "path_hint": entry_path,
             },
             semantic_id=f"render_effect_group.entry.{index}.asset",
         )
@@ -4110,13 +4606,10 @@ def _render_render_effect_body(ctx: InxGUIContext, panel, state: _State):
             apply_group_document(document, f"entries.{index}.remove", "Remove Render Effect Group entry")
             return
 
-        reference = RenderEffectRef(
-            guid=entry.asset.guid,
-            path_hint=entry.asset.path_hint,
-        )
+        reference = RenderEffectRef(guid=entry.asset.guid)
         effect = reference.resolve()
         if effect is None:
-            ctx.label(entry.asset.path_hint or entry.asset.guid)
+            ctx.label(entry_path or entry.asset.guid)
             continue
         if not entry.enabled:
             ctx.begin_disabled(True)

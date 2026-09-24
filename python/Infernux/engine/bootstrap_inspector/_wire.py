@@ -1367,8 +1367,26 @@ def _wire_asset_preview(ctx):
 
     def _render_asset_inspector(ctx_arg, file_path, category):
         from Infernux.engine.ui.asset_details_renderer import render_asset_inspector
+        from Infernux.engine.interaction import SelectionDomain, SelectionService
         try:
-            render_asset_inspector(ctx_arg, ip, file_path, category)
+            snapshot = SelectionService.instance().snapshot
+            selected_paths = ()
+            if snapshot.domain is SelectionDomain.ASSET:
+                from Infernux.core.assets import AssetManager
+
+                database = AssetManager.require_asset_database()
+                selected_paths = tuple(
+                    str(database.get_path_from_guid(target.target_id) or "")
+                    for target in snapshot.targets
+                    if target.domain is SelectionDomain.ASSET
+                )
+            render_asset_inspector(
+                ctx_arg,
+                ip,
+                file_path,
+                category,
+                selected_paths=selected_paths,
+            )
         except Exception as exc:
             Debug.log_error(f"Asset inspector render failed for '{file_path}': {exc}")
 
