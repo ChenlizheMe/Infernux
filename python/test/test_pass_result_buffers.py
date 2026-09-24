@@ -9,6 +9,7 @@ from Infernux.renderstack.geometry_buffers import (
 )
 from Infernux.renderstack.render_pipeline import RenderPipeline
 from Infernux.renderstack.default_forward_pipeline import DefaultForwardPipeline
+from Infernux.renderstack.default_forward_plus_pipeline import DefaultForwardPlusPipeline
 from Infernux.renderstack.default_deferred_pipeline import DefaultDeferredPipeline
 from Infernux.renderstack.fullscreen_effect import FullScreenEffect
 from Infernux.renderstack.pipeline_dsl import PipelineBuilder
@@ -89,6 +90,66 @@ def test_builtin_pipeline_publishes_view_shadow_map_to_effects(pipeline_type, pr
         render_pass.write_color(graph.create_texture("shadow_preview"))
         render_pass.fullscreen_quad("Shadow Preview")
     assert render_pass._input_bindings == {"shadowMap": "shadow_map"}
+
+
+@pytest.mark.parametrize("pipeline_type", [DefaultForwardPipeline, DefaultForwardPlusPipeline])
+@pytest.mark.parametrize("samples", [1, 4])
+def test_forward_pass_buffers_have_current_view_producers_and_resolved_inputs(pipeline_type, samples):
+    graph = RenderGraph("View Pass Buffers")
+    graph.set_geometry_buffer_requirements({"normal", "motion"})
+    observed = {}
+
+    def capture_stage(stage):
+        if stage.stable_id == "after_opaque":
+            observed["result"] = graph.current_pass_result
+            observed["inputs"] = stage.contract.inputs
+
+    graph._effect_stage_callback = capture_stage
+    pipeline = pipeline_type()
+    pipeline.msaa_samples = samples
+    pipeline.define_topology(graph)
+    graph.build()
+
+    result = observed["result"]
+    assert {"color", "depth", "normal", "motion"} <= set(observed["inputs"])
+    assert result.sample("depth") is graph.get_texture("depth")
+    assert result.sample("normal").samples == 1
+    assert result.sample("motion").samples == 1
+    assert result.sample("normal") is not result.sample("motion")
+
+    opaque_index = next(i for i, p in enumerate(graph._passes) if p._name == "OpaquePass")
+    for semantic, material_pass in (("normal", "normal"), ("motion", "motion")):
+        producer_index, producer = next(
+            (i, p) for i, p in enumerate(graph._passes) if p._material_pass == material_pass
+        )
+        assert producer_index > opaque_index
+        assert producer._reads == ["depth"]
+        assert producer._write_depth is None
+        if samples == 4:
+            assert producer._resolve_color == result.sample(semantic).name
+            assert graph.get_texture(producer._write_colors[0]).samples == 4
+        else:
+            assert producer._resolve_color is None
+            assert producer._write_colors[0] == result.sample(semantic).name
+
+    class RecordingPass:
+        def set_textures(self, bindings):
+            self.bindings = bindings
+
+    class PassBufferEffect(FullScreenEffect):
+        name = "pass_buffer_effect"
+        injection_point = "after_opaque"
+        requires = {"color", "depth", "normal", "motion"}
+        modifies = set()
+
+    render_pass = RecordingPass()
+    PassBufferEffect().bind_buffers(render_pass, ResourceBus(result.snapshot))
+    assert render_pass.bindings == {
+        "_InxPassColor": result.sample("color"),
+        "_InxPassDepth": result.sample("depth"),
+        "_InxPassNormal": result.sample("normal"),
+        "_InxPassMotion": result.sample("motion"),
+    }
 
 
 def test_fullscreen_effect_shadow_binding_reports_missing_source():

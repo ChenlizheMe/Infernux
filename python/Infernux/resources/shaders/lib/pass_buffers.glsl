@@ -20,7 +20,10 @@ float samplePassDeviceDepth(vec2 uv) {
 vec3 reconstructPassWorldPosition(float deviceDepth, vec2 uv) {
     vec4 clip = vec4(uv * 2.0 - 1.0, deviceDepth, 1.0);
     vec4 world = ubo.inverseViewProj * clip;
-    return world.xyz / max(abs(world.w), 1e-7);
+    // Preserve the homogeneous sign for custom projection matrices. A valid
+    // negative w must not mirror the reconstructed world position.
+    float signedW = abs(world.w) < 1e-7 ? (world.w < 0.0 ? -1e-7 : 1e-7) : world.w;
+    return world.xyz / signedW;
 }
 
 vec3 samplePassWorldPosition(vec2 uv) {
