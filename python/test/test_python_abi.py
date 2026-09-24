@@ -17,6 +17,7 @@ def test_windows_player_native_library_contract_is_complete() -> None:
         {
             "InfernuxFoundation.dll",
             "InfernuxAudioRuntime.dll",
+            "InfernuxAssetRuntime.dll",
             "InfernuxParticleRuntime.dll",
             "InfernuxRenderCore.dll",
             "InfernuxRendererRuntime.dll",
@@ -34,6 +35,7 @@ def test_linux_player_native_library_contract_is_complete() -> None:
         {
             "libInfernuxFoundation.so",
             "libInfernuxAudioRuntime.so",
+            "libInfernuxAssetRuntime.so",
             "libInfernuxParticleRuntime.so",
             "libInfernuxRenderCore.so",
             "libInfernuxRendererRuntime.so",

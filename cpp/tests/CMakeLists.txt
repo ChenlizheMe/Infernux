@@ -1046,18 +1046,12 @@ if(INFERNUX_BUILD_TESTS)
 
     add_executable(infernux_asset_index_tests
         cpp/tests/AssetIndexTests.cpp
-        cpp/infernux/core/log/InxLog.cpp
-        cpp/infernux/function/resources/AssetDatabase/AssetIndex.cpp
-        cpp/infernux/function/resources/InxResource/InxResourceMeta.cpp
-        cpp/infernux/core/reflection/InxTypeRegistry.cpp
-        cpp/infernux/platform/filesystem/DocumentStore.cpp
-        cpp/infernux/platform/filesystem/AtomicFile.cpp
     )
     target_include_directories(infernux_asset_index_tests PRIVATE
         ${CMAKE_SOURCE_DIR}/cpp/infernux
         ${CMAKE_SOURCE_DIR}/external
     )
-    target_link_libraries(infernux_asset_index_tests PRIVATE Threads::Threads)
+    target_link_libraries(infernux_asset_index_tests PRIVATE InfernuxAssetRuntime)
     if(MSVC)
         target_compile_options(infernux_asset_index_tests PRIVATE /utf-8)
     endif()
@@ -1083,12 +1077,11 @@ if(INFERNUX_BUILD_TESTS)
 
     add_executable(infernux_asset_dependency_graph_tests
         cpp/tests/AssetDependencyGraphTests.cpp
-        cpp/infernux/core/log/InxLog.cpp
-        cpp/infernux/function/resources/AssetDependencyGraph.cpp
     )
     target_include_directories(infernux_asset_dependency_graph_tests PRIVATE
         ${CMAKE_SOURCE_DIR}/cpp/infernux
     )
+    target_link_libraries(infernux_asset_dependency_graph_tests PRIVATE InfernuxAssetRuntime)
     if(MSVC)
         target_compile_options(infernux_asset_dependency_graph_tests PRIVATE /utf-8)
     endif()

@@ -32,6 +32,20 @@ set(INFERNUX_AUDIO_RUNTIME_SOURCES
     "${CMAKE_SOURCE_DIR}/external/stb/stb_vorbis.c"
 )
 
+# Asset identity, metadata, and dependency publication form one native ABI.
+# Keep this layer independent of scene/renderer ownership so the composition
+# archive does not repeatedly compile and link the asset catalog core.
+set(INFERNUX_ASSET_RUNTIME_SOURCES
+    "${CMAKE_SOURCE_DIR}/cpp/infernux/function/resources/AssetDependencyGraph.cpp"
+    "${CMAKE_SOURCE_DIR}/cpp/infernux/function/resources/AssetDependencyGraph.h"
+    "${CMAKE_SOURCE_DIR}/cpp/infernux/function/resources/AssetRuntimeApi.h"
+    "${CMAKE_SOURCE_DIR}/cpp/infernux/function/resources/AssetDatabase/AssetIndex.cpp"
+    "${CMAKE_SOURCE_DIR}/cpp/infernux/function/resources/AssetDatabase/AssetIndex.h"
+    "${CMAKE_SOURCE_DIR}/cpp/infernux/function/resources/InxResource/InxResourceMeta.cpp"
+    "${CMAKE_SOURCE_DIR}/cpp/infernux/function/resources/InxResource/InxResourceMeta.h"
+    "${CMAKE_SOURCE_DIR}/cpp/infernux/function/resources/InxResource/InxResourceMeta.inl"
+)
+
 set(INFERNUX_PARTICLE_RUNTIME_SOURCES
     "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/particle/ParticleGpuBounds.cpp"
     "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/particle/ParticleGpuContinuationRuntime.cpp"
@@ -87,6 +101,7 @@ list(APPEND INFERNUX_VULKAN_BACKEND_SOURCES
 list(REMOVE_ITEM INFERNUX_RUNTIME_SOURCES
     ${INFERNUX_FOUNDATION_SOURCES}
     ${INFERNUX_AUDIO_RUNTIME_SOURCES}
+    ${INFERNUX_ASSET_RUNTIME_SOURCES}
     ${INFERNUX_PARTICLE_RUNTIME_SOURCES}
     ${INFERNUX_SHADER_COMPILER_SOURCES}
     ${INFERNUX_RENDER_CORE_SOURCES}

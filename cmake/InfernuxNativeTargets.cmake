@@ -5,6 +5,7 @@
 # compile and link settings always agree.
 add_library(InfernuxFoundation SHARED ${INFERNUX_FOUNDATION_SOURCES})
 add_library(InfernuxAudioRuntime SHARED ${INFERNUX_AUDIO_RUNTIME_SOURCES})
+add_library(InfernuxAssetRuntime SHARED ${INFERNUX_ASSET_RUNTIME_SOURCES})
 add_library(InfernuxParticleRuntime SHARED ${INFERNUX_PARTICLE_RUNTIME_SOURCES})
 add_library(InfernuxShaderCompiler SHARED ${INFERNUX_SHADER_COMPILER_SOURCES})
 add_library(InfernuxRenderCore SHARED ${INFERNUX_RENDER_CORE_SOURCES})
@@ -46,6 +47,7 @@ endif()
 set(INFERNUX_RUNTIME_DLL_TARGETS
     InfernuxFoundation
     InfernuxAudioRuntime
+    InfernuxAssetRuntime
     InfernuxParticleRuntime
     InfernuxShaderCompiler
     InfernuxRenderCore
@@ -55,7 +57,21 @@ set(INFERNUX_RUNTIME_DLL_TARGETS
 if(NOT INFERNUX_RUNTIME_STATIC)
     list(APPEND INFERNUX_RUNTIME_DLL_TARGETS InfernuxRuntime)
 endif()
-foreach(_infernux_dll ${INFERNUX_RUNTIME_DLL_TARGETS})
+# AssetRuntime has a deliberately annotated ABI. Existing subsystem DLLs are
+# kept on their current export policy until each boundary is annotated in turn.
+set(_infernux_legacy_auto_export_dlls
+    InfernuxFoundation
+    InfernuxAudioRuntime
+    InfernuxParticleRuntime
+    InfernuxShaderCompiler
+    InfernuxRenderCore
+    InfernuxRendererRuntime
+    InfernuxVulkanBackend
+)
+if(NOT INFERNUX_RUNTIME_STATIC)
+    list(APPEND _infernux_legacy_auto_export_dlls InfernuxRuntime)
+endif()
+foreach(_infernux_dll ${_infernux_legacy_auto_export_dlls})
     set_target_properties(${_infernux_dll} PROPERTIES
         WINDOWS_EXPORT_ALL_SYMBOLS ON
         CXX_VISIBILITY_PRESET default
@@ -66,6 +82,7 @@ endforeach()
 set(INFERNUX_NATIVE_TARGETS
     InfernuxFoundation
     InfernuxAudioRuntime
+    InfernuxAssetRuntime
     InfernuxParticleRuntime
     InfernuxShaderCompiler
     InfernuxRenderCore
@@ -97,6 +114,8 @@ endif()
 
 target_link_libraries(InfernuxAudioRuntime PUBLIC InfernuxFoundation SDL3::SDL3)
 target_link_libraries(InfernuxAudioRuntime PRIVATE dr_libs)
+target_link_libraries(InfernuxAssetRuntime PUBLIC InfernuxFoundation)
+target_compile_definitions(InfernuxAssetRuntime PRIVATE INFERNUX_ASSET_RUNTIME_EXPORTS=1)
 target_link_libraries(InfernuxParticleRuntime PUBLIC InfernuxFoundation)
 target_link_libraries(InfernuxShaderCompiler PUBLIC InfernuxFoundation)
 target_link_libraries(InfernuxRenderCore PUBLIC InfernuxFoundation)
@@ -105,6 +124,7 @@ target_link_libraries(InfernuxVulkanBackend PUBLIC InfernuxRenderCore)
 target_link_libraries(InfernuxRuntime PUBLIC
     InfernuxFoundation
     InfernuxAudioRuntime
+    InfernuxAssetRuntime
     InfernuxParticleRuntime
     InfernuxShaderCompiler
     InfernuxRenderCore

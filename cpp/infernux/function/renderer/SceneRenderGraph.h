@@ -26,6 +26,7 @@
 #include "lighting/CanonicalLightGpuBuffer.h"
 #include "lighting/ForwardPlusLightGrid.h"
 #include "particle/ParticleGpuViewDiagnostics.h"
+#include "rhi/RhiRenderTexture.h"
 #include "vk/RenderGraph.h"
 #include "vk/VkDescriptorManager.h"
 #include "vk/VkDeviceContext.h"

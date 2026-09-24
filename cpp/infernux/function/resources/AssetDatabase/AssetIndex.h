@@ -1,6 +1,7 @@
 #pragma once
 
 #include <core/types/InxFwdType.h>
+#include <function/resources/AssetRuntimeApi.h>
 #include <function/resources/InxResource/InxResourceMeta.h>
 
 #include <cstdint>
@@ -46,23 +47,26 @@ struct AssetIndexEntry
 class AssetIndex final
 {
   public:
-    void Reset(std::string normalizedProjectRoot);
-    [[nodiscard]] bool Load(const std::string &path, const std::string &normalizedProjectRoot);
-    void Save(const std::string &path) const;
+    INFERNUX_ASSET_RUNTIME_API void Reset(std::string normalizedProjectRoot);
+    [[nodiscard]] INFERNUX_ASSET_RUNTIME_API bool Load(const std::string &path,
+                                                       const std::string &normalizedProjectRoot);
+    INFERNUX_ASSET_RUNTIME_API void Save(const std::string &path) const;
 
-    [[nodiscard]] const AssetIndexEntry *Find(const std::string &normalizedPath) const;
+    [[nodiscard]] INFERNUX_ASSET_RUNTIME_API const AssetIndexEntry *
+    Find(const std::string &normalizedPath) const;
     [[nodiscard]] const std::unordered_map<std::string, AssetIndexEntry> &Entries() const noexcept
     {
         return m_entries;
     }
-    void Upsert(AssetIndexEntry entry);
+    INFERNUX_ASSET_RUNTIME_API void Upsert(AssetIndexEntry entry);
     [[nodiscard]] size_t Size() const noexcept
     {
         return m_entries.size();
     }
 
-    [[nodiscard]] nlohmann::json SerializeDocument() const;
-    void DeserializeDocument(const nlohmann::json &document, const std::string &normalizedProjectRoot);
+    [[nodiscard]] INFERNUX_ASSET_RUNTIME_API nlohmann::json SerializeDocument() const;
+    INFERNUX_ASSET_RUNTIME_API void DeserializeDocument(const nlohmann::json &document,
+                                                        const std::string &normalizedProjectRoot);
 
   private:
     std::string m_projectRoot;
