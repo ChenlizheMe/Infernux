@@ -13,6 +13,9 @@ using infernux::InxMaterial;
 using infernux::MaterialBlendFactor;
 using infernux::MaterialCompareOp;
 using infernux::MaterialCullMode;
+using infernux::MaterialSamplerAddress;
+using infernux::MaterialSamplerFilter;
+using infernux::MaterialTextureSampler;
 using infernux::RenderStateOverride;
 using infernux::ShaderAssetReference;
 using infernux::ShaderProgramArtifact;
@@ -395,6 +398,67 @@ void VerifyColorVectorShaderTransitionsPreserveAuthoredValues()
     assert(std::get<glm::vec4>(material.GetProperty("baseColor")->value) == glm::vec4(1.0f));
 }
 
+void VerifyTextureSamplerBindingRoundTrip()
+{
+    InxMaterial material("SamplerBinding", "Lit");
+    material.SetTextureGuid("texSampler", "white");
+    MaterialTextureSampler sampler;
+    sampler.minFilter = MaterialSamplerFilter::Nearest;
+    sampler.magFilter = MaterialSamplerFilter::Linear;
+    sampler.mipFilter = MaterialSamplerFilter::Nearest;
+    sampler.addressU = MaterialSamplerAddress::Clamp;
+    sampler.addressV = MaterialSamplerAddress::Mirror;
+    sampler.addressW = MaterialSamplerAddress::Repeat;
+    material.SetTextureSampler("texSampler", sampler);
+    assert(material.GetTextureSampler("texSampler") && *material.GetTextureSampler("texSampler") == sampler);
+
+    const auto document = material.SerializeDocument();
+    assert(document.at("textureSamplers").at("texSampler").at("addressV") ==
+           static_cast<uint32_t>(MaterialSamplerAddress::Mirror));
+    InxMaterial restored;
+    assert(restored.DeserializeDocument(document));
+    assert(restored.GetTextureSampler("texSampler") && *restored.GetTextureSampler("texSampler") == sampler);
+    assert(restored.Clone()->GetTextureSampler("texSampler") &&
+           *restored.Clone()->GetTextureSampler("texSampler") == sampler);
+
+    const auto before = restored.SerializeDocument();
+    auto invalid = before;
+    invalid["textureSamplers"]["texSampler"]["minFilter"] = 99;
+    assert(!restored.DeserializeDocument(invalid));
+    assert(restored.SerializeDocument() == before);
+    invalid = before;
+    invalid["textureSamplers"]["missing"] = invalid["textureSamplers"]["texSampler"];
+    assert(!restored.DeserializeDocument(invalid));
+    assert(restored.SerializeDocument() == before);
+
+    assert(restored.RemoveProperty("texSampler"));
+    assert(restored.GetTextureSampler("texSampler") == nullptr);
+    assert(!restored.SerializeDocument().contains("textureSamplers"));
+}
+
+void VerifyReflectedArrayRoundTripAndLengthAuthority()
+{
+    InxMaterial material("ArrayContract", "Unlit");
+    material.SetFloatArray("curve", {0.0f, 0.5f, 1.0f});
+    material.SetVector4Array("palette", {{1.0f, 0.0f, 0.0f, 1.0f}, {0.0f, 1.0f, 0.0f, 1.0f}});
+
+    const auto document = material.SerializeDocument();
+    InxMaterial restored;
+    assert(restored.DeserializeDocument(document));
+    assert(std::get<std::vector<float>>(restored.GetProperty("curve")->value) ==
+           std::vector<float>({0.0f, 0.5f, 1.0f}));
+    const auto &palette = std::get<std::vector<glm::vec4>>(restored.GetProperty("palette")->value);
+    assert(palette.size() == 2 && palette[1] == glm::vec4(0.0f, 1.0f, 0.0f, 1.0f));
+
+    bool rejected = false;
+    try {
+        restored.SetFloatArray("curve", {1.0f, 2.0f});
+    } catch (const std::invalid_argument &) {
+        rejected = true;
+    }
+    assert(rejected);
+}
+
 } // namespace
 
 int main()
@@ -407,12 +471,14 @@ int main()
     VerifyRenderStateVersioning();
     VerifyShaderReferenceVersioning();
     VerifyPropertyRemoval();
+    VerifyTextureSamplerBindingRoundTrip();
     VerifyShaderDefaultsReplacePreviousShaderState();
     VerifyMaterialOverridesSurviveShaderDefaults();
     VerifyBuiltinSixWaySmokeMaterial();
     VerifyBackendNeutralRenderStateSchema();
     VerifySparseMaterialUsesLinkedShaderDefaults();
     VerifyColorVectorShaderTransitionsPreserveAuthoredValues();
+    VerifyReflectedArrayRoundTripAndLengthAuthority();
     std::cout << "Material document tests passed\n";
     return 0;
 }

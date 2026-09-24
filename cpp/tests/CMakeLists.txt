@@ -54,6 +54,33 @@ if(INFERNUX_BUILD_TESTS)
     endif()
     add_test(NAME infernux.gizmo_draw_buffer COMMAND infernux_gizmo_draw_buffer_tests)
 
+    set(_material_texture_readiness_vert "${CMAKE_CURRENT_BINARY_DIR}/MaterialTextureReadiness.vert.spv")
+    set(_material_texture_readiness_frag "${CMAKE_CURRENT_BINARY_DIR}/MaterialTextureReadiness.frag.spv")
+    foreach(_stage IN ITEMS vert frag)
+        add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/MaterialTextureReadiness.${_stage}.spv"
+            COMMAND "${Vulkan_GLSLANG_VALIDATOR_EXECUTABLE}" -V
+                "${CMAKE_SOURCE_DIR}/cpp/tests/shaders/MaterialTextureReadiness.${_stage}"
+                -o "${CMAKE_CURRENT_BINARY_DIR}/MaterialTextureReadiness.${_stage}.spv"
+            DEPENDS "${CMAKE_SOURCE_DIR}/cpp/tests/shaders/MaterialTextureReadiness.${_stage}"
+            VERBATIM)
+    endforeach()
+    add_executable(infernux_material_texture_readiness_vulkan_tests
+        cpp/tests/MaterialTextureReadinessVulkanTests.cpp
+        "${_material_texture_readiness_vert}" "${_material_texture_readiness_frag}")
+    target_include_directories(infernux_material_texture_readiness_vulkan_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/cpp/infernux ${CMAKE_SOURCE_DIR}/external)
+    target_link_libraries(infernux_material_texture_readiness_vulkan_tests PRIVATE infernux_runtime_test_support)
+    if(MSVC)
+        target_compile_options(infernux_material_texture_readiness_vulkan_tests PRIVATE /utf-8 /UNDEBUG)
+    else()
+        target_compile_options(infernux_material_texture_readiness_vulkan_tests PRIVATE -UNDEBUG)
+    endif()
+    add_test(NAME infernux.material_texture_readiness_vulkan
+        COMMAND infernux_material_texture_readiness_vulkan_tests
+            "${_material_texture_readiness_vert}" "${_material_texture_readiness_frag}")
+    set_tests_properties(infernux.material_texture_readiness_vulkan PROPERTIES
+        LABELS "requires_vulkan_device" TIMEOUT 60 FAIL_REGULAR_EXPRESSION "Validation Error:")
+
     add_executable(infernux_audio_mixer_tests
         cpp/tests/AudioMixerTests.cpp
     )

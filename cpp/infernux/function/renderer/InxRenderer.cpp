@@ -3814,7 +3814,7 @@ particle::ParticleGpuSystemManager *InxRenderer::GetParticleGpuSystemManager()
             resolved.binding.gpuSlot = std::move(residentSlot);
             resolved.binding.gpuView = std::move(resident);
         } else {
-            resolved = core->ResolveTextureForMaterial(textureGuid, bindingName,
+            resolved = core->ResolveTextureForMaterial(textureGuid, bindingName, nullptr,
                                                        request == particle::GpuParticleTextureRequest::Prepare);
         }
 
@@ -4768,23 +4768,24 @@ void InxRenderer::ConfigureScreenUIMaterialResolver(InxScreenUIRenderer &rendere
             throw std::runtime_error("UI material GUID is missing or its retained generation is stale: " + guid);
         return std::shared_ptr<const InxMaterial>(std::move(material));
     });
-    renderer.SetMaterialTextureResolver([this](const std::string &textureGuid, const std::string &bindingName) {
-        if (!m_vkCore)
-            throw std::logic_error("UI material texture resolver requires a live Vulkan core");
-        if (textureGuid == "white" || textureGuid == "black" || textureGuid == "normal") {
-            const bool normal = textureGuid == "normal" || bindingName.find("normal") != std::string::npos ||
-                                bindingName.find("Normal") != std::string::npos;
-            auto slot = m_vkCore->GetTextureCache().Find(normal ? "_default_normal" : "white");
-            auto view = slot ? slot->Acquire() : nullptr;
-            if (!view || !view->IsValid())
-                return TextureResolveResult{TextureResolveStatus::Pending, {}};
-            auto &device = m_vkCore->GetDeviceContext().GetRhiDevice();
-            return TextureResolveResult{TextureResolveStatus::Ready,
-                                        {device.Resolve(view->GetView()), device.Resolve(view->GetSampler()),
-                                         std::move(slot), std::move(view)}};
-        }
-        return m_vkCore->ResolveTextureForMaterial(textureGuid, bindingName);
-    });
+    renderer.SetMaterialTextureResolver(
+        [this](const std::string &textureGuid, const std::string &bindingName, const MaterialTextureSampler *sampler) {
+            if (!m_vkCore)
+                throw std::logic_error("UI material texture resolver requires a live Vulkan core");
+            if (textureGuid == "white" || textureGuid == "black" || textureGuid == "normal") {
+                const bool normal = textureGuid == "normal" || bindingName.find("normal") != std::string::npos ||
+                                    bindingName.find("Normal") != std::string::npos;
+                auto slot = m_vkCore->GetTextureCache().Find(normal ? "_default_normal" : "white");
+                auto view = slot ? slot->Acquire() : nullptr;
+                if (!view || !view->IsValid())
+                    return TextureResolveResult{TextureResolveStatus::Pending, {}};
+                auto &device = m_vkCore->GetDeviceContext().GetRhiDevice();
+                return TextureResolveResult{TextureResolveStatus::Ready,
+                                            {device.Resolve(view->GetView()), device.Resolve(view->GetSampler()),
+                                             std::move(slot), std::move(view)}};
+            }
+            return m_vkCore->ResolveTextureForMaterial(textureGuid, bindingName, sampler);
+        });
     renderer.SetMaterialTextureGenerationResolver([](const std::string &textureGuid) -> uint64_t {
         if (textureGuid == "white" || textureGuid == "black" || textureGuid == "normal")
             return 1;

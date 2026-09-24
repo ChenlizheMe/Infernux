@@ -174,7 +174,8 @@ void ValidateProperty(const std::string &name, const json &document, std::string
     if (!document.is_object() || !document.contains("type") || !document["type"].is_number_integer())
         Fail(path, "property must contain an integer type");
     const int type = RequireInteger(document, "type", path);
-    if (type < static_cast<int>(MaterialPropertyType::Float) || type > static_cast<int>(MaterialPropertyType::Color)) {
+    if (type < static_cast<int>(MaterialPropertyType::Float) ||
+        type > static_cast<int>(MaterialPropertyType::Float4Array)) {
         Fail(path, "property type is out of range");
     }
 
@@ -209,6 +210,30 @@ void ValidateProperty(const std::string &name, const json &document, std::string
     }
     if (propertyType == MaterialPropertyType::Float) {
         RequireFiniteNumber(document, "value", path);
+        return;
+    }
+    if (propertyType == MaterialPropertyType::FloatArray) {
+        const auto &values = document["value"];
+        if (!values.is_array() || values.empty())
+            Fail(path, "FloatArray value must be a non-empty array");
+        for (const auto &value : values) {
+            if (!value.is_number() || !std::isfinite(value.get<double>()))
+                Fail(path, "FloatArray value must contain only finite numbers");
+        }
+        return;
+    }
+    if (propertyType == MaterialPropertyType::Float4Array) {
+        const auto &values = document["value"];
+        if (!values.is_array() || values.empty())
+            Fail(path, "Float4Array value must be a non-empty array");
+        for (const auto &value : values) {
+            if (!value.is_array() || value.size() != 4)
+                Fail(path, "Float4Array value must contain four-component vectors");
+            for (const auto &component : value) {
+                if (!component.is_number() || !std::isfinite(component.get<double>()))
+                    Fail(path, "Float4Array value must contain only finite numbers");
+            }
+        }
         return;
     }
 
@@ -255,6 +280,28 @@ void ValidateShaderReference(const json &document, std::string_view path)
     }
 }
 
+void ValidateTextureSamplers(const json &samplers, const json &properties, std::string_view path)
+{
+    static const std::unordered_set<std::string> fields = {
+        "minFilter", "magFilter", "mipFilter", "addressU", "addressV", "addressW",
+    };
+    if (!samplers.is_object())
+        Fail(path, "must be an object");
+    for (const auto &[name, sampler] : samplers.items()) {
+        const std::string samplerPath = std::string(path) + "." + name;
+        if (!properties.contains(name) ||
+            properties.at(name).at("type").get<int>() != static_cast<int>(MaterialPropertyType::Texture2D))
+            Fail(samplerPath, "must reference an existing Texture2D property");
+        RequireFields(sampler, fields, samplerPath);
+        for (const char *field : {"minFilter", "magFilter", "mipFilter"})
+            RequireIntegerRange(sampler, field, static_cast<int>(MaterialSamplerFilter::Inherit),
+                                static_cast<int>(MaterialSamplerFilter::Linear), samplerPath);
+        for (const char *field : {"addressU", "addressV", "addressW"})
+            RequireIntegerRange(sampler, field, static_cast<int>(MaterialSamplerAddress::Inherit),
+                                static_cast<int>(MaterialSamplerAddress::Mirror), samplerPath);
+    }
+}
+
 } // namespace
 
 void ValidateMaterialDocument(const nlohmann::json &document, std::string_view path)
@@ -287,6 +334,9 @@ void ValidateMaterialDocument(const nlohmann::json &document, std::string_view p
         Fail(path, "properties must be an object");
     for (const auto &[name, property] : document["properties"].items())
         ValidateProperty(name, property, std::string(path) + ".properties." + name);
+    if (document.contains("textureSamplers"))
+        ValidateTextureSamplers(document["textureSamplers"], document["properties"],
+                                std::string(path) + ".textureSamplers");
 
     if (document.contains("_shader_property_order")) {
         const auto &order = document["_shader_property_order"];

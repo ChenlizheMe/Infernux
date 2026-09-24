@@ -184,6 +184,11 @@ class MaterialPipelineManager
         return m_descriptorManager.HasPendingTextureProperties(materialName);
     }
 
+    [[nodiscard]] bool HasUnresolvedExplicitTextureProperties(const std::string &materialName) const
+    {
+        return m_descriptorManager.HasUnresolvedExplicitTextureProperties(materialName);
+    }
+
     /**
      * @brief Bind a texture to a material
      */

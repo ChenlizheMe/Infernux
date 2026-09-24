@@ -54,7 +54,7 @@ bool HasSameGpuBinding(const MaterialDescriptorSet::TextureBinding &left,
                        const MaterialDescriptorSet::TextureBinding &right)
 {
     return left.imageView == right.imageView && left.sampler == right.sampler &&
-           left.resourceIndex == right.resourceIndex;
+           left.resourceIndex == right.resourceIndex && left.resolvedExplicitTexture == right.resolvedExplicitTexture;
 }
 
 } // namespace
@@ -418,18 +418,20 @@ MaterialDescriptorManager::ResolveRenderTextureBinding(const std::shared_ptr<rhi
     binding = m_renderTextureResolver(texture);
     if (!ResolveBindlessIndex(binding))
         throw std::runtime_error("RenderTexture could not be published to the material texture table");
+    binding.resolvedExplicitTexture = true;
     return TextureResolveStatus::Ready;
 }
 
 TextureResolveStatus
 MaterialDescriptorManager::ResolveExplicitTextureBinding(const std::string &texturePath, const std::string &bindingName,
-                                                         MaterialDescriptorSet::TextureBinding &outBinding) const
+                                                         MaterialDescriptorSet::TextureBinding &outBinding,
+                                                         const MaterialTextureSampler *sampler) const
 {
     if (!m_textureResolver || texturePath.empty()) {
         return TextureResolveStatus::Failed;
     }
 
-    TextureResolveResult result = m_textureResolver(texturePath, bindingName);
+    TextureResolveResult result = m_textureResolver(texturePath, bindingName, sampler);
     if (result.status != TextureResolveStatus::Ready) {
         outBinding = {};
         return result.status;
@@ -447,6 +449,7 @@ MaterialDescriptorManager::ResolveExplicitTextureBinding(const std::string &text
         outBinding = {};
         return TextureResolveStatus::Failed;
     }
+    outBinding.resolvedExplicitTexture = true;
     return TextureResolveStatus::Ready;
 }
 
@@ -641,9 +644,13 @@ MaterialDescriptorSet *MaterialDescriptorManager::GetOrCreateDescriptorSet(const
                 if (hasExplicitTexture)
                     resolveStatus = renderTexture
                                         ? ResolveRenderTextureBinding(renderTexture, resolvedBinding)
-                                        : ResolveExplicitTextureBinding(*texturePath, propName, resolvedBinding);
-                if (hasExplicitTexture && resolveStatus == TextureResolveStatus::Pending)
-                    matDescSet->hasPendingTextures = true;
+                                        : ResolveExplicitTextureBinding(*texturePath, propName, resolvedBinding,
+                                                                        material.GetTextureSampler(propName));
+                if (hasExplicitTexture && resolveStatus != TextureResolveStatus::Ready) {
+                    matDescSet->hasUnresolvedExplicitTextures = true;
+                    if (resolveStatus == TextureResolveStatus::Pending)
+                        matDescSet->hasPendingTextures = true;
+                }
 
                 const bool resolvedExplicit = resolveStatus == TextureResolveStatus::Ready;
                 if (!resolvedExplicit && !TryGetDefaultTextureBinding(propName, resolvedBinding)) {
@@ -686,11 +693,14 @@ MaterialDescriptorSet *MaterialDescriptorManager::GetOrCreateDescriptorSet(const
                         renderTexture ? ResolveRenderTextureBinding(renderTexture, resolvedBinding)
                         : isPlaceholderTexture
                             ? TextureResolveStatus::Pending
-                            : ResolveExplicitTextureBinding(*texturePath, binding.name, resolvedBinding);
+                            : ResolveExplicitTextureBinding(*texturePath, binding.name, resolvedBinding,
+                                                            material.GetTextureSampler(binding.name));
                     const bool resolvedExplicit = resolveStatus == TextureResolveStatus::Ready;
 
-                    if (!isPlaceholderTexture && resolveStatus == TextureResolveStatus::Pending) {
-                        matDescSet->hasPendingTextures = true;
+                    if (!isPlaceholderTexture && resolveStatus != TextureResolveStatus::Ready) {
+                        matDescSet->hasUnresolvedExplicitTextures = true;
+                        if (resolveStatus == TextureResolveStatus::Pending)
+                            matDescSet->hasPendingTextures = true;
                     }
 
                     if (!resolvedExplicit && !TryGetDefaultTextureBinding(binding.name, resolvedBinding)) {
@@ -782,6 +792,7 @@ MaterialDescriptorSet *MaterialDescriptorManager::GetOrCreateRendererDescriptorS
     descriptor->textureBindings = base->textureBindings;
     descriptor->storageBufferBindings = base->storageBufferBindings;
     descriptor->hasPendingTextures = base->hasPendingTextures;
+    descriptor->hasUnresolvedExplicitTextures = base->hasUnresolvedExplicitTextures;
 
     const auto arena =
         m_updateAfterBindEnabled ? vk::DescriptorArena::UpdateAfterBind : vk::DescriptorArena::Persistent;
@@ -812,7 +823,8 @@ MaterialDescriptorSet *MaterialDescriptorManager::GetOrCreateRendererDescriptorS
     const auto resolveTexture = [&](const std::string &name, const std::string &guid,
                                     MaterialDescriptorSet::TextureBinding &binding) {
         if (!guid.empty() && !IsPlaceholderTexturePath(guid)) {
-            const TextureResolveStatus status = ResolveExplicitTextureBinding(guid, name, binding);
+            const TextureResolveStatus status =
+                ResolveExplicitTextureBinding(guid, name, binding, material.GetTextureSampler(name));
             if (status == TextureResolveStatus::Ready)
                 return true;
             if (status == TextureResolveStatus::Pending) {
@@ -1223,6 +1235,7 @@ void MaterialDescriptorManager::ResolveTextureProperties(const std::string &mate
     auto &matDescSet = *it->second;
     auto candidateBindings = matDescSet.textureBindings;
     bool candidateHasPendingTextures = false;
+    bool candidateHasUnresolvedExplicitTextures = false;
     bool bindingsChanged = false;
     const auto &properties = material.GetAllProperties();
     const auto &bindings = program.GetDescriptorBindings();
@@ -1261,20 +1274,22 @@ void MaterialDescriptorManager::ResolveTextureProperties(const std::string &mate
             const TextureResolveStatus resolveStatus =
                 renderTexture ? ResolveRenderTextureBinding(renderTexture, resolvedBinding)
                 : placeholder ? TextureResolveStatus::Pending
-                              : ResolveExplicitTextureBinding(*texturePath, propName, resolvedBinding);
+                              : ResolveExplicitTextureBinding(*texturePath, propName, resolvedBinding,
+                                                              material.GetTextureSampler(propName));
             const bool resolvedExplicit = resolveStatus == TextureResolveStatus::Ready;
-            if (!placeholder && resolveStatus == TextureResolveStatus::Pending) {
-                candidateHasPendingTextures = true;
+            if (!placeholder && !resolvedExplicit) {
+                if (resolveStatus == TextureResolveStatus::Pending)
+                    candidateHasPendingTextures = true;
 
                 // Texture uploads publish a complete immutable GPU view. Keep
-                // the previous revision visible until that publication is
-                // ready; rebinding the fallback here makes Scene, Game and
-                // preview briefly flash white during every hot replacement.
+                // the previous revision visible for both pending work and a
+                // failed replacement. A failure must never overwrite a good
+                // icon with the default white descriptor.
                 const auto previous = candidateBindings.find(static_cast<uint32_t>(slot));
-                if (previous != candidateBindings.end() && previous->second.gpuView &&
-                    previous->second.gpuView->IsValid()) {
+                if (previous != candidateBindings.end() && previous->second.resolvedExplicitTexture &&
+                    previous->second.gpuView && previous->second.gpuView->IsValid())
                     continue;
-                }
+                candidateHasUnresolvedExplicitTextures = true;
             }
 
             if (!resolvedExplicit && !TryGetDefaultTextureBinding(propName, resolvedBinding)) {
@@ -1287,11 +1302,14 @@ void MaterialDescriptorManager::ResolveTextureProperties(const std::string &mate
         }
 
         const bool previousHasPendingTextures = matDescSet.hasPendingTextures;
+        const bool previousHasUnresolvedExplicitTextures = matDescSet.hasUnresolvedExplicitTextures;
         matDescSet.hasPendingTextures = candidateHasPendingTextures;
+        matDescSet.hasUnresolvedExplicitTextures = candidateHasUnresolvedExplicitTextures;
         if (!bindingsChanged)
             return;
         if (!PublishDescriptorReplacement(matDescSet, candidateBindings)) {
             matDescSet.hasPendingTextures = previousHasPendingTextures;
+            matDescSet.hasUnresolvedExplicitTextures = previousHasUnresolvedExplicitTextures;
             INXLOG_ERROR("Bindless material texture publication failed for '", materialName,
                          "'; the previous complete descriptor set remains active");
         }
@@ -1327,16 +1345,19 @@ void MaterialDescriptorManager::ResolveTextureProperties(const std::string &mate
                 const TextureResolveStatus resolveStatus =
                     renderTexture   ? ResolveRenderTextureBinding(renderTexture, resolvedBinding)
                     : isPlaceholder ? TextureResolveStatus::Pending
-                                    : ResolveExplicitTextureBinding(*texturePath, binding.name, resolvedBinding);
+                                    : ResolveExplicitTextureBinding(*texturePath, binding.name, resolvedBinding,
+                                                                    material.GetTextureSampler(binding.name));
                 const bool resolvedExplicit = resolveStatus == TextureResolveStatus::Ready;
 
-                if (!isPlaceholder && resolveStatus == TextureResolveStatus::Pending) {
-                    candidateHasPendingTextures = true;
+                if (!isPlaceholder && !resolvedExplicit) {
+                    if (resolveStatus == TextureResolveStatus::Pending)
+                        candidateHasPendingTextures = true;
                     const auto previous = candidateBindings.find(binding.binding);
-                    if (previous != candidateBindings.end() && previous->second.gpuView &&
-                        previous->second.gpuView->IsValid()) {
+                    if (previous != candidateBindings.end() && previous->second.resolvedExplicitTexture &&
+                        previous->second.gpuView && previous->second.gpuView->IsValid()) {
                         break;
                     }
+                    candidateHasUnresolvedExplicitTextures = true;
                 }
 
                 const bool hasBinding = resolvedExplicit || TryGetDefaultTextureBinding(binding.name, resolvedBinding);
@@ -1358,12 +1379,15 @@ void MaterialDescriptorManager::ResolveTextureProperties(const std::string &mate
     }
 
     const bool previousHasPendingTextures = matDescSet.hasPendingTextures;
+    const bool previousHasUnresolvedExplicitTextures = matDescSet.hasUnresolvedExplicitTextures;
     matDescSet.hasPendingTextures = candidateHasPendingTextures;
+    matDescSet.hasUnresolvedExplicitTextures = candidateHasUnresolvedExplicitTextures;
     if (!bindingsChanged)
         return;
 
     if (!PublishDescriptorReplacement(matDescSet, candidateBindings)) {
         matDescSet.hasPendingTextures = previousHasPendingTextures;
+        matDescSet.hasUnresolvedExplicitTextures = previousHasUnresolvedExplicitTextures;
         INXLOG_ERROR("Material texture publication failed for '", materialName,
                      "'; the previous complete descriptor set remains active");
     }
@@ -1379,6 +1403,13 @@ bool MaterialDescriptorManager::HasPendingTextureProperties(const std::string &m
                const auto &binding = entry.second;
                return binding.gpuSlot && binding.gpuSlot->Acquire() != binding.gpuView;
            });
+}
+
+bool MaterialDescriptorManager::HasUnresolvedExplicitTextureProperties(const std::string &materialName) const
+{
+    const auto it = m_descriptorSets.find(materialName);
+    return it != m_descriptorSets.end() && it->second && it->second->isValid &&
+           it->second->hasUnresolvedExplicitTextures;
 }
 
 const std::vector<rhi::ResourceIndex> *

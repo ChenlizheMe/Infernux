@@ -83,13 +83,14 @@ ShadowViewGpuData PackShadowView(const lighting::ShadowView &view, uint32_t atla
 void InxVkCoreModular::PumpPendingTextureLoads()
 {
     auto &registry = AssetRegistry::Instance();
+    std::vector<std::string> publishedTextures;
     for (auto pending = m_pendingTextureAssetLoads.begin(); pending != m_pendingTextureAssetLoads.end();) {
         try {
             if (!registry.TryCommitAssetLoad(pending->second)) {
                 ++pending;
                 continue;
             }
-            m_materialPipelineManager.RefreshMaterialsUsingTexture(pending->first);
+            publishedTextures.push_back(pending->first);
         } catch (const std::exception &exception) {
             INXLOG_ERROR("Texture CPU load failed for GUID '", pending->first, "': ", exception.what());
         }
@@ -109,20 +110,29 @@ void InxVkCoreModular::PumpPendingTextureLoads()
             }
             (void)m_textureCache.Insert(pending->first, std::move(texture), m_ensureFrameCounter, false,
                                         pending->second.guid, pending->second.runtimeVersion);
-            m_materialPipelineManager.RefreshMaterialsUsingTexture(pending->second.guid);
+            publishedTextures.push_back(pending->second.guid);
             ++m_completedTextureUploadCount;
         } catch (const std::exception &exception) {
             INXLOG_ERROR("Texture GPU upload failed for GUID '", pending->second.guid, "': ", exception.what());
         }
         pending = m_pendingTextureGpuUploads.erase(pending);
     }
+
+    // Material refresh resolves every texture property and can insert/erase
+    // entries in either pending map. Finish draining before invoking it: even
+    // a different texture's completion can rehash the map being traversed.
+    std::sort(publishedTextures.begin(), publishedTextures.end());
+    publishedTextures.erase(std::unique(publishedTextures.begin(), publishedTextures.end()), publishedTextures.end());
+    for (const auto &guid : publishedTextures)
+        m_materialPipelineManager.RefreshMaterialsUsingTexture(guid);
 }
 
 TextureResolveResult InxVkCoreModular::ResolveTextureForMaterial(const std::string &textureRef,
                                                                  const std::string &bindingName,
+                                                                 const MaterialTextureSampler *sampler,
                                                                  bool waitForPreparation)
 {
-    return ResolveTextureAsset(textureRef, bindingName, TextureDimension::Texture2D, nullptr, nullptr,
+    return ResolveTextureAsset(textureRef, bindingName, TextureDimension::Texture2D, nullptr, nullptr, sampler,
                                waitForPreparation);
 }
 
@@ -131,7 +141,8 @@ TextureResolveResult InxVkCoreModular::ResolveTextureForVectorField(const std::s
                                                                     bool waitForPreparation)
 {
     return ResolveTextureAsset(textureGuid, "ParticleVectorField", TextureDimension::Texture3D,
-                               linearFiltering ? "bilinear" : "point", repeat ? "repeat" : "clamp", waitForPreparation);
+                               linearFiltering ? "bilinear" : "point", repeat ? "repeat" : "clamp", nullptr,
+                               waitForPreparation);
 }
 
 TextureResolveResult InxVkCoreModular::ResolveTextureForGraph(const std::string &textureGuid, bool volume,
@@ -139,13 +150,14 @@ TextureResolveResult InxVkCoreModular::ResolveTextureForGraph(const std::string 
 {
     return ResolveTextureAsset(textureGuid, "RenderGraph",
                                volume ? TextureDimension::Texture3D : TextureDimension::Texture2D, nullptr, nullptr,
-                               waitForPreparation);
+                               nullptr, waitForPreparation);
 }
 
 TextureResolveResult InxVkCoreModular::ResolveTextureAsset(const std::string &textureGuid,
                                                            const std::string &bindingName,
                                                            TextureDimension expectedDimension,
                                                            const char *filterOverride, const char *wrapOverride,
+                                                           const MaterialTextureSampler *samplerOverride,
                                                            bool waitForPreparation)
 {
     // Material texture properties store asset GUIDs. Path normalization belongs
@@ -167,8 +179,17 @@ TextureResolveResult InxVkCoreModular::ResolveTextureAsset(const std::string &te
     // stable material into a per-frame decode/upload loop.
     const std::string filterIdentity = filterOverride ? filterOverride : "asset";
     const std::string wrapIdentity = wrapOverride ? wrapOverride : "asset";
+    const std::string samplerIdentity =
+        samplerOverride ? std::to_string(static_cast<uint32_t>(samplerOverride->minFilter)) + "," +
+                              std::to_string(static_cast<uint32_t>(samplerOverride->magFilter)) + "," +
+                              std::to_string(static_cast<uint32_t>(samplerOverride->mipFilter)) + "," +
+                              std::to_string(static_cast<uint32_t>(samplerOverride->addressU)) + "," +
+                              std::to_string(static_cast<uint32_t>(samplerOverride->addressV)) + "," +
+                              std::to_string(static_cast<uint32_t>(samplerOverride->addressW))
+                        : "asset";
     const std::string cacheKey = textureGuid + "::dim" + std::to_string(static_cast<uint32_t>(expectedDimension)) +
-                                 "::filter=" + filterIdentity + "::wrap=" + wrapIdentity;
+                                 "::filter=" + filterIdentity + "::wrap=" + wrapIdentity +
+                                 "::bindingSampler=" + samplerIdentity;
     const uint64_t publishedRuntimeVersion = registry.GetAssetVersion(textureGuid);
     if (publishedRuntimeVersion != 0) {
         auto cachedSlot =
@@ -251,6 +272,33 @@ TextureResolveResult InxVkCoreModular::ResolveTextureAsset(const std::string &te
         sampler.addressU = sampler.addressV = sampler.addressW = rhi::AddressMode::ClampToEdge;
     else if (wrapMode == "mirror")
         sampler.addressU = sampler.addressV = sampler.addressW = rhi::AddressMode::MirroredRepeat;
+
+    if (samplerOverride) {
+        const auto filter = [](MaterialSamplerFilter value, rhi::FilterMode inherited) {
+            if (value == MaterialSamplerFilter::Nearest)
+                return rhi::FilterMode::Nearest;
+            if (value == MaterialSamplerFilter::Linear)
+                return rhi::FilterMode::Linear;
+            return inherited;
+        };
+        const auto address = [](MaterialSamplerAddress value, rhi::AddressMode inherited) {
+            if (value == MaterialSamplerAddress::Repeat)
+                return rhi::AddressMode::Repeat;
+            if (value == MaterialSamplerAddress::Clamp)
+                return rhi::AddressMode::ClampToEdge;
+            if (value == MaterialSamplerAddress::Mirror)
+                return rhi::AddressMode::MirroredRepeat;
+            return inherited;
+        };
+        sampler.minFilter = filter(samplerOverride->minFilter, sampler.minFilter);
+        sampler.magFilter = filter(samplerOverride->magFilter, sampler.magFilter);
+        sampler.mipFilter = filter(samplerOverride->mipFilter, sampler.mipFilter);
+        sampler.addressU = address(samplerOverride->addressU, sampler.addressU);
+        sampler.addressV = address(samplerOverride->addressV, sampler.addressV);
+        sampler.addressW = address(samplerOverride->addressW, sampler.addressW);
+        if (sampler.minFilter == rhi::FilterMode::Nearest && sampler.magFilter == rhi::FilterMode::Nearest)
+            sampler.maxAnisotropy = 1.0f;
+    }
 
     // Cache key uses GUID so that a renamed file still shares its cache entry
     // The cache key identifies a stable consumer slot, not the mutable import
@@ -342,8 +390,8 @@ TextureResolveResult InxVkCoreModular::ResolveTextureAsset(const std::string &te
 std::shared_ptr<const rhi::TextureGpuView>
 InxVkCoreModular::ResolveTextureForEditorPreview(const std::string &textureGuid)
 {
-    TextureResolveResult resolved =
-        ResolveTextureAsset(textureGuid, "EditorTexturePreview", TextureDimension::Texture2D, nullptr, nullptr);
+    TextureResolveResult resolved = ResolveTextureAsset(textureGuid, "EditorTexturePreview",
+                                                        TextureDimension::Texture2D, nullptr, nullptr, nullptr);
     return resolved.status == TextureResolveStatus::Ready ? std::move(resolved.binding.gpuView) : nullptr;
 }
 
@@ -656,8 +704,9 @@ void InxVkCoreModular::InitializeMaterialSystem()
         // Set up texture resolver for material Texture2D properties
         // Delegates to ResolveTextureForMaterial which uses GUID-based cache keys.
         m_materialPipelineManager.SetTextureResolver(
-            [this](const std::string &textureRef, const std::string &bindingName) -> TextureResolveResult {
-                return ResolveTextureForMaterial(textureRef, bindingName);
+            [this](const std::string &textureRef, const std::string &bindingName,
+                   const MaterialTextureSampler *sampler) -> TextureResolveResult {
+                return ResolveTextureForMaterial(textureRef, bindingName, sampler);
             });
         m_materialPipelineManager.GetDescriptorManager().SetRenderTextureResolver(
             [this](const std::shared_ptr<rhi::RenderTexture> &texture) {

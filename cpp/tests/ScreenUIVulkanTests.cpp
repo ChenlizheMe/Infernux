@@ -511,21 +511,22 @@ int main(int argc, char **argv)
             assert(material->GetVersion() == generation);
             return std::shared_ptr<const InxMaterial>(material);
         });
-        renderer.SetMaterialTextureResolver([&](const std::string &guid, const std::string &name) {
-            assert(guid == "white" && name == "detailTex");
-            ++textureResolutions;
-            TextureResolveResult result;
-            if (texturePending) {
-                ++pendingTextureResolutions;
-                result.status = TextureResolveStatus::Pending;
+        renderer.SetMaterialTextureResolver(
+            [&](const std::string &guid, const std::string &name, const MaterialTextureSampler *) {
+                assert(guid == "white" && name == "detailTex");
+                ++textureResolutions;
+                TextureResolveResult result;
+                if (texturePending) {
+                    ++pendingTextureResolutions;
+                    result.status = TextureResolveStatus::Pending;
+                    return result;
+                }
+                result.status = TextureResolveStatus::Ready;
+                result.binding.imageView = device.Resolve(view);
+                result.binding.sampler = device.Resolve(sampler);
+                result.binding.gpuView = whitePublication;
                 return result;
-            }
-            result.status = TextureResolveStatus::Ready;
-            result.binding.imageView = device.Resolve(view);
-            result.binding.sampler = device.Resolve(sampler);
-            result.binding.gpuView = whitePublication;
-            return result;
-        });
+            });
         renderer.SetMaterialTextureGenerationResolver([&](const std::string &guid) {
             assert(guid == "white");
             return textureGeneration;
