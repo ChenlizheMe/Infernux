@@ -67,20 +67,18 @@ class AssetDependencyGraph
     AssetDependencyGraph(const AssetDependencyGraph &) = delete;
     AssetDependencyGraph &operator=(const AssetDependencyGraph &) = delete;
 
-    INFERNUX_ASSET_RUNTIME_API void AddAssetDependency(const std::string &assetGuid,
-                                                       const std::string &dependencyGuid);
+    INFERNUX_ASSET_RUNTIME_API void AddAssetDependency(const std::string &assetGuid, const std::string &dependencyGuid);
     INFERNUX_ASSET_RUNTIME_API void RemoveAssetDependency(const std::string &assetGuid,
                                                           const std::string &dependencyGuid);
     INFERNUX_ASSET_RUNTIME_API void ClearAssetDependenciesOf(const std::string &assetGuid);
-    INFERNUX_ASSET_RUNTIME_API void
-    SetAssetDependencies(const std::string &assetGuid, const std::unordered_set<std::string> &dependencyGuids);
+    INFERNUX_ASSET_RUNTIME_API void SetAssetDependencies(const std::string &assetGuid,
+                                                         const std::unordered_set<std::string> &dependencyGuids);
 
     [[nodiscard]] INFERNUX_ASSET_RUNTIME_API static std::shared_ptr<const AssetDependencySnapshot>
     BuildAssetSnapshot(const std::unordered_map<std::string, std::vector<std::string>> &dependenciesByAsset,
                        uint64_t generation);
     INFERNUX_ASSET_RUNTIME_API void InstallAssetSnapshot(std::shared_ptr<const AssetDependencySnapshot> snapshot);
-    [[nodiscard]] INFERNUX_ASSET_RUNTIME_API std::shared_ptr<const AssetDependencySnapshot>
-    GetAssetSnapshot() const;
+    [[nodiscard]] INFERNUX_ASSET_RUNTIME_API std::shared_ptr<const AssetDependencySnapshot> GetAssetSnapshot() const;
     [[nodiscard]] INFERNUX_ASSET_RUNTIME_API uint64_t GetAssetGeneration() const;
 
     INFERNUX_ASSET_RUNTIME_API void AddRuntimeDependency(const std::string &objectGuid, const std::string &assetGuid);
@@ -88,8 +86,7 @@ class AssetDependencyGraph
                                                             const std::string &assetGuid);
     INFERNUX_ASSET_RUNTIME_API void ClearRuntimeDependenciesOf(const std::string &objectGuid);
     /// Preserve all asset subscriptions when a staged component receives its published ID.
-    INFERNUX_ASSET_RUNTIME_API void RekeyRuntimeDependencies(const std::string &oldOwner,
-                                                             const std::string &newOwner);
+    INFERNUX_ASSET_RUNTIME_API void RekeyRuntimeDependencies(const std::string &oldOwner, const std::string &newOwner);
 
     /// Remove dependencies owned by an asset while retaining references to it.
     /// Incoming edges represent serialized missing references and must survive
@@ -103,7 +100,7 @@ class AssetDependencyGraph
     [[nodiscard]] INFERNUX_ASSET_RUNTIME_API std::unordered_set<std::string>
     GetDependents(const std::string &guid) const;
     [[nodiscard]] INFERNUX_ASSET_RUNTIME_API bool HasDependency(const std::string &userGuid,
-                                                               const std::string &dependencyGuid) const;
+                                                                const std::string &dependencyGuid) const;
 
     INFERNUX_ASSET_RUNTIME_API void RegisterCallback(ResourceType type, AssetEventCallback callback);
     INFERNUX_ASSET_RUNTIME_API void NotifyEvent(const std::string &guid, ResourceType type, AssetEvent event);

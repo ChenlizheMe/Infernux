@@ -52,8 +52,7 @@ class AssetIndex final
                                                        const std::string &normalizedProjectRoot);
     INFERNUX_ASSET_RUNTIME_API void Save(const std::string &path) const;
 
-    [[nodiscard]] INFERNUX_ASSET_RUNTIME_API const AssetIndexEntry *
-    Find(const std::string &normalizedPath) const;
+    [[nodiscard]] INFERNUX_ASSET_RUNTIME_API const AssetIndexEntry *Find(const std::string &normalizedPath) const;
     [[nodiscard]] const std::unordered_map<std::string, AssetIndexEntry> &Entries() const noexcept
     {
         return m_entries;
