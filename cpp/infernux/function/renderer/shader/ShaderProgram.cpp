@@ -284,6 +284,9 @@ void ShaderProgram::MergeReflectionData()
         // Check if binding already exists
         for (auto &existing : m_descriptorBindings) {
             if (existing.binding == binding && existing.set == set) {
+                if (existing.type != type || existing.descriptorCount != count || existing.name != name)
+                    throw std::runtime_error("Shader reflection descriptor ABI mismatch at set " + std::to_string(set) +
+                                             ", binding " + std::to_string(binding));
                 // Merge stage flags
                 existing.stageFlags |= stage;
                 return;
@@ -311,6 +314,10 @@ void ShaderProgram::MergeReflectionData()
         addBinding(sampler.binding, sampler.set, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, sampler.arraySize,
                    VK_SHADER_STAGE_VERTEX_BIT, sampler.name);
     }
+    for (const auto &buffer : m_vertReflection.GetStorageBuffers()) {
+        addBinding(buffer.binding, buffer.set, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, buffer.arraySize,
+                   VK_SHADER_STAGE_VERTEX_BIT, buffer.name);
+    }
 
     // Process fragment shader UBOs
     for (const auto &ubo : m_fragReflection.GetUniformBuffers()) {
@@ -321,6 +328,10 @@ void ShaderProgram::MergeReflectionData()
     for (const auto &sampler : m_fragReflection.GetSampledImages()) {
         addBinding(sampler.binding, sampler.set, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, sampler.arraySize,
                    VK_SHADER_STAGE_FRAGMENT_BIT, sampler.name);
+    }
+    for (const auto &buffer : m_fragReflection.GetStorageBuffers()) {
+        addBinding(buffer.binding, buffer.set, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, buffer.arraySize,
+                   VK_SHADER_STAGE_FRAGMENT_BIT, buffer.name);
     }
 
     // Sort by set, then by binding
