@@ -207,9 +207,7 @@ def test_camera_declarations_match_native_defaults_and_wrapper_metadata(scene):
     camera = obj.add_component("Camera")
     document = camera.serialize_document()
     descriptor = native._semantic_catalog_snapshot().type_document("native:infernux.Camera")
-    # The semantic catalog includes the four physical-camera fields added to
-    # the Camera contract; the old 13-field count predates that API.
-    assert len(descriptor["fields"]) == 17
+    assert len(descriptor["fields"]) == 27
     assert any(record["type_id"] == descriptor["type_guid"] for record in obj.serialize_document()["components"])
     for field in descriptor["fields"]:
         attributes = field["attributes"]
@@ -219,11 +217,20 @@ def test_camera_declarations_match_native_defaults_and_wrapper_metadata(scene):
         if field["value_type"] == "FieldType.ENUM":
             assert attributes["enum"]["type_id"] == f"native:infernux.{type(raw).__name__}"
             assert encoded == expected
-            assert int(raw) == document[attributes["serialized_name"]]
+            if attributes.get("serialized", True):
+                assert int(raw) == document[attributes["serialized_name"]]
+            else:
+                assert attributes["serialized_name"] not in document
+                assert field["read_only"] is True
         elif field["value_type"] == "FieldType.ASSET":
             assert attributes["asset_type"] == expected["asset_type"] == "RenderTexture"
+            assert expected == {
+                "$type": "asset_ref",
+                "asset_type": "RenderTexture",
+                "guid": "",
+            }
             assert raw is None and document[attributes["serialized_name"]] == expected["guid"] == ""
-        else:
+        elif attributes.get("serialized", True):
             assert encoded == pytest.approx(expected)
             assert document[attributes["serialized_name"]] == pytest.approx(expected)
         prop = getattr(Camera, attributes["field_id"])
@@ -348,6 +355,11 @@ def test_collider_declarations_own_serialized_fields_and_wrapper_schema(
     assert fields["physic_material"]["attributes"]["serialized_name"] == "physic_material_guid"
     assert fields["physic_material"]["attributes"]["asset_type"] == "PhysicMaterial"
     assert fields["physic_material"]["attributes"]["setter_owns_document_shape"] is True
+    assert fields["physic_material"]["attributes"]["default"] == {
+        "$type": "asset_ref",
+        "asset_type": "PhysicMaterial",
+        "guid": "",
+    }
     for name, field in fields.items():
         prop = getattr(wrapper_type, name)
         assert isinstance(prop, CppProperty)
