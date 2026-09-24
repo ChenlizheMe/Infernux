@@ -62,6 +62,8 @@ file(GLOB_RECURSE INFERNUX_RENDER_CORE_SOURCES CONFIGURE_DEPENDS
 list(APPEND INFERNUX_RENDER_CORE_SOURCES
     "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/FullscreenRenderer.cpp"
     "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/FullscreenRenderer.h"
+    "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/SceneDepthResolver.cpp"
+    "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/SceneDepthResolver.h"
 )
 
 set(INFERNUX_RENDERER_RUNTIME_SOURCES
@@ -74,6 +76,12 @@ set(INFERNUX_RENDERER_RUNTIME_SOURCES
 file(GLOB_RECURSE INFERNUX_VULKAN_BACKEND_SOURCES CONFIGURE_DEPENDS
     cpp/infernux/function/renderer/vk/*.cpp
     cpp/infernux/function/renderer/vk/*.h
+)
+list(APPEND INFERNUX_VULKAN_BACKEND_SOURCES
+    "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/CaptureService.cpp"
+    "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/CaptureService.h"
+    "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/TransientResourcePool.cpp"
+    "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/TransientResourcePool.h"
 )
 
 list(REMOVE_ITEM INFERNUX_RUNTIME_SOURCES
