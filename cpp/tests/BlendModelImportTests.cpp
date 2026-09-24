@@ -1,3 +1,4 @@
+#include <assimp/scene.h>
 #include <function/resources/InxMesh/InxMesh.h>
 #include <function/resources/InxMesh/MeshArtifact.h>
 #include <function/resources/InxMesh/MeshImportSettings.h>
@@ -5,9 +6,8 @@
 #include <function/resources/InxMesh/ModelVertexBasis.h>
 #include <function/resources/InxResource/InxResourceMeta.h>
 #include <function/resources/InxSkinnedMesh/InxSkinnedMesh.h>
-#include <function/resources/InxSkinnedMesh/SkinnedModelImporter.h>
 #include <function/resources/InxSkinnedMesh/SkinnedMeshArtifact.h>
-#include <assimp/scene.h>
+#include <function/resources/InxSkinnedMesh/SkinnedModelImporter.h>
 #include <platform/filesystem/InxPath.h>
 
 #include <cassert>
@@ -54,8 +54,8 @@ static void TestSkinWeightImport()
             bone.mWeights[v] = aiVertexWeight(v, float(i + 1) / 21.0f);
     }
     const auto convert = [&](int limit, float threshold) {
-        return infernux::SkinnedModelImporter::ConvertScene(scene, "weights-guid", "weights.gltf", 1.0f,
-                                                           false, limit, threshold);
+        return infernux::SkinnedModelImporter::ConvertScene(scene, "weights-guid", "weights.gltf", 1.0f, false, limit,
+                                                            threshold);
     };
     for (int limit = 1; limit <= 4; ++limit) {
         const auto imported = convert(limit, 0.0f);
@@ -96,8 +96,9 @@ static void TestSkinWeightImport()
         assert(count == 2);
     }
     bool rejected = false;
-    try { (void)convert(4, 0.9f); }
-    catch (const std::runtime_error &error) {
+    try {
+        (void)convert(4, 0.9f);
+    } catch (const std::runtime_error &error) {
         rejected = std::string(error.what()).find("min_bone_weight") != std::string::npos;
     }
     assert(rejected);
@@ -168,7 +169,8 @@ static void TestMikkMirroredSeamPreservesVertexChannels()
         assert(mesh.mBones[0]->mWeights[i].mWeight == 1.0f);
     }
     assert(influenced.size() == 6);
-    const auto skin = infernux::SkinnedModelImporter::ConvertScene(scene, "mikk-skin", "mikk-skin", settings.scaleFactor);
+    const auto skin =
+        infernux::SkinnedModelImporter::ConvertScene(scene, "mikk-skin", "mikk-skin", settings.scaleFactor);
     assert(skin && skin->baseVertices.size() == 6 && skin->influences.size() == 6);
     for (const auto &influence : skin->influences)
         assert(influence.weight[0] == 1.0f);
@@ -273,14 +275,14 @@ int main(int argc, char **argv)
     for (const std::string mode : {"none", "description"}) {
         infernux::InxResourceMeta materialSettings;
         infernux::MeshImportSettings::ApplyPatch(materialSettings, {{"material_import_mode", mode}});
-        const auto variant = infernux::MeshLoader::ImportSourceDetailed(
-            infernux::FromFsPath(animatedFbx), "animated", materialSettings);
+        const auto variant =
+            infernux::MeshLoader::ImportSourceDetailed(infernux::FromFsPath(animatedFbx), "animated", materialSettings);
         assert(variant.vertexCount == full.vertexCount && variant.indexCount == full.indexCount);
         assert(variant.materialSlots == full.materialSlots);
         assert(variant.skinnedMesh && variant.boneNames == full.boneNames);
         assert(variant.mesh->GetMaterialSlotData().empty() == (mode == "none"));
-        const auto restored = infernux::MeshArtifact::Deserialize(
-            infernux::MeshArtifact::Serialize(*variant.mesh, "fixture"), "fixture");
+        const auto restored =
+            infernux::MeshArtifact::Deserialize(infernux::MeshArtifact::Serialize(*variant.mesh, "fixture"), "fixture");
         assert(restored->GetMaterialSlotNames() == full.materialSlots);
         assert(restored->GetMaterialSlotData().empty() == (mode == "none"));
     }
@@ -325,8 +327,8 @@ int main(int argc, char **argv)
     // implementation detail and must never leak into the authored hierarchy
     // shown by the editor (or become a persisted model-node identity).
     const auto syntheticObjPath = sourceRoot / "cpp/tests/fixtures/model_smoothing.obj";
-    const auto objImport = infernux::MeshLoader::ImportSourceDetailed(
-        infernux::FromFsPath(syntheticObjPath), "obj-root-guid", metadata);
+    const auto objImport =
+        infernux::MeshLoader::ImportSourceDetailed(infernux::FromFsPath(syntheticObjPath), "obj-root-guid", metadata);
     assert(objImport.mesh && !objImport.mesh->GetModelNodes().empty());
     assert(objImport.mesh->GetModelNodes().front().name == "model_smoothing.obj");
     assert(objImport.mesh->GetModelNodes().front().name != "$$$___magic___$$$.obj");
@@ -345,6 +347,14 @@ int main(int argc, char **argv)
     assert(hierarchyImport.indexCount == hierarchy->GetIndexCount());
     assert(hierarchyImport.materialSlots == hierarchy->GetMaterialSlotNames());
     assert(hierarchy->GetModelSourceGeometry());
+    // This source deliberately has POSITION only. A lit material still needs
+    // an orthogonal tangent frame after Assimp generates its normals.
+    for (const auto &vertex : hierarchy->GetVertices()) {
+        assert(std::abs(glm::length(vertex.normal) - 1.0f) < 1.e-5f);
+        assert(std::abs(glm::length(glm::vec3(vertex.tangent)) - 1.0f) < 1.e-5f);
+        assert(std::abs(glm::dot(vertex.normal, glm::vec3(vertex.tangent))) < 1.e-5f);
+        assert(std::abs(vertex.tangent.w) == 1.0f);
+    }
     const auto &nodes = hierarchy->GetModelNodes();
     const auto findNode = [](const auto &modelNodes, const std::string &name) -> size_t {
         for (size_t index = 0; index < modelNodes.size(); ++index)
@@ -458,8 +468,8 @@ int main(int argc, char **argv)
             settings.AddMetadata("tangent_algorithm", std::string("mikktspace"));
             settings.AddMetadata("swap_uv_channels", swap);
             settings.AddMetadata("flip_uvs", flip);
-            const auto result = infernux::MeshLoader::ImportSourceDetailed(
-                infernux::FromFsPath(uvPath), "mikk-uv-basis", settings);
+            const auto result =
+                infernux::MeshLoader::ImportSourceDetailed(infernux::FromFsPath(uvPath), "mikk-uv-basis", settings);
             const auto &vertices = result.mesh->GetVertices();
             const auto e1 = vertices[1].pos - vertices[0].pos;
             const auto e2 = vertices[2].pos - vertices[0].pos;
@@ -512,10 +522,10 @@ int main(int argc, char **argv)
             infernux::InxResourceMeta settings;
             settings.AddMetadata("normal_mode", std::string(mode));
             settings.AddMetadata("normal_smoothing_angle", 30.0f);
-            const auto authored = infernux::MeshLoader::ImportSourceDetailed(
-                infernux::FromFsPath(authoredPath), "authored-basis", settings);
-            const auto missing = infernux::MeshLoader::ImportSourceDetailed(
-                infernux::FromFsPath(missingPath), "missing-basis", settings);
+            const auto authored = infernux::MeshLoader::ImportSourceDetailed(infernux::FromFsPath(authoredPath),
+                                                                             "authored-basis", settings);
+            const auto missing = infernux::MeshLoader::ImportSourceDetailed(infernux::FromFsPath(missingPath),
+                                                                            "missing-basis", settings);
             for (const auto &vertex : authored.mesh->GetVertices()) {
                 if (std::string_view(mode) == "none") {
                     assert(vertex.normal == glm::vec3(0));
@@ -536,14 +546,15 @@ int main(int argc, char **argv)
                 infernux::InxResourceMeta settings;
                 settings.AddMetadata("normal_mode", std::string(normalMode));
                 settings.AddMetadata("tangent_mode", std::string(tangentMode));
-                const auto result = infernux::MeshLoader::ImportSourceDetailed(
-                    infernux::FromFsPath(uvPath), "mode-basis", settings);
+                const auto result =
+                    infernux::MeshLoader::ImportSourceDetailed(infernux::FromFsPath(uvPath), "mode-basis", settings);
                 const auto mesh = infernux::MeshArtifact::Deserialize(
                     infernux::MeshArtifact::Serialize(*result.mesh, "mode-basis"), "mode-basis");
                 const auto skin = infernux::SkinnedMeshArtifact::Deserialize(
                     infernux::SkinnedMeshArtifact::Serialize(*result.skinnedMesh, "mode-basis"), "mode-basis");
                 const bool normalPresent = std::string_view(normalMode) != "none";
-                const bool tangentPresent = normalPresent && std::string_view(tangentMode) != "none" &&
+                const bool tangentPresent =
+                    normalPresent && std::string_view(tangentMode) != "none" &&
                     !(std::string_view(normalMode) == "calculate" && std::string_view(tangentMode) == "source_only");
                 for (size_t i = 0; i < mesh->GetVertices().size(); ++i) {
                     const auto &vertex = mesh->GetVertices()[i];
@@ -565,8 +576,8 @@ int main(int argc, char **argv)
                  {{"unweighted", 1.0f}, {"area", 2.0f}, {"angle", 2.0f}, {"area_angle", 4.0f}}}) {
             infernux::InxResourceMeta settings;
             settings.AddMetadata("normal_weighting", std::string(weighting));
-            const auto result = infernux::MeshLoader::ImportSourceDetailed(
-                infernux::FromFsPath(path), "weighted-normal", settings);
+            const auto result =
+                infernux::MeshLoader::ImportSourceDetailed(infernux::FromFsPath(path), "weighted-normal", settings);
             bool found = false;
             for (const auto &vertex : result.mesh->GetVertices())
                 if (vertex.pos == glm::vec3(0)) {
@@ -575,8 +586,8 @@ int main(int argc, char **argv)
                 }
             assert(found);
             settings.AddMetadata("normal_smoothing_angle", 30.0f);
-            const auto hard = infernux::MeshLoader::ImportSourceDetailed(
-                infernux::FromFsPath(path), "weighted-hard", settings);
+            const auto hard =
+                infernux::MeshLoader::ImportSourceDetailed(infernux::FromFsPath(path), "weighted-hard", settings);
             for (const auto &vertex : hard.mesh->GetVertices())
                 assert(vertex.normal == glm::vec3(0, 1, 0) || vertex.normal == glm::vec3(0, 0, 1));
         }
@@ -621,8 +632,11 @@ int main(int argc, char **argv)
         infernux::MeshImportSettings settings;
         settings.customAnimationClips = true;
         const std::string id(32, 'a');
-        settings.animationClips = {{{"id", id}, {"name", "Middle"}, {"source_take", take.name},
-                                    {"start", duration * .25}, {"end", duration * .75}}};
+        settings.animationClips = {{{"id", id},
+                                    {"name", "Middle"},
+                                    {"source_take", take.name},
+                                    {"start", duration * .25},
+                                    {"end", duration * .75}}};
         auto model = *source.skinnedMesh;
         infernux::SkinnedModelImporter::ApplyAnimationClips(model, settings);
         assert(model.animations.size() == 1);
@@ -658,8 +672,9 @@ int main(int argc, char **argv)
         invalid.animationClips[0]["end"] = duration + 1;
         model = *source.skinnedMesh;
         bool rejected = false;
-        try { infernux::SkinnedModelImporter::ApplyAnimationClips(model, invalid); }
-        catch (const std::invalid_argument &error) {
+        try {
+            infernux::SkinnedModelImporter::ApplyAnimationClips(model, invalid);
+        } catch (const std::invalid_argument &error) {
             rejected = std::string(error.what()).find("exceeds source take duration") != std::string::npos;
         }
         assert(rejected && model.animations[0].id == take.id && !model.FindAnimation(id));
@@ -672,8 +687,7 @@ int main(int argc, char **argv)
         infernux::SkinnedRuntimeTrack track;
         track.positions = {{0, glm::vec3(0)}, {2, glm::vec3(2, 4, 6)}};
         track.scales = {{0, glm::vec3(1)}};
-        track.rotations = {{0, glm::quat(1, 0, 0, 0)},
-                           {2, glm::angleAxis(glm::radians(90.0f), glm::vec3(0, 1, 0))}};
+        track.rotations = {{0, glm::quat(1, 0, 0, 0)}, {2, glm::angleAxis(glm::radians(90.0f), glm::vec3(0, 1, 0))}};
         animation.tracks.push_back(track);
         analytic.animations.push_back(animation);
         settings.animationClips[0]["source_take"] = "Linear";
@@ -691,8 +705,9 @@ int main(int argc, char **argv)
         std::reverse(analytic.animations[0].tracks[0].positions.begin(),
                      analytic.animations[0].tracks[0].positions.end());
         rejected = false;
-        try { infernux::SkinnedModelImporter::ApplyAnimationClips(analytic, settings); }
-        catch (const std::invalid_argument &error) {
+        try {
+            infernux::SkinnedModelImporter::ApplyAnimationClips(analytic, settings);
+        } catch (const std::invalid_argument &error) {
             rejected = std::string(error.what()).find("ordered by time") != std::string::npos;
         }
         assert(rejected && analytic.animations[0].name == "Linear");

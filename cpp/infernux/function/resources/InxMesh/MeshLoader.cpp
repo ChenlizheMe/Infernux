@@ -19,13 +19,14 @@
 #include <function/resources/InxSkinnedMesh/InxSkinnedMesh.h>
 #include <function/resources/InxSkinnedMesh/SkinnedModelImporter.h>
 
-#include <assimp/Importer.hpp>
 #include <assimp/GltfMaterial.h>
+#include <assimp/Importer.hpp>
 #include <assimp/postprocess.h>
 #include <assimp/scene.h>
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <platform/filesystem/InxPath.h>
@@ -34,6 +35,20 @@
 
 namespace infernux
 {
+
+namespace
+{
+glm::vec4 FallbackTangent(const glm::vec3 &normal)
+{
+    const float normalLengthSquared = glm::dot(normal, normal);
+    if (normalLengthSquared <= kEpsilon * kEpsilon)
+        return glm::vec4(0.0f);
+    const glm::vec3 unitNormal = normal / std::sqrt(normalLengthSquared);
+    const glm::vec3 reference =
+        std::abs(unitNormal.y) < 0.999f ? glm::vec3(0.0f, 1.0f, 0.0f) : glm::vec3(1.0f, 0.0f, 0.0f);
+    return glm::vec4(glm::normalize(glm::cross(reference, unitNormal)), 1.0f);
+}
+} // namespace
 
 // ============================================================================
 // Import-setting helpers
@@ -269,6 +284,14 @@ static std::shared_ptr<InxMesh> ConvertScene(const aiScene *scene, const MeshImp
                 // Compute handedness: sign of dot(cross(N,T), B)
                 float handedness = (glm::dot(glm::cross(vert.normal, t), b) < 0.0f) ? -1.0f : 1.0f;
                 vert.tangent = glm::vec4(t, handedness);
+            } else if (settings.tangentMode != "none" && settings.tangentMode != "source_only" &&
+                       settings.normalMode != "none") {
+                // A source can legitimately omit UVs and tangents while still
+                // using a Lit material with the built-in flat normal texture.
+                // A zero tangent makes the shader's TBN basis undefined and
+                // turns otherwise valid geometry black. Publish a stable
+                // orthogonal frame; authored/calculated tangents still win.
+                vert.tangent = FallbackTangent(vert.normal);
             } else {
                 vert.tangent = glm::vec4(0.0f);
             }
@@ -349,16 +372,20 @@ static std::shared_ptr<InxMesh> ConvertScene(const aiScene *scene, const MeshImp
                                         break;
                                     }
                             }
-                            textureSources.push_back({slot, texturePath.C_Str(), static_cast<uint32_t>(channel), embeddedIndex});
+                            textureSources.push_back(
+                                {slot, texturePath.C_Str(), static_cast<uint32_t>(channel), embeddedIndex});
                         }
                     };
-                    readTexture(aiMat->GetTextureCount(aiTextureType_BASE_COLOR)
-                                    ? aiTextureType_BASE_COLOR : aiTextureType_DIFFUSE, ModelTexture::BaseColor);
+                    readTexture(aiMat->GetTextureCount(aiTextureType_BASE_COLOR) ? aiTextureType_BASE_COLOR
+                                                                                 : aiTextureType_DIFFUSE,
+                                ModelTexture::BaseColor);
                     readTexture(aiTextureType_NORMALS, ModelTexture::Normal);
                     readTexture(aiTextureType_METALNESS, ModelTexture::Metallic);
                     readTexture(aiTextureType_DIFFUSE_ROUGHNESS, ModelTexture::Roughness);
                     readTexture(aiMat->GetTextureCount(aiTextureType_AMBIENT_OCCLUSION)
-                                    ? aiTextureType_AMBIENT_OCCLUSION : aiTextureType_LIGHTMAP, ModelTexture::Occlusion);
+                                    ? aiTextureType_AMBIENT_OCCLUSION
+                                    : aiTextureType_LIGHTMAP,
+                                ModelTexture::Occlusion);
                     readTexture(aiTextureType_EMISSIVE, ModelTexture::Emission);
                     aiString packedTexture;
                     slotData.packedMetallicRoughness =
@@ -561,8 +588,8 @@ MeshSourceImportResult MeshLoader::ImportSourceDetailed(const std::string &fileP
         output.name = input.mFilename.C_Str();
         // Named images survive source reordering. An unnamed source only has
         // its explicit import-local ordinal; do not invent content-hash identity.
-        output.key = !output.name.empty() && imageNameCounts.at(output.name) == 1
-                         ? "name/" + output.name : "index/" + std::to_string(index);
+        output.key = !output.name.empty() && imageNameCounts.at(output.name) == 1 ? "name/" + output.name
+                                                                                  : "index/" + std::to_string(index);
         if (output.name.empty())
             output.name = "Texture " + std::to_string(index);
         output.width = input.mWidth;
@@ -616,11 +643,12 @@ MeshSourceImportResult MeshLoader::ImportSourceDetailed(const std::string &fileP
         if (animationName.empty())
             animationName = "Anim_" + std::to_string(animationIndex);
         const double rate = std::isfinite(animation->mTicksPerSecond) && animation->mTicksPerSecond > 0
-                                ? animation->mTicksPerSecond : 25.0;
-        result.sourceAnimations.push_back({{"name", animationName},
-                                          {"duration", std::isfinite(animation->mDuration)
-                                              ? std::max(0.0, animation->mDuration) / rate : 0.0},
-                                          {"sample_rate", rate}});
+                                ? animation->mTicksPerSecond
+                                : 25.0;
+        result.sourceAnimations.push_back(
+            {{"name", animationName},
+             {"duration", std::isfinite(animation->mDuration) ? std::max(0.0, animation->mDuration) / rate : 0.0},
+             {"sample_rate", rate}});
         result.animationNames.push_back(std::move(animationName));
     }
     // Animation-only FBX files are first-class sources: their skeleton and
@@ -628,7 +656,7 @@ MeshSourceImportResult MeshLoader::ImportSourceDetailed(const std::string &fileP
     if (settings.rigType != "none" && SkinnedModelImporter::HasSkinningData(*scene, settings.importAnimations))
         result.skinnedMesh =
             SkinnedModelImporter::ConvertScene(*scene, guid, filePath, settings.scaleFactor, settings.importAnimations,
-                                              settings.maxBonesPerVertex, settings.minBoneWeight);
+                                               settings.maxBonesPerVertex, settings.minBoneWeight);
     if (result.skinnedMesh) {
         SkinnedModelImporter::ApplyAnimationClips(*result.skinnedMesh, settings);
         if (!result.skinnedMesh->IsAssetPayloadValid())
