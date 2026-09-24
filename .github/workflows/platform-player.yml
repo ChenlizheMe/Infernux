@@ -377,7 +377,7 @@ jobs:
         run: |
           conda activate infernux
           python -m pytest python/test/test_web_exporter_plugin.py python/test/test_web_jit_fixture.py \
-            -q -k 'web_dependency_gate or web_jit_fixture_verifier'
+            -q -k 'web_dependency_gate or web_jit_fixture_verifier' --noconftest
           rm -rf out/ci-projects/web out/acceptance/web
           mkdir -p out/ci-projects/web out/test-results
           cp -a tests/fixtures/multiplatform_player/. out/ci-projects/web/
