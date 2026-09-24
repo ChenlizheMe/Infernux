@@ -1,6 +1,7 @@
 """Run only in the managed Blender process; do not import from the engine."""
 import json
 import sys
+from pathlib import Path
 
 
 def main():
@@ -141,15 +142,26 @@ def main():
         obj.select_set(False)
 
     diagnostics.sort(key=lambda item: (item["code"], item["owner"], item["property"], item["detail"]))
-    external_images = []
+    external_image_paths = {}
     for image in bpy.data.images:
         if image.source != "FILE" or image.packed_file is not None or not image.filepath:
             continue
-        external_images.append({
-            "name": image.name,
-            "path": bpy.path.abspath(image.filepath, library=image.library),
-        })
-    external_images.sort(key=lambda item: (item["name"], item["path"]))
+        path = bpy.path.abspath(image.filepath, library=image.library)
+        # Blender's GLB exporter names an external image from its file stem,
+        # not from the editable Blender image datablock name.  The native
+        # importer joins this report to the exported GLB by image name.
+        export_name = Path(path).stem
+        previous_path = external_image_paths.get(export_name)
+        if previous_path is not None and previous_path != path:
+            raise RuntimeError(
+                f"External Blender images export as the same GLB image '{export_name}': "
+                f"'{previous_path}' and '{path}'"
+            )
+        external_image_paths[export_name] = path
+    external_images = [
+        {"name": name, "path": path}
+        for name, path in sorted(external_image_paths.items())
+    ]
     with open(report_path, "w", encoding="utf-8") as report:
         json.dump({"diagnostics": diagnostics, "external_images": external_images}, report,
                   ensure_ascii=False, separators=(",", ":"))

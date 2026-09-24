@@ -3,6 +3,8 @@ import os
 import json
 from pathlib import Path
 import subprocess
+import shutil
+import struct
 import time
 
 import pytest
@@ -25,6 +27,67 @@ def _descendants(root):
 
     visit(root)
     return result
+
+
+@pytest.mark.skipif(not os.environ.get("INFERNUX_TEST_BLENDER"), reason="requires the Blender 5.2 authoring tool")
+def test_blender_external_image_report_matches_exported_glb_identity(tmp_path):
+    tool = os.environ["INFERNUX_TEST_BLENDER"]
+    source = tmp_path / "AuthoringMatrix.blend"
+    external_texture = tmp_path / "ExternalAlbedo.png"
+    fixture_script = Path(__file__).with_name("fixtures") / "create_blender_import_matrix.py"
+    subprocess.run(
+        [tool, "--background", "--factory-startup", "--disable-autoexec", "--python-exit-code", "1",
+         "--python", str(fixture_script), "--", str(source), str(external_texture)],
+        check=True, capture_output=True, timeout=60,
+        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+    )
+    glb = tmp_path / "AuthoringMatrix.glb"
+    report = tmp_path / "AuthoringMatrix.report.json"
+    subprocess.run(
+        [tool, "--background", "--factory-startup", "--disable-autoexec", "--python-exit-code", "1",
+         "--python", export_script(), "--", str(source), str(glb), str(report)],
+        check=True, capture_output=True, timeout=90,
+        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+    )
+    payload = glb.read_bytes()
+    assert payload[:4] == b"glTF"
+    chunk_size, chunk_type = struct.unpack_from("<I4s", payload, 12)
+    assert chunk_type == b"JSON"
+    document = json.loads(payload[20:20 + chunk_size])
+    image_names = {image["name"] for image in document["images"]}
+    external_images = json.loads(report.read_text(encoding="utf-8"))["external_images"]
+    assert external_images == [{"name": "ExternalAlbedo", "path": str(external_texture)}]
+    assert external_images[0]["name"] in image_names
+
+    other_folder = tmp_path / "another-source"
+    other_folder.mkdir()
+    duplicate_name = other_folder / external_texture.name
+    shutil.copy2(external_texture, duplicate_name)
+    add_image = (
+        "import bpy; "
+        f"bpy.ops.wm.open_mainfile(filepath={str(source)!r}, load_ui=False); "
+        f"image=bpy.data.images.load({str(duplicate_name)!r}); "
+        "material=next(mat for mat in bpy.data.materials if mat.use_nodes); "
+        "texture=material.node_tree.nodes.new('ShaderNodeTexImage'); "
+        "texture.image=image; "
+        f"bpy.ops.wm.save_as_mainfile(filepath={str(source)!r})"
+    )
+    subprocess.run(
+        [tool, "--background", "--factory-startup", "--disable-autoexec", "--python-exit-code", "1",
+         "--python-expr", add_image],
+        check=True, capture_output=True, timeout=60,
+        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+    )
+    ambiguous = subprocess.run(
+        [tool, "--background", "--factory-startup", "--disable-autoexec", "--python-exit-code", "1",
+         "--python", export_script(), "--", str(source), str(glb), str(report)],
+        capture_output=True, timeout=90,
+        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+    )
+    assert ambiguous.returncode != 0
+    assert b"External Blender images export as the same GLB image 'ExternalAlbedo'" in (
+        ambiguous.stdout + ambiguous.stderr
+    )
 
 
 def test_blender_tool_requires_explicit_absolute_configuration(engine, tmp_path):
