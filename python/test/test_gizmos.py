@@ -35,6 +35,72 @@ def test_numpy_line_batch_captures_inputs_and_preserves_index_offsets():
     Gizmos._begin_frame()
 
 
+def test_resident_line_dispatch_matches_vector_and_scalar_buffer_layout(monkeypatch):
+    from Infernux.gizmos import gizmos as gizmo_module
+
+    class FakeBuffer:
+        def __init__(self, shape, dtype, device="gpu", data=None):
+            self.shape = tuple(shape) if isinstance(shape, tuple) else (shape,)
+            self.dtype = dtype if isinstance(dtype, str) else np.dtype(dtype).name
+            self.device = device
+            self.closed = False
+            self.dependents = []
+
+        def _retain_dependent(self, value):
+            self.dependents.append(value)
+
+        def close(self):
+            self.closed = True
+
+    launched = []
+    monkeypatch.setattr(gizmo_module, "Buffer", FakeBuffer)
+    monkeypatch.setattr(gizmo_module, "buffer", lambda **kwargs: FakeBuffer(**kwargs))
+    monkeypatch.setattr(
+        gizmo_module, "launch", lambda declaration, params: launched.append(declaration)
+    )
+    edges = np.asarray(((0, 1),), dtype=np.uint32)
+
+    Gizmos._begin_frame()
+    Gizmos.draw_lines(FakeBuffer((2,), "vector3"), edges)
+    assert launched[-1] is gizmo_module._resident_line_vertex_vector3_kernel
+
+    Gizmos._begin_frame()
+    Gizmos.draw_lines(FakeBuffer((2, 3), "float32"), edges)
+    assert launched[-1] is gizmo_module._resident_line_vertex_scalar_kernel
+    Gizmos._begin_frame()
+
+
+def test_resident_wire_sphere_dispatch_matches_vector_center_layout(monkeypatch):
+    from Infernux.gizmos import gizmos as gizmo_module
+
+    class FakeBuffer:
+        def __init__(self, shape, dtype, device="gpu", data=None):
+            self.shape = tuple(shape) if isinstance(shape, tuple) else (shape,)
+            self.dtype = dtype if isinstance(dtype, str) else np.dtype(dtype).name
+            self.device = device
+            self.closed = False
+            self.dependents = []
+
+        def _retain_dependent(self, value):
+            self.dependents.append(value)
+
+        def close(self):
+            self.closed = True
+
+    launched = []
+    monkeypatch.setattr(gizmo_module, "Buffer", FakeBuffer)
+    monkeypatch.setattr(gizmo_module, "buffer", lambda **kwargs: FakeBuffer(**kwargs))
+    monkeypatch.setattr(
+        gizmo_module, "launch", lambda declaration, params: launched.append(declaration)
+    )
+
+    Gizmos._begin_frame()
+    Gizmos.draw_wire_spheres(FakeBuffer((2,), "vector3"), 0.25, segments=3)
+    assert launched[0] is gizmo_module._resident_wire_sphere_vector3_kernel
+    assert launched[1] is gizmo_module._resident_line_vertex_scalar_kernel
+    Gizmos._begin_frame()
+
+
 def test_line_batch_only_splits_when_world_matrix_changes():
     Gizmos._begin_frame()
     Gizmos.draw_line((0, 0, 0), (1, 0, 0))

@@ -72,12 +72,33 @@ def _profile_geometry_helper(method):
 
 
 @kernel
-def _resident_line_vertex_kernel(domain, positions, vertices, red, green, blue):
-    """Expand resident positions into the renderer's canonical Vertex stream."""
+def _resident_line_vertex_scalar_kernel(domain, positions, vertices, red, green, blue):
+    """Expand scalar ``(N, 3)`` positions into the canonical Vertex stream."""
     i = index(domain)
     vertices[i, 0] = positions[i, 0]
     vertices[i, 1] = positions[i, 1]
     vertices[i, 2] = positions[i, 2]
+    vertices[i, 3] = 0.0
+    vertices[i, 4] = 1.0
+    vertices[i, 5] = 0.0
+    vertices[i, 6] = 1.0
+    vertices[i, 7] = 0.0
+    vertices[i, 8] = 0.0
+    vertices[i, 9] = 1.0
+    vertices[i, 10] = red
+    vertices[i, 11] = green
+    vertices[i, 12] = blue
+    for lane in range(13, 25):
+        vertices[i, lane] = 0.0
+
+
+@kernel
+def _resident_line_vertex_vector3_kernel(domain, positions, vertices, red, green, blue):
+    """Expand a one-dimensional vector3 position buffer into Vertex data."""
+    i = index(domain)
+    vertices[i, 0] = positions[i][0]
+    vertices[i, 1] = positions[i][1]
+    vertices[i, 2] = positions[i][2]
     vertices[i, 3] = 0.0
     vertices[i, 4] = 1.0
     vertices[i, 5] = 0.0
@@ -105,8 +126,8 @@ class _ResidentLineState:
 
 
 @kernel
-def _resident_wire_sphere_kernel(domain, centers, center_indices, unit_positions,
-                                 positions, unit_count, radius):
+def _resident_wire_sphere_scalar_kernel(domain, centers, center_indices, unit_positions,
+                                        positions, unit_count, radius):
     i = index(domain)
     center_slot = i // unit_count
     unit_slot = i - center_slot * unit_count
@@ -114,6 +135,18 @@ def _resident_wire_sphere_kernel(domain, centers, center_indices, unit_positions
     positions[i, 0] = centers[center_index, 0] + unit_positions[unit_slot, 0] * radius
     positions[i, 1] = centers[center_index, 1] + unit_positions[unit_slot, 1] * radius
     positions[i, 2] = centers[center_index, 2] + unit_positions[unit_slot, 2] * radius
+
+
+@kernel
+def _resident_wire_sphere_vector3_kernel(domain, centers, center_indices, unit_positions,
+                                         positions, unit_count, radius):
+    i = index(domain)
+    center_slot = i // unit_count
+    unit_slot = i - center_slot * unit_count
+    center_index = center_indices[center_slot]
+    positions[i, 0] = centers[center_index][0] + unit_positions[unit_slot, 0] * radius
+    positions[i, 1] = centers[center_index][1] + unit_positions[unit_slot, 1] * radius
+    positions[i, 2] = centers[center_index][2] + unit_positions[unit_slot, 2] * radius
 
 
 @dataclass(slots=True)
@@ -277,8 +310,13 @@ class Gizmos:
             states[key] = state
             positions._retain_dependent(state)
         red, green, blue = (float(value) for value in cls.color)
+        position_kernel = (
+            _resident_line_vertex_vector3_kernel
+            if positions.dtype == "vector3"
+            else _resident_line_vertex_scalar_kernel
+        )
         launch(
-            _resident_line_vertex_kernel,
+            position_kernel,
             params=(state.domain, positions, state.vertices, red, green, blue),
         )
         cls._resident_draw_batches.append((state, cls._snapshot_matrix()))
@@ -468,8 +506,13 @@ class Gizmos:
             )
             states[key] = state
             centers._retain_dependent(state)
+        sphere_kernel = (
+            _resident_wire_sphere_vector3_kernel
+            if centers.dtype == "vector3"
+            else _resident_wire_sphere_scalar_kernel
+        )
         launch(
-            _resident_wire_sphere_kernel,
+            sphere_kernel,
             params=(state.domain, centers, state.center_indices, state.unit_positions,
                     state.positions, state.unit_count, float(radius)),
         )
