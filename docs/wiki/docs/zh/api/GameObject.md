@@ -25,6 +25,7 @@ GameObject 拥有 Transform 与一组组件。注意 `active_self` 与派生状�
 | is_static | `bool` | 静态标志。 |
 | prefab_guid | `str` |  |
 | prefab_root | `bool` |  |
+| prefab_source_id | `int` |  |
 | active_self | `bool` | 此对象自身是否处于活动状态。active 的别名。 *(只读)* |
 | active_in_hierarchy | `bool` | 此对象在层级中是否处于活动状态。 *(只读)* |
 | id | `int` | 唯一对象标识符。 *(只读)* |

@@ -40,6 +40,10 @@ class ToolbarPanel : public EditorPanel
     /// Query show-grid state.
     std::function<bool()> isShowGrid;
 
+    /// Query component Gizmos state. Mutation is routed through the global
+    /// command service so toolbar, command palette, and Undo share semantics.
+    std::function<bool()> isShowGizmos;
+
     // ── Camera settings ──────────────────────────────────────────────
 
     struct CameraSettings

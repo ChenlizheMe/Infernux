@@ -173,7 +173,7 @@ class HierarchyPanel : public EditorPanel
     EditorTreeProjectionModel<uint64_t> m_treeProjection;
     std::unordered_set<uint64_t> m_forceExpandIds; // one-shot SetNextItemOpen
     std::unordered_set<uint64_t> m_collapsedSceneWorldIds;
-    bool m_flatListDirty = true;                   // rebuild flat list when true
+    bool m_flatListDirty = true; // rebuild flat list when true
 
     void BuildFlatVisibleList(const std::vector<GameObject *> &roots);
     void RebuildFlatListIfNeeded(const std::vector<GameObject *> &roots);

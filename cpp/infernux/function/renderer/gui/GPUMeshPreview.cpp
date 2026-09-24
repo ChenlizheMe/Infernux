@@ -42,6 +42,31 @@ namespace
 constexpr float kMeshPreviewFovDeg = 30.0f;
 constexpr int kPreviewSupersampleFactor = 2;
 
+struct PreviewIndexUpload
+{
+    std::vector<uint16_t> packed16;
+    const void *data = nullptr;
+    size_t byteSize = 0;
+    VkIndexType type = VK_INDEX_TYPE_UINT32;
+};
+
+PreviewIndexUpload PreparePreviewIndices(size_t vertexCount, const std::vector<uint32_t> &indices,
+                                         MeshIndexFormat requested)
+{
+    PreviewIndexUpload upload;
+    const auto resolved = ResolveMeshIndexFormat(requested, vertexCount, indices);
+    if (resolved == MeshIndexFormat::UInt16) {
+        upload.packed16.assign(indices.begin(), indices.end());
+        upload.data = upload.packed16.data();
+        upload.byteSize = upload.packed16.size() * sizeof(uint16_t);
+        upload.type = VK_INDEX_TYPE_UINT16;
+    } else {
+        upload.data = indices.data();
+        upload.byteSize = indices.size() * sizeof(uint32_t);
+    }
+    return upload;
+}
+
 /// @brief Downsample RGBA image from srcSize to dstSize using box filter.
 void DownsampleRGBABox(const std::vector<unsigned char> &srcPixels, int srcSize, int dstSize,
                        std::vector<unsigned char> &dstPixels)
@@ -187,7 +212,8 @@ std::shared_ptr<vk::ImageReadbackTicket> GPUMeshPreview::BeginRenderToPixelsCame
     // ── Upload mesh geometry to temporary GPU buffers ────────────────
     auto &rm = m_vkCore->GetResourceManager();
     auto vbo = rm.CreateVertexBuffer(vertices.data(), vertices.size() * sizeof(Vertex));
-    auto ibo = rm.CreateIndexBuffer(indices.data(), indices.size() * sizeof(uint32_t));
+    const auto indexUpload = PreparePreviewIndices(vertices.size(), indices, mesh.GetIndexFormat());
+    auto ibo = rm.CreateIndexBuffer(indexUpload.data, indexUpload.byteSize);
     if (!vbo || !ibo)
         return nullptr;
 
@@ -455,7 +481,7 @@ std::shared_ptr<vk::ImageReadbackTicket> GPUMeshPreview::BeginRenderToPixelsCame
     VkBuffer vboBuf = vbo->GetBuffer();
     VkDeviceSize offsets[] = {0};
     vkCmdBindVertexBuffers(cmd, 0, 1, &vboBuf, offsets);
-    vkCmdBindIndexBuffer(cmd, ibo->GetBuffer(), 0, VK_INDEX_TYPE_UINT32);
+    vkCmdBindIndexBuffer(cmd, ibo->GetBuffer(), 0, indexUpload.type);
 
     // Push constants
     struct PushConstants
@@ -916,16 +942,19 @@ uint64_t GPUMeshPreview::RenderToImGuiTextureCamera(const InxMesh &mesh,
         return 0;
 
     auto &rm = m_vkCore->GetResourceManager();
+    const auto indexUpload =
+        PreparePreviewIndices(vertices.size(), indices, skin ? skin->indexFormat : mesh.GetIndexFormat());
     std::shared_ptr<vk::VkBufferHandle> vbo;
     std::shared_ptr<vk::VkBufferHandle> ibo;
-    if (skin && skin == m_uploadedSkin) {
+    if (skin && skin == m_uploadedSkin && skin->indexFormat == m_uploadedSkinIndexFormat) {
         vbo = m_skinVertices;
         ibo = m_skinIndices;
     } else {
         vbo = rm.CreateVertexBuffer(vertices.data(), vertices.size() * sizeof(Vertex));
-        ibo = rm.CreateIndexBuffer(indices.data(), indices.size() * sizeof(uint32_t));
+        ibo = rm.CreateIndexBuffer(indexUpload.data, indexUpload.byteSize);
         if (skin && vbo && ibo) {
             m_uploadedSkin = skin;
+            m_uploadedSkinIndexFormat = skin->indexFormat;
             m_skinVertices = vbo;
             m_skinIndices = ibo;
         }
@@ -1109,13 +1138,12 @@ uint64_t GPUMeshPreview::RenderToImGuiTextureCamera(const InxMesh &mesh,
     vkCmdUpdateBuffer(cmd, lightingUBOBuf, 0, sizeof(lightingUBO), &lightingUBO);
     vkCmdUpdateBuffer(cmd, globalsUBOBuf, 0, sizeof(globalsUBO), &globalsUBO);
     vkCmdUpdateBuffer(cmd, instanceSSBOBuf, 0, sizeof(modelMat), &modelMat);
-    const std::array<uint32_t, 4> skinInstance{0u,
-        bonePalette ? static_cast<uint32_t>(bonePalette->size()) : 0u,
-        bonePalette ? 1u : 0u, 0u};
+    const std::array<uint32_t, 4> skinInstance{0u, bonePalette ? static_cast<uint32_t>(bonePalette->size()) : 0u,
+                                               bonePalette ? 1u : 0u, 0u};
     const glm::mat4 identityBone(1.0f);
     vkCmdUpdateBuffer(cmd, m_previewSkinInstanceBuffer->GetBuffer(), 0, sizeof(skinInstance), skinInstance.data());
-    const auto *paletteData = reinterpret_cast<const unsigned char *>(
-        bonePalette ? bonePalette->data() : &identityBone);
+    const auto *paletteData =
+        reinterpret_cast<const unsigned char *>(bonePalette ? bonePalette->data() : &identityBone);
     for (VkDeviceSize offset = 0; offset < paletteBytes; offset += 65536) {
         const auto bytes = std::min<VkDeviceSize>(65536, paletteBytes - offset);
         vkCmdUpdateBuffer(cmd, m_previewSkinPaletteBuffer->GetBuffer(), offset, bytes, paletteData + offset);
@@ -1183,7 +1211,7 @@ uint64_t GPUMeshPreview::RenderToImGuiTextureCamera(const InxMesh &mesh,
     VkBuffer vboBuf = vbo->GetBuffer();
     VkDeviceSize offsets[] = {0};
     vkCmdBindVertexBuffers(cmd, 0, 1, &vboBuf, offsets);
-    vkCmdBindIndexBuffer(cmd, ibo->GetBuffer(), 0, VK_INDEX_TYPE_UINT32);
+    vkCmdBindIndexBuffer(cmd, ibo->GetBuffer(), 0, indexUpload.type);
 
     struct PushConstants
     {
@@ -1272,8 +1300,8 @@ uint64_t GPUMeshPreview::RenderToImGuiTextureCamera(const InxMesh &mesh,
     return reinterpret_cast<uint64_t>(m_displayDescriptorSet);
 }
 
-uint64_t GPUMeshPreview::RenderAnimation(const std::shared_ptr<InxMesh> &mesh, const std::string &take,
-                                         float seconds, int size, uint64_t dependencyRevision)
+uint64_t GPUMeshPreview::RenderAnimation(const std::shared_ptr<InxMesh> &mesh, const std::string &take, float seconds,
+                                         int size, uint64_t dependencyRevision)
 {
     if (!mesh || !std::isfinite(seconds) || seconds < 0.0f || size < 32 || size > 1024)
         throw std::invalid_argument("Animation preview requires a mesh, finite nonnegative time and size 32..1024");
@@ -1319,8 +1347,8 @@ uint64_t GPUMeshPreview::RenderAnimation(const std::shared_ptr<InxMesh> &mesh, c
     request.timeSeconds = seconds;
     request.loop = false; // Scrubbing to duration must show the final pose.
     const auto palette = skin->BuildGpuBonePalette(request);
-    const uint64_t texture = RenderToImGuiTextureCamera(*mesh, m_animationMaterials, size, camera.view,
-                                                        camera.proj, camera.cameraPos, false, &palette);
+    const uint64_t texture = RenderToImGuiTextureCamera(*mesh, m_animationMaterials, size, camera.view, camera.proj,
+                                                        camera.cameraPos, false, &palette);
     if (texture) {
         m_renderedTake = take;
         m_renderedSeconds = seconds;

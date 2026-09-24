@@ -256,7 +256,7 @@
                             <span class="ns-arr">&#9654;</span>
                             <span class="ns-nm">Infernux.jit</span>
                         </button>
-                        <div class="ns-ch"><a href="/wiki/site/zh/api/njit.html" class="">njit</a><a href="/wiki/site/zh/api/warmup.html" class="">warmup</a></div>
+                        <div class="ns-ch"><a href="/wiki/site/zh/api/compile.html" class="">compile</a><a href="/wiki/site/zh/api/statistics.html" class="">statistics</a><a href="/wiki/site/zh/api/warmup.html" class="">warmup</a></div>
                     </div><div class="ns-group">
                         <button type="button" class="ns-hd" aria-expanded="false">
                             <span class="ns-arr">&#9654;</span>
@@ -384,6 +384,11 @@
 <td>is_loaded</td>
 <td><code>bool</code></td>
 <td>Whether the audio data is loaded in memory. <em>(只读)</em></td>
+</tr>
+<tr>
+<td>is_streaming</td>
+<td><code>bool</code></td>
+<td>Whether playback uses file-backed bounded read-ahead. <em>(只读)</em></td>
 </tr>
 <tr>
 <td>duration</td>

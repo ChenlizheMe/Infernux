@@ -26,6 +26,17 @@ Base class for all collider components.
 
 <!-- USER CONTENT END -->
 
+## Public Methods
+
+| Method | Description |
+|------|------|
+| `raycast(origin: Any, direction: Any, max_distance: float = 1000.0) → Any | None` |  |
+| `closest_point(point: Any) → Any` |  |
+
+<!-- USER CONTENT START --> public_methods
+
+<!-- USER CONTENT END -->
+
 ## Example
 
 <!-- USER CONTENT START --> example

@@ -89,6 +89,7 @@ def test_plugin_preload_resolves_cooked_assets_before_scene_startup(
         }]},
     )
     session = PlayerRuntimeSession(
+        asset_database=object(),
         scheduler=types.SimpleNamespace(),
         scene_service=types.SimpleNamespace(bind_runtime_catalog=lambda _catalog: None),
     )
@@ -135,7 +136,7 @@ def test_plugin_preload_resolves_cooked_assets_before_scene_startup(
                 "_player_session": None,
                 "_prepare_player_asset_contract": lambda: None,
                 "_runtime_data_root": str(tmp_path),
-                "_player_asset_database": None,
+                "_player_asset_database": session.get_asset_database(),
                 "_player_runtime_manifest": manifest,
                 "_player_runtime_catalog": catalog,
             }
@@ -151,6 +152,10 @@ def test_plugin_preload_resolves_cooked_assets_before_scene_startup(
         with pytest.raises(PreloadObserved):
             run()
     finally:
+        from Infernux.core.assets import AssetManager
+
+        AssetManager.release_engine()
+        Application._unbind_engine(session)
         set_project_root(None)
 
 

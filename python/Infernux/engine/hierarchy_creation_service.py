@@ -473,8 +473,6 @@ class HierarchyCreationService:
             text = UITextCls()
             text.align_h = ScreenAlignH.Center
             text.align_v = ScreenAlignV.Center
-            text.x = -80.0
-            text.y = -20.0
             obj.add_py_component(text)
             invalidate_canvas_cache()
         return obj
@@ -490,8 +488,6 @@ class HierarchyCreationService:
             frame.height = 180.0
             frame.align_h = ScreenAlignH.Center
             frame.align_v = ScreenAlignV.Center
-            frame.x = -160.0
-            frame.y = -90.0
             obj.add_py_component(frame)
             invalidate_canvas_cache()
         return obj
@@ -507,8 +503,6 @@ class HierarchyCreationService:
             image.height = 100.0
             image.align_h = ScreenAlignH.Center
             image.align_v = ScreenAlignV.Center
-            image.x = -50.0
-            image.y = -50.0
             obj.add_py_component(image)
             invalidate_canvas_cache()
         return obj
@@ -524,8 +518,6 @@ class HierarchyCreationService:
             button.height = 40.0
             button.align_h = ScreenAlignH.Center
             button.align_v = ScreenAlignV.Center
-            button.x = -80.0
-            button.y = -20.0
             obj.add_py_component(button)
             invalidate_canvas_cache()
         return obj
@@ -540,8 +532,6 @@ class HierarchyCreationService:
             component.height = 24.0
             component.align_h = ScreenAlignH.Center
             component.align_v = ScreenAlignV.Center
-            component.x = -120.0
-            component.y = -12.0
             obj.add_py_component(component)
             invalidate_canvas_cache()
         return obj

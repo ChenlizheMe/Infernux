@@ -56,8 +56,8 @@ class GPUMeshPreview
                                         const glm::vec3 &cameraPos, bool cloneMaterials = false,
                                         const std::vector<glm::mat4> *bonePalette = nullptr);
 
-    uint64_t RenderAnimation(const std::shared_ptr<InxMesh> &mesh, const std::string &take,
-                             float seconds, int size, uint64_t dependencyRevision);
+    uint64_t RenderAnimation(const std::shared_ptr<InxMesh> &mesh, const std::string &take, float seconds, int size,
+                             uint64_t dependencyRevision);
 
     /// @brief Currently-published ImGui display descriptor, 0 when absent.
     ///
@@ -119,6 +119,7 @@ class GPUMeshPreview
     uint64_t m_animationRevision = 0;
     std::vector<std::shared_ptr<InxMaterial>> m_animationMaterials;
     std::shared_ptr<const InxSkinnedMesh> m_uploadedSkin;
+    MeshIndexFormat m_uploadedSkinIndexFormat = MeshIndexFormat::Auto;
     std::shared_ptr<vk::VkBufferHandle> m_skinVertices;
     std::shared_ptr<vk::VkBufferHandle> m_skinIndices;
     std::string m_renderedTake;

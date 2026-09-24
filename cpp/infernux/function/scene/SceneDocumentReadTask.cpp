@@ -101,7 +101,7 @@ void ValidateObject(const json &object, const std::string &path, std::unordered_
     static const std::unordered_set<std::string> allowed = {
         "name",      "id",          "active",      "is_static",        "tag",
         "layer",     "prefab_guid", "prefab_root", "prefab_source_id", "prefab_source",
-        "transform", "components",  "children", "model_source",
+        "transform", "components",  "children",    "model_source",
     };
     RequireExactFields(object, allowed, path);
     if (!object.contains("name") || !object["name"].is_string() || !object.contains("active") ||

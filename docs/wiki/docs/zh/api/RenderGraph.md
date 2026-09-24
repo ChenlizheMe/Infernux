@@ -16,7 +16,7 @@
 
 | 签名 | 描述 |
 |------|------|
-| `RenderGraph.__init__(name: str = ..., *, output_samples: int = 0) → None` | 固定 Camera 目标提供输出采样配置；0 表示由管线决定屏幕采样。 |
+| `RenderGraph.__init__(name: str = ..., output_samples: int = 0) → None` |  |
 
 <!-- USER CONTENT START --> constructors
 
@@ -66,7 +66,7 @@
 | `injection_point(name: str, display_name: str = ..., resources: Optional[set] = ...) → None` | Declare an injection point where external passes can be inserted. |
 | `effect_stage(stable_id: str, scope: EffectScope | str = ..., display_name: str = ..., inputs: Optional[set[str]] = ..., outputs: Optional[set[str]] = ..., capabilities: Optional[set[str]] = ...) → EffectStage` | Declare a stable user-facing RenderEffect attachment stage. |
 | `effects(stable_id: str) → EffectStage` | Pipeline-author shorthand for ``effect_stage``. |
-| `screen_ui_section(resources: set | None = ...) → None` | Declare a screen UI section in the graph topology. |
+| `screen_ui_section(resources: set | None = ..., world_ui_layer_mask: int = ...) → None` | Declare a screen UI section in the graph topology. |
 | `set_geometry_buffer_requirements(requirements) → None` |  |
 | `require_geometry_buffers(requirements) → None` |  |
 | `needs_geometry_buffer(semantic: str) → bool` |  |
@@ -74,7 +74,7 @@
 | `derive_pass_result(source: str, parent: PassResult, overrides) → PassResult` |  |
 | `write_buffer(source: str, parent: PassResult, name: str, texture: TextureHandle) → PassResult` |  |
 | `get_pass_result(source: str) → PassResult | None` |  |
-| `camera_ui_section(resources: set | None = ...) → None` | Draw Camera UI and declare the after-camera-UI effect stage. |
+| `camera_ui_section(resources: set | None = ..., world_ui_layer_mask: int = ...) → None` | Draw Camera UI and declare the after-camera-UI effect stage. |
 | `screen_ui_overlay_section(resources: set | None = ...) → None` | Encode for display, draw Screen UI, and declare its effect stage. |
 | `add_pass(name: str) → RenderPassBuilder` | 添加一个渲染 Pass。 |
 | `add_copy_pass(name: str) → RenderPassBuilder` | Add a transfer-domain texture or buffer copy pass. |

@@ -33,6 +33,14 @@ vec2 getUV() {
     return v_TexCoord;
 }
 
+// Keep built-in surface shaders source-compatible across geometry and
+// particle programs. Particle vertices intentionally expose one authored UV
+// stream plus flipbook coordinates; model-import UV-set metadata does not
+// apply to this domain.
+vec2 getUV(int setIndex) {
+    return v_TexCoord;
+}
+
 vec2 getParticleLocalUV() {
     return v_ParticleLocalTexCoord;
 }
@@ -69,6 +77,10 @@ vec3 worldToTangent(vec3 worldDirection) {
 
 vec3 sampleNormal(sampler2D normalMap, vec2 uv, float scale) {
     return getNormalFromMap(normalMap, uv, scale, v_Normal, v_Tangent);
+}
+
+vec3 sampleNormal(sampler2D normalMap, vec2 uv, int uvSet, float scale) {
+    return sampleNormal(normalMap, uv, scale);
 }
 
 vec3 sampleNormal(sampler2D normalMap, float scale) {

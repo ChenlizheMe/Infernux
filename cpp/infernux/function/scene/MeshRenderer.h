@@ -340,10 +340,19 @@ class MeshRenderer : public Component
     /// Imported hierarchy instances consume node-local geometry; ordinary mesh
     /// assignments retain the merged model-space view. Persisted with the binding.
     void SetModelNodePath(std::vector<std::string> path);
-    [[nodiscard]] const std::vector<std::string> &GetModelNodePath() const noexcept { return m_modelNodePath; }
+    [[nodiscard]] const std::vector<std::string> &GetModelNodePath() const noexcept
+    {
+        return m_modelNodePath;
+    }
     /// Stable imported subresource identity used to reconcile DCC renames.
-    void SetModelSubresourceId(std::string id) { m_modelSubresourceId = std::move(id); }
-    [[nodiscard]] const std::string &GetModelSubresourceId() const noexcept { return m_modelSubresourceId; }
+    void SetModelSubresourceId(std::string id)
+    {
+        m_modelSubresourceId = std::move(id);
+    }
+    [[nodiscard]] const std::string &GetModelSubresourceId() const noexcept
+    {
+        return m_modelSubresourceId;
+    }
     [[nodiscard]] bool IsModelNodeLocal() const noexcept
     {
         return !m_modelNodePath.empty();
@@ -502,8 +511,8 @@ class MeshRenderer : public Component
     bool m_vertexBufferWorldSpace = false;
     glm::mat4 m_vertexBufferWorldBoundsAnchorInverse{1.0f};
 
-    int32_t m_submeshIndex = -1;       // -1 = render all submeshes, >= 0 = single submesh
-    int32_t m_nodeGroup = -1;          // -1 = render all node groups, >= 0 = specific node group
+    int32_t m_submeshIndex = -1; // -1 = render all submeshes, >= 0 = single submesh
+    int32_t m_nodeGroup = -1;    // -1 = render all node groups, >= 0 = specific node group
     std::vector<std::string> m_modelNodePath;
     std::string m_modelSubresourceId;
     glm::vec3 m_meshPivotOffset{0.0f}; // Pre-transform to re-center submesh geometry

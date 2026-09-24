@@ -1,14 +1,16 @@
 """Measure the public RaycastBatch path in a real headless physics world.
 
-This is deliberately a measurement tool, not a pass/fail FPS claim.  It uses
-the same published snapshot and reusable output arrays as gameplay code and
-reports the Python/native call boundary separately from the scene load.
+This is deliberately a measurement tool, not a pass/fail FPS claim. It uses
+the same synchronized live-world query epoch and reusable output arrays as
+gameplay code and reports the Python/native call boundary separately from the
+scene load.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 from pathlib import Path
 import sys
@@ -67,6 +69,26 @@ def _parser() -> argparse.ArgumentParser:
         choices=("all_hit", "sparse", "all_miss"),
         default="all_hit",
         help="ray distribution: all_hit reproduces the dense baseline, sparse mixes one hit with seven misses, all_miss avoids scene geometry",
+    )
+    parser.add_argument(
+        "--profile",
+        action="store_true",
+        help="record explicit pybind, query-epoch, Jolt and result-publication stages",
+    )
+    parser.add_argument(
+        "--p50-budget-ms",
+        type=float,
+        help="optional hard P50 budget applied to every emitted measurement row",
+    )
+    parser.add_argument(
+        "--p95-budget-ms",
+        type=float,
+        help="optional hard P95 budget applied to every emitted measurement row",
+    )
+    parser.add_argument(
+        "--expected-hits",
+        type=int,
+        help="optional exact hit count required from the final sample of every emitted row",
     )
     parser.add_argument("--output")
     return parser
@@ -171,6 +193,12 @@ def main() -> int:
         raise ValueError("--triangle-counts must contain non-negative integers")
     if args.samples <= 0 or args.warmup < 0:
         raise ValueError("--samples must be positive and --warmup cannot be negative")
+    if args.p50_budget_ms is not None and (not math.isfinite(args.p50_budget_ms) or args.p50_budget_ms <= 0):
+        raise ValueError("--p50-budget-ms must be finite and greater than zero")
+    if args.p95_budget_ms is not None and (not math.isfinite(args.p95_budget_ms) or args.p95_budget_ms <= 0):
+        raise ValueError("--p95-budget-ms must be finite and greater than zero")
+    if args.expected_hits is not None and args.expected_hits < 0:
+        raise ValueError("--expected-hits cannot be negative")
 
     state = {"requested": False, "active": False, "error": "", "result": None}
     errors: list[dict[str, str]] = []
@@ -240,11 +268,18 @@ def main() -> int:
                             for _ in range(args.warmup):
                                 inx.physics.Physics.raycast_batch(origins, directions, output, max_distance=20.0)
                             timings = []
+                            profile_timings = {}
                             for _ in range(args.samples):
                                 start = time.perf_counter_ns()
-                                inx.physics.Physics.raycast_batch(origins, directions, output, max_distance=20.0)
+                                inx.physics.Physics.raycast_batch(
+                                    origins, directions, output, max_distance=20.0,
+                                    profile=args.profile,
+                                )
                                 timings.append((time.perf_counter_ns() - start) / 1_000_000.0)
-                            measurements.append({
+                                if args.profile:
+                                    for key, value in output["profile"].items():
+                                        profile_timings.setdefault(key, []).append(float(value))
+                            measurement = {
                                 "collider_count": collider_count,
                                 "triangle_target": triangle_target,
                                 "triangle_count": triangle_count,
@@ -255,7 +290,16 @@ def main() -> int:
                                 "max_ms": float(max(timings)),
                                 "rays_per_second_p50": float(count / (np.percentile(timings, 50) / 1000.0)),
                                 "hits_last_sample": int(output["hit"].sum()),
-                            })
+                            }
+                            if args.profile:
+                                measurement["profile"] = {
+                                    key: {
+                                        "p50": float(np.percentile(values, 50)),
+                                        "p95": float(np.percentile(values, 95)),
+                                    }
+                                    for key, values in profile_timings.items()
+                                }
+                            measurements.append(measurement)
                     finally:
                         _destroy_static_triangle_mesh(active_scene, temporary_mesh)
             finally:
@@ -272,19 +316,57 @@ def main() -> int:
     finally:
         console.remove_listener(on_error)
 
+    measurements = state["result"] or []
+    budget_violations = []
+    for row in measurements:
+        identity = {
+            "collider_count": row["collider_count"],
+            "triangle_count": row["triangle_count"],
+            "count": row["count"],
+        }
+        if args.p50_budget_ms is not None and row["p50_ms"] > args.p50_budget_ms:
+            budget_violations.append({
+                **identity,
+                "metric": "p50_ms",
+                "actual": row["p50_ms"],
+                "limit": args.p50_budget_ms,
+            })
+        if args.p95_budget_ms is not None and row["p95_ms"] > args.p95_budget_ms:
+            budget_violations.append({
+                **identity,
+                "metric": "p95_ms",
+                "actual": row["p95_ms"],
+                "limit": args.p95_budget_ms,
+            })
+        if args.expected_hits is not None and row["hits_last_sample"] != args.expected_hits:
+            budget_violations.append({
+                **identity,
+                "metric": "hits_last_sample",
+                "actual": row["hits_last_sample"],
+                "expected": args.expected_hits,
+            })
+
+    passed = state["result"] is not None and not state["error"] and not errors and not budget_violations
     document = {
         "schema": "infernux.raycast_batch_benchmark",
-        "status": "passed" if state["result"] is not None and not state["error"] and not errors else "failed",
+        "status": "passed" if passed else "failed",
         "project": project,
         "scene": scene_relative,
         "pattern": args.pattern,
         "samples": args.samples,
         "warmup": args.warmup,
+        "profile": args.profile,
         "collider_counts": list(collider_counts),
         "triangle_counts": list(triangle_counts),
+        "acceptance": {
+            "p50_budget_ms": args.p50_budget_ms,
+            "p95_budget_ms": args.p95_budget_ms,
+            "expected_hits": args.expected_hits,
+            "violations": budget_violations,
+        },
         "error": state["error"],
         "runtime_errors": errors,
-        "measurements": state["result"] or [],
+        "measurements": measurements,
     }
     encoded = json.dumps(document, ensure_ascii=False, indent=2)
     print(encoded)
@@ -292,7 +374,7 @@ def main() -> int:
         output = resolved_path(args.output)
         os.makedirs(os.path.dirname(output), exist_ok=True)
         Path(output).write_text(encoded + "\n", encoding="utf-8")
-    return 0 if document["status"] == "passed" else 1
+    return 0 if passed else 1
 
 
 if __name__ == "__main__":

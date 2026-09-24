@@ -16,13 +16,14 @@ Fires ``on_click`` when the user performs a full click (down + up).
 Attributes:
     label: Button label text.
     font_size: Label font size in canvas pixels.
-    font_path: Optional font asset path.
+    font: Optional imported Font asset, persisted by GUID.
+    fallback_fonts: Ordered fallback Font assets, persisted by GUID.
     label_color: Label text colour as ``[R, G, B, A]``.
     text_align_h: Horizontal text alignment.
     text_align_v: Vertical text alignment.
     line_height: Line height multiplier.
     letter_spacing: Extra letter spacing in pixels.
-    texture_path: Background image texture path.
+    background_texture: Imported Texture/RenderTexture, or a live RenderTexture override.
     background_color: Background fill colour as ``[R, G, B, A]``.
     on_click_entries: Persistent click handlers (serialized).
 
@@ -49,14 +50,17 @@ Example::
 |------|------|------|
 | label | `str` |  |
 | font_size | `float` |  |
-| font_path | `str` |  |
+| font | `FontAssetInfo | None` |  |
+| fallback_fonts | `list[FontAssetInfo | None]` |  |
 | label_color | `list` |  |
+| text_material | `Material | None` |  |
 | text_align_h | `TextAlignH` |  |
 | text_align_v | `TextAlignV` |  |
 | line_height | `float` |  |
 | letter_spacing | `float` |  |
-| texture_path | `str` |  |
+| background_texture | `Texture | RenderTexture | None` |  |
 | background_color | `list` |  |
+| background_material | `Material | None` |  |
 | on_click_entries | `List[UIEventEntry]` |  |
 | on_click | `UIEvent` | The click event — call ``add_listener()`` to subscribe. *(read-only)* |
 

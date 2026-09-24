@@ -458,6 +458,17 @@ class SceneObjectCommandService:
         parent = scene.find_by_id(int(parent_id)) if int(parent_id or 0) else None
         registry = AssetRegistry.instance()
         asset_database = registry.get_asset_database() if registry else None
+        if asset_database is None:
+            return None
+        if is_guid:
+            prefab_guid = ref
+        else:
+            try:
+                prefab_guid = str(asset_database.get_guid_from_path(ref) or "").strip()
+            except Exception:
+                prefab_guid = ""
+        if not prefab_guid:
+            return None
         created_canvas = None
         new_object = None
 
@@ -484,8 +495,7 @@ class SceneObjectCommandService:
         try:
             if parent is None:
                 canvas_name = read_prefab_source_canvas(
-                    file_path=None if is_guid else ref,
-                    guid=ref if is_guid else None,
+                    guid=prefab_guid,
                     asset_database=asset_database,
                 )
                 if canvas_name:
@@ -509,8 +519,7 @@ class SceneObjectCommandService:
                         parent = created_canvas
 
             new_object = instantiate_prefab(
-                guid=ref if is_guid else None,
-                file_path=None if is_guid else ref,
+                guid=prefab_guid,
                 scene=scene,
                 parent=parent,
                 asset_database=asset_database,

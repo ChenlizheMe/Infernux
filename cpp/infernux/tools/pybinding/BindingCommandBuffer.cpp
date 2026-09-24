@@ -11,6 +11,7 @@
 #include "MatrixPyBridge.h"
 #include <function/renderer/CommandBuffer.h>
 #include <function/renderer/RendererSelection.h>
+#include <function/renderer/rhi/RhiComputeBuffer.h>
 #include <function/resources/InxMaterial/InxMaterial.h>
 #include <function/resources/InxMesh/InxMesh.h>
 #include <function/scene/GameObject.h>
@@ -68,10 +69,32 @@ void RegisterCommandBufferBindings(py::module_ &m)
         .def(
             "set_matrix",
             [](DrawParameterBlock &self, const std::string &name, py::handle value) {
-                self.SetMatrix(name, binding::Matrix4FromPython(value, "Draw matrix", true));
+                self.SetMatrix(name, binding::Matrix4FromPython(value, "Draw matrix"));
             },
             py::arg("name"), py::arg("value"))
+        .def(
+            "set_float_array",
+            [](DrawParameterBlock &self, const std::string &name, const std::vector<float> &values) {
+                self.SetFloatArray(name, values);
+            },
+            py::arg("name"), py::arg("values"))
+        .def(
+            "set_vector4_array",
+            [](DrawParameterBlock &self, const std::string &name, py::sequence values) {
+                std::vector<glm::vec4> native;
+                native.reserve(py::len(values));
+                for (py::handle item : values) {
+                    py::sequence vector = py::reinterpret_borrow<py::sequence>(item);
+                    if (py::len(vector) != 4)
+                        throw py::value_error("set_vector4_array requires four-component vectors");
+                    native.emplace_back(vector[0].cast<float>(), vector[1].cast<float>(), vector[2].cast<float>(),
+                                        vector[3].cast<float>());
+                }
+                self.SetVector4Array(name, native);
+            },
+            py::arg("name"), py::arg("values"))
         .def("set_texture", &DrawParameterBlock::SetTexture, py::arg("name"), py::arg("texture_guid"))
+        .def("set_buffer", &DrawParameterBlock::SetBuffer, py::arg("name"), py::arg("buffer"))
         .def("remove", &DrawParameterBlock::Remove, py::arg("name"))
         .def("clear", &DrawParameterBlock::Clear)
         .def_property_readonly("size", &DrawParameterBlock::Size);
@@ -159,8 +182,8 @@ void RegisterCommandBufferBindings(py::module_ &m)
             [](CommandBuffer &self, const std::shared_ptr<InxMesh> &mesh, py::handle matrix,
                const std::shared_ptr<InxMaterial> &material, int submeshIndex, int pass,
                const DrawParameterBlock *parameters) {
-                self.DrawMesh(mesh, binding::Matrix4FromPython(matrix, "draw_mesh matrix", true), material,
-                              submeshIndex, pass, parameters);
+                self.DrawMesh(mesh, binding::Matrix4FromPython(matrix, "draw_mesh matrix"), material, submeshIndex,
+                              pass, parameters);
             },
             py::arg("mesh"), py::arg("matrix"), py::arg("material"), py::arg("submesh") = 0, py::arg("pass_index") = 0,
             py::arg("parameters") = nullptr,

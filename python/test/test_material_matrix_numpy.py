@@ -36,11 +36,12 @@ def test_material_copies_row_column_matrix_independently_of_array_strides(materi
 
 
 @pytest.mark.parametrize('setter', ['set_matrix', 'set_param'])
-def test_existing_flat_column_major_contract_remains_explicit(material, setter):
+def test_matrix_contract_accepts_only_explicit_four_by_four_shape(material, setter):
     values = np.arange(16, dtype=float).reshape(4, 4)
-    getattr(material, setter)('projection', values.flatten(order='F').tolist())
+    getattr(material, setter)('projection', values)
     np.testing.assert_array_equal(stored_matrix(material), values)
-    getattr(material, setter)('projection', values.tolist())
+    with pytest.raises((TypeError, ValueError, RuntimeError), match='matrix'):
+        getattr(material, setter)('projection', values.flatten(order='F').tolist())
     np.testing.assert_array_equal(stored_matrix(material), values)
 
 
@@ -78,5 +79,6 @@ def test_camera_matrix_passes_directly_to_material_renderer_and_draw(scene, mate
     with pytest.raises(ValueError, match='matrix'):
         block.set_matrix('projection', np.eye(3))
     assert block.size == 1
-    block.set_matrix('projection', changed.flatten(order='F').tolist())
+    with pytest.raises(ValueError, match='matrix'):
+        block.set_matrix('projection', changed.flatten(order='F').tolist())
     assert block.size == 1

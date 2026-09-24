@@ -10,11 +10,13 @@ class in <b>Infernux.ui</b>
 
 Figma-style text label rendered with ImGui draw primitives.
 
-Inherits ``x``, ``y``, ``width``, ``height`` from ``InxUIScreenComponent``.
+Inherits ``width`` and ``height`` from ``InxUIScreenComponent``; position
+and rotation come from the GameObject Transform.
 
 Attributes:
     text: Display string.
-    font_path: Optional font asset path (``.ttf`` / ``.otf``).
+    font: Optional imported Font asset (``.ttf`` / ``.otf``), persisted by GUID.
+    fallback_fonts: Ordered fallback Font assets, persisted by GUID.
     font_size: Font size in canvas pixels.
     line_height: Line height multiplier.
     letter_spacing: Extra letter spacing in pixels.
@@ -40,7 +42,8 @@ Example::
 | Name | Type | Description |
 |------|------|------|
 | text | `str` |  |
-| font_path | `str` |  |
+| font | `FontAssetInfo | None` |  |
+| fallback_fonts | `list[FontAssetInfo | None]` |  |
 | font_size | `float` |  |
 | line_height | `float` |  |
 | letter_spacing | `float` |  |
@@ -62,9 +65,8 @@ Example::
 | `is_auto_height() → bool` | Return ``True`` if resize mode is ``AutoHeight``. |
 | `is_fixed_size() → bool` | Return ``True`` if resize mode is ``FixedSize``. |
 | `get_wrap_width() → float` | Return the wrap width for text layout (0 = no wrap). |
-| `get_layout_tolerance() → float` | Return the layout tolerance for auto-sizing decisions. |
-| `get_editor_wrap_width() → float` | Return the wrap width used by the editor preview. |
-| `get_auto_size_padding() → Tuple[float, float]` | Return ``(horizontal_padding, vertical_padding)`` for auto-sizing. |
+| `resolve_text_layout(measure_text: Callable[[str, float, float, str, float, float], Tuple[float, float]], scale: float = ...) → bool` | Resolve the transient intrinsic size in logical canvas pixels. |
+| `get_resolved_size() → Tuple[float, float]` | Return the effective box shared by layout, drawing, and input. |
 | `is_width_editable() → bool` | Return ``True`` if width can be manually edited (not AutoWidth). |
 | `is_height_editable() → bool` | Return ``True`` if height can be manually edited (not AutoHeight). |
 

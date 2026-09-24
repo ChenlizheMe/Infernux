@@ -110,33 +110,72 @@ class Camera : public Component
     void SetFieldOfView(float fov);
 
     // Physical camera settings (Unity-compatible photographic model).
-    [[nodiscard]] bool GetUsePhysicalProperties() const { return m_usePhysicalProperties; }
+    [[nodiscard]] bool GetUsePhysicalProperties() const
+    {
+        return m_usePhysicalProperties;
+    }
     void SetUsePhysicalProperties(bool enabled);
-    [[nodiscard]] int GetIso() const { return m_iso; }
+    [[nodiscard]] int GetIso() const
+    {
+        return m_iso;
+    }
     void SetIso(int value);
-    [[nodiscard]] float GetShutterSpeed() const { return m_shutterSpeed; }
+    [[nodiscard]] float GetShutterSpeed() const
+    {
+        return m_shutterSpeed;
+    }
     void SetShutterSpeed(float value);
-    [[nodiscard]] float GetAperture() const { return m_aperture; }
+    [[nodiscard]] float GetAperture() const
+    {
+        return m_aperture;
+    }
     void SetAperture(float value);
-    [[nodiscard]] float GetFocusDistance() const { return m_focusDistance; }
+    [[nodiscard]] float GetFocusDistance() const
+    {
+        return m_focusDistance;
+    }
     void SetFocusDistance(float value);
-    [[nodiscard]] int GetBladeCount() const { return m_bladeCount; }
+    [[nodiscard]] int GetBladeCount() const
+    {
+        return m_bladeCount;
+    }
     void SetBladeCount(int value);
-    [[nodiscard]] glm::vec2 GetCurvature() const { return m_curvature; }
+    [[nodiscard]] glm::vec2 GetCurvature() const
+    {
+        return m_curvature;
+    }
     void SetCurvature(const glm::vec2 &value);
-    [[nodiscard]] float GetBarrelClipping() const { return m_barrelClipping; }
+    [[nodiscard]] float GetBarrelClipping() const
+    {
+        return m_barrelClipping;
+    }
     void SetBarrelClipping(float value);
-    [[nodiscard]] float GetAnamorphism() const { return m_anamorphism; }
+    [[nodiscard]] float GetAnamorphism() const
+    {
+        return m_anamorphism;
+    }
     void SetAnamorphism(float value);
-    [[nodiscard]] float GetFocalLength() const { return m_focalLength; }
+    [[nodiscard]] float GetFocalLength() const
+    {
+        return m_focalLength;
+    }
     void SetFocalLength(float value);
     [[nodiscard]] CameraSensorType GetSensorType() const;
     void SetSensorType(CameraSensorType value);
-    [[nodiscard]] glm::vec2 GetSensorSize() const { return m_sensorSize; }
+    [[nodiscard]] glm::vec2 GetSensorSize() const
+    {
+        return m_sensorSize;
+    }
     void SetSensorSize(const glm::vec2 &value);
-    [[nodiscard]] glm::vec2 GetLensShift() const { return m_lensShift; }
+    [[nodiscard]] glm::vec2 GetLensShift() const
+    {
+        return m_lensShift;
+    }
     void SetLensShift(const glm::vec2 &value);
-    [[nodiscard]] PhysicalGateFit GetGateFit() const { return m_gateFit; }
+    [[nodiscard]] PhysicalGateFit GetGateFit() const
+    {
+        return m_gateFit;
+    }
     void SetGateFit(PhysicalGateFit value);
 
     [[nodiscard]] float GetAspectRatio() const
@@ -352,7 +391,7 @@ class Camera : public Component
     bool m_usePhysicalProperties = false;
     int m_iso = 200;
     float m_shutterSpeed = 0.005f; // seconds (1/200)
-    float m_aperture = 16.0f; // f-stop
+    float m_aperture = 16.0f;      // f-stop
     float m_focusDistance = 10.0f;
     float m_focalLength = 50.0f; // millimetres
     int m_bladeCount = 5;
@@ -360,7 +399,7 @@ class Camera : public Component
     float m_barrelClipping = 0.25f;
     float m_anamorphism = 0.0f;
     glm::vec2 m_sensorSize{36.0f, 24.0f}; // millimetres (width, height)
-    glm::vec2 m_lensShift{0.0f, 0.0f}; // normalized sensor offsets
+    glm::vec2 m_lensShift{0.0f, 0.0f};    // normalized sensor offsets
     PhysicalGateFit m_gateFit = PhysicalGateFit::Horizontal;
 
     // Orthographic

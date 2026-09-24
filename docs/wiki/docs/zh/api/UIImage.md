@@ -18,7 +18,7 @@ UI 图片组件。在屏幕上显示图片或色块。
 
 | 名称 | 类型 | 描述 |
 |------|------|------|
-| texture_path | `str` |  |
+| texture | `Texture | RenderTexture | None` |  |
 | color | `list` | 图片颜色/叠色。 |
 
 <!-- USER CONTENT START --> properties

@@ -202,8 +202,19 @@ def test_asset_reference_field_rejects_split_assignment_callbacks():
         )
 
 
-def test_asset_reference_clipboard_round_trip_uses_assignment_compatibility():
+def test_asset_reference_clipboard_round_trip_uses_assignment_compatibility(monkeypatch):
     from Infernux.engine.interaction.object_fields import AssetReferenceFieldModel
+    from Infernux.core.assets import AssetManager
+
+    monkeypatch.setattr(
+        AssetManager,
+        "_asset_database",
+        type("Database", (), {
+            "get_path_from_guid": lambda _self, guid: (
+                "Assets/Art/smoke.png" if guid == "texture-guid" else ""
+            ),
+        })(),
+    )
 
     assigned = []
     rejected = []
@@ -240,15 +251,27 @@ def test_asset_reference_clipboard_round_trip_uses_assignment_compatibility():
         "asset_type": "Texture",
         "builtin": "",
         "guid": "texture-guid",
-        "path_hint": "Assets/Art/smoke.png",
+        "path_hint": "",
     }]
     assert material.can_paste_reference(text) is False
     assert material.dispatch_paste_reference(text) is False
     assert "rejects asset type 'Texture'" in rejected[-1]
 
 
-def test_asset_reference_picker_drop_and_paste_ignore_same_value():
+def test_asset_reference_picker_drop_and_paste_ignore_same_value(monkeypatch):
     from Infernux.engine.interaction.object_fields import AssetReferenceFieldModel
+    from Infernux.core.assets import AssetManager
+
+    class Database:
+        @staticmethod
+        def get_guid_from_path(path):
+            return "texture-guid" if path.replace("\\", "/") == "Assets/Art/smoke.png" else ""
+
+        @staticmethod
+        def get_path_from_guid(guid):
+            return "Assets/Art/smoke.png" if guid.casefold() == "texture-guid" else ""
+
+    monkeypatch.setattr(AssetManager, "_asset_database", Database())
 
     assigned = []
     model = AssetReferenceFieldModel(
@@ -456,7 +479,7 @@ def test_asset_reference_context_menu_defers_copy_until_popup_scope_closes():
         "smoke.png",
         "Texture",
         has_value=True,
-        reference_value={"path_hint": "Assets/Art/smoke.png"},
+        reference_value={"guid": "texture-guid"},
     )
 
     result = IGUI._render_asset_reference_context_menu(ctx, model)

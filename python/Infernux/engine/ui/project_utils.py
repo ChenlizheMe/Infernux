@@ -787,14 +787,19 @@ def open_in_pycharm(file_path: str, line: int = 0, project_root: str = "") -> bo
 
 
 
-def open_file_with_system(file_path: str, project_root: str = "") -> bool:
+def open_file_with_system(
+    file_path: str,
+    project_root: str = "",
+    line: int = 0,
+) -> bool:
     """
     Open *file_path* with the OS default application.
 
     For ``.py``, ``.vert``, ``.frag``, ``.glsl``, ``.hlsl``, ``.json``,
     ``.txt``, and ``.md`` files, open in VS Code with the *project_root*
     as the workspace folder — so that the project's Python runtime
-    interpreter and type stubs are automatically picked up by Pylance.
+    interpreter and type stubs are automatically picked up by Pylance. When
+    *line* is positive, the selected IDE navigates directly to that line.
     """
     import subprocess
     import platform
@@ -827,11 +832,11 @@ def open_file_with_system(file_path: str, project_root: str = "") -> bool:
                 continue
 
             if ide == "vscode":
-                if open_in_vscode(file_path, project_root=project_root):
+                if open_in_vscode(file_path, line=line, project_root=project_root):
                     return True
 
             elif ide == "pycharm":
-                if open_in_pycharm(file_path, project_root=project_root):
+                if open_in_pycharm(file_path, line=line, project_root=project_root):
                     return True
 
     # Fallback: open with OS default application

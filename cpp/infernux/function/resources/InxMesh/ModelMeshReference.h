@@ -33,8 +33,10 @@ inline std::pair<std::string, std::vector<std::string>> SplitModelMeshReference(
     if (position == 0 || suffix.empty() || suffix.size() % 2)
         throw std::invalid_argument("Malformed model mesh reference");
     const auto nibble = [](char c) -> unsigned {
-        if (c >= '0' && c <= '9') return c - '0';
-        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        if (c >= '0' && c <= '9')
+            return c - '0';
+        if (c >= 'a' && c <= 'f')
+            return c - 'a' + 10;
         throw std::invalid_argument("Malformed model mesh reference encoding");
     };
     std::string decoded;

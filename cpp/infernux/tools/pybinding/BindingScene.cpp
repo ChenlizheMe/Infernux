@@ -1168,7 +1168,7 @@ void RegisterSceneBindings(py::module_ &m)
                     break;
                 }
                 case MaterialPropertyType::Mat4: {
-                    nativeValue = binding::Matrix4FromPython(value, "Renderer matrix", true);
+                    nativeValue = binding::Matrix4FromPython(value, "Renderer matrix");
                     break;
                 }
                 case MaterialPropertyType::Texture2D:
@@ -1179,6 +1179,25 @@ void RegisterSceneBindings(py::module_ &m)
                     else
                         throw py::type_error("texture renderer parameters require a texture GUID or Texture object");
                     break;
+                case MaterialPropertyType::FloatArray:
+                    if (!py::isinstance<py::sequence>(value) || py::isinstance<py::str>(value))
+                        throw py::type_error("float array renderer parameters require a numeric sequence");
+                    nativeValue = value.cast<std::vector<float>>();
+                    break;
+                case MaterialPropertyType::Float4Array: {
+                    if (!py::isinstance<py::sequence>(value) || py::isinstance<py::str>(value))
+                        throw py::type_error("float4 array renderer parameters require a vector sequence");
+                    std::vector<glm::vec4> values;
+                    for (py::handle item : value.cast<py::sequence>()) {
+                        py::sequence vector = py::reinterpret_borrow<py::sequence>(item);
+                        if (py::len(vector) != 4)
+                            throw py::value_error("float4 array renderer parameters require four-component vectors");
+                        values.emplace_back(vector[0].cast<float>(), vector[1].cast<float>(), vector[2].cast<float>(),
+                                            vector[3].cast<float>());
+                    }
+                    nativeValue = std::move(values);
+                    break;
+                }
                 }
                 renderer.SetParameter(materialSlot, name, std::move(nativeValue), persistent, owner);
             },
@@ -1219,6 +1238,14 @@ void RegisterSceneBindings(py::module_ &m)
                 }
                 case MaterialPropertyType::Texture2D:
                     return py::str(std::get<std::string>(property->value));
+                case MaterialPropertyType::FloatArray:
+                    return py::cast(std::get<std::vector<float>>(property->value));
+                case MaterialPropertyType::Float4Array: {
+                    py::list values;
+                    for (const auto &value : std::get<std::vector<glm::vec4>>(property->value))
+                        values.append(py::make_tuple(value.x, value.y, value.z, value.w));
+                    return values;
+                }
                 }
                 return py::none();
             },
@@ -1652,6 +1679,17 @@ void RegisterSceneBindings(py::module_ &m)
             "Get imported animation take names from the source model")
         .def("get_animation_duration_seconds", &SkinnedMeshRenderer::GetAnimationDurationSeconds, py::arg("take_name"),
              py::arg("animation_source_guid") = "", "Get imported animation take duration in seconds")
+        .def(
+            "get_root_motion_delta",
+            [](const SkinnedMeshRenderer &renderer, const std::string &takeName, float fromSeconds, float toSeconds,
+               bool loop, const std::string &animationSourceGuid) {
+                const RootMotionDelta delta =
+                    renderer.GetRootMotionDelta(takeName, fromSeconds, toSeconds, loop, animationSourceGuid);
+                return py::make_tuple(delta.translation, delta.rotation);
+            },
+            py::arg("take_name"), py::arg("from_seconds"), py::arg("to_seconds"), py::arg("loop") = true,
+            py::arg("animation_source_guid") = "",
+            "Return the imported root-motion translation and rotation delta for one playback interval")
         .def("submit_animation_pose", &SkinnedMeshRenderer::SubmitAnimationPose, py::arg("take_name"),
              py::arg("time_seconds"), py::arg("normalized_time"), py::arg("blend_take_name") = "",
              py::arg("blend_time_seconds") = 0.0f, py::arg("blend_weight") = 0.0f, py::arg("loop") = true,
@@ -1756,6 +1794,10 @@ void RegisterSceneBindings(py::module_ &m)
         .value("ForcePixel", LightRenderMode::ForcePixel)
         .value("ForceVertex", LightRenderMode::ForceVertex);
 
+    py::enum_<LightColorMode>(m, "LightColorMode")
+        .value("Color", LightColorMode::Color)
+        .value("FilterAndTemperature", LightColorMode::FilterAndTemperature);
+
     // ========================================================================
     // Light component binding (Unity-like API)
     // ========================================================================
@@ -1767,7 +1809,18 @@ void RegisterSceneBindings(py::module_ &m)
         // Color & intensity (Unity-style)
         .def_property(
             "color", [](Light *l) { return glm::vec3(l->GetColor()); },
-            [](Light *l, const glm::vec3 &v) { l->SetColor(v.x, v.y, v.z); }, "Light color (linear RGB)")
+            [](Light *l, const glm::vec3 &v) { l->SetColor(v.x, v.y, v.z); },
+            "Authored sRGB color or temperature filter")
+        .def_property("use_color_temperature", &Light::GetUseColorTemperature, &Light::SetUseColorTemperature,
+                      "Use color as a filter over Kelvin blackbody color")
+        .def_property("color_mode", &Light::GetColorMode, &Light::SetColorMode,
+                      "Color or Filter and Temperature appearance mode")
+        .def_property("color_temperature", &Light::GetColorTemperature, &Light::SetColorTemperature,
+                      "Blackbody color temperature in Kelvin (1000-20000)")
+        .def_property_readonly("effective_color", &Light::GetEffectiveColor,
+                               "Final emitted color in sRGB before intensity")
+        .def_property_readonly("effective_linear_color", &Light::GetLinearColor,
+                               "Final emitted color in linear RGB before intensity")
         .def_property("intensity", &Light::GetIntensity, &Light::SetIntensity, "Light intensity multiplier")
 
         // Range (Point/Spot)

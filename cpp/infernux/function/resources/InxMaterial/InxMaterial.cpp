@@ -288,6 +288,13 @@ std::shared_ptr<InxMaterial> CreateTexturedComponentGizmoIconMaterial(const std:
 
     material->SetColor("baseColor", glm::vec4(1.0f));
     material->SetTextureGuid("texSampler", ResolveEngineTextureGuid(textureRef));
+    MaterialTextureSampler iconSampler;
+    iconSampler.minFilter = MaterialSamplerFilter::Linear;
+    iconSampler.magFilter = MaterialSamplerFilter::Linear;
+    iconSampler.mipFilter = MaterialSamplerFilter::Linear;
+    iconSampler.addressU = MaterialSamplerAddress::Clamp;
+    iconSampler.addressV = MaterialSamplerAddress::Clamp;
+    material->SetTextureSampler("texSampler", iconSampler);
     material->SetBuiltin(true);
 
     return material;

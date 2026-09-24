@@ -171,13 +171,23 @@ def test_removing_owner_unregisters_children_without_erasing_material_reference(
     assert json.loads(target.read_text(encoding="utf-8"))["properties"]["texSampler"]["guid"] == child["guid"]
 
 
-def test_project_selection_roundtrips_and_texture_fields_accept_owned_path():
+def test_project_selection_roundtrips_and_texture_fields_accept_owned_path(imported_model):
     from Infernux.engine._bootstrap_selection import _project_selection_target, _project_path_for_target
     from Infernux.core.asset_reference_types import asset_type_registry
-    path = str(Path("Assets/Model.glb").resolve()) + "::subtex:" + "a" * 32
+    _, document, source, database, _ = imported_model
+    embed(document)
+    source.write_text(json.dumps(document), encoding="utf-8")
+    assert AssetManager.reimport_asset(str(source), database=database)
+    owner_guid = database.get_guid_from_path(str(source))
+    texture_guid = records(database, source)[0]["guid"]
+    path = str(source) + "::subtex:" + texture_guid
     target = _project_selection_target(path)
     assert target.sub_kind == "subtexture"
-    assert _project_path_for_target(target) == path
+    assert target.document_id == owner_guid
+    assert target.target_id == texture_guid
+    assert _project_path_for_target(target) == (
+        database.get_path_from_guid(owner_guid) + "::subtex:" + texture_guid
+    )
     for name in ("Texture", "Texture.Sampled"):
         assert not asset_type_registry.require(name).incompatibility(path)
 

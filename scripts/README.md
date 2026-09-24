@@ -84,3 +84,18 @@ platform code out of the engine package, and records key output hashes in
 `infernux-web-toolchain.json`. Install `glslangValidator` separately through the
 host package manager because it is a system shader compiler rather than part of
 the cached Web toolchain.
+
+Dawn dependency identities are pinned in
+`setup/dawn_dependencies.lock.json`. Fifteen dependencies are fetched from the
+canonical GitHub repositories named by Dawn's DEPS file. The four
+Chromium-vendored dependencies must be prepared on a trusted host from their
+official `chromium.googlesource.com` repositories and supplied through
+`INFERNUX_DAWN_OFFICIAL_SNAPSHOT_DIR`. That directory must contain one
+uncompressed, Git-worktree `.tar` per dependency plus `manifest.json`; the
+manifest records `schema: infernux.dawn_official_snapshots`, `version: 1`, the
+locked Dawn revision, and for every archive its dependency `path`, filename,
+SHA-256, official source URL, commit, and tree. The setup fails before placing
+any dependency if any of the four snapshots is missing, unsafe to extract, or
+does not match the lock. It never substitutes a community mirror. Invalid
+cached repositories are moved into the toolchain root's quarantine directories
+rather than deleted.

@@ -42,6 +42,7 @@ Attributes:
 |------|------|------|
 | position | `Tuple[float, float]` |  |
 | delta | `Tuple[float, float]` |  |
+| canvas_size | `Tuple[float, float]` |  |
 | button | `PointerButton` |  |
 | press_position | `Tuple[float, float]` |  |
 | click_count | `int` |  |

@@ -387,7 +387,7 @@ class ParticleArtifactRegistry:
 
     @classmethod
     def load_runtime_reference(
-        cls, path: str = "", *, guid: str = ""
+        cls, *, guid: str
     ) -> ParticleArtifact | None:
         """Load a shipped AOT artifact by its imported asset GUID."""
         from Infernux.engine.project_context import get_project_root
@@ -409,7 +409,6 @@ class ParticleArtifactRegistry:
             ) from exc
         if (
             type(index) is not dict
-            or set(index) != {"$schema", "entries"}
             or index.get("$schema") != PARTICLE_RUNTIME_INDEX_SCHEMA
             or type(index.get("entries")) is not list
         ):
@@ -422,24 +421,16 @@ class ParticleArtifactRegistry:
             )
         selected = None
         for entry in index["entries"]:
-            if (
-                type(entry) is not dict
-                or set(entry) != {"guid", "path_hint", "stable_id"}
-                or any(type(entry.get(key)) is not str for key in entry)
-            ):
-                raise ParticleArtifactError("particle runtime index entry is not current")
+            if type(entry) is not dict or type(entry.get("guid")) is not str:
+                continue
             entry_guid = entry["guid"].strip()
-            if not entry_guid:
-                raise ParticleArtifactError(
-                    "particle runtime index entry has an empty GUID"
-                )
             if entry_guid == wanted_guid:
                 selected = entry
                 break
         if selected is None:
             return None
 
-        stable_id = selected["stable_id"]
+        stable_id = selected.get("stable_id", "")
         if not stable_id or not all(
             character.isalnum() or character in "-_" for character in stable_id
         ):
@@ -458,7 +449,7 @@ class ParticleArtifactRegistry:
             raise ParticleArtifactError(
                 f"shipped particle artifact cannot be read: {artifact_path}"
             ) from exc
-        key = cls._source_key(path, guid)
+        key = cls._source_key("", guid)
         artifact = cls._load_persisted(
             artifact_path,
             key=key,
@@ -470,7 +461,7 @@ class ParticleArtifactRegistry:
                 f"shipped particle artifact is invalid: {artifact_path}"
             )
         with cls._lock:
-            cls._register_unlocked(artifact, key, cls._source_key(path))
+            cls._register_unlocked(artifact, key, key)
             cls._revision = max(cls._revision, artifact.revision)
         return artifact
 

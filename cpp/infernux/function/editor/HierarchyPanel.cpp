@@ -339,8 +339,7 @@ void HierarchyPanel::RefreshRootObjects(Scene *scene, bool allowStale, bool forc
                 scenes.push_back(loadedScene.get());
         }
     }
-    if (m_selectedSceneWorldId != 0 &&
-        std::none_of(scenes.begin(), scenes.end(), [this](Scene *loadedScene) {
+    if (m_selectedSceneWorldId != 0 && std::none_of(scenes.begin(), scenes.end(), [this](Scene *loadedScene) {
             return loadedScene && loadedScene->GetWorldId() == m_selectedSceneWorldId;
         }))
         m_selectedSceneWorldId = 0;
@@ -692,11 +691,10 @@ void HierarchyPanel::ReparentObject(uint64_t draggedId, uint64_t newParentId)
 
         validIds.push_back(did);
     }
-    if (!validIds.empty() &&
-        ExecuteEditorCommand("scene.move_hierarchy",
-                             MoveCommandArgument(validIds, "parent", newParentId, false,
-                                                 newParent->GetScene()->GetWorldId()),
-                             "drag_drop"))
+    if (!validIds.empty() && ExecuteEditorCommand("scene.move_hierarchy",
+                                                  MoveCommandArgument(validIds, "parent", newParentId, false,
+                                                                      newParent->GetScene()->GetWorldId()),
+                                                  "drag_drop"))
         m_pendingExpandId = newParentId;
 }
 
@@ -734,10 +732,10 @@ void HierarchyPanel::MoveObjectAdjacent(uint64_t draggedId, uint64_t targetId, b
     if (validIds.empty())
         return;
 
-    if (ExecuteEditorCommand("scene.move_hierarchy",
-                             MoveCommandArgument(validIds, "adjacent", targetId, after,
-                                                 targetObj->GetScene()->GetWorldId()),
-                             "drag_drop") &&
+    if (ExecuteEditorCommand(
+            "scene.move_hierarchy",
+            MoveCommandArgument(validIds, "adjacent", targetId, after, targetObj->GetScene()->GetWorldId()),
+            "drag_drop") &&
         newParentId != 0)
         m_pendingExpandId = newParentId;
 }
@@ -877,7 +875,7 @@ void HierarchyPanel::CancelRename()
 // ════════════════════════════════════════════════════════════════════
 
 void HierarchyPanel::RenderReorderSep(InxGUIContext *ctx, const char *sepId, std::function<void(uint64_t)> onDrop,
-                                       float indentPx, bool consumeSpace)
+                                      float indentPx, bool consumeSpace)
 {
     const ImGuiPayload *activePayload = ImGui::GetDragDropPayload();
     if (activePayload == nullptr || !activePayload->IsDataType(DRAG_DROP_TYPE))
@@ -902,9 +900,9 @@ void HierarchyPanel::RenderReorderSep(InxGUIContext *ctx, const char *sepId, std
         float x1 = ctx->GetItemRectMinX();
         float x2 = x1 + availW;
         const float lineH = EditorTheme::DND_REORDER_LINE_THICKNESS * dpi;
-        ctx->DrawFilledRect(x1, std::floor(lineY), x2, std::floor(lineY) + lineH,
-                            EditorTheme::DND_REORDER_LINE.x, EditorTheme::DND_REORDER_LINE.y,
-                            EditorTheme::DND_REORDER_LINE.z, EditorTheme::DND_REORDER_LINE.w, 0.0f);
+        ctx->DrawFilledRect(x1, std::floor(lineY), x2, std::floor(lineY) + lineH, EditorTheme::DND_REORDER_LINE.x,
+                            EditorTheme::DND_REORDER_LINE.y, EditorTheme::DND_REORDER_LINE.z,
+                            EditorTheme::DND_REORDER_LINE.w, 0.0f);
         uint64_t payload = 0;
         if (ctx->AcceptDragDropPayload(DRAG_DROP_TYPE, &payload)) {
             if (onDrop)
@@ -1025,25 +1023,20 @@ void HierarchyPanel::RenderSceneHeader(InxGUIContext *ctx, Scene *scene)
     const ImVec2 sceneRowMin = ImGui::GetCursorScreenPos();
     const float sceneRowHeight = ImGui::GetFontSize() * EditorTheme::INSPECTOR_HEADER_PRIMARY_FONT_SCALE +
                                  2.0f * EditorTheme::INSPECTOR_HEADER_PRIMARY_FRAME_PAD.y * dpi;
-    const ImVec2 sceneRowMax{sceneRowMin.x + ImGui::GetContentRegionAvail().x,
-                             sceneRowMin.y + sceneRowHeight};
-    const bool dragTargetHovered = ImGui::GetDragDropPayload() != nullptr &&
-                                   ImGui::IsMouseHoveringRect(sceneRowMin, sceneRowMax, false);
-    const ImVec4 &header = selectedOrDragged ? EditorTheme::HIERARCHY_ROW_SELECTED
-                            : dragTargetHovered ? EditorTheme::HIERARCHY_ROW_HOVER
-                                                : EditorTheme::INSPECTOR_HEADER_PRIMARY;
-    const ImVec4 &hovered = selectedOrDragged ? EditorTheme::HIERARCHY_ROW_SELECTED
-                                              : EditorTheme::HIERARCHY_ROW_HOVER;
-    const ImVec4 &pressed = selectedOrDragged ? EditorTheme::HIERARCHY_ROW_SELECTED
-                                              : EditorTheme::HIERARCHY_ROW_HOVER;
+    const ImVec2 sceneRowMax{sceneRowMin.x + ImGui::GetContentRegionAvail().x, sceneRowMin.y + sceneRowHeight};
+    const bool dragTargetHovered =
+        ImGui::GetDragDropPayload() != nullptr && ImGui::IsMouseHoveringRect(sceneRowMin, sceneRowMax, false);
+    const ImVec4 &header = selectedOrDragged   ? EditorTheme::HIERARCHY_ROW_SELECTED
+                           : dragTargetHovered ? EditorTheme::HIERARCHY_ROW_HOVER
+                                               : EditorTheme::INSPECTOR_HEADER_PRIMARY;
+    const ImVec4 &hovered = selectedOrDragged ? EditorTheme::HIERARCHY_ROW_SELECTED : EditorTheme::HIERARCHY_ROW_HOVER;
+    const ImVec4 &pressed = selectedOrDragged ? EditorTheme::HIERARCHY_ROW_SELECTED : EditorTheme::HIERARCHY_ROW_HOVER;
     ctx->PushStyleColor(ImGuiCol_Header, header.x, header.y, header.z, header.w);
     ctx->PushStyleColor(ImGuiCol_HeaderHovered, hovered.x, hovered.y, hovered.z, hovered.w);
     ctx->PushStyleColor(ImGuiCol_HeaderActive, pressed.x, pressed.y, pressed.z, pressed.w);
-    ctx->PushStyleVarVec2(ImGuiStyleVar_FramePadding,
-                          EditorTheme::INSPECTOR_HEADER_PRIMARY_FRAME_PAD.x * dpi,
+    ctx->PushStyleVarVec2(ImGuiStyleVar_FramePadding, EditorTheme::INSPECTOR_HEADER_PRIMARY_FRAME_PAD.x * dpi,
                           EditorTheme::INSPECTOR_HEADER_PRIMARY_FRAME_PAD.y * dpi);
-    ctx->PushStyleVarVec2(ImGuiStyleVar_ItemSpacing,
-                          EditorTheme::INSPECTOR_HEADER_ITEM_SPC.x * dpi,
+    ctx->PushStyleVarVec2(ImGuiStyleVar_ItemSpacing, EditorTheme::INSPECTOR_HEADER_ITEM_SPC.x * dpi,
                           EditorTheme::INSPECTOR_HEADER_ITEM_SPC.y * dpi);
     ctx->PushStyleVarFloat(ImGuiStyleVar_FrameBorderSize, EditorTheme::INSPECTOR_HEADER_BORDER_SIZE * dpi);
     ImGui::SetWindowFontScale(EditorTheme::INSPECTOR_HEADER_PRIMARY_FONT_SCALE);
@@ -1056,8 +1049,8 @@ void HierarchyPanel::RenderSceneHeader(InxGUIContext *ctx, Scene *scene)
     label += "###HierarchySceneHeader";
     // Unity semantics: the header body selects the scene; only the disclosure
     // arrow changes the expanded state.
-    const bool isOpen = ImGui::CollapsingHeader(
-        label.c_str(), ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_OpenOnArrow);
+    const bool isOpen =
+        ImGui::CollapsingHeader(label.c_str(), ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_OpenOnArrow);
     const bool leftClicked = ImGui::IsItemClicked(ImGuiMouseButton_Left);
     if (leftClicked) {
         m_pendingSceneSelectWorldId = worldId;
@@ -1083,8 +1076,7 @@ void HierarchyPanel::RenderSceneHeader(InxGUIContext *ctx, Scene *scene)
     if (ctx->BeginDragDropTarget()) {
         const ImGuiPayload *payloadType = ImGui::GetDragDropPayload();
         if (payloadType && payloadType->IsDataType(SCENE_DRAG_DROP_TYPE)) {
-            const bool after = ImGui::GetMousePos().y >=
-                               (ctx->GetItemRectMinY() + ctx->GetItemRectMaxY()) * 0.5f;
+            const bool after = ImGui::GetMousePos().y >= (ctx->GetItemRectMinY() + ctx->GetItemRectMaxY()) * 0.5f;
             const float lineY = after ? ctx->GetItemRectMaxY() : ctx->GetItemRectMinY();
             ctx->DrawFilledRect(ctx->GetItemRectMinX(), std::floor(lineY), ctx->GetItemRectMaxX(),
                                 std::floor(lineY) + EditorTheme::DND_REORDER_LINE_THICKNESS * dpi,
@@ -1200,17 +1192,15 @@ void HierarchyPanel::RenderFlatItem(InxGUIContext *ctx, const FlatItem &item, fl
     // the exact same Header color as an ordinary mouse hover. Drawing a drop
     // overlay afterward would tint or cover the row text.
     const ImVec2 rowMin = ImGui::GetCursorScreenPos();
-    const ImVec2 rowMax{rowMin.x + ImGui::GetContentRegionAvail().x,
-                        rowMin.y + ImGui::GetFrameHeight()};
-    const bool dragBodyHovered = ImGui::GetDragDropPayload() != nullptr &&
-                                 ImGui::IsMouseHoveringRect(rowMin, rowMax, false);
+    const ImVec2 rowMax{rowMin.x + ImGui::GetContentRegionAvail().x, rowMin.y + ImGui::GetFrameHeight()};
+    const bool dragBodyHovered =
+        ImGui::GetDragDropPayload() != nullptr && ImGui::IsMouseHoveringRect(rowMin, rowMax, false);
     if (dragBodyHovered && !selectedOrDragged)
         nodeFlags |= ImGuiTreeNodeFlags_Selected;
     const ImVec4 &rowBase = selectedOrDragged ? EditorTheme::HIERARCHY_ROW_SELECTED
                             : dragBodyHovered ? EditorTheme::HIERARCHY_ROW_HOVER
                                               : EditorTheme::ROW_NONE;
-    const ImVec4 &rowHover = selectedOrDragged ? EditorTheme::HIERARCHY_ROW_SELECTED
-                                               : EditorTheme::HIERARCHY_ROW_HOVER;
+    const ImVec4 &rowHover = selectedOrDragged ? EditorTheme::HIERARCHY_ROW_SELECTED : EditorTheme::HIERARCHY_ROW_HOVER;
     ctx->PushStyleColor(ImGuiCol_Header, rowBase.x, rowBase.y, rowBase.z, rowBase.w);
     ctx->PushStyleColor(ImGuiCol_HeaderHovered, rowHover.x, rowHover.y, rowHover.z, rowHover.w);
     ctx->PushStyleColor(ImGuiCol_HeaderActive, rowHover.x, rowHover.y, rowHover.z, rowHover.w);
@@ -1586,8 +1576,7 @@ void HierarchyPanel::OnRenderContent(InxGUIContext *ctx)
                         if (firstRootVisible) {
                             const uint64_t firstRootId = m_flatItems[i + 1].obj->GetID();
                             const float rootIndent = static_cast<float>(m_flatItems[i + 1].depth) * indentStep;
-                            const std::string separatorId =
-                                "##scene_first_root_" + std::to_string(destinationWorldId);
+                            const std::string separatorId = "##scene_first_root_" + std::to_string(destinationWorldId);
                             RenderReorderSep(
                                 ctx, separatorId.c_str(),
                                 [this, firstRootId](uint64_t payload) {
@@ -1595,8 +1584,7 @@ void HierarchyPanel::OnRenderContent(InxGUIContext *ctx)
                                 },
                                 rootIndent);
                         } else {
-                            const std::string separatorId =
-                                "##scene_empty_root_" + std::to_string(destinationWorldId);
+                            const std::string separatorId = "##scene_empty_root_" + std::to_string(destinationWorldId);
                             RenderReorderSep(
                                 ctx, separatorId.c_str(),
                                 [this, destinationWorldId](uint64_t payload) {
@@ -1626,8 +1614,7 @@ void HierarchyPanel::OnRenderContent(InxGUIContext *ctx)
                     if (minimumDepth <= currentItem.depth) {
                         const float relativeMouseX = ImGui::GetMousePos().x - baseIndentScreenX;
                         const int pointerDepth = static_cast<int>(std::floor(relativeMouseX / indentStep + 0.5f));
-                        const int desiredDepth =
-                            (std::max)(minimumDepth, (std::min)(currentItem.depth, pointerDepth));
+                        const int desiredDepth = (std::max)(minimumDepth, (std::min)(currentItem.depth, pointerDepth));
                         GameObject *afterObject = currentItem.obj;
                         int afterDepth = currentItem.depth;
                         while (afterObject && afterDepth > desiredDepth) {
@@ -1636,8 +1623,8 @@ void HierarchyPanel::OnRenderContent(InxGUIContext *ctx)
                         }
                         if (afterObject) {
                             const uint64_t afterObjectId = afterObject->GetID();
-                            const std::string separatorId = "##boundary_after_" +
-                                                            std::to_string(currentItem.obj->GetID());
+                            const std::string separatorId =
+                                "##boundary_after_" + std::to_string(currentItem.obj->GetID());
                             RenderReorderSep(
                                 ctx, separatorId.c_str(),
                                 [this, afterObjectId](uint64_t payload) {
@@ -1734,8 +1721,7 @@ void HierarchyPanel::OnRenderContent(InxGUIContext *ctx)
                     const int rootDepth = IsPrefabModeActive() ? 0 : 1;
                     const int pointerDepth = static_cast<int>(
                         std::floor((ImGui::GetMousePos().x - tailMinX) / (EditorTheme::TREE_INDENT * dpi) + 0.5f));
-                    const int desiredDepth =
-                        (std::max)(rootDepth, (std::min)(lastItem.depth, pointerDepth));
+                    const int desiredDepth = (std::max)(rootDepth, (std::min)(lastItem.depth, pointerDepth));
                     tailAfterObject = lastItem.obj;
                     int afterDepth = lastItem.depth;
                     while (tailAfterObject && afterDepth > desiredDepth) {
@@ -1755,8 +1741,7 @@ void HierarchyPanel::OnRenderContent(InxGUIContext *ctx)
                     if (tailAfterObject)
                         MoveObjectAdjacent(payload, tailAfterObject->GetID(), true);
                     else {
-                        const uint64_t lastWorldId =
-                            m_cachedScenes.empty() ? 0 : m_cachedScenes.back()->GetWorldId();
+                        const uint64_t lastWorldId = m_cachedScenes.empty() ? 0 : m_cachedScenes.back()->GetWorldId();
                         ReparentToRoot(payload, lastWorldId);
                     }
                     accepted = true;

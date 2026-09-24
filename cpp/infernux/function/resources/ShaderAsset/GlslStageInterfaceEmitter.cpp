@@ -180,6 +180,14 @@ std::string GlslStageInterfaceEmitter::EmitMaterialBlockMembers(const ShaderProg
     for (const auto &property : artifact.properties) {
         if (!property.bufferOffset)
             continue;
+        if (property.schema.type == "FloatArray") {
+            source << "    float " << property.schema.name << "[" << property.arrayCount << "];\n";
+            continue;
+        }
+        if (property.schema.type == "Float4Array") {
+            source << "    vec4 " << property.schema.name << "[" << property.arrayCount << "];\n";
+            continue;
+        }
         const auto type = GlslType(property.schema.type);
         if (!type.empty())
             source << "    " << type << " " << property.schema.name << ";\n";

@@ -252,6 +252,8 @@ def _resolve_texture_display(prop):
     tex_guid = prop.get("guid", "")
     if not isinstance(tex_guid, str) or not tex_guid:
         return t("igui.none")
+    if tex_guid in {"white", "black", "normal"}:
+        return t("igui.none")
     adb = _get_asset_database()
     tex_path = adb.get_path_from_guid(tex_guid)
     if tex_path:
@@ -271,11 +273,12 @@ def _render_texture2d_property(ctx, prop, prop_name, wid_prefix, plw,
         database_generation = getattr(adb, "query_generation", -1)
         cache_key = (id(adb), int(database_generation or 0), tex_guid)
         if reference_cache.get("key") != cache_key:
-            tex_path = adb.get_path_from_guid(tex_guid) if tex_guid else ""
+            builtin = tex_guid in {"white", "black", "normal"}
+            tex_path = "" if builtin else (adb.get_path_from_guid(tex_guid) if tex_guid else "")
             reference_cache["key"] = cache_key
             reference_cache["path"] = tex_path or ""
             reference_cache["display"] = (
-                _texture_display_name(adb, tex_path) if tex_path else (
+                t("igui.none") if builtin else _texture_display_name(adb, tex_path) if tex_path else (
                     f"{t('material.missing_texture')} ({tex_guid[:8]}...)"
                     if tex_guid else t("igui.none")
                 )

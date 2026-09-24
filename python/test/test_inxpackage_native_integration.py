@@ -98,7 +98,7 @@ def _source(path: Path, reference: str) -> Path:
 
 
 @pytest.mark.skipif(not _native_available(), reason="native InxPack backend unavailable")
-def test_repository_package_script_is_standalone_deterministic_and_native_compatible(
+def test_repository_package_scripts_are_standalone_deterministic_and_native_compatible(
     tmp_path,
 ):
     repository = Path(__file__).parents[2]
@@ -112,9 +112,9 @@ def test_repository_package_script_is_standalone_deterministic_and_native_compat
         )
     )
     scripts = [(root / "package.py").read_bytes() for root in plugin_roots]
-    assert len({script.replace(b"\r\n", b"\n").rstrip(b"\n") for script in scripts}) == 1
-    assert b"from Infernux" not in scripts[0]
-    assert b"import Infernux" not in scripts[0]
+    for script in scripts:
+        assert b"from Infernux" not in script
+        assert b"import Infernux" not in script
 
     outputs = (tmp_path / "first.inxpkg", tmp_path / "second.inxpkg")
     for destination in outputs:
@@ -436,9 +436,9 @@ def test_official_mcp_default_install_uninstall_reinstalls_on_restart(
         for item in authoring_result["data"]["operations"]
     )
     assert capabilities_result["ok"] is True
-    # 33 engine-owned authoring operations plus 70 MCP operations, matching
+    # 34 engine-owned authoring operations plus 70 MCP operations, matching
     # the source catalog checked by test_mcp_server.
-    assert capabilities_result["data"]["operation_count"] == 103
+    assert capabilities_result["data"]["operation_count"] == 104
 
     manager.uninstall("infernux/mcp")
     assert manager.registry.installed() == ()

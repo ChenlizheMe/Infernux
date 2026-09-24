@@ -105,6 +105,9 @@ from Infernux import ExecuteInEditMode as ExecuteInEditMode
 from Infernux import AddComponentMenu as AddComponentMenu
 from Infernux import HelpURL as HelpURL
 from Infernux import Icon as Icon
+from Infernux import DrivenTransformProperties as DrivenTransformProperties
+from Infernux import drives_transform as drives_transform
+from Infernux import DrivesTransform as DrivesTransform
 from Infernux import Material as Material
 from Infernux import Texture as Texture
 from Infernux import Shader as Shader

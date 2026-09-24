@@ -1,3 +1,4 @@
+#include <function/editor/SelectionOutline.h>
 #include <function/scene/Camera.h>
 #include <function/scene/Component.h>
 #include <function/scene/GameObject.h>
@@ -163,6 +164,23 @@ int main()
 
     GameObject *objectA = sceneA->CreateGameObject("ObjectA");
     GameObject *objectB = sceneB->CreateGameObject("ObjectB");
+    GameObject *childB = sceneB->CreateGameObject("SelectedDescendantB");
+    childB->SetParent(objectB);
+    GameObject *hiddenB = sceneB->CreateGameObject("InactiveDescendantB");
+    hiddenB->SetParent(objectB);
+    hiddenB->SetActive(false);
+    const uint64_t objectAId = objectA->GetID();
+    const uint64_t objectBId = objectB->GetID();
+    const uint64_t childBId = childB->GetID();
+    const std::vector<uint64_t> selectionIds{objectAId, objectBId, childBId, objectBId, 0};
+    const std::vector<uint64_t> expectedOutline{objectAId, objectBId, childBId};
+    assert(ExpandSelectionOutlineIds(manager, selectionIds) == expectedOutline);
+    assert(manager.GetActiveScene() == sceneA); // Selection must not change authoring ownership.
+    manager.SetActiveScene(sceneB);
+    assert(ExpandSelectionOutlineIds(manager, selectionIds) == expectedOutline);
+    manager.SetActiveScene(sceneA);
+    assert(ExpandSelectionOutlineIds(manager, {objectBId}) == std::vector<uint64_t>({objectBId, childBId}));
+    assert(ExpandSelectionOutlineIds(manager, {}).empty());
     objectA->AddComponent<AdditiveLifecycleProbe>(stateA);
     objectB->AddComponent<AdditiveLifecycleProbe>(stateB);
     objectA->AddComponent<Light>();
@@ -203,6 +221,7 @@ int main()
     // Unloading the active additive Scene promotes another loaded Scene and
     // removes only the unloaded Scene's lifecycle and global registry state.
     manager.UnloadScene(sceneB);
+    assert(ExpandSelectionOutlineIds(manager, selectionIds) == std::vector<uint64_t>({objectAId}));
     assert(manager.GetActiveScene() == sceneA);
     assert(manager.GetSceneCount() == 1);
     assert(manager.GetActiveLights().size() == 1);

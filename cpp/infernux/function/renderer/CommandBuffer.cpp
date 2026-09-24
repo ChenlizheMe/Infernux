@@ -411,6 +411,7 @@ void CommandBuffer::DrawMesh(const std::shared_ptr<InxMesh> &mesh, const glm::ma
     params.objectId = 0xF000000000000000ULL | g_nextExplicitDrawId.fetch_add(1, std::memory_order_relaxed);
     params.meshGuid = mesh->GetGuid();
     params.meshGeneration = mesh->GetGeneration();
+    params.meshIndexFormat = mesh->GetIndexFormat();
     params.submeshIndex = submeshIndex;
     params.pass = pass;
     m_commands.push_back({RenderCommandType::DrawMesh, std::move(params)});

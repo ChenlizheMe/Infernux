@@ -214,6 +214,13 @@ def _invalidate_canvas_caches(go):
 
 
 def _preserve_ui_world_position(obj, new_parent):
+    """Capture a screen UI rect and return its post-reparent restore step.
+
+    The target parent must already own the object when the returned callback
+    runs: layout conversion reads the current parent hierarchy.  Native
+    ``set_parent`` preserves the ordinary world Transform; this extra step is
+    only needed when both sides use Canvas-space layout metrics.
+    """
     from Infernux.ui.inx_ui_screen_component import InxUIScreenComponent, clear_rect_cache
     from Infernux.ui import UICanvas
 
@@ -223,7 +230,7 @@ def _preserve_ui_world_position(obj, new_parent):
             ui_comp = comp
             break
     if ui_comp is None:
-        return
+        return lambda: None
 
     def _find_canvas(go):
         while go is not None:
@@ -235,7 +242,7 @@ def _preserve_ui_world_position(obj, new_parent):
 
     old_canvas = _find_canvas(obj.get_parent() or obj)
     if old_canvas is None:
-        return
+        return lambda: None
     old_cw = float(old_canvas.reference_width)
     old_ch = float(old_canvas.reference_height)
     old_abs_x, old_abs_y, _w, _h = ui_comp.get_rect(old_cw, old_ch)
@@ -244,20 +251,9 @@ def _preserve_ui_world_position(obj, new_parent):
     ncw = float(new_canvas.reference_width) if new_canvas is not None else old_cw
     nch = float(new_canvas.reference_height) if new_canvas is not None else old_ch
 
-    if new_parent is not None:
-        new_parent_ui = None
-        for c in new_parent.get_py_components():
-            if isinstance(c, InxUIScreenComponent):
-                new_parent_ui = c
-                break
-        if new_parent_ui is not None:
-            npx, npy, npw, nph = new_parent_ui.get_rect(ncw, nch)
-        else:
-            npx, npy, npw, nph = 0.0, 0.0, ncw, nch
-    else:
-        npx, npy, npw, nph = 0.0, 0.0, ncw, nch
+    def _restore():
+        clear_rect_cache(-1)
+        if new_canvas is not None:
+            ui_comp._set_layout_rect_origin(old_abs_x, old_abs_y, ncw, nch)
 
-    anchor_x, anchor_y = ui_comp._anchor_origin(npw, nph)
-    ui_comp.x = old_abs_x - npx - anchor_x
-    ui_comp.y = old_abs_y - npy - anchor_y
-    clear_rect_cache(-1)
+    return _restore

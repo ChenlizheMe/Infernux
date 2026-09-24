@@ -281,6 +281,22 @@ class AssetDatabase
     {
         return m_lastRefreshCommitMilliseconds;
     }
+    [[nodiscard]] double GetLastModelReimportWorkerMilliseconds() const noexcept
+    {
+        return m_lastModelReimportWorkerMilliseconds;
+    }
+    [[nodiscard]] double GetLastModelReimportPrepareMilliseconds() const noexcept
+    {
+        return m_lastModelReimportPrepareMilliseconds;
+    }
+    [[nodiscard]] double GetLastModelReimportPersistenceMilliseconds() const noexcept
+    {
+        return m_lastModelReimportPersistenceMilliseconds;
+    }
+    [[nodiscard]] double GetLastModelReimportLivePublicationMilliseconds() const noexcept
+    {
+        return m_lastModelReimportLivePublicationMilliseconds;
+    }
     [[nodiscard]] double GetLastRefreshPrepareMilliseconds() const noexcept
     {
         return m_lastRefreshPrepareMilliseconds;
@@ -546,6 +562,7 @@ class AssetDatabase
         AssetFileFingerprint metadataFingerprint;
         bool metadataExists = false;
         bool discarded = false;
+        double workerMilliseconds = 0.0;
         JobHandle job;
     };
 
@@ -667,7 +684,9 @@ class AssetDatabase
                                         AssetMutationResult &result);
     ImportRequest MakeImportRequest(const std::string &guid, const std::string &path, bool isReimport,
                                     const InxResourceMeta &metadata) const;
-    void PublishImportArtifact(const ImportRequest &request, ImportArtifact artifact, bool persistMetadata);
+    void PublishImportArtifact(const ImportRequest &request, ImportArtifact artifact, bool persistMetadata,
+                               double *prepareMilliseconds = nullptr, double *persistenceMilliseconds = nullptr,
+                               double *livePublicationMilliseconds = nullptr);
     void FinishReimport(AssetMutationResult &result);
 
     std::string CreateOrLoadMetadata(const std::string &filePath, ResourceType type, bool readOnly,
@@ -727,6 +746,10 @@ class AssetDatabase
     size_t m_lastRefreshScannedCount = 0;
     double m_lastRefreshScanMilliseconds = 0.0;
     double m_lastRefreshCommitMilliseconds = 0.0;
+    double m_lastModelReimportWorkerMilliseconds = 0.0;
+    double m_lastModelReimportPrepareMilliseconds = 0.0;
+    double m_lastModelReimportPersistenceMilliseconds = 0.0;
+    double m_lastModelReimportLivePublicationMilliseconds = 0.0;
     double m_lastRefreshPrepareMilliseconds = 0.0;
     double m_lastRefreshFinalizeMilliseconds = 0.0;
     double m_lastRefreshOwnerMergeMaxSliceMilliseconds = 0.0;

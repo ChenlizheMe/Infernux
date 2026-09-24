@@ -218,7 +218,7 @@ void ToolbarPanel::RenderRightDropdowns(InxGUIContext *ctx, float winW)
 
 void ToolbarPanel::PopupGizmos(InxGUIContext *ctx)
 {
-    if (!isShowGrid) {
+    if (!isShowGrid || !isShowGizmos) {
         ImGui::TextUnformatted(T("toolbar.engine_not_available").c_str());
         return;
     }
@@ -226,6 +226,14 @@ void ToolbarPanel::PopupGizmos(InxGUIContext *ctx)
     ImGui::Dummy(ImVec2(200.0f * ctx->GetDpiScale(), 0.0f)); // minimum popup width
     ImGui::TextUnformatted(T("toolbar.gizmos_header").c_str());
     ImGui::Separator();
+
+    bool gizmos = isShowGizmos();
+    const std::string gizmosLabel = T("toolbar.show_gizmos");
+    const bool gizmosChanged = ctx->Checkbox(gizmosLabel, &gizmos);
+    if (InxGUISemantics::IsCaptureEnabled())
+        ctx->RecordSemanticItem("toolbar_show_gizmos", gizmosLabel, true, "toolbar.gizmos.show_gizmos");
+    if (gizmosChanged && executeCommand)
+        executeCommand("scene.toggle_gizmos", "toolbar", "");
 
     bool grid = isShowGrid();
     const std::string gridLabel = T("toolbar.show_grid");

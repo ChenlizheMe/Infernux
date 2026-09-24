@@ -61,3 +61,31 @@ vec3 sampleNormal(uint textureIndex, float scale) {
 vec3 sampleNormal(uint textureIndex, vec2 uv, float scale) {
     return inxSampleBindlessNormal(textureIndex, uv, scale);
 }
+
+vec3 sampleNormal(uint textureIndex, vec2 uv, int uvSet, float scale) {
+    if (uvSet == 0) {
+        return inxSampleBindlessNormal(textureIndex, uv, scale);
+    }
+
+    vec3 tangentNormal = inxSampleBindlessTexture(textureIndex, uv).rgb * 2.0 - 1.0;
+    tangentNormal.xy *= scale;
+    tangentNormal = normalize(tangentNormal);
+    vec3 normalWS = normalize(v_Normal);
+    vec3 positionDx = dFdx(v_WorldPos);
+    vec3 positionDy = dFdy(v_WorldPos);
+    vec2 uvDx = dFdx(uv);
+    vec2 uvDy = dFdy(uv);
+    vec3 dyPerpendicular = cross(positionDy, normalWS);
+    vec3 dxPerpendicular = cross(normalWS, positionDx);
+    vec3 tangent = dyPerpendicular * uvDx.x + dxPerpendicular * uvDy.x;
+    vec3 bitangent = dyPerpendicular * uvDx.y + dxPerpendicular * uvDy.y;
+    float basisLengthSq = max(dot(tangent, tangent), dot(bitangent, bitangent));
+    if (basisLengthSq <= 1e-12) {
+        return inxSampleBindlessNormal(textureIndex, uv, scale);
+    }
+    float inverseBasisLength = inversesqrt(basisLengthSq);
+    mat3 uvBasis = mat3(tangent * inverseBasisLength,
+                        bitangent * inverseBasisLength,
+                        normalWS);
+    return normalize(uvBasis * tangentNormal);
+}

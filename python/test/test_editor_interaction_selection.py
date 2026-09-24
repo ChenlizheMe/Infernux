@@ -207,6 +207,7 @@ def test_asset_refresh_reconciles_sprite_selection_without_inspector_visibility(
 ):
     from types import SimpleNamespace
 
+    from Infernux.engine import _bootstrap_selection as selection_bootstrap
     from Infernux.engine._bootstrap_selection import BootstrapSelectionMixin
     from Infernux.core import asset_types
 
@@ -214,8 +215,17 @@ def test_asset_refresh_reconciles_sprite_selection_without_inspector_visibility(
     service = SelectionService()
     asset_path = tmp_path / "sheet.png"
     asset_path.write_bytes(b"texture")
+    asset_guid = "sheet-guid"
+    monkeypatch.setattr(
+        selection_bootstrap,
+        "_selection_asset_database",
+        lambda: SimpleNamespace(
+            get_guid_from_path=lambda _path: asset_guid,
+            get_path_from_guid=lambda _guid: str(asset_path),
+        ),
+    )
     stale = SelectionTarget.asset_subresource(
-        str(asset_path),
+        asset_guid,
         "1" * 32,
         sub_kind="sprite_frame",
     )
@@ -232,9 +242,13 @@ def test_asset_refresh_reconciles_sprite_selection_without_inspector_visibility(
     )
     try:
         BootstrapSelectionMixin()._on_asset_selection_source_changed(
-            AssetMutation(AssetMutationKind.MODIFIED, str(asset_path))
+            AssetMutation(
+                AssetMutationKind.MODIFIED,
+                str(asset_path),
+                guid=asset_guid,
+            )
         )
-        assert service.snapshot.primary == SelectionTarget.asset(str(asset_path))
+        assert service.snapshot.primary == SelectionTarget.asset(asset_guid)
     finally:
         SelectionService._instance = previous
 
@@ -655,10 +669,20 @@ def test_revealed_dock_tab_focus_change_remains_in_global_journal():
     assert manager.undo_description == "Focus particle_graph_editor"
 
 
-def test_project_selection_intent_does_not_forge_panel_focus():
+def test_project_selection_intent_does_not_forge_panel_focus(monkeypatch):
     from types import SimpleNamespace
 
+    from Infernux.engine import _bootstrap_selection as selection_bootstrap
     from Infernux.engine._bootstrap_selection import BootstrapSelectionMixin
+
+    monkeypatch.setattr(
+        selection_bootstrap,
+        "_selection_asset_database",
+        lambda: SimpleNamespace(
+            get_guid_from_path=lambda _path: "smoke-guid",
+            get_path_from_guid=lambda _guid: "Assets/Smoke.particlegraph",
+        ),
+    )
 
     focus = FocusService()
     selection = SelectionService()
@@ -675,7 +699,7 @@ def test_project_selection_intent_does_not_forge_panel_focus():
     assert focus.snapshot.active_view_id == ""
     assert selection.snapshot.owner_id == "project"
     assert selection.snapshot.primary == SelectionTarget.asset(
-        "Assets/Smoke.particlegraph"
+        "smoke-guid"
     )
 
 
@@ -719,10 +743,20 @@ def test_hierarchy_pointer_commands_use_the_originating_view_context():
     assert "hp.execute_command = _execute_hierarchy_command" in source
 
 
-def test_project_subresource_click_keeps_typed_row_identity():
+def test_project_subresource_click_keeps_typed_row_identity(monkeypatch):
     from types import SimpleNamespace
 
+    from Infernux.engine import _bootstrap_selection as selection_bootstrap
     from Infernux.engine._bootstrap_selection import BootstrapSelectionMixin
+
+    monkeypatch.setattr(
+        selection_bootstrap,
+        "_selection_asset_database",
+        lambda: SimpleNamespace(
+            get_guid_from_path=lambda _path: "robot-guid",
+            get_path_from_guid=lambda _guid: "Assets/Robot.fbx",
+        ),
+    )
 
     focus = FocusService()
     selection = SelectionService()
@@ -734,7 +768,7 @@ def test_project_subresource_click_keeps_typed_row_identity():
     bootstrap._on_project_selection_changed((row,), row)
 
     assert selection.snapshot.primary == SelectionTarget.asset_subresource(
-        "Assets/Robot.fbx",
+        "robot-guid",
         "3",
         sub_kind="subanimation",
     )
@@ -829,10 +863,20 @@ def test_input_context_stack_honors_priority_and_modal_barrier():
     ]
 
 
-def test_bootstrap_selection_projection_is_the_single_cross_panel_writer():
+def test_bootstrap_selection_projection_is_the_single_cross_panel_writer(monkeypatch):
     from types import SimpleNamespace
 
+    from Infernux.engine import _bootstrap_selection as selection_bootstrap
     from Infernux.engine._bootstrap_selection import BootstrapSelectionMixin
+
+    monkeypatch.setattr(
+        selection_bootstrap,
+        "_selection_asset_database",
+        lambda: SimpleNamespace(
+            get_guid_from_path=lambda _path: "smoke-guid",
+            get_path_from_guid=lambda _guid: "Assets/Smoke.mat",
+        ),
+    )
 
     project_calls = []
     inspector_calls = []
@@ -858,12 +902,12 @@ def test_bootstrap_selection_projection_is_the_single_cross_panel_writer():
     )
 
     asset = SelectionSnapshot.create(
-        (SelectionTarget.asset("Assets/Smoke.mat"),),
+        (SelectionTarget.asset("smoke-guid"),),
         owner_id="project",
     )
     bootstrap._present_selection_snapshot(asset)
 
-    asset_path = asset.primary.target_id
+    asset_path = "Assets/Smoke.mat"
     assert project_calls == [("set", [asset_path], asset_path, False)]
     assert inspector_calls == [("file", asset_path)]
     assert outlines == [(0, [])]
@@ -891,6 +935,7 @@ def test_bootstrap_projects_subresources_and_all_component_owners(monkeypatch, s
     from types import SimpleNamespace
 
     import Infernux.lib as native
+    from Infernux.engine import _bootstrap_selection as selection_bootstrap
     from Infernux.engine._bootstrap_selection import BootstrapSelectionMixin
 
     objects = {value: SimpleNamespace(id=value) for value in (41, 42)}
@@ -916,6 +961,14 @@ def test_bootstrap_projects_subresources_and_all_component_owners(monkeypatch, s
     monkeypatch.setattr(native, "SceneManager", _SceneManager)
 
     project_calls = []
+    monkeypatch.setattr(
+        selection_bootstrap,
+        "_selection_asset_database",
+        lambda: SimpleNamespace(
+            get_guid_from_path=lambda _path: "robot-guid",
+            get_path_from_guid=lambda _guid: "Assets/Robot.fbx",
+        ),
+    )
     inspector_calls = []
     component_projection = []
     outlines = []
@@ -941,13 +994,13 @@ def test_bootstrap_projects_subresources_and_all_component_owners(monkeypatch, s
     subresource = SelectionSnapshot.create(
         (
             SelectionTarget.asset_subresource(
-                "Assets/Robot.fbx", "body", sub_kind=sub_kind
+                "robot-guid", "body", sub_kind=sub_kind
             ),
         ),
         owner_id="project",
     )
     bootstrap._present_selection_snapshot(subresource)
-    asset_path = subresource.primary.document_id + token + "body"
+    asset_path = "Assets/Robot.fbx" + token + "body"
     assert project_calls == [([asset_path], asset_path, False)]
     assert inspector_calls == [asset_path]
 

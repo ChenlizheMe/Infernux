@@ -859,8 +859,15 @@ def ping_asset_in_project(path: str) -> bool:
         core = EditorInteractionCore.instance()
         if core is None:
             return False
+        from Infernux.core.assets import AssetManager
+
+        guid = str(
+            AssetManager.require_asset_database().get_guid_from_path(disk_path) or ""
+        ).strip()
+        if not guid:
+            return False
         return bool(core.navigation.locate(
-            SelectionTarget.asset(disk_path),
+            SelectionTarget.asset(guid),
             owner_id="project",
             reason="ping_asset",
             record_history=True,

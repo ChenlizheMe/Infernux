@@ -104,6 +104,58 @@ int main()
     assert(!infernux::ShaderCompileTargetUsesInstanceAuxiliary(infernux::ShaderCompileTarget::Shadow));
 
     auto compiler = MakeCompiler();
+    const std::string arrayVertex = R"(
+ShaderInfo {
+    Name "Tests/ArrayVertex"
+    Properties {
+        FloatArray curveWeights = [0.0, 0.5, 1.0]
+    }
+}
+void vertex(inout VertexInput v) {
+    v.position.y += material.curveWeights[1];
+}
+)";
+    const std::string arrayFragment = R"(
+ShaderInfo {
+    Name "Tests/ArrayFragment"
+    ShadingModel "Unlit"
+    Properties {
+        Float4Array palette = [[1.0, 0.0, 0.0, 1.0], [0.0, 1.0, 0.0, 1.0]]
+    }
+}
+void surface(out SurfaceData s) {
+    s = InitSurfaceData();
+    s.albedo = material.palette[0].rgb;
+}
+)";
+    const auto arrayVertexDescriptor = compiler.ParseShaderSource(arrayVertex, "ArrayVertex.vert");
+    const auto arrayFragmentDescriptor = compiler.ParseShaderSource(arrayFragment, "ArrayFragment.frag");
+    const auto arrayInterface = infernux::ShaderStageLinker::Link(arrayVertexDescriptor, arrayFragmentDescriptor);
+    if (!arrayInterface.IsValid()) {
+        for (const auto &diagnostic : arrayInterface.diagnostics)
+            std::cerr << diagnostic.message << '\n';
+    }
+    assert(arrayInterface.IsValid());
+    const auto &curve = RequireProperty(arrayInterface, "curveWeights");
+    const auto &palette = RequireProperty(arrayInterface, "palette");
+    assert(curve.arrayCount == 3 && curve.byteAlignment == 16 && curve.byteSize == 48 && curve.bufferOffset == 0);
+    assert(palette.arrayCount == 2 && palette.byteAlignment == 16 && palette.byteSize == 32 &&
+           palette.bufferOffset == 48);
+
+    infernux::InxShaderLoader::AddShaderSearchPath(INFERNUX_TEST_SHADER_ROOT);
+    const auto compiledArrays =
+        compiler.CompileLinkedForward(arrayVertex, "ArrayVertex.vert", arrayFragment, "ArrayFragment.frag");
+    if (!compiledArrays.IsValid()) {
+        for (const auto &error : compiledArrays.errors)
+            std::cerr << error << '\n';
+    }
+    assert(compiledArrays.IsValid());
+    const auto arrayRuntime = compiledArrays.CreateRuntimeArtifact();
+    assert(RequireRuntimeProperty(arrayRuntime, "curveWeights").arrayCount == 3);
+    assert(RequireRuntimeProperty(arrayRuntime, "palette").arrayCount == 2);
+    assert(compiledArrays.generatedVertexSource.find("float curveWeights[3]") != std::string::npos);
+    assert(compiledArrays.generatedFragmentSource.find("vec4 palette[2]") != std::string::npos);
+
     const std::string waveVertex = R"(
 ShaderInfo
 {
@@ -172,11 +224,11 @@ void surface(out SurfaceData s)
     assert(artifact.shadingModel == "PBR");
     assert(artifact.varyings.size() == 3);
     assert(artifact.varyings[0].name == "waveUV");
-    assert(artifact.varyings[0].location == 7);
+    assert(artifact.varyings[0].location == 8);
     assert(artifact.varyings[1].name == "waveBand");
-    assert(artifact.varyings[1].location == 8);
+    assert(artifact.varyings[1].location == 9);
     assert(artifact.varyings[2].name == "waveHeight");
-    assert(artifact.varyings[2].location == 9);
+    assert(artifact.varyings[2].location == 10);
 
     const auto &amplitude = RequireProperty(artifact, "amplitude");
     assert(amplitude.visibility ==
@@ -222,7 +274,6 @@ void surface(out SurfaceData s)
     assert(forwardOnlyGBuffer->fallback == infernux::ShaderCompileTarget::ForwardPlus);
     assert(forwardOnlyGBuffer->reason.find("Unsupported [Deferred]") != std::string::npos);
 
-    infernux::InxShaderLoader::AddShaderSearchPath(INFERNUX_TEST_SHADER_ROOT);
     const auto compiledProgram =
         compiler.CompileLinkedForward(waveVertex, "WaveDeform.vert", oceanFragment, "OceanSurface.frag");
     if (!compiledProgram.IsValid()) {
@@ -263,9 +314,15 @@ void surface(out SurfaceData s)
     duplicateVariantArtifact.variants.push_back(*forwardVariant);
     assert(!duplicateVariantArtifact.IsValid());
     assert(runtimeArtifact.key.ToString().find("Tests/WaveDeform|Tests/OceanSurface@") == 0);
-    assert(compiledProgram.generatedVertexSource.find("layout(location = 7) smooth out vec2 _inx_v_waveUV;") !=
+    assert(compiledProgram.generatedVertexSource.find("layout(location = 7) in vec2 inTexCoord1;") !=
            std::string::npos);
-    assert(compiledProgram.generatedFragmentSource.find("layout(location = 8) flat in int _inx_v_waveBand;") !=
+    assert(compiledProgram.generatedVertexSource.find("layout(location = 7) out vec2 v_TexCoord1;") !=
+           std::string::npos);
+    assert(compiledProgram.generatedFragmentSource.find("layout(location = 7) in vec2 v_TexCoord1;") !=
+           std::string::npos);
+    assert(compiledProgram.generatedVertexSource.find("layout(location = 8) smooth out vec2 _inx_v_waveUV;") !=
+           std::string::npos);
+    assert(compiledProgram.generatedFragmentSource.find("layout(location = 9) flat in int _inx_v_waveBand;") !=
            std::string::npos);
     assert(compiledProgram.generatedVertexSource.find("VertexOutput _inx_output = inxVertexEntry(v);") !=
            std::string::npos);
@@ -334,7 +391,7 @@ void surface(out SurfaceData s)
         std::find_if(completeCompilation.compiledVariants.begin(), completeCompilation.compiledVariants.end(),
                      [](const auto &variant) { return variant.target == infernux::ShaderCompileTarget::Shadow; });
     assert(shadowCompilation != completeCompilation.compiledVariants.end());
-    assert(shadowCompilation->generatedVertexSource.find("layout(location = 7) smooth out vec2 _inx_v_waveUV;") !=
+    assert(shadowCompilation->generatedVertexSource.find("layout(location = 8) smooth out vec2 _inx_v_waveUV;") !=
            std::string::npos);
     assert(shadowCompilation->generatedVertexSource.find(
                "layout(set = 2, binding = 0) uniform sampler2D displacement;") != std::string::npos);
@@ -343,7 +400,7 @@ void surface(out SurfaceData s)
     assert(shadowCompilation->generatedVertexSource.find("set = 1, binding = 3") != std::string::npos);
     assert(shadowCompilation->generatedVertexSource.find("InstanceAuxBuffer") == std::string::npos);
     assert(shadowCompilation->generatedVertexSource.find("set = 1, binding = 4") == std::string::npos);
-    assert(shadowCompilation->generatedFragmentSource.find("layout(location = 7) smooth in vec2 _inx_v_waveUV;") !=
+    assert(shadowCompilation->generatedFragmentSource.find("layout(location = 8) smooth in vec2 _inx_v_waveUV;") !=
            std::string::npos);
 
     const auto depthCompilation =
@@ -644,6 +701,30 @@ void surface(out SurfaceData surface)
            std::string::npos);
 
     const std::string shaderRoot = INFERNUX_TEST_SHADER_ROOT;
+    const std::string passReconstructionFragment = R"(
+ShaderInfo {
+    Name "Tests/PassReconstruction"
+    ShadingModel "Unlit"
+    Capabilities [PassBuffers]
+    Imports ["Lib Pass Buffers"]
+}
+void surface(out SurfaceData surface) {
+    surface = InitSurfaceData();
+    vec3 position = samplePassWorldPosition(vec2(0.5));
+    float eyeDepth = samplePassLinearEyeDepth(vec2(0.5));
+    surface.albedo = position * 0.0 + vec3(eyeDepth);
+}
+)";
+    const auto passReconstruction =
+        compiler.CompileLinkedProgram(waveVertex, "WaveDeform.vert", passReconstructionFragment,
+                                      shaderRoot + "/pass_reconstruction.frag", infernux::ShaderCompileTarget::Forward);
+    if (!passReconstruction.IsValid()) {
+        for (const auto &error : passReconstruction.errors)
+            std::cerr << error << '\n';
+    }
+    assert(passReconstruction.IsValid());
+    assert(passReconstruction.generatedFragmentSource.find("ubo.inverseViewProj * clip") != std::string::npos);
+    assert(passReconstruction.generatedFragmentSource.find("abs(samplePassViewPosition(uv).z)") != std::string::npos);
     // Data-only replacement materials use current geometry but own a raw
     // fragment output, not generated surface/shadow outputs.
     const std::string dataMaskFragment = R"(

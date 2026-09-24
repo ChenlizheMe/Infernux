@@ -28,6 +28,7 @@ class InxMesh;
 class InxTexture;
 class AssetRegistry;
 struct TextureCpuData;
+enum class MeshGeometryView : uint8_t;
 
 struct AssetResidencyRecord
 {
@@ -268,6 +269,16 @@ class AssetRegistry
     [[nodiscard]] bool IsLoaded(const std::string &guid) const;
     [[nodiscard]] ResourceType GetAssetType(const std::string &guid) const;
     [[nodiscard]] uint64_t GetAssetVersion(const std::string &guid) const;
+    /// Publish one immutable GPU geometry view for an exact asset generation.
+    /// Hierarchical models require both merged and node-local views before CPU
+    /// streams may be released.
+    void MarkMeshGpuViewResident(const std::string &guid, uint64_t runtimeVersion, MeshGeometryView view);
+    [[nodiscard]] uint8_t GetMeshGpuViewResidencyMask(const std::string &guid, uint64_t runtimeVersion) const;
+    [[nodiscard]] bool IsMeshGpuResidencyRequired(const std::string &guid, uint64_t runtimeVersion) const;
+    /// Player-only post-upload transition for non-readable Mesh assets. The
+    /// runtime version is not changed because published GPU buffers retain
+    /// that exact identity.
+    size_t ReleaseMeshCpuGeometry(const std::string &guid, uint64_t runtimeVersion);
     [[nodiscard]] std::string GetAssetRuntimeTypeName(const std::string &guid) const;
     [[nodiscard]] std::vector<std::string> GetAllLoadedGuids() const;
     [[nodiscard]] AssetResidencyRecord GetAssetResidency(const std::string &guid) const;
@@ -327,6 +338,12 @@ class AssetRegistry
     AssetEntryMap m_loadedAssets; // GUID → live instance
     std::unordered_map<std::string, uint64_t> m_assetMutationGenerations;
     std::unordered_map<std::string, uint64_t> m_assetRuntimeVersions;
+    struct MeshGpuViewResidency
+    {
+        uint64_t runtimeVersion = 0;
+        uint8_t mask = 0;
+    };
+    std::unordered_map<std::string, MeshGpuViewResidency> m_meshGpuViewResidency;
     std::unordered_map<std::string, ResourceType> m_assetRuntimeTypes;
     std::vector<std::weak_ptr<AssetLoadTicket>> m_pendingLoads;
     std::vector<std::weak_ptr<TextureUploadStagingTicket>> m_pendingTextureStagingLoads;

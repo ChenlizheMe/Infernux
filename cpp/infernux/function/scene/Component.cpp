@@ -311,12 +311,6 @@ bool Component::DeserializeDocument(const nlohmann::json &j)
             INXLOG_ERROR("Component::Deserialize for '", GetTypeName(), "': missing or invalid base fields");
             return false;
         }
-        if (j.contains("instance_guid")) {
-            INXLOG_ERROR("Component::Deserialize for '", GetTypeName(),
-                         "': instance_guid was removed; use component_id");
-            return false;
-        }
-
         if (j.contains("prefab_source_id") &&
             (!j["prefab_source_id"].is_number_unsigned() || j["prefab_source_id"].get<uint64_t>() == 0)) {
             INXLOG_ERROR("Component prefab_source_id must be a non-zero unsigned integer");

@@ -1,9 +1,39 @@
 from __future__ import annotations
 
-from typing import Any, List, Optional, Tuple, Union
+from typing import Any, List, NotRequired, Optional, Tuple, TypedDict, Union
 import numpy as np
 import numpy.typing as npt
 from Infernux.lib import PenetrationResult
+
+
+class RaycastBatchProfile(TypedDict):
+    input_validation_ms: float
+    snapshot_sync_ms: float
+    snapshot_lock_wait_ms: float
+    dispatch_wall_ms: float
+    jolt_query_cpu_ms: float
+    broadphase_filter_lock_cpu_ms: float
+    narrowphase_cpu_ms: float
+    result_sort_filter_cpu_ms: float
+    hit_publish_cpu_ms: float
+    output_publish_ms: float
+    broadphase_candidates: int
+    narrowphase_hits: int
+    published_hits: int
+
+
+class RaycastBatchOutput(TypedDict):
+    hit: npt.NDArray[np.uint8]
+    point: npt.NDArray[np.float32]
+    normal: npt.NDArray[np.float32]
+    distance: npt.NDArray[np.float32]
+    body_id: npt.NDArray[np.uint32]
+    sub_shape_id: npt.NDArray[np.uint32]
+    triangle_index: npt.NDArray[np.uint32]
+    collider_id: npt.NDArray[np.uint64]
+    game_object_id: npt.NDArray[np.uint64]
+    query_generation: NotRequired[int]
+    profile: NotRequired[RaycastBatchProfile]
 
 
 class Physics:
@@ -108,11 +138,12 @@ class Physics:
     def raycast_batch(
         origins: npt.NDArray[np.float32],
         directions: npt.NDArray[np.float32],
-        out: dict[str, npt.NDArray[Any]],
+        out: RaycastBatchOutput,
         max_distance: float = ...,
         layer_mask: int = ...,
         query_triggers: bool = ...,
-    ) -> dict[str, npt.NDArray[Any]]: ...
+        profile: bool = ...,
+    ) -> RaycastBatchOutput: ...
 
     @staticmethod
     def raycast_all(

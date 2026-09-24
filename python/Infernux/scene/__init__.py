@@ -214,7 +214,8 @@ class SceneManager:
         """Return the loaded scene corresponding to a build-list entry."""
         scenes = SceneManager._load_build_list()
         if 0 <= build_index < len(scenes):
-            name = os.path.splitext(os.path.basename(scenes[build_index]))[0]
+            display_path = SceneManager._build_scene_display_path(scenes[build_index])
+            name = os.path.splitext(os.path.basename(display_path))[0]
             return _NativeSceneManager.instance().get_scene(name)
         return None
 
@@ -262,25 +263,32 @@ class SceneManager:
 
     @staticmethod
     def _load_build_list() -> List[str]:
-        """Return the list of scene file paths from BuildSettings.json.
-
-        In packaged builds the paths are stored relative to the project
-        (Data/) directory.  This method resolves them to absolute paths
-        using ``get_project_root()`` so that callers can safely pass them
-        to ``os.path.isfile()`` and ``load_from_file()``.
-        """
+        """Return build scene GUIDs in Player, resolved paths in Editor."""
         from Infernux.engine.build_settings import load_build_settings
-        data = load_build_settings()
-        scenes = list(data["scenes"])
+        from Infernux.engine.interaction.project_settings import normalize_build_settings
 
-        from Infernux.engine.project_context import get_project_root
-        root = get_project_root()
-        if root:
-            scenes = [
-                os.path.join(root, p) if not os.path.isabs(p) else p
-                for p in scenes
-            ]
-        return scenes
+        scene_guids = list(
+            normalize_build_settings(load_build_settings())["scene_guids"]
+        )
+        if SceneManager._runtime_scene_service is not None:
+            return scene_guids
+        from Infernux.core.assets import AssetManager
+
+        database = AssetManager.require_asset_database()
+        return [
+            str(database.get_path_from_guid(guid) or "")
+            for guid in scene_guids
+        ]
+
+    @staticmethod
+    def _build_scene_display_path(identity: str) -> str:
+        if SceneManager._runtime_scene_service is None:
+            return identity
+        from Infernux.core.assets import AssetManager
+
+        return str(
+            AssetManager.require_asset_database().get_path_from_guid(identity) or ""
+        )
 
     @staticmethod
     def _resolve_build_scene(reference: str, scenes: List[str]) -> Optional[str]:
@@ -291,6 +299,8 @@ class SceneManager:
         value = str(reference or "").strip()
         if not value:
             return None
+        if value in scenes:
+            return value
 
         root = get_project_root()
         target = portable_path(value).casefold()
@@ -300,14 +310,16 @@ class SceneManager:
             if root:
                 absolute_target = value if os.path.isabs(value) else os.path.join(root, value)
                 for candidate in scenes:
-                    if same_path(candidate, absolute_target):
+                    display_path = SceneManager._build_scene_display_path(candidate)
+                    if display_path and same_path(display_path, absolute_target):
                         return candidate
 
             for candidate in scenes:
-                candidate_keys = {portable_path(candidate).casefold()}
+                display_path = SceneManager._build_scene_display_path(candidate)
+                candidate_keys = {portable_path(display_path).casefold()}
                 if root:
                     try:
-                        candidate_keys.add(relative_path(candidate, root).casefold())
+                        candidate_keys.add(relative_path(display_path, root).casefold())
                     except ValueError:
                         pass
                 if target in candidate_keys:
@@ -317,7 +329,8 @@ class SceneManager:
         target_filename = os.path.basename(value).casefold()
         target_has_extension = target_filename.endswith(".scene")
         for candidate in scenes:
-            filename = os.path.basename(candidate).casefold()
+            display_path = SceneManager._build_scene_display_path(candidate)
+            filename = os.path.basename(display_path).casefold()
             if target_has_extension:
                 if filename == target_filename:
                     return candidate
@@ -533,6 +546,8 @@ class SceneManager:
         sfm = SceneFileManager.instance()
         if sfm and load_mode is LoadSceneMode.SINGLE:
             return sfm.open_scene(path)
+        if sfm and load_mode is LoadSceneMode.ADDITIVE:
+            return sfm.load_scene_additive_immediate(path)
 
         # Runtime/current-schema path. Python component validation must happen
         # before the native staging graph commits.
@@ -564,8 +579,6 @@ class SceneManager:
             return False
         if load_mode is LoadSceneMode.SINGLE:
             SceneManager._unload_other_scenes(target)
-        elif sfm is not None:
-            sfm.register_loaded_scene(target, path, dirty=False)
         return True
 
     @staticmethod
@@ -831,7 +844,8 @@ class SceneManager:
         """Return the scene name for a build index, or None if out of range."""
         scenes = SceneManager._load_build_list()
         if 0 <= build_index < len(scenes):
-            return os.path.splitext(os.path.basename(scenes[build_index]))[0]
+            display_path = SceneManager._build_scene_display_path(scenes[build_index])
+            return os.path.splitext(os.path.basename(display_path))[0]
         return None
 
     @staticmethod
@@ -839,7 +853,7 @@ class SceneManager:
         """Return the absolute scene file path for a build index."""
         scenes = SceneManager._load_build_list()
         if 0 <= build_index < len(scenes):
-            return scenes[build_index]
+            return SceneManager._build_scene_display_path(scenes[build_index])
         return None
 
     @staticmethod
@@ -847,7 +861,8 @@ class SceneManager:
         """Return the build index for a scene name, or -1 if not found."""
         target = name.lower()
         for i, p in enumerate(SceneManager._load_build_list()):
-            n = os.path.splitext(os.path.basename(p))[0]
+            display_path = SceneManager._build_scene_display_path(p)
+            n = os.path.splitext(os.path.basename(display_path))[0]
             if n.lower() == target:
                 return i
         return -1
@@ -856,7 +871,9 @@ class SceneManager:
     def get_all_scene_names() -> List[str]:
         """Return a list of all scene names in build order."""
         return [
-            os.path.splitext(os.path.basename(p))[0]
+            os.path.splitext(
+                os.path.basename(SceneManager._build_scene_display_path(p))
+            )[0]
             for p in SceneManager._load_build_list()
         ]
 

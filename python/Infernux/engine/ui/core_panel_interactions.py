@@ -89,6 +89,18 @@ def _standard_edit_shortcuts(
     )
 
 
+def _project_asset_path_for_guid(guid: str) -> str:
+    """Resolve one global Project selection identity at the UI boundary."""
+    try:
+        from Infernux.core.assets import AssetManager
+
+        return str(
+            AssetManager.require_asset_database().get_path_from_guid(guid) or ""
+        ).strip()
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        return ""
+
+
 def hierarchy_panel_interaction(
     scene_commands: SceneObjectCommandService,
     *,
@@ -373,7 +385,7 @@ def project_panel_interaction(
         seen: set[str] = set()
         if context.selection.domain is SelectionDomain.ASSET:
             raw_paths = tuple(
-                str(target.document_id or target.target_id or "").strip()
+                _project_asset_path_for_guid(target.target_id)
                 for target in context.selection.targets
             )
         else:
@@ -411,7 +423,7 @@ def project_panel_interaction(
             and context.selection.domain is SelectionDomain.ASSET
             and context.selection.primary is not None
         ):
-            value = context.selection.primary.target_id
+            value = _project_asset_path_for_guid(context.selection.primary.target_id)
         return value
 
     def destination(context: CommandContext, panel: object) -> str:
@@ -499,7 +511,7 @@ def project_panel_interaction(
             and context.selection.primary is not None
         ):
             primary = context.selection.primary
-            value = str(primary.document_id or primary.target_id or "").strip()
+            value = _project_asset_path_for_guid(primary.document_id or primary.target_id)
         return lexical_path(value)
 
     def expansion_args(context: CommandContext):
@@ -623,8 +635,18 @@ def project_panel_interaction(
 
     def locate_asset(context: CommandContext) -> bool:
         path = navigation_path(context)
+        try:
+            from Infernux.core.assets import AssetManager
+
+            guid = str(
+                AssetManager.require_asset_database().get_guid_from_path(path) or ""
+            ).strip()
+        except (AttributeError, RuntimeError, TypeError, ValueError):
+            guid = ""
+        if not guid:
+            return False
         return navigation.locate(
-            SelectionTarget.asset(path),
+            SelectionTarget.asset(guid),
             owner_id="project",
             reason="project_locate_asset",
             record_history=True,

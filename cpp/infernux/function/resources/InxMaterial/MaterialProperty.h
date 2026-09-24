@@ -73,9 +73,8 @@ enum class MaterialPropertyType
     Float4Array
 };
 
-using MaterialPropertyValue =
-    std::variant<float, glm::vec2, glm::vec3, glm::vec4, int, glm::mat4, std::string, std::vector<float>,
-                 std::vector<glm::vec4>>;
+using MaterialPropertyValue = std::variant<float, glm::vec2, glm::vec3, glm::vec4, int, glm::mat4, std::string,
+                                           std::vector<float>, std::vector<glm::vec4>>;
 
 struct MaterialProperty
 {

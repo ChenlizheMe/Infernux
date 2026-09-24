@@ -1144,8 +1144,7 @@ void InspectorPanel::FinishTransformGesture(size_t rowIndex, uint32_t lifecycleF
         m_transformGestureIds[rowIndex].clear();
 }
 
-void InspectorPanel::RenderTransform(InxGUIContext *ctx, uint64_t objId, bool hideScale,
-                                     uint32_t drivenProperties)
+void InspectorPanel::RenderTransform(InxGUIContext *ctx, uint64_t objId, bool hideScale, uint32_t drivenProperties)
 {
     if (!getTransformData)
         return;

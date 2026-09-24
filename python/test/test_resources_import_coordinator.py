@@ -307,6 +307,32 @@ def test_deleted_new_asset_does_not_retry_importing_its_absent_file(monkeypatch,
     assert errors == []
 
 
+def test_blender_numbered_backups_never_move_or_register_asset_identity(tmp_path):
+    database = _AssetDatabaseProbe()
+    handler = ResourceChangeHandler(_EngineProbe(database))
+    source = tmp_path / "Assembly.blend"
+    backup = tmp_path / "Assembly.blend1"
+    source.write_bytes(b"new generation")
+    backup.write_bytes(b"previous generation")
+    database.guid_by_path[str(source)] = "stable-model-guid"
+
+    # Blender reports its save as the old source moving to .blend1 followed by
+    # a newly created .blend. The backup event is presentation noise; the
+    # source path remains authoritative and is reimported with its GUID.
+    handler.on_moved(_event(source, destination=backup))
+    handler.on_created(_event(source))
+
+    assert handler.pending_count == 1
+    events = handler._coordinator.drain(force=True)
+    assert len(events) == 1
+    assert events[0].kind is AssetFsEventKind.MODIFIED
+    assert events[0].path == str(source.resolve())
+    assert events[0].guid_hint == "stable-model-guid"
+    assert database.mutations == []
+    assert database.guid_by_path[str(source)] == "stable-model-guid"
+    assert str(backup) not in database.guid_by_path
+
+
 def test_stale_meta_deleted_event_after_atomic_replace_is_ignored(monkeypatch, tmp_path):
     database = _AssetDatabaseProbe()
     handler = ResourceChangeHandler(_EngineProbe(database))

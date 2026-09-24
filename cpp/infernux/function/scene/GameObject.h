@@ -182,8 +182,14 @@ class GameObject
 
     /// Imported model ownership is independent of display name and renderer overrides.
     /// An empty node path identifies the model instance container.
-    [[nodiscard]] const std::string &GetModelSourceGuid() const { return m_modelSourceGuid; }
-    [[nodiscard]] const std::vector<std::string> &GetModelSourcePath() const { return m_modelSourcePath; }
+    [[nodiscard]] const std::string &GetModelSourceGuid() const
+    {
+        return m_modelSourceGuid;
+    }
+    [[nodiscard]] const std::vector<std::string> &GetModelSourcePath() const
+    {
+        return m_modelSourcePath;
+    }
     void SetModelSource(std::string guid, std::vector<std::string> path);
     static void ValidateModelSourceDocument(const nlohmann::json &document);
 

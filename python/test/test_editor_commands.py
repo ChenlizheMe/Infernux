@@ -665,6 +665,11 @@ def test_scene_grid_toolbar_action_uses_one_global_undoable_command():
     bootstrap.engine = SimpleNamespace(
         _play_mode_manager=None,
         get_native_engine=lambda: native,
+        _show_gizmos=True,
+        is_show_gizmos=lambda: bootstrap.engine._show_gizmos,
+        set_show_gizmos=lambda value: setattr(
+            bootstrap.engine, "_show_gizmos", bool(value)
+        ),
     )
     windows = SimpleNamespace(
         get_window_instance=lambda _panel_id: None,
@@ -693,6 +698,25 @@ def test_scene_grid_toolbar_action_uses_one_global_undoable_command():
 
         manager.undo()
         assert native.show_grid is True
+
+        assert registry.can_execute("scene.toggle_gizmos", context)
+        assert registry.is_checked("scene.toggle_gizmos", context)
+        assert registry.execute(
+            "scene.toggle_gizmos",
+            source=CommandSource.TOOLBAR,
+        ).accepted
+        assert bootstrap.engine._show_gizmos is False
+        # The toolbar callback remains bound while its returned state is false;
+        # the same checkbox/command can therefore turn Gizmos back on.
+        assert registry.execute(
+            "scene.toggle_gizmos",
+            source=CommandSource.TOOLBAR,
+        ).accepted
+        assert bootstrap.engine._show_gizmos is True
+        manager.undo()
+        assert bootstrap.engine._show_gizmos is False
+        manager.undo()
+        assert bootstrap.engine._show_gizmos is True
     finally:
         UndoManager._instance = previous_manager
         bootstrap.interaction_core.shutdown()
@@ -741,9 +765,9 @@ def test_console_source_navigation_is_one_global_command(monkeypatch):
 
     opened_sources = []
     monkeypatch.setattr(
-        "Infernux.engine.ui.project_utils.open_file_with_system",
-        lambda path, project_root="": (
-            opened_sources.append((path, project_root)) or True
+        "Infernux.engine.ui.project_utils.open_in_vscode",
+        lambda path, project_root="", line=0: (
+            opened_sources.append((path, project_root, line)) or True
         ),
     )
     windows = SimpleNamespace(
@@ -769,7 +793,7 @@ def test_console_source_navigation_is_one_global_command(monkeypatch):
 
         assert result.accepted
         assert opened_sources == [
-            ("D:/src/example.py", "D:/Projects/ConsoleTest")
+            ("D:/src/example.py", "D:/Projects/ConsoleTest", 17)
         ]
     finally:
         bootstrap.interaction_core.shutdown()
@@ -1145,7 +1169,9 @@ def test_ui_editor_uses_global_scene_commands_and_selection_clear():
     core.shutdown()
 
 
-def test_project_edit_shortcuts_use_the_same_commands_as_hierarchy(tmp_path):
+def test_project_edit_shortcuts_use_the_same_commands_as_hierarchy(tmp_path, monkeypatch):
+    from Infernux.core.assets import AssetManager
+
     class BootstrapHarness(BootstrapWiringMixin):
         pass
 
@@ -1154,6 +1180,14 @@ def test_project_edit_shortcuts_use_the_same_commands_as_hierarchy(tmp_path):
     assets.mkdir(parents=True)
     smoke_material = str(assets / "Smoke.mat")
     pasted_material = str(assets / "Pasted.mat")
+    smoke_guid = "smoke-material-guid"
+
+    class _AssetDatabase:
+        @staticmethod
+        def get_path_from_guid(guid):
+            return smoke_material if guid == smoke_guid else ""
+
+    monkeypatch.setattr(AssetManager, "_asset_database", _AssetDatabase())
     bootstrap = BootstrapHarness()
     bootstrap.interaction_core = EditorInteractionCore()
     bootstrap.engine = SimpleNamespace(_play_mode_manager=None)
@@ -1222,7 +1256,7 @@ def test_project_edit_shortcuts_use_the_same_commands_as_hierarchy(tmp_path):
     core = bootstrap.interaction_core
     core.focus.activate_panel("project", view_id="project")
     core.selection.select(
-        SelectionTarget.asset(smoke_material),
+        SelectionTarget.asset(smoke_guid),
         owner_id="project",
     )
 

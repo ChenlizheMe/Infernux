@@ -16,7 +16,7 @@ from typing import List, Optional
 from Infernux.components.builtin_component import BuiltinComponent, CppProperty
 from Infernux.components.fields import FieldType
 from Infernux.debug import Debug
-from Infernux.engine.path_utils import lexical_path, portable_path, same_path
+from Infernux.engine.path_utils import lexical_path, portable_path
 
 
 def _to_native_material(value):
@@ -181,19 +181,15 @@ class SpriteRenderer(BuiltinComponent):
         super()._invalidate_native_binding()
 
     def _on_asset_changed(self, change):
-        """Called when any asset file is modified/deleted on disk."""
+        """Refresh only mutations carrying this renderer's sprite identity."""
         from Infernux.engine.interaction import iter_asset_mutations
 
         guid = self.sprite
         if not guid:
             return
-        adb = _get_asset_database()
-        asset_path = adb.get_path_from_guid(guid)
-        if not asset_path:
-            return
         for mutation in iter_asset_mutations(change):
-            file_path = mutation.path
-            if same_path(file_path, asset_path) or same_path(file_path, asset_path + ".meta"):
+            mutation_guid = str(mutation.guid or "").strip()
+            if mutation_guid and mutation_guid == guid:
                 self._load_sprite_data()
                 self._apply_uv_rect()
                 self._apply_color()
@@ -238,15 +234,16 @@ class SpriteRenderer(BuiltinComponent):
     def _resolve_sprite_reference_candidate(self, candidate) -> str:
         if candidate is None or candidate == "":
             return ""
-        supplied_guid = ""
-        path = ""
         if isinstance(candidate, dict):
-            supplied_guid = str(candidate.get("guid") or "").strip()
-            path = str(candidate.get("path_hint") or "").strip()
+            # A structured value is persisted reference data: its GUID is the
+            # only identity.  Never revive it from a stale path hint.
+            guid = str(candidate.get("guid") or "").strip()
+        elif isinstance(candidate, str):
+            # Raw strings enter here only from the editor file picker/drop
+            # boundary, which resolves them immediately to an imported GUID.
+            guid = self._resolve_texture_guid(candidate.strip())
         else:
-            supplied_guid = self._extract_guid(candidate)
-            path = str(candidate or "").strip()
-        guid = supplied_guid or self._resolve_texture_guid(path)
+            guid = self._extract_guid(candidate)
         if not guid:
             raise ValueError("sprite must reference an imported Texture asset")
         return guid

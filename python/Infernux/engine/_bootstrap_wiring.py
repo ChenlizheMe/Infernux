@@ -167,6 +167,23 @@ class BootstrapWiringMixin:
             native = _native_engine()
             return bool(native is not None and native.is_show_grid())
 
+        def _toggle_scene_gizmos(_context) -> bool:
+            engine = self.engine
+            if engine is None:
+                return False
+            current = bool(engine.is_show_gizmos())
+            return self.interaction_core.view_commands.set_value(
+                current,
+                not current,
+                lambda value: engine.set_show_gizmos(bool(value)),
+                description="Toggle Scene Gizmos",
+                owner_view_id="scene_view",
+            )
+
+        def _are_scene_gizmos_visible(_context) -> bool:
+            engine = self.engine
+            return bool(engine is not None and engine.is_show_gizmos())
+
         def _window_target(context) -> str:
             return str(context.payload.get("target_id", "") or "").strip()
 
@@ -209,12 +226,20 @@ class BootstrapWiringMixin:
             source_path = _console_source_path(context)
             if not source_path:
                 return False
+            try:
+                source_line = max(
+                    int(context.payload.get("source_line", 0) or 0),
+                    0,
+                )
+            except (TypeError, ValueError):
+                source_line = 0
             from Infernux.engine.ui import project_utils
 
             return bool(
-                project_utils.open_file_with_system(
+                project_utils.open_in_vscode(
                     source_path,
                     project_root=self.project_path,
+                    line=source_line,
                 )
             )
 
@@ -1416,6 +1441,14 @@ class BootstrapWiringMixin:
                 category="Scene",
                 can_execute=lambda _context: _native_engine() is not None,
                 is_checked=_is_scene_grid_visible,
+            ),
+            EditorCommand(
+                "scene.toggle_gizmos",
+                _toggle_scene_gizmos,
+                display_name="Toggle Scene Gizmos",
+                category="Scene",
+                can_execute=lambda _context: self.engine is not None,
+                is_checked=_are_scene_gizmos_visible,
             ),
             EditorCommand(
                 "scene.set_coordinate_space",

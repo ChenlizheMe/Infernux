@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import struct
 from dataclasses import replace
@@ -36,17 +37,62 @@ from Infernux.particle.nodes import (
 
 
 @pytest.fixture(autouse=True)
-def _isolate_particle_graph_panel_dirty_tracking():
+def _isolate_particle_graph_panel_dirty_tracking(monkeypatch):
+    from Infernux.core.assets import AssetManager
     from Infernux.engine.undo import UndoManager
+
+    class _AssetDatabase:
+        def __init__(self):
+            self._paths: dict[str, str] = {}
+            self._guids: dict[str, str] = {}
+
+        def register(self, path: str, guid: str = "") -> str:
+            normalized = os.path.abspath(str(path))
+            identity = guid or hashlib.sha256(normalized.encode()).hexdigest()[:32]
+            self._paths[identity] = normalized
+            self._guids[os.path.normcase(normalized)] = identity
+            return identity
+
+        def get_guid_from_path(self, path: str) -> str:
+            normalized = os.path.abspath(str(path))
+            key = os.path.normcase(normalized)
+            if key not in self._guids and os.path.isfile(normalized):
+                self.register(normalized)
+            return self._guids.get(key, "")
+
+        def get_path_from_guid(self, guid: str) -> str:
+            return self._paths.get(str(guid), "")
+
+        def contains_path(self, path: str) -> bool:
+            return bool(self.get_guid_from_path(path))
+
+    database = _AssetDatabase()
+    monkeypatch.setattr(AssetManager, "_asset_database", database)
+    monkeypatch.setattr(
+        AssetManager,
+        "reimport_asset",
+        classmethod(lambda _cls, path, **_kwargs: bool(database.register(path))),
+    )
+    monkeypatch.setattr(
+        AssetManager,
+        "import_asset",
+        classmethod(lambda _cls, path, **_kwargs: bool(database.register(path))),
+    )
 
     previous_manager = UndoManager.instance()
     UndoManager()
     DocumentRegistry.instance().close_view("particle_graph_editor")
     try:
-        yield
+        yield database
     finally:
         DocumentRegistry.instance().close_view("particle_graph_editor")
         UndoManager._instance = previous_manager
+
+
+def _register_asset_reference(path, guid: str) -> None:
+    from Infernux.core.assets import AssetManager
+
+    AssetManager.require_asset_database().register(str(path), guid)
 
 
 def _stage_model(document):
@@ -1713,9 +1759,9 @@ def test_particle_graph_editor_discards_incompatible_document_session(tmp_path):
     restored = ParticleGraphEditorPanel()
     assert restored.restore_persisted_session_document()
 
-    assert restored._document_is_dirty() is False
-    assert os.path.normcase(restored._file_path) == os.path.normcase(str(target.resolve()))
-    assert restored.asset.stable_id == "current-graph"
+    assert restored._document_is_dirty() is True
+    assert restored._file_path == ""
+    assert restored.asset.stable_id != "current-graph"
 
 
 def test_particle_graph_editor_explicitly_discards_an_unsaved_memory_document():
@@ -1997,6 +2043,7 @@ def test_particle_output_texture_port_uses_live_asset_reference_path(
 
     texture_path = tmp_path / "Smoke.png"
     texture_path.write_bytes(b"png")
+    _register_asset_reference(texture_path, "smoke-guid")
     monkeypatch.setattr(module, "_asset_guid_from_path", lambda _path: "smoke-guid")
     monkeypatch.setattr(
         module,
@@ -2029,6 +2076,7 @@ def test_particle_inline_texture_field_uses_structured_picker_and_clear_contract
 
     texture_path = tmp_path / "Smoke.png"
     texture_path.write_bytes(b"png")
+    _register_asset_reference(texture_path, "smoke-guid")
     monkeypatch.setattr(module, "_asset_guid_from_path", lambda _path: "smoke-guid")
     monkeypatch.setattr(
         module,
@@ -2101,6 +2149,7 @@ def test_particle_node_inspector_texture_field_uses_live_asset_reference_path(
 
     texture_path = tmp_path / "Smoke.png"
     texture_path.write_bytes(b"png")
+    _register_asset_reference(texture_path, "smoke-guid")
     monkeypatch.setattr(module, "_asset_guid_from_path", lambda _path: "smoke-guid")
     monkeypatch.setattr(
         module,
@@ -2391,6 +2440,7 @@ def test_particle_graph_editor_sets_mesh_asset_through_live_authoring_model(
 
     mesh_path = tmp_path / "ParticleShard.obj"
     mesh_path.write_text("o ParticleShard\nv 0 0 0\n", encoding="utf-8")
+    _register_asset_reference(mesh_path, "mesh-guid")
     monkeypatch.setattr(module, "_asset_guid_from_path", lambda _path: "mesh-guid")
     monkeypatch.setattr(
         module, "_portable_asset_path_hint", lambda _path: "Assets/Models/ParticleShard.obj"
@@ -2484,6 +2534,7 @@ def test_particle_graph_editor_authors_mesh_input_as_constant_or_parameter(
 
     mesh_path = tmp_path / "Surface.fbx"
     mesh_path.write_bytes(b"fbx")
+    _register_asset_reference(mesh_path, "mesh-guid")
     monkeypatch.setattr(module, "_asset_guid_from_path", lambda _path: "mesh-guid")
     monkeypatch.setattr(
         module,

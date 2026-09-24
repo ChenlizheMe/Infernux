@@ -1,10 +1,10 @@
 #pragma once
 
 #include "AudioStreamDecoder.h"
+#include <SDL3/SDL_mutex.h>
 #include <array>
 #include <atomic>
 #include <thread>
-#include <SDL3/SDL_mutex.h>
 
 namespace infernux
 {
@@ -20,13 +20,29 @@ class AudioStreamBuffer
     // read-ahead cursor backwards when sampling across a page boundary.
     void Request(uint64_t frame);
     bool ReadFrame(uint64_t frame, float &left, float &right);
-    bool Failed() const { return m_failed.load(std::memory_order_acquire); }
-    uint64_t FrameCount() const { return m_decoder->FrameCount(); }
-    int SampleRate() const { return m_decoder->SampleRate(); }
+    bool Failed() const
+    {
+        return m_failed.load(std::memory_order_acquire);
+    }
+    uint64_t FrameCount() const
+    {
+        return m_decoder->FrameCount();
+    }
+    int SampleRate() const
+    {
+        return m_decoder->SampleRate();
+    }
 
   private:
-    enum State { Empty, Writing, Ready, Reading };
-    struct Page {
+    enum State
+    {
+        Empty,
+        Writing,
+        Ready,
+        Reading
+    };
+    struct Page
+    {
         std::atomic<int> state{Empty};
         uint64_t start = 0;
         size_t count = 0;
@@ -43,4 +59,4 @@ class AudioStreamBuffer
     SDL_Semaphore *m_wake = nullptr;
     std::thread m_worker;
 };
-}
+} // namespace infernux

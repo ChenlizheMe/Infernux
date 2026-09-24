@@ -269,6 +269,7 @@ class TestSceneLifecycle:
     def test_additive_transaction_remaps_object_component_and_python_references(
         self, scene, tmp_path, monkeypatch
     ):
+        from Infernux.engine.scene_manager import SceneFileManager
         from Infernux.scene import LoadSceneMode, SceneManager as PublicSceneManager
 
         native = SceneManager.instance()
@@ -288,6 +289,11 @@ class TestSceneLifecycle:
         scene_path = tmp_path / "AdditiveIdentityCopy.scene"
         scene_path.write_text(json.dumps(source_document), encoding="utf-8")
         loaded_before = native.scene_count
+        # This exercises the runtime/current-schema transaction path.  Other
+        # editor tests may have installed a process-wide SceneFileManager,
+        # whose authored-project boundary intentionally rejects this isolated
+        # temporary scene outside Assets.
+        monkeypatch.setattr(SceneFileManager, "_instance", None)
         monkeypatch.setattr(PublicSceneManager, "_runtime_scene_service", None)
         monkeypatch.setattr(PublicSceneManager, "_is_in_play_mode", staticmethod(lambda: False))
         monkeypatch.setattr(
@@ -1997,15 +2003,24 @@ class TestInstantiate:
             "    wrap_distance: float = 18.0\n",
             encoding="utf-8",
         )
+        prefab_path = tmp_path / "pipe_probe.prefab"
 
         class AssetDatabase:
             @staticmethod
             def get_guid_from_path(path):
-                return "pipe-probe-guid" if str(path) == str(script_path) else ""
+                identities = {
+                    str(script_path): "pipe-probe-guid",
+                    str(prefab_path): "pipe-probe-prefab-guid",
+                }
+                return identities.get(str(path), "")
 
             @staticmethod
             def get_path_from_guid(guid):
-                return str(script_path) if guid == "pipe-probe-guid" else ""
+                identities = {
+                    "pipe-probe-guid": str(script_path),
+                    "pipe-probe-prefab-guid": str(prefab_path),
+                }
+                return identities.get(str(guid), "")
 
         from Infernux.components.script_loader import load_and_create_component
 
@@ -2042,7 +2057,6 @@ class TestInstantiate:
             save_prefab,
         )
 
-        prefab_path = tmp_path / "pipe_probe.prefab"
         _PREFAB_TEMPLATE_CACHE.clear()
         assert save_prefab(original, str(prefab_path)) is True
         for _ in range(3):
@@ -2074,6 +2088,7 @@ class TestInstantiate:
         assert save_prefab(
             source,
             str(prefab_path),
+            asset_database=AssetRegistry.instance().get_asset_database(),
             source_canvas_name="HUD",
         )
 
@@ -2430,6 +2445,158 @@ class TestInstantiate:
             UndoManager._instance = previous_undo
             set_project_root(previous_root)
 
+    @pytest.mark.parametrize("immediate", (False, True))
+    def test_additive_scene_open_undo_unloads_and_redo_reloads_without_placeholder(
+        self,
+        scene,
+        tmp_path,
+        monkeypatch,
+        immediate,
+    ):
+        from Infernux.engine.interaction import EditorInteractionCore
+        from Infernux.engine.project_context import get_project_root, set_project_root
+        from Infernux.engine.undo import UndoManager
+
+        previous_root = get_project_root()
+        previous_core = EditorInteractionCore._instance
+        previous_manager = SceneFileManager._instance
+        previous_undo = UndoManager._instance
+        project_root = tmp_path / "Project"
+        assets = project_root / "Assets"
+        assets.mkdir(parents=True)
+        additive_path = assets / "UndoableAdditive.scene"
+        document = scene.serialize_document()
+        document["name"] = "UndoableAdditive"
+        document["objects"] = []
+        additive_path.write_text(json.dumps(document), encoding="utf-8")
+
+        core = EditorInteractionCore()
+        manager = SceneFileManager()
+        undo = UndoManager(core.action_journal)
+        baseline_scene_count = int(SceneManager.instance().scene_count)
+
+        class _AssetDatabase:
+            @staticmethod
+            def get_guid_from_path(path):
+                return (
+                    "undoable-additive-guid"
+                    if str(path) == str(additive_path.resolve())
+                    else ""
+                )
+
+            @staticmethod
+            def get_path_from_guid(guid):
+                return (
+                    str(additive_path.resolve())
+                    if guid == "undoable-additive-guid"
+                    else ""
+                )
+
+        def drain_additive_load():
+            deadline = time.monotonic() + 3.0
+            while manager.is_loading and time.monotonic() < deadline:
+                manager.poll_deferred_load()
+                time.sleep(0.001)
+            assert not manager.is_loading
+
+        try:
+            set_project_root(str(project_root))
+            manager.set_asset_database(_AssetDatabase())
+            monkeypatch.setattr(manager, "_prepare_native_scene_swap", lambda: None)
+            if immediate:
+                assert manager.load_scene_additive_immediate(str(additive_path)) is True
+            else:
+                assert manager.open_scene_additive(str(additive_path)) is True
+                drain_additive_load()
+
+            native = SceneManager.instance()
+            loaded = tuple(
+                native.get_scene_at(index) for index in range(int(native.scene_count))
+            )
+            additive = next(item for item in loaded if item.name == "UndoableAdditive")
+            additive_world_id = int(additive.world_id)
+            assert undo.undo_description == "Open Scene UndoableAdditive Additively"
+
+            undo.undo()
+            manager.poll_deferred_load()
+            assert native.get_scene_by_world_id(additive_world_id) is None
+            assert int(native.scene_count) == baseline_scene_count
+
+            undo.redo()
+            drain_additive_load()
+            assert int(native.scene_count) == baseline_scene_count + 1
+            assert native.get_active_scene().name == "UndoableAdditive"
+            assert all(native.get_scene_at(index).name for index in range(int(native.scene_count)))
+        finally:
+            native = SceneManager.instance()
+            native.set_active_scene(scene)
+            for index in range(int(native.scene_count) - 1, -1, -1):
+                candidate = native.get_scene_at(index)
+                if candidate is not None and candidate is not scene:
+                    native.unload_scene(candidate)
+            undo.shutdown()
+            core.shutdown()
+            EditorInteractionCore._instance = previous_core
+            SceneFileManager._instance = previous_manager
+            UndoManager._instance = previous_undo
+            set_project_root(previous_root)
+
+    def test_additive_unload_rebinds_stale_editor_document_before_retiring_target(
+        self,
+        scene,
+        tmp_path,
+    ):
+        """A queued Header activation must not leave views on a retired document."""
+        from Infernux.engine.interaction import DocumentRegistry
+        from Infernux.engine.project_context import get_project_root, set_project_root
+
+        previous_root = get_project_root()
+        previous_manager = SceneFileManager._instance
+        project_root = tmp_path / "Project"
+        assets = project_root / "Assets"
+        assets.mkdir(parents=True)
+        primary_path = assets / "Primary.scene"
+        additive_path = assets / "Additive.scene"
+        primary_path.write_text("{}", encoding="utf-8")
+        additive_path.write_text("{}", encoding="utf-8")
+
+        manager = SceneFileManager()
+        native = SceneManager.instance()
+        additive = native.create_scene("Additive")
+        registry = DocumentRegistry.instance()
+        callbacks: list[str] = []
+
+        try:
+            set_project_root(str(project_root))
+            primary_document = manager.register_loaded_scene(scene, str(primary_path))
+            additive_document = manager.register_loaded_scene(additive, str(additive_path))
+            native.set_active_scene(scene)
+
+            # Reproduce the one-frame divergence caused by an activation
+            # immediately followed by Ctrl+Z/unload.
+            manager._scene_document_id = additive_document
+            manager._current_scene_path = str(additive_path)
+
+            def observe_scene_change():
+                callbacks.append(manager.document_id)
+                registry.require(manager.document_id)
+
+            manager.set_on_scene_changed(observe_scene_change)
+            assert manager.request_unload_scene(additive)
+            manager.poll_deferred_load()
+
+            assert native.get_active_scene() is scene
+            assert manager.document_id == primary_document
+            assert manager.scene_for_document(additive_document) is None
+            assert callbacks
+            assert all(identifier == primary_document for identifier in callbacks)
+        finally:
+            native.set_active_scene(scene)
+            if native.get_scene_by_world_id(int(additive.world_id)) is not None:
+                native.unload_scene(additive)
+            SceneFileManager._instance = previous_manager
+            set_project_root(previous_root)
+
     def test_single_scene_open_resolves_every_dirty_resident_scene_document(
         self, scene, tmp_path, monkeypatch
     ):
@@ -2780,7 +2947,7 @@ class TestSceneSerialization:
         assert scene.find("WorkerRenderAudioExisting") is existing
         assert existing.get_component(component_type) is component
 
-    def test_worker_type_validator_rejects_removed_ordinary_field(self, scene, tmp_path):
+    def test_worker_type_validator_ignores_removed_ordinary_field(self, scene, tmp_path):
         existing = scene.create_game_object("WorkerRemovedField")
         existing.add_component("SkinnedMeshRenderer")
         candidate = json.loads(json.dumps(scene.serialize_document()))
@@ -2790,9 +2957,9 @@ class TestSceneSerialization:
         path.write_text(json.dumps(candidate), encoding="utf-8")
         transaction = SceneDocumentTransaction(scene, path=path)
 
-        assert transaction.run_to_completion(raise_on_failure=False) is False
+        assert transaction.run_to_completion(raise_on_failure=False) is True
         assert transaction.ran_on_worker is True
-        assert transaction.state is SceneDocumentTransactionState.FAILED
+        assert transaction.state is SceneDocumentTransactionState.COMPLETED
         loaded = scene.find("WorkerRemovedField").get_component("SkinnedMeshRenderer")
         assert loaded is not None
         assert "sourceModelGuid" not in loaded.serialize_document()
@@ -3801,6 +3968,22 @@ class TestSceneSerialization:
         assert restored.target_component is not None
         assert restored.target_component.game_object.id == target.id
         assert scene.find_by_id(target.id) is target
+
+    def test_play_snapshot_preserves_internal_game_object_reference_parentage(self, scene):
+        owner = scene.create_game_object("PrefabInstanceRoot")
+        target = scene.create_game_object("PrefabInstanceChild")
+        target.set_parent(owner)
+        component = owner.add_py_component(_ObjectRefSceneComponent())
+        component.target = GameObjectRef(target)
+        snapshot = scene._capture_play_mode_snapshot()
+
+        assert replace_scene_python_components_for_play(scene, snapshot) is True
+
+        restored = owner.get_py_component(_ObjectRefSceneComponent)
+        assert restored is not component
+        assert restored.target is target
+        assert restored.target.get_parent() is owner
+        assert restored._serialize_fields_document()["target"]["object_id"] == target.id
 
     def test_python_preflight_rejects_duplicate_disallow_multiple_component(self, scene):
         owner = scene.create_game_object("StrictDisallowMultiple")

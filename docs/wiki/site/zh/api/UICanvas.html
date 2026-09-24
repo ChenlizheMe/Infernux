@@ -256,7 +256,7 @@
                             <span class="ns-arr">&#9654;</span>
                             <span class="ns-nm">Infernux.jit</span>
                         </button>
-                        <div class="ns-ch"><a href="/wiki/site/zh/api/njit.html" class="">njit</a><a href="/wiki/site/zh/api/warmup.html" class="">warmup</a></div>
+                        <div class="ns-ch"><a href="/wiki/site/zh/api/compile.html" class="">compile</a><a href="/wiki/site/zh/api/statistics.html" class="">statistics</a><a href="/wiki/site/zh/api/warmup.html" class="">warmup</a></div>
                     </div><div class="ns-group">
                         <button type="button" class="ns-hd" aria-expanded="false">
                             <span class="ns-arr">&#9654;</span>
@@ -407,6 +407,11 @@
 <td><code>float</code></td>
 <td></td>
 </tr>
+<tr>
+<td>input_logical_size</td>
+<td><code>tuple[float, float]</code></td>
+<td><em>(只读)</em></td>
+</tr>
 </tbody>
 </table>
 <!-- USER CONTENT START -->
@@ -422,6 +427,10 @@
 </tr>
 </thead>
 <tbody>
+<tr>
+<td><code>set_input_logical_size(width: float, height: float) → None</code></td>
+<td></td>
+</tr>
 <tr>
 <td><code>compute_scale(screen_w: float, screen_h: float) → Tuple[float, float, float]</code></td>
 <td>Compute <code>(scale_x, scale_y, text_scale)</code> for a viewport size.</td>
@@ -439,11 +448,11 @@
 <td>Yield all screen-space UI components on child GameObjects (depth-first).</td>
 </tr>
 <tr>
-<td><code>raycast(canvas_x: float, canvas_y: float, tolerance: float = ...) → Optional[InxUIScreenComponent]</code></td>
+<td><code>raycast(canvas_x: float, canvas_y: float, tolerance: float = ..., layout_width: float | None = ..., layout_height: float | None = ...) → Optional[InxUIScreenComponent]</code></td>
 <td>Return the front-most element hit at <code>(canvas_x, canvas_y)</code>, or <code>None</code>.</td>
 </tr>
 <tr>
-<td><code>raycast_all(canvas_x: float, canvas_y: float, tolerance: float = ...) → List[InxUIScreenComponent]</code></td>
+<td><code>raycast_all(canvas_x: float, canvas_y: float, tolerance: float = ..., layout_width: float | None = ..., layout_height: float | None = ...) → List[InxUIScreenComponent]</code></td>
 <td>Return all elements hit at the given point, front-to-back order.</td>
 </tr>
 </tbody>

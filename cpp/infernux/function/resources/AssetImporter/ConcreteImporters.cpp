@@ -480,39 +480,27 @@ std::vector<std::string> RenderEffectImporter::ScanDependencies(const ImportRequ
         throw std::runtime_error("RenderEffectImporter failed to parse '" + request.sourcePath + "': " + e.what());
     }
 
-    const auto requireExactKeys = [](const nlohmann::json &value, std::initializer_list<const char *> expected,
-                                     const std::string &location) {
+    const auto requireRequiredKeys = [](const nlohmann::json &value, std::initializer_list<const char *> expected,
+                                        const std::string &location) {
         if (!value.is_object())
             throw std::runtime_error(location + " must be an object");
-        std::unordered_set<std::string> keys;
-        for (const char *key : expected)
-            keys.emplace(key);
         std::vector<std::string> missing;
-        std::vector<std::string> unknown;
-        for (const auto &key : keys) {
+        for (const char *key : expected) {
             if (!value.contains(key))
                 missing.push_back(key);
         }
-        for (const auto &[key, ignored] : value.items()) {
-            (void)ignored;
-            if (keys.find(key) == keys.end())
-                unknown.push_back(key);
-        }
-        if (!missing.empty() || !unknown.empty()) {
-            std::sort(missing.begin(), missing.end());
-            std::sort(unknown.begin(), unknown.end());
-            const auto join = [](const std::vector<std::string> &items) {
-                std::string result;
-                for (const auto &item : items) {
-                    if (!result.empty())
-                        result += ", ";
-                    result += "'" + item + "'";
-                }
-                return result;
-            };
-            throw std::runtime_error(location + " schema mismatch; missing=[" + join(missing) + "], unknown=[" +
-                                     join(unknown) + "]");
-        }
+        const auto join = [](std::vector<std::string> items) {
+            std::sort(items.begin(), items.end());
+            std::string result;
+            for (const auto &item : items) {
+                if (!result.empty())
+                    result += ", ";
+                result += "'" + item + "'";
+            }
+            return result;
+        };
+        if (!missing.empty())
+            throw std::runtime_error(location + " is missing required fields: [" + join(missing) + "]");
     };
 
     if (!root.is_object())
@@ -522,20 +510,25 @@ std::vector<std::string> RenderEffectImporter::ScanDependencies(const ImportRequ
 
     std::unordered_set<std::string> dependencies;
     const auto readReference = [&](const nlohmann::json &reference, const std::string &location) {
-        requireExactKeys(reference, {"guid", "path_hint"}, location);
-        if (!reference["guid"].is_string() || !reference["path_hint"].is_string())
-            throw std::runtime_error(location + " guid and path_hint must be strings");
-        const std::string guid = reference["guid"].get<std::string>();
-        const std::string pathHint = reference["path_hint"].get<std::string>();
-        RejectPathOnlyReference(guid, pathHint, location);
-        if (guid.empty())
-            throw std::runtime_error(location + " must provide a non-empty asset GUID");
-        dependencies.insert(guid);
+        if (!reference.is_object())
+            throw std::runtime_error(location + " must be an object");
+        const auto guidIt = reference.find("guid");
+        if (guidIt == reference.end())
+            return false;
+        if (!guidIt->is_string())
+            throw std::runtime_error(location + ".guid must be a string");
+        const std::string guid = guidIt->get<std::string>();
+        const size_t first = guid.find_first_not_of(" \t\r\n");
+        if (first == std::string::npos)
+            return false;
+        const size_t last = guid.find_last_not_of(" \t\r\n");
+        dependencies.insert(guid.substr(first, last - first + 1));
+        return true;
     };
 
     const std::string schema = root["$schema"].get<std::string>();
     if (schema == "infernux.render_effect") {
-        requireExactKeys(root, {"$schema", "feature_type", "parameters", "dependencies"}, "render effect");
+        requireRequiredKeys(root, {"$schema", "feature_type", "parameters", "dependencies"}, "render effect");
         static const std::regex featureTypePattern("^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+$");
         if (!root["feature_type"].is_string() ||
             !std::regex_match(root["feature_type"].get_ref<const std::string &>(), featureTypePattern))
@@ -547,23 +540,25 @@ std::vector<std::string> RenderEffectImporter::ScanDependencies(const ImportRequ
         for (size_t index = 0; index < root["dependencies"].size(); ++index)
             readReference(root["dependencies"][index], "dependencies[" + std::to_string(index) + "]");
     } else if (schema == "infernux.render_effect_group") {
-        requireExactKeys(root, {"$schema", "entries"}, "render effect group");
+        requireRequiredKeys(root, {"$schema", "entries"}, "render effect group");
         if (!root["entries"].is_array())
             throw std::runtime_error("render effect group entries must be an array");
         std::unordered_set<std::string> entryIds;
         for (size_t index = 0; index < root["entries"].size(); ++index) {
             const auto &entry = root["entries"][index];
             const std::string location = "entries[" + std::to_string(index) + "]";
-            requireExactKeys(entry, {"entry_id", "asset", "enabled", "overrides"}, location);
+            requireRequiredKeys(entry, {"asset"}, location);
+            if (!readReference(entry["asset"], location + ".asset"))
+                continue;
+            requireRequiredKeys(entry, {"entry_id", "enabled", "overrides"}, location);
             if (!entry["entry_id"].is_string() || entry["entry_id"].get_ref<const std::string &>().empty())
                 throw std::runtime_error(location + ".entry_id must be a non-empty string");
-            if (!entryIds.insert(entry["entry_id"].get<std::string>()).second)
-                throw std::runtime_error("render effect group entry_id values must be unique");
             if (!entry["enabled"].is_boolean())
                 throw std::runtime_error(location + ".enabled must be a boolean");
             if (!entry["overrides"].is_object())
                 throw std::runtime_error(location + ".overrides must be an object");
-            readReference(entry["asset"], location + ".asset");
+            if (!entryIds.insert(entry["entry_id"].get<std::string>()).second)
+                throw std::runtime_error("render effect group entry_id values must be unique");
         }
     } else {
         throw std::runtime_error("unsupported render effect schema '" + schema + "'");
@@ -734,16 +729,10 @@ std::vector<std::string> DataAssetImporter::ScanDependencies(const ImportRequest
         throw std::runtime_error("DataAssetImporter failed to parse '" + request.sourcePath + "': " + e.what());
     }
 
-    const bool legacyDocument = root.is_object() && root.size() == 3;
-    const bool versionedDocument = root.is_object() && root.size() == 4 && root.contains("schema_version") &&
-                                   root["schema_version"].is_number_unsigned() &&
-                                   root["schema_version"].get<uint64_t>() > 0;
-    if ((!legacyDocument && !versionedDocument) || root.value("$type", std::string{}) != "data_asset" ||
-        !root.contains("type_id") || !root["type_id"].is_string() ||
-        root["type_id"].get_ref<const std::string &>().empty() || !root.contains("fields") ||
-        !root["fields"].is_object()) {
-        throw std::runtime_error("DataAsset document must contain $type='data_asset', type_id, fields, and an optional "
-                                 "positive schema_version");
+    if (!root.is_object() || root.value("$type", std::string{}) != "data_asset" || !root.contains("type_id") ||
+        !root["type_id"].is_string() || root["type_id"].get_ref<const std::string &>().empty() ||
+        !root.contains("fields") || !root["fields"].is_object()) {
+        throw std::runtime_error("DataAsset document must contain $type='data_asset', type_id, and fields");
     }
 
     std::unordered_set<std::string> dependencies;
@@ -757,14 +746,11 @@ std::vector<std::string> DataAssetImporter::ScanDependencies(const ImportRequest
         if (!value.is_object())
             return;
         if (value.value("$type", std::string{}) == "asset_ref") {
-            if (value.size() != 4 || !value.contains("asset_type") || !value["asset_type"].is_string() ||
-                !value.contains("guid") || !value["guid"].is_string() || !value.contains("path_hint") ||
-                !value["path_hint"].is_string()) {
+            if (!value.contains("asset_type") || !value["asset_type"].is_string() || !value.contains("guid") ||
+                !value["guid"].is_string()) {
                 throw std::runtime_error(location + " contains a malformed asset reference");
             }
             const std::string guid = value["guid"].get<std::string>();
-            const std::string pathHint = value["path_hint"].get<std::string>();
-            RejectPathOnlyReference(guid, pathHint, location);
             if (!guid.empty())
                 dependencies.insert(guid);
             return;
@@ -786,7 +772,6 @@ std::vector<std::string> DataAssetImporter::ScanDependencies(const ImportRequest
 ImportArtifact ModelImporter::Import(const ImportRequest &request) const
 {
     ImportArtifact artifact(request.metadata);
-    EnsureDefaultSettings(artifact.metadata);
     std::string sourcePath = request.sourcePath;
     std::string extension = FromFsPath(ToFsPath(sourcePath).extension());
     std::transform(extension.begin(), extension.end(), extension.begin(),

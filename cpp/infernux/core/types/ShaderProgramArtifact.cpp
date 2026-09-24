@@ -75,10 +75,10 @@ bool ShaderProgramPropertyBinding::IsValid(uint32_t materialBufferSize) const no
     if (bufferOffset.has_value() == textureSlot.has_value())
         return false;
     if (textureSlot)
-        return byteSize == 0 && byteAlignment == 0;
+        return byteSize == 0 && byteAlignment == 0 && arrayCount == 1;
     if (byteSize == 0 || byteAlignment == 0 || (*bufferOffset % byteAlignment) != 0)
         return false;
-    return *bufferOffset <= materialBufferSize && byteSize <= materialBufferSize - *bufferOffset;
+    return arrayCount > 0 && *bufferOffset <= materialBufferSize && byteSize <= materialBufferSize - *bufferOffset;
 }
 
 const ShaderProgramArtifact::PassVariant *ShaderProgramArtifact::FindVariant(ShaderCompileTarget target) const noexcept
@@ -175,6 +175,7 @@ uint64_t ComputeShaderProgramArtifactRevision(const ShaderProgramArtifact &artif
             hash = AppendBytes(hash, &*property.textureSlot, sizeof(*property.textureSlot));
         hash = AppendBytes(hash, &property.byteSize, sizeof(property.byteSize));
         hash = AppendBytes(hash, &property.byteAlignment, sizeof(property.byteAlignment));
+        hash = AppendBytes(hash, &property.arrayCount, sizeof(property.arrayCount));
     }
     hash = AppendBytes(hash, &artifact.varyingInterfaceSignature, sizeof(artifact.varyingInterfaceSignature));
     hash = AppendBytes(hash, &artifact.materialLayoutSignature, sizeof(artifact.materialLayoutSignature));

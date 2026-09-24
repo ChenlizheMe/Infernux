@@ -59,8 +59,10 @@ def test_model_selection_collision_tracks_only_selected_geometry(scene, convex, 
     renderer.set_mesh_asset_guid(mesh.guid)
     collider = go.add_component("MeshCollider")
     collider.convex = convex
+    published_revision = 0
 
     def select(index):
+        nonlocal published_revision
         if selection == "submesh":
             renderer.submesh_index = index
         else:
@@ -69,6 +71,8 @@ def test_model_selection_collision_tracks_only_selected_geometry(scene, convex, 
             assert renderer.deserialize_document(document)
         Physics.sync_transforms()
         assert collider.shape_error == ""
+        assert collider.collision_geometry_revision > published_revision
+        published_revision = collider.collision_geometry_revision
 
     def hit(x):
         return Physics.raycast(Vector3(x, 5, 0), Vector3(0, -1, 0), 10)

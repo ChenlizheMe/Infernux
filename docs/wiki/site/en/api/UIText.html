@@ -256,7 +256,7 @@
                             <span class="ns-arr">&#9654;</span>
                             <span class="ns-nm">Infernux.jit</span>
                         </button>
-                        <div class="ns-ch"><a href="/wiki/site/en/api/njit.html" class="">njit</a><a href="/wiki/site/en/api/warmup.html" class="">warmup</a></div>
+                        <div class="ns-ch"><a href="/wiki/site/en/api/compile.html" class="">compile</a><a href="/wiki/site/en/api/statistics.html" class="">statistics</a><a href="/wiki/site/en/api/warmup.html" class="">warmup</a></div>
                     </div><div class="ns-group">
                         <button type="button" class="ns-hd" aria-expanded="false">
                             <span class="ns-arr">&#9654;</span>
@@ -341,10 +341,12 @@ class in <b>Infernux.ui</b>
 <p><strong>Inherits from:</strong> <code>InxUIScreenComponent</code></p>
 <h2 id="description">Description<a class="headerlink" href="#description" title="Permanent link">&para;</a></h2>
 <p>Figma-style text label rendered with ImGui draw primitives.</p>
-<p>Inherits <code>x</code>, <code>y</code>, <code>width</code>, <code>height</code> from <code>InxUIScreenComponent</code>.</p>
+<p>Inherits <code>width</code> and <code>height</code> from <code>InxUIScreenComponent</code>; position
+and rotation come from the GameObject Transform.</p>
 <p>Attributes:
     text: Display string.
-    font_path: Optional font asset path (<code>.ttf</code> / <code>.otf</code>).
+    font: Optional imported Font asset (<code>.ttf</code> / <code>.otf</code>), persisted by GUID.
+    fallback_fonts: Ordered fallback Font assets, persisted by GUID.
     font_size: Font size in canvas pixels.
     line_height: Line height multiplier.
     letter_spacing: Extra letter spacing in pixels.
@@ -379,8 +381,13 @@ text.color = [1.0, 0.8, 0.0, 1.0]
 <td></td>
 </tr>
 <tr>
-<td>font_path</td>
-<td><code>str</code></td>
+<td>font</td>
+<td><code>FontAssetInfo | None</code></td>
+<td></td>
+</tr>
+<tr>
+<td>fallback_fonts</td>
+<td><code>list[FontAssetInfo | None]</code></td>
 <td></td>
 </tr>
 <tr>
@@ -455,16 +462,12 @@ text.color = [1.0, 0.8, 0.0, 1.0]
 <td>Return the wrap width for text layout (0 = no wrap).</td>
 </tr>
 <tr>
-<td><code>get_layout_tolerance() → float</code></td>
-<td>Return the layout tolerance for auto-sizing decisions.</td>
+<td><code>resolve_text_layout(measure_text: Callable[[str, float, float, str, float, float], Tuple[float, float]], scale: float = ...) → bool</code></td>
+<td>Resolve the transient intrinsic size in logical canvas pixels.</td>
 </tr>
 <tr>
-<td><code>get_editor_wrap_width() → float</code></td>
-<td>Return the wrap width used by the editor preview.</td>
-</tr>
-<tr>
-<td><code>get_auto_size_padding() → Tuple[float, float]</code></td>
-<td>Return <code>(horizontal_padding, vertical_padding)</code> for auto-sizing.</td>
+<td><code>get_resolved_size() → Tuple[float, float]</code></td>
+<td>Return the effective box shared by layout, drawing, and input.</td>
 </tr>
 <tr>
 <td><code>is_width_editable() → bool</code></td>

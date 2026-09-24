@@ -185,7 +185,7 @@ Scene *SceneManager::CreatePreviewScene(const std::string &name)
 void SceneManager::ClosePreviewScene(Scene *scene)
 {
     const auto it = std::find_if(m_previewScenes.begin(), m_previewScenes.end(),
-                                [scene](const auto &item) { return item.get() == scene; });
+                                 [scene](const auto &item) { return item.get() == scene; });
     if (it == m_previewScenes.end())
         throw std::invalid_argument("Scene is not an open preview Scene");
     m_previewScenes.erase(it);

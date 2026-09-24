@@ -48,10 +48,15 @@ int main()
     assert(queues.GetFrameCompletionEpoch(0) == rhi::InvalidSubmissionSerial);
     const auto earlierEpoch = queues.ReserveCompletionEpoch();
     const auto laterEpoch = queues.ReserveCompletionEpoch();
+    assert(!queues.IsCompletionEpochComplete(earlierEpoch));
+    assert(!queues.IsCompletionEpochComplete(laterEpoch));
     queues.CompleteCompletionEpoch(laterEpoch);
     assert(queues.GetCompletedCompletionEpoch() == abandonedEpoch);
+    assert(!queues.IsCompletionEpochComplete(earlierEpoch));
+    assert(queues.IsCompletionEpochComplete(laterEpoch));
     queues.CompleteCompletionEpoch(earlierEpoch);
     assert(queues.GetCompletedCompletionEpoch() == laterEpoch);
+    assert(queues.IsCompletionEpochComplete(earlierEpoch));
     const auto graphicsLane = queues.GetSnapshot(rhi::QueueRole::Graphics).nativeLane;
     const auto computeLane = queues.GetSnapshot(rhi::QueueRole::Compute).nativeLane;
     const auto transferLane = queues.GetSnapshot(rhi::QueueRole::Transfer).nativeLane;

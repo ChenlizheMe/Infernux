@@ -427,8 +427,9 @@ class InxVkCoreModular
     /// @brief Ensure per-object GPU buffers exist and match the given mesh data.
     /// Creates new buffers or recreates if vertex/index count changed.
     void EnsureObjectBuffers(uint64_t objectId, const std::vector<Vertex> &vertices,
-                             const std::vector<uint32_t> &indices, bool forceUpdate, const std::string &assetGuid,
-                             uint64_t runtimeVersion);
+                             const std::vector<uint32_t> &indices, MeshIndexFormat indexFormat, bool forceUpdate,
+                             const std::string &assetGuid, uint64_t runtimeVersion,
+                             MeshGeometryView geometryView = MeshGeometryView::MergedModelSpace);
     /// Replace only an object's vertex stream with canonical resident compute
     /// storage. The ordinary mesh cache keeps topology/index ownership.
     void BindObjectVertexBuffer(uint64_t objectId, const std::shared_ptr<rhi::ComputeBuffer> &buffer);
@@ -979,6 +980,8 @@ class InxVkCoreModular
 
     /// @brief Get per-object index buffer VkBuffer handle (VK_NULL_HANDLE if not found)
     [[nodiscard]] VkBuffer GetObjectIndexBuffer(uint64_t objectId) const;
+    [[nodiscard]] MeshIndexFormat GetObjectIndexFormat(uint64_t objectId) const;
+    [[nodiscard]] uint64_t GetObjectIndexBufferBytes(uint64_t objectId) const;
 
     /// @brief Get the zero-initialized fallback material UBO.
     [[nodiscard]] VkBuffer GetFallbackMaterialUbo() const;
@@ -1424,12 +1427,15 @@ class InxVkCoreModular
         uint64_t runtimeVersion = 0;
         size_t vertexCount = 0;
         size_t indexCount = 0;
+        MeshIndexFormat indexFormat = MeshIndexFormat::UInt32;
+        MeshGeometryView geometryView = MeshGeometryView::MergedModelSpace;
 
         bool operator==(const SharedMeshKey &other) const noexcept
         {
             return assetGuid == other.assetGuid && dynamicObjectId == other.dynamicObjectId &&
                    runtimeVersion == other.runtimeVersion && vertexCount == other.vertexCount &&
-                   indexCount == other.indexCount;
+                   indexCount == other.indexCount && indexFormat == other.indexFormat &&
+                   geometryView == other.geometryView;
         }
     };
 
@@ -1442,11 +1448,41 @@ class InxVkCoreModular
             h ^= std::hash<uint64_t>{}(key.runtimeVersion) + 0x9e3779b9 + (h << 6) + (h >> 2);
             h ^= std::hash<size_t>{}(key.vertexCount) + 0x9e3779b9 + (h << 6) + (h >> 2);
             h ^= std::hash<size_t>{}(key.indexCount) + 0x9e3779b9 + (h << 6) + (h >> 2);
+            h ^= std::hash<uint32_t>{}(static_cast<uint32_t>(key.indexFormat)) + 0x9e3779b9 + (h << 6) + (h >> 2);
+            h ^= std::hash<uint8_t>{}(static_cast<uint8_t>(key.geometryView)) + 0x9e3779b9 + (h << 6) + (h >> 2);
+            return h;
+        }
+    };
+
+    struct AssetMeshViewIdentity
+    {
+        std::string assetGuid;
+        uint64_t runtimeVersion = 0;
+        MeshGeometryView geometryView = MeshGeometryView::MergedModelSpace;
+
+        bool operator==(const AssetMeshViewIdentity &other) const noexcept
+        {
+            return assetGuid == other.assetGuid && runtimeVersion == other.runtimeVersion &&
+                   geometryView == other.geometryView;
+        }
+    };
+
+    struct AssetMeshViewIdentityHash
+    {
+        size_t operator()(const AssetMeshViewIdentity &identity) const noexcept
+        {
+            size_t h = std::hash<std::string>{}(identity.assetGuid);
+            h ^= std::hash<uint64_t>{}(identity.runtimeVersion) + 0x9e3779b9 + (h << 6) + (h >> 2);
+            h ^= std::hash<uint8_t>{}(static_cast<uint8_t>(identity.geometryView)) + 0x9e3779b9 + (h << 6) + (h >> 2);
             return h;
         }
     };
 
     void PumpPendingMeshUploads();
+    void QueueSharedMeshUpload(const SharedMeshKey &key, const std::vector<Vertex> &vertices,
+                               const std::vector<uint32_t> &indices);
+    void QueueHierarchyCompanionView(const std::string &assetGuid, uint64_t runtimeVersion,
+                                     MeshGeometryView currentView);
     void RetireUnusedRuntimeMeshBuffers();
     void PumpPendingTextureLoads();
     [[nodiscard]] std::vector<GpuAssetResidencyRecord> GetAssetTextureGpuResidency() const
@@ -1463,6 +1499,7 @@ class InxVkCoreModular
         size_t indexCount = 0;
         uint64_t residentBytes = 0;
         uint64_t lastUsedFrame = 0;
+        MeshIndexFormat indexFormat = MeshIndexFormat::UInt32;
     };
 
     struct RetiredMeshLease
@@ -1478,6 +1515,7 @@ class InxVkCoreModular
         std::shared_ptr<vk::BufferUploadTicket> indexUpload;
         size_t vertexCount = 0;
         size_t indexCount = 0;
+        MeshIndexFormat indexFormat = MeshIndexFormat::UInt32;
     };
 
     /// @brief Per-object reference into the shared mesh-buffer cache.
@@ -1493,6 +1531,7 @@ class InxVkCoreModular
         const void *lastVertexPtr = nullptr; // fast-path: skip hash if pointer unchanged
         const void *lastIndexPtr = nullptr;
         uint64_t ensuredOnFrame = 0; // frame-stamp: skip duplicate EnsureObjectBuffers per frame
+        MeshIndexFormat indexFormat = MeshIndexFormat::UInt32;
 
         [[nodiscard]] bool HasVertexBuffer() const noexcept
         {
@@ -1527,6 +1566,7 @@ class InxVkCoreModular
     /// @brief Shared mesh GPU buffer cache keyed by vertex/index storage pointers.
     std::unordered_map<SharedMeshKey, SharedMeshBuffers, SharedMeshKeyHash> m_sharedMeshBuffers;
     std::unordered_map<SharedMeshKey, PendingSharedMeshBuffers, SharedMeshKeyHash> m_pendingSharedMeshBuffers;
+    std::unordered_map<AssetMeshViewIdentity, SharedMeshKey, AssetMeshViewIdentityHash> m_assetMeshViewKeys;
     mutable std::vector<RetiredMeshLease> m_retiredMeshLeases;
     uint64_t m_meshGpuBudgetBytes = 512ULL * 1024ULL * 1024ULL;
     mutable uint64_t m_meshGpuResidentBytes = 0;
@@ -1583,6 +1623,7 @@ class InxVkCoreModular
         size_t indexCapacity = 0;
         std::shared_ptr<rhi::ComputeBuffer> residentVertexBuffer;
         VkBuffer residentVertexHandle = VK_NULL_HANDLE;
+        MeshIndexFormat indexFormat = MeshIndexFormat::UInt32;
 
         [[nodiscard]] bool HasVertexBuffer() const noexcept
         {
@@ -1634,6 +1675,7 @@ class InxVkCoreModular
         // a frame, which flickers moving LineRenderer trails.
         uint32_t indexCountClamp = 0;
         const std::shared_ptr<const RendererParameterBlock> *parameters = nullptr;
+        MeshIndexFormat indexFormat = MeshIndexFormat::UInt32;
 
         const RendererParameterBlock *ParameterIdentity() const noexcept
         {
@@ -1696,6 +1738,7 @@ class InxVkCoreModular
         VkPipeline shadowPipeline;
         VkDescriptorSet shadowMaterialDescSet = VK_NULL_HANDLE;
         AABB worldBounds; // Cached for per-cascade frustum culling
+        MeshIndexFormat indexFormat = MeshIndexFormat::UInt32;
     };
     std::vector<ShadowDraw> m_shadowDrawScratch;
     std::vector<uint32_t> m_shadowViewVisible; ///< Per-view visible indices into m_shadowDrawScratch
@@ -1744,6 +1787,7 @@ class InxVkCoreModular
             AABB worldBounds;
             VkBuffer vertexBuffer = VK_NULL_HANDLE;
             VkBuffer indexBuffer = VK_NULL_HANDLE;
+            MeshIndexFormat indexFormat = MeshIndexFormat::UInt32;
             VkPipeline pipeline = VK_NULL_HANDLE;
             VkDescriptorSet materialDescriptor = VK_NULL_HANDLE;
             uint32_t indexStart = 0;

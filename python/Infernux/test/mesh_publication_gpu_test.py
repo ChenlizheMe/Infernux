@@ -4,6 +4,8 @@ import argparse
 import tempfile
 
 from Infernux import Engine
+from Infernux.core.asset_types import read_mesh_import_settings
+from Infernux.core.assets import AssetManager
 from Infernux.lib import AssetRegistry, PrimitiveType, SceneManager
 
 
@@ -28,6 +30,13 @@ def main(continuous=False):
             engine.set_editor_fps_cap(240.0)
             engine.set_editor_idle_fps(0.0)
             registry = AssetRegistry.instance()
+            database = frontend.get_asset_database()
+            settings = read_mesh_import_settings(str(source))
+            settings.is_readable = True
+            reimported = AssetManager.reimport_asset(
+                str(source), import_settings=settings.to_dict(), database=database
+            )
+            assert reimported, reimported.error
             mesh = registry.load_mesh(str(source))
             positions = mesh._particle_sampling_data()["positions"]
             scene = SceneManager.instance().get_active_scene()

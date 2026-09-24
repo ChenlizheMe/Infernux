@@ -177,12 +177,80 @@ def test_installed_preload_has_project_paths_and_mirrored_resources(tmp_path, mo
     monkeypatch.setattr(library_sync, "sync_resources", lambda root: calls.append(root))
 
     def startup(root, *, runtime):
-        assert runtime is False
+        assert runtime is True
         assert calls == [root]
-        assert Path(Application.asset_path("Packages/probe/runtime/message.txt")) == asset
+        assert Path(Application.package_path("probe", "runtime/message.txt")) == asset
 
     monkeypatch.setattr(PluginManager, "startup", startup)
     assert _module()._installed_exporter_registry(tmp_path) is exporter_registry
+
+
+def test_prepare_project_registry_imports_runtime_package_scripts_only(
+    tmp_path, monkeypatch
+):
+    """Player Cook must filter package roles before importing Python files."""
+    module = _module()
+    package = tmp_path / "Packages" / "probe"
+    runtime = package / "runtime"
+    editor = package / "editor"
+    runtime.mkdir(parents=True)
+    editor.mkdir()
+    (tmp_path / "ProjectSettings").mkdir()
+    (package / "inx_package.json").write_text(
+        json.dumps({"reference": "probe", "name": "probe", "engine": "*"}),
+        encoding="utf-8",
+    )
+
+    runtime_marker = tmp_path / "runtime-imported.txt"
+    editor_marker = tmp_path / "editor-imported.txt"
+    runtime_script = runtime / "runtime_component.py"
+    editor_script = editor / "editor_component.py"
+    script_template = (
+        "from pathlib import Path\n"
+        "import Infernux as inx\n"
+        "Path({marker!r}).write_text('imported', encoding='utf-8')\n"
+        "class {class_name}(inx.InxComponent):\n"
+        "    pass\n"
+    )
+    runtime_script.write_text(
+        script_template.format(marker=str(runtime_marker), class_name="RuntimeComponent"),
+        encoding="utf-8",
+    )
+    editor_script.write_text(
+        script_template.format(marker=str(editor_marker), class_name="EditorComponent"),
+        encoding="utf-8",
+    )
+    for index, script in enumerate((runtime_script, editor_script), start=1):
+        (script.with_name(script.name + ".meta")).write_text(
+            json.dumps(
+                {"metadata": {"guid": {"type": "string", "value": f"{index:032x}"}}}
+            ),
+            encoding="utf-8",
+        )
+
+    startup_calls = []
+    from Infernux.components import registry as component_registry
+    from Infernux.engine import library_sync, project_context
+    from Infernux.plugins import PluginManager
+
+    monkeypatch.setattr(library_sync, "sync_resources", lambda _root: None)
+    monkeypatch.setattr(project_context, "_project_root", None)
+    monkeypatch.setattr(
+        PluginManager,
+        "startup",
+        lambda _root, *, runtime: startup_calls.append(runtime),
+    )
+    monkeypatch.setattr(
+        component_registry,
+        "publish_component_script_types",
+        lambda _path, _types: (),
+    )
+
+    module._prepare_project_registry(tmp_path)
+
+    assert startup_calls == [True]
+    assert runtime_marker.is_file()
+    assert not editor_marker.exists()
 
 
 def test_installed_registry_publishes_project_data_asset_types_before_cook(

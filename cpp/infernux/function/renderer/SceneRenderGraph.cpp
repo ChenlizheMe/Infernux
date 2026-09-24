@@ -986,7 +986,8 @@ bool SceneRenderGraph::Initialize(InxVkCoreModular *vkCore, SceneRenderTarget *s
     cameraBufferDesc.memory = rhi::BufferMemory::Upload;
     for (auto &frame : m_perViewFrames) {
         frame.cameraMatrix = rhiDevice.CreateBuffer(cameraBufferDesc);
-        if (!frame.cameraMatrix.IsValid()) {
+        frame.editorOverlayCameraMatrix = rhiDevice.CreateBuffer(cameraBufferDesc);
+        if (!frame.cameraMatrix.IsValid() || !frame.editorOverlayCameraMatrix.IsValid()) {
             INXLOG_ERROR("SceneRenderGraph: failed to allocate camera-local matrix UBO");
             return false;
         }
@@ -1016,10 +1017,13 @@ bool SceneRenderGraph::Initialize(InxVkCoreModular *vkCore, SceneRenderTarget *s
         auto &frame = m_perViewFrames[i];
         frame.geometryDescriptor = vkCore->AllocatePerViewDescriptorLease();
         frame.particleDescriptor = vkCore->AllocatePerViewDescriptorLease();
+        frame.editorOverlayDescriptor = vkCore->AllocatePerViewDescriptorLease();
         frame.geometryGroup = rhiDevice.RegisterBindGroup(frame.GeometrySet());
         frame.particleGroup = rhiDevice.RegisterBindGroup(frame.ParticleSet());
+        frame.editorOverlayGroup = rhiDevice.RegisterBindGroup(frame.EditorOverlaySet());
         if (!frame.geometryDescriptor.IsValid() || !frame.particleDescriptor.IsValid() ||
-            !frame.geometryGroup.IsValid() || !frame.particleGroup.IsValid()) {
+            !frame.editorOverlayDescriptor.IsValid() || !frame.geometryGroup.IsValid() ||
+            !frame.particleGroup.IsValid() || !frame.editorOverlayGroup.IsValid()) {
             INXLOG_ERROR("SceneRenderGraph: failed to allocate the canonical per-view descriptor resources [", i, "]");
             return false;
         }
@@ -1027,8 +1031,11 @@ bool SceneRenderGraph::Initialize(InxVkCoreModular *vkCore, SceneRenderTarget *s
         const VkBuffer cameraBuffer = rhiDevice.Resolve(frame.cameraMatrix);
         vkCore->UpdatePerViewLightingBuffer(frame.GeometrySet(), lightingBuffer, sizeof(ShaderLightingUBO));
         vkCore->UpdatePerViewLightingBuffer(frame.ParticleSet(), lightingBuffer, sizeof(ShaderLightingUBO));
+        vkCore->UpdatePerViewLightingBuffer(frame.EditorOverlaySet(), lightingBuffer, sizeof(ShaderLightingUBO));
         vkCore->UpdatePerViewCameraBuffer(frame.GeometrySet(), cameraBuffer, sizeof(UniformBufferObject));
         vkCore->UpdatePerViewCameraBuffer(frame.ParticleSet(), cameraBuffer, sizeof(UniformBufferObject));
+        vkCore->UpdatePerViewCameraBuffer(frame.EditorOverlaySet(), rhiDevice.Resolve(frame.editorOverlayCameraMatrix),
+                                          sizeof(UniformBufferObject));
     }
 
     // Initialize fullscreen effect renderer for FullscreenQuad passes
@@ -1316,10 +1323,13 @@ void SceneRenderGraph::Destroy()
         for (auto &frame : m_perViewFrames) {
             rhiDevice.Release(frame.geometryGroup);
             rhiDevice.Release(frame.particleGroup);
+            rhiDevice.Release(frame.editorOverlayGroup);
             descriptorManager.Retire(frame.geometryDescriptor);
             descriptorManager.Retire(frame.particleDescriptor);
+            descriptorManager.Retire(frame.editorOverlayDescriptor);
             rhiDevice.Release(frame.lighting);
             rhiDevice.Release(frame.cameraMatrix);
+            rhiDevice.Release(frame.editorOverlayCameraMatrix);
             frame = {};
         }
         rhiDevice.Release(m_perViewLayout);
@@ -1543,6 +1553,14 @@ rhi::BindGroupHandle SceneRenderGraph::GetPerViewBindGroup() const
     return m_perViewFrames[frameIndex].geometryGroup;
 }
 
+rhi::BindGroupHandle SceneRenderGraph::GetEditorOverlayBindGroup() const
+{
+    if (!m_vkCore)
+        return {};
+    const uint32_t frameIndex = m_vkCore->GetCurrentFrameSlot() % kMaxFramesInFlight;
+    return m_perViewFrames[frameIndex].editorOverlayGroup;
+}
+
 void SceneRenderGraph::SetCameraInvertCulling(bool invert)
 {
     if (m_cameraInvertCulling == invert)
@@ -1592,7 +1610,7 @@ void SceneRenderGraph::SetCachedCameraVP(const Camera *camera, const glm::mat4 &
     m_temporalJitterNdc = m_pythonGraphDesc.temporalJitter
                               ? ComputeTemporalJitterNdc(m_temporalSampleIndex, m_width, m_height)
                               : glm::vec2(0.0f);
-    m_cachedProj = ApplyTemporalJitter(proj, m_temporalJitterNdc);
+    m_cachedProj = ProjectionForPass(proj, m_temporalJitterNdc, false);
     m_hasCachedCameraVP = true;
     (void)StageCameraMatrices(view, m_cachedProj);
 }
@@ -1628,6 +1646,12 @@ glm::mat4 SceneRenderGraph::ApplyTemporalJitter(const glm::mat4 &projection, con
     return result;
 }
 
+glm::mat4 SceneRenderGraph::ProjectionForPass(const glm::mat4 &projection, const glm::vec2 &jitterNdc,
+                                              bool editorOverlay)
+{
+    return editorOverlay ? projection : ApplyTemporalJitter(projection, jitterNdc);
+}
+
 bool SceneRenderGraph::StageCameraMatrices(const glm::mat4 &view, const glm::mat4 &proj,
                                            const glm::mat4 *previousViewProj)
 {
@@ -1654,6 +1678,18 @@ bool SceneRenderGraph::StageCameraMatrices(const glm::mat4 &view, const glm::mat
     auto &rhiDevice = m_vkCore->GetDeviceContext().GetRhiDevice();
     if (!rhiDevice.WriteBuffer(frame.cameraMatrix, 0, &camera, sizeof(camera))) {
         INXLOG_ERROR("SceneRenderGraph: failed to upload camera-local matrix UBO");
+        return false;
+    }
+    UniformBufferObject overlayCamera = camera;
+    if (m_renderView.kind == rhi::RenderViewKind::Scene) {
+        // Editor overlays run after the temporal resolve. Their own subpixel
+        // jitter would otherwise reappear as icon/grid shimmer every frame.
+        overlayCamera.proj = ProjectionForPass(m_cachedUnjitteredProj, m_temporalJitterNdc, true);
+        overlayCamera.previousViewProj = overlayCamera.proj * view;
+        overlayCamera.inverseViewProj = glm::inverse(overlayCamera.proj * view);
+    }
+    if (!rhiDevice.WriteBuffer(frame.editorOverlayCameraMatrix, 0, &overlayCamera, sizeof(overlayCamera))) {
+        INXLOG_ERROR("SceneRenderGraph: failed to upload editor overlay camera UBO");
         return false;
     }
     return true;
@@ -1994,7 +2030,7 @@ void SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
 #if INFERNUX_FRAME_PROFILE
         const auto region = vkCore->BeginGpuProfileRegion(ctx.GetCommandBuffer(), "_ComponentGizmos");
         try {
-            vkCore->DrawSceneFiltered(ctx.GetCommandBuffer(), w, h, GetPerViewBindGroup(), m_drawView,
+            vkCore->DrawSceneFiltered(ctx.GetCommandBuffer(), w, h, GetEditorOverlayBindGroup(), m_drawView,
                                       COMP_GIZMO_QUEUE_MIN, COMP_GIZMO_QUEUE_MAX, "", "", "", &editorOverlayPass);
         } catch (...) {
             vkCore->EndGpuProfileRegion(ctx.GetCommandBuffer(), region);
@@ -2002,8 +2038,8 @@ void SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
         }
         vkCore->EndGpuProfileRegion(ctx.GetCommandBuffer(), region);
 #else
-        vkCore->DrawSceneFiltered(ctx.GetCommandBuffer(), w, h, GetPerViewBindGroup(), m_drawView, COMP_GIZMO_QUEUE_MIN,
-                                  COMP_GIZMO_QUEUE_MAX, "", "", "", &editorOverlayPass);
+        vkCore->DrawSceneFiltered(ctx.GetCommandBuffer(), w, h, GetEditorOverlayBindGroup(), m_drawView,
+                                  COMP_GIZMO_QUEUE_MIN, COMP_GIZMO_QUEUE_MAX, "", "", "", &editorOverlayPass);
 #endif
     };
 
@@ -2019,8 +2055,8 @@ void SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
     static const std::string kEditorGizmosPassName = "_EditorGizmos";
     m_pythonCallbacks[kEditorGizmosPassName] = [this, vkCore, editorOverlayPass](vk::RenderContext &ctx, uint32_t w,
                                                                                  uint32_t h) {
-        vkCore->DrawSceneFiltered(ctx.GetCommandBuffer(), w, h, GetPerViewBindGroup(), m_drawView, GIZMO_QUEUE_MIN,
-                                  GIZMO_QUEUE_MAX, "", "", "", &editorOverlayPass);
+        vkCore->DrawSceneFiltered(ctx.GetCommandBuffer(), w, h, GetEditorOverlayBindGroup(), m_drawView,
+                                  GIZMO_QUEUE_MIN, GIZMO_QUEUE_MAX, "", "", "", &editorOverlayPass);
     };
 
     // ========================================================================
@@ -2033,8 +2069,8 @@ void SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
     static const std::string kEditorToolsPassName = "_EditorTools";
     m_pythonCallbacks[kEditorToolsPassName] = [this, vkCore, editorOverlayPass](vk::RenderContext &ctx, uint32_t w,
                                                                                 uint32_t h) {
-        vkCore->DrawSceneFiltered(ctx.GetCommandBuffer(), w, h, GetPerViewBindGroup(), m_drawView, TOOLS_QUEUE_MIN,
-                                  TOOLS_QUEUE_MAX, "preserve", "", "", &editorOverlayPass);
+        vkCore->DrawSceneFiltered(ctx.GetCommandBuffer(), w, h, GetEditorOverlayBindGroup(), m_drawView,
+                                  TOOLS_QUEUE_MIN, TOOLS_QUEUE_MAX, "preserve", "", "", &editorOverlayPass);
     };
 
     // Store description for BuildRenderGraph()'s topology traversal. Exact
@@ -2616,6 +2652,9 @@ bool SceneRenderGraph::PrepareForwardPlusFrame()
         m_vkCore->UpdatePerViewForwardPlusBuffers(descriptorSet, lights.buffer, lights.dataBytes, frame.headers,
                                                   frame.config.headerBytes, frame.lightMasks, frame.config.maskBytes,
                                                   viewFrame.lighting, sizeof(ShaderLightingUBO));
+        m_vkCore->UpdatePerViewForwardPlusBuffers(
+            viewFrame.EditorOverlaySet(), lights.buffer, lights.dataBytes, frame.headers, frame.config.headerBytes,
+            frame.lightMasks, frame.config.maskBytes, viewFrame.lighting, sizeof(ShaderLightingUBO));
         viewFrame.geometryBindings = geometryBindings;
     }
     if (m_forwardPlusParticlesRequired) {
@@ -2848,6 +2887,7 @@ void SceneRenderGraph::RefreshPerViewShadowDescriptor()
         if (!viewFrame.shadowBinding.usesDefaultTexture) {
             m_vkCore->ClearPerViewShadowMap(graphShadowDesc);
             m_vkCore->ClearPerViewShadowMap(particleShadowDesc);
+            m_vkCore->ClearPerViewShadowMap(viewFrame.EditorOverlaySet());
             viewFrame.shadowBinding = {};
         }
         return;
@@ -2873,6 +2913,7 @@ void SceneRenderGraph::RefreshPerViewShadowDescriptor()
     // domain can observe a half-updated per-view generation.
     m_vkCore->UpdatePerViewShadowMap(graphShadowDesc, view, shadowSampler, imageLayout);
     m_vkCore->UpdatePerViewShadowMap(particleShadowDesc, view, shadowSampler, imageLayout);
+    m_vkCore->UpdatePerViewShadowMap(viewFrame.EditorOverlaySet(), view, shadowSampler, imageLayout);
     viewFrame.shadowBinding = {view, shadowSampler, imageLayout, false};
 }
 
@@ -3416,6 +3457,8 @@ void SceneRenderGraph::BuildRenderGraph()
         m_vkCore->ClearPerViewShadowMap(currentViewFrame.GeometrySet());
     if (currentViewFrame.ParticleSet() != VK_NULL_HANDLE)
         m_vkCore->ClearPerViewShadowMap(currentViewFrame.ParticleSet());
+    if (currentViewFrame.EditorOverlaySet() != VK_NULL_HANDLE)
+        m_vkCore->ClearPerViewShadowMap(currentViewFrame.EditorOverlaySet());
     currentViewFrame.shadowBinding = {};
 
     // Graph topology and material pipeline compatibility are independent.
@@ -4086,8 +4129,28 @@ void SceneRenderGraph::BuildRenderGraph()
         bool cameraClearOverridePending = m_hasCameraClearOverride;
         m_mainClearPassName.clear();
 
+        // Scene overlays are authored in linear space. Composite them before
+        // the final display encode so icons, handles, outlines and the grid all
+        // share the same color contract as scene geometry. Player/Game graphs
+        // never receive these editor-only passes.
+        bool sceneOverlaysAppended = false;
+        const auto appendSceneOverlays = [&]() {
+            if (sceneOverlaysAppended || m_renderView.kind != rhi::RenderViewKind::Scene)
+                return;
+            m_importedColorTarget =
+                AppendAutoPass("_ComponentGizmos", m_importedColorTarget, sharedDepth, width, height);
+            m_importedColorTarget = AppendAutoPass("_EditorGizmos", m_importedColorTarget, sharedDepth, width, height);
+            m_importedColorTarget = AppendEditorOutline(m_importedColorTarget);
+            m_importedColorTarget = AppendAutoPass("_EditorTools", m_importedColorTarget, sharedDepth, width, height);
+            sceneOverlaysAppended = true;
+        };
+
         for (const auto &passDesc : sortedPasses) {
             const GraphCommandDesc *command = PrimaryCommand(passDesc);
+            if (command && command->type == GraphCommandType::FullscreenQuad &&
+                command->shaderName == "Display Encode") {
+                appendSceneOverlays();
+            }
             const auto isPersistent = [&](const std::string &name) {
                 const auto texture = texDescMap.find(name);
                 return texture != texDescMap.end() && texture->second->role == GraphTextureRole::Persistent;
@@ -5357,18 +5420,10 @@ void SceneRenderGraph::BuildRenderGraph()
                                    });
         }
 
-        // Editor overlays are a Scene-view concern only.  A standalone Player
-        // must export the exact user pipeline result: adding editor-only
-        // queues to a Game graph creates extra color-target versions after
-        // post processing and can invalidate the MSAA/display output chain.
-        // ====================================================================
-        if (m_renderView.kind == rhi::RenderViewKind::Scene) {
-            m_importedColorTarget =
-                AppendAutoPass("_ComponentGizmos", m_importedColorTarget, sharedDepth, width, height);
-            m_importedColorTarget = AppendAutoPass("_EditorGizmos", m_importedColorTarget, sharedDepth, width, height);
-            m_importedColorTarget = AppendEditorOutline(m_importedColorTarget);
-            m_importedColorTarget = AppendAutoPass("_EditorTools", m_importedColorTarget, sharedDepth, width, height);
-        }
+        // Custom author pipelines may omit the built-in display encode. Keep
+        // their editor overlays observable at the graph tail without adding
+        // anything to Game/Player graphs.
+        appendSceneOverlays();
     }
 
     // Set output for proper resource tracking and dead-pass culling.

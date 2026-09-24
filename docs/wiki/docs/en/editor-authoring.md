@@ -44,6 +44,79 @@ created hierarchy, asset and placed instance; Redo restores the recorded action.
 Register commands and shortcuts inside `preload`: their owner is then removed on
 reload, unload or project close. Do not register them each frame.
 
+## Component-driven Transform fields
+
+When an enabled component is the authoring authority for part of its owner's
+Transform, declare that ownership once. The Inspector and Scene tools then obey
+the same rule:
+
+```python
+from infernux.components import (
+    DrivenTransformProperties,
+    InxComponent,
+    drives_transform,
+)
+
+@drives_transform(DrivenTransformProperties.SCALE)
+class ProceduralSurface(InxComponent):
+    pass
+```
+
+The Scale and Rect tools cannot overwrite the driven scale. Combine
+`POSITION`, `ROTATION`, and `SCALE`, or use `ALL`. A component whose ownership
+changes at runtime may instead implement `driven_transform_properties()` and
+return the current flags. Disabling that component releases its authoring lock.
+
+## Custom Scene View handles
+
+Projects and editor plugins register one stable provider with
+`inx.editor.register_handle_provider()`. The provider receives an
+`EditorHandleContext` on each Gizmo collection and may submit world-space
+`position`, `direction`, `radius`, and `limit` handles:
+
+```python
+import infernux as inx
+
+class SpawnHandles(inx.InxPreload):
+    def preload(self, context):
+        inx.editor.register_handle_provider(
+            "sample.spawn", self.draw_handles,
+            on_retire=self.release_preview_resources,
+        )
+
+    def draw_handles(self, handles):
+        target = current_spawn_target()
+        if target is None:
+            return
+        handles.position("position", target.position,
+                         lambda value: set_spawn_position(target, value))
+        handles.direction("forward", target.position, target.forward,
+                          lambda value: set_spawn_forward(target, value))
+        handles.radius("radius", target.position, target.radius,
+                       lambda value: set_spawn_radius(target, value))
+        handles.limit("travel", target.position, target.forward,
+                      (target.minimum, target.maximum),
+                      lambda value: set_spawn_limits(target, value))
+
+    def release_preview_resources(self):
+        pass
+```
+
+Register the provider once and submit only the handles that remain valid for
+the current selection; `handles.selection` is the selection snapshot used by
+that collection. Values and callbacks are frame-scoped, so a handle omitted
+from the next collection immediately expires. Direction changes are normalized,
+radius values remain non-negative, and limits preserve minimum <= maximum.
+
+The returned `HandleRegistration` can be closed explicitly. A registration
+created by a preload is automatically owned by that preload. Reload, disable,
+uninstall, and editor shutdown cancel an active drag first (restoring the
+initial value through `on_changed` and `on_cancel`), then call `on_retire` once
+and release the provider's frame resources and callback references. Do not
+retain an `EditorHandleContext` across frames. Project callbacks still own
+their document/command integration; the handle API does not turn arbitrary
+field assignments into Undo records.
+
 ## Creation and editing
 
 - `create_game_object` returns the created GameObject. `kind` uses the Hierarchy
@@ -192,10 +265,28 @@ unrelated scripts. Directly constructing `MyComponent()` and passing that instan
 to `add_py_component` is a lower-level path and does not perform this resolution.
 For undoable edits on existing objects, keep using `inx.editor.add_component`.
 
-To load an existing material, resolve its project path with
-`inx.Application.asset_path("Assets/Materials/Example.mat")` before passing it to
-`inx.AssetManager.load`. Tools should not depend on the Editor process's working
-directory or hard-code asset GUIDs.
+To load an existing material, pass its `Assets`-relative author path directly to
+`inx.AssetManager.load("Assets/Materials/Example.mat")`. In Editor that path is
+immediately converted to its asset GUID. Player accepts the same path expression,
+but resolves it only through the build-frozen query index and continues with the
+GUID; it never scans `Assets` or treats the path as runtime identity. Likewise,
+`find_assets("Assets/Materials/*.mat")` returns immutable `AssetFile` objects in
+both. Each object is identified only by its `guid` and can load that asset with
+`load()`; an authoring path never becomes its identity. Passing a directory
+such as `Assets/Materials` lists its direct child files; use an explicit glob
+such as `Assets/Materials/**/*.mat` for recursive matching. Directories are
+never returned.
+
+Loose files and mod folders are an explicit second mode. Pass
+`raw_filesystem=True` to `load` to obtain a `SandboxPath`, or to `find_assets` to
+list sandboxed files. A directory query such as `Mods` lists only its direct
+child files; directories are never query results. The root is the project `Assets` directory in Editor and
+the executable directory in desktop Player. Web Player uses an isolated loose-file
+directory in its browser-persistent storage instead of exposing cooked MEMFS content.
+Handles provide `read_bytes`, `read_text`,
+`write_bytes`, `write_text`, and non-recursive `delete`. Absolute paths, parent
+traversal, and symlink/junction traversal are rejected. Never persist a
+`SandboxPath` as an asset identity.
 
 `get_build_scenes()` returns a detached ordered list of project-relative paths.
 `set_build_scenes(paths)` edits the shared Build Settings document as one Undo

@@ -5,6 +5,15 @@ import numpy as np
 import infernux as inx
 from Infernux.components.builtin import MeshRenderer
 from Infernux.lib import AssetRegistry
+from Infernux.core.assets import AssetManager
+from Infernux.core.asset_types import read_mesh_import_settings
+
+
+def _enable_mesh_read_write(database, source):
+    settings = read_mesh_import_settings(str(source))
+    settings.is_readable = True
+    result = AssetManager.reimport_asset(str(source), import_settings=settings.to_dict(), database=database)
+    assert result, result.error
 
 
 def test_imported_model_nodes_preserve_source_hierarchy_and_are_detached(engine, monkeypatch):
@@ -18,6 +27,7 @@ def test_imported_model_nodes_preserve_source_hierarchy_and_are_detached(engine,
     target.write_bytes(source.read_bytes())
     result = database.import_asset(str(target))
     assert result, result.error
+    _enable_mesh_read_write(database, target)
     mesh = inx.Mesh.load_guid(result.guid)
     nodes = mesh.model_nodes
     indices = {node['name']: index for index, node in enumerate(nodes)}
@@ -48,6 +58,7 @@ def test_imported_model_nodes_preserve_source_hierarchy_and_are_detached(engine,
     binary.write_bytes(mesh.serialize_source())
     binary_import = database.import_asset(str(binary))
     assert binary_import, binary_import.error
+    _enable_mesh_read_write(database, binary)
     restored = inx.Mesh.load_guid(binary_import.guid)
     assert restored.model_nodes == mesh.model_nodes
     assert restored.serialize_source() == mesh.serialize_source()

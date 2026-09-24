@@ -58,12 +58,18 @@ class _AuthoringView:
         return True
 
 
-def _bound_document(registry: DocumentRegistry, view: _AuthoringView, path: str):
+def _bound_document(
+    registry: DocumentRegistry,
+    view: _AuthoringView,
+    path: str,
+    *,
+    guid: str = "particle-guid",
+):
     controller = AuthoringDocumentController(view)
     document = registry.create(
         DocumentKind.PARTICLE_GRAPH,
         "Smoke",
-        key=DocumentKey.resource(DocumentKind.PARTICLE_GRAPH, path),
+        key=DocumentKey.asset(DocumentKind.PARTICLE_GRAPH, guid),
         resource_path=path,
         revision=1,
         saved_revision=0,
@@ -149,6 +155,13 @@ def test_save_as_changes_document_identity_only_after_durable_completion(
     target = str(tmp_path / "Copy.particlegraph")
     document, controller = _bound_document(registry, view, source)
 
+    class _Database:
+        @staticmethod
+        def get_guid_from_path(path):
+            return "copy-guid" if str(path) == target else ""
+
+    monkeypatch.setattr("Infernux.core.assets.AssetManager._asset_database", _Database())
+
     result = registry.request_save_to_resource(document.document_id, target)
     assert result.status is DocumentActionStatus.PENDING
     assert document.resource_path == source
@@ -158,7 +171,7 @@ def test_save_as_changes_document_identity_only_after_durable_completion(
     controller.poll_pending_writes()
 
     assert document.resource_path == target
-    assert document.key == DocumentKey.resource(DocumentKind.PARTICLE_GRAPH, target)
+    assert document.key == DocumentKey.asset(DocumentKind.PARTICLE_GRAPH, "copy-guid")
     assert document.title == "Copy"
     assert view.path == target
     assert not document.is_dirty

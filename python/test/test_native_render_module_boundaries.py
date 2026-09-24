@@ -1188,6 +1188,23 @@ def test_touch_events_wake_the_frame_loop_and_request_ui_refresh() -> None:
         assert event_name in process_one
 
 
+def test_desktop_occlusion_does_not_suspend_render_target_capture() -> None:
+    view_header = (
+        ROOT / "cpp" / "infernux" / "platform" / "window" / "InxView.h"
+    ).read_text(encoding="utf-8")
+    view_source = (
+        ROOT / "cpp" / "infernux" / "platform" / "window" / "InxView.cpp"
+    ).read_text(encoding="utf-8")
+
+    # SDL_WINDOW_OCCLUDED is a compositor hint, not a minimized state. Keeping
+    # a sticky event-driven boolean here strands Scene/Game/Editor captures in
+    # PendingGpu even though the editor and MCP command channel still respond.
+    assert "SDL_GetWindowFlags(m_window)" in view_header
+    assert "WindowVisibility::Occluded" in view_header
+    assert "m_isMinimized" not in view_header
+    assert "m_isMinimized" not in view_source
+
+
 def test_play_mode_supports_an_explicit_frame_cap() -> None:
     view_header = (
         ROOT / "cpp" / "infernux" / "platform" / "window" / "InxView.h"

@@ -256,7 +256,7 @@
                             <span class="ns-arr">&#9654;</span>
                             <span class="ns-nm">Infernux.jit</span>
                         </button>
-                        <div class="ns-ch"><a href="/wiki/site/zh/api/njit.html" class="">njit</a><a href="/wiki/site/zh/api/warmup.html" class="">warmup</a></div>
+                        <div class="ns-ch"><a href="/wiki/site/zh/api/compile.html" class="">compile</a><a href="/wiki/site/zh/api/statistics.html" class="">statistics</a><a href="/wiki/site/zh/api/warmup.html" class="">warmup</a></div>
                     </div><div class="ns-group">
                         <button type="button" class="ns-hd" aria-expanded="false">
                             <span class="ns-arr">&#9654;</span>
@@ -435,6 +435,42 @@
 </tr>
 </thead>
 <tbody>
+<tr>
+<td><code>physics_pre_step(fixed_delta_time: float) → None</code></td>
+<td>Called after Collider input is synchronized and before Jolt steps.</td>
+</tr>
+<tr>
+<td><code>physics_post_step(fixed_delta_time: float) → None</code></td>
+<td>Called after Jolt results and Rigidbody transforms are published.</td>
+</tr>
+<tr>
+<td><code>on_mouse_enter() → None</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>on_mouse_over() → None</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>on_mouse_exit() → None</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>on_mouse_down() → None</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>on_mouse_drag() → None</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>on_mouse_up() → None</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>on_mouse_up_as_button() → None</code></td>
+<td></td>
+</tr>
 <tr>
 <td><code>destroy() → None</code></td>
 <td>销毁此组件或指定的 GameObject。</td>

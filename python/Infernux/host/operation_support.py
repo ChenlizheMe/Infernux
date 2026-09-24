@@ -41,6 +41,10 @@ _ENGINE_OUTPUTS: dict[str, tuple[dict[str, object], tuple[str, ...]]] = {
         {"id": _INTEGER, "name": _STRING, "kind": _STRING, "parent_id": _INTEGER, "selected": _BOOLEAN, "components": _ARRAY},
         ("id", "name", "kind", "parent_id", "selected", "components"),
     ),
+    "infernux.scene.model.instantiate": (
+        {"id": _INTEGER, "name": _STRING, "asset_guid": _STRING, "parent_id": _INTEGER},
+        ("id", "name", "asset_guid", "parent_id"),
+    ),
     "infernux.scene.object.delete": ({"deleted": _ARRAY}, ("deleted",)),
     "infernux.scene.object.property.set": (
         {"object_id": _INTEGER, "property": _STRING, "value": _ANY},
@@ -128,8 +132,8 @@ _ENGINE_OUTPUTS: dict[str, tuple[dict[str, object], tuple[str, ...]]] = {
         ("asset_guid", "path", "document"),
     ),
     "infernux.data_asset.schema": (
-        {"asset_guid": _STRING, "path": _STRING, "type_id": _STRING, "schema_version": _INTEGER, "fields": _ARRAY},
-        ("asset_guid", "path", "type_id", "schema_version", "fields"),
+        {"asset_guid": _STRING, "path": _STRING, "type_id": _STRING, "fields": _ARRAY},
+        ("asset_guid", "path", "type_id", "fields"),
     ),
     "infernux.data_asset.property.set": (
         {"asset_guid": _STRING, "path": _STRING, "pointer": _STRING, "document": _OBJECT},

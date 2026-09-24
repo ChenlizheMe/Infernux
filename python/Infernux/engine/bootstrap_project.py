@@ -31,9 +31,16 @@ def _inxpackage_export_paths(context, project_root: str) -> tuple[str, ...]:
 
     selected = ()
     if context.selection.domain is SelectionDomain.ASSET:
+        try:
+            from Infernux.core.assets import AssetManager
+
+            database = AssetManager.require_asset_database()
+        except (AttributeError, RuntimeError):
+            database = None
         selected = tuple(
-            resolve(target.document_id or target.target_id)
+            resolve(database.get_path_from_guid(target.target_id))
             for target in context.selection.targets
+            if database is not None
         )
 
     explicit = context.payload.get("paths", ())

@@ -21,11 +21,13 @@ class ComputeBuffer;
  * @brief Buffer that receives packed gizmo geometry from Python and produces DrawCalls.
  *
  * Python-side Gizmos/GizmosCollector packs all per-frame gizmo primitives
- * into flat vertex/index arrays plus a descriptor list, then publishes them
+ * into flat vertex/index arrays plus a
+ * descriptor list, then publishes them
  * in a single call via SetData(). The C++ side retains unchanged geometry,
- * advances an explicit generation only for vertex/topology changes, and
- * produces DrawCall entries consumed by ScriptableRenderContext::SubmitCulling().
  *
+ * advances an explicit generation only for vertex/topology changes, and
+ * produces DrawCall entries consumed by
+ * ScriptableRenderContext::SubmitCulling().
  * Queue range: 10000-20000 (_ComponentGizmos pass, depth-tested).
  *
  * Object IDs use prefix 0xEDED_GIZM_xxxx_xxxx to avoid collision with
@@ -206,7 +208,8 @@ class GizmosDrawCallBuffer
      *   - 4 vertices forming a camera-facing diamond quad
      *   - material = iconMaterial (TRIANGLE_LIST, unlit vertex-color)
      *   - objectId = renderer-private icon buffer identity
-     *   - pickingObjectId = IconEntry::objectId (the actual GameObject ID)
+     *   - pickingObjectId = IconEntry::objectId (the actual
+     * GameObject ID)
      *   - Constant angular size relative to distance from camera
      *
      * @param materials     Per-kind icon billboard materials
@@ -216,7 +219,9 @@ class GizmosDrawCallBuffer
      * @return DrawCallResult containing all icon draw calls
      */
     [[nodiscard]] DrawCallResult GetIconDrawCalls(const IconMaterials &materials, const glm::vec3 &cameraPos,
-                                                  const glm::vec3 &cameraRight, const glm::vec3 &cameraUp) const;
+                                                  const glm::vec3 &cameraRight, const glm::vec3 &cameraUp,
+                                                  const glm::mat4 &projection, uint32_t viewportHeight,
+                                                  float dpiScale) const;
 
     /**
      * @brief Get icon entries for picking tests.
@@ -226,11 +231,12 @@ class GizmosDrawCallBuffer
         return m_iconEntries;
     }
 
-    /// Angular size factor: icon world-size = distance * ICON_SIZE_FACTOR
-    static constexpr float ICON_SIZE_FACTOR = 0.036f;
+    /// Half of the intended icon width in 100%-DPI viewport pixels.
+    static constexpr float ICON_HALF_SIZE_PIXELS = 20.0f;
 
-    /// Minimum half-size used when an icon is extremely close to the camera.
-    static constexpr float ICON_MIN_WORLD_SIZE = 0.10f;
+    [[nodiscard]] static float ComputeIconHalfWorldSize(const glm::vec3 &iconPosition, const glm::vec3 &cameraPosition,
+                                                        const glm::vec3 &cameraForward, const glm::mat4 &projection,
+                                                        uint32_t viewportHeight, float dpiScale);
 
   private:
     std::vector<Vertex> m_vertices;

@@ -26,6 +26,77 @@ namespace infernux
 namespace
 {
 
+bool RendererParameterValueIsFinite(const MaterialPropertyValue &value)
+{
+    const auto finiteVector = [](const auto &vector) {
+        for (glm::length_t component = 0; component < vector.length(); ++component) {
+            if (!std::isfinite(vector[component]))
+                return false;
+        }
+        return true;
+    };
+    if (const auto *number = std::get_if<float>(&value))
+        return std::isfinite(*number);
+    if (const auto *vector = std::get_if<glm::vec2>(&value))
+        return finiteVector(*vector);
+    if (const auto *vector = std::get_if<glm::vec3>(&value))
+        return finiteVector(*vector);
+    if (const auto *vector = std::get_if<glm::vec4>(&value))
+        return finiteVector(*vector);
+    if (const auto *matrix = std::get_if<glm::mat4>(&value)) {
+        for (glm::length_t column = 0; column < matrix->length(); ++column) {
+            if (!finiteVector((*matrix)[column]))
+                return false;
+        }
+    }
+    if (const auto *values = std::get_if<std::vector<float>>(&value))
+        return std::all_of(values->begin(), values->end(), [](float number) { return std::isfinite(number); });
+    if (const auto *values = std::get_if<std::vector<glm::vec4>>(&value))
+        return std::all_of(values->begin(), values->end(), finiteVector);
+    return true;
+}
+
+bool RendererParameterValueEquals(const MaterialPropertyValue &left, const MaterialPropertyValue &right)
+{
+    if (left.index() != right.index())
+        return false;
+    if (const auto *value = std::get_if<float>(&left))
+        return *value == std::get<float>(right);
+    if (const auto *value = std::get_if<glm::vec2>(&left))
+        return glm::all(glm::equal(*value, std::get<glm::vec2>(right)));
+    if (const auto *value = std::get_if<glm::vec3>(&left))
+        return glm::all(glm::equal(*value, std::get<glm::vec3>(right)));
+    if (const auto *value = std::get_if<glm::vec4>(&left))
+        return glm::all(glm::equal(*value, std::get<glm::vec4>(right)));
+    if (const auto *value = std::get_if<int>(&left))
+        return *value == std::get<int>(right);
+    if (const auto *value = std::get_if<glm::mat4>(&left)) {
+        const auto &other = std::get<glm::mat4>(right);
+        for (glm::length_t column = 0; column < value->length(); ++column) {
+            if (!glm::all(glm::equal((*value)[column], other[column])))
+                return false;
+        }
+        return true;
+    }
+    if (const auto *value = std::get_if<std::string>(&left))
+        return *value == std::get<std::string>(right);
+    if (const auto *value = std::get_if<std::vector<float>>(&left))
+        return *value == std::get<std::vector<float>>(right);
+    if (const auto *value = std::get_if<std::vector<glm::vec4>>(&left)) {
+        const auto &other = std::get<std::vector<glm::vec4>>(right);
+        return value->size() == other.size() &&
+               std::equal(value->begin(), value->end(), other.begin(),
+                          [](const glm::vec4 &a, const glm::vec4 &b) { return glm::all(glm::equal(a, b)); });
+    }
+    return false;
+}
+
+bool RendererParameterEquals(const MaterialProperty &left, const MaterialProperty &right)
+{
+    return left.name == right.name && left.type == right.type && left.hdr == right.hdr && left.range == right.range &&
+           RendererParameterValueEquals(left.value, right.value);
+}
+
 bool MeshDataEquals(const std::shared_ptr<InxMesh> &mesh, const std::vector<Vertex> &vertices,
                     const std::vector<uint32_t> &indices)
 {
@@ -208,6 +279,14 @@ json SerializeRendererParameter(const MaterialProperty &property)
     case MaterialPropertyType::Texture2D:
         result["guid"] = std::get<std::string>(property.value);
         break;
+    case MaterialPropertyType::FloatArray:
+        result["value"] = std::get<std::vector<float>>(property.value);
+        break;
+    case MaterialPropertyType::Float4Array:
+        result["value"] = json::array();
+        for (const auto &value : std::get<std::vector<glm::vec4>>(property.value))
+            result["value"].push_back({value.x, value.y, value.z, value.w});
+        break;
     }
     return result;
 }
@@ -218,7 +297,7 @@ MaterialProperty DeserializeRendererParameter(const std::string &name, const jso
         throw std::invalid_argument("renderer parameter '" + name + "' requires an integer type");
     const int typeValue = document["type"].get<int>();
     if (typeValue < static_cast<int>(MaterialPropertyType::Float) ||
-        typeValue > static_cast<int>(MaterialPropertyType::Color))
+        typeValue > static_cast<int>(MaterialPropertyType::Float4Array))
         throw std::invalid_argument("renderer parameter '" + name + "' has an invalid type");
 
     MaterialProperty property{name, static_cast<MaterialPropertyType>(typeValue), 0.0f};
@@ -276,6 +355,40 @@ MaterialProperty DeserializeRendererParameter(const std::string &name, const jso
             throw std::invalid_argument("renderer texture parameter '" + name + "' requires one GUID");
         property.value = document["guid"].get<std::string>();
         break;
+    case MaterialPropertyType::FloatArray: {
+        if (document.size() != 2 || !document.contains("value") || !document["value"].is_array() ||
+            document["value"].empty())
+            throw std::invalid_argument("renderer float array parameter '" + name + "' requires finite values");
+        std::vector<float> values;
+        values.reserve(document["value"].size());
+        for (const auto &value : document["value"]) {
+            if (!value.is_number() || !std::isfinite(value.get<double>()))
+                throw std::invalid_argument("renderer float array parameter '" + name + "' requires finite values");
+            values.push_back(value.get<float>());
+        }
+        property.value = std::move(values);
+        break;
+    }
+    case MaterialPropertyType::Float4Array: {
+        if (document.size() != 2 || !document.contains("value") || !document["value"].is_array() ||
+            document["value"].empty())
+            throw std::invalid_argument("renderer float4 array parameter '" + name + "' requires finite values");
+        std::vector<glm::vec4> values;
+        values.reserve(document["value"].size());
+        for (const auto &value : document["value"]) {
+            if (!value.is_array() || value.size() != 4)
+                throw std::invalid_argument("renderer float4 array parameter '" + name + "' requires vec4 values");
+            for (const auto &component : value) {
+                if (!component.is_number() || !std::isfinite(component.get<double>()))
+                    throw std::invalid_argument("renderer float4 array parameter '" + name +
+                                                "' requires finite values");
+            }
+            values.emplace_back(value[0].get<float>(), value[1].get<float>(), value[2].get<float>(),
+                                value[3].get<float>());
+        }
+        property.value = std::move(values);
+        break;
+    }
     }
     return property;
 }
@@ -928,9 +1041,21 @@ void MeshRenderer::SetParameter(uint32_t slot, const std::string &name, Material
          std::holds_alternative<glm::vec4>(value)) ||
         (declaration->type == MaterialPropertyType::Int && std::holds_alternative<int>(value)) ||
         (declaration->type == MaterialPropertyType::Mat4 && std::holds_alternative<glm::mat4>(value)) ||
-        (declaration->type == MaterialPropertyType::Texture2D && std::holds_alternative<std::string>(value));
+        (declaration->type == MaterialPropertyType::Texture2D && std::holds_alternative<std::string>(value)) ||
+        (declaration->type == MaterialPropertyType::FloatArray && std::holds_alternative<std::vector<float>>(value)) ||
+        (declaration->type == MaterialPropertyType::Float4Array &&
+         std::holds_alternative<std::vector<glm::vec4>>(value));
     if (!typeMatches)
         throw std::invalid_argument("renderer parameter '" + name + "' does not match the reflected shader type");
+    if (!RendererParameterValueIsFinite(value))
+        throw std::invalid_argument("renderer parameter '" + name + "' must contain only finite values");
+
+    if (declaration->type == MaterialPropertyType::FloatArray &&
+        std::get<std::vector<float>>(declaration->value).size() != std::get<std::vector<float>>(value).size())
+        throw std::invalid_argument("renderer parameter '" + name + "' does not match the reflected array length");
+    if (declaration->type == MaterialPropertyType::Float4Array &&
+        std::get<std::vector<glm::vec4>>(declaration->value).size() != std::get<std::vector<glm::vec4>>(value).size())
+        throw std::invalid_argument("renderer parameter '" + name + "' does not match the reflected array length");
 
     if (declaration->type == MaterialPropertyType::Texture2D)
         value = InxMaterial::RequireTextureGuid(std::get<std::string>(value));
@@ -938,14 +1063,36 @@ void MeshRenderer::SetParameter(uint32_t slot, const std::string &name, Material
     EnsureParameterSlot(slot);
     MaterialProperty property{name, declaration->type, std::move(value), declaration->hdr, declaration->range};
     if (persistent) {
+        const auto existing = m_persistentParameters[slot].find(name);
+        if (existing != m_persistentParameters[slot].end() && RendererParameterEquals(existing->second, property))
+            return;
         m_persistentParameters[slot][name] = std::move(property);
     } else {
         if (owner.empty())
             throw std::invalid_argument("runtime renderer parameter owner cannot be empty");
+        auto &owners = m_runtimeParameters[slot];
+        auto ownerLayer = owners.find(owner);
+        if (ownerLayer != owners.end()) {
+            const auto existing = ownerLayer->second.find(name);
+            if (existing != ownerLayer->second.end() && RendererParameterEquals(existing->second.property, property)) {
+                // A repeated write is a true no-op only while this owner still
+                // supplies the effective value. If a later owner wrote the
+                // field, writing the same value again must regain precedence.
+                const RuntimeParameterEntry *newest = nullptr;
+                for (const auto &[layerOwner, layer] : owners) {
+                    (void)layerOwner;
+                    const auto candidate = layer.find(name);
+                    if (candidate != layer.end() &&
+                        (!newest || newest->writeRevision < candidate->second.writeRevision))
+                        newest = &candidate->second;
+                }
+                if (newest == &existing->second)
+                    return;
+            }
+        }
         if (m_runtimeParameterWriteRevision == std::numeric_limits<uint64_t>::max())
             throw std::overflow_error("runtime renderer parameter write revision overflow");
-        m_runtimeParameters[slot][owner][name] =
-            RuntimeParameterEntry{std::move(property), ++m_runtimeParameterWriteRevision};
+        owners[owner][name] = RuntimeParameterEntry{std::move(property), ++m_runtimeParameterWriteRevision};
     }
     PublishParameterSlot(slot);
 }
@@ -1817,8 +1964,10 @@ bool MeshRenderer::DeserializeDocument(const nlohmann::json &j)
         const bool meshAssetResolved = static_cast<bool>(stagedMesh);
         if (!stagedPath.empty() && stagedMesh && !stagedMesh->GetModelSourceGeometry())
             throw std::invalid_argument("Model node binding requires node-local source geometry");
-        if (stagedMesh && !stagedPath.empty())
-            static_cast<void>(stagedMesh->RequireModelNode(stagedPath));
+        if (stagedMesh) {
+            if (!stagedPath.empty())
+                static_cast<void>(stagedMesh->RequireModelNode(stagedPath));
+        }
 
         const auto &materialsDocument = j["materials"];
         std::vector<AssetRef<InxMaterial>> stagedMaterials(materialsDocument.size());
@@ -2003,8 +2152,13 @@ bool MeshRenderer::DeserializeDocument(const nlohmann::json &j)
 
         ++m_inlineMeshVersion;
 
-        // Component deserialization is order-independent. A MeshCollider may
-        // have been deserialized before the complete model binding was ready.
+        // Component deserialization is intentionally order-independent.  A
+        // MeshCollider may have been deserialized before this renderer and
+        // therefore cooked an empty (or whole-model) snapshot while the
+        // renderer still had no selected model node.  Re-issue the geometry
+        // publication after the complete model binding (GUID, stable
+        // subresource identity and node path) is restored so the collider
+        // captures exactly this renderer's selected mesh.
         NotifyCollisionGeometryChanged(this);
 
         return true;

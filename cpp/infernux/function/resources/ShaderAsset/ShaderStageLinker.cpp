@@ -6,6 +6,7 @@
 #include <cctype>
 #include <cstring>
 #include <limits>
+#include <nlohmann/json.hpp>
 #include <string_view>
 #include <unordered_map>
 #include <unordered_set>
@@ -102,6 +103,27 @@ std::optional<PropertyLayout> GetPropertyLayout(std::string_view type)
     return std::nullopt;
 }
 
+uint32_t PropertyArrayCount(const ShaderProperty &property)
+{
+    if (property.type != "FloatArray" && property.type != "Float4Array")
+        return 1;
+    const auto value = nlohmann::json::parse(property.defaultValue, nullptr, false);
+    if (!value.is_array() || value.empty())
+        return 0;
+    if (property.type == "FloatArray")
+        return std::all_of(value.begin(), value.end(), [](const auto &element) { return element.is_number(); })
+                   ? static_cast<uint32_t>(value.size())
+                   : 0;
+    return std::all_of(value.begin(), value.end(),
+                       [](const auto &element) {
+                           return element.is_array() && element.size() == 4 &&
+                                  std::all_of(element.begin(), element.end(),
+                                              [](const auto &component) { return component.is_number(); });
+                       })
+               ? static_cast<uint32_t>(value.size())
+               : 0;
+}
+
 bool SameRange(const std::optional<std::array<double, 2>> &lhs, const std::optional<std::array<double, 2>> &rhs)
 {
     if (lhs.has_value() != rhs.has_value())
@@ -194,16 +216,32 @@ void AssignPropertyLayout(ShaderProgramInterfaceArtifact &artifact, bool include
             continue;
         }
 
-        const auto layout = GetPropertyLayout(property.schema.type);
+        const uint32_t arrayCount = PropertyArrayCount(property.schema);
+        if ((property.schema.type == "FloatArray" || property.schema.type == "Float4Array") && arrayCount == 0) {
+            artifact.diagnostics.push_back(MakeDiagnostic(
+                ShaderLinkDiagnosticCode::PropertyContractMismatch,
+                "material array property '" + property.schema.name + "' requires a non-empty numeric default array",
+                HasVisibility(property.visibility, ShaderStageVisibility::Vertex) ? artifact.vertex.filePath
+                                                                                  : artifact.fragment.filePath,
+                property.schema.source));
+            continue;
+        }
+        std::optional<PropertyLayout> layout;
+        if (property.schema.type == "FloatArray" || property.schema.type == "Float4Array")
+            layout = PropertyLayout{16, 16u * arrayCount};
+        else
+            layout = GetPropertyLayout(property.schema.type);
         if (!layout)
             continue;
         bufferCursor = AlignUp(bufferCursor, layout->alignment);
         property.bufferOffset = bufferCursor;
         property.byteAlignment = layout->alignment;
         property.byteSize = layout->size;
+        property.arrayCount = arrayCount;
         bufferCursor += layout->size;
         signature = HashNumber(signature, *property.bufferOffset);
         signature = HashNumber(signature, property.byteSize);
+        signature = HashNumber(signature, property.arrayCount);
     }
     if (includeAlphaClipThreshold) {
         bufferCursor = AlignUp(bufferCursor, 4);

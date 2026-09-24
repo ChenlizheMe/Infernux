@@ -127,10 +127,12 @@ class TestInspectorDataStructs:
         oi.layer = 3
         oi.prefab_guid = ""
         oi.hide_transform = False
+        oi.driven_transform_properties = 5
         oi.transform_component_id = 91
         assert oi.name == "Cube"
         assert oi.layer == 3
         assert oi.transform_component_id == 91
+        assert oi.driven_transform_properties == 5
 
     def test_transform_data(self):
         td = InspectorTransformData()

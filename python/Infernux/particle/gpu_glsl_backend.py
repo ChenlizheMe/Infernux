@@ -7785,6 +7785,11 @@ def pack_gpu_particle_parameters(
             encoded = []
         elif kind is ValueType.MESH:
             if not is_component_ref_document(value, "SkinnedMeshRenderer"):
+                if type(value) is dict and value.get("$type") == "component_ref":
+                    raise GpuParticleCompileError(
+                        f"particle Mesh parameter {parameter.name!r} requires a Mesh "
+                        "asset or SkinnedMeshRenderer"
+                    )
                 try:
                     AssetReference.from_dict(value)
                 except (TypeError, ValueError) as exc:

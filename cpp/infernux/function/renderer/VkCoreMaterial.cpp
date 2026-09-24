@@ -1692,6 +1692,22 @@ uint64_t InxVkCoreModular::GetMeshPreviewDisplayTextureId() const
     return m_gpuMeshPreview ? m_gpuMeshPreview->GetDisplayTextureId() : 0;
 }
 
+MeshIndexFormat InxVkCoreModular::GetObjectIndexFormat(uint64_t objectId) const
+{
+    const auto it = m_perObjectBuffers.find(objectId);
+    if (it == m_perObjectBuffers.end() || !it->second.indexBuffer)
+        throw std::out_of_range("Object has no published GPU index buffer");
+    return it->second.indexFormat;
+}
+
+uint64_t InxVkCoreModular::GetObjectIndexBufferBytes(uint64_t objectId) const
+{
+    const auto it = m_perObjectBuffers.find(objectId);
+    if (it == m_perObjectBuffers.end() || !it->second.indexBuffer)
+        return 0;
+    return it->second.indexBuffer->GetSize();
+}
+
 uint64_t InxVkCoreModular::RenderModelAnimationPreview(const std::shared_ptr<InxMesh> &mesh, const std::string &take,
                                                        float seconds, int size, uint64_t dependencyRevision)
 {

@@ -589,6 +589,8 @@ class SceneRenderGraph
     /// Apply an NDC offset to a projection without assuming perspective or
     /// orthographic matrix layout. Culling continues to use the source matrix.
     [[nodiscard]] static glm::mat4 ApplyTemporalJitter(const glm::mat4 &projection, const glm::vec2 &jitterNdc);
+    [[nodiscard]] static glm::mat4 ProjectionForPass(const glm::mat4 &projection, const glm::vec2 &jitterNdc,
+                                                     bool editorOverlay);
 
     /// A caster may be frozen in the atlas only when its authoring contract
     /// explicitly declares it static and it has no frame-varying skin pose.
@@ -710,6 +712,7 @@ class SceneRenderGraph
     /// @brief Get per-graph shadow descriptor set (set 1) for the current frame-in-flight
     [[nodiscard]] VkDescriptorSet GetPerViewDescriptorSet() const;
     [[nodiscard]] rhi::BindGroupHandle GetPerViewBindGroup() const;
+    [[nodiscard]] rhi::BindGroupHandle GetEditorOverlayBindGroup() const;
 
     /// Build immutable lighting and shadow state owned by this camera graph.
     void StageCameraLighting(Scene *scene, Camera *camera, const glm::vec3 &cameraPosition,
@@ -982,9 +985,12 @@ class SceneRenderGraph
     {
         vk::DescriptorLease geometryDescriptor;
         vk::DescriptorLease particleDescriptor;
+        vk::DescriptorLease editorOverlayDescriptor;
         rhi::BindGroupHandle geometryGroup;
         rhi::BindGroupHandle particleGroup;
+        rhi::BindGroupHandle editorOverlayGroup;
         rhi::BufferHandle cameraMatrix;
+        rhi::BufferHandle editorOverlayCameraMatrix;
         rhi::BufferHandle lighting;
         PerViewBufferBindingState geometryBindings;
         PerViewBufferBindingState particleBindings;
@@ -998,6 +1004,11 @@ class SceneRenderGraph
         [[nodiscard]] VkDescriptorSet ParticleSet() const noexcept
         {
             return particleDescriptor.set;
+        }
+
+        [[nodiscard]] VkDescriptorSet EditorOverlaySet() const noexcept
+        {
+            return editorOverlayDescriptor.set;
         }
     };
 

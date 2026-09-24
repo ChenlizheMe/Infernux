@@ -92,6 +92,7 @@ jobs:
     timeout-minutes: 120
     env:
       VULKAN_SDK_VERSION: "1.3.296.0"
+      SDL_AUDIODRIVER: dummy
     steps:
       - uses: actions/checkout@v4
         with:
@@ -199,6 +200,7 @@ jobs:
         run: |
           conda activate infernux
           $env:VULKAN_SDK = "C:\VulkanSDK\$env:VULKAN_SDK_VERSION"
+          $env:PYTHONPATH = "$env:GITHUB_WORKSPACE\python" + $(if ($env:PYTHONPATH) { ";$env:PYTHONPATH" } else { "" })
           python -m pytest python\test -q --junitxml out\test-results\pytest-windows.xml
 
       - name: Run Hub tests

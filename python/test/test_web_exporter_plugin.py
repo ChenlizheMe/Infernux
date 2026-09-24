@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import importlib
 import json
+import os
 import re
 import shutil
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -17,6 +20,38 @@ ROOT = Path(__file__).resolve().parents[2]
 PLUGIN_EDITOR = (
     ROOT / "external" / "plugins" / "infernux_web" / "package" / "editor"
 )
+
+
+def _web_python_runtime_manifest():
+    return {
+        "implementation": "cpython",
+        "version": "3.13.15",
+        "abi": "cp313",
+        "platform": "emscripten",
+        "platform_version": "4.0.10",
+        "architecture": "wasm32",
+        "extension_linkage": "static-built-in",
+        "required_imports": ["numpy"],
+        "packages": [
+            {
+                "name": "numpy",
+                "version": "2.2.5",
+                "imports": ["numpy"],
+                "python_abi": "cp313",
+                "platform": "emscripten",
+                "platform_version": "4.0.10",
+                "architecture": "wasm32",
+                "linkage": "static-built-in",
+                "source_url": "https://files.pythonhosted.org/packages/source/n/numpy/numpy-2.2.5.tar.gz",
+                "source_sha256": "a9c0d994680cd991b1cb772e8b297340085466a6fe964bc9d4e80f5e2f43c291",
+                "payload_hash_algorithm": "infernux-tree-sha256-v1",
+                "payload_sha256": "1" * 64,
+                "payload_bytes": 1,
+                "payload_files": 1,
+                "license": "BSD-3-Clause",
+            }
+        ],
+    }
 
 
 def _web_module(monkeypatch):
@@ -32,7 +67,7 @@ def _request(tmp_path: Path) -> BuildRequest:
         str(tmp_path / "project"),
         "web-wasm32",
         str(tmp_path / "output"),
-        BuildProfile(options={"build_settings": {"scenes": []}}),
+        BuildProfile(options={"build_settings": {"scene_guids": []}}),
     )
 
 
@@ -206,7 +241,8 @@ def _installed_web_payload(tmp_path):
     player.mkdir(parents=True)
     manifest = {"$schema": "infernux.web_player", "engine": "0.4.0",
                 "platform": "web", "architecture": "wasm32", "python_abi": "cp313",
-                "configuration": "Release"}
+                "configuration": "Release",
+                "python_runtime": _web_python_runtime_manifest()}
     (player / "Player.inxmanifest").write_text(json.dumps(manifest), encoding="utf-8")
     for suffix in ("js", "wasm", "data"):
         (player / f"infernux-runtime.{suffix}").write_bytes(suffix.encode())
@@ -232,6 +268,77 @@ def test_web_doctor_accepts_installed_payload_without_compilers(monkeypatch, tmp
     assert Path(report.details["tint"]).is_relative_to(root)
 
 
+def test_web_python_payload_identity_is_content_and_path_stable(monkeypatch, tmp_path):
+    _web_module(monkeypatch)
+    native_payload = importlib.import_module("infernux_web.native_payload")
+    payload = tmp_path / "numpy-payload"
+    (payload / "numpy").mkdir(parents=True)
+    (payload / "numpy/__init__.py").write_bytes(b"version = 'fixture'\n")
+    (payload / "static").mkdir()
+    (payload / "static/multiarray.a").write_bytes(b"wasm archive")
+
+    first = native_payload.python_package_payload_identity(payload)
+    second = native_payload.python_package_payload_identity(payload)
+
+    assert first == second
+    assert first["algorithm"] == "infernux-tree-sha256-v1"
+    assert first["files"] == 2
+    assert first["bytes"] == len(b"version = 'fixture'\nwasm archive")
+    (payload / "numpy/__init__.py").write_bytes(b"version = 'changed'\n")
+    assert native_payload.python_package_payload_identity(payload)["sha256"] != first["sha256"]
+
+
+def test_web_python_payload_verification_rehashes_exact_preload_tree(monkeypatch, tmp_path):
+    _web_module(monkeypatch)
+    native_payload = importlib.import_module("infernux_web.native_payload")
+    payload = tmp_path / "numpy-payload"
+    (payload / "site-packages/numpy").mkdir(parents=True)
+    package_file = payload / "site-packages/numpy/__init__.py"
+    package_file.write_bytes(b"__version__ = '2.2.5'\n")
+    (payload / "archives").mkdir()
+    archives = []
+    for module in native_payload.WEB_NUMPY_BUILTIN_MODULES:
+        relative = f"archives/{module}.a"
+        (payload / relative).write_bytes(module.encode())
+        archives.append(relative)
+    (payload / "numpy_builtin_registry.c").write_bytes(b"int fixture;\n")
+    (payload / "numpy_static_link.json").write_text(
+        json.dumps({
+            "schema": "infernux.numpy_static_payload.v1",
+            "modules": list(native_payload.WEB_NUMPY_BUILTIN_MODULES),
+            "archives": archives,
+            "registry": "numpy_builtin_registry.c",
+            "preload": "site-packages",
+        }),
+        encoding="utf-8",
+    )
+    identity = native_payload.python_package_payload_identity(payload)
+    runtime = _web_python_runtime_manifest()
+    runtime["packages"][0].update(
+        payload_hash_algorithm=identity["algorithm"],
+        payload_sha256=identity["sha256"],
+        payload_bytes=identity["bytes"],
+        payload_files=identity["files"],
+    )
+
+    assert native_payload.verify_python_package_payload(
+        payload, runtime, package_name="numpy"
+    ) == identity
+    for field in ("payload_sha256", "payload_bytes", "payload_files"):
+        stale = json.loads(json.dumps(runtime))
+        value = stale["packages"][0][field]
+        stale["packages"][0][field] = ("0" * 64) if isinstance(value, str) else value + 1
+        with pytest.raises(ValueError, match="does not match manifest"):
+            native_payload.verify_python_package_payload(
+                payload, stale, package_name="numpy"
+            )
+    package_file.write_bytes(b"__version__ = 'stale'\n")
+    with pytest.raises(ValueError, match="does not match manifest.*sha256"):
+        native_payload.verify_python_package_payload(
+            payload, runtime, package_name="numpy"
+        )
+
+
 @pytest.mark.parametrize("missing", ["Player.inxmanifest", "infernux-runtime.wasm",
                                      "infernux-runtime.data"])
 def test_web_doctor_reports_missing_payload(monkeypatch, tmp_path, missing):
@@ -255,6 +362,43 @@ def test_web_doctor_rejects_incompatible_engine(monkeypatch, tmp_path):
     report = module.inspect_web_toolchain("web-wasm32")
     assert not report.available
     assert "does not match" in report.diagnostics[0].message
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        (lambda runtime: runtime.update(platform_version="4.0.9"), "ABI does not match"),
+        (lambda runtime: runtime.update(packages=[]), "package closure is missing"),
+        (
+            lambda runtime: runtime["packages"][0].update(linkage="dynamic-side-module"),
+            "package ABI is incompatible",
+        ),
+        (
+            lambda runtime: runtime["packages"][0].update(source_sha256="2" * 64),
+            "source provenance does not match",
+        ),
+        (
+            lambda runtime: runtime["packages"][0].update(payload_sha256="not-a-hash"),
+            "payload hash is invalid",
+        ),
+    ],
+)
+def test_web_doctor_rejects_missing_or_wrong_abi_python_runtime(
+    monkeypatch, tmp_path, mutation, message
+):
+    module = _web_module(monkeypatch)
+    doctor = importlib.import_module("infernux_web.doctor")
+    root = _installed_web_payload(tmp_path)
+    manifest_path = root / "player/Player.inxmanifest"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    mutation(manifest["python_runtime"])
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    monkeypatch.setattr(doctor, "__file__", str(root / "doctor.py"))
+
+    report = module.inspect_web_toolchain("web-wasm32")
+
+    assert not report.available
+    assert message in report.diagnostics[0].message
 
 
 @pytest.mark.parametrize("mode", ["windowed", "fullscreen_borderless"])
@@ -317,6 +461,141 @@ def test_web_assembly_reuses_runtime_and_packs_project_without_compilation(
     assert "{{{ SCRIPT }}}" not in html
     assert len(compiler_calls) == 1
     assert all(Path(item.path).is_relative_to(output) for item in artifacts)
+
+
+def test_web_publish_html_switch_failure_keeps_previous_generation_complete(
+    monkeypatch, tmp_path
+):
+    _web_module(monkeypatch)
+    exporter = importlib.import_module("infernux_web.exporter")
+    capabilities = importlib.import_module("infernux_web.capabilities")
+    request = _request(tmp_path)
+    output = Path(request.output_dir)
+    output.mkdir(parents=True)
+    host = tmp_path / "host-build"
+    host.mkdir()
+    old_revision = "a" * 24
+    new_revision = "b" * 24
+    old_names = [
+        "infernux-player.html",
+        *(
+            f"infernux-player.{old_revision}.{suffix}"
+            for suffix in ("js", "wasm", "data", "inxpkg")
+        ),
+    ]
+    for name in old_names:
+        (output / name).write_bytes(f"old:{name}".encode())
+    html = (
+        f"<script>const assetRevision = '{new_revision}';"
+        "const paths = {'infernux-runtime.wasm': "
+        "`infernux-player.${assetRevision}.wasm`, 'infernux-runtime.data': "
+        "`infernux-player.${assetRevision}.data`};</script>"
+        f'<script src="infernux-player.{new_revision}.js"></script>'
+    )
+    (host / "infernux-player.html").write_text(html, encoding="utf-8")
+    for suffix in ("js", "wasm", "data", "inxpkg"):
+        (host / f"infernux-player.{new_revision}.{suffix}").write_bytes(
+            f"new:{suffix}".encode()
+        )
+    for name in (
+        "infernux-logo.png",
+        "infernux-favicon.png",
+        "infernux-icon-192.png",
+        "infernux-icon-512.png",
+        "infernux.webmanifest",
+        "infernux-branding.js",
+    ):
+        (host / name).write_bytes(f"new:{name}".encode())
+    (host / exporter.WEBGPU_CAPABILITY_FILENAME).write_text(
+        json.dumps(capabilities.webgpu_capability_inventory()), encoding="utf-8"
+    )
+    original_replace = os.replace
+    replaced = []
+
+    def fail_html_switch(source, destination, *args, **kwargs):
+        replaced.append(Path(destination).name)
+        if Path(destination).name == "infernux-player.html":
+            raise OSError("injected HTML switch failure")
+        return original_replace(source, destination, *args, **kwargs)
+
+    monkeypatch.setattr(exporter.os, "replace", fail_html_switch)
+
+    with pytest.raises(OSError, match="injected HTML switch failure"):
+        exporter._publish_web_player(request, host, None)
+
+    for name in old_names:
+        assert (output / name).read_bytes() == f"old:{name}".encode()
+    for suffix in ("js", "wasm", "data", "inxpkg"):
+        assert (output / f"infernux-player.{new_revision}.{suffix}").is_file()
+    assert replaced[-1] == "infernux-player.html"
+    assert not list(output.glob(".*.tmp"))
+
+
+def test_web_publish_copy_failure_keeps_previous_generation_complete(
+    monkeypatch, tmp_path
+):
+    _web_module(monkeypatch)
+    exporter = importlib.import_module("infernux_web.exporter")
+    capabilities = importlib.import_module("infernux_web.capabilities")
+    request = _request(tmp_path)
+    output = Path(request.output_dir)
+    output.mkdir(parents=True)
+    host = tmp_path / "host-build"
+    host.mkdir()
+    old_revision = "c" * 24
+    new_revision = "d" * 24
+    old_names = [
+        "infernux-player.html",
+        *(
+            f"infernux-player.{old_revision}.{suffix}"
+            for suffix in ("js", "wasm", "data", "inxpkg")
+        ),
+    ]
+    old_bytes = {}
+    for name in old_names:
+        old_bytes[name] = f"old:{name}".encode()
+        (output / name).write_bytes(old_bytes[name])
+    html = (
+        f"<script>const assetRevision = '{new_revision}';"
+        "const paths = {'infernux-runtime.wasm': "
+        "`infernux-player.${assetRevision}.wasm`, 'infernux-runtime.data': "
+        "`infernux-player.${assetRevision}.data`};</script>"
+        f'<script src="infernux-player.{new_revision}.js"></script>'
+    )
+    (host / "infernux-player.html").write_text(html, encoding="utf-8")
+    for suffix in ("js", "wasm", "data", "inxpkg"):
+        (host / f"infernux-player.{new_revision}.{suffix}").write_bytes(
+            f"new:{suffix}".encode()
+        )
+    for name in (
+        "infernux-logo.png",
+        "infernux-favicon.png",
+        "infernux-icon-192.png",
+        "infernux-icon-512.png",
+        "infernux.webmanifest",
+        "infernux-branding.js",
+    ):
+        (host / name).write_bytes(f"new:{name}".encode())
+    (host / exporter.WEBGPU_CAPABILITY_FILENAME).write_text(
+        json.dumps(capabilities.webgpu_capability_inventory()), encoding="utf-8"
+    )
+    original_copy2 = exporter.shutil.copy2
+
+    def fail_resource_copy(source, destination, *args, **kwargs):
+        if Path(source).name == f"infernux-player.{new_revision}.wasm":
+            Path(destination).write_bytes(b"partial")
+            raise OSError("injected resource copy failure")
+        return original_copy2(source, destination, *args, **kwargs)
+
+    monkeypatch.setattr(exporter.shutil, "copy2", fail_resource_copy)
+
+    with pytest.raises(OSError, match="injected resource copy failure"):
+        exporter._publish_web_player(request, host, None)
+
+    for name, expected in old_bytes.items():
+        assert (output / name).read_bytes() == expected
+    assert not list(output.glob(f"infernux-player.{new_revision}.*"))
+    assert not list(output.glob(".*.tmp"))
 
 
 def test_web_exporter_plan_exposes_real_runtime_stages(monkeypatch, tmp_path):
@@ -417,6 +696,7 @@ def test_web_export_publishes_versioned_cooked_player(monkeypatch, tmp_path):
                 "emsdk_root": "/fixture/emsdk",
                 "cpython_root": "/fixture/cpython",
                 "source_root": str(ROOT),
+                "player": {"python_runtime": _web_python_runtime_manifest()},
             },
         ),
     )
@@ -448,7 +728,7 @@ def test_web_export_publishes_versioned_cooked_player(monkeypatch, tmp_path):
     monkeypatch.setattr(
         exporter_module,
         "_cook_web_player_assets",
-        lambda _request, _staging: ("Balance", player_assets),
+        lambda _request, _staging: ("Balance", player_assets, ()),
     )
     monkeypatch.setattr(
         exporter_module,
@@ -540,6 +820,7 @@ def test_web_export_publishes_versioned_cooked_player(monkeypatch, tmp_path):
     assert result.manifest["game"] == "Balance"
     assert result.manifest["asset_revision"] == revision
     assert result.manifest["entry_point"] == "infernux-player.html"
+    assert result.manifest["python_runtime"] == _web_python_runtime_manifest()
     assert result.manifest["web_template"] == "project"
     assert result.manifest["presentation"] == {
         "display_mode": "fullscreen_borderless",
@@ -648,6 +929,8 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
     main = (host_templates / "main.cpp").read_text(encoding="utf-8")
     rhi_backend = (host_templates / "WebGpuRhiDevice.cpp").read_text(encoding="utf-8")
     scene_renderer = (host_templates / "WebSceneRenderer.cpp").read_text(encoding="utf-8")
+    scene_renderer_header = (host_templates / "WebSceneRenderer.h").read_text(encoding="utf-8")
+    index_packing = (host_templates / "WebIndexPacking.cpp").read_text(encoding="utf-8")
     particle_runtime = (host_templates / "WebParticleRuntime.cpp").read_text(encoding="utf-8")
     post_process_renderer = (host_templates / "WebPostProcessRenderer.cpp").read_text(
         encoding="utf-8"
@@ -664,8 +947,22 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
 
     assert "libpython3.13.a" in cmake
     assert "--use-port=emdawnwebgpu" in cmake
+    assert "INFERNUX_WEB_PYTHON_RUNTIME_MANIFEST" in cmake
+    assert "INFERNUX_WEB_NUMPY_PAYLOAD_ROOT" in cmake
+    assert "INFERNUX_WEB_HOST_PYTHON" in cmake
+    assert "--verify-python-package-payload" in cmake
+    assert "infernux_web_verify_python_runtime" in cmake
+    assert "COMMAND python" not in cmake
+    assert "numpy_builtin_registry.c" in cmake
+    assert "InfernuxRegisterNumPyBuiltins" in main
+    assert r'\"python_runtime\":${_python_runtime_manifest}' in cmake
     assert "adapterOptions.forceFallbackAdapter" in main
     assert "INFERNUX_WEBGPU_ADAPTER_REQUEST mode=%s" in main
+    assert "g_adapter = std::move(adapter);" in main
+    assert "g_device = std::move(device);" in main
+    assert "INFERNUX_WEB_NUMPY_READY version=2.2.5 abi=cp313" in main
+    assert "tuple(sys._emscripten_info.emscripten_version) == (4, 0, 10)" in main
+    assert 'PrintPythonError("numerical-runtime")' in main
     assert "TextureFormat::RGBA16Unorm" not in rhi_backend
     assert "TextureFormat::RGBA16Unorm" not in scene_renderer
     assert "TextureFormat::RGBA16Unorm" not in screen_ui_renderer
@@ -678,6 +975,15 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
     assert "MAIN_MODULE" not in cmake
     assert "FullscreenRenderer.cpp" in cmake
     assert "WebSceneRenderer.cpp" in cmake
+    assert "WebIndexPacking.cpp" in cmake
+    assert "SceneManager &sceneManager = SceneManager::Instance();" in scene_renderer
+    assert "m_extractor.ExtractCameraFrame(m_world, camera)" in scene_renderer
+    assert "const auto &residentLights = sceneManager.GetActiveLights();" in scene_renderer
+    assert "scene->GetEnvironment()" in scene_renderer
+    assert "sceneManager.GetActiveMeshRenderers().size()" in scene_renderer
+    assert "sceneManager.GetRuntimePersistentScene()" in scene_renderer
+    assert "scenes=%zu renderers=%zu lights=%zu active_world=%llu" in scene_renderer
+    assert "GetAllScenes()" not in scene_renderer
     assert "WebPostProcessRenderer.cpp" in cmake
     assert "dv_smith_joint_ggx" in scene_renderer
     assert 'MaterialFloat(draw.material, "metallic", 0.0f)' in scene_renderer
@@ -697,7 +1003,7 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
     assert "material_smoothness_map" in scene_renderer
     assert "material_ao_map" in scene_renderer
     assert "material_normal_map" in scene_renderer
-    assert "MaterialTextureGuids" in scene_renderer
+    assert "MaterialTextures" in scene_renderer
     assert "ResolveMaterialTextureSet" in scene_renderer
     assert 'MaterialFloat(draw.material, "normalScale", 1.0f)' in scene_renderer
     assert "INFERNUX_WEB_MATERIAL_TEXTURE_READY" in scene_renderer
@@ -711,6 +1017,29 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
     assert "samplerDescriptor.maxAnisotropy" in scene_renderer
     assert "offsetof(WebVertex, tangent)" in scene_renderer
     assert "source.texCoord" in scene_renderer
+    assert "offsetof(WebVertex, uv1)" in scene_renderer
+    assert "source.texCoord1" in scene_renderer
+    assert 'MaterialInt(draw.material, "baseColorUvSet", 0)' in scene_renderer
+    assert 'MaterialInt(draw.material, "normalUvSet", 0)' in scene_renderer
+    assert "invalid-material-uv-set" in scene_renderer
+    assert "let position_dx = dpdx(input.world_position);" in scene_renderer
+    assert "let position_dy = dpdy(input.world_position);" in scene_renderer
+    assert "let uv_dx = dpdx(uv);" in scene_renderer
+    assert "let uv_dy = dpdy(uv);" in scene_renderer
+    assert "use_derivative_basis = input.texture_uv_sets1.x >= 0.5" in scene_renderer
+    assert "select(authored_normal, derivative_normal, use_derivative_basis)" in scene_renderer
+    assert "MaterialTextureSampler" in scene_renderer
+    assert "SamplerIdentity" in scene_renderer
+    assert "textureIdentity = guid + '\\x1e' + samplerIdentity" in scene_renderer
+    assert "key.append(SamplerIdentity(bindings[index].sampler))" in scene_renderer
+    assert "std::array<GPUTexture, 6>" in scene_renderer
+    assert "material_emission_map" in scene_renderer
+    assert "input.metallic_channels" in scene_renderer
+    assert "input.smoothness_channels" in scene_renderer
+    assert "sampled_smoothness_channel * input.material.y" in scene_renderer
+    assert "1.0 - sampled_smoothness_channel * (1.0 - input.material.y)" in scene_renderer
+    assert "roughness_smoothness" in scene_renderer
+    assert "input.material_sampling.y" in scene_renderer
     assert "horizon_glow" in scene_renderer
     assert "smoothstep(-0.10, 0.45, y)" in scene_renderer
     assert 'EXCLUDE REGEX "SceneRenderExtractor\\\\.cpp$"' not in cmake
@@ -769,6 +1098,20 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
         "passDescriptor.depthStencilAttachment = &depthAttachment"
     ) < main.index("scenePrepared && g_sceneRenderer.RenderPrepared(pass)")
     assert "INFERNUX_WEB_SCENE_RENDER_READY" in scene_renderer
+    assert "PackWebIndexRange(indexStreams, draw.meshIndexFormat" in scene_renderer
+    assert "m_indexBuffer16" in scene_renderer
+    assert "m_indexBuffer32" in scene_renderer
+    assert "WebPackedIndexStreams m_indexStreams" in scene_renderer_header
+    assert "std::vector<uint32_t> m_indices" not in scene_renderer_header
+    assert "wgpu::IndexFormat::Uint16" in scene_renderer
+    assert "wgpu::IndexFormat::Uint32" in scene_renderer
+    assert "range.indices.baseVertex" in scene_renderer
+    assert "BindIndexStream(shadowPass, range.indices.format)" in scene_renderer
+    assert "BindIndexStream(pass, range.indices.format)" in scene_renderer
+    assert "sourceIndex >= sourceVertices.size()" not in scene_renderer
+    assert "ResolveMeshIndexFormat(requestedFormat" in index_packing
+    assert "Web rebased vertex index exceeds the uint32 GPU range" in index_packing
+    assert "const size_t padding = indexCount % 2U" in index_packing
     assert "INFERNUX_WEB_SKY_READY" in scene_renderer
     assert "INFERNUX_WEB_SHADOW_READY" in scene_renderer
     assert "SetSkyEnabledForDiagnostics" in scene_renderer
@@ -969,13 +1312,15 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
     assert "session.load_scene(" not in asset_contract
     assert "_player_initial_scene_path = scene_path" in asset_contract
     assert "_prepare_player_asset_contract()" in player_runtime
-    assert "session.load_scene(scene_path)" in player_runtime
+    assert "session.load_scene(scene_path)" not in player_runtime
+    assert "session.load_scene(_player_initial_scene_path)" not in player_runtime
+    assert "session.load_scene(scene_guid)" in player_runtime
     assert "PluginManager.startup(" in player_runtime
     assert player_runtime.index("PluginManager.startup(") < player_runtime.index(
-        "session.load_scene(scene_path)"
+        "session.load_scene(scene_guid)"
     )
     assert player_runtime.index("_install_runtime_lifecycle_bridge(") < player_runtime.index(
-        "session.load_scene(scene_path)"
+        "session.load_scene(scene_guid)"
     )
     lifecycle_bridge = bootstrap[
         bootstrap.index("def _install_runtime_lifecycle_bridge(") : bootstrap.index(
@@ -1036,6 +1381,11 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
     assert "AddImageRounded" in screen_ui_renderer
     assert "command.GetTexID()" in screen_ui_renderer
     assert "screen_ui_add_text" in host_module
+    assert "ParseFallbackFontPaths" in host_module
+    assert '"sddsdd|O:screen_ui_measure_text"' in host_module
+    assert "clip, fallbackFontPaths" in host_module
+    assert "fallbackFontPaths});" in screen_ui_renderer
+    assert "draw->PushClipRect({minX, minY}, {maxX, maxY}, true);" in screen_ui_renderer
     assert "_WebScreenUITextureCache" in bootstrap
     assert "_screen_ui_texture_cache.get" in bootstrap
     assert "RuntimeScreenUISubmission._submit_canvas" in bootstrap
@@ -1062,6 +1412,34 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
     assert re.search(r"\bgles\b", combined) is None
 
 
+def test_web_scene_shader_passes_pinned_tint_validation():
+    renderer = (
+        ROOT / "external" / "plugins" / "infernux_web" / "native" / "WebSceneRenderer.cpp"
+    ).read_text(encoding="utf-8")
+    match = re.search(
+        r'constexpr char kSceneShader\[\] = R"wgsl\((.*?)\)wgsl";',
+        renderer,
+        re.DOTALL,
+    )
+    assert match is not None
+    platform_name = "windows-x64" if sys.platform == "win32" else "linux-x64"
+    executable = "tint.exe" if sys.platform == "win32" else "tint"
+    tint = PLUGIN_EDITOR / "infernux_web" / "tools" / platform_name / executable
+    if not tint.is_file():
+        pytest.skip(f"pinned Tint is unavailable for {platform_name}")
+    with tempfile.TemporaryDirectory(prefix="web-wgsl-", dir=ROOT / "out") as temp_dir:
+        shader = Path(temp_dir) / "WebSceneRenderer.wgsl"
+        shader.write_text(match.group(1), encoding="utf-8")
+        completed = subprocess.run(
+            [str(tint), "--input-format", "wgsl", "--format", "wgsl", str(shader)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+
+
 def test_web_host_build_templates_are_editor_only():
     plugin_root = ROOT / "external" / "plugins" / "infernux_web"
     host_templates = (
@@ -1082,6 +1460,79 @@ def test_web_host_build_templates_are_editor_only():
         if path.is_file():
             relative = path.relative_to(plugin_root / "package").as_posix()
             assert player_file_exported({}, relative) is False
+
+
+def test_web_asset_database_binding_exposes_readonly_guid_snapshot():
+    source = (
+        ROOT
+        / "cpp/infernux/tools/pybinding/BindingAssetRegistry.cpp"
+    ).read_text(encoding="utf-8")
+    cmake = (
+        ROOT / "external/plugins/infernux_web/native/CMakeLists.txt"
+    ).read_text(encoding="utf-8")
+    web_binding = source[
+        source.index("#if defined(INFERNUX_PYBIND_WEB_PLAYER)") : source.index(
+            "#endif", source.index("#if defined(INFERNUX_PYBIND_WEB_PLAYER)")
+        )
+    ]
+    runtime_bindings = cmake[
+        cmake.index("set(_web_runtime_binding_sources") : cmake.index(
+            "add_library(InfernuxWebNativeModuleProbe"
+        )
+    ]
+
+    assert '.def("get_all_guids", &AssetDatabase::GetAllGuids' in web_binding
+    assert '.def("refresh"' not in web_binding
+    assert "BindingAssetRegistry.cpp" in runtime_bindings
+    assert "BindingAssetDatabase.cpp" not in runtime_bindings
+
+
+def test_web_bootstrap_binds_guid_asset_api_to_player_memfs():
+    bootstrap = (
+        ROOT / "external" / "plugins" / "infernux_web" / "native" / "bootstrap.py"
+    ).read_text(encoding="utf-8")
+
+    public_api = bootstrap[
+        bootstrap.index("def _install_platform_runtime_api(") : bootstrap.index(
+            "def _install_runtime_lifecycle_bridge("
+        )
+    ]
+    asset_contract = bootstrap[
+        bootstrap.index("def _prepare_player_asset_contract()") : bootstrap.index(
+            "def _prepare_player_runtime()"
+        )
+    ]
+    runtime = bootstrap[
+        bootstrap.index("def _prepare_player_runtime()") : bootstrap.index(
+            "class _WebSplashPlayer"
+        )
+    ]
+
+    assert '"AssetFile": assets_module.AssetFile' in public_api
+    assert '"AssetManager": assets_module.AssetManager' in public_api
+    assert '"SandboxPath": sandbox_files_module.SandboxPath' in public_api
+    assert "package.__version__" not in public_api
+    assert '_loose_root = os.path.join(_persistent_root, "loose")' in asset_contract
+    assert 'os.environ["_INFERNUX_PLAYER_INSTALL_ROOT"] = _loose_root' in asset_contract
+    assert 'os.environ["_INFERNUX_PLAYER_INSTALL_ROOT"] = _player_root' not in asset_contract
+    assert 'scene_guids = build_manifest_document.get("scene_guids")' in asset_contract
+    assert "runtime_catalog.resolve_scene(scene_guids[0])" in asset_contract
+    assert "BuildSettings.json" not in asset_contract
+    assert 'Application._bind_engine(session, "player")' in runtime
+    assert "AssetManager.initialize(session)" in runtime
+    assert runtime.index('Application._bind_engine(session, "player")') < runtime.index(
+        "AssetManager.initialize(session)"
+    )
+    assert runtime.index("AssetManager.initialize(session)") < runtime.index(
+        "session.configure_runtime_contract("
+    )
+    assert runtime.index("session.configure_runtime_contract(") < runtime.index(
+        "PluginManager.startup("
+    )
+    assert "session.load_scene(scene_path)" not in runtime
+    assert runtime.index("session.configure_runtime_contract(") < runtime.index(
+        "session.load_scene(scene_guid)"
+    )
 
 
 def test_web_native_runtime_excludes_model_authoring_and_links_stream_audio():

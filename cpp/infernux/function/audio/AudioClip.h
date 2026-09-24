@@ -23,8 +23,8 @@ struct AudioPlaybackPcm
  *
  * AudioClip is the audio equivalent of a Texture — it represents loaded,
  * ready-to-play audio data. Resident clips share decoded PCM; streaming voices
- * own bounded read-ahead buffers. Both are referenced by AudioSource components.
- *
+ * own bounded read-ahead buffers. Both
+ * are referenced by AudioSource components.
  * Unity API alignment:
  * - AudioClip.length       → GetDuration()
  * - AudioClip.samples      → GetSampleCount()
@@ -125,7 +125,10 @@ class AudioClip
     /// Return one immutable stereo float playback image shared by every
     /// active voice of this clip at the requested output sample rate.
     [[nodiscard]] std::shared_ptr<const AudioPlaybackPcm> AcquirePlaybackPcm(int sampleRate) const;
-    [[nodiscard]] bool IsStreaming() const { return m_streaming; }
+    [[nodiscard]] bool IsStreaming() const
+    {
+        return m_streaming;
+    }
     [[nodiscard]] std::unique_ptr<AudioStreamBuffer> CreateStream(uint64_t firstFrame) const;
 
   private:

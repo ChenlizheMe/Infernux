@@ -424,6 +424,7 @@ void SceneRenderExtractor::UpdateCachedRenderableTransforms(RenderWorldFrame &fr
                     dc.meshDataOwner = source.inlineMeshOwner;
                     dc.meshVertices = source.inlineVertices;
                     dc.meshIndices = source.inlineIndices;
+                    dc.meshIndexFormat = MeshIndexFormat::Auto;
                     dc.meshVertexBuffer = mr->GetVertexBuffer();
                     dc.meshRuntimeVersion = mr->GetInlineMeshVersion();
                     dc.meshAssetGuid = mr->HasSharedInlineMesh() ? mr->GetSharedInlineMeshGuid() : std::string{};
@@ -518,11 +519,9 @@ void SceneRenderExtractor::EmitDrawCallsForRenderable(DrawCallResult &result, co
             return;
         const auto stampAssetIdentity = [&assetRef, renderer](DrawCall &drawCall) {
             drawCall.meshAssetGuid = assetRef.GetGuid();
-            // GPU cache identity includes the geometry view, not just its source
-            // asset: a merged preview may coexist with local hierarchy instances.
-            if (renderer->IsModelNodeLocal())
-                drawCall.meshAssetGuid += ":node-local";
             drawCall.meshRuntimeVersion = assetRef.GetCachedVersion();
+            drawCall.meshGeometryView =
+                renderer->IsModelNodeLocal() ? MeshGeometryView::NodeLocal : MeshGeometryView::MergedModelSpace;
         };
         const auto geometry = renderer->GetAssetGeometry();
         if (!geometry)
@@ -535,11 +534,15 @@ void SceneRenderExtractor::EmitDrawCallsForRenderable(DrawCallResult &result, co
         const std::vector<glm::mat4> *skinBoneMatricesPtr = nullptr;
         std::shared_ptr<const std::vector<glm::mat4>> previousSkinBoneMatricesOwner;
         const std::vector<glm::mat4> *previousSkinBoneMatricesPtr = nullptr;
+        MeshIndexFormat drawIndexFormat = meshPtr->GetIndexFormat();
         if (auto *skinned = source.skinnedRenderer; skinned && skinned->HasRuntimeSkinnedMesh()) {
             objVerticesPtr = &skinned->GetRuntimeSkinnedVertices();
             objIndicesPtr = &skinned->GetRuntimeSkinnedIndices();
             subMeshesPtr = &skinned->GetRuntimeSkinnedSubMeshes();
-            meshDataOwner = skinned->GetRuntimeModelSnapshot();
+            const auto runtimeModel = skinned->GetRuntimeModelSnapshot();
+            meshDataOwner = runtimeModel;
+            if (runtimeModel)
+                drawIndexFormat = runtimeModel->indexFormat;
             const auto pose = skinned->GetRuntimeSkinPoseSnapshot();
             skinBoneMatricesOwner = pose ? pose->current : nullptr;
             skinBoneMatricesPtr = skinBoneMatricesOwner.get();
@@ -548,7 +551,8 @@ void SceneRenderExtractor::EmitDrawCallsForRenderable(DrawCallResult &result, co
         }
         const auto &objVertices = *objVerticesPtr;
         const auto &objIndices = *objIndicesPtr;
-        if (objVertices.empty() || objIndices.empty())
+        const bool gpuResidentOnly = !source.skinnedRenderer && !meshPtr->HasCpuGeometry();
+        if ((objVertices.empty() || objIndices.empty()) && !gpuResidentOnly)
             return;
 
         const glm::mat4 &worldMatrix = frame.worldMatrix;
@@ -560,7 +564,7 @@ void SceneRenderExtractor::EmitDrawCallsForRenderable(DrawCallResult &result, co
             // Fallback: single draw call for entire mesh
             DrawCall dc;
             dc.indexStart = 0;
-            dc.indexCount = static_cast<uint32_t>(objIndices.size());
+            dc.indexCount = gpuResidentOnly ? geometry->indexCount : static_cast<uint32_t>(objIndices.size());
             dc.vertexStart = 0;
             dc.worldMatrix = worldMatrix;
             dc.material = renderer->GetEffectiveMaterial(0);
@@ -575,6 +579,7 @@ void SceneRenderExtractor::EmitDrawCallsForRenderable(DrawCallResult &result, co
             dc.worldBounds = frame.worldBounds;
             dc.meshVertices = &objVertices;
             dc.meshIndices = &objIndices;
+            dc.meshIndexFormat = drawIndexFormat;
             dc.meshDataOwner = meshDataOwner;
             stampAssetIdentity(dc);
             dc.skinBoneMatricesOwner = skinBoneMatricesOwner;
@@ -608,6 +613,7 @@ void SceneRenderExtractor::EmitDrawCallsForRenderable(DrawCallResult &result, co
             dc.worldBounds = frame.worldBounds;
             dc.meshVertices = &objVertices;
             dc.meshIndices = &objIndices;
+            dc.meshIndexFormat = drawIndexFormat;
             dc.meshDataOwner = meshDataOwner;
             stampAssetIdentity(dc);
             dc.skinBoneMatricesOwner = skinBoneMatricesOwner;
@@ -657,6 +663,7 @@ void SceneRenderExtractor::EmitDrawCallsForRenderable(DrawCallResult &result, co
                 dc.worldBounds = frame.worldBounds;
                 dc.meshVertices = &objVertices;
                 dc.meshIndices = &objIndices;
+                dc.meshIndexFormat = drawIndexFormat;
                 dc.meshDataOwner = meshDataOwner;
                 stampAssetIdentity(dc);
                 dc.skinBoneMatricesOwner = skinBoneMatricesOwner;

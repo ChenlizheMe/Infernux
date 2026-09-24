@@ -251,6 +251,10 @@ class InxRenderer
     {
         return m_computeHostLeases != 0;
     }
+    [[nodiscard]] size_t GetComputeHostLeaseCount() const noexcept
+    {
+        return m_computeHostLeases;
+    }
 
     InxRenderer(const InxRenderer &) = delete;
     InxRenderer &operator=(const InxRenderer &) = delete;
@@ -312,6 +316,8 @@ class InxRenderer
     [[nodiscard]] size_t GetMeshGpuCacheEntryCount() const;
     [[nodiscard]] size_t GetRetiredMeshGpuLeaseCount() const;
     [[nodiscard]] uint64_t GetMeshGpuEvictionCount() const;
+    [[nodiscard]] MeshIndexFormat GetObjectMeshIndexFormat(uint64_t objectId) const;
+    [[nodiscard]] uint64_t GetObjectMeshIndexBufferBytes(uint64_t objectId) const;
     void SetMeshGpuBudgetBytes(uint64_t bytes);
     [[nodiscard]] size_t TrimMeshGpuBudget();
     [[nodiscard]] GpuResidencySnapshot GetGpuResidencySnapshot() const;

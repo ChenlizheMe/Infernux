@@ -9,7 +9,6 @@ from pathlib import Path, PurePosixPath
 from typing import Mapping
 
 from Infernux.engine.path_utils import resolved_path
-from .package import package_migration_error
 
 
 ANDROID_PLUGIN_REFERENCE = "infernux/platform-android"
@@ -170,9 +169,6 @@ def plugin_install_block_reason(
     reference: str,
     environ: Mapping[str, str] | None = None,
 ) -> str:
-    migration = package_migration_error(reference)
-    if migration:
-        return migration
     if str(reference or "").strip().casefold() != ANDROID_PLUGIN_REFERENCE:
         return ""
     return "" if android_support_available(environ) else ANDROID_SUPPORT_REQUIRED_MESSAGE

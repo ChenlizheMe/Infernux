@@ -256,7 +256,7 @@
                             <span class="ns-arr">&#9654;</span>
                             <span class="ns-nm">Infernux.jit</span>
                         </button>
-                        <div class="ns-ch"><a href="/wiki/site/en/api/njit.html" class="">njit</a><a href="/wiki/site/en/api/warmup.html" class="">warmup</a></div>
+                        <div class="ns-ch"><a href="/wiki/site/en/api/compile.html" class="">compile</a><a href="/wiki/site/en/api/statistics.html" class="">statistics</a><a href="/wiki/site/en/api/warmup.html" class="">warmup</a></div>
                     </div><div class="ns-group">
                         <button type="button" class="ns-hd" aria-expanded="false">
                             <span class="ns-arr">&#9654;</span>
@@ -393,6 +393,16 @@ class in <b>Infernux.components.builtin</b>
 <td>The name of the assigned mesh. <em>(read-only)</em></td>
 </tr>
 <tr>
+<td>mesh</td>
+<td><code>Optional[Mesh]</code></td>
+<td></td>
+</tr>
+<tr>
+<td>shared_mesh</td>
+<td><code>Optional[Mesh]</code></td>
+<td></td>
+</tr>
+<tr>
 <td>vertex_count</td>
 <td><code>int</code></td>
 <td>The number of vertices in the mesh. <em>(read-only)</em></td>
@@ -401,6 +411,16 @@ class in <b>Infernux.components.builtin</b>
 <td>index_count</td>
 <td><code>int</code></td>
 <td>The number of indices in the mesh. <em>(read-only)</em></td>
+</tr>
+<tr>
+<td>inline_mesh_version</td>
+<td><code>int</code></td>
+<td><em>(read-only)</em></td>
+</tr>
+<tr>
+<td>vertex_buffer_capacity</td>
+<td><code>int</code></td>
+<td><em>(read-only)</em></td>
 </tr>
 </tbody>
 </table>
@@ -442,6 +462,22 @@ class in <b>Infernux.components.builtin</b>
 <td>Set the number of material slots on this renderer.</td>
 </tr>
 <tr>
+<td><code>set_parameter(name: str, value: Any, material_slot: int = ..., persistent: bool = ..., owner: str = ...) → None</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>get_parameter(name: str, material_slot: int = ..., persistent_only: bool = ..., owner: str = ...) → Any</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>remove_parameter(name: str, material_slot: int = ..., persistent: bool = ..., owner: str = ...) → bool</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>clear_parameters(material_slot: int = ..., persistent: bool = ..., owner: str = ...) → None</code></td>
+<td></td>
+</tr>
+<tr>
 <td><code>has_inline_mesh() → bool</code></td>
 <td>Return whether the renderer has an inline (non-asset) mesh.</td>
 </tr>
@@ -466,12 +502,44 @@ class in <b>Infernux.components.builtin</b>
 <td>Return the list of vertex normals.</td>
 </tr>
 <tr>
+<td><code>get_tangents() → List[Tuple[float, float, float, float]]</code></td>
+<td>Return tangent direction and handedness for every vertex.</td>
+</tr>
+<tr>
 <td><code>get_uvs() → List[Tuple[float, float]]</code></td>
 <td>Return the list of UV coordinates.</td>
 </tr>
 <tr>
 <td><code>get_indices() → List[int]</code></td>
 <td>Return the list of triangle indices.</td>
+</tr>
+<tr>
+<td><code>set_inline_mesh_data(positions: Any, normals: Any, uvs: Any, indices: Any, name: str = 'Inline Mesh', tangents: Any = None) → None</code></td>
+<td>Copy NumPy geometry; omitted normals/tangents are derived.</td>
+</tr>
+<tr>
+<td><code>recalculate_normals() → None</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>recalculate_tangents() → None</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>recalculate_bounds() → None</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>create_vertex_buffer(device: str = 'gpu', auto_normals: bool = True, auto_tangents: bool = True, capacity: int | None = None) → Buffer</code></td>
+<td>Create resident vertex storage with automatic GPU normal/tangent rebuilding.</td>
+</tr>
+<tr>
+<td><code>set_vertex_buffer(value: Buffer, bounds_min: Any, bounds_max: Any, space: str = ...) → None</code></td>
+<td>Render directly from resident vertex storage in explicit local or world space.</td>
+</tr>
+<tr>
+<td><code>clear_vertex_buffer() → None</code></td>
+<td>Return rendering to the authored CPU vertex stream.</td>
 </tr>
 <tr>
 <td><code>set_primitive_mesh(primitive_type: Any) → None</code></td>

@@ -1527,6 +1527,20 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
                                    return renderer ? renderer->GetMeshGpuEvictionCount() : uint64_t{0};
                                })
         .def(
+            "get_object_mesh_index_gpu_info",
+            [](const Infernux &self, uint64_t objectId) {
+                const auto *renderer = self.GetRenderer();
+                if (!renderer)
+                    throw std::logic_error("Cannot inspect a GPU mesh without an initialized renderer");
+                py::dict result;
+                const auto format = renderer->GetObjectMeshIndexFormat(objectId);
+                result["format"] = format == MeshIndexFormat::UInt16 ? "uint16" : "uint32";
+                result["bytes"] = renderer->GetObjectMeshIndexBufferBytes(objectId);
+                return result;
+            },
+            py::arg("object_id"),
+            "Inspect the actual Vulkan index allocation currently published for one render object")
+        .def(
             "set_mesh_gpu_budget_bytes",
             [](Infernux &self, uint64_t bytes) {
                 auto *renderer = self.GetRenderer();
@@ -2081,7 +2095,7 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
                 auto *r = self.GetRenderer();
                 return r && r->IsWindowMinimized();
             },
-            "Return whether the Infernux window is currently minimized or occluded")
+            "Return whether native presentation is suspended by window state")
         .def(
             "set_window_icon",
             [](Infernux &self, const std::string &iconPath) {

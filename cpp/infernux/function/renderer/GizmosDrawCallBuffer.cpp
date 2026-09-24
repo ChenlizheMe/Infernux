@@ -1,6 +1,7 @@
 #include "GizmosDrawCallBuffer.h"
 
 #include <algorithm>
+#include <cmath>
 #include <core/config/MathConstants.h>
 #include <core/log/InxLog.h>
 #include <cstring>
@@ -27,10 +28,8 @@ bool SameVertex(const Vertex &left, const Vertex &right) noexcept
 
 bool SameVertices(const std::vector<Vertex> &left, const std::vector<Vertex> &right) noexcept
 {
-    return left.size() == right.size() &&
-           std::equal(left.begin(), left.end(), right.begin(), [](const Vertex &a, const Vertex &b) {
-               return SameVertex(a, b);
-           });
+    return left.size() == right.size() && std::equal(left.begin(), left.end(), right.begin(),
+                                                     [](const Vertex &a, const Vertex &b) { return SameVertex(a, b); });
 }
 
 void AdvanceRevision(uint64_t &revision) noexcept
@@ -285,8 +284,24 @@ bool GizmosDrawCallBuffer::HasIconData() const
     return !m_iconEntries.empty();
 }
 
+float GizmosDrawCallBuffer::ComputeIconHalfWorldSize(const glm::vec3 &iconPosition, const glm::vec3 &cameraPosition,
+                                                     const glm::vec3 &cameraForward, const glm::mat4 &projection,
+                                                     uint32_t viewportHeight, float dpiScale)
+{
+    // CameraToWorld may come from a Transform or an explicit view-matrix
+    // override. Their third basis columns can have opposite signs, while the
+    // billboard's projected size depends on axial distance in either case.
+    const float viewDepth = std::max(std::abs(glm::dot(iconPosition - cameraPosition, cameraForward)), 0.1f);
+    const bool perspective = std::abs(projection[3][3]) < 0.5f;
+    const float focalScale = std::max(std::abs(projection[1][1]), 1.0e-4f);
+    const float pixelHalfSize = ICON_HALF_SIZE_PIXELS * std::max(dpiScale, 0.1f);
+    return 2.0f * pixelHalfSize * (perspective ? viewDepth : 1.0f) / (std::max(viewportHeight, 1u) * focalScale);
+}
+
 DrawCallResult GizmosDrawCallBuffer::GetIconDrawCalls(const IconMaterials &materials, const glm::vec3 &cameraPos,
-                                                      const glm::vec3 &cameraRight, const glm::vec3 &cameraUp) const
+                                                      const glm::vec3 &cameraRight, const glm::vec3 &cameraUp,
+                                                      const glm::mat4 &projection, uint32_t viewportHeight,
+                                                      float dpiScale) const
 {
     DrawCallResult result;
     if (m_iconEntries.empty())
@@ -325,8 +340,11 @@ DrawCallResult GizmosDrawCallBuffer::GetIconDrawCalls(const IconMaterials &mater
             toCamera /= distance; // normalize
         }
 
-        // Constant angular size
-        float worldSize = std::max(distance * ICON_SIZE_FACTOR, ICON_MIN_WORLD_SIZE);
+        // A projected pixel size remains stable across viewport resize, FOV,
+        // perspective/orthographic cameras and monitor DPI changes.
+        const glm::vec3 cameraForward = glm::normalize(glm::cross(billboardRight, billboardUp));
+        const float worldSize =
+            ComputeIconHalfWorldSize(icon.position, cameraPos, cameraForward, projection, viewportHeight, dpiScale);
 
         glm::vec3 topLeft = icon.position + billboardUp * worldSize - billboardRight * worldSize;
         glm::vec3 topRight = icon.position + billboardUp * worldSize + billboardRight * worldSize;

@@ -105,9 +105,12 @@ void RegisterAssetDatabaseBindings(py::module_ &m)
             },
             py::arg("path"), py::arg("settings") = py::none(),
             "Reimport an existing asset, atomically publishing optional model settings with its artifacts")
-        .def("begin_model_reimport", [](AssetDatabase &database, const std::string &path, py::object settings) {
-            database.BeginModelReimport(path, PythonToJson(settings));
-        }, py::arg("path"), py::arg("settings"), "Start model parsing on the native JobSystem")
+        .def(
+            "begin_model_reimport",
+            [](AssetDatabase &database, const std::string &path, py::object settings) {
+                database.BeginModelReimport(path, PythonToJson(settings));
+            },
+            py::arg("path"), py::arg("settings"), "Start model parsing on the native JobSystem")
         .def("try_commit_model_reimport", &AssetDatabase::TryCommitModelReimport,
              "Return None while pending, otherwise publish once and return the mutation result")
         .def("discard_model_reimport", &AssetDatabase::DiscardModelReimport)
@@ -174,6 +177,13 @@ void RegisterAssetDatabaseBindings(py::module_ &m)
         .def_property_readonly("last_refresh_scanned_count", &AssetDatabase::GetLastRefreshScannedCount)
         .def_property_readonly("last_refresh_scan_ms", &AssetDatabase::GetLastRefreshScanMilliseconds)
         .def_property_readonly("last_refresh_commit_ms", &AssetDatabase::GetLastRefreshCommitMilliseconds)
+        .def_property_readonly("last_model_reimport_worker_ms", &AssetDatabase::GetLastModelReimportWorkerMilliseconds)
+        .def_property_readonly("last_model_reimport_prepare_ms",
+                               &AssetDatabase::GetLastModelReimportPrepareMilliseconds)
+        .def_property_readonly("last_model_reimport_persistence_ms",
+                               &AssetDatabase::GetLastModelReimportPersistenceMilliseconds)
+        .def_property_readonly("last_model_reimport_live_publication_ms",
+                               &AssetDatabase::GetLastModelReimportLivePublicationMilliseconds)
         .def_property_readonly("last_refresh_prepare_ms", &AssetDatabase::GetLastRefreshPrepareMilliseconds)
         .def_property_readonly("last_refresh_finalize_ms", &AssetDatabase::GetLastRefreshFinalizeMilliseconds)
         .def_property_readonly("last_refresh_owner_merge_max_slice_ms",

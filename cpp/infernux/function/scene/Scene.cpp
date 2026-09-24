@@ -885,7 +885,7 @@ std::unique_ptr<GameObject> Scene::BuildGameObjectFromJsonImpl(const json &objJs
     static const std::unordered_set<std::string> allowedObjectFields = {
         "name",      "id",          "active",      "is_static",        "tag",
         "layer",     "prefab_guid", "prefab_root", "prefab_source_id", "prefab_source",
-        "transform", "components",  "children", "model_source",
+        "transform", "components",  "children",    "model_source",
     };
     for (const auto &[key, value] : objJson.items()) {
         (void)value;

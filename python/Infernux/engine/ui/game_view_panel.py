@@ -1083,9 +1083,9 @@ class GameViewPanel(EditorPanel):
             mouse_down, mouse_up, mouse_held,
             scroll, dt,
         )
-        # Scene mouse callbacks are a separate 3D hit path. UI dispatch above
-        # remains authoritative for screen/world UI and does not consume the
-        # Collider raycast.
+        # UI dispatch remains authoritative: blocking screen UI suppresses a
+        # hidden 3D query, while Canvas-free world UI and ordinary mouse
+        # callbacks consume the one shared physical hit snapshot above.
         dispatcher = getattr(self, "_mouse_event_dispatcher", None)
         if dispatcher is None:
             return

@@ -39,10 +39,9 @@ SemanticTypeDescriptor Collider::DescribeSemanticType(std::string typeName, std:
     AddSemanticField(type, "center", "VEC3", nlohmann::json::array({0.0, 0.0, 0.0}), "collider.center",
                      "collider.tooltip.center");
     AddSemanticField(type, "is_trigger", "BOOL", false, "collider.is_trigger", "collider.tooltip.is_trigger");
-    auto &material =
-        AddSemanticField(type, "physic_material", "ASSET",
-                         {{"$type", "asset_ref"}, {"asset_type", "PhysicMaterial"}, {"guid", ""}, {"path_hint", ""}},
-                         "collider.physic_material", "collider.tooltip.physic_material");
+    auto &material = AddSemanticField(type, "physic_material", "ASSET",
+                                      {{"$type", "asset_ref"}, {"asset_type", "PhysicMaterial"}, {"guid", ""}},
+                                      "collider.physic_material", "collider.tooltip.physic_material");
     material["serialized_name"] = "physic_material_guid";
     material["asset_type"] = "PhysicMaterial";
     material["nullable"] = true;

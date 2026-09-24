@@ -716,15 +716,15 @@ void ConsolePanel::PruneLocalSelection()
         if (IsUidSelected(entry.uid))
             existing.insert(entry.uid);
     }
-    m_selectedUids.erase(
-        std::remove_if(m_selectedUids.begin(), m_selectedUids.end(), [this, &existing](uint64_t uid) {
-            if (existing.find(uid) == existing.end()) {
-                m_selectedUidLookup.erase(uid);
-                return true;
-            }
-            return false;
-        }),
-        m_selectedUids.end());
+    m_selectedUids.erase(std::remove_if(m_selectedUids.begin(), m_selectedUids.end(),
+                                        [this, &existing](uint64_t uid) {
+                                            if (existing.find(uid) == existing.end()) {
+                                                m_selectedUidLookup.erase(uid);
+                                                return true;
+                                            }
+                                            return false;
+                                        }),
+                         m_selectedUids.end());
 }
 
 std::vector<int> ConsolePanel::SelectedVisibleIndices() const
@@ -1164,9 +1164,8 @@ void ConsolePanel::RenderRow(InxGUIContext *ctx, int visIdx, const VisibleEntry 
         }
         if (ImGui::GetIO().KeyCtrl) {
             ToggleLocalSelection(ve.uid);
-            const uint64_t newPrimary = IsUidSelected(ve.uid)
-                                            ? ve.uid
-                                            : (m_selectedUids.empty() ? 0 : m_selectedUids.back());
+            const uint64_t newPrimary =
+                IsUidSelected(ve.uid) ? ve.uid : (m_selectedUids.empty() ? 0 : m_selectedUids.back());
             if (newPrimary != m_selectedUid)
                 PublishSelection(newPrimary, true);
         } else {

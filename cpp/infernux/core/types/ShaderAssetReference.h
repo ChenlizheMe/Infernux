@@ -23,7 +23,7 @@ struct ShaderAssetReference
 
     friend bool operator==(const ShaderAssetReference &lhs, const ShaderAssetReference &rhs) noexcept
     {
-        return lhs.guid == rhs.guid && lhs.shaderId == rhs.shaderId && lhs.pathHint == rhs.pathHint;
+        return lhs.guid == rhs.guid && lhs.shaderId == rhs.shaderId;
     }
 };
 

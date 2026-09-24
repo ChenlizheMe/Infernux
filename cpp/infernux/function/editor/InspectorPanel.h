@@ -296,8 +296,7 @@ class InspectorPanel : public EditorPanel
 
     void RenderObjectHeader(InxGUIContext *ctx, uint64_t objId, const ObjectInfo &info);
     void RenderTagLayerRow(InxGUIContext *ctx, uint64_t objId, const ObjectInfo &info);
-    void RenderTransform(InxGUIContext *ctx, uint64_t objId, bool hideScale = false,
-                         uint32_t drivenProperties = 0);
+    void RenderTransform(InxGUIContext *ctx, uint64_t objId, bool hideScale = false, uint32_t drivenProperties = 0);
     void RenderMultiTransform(InxGUIContext *ctx, const std::vector<uint64_t> &ids, bool hideScale = false,
                               uint32_t drivenProperties = 0);
     std::string UpdateTransformGesture(size_t rowIndex, uint32_t lifecycleFlags);

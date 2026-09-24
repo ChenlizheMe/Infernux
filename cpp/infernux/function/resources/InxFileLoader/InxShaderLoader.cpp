@@ -58,10 +58,10 @@ void CopyRuntimeInterface(const ShaderProgramInterfaceArtifact &source, ShaderPr
     target.alphaClipThresholdOffset = source.alphaClipThresholdOffset;
     target.properties.reserve(source.properties.size());
     for (const auto &property : source.properties) {
-        target.properties.push_back({property.schema.name, property.schema.type, property.schema.defaultValue,
-                                     property.schema.textureDefault, ToRuntimeStageMask(property.visibility),
-                                     property.schema.hdr, property.schema.range, property.bufferOffset,
-                                     property.textureSlot, property.byteSize, property.byteAlignment});
+        target.properties.push_back(
+            {property.schema.name, property.schema.type, property.schema.defaultValue, property.schema.textureDefault,
+             ToRuntimeStageMask(property.visibility), property.schema.hdr, property.schema.range, property.bufferOffset,
+             property.textureSlot, property.byteSize, property.byteAlignment, property.arrayCount});
     }
 }
 } // namespace
@@ -739,8 +739,8 @@ ShaderDescriptor InxShaderLoader::ParseShaderSource(const std::string &source, c
     };
 
     static const std::unordered_map<std::string, std::string> typeMap = {
-        {"Float4", "vec4"}, {"Color", "vec4"}, {"Float3", "vec3"}, {"Float2", "vec2"},
-        {"Float", "float"}, {"Int", "int"},    {"Mat4", "mat4"},
+        {"Float4", "vec4"}, {"Color", "vec4"}, {"Float3", "vec3"},      {"Float2", "vec2"},      {"Float", "float"},
+        {"Int", "int"},     {"Mat4", "mat4"},  {"FloatArray", "float"}, {"Float4Array", "vec4"},
     };
 
     const ShaderInfoDocument shaderInfo = ParseShaderInfo(source);

@@ -36,7 +36,7 @@ namespace rhi
 {
 class RenderTexture;
 class ComputeBuffer;
-}
+} // namespace rhi
 
 /**
  * @brief Shader stage type for the material system

@@ -385,6 +385,15 @@ rhi::SubmissionSerial VulkanQueueManager::GetCompletedCompletionEpoch() const no
     return m_completedCompletionEpoch;
 }
 
+bool VulkanQueueManager::IsCompletionEpochComplete(rhi::SubmissionSerial epoch) const noexcept
+{
+    std::lock_guard lock(m_mutex);
+    if (epoch == rhi::InvalidSubmissionSerial)
+        return false;
+    return epoch <= m_completedCompletionEpoch ||
+           m_completedOutOfOrderEpochs.find(epoch) != m_completedOutOfOrderEpochs.end();
+}
+
 rhi::SubmissionSerial VulkanQueueManager::ReserveCompletionEpoch() noexcept
 {
     std::lock_guard lock(m_mutex);

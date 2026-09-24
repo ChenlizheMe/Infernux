@@ -269,6 +269,11 @@ class ResourcePreflight
 
     void ValidateObject(const nlohmann::json &object, const std::string &path)
     {
+        if (const auto source = object.find("model_source"); source != object.end()) {
+            if (!source->is_object() || !source->contains("guid") || !(*source)["guid"].is_string())
+                throw std::invalid_argument(path + ".model_source.guid must be a string");
+            RequireAsset((*source)["guid"].get<std::string>(), ResourceType::Mesh, path + ".model_source.guid");
+        }
         const auto &components = object.at("components");
         for (size_t index = 0; index < components.size(); ++index)
             ValidateComponent(components[index], path + ".components[" + std::to_string(index) + "]");

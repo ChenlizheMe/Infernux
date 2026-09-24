@@ -305,16 +305,16 @@ class AnimTimelineEditorPanel(EditorPanel):
     def capture_document_restore_state(self, document_id: str) -> dict:
         if document_id != self.document_id:
             raise ValueError("timeline restore capture targeted another document")
-        return {
-            "timeline": self._timeline.to_dict(),
-            "file_path": self._file_path,
-        }
+        return {"timeline": self._timeline.to_dict()}
 
     def restore_document_restore_state(self, state: dict) -> None:
-        if not isinstance(state, dict) or set(state) != {"timeline", "file_path"}:
+        if not isinstance(state, dict) or set(state) != {"timeline"}:
             raise ValueError("Timeline document restore state is invalid")
         self._timeline = AnimationTimeline.from_dict(copy.deepcopy(state["timeline"]))
-        self._file_path = self._normalize_timeline_path(state.get("file_path", ""))
+        document = self._timeline_document()
+        self._file_path = self._normalize_timeline_path(
+            document.resource_path if document is not None else ""
+        )
         self._timeline.file_path = self._file_path
         self._playing = False
         self._clear_key_selection(record_history=False)
@@ -325,10 +325,7 @@ class AnimTimelineEditorPanel(EditorPanel):
         state,
         error: Exception,
     ) -> bool:
-        del error
-        path = str(state.get("file_path", "")) if isinstance(state, dict) else ""
-        if path and os.path.isfile(path):
-            return self.open_document_resource_immediate(path)
+        del state, error
         return self._new_timeline_immediate()
 
     def _replace_timeline_document(self, *, resource_path: str, dirty: bool) -> None:
@@ -368,14 +365,13 @@ class AnimTimelineEditorPanel(EditorPanel):
         destination_path: str,
         guid: str,
     ) -> None:
-        del guid
+        del source_path, guid
         if document_id != self.document_id:
             return
-        if self._file_path and same_path(self._file_path, source_path):
-            self._file_path = self._normalize_timeline_path(destination_path)
-            self._timeline.file_path = self._file_path
-            self._timeline.name = os.path.splitext(os.path.basename(self._file_path))[0]
-            self._persist_panel_state()
+        self._file_path = self._normalize_timeline_path(destination_path)
+        self._timeline.file_path = self._file_path
+        self._timeline.name = os.path.splitext(os.path.basename(self._file_path))[0]
+        self._persist_panel_state()
 
     @staticmethod
     def _timeline_document_key(path: str):
@@ -390,7 +386,7 @@ class AnimTimelineEditorPanel(EditorPanel):
             guid = ""
         if guid:
             return DocumentKey.asset(DocumentKind.TIMELINE, guid)
-        return DocumentKey.resource(DocumentKind.TIMELINE, normalized)
+        return DocumentKey.session(DocumentKind.TIMELINE)
 
     # ── Lifecycle ──────────────────────────────────────────────────────
     def _initial_size(self):

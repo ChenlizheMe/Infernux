@@ -46,24 +46,28 @@ namespace infernux
 
 /// Collect all icon hits within icon radius, appending to `hits`.
 static void CollectIconHits(InxRenderer *rendererPtr, const glm::vec3 &rayOrigin, const glm::vec3 &rayDirection,
-                            std::vector<std::pair<float, uint64_t>> &hits)
+                            Camera *camera, float viewportHeight, std::vector<std::pair<float, uint64_t>> &hits)
 {
-    if (!rendererPtr)
+    if (!rendererPtr || !camera || viewportHeight <= 0.0f)
         return;
     GizmosDrawCallBuffer *buf = rendererPtr->GetGizmosDrawCallBuffer();
     if (!buf || !buf->HasIconData())
         return;
 
     const auto &icons = buf->GetIconEntries();
+    const glm::mat4 cameraToWorld = camera->GetCameraToWorldMatrix();
+    const glm::vec3 cameraPos(cameraToWorld[3]);
+    const glm::vec3 cameraForward = -glm::normalize(glm::vec3(cameraToWorld[2]));
+    const glm::mat4 projection = camera->GetProjectionMatrix();
     for (const auto &icon : icons) {
         float t = glm::dot(icon.position - rayOrigin, rayDirection);
         if (t < 0.0f)
             continue;
         glm::vec3 closestOnRay = rayOrigin + rayDirection * t;
         float dist = glm::length(closestOnRay - icon.position);
-        float camDist = glm::length(icon.position - rayOrigin);
-        float iconRadius =
-            std::max(camDist * GizmosDrawCallBuffer::ICON_SIZE_FACTOR, GizmosDrawCallBuffer::ICON_MIN_WORLD_SIZE);
+        const float iconRadius = GizmosDrawCallBuffer::ComputeIconHalfWorldSize(
+            icon.position, cameraPos, cameraForward, projection, static_cast<uint32_t>(viewportHeight),
+            rendererPtr->GetDisplayScale());
         if (dist >= iconRadius)
             continue;
         // Rank icons by the ray's entry into the screen-space billboard
@@ -388,15 +392,11 @@ uint64_t Infernux::PickGizmoAxis(float screenX, float screenY, float viewportWid
     if (!tools || tools->GetToolMode() == EditorTools::ToolMode::None || m_selectedObjectId == 0)
         return 0;
 
-    Scene *scene = SceneManager::Instance().GetActiveScene();
-    if (!scene)
-        return 0;
-
     Camera *camera = SceneRenderBridge::Instance().GetEditorCamera();
     if (!camera)
         return 0;
 
-    GameObject *selObj = scene->FindByID(m_selectedObjectId);
+    GameObject *selObj = SceneManager::Instance().FindRuntimeObjectByID(m_selectedObjectId);
     if (!selObj || !selObj->IsActiveInHierarchy() || !selObj->GetTransform())
         return 0;
 
@@ -467,7 +467,7 @@ uint64_t Infernux::PickSceneObjectId(float screenX, float screenY, float viewpor
         bool gizmoTestActive = tools && tools->GetToolMode() != EditorTools::ToolMode::None && m_selectedObjectId != 0;
 
         if (gizmoTestActive) {
-            GameObject *selObj = scene->FindByID(m_selectedObjectId);
+            GameObject *selObj = SceneManager::Instance().FindRuntimeObjectByID(m_selectedObjectId);
             if (selObj && selObj->IsActiveInHierarchy() && selObj->GetTransform()) {
                 uint64_t gizmoId =
                     TestGizmoAxes(rayOrigin, rayDirection, tools, selObj->GetTransform(), camera, viewportHeight);
@@ -483,7 +483,7 @@ uint64_t Infernux::PickSceneObjectId(float screenX, float screenY, float viewpor
     // =========================================================================
     if (m_renderer) {
         std::vector<std::pair<float, uint64_t>> iconHits;
-        CollectIconHits(m_renderer.get(), rayOrigin, rayDirection, iconHits);
+        CollectIconHits(m_renderer.get(), rayOrigin, rayDirection, camera, viewportHeight, iconHits);
         for (const auto &[dist, objId] : iconHits) {
             if (dist < closestDistance) {
                 closestDistance = dist;
@@ -539,14 +539,14 @@ std::vector<uint64_t> Infernux::PickSceneObjectIds(float screenX, float screenY,
     CollectMeshRendererHits(rayOrigin, rayDirection, hits);
 
     // Icon candidates
-    CollectIconHits(m_renderer.get(), rayOrigin, rayDirection, hits);
+    CollectIconHits(m_renderer.get(), rayOrigin, rayDirection, camera, viewportHeight, hits);
 
     if (hits.empty()) {
         return orderedIds;
     }
 
     std::sort(hits.begin(), hits.end(), [](const std::pair<float, uint64_t> &a, const std::pair<float, uint64_t> &b) {
-        return a.first < b.first;
+        return std::tie(a.first, a.second) < std::tie(b.first, b.second);
     });
 
     std::unordered_set<uint64_t> seen;

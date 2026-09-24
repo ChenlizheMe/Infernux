@@ -81,7 +81,10 @@ class TestFormat:
         block.set_vector4("weights", (1.0, 0.0, 0.0, 0.0))
         block.set_color("tint", (0.2, 0.4, 0.8, 1.0))
         block.set_int("variant", 2)
-        block.set_matrix("local", tuple(float(i) for i in range(16)))
+        block.set_matrix(
+            "local",
+            tuple(tuple(float(row * 4 + column) for column in range(4)) for row in range(4)),
+        )
         block.set_texture("albedo", "white")
         assert block.size == 8
         assert block.remove("variant")

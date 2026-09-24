@@ -256,7 +256,7 @@
                             <span class="ns-arr">&#9654;</span>
                             <span class="ns-nm">Infernux.jit</span>
                         </button>
-                        <div class="ns-ch"><a href="/wiki/site/zh/api/njit.html" class="">njit</a><a href="/wiki/site/zh/api/warmup.html" class="">warmup</a></div>
+                        <div class="ns-ch"><a href="/wiki/site/zh/api/compile.html" class="">compile</a><a href="/wiki/site/zh/api/statistics.html" class="">statistics</a><a href="/wiki/site/zh/api/warmup.html" class="">warmup</a></div>
                     </div><div class="ns-group">
                         <button type="button" class="ns-hd" aria-expanded="false">
                             <span class="ns-arr">&#9654;</span>
@@ -384,6 +384,10 @@
 <td>绘制一条线段。</td>
 </tr>
 <tr>
+<td><code>Gizmos.draw_lines(positions: ndarray | Buffer, indices: ndarray) → None</code></td>
+<td>Draw indexed lines from NumPy or GPU-resident (N,3) positions.</td>
+</tr>
+<tr>
 <td><code>Gizmos.draw_ray(origin: Vec3, direction: Vec3) → None</code></td>
 <td>绘制一条射线。</td>
 </tr>
@@ -398,6 +402,10 @@
 <tr>
 <td><code>Gizmos.draw_wire_sphere(center: Vec3, radius: float, segments: int = ...) → None</code></td>
 <td>绘制线框球体。</td>
+</tr>
+<tr>
+<td><code>Gizmos.draw_wire_spheres(centers: Buffer, radius: float, segments: int = ..., center_indices: ndarray | None = ...) → None</code></td>
+<td>Draw many wire spheres from GPU-resident center positions.</td>
 </tr>
 <tr>
 <td><code>Gizmos.draw_frustum(position: Vec3, fov_deg: float, aspect: float, near: float, far: float, forward: Vec3 = ..., up: Vec3 = ..., right: Vec3 = ...) → None</code></td>

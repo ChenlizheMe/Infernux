@@ -81,6 +81,39 @@ if(INFERNUX_BUILD_TESTS)
     set_tests_properties(infernux.material_texture_readiness_vulkan PROPERTIES
         LABELS "requires_vulkan_device" TIMEOUT 60 FAIL_REGULAR_EXPRESSION "Validation Error:")
 
+    add_executable(infernux_web_index_packing_tests
+        cpp/tests/WebIndexPackingTests.cpp
+        external/plugins/infernux_web/native/WebIndexPacking.cpp
+    )
+    target_include_directories(infernux_web_index_packing_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/cpp/infernux
+        ${CMAKE_SOURCE_DIR}/external
+        ${CMAKE_SOURCE_DIR}/external/glm
+        ${CMAKE_SOURCE_DIR}/external/plugins/infernux_web/native
+    )
+    if(MSVC)
+        target_compile_options(infernux_web_index_packing_tests PRIVATE /utf-8 /UNDEBUG)
+    else()
+        target_compile_options(infernux_web_index_packing_tests PRIVATE -UNDEBUG)
+    endif()
+    add_test(NAME infernux.web_index_packing COMMAND infernux_web_index_packing_tests)
+
+    add_executable(infernux_web_scene_world_contract_tests
+        cpp/tests/WebSceneWorldContractTests.cpp
+    )
+    target_include_directories(infernux_web_scene_world_contract_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/cpp/infernux
+        ${CMAKE_SOURCE_DIR}/external
+        ${CMAKE_SOURCE_DIR}/external/glm
+    )
+    target_link_libraries(infernux_web_scene_world_contract_tests PRIVATE infernux_runtime_test_support)
+    if(MSVC)
+        target_compile_options(infernux_web_scene_world_contract_tests PRIVATE /utf-8 /UNDEBUG)
+    else()
+        target_compile_options(infernux_web_scene_world_contract_tests PRIVATE -UNDEBUG)
+    endif()
+    add_test(NAME infernux.web_scene_world_contract COMMAND infernux_web_scene_world_contract_tests)
+
     add_executable(infernux_audio_mixer_tests
         cpp/tests/AudioMixerTests.cpp
     )
@@ -1352,11 +1385,26 @@ if(INFERNUX_BUILD_TESTS)
         SKIP_RETURN_CODE 77
     )
 
+    add_test(
+        NAME infernux.mesh_index_format_gpu
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/python/Infernux/test/mesh_index_format_gpu_test.py
+    )
+    set_tests_properties(infernux.mesh_index_format_gpu PROPERTIES
+        ENVIRONMENT "PYTHONPATH=${CMAKE_SOURCE_DIR}/python;INFERNUX_NATIVE_MODULE_DIR=$<TARGET_FILE_DIR:_Infernux>"
+        LABELS "requires_vulkan_device"
+        TIMEOUT 30
+        RUN_SERIAL TRUE
+        SKIP_RETURN_CODE 77
+    )
+
     if(TARGET infernux_gpu_jit_compiler)
         foreach(contract compiler bit)
             add_test(NAME infernux.compute_${contract}_contract
-                # The nested compiler project uses its own explicit configuration,
-                # which can differ from the outer multi-config tree.
+                # The nested Taichi compiler project has its own explicit
+                # configuration, which can differ from the outer multi-config
+                # tree (for example RelWithDebInfo).  Use that shared value
+                # instead of letting CTest point at a directory it never
+                # produces.
                 COMMAND ${INFERNUX_GPU_JIT_BINARY_DIR}/tests/${INFERNUX_GPU_JIT_BUILD_CONFIG}/infernux_${contract}_contract_tests${CMAKE_EXECUTABLE_SUFFIX})
             set_tests_properties(infernux.compute_${contract}_contract PROPERTIES
                 LABELS "compiler" TIMEOUT 30)

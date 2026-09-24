@@ -59,15 +59,17 @@ def _clamp(value, min_value, max_value):
 
 
 def _light_gizmo_color(light):
-    rgba = light.color
+    # Gizmo vertices are consumed in the linear scene pipeline and encoded once
+    # on presentation. Feeding display/sRGB values here would brighten every
+    # non-white light icon a second time.
+    rgba = light.effective_linear_color
     r = float(rgba[0]) if len(rgba) > 0 else 1.0
     g = float(rgba[1]) if len(rgba) > 1 else 1.0
     b = float(rgba[2]) if len(rgba) > 2 else 1.0
-    boost = 0.35
     return (
-        _clamp(r * 0.75 + boost, 0.0, 1.0),
-        _clamp(g * 0.75 + boost, 0.0, 1.0),
-        _clamp(b * 0.75 + boost, 0.0, 1.0),
+        _clamp(r, 0.0, 1.0),
+        _clamp(g, 0.0, 1.0),
+        _clamp(b, 0.0, 1.0),
     )
 
 
@@ -106,8 +108,7 @@ class Light(BuiltinComponent):
     _component_category_ = "Rendering"
     _always_show = False
 
-    # The Scene-view bulb is an authored pure-white alpha silhouette. Keep the
-    # vertex tint neutral so Inspector theme colours never leak into the world.
+    # A white texture leaves the billboard free to take its tint from each light.
     _gizmo_icon_color = (1.0, 1.0, 1.0)
     _gizmo_icon_kind = ICON_KIND_LIGHT
 
@@ -115,16 +116,30 @@ class Light(BuiltinComponent):
     light_type = CppProperty.from_native("Light", "light_type")
 
     # ---- Color & intensity ----
+    color_mode = CppProperty.from_native("Light", "color_mode")
     color = CppProperty(
         "color",
         FieldType.COLOR,
         default=None,
-        header="Appearance",
-        tooltip="Light color (linear RGB)",
+        tooltip="Authored sRGB color; a filter when using color temperature",
         get_converter=_rgb_to_rgba,
         set_converter=_rgba_to_vec3,
     )
+    use_color_temperature = CppProperty.from_native("Light", "use_color_temperature")
+    color_temperature = CppProperty.from_native(
+        "Light", "color_temperature", visible_when=lambda comp: comp.use_color_temperature
+    )
     intensity = CppProperty.from_native("Light", "intensity")
+
+    @property
+    def effective_color(self):
+        """Emitted sRGB color after the optional Kelvin filter, before intensity."""
+        return self._require_cpp_component().effective_color
+
+    @property
+    def effective_linear_color(self):
+        """Emitted linear RGB color used by rendering, before intensity."""
+        return self._require_cpp_component().effective_linear_color
 
     # ---- Range (Point / Spot) ----
     range = CppProperty.from_native(

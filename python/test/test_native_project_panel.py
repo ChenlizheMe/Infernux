@@ -836,6 +836,20 @@ class TestProjectPanelCallbacks:
         pp.invalidate_asset_inspector("/asset.mat")
         assert invalidated == ["/asset.mat"]
 
+    def test_model_animation_rows_require_current_published_clip_descriptors(self):
+        source = Path("cpp/infernux/function/editor/ProjectPanel.cpp").read_text(
+            encoding="utf-8"
+        )
+        append = source[
+            source.index("void ProjectPanel::AppendModelSubAssets") :
+            source.index("void ProjectPanel::ProcessPendingThumbnails")
+        ]
+
+        assert 'meta->HasKey("model_animations")' in append
+        assert 'animation.at("id")' in append
+        assert "animation_names_csv" not in append
+        assert "animation_count" not in append
+
 class TestProjectPanelPublicAPI:
 
     def test_clear_selection(self):

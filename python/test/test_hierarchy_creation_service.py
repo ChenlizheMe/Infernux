@@ -273,6 +273,7 @@ def test_hierarchy_creation_absorbs_initializer_property_edits_into_create(scene
         SetPropertyCommand,
         UndoManager,
     )
+    from Infernux.lib import Vector3
     from Infernux.ui import UICanvas, UIText
 
     canvas = scene.create_game_object("Canvas")
@@ -291,10 +292,12 @@ def test_hierarchy_creation_absorbs_initializer_property_edits_into_create(scene
     service = HierarchyCreationService()
 
     def configure_created(obj):
-        text = obj.get_py_component(UIText)
-        old_x = float(text.x)
-        text.x = 48.0
-        manager.record(SetPropertyCommand(text, "x", old_x, 48.0, "Set x"))
+        old_position = obj.transform.local_position
+        new_position = Vector3(48.0, old_position.y, old_position.z)
+        obj.transform.local_position = new_position
+        manager.record(SetPropertyCommand(
+            obj.transform, "local_position", old_position, new_position, "Set position"
+        ))
 
     try:
         created = service.create(
@@ -315,7 +318,7 @@ def test_hierarchy_creation_absorbs_initializer_property_edits_into_create(scene
         manager.redo()
         restored = scene.find_by_id(text_id)
         assert restored is not None
-        assert restored.get_py_component(UIText).x == pytest.approx(48.0)
+        assert restored.transform.local_position.x == pytest.approx(48.0)
     finally:
         manager.clear()
         selection.apply_snapshot(original_selection, record_history=False)
@@ -434,7 +437,8 @@ def test_ui_editor_creation_uses_shared_atomic_hierarchy_service(scene, monkeypa
         text = text_object.get_py_component(UIText)
         text_id = text_object.id
         assert isinstance(text, UIText)
-        assert (text.x, text.y) == (-80.0, -20.0)
+        assert tuple(text_object.transform.local_position) == pytest.approx((0.0, 0.0, 0.0))
+        assert text.get_rect(1920.0, 1080.0) == pytest.approx((880.0, 520.0, 160.0, 40.0))
         assert text_object.get_parent() is canvas
         assert len(manager.action_journal.entries) == 2
         assert selection.snapshot.owner_id == "ui_editor"

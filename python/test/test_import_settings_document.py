@@ -229,7 +229,7 @@ def test_sprite_reslice_undo_restores_subresource_identity_and_selection():
             details._categories["texture"],
         )
         selected_source = SelectionTarget.asset_subresource(
-            state.file_path,
+            state.meta["guid"],
             source.stable_id,
             sub_kind="sprite_frame",
         )
@@ -255,7 +255,7 @@ def test_sprite_reslice_undo_restores_subresource_identity_and_selection():
                 before,
             ),
         )
-        assert selection.snapshot.primary == SelectionTarget.asset(state.file_path)
+        assert selection.snapshot.primary == SelectionTarget.asset(state.meta["guid"])
         assert len(state.settings.sprite_frames) == 2
 
         manager.undo()
@@ -266,7 +266,7 @@ def test_sprite_reslice_undo_restores_subresource_identity_and_selection():
 
         manager.redo()
         assert len(state.settings.sprite_frames) == 2
-        assert selection.snapshot.primary == SelectionTarget.asset(state.file_path)
+        assert selection.snapshot.primary == SelectionTarget.asset(state.meta["guid"])
     finally:
         SelectionService._instance = previous_selection
         AuthoringMutationService._instance = previous_mutations

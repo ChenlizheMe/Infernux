@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 
 def _runtime_contract(tmp_path):
     from Infernux.engine.player_service_graph import (
@@ -69,6 +71,25 @@ def test_player_runtime_default_scheduler_publishes_native_phase_work(monkeypatc
 
     assert session.execution_scheduler is not None
     assert created == [{"name": "player", "native_bridge": True}]
+
+
+def test_player_runtime_exposes_only_its_published_runtime_database():
+    from Infernux.engine.player_runtime import PlayerRuntimeSession
+
+    database = object()
+    session = PlayerRuntimeSession(
+        asset_database=database,
+        scheduler=object(),
+        scene_service=object(),
+    )
+    assert session.get_asset_database() is database
+
+    unavailable = PlayerRuntimeSession(
+        scheduler=object(),
+        scene_service=object(),
+    )
+    with pytest.raises(RuntimeError, match="runtime asset database"):
+        unavailable.get_asset_database()
 
 
 def test_player_runtime_activation_does_not_snapshot_scene(monkeypatch, tmp_path):

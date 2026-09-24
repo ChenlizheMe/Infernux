@@ -26,7 +26,6 @@ size_t AudioClip::GetRuntimeMemoryBytes() const
            playbackBytes;
 }
 
-
 AudioClip::~AudioClip()
 {
     Unload();
@@ -73,9 +72,12 @@ bool AudioClip::LoadFromFile(const std::string &filePath)
         InxResourceMeta meta;
         const auto metaPath = InxResourceMeta::GetMetaFilePath(filePath);
         if (std::filesystem::exists(ToFsPath(metaPath))) {
-            if (!meta.LoadFromFile(metaPath)) throw std::runtime_error("Cannot read audio import metadata");
-            if (meta.HasKey("force_mono")) m_forceMono = meta.GetDataAs<bool>("force_mono");
-            const auto mode = meta.HasKey("load_type") ? meta.GetDataAs<std::string>("load_type") : "decompress_on_load";
+            if (!meta.LoadFromFile(metaPath))
+                throw std::runtime_error("Cannot read audio import metadata");
+            if (meta.HasKey("force_mono"))
+                m_forceMono = meta.GetDataAs<bool>("force_mono");
+            const auto mode =
+                meta.HasKey("load_type") ? meta.GetDataAs<std::string>("load_type") : "decompress_on_load";
             if (mode != "decompress_on_load" && mode != "streaming")
                 throw std::invalid_argument("Audio load_type must be decompress_on_load or streaming");
             m_streaming = mode == "streaming";
@@ -92,11 +94,13 @@ bool AudioClip::LoadFromFile(const std::string &filePath)
             while (read < m_frameCount) {
                 const auto got = decoder.Read(reinterpret_cast<float *>(m_data.data()) + read * m_spec.channels,
                                               std::min<size_t>(8192, m_frameCount - read));
-                if (!got) throw std::runtime_error("Audio source ended before its declared frame count");
+                if (!got)
+                    throw std::runtime_error("Audio source ended before its declared frame count");
                 read += got;
             }
             m_dataLength = static_cast<uint32_t>(bytes);
-            if (m_forceMono) ConvertToMono();
+            if (m_forceMono)
+                ConvertToMono();
         } else if (m_forceMono) {
             m_spec.channels = 1;
         }
@@ -113,7 +117,8 @@ bool AudioClip::LoadFromFile(const std::string &filePath)
 
 std::unique_ptr<AudioStreamBuffer> AudioClip::CreateStream(uint64_t firstFrame) const
 {
-    if (!m_loaded || !m_streaming) throw std::logic_error("AudioClip is not a loaded stream");
+    if (!m_loaded || !m_streaming)
+        throw std::logic_error("AudioClip is not a loaded stream");
     auto decoder = std::make_unique<AudioStreamDecoder>(m_filePath);
     if (decoder->FrameCount() != m_frameCount || decoder->SampleRate() != m_spec.freq)
         throw std::runtime_error("Audio source changed; reimport before creating a voice");
@@ -122,12 +127,14 @@ std::unique_ptr<AudioStreamBuffer> AudioClip::CreateStream(uint64_t firstFrame) 
 
 void AudioClip::ConvertToMono()
 {
-    if (m_spec.channels <= 1) return;
+    if (m_spec.channels <= 1)
+        return;
     const int channels = m_spec.channels;
     auto *samples = reinterpret_cast<float *>(m_data.data());
     for (size_t frame = 0; frame < m_frameCount; ++frame) {
         float sum = 0;
-        for (int channel = 0; channel < channels; ++channel) sum += samples[frame * channels + channel];
+        for (int channel = 0; channel < channels; ++channel)
+            sum += samples[frame * channels + channel];
         samples[frame] = sum / channels;
     }
     m_data.resize(static_cast<size_t>(m_frameCount) * sizeof(float));

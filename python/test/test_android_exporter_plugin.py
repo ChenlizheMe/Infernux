@@ -37,6 +37,10 @@ def _write_android_numpy_wheel(prefix: Path, *, abi: str = "x86_64") -> Path:
             "numpy/random/_examples/numba/extending.py",
             "raise RuntimeError('runtime package must not ship NumPy examples')\n",
         )
+        archive.writestr("numpy/_core/tests/test_runtime.py", "raise AssertionError\n")
+        archive.writestr("numpy/testing/__init__.py", "raise AssertionError\n")
+        archive.writestr("numpy/typing/tests/test_typing.py", "raise AssertionError\n")
+        archive.writestr("numpy/f2py/__init__.py", "raise AssertionError\n")
         archive.writestr(
             "numpy-2.5.2.dist-info/WHEEL",
             "Wheel-Version: 1.0\n"
@@ -197,7 +201,7 @@ def test_android_exporter_contributes_only_vulkan_targets(monkeypatch):
         "android-arm64",
     ]
     assert {target.capabilities.graphics_api for target in targets} == {"vulkan"}
-    assert all(not target.capabilities.numba for target in targets)
+    assert all(not target.capabilities.cpu_jit for target in targets)
 
 
 def test_android_build_cache_is_project_owned_by_default(monkeypatch, tmp_path):
@@ -538,8 +542,12 @@ def test_android_host_template_disables_opengl_and_configures_vulkan(
     gradle = (project / "app/build.gradle").read_text(encoding="utf-8")
     doctor = importlib.import_module("infernux_android.doctor")
     assert f'buildToolsVersion "{doctor.ANDROID_BUILD_TOOLS}"' in gradle
+    assert 'applicationId "com.infernux.infernuxplayer"' in gradle
     root_gradle = (project / "build.gradle").read_text(encoding="utf-8")
     host_source = (PLUGIN_EDITOR.parents[1] / "native/main.cpp").read_text(encoding="utf-8")
+    host_cmake = (PLUGIN_EDITOR.parents[1] / "native/CMakeLists.txt").read_text(
+        encoding="utf-8"
+    )
     activity = (
         project
         / "app/src/main/java/com/infernux/bootstrap/InfernuxActivity.java"
@@ -602,6 +610,16 @@ def test_android_host_template_disables_opengl_and_configures_vulkan(
     assert 'Os.setenv("INFERNUX_PLAYER_RENDER_SCALE", scaleText' in activity
     assert "getDisplayMetrics().densityDpi" in activity
     assert "INFERNUX_ANDROID_RESOLUTION_SCALING" in activity
+    assert "new InfernuxSurface(context)" in activity
+    surface_destroy = activity.split(
+        "public void surfaceDestroyed(SurfaceHolder holder)", 1
+    )[1].split("super.surfaceDestroyed(holder);", 1)[0]
+    assert surface_destroy.index("SDLActivity.handleNativeState();") < (
+        surface_destroy.index("nativeWaitForPresentationSuspended();")
+    )
+    assert "AndroidPresentationLifecycle::WaitForPresentationSuspended()" in host_source
+    assert "INFERNUX_ANDROID_SURFACE_DESTROY_WAIT_COMPLETE" in host_source
+    assert '"${CMAKE_SOURCE_DIR}/cpp/infernux"' in host_cmake
     assert "INFERNUX_PLAYER_FPS_CAP" not in activity
     assert 'Os.setenv("INFERNUX_PRESENT_MODE", "fifo"' in activity
     assert 'Os.setenv("INFERNUX_MAX_FRAMES_IN_FLIGHT", "2"' in activity
@@ -639,6 +657,21 @@ def test_android_host_template_disables_opengl_and_configures_vulkan(
     assert "cmake" not in gradle
     assert "@INFERNUX_" not in gradle + root_gradle
     assert "@ANDROID_" not in gradle + root_gradle
+
+
+@pytest.mark.parametrize(
+    ("game_name", "application_id"),
+    [
+        ("Infernux041Labv2", "com.infernux.infernux041labv2"),
+        ("Runner Long", "com.infernux.runnerlong"),
+        ("123 Demo", "com.infernux.game123demo"),
+    ],
+)
+def test_android_application_id_is_project_owned(monkeypatch, game_name, application_id):
+    _android_module(monkeypatch)
+    exporter_module = importlib.import_module("infernux_android.exporter")
+
+    assert exporter_module._android_application_id(game_name) == application_id
 
 
 def test_android_launcher_icons_are_generated_from_the_cooked_project_icon(
@@ -952,6 +985,10 @@ def test_android_python_runtime_staging_is_exact_and_versioned(monkeypatch, tmp_
     (stdlib / "encodings" / "__init__.py").write_text("fixture\n", encoding="utf-8")
     (stdlib / "removed.py").write_text("removed later\n", encoding="utf-8")
     (stdlib / "__pycache__" / "ignored.pyc").write_bytes(b"ignored")
+    (stdlib / "pydoc_data").mkdir()
+    (stdlib / "pydoc_data" / "topics.py").write_text("ignored\n", encoding="utf-8")
+    (stdlib / "lib-dynload").mkdir()
+    (stdlib / "lib-dynload" / "_testcapi.so").write_bytes(b"ignored")
     (prefix / "lib" / "libpython3.13.so").write_bytes(b"python")
     (prefix / "lib" / "libssl_python.so").write_bytes(b"ssl")
     _write_android_numpy_wheel(prefix)
@@ -990,6 +1027,12 @@ def test_android_python_runtime_staging_is_exact_and_versioned(monkeypatch, tmp_
     assert (stale_native / "libengine.so").is_file()
     assert (stale_assets / "site-packages/numpy/__init__.py").is_file()
     assert not (stale_assets / "site-packages/numpy/random/_examples").exists()
+    assert not (stale_assets / "site-packages/numpy/_core/tests").exists()
+    assert not (stale_assets / "site-packages/numpy/testing").exists()
+    assert not (stale_assets / "site-packages/numpy/typing/tests").exists()
+    assert not (stale_assets / "site-packages/numpy/f2py").exists()
+    assert not (stale_assets / "lib/python3.13/pydoc_data").exists()
+    assert not (stale_assets / "lib/python3.13/lib-dynload/_testcapi.so").exists()
     assert len(first_identity.strip()) == 64
 
     (stdlib / "encodings" / "__init__.py").write_text(
@@ -1085,6 +1128,9 @@ def test_android_engine_staging_excludes_desktop_runtime_payloads(
     for path in excluded:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b"desktop-only")
+    vendor = package / "_compiler/taichi/_vendor/taichi/__init__.py"
+    vendor.parent.mkdir(parents=True)
+    vendor.write_text("raise AssertionError('compiler must not ship')\n", encoding="utf-8")
     staging = tmp_path / "staging"
     request = BuildRequest(
         str(tmp_path / "project"),
@@ -1108,9 +1154,10 @@ def test_android_engine_staging_excludes_desktop_runtime_payloads(
     assert not (destination / "resources/project_templates").exists()
     assert not (destination / "test").exists()
     assert not (destination / "engine/platform_player_bootstrap.pyi").exists()
+    assert not (destination / "_compiler/taichi/_vendor").exists()
 
 
-def test_android_python_runtime_identity_tracks_layout_contract(monkeypatch, tmp_path):
+def test_android_python_runtime_identity_tracks_packaging_policy(monkeypatch, tmp_path):
     _android_module(monkeypatch)
     exporter_module = importlib.import_module("infernux_android.exporter")
     prefix = tmp_path / "python-prefix"
@@ -1127,11 +1174,7 @@ def test_android_python_runtime_identity_tracks_layout_contract(monkeypatch, tmp
         "3.13",
         "x86_64",
     )
-    monkeypatch.setattr(
-        exporter_module,
-        "_ANDROID_PYTHON_RUNTIME_LAYOUT",
-        exporter_module._ANDROID_PYTHON_RUNTIME_LAYOUT + 1,
-    )
+    monkeypatch.setattr(exporter_module, "_ANDROID_STDLIB_IGNORES", ("changed-policy",))
     second = exporter_module._python_runtime_identity(
         prefix,
         stdlib,

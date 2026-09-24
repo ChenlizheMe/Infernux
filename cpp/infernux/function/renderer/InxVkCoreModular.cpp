@@ -169,6 +169,7 @@ InxVkCoreModular::~InxVkCoreModular()
     m_residentVertexBufferCount = 0;
     m_sharedMeshBuffers.clear();
     m_pendingSharedMeshBuffers.clear();
+    m_assetMeshViewKeys.clear();
     m_pendingTextureAssetLoads.clear();
     m_pendingTextureStagingLoads.clear();
     m_pendingTextureGpuUploads.clear();

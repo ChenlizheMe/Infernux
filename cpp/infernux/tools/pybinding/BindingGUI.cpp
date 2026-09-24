@@ -1237,6 +1237,7 @@ void RegisterGUIBindings(py::module_ &m)
         .def_readwrite("get_play_state", &ToolbarPanel::getPlayState)
         .def_readwrite("get_play_time_str", &ToolbarPanel::getPlayTimeStr)
         .def_readwrite("is_show_grid", &ToolbarPanel::isShowGrid)
+        .def_readwrite("is_show_gizmos", &ToolbarPanel::isShowGizmos)
         .def_readwrite("translate", &ToolbarPanel::translate)
         .def(
             "get_camera_settings",

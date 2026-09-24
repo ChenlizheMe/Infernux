@@ -35,6 +35,7 @@ The current reliable decoder supports WAV. Keep a loaded clip alive while an Aud
 |------|------|------|
 | native | `CppAudioClip` | The underlying C++ AudioClip object. *(read-only)* |
 | is_loaded | `bool` | Whether the audio data is loaded in memory. *(read-only)* |
+| is_streaming | `bool` | Whether playback uses file-backed bounded read-ahead. *(read-only)* |
 | duration | `float` | Duration of the audio clip in seconds. *(read-only)* |
 | sample_count | `int` | Total number of audio samples. *(read-only)* |
 | sample_rate | `int` | Sample rate in Hz (e.g. *(read-only)* |

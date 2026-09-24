@@ -610,7 +610,7 @@ def _mesh_asset_path(comp) -> str:
             from Infernux.lib._Infernux import make_model_mesh_reference
             return make_model_mesh_reference(path, node_path)
         return path
-    return str(getattr(comp, 'source_model_path', '') or "")
+    return ""
 
 
 def _mesh_display_name(comp) -> str:
@@ -635,9 +635,6 @@ def _mesh_display_name(comp) -> str:
     except Exception as exc:
         Debug.log(f"[Suppressed] {type(exc).__name__}: {exc}")
 
-    source_path = getattr(comp, 'source_model_path', '') or ''
-    if source_path:
-        return os.path.basename(source_path)
     return "None"
 
 
@@ -745,8 +742,6 @@ def _assign_primitive_mesh(comp, primitive_name: str) -> None:
     if getattr(comp, 'type_name', '') == 'SkinnedMeshRenderer':
         if hasattr(comp, 'set_source_model_guid'):
             comp.set_source_model_guid("")
-        if hasattr(comp, 'set_source_model_path'):
-            comp.set_source_model_path("")
     comp.set_primitive_mesh(primitive_type)
     _record_mesh_renderer_change(comp, old_document, f"Set Mesh {primitive_name}")
 
@@ -769,8 +764,6 @@ def _clear_mesh(comp) -> None:
     if getattr(comp, 'type_name', '') == 'SkinnedMeshRenderer':
         if hasattr(comp, 'set_source_model_guid'):
             comp.set_source_model_guid("")
-        if hasattr(comp, 'set_source_model_path'):
-            comp.set_source_model_path("")
     if hasattr(comp, 'clear_mesh_asset'):
         comp.clear_mesh_asset()
     _record_mesh_renderer_change(comp, old_document, "Clear Mesh")
@@ -825,11 +818,14 @@ def _set_material_slot_from_path(comp, slot_idx: int, material_path) -> None:
     adb = AssetRegistry.instance().get_asset_database()
     if not adb:
         return
-    supplied_guid = ""
     if isinstance(material_path, dict):
-        supplied_guid = str(material_path.get("guid") or "").strip()
-        material_path = str(material_path.get("path_hint") or "").strip()
-    guid = supplied_guid or adb.get_guid_from_path(str(material_path))
+        # Structured values already crossed the authoring boundary. Their GUID
+        # is authoritative; a stale display path must never recover identity.
+        guid = str(material_path.get("guid") or "").strip()
+    else:
+        # Raw picker/drop paths are explicit editor authoring input and are
+        # converted once, before they reach the component document.
+        guid = str(adb.get_guid_from_path(str(material_path)) or "").strip()
     if not guid:
         return
     guids = comp.get_material_guids()
@@ -1001,8 +997,13 @@ def _render_mesh_renderer_materials(ctx: InxGUIContext, comp):
                     ping_path=material_path or None,
                     has_value=bool(material_path),
                     reference_value=(
-                        {"asset_type": "Material", "path_hint": material_path}
-                        if material_path else None
+                        {
+                            "asset_type": "Material",
+                            "guid": str(material_guids[slot_idx] or ""),
+                        }
+                        if 0 <= slot_idx < len(material_guids)
+                        and material_guids[slot_idx]
+                        else None
                     ),
                 )
             if payload:
@@ -1062,7 +1063,11 @@ def _render_mesh_renderer_materials(ctx: InxGUIContext, comp):
             ping_path=mat_path or None,
             has_value=bool(mat_path),
             reference_value=(
-                {"asset_type": "Material", "path_hint": mat_path}
-                if mat_path else None
+                {
+                    "asset_type": "Material",
+                    "guid": str(material_guids[slot_idx] or ""),
+                }
+                if slot_idx < len(material_guids) and material_guids[slot_idx]
+                else None
             ),
         )

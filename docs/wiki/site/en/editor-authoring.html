@@ -1,0 +1,610 @@
+<!DOCTYPE html>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'self'; object-src 'none'; script-src 'self'; script-src-attr 'none'; style-src 'self'; style-src-attr 'none'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-src 'none'; worker-src 'self'; manifest-src 'self'; form-action 'self'; upgrade-insecure-requests">
+    <meta name="referrer" content="strict-origin-when-cross-origin">
+    <meta name="description" content="Official Infernux documentation for Writing Editor tools.">
+
+    <meta name="theme-color" content="#0a0c11">
+    <meta name="color-scheme" content="dark light">
+    <title>Writing Editor tools - Infernux Documentation</title>
+
+    <link rel="canonical" href="https://infernux-engine.com/wiki/site/en/editor-authoring.html">
+    <meta property="og:type" content="article">
+    <meta property="og:site_name" content="Infernux Engine">
+    <meta property="og:title" content="Writing Editor tools - Infernux Documentation">
+    <meta property="og:description" content="Official Infernux documentation for Writing Editor tools.">
+    <meta property="og:url" content="https://infernux-engine.com/wiki/site/en/editor-authoring.html">
+    <meta property="og:locale" content="en_US">
+    <meta property="og:locale:alternate" content="zh_CN">
+    <meta property="og:image" content="https://infernux-engine.com/assets/infernux-social-card-0.3.4.jpg">
+    <meta property="og:image:type" content="image/jpeg">
+    <meta property="og:image:width" content="1200">
+    <meta property="og:image:height" content="630">
+    <meta property="og:image:alt" content="Infernux NASA Punk mission card with the editor, forge emblem, and technical preview status.">
+
+
+
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="Writing Editor tools - Infernux Documentation">
+    <meta name="twitter:description" content="Official Infernux documentation for Writing Editor tools.">
+    <meta name="twitter:image" content="https://infernux-engine.com/assets/infernux-social-card-0.3.4.jpg">
+    <meta name="twitter:image:alt" content="Infernux NASA Punk mission card with the editor, forge emblem, and technical preview status.">
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@graph": [
+        {
+          "@type": "TechArticle",
+          "@id": "https://infernux-engine.com/wiki/site/en/editor-authoring.html#document",
+          "headline": "Writing Editor tools",
+          "name": "Writing Editor tools",
+          "description": "Official Infernux documentation for Writing Editor tools.",
+          "url": "https://infernux-engine.com/wiki/site/en/editor-authoring.html",
+          "mainEntityOfPage": {
+            "@type": "WebPage",
+            "@id": "https://infernux-engine.com/wiki/site/en/editor-authoring.html"
+          },
+          "inLanguage": "en",
+          "isAccessibleForFree": true,
+          "learningResourceType": "API reference",
+          "articleSection": "API Reference",
+          "image": {
+            "@type": "ImageObject",
+            "url": "https://infernux-engine.com/assets/infernux-social-card-0.3.4.jpg",
+            "width": 1200,
+            "height": 630,
+            "caption": "Infernux NASA Punk mission card with the editor, forge emblem, and technical preview status."
+          },
+          "author": {
+            "@type": "Organization",
+            "name": "Infernux Engine",
+            "url": "https://infernux-engine.com/"
+          },
+          "publisher": {
+            "@type": "Organization",
+            "name": "Infernux Engine",
+            "url": "https://infernux-engine.com/",
+            "logo": {
+              "@type": "ImageObject",
+              "url": "https://infernux-engine.com/assets/logo.png"
+            }
+          },
+          "isPartOf": { "@id": "https://infernux-engine.com/#website" },
+          "about": { "@id": "https://infernux-engine.com/#software" }
+        },
+        {
+          "@type": "BreadcrumbList",
+          "@id": "https://infernux-engine.com/wiki/site/en/editor-authoring.html#breadcrumb",
+          "itemListElement": [
+            {
+              "@type": "ListItem",
+              "position": 1,
+              "name": "Start",
+              "item": "https://infernux-engine.com/start.html"
+            },
+
+            {
+              "@type": "ListItem",
+              "position": 2,
+              "name": "Writing Editor tools",
+              "item": "https://infernux-engine.com/wiki/site/en/editor-authoring.html"
+            }
+
+          ]
+        }
+      ]
+    }
+    </script>
+
+
+    <link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/editor-authoring.html">
+    <link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/editor-authoring.html">
+    <link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/editor-authoring.html">
+
+    <link rel="alternate" type="application/json" title="Infernux API index" href="/api-index.json">
+    <link rel="manifest" href="/site.webmanifest">
+    <link rel="icon" type="image/png" href="/assets/logo.png">
+    <link rel="apple-touch-icon" sizes="180x180" href="/assets/infernux-apple-touch-icon.png">
+    <link rel="stylesheet" href="/css/fonts.css?v=1">
+    <link rel="stylesheet" href="/css/style.css?v=20">
+    <link rel="stylesheet" href="/css/fontawesome-subset.css?v=6.4.0">
+    <link rel="stylesheet" href="/css/docs-search.css?v=3">
+    <link rel="stylesheet" href="/css/wiki-generated.css?v=9">
+    <link rel="stylesheet" href="/css/wiki-template.8274a64753b131d2.css">
+</head>
+<body class="guide-page">
+
+
+
+
+    <a class="skip-link" href="#main-content">Skip to content</a>
+    <!-- Top Navigation -->
+    <nav class="navbar" aria-label="Primary navigation">
+        <div class="nav-container">
+            <a href="/index.html" class="nav-logo">
+                <span class="logo-icon"><img src="/assets/logo.png" width="256" height="256" alt="Infernux logo"></span>
+                <span class="logo-text">Infernux</span>
+            </a>
+            <div class="nav-links" id="primary-navigation">
+                <a href="/start.html" class="nav-priority">Start</a>
+                <a href="/learn.html">Learn</a>
+                <a href="/wiki/site/en/api/index.html">API</a>
+                <a href="/roadmap.html">Roadmap</a>
+                <a href="https://infernux-engine.discourse.group/" class="nav-priority">Community</a>
+                <a href="/download.html">Download</a>
+                <a href="https://github.com/ChenlizheMe/Infernux" target="_blank" rel="noopener">
+                    <i class="fab fa-github" aria-hidden="true"></i> GitHub
+                </a>
+            </div>
+            <div class="nav-right">
+                <button type="button" class="docs-context-trigger" data-doc-context-trigger title="Copy version, sources, and canonical link" aria-label="Copy page context for an Agent">
+                    <i class="fas fa-copy" aria-hidden="true"></i><span data-doc-context-label>Copy for Agent</span>
+                </button>
+                <button type="button" class="docs-search-trigger" data-docs-search-trigger aria-haspopup="dialog" aria-controls="docs-search-dialog" aria-expanded="false">
+                    <i class="fas fa-magnifying-glass" aria-hidden="true"></i><span data-docs-search-trigger-label>Search docs</span><kbd aria-hidden="true">/</kbd>
+                </button>
+                <button type="button" class="theme-toggle" data-site-action="theme" title="Toggle theme" aria-label="Toggle theme" aria-pressed="false">
+                    <i class="fas fa-moon" id="theme-icon"></i>
+                </button>
+                <button type="button" class="mobile-menu-btn" data-site-action="menu" aria-label="Open navigation menu" aria-controls="primary-navigation" aria-expanded="false">
+                    <i class="fas fa-bars"></i>
+                </button>
+            </div>
+        </div>
+    </nav>
+
+
+    <!-- Article Layout (No Sidebar) -->
+    <main class="page-shell article-page-shell" id="main-content">
+        <div class="container article-page-container">
+            <div class="api-main article-page-content">
+
+    <nav class="doc-breadcrumb" aria-label="Breadcrumb">
+        <a href="/start.html">Start</a>
+        <span aria-hidden="true">/</span>
+
+        <span aria-current="page">Writing Editor tools</span>
+    </nav>
+
+
+
+    <aside class="doc-outline" data-doc-outline hidden>
+        <div class="doc-outline-head">
+            <strong>On this page</strong>
+            <button type="button" class="doc-outline-toggle" aria-controls="doc-outline-links" aria-expanded="true">
+                <span>Hide sections</span>
+                <span class="doc-outline-toggle-mark" aria-hidden="true">⌄</span>
+            </button>
+        </div>
+        <nav class="doc-outline-links" id="doc-outline-links" aria-label="Sections on this page"></nav>
+    </aside>
+
+                <h1 id="writing-editor-tools">Writing Editor tools<a class="headerlink" href="#writing-editor-tools" title="Permanent link">&para;</a></h1>
+<p><code>inx.editor</code> is the public entry point for project-specific Editor tools.
+Its operations use the same Hierarchy, Prefab, save-ticket and Undo services as
+the Editor UI. They require an active Editor session and are unavailable in Play
+Mode. They are not gameplay APIs and do not belong in a Player script.</p>
+<p>Place this script in <code>Assets/Editor/CreateObstacle.py</code>:</p>
+<div class="language-python highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">infernux</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">inx</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="k">class</span><span class="w"> </span><span class="nc">ObstacleTools</span><span class="p">(</span><span class="n">inx</span><span class="o">.</span><span class="n">InxPreload</span><span class="p">):</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">preload</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">context</span><span class="p">):</span>
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>        <span class="n">inx</span><span class="o">.</span><span class="n">editor</span><span class="o">.</span><span class="n">EditorCommandRegistry</span><span class="o">.</span><span class="n">instance</span><span class="p">()</span><span class="o">.</span><span class="n">register</span><span class="p">(</span>
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>            <span class="n">inx</span><span class="o">.</span><span class="n">editor</span><span class="o">.</span><span class="n">EditorCommand</span><span class="p">(</span>
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>                <span class="s2">"my_game.create_obstacle"</span><span class="p">,</span>
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>                <span class="bp">self</span><span class="o">.</span><span class="n">create_obstacle</span><span class="p">,</span>
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>                <span class="n">display_name</span><span class="o">=</span><span class="s2">"Create obstacle"</span><span class="p">,</span>
+<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>            <span class="p">)</span>
+<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>        <span class="p">)</span>
+<a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>        <span class="n">inx</span><span class="o">.</span><span class="n">editor</span><span class="o">.</span><span class="n">ShortcutRouter</span><span class="o">.</span><span class="n">instance</span><span class="p">()</span><span class="o">.</span><span class="n">register</span><span class="p">(</span>
+<a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>            <span class="n">inx</span><span class="o">.</span><span class="n">editor</span><span class="o">.</span><span class="n">ShortcutBinding</span><span class="p">(</span>
+<a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a>                <span class="s2">"my_game.create_obstacle"</span><span class="p">,</span>
+<a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a>                <span class="n">inx</span><span class="o">.</span><span class="n">editor</span><span class="o">.</span><span class="n">KeyChord</span><span class="p">(</span><span class="s2">"F9"</span><span class="p">),</span>
+<a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a>                <span class="n">binding_id</span><span class="o">=</span><span class="s2">"my_game.create_obstacle.f9"</span><span class="p">,</span>
+<a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a>            <span class="p">)</span>
+<a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a>        <span class="p">)</span>
+<a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a>
+<a id="__codelineno-0-21" name="__codelineno-0-21" href="#__codelineno-0-21"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">create_obstacle</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">context</span><span class="p">):</span>
+<a id="__codelineno-0-22" name="__codelineno-0-22" href="#__codelineno-0-22"></a>        <span class="k">with</span> <span class="n">inx</span><span class="o">.</span><span class="n">editor</span><span class="o">.</span><span class="n">edit_scene</span><span class="p">(</span><span class="s2">"Create obstacle"</span><span class="p">):</span>
+<a id="__codelineno-0-23" name="__codelineno-0-23" href="#__codelineno-0-23"></a>            <span class="n">root</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">editor</span><span class="o">.</span><span class="n">create_game_object</span><span class="p">(</span><span class="s2">"Obstacle"</span><span class="p">)</span>
+<a id="__codelineno-0-24" name="__codelineno-0-24" href="#__codelineno-0-24"></a>            <span class="n">inx</span><span class="o">.</span><span class="n">editor</span><span class="o">.</span><span class="n">create_game_object</span><span class="p">(</span>
+<a id="__codelineno-0-25" name="__codelineno-0-25" href="#__codelineno-0-25"></a>                <span class="s2">"Body"</span><span class="p">,</span> <span class="n">kind</span><span class="o">=</span><span class="s2">"primitive.cube"</span><span class="p">,</span> <span class="n">parent</span><span class="o">=</span><span class="n">root</span><span class="p">,</span>
+<a id="__codelineno-0-26" name="__codelineno-0-26" href="#__codelineno-0-26"></a>            <span class="p">)</span>
+<a id="__codelineno-0-27" name="__codelineno-0-27" href="#__codelineno-0-27"></a>            <span class="n">prefab_path</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">editor</span><span class="o">.</span><span class="n">create_prefab</span><span class="p">(</span><span class="n">root</span><span class="p">,</span> <span class="s2">"Assets"</span><span class="p">)</span>
+<a id="__codelineno-0-28" name="__codelineno-0-28" href="#__codelineno-0-28"></a>            <span class="n">placed</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">editor</span><span class="o">.</span><span class="n">instantiate_prefab</span><span class="p">(</span><span class="n">prefab_path</span><span class="p">)</span>
+<a id="__codelineno-0-29" name="__codelineno-0-29" href="#__codelineno-0-29"></a>        <span class="k">return</span> <span class="n">placed</span><span class="o">.</span><span class="n">id</span>
+</code></pre></div>
+<p>Press F9 or find <strong>Create obstacle</strong> in the command palette. One Undo removes the
+created hierarchy, asset and placed instance; Redo restores the recorded action.
+Register commands and shortcuts inside <code>preload</code>: their owner is then removed on
+reload, unload or project close. Do not register them each frame.</p>
+<h2 id="component-driven-transform-fields">Component-driven Transform fields<a class="headerlink" href="#component-driven-transform-fields" title="Permanent link">&para;</a></h2>
+<p>When an enabled component is the authoring authority for part of its owner's
+Transform, declare that ownership once. The Inspector and Scene tools then obey
+the same rule:</p>
+<div class="language-python highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.components</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>    <span class="n">DrivenTransformProperties</span><span class="p">,</span>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>    <span class="n">InxComponent</span><span class="p">,</span>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>    <span class="n">drives_transform</span><span class="p">,</span>
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="p">)</span>
+<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>
+<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="nd">@drives_transform</span><span class="p">(</span><span class="n">DrivenTransformProperties</span><span class="o">.</span><span class="n">SCALE</span><span class="p">)</span>
+<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="k">class</span><span class="w"> </span><span class="nc">ProceduralSurface</span><span class="p">(</span><span class="n">InxComponent</span><span class="p">):</span>
+<a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a>    <span class="k">pass</span>
+</code></pre></div>
+<p>The Scale and Rect tools cannot overwrite the driven scale. Combine
+<code>POSITION</code>, <code>ROTATION</code>, and <code>SCALE</code>, or use <code>ALL</code>. A component whose ownership
+changes at runtime may instead implement <code>driven_transform_properties()</code> and
+return the current flags. Disabling that component releases its authoring lock.</p>
+<h2 id="custom-scene-view-handles">Custom Scene View handles<a class="headerlink" href="#custom-scene-view-handles" title="Permanent link">&para;</a></h2>
+<p>Projects and editor plugins register one stable provider with
+<code>inx.editor.register_handle_provider()</code>. The provider receives an
+<code>EditorHandleContext</code> on each Gizmo collection and may submit world-space
+<code>position</code>, <code>direction</code>, <code>radius</code>, and <code>limit</code> handles:</p>
+<div class="language-python highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">infernux</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">inx</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="k">class</span><span class="w"> </span><span class="nc">SpawnHandles</span><span class="p">(</span><span class="n">inx</span><span class="o">.</span><span class="n">InxPreload</span><span class="p">):</span>
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">preload</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">context</span><span class="p">):</span>
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>        <span class="n">inx</span><span class="o">.</span><span class="n">editor</span><span class="o">.</span><span class="n">register_handle_provider</span><span class="p">(</span>
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>            <span class="s2">"sample.spawn"</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">draw_handles</span><span class="p">,</span>
+<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a>            <span class="n">on_retire</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">release_preview_resources</span><span class="p">,</span>
+<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a>        <span class="p">)</span>
+<a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a>
+<a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">draw_handles</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">handles</span><span class="p">):</span>
+<a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a>        <span class="n">target</span> <span class="o">=</span> <span class="n">current_spawn_target</span><span class="p">()</span>
+<a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a>        <span class="k">if</span> <span class="n">target</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+<a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a>            <span class="k">return</span>
+<a id="__codelineno-2-14" name="__codelineno-2-14" href="#__codelineno-2-14"></a>        <span class="n">handles</span><span class="o">.</span><span class="n">position</span><span class="p">(</span><span class="s2">"position"</span><span class="p">,</span> <span class="n">target</span><span class="o">.</span><span class="n">position</span><span class="p">,</span>
+<a id="__codelineno-2-15" name="__codelineno-2-15" href="#__codelineno-2-15"></a>                         <span class="k">lambda</span> <span class="n">value</span><span class="p">:</span> <span class="n">set_spawn_position</span><span class="p">(</span><span class="n">target</span><span class="p">,</span> <span class="n">value</span><span class="p">))</span>
+<a id="__codelineno-2-16" name="__codelineno-2-16" href="#__codelineno-2-16"></a>        <span class="n">handles</span><span class="o">.</span><span class="n">direction</span><span class="p">(</span><span class="s2">"forward"</span><span class="p">,</span> <span class="n">target</span><span class="o">.</span><span class="n">position</span><span class="p">,</span> <span class="n">target</span><span class="o">.</span><span class="n">forward</span><span class="p">,</span>
+<a id="__codelineno-2-17" name="__codelineno-2-17" href="#__codelineno-2-17"></a>                          <span class="k">lambda</span> <span class="n">value</span><span class="p">:</span> <span class="n">set_spawn_forward</span><span class="p">(</span><span class="n">target</span><span class="p">,</span> <span class="n">value</span><span class="p">))</span>
+<a id="__codelineno-2-18" name="__codelineno-2-18" href="#__codelineno-2-18"></a>        <span class="n">handles</span><span class="o">.</span><span class="n">radius</span><span class="p">(</span><span class="s2">"radius"</span><span class="p">,</span> <span class="n">target</span><span class="o">.</span><span class="n">position</span><span class="p">,</span> <span class="n">target</span><span class="o">.</span><span class="n">radius</span><span class="p">,</span>
+<a id="__codelineno-2-19" name="__codelineno-2-19" href="#__codelineno-2-19"></a>                       <span class="k">lambda</span> <span class="n">value</span><span class="p">:</span> <span class="n">set_spawn_radius</span><span class="p">(</span><span class="n">target</span><span class="p">,</span> <span class="n">value</span><span class="p">))</span>
+<a id="__codelineno-2-20" name="__codelineno-2-20" href="#__codelineno-2-20"></a>        <span class="n">handles</span><span class="o">.</span><span class="n">limit</span><span class="p">(</span><span class="s2">"travel"</span><span class="p">,</span> <span class="n">target</span><span class="o">.</span><span class="n">position</span><span class="p">,</span> <span class="n">target</span><span class="o">.</span><span class="n">forward</span><span class="p">,</span>
+<a id="__codelineno-2-21" name="__codelineno-2-21" href="#__codelineno-2-21"></a>                      <span class="p">(</span><span class="n">target</span><span class="o">.</span><span class="n">minimum</span><span class="p">,</span> <span class="n">target</span><span class="o">.</span><span class="n">maximum</span><span class="p">),</span>
+<a id="__codelineno-2-22" name="__codelineno-2-22" href="#__codelineno-2-22"></a>                      <span class="k">lambda</span> <span class="n">value</span><span class="p">:</span> <span class="n">set_spawn_limits</span><span class="p">(</span><span class="n">target</span><span class="p">,</span> <span class="n">value</span><span class="p">))</span>
+<a id="__codelineno-2-23" name="__codelineno-2-23" href="#__codelineno-2-23"></a>
+<a id="__codelineno-2-24" name="__codelineno-2-24" href="#__codelineno-2-24"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">release_preview_resources</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+<a id="__codelineno-2-25" name="__codelineno-2-25" href="#__codelineno-2-25"></a>        <span class="k">pass</span>
+</code></pre></div>
+<p>Register the provider once and submit only the handles that remain valid for
+the current selection; <code>handles.selection</code> is the selection snapshot used by
+that collection. Values and callbacks are frame-scoped, so a handle omitted
+from the next collection immediately expires. Direction changes are normalized,
+radius values remain non-negative, and limits preserve minimum &lt;= maximum.</p>
+<p>The returned <code>HandleRegistration</code> can be closed explicitly. A registration
+created by a preload is automatically owned by that preload. Reload, disable,
+uninstall, and editor shutdown cancel an active drag first (restoring the
+initial value through <code>on_changed</code> and <code>on_cancel</code>), then call <code>on_retire</code> once
+and release the provider's frame resources and callback references. Do not
+retain an <code>EditorHandleContext</code> across frames. Project callbacks still own
+their document/command integration; the handle API does not turn arbitrary
+field assignments into Undo records.</p>
+<h2 id="creation-and-editing">Creation and editing<a class="headerlink" href="#creation-and-editing" title="Permanent link">&para;</a></h2>
+<ul>
+<li><code>create_game_object</code> returns the created GameObject. <code>kind</code> uses the Hierarchy
+  creation catalog, for example <code>empty</code>, <code>primitive.sphere</code> or <code>ui.button</code>.</li>
+<li>Its optional <code>configure(obj)</code> callback runs before the creation snapshot is
+  recorded. Use it for initial components or Transform values that must survive
+  Undo/Redo. An exception cancels that creation.</li>
+<li><code>edit_scene(description)</code> groups <strong>journal-aware operations</strong>. It does not
+  intercept arbitrary Python assignments or roll back an entire script on error.</li>
+<li><code>create_prefab(obj, directory)</code> creates a uniquely named asset and links its
+  source hierarchy. The second argument is a <strong>directory</strong>, not an output filename;
+  it does not overwrite an existing Prefab.</li>
+<li><code>instantiate_prefab(path, parent=...)</code> returns the new GameObject.</li>
+<li><code>apply_prefab(obj)</code> publishes instance overrides to the linked asset;
+  <code>revert_prefab(obj)</code> restores source-owned values. Both use the global journal.</li>
+</ul>
+<h2 id="editing-prefab-contents-without-instantiating-into-the-active-scene">Editing Prefab contents without instantiating into the active scene<a class="headerlink" href="#editing-prefab-contents-without-instantiating-into-the-active-scene" title="Permanent link">&para;</a></h2>
+<div class="language-python highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="k">def</span><span class="w"> </span><span class="nf">edit_obstacle</span><span class="p">():</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>    <span class="n">path</span> <span class="o">=</span> <span class="s2">"Assets/Obstacle.prefab"</span>
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>    <span class="n">root</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">editor</span><span class="o">.</span><span class="n">load_prefab_contents</span><span class="p">(</span><span class="n">path</span><span class="p">)</span>
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>    <span class="k">try</span><span class="p">:</span>
+<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>        <span class="n">root</span><span class="o">.</span><span class="n">name</span> <span class="o">=</span> <span class="s2">"Obstacle"</span>
+<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a>        <span class="n">root</span><span class="o">.</span><span class="n">transform</span><span class="o">.</span><span class="n">local_position</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">vector3</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">0</span><span class="p">)</span>
+<a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a>        <span class="n">inx</span><span class="o">.</span><span class="n">editor</span><span class="o">.</span><span class="n">save_as_prefab_asset</span><span class="p">(</span><span class="n">root</span><span class="p">,</span> <span class="n">path</span><span class="p">)</span>
+<a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a>    <span class="k">finally</span><span class="p">:</span>
+<a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a>        <span class="n">inx</span><span class="o">.</span><span class="n">editor</span><span class="o">.</span><span class="n">unload_prefab_contents</span><span class="p">(</span><span class="n">root</span><span class="p">)</span>
+</code></pre></div>
+<p>Contents live in an isolated scene, outside Hierarchy, game rendering, physics
+queries and Awake/Start/Update. Serialization callbacks still run. Mutating this
+temporary tree does not record individual Undo steps; saving the asset records a
+Project Undo operation. Unloading discards unsaved changes. Editor shutdown also
+releases outstanding contents.</p>
+<p>Menu, command-palette and Inspector handlers should schedule the entire batch
+through the existing editor task runner. Loading scripts during a GUI draw can
+require a type publication, which belongs at an owner safe point:</p>
+<div class="language-python highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="k">def</span><span class="w"> </span><span class="nf">on_edit_command</span><span class="p">(</span><span class="n">context</span><span class="p">):</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>    <span class="n">accepted</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">editor</span><span class="o">.</span><span class="n">defer</span><span class="p">(</span><span class="n">edit_obstacle</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="s2">"Edit obstacle Prefab"</span><span class="p">)</span>
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>    <span class="k">if</span> <span class="ow">not</span> <span class="n">accepted</span><span class="p">:</span>
+<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>        <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span><span class="s2">"Wait for the current editor task to finish"</span><span class="p">)</span>
+</code></pre></div>
+<p><code>defer</code> returns <code>False</code> while another editor task is active. It never calls the
+callback inline or retries it. Register the command with
+<code>creates_user_action=False</code>; the deferred batch records its own authoring actions.</p>
+<p><code>save_as_prefab_asset</code> returns the asset path. New files must be under <code>Assets</code>
+or <code>Packages</code>, with an existing parent directory. To overwrite an existing file,
+load that file's contents first. Nested Prefabs, internal references and source
+identities are preserved. An ordinary scene object produces an ordinary Prefab;
+this operation does not connect it to the new asset. Use <code>create_prefab</code> to create
+and connect. Saving a linked Prefab root to a new path creates a Variant of its
+source. A Variant may itself be the source of another Variant.</p>
+<p>Offline saving and Apply update registered descendant Variants and their loaded
+scene instances in the same Undo/Redo operation. Prefab Mode saving uses the same
+publication path; exiting also updates Variants in the suspended scene. Local property overrides,
+added children and removed components survive base updates. Inherited objects
+can be deactivated, but cannot be deleted or reparented in a Variant. Variants
+remain ordinary <code>.prefab</code> assets with inheritance metadata; they do not introduce
+a second runtime object type. Loading and cooking resolve the current base chain
+without rewriting the author files, and a base change invalidates cached templates.
+Cooked Variants contain the resolved tree, not editor inheritance metadata.
+Dedicated Variant override controls, automatic propagation of external edits to
+already-open scene instances, and final Player delivery are still in progress.</p>
+<p>Saving rejects source changes or deletion since load. Close the same asset's
+Prefab Mode before editing it offline. Saving an existing source, or applying
+instance overrides, updates linked instances in all loaded scenes, including
+nested instances. Instance-specific overrides and component references survive
+the merge. Parent cycles are rejected before publishing the source.</p>
+<p>The source and affected scene instances share one Undo/Redo operation. Each
+affected scene gets its own dirty revision; unrelated scenes stay unchanged.
+Unloading the temporary contents does not invalidate that operation. If an
+affected editor scene has been closed, replay restores its recorded document
+additively, preserving instance identities and overrides without replacing the
+active scene. This requires the scene to have been registered with the editor;
+destroying an unregistered native world cannot provide a restorable document.
+Undo/Redo refuses to overwrite a source changed outside that history, deleted,
+or replaced by another asset. Formatting-only JSON changes are accepted. A
+conflict leaves the source unchanged; it does not silently discard the action.</p>
+<h2 id="data-assets-and-build-scenes">Data assets and build scenes<a class="headerlink" href="#data-assets-and-build-scenes" title="Permanent link">&para;</a></h2>
+<p>Declare runtime configuration with <code>DataAsset</code> and <code>serialized_field</code> in
+<code>Assets/Scripts/LevelConfig.py</code>. Editor tools import it as
+<code>from Scripts.LevelConfig import LevelConfig</code>: <code>Assets</code> is the project module
+root, not a Python package name.</p>
+<div class="language-python highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">Scripts.LevelConfig</span><span class="w"> </span><span class="kn">import</span> <span class="n">LevelConfig</span>
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>
+<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="k">with</span> <span class="n">inx</span><span class="o">.</span><span class="n">editor</span><span class="o">.</span><span class="n">edit_scene</span><span class="p">(</span><span class="s2">"Create level configuration"</span><span class="p">):</span>
+<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>    <span class="n">inx</span><span class="o">.</span><span class="n">editor</span><span class="o">.</span><span class="n">create_folder</span><span class="p">(</span><span class="s2">"Assets/NewLevel"</span><span class="p">)</span>
+<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>    <span class="n">path</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">editor</span><span class="o">.</span><span class="n">create_data_asset</span><span class="p">(</span>
+<a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>        <span class="n">LevelConfig</span><span class="p">(</span><span class="n">title</span><span class="o">=</span><span class="s2">"Garden"</span><span class="p">),</span> <span class="s2">"Assets/NewLevel/Level.inxdata"</span><span class="p">,</span>
+<a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a>    <span class="p">)</span>
+<a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a><span class="n">config</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">DataAsset</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="n">path</span><span class="p">)</span>
+</code></pre></div>
+<p><code>create_data_asset</code> saves an independent copy through the asset system, which
+owns its GUID and import results. The input object's persistent identity is
+unchanged. The parent directory must exist and the target must not exist.
+Undo removes the asset; Redo restores its original GUID and fields. Use the
+Inspector document workflow to edit existing assets rather than overwriting them.</p>
+<p>Authoring scripts can use that same document without opening an Inspector:</p>
+<div class="language-python highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="n">level</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">editor</span><span class="o">.</span><span class="n">load_data_asset</span><span class="p">(</span><span class="s2">"Assets/Data/Level01.inxdata"</span><span class="p">)</span>
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="k">with</span> <span class="n">inx</span><span class="o">.</span><span class="n">editor</span><span class="o">.</span><span class="n">edit_scene</span><span class="p">(</span><span class="s2">"Update level configuration"</span><span class="p">):</span>
+<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>    <span class="n">inx</span><span class="o">.</span><span class="n">editor</span><span class="o">.</span><span class="n">set_data_asset_fields</span><span class="p">(</span><span class="n">level</span><span class="p">,</span> <span class="n">title</span><span class="o">=</span><span class="s2">"First level"</span><span class="p">,</span> <span class="n">difficulty</span><span class="o">=</span><span class="mi">3</span><span class="p">)</span>
+<a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="n">result</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">editor</span><span class="o">.</span><span class="n">save_data_asset</span><span class="p">(</span><span class="n">level</span><span class="p">)</span>
+</code></pre></div>
+<p><code>load_data_asset</code> reads the live Editor document, including unsaved changes.
+Do not use the disk-reading <code>DataAsset.load</code> to observe an Undo immediately.
+<code>set_data_asset_fields</code> validates every declared field on an independent copy
+before recording one undoable edit. Unknown or read-only fields reject the whole
+call; unchanged values return <code>False</code>. A group can include several assets.
+<code>save_data_asset</code> uses the existing save transaction; inspect its
+<code>APPLIED/PENDING/FAILED</code> result rather than assuming that a request has finished.</p>
+<p>Declare an asset-reference list with
+<code>inx.list_field(element_type=inx.FieldType.ASSET, asset_type="DataAsset")</code>.
+The list stores references, not embedded copies of each asset.</p>
+<p>To attach a component in an authoring tool, use
+<code>inx.editor.add_component(obj, "MyComponent", configure=initialize)</code>.
+It resolves the published script and asset identity through the same service as
+Inspector, and records initialized fields for Undo/Redo. Constructing an instance
+from an old imported Python class and calling <code>add_py_component</code> directly bypasses
+that authoring service.</p>
+<p>The regular <code>obj.add_component(MyComponent)</code> and <code>obj.get_component(MyComponent)</code>
+also resolve retained class handles to the currently published script type. This
+includes a class imported by a preload before its first asset-GUID publication;
+matching uses the owning module and qualified name, not a short name shared by
+unrelated scripts. Directly constructing <code>MyComponent()</code> and passing that instance
+to <code>add_py_component</code> is a lower-level path and does not perform this resolution.
+For undoable edits on existing objects, keep using <code>inx.editor.add_component</code>.</p>
+<p>To load an existing material, pass its <code>Assets</code>-relative author path directly to
+<code>inx.AssetManager.load("Assets/Materials/Example.mat")</code>. In Editor that path is
+immediately converted to its asset GUID. Player accepts the same path expression,
+but resolves it only through the build-frozen query index and continues with the
+GUID; it never scans <code>Assets</code> or treats the path as runtime identity. Likewise,
+<code>find_assets("Assets/Materials/*.mat")</code> returns immutable <code>AssetFile</code> objects in
+both. Each object is identified only by its <code>guid</code> and can load that asset with
+<code>load()</code>; an authoring path never becomes its identity. Passing a directory
+such as <code>Assets/Materials</code> lists its direct child files; use an explicit glob
+such as <code>Assets/Materials/**/*.mat</code> for recursive matching. Directories are
+never returned.</p>
+<p>Loose files and mod folders are an explicit second mode. Pass
+<code>raw_filesystem=True</code> to <code>load</code> to obtain a <code>SandboxPath</code>, or to <code>find_assets</code> to
+list sandboxed files. A directory query such as <code>Mods</code> lists only its direct
+child files; directories are never query results. The root is the project <code>Assets</code> directory in Editor and
+the executable directory in Player. Handles provide <code>read_bytes</code>, <code>read_text</code>,
+<code>write_bytes</code>, <code>write_text</code>, and non-recursive <code>delete</code>. Absolute paths, parent
+traversal, and symlink/junction traversal are rejected. Never persist a
+<code>SandboxPath</code> as an asset identity.</p>
+<p><code>get_build_scenes()</code> returns a detached ordered list of project-relative paths.
+<code>set_build_scenes(paths)</code> edits the shared Build Settings document as one Undo
+operation. Entries must be existing <code>.scene</code> files beneath <code>Assets</code>; an empty
+list clears the selection, and an unchanged list creates no history. Normal
+Editor autosave applies. <code>save_project_settings()</code> also provides explicit saving
+with the same status contract as scene saving: <code>PENDING</code> is not a completed write.</p>
+<h2 id="scene-documents-and-history">Scene documents and history<a class="headerlink" href="#scene-documents-and-history" title="Permanent link">&para;</a></h2>
+<p><code>save_scene("Assets/Scenes/MyLevel.scene")</code> saves the active scene to an explicit
+project-relative path. <code>save_scene()</code> saves its current document, or requests a
+Save As dialog if it has no path. The result is a <code>DocumentActionResult</code>:</p>
+<ul>
+<li><code>APPLIED</code> / <code>NO_OP</code>: the operation completed / nothing needed saving.</li>
+<li><code>PENDING</code>: a dialog or asynchronous operation remains outstanding.</li>
+<li><code>REJECTED</code> / <code>FAILED</code>: inspect <code>message</code>; do not report success.</li>
+</ul>
+<p><code>open_scene(path)</code> and <code>new_scene()</code> retain the normal unsaved-changes confirmation
+and deferred scene-switch rules. Returning from a request is <strong>not</strong> proof that
+the new scene is loaded. Do not create objects for the destination immediately
+after requesting a scene switch.</p>
+<p><code>undo()</code> and <code>redo()</code> defer replay to the Editor safe point by default. If a
+command invokes them, register that command with <code>creates_user_action=False</code>:
+replaying history is not a new edit. <code>defer=False</code> is for an already safe,
+caller-controlled non-rendering host, not a GUI callback.</p>
+<p>Prefab components retain source identities independently of their runtime IDs.
+Deleting or reordering same-type components does not retarget the surviving
+components during Apply/Revert, Undo/Redo, or scene synchronization. Newly added
+components remain private to an instance until applied. Deleted source IDs are
+not reused by later additions.</p>
+<p>Old scenes without component source identities are adopted once using their
+saved baseline and type order. This cannot recover the identity of a same-type
+component that was already deleted before the scene acquired that metadata.</p>
+<p>Component fields store the exact component ID as well as its owning object and
+type. Assign a component instance directly; the Inspector picker lists each
+component separately. Dropping a GameObject binds its first matching component.
+Deleting that target resolves the reference to <code>None</code>, not to another component
+of the same type. Clear missing references before saving a Prefab asset.
+Legacy type-only references remain readable and acquire an exact ID when saved.
+Copies, Prefab operations and scene loading remap internal references to the new
+identities; explicit references to objects outside the copied graph stay external.</p>
+<p>Reparenting a node inside a Prefab preserves its identity. Source hierarchy edits
+can merge with instance field edits, and an instance parent override survives
+unrelated source updates. If concurrent edits form a parent cycle, Apply rejects
+the conflict before changing the asset file; resolve the hierarchy and apply again.</p>
+<h2 id="revert-one-property-override">Revert one property override<a class="headerlink" href="#revert-one-property-override" title="Permanent link">&para;</a></h2>
+<div class="language-python highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="n">inx</span><span class="o">.</span><span class="n">editor</span><span class="o">.</span><span class="n">revert_property_override</span><span class="p">(</span><span class="n">component</span><span class="p">,</span> <span class="s2">"amount"</span><span class="p">)</span>
+</code></pre></div>
+<p>Restores one declared serialized field from the nearest Prefab source and records
+one undoable edit. Other field overrides, object identities, and component
+references stay intact. The source asset is not modified. A <code>False</code> result means
+there was no change to record.</p>
+<p>Use the public Python field name, including native properties such as a
+collider's <code>size</code> or Transform's <code>local_position</code>. Explicitly reverting a root
+Transform field restores its source value; whole-instance Revert instead
+preserves root placement. Collection fields are restored as a whole. Nested
+property paths, added instance components, and read-only fields are not supported
+by this entry point. If a source reference targets a removed instance member,
+restore that member first; the reference will not bind an unrelated object.</p>
+<h2 id="query-property-overrides">Query property overrides<a class="headerlink" href="#query-property-overrides" title="Permanent link">&para;</a></h2>
+<div class="language-python highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="k">if</span> <span class="n">inx</span><span class="o">.</span><span class="n">editor</span><span class="o">.</span><span class="n">is_property_override</span><span class="p">(</span><span class="n">component</span><span class="p">,</span> <span class="s2">"amount"</span><span class="p">):</span>
+<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>    <span class="n">inx</span><span class="o">.</span><span class="n">editor</span><span class="o">.</span><span class="n">revert_property_override</span><span class="p">(</span><span class="n">component</span><span class="p">,</span> <span class="s2">"amount"</span><span class="p">)</span>
+<a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a>
+<a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="k">for</span> <span class="n">change</span> <span class="ow">in</span> <span class="n">inx</span><span class="o">.</span><span class="n">editor</span><span class="o">.</span><span class="n">get_property_modifications</span><span class="p">(</span><span class="n">instance</span><span class="p">):</span>
+<a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a>    <span class="nb">print</span><span class="p">(</span><span class="n">change</span><span class="o">.</span><span class="n">object_id</span><span class="p">,</span> <span class="n">change</span><span class="o">.</span><span class="n">component_id</span><span class="p">,</span> <span class="n">change</span><span class="o">.</span><span class="n">property_path</span><span class="p">,</span>
+<a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a>          <span class="n">change</span><span class="o">.</span><span class="n">source_value</span><span class="p">,</span> <span class="n">change</span><span class="o">.</span><span class="n">instance_value</span><span class="p">)</span>
+</code></pre></div>
+<p>Queries use the same source identities and typed reference comparison as Prefab
+Apply/Revert. Same-named objects and same-type components remain distinct.
+<code>is_property_override</code> takes a public Python field name, including read-only
+serialized fields. An undeclared field is an error; an ordinary scene object or
+an added component has no source field override.</p>
+<p><code>get_property_modifications</code> returns a detached tuple for the nearest containing
+Prefab and its descendants. Records contain scene object/component IDs and the
+corresponding asset-local <code>source_object_id</code>/<code>source_component_id</code>. Component
+fields use <code>data.&lt;serialized_name&gt;</code>; Transform fields use <code>position</code>, <code>rotation</code>,
+and <code>scale</code>. Values follow the serialized value codec, including typed references:
+source references use asset-local IDs, instance references use scene IDs.
+Collections are compared as whole fields, not separate array elements.</p>
+<p>Root placement/organization differences are included with <code>is_default_override</code>
+set, reflecting the existing whole-instance Apply/Revert exclusions. Added or
+removed objects/components and ordering changes are structural overrides, not
+property records. These are current differences against the source, not a log of
+past edits or unused historical Unity overrides. Queries do not save, add Undo,
+or advance the merge baseline; modifying returned values does not modify assets.</p>
+<h2 id="nested-prefabs">Nested Prefabs<a class="headerlink" href="#nested-prefabs" title="Permanent link">&para;</a></h2>
+<p>Place a Prefab instance under another hierarchy and save the outer hierarchy as
+a Prefab. The inner instance retains its own asset link. Repeated instances of
+the same inner asset have separate outer identities; object and component
+references continue to target their respective instances.</p>
+<ul>
+<li>Applying an inner instance updates its inner source. Applying the outer root
+  records those changes in the outer asset instead.</li>
+<li>Outer Apply/Revert, Undo/Redo and Prefab Mode saves preserve inner links.
+  Copying an inner instance creates a new outer member rather than reusing the
+  original member's identity.</li>
+<li>Unpacking the outer instance preserves inner Prefab links. It does not unpack
+  every nesting level recursively.</li>
+<li>Moving an inner instance to a different outer instance makes it a new member
+  of that outer instance while preserving its inner asset link. Undo restores
+  its previous ownership; Redo applies the move again. Moving within the same
+  outer instance preserves its existing member identity.</li>
+<li>Moving an ordinary source-owned child out of its instance removes that source
+  membership. Use sibling ordering to reorder children, not detach/reattach;
+  use Undo to restore a detached child's original membership.</li>
+<li>Scene reopening, fresh instantiation and build resolution read the current
+  inner sources even when the outer asset file has not changed. Cyclic nesting
+  is rejected rather than expanded indefinitely.</li>
+</ul>
+<p>These APIs are not the complete Unity Editor SDK. Migrating the project's
+complete authoring tools remains a separate acceptance task.</p>
+
+    <nav class="doc-trail" data-doc-trail aria-label="Document navigation and feedback">
+        <a class="doc-trail-fallback" href="/wiki/site/en/api/index.html">Back to API index</a>
+    </nav>
+
+
+
+    <section class="doc-build-provenance" data-doc-build-provenance data-state="loading" aria-label="Documentation build evidence">
+        <span class="doc-build-label">Build evidence</span>
+        <div class="doc-build-facts" data-doc-build-facts aria-live="polite">
+            <span class="doc-build-loading">Reading release and source provenance…</span>
+        </div>
+        <a class="doc-build-manifest" href="/docs-manifest.json">Machine manifest JSON</a>
+    </section>
+
+
+            </div>
+        </div>
+    </main>
+
+    <!-- Footer -->
+    <footer class="footer">
+        <div class="container">
+            <div class="footer-bottom">
+                <p>&copy; 2024-2026 Infernux Engine. MIT License.</p>
+            </div>
+        </div>
+    </footer>
+
+
+    <dialog class="docs-search-dialog" id="docs-search-dialog" role="dialog" aria-modal="true" aria-labelledby="docs-search-title">
+        <button type="button" class="docs-search-backdrop" data-docs-search-close tabindex="-1" aria-hidden="true"></button>
+        <div class="docs-search-panel">
+            <div class="docs-search-head">
+                <h2 id="docs-search-title">Search Infernux documentation</h2>
+                <button type="button" class="docs-search-close" data-docs-search-close aria-label="Close documentation search"><i class="fas fa-xmark" aria-hidden="true"></i></button>
+            </div>
+            <label class="docs-search-field" for="docs-search-input">
+                <i class="fas fa-magnifying-glass" aria-hidden="true"></i>
+                <input class="docs-search-input" id="docs-search-input" type="search" autocomplete="off" spellcheck="false" aria-controls="docs-search-results" aria-describedby="docs-search-status" aria-autocomplete="list" placeholder="API symbol, module, or method…">
+            </label>
+            <div class="docs-search-filters" id="docs-search-filters" aria-label="Documentation search filters"></div>
+            <p class="docs-search-status" id="docs-search-status" aria-live="polite" aria-atomic="true"></p>
+            <div class="docs-search-results" id="docs-search-results" role="list"></div>
+        </div>
+    </dialog>
+
+    <script src="/js/main.js?v=15"></script>
+    <script src="/js/docs-search.js?v=6"></script>
+    <script src="/js/wiki-generated.js?v=14"></script>
+</body>
+</html>

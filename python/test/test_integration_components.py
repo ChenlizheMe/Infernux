@@ -32,6 +32,7 @@ from Infernux.lib import (
     InxPhysicMaterial,
     LightType,
     LightShadows,
+    LightColorMode,
     Physics,
     AssetRegistry,
     ResourceType,
@@ -1334,12 +1335,12 @@ class TestComponentLifecycle:
         assert restored[1].effect_ref.guid == "missing-effect-guid"
         assert not hasattr(stack, "effect_stage_bindings_json")
 
-    def test_renderstack_rejects_obsolete_binding_source(self, scene):
+    def test_renderstack_ignores_obsolete_binding_source(self, scene):
         stack = scene.create_game_object("InvalidEffectBindingRenderStack").add_component(RenderStack)
-        with pytest.raises(ValueError, match="removed"):
-            stack._deserialize_fields_document(
-                {"effect_stage_bindings_json": '{"$schema":"broken"}'}
-            )
+        stack._deserialize_fields_document(
+            {"effect_stage_bindings_json": '{"$schema":"broken"}'}
+        )
+        assert "effect_stage_bindings_json" not in stack._serialize_fields_document()
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Collider properties
@@ -1539,13 +1540,13 @@ class TestColliders:
         assert collider.deserialize_document(invalid) is False
         assert collider.serialize_document() == original
 
-    def test_collider_document_rejects_removed_ordinary_field(self, scene):
+    def test_collider_document_ignores_removed_ordinary_field(self, scene):
         collider = scene.create_game_object("UnknownColliderField").add_component("BoxCollider")
         original = collider.serialize_document()
         invalid = dict(original)
         invalid["legacy_material"] = 1
 
-        assert collider.deserialize_document(invalid) is False
+        assert collider.deserialize_document(invalid) is True
         assert collider.serialize_document() == original
 
     @pytest.mark.parametrize(
@@ -1709,6 +1710,34 @@ class TestLight:
         assert c[1] == pytest.approx(0.0)
         assert c[2] == pytest.approx(0.0)
         assert c[3] == pytest.approx(1.0)
+
+    def test_light_color_modes_and_kelvin_round_trip(self, scene):
+        light = scene.create_game_object("TemperatureLight").add_component("Light")
+        native = light._cpp_component
+        light.color = Vector3(0.8, 0.5, 0.25)
+        assert light.color_mode == LightColorMode.Color
+        assert light.use_color_temperature is False
+        assert not type(light).color_temperature.metadata.visible_when(light)
+        assert tuple(native.effective_color) == pytest.approx((0.8, 0.5, 0.25))
+
+        light.color_mode = LightColorMode.FilterAndTemperature
+        assert light.use_color_temperature is True
+        assert type(light).color_temperature.metadata.visible_when(light)
+        light.color_temperature = 6500.0
+        assert tuple(native.effective_color) == pytest.approx((0.8, 0.5, 0.25))
+        light.color_temperature = 2500.0
+        warm = tuple(native.effective_color)
+        assert warm[0] > warm[1] > warm[2]
+        assert warm[2] < 0.25
+
+        document = native.serialize_document()
+        assert document["useColorTemperature"] is True
+        assert document["colorTemperature"] == pytest.approx(2500.0)
+        light.use_color_temperature = False
+        assert native.deserialize_document(document) is True
+        assert light.color_mode == LightColorMode.FilterAndTemperature
+        invalid = dict(document, colorTemperature=999.0)
+        assert native.deserialize_document(invalid) is False
 
     def test_light_shadows(self, scene):
         go = scene.create_game_object("L")
@@ -2187,7 +2216,7 @@ class TestComponentSerialization:
             "SpriteRenderer",
         ],
     )
-    def test_registered_component_rejects_unknown_field(self, scene, component_type):
+    def test_registered_component_ignores_unknown_field(self, scene, component_type):
         owner = scene.create_game_object(f"Strict{component_type}")
         if component_type == "Transform":
             component = owner.transform
@@ -2197,15 +2226,25 @@ class TestComponentSerialization:
         invalid = dict(original)
         invalid["unexpected"] = True
 
-        assert component.deserialize_document(invalid) is False
+        assert component.deserialize_document(invalid) is True
         assert component.serialize_document() == original
+
+    def test_registered_component_does_not_special_case_retired_identity_field(self, scene):
+        light = scene.create_game_object("CurrentLight").add_component("Light")
+        original = light.serialize_document()
+        authored = dict(original)
+        authored["instance_guid"] = "retired-editor-value"
+
+        assert light.deserialize_document(authored) is True
+        assert light.serialize_document() == original
 
     def test_component_documents_are_strict(self, scene):
         cube = scene.create_primitive(PrimitiveType.Cube, "CurrentFormatCube")
         renderer = cube.get_component("MeshRenderer")
         renderer_document = renderer.serialize_document()
         renderer_document["unknown"] = 5
-        assert renderer.deserialize_document(renderer_document) is False
+        assert renderer.deserialize_document(renderer_document) is True
+        assert "unknown" not in renderer.serialize_document()
 
         rigidbody = cube.add_component("Rigidbody")
         rigidbody_document = rigidbody.serialize_document()

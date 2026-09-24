@@ -1121,9 +1121,9 @@ void GameObject::SetModelSource(std::string guid, std::vector<std::string> path)
 
 void GameObject::ValidateModelSourceDocument(const nlohmann::json &document)
 {
-    if (!document.is_object() || document.size() != 2 || !document.contains("guid") ||
-        !document["guid"].is_string() || document["guid"].get_ref<const std::string &>().empty() ||
-        !document.contains("path") || !document["path"].is_array())
+    if (!document.is_object() || document.size() != 2 || !document.contains("guid") || !document["guid"].is_string() ||
+        document["guid"].get_ref<const std::string &>().empty() || !document.contains("path") ||
+        !document["path"].is_array())
         throw std::invalid_argument("GameObject.model_source requires a non-empty guid and a path array");
     for (const auto &part : document["path"])
         if (!part.is_string() || part.get_ref<const std::string &>().empty())

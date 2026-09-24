@@ -250,30 +250,42 @@ def _project_settings():
 
 
 def get_build_scenes() -> list[str]:
-    """Return a copy of the ordered project-relative build scene list."""
-    return _project_settings().section("build")["scenes"]
+    """Return the ordered build scene paths resolved from their asset GUIDs."""
+    from .engine.path_utils import relative_path
+
+    core = _authoring_core()
+    database = core.project_assets.asset_database
+    paths = []
+    for guid in _project_settings().section("build")["scene_guids"]:
+        path = str(database.get_path_from_guid(guid) or "")
+        if path:
+            paths.append(relative_path(path, core.project_assets.project_root))
+    return paths
 
 
 def set_build_scenes(paths) -> bool:
     """Edit the shared Build Settings document as one undoable operation."""
     import os
-    from .engine.path_utils import is_path_within, relative_path
+    from .engine.path_utils import is_path_within
 
     core = _authoring_core()
     if not isinstance(paths, (list, tuple)):
         raise TypeError("Build scenes must be a list or tuple of paths")
     root = core.project_assets.project_root
-    scenes = []
+    scene_guids = []
     for path in paths:
         target = _asset_path(path)
         if not is_path_within(target, os.path.join(root, "Assets"), allow_root=False) or not target.lower().endswith(".scene"):
             raise ValueError("Build scenes must be .scene assets beneath Assets")
         if not os.path.isfile(target):
             raise FileNotFoundError(target)
-        scenes.append(relative_path(target, root).replace("\\", "/"))
+        guid = str(core.project_assets.asset_database.get_guid_from_path(target) or "").strip()
+        if not guid:
+            raise ValueError(f"Build scene has not been imported: {target}")
+        scene_guids.append(guid)
     controller = _project_settings()
     settings = controller.section("build")
-    settings["scenes"] = scenes
+    settings["scene_guids"] = scene_guids
     return controller.apply_section("build", settings, edit_key="build.scenes", description="Set Build Scenes")
 
 

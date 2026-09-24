@@ -37,8 +37,6 @@ from .external_drops import ExternalDropDecision, ExternalDropStatus, ExternalDr
 from .scene_objects import SceneObjectCommandService
 from .asset_mutations import AssetContentChange, AssetMutation, AssetMutationChange, AssetMutationKind, AssetMutationNotification, AssetMutationService, AssetRelocationChange, AssetRelocationPlan, iter_asset_mutations
 from .asset_content import (
-    AssetReferenceContentPatch,
-    AssetReferenceRelocationPlanner,
     AssetRenameContentRegistry,
     AssetRenameTransform,
 )

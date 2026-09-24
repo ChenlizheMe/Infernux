@@ -80,6 +80,10 @@ class VulkanQueueManager
     /// proves that every queue contributing to the frame has finished.
     [[nodiscard]] rhi::SubmissionSerial GetLastReservedCompletionEpoch() const noexcept;
     [[nodiscard]] rhi::SubmissionSerial GetCompletedCompletionEpoch() const noexcept;
+    /// Exact completion query for work that owns one known epoch. Unlike the
+    /// contiguous retirement watermark, this remains true when an unrelated
+    /// older epoch is still outstanding.
+    [[nodiscard]] bool IsCompletionEpochComplete(rhi::SubmissionSerial epoch) const noexcept;
     [[nodiscard]] rhi::SubmissionSerial ReserveCompletionEpoch() noexcept;
     void CompleteCompletionEpoch(rhi::SubmissionSerial epoch) noexcept;
 

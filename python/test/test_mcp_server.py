@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import importlib
 import json
 import socket
+import sys
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -65,7 +68,7 @@ def test_default_mcp_surface_is_schema_gateway_not_flat_tools(tmp_path):
     try:
         state = register_gateways(mcp, str(tmp_path), {})
 
-        assert state["operation_count"] == 103
+        assert state["operation_count"] == 104
         assert state["owned_operation_count"] == 70
         assert state["gateway_count"] == 14
         assert 0.0 < state["registration_ms"] < 5000.0
@@ -104,7 +107,7 @@ def test_default_mcp_surface_is_schema_gateway_not_flat_tools(tmp_path):
             "availability",
             "phase",
         }
-        assert len(documents) == 103
+        assert len(documents) == 104
         assert all(required <= set(document) for document in documents)
         operation_ids = {document["id"] for document in documents}
         assert {
@@ -166,7 +169,7 @@ def test_default_mcp_surface_is_schema_gateway_not_flat_tools(tmp_path):
     finally:
         shutdown_adapter()
     remaining = OperationRegistry.instance().list()
-    assert len(remaining) == 33
+    assert len(remaining) == 34
     assert {
         OperationRegistry.instance().get(document["id"]).owner
         for document in remaining
@@ -898,3 +901,76 @@ def test_server_start_rejects_occupied_port_without_false_loaded_state(tmp_path)
             server.start_server(str(tmp_path), port=port)
     assert server.is_running() is False
     assert adapter_status()["active"] is False
+
+
+def test_server_hot_reload_keeps_one_owner_and_stops_without_error(
+    tmp_path, monkeypatch
+):
+    (tmp_path / "Assets").mkdir()
+    (tmp_path / "ProjectSettings").mkdir()
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+
+    errors: list[str] = []
+    monkeypatch.setattr(
+        server.Debug,
+        "log_error",
+        lambda message, *args, **kwargs: errors.append(str(message)),
+    )
+
+    try:
+        assert server.start_server(str(tmp_path), port=port) is True
+        assert server.is_running() is True
+        assert sum(
+            thread.name == "InfernuxMCPHTTP" and thread.is_alive()
+            for thread in threading.enumerate()
+        ) == 1
+
+        sys.modules.pop(server.__name__, None)
+        replacement = importlib.import_module(server.__name__)
+        assert replacement is not server
+        assert replacement.is_running() is True
+        assert replacement.start_server(str(tmp_path), port=port) is True
+        assert sum(
+            thread.name == "InfernuxMCPHTTP" and thread.is_alive()
+            for thread in threading.enumerate()
+        ) == 1
+
+        replacement.stop_server()
+        assert replacement.is_running() is False
+        assert errors == []
+
+        # Shutdown is synchronous: a following generation may bind the exact
+        # endpoint immediately instead of colliding with the old transport.
+        assert replacement.start_server(str(tmp_path), port=port) is True
+        assert replacement.is_running() is True
+    finally:
+        server.stop_server()
+
+    assert server.is_running() is False
+    assert errors == []
+
+
+def test_server_async_retirement_releases_owner_before_next_generation(tmp_path):
+    (tmp_path / "Assets").mkdir()
+    (tmp_path / "ProjectSettings").mkdir()
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+
+    try:
+        assert server.start_server(str(tmp_path), port=port) is True
+        started = time.monotonic()
+        server.request_stop_server()
+        assert time.monotonic() - started < 0.5
+
+        deadline = time.monotonic() + 10.0
+        while server.is_running() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert server.is_running() is False
+
+        assert server.start_server(str(tmp_path), port=port) is True
+        assert server.is_running() is True
+    finally:
+        server.stop_server()

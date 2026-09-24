@@ -83,6 +83,7 @@ struct EditorGizmosContext
     uint64_t selectedObjectId = 0;
     Scene *activeScene = nullptr;
     glm::vec3 cameraPos{0.0f};
+    float iconDpiScale = 1.0f;
 };
 
 // ============================================================================

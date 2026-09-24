@@ -276,3 +276,22 @@ def test_linux_smoke_fatal_scan_includes_vulkan_validation():
     )
 
     assert lines == ["Vulkan Validation Error: VUID-RuntimeSpirv-test"]
+
+
+@pytest.mark.parametrize(
+    "diagnostic",
+    [
+        "X Error of failed request: BadWindow",
+        "VK_ERROR_DEVICE_LOST",
+        "device lost while presenting",
+        "Aborted (core dumped)",
+        "Aborted",
+        "SIGABRT",
+        "Segmentation fault",
+        "SIGSEGV",
+    ],
+)
+def test_linux_smoke_fatal_scan_includes_native_process_failures(diagnostic):
+    module = _module()
+
+    assert module._fatal_lines(f"normal line\n{diagnostic}\n") == [diagnostic]

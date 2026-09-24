@@ -363,6 +363,9 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
         native = engine.get_native_engine() if engine else None
         if native:
             tb.is_show_grid = lambda: native.is_show_grid()
+        if engine:
+            tb.is_show_gizmos = lambda: engine.is_show_gizmos()
+
         def _sync_camera():
             cam = engine.editor_camera if engine else None
             if not cam:

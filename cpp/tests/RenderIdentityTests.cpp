@@ -13,11 +13,11 @@ using infernux::RenderProxyHandle;
 
 int main()
 {
-    for (const auto domain : {RenderDomain::ComponentGizmo, RenderDomain::EditorGizmo,
-                              RenderDomain::EditorTool, RenderDomain::Skybox})
+    for (const auto domain :
+         {RenderDomain::ComponentGizmo, RenderDomain::EditorGizmo, RenderDomain::EditorTool, RenderDomain::Skybox})
         assert(infernux::RenderDomainRequiresDedicatedMaterial(domain));
-    for (const auto domain : {RenderDomain::Unknown, RenderDomain::SceneGeometry,
-                              RenderDomain::Particle, RenderDomain::ScreenUI})
+    for (const auto domain :
+         {RenderDomain::Unknown, RenderDomain::SceneGeometry, RenderDomain::Particle, RenderDomain::ScreenUI})
         assert(!infernux::RenderDomainRequiresDedicatedMaterial(domain));
 
     const ObjectHandle object{10, 2, 7};

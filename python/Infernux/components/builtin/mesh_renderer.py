@@ -266,8 +266,7 @@ class MeshRenderer(BuiltinComponent):
         Runtime overrides are the default and disappear with this component's
         Play/runtime lifetime. Set ``persistent=True`` for authored scene data.
         Neither mode modifies or clones the shared material.
-        Matrix parameters accept NumPy (4,4) arrays indexed [row, column];
-        legacy flat 16-number sequences remain column-major.
+        Matrix parameters accept NumPy (4,4) arrays indexed [row, column].
         """
         cpp = self._require_cpp_component()
         cpp.set_parameter(name, value, material_slot, persistent, owner)

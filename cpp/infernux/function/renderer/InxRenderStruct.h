@@ -60,7 +60,7 @@ inline MeshIndexFormat ResolveMeshIndexFormat(MeshIndexFormat requested, size_t 
     if (requested == MeshIndexFormat::UInt16 && !indicesFit16)
         throw std::invalid_argument("Mesh index_format uint16 exceeds the 16-bit vertex/index range");
     return requested == MeshIndexFormat::Auto ? (indicesFit16 ? MeshIndexFormat::UInt16 : MeshIndexFormat::UInt32)
-                                               : requested;
+                                              : requested;
 }
 namespace rhi
 {

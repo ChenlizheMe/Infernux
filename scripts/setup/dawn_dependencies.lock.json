@@ -1,0 +1,161 @@
+{
+  "schema": "infernux.dawn_dependencies",
+  "version": 1,
+  "dawn_revision": "31e25af254ab572c77054edec4946d2244e184dd",
+  "dependency_count": 19,
+  "snapshot_dependency_count": 4,
+  "dependencies": [
+    {
+      "path": "third_party/abseil-cpp",
+      "transport": "official_gitiles_snapshot",
+      "deps_url": "https://chromium.googlesource.com/chromium/src/third_party/abseil-cpp.git",
+      "source_url": "https://chromium.googlesource.com/chromium/src/third_party/abseil-cpp.git",
+      "commit": "dd4432fb02583b7a5b2b4fbf2012f7053e286ce0",
+      "tree": "b95e1cd72a022a1223b608acdf32f4bc73f1593b"
+    },
+    {
+      "path": "third_party/directx-shader-compiler/src",
+      "transport": "github",
+      "deps_url": "https://chromium.googlesource.com/external/github.com/microsoft/DirectXShaderCompiler.git",
+      "source_url": "https://github.com/microsoft/DirectXShaderCompiler.git",
+      "commit": "c763461468246fb779fb234b08ad3b460fb93a02",
+      "tree": "9e5068287417d622848a8f7ccc946039c8a9a013"
+    },
+    {
+      "path": "third_party/directx-headers/src",
+      "transport": "github",
+      "deps_url": "https://chromium.googlesource.com/external/github.com/microsoft/DirectX-Headers.git",
+      "source_url": "https://github.com/microsoft/DirectX-Headers.git",
+      "commit": "980971e835876dc0cde415e8f9bc646e64667bf7",
+      "tree": "344fb8e5885ab196e438c0d97b52cdd2c9152077"
+    },
+    {
+      "path": "third_party/glfw3/src",
+      "transport": "github",
+      "deps_url": "https://chromium.googlesource.com/external/github.com/glfw/glfw.git",
+      "source_url": "https://github.com/glfw/glfw.git",
+      "commit": "b00e6a8a88ad1b60c0a045e696301deb92c9a13e",
+      "tree": "25d72f6b99d9592347d222a1f0b84a3be33877b9"
+    },
+    {
+      "path": "third_party/jinja2",
+      "transport": "official_gitiles_snapshot",
+      "deps_url": "https://chromium.googlesource.com/chromium/src/third_party/jinja2.git",
+      "source_url": "https://chromium.googlesource.com/chromium/src/third_party/jinja2.git",
+      "commit": "c3027d884967773057bf74b957e3fea87e5df4d7",
+      "tree": "b1ced381d7e8c813f62afc3be3026da78800409c"
+    },
+    {
+      "path": "third_party/EGL-Registry/src",
+      "transport": "github",
+      "deps_url": "https://chromium.googlesource.com/external/github.com/KhronosGroup/EGL-Registry.git",
+      "source_url": "https://github.com/KhronosGroup/EGL-Registry.git",
+      "commit": "3d7796b3721d93976b6bfe536aa97bbc4bce8667",
+      "tree": "c6354f457032838120830d00854703551114a7ac"
+    },
+    {
+      "path": "third_party/OpenGL-Registry/src",
+      "transport": "github",
+      "deps_url": "https://chromium.googlesource.com/external/github.com/KhronosGroup/OpenGL-Registry.git",
+      "source_url": "https://github.com/KhronosGroup/OpenGL-Registry.git",
+      "commit": "9cb90ca4902d588bef3c830fbb1da484893bd5fb",
+      "tree": "537f857c6c5d9db6d1f4af4258d15b765e9ca877"
+    },
+    {
+      "path": "third_party/libprotobuf-mutator/src",
+      "transport": "github",
+      "deps_url": "https://chromium.googlesource.com/external/github.com/google/libprotobuf-mutator.git",
+      "source_url": "https://github.com/google/libprotobuf-mutator.git",
+      "commit": "7bf98f78a30b067e22420ff699348f084f802e12",
+      "tree": "179054b1949df3f6c10cecc765c6f9130cebde2c"
+    },
+    {
+      "path": "third_party/protobuf",
+      "transport": "official_gitiles_snapshot",
+      "deps_url": "https://chromium.googlesource.com/chromium/src/third_party/protobuf.git",
+      "source_url": "https://chromium.googlesource.com/chromium/src/third_party/protobuf.git",
+      "commit": "04bb12d7ca5e16c58b55012acb32f07c89dd4e2b",
+      "tree": "18393d6c20c7d84a88dbbe84a4ca8edc0ff395d0"
+    },
+    {
+      "path": "third_party/markupsafe",
+      "transport": "official_gitiles_snapshot",
+      "deps_url": "https://chromium.googlesource.com/chromium/src/third_party/markupsafe.git",
+      "source_url": "https://chromium.googlesource.com/chromium/src/third_party/markupsafe.git",
+      "commit": "4256084ae14175d38a3ff7d739dca83ae49ccec6",
+      "tree": "8c1f275c5022de6417bf43377c671b44d7a474d6"
+    },
+    {
+      "path": "third_party/glslang/src",
+      "transport": "github",
+      "deps_url": "https://chromium.googlesource.com/external/github.com/KhronosGroup/glslang.git",
+      "source_url": "https://github.com/KhronosGroup/glslang.git",
+      "commit": "aa8e19e05f8b30d14b894fb2d94875bb6c8be3c6",
+      "tree": "b8f0733e26a73b78d3639d4d3903b43867286d88"
+    },
+    {
+      "path": "third_party/google_benchmark/src",
+      "transport": "github",
+      "deps_url": "https://chromium.googlesource.com/external/github.com/google/benchmark.git",
+      "source_url": "https://github.com/google/benchmark.git",
+      "commit": "8abf1e701fbd88c8170f48fe0558247e2e5f8e7d",
+      "tree": "690d67cf043f30e8931ad205811d693ea84aac76"
+    },
+    {
+      "path": "third_party/googletest",
+      "transport": "github",
+      "deps_url": "https://chromium.googlesource.com/external/github.com/google/googletest.git",
+      "source_url": "https://github.com/google/googletest.git",
+      "commit": "4fe3307fb2d9f86d19777c7eb0e4809e9694dde7",
+      "tree": "feafbf9cf5deeb64dbe983f5574cb50f96fc330b"
+    },
+    {
+      "path": "third_party/spirv-headers/src",
+      "transport": "github",
+      "deps_url": "https://chromium.googlesource.com/external/github.com/KhronosGroup/SPIRV-Headers.git",
+      "source_url": "https://github.com/KhronosGroup/SPIRV-Headers.git",
+      "commit": "ad9184e76a66b1001c29db9b0a3e87f646c64de0",
+      "tree": "6b1305cbbfd740b666825553638cec177d4c0b85"
+    },
+    {
+      "path": "third_party/spirv-tools/src",
+      "transport": "github",
+      "deps_url": "https://chromium.googlesource.com/external/github.com/KhronosGroup/SPIRV-Tools.git",
+      "source_url": "https://github.com/KhronosGroup/SPIRV-Tools.git",
+      "commit": "ff5c50339cc1e9f34f04cb440a3e5fe89db0161d",
+      "tree": "5e6f7a43856e912a49a8a5cb0b8fd26cc3a4f7d4"
+    },
+    {
+      "path": "third_party/vulkan-headers/src",
+      "transport": "github",
+      "deps_url": "https://chromium.googlesource.com/external/github.com/KhronosGroup/Vulkan-Headers.git",
+      "source_url": "https://github.com/KhronosGroup/Vulkan-Headers.git",
+      "commit": "f6a6f7ab165cedbfa2a7d0c93fe27a2d01ce09c8",
+      "tree": "22e91ab4c76b9566b98cae31a77207f73153702c"
+    },
+    {
+      "path": "third_party/vulkan-loader/src",
+      "transport": "github",
+      "deps_url": "https://chromium.googlesource.com/external/github.com/KhronosGroup/Vulkan-Loader.git",
+      "source_url": "https://github.com/KhronosGroup/Vulkan-Loader.git",
+      "commit": "15a84652b94e465e9a7b25eb507193929863bc2f",
+      "tree": "3e98011a293f8dfc763956de51fd7bd8e12b0f9b"
+    },
+    {
+      "path": "third_party/vulkan-utility-libraries/src",
+      "transport": "github",
+      "deps_url": "https://chromium.googlesource.com/external/github.com/KhronosGroup/Vulkan-Utility-Libraries.git",
+      "source_url": "https://github.com/KhronosGroup/Vulkan-Utility-Libraries.git",
+      "commit": "e2f236b273bfcd9c665306fdd53451b923d659ab",
+      "tree": "19d8391f11ebb72617ec0093d02acbcce13f02ea"
+    },
+    {
+      "path": "third_party/webgpu-headers/src",
+      "transport": "github",
+      "deps_url": "https://chromium.googlesource.com/external/github.com/webgpu-native/webgpu-headers.git",
+      "source_url": "https://github.com/webgpu-native/webgpu-headers.git",
+      "commit": "dc16b3e531cf4f31be54236d1a3e988ba5f295a2",
+      "tree": "f6c964c7f4f13216ec7fdd0b9ac147d1626de0bb"
+    }
+  ]
+}

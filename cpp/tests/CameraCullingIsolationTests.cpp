@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <limits>
 #include <memory>
 
 using namespace infernux;
@@ -162,7 +163,27 @@ int main()
     };
     const DrawCall *beforeParameter = findLeftDraw(leftMaterialAssigned);
     assert(beforeParameter && !beforeParameter->parameterBlock);
+    bool rejectedNonFiniteOverride = false;
+    try {
+        leftRenderer->SetParameter(0, "baseColor", glm::vec4(0.1f, std::numeric_limits<float>::infinity(), 0.2f, 1.0f),
+                                   false);
+    } catch (const std::invalid_argument &) {
+        rejectedNonFiniteOverride = true;
+    }
+    assert(rejectedNonFiniteOverride && !leftRenderer->GetParameterBlock(0));
     leftRenderer->SetParameter(0, "baseColor", glm::vec4(0.1f, 0.8f, 0.2f, 1.0f), false);
+    const auto stableRuntimePublication = leftRenderer->GetParameterBlock(0);
+    assert(stableRuntimePublication);
+    leftRenderer->SetParameter(0, "baseColor", glm::vec4(0.1f, 0.8f, 0.2f, 1.0f), false);
+    assert(leftRenderer->GetParameterBlock(0) == stableRuntimePublication);
+    leftRenderer->SetParameter(0, "baseColor", glm::vec4(0.8f, 0.2f, 0.1f, 1.0f), false, "animation");
+    const auto laterOwnerPublication = leftRenderer->GetParameterBlock(0);
+    assert(laterOwnerPublication && laterOwnerPublication != stableRuntimePublication);
+    // Repeating script's own value is not a no-op after another owner wrote
+    // the field: actual write order remains authoritative.
+    leftRenderer->SetParameter(0, "baseColor", glm::vec4(0.1f, 0.8f, 0.2f, 1.0f), false);
+    assert(leftRenderer->GetParameterBlock(0) != laterOwnerPublication);
+    assert(std::get<glm::vec4>(leftRenderer->GetParameter(0, "baseColor")->value) == glm::vec4(0.1f, 0.8f, 0.2f, 1.0f));
     bridge.PrepareFrame(false);
     CameraDrawCallResult leftParameterChanged = bridge.CullAndBuildForCamera(leftCamera, false);
     const DrawCall *afterParameter = findLeftDraw(leftParameterChanged);
@@ -204,6 +225,23 @@ int main()
     twoSlotRenderer->SetMaterial(1, sharedMaterial);
     twoSlotRenderer->SetParameter(0, "baseColor", glm::vec4(0.8f, 0.1f, 0.1f, 1.0f), true);
     twoSlotRenderer->SetParameter(1, "baseColor", glm::vec4(0.1f, 0.8f, 0.1f, 1.0f), true);
+    const auto stablePersistentPublication = twoSlotRenderer->GetParameterBlock(1);
+    twoSlotRenderer->SetParameter(1, "baseColor", glm::vec4(0.1f, 0.8f, 0.1f, 1.0f), true);
+    assert(twoSlotRenderer->GetParameterBlock(1) == stablePersistentPublication);
+    twoSlotRenderer->SetParameter(1, "metallic", 0.65f, false, "play-runtime");
+    auto rendererClone = twoSlotRenderer->Clone();
+    auto *clonedRenderer = static_cast<MeshRenderer *>(rendererClone.get());
+    assert(clonedRenderer->GetParameter(1, "baseColor", true));
+    assert(!clonedRenderer->GetParameter(1, "metallic"));
+    const auto serializedRenderer = twoSlotRenderer->SerializeDocument();
+    assert(serializedRenderer.contains("parameterOverrides"));
+    assert(serializedRenderer["parameterOverrides"][1].contains("baseColor"));
+    assert(!serializedRenderer["parameterOverrides"][1].contains("metallic"));
+    MeshRenderer restoredRenderer;
+    assert(restoredRenderer.DeserializeDocument(serializedRenderer));
+    assert(restoredRenderer.GetParameter(1, "baseColor", true));
+    assert(!restoredRenderer.GetParameter(1, "metallic"));
+    assert(twoSlotRenderer->RemoveParameter(1, "metallic", false, "play-runtime"));
     const auto slotOneBlock = twoSlotRenderer->GetParameterBlock(1);
     bridge.PrepareFrame(false);
     CameraDrawCallResult twoSlotResult = bridge.CullAndBuildForCamera(leftCamera, false);
@@ -228,6 +266,13 @@ int main()
     twoSlotRenderer->OnParameterTextureAssetEvent("white", AssetEvent::Modified);
     const auto textureBlockAfterReload = twoSlotRenderer->GetParameterBlock(0);
     assert(textureBlockAfterReload && textureBlockAfterReload != textureBlockBeforeReload);
+    assert(std::get<std::string>(textureBlockAfterReload->properties.at("texSampler").value) == "white");
+    // A delete publishes another generation while already captured draw data
+    // retains the prior generation until its GPU submission can retire.
+    twoSlotRenderer->OnParameterTextureAssetEvent("white", AssetEvent::Deleted);
+    const auto textureBlockAfterDelete = twoSlotRenderer->GetParameterBlock(0);
+    assert(textureBlockAfterDelete && textureBlockAfterDelete != textureBlockAfterReload);
+    assert(std::get<std::string>(textureBlockBeforeReload->properties.at("texSampler").value) == "white");
     assert(std::get<std::string>(textureBlockAfterReload->properties.at("texSampler").value) == "white");
     assert(twoSlotRenderer->RemoveParameter(0, "texSampler", false, "gameplay"));
 
@@ -302,6 +347,33 @@ int main()
         assert(found->meshRuntimeVersion == changedVersion);
         assert(found->meshVertices && !found->meshVertices->empty());
         assert(found->meshVertices->front().pos.y == PrimitiveMeshes::GetQuadVertices().front().pos.y + 0.25f);
+    }
+
+    // Additively loaded Scenes form one render world.  Changing the active
+    // authoring Scene must not remove another loaded Scene's draw calls: the
+    // selection-outline mask, Scene picking, and Gizmos all consume this same
+    // publication and therefore need the selected object even when it belongs
+    // to a non-active Scene.
+    Scene *additiveScene = manager.CreateScene("RenderWorldAdditive");
+    GameObject *additiveObject = additiveScene->CreateGameObject("AdditiveOutlinedObject");
+    MeshRenderer *additiveRenderer = additiveObject->AddComponent<MeshRenderer>();
+    additiveRenderer->SetMesh(PrimitiveMeshes::GetCubeVertices(), PrimitiveMeshes::GetCubeIndices());
+    const uint64_t additiveObjectId = additiveObject->GetID();
+    const uint64_t primaryObjectId = snapshotMeshObject->GetID();
+
+    for (Scene *authoringOwner : {scene, additiveScene}) {
+        manager.SetActiveScene(authoringOwner);
+        const size_t visibleCount = snapshotExtractor.ExtractCameraFrame(snapshotWorld, leftCamera);
+        assert(visibleCount > 0);
+        const auto publication = snapshotWorld.Acquire();
+        assert(publication);
+        const auto &draws = publication->DrawCalls().drawCalls;
+        const auto contains = [&draws](uint64_t objectId) {
+            return std::any_of(draws.begin(), draws.end(),
+                               [objectId](const DrawCall &draw) { return draw.objectId == objectId; });
+        };
+        assert(contains(primaryObjectId));
+        assert(contains(additiveObjectId));
     }
 
     manager.UnloadAllScenes();

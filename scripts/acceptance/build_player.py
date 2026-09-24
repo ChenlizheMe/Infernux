@@ -149,7 +149,11 @@ def _prepare_project_registry(project: Path):
     """
     from Infernux.engine.build import exporter_registry
     from Infernux.engine.library_sync import sync_resources
-    from Infernux.engine.project_context import set_project_root
+    from Infernux.engine.project_context import (
+        is_editor_asset_path,
+        package_script_role,
+        set_project_root,
+    )
     from Infernux.plugins import PluginManager
     from Infernux.components.script_loader import load_all_components_from_file
     from Infernux.components.component_identity import bind_asset_script_guid
@@ -157,7 +161,12 @@ def _prepare_project_registry(project: Path):
 
     set_project_root(str(project))
     sync_resources(str(project))
-    PluginManager.startup(str(project), runtime=False)
+    # Cook is a runtime publication step.  Keep the plugin boundary identical
+    # to the Player host: only ``runtime/`` package code is discovered and
+    # loaded.  Starting an authoring manager here imports editor-role preload
+    # modules (and can transitively import MCP/FastMCP) even though no Editor
+    # process is running.
+    PluginManager.startup(str(project), runtime=True)
 
     # Cook decodes DataAsset documents before the normal build script
     # compilation phase.  Import every project-owned Python source now so
@@ -169,6 +178,13 @@ def _prepare_project_registry(project: Path):
         if not root.is_dir():
             continue
         for script_path in sorted(root.rglob("*.py")):
+            project_relative = script_path.relative_to(project).as_posix()
+            if root.name == "Assets" and is_editor_asset_path(project_relative):
+                continue
+            if root.name == "Packages" and package_script_role(
+                str(script_path), str(project)
+            ) != "runtime":
+                continue
             components = tuple(
                 load_all_components_from_file(str(script_path), register=False)
             )

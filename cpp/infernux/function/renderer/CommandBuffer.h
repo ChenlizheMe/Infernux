@@ -123,6 +123,7 @@ struct DrawMeshParams
     uint64_t objectId = 0;
     std::string meshGuid;
     uint64_t meshGeneration = 0;
+    MeshIndexFormat meshIndexFormat = MeshIndexFormat::Auto;
     int submeshIndex = 0;
     int pass = 0;
 };

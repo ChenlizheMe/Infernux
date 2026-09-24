@@ -1000,7 +1000,7 @@ void VkResourceManager::PollImageReadbacks()
                                       m_asyncReadback->IsComplete(ticket->m_submission);
         const bool frameComplete = ticket && ticket->m_frameCompletionEpoch != rhi::InvalidSubmissionSerial &&
                                    m_queueManager &&
-                                   m_queueManager->GetCompletedCompletionEpoch() >= ticket->m_frameCompletionEpoch;
+                                   m_queueManager->IsCompletionEpochComplete(ticket->m_frameCompletionEpoch);
         if (graphicsComplete || transferComplete || frameComplete) {
             FinalizeImageReadback(ticket);
             continue;

@@ -187,6 +187,11 @@ def test_runtime_performance_operations_reuse_native_window(monkeypatch):
         pending_mesh_gpu_upload_count=1,
         submitted_mesh_gpu_upload_count=7,
         completed_mesh_gpu_upload_count=6,
+        pending_texture_cpu_load_count=2,
+        pending_texture_gpu_upload_count=3,
+        submitted_texture_gpu_upload_count=9,
+        completed_texture_gpu_upload_count=8,
+        gpu_residency_snapshot={"resident_textures": 5},
     )
     host = EditorAutomationHost()
     monkeypatch.setattr(host, "_native_engine", lambda: native)
@@ -202,7 +207,12 @@ def test_runtime_performance_operations_reuse_native_window(monkeypatch):
             "pending_mesh_uploads": 1,
             "submitted_mesh_uploads": 7,
             "completed_mesh_uploads": 6,
+            "pending_texture_cpu_loads": 2,
+            "pending_texture_uploads": 3,
+            "submitted_texture_uploads": 9,
+            "completed_texture_uploads": 8,
         },
+        "gpu_residency": {"resident_textures": 5},
     }
     assert query.handler() == expected
     assert query.handler() == expected
@@ -547,6 +557,21 @@ def test_capture_returns_review_artifact_metadata_without_pixels(tmp_path):
         assert "output_path" not in status
         assert "pixels" not in status
         assert host.capture_path.name == "review.png"
+
+        # Reusing an artifact name starts a fresh lifecycle. A failed request
+        # must not expose the previous PNG or report its byte count.
+        host.capture_path.write_bytes(b"stale-frame")
+        operations["infernux.capture.request"]("game", "review.png")
+        assert not host.capture_path.exists()
+        host.capture_status = lambda capture_id: {
+            "capture_id": capture_id,
+            "status": "failed",
+            "output_path": str(host.capture_path),
+            "error": "Capture source frame was not submitted before timeout",
+        }
+        failed = operations["infernux.capture.status"](17)
+        assert failed["terminal"] is True
+        assert "byte_size" not in failed
 
         editor_requested = operations["infernux.capture.request"]("editor", "editor.png")
         assert editor_requested["source"] == "editor"

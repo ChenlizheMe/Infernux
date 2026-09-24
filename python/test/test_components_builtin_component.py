@@ -111,6 +111,25 @@ class TestCppPropertyBinding:
         assert descriptor.native_setter is native_setter
         assert descriptor.schema is None
 
+    def test_android_runtime_uses_direct_native_property_bridge(self, monkeypatch):
+        import Infernux.field_schema as field_schema
+        import Infernux.components.builtin_component as builtin_component
+
+        monkeypatch.delenv("INFERNUX_WEB_RUNTIME", raising=False)
+        monkeypatch.setattr(builtin_component.sys, "platform", "android")
+        monkeypatch.setattr(
+            field_schema,
+            "get_native_field_schema",
+            lambda *_args, **_kwargs: pytest.fail(
+                "Android Player must not query editor semantic metadata"
+            ),
+        )
+
+        descriptor = CppProperty.from_native("Light", "light_type")
+
+        assert descriptor.cpp_attr == "light_type"
+        assert descriptor.schema is None
+
 
 class TestCppPropertyReadWrite:
     def test_reads_from_cpp_and_casts_enum(self):

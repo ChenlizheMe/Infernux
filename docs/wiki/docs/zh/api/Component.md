@@ -35,6 +35,7 @@
 | `is_component_type(type_name: str) → bool` |  |
 | `serialize() → str` |  |
 | `serialize_document() → Dict[str, Any]` |  |
+| `validate_document(document: Dict[str, Any]) → None` |  |
 
 <!-- USER CONTENT START --> public_methods
 

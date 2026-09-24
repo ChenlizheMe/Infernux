@@ -23,6 +23,7 @@
 #include <function/audio/AudioClipLoader.h>
 #include <function/audio/AudioEngine.h>
 #include <function/audio/AudioSource.h>
+#include <function/editor/SelectionOutline.h>
 #include <function/renderer/EditorGizmos.h>
 #include <function/renderer/GizmosDrawCallBuffer.h>
 #include <function/renderer/SceneRenderGraph.h>
@@ -1143,7 +1144,8 @@ std::shared_ptr<rhi::RenderTexture> Infernux::CreateRenderTexture(const rhi::Ren
 void Infernux::RequireComputeHostsReleased() const
 {
     if (m_renderer && m_renderer->HasComputeHostLeases())
-        throw std::runtime_error("Release compute plugin runtimes before cleaning up the engine");
+        throw std::runtime_error("Release compute plugin runtimes before cleaning up the engine (active leases=" +
+                                 std::to_string(m_renderer->GetComputeHostLeaseCount()) + ")");
 }
 
 std::shared_ptr<rhi::RenderTexture> Infernux::LoadRenderTexture(const std::string &guid)
@@ -3520,31 +3522,6 @@ void Infernux::InitHeadless(const std::string &projectPath, const std::string &b
     INXLOG_INFO("Headless runtime initialized without renderer, window, GUI, or audio device.");
 }
 
-static void CollectOutlineSubtreeIds(GameObject *obj, std::vector<uint64_t> &outIds, std::unordered_set<uint64_t> &seen)
-{
-    if (!obj || !obj->IsActiveInHierarchy())
-        return;
-    const uint64_t id = obj->GetID();
-    if (id != 0 && seen.insert(id).second)
-        outIds.push_back(id);
-    for (size_t i = 0; i < obj->GetChildCount(); ++i)
-        CollectOutlineSubtreeIds(obj->GetChild(i), outIds, seen);
-}
-
-static std::vector<uint64_t> ExpandOutlineIds(Scene *scene, const std::vector<uint64_t> &objectIds)
-{
-    std::vector<uint64_t> expanded;
-    if (!scene)
-        return expanded;
-
-    std::unordered_set<uint64_t> seen;
-    for (uint64_t objectId : objectIds) {
-        GameObject *obj = scene->FindByID(objectId);
-        CollectOutlineSubtreeIds(obj, expanded, seen);
-    }
-    return expanded;
-}
-
 // ----------------------------------
 // Editor Gizmos
 // ----------------------------------
@@ -3578,14 +3555,7 @@ void Infernux::SetSelectionOutlines(const std::vector<uint64_t> &objectIds)
         return;
     }
 
-    Scene *scene = SceneManager::Instance().GetActiveScene();
-    if (!scene) {
-        m_selectedObjectId = 0;
-        m_renderer->SetSelectionState(0, {});
-        return;
-    }
-
-    std::vector<uint64_t> expandedIds = ExpandOutlineIds(scene, objectIds);
+    std::vector<uint64_t> expandedIds = ExpandSelectionOutlineIds(SceneManager::Instance(), objectIds);
     const uint64_t primaryObjectId = objectIds.empty() ? 0 : objectIds.back();
     m_selectedObjectId = primaryObjectId;
     m_renderer->SetSelectionState(primaryObjectId, expandedIds);

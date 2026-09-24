@@ -12,12 +12,13 @@ def test_editor_authoring_operations_exist_without_mcp_plugin(tmp_path):
     registry = OperationRegistry()
     operation_ids = install_editor_operations(str(tmp_path), registry)
 
-    assert len(operation_ids) == 33
+    assert len(operation_ids) == 34
     assert "infernux.scene.component.schema" in operation_ids
     assert "infernux.scene.component.property.set" in operation_ids
     assert "infernux.asset.inspect" in operation_ids
     assert "infernux.asset.model.inspect" in operation_ids
     assert "infernux.asset.model.material.extract" in operation_ids
+    assert "infernux.scene.model.instantiate" in operation_ids
     assert "infernux.asset.text.set" in operation_ids
     assert "infernux.data_asset.inspect" in operation_ids
     assert "infernux.data_asset.schema" in operation_ids
@@ -101,6 +102,39 @@ def test_scene_open_reports_scheduling_and_schema_matches(monkeypatch):
     assert result == {"asset_guid": "scene-guid", "path": "Assets/TankBattle.scene", "scheduled": True}
     assert set(operation.schema.output_schema["required"]) == set(result)
     assert "opened" not in operation.schema.output_schema["properties"]
+
+
+def test_model_instantiation_routes_guid_to_shared_scene_mutation(monkeypatch):
+    from Infernux.host import scene_operations as operations
+
+    calls = []
+    parent = SimpleNamespace(id=41)
+    created = SimpleNamespace(id=73, name="Authored Model", get_parent=lambda: parent)
+    host = SimpleNamespace(
+        instantiate_scene_model=lambda guid, parent_id, name: calls.append(
+            (guid, parent_id, name)
+        ) or created
+    )
+    monkeypatch.setattr(operations, "on_editor", lambda _name, callback: callback())
+    monkeypatch.setattr(operations, "asset_path", lambda _guid: "Assets/Models/Assembly.blend")
+    monkeypatch.setattr(operations.EditorAutomationHost, "instance", lambda: host)
+    operation = next(
+        value for value in operations.build_scene_operations()
+        if value.schema.id == "infernux.scene.model.instantiate"
+    )
+
+    result = operation.handler(
+        asset_guid="model-guid", parent_id=41, name="Authored Model"
+    )
+
+    assert calls == [("model-guid", 41, "Authored Model")]
+    assert result == {
+        "id": 73,
+        "name": "Authored Model",
+        "asset_guid": "model-guid",
+        "parent_id": 41,
+    }
+    assert set(operation.schema.output_schema["required"]) == set(result)
 
 
 def test_asset_listing_uses_filesystem_identity_for_root_membership(tmp_path, monkeypatch):

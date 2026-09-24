@@ -203,6 +203,13 @@
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/ColorAdjustmentsEffect.html" />
   </url>
   <url>
+    <loc>https://infernux-engine.com/wiki/site/en/api/compile.html</loc>
+    <lastmod>2026-09-06</lastmod>
+    <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/compile.html" />
+    <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/compile.html" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/compile.html" />
+  </url>
+  <url>
     <loc>https://infernux-engine.com/wiki/site/en/api/Component.html</loc>
     <lastmod>2026-09-06</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/Component.html" />
@@ -371,13 +378,6 @@
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/MeshRenderer.html" />
   </url>
   <url>
-    <loc>https://infernux-engine.com/wiki/site/en/api/njit.html</loc>
-    <lastmod>2026-09-06</lastmod>
-    <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/njit.html" />
-    <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/njit.html" />
-    <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/njit.html" />
-  </url>
-  <url>
     <loc>https://infernux-engine.com/wiki/site/en/api/Physics.html</loc>
     <lastmod>2026-09-06</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/Physics.html" />
@@ -509,6 +509,13 @@
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/SphereCollider.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/SphereCollider.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/SphereCollider.html" />
+  </url>
+  <url>
+    <loc>https://infernux-engine.com/wiki/site/en/api/statistics.html</loc>
+    <lastmod>2026-09-06</lastmod>
+    <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/statistics.html" />
+    <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/statistics.html" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/statistics.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/en/api/Texture.html</loc>
@@ -767,6 +774,13 @@
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/ColorAdjustmentsEffect.html" />
   </url>
   <url>
+    <loc>https://infernux-engine.com/wiki/site/zh/api/compile.html</loc>
+    <lastmod>2026-09-06</lastmod>
+    <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/compile.html" />
+    <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/compile.html" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/compile.html" />
+  </url>
+  <url>
     <loc>https://infernux-engine.com/wiki/site/zh/api/Component.html</loc>
     <lastmod>2026-09-06</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/Component.html" />
@@ -935,13 +949,6 @@
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/MeshRenderer.html" />
   </url>
   <url>
-    <loc>https://infernux-engine.com/wiki/site/zh/api/njit.html</loc>
-    <lastmod>2026-09-06</lastmod>
-    <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/njit.html" />
-    <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/njit.html" />
-    <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/njit.html" />
-  </url>
-  <url>
     <loc>https://infernux-engine.com/wiki/site/zh/api/Physics.html</loc>
     <lastmod>2026-09-06</lastmod>
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/Physics.html" />
@@ -1073,6 +1080,13 @@
     <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/SphereCollider.html" />
     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/SphereCollider.html" />
     <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/SphereCollider.html" />
+  </url>
+  <url>
+    <loc>https://infernux-engine.com/wiki/site/zh/api/statistics.html</loc>
+    <lastmod>2026-09-06</lastmod>
+    <xhtml:link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/statistics.html" />
+    <xhtml:link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/statistics.html" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/statistics.html" />
   </url>
   <url>
     <loc>https://infernux-engine.com/wiki/site/zh/api/Texture.html</loc>

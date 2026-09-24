@@ -28,6 +28,7 @@
 |------|------|------|
 | position | `Tuple[float, float]` | 当前指针屏幕坐标。 |
 | delta | `Tuple[float, float]` |  |
+| canvas_size | `Tuple[float, float]` |  |
 | button | `PointerButton` | 触发事件的鼠标按钮。 |
 | press_position | `Tuple[float, float]` |  |
 | click_count | `int` | 点击次数。 |

@@ -22,8 +22,8 @@ def test_file_manager_package_export_uses_the_complete_multi_selection(tmp_path)
     second.mkdir(parents=True)
 
     context = _context(
-        (first, second),
-        payload={"target_id": str(first)},
+        (),
+        payload={"paths": (str(first), str(second)), "target_id": str(first)},
     )
 
     assert _inxpackage_export_paths(context, str(project)) == (
@@ -40,7 +40,7 @@ def test_file_manager_package_export_right_click_outside_selection_uses_target(t
     target.mkdir(parents=True)
 
     context = _context(
-        (selected,),
+        (),
         payload={"target_id": str(target)},
     )
 

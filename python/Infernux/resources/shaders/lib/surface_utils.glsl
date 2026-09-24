@@ -59,6 +59,13 @@ vec2 getUV() {
     return v_TexCoord;
 }
 
+// Select one of the two model UV streams exposed by the current Vertex ABI.
+// Import rejects higher source channels; custom shaders can still address the
+// varyings directly when they author their own mapping policy.
+vec2 getUV(int setIndex) {
+    return setIndex == 1 ? v_TexCoord1 : v_TexCoord;
+}
+
 // Linear eye-space depth of this fragment
 float getViewDepth() {
     return v_ViewDepth;
@@ -136,6 +143,37 @@ float getFresnelPower(float power) {
 // Sample a normal map → world-space normal  (Unity: Normal Map / Sample Texture 2D Normal)
 vec3 sampleNormal(sampler2D normalMap, vec2 uv, float scale) {
     return getNormalFromMap(normalMap, uv, scale, v_Normal, v_Tangent);
+}
+
+// Imported geometry owns one authored tangent stream, conventionally derived
+// from UV0. A normal map selecting UV1 therefore reconstructs the basis from
+// that UV set's derivatives instead of incorrectly reusing the UV0 tangent.
+vec3 sampleNormal(sampler2D normalMap, vec2 uv, int uvSet, float scale) {
+    if (uvSet == 0) {
+        return sampleNormal(normalMap, uv, scale);
+    }
+
+    vec3 tangentNormal = texture(normalMap, uv).rgb * 2.0 - 1.0;
+    tangentNormal.xy *= scale;
+    tangentNormal = normalize(tangentNormal);
+    vec3 normalWS = normalize(v_Normal);
+    vec3 positionDx = dFdx(v_WorldPos);
+    vec3 positionDy = dFdy(v_WorldPos);
+    vec2 uvDx = dFdx(uv);
+    vec2 uvDy = dFdy(uv);
+    vec3 dyPerpendicular = cross(positionDy, normalWS);
+    vec3 dxPerpendicular = cross(normalWS, positionDx);
+    vec3 tangent = dyPerpendicular * uvDx.x + dxPerpendicular * uvDy.x;
+    vec3 bitangent = dyPerpendicular * uvDx.y + dxPerpendicular * uvDy.y;
+    float basisLengthSq = max(dot(tangent, tangent), dot(bitangent, bitangent));
+    if (basisLengthSq <= 1e-12) {
+        return sampleNormal(normalMap, uv, scale);
+    }
+    float inverseBasisLength = inversesqrt(basisLengthSq);
+    mat3 uvBasis = mat3(tangent * inverseBasisLength,
+                        bitangent * inverseBasisLength,
+                        normalWS);
+    return normalize(uvBasis * tangentNormal);
 }
 
 // Overload: uses primary UV

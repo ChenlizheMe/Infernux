@@ -35,7 +35,12 @@ def test_mouse_route_uses_live_play_manager_and_newly_focused_panel(monkeypatch)
     from Infernux.physics import Physics
 
     camera = SimpleNamespace(culling_mask=1, screen_point_to_ray=lambda *args: (1, 2))
-    scene = SimpleNamespace(effective_game_camera=camera)
+    scene = SimpleNamespace(
+        effective_game_camera=camera,
+        # A render stack does not multiply pointer queries: input belongs to
+        # the one effective output camera for this Game View.
+        active_game_cameras=(object(), object(), camera, object()),
+    )
     monkeypatch.setattr(lib, 'SceneManager', SimpleNamespace(instance=lambda: SimpleNamespace(
         get_active_scene=lambda: scene)))
     monkeypatch.setattr(ui, 'collect_runtime_ui_input_surfaces', lambda *args: ())

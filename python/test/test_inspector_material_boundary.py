@@ -114,12 +114,27 @@ def test_ui_shader_properties_use_shared_material_inspector_order(monkeypatch):
 
 
 @pytest.mark.parametrize('extension,resource_type', [('png', 'Texture'), ('rendertexture', 'RenderTexture')])
-def test_sampled_texture_clipboard_preserves_concrete_asset_type(extension, resource_type):
+def test_sampled_texture_clipboard_preserves_concrete_asset_type(
+    monkeypatch, extension, resource_type,
+):
     from Infernux.core.asset_reference_types import AssetReferenceCodec, asset_type_registry
+    from Infernux.core.assets import AssetManager
 
-    encoded = AssetReferenceCodec.encode('Texture.Sampled', {'path_hint': f'Assets/Monitor.{extension}'})
+    path = f'Assets/Monitor.{extension}'
+    monkeypatch.setattr(
+        AssetManager,
+        '_asset_database',
+        type('Database', (), {
+            'get_path_from_guid': lambda _self, guid: path if guid == 'asset-guid' else '',
+        })(),
+    )
+
+    encoded = AssetReferenceCodec.encode(
+        'Texture.Sampled', {'guid': 'asset-guid', 'asset_type': resource_type}
+    )
     payload = AssetReferenceCodec.decode(encoded)
     assert payload['asset_type'] == resource_type
+    assert payload['path_hint'] == ''
     assert not asset_type_registry.require(resource_type).incompatibility(payload)
 
 

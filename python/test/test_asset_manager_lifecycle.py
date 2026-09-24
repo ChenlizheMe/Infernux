@@ -101,7 +101,7 @@ def test_asset_reference_does_not_reuse_retired_play_mode_database(monkeypatch):
 @pytest.mark.parametrize(
     "operation",
     [
-        lambda: AssetManager.find_assets("*.mat"),
+        lambda: AssetManager.find_assets("Assets/*.mat"),
         lambda: AssetManager._get_guid_from_path("Assets/Test.mat"),
         lambda: AssetManager._get_path_from_guid("test-guid"),
     ],

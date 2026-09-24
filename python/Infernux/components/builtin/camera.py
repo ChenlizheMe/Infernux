@@ -188,7 +188,7 @@ class Camera(BuiltinComponent):
     _always_show = False
 
     # Scene icon: white diamond shown at camera position (Unity-style)
-    _gizmo_icon_color = (1.0, 1.0, 1.0)
+    _gizmo_icon_color = (0.66, 0.74, 0.78)
     _gizmo_icon_kind = ICON_KIND_CAMERA
 
     # Native declarations own types, defaults and Inspector metadata.

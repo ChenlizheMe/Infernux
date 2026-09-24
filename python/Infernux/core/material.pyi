@@ -236,7 +236,7 @@ class Material:
 
     # High-level property setters
     def set_matrix(self, name: str, value: Any) -> None:
-        """Set a NumPy (4,4) [row,column] matrix, or a legacy flat column-major sequence."""
+        """Set a NumPy (4,4) matrix indexed as [row, column]."""
         ...
     def set_param(self, name: str, value: Any) -> None:
         """Set a non-texture material property using type/shape dispatch."""

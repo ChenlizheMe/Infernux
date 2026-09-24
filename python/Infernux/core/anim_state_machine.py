@@ -329,8 +329,8 @@ class AnimState:
 
     A state is normally a single clip (``kind="clip"``).  A *blend* state
     (``kind="blend"``) is a single-in/single-out node that linearly blends two
-    clips A and B by its own ``blend_value`` (0..1, "Lerp") — A reuses
-    ``clip_guid``/``clip_path``; B uses ``clip_b_guid``/``clip_b_path``.  Each
+    clips A and B by its own ``blend_value`` (0..1, "Lerp") — A uses
+    ``clip_guid``; B uses ``clip_b_guid``. Each
     blend state owns its Lerp (not shared across nodes).
     """
 
@@ -338,14 +338,11 @@ class AnimState:
     name: str = "New State"
     kind: str = "clip"        # "clip" | "blend" | "timeline"
     clip_guid: str = ""       # GUID of the referenced .animclip2d / .animclip3d (clip A)
-    clip_path: str = ""       # editor-only display hint; runtime resolves clip_guid
     # Blend-state second clip (B) + per-node Lerp (0..1) when kind == "blend".
     clip_b_guid: str = ""
-    clip_b_path: str = ""
     blend_value: float = 0.5
     # Timeline-state reference when kind == "timeline" (.animtimeline asset).
     timeline_guid: str = ""
-    timeline_path: str = ""
     speed: float = 1.0
     # 0..1: minimum normalized clip progress before outgoing transitions are considered.
     # 1.0 = must reach end of current clip segment (default; matches "play full clip then transition").
@@ -370,12 +367,9 @@ class AnimState:
             "name": self.name,
             "kind": self.kind,
             "clip_guid": self.clip_guid,
-            "clip_path": self.clip_path,
             "clip_b_guid": self.clip_b_guid,
-            "clip_b_path": self.clip_b_path,
             "blend_value": float(self.blend_value),
             "timeline_guid": self.timeline_guid,
-            "timeline_path": self.timeline_path,
             "speed": self.speed,
             "exit_time_normalized": self.exit_time_normalized,
             "loop": self.loop,
@@ -388,54 +382,56 @@ class AnimState:
     @classmethod
     def from_dict(cls, d: dict) -> AnimState:
         expected = {
-            "stable_id", "name", "kind", "clip_guid", "clip_path", "clip_b_guid", "clip_b_path",
-            "blend_value", "timeline_guid", "timeline_path", "speed",
+            "stable_id", "name", "kind", "clip_guid", "clip_b_guid",
+            "blend_value", "timeline_guid", "speed",
             "exit_time_normalized", "loop", "restart_same_clip", "transitions",
             "position", "header_color",
         }
-        _require_exact_fields(d, expected, "animation state")
+        if type(d) is not dict:
+            raise ValueError("animation state must be a document")
+        if not expected.issubset(d):
+            raise ValueError(
+                f"animation state fields mismatch; missing={sorted(expected - set(d))}"
+            )
+        document = {name: d[name] for name in expected}
         string_fields = (
-            "stable_id", "name", "kind", "clip_guid", "clip_path", "clip_b_guid", "clip_b_path",
-            "timeline_guid", "timeline_path",
+            "stable_id", "name", "kind", "clip_guid", "clip_b_guid", "timeline_guid",
         )
-        if any(type(d[field]) is not str for field in string_fields) or not d["stable_id"]:
+        if any(type(document[field]) is not str for field in string_fields) or not document["stable_id"]:
             raise TypeError("animation state identity and asset fields must be strings")
-        if d["kind"] not in {"clip", "blend", "timeline"}:
+        if document["kind"] not in {"clip", "blend", "timeline"}:
             raise ValueError("animation state kind must be clip, blend, or timeline")
-        blend_value = _finite_number(d["blend_value"], "animation state blend_value")
-        exit_time = _finite_number(d["exit_time_normalized"], "animation state exit_time_normalized")
-        speed = _finite_number(d["speed"], "animation state speed")
+        blend_value = _finite_number(document["blend_value"], "animation state blend_value")
+        exit_time = _finite_number(document["exit_time_normalized"], "animation state exit_time_normalized")
+        speed = _finite_number(document["speed"], "animation state speed")
         if not 0.0 <= blend_value <= 1.0 or not 0.0 <= exit_time <= 1.0:
             raise ValueError("animation state normalized values must be in [0, 1]")
-        if type(d["loop"]) is not bool or type(d["restart_same_clip"]) is not bool:
+        if type(document["loop"]) is not bool or type(document["restart_same_clip"]) is not bool:
             raise TypeError("animation state loop fields must be bools")
-        if type(d["transitions"]) is not list:
+        if type(document["transitions"]) is not list:
             raise TypeError("animation state transitions must be an array")
-        if type(d["position"]) is not list or len(d["position"]) != 2:
+        if type(document["position"]) is not list or len(document["position"]) != 2:
             raise TypeError("animation state position must contain two numbers")
-        position = [_finite_number(value, "animation state position") for value in d["position"]]
-        raw_header = d["header_color"]
+        position = [_finite_number(value, "animation state position") for value in document["position"]]
+        raw_header = document["header_color"]
         if type(raw_header) is not list or len(raw_header) not in {0, 4}:
             raise TypeError("animation state header_color must be empty or contain four numbers")
         header_color = [_finite_number(value, "animation state header_color") for value in raw_header]
         if any(value < 0.0 or value > 1.0 for value in header_color):
             raise ValueError("animation state header_color values must be in [0, 1]")
         return cls(
-            stable_id=d["stable_id"],
-            name=d["name"],
-            kind=d["kind"],
-            clip_guid=d["clip_guid"],
-            clip_path=d["clip_path"],
-            clip_b_guid=d["clip_b_guid"],
-            clip_b_path=d["clip_b_path"],
+            stable_id=document["stable_id"],
+            name=document["name"],
+            kind=document["kind"],
+            clip_guid=document["clip_guid"],
+            clip_b_guid=document["clip_b_guid"],
             blend_value=blend_value,
-            timeline_guid=d["timeline_guid"],
-            timeline_path=d["timeline_path"],
+            timeline_guid=document["timeline_guid"],
             speed=speed,
             exit_time_normalized=exit_time,
-            loop=d["loop"],
-            restart_same_clip=d["restart_same_clip"],
-            transitions=[AnimTransition.from_dict(t) for t in d["transitions"]],
+            loop=document["loop"],
+            restart_same_clip=document["restart_same_clip"],
+            transitions=[AnimTransition.from_dict(t) for t in document["transitions"]],
             position=position,
             header_color=header_color,
         )

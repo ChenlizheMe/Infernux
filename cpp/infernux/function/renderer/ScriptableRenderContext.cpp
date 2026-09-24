@@ -385,8 +385,9 @@ void ScriptableRenderContext::SubmitCulling(CullingResults &culling)
         const GizmosDrawCallBuffer::IconMaterials iconMaterials{
             m_gizmoCtx.componentGizmoIconMaterial, m_gizmoCtx.cameraGizmoIconMaterial,
             m_gizmoCtx.lightGizmoIconMaterial, m_gizmoCtx.particleGizmoIconMaterial};
-        DrawCallResult iconResult =
-            m_gizmoCtx.componentGizmos->GetIconDrawCalls(iconMaterials, m_gizmoCtx.cameraPos, cameraRight, cameraUp);
+        DrawCallResult iconResult = m_gizmoCtx.componentGizmos->GetIconDrawCalls(
+            iconMaterials, m_gizmoCtx.cameraPos, cameraRight, cameraUp, m_cachedProj,
+            m_graph ? m_graph->GetRenderViewContext().height : 1u, m_gizmoCtx.iconDpiScale);
         if (!iconResult.drawCalls.empty())
             submittedDomains |= RenderDomainBit(RenderDomain::ComponentGizmo);
         static size_t s_lastSubmittedIconDrawCalls = static_cast<size_t>(-1);
@@ -439,6 +440,7 @@ void ScriptableRenderContext::SubmitCulling(CullingResults &culling)
         mix(static_cast<uint64_t>(reinterpret_cast<uintptr_t>(dc.meshIndices)));
         mix(static_cast<uint64_t>(reinterpret_cast<uintptr_t>(dc.meshVertexBuffer.get())));
         mix(dc.meshRuntimeVersion);
+        mix(static_cast<uint64_t>(dc.meshIndexFormat));
         hasForcedBufferUpdate = hasForcedBufferUpdate || dc.forceBufferUpdate;
     };
     if (shadowSource) {
@@ -468,8 +470,9 @@ void ScriptableRenderContext::SubmitCulling(CullingResults &culling)
                 continue;
             lastEnsuredId = dc.objectId;
             if (dc.meshVertices && dc.meshIndices) {
-                m_vkCore->EnsureObjectBuffers(dc.objectId, *dc.meshVertices, *dc.meshIndices, dc.forceBufferUpdate,
-                                              dc.meshAssetGuid, dc.meshRuntimeVersion);
+                m_vkCore->EnsureObjectBuffers(dc.objectId, *dc.meshVertices, *dc.meshIndices, dc.meshIndexFormat,
+                                              dc.forceBufferUpdate, dc.meshAssetGuid, dc.meshRuntimeVersion,
+                                              dc.meshGeometryView);
                 if (dc.meshVertexBuffer)
                     m_vkCore->BindObjectVertexBuffer(dc.objectId, dc.meshVertexBuffer);
             }
@@ -482,8 +485,9 @@ void ScriptableRenderContext::SubmitCulling(CullingResults &culling)
                 continue;
             lastEnsuredId = dc.objectId;
             if (dc.meshVertices && dc.meshIndices) {
-                m_vkCore->EnsureObjectBuffers(dc.objectId, *dc.meshVertices, *dc.meshIndices, dc.forceBufferUpdate,
-                                              dc.meshAssetGuid, dc.meshRuntimeVersion);
+                m_vkCore->EnsureObjectBuffers(dc.objectId, *dc.meshVertices, *dc.meshIndices, dc.meshIndexFormat,
+                                              dc.forceBufferUpdate, dc.meshAssetGuid, dc.meshRuntimeVersion,
+                                              dc.meshGeometryView);
                 if (dc.meshVertexBuffer)
                     m_vkCore->BindObjectVertexBuffer(dc.objectId, dc.meshVertexBuffer);
             }
@@ -501,8 +505,9 @@ void ScriptableRenderContext::SubmitCulling(CullingResults &culling)
         if (!reuseObjectBuffers) {
             for (const DrawCall &dc : forwardDrawCalls) {
                 if (dc.meshVertices && dc.meshIndices) {
-                    m_vkCore->EnsureObjectBuffers(dc.objectId, *dc.meshVertices, *dc.meshIndices, dc.forceBufferUpdate,
-                                                  dc.meshAssetGuid, dc.meshRuntimeVersion);
+                    m_vkCore->EnsureObjectBuffers(dc.objectId, *dc.meshVertices, *dc.meshIndices, dc.meshIndexFormat,
+                                                  dc.forceBufferUpdate, dc.meshAssetGuid, dc.meshRuntimeVersion,
+                                                  dc.meshGeometryView);
                     if (dc.meshVertexBuffer)
                         m_vkCore->BindObjectVertexBuffer(dc.objectId, dc.meshVertexBuffer);
                 }
@@ -691,6 +696,7 @@ RenderDomainMask ScriptableRenderContext::ProcessPendingCommandBuffers()
             draw.worldBounds = params.worldBounds;
             draw.meshVertices = params.vertices;
             draw.meshIndices = params.indices;
+            draw.meshIndexFormat = params.meshIndexFormat;
             draw.meshDataOwner = params.geometry;
             draw.meshAssetGuid = params.meshGuid;
             draw.meshRuntimeVersion = params.meshGeneration;

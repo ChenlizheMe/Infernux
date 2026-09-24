@@ -208,9 +208,7 @@ def test_editable_resource_document_tracks_autosave_and_undo_revisions():
     document = registry.create(
         DocumentKind.PHYSIC_MATERIAL,
         "Ice.physmat",
-        key=DocumentKey.resource(
-            DocumentKind.PHYSIC_MATERIAL, "Assets/Ice.physmat"
-        ),
+        key=DocumentKey.asset(DocumentKind.PHYSIC_MATERIAL, "ice-guid"),
         resource_path="Assets/Ice.physmat",
         capabilities=DocumentCapability.SAVE | DocumentCapability.DISCARD,
         controller=controller,

@@ -77,6 +77,22 @@ def build_scene_operations() -> tuple[Operation, ...]:
             tags=("scene", "object", "create", "authoring"),
         ),
         operation(
+            "infernux.scene.model.instantiate",
+            OperationKind.COMMAND,
+            "Instantiate one imported model asset through the same hierarchy transaction as a Project-panel drop.",
+            _instantiate_model,
+            capability="scene.write",
+            input_properties={
+                "asset_guid": {"type": "string"},
+                "parent_id": {"type": "integer", "default": 0},
+                "name": {"type": "string", "default": ""},
+            },
+            required=("asset_guid",),
+            side_effects=("Instantiates a model hierarchy and records one Undo entry.",),
+            reversible=True,
+            tags=("scene", "model", "asset", "instantiate", "authoring"),
+        ),
+        operation(
             "infernux.scene.object.delete",
             OperationKind.COMMAND,
             "Delete explicit GameObjects through one hierarchy transaction.",
@@ -325,6 +341,31 @@ def _create_object(kind: str, parent_id: int = 0, name: str = "") -> dict[str, o
         )
 
     return on_editor("infernux.scene.object.create", create)
+
+
+def _instantiate_model(
+    asset_guid: str, parent_id: int = 0, name: str = ""
+) -> dict[str, object]:
+    def instantiate():
+        path = asset_path(asset_guid)
+        from Infernux.core.asset_types import MESH_EXTENSIONS
+
+        if not any(path.casefold().endswith(extension) for extension in MESH_EXTENSIONS):
+            raise OperationError(
+                "asset.invalid_type", "Model instantiation requires a mesh asset."
+            )
+        value = EditorAutomationHost.instance().instantiate_scene_model(
+            asset_guid, int(parent_id), str(name or "")
+        )
+        parent = value.get_parent()
+        return {
+            "id": int(value.id),
+            "name": str(value.name),
+            "asset_guid": str(asset_guid),
+            "parent_id": int(parent.id) if parent is not None else 0,
+        }
+
+    return on_editor("infernux.scene.model.instantiate", instantiate)
 
 
 def _delete_objects(object_ids: list[int]) -> dict[str, object]:

@@ -29,7 +29,7 @@ def _prepare_project(project: Path) -> None:
     )
     (project / "ProjectSettings").mkdir()
     (project / "ProjectSettings/BuildSettings.json").write_text(
-        json.dumps({"scenes": []}), encoding="utf-8"
+        json.dumps({"scene_guids": []}), encoding="utf-8"
     )
 
 
@@ -76,8 +76,10 @@ def _run_editor_without_mcp(project: Path, port: int) -> None:
             str(scene_path),
         )
         assert save.status is DocumentActionStatus.APPLIED
+        scene_guid = database.get_guid_from_path(str(scene_path))
+        assert scene_guid
         (project / "ProjectSettings" / "BuildSettings.json").write_text(
-            json.dumps({"scenes": ["Assets/NoMCP.scene"]}),
+            json.dumps({"scene_guids": [scene_guid]}),
             encoding="utf-8",
         )
 

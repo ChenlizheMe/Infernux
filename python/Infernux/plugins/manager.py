@@ -55,7 +55,6 @@ from .package import (
     current_meta_bytes,
     package_control_root,
     package_destination,
-    package_migration_error,
     validate_reference,
 )
 from .preload import PreloadManager
@@ -211,13 +210,6 @@ class PluginManager:
         self.official_catalog_error = ""
         self.python_requirement_error = ""
         self.registry = PluginRegistry(self.project_root)
-        for record in self.registry.installed():
-            reference = str(record["reference"])
-            migration = package_migration_error(reference)
-            if migration and bool(record.get("enabled", True)):
-                if not self.runtime:
-                    self.registry.set_enabled(reference, False)
-                Debug.log_warning(migration)
         self.preloads = PreloadManager(
             self.project_root,
             engine=engine,
@@ -906,9 +898,7 @@ class PluginManager:
             location = str(source["repository"])
         else:
             return ""
-        from .official import migrate_official_repository
-
-        return migrate_official_repository(reference, location)
+        return location
 
     def download_update(
         self, reference: str, release_tag: str, *, progress: _InstallProgress | None = None,
@@ -1226,12 +1216,21 @@ class PluginManager:
         values = tuple(str(line) for line in lines)
         executable = self._project_python_executable()
         before = self._python_environment_snapshot(executable)
+        requirements = _pip_requirement_targets(values)
+        requested = tuple(item["requirement"] for item in requirements)
+        if requested and _requirements_satisfied(requested, before):
+            return _PipInstallEffect(
+                before,
+                dict(before),
+                requirements,
+                (),
+                "Requirements already satisfied by the project Python environment.",
+            )
         try:
             with self._pip_requirement_file(values) as filtered:
                 command = (executable, "-m", "pip", "install", "-r", filtered)
                 result = self._run_process(list(command), cwd=self.project_root)
             after = self._python_environment_snapshot(executable)
-            requirements = _pip_requirement_targets(values)
             self._activate_installed_python_paths(before, after, executable=executable)
             return _PipInstallEffect(
                 before,
@@ -1455,8 +1454,6 @@ class PluginManager:
         if record is None:
             raise KeyError(f"Plugin is not installed: {reference}")
         requested = bool(enabled)
-        if requested and (migration := package_migration_error(reference)):
-            raise RuntimeError(migration)
         if bool(record.get("enabled", True)) == requested:
             return self.states.get(reference.casefold()) or self.reload(reference)
         installed = self.registry.installed()
@@ -2146,9 +2143,6 @@ class PluginManager:
             == reference.casefold()
         )
         errors = [str(item.get("error", "")) for item in package_lifecycle if item.get("error")]
-        migration = package_migration_error(reference)
-        if migration:
-            errors.append(migration)
         enabled = bool(record.get("enabled", True))
         resources = {
             str(item.get("logical_path", "")): resolved_path(

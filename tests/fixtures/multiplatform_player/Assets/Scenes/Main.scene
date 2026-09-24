@@ -88,6 +88,7 @@
             "areaTwoSided": false,
             "baked": false,
             "color": [1.0, 0.95, 0.88],
+            "colorTemperature": 6500.0,
             "cullingMask": 4294967295,
             "influenceDomains": 3,
             "intensity": 1.2,
@@ -98,7 +99,8 @@
             "shadowSoftness": 1.0,
             "shadowStrength": 1.0,
             "shadows": 2,
-            "spotAngle": 30.0
+            "spotAngle": 30.0,
+            "useColorTemperature": false
           },
           "enabled": true,
           "execution_order": 0,

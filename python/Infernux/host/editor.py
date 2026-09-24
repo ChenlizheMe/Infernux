@@ -293,7 +293,12 @@ class EditorAutomationHost:
             "pending_mesh_uploads": int(native.pending_mesh_gpu_upload_count),
             "submitted_mesh_uploads": int(native.submitted_mesh_gpu_upload_count),
             "completed_mesh_uploads": int(native.completed_mesh_gpu_upload_count),
+            "pending_texture_cpu_loads": int(native.pending_texture_cpu_load_count),
+            "pending_texture_uploads": int(native.pending_texture_gpu_upload_count),
+            "submitted_texture_uploads": int(native.submitted_texture_gpu_upload_count),
+            "completed_texture_uploads": int(native.completed_texture_gpu_upload_count),
         }
+        result["gpu_residency"] = dict(native.gpu_residency_snapshot)
         return result
 
     def gizmo_collection_observation(self) -> dict[str, object]:
@@ -501,12 +506,13 @@ class EditorAutomationHost:
 
         resolved = resolved_path(path)
         guid = str(self.asset_database().get_guid_from_path(resolved) or "")
-        key = (
-            DocumentKey.asset(DocumentKind.DATA_ASSET, guid)
+        document = (
+            DocumentRegistry.instance().get_by_key(
+                DocumentKey.asset(DocumentKind.DATA_ASSET, guid)
+            )
             if guid
-            else DocumentKey.resource(DocumentKind.DATA_ASSET, resolved)
+            else None
         )
-        document = DocumentRegistry.instance().get_by_key(key)
         controller = getattr(document, "controller", None)
         live_asset = getattr(controller, "resource", None)
         if isinstance(live_asset, DataAsset):
@@ -521,7 +527,6 @@ class EditorAutomationHost:
         asset_type = type(asset)
         return {
             "type_id": str(asset_type.__serialized_type_id__),
-            "schema_version": int(asset_type.__serialized_schema_version__),
             "fields": [
                 get_field_schema(asset_type, name).to_document()
                 for name in get_serialized_fields(asset_type)
@@ -656,6 +661,23 @@ class EditorAutomationHost:
             selection_owner_id="automation",
             selection_reason="host_create_game_object",
         )
+
+    def instantiate_scene_model(self, asset_guid: str, parent_id: int, name: str):
+        """Instantiate a model through the Project/Hierarchy mutation service."""
+        value = self.interaction_core().scene_objects.create_model_object(
+            str(asset_guid),
+            parent_id=int(parent_id),
+            is_guid=True,
+            name=str(name or ""),
+            select=False,
+            selection_owner_id="automation",
+            selection_reason="host_instantiate_model",
+        )
+        if value is None:
+            raise OperationError(
+                "scene.create_rejected", "The model asset could not be instantiated."
+            )
+        return value
 
     def scene_object(self, object_id: int):
         """Resolve one live scene object without exposing SceneManager lookup rules."""
@@ -925,7 +947,7 @@ class EditorAutomationHost:
 
     def load_additive_scene(self, path: str) -> bool:
         from Infernux.engine.play_mode import PlayModeManager, PlayModeState
-        from Infernux.scene import LoadSceneMode, SceneManager
+        from Infernux.engine.scene_manager import SceneFileManager
 
         play_mode = PlayModeManager.instance()
         if play_mode is not None and play_mode.state is not PlayModeState.EDIT:
@@ -933,7 +955,11 @@ class EditorAutomationHost:
                 "scene.additive.edit_mode_required",
                 "Additive scene authoring is only available in Edit Mode.",
             )
-        return bool(SceneManager._do_load(path, mode=LoadSceneMode.ADDITIVE))
+        manager = SceneFileManager.instance()
+        return bool(
+            manager is not None
+            and manager.load_scene_additive_immediate(path)
+        )
 
     def save_scene(self) -> str:
         from Infernux.engine.scene_manager import SceneFileManager

@@ -18,14 +18,14 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <function/resources/AssetRegistry/AssetRegistry.h>
+#include <function/resources/InxMesh/InxMesh.h>
+#include <function/resources/InxMesh/ModelMeshReference.h>
 #include <functional>
 #include <imgui_internal.h>
 #include <nlohmann/json.hpp>
 #include <string_view>
 #include <unordered_set>
-#include <function/resources/InxMesh/ModelMeshReference.h>
-#include <function/resources/InxMesh/InxMesh.h>
-#include <function/resources/AssetRegistry/AssetRegistry.h>
 
 #ifdef INX_PLATFORM_WINDOWS
 #include <ShlObj.h> // CF_HDROP, DragQueryFileW
@@ -1232,47 +1232,6 @@ void ProjectPanel::AppendModelSubAssets(std::vector<FileItem> &out, AssetDatabas
             sub.slotIndex = static_cast<int>(i);
             out.push_back(std::move(sub));
         }
-        return;
-    }
-    std::vector<std::string> animNames = SplitCommaList(TryGetMetaString(meta.get(), "animation_names_csv"));
-    int animCount = TryGetMetaInt(meta.get(), "animation_count", -1);
-    if (!animNames.empty()) {
-        const int maxShow = 24;
-        const int total = static_cast<int>(animNames.size());
-        const int show = std::min(total, maxShow);
-        for (int i = 0; i < show; ++i) {
-            FileItem sub{};
-            sub.type = FileItem::SubMesh;
-            const std::string &takeName = animNames[static_cast<size_t>(i)];
-            sub.name = StripPipeDisplaySuffix(takeName) + ".animclip3d";
-            sub.path = MakeSubAssetVirtualPath(animVirtualBase, kSubAnimToken, i);
-            sub.ext = ".animclip3d";
-            sub.parentPath = modelPath;
-            sub.mtimeNs = childMtime;
-            sub.slotIndex = i;
-            out.push_back(std::move(sub));
-        }
-        if (total > show) {
-            FileItem sub{};
-            sub.type = FileItem::SubMesh;
-            sub.name = std::string("... ") + std::to_string(total - show) + " more animation takes";
-            sub.path = MakeSubAssetVirtualPath(animVirtualBase, kSubAnimToken, 999999);
-            sub.ext = ".animclip3d";
-            sub.parentPath = modelPath;
-            sub.mtimeNs = childMtime;
-            sub.slotIndex = -1;
-            out.push_back(std::move(sub));
-        }
-    } else if (animCount > 0) {
-        FileItem sub{};
-        sub.type = FileItem::SubMesh;
-        sub.name = std::string("Animations: ") + std::to_string(animCount) + " take(s) (reimport for names)";
-        sub.path = MakeSubAssetVirtualPath(animVirtualBase, kSubAnimToken, 0);
-        sub.ext = ".animclip3d";
-        sub.parentPath = modelPath;
-        sub.mtimeNs = childMtime;
-        sub.slotIndex = -1;
-        out.push_back(std::move(sub));
     }
 }
 
@@ -1968,7 +1927,8 @@ void ProjectPanel::HandleItemClick(const FileItem &item, InxGUIContext *ctx)
             if (RequestDirectoryNavigation(item.path))
                 m_lastClickedFile.clear();
         }
-    } else if (item.type == FileItem::SubMesh || item.type == FileItem::SubMaterial || item.type == FileItem::SubTexture) {
+    } else if (item.type == FileItem::SubMesh || item.type == FileItem::SubMaterial ||
+               item.type == FileItem::SubTexture) {
         // Sub-assets: select only
     } else if (doubleClicked) {
         std::string openKind = "system";
@@ -3015,7 +2975,8 @@ void ProjectPanel::RenderFileGrid(InxGUIContext *ctx)
                 selectionKey = &fallbackSelectionKey;
             }
 
-            const bool isSubAsset = (item.type == FileItem::SubMaterial || item.type == FileItem::SubMesh || item.type == FileItem::SubTexture);
+            const bool isSubAsset = (item.type == FileItem::SubMaterial || item.type == FileItem::SubMesh ||
+                                     item.type == FileItem::SubTexture);
             const std::string itemSemanticId = captureSemantics ? MakeProjectItemSemanticId(item) : std::string{};
             const ImVec2 cellTopLeft = ImGui::GetCursorScreenPos();
 
@@ -3034,7 +2995,8 @@ void ProjectPanel::RenderFileGrid(InxGUIContext *ctx)
             }
 
             const auto isSubAssetItem = [](const FileItem &it) {
-                return it.type == FileItem::SubMaterial || it.type == FileItem::SubMesh || it.type == FileItem::SubTexture;
+                return it.type == FileItem::SubMaterial || it.type == FileItem::SubMesh ||
+                       it.type == FileItem::SubTexture;
             };
 
             // Expanded model on this row: draw the left portion of the inline strip so it
@@ -3387,7 +3349,8 @@ void ProjectPanel::RenderContextMenu(InxGUIContext *ctx)
 void ProjectPanel::RenderDragDropSource(InxGUIContext *ctx, const FileItem &item)
 {
     // Embedded model materials are browse-only (no drag — use a standalone .mat to assign).
-    if (item.type != FileItem::Dir && item.type != FileItem::File && item.type != FileItem::SubMesh && item.type != FileItem::SubTexture)
+    if (item.type != FileItem::Dir && item.type != FileItem::File && item.type != FileItem::SubMesh &&
+        item.type != FileItem::SubTexture)
         return;
 
     // BeginDragDropSource is cheap (~1µs) — returns false 99.9% of the time.

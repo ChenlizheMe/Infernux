@@ -53,22 +53,23 @@ from Infernux.plugins.registry import PluginRegistry
 
 
 @pytest.mark.parametrize(
-    ("suffix", "magic"),
+    ("suffix", "magic", "schema"),
     (
-        (".inxtex", b"INXTEXTURE"),
-        (".inxmesh", b"INXMESHART"),
-        (".inxskin", b"INXSKINAR"),
-        (".inxrtex", b"INXRTEX1"),
+        (".inxtex", b"INXTEXTURE", b""),
+        (".inxmesh", b"INXMESHART", b"MSH1"),
+        (".inxskin", b"INXSKINAR", b"SKN1"),
+        (".inxrtex", b"INXRTEX1", b""),
     ),
 )
 def test_current_binary_artifact_headers_use_their_exact_magic_length(
-    tmp_path, suffix, magic
+    tmp_path, suffix, magic, schema
 ):
     source_hash = "0123456789abcdef"
     artifact = tmp_path / f"fixture{suffix}"
     artifact.write_bytes(
         magic
         + b"\x04\x03\x02\x01"
+        + schema
         + len(source_hash).to_bytes(4, "little")
         + source_hash.encode("ascii")
     )
@@ -1218,7 +1219,6 @@ def _write_animation_clip(
     clip_path: Path,
     *,
     texture_guid: str,
-    texture_path: str,
     sprite_frame_id: str,
 ) -> None:
     from Infernux.core.animation_clip import AnimationClip, AnimationFrame
@@ -1227,7 +1227,6 @@ def _write_animation_clip(
     clip = AnimationClip(
         name=clip_path.stem,
         authoring_texture_guid=texture_guid,
-        authoring_texture_path=texture_path,
         frames=[AnimationFrame(sprite_frame_id=sprite_frame_id)],
     )
     clip_path.write_text(json.dumps(clip.to_dict(), indent=2), encoding="utf-8")
@@ -1248,7 +1247,6 @@ class TestGameBuilderAnimationClipPreflight:
         _write_animation_clip(
             project / "Assets" / "Animations" / "walk.animclip2d",
             texture_guid=self.TEXTURE_GUID,
-            texture_path="Assets/Sprites/stale-path.png",
             sprite_frame_id=self.FRAME_ID,
         )
         scene = project / "Assets" / "Main.scene"
@@ -1284,7 +1282,6 @@ class TestGameBuilderAnimationClipPreflight:
         _write_animation_clip(
             clip_path,
             texture_guid=self.TEXTURE_GUID,
-            texture_path="Assets/Sprites/sheet.png",
             sprite_frame_id=missing_id,
         )
         _write_asset_index(
@@ -1321,7 +1318,6 @@ class TestGameBuilderAnimationClipPreflight:
         _write_animation_clip(
             clip_path,
             texture_guid=self.TEXTURE_GUID,
-            texture_path="Assets/Textures/albedo.png",
             sprite_frame_id=self.FRAME_ID,
         )
         _write_asset_index(
@@ -3725,10 +3721,9 @@ def test_player_cooks_data_asset_to_binary_infernux_artifact(tmp_path):
     assert cooked == {
         "$type": "data_asset",
         "type_id": "infernux.data_asset",
-        "schema_version": 1,
         "fields": {},
     }
-    # Cook upgrades the runtime payload without rewriting the authored source.
+    # Cook normalizes runtime values without rewriting the authored source.
     assert "schema_version" not in json.loads(source.read_text(encoding="utf-8"))
     assert builder._runtime_artifact_bindings[runtime_path]["source_path"] == (
         "Assets/Data/Settings.inxdata"
@@ -3847,6 +3842,27 @@ def test_player_catalog_excludes_editor_assets_and_rejects_runtime_dependencies(
     builder.freeze_asset_index_entries(entries)
     with pytest.raises(RuntimeError, match="BuildSettings scene is editor-only"):
         builder._collect_library_asset_entries(entries)
+
+
+def test_cooked_python_sources_follow_the_frozen_player_closure(tmp_path):
+    builder = _make_builder(tmp_path, tmp_path / "build_output")
+    project = Path(builder.project_path)
+    runtime = project / "Assets" / "Scripts" / "Gameplay.py"
+    editor = project / "Assets" / "Editor" / "Bake.py"
+    package = project / "Packages" / "effects" / "Runtime" / "Bloom.py"
+    for source in (runtime, editor, package):
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_text("value = 1\n", encoding="utf-8")
+
+    builder._player_python_source_paths = {
+        str(runtime.resolve()),
+        str(package.resolve()),
+    }
+
+    assert builder.cooked_python_source_paths() == tuple(
+        sorted((str(runtime.resolve()), str(package.resolve())), key=str.casefold)
+    )
+    assert str(editor.resolve()) not in builder.cooked_python_source_paths()
 
 
 def test_content_archive_keeps_only_catalog_staged_project_glsl(tmp_path):
@@ -3991,7 +4007,7 @@ def test_particle_reference_uses_guid_when_serialized_path_belongs_to_old_projec
     ]
 
 
-def test_particle_reference_without_guid_is_rejected(tmp_path):
+def test_particle_reference_without_guid_is_ignored(tmp_path):
     builder = _make_builder(tmp_path, tmp_path / "build_output")
     project = Path(builder.project_path)
     _reference_particle_graph(project, "path-only")
@@ -4000,9 +4016,16 @@ def test_particle_reference_without_guid_is_rejected(tmp_path):
     reference = scene["objects"][0]["components"][0]["data"]["graph"]
     reference["guid"] = ""
     scene_path.write_text(json.dumps(scene), encoding="utf-8")
+    _write_asset_index(
+        project,
+        [
+            entry
+            for entry in load_asset_index(project)
+            if entry["guid"] != hashlib.md5(b"path-only").hexdigest()
+        ],
+    )
 
-    with pytest.raises(RuntimeError, match="must declare a non-empty GUID"):
-        builder._collect_reachable_particle_artifacts()
+    assert builder._collect_reachable_particle_artifacts() == []
 
 
 def test_game_data_excludes_unreachable_particle_artifacts(tmp_path):
@@ -4046,7 +4069,7 @@ def test_game_data_recompiles_instead_of_shipping_stable_id_particle_artifact(
     assert not (shipped / "retired-name.inxparticle").exists()
 
 
-def test_particle_runtime_index_rejects_path_only_entry(tmp_path):
+def test_particle_runtime_index_ignores_path_only_entry(tmp_path):
     builder = _make_builder(tmp_path, tmp_path / "build_output")
     index_path = (
         Path(builder.project_path)
@@ -4072,8 +4095,7 @@ def test_particle_runtime_index_rejects_path_only_entry(tmp_path):
         encoding="utf-8",
     )
 
-    with pytest.raises(RuntimeError, match="non-empty GUID"):
-        builder._particle_library_artifacts()
+    assert builder._particle_library_artifacts() == {}
 
 
 def test_game_data_compiles_missing_particle_artifact(tmp_path):
@@ -4200,15 +4222,14 @@ def test_validate_artifact_rejects_particle_owned_by_another_guid(tmp_path):
         )
 
 
-def test_particle_runtime_index_is_not_required_without_particle_references(tmp_path):
+def test_particle_runtime_index_requires_current_asset_index_for_scene_identity(tmp_path):
     builder = _make_builder(tmp_path, tmp_path / "build_output")
     project = Path(builder.project_path)
     (project / "Library" / "AssetIndex.json").unlink()
     data_dir = tmp_path / "dist" / "Data"
 
-    builder._write_particle_runtime_index(str(data_dir))
-
-    assert not (data_dir / "Library" / "Artifacts" / "Particle").exists()
+    with pytest.raises(RuntimeArtifactError, match="AssetIndex is unreadable"):
+        builder._write_particle_runtime_index(str(data_dir))
 
 
 def test_particle_runtime_index_remains_required_for_reachable_graph(tmp_path):
@@ -4217,7 +4238,7 @@ def test_particle_runtime_index_remains_required_for_reachable_graph(tmp_path):
     _reference_particle_graph(project, "smoke")
     (project / "Library" / "AssetIndex.json").unlink()
 
-    with pytest.raises(RuntimeError, match="current Library/AssetIndex.json"):
+    with pytest.raises(RuntimeArtifactError, match="AssetIndex is unreadable"):
         builder._write_particle_runtime_index(str(tmp_path / "dist" / "Data"))
 
 
@@ -4580,14 +4601,7 @@ def test_core_runtime_archive_replaces_loose_numpy_and_resources(tmp_path):
     numpy_license = final_dir / "numpy" / "LICENSE.txt"
     font = final_dir / "Infernux" / "resources" / "fonts" / "engine.otf"
     gizmo_icon = final_dir / "Infernux" / "resources" / "icons" / "gizmo_camera.png"
-    light_icon = (
-        final_dir
-        / "Infernux"
-        / "resources"
-        / "icons"
-        / "components"
-        / "component_light.png"
-    )
+    light_icon = final_dir / "Infernux" / "resources" / "icons" / "gizmo_light.png"
     editor_icon = final_dir / "Infernux" / "resources" / "icons" / "file.png"
     numpy_file.parent.mkdir(parents=True)
     numpy_core_init.parent.mkdir(parents=True, exist_ok=True)
@@ -4615,17 +4629,6 @@ def test_core_runtime_archive_replaces_loose_numpy_and_resources(tmp_path):
     gizmo_icon.write_bytes(b"gizmo")
     light_icon.write_bytes(b"light")
     editor_icon.write_bytes(b"editor")
-    stray_exe = (
-        final_dir
-        / "Infernux"
-        / "resources"
-        / "player_runtime"
-        / "stray.exe"
-    )
-    stray_exe.parent.mkdir(parents=True)
-    stray_exe.write_bytes(b"must not enter Runtime.inxrt")
-    linux_player_host = stray_exe.with_name("InfernuxPlayerHost")
-    linux_player_host.write_bytes(b"linux host has no executable suffix")
     (final_dir / "TestGame_Data").mkdir(parents=True)
 
     builder._pack_core_runtime_archive(str(final_dir))
@@ -4640,7 +4643,7 @@ def test_core_runtime_archive_replaces_loose_numpy_and_resources(tmp_path):
     assert {entry["path"] for entry in header["files"]} == {
         "Infernux/resources/fonts/engine.otf",
         "Infernux/resources/icons/gizmo_camera.png",
-        "Infernux/resources/icons/components/component_light.png",
+        "Infernux/resources/icons/gizmo_light.png",
         "numpy.libs/openblas.dll",
         "numpy/__init__.pyc",
         "numpy/_core/__init__.pyc",
@@ -5827,7 +5830,7 @@ def test_player_type_registry_cooks_published_data_asset_semantics(tmp_path):
     assert record["kind"] == "data"
     assert record["data_asset"] is True
     assert record["type_id"] == "python:data:tests.player.balance-config"
-    assert record["semantic"]["schema_version"] == 1
+    assert "schema_version" not in record["semantic"]
     assert record["semantic"]["fields"][0]["property_path"] == "BalanceConfig.gravity"
     assert record["semantic"]["fields"][0]["attributes"]["default"] == 9.8
 
@@ -5866,8 +5869,7 @@ def test_player_data_inheritance_survives_cook_and_catalog_publication(
     child_source = (
         "class DerivedConfig(IntermediateConfig):\n"
         + ("    __serialized_type_id__ = 'tests.player.derived'\n" if explicit_ids else "")
-        + "    __serialized_schema_version__ = 2\n"
-        "    strength: float = 5.0\n"
+        + "    strength: float = 5.0\n"
     )
     sources = {base_module: base_source}
     if split_modules:
@@ -5895,7 +5897,7 @@ def test_player_data_inheritance_survives_cook_and_catalog_publication(
     base, intermediate, derived = (records[name] for name in ("BaseConfig", "IntermediateConfig", "DerivedConfig"))
     assert intermediate["semantic"]["base_type_guid"] == base["type_guid"]
     assert derived["semantic"]["base_type_guid"] == intermediate["type_guid"]
-    assert derived["semantic"]["schema_version"] == 2
+    assert "schema_version" not in derived["semantic"]
     assert derived["semantic"]["owner"] == f"script:data-script-{int(split_modules)}"
     assert [field["attributes"]["field_id"] for field in derived["semantic"]["fields"]] == [
         "motion.speed", "weight", "strength",
@@ -6074,6 +6076,23 @@ def test_render_texture_cook_ships_guid_binary_description_not_authoring_source(
     assert payload_kind_for(logical_type_for_path(artifact_path)) == "compiled_artifact"
 
 
+@pytest.mark.parametrize(
+    ("suffix", "magic"),
+    ((".inxmesh", b"INXMESHART"), (".inxskin", b"INXSKINAR")),
+)
+def test_current_mesh_artifact_requires_its_format_marker(tmp_path, suffix, magic):
+    artifact = tmp_path / f"obsolete{suffix}"
+    artifact.write_bytes(
+        magic
+        + b"\x04\x03\x02\x01"
+        + (16).to_bytes(4, "little")
+        + b"0123456789abcdef"
+    )
+
+    with pytest.raises(RuntimeArtifactError, match="current format marker"):
+        artifact_source_hash(artifact)
+
+
 def test_render_texture_missing_artifact_cannot_ship_source_as_blob(tmp_path):
     builder = _make_builder(tmp_path, tmp_path / "build_output")
     project = Path(builder.project_path)
@@ -6120,7 +6139,60 @@ def test_interchange_model_sources_share_runtime_model_classification(path):
     assert payload_kind_for(logical_type_for_path(path)) != "compiled_artifact"
 
 
-def test_cooked_document_catalog_resolves_author_path_dependency_alias():
+def test_button_background_texture_is_a_guid_backed_player_cook_dependency():
+    from Infernux.core.asset_ref import TextureRef
+    from Infernux.ui import UIButton
+
+    texture_guid = "button-background-texture-guid"
+    button = UIButton()
+    button.background_texture = TextureRef(
+        guid=texture_guid,
+        path_hint="Assets/Textures/Button.png",
+    )
+    document = button._serialize_fields_document()
+
+    assert "background_texture" in document
+    assert "texture_path" not in document
+    references = list(GameBuilder._asset_reference_values(
+        document, frozenset({texture_guid}),
+    ))
+    assert references[0] == (texture_guid, "")
+    assert {guid for guid, _path in references} == {texture_guid}
+
+
+@pytest.mark.parametrize("component_type", ["UIText", "UIButton"])
+def test_ui_font_chain_is_a_guid_backed_player_cook_dependency(component_type):
+    from Infernux.core.asset_ref import create_asset_ref
+    from Infernux.ui import UIButton, UIText
+
+    primary_guid = "ui-primary-font-guid"
+    fallback_guid = "ui-fallback-font-guid"
+    component = {"UIText": UIText, "UIButton": UIButton}[component_type]()
+    component.font = create_asset_ref(
+        "Font", guid=primary_guid, path_hint="Assets/Fonts/Primary.ttf"
+    )
+    component.fallback_fonts = [
+        create_asset_ref(
+            "Font", guid=fallback_guid, path_hint="Assets/Fonts/Fallback.otf"
+        )
+    ]
+
+    document = component._serialize_fields_document()
+    references = list(
+        GameBuilder._asset_reference_values(
+            document, frozenset({primary_guid, fallback_guid})
+        )
+    )
+
+    assert references == [
+        (primary_guid, ""),
+        (fallback_guid, ""),
+    ]
+    assert "font_path" not in document
+    assert "fallback_font_paths" not in document
+
+
+def test_cooked_document_catalog_ignores_path_only_asset_reference():
     scene_payload = json.dumps(
         {
             "material": {
@@ -6163,11 +6235,8 @@ def test_cooked_document_catalog_resolves_author_path_dependency_alias():
     )
 
     by_path = {artifact["runtime_path"]: artifact for artifact in catalog["artifacts"]}
-    material_id = by_path[
-        "Library/Artifacts/Document/material-guid.mat"
-    ]["runtime_artifact_id"]
     scene = by_path["Library/Artifacts/Document/scene-guid.scene"]
-    assert scene["dependencies"] == [material_id]
+    assert scene["dependencies"] == []
     assert scene["unresolved_dependencies"] == []
 
 
@@ -6359,10 +6428,7 @@ def test_cooked_catalog_discovers_native_and_effect_group_asset_references():
             {
                 "entries": [
                     {
-                        "asset": {
-                            "guid": effect_guid,
-                            "path_hint": "Assets/Effects/Ink.effect",
-                        }
+                        "asset": {"guid": effect_guid}
                     }
                 ]
             }

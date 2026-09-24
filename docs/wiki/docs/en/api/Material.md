@@ -78,8 +78,9 @@ Pythonic wrapper around C++ InxMaterial.
 | `get_property(name: str) → Any` | Get a shader property value by name. |
 | `get_all_properties() → dict` | Get all shader properties as a dictionary. |
 | `save(file_path: str) → bool` | Save the material to a file. |
+| `set_matrix(name: str, value: Any) → None` | Set a NumPy (4,4) matrix indexed as [row, column]. |
 | `set_param(name: str, value: Any) → None` | Set a non-texture material property using type/shape dispatch. |
-| `set_texture(name: str, value: Any) → None` | Set a texture property from GUID, path, Texture, or None. |
+| `set_texture(name: str, value: Any) → None` | Bind a texture asset or builtin. |
 | `flush() → None` | Force-write any pending changes to disk. |
 
 <!-- USER CONTENT START --> public_methods

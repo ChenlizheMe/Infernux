@@ -78,8 +78,9 @@
 | `get_property(name: str) → Any` | 按名称获取着色器属性值。 |
 | `get_all_properties() → dict` | 获取所有着色器属性的字典。 |
 | `save(file_path: str) → bool` | 将材质保存到文件。 |
+| `set_matrix(name: str, value: Any) → None` | Set a NumPy (4,4) matrix indexed as [row, column]. |
 | `set_param(name: str, value: Any) → None` | Set a non-texture material property using type/shape dispatch. |
-| `set_texture(name: str, value: Any) → None` | Set a texture property from GUID, path, Texture, or None. |
+| `set_texture(name: str, value: Any) → None` | Bind a texture asset or builtin. |
 | `flush() → None` | Force-write any pending changes to disk. |
 
 <!-- USER CONTENT START --> public_methods

@@ -205,3 +205,28 @@ class TestDebugStaticMethods:
         Debug.log("ctx_test", context=ctx)
         entries = console.get_entries()
         assert entries[-1].context is ctx
+
+    def test_public_log_methods_capture_real_call_site(self, console):
+        expected_file = __file__
+
+        log_line = sys._getframe().f_lineno + 1
+        Debug.log("source-log")
+        warning_line = sys._getframe().f_lineno + 1
+        Debug.log_warning("source-warning")
+        error_line = sys._getframe().f_lineno + 1
+        Debug.log_error("source-error")
+
+        entries = console.get_entries()[-3:]
+        assert [(entry.source_file, entry.source_line) for entry in entries] == [
+            (expected_file, log_line),
+            (expected_file, warning_line),
+            (expected_file, error_line),
+        ]
+
+    def test_log_helper_skips_debug_module_frame(self, console):
+        source_line = sys._getframe().f_lineno + 1
+        Debug.log_suppressed("worker", RuntimeError("failed"))
+
+        entry = console.get_entries()[-1]
+        assert entry.source_file == __file__
+        assert entry.source_line == source_line

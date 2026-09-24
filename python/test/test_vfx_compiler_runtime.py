@@ -56,6 +56,49 @@ from Infernux.lib import AssetRegistry, GameObject
 particle_system_module = importlib.import_module("Infernux.components.particle_system")
 
 
+class _ParticleGraphGuidDatabase:
+    def __init__(self, base, guid: str, source: str):
+        self._base = base
+        self._guid = guid
+        self._source = source
+
+    def get_path_from_guid(self, guid: str) -> str:
+        if guid == self._guid:
+            return self._source
+        resolver = getattr(self._base, "get_path_from_guid", None)
+        return str(resolver(guid) or "") if callable(resolver) else ""
+
+    def get_guid_from_path(self, path: str) -> str:
+        resolver = getattr(self._base, "get_guid_from_path", None)
+        return str(resolver(path) or "") if callable(resolver) else ""
+
+    def __getattr__(self, name: str):
+        if self._base is None:
+            raise AttributeError(name)
+        return getattr(self._base, name)
+
+
+def _particle_graph_ref(monkeypatch, source) -> ParticleGraphRef:
+    """Bind a test authoring source to the same GUID-only lookup used at runtime."""
+    source_path = str(source)
+    guid = f"test-particle-{source.stem.casefold()}"
+    database = _ParticleGraphGuidDatabase(
+        AssetManager._asset_database,
+        guid,
+        source_path,
+    )
+    monkeypatch.setattr(AssetManager, "_asset_database", database)
+    # ParticleGraphAsset.save() publishes the authoring product under its
+    # source key. Import assigns the durable GUID and rekeys that same product;
+    # mirror that boundary without compiling a second time in runtime tests.
+    particle_system_module.ParticleArtifactRegistry.remap_source(
+        source_path,
+        source_path,
+        guid=guid,
+    )
+    return ParticleGraphRef(guid=guid, path_hint="Assets/VFX/display-only.particlegraph")
+
+
 # SwiftShader's pinned Windows ICD heap-corrupts its own process while compiling
 # these particle pipelines. Hardware Vulkan and Linux lavapipe still execute the
 # real integration tests; this is an explicit software-device boundary, not a
@@ -125,7 +168,7 @@ def _particle_artifact_load_probe(monkeypatch, tmp_path, *, editor: bool):
         ),
     )
     assert component._load_particle_graph_artifact(
-        ParticleGraphRef(path_hint=str(source))
+        _particle_graph_ref(monkeypatch, source)
     ) is editor
     return calls, runtime_load_calls
 
@@ -139,7 +182,7 @@ def test_editor_compiles_authoring_source_without_player_artifact_lookup(
 
     assert len(calls) == 1
     assert calls[0][0] == str(tmp_path / "Recovery.particlegraph")
-    assert calls[0][1] == {"guid": ""}
+    assert calls[0][1] == {"guid": "test-particle-recovery"}
     assert runtime_load_calls == []
 
 
@@ -201,7 +244,7 @@ def test_editor_does_not_recompile_after_gpu_publication_failure(
     monkeypatch.setattr(component, "_publish_gpu_particle_graph", publish)
 
     assert not component._load_particle_graph_artifact(
-        ParticleGraphRef(path_hint=str(source))
+        _particle_graph_ref(monkeypatch, source)
     )
     assert len(compile_calls) == 1
     assert len(publish_calls) == 1
@@ -217,6 +260,58 @@ def test_player_rejects_invalid_particle_artifact_without_source_compilation(
 
     assert calls == []
     assert len(runtime_load_calls) == 1
+
+
+def test_particle_runtime_ignores_obsolete_path_only_graph_reference(
+    monkeypatch, tmp_path
+):
+    source = tmp_path / "ObsoletePathOnly.particlegraph"
+    source.write_text("{}", encoding="utf-8")
+
+    class _NoPathIdentityDatabase:
+        @staticmethod
+        def get_guid_from_path(_path):
+            raise AssertionError("runtime must not recover a GUID from path_hint")
+
+        @staticmethod
+        def get_path_from_guid(_guid):
+            raise AssertionError("an empty GUID must not query the asset database")
+
+    monkeypatch.setattr(
+        AssetManager,
+        "_asset_database",
+        _NoPathIdentityDatabase(),
+    )
+    reference = ParticleGraphRef.from_dict(
+        {"guid": "", "path_hint": str(source)}
+    )
+
+    assert reference.guid == ""
+    assert reference.path_hint == ""
+    assert ParticleSystem._particle_source_path(reference) == ""
+    component = ParticleSystem()
+    component.graph = reference
+    assert component._definition_signature()[0] == ("asset", "")
+
+
+def test_particle_runtime_does_not_reverse_lookup_texture_path_hint(monkeypatch):
+    class _NoPathIdentityDatabase:
+        @staticmethod
+        def get_guid_from_path(_path):
+            raise AssertionError("runtime must not recover a texture GUID from path_hint")
+
+    monkeypatch.setattr(
+        AssetManager,
+        "_asset_database",
+        _NoPathIdentityDatabase(),
+    )
+
+    assert (
+        ParticleSystem._particle_texture_guid(
+            AssetReference(path_hint="Assets/VFX/obsolete-smoke.png")
+        )
+        == "white"
+    )
 
 
 def test_particle_runtime_batch_ids_do_not_alias_reused_scene_ids(monkeypatch):
@@ -658,7 +753,7 @@ def test_particle_system_exposes_graph_defined_event_schema_without_external_rou
     native = _GpuParticleNative()
     monkeypatch.setattr(ParticleSystem, "_native_engine", staticmethod(lambda: native))
     component = ParticleSystem()
-    component.graph = ParticleGraphRef(path_hint=str(source))
+    component.graph = _particle_graph_ref(monkeypatch, source)
     game_object = scene.create_game_object("RuntimeEventProbe")
     game_object.add_py_component(component)
 
@@ -703,7 +798,7 @@ def test_particle_system_exposed_parameter_updates_live_gpu_block(
     native = _GpuParticleNative()
     monkeypatch.setattr(ParticleSystem, "_native_engine", staticmethod(lambda: native))
     component = ParticleSystem()
-    component.graph = ParticleGraphRef(path_hint=str(source))
+    component.graph = _particle_graph_ref(monkeypatch, source)
     game_object = scene.create_game_object("GpuParticleParameterProbe")
     game_object.add_py_component(component)
 
@@ -776,7 +871,7 @@ def test_particle_system_serialize_flushes_live_instance_overrides(
     native = _GpuParticleNative()
     monkeypatch.setattr(ParticleSystem, "_native_engine", staticmethod(lambda: native))
     component = ParticleSystem()
-    component.graph = ParticleGraphRef(path_hint=str(source))
+    component.graph = _particle_graph_ref(monkeypatch, source)
     scene.create_game_object("SerializeFlush").add_py_component(component)
     component.awake()
     component.start()
@@ -806,7 +901,7 @@ def test_particle_system_keeps_instance_overrides_when_runtime_schema_is_empty(
     native = _GpuParticleNative()
     monkeypatch.setattr(ParticleSystem, "_native_engine", staticmethod(lambda: native))
     component = ParticleSystem()
-    component.graph = ParticleGraphRef(path_hint=str(source))
+    component.graph = _particle_graph_ref(monkeypatch, source)
     scene.create_game_object("EmptySchema").add_py_component(component)
     component.awake()
     component._parameter_overrides = {"impact-scale": 0.2}
@@ -833,7 +928,7 @@ def test_game_object_instantiate_copies_particle_instance_state(
     native = _GpuParticleNative()
     monkeypatch.setattr(ParticleSystem, "_native_engine", staticmethod(lambda: native))
     component = ParticleSystem()
-    component.graph = ParticleGraphRef(path_hint=str(source))
+    component.graph = _particle_graph_ref(monkeypatch, source)
     game_object = scene.create_game_object("ImpactSparkTemplate")
     game_object.add_py_component(component)
     component.awake()
@@ -888,7 +983,7 @@ def test_game_object_instantiate_copies_live_overrides_ahead_of_json(
     native = _GpuParticleNative()
     monkeypatch.setattr(ParticleSystem, "_native_engine", staticmethod(lambda: native))
     component = ParticleSystem()
-    component.graph = ParticleGraphRef(path_hint=str(source))
+    component.graph = _particle_graph_ref(monkeypatch, source)
     game_object = scene.create_game_object("LiveAheadTemplate")
     game_object.add_py_component(component)
     component.awake()
@@ -919,7 +1014,7 @@ def test_particle_system_deserialize_repairs_missing_runtime_override_cache(
     native = _GpuParticleNative()
     monkeypatch.setattr(ParticleSystem, "_native_engine", staticmethod(lambda: native))
     component = ParticleSystem()
-    component.graph = ParticleGraphRef(path_hint=str(source))
+    component.graph = _particle_graph_ref(monkeypatch, source)
     game_object = scene.create_game_object("UndoRepair")
     game_object.add_py_component(component)
     component.awake()
@@ -966,7 +1061,7 @@ def test_particle_system_inspector_document_edits_undo_fields_parameters_and_emi
     native = _GpuParticleNative()
     monkeypatch.setattr(ParticleSystem, "_native_engine", staticmethod(lambda: native))
     component = ParticleSystem()
-    component.graph = ParticleGraphRef(path_hint=str(source))
+    component.graph = _particle_graph_ref(monkeypatch, source)
     owner = scene.create_game_object("InspectorUndo")
     owner.add_py_component(component)
     component.awake()
@@ -1048,7 +1143,7 @@ def test_particle_system_curve_and_gradient_parameters_hot_update_fixed_gpu_bloc
         staticmethod(lambda: native_runtime),
     )
     component = ParticleSystem()
-    component.graph = ParticleGraphRef(path_hint=str(source))
+    component.graph = _particle_graph_ref(monkeypatch, source)
     scene.create_game_object("GpuRampParameterProbe").add_py_component(component)
     component.awake()
     component.start()
@@ -1508,7 +1603,7 @@ def test_particle_system_runs_gpu_emitters_by_active_index(
     native = _GpuParticleNative()
     monkeypatch.setattr(ParticleSystem, "_native_engine", staticmethod(lambda: native))
     component = ParticleSystem()
-    component.graph = ParticleGraphRef(path_hint=str(source))
+    component.graph = _particle_graph_ref(monkeypatch, source)
     game_object = scene.create_game_object("GpuParticleGraphProbe")
     game_object.layer = 3
     game_object.add_py_component(component)
@@ -1746,7 +1841,7 @@ def test_particle_system_keeps_event_queues_inside_each_gpu_emitter(
     native = _GpuParticleNative()
     monkeypatch.setattr(ParticleSystem, "_native_engine", staticmethod(lambda: native))
     component = ParticleSystem()
-    component.graph = ParticleGraphRef(path_hint=str(source))
+    component.graph = _particle_graph_ref(monkeypatch, source)
     game_object = scene.create_game_object("GpuEventGraphProbe")
     game_object.add_py_component(component)
 
@@ -1856,7 +1951,7 @@ def test_saved_particle_graph_uses_real_gpu_runtime_control_path(
     )
     graph.save(str(source))
     component = ParticleSystem()
-    component.graph = ParticleGraphRef(path_hint=str(source))
+    component.graph = _particle_graph_ref(monkeypatch, source)
     game_object = scene.create_game_object("GpuParticleGraphProbe")
     game_object.add_py_component(component)
     monkeypatch.setattr(ParticleSystem, "_native_engine", staticmethod(lambda: engine))
@@ -1904,7 +1999,9 @@ def test_saved_particle_graph_uses_real_gpu_runtime_control_path(
         ),
     )
     compatible_revision = component._artifact_revision
-    compatible_graph.save(str(source))
+    particle_system_module.ParticleArtifactRegistry.save_graph_asset(
+        compatible_graph, str(source), guid="test-particle-gpusmoke"
+    )
     component.update(0.0)
     assert component._artifact_revision > compatible_revision
     assert component._gpu_controllers[0].is_playing is False
@@ -1930,7 +2027,9 @@ def test_saved_particle_graph_uses_real_gpu_runtime_control_path(
         ),
     )
     resized_revision = component._artifact_revision
-    resized_graph.save(str(source))
+    particle_system_module.ParticleArtifactRegistry.save_graph_asset(
+        resized_graph, str(source), guid="test-particle-gpusmoke"
+    )
     component.update(0.0)
     assert component._artifact_revision > resized_revision
     assert component._gpu_controllers[0].is_playing is False
@@ -1957,7 +2056,9 @@ def test_saved_particle_graph_uses_real_gpu_runtime_control_path(
         event_types=(ParticleEventType("impact", "Impact", 8),),
     )
     event_revision = component._artifact_revision
-    event_graph.save(str(source))
+    particle_system_module.ParticleArtifactRegistry.save_graph_asset(
+        event_graph, str(source), guid="test-particle-gpusmoke"
+    )
     component.update(0.0)
     assert component._artifact_revision > event_revision
     assert component._gpu_controllers[0].simulation_step == 0
@@ -1983,7 +2084,9 @@ def test_saved_particle_graph_uses_real_gpu_runtime_control_path(
             ),
         ),
     )
-    revised_graph.save(str(source))
+    particle_system_module.ParticleArtifactRegistry.save_graph_asset(
+        revised_graph, str(source), guid="test-particle-gpusmoke"
+    )
     component.update(0.0)
     assert component._artifact_revision > previous_revision
     assert component._gpu_controllers[0].is_playing is False
@@ -2111,7 +2214,7 @@ def test_saved_gpu_particle_graph_binds_vector_field_texture3d_through_rhi(
     ).save(str(source))
 
     component = ParticleSystem()
-    component.graph = ParticleGraphRef(path_hint=str(source))
+    component.graph = _particle_graph_ref(monkeypatch, source)
     game_object = scene.create_game_object("GpuVectorFieldProbe")
     game_object.add_py_component(component)
     monkeypatch.setattr(ParticleSystem, "_native_engine", staticmethod(lambda: engine))
@@ -2229,7 +2332,7 @@ def test_saved_gpu_particle_graph_binds_sdf_texture3d_through_rhi(
     ).save(str(source))
 
     component = ParticleSystem()
-    component.graph = ParticleGraphRef(path_hint=str(source))
+    component.graph = _particle_graph_ref(monkeypatch, source)
     game_object = scene.create_game_object("GpuSdfProbe")
     game_object.add_py_component(component)
     monkeypatch.setattr(ParticleSystem, "_native_engine", staticmethod(lambda: engine))
@@ -2308,7 +2411,7 @@ def test_particle_system_prewarm_uses_one_transactional_fixed_step_gpu_sequence(
     native = _GpuParticleNative()
     monkeypatch.setattr(ParticleSystem, "_native_engine", staticmethod(lambda: native))
     component = ParticleSystem()
-    component.graph = ParticleGraphRef(path_hint=str(source))
+    component.graph = _particle_graph_ref(monkeypatch, source)
     component.prewarm = True
     game_object = scene.create_game_object("GpuPrewarmProbe")
     game_object.add_py_component(component)
@@ -2384,7 +2487,7 @@ def test_particle_system_play_consumes_saved_aot_without_source_compilation(
     monkeypatch.setattr(ParticleGraphCompiler, "compile", _unexpected_compile)
     monkeypatch.setattr(ParticleKernelLowerer, "lower", _unexpected_compile)
     component = ParticleSystem()
-    component.graph = ParticleGraphRef(path_hint=str(source))
+    component.graph = _particle_graph_ref(monkeypatch, source)
     scene.create_game_object("SavedAotOnlyProbe").add_py_component(component)
 
     component.awake()
@@ -2403,7 +2506,7 @@ def test_single_emitter_restart_resets_authoritative_graph_clock(
     native = _GpuParticleNative()
     monkeypatch.setattr(ParticleSystem, "_native_engine", staticmethod(lambda: native))
     component = ParticleSystem()
-    component.graph = ParticleGraphRef(path_hint=str(source))
+    component.graph = _particle_graph_ref(monkeypatch, source)
     scene.create_game_object("SingleBurstRestartProbe").add_py_component(component)
 
     component.awake()
@@ -2440,7 +2543,7 @@ def test_particle_preview_reuses_saved_aot_native_runtime_and_graph_clock(
     monkeypatch.setattr(ParticleGraphCompiler, "compile", _unexpected_compile)
     monkeypatch.setattr(ParticleKernelLowerer, "lower", _unexpected_compile)
     component = ParticleSystem()
-    component.graph = ParticleGraphRef(path_hint=str(source))
+    component.graph = _particle_graph_ref(monkeypatch, source)
     scene.create_game_object("SavedPreviewAotOnlyProbe").add_py_component(component)
 
     component.awake()
@@ -2488,7 +2591,7 @@ def test_particle_system_seek_replays_from_zero_and_preserves_pause_state(
     native = _GpuParticleNative()
     monkeypatch.setattr(ParticleSystem, "_native_engine", staticmethod(lambda: native))
     component = ParticleSystem()
-    component.graph = ParticleGraphRef(path_hint=str(source))
+    component.graph = _particle_graph_ref(monkeypatch, source)
     component.random_seed = 123
     game_object = scene.create_game_object("GpuSeekProbe")
     game_object.add_py_component(component)

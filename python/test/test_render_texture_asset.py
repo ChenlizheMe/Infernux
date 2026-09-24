@@ -94,7 +94,7 @@ def test_image_target_reimport_delete_and_restore_keeps_saved_guid(imported_targ
     assert image.texture.width == 71
 
 
-def test_image_legacy_texture_path_migrates_to_single_guid_slot(imported_target, tmp_path):
+def test_image_obsolete_texture_path_is_ignored(imported_target, tmp_path):
     from Infernux.ui import UIImage
     from Infernux.components.fields import get_raw_field_value
     from Infernux.core.asset_ref import TextureRef
@@ -105,17 +105,9 @@ def test_image_legacy_texture_path_migrates_to_single_guid_slot(imported_target,
     imported = database.import_asset(str(path))
     assert imported.succeeded
     image = UIImage()
+    before = image._serialize_fields_document()
     image._deserialize_fields_document({'texture_path': str(path)})
-    ref = get_raw_field_value(image, 'texture')
-    assert isinstance(ref, TextureRef) and ref.guid == imported.guid
-    document = image._serialize_fields_document()
-    assert document['texture']['asset_type'] == 'Texture'
-    assert 'texture_path' not in document
-    assert image.texture.width == 13
-    assert image.texture.height == 7
-    canonical = dict(document, texture=None, texture_path=str(path))
-    image._deserialize_fields_document(canonical)
-    assert image.texture is None  # New documents win; no legacy resurrection.
+    assert image._serialize_fields_document() == before
 
 
 def test_sampled_field_rejects_union_identity_and_keeps_static_fields_narrow():
@@ -205,7 +197,7 @@ def imported_target(engine, tmp_path, monkeypatch):
     monkeypatch.setattr(Application, '_current_engine', staticmethod(
         lambda: SimpleNamespace(get_native_engine=lambda: engine)))
     source = tmp_path / 'Monitor.rendertexture'
-    document = {'$type': 'render_texture', 'schema_version': 1,
+    document = {'$type': 'render_texture',
                 'size': {'width': 53, 'height': 29}, 'format': 'rgba8_unorm',
                 'depth_format': 'd32_sfloat', 'samples': 1, 'filter': 'linear',
                 'storage': False, 'sampled_depth': False}
@@ -320,7 +312,7 @@ def test_ui_material_samples_imported_target_without_source_path_lookup(imported
     image = UIImage()
     image.material = material
     state = material_visual_state(image)
-    assert state['texture_path'] == ''
+    assert state['texture_guid'] == guid
     assert state['texture'] is RenderTexture.load_by_guid(guid)._native
     assert image_texture_source(image, state) is state['texture']
 
@@ -342,7 +334,7 @@ def test_load_path_guid_reference_and_camera_share_owner(imported_target, scene)
     assert _get_reference_display_name(inx.FieldType.ASSET, target) == source.name
     assert (target.width, target.height) == (53, 29)
     assert RenderTexture.load_by_guid(guid)._native is target._native
-    assert AssetManager.load(str(source))._native is target._native
+    assert AssetManager.load_by_guid(guid)._native is target._native
     ref = RenderTextureRef(guid)
     assert ref.resolve()._native is target._native
     camera = scene.create_game_object('AssetCamera').add_component('Camera')

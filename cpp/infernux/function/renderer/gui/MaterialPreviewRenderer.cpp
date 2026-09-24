@@ -549,8 +549,8 @@ void MaterialPreviewRenderer::RenderPreview(const PreviewMaterialParams &params,
             }
             if (params.smoothnessTex) {
                 float texSmooth = glm::dot(params.smoothnessTex->Sample(texU, texV), params.smoothnessChannels);
-                pixelRoughness = glm::mix(1.0f - ((1.0f - params.roughness) * texSmooth),
-                                         params.roughness * texSmooth, params.smoothnessFromRoughness);
+                pixelRoughness = glm::mix(1.0f - ((1.0f - params.roughness) * texSmooth), params.roughness * texSmooth,
+                                          params.smoothnessFromRoughness);
             }
             if (params.aoTex) {
                 pixelAO *= glm::mix(1.0f, params.aoTex->Sample(texU, texV).x, params.occlusionStrength);

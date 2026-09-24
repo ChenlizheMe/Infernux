@@ -12,6 +12,7 @@ import pytest
 
 from Infernux.lib import AssetDependencyGraph, AssetMutationErrorCode, AssetRegistry, InxMaterial, ResourceType
 from Infernux.core.assets import AssetManager
+from Infernux.core.asset_types import read_mesh_import_settings
 from Infernux.engine.path_utils import same_path
 from Infernux.particle import (
     AssetReference,
@@ -22,6 +23,13 @@ from Infernux.particle import (
 )
 
 
+def _enable_mesh_read_write(database, source: Path) -> None:
+    settings = read_mesh_import_settings(str(source))
+    settings.is_readable = True
+    result = AssetManager.reimport_asset(str(source), import_settings=settings.to_dict(), database=database)
+    assert result, result.error
+
+
 def test_mesh_position_publication_preserves_identity_and_source(engine, tmp_path: Path):
     database = engine.get_asset_database()
     registry = AssetRegistry.instance()
@@ -30,6 +38,7 @@ def test_mesh_position_publication_preserves_identity_and_source(engine, tmp_pat
     source.write_text(document, encoding="ascii")
     guid = database.import_asset(str(source)).guid
     try:
+        _enable_mesh_read_write(database, source)
         pending = registry.begin_load_mesh_by_guid(guid)
         mesh = registry.load_mesh_by_guid(guid)
         original = mesh._particle_sampling_data()
@@ -76,6 +85,7 @@ def test_shared_mesh_position_publication_keeps_collision_until_recook(engine, s
     guid = database.import_asset(str(source)).guid
     objects = []
     try:
+        _enable_mesh_read_write(database, source)
         for x in (0, 5):
             go = scene.create_game_object("shared surface")
             objects.append(go)
@@ -121,6 +131,7 @@ def test_authored_mesh_import_restores_edited_geometry_with_independent_identity
     original.write_text("v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n", encoding="ascii")
     original_guid = database.import_asset(str(original)).guid
     try:
+        _enable_mesh_read_write(database, original)
         mesh = registry.load_mesh_by_guid(original_guid)
         positions = mesh._particle_sampling_data()["positions"]
         positions[:, 2] = 3
@@ -131,6 +142,7 @@ def test_authored_mesh_import_restores_edited_geometry_with_independent_identity
         imported = database.import_asset(str(authored))
         assert imported.resource_type == ResourceType.Mesh
         assert imported.guid != original_guid
+        _enable_mesh_read_write(database, authored)
         restored = registry.load_mesh_by_guid(imported.guid)
         assert restored is not mesh
         np.testing.assert_array_equal(restored._particle_sampling_data()["positions"], positions)
@@ -166,13 +178,15 @@ def test_authored_mesh_cooked_artifact_validates_and_loads_without_source(engine
     settings = root / "ProjectSettings" / "BuildSettings.json"
     previous_settings = settings.read_bytes() if settings.exists() else None
     settings.parent.mkdir(exist_ok=True)
-    settings.write_text('{"scenes": []}', encoding="utf-8")
+    settings.write_text('{"scene_guids": []}', encoding="utf-8")
     original.write_text("v 0 0 2\nv 1 0 2\nv 0 1 2\nf 1 2 3\n", encoding="ascii")
     try:
         original_guid = database.import_asset(str(original)).guid
+        _enable_mesh_read_write(database, original)
         source_bytes = registry.load_mesh_by_guid(original_guid).serialize_source()
         authored.write_bytes(source_bytes)
         guid = database.import_asset(str(authored)).guid
+        _enable_mesh_read_write(database, authored)
         database.flush_derived_index()
         index = json.loads(Path(database.asset_index_path).read_text(encoding="utf-8"))
         entry = next(item for item in index["entries"] if item["guid"] == guid)
@@ -222,6 +236,7 @@ def test_mesh_copy_command_undo_redo_restores_identity(engine, tmp_path: Path):
     target = assets / "copy.inxmesh"
     original.write_text("v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n", encoding="ascii")
     original_guid = database.import_asset(str(original)).guid
+    _enable_mesh_read_write(database, original)
     manager = UndoManager(EditorActionJournal())
     service = ProjectAssetCommandService(SelectionService())
     service.configure(str(tmp_path), database)
@@ -240,6 +255,7 @@ def test_mesh_copy_command_undo_redo_restores_identity(engine, tmp_path: Path):
         manager.redo()
         assert database.get_guid_from_path(str(target)) == guid
         assert target.read_bytes() == content
+        _enable_mesh_read_write(database, target)
         assert registry.load_mesh_by_guid(guid).serialize_source() == content
         occupied = assets / "occupied.inxmesh"
 

@@ -35,6 +35,63 @@ class ObstacleTools(inx.InxPreload):
 
 一次撤销会移除这组创建的物体、资产和实例，重做会恢复它们。注册操作放在 `preload` 中：热重载、卸载及关闭项目时，注册项随所属脚本清理，不要每帧注册，也不要在模块导入时直接创建场景物体。
 
+## 由组件驱动的 Transform 字段
+
+当启用的组件负责其 GameObject 的部分 Transform 时，只需声明一次所有权，
+Inspector 与 Scene 工具会遵守同一规则：
+
+```python
+from infernux.components import (
+    DrivenTransformProperties,
+    InxComponent,
+    drives_transform,
+)
+
+@drives_transform(DrivenTransformProperties.SCALE)
+class ProceduralSurface(InxComponent):
+    pass
+```
+
+Scale 和 Rect 工具不会覆盖被驱动的缩放。可组合 `POSITION`、`ROTATION`、
+`SCALE`，或直接使用 `ALL`。如果所有权会动态改变，组件可实现
+`driven_transform_properties()` 返回当前标志；禁用该组件即释放作者锁。
+
+## 自定义 Scene View Handle
+
+项目和编辑器插件通过 `inx.editor.register_handle_provider()` 注册一个稳定的 Handle provider。provider 每次收到 `EditorHandleContext`，可提交世界空间的 `position`、`direction`、`radius` 和 `limit` Handle：
+
+```python
+import infernux as inx
+
+class SpawnHandles(inx.InxPreload):
+    def preload(self, context):
+        inx.editor.register_handle_provider(
+            "sample.spawn", self.draw_handles,
+            on_retire=self.release_preview_resources,
+        )
+
+    def draw_handles(self, handles):
+        target = current_spawn_target()
+        if target is None:
+            return
+        handles.position("position", target.position,
+                         lambda value: set_spawn_position(target, value))
+        handles.direction("forward", target.position, target.forward,
+                          lambda value: set_spawn_forward(target, value))
+        handles.radius("radius", target.position, target.radius,
+                       lambda value: set_spawn_radius(target, value))
+        handles.limit("travel", target.position, target.forward,
+                      (target.minimum, target.maximum),
+                      lambda value: set_spawn_limits(target, value))
+
+    def release_preview_resources(self):
+        pass
+```
+
+provider 只注册一次，每帧根据当前 Selection 提交当帧仍然有效的 Handle；`handles.selection` 是本次收集使用的选择快照。所有值和回调都属于该帧，未再次提交的 Handle 会立即失效，不保留旧回调。`direction` 回调收到归一化方向，`radius` 不会变为负数，`limit` 始终保持最小值不大于最大值。
+
+注册返回的 `HandleRegistration` 可以显式 `close()`。在 preload 中注册时，注册项自动归属于该 preload；插件热重载、禁用、卸载或编辑器关闭会先取消仍在拖拽的 Handle、用初值调用 `on_changed`/`on_cancel`，再调用一次 `on_retire` 并清除 provider 的当帧资源和回调。不要保留 `EditorHandleContext` 到下一帧。跨帧撤销记录仍由项目回调接入自己的文档/命令服务，Handle API 不把任意字段赋值自动变成 Undo。
+
 - `create_game_object` 返回新物体；`kind` 与 Hierarchy 创建类型共用，例如 `empty`、`primitive.sphere`、`ui.button`。
 - 初始组件和 Transform 值可以放进 `configure(obj)` 回调，在创建快照记录前完成，撤销/重做能恢复这些初值。回调抛出异常会取消该物体的创建。
 - `edit_scene` 只合并已经走编辑器历史服务的操作，不会自动拦截任意 Python 赋值，也不是整个脚本失败时的全量回滚事务。
@@ -116,7 +173,9 @@ result = inx.editor.save_data_asset(level)
 
 普通的 `obj.add_component(MyComponent)` 与 `obj.get_component(MyComponent)` 也会把保留的类句柄解析到当前已发布脚本类型，包括 preload 在首次资产 GUID 发布前导入的类。匹配按所属模块和限定类名，不会混淆不同脚本中的同名类。直接调用 `MyComponent()` 再传给低层 `add_py_component` 不执行这一步身份解析；编辑已有物体且需要撤销时，仍使用 `inx.editor.add_component`。
 
-工具需要加载已有材质时，先用 `inx.Application.asset_path("Assets/Materials/Example.mat")` 解析项目路径，再传给 `inx.AssetManager.load`。不要依赖启动编辑器时的工作目录，也不需要在脚本里手写 GUID。
+工具需要加载已有材质时，直接调用 `inx.AssetManager.load("Assets/Materials/Example.mat")`。Editor 会立即把这条 `Assets` 相对作者路径转换为资产 GUID。Player 也接受相同的 path 表达式，但只能通过构建时冻结的查询索引得到 GUID，之后只按 GUID 继续；它不会扫描 `Assets`，也不把 path 当成运行时身份。`find_assets("Assets/Materials/*.mat")` 在两端都返回不可变的 `AssetFile` 文件对象；对象只用 `guid` 标识，并可调用 `load()` 加载，作者路径不会成为它的身份。直接传 `Assets/Materials` 会枚举该目录的直接子文件；递归查找应显式使用 `Assets/Materials/**/*.mat`，文件夹本身永远不会成为结果。
+
+真实文件和 Mod 目录使用显式的第二模式：给 `load` 传 `raw_filesystem=True` 可取得 `SandboxPath`，给 `find_assets` 传同一开关可列举沙箱文件。传入 `Mods` 这类目录时只枚举它的直接子文件，文件夹不会出现在查询结果里。Editor 的根是项目 `Assets`，桌面 Player 的根是可执行文件目录；Web Player 使用浏览器持久化存储中独立的 loose-file 目录，不会暴露打包后的 MEMFS 内容。句柄提供 `read_bytes`、`read_text`、`write_bytes`、`write_text` 和非递归 `delete`。绝对路径、父目录穿越，以及符号链接/junction 穿越都会被拒绝；不要把 `SandboxPath` 持久化成资产身份。
 
 `get_build_scenes()` 返回独立的、有序的项目相对路径列表。`set_build_scenes(paths)` 用一条可撤销操作更新同一份 Build Settings；路径必须是 `Assets` 下已存在的 `.scene`。传空列表表示清空，相同列表不新增历史。编辑器的自动保存仍生效，也可显式调用 `save_project_settings()`，其返回状态与场景保存相同，不要把 `PENDING` 当成写盘完成。
 

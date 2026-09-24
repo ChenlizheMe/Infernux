@@ -256,7 +256,7 @@
                             <span class="ns-arr">&#9654;</span>
                             <span class="ns-nm">Infernux.jit</span>
                         </button>
-                        <div class="ns-ch"><a href="/wiki/site/en/api/njit.html" class="">njit</a><a href="/wiki/site/en/api/warmup.html" class="">warmup</a></div>
+                        <div class="ns-ch"><a href="/wiki/site/en/api/compile.html" class="">compile</a><a href="/wiki/site/en/api/statistics.html" class="">statistics</a><a href="/wiki/site/en/api/warmup.html" class="">warmup</a></div>
                     </div><div class="ns-group">
                         <button type="button" class="ns-hd" aria-expanded="false">
                             <span class="ns-arr">&#9654;</span>
@@ -346,13 +346,14 @@ Fires <code>on_click</code> when the user performs a full click (down + up).</p>
 <p>Attributes:
     label: Button label text.
     font_size: Label font size in canvas pixels.
-    font_path: Optional font asset path.
+    font: Optional imported Font asset, persisted by GUID.
+    fallback_fonts: Ordered fallback Font assets, persisted by GUID.
     label_color: Label text colour as <code>[R, G, B, A]</code>.
     text_align_h: Horizontal text alignment.
     text_align_v: Vertical text alignment.
     line_height: Line height multiplier.
     letter_spacing: Extra letter spacing in pixels.
-    texture_path: Background image texture path.
+    background_texture: Imported Texture/RenderTexture, or a live RenderTexture override.
     background_color: Background fill colour as <code>[R, G, B, A]</code>.
     on_click_entries: Persistent click handlers (serialized).</p>
 <p>Example::</p>
@@ -392,13 +393,23 @@ Fires <code>on_click</code> when the user performs a full click (down + up).</p>
 <td></td>
 </tr>
 <tr>
-<td>font_path</td>
-<td><code>str</code></td>
+<td>font</td>
+<td><code>FontAssetInfo | None</code></td>
+<td></td>
+</tr>
+<tr>
+<td>fallback_fonts</td>
+<td><code>list[FontAssetInfo | None]</code></td>
 <td></td>
 </tr>
 <tr>
 <td>label_color</td>
 <td><code>list</code></td>
+<td></td>
+</tr>
+<tr>
+<td>text_material</td>
+<td><code>Material | None</code></td>
 <td></td>
 </tr>
 <tr>
@@ -422,13 +433,18 @@ Fires <code>on_click</code> when the user performs a full click (down + up).</p>
 <td></td>
 </tr>
 <tr>
-<td>texture_path</td>
-<td><code>str</code></td>
+<td>background_texture</td>
+<td><code>Texture | RenderTexture | None</code></td>
 <td></td>
 </tr>
 <tr>
 <td>background_color</td>
 <td><code>list</code></td>
+<td></td>
+</tr>
+<tr>
+<td>background_material</td>
+<td><code>Material | None</code></td>
 <td></td>
 </tr>
 <tr>

@@ -97,8 +97,27 @@ class Mesh:
         return int(self._native.index_count)
 
     @property
+    def is_readable(self) -> bool:
+        """Whether CPU vertex/index access was enabled by the Model Importer."""
+        return bool(self._native.is_readable)
+
+    @property
+    def has_cpu_geometry(self) -> bool:
+        """Whether CPU streams are resident; false is valid after Player GPU publication."""
+        return bool(self._native.has_cpu_geometry)
+
+    @property
     def submesh_count(self) -> int:
         return int(self._native.submesh_count)
+
+    @property
+    def morph_target_names(self) -> tuple[str, ...]:
+        """Blend-shape targets imported with this mesh in stable source order."""
+        return tuple(self._native.morph_target_names)
+
+    def get_morph_target(self, index: int) -> dict[str, Any]:
+        """Return independent NumPy copies of one imported blend-shape target."""
+        return dict(self._native.get_morph_target_data(index))
 
     @property
     def material_slots(self) -> tuple[str, ...]:

@@ -55,6 +55,8 @@ For dynamic bodies, use forces or velocity rather than writing Transform every f
 | `has_constraint(constraint: RigidbodyConstraints) → bool` | Return whether the specified constraint flag is set. |
 | `add_constraint(constraint: RigidbodyConstraints) → None` | Add a constraint flag to the rigidbody. |
 | `remove_constraint(constraint: RigidbodyConstraints) → None` | Remove a constraint flag from the rigidbody. |
+| `get_point_velocity(point: Any) → Any` |  |
+| `get_point_velocities(points: NDArray[float32], output: NDArray[float32]) → NDArray[float32]` |  |
 | `add_force(force: Any, mode: Any = ...) → None` | Apply a force to the rigidbody. |
 | `add_torque(torque: Any, mode: Any = ...) → None` | Apply a torque to the rigidbody. |
 | `add_force_at_position(force: Any, position: Any, mode: Any = ...) → None` | Apply a force at a specific world-space position. |

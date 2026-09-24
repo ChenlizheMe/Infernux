@@ -687,7 +687,6 @@ def test_ui_layout_vector_exposes_stable_axis_semantic_base(monkeypatch):
         width=280.0,
         height=72.0,
         lock_aspect_ratio=False,
-        texture_path="",
     )
     ctx = _FakeVectorContext()
 
@@ -718,7 +717,7 @@ def test_ui_size_edit_keeps_position_set_after_rect_was_cached(scene):
 
     try:
         initial_rect = button.get_visual_rect(1920, 1080)
-        assert initial_rect[:2] == (0.0, 0.0)
+        assert initial_rect[:2] == (880.0, 520.0)
         _apply_visual_position(button, 820.0, 620.0, canvas)
         assert len(manager.action_journal.applied_entries()) == 1
         _apply_size_preserve_top_left(button, 280.0, 72.0, canvas)
@@ -1205,6 +1204,7 @@ def test_inline_material_state_and_preview_query_are_reused(monkeypatch):
 
     class NativeMaterial:
         file_path = "C:/project/Assets/Test.mat"
+        guid = "test-material-guid"
 
         def __init__(self):
             self.version = 4
@@ -2510,3 +2510,10 @@ def test_builtin_field_visibility_failure_is_not_treated_as_visible():
             {"values": {}, "field_revisions": {}},
             True,
         )
+
+
+def test_builtin_material_textures_display_as_unassigned(monkeypatch):
+    monkeypatch.setattr(inspector_material, "t", lambda key: key)
+    assert inspector_material._resolve_texture_display({"guid": "white"}) == "igui.none"
+    assert inspector_material._resolve_texture_display({"guid": "black"}) == "igui.none"
+    assert inspector_material._resolve_texture_display({"guid": "normal"}) == "igui.none"

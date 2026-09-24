@@ -56,6 +56,22 @@ bool WriteMaterialProperty(std::vector<uint8_t> &bytes, const ShaderProgramPrope
         return WriteValue(bytes, offset, std::get<int>(property.value));
     if (binding.type == "Mat4" && property.type == MaterialPropertyType::Mat4)
         return WriteValue(bytes, offset, std::get<glm::mat4>(property.value));
+    if (binding.type == "FloatArray" && property.type == MaterialPropertyType::FloatArray) {
+        const auto &values = std::get<std::vector<float>>(property.value);
+        if (values.size() != binding.arrayCount || offset + values.size() * 16u > bytes.size())
+            return false;
+        for (size_t index = 0; index < values.size(); ++index)
+            std::memcpy(bytes.data() + offset + index * 16u, &values[index], sizeof(float));
+        return true;
+    }
+    if (binding.type == "Float4Array" && property.type == MaterialPropertyType::Float4Array) {
+        const auto &values = std::get<std::vector<glm::vec4>>(property.value);
+        if (values.size() != binding.arrayCount || offset + values.size() * sizeof(glm::vec4) > bytes.size())
+            return false;
+        if (!values.empty())
+            std::memcpy(bytes.data() + offset, values.data(), values.size() * sizeof(glm::vec4));
+        return true;
+    }
     return false;
 }
 
@@ -103,6 +119,33 @@ bool WriteDefaultProperty(std::vector<uint8_t> &bytes, const ShaderProgramProper
     if (binding.type == "Mat4") {
         glm::mat4 result{0.0f};
         return readFloatArray(&result[0][0], 16) && WriteValue(bytes, offset, result);
+    }
+    if (binding.type == "FloatArray") {
+        if (value.size() != binding.arrayCount || offset + value.size() * 16u > bytes.size())
+            return false;
+        for (size_t index = 0; index < value.size(); ++index) {
+            if (!value[index].is_number())
+                return false;
+            const float number = value[index].get<float>();
+            std::memcpy(bytes.data() + offset + index * 16u, &number, sizeof(number));
+        }
+        return true;
+    }
+    if (binding.type == "Float4Array") {
+        if (value.size() != binding.arrayCount || offset + value.size() * sizeof(glm::vec4) > bytes.size())
+            return false;
+        for (size_t index = 0; index < value.size(); ++index) {
+            if (!value[index].is_array() || value[index].size() != 4)
+                return false;
+            glm::vec4 vector{};
+            for (size_t component = 0; component < 4; ++component) {
+                if (!value[index][component].is_number())
+                    return false;
+                vector[component] = value[index][component].get<float>();
+            }
+            std::memcpy(bytes.data() + offset + index * sizeof(glm::vec4), &vector, sizeof(vector));
+        }
+        return true;
     }
     return false;
 }

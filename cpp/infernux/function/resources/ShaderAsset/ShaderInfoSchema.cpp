@@ -258,14 +258,14 @@ class Lexer final
 
 bool IsPropertyType(std::string_view value)
 {
-    static const std::unordered_set<std::string> Types = {"Float", "Float2", "Float3", "Float4",
-                                                          "Color", "Int",    "Mat4",   "Texture2D"};
+    static const std::unordered_set<std::string> Types = {"Float", "Float2", "Float3",    "Float4",     "Color",
+                                                          "Int",   "Mat4",   "Texture2D", "FloatArray", "Float4Array"};
     return Types.find(std::string(value)) != Types.end();
 }
 
 bool IsValueType(std::string_view value)
 {
-    return IsPropertyType(value) && value != "Texture2D";
+    return IsPropertyType(value) && value != "Texture2D" && value != "FloatArray" && value != "Float4Array";
 }
 
 bool IsInterpolation(std::string_view value)

@@ -11,6 +11,7 @@ from Infernux.core.document_store import submit_document_text
 from .documents import (
     DocumentActionResult,
     DocumentActionStatus,
+    DocumentIdentityKind,
     DocumentKey,
     DocumentRegistry,
     SaveTicketStatus,
@@ -213,15 +214,39 @@ class AuthoringDocumentController:
                     message="the authoring document closed before publication",
                 )
                 continue
+            if self._publication_error:
+                registry.complete_save(
+                    ticket.ticket_id,
+                    success=False,
+                    message=self._publication_error,
+                )
+                continue
             current_token = str(
                 self._call("current_authoring_content_token") or ""
             )
             key_update = None
-            if pending.save_as or not document.resource_path:
-                key_update = DocumentKey.resource(
-                    document.kind,
-                    pending.snapshot.target_path,
-                )
+            if (
+                pending.save_as
+                or not document.resource_path
+                or document.key.identity_kind is DocumentIdentityKind.SESSION
+            ):
+                try:
+                    from Infernux.core.assets import AssetManager
+
+                    database = AssetManager.require_asset_database()
+                    asset_guid = str(
+                        database.get_guid_from_path(pending.snapshot.target_path) or ""
+                    ).strip()
+                except (AttributeError, RuntimeError, TypeError, ValueError):
+                    asset_guid = ""
+                if not asset_guid:
+                    registry.complete_save(
+                        ticket.ticket_id,
+                        success=False,
+                        message="saved authoring asset was not registered",
+                    )
+                    continue
+                key_update = DocumentKey.asset(document.kind, asset_guid)
             registry.complete_save(
                 ticket.ticket_id,
                 success=True,

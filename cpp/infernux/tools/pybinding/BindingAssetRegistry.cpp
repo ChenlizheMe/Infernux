@@ -244,6 +244,10 @@ void RegisterAssetRegistryBindings(py::module_ &m)
         .def_property_readonly("guid", &InxMesh::GetGuid, "Mesh asset GUID")
         .def_property_readonly("file_path", &InxMesh::GetFilePath, "Source file path")
         .def_property_readonly("vertex_count", &InxMesh::GetVertexCount, "Total vertex count")
+        .def_property_readonly("is_readable", &InxMesh::IsCpuReadable,
+                               "Whether scripting may access CPU vertex/index data")
+        .def_property_readonly("has_cpu_geometry", &InxMesh::HasCpuGeometry,
+                               "Whether CPU geometry streams are currently resident")
         .def_property_readonly("index_count", &InxMesh::GetIndexCount, "Total index count")
         .def_property_readonly("submesh_count", &InxMesh::GetSubMeshCount, "Number of submeshes")
         .def_property_readonly(
@@ -259,6 +263,28 @@ void RegisterAssetRegistryBindings(py::module_ &m)
                 return names;
             },
             "Imported blend-shape target names in source order")
+        .def(
+            "get_morph_target_data",
+            [](const InxMesh &mesh, size_t index) {
+                mesh.RequireCpuReadable("Mesh.get_morph_target");
+                const auto &target = mesh.GetMorphTargets().at(index);
+                const auto encode = [](const std::vector<glm::vec3> &values) {
+                    py::array_t<float> result({static_cast<py::ssize_t>(values.size()), py::ssize_t{3}});
+                    auto view = result.mutable_unchecked<2>();
+                    for (py::ssize_t row = 0; row < static_cast<py::ssize_t>(values.size()); ++row)
+                        for (py::ssize_t column = 0; column < 3; ++column)
+                            view(row, column) = values[static_cast<size_t>(row)][column];
+                    return result;
+                };
+                py::dict result;
+                result["name"] = target.name;
+                result["default_weight"] = target.defaultWeight;
+                result["position_deltas"] = encode(target.positionDeltas);
+                result["normal_deltas"] = encode(target.normalDeltas);
+                result["tangent_deltas"] = encode(target.tangentDeltas);
+                return result;
+            },
+            py::arg("index"), "Copy one imported blend-shape target and its vertex-aligned deltas")
         .def_property_readonly("material_slot_count", &InxMesh::GetMaterialSlotCount, "Number of material slots")
         .def_property_readonly("material_slot_names", &InxMesh::GetMaterialSlotNames,
                                "Material slot names from model file")
@@ -441,6 +467,7 @@ void RegisterAssetRegistryBindings(py::module_ &m)
         .def(
             "_particle_sampling_data",
             [](const InxMesh &self) -> py::dict {
+                self.RequireCpuReadable("Mesh particle CPU sampling");
                 const auto &vertices = self.GetVertices();
                 const auto &indices = self.GetIndices();
                 py::array_t<float> positions({static_cast<py::ssize_t>(vertices.size()), py::ssize_t{3}});
@@ -465,6 +492,7 @@ void RegisterAssetRegistryBindings(py::module_ &m)
         .def(
             "get_index_data",
             [](const InxMesh &self) {
+                self.RequireCpuReadable("Mesh.index_buffer");
                 const auto &indices = self.GetIndices();
                 py::array_t<uint32_t> result(indices.size());
                 if (!indices.empty())
@@ -473,7 +501,11 @@ void RegisterAssetRegistryBindings(py::module_ &m)
             },
             "Copy the triangle index stream into a uint32 NumPy array")
         .def(
-            "serialize_source", [](const InxMesh &self) { return py::bytes(MeshArtifact::SerializeSource(self)); },
+            "serialize_source",
+            [](const InxMesh &self) {
+                self.RequireCpuReadable("Mesh.serialize_source");
+                return py::bytes(MeshArtifact::SerializeSource(self));
+            },
             "Encode a static .inxmesh source. Does not write or import an asset.")
         .def("__repr__", [](const InxMesh &self) {
             return "<InxMesh '" + self.GetName() + "' " + std::to_string(self.GetVertexCount()) + " verts, " +
@@ -656,6 +688,7 @@ void RegisterAssetRegistryBindings(py::module_ &m)
                 }
                 if (!found)
                     throw py::value_error("update_mesh_vertices requires at least one vertex stream");
+                current->RequireCpuReadable("Mesh.update_mesh_vertices");
                 const auto &source = current->GetVertices();
                 if (first > source.size() || count > source.size() - first)
                     throw py::value_error("Mesh vertex update exceeds the existing vertex range");
@@ -810,6 +843,8 @@ void RegisterAssetRegistryBindings(py::module_ &m)
         .def("is_loaded", &AssetRegistry::IsLoaded, py::arg("guid"), "Check if an asset is currently cached")
         .def("get_asset_version", &AssetRegistry::GetAssetVersion, py::arg("guid"),
              "Get the last successfully published runtime generation, or zero before first publication")
+        .def("get_mesh_gpu_view_residency_mask", &AssetRegistry::GetMeshGpuViewResidencyMask, py::arg("guid"),
+             py::arg("runtime_version"), "Diagnostic immutable GPU mesh-view residency: bit 0 merged, bit 1 node-local")
         .def("get_asset_runtime_type_name", &AssetRegistry::GetAssetRuntimeTypeName, py::arg("guid"),
              "Get the validated native payload type name, or an empty string")
         .def("get_asset_residency", &AssetRegistry::GetAssetResidency, py::arg("guid"))

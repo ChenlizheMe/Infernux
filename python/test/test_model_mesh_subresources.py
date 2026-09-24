@@ -1,12 +1,14 @@
 """Model mesh children share source geometry and survive editor reference workflows."""
+import base64
 import json
+import struct
 
 import numpy as np
 import pytest
 
-from test_model_hierarchy_instances import hierarchy_asset
+from test_model_hierarchy_instances import descendants, hierarchy_asset
 from test_model_material_defaults import imported_model
-from Infernux.lib import AssetRegistry
+from Infernux.lib import AssetRegistry, Vector3
 from Infernux.lib._Infernux import make_model_mesh_reference, split_model_mesh_reference
 
 
@@ -106,6 +108,129 @@ def test_mesh_subresource_id_survives_unique_parent_rename(scene, hierarchy_asse
     renamed = next(item for item in after if item['name'] == 'Upper')
     assert renamed['path'] == ['Renamed Assembly', 'Empty pivot', 'Upper']
     assert renamed['subresource_id'] == upper['subresource_id']
+
+
+def test_mesh_subresource_id_survives_rename_with_artwork_edits(
+        scene, hierarchy_asset, engine, monkeypatch):
+    """Renaming while editing vertices/materials still addresses one source object."""
+    from Infernux.core.assets import AssetManager
+
+    database, source, guid = hierarchy_asset
+    monkeypatch.setattr(AssetManager, '_engine', engine)
+    monkeypatch.setattr(AssetManager, '_asset_database', database)
+
+    # Make the topology candidate unique and publish its current topology
+    # identity before the compound edit.
+    document = json.loads(source.read_text())
+    document['nodes'][1]['children'] = [2]
+    document['nodes'].pop(3)
+    source.write_text(json.dumps(document))
+    assert AssetManager.reimport_asset(str(source), database=database)
+    before = json.loads(database.get_meta_by_guid(guid).get_string('model_meshes'))[0]
+    assert before['topology_key']
+    root = scene.create_from_model(guid)
+    live = descendants(root)['Upper']
+    live_id = live.id
+    live.transform.local_position = Vector3(7, 8, 9)
+
+    document = json.loads(source.read_text())
+    document['nodes'][2]['name'] = 'Renamed And Edited'
+    encoded = document['buffers'][0]['uri'].split(',', 1)[1]
+    payload = bytearray(base64.b64decode(encoded))
+    struct.pack_into('<f', payload, 12, 2.0)
+    document['buffers'][0]['uri'] = (
+        'data:application/octet-stream;base64,'
+        + base64.b64encode(payload).decode()
+    )
+    document['accessors'][0]['max'] = [2, 1, 0]
+    source.write_text(json.dumps(document))
+    assert AssetManager.reimport_asset(str(source), database=database)
+
+    after = json.loads(database.get_meta_by_guid(guid).get_string('model_meshes'))[0]
+    assert after['path'][-1] == 'Renamed And Edited'
+    assert after['geometry_key'] != before['geometry_key']
+    assert after['topology_key'] == before['topology_key']
+    assert after['subresource_id'] == before['subresource_id']
+    renamed = descendants(root)['Renamed And Edited']
+    assert renamed.id == live_id
+    assert tuple(renamed.transform.local_position) == (7, 8, 9)
+    assert renamed.get_component('MeshRenderer').model_subresource_id == before['subresource_id']
+
+
+def test_mesh_renderer_cold_load_resolves_stable_identity_after_cross_parent_move(
+        scene, hierarchy_asset, engine, monkeypatch):
+    """A persisted node path is only a hint once a stable mesh identity exists."""
+    from Infernux.core.assets import AssetManager
+
+    database, source, guid = hierarchy_asset
+    monkeypatch.setattr(AssetManager, '_engine', engine)
+    monkeypatch.setattr(AssetManager, '_asset_database', database)
+
+    # Make Upper unambiguous before capturing its persisted reference.  The
+    # stock fixture deliberately contains a geometry-identical sibling.
+    source_document = json.loads(source.read_text())
+    source_document['nodes'][1]['children'] = [2]
+    source_document['nodes'].pop(3)
+    source.write_text(json.dumps(source_document))
+    assert AssetManager.reimport_asset(str(source), database=database)
+
+    root = scene.create_from_model(guid)
+    renderer = descendants(root)['Upper'].get_component('MeshRenderer')._require_cpp_component()
+    old_document = renderer.serialize_document()
+    old_path = old_document['modelNodePath']
+    stable_id = old_document['modelSubresourceId']
+    assert old_path == ['Assembly', 'Empty pivot', 'Upper']
+    assert stable_id
+
+    # The DCC moves the same mesh across a parent boundary.  Reimport retains
+    # its stable identity while changing the authoritative path.
+    source_document = json.loads(source.read_text())
+    source_document['nodes'][0]['children'] = [1, 2]
+    source_document['nodes'][1]['children'] = []
+    source.write_text(json.dumps(source_document))
+    assert AssetManager.reimport_asset(str(source), database=database)
+    manifest = json.loads(database.get_meta_by_guid(guid).get_string('model_meshes'))
+    current = next(item for item in manifest if item['subresource_id'] == stable_id)
+    current_path = current['path']
+    assert current_path == ['Assembly', 'Upper']
+
+    # ID + stale path resolves to the current imported node before strict node
+    # validation, which is the cold scene-load contract.
+    assert renderer.deserialize_document(old_document)
+    assert renderer.serialize_document()['modelNodePath'] == current_path
+
+    # Once present, the stable identity is authoritative: a valid path cannot
+    # rescue a missing identity.
+    missing_identity = dict(old_document)
+    missing_identity['modelNodePath'] = current_path
+    missing_identity['modelSubresourceId'] = 'missing-stable-model-mesh-id'
+    assert renderer.deserialize_document(missing_identity) is False
+
+    # Path-only references remain strict current references.  They neither
+    # perform identity migration nor accept a stale path.
+    path_only_current = dict(old_document)
+    path_only_current.pop('modelSubresourceId')
+    path_only_current['modelNodePath'] = current_path
+    assert renderer.deserialize_document(path_only_current)
+    path_only_stale = dict(path_only_current)
+    path_only_stale['modelNodePath'] = old_path
+    assert renderer.deserialize_document(path_only_stale) is False
+
+    # Corrupt/ambiguous identity manifests are rejected instead of selecting
+    # an arbitrary candidate or falling back to the serialized path.
+    metadata = database.get_meta_by_guid(guid)
+    meta_document = metadata.serialize_document()
+    duplicate_manifest = list(manifest)
+    duplicate = dict(current)
+    duplicate['path'] = ['Assembly', 'Duplicate identity']
+    duplicate_manifest.append(duplicate)
+    meta_document['metadata']['model_meshes']['value'] = json.dumps(duplicate_manifest, separators=(',', ':'))
+    metadata.deserialize_document(meta_document)
+    refreshed_manifest = json.loads(database.get_meta_by_guid(guid).get_string('model_meshes'))
+    assert sum(item['subresource_id'] == stable_id for item in refreshed_manifest) == 2
+    duplicate_identity = dict(old_document)
+    duplicate_identity['modelNodePath'] = current_path
+    assert renderer.deserialize_document(duplicate_identity) is False
 
 
 def test_identical_node_geometry_has_same_signature(hierarchy_asset):
@@ -219,10 +344,18 @@ def test_missing_mesh_does_not_create_or_modify_object(scene, hierarchy_asset):
     assert scene.serialize_document() == before
 
 
-def test_project_selection_roundtrip(hierarchy_asset):
+def test_project_selection_roundtrip(hierarchy_asset, monkeypatch):
     from Infernux.engine._bootstrap_selection import _project_selection_target, _project_path_for_target
-    _, source, _ = hierarchy_asset
+    from Infernux.core.assets import AssetManager
+
+    database, source, guid = hierarchy_asset
+    monkeypatch.setattr(AssetManager, '_asset_database', database)
     reference = make_model_mesh_reference(str(source), ['Assembly', 'Empty pivot', 'Upper'])
     target = _project_selection_target(reference)
     assert target.sub_kind == 'submesh'
-    assert _project_path_for_target(target) == reference
+    assert target.document_id == guid
+    resolved_source, resolved_nodes = split_model_mesh_reference(
+        _project_path_for_target(target)
+    )
+    assert resolved_source == database.get_path_from_guid(guid)
+    assert resolved_nodes == ['Assembly', 'Empty pivot', 'Upper']

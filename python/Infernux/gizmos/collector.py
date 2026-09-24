@@ -22,6 +22,7 @@ from Infernux.gizmos.gizmos import (
     _GEOMETRY_PROFILE_COMPILED,
 )
 from Infernux.components.fields import SerializedFieldDescriptor
+from Infernux.components.builtin.light import _light_gizmo_color
 from Infernux.debug import Debug
 from Infernux.engine.editor_visibility import (
     component_owner_is_active_in_hierarchy,
@@ -425,13 +426,16 @@ class GizmosCollector:
                     transform = go.get_transform()
                     if transform is not None:
                         pos = transform.position
+                        tint = icon_color
+                        if type_name == 'Light':
+                            tint = _light_gizmo_color(cpp_comp)
                         if timing_enabled:
                             invoke_geometry(
                                 Gizmos.draw_icon,
-                                (pos.x, pos.y, pos.z), go_id, icon_color, icon_kind=icon_kind)
+                                (pos.x, pos.y, pos.z), go_id, tint, icon_kind=icon_kind)
                         else:
                             Gizmos.draw_icon(
-                                (pos.x, pos.y, pos.z), go_id, icon_color, icon_kind=icon_kind)
+                                (pos.x, pos.y, pos.z), go_id, tint, icon_kind=icon_kind)
 
                 # ---- Gizmo lifecycle ----
                 if not has_gizmos or (

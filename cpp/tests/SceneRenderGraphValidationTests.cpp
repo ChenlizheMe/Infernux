@@ -579,11 +579,15 @@ int main(int argc, char **argv)
     perspective[2][3] = -1.0f;
     const glm::vec2 offset{0.01f, -0.02f};
     const glm::mat4 jitteredPerspective = SceneRenderGraph::ApplyTemporalJitter(perspective, offset);
+    assert(SceneRenderGraph::ProjectionForPass(perspective, offset, false) == jitteredPerspective);
+    assert(SceneRenderGraph::ProjectionForPass(perspective, offset, true) == perspective);
     assert(std::abs(jitteredPerspective[2][0] + 0.01f) < 1e-7f);
     assert(std::abs(jitteredPerspective[2][1] - 0.02f) < 1e-7f);
 
     glm::mat4 orthographic(1.0f);
     const glm::mat4 jitteredOrthographic = SceneRenderGraph::ApplyTemporalJitter(orthographic, offset);
+    assert(SceneRenderGraph::ProjectionForPass(orthographic, offset, false) == jitteredOrthographic);
+    assert(SceneRenderGraph::ProjectionForPass(orthographic, offset, true) == orthographic);
     assert(std::abs(jitteredOrthographic[3][0] - 0.01f) < 1e-7f);
     assert(std::abs(jitteredOrthographic[3][1] + 0.02f) < 1e-7f);
 

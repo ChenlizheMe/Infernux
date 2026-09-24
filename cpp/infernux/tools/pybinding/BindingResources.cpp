@@ -1,5 +1,6 @@
 #include "JsonPyBridge.h"
 #include "MatrixPyBridge.h"
+#include <function/renderer/rhi/RhiComputeBuffer.h>
 #include <function/renderer/rhi/RhiRenderTexture.h>
 #include <function/resources/AssetDatabase/AssetDatabase.h>
 #include <function/resources/AssetRegistry/AssetRegistry.h>
@@ -482,18 +483,38 @@ void RegisterResourceBindings(py::module_ &m)
         .def(
             "set_matrix",
             [](InxMaterial &mat, const std::string &name, py::handle value) {
-                mat.SetMatrix(name, binding::Matrix4FromPython(value, "Material matrix", true));
+                mat.SetMatrix(name, binding::Matrix4FromPython(value, "Material matrix"));
             },
             py::arg("name"), py::arg("value"), "Set a mat4 from a [row, column] array")
+        .def("set_float_array", &InxMaterial::SetFloatArray, py::arg("name"), py::arg("values"),
+             "Set a reflected float array property")
+        .def(
+            "set_vector4_array",
+            [](InxMaterial &material, const std::string &name, py::sequence values) {
+                std::vector<glm::vec4> native;
+                native.reserve(py::len(values));
+                for (py::handle item : values) {
+                    py::sequence vector = py::reinterpret_borrow<py::sequence>(item);
+                    if (py::len(vector) != 4)
+                        throw py::value_error("set_vector4_array requires four-component vectors");
+                    native.emplace_back(vector[0].cast<float>(), vector[1].cast<float>(), vector[2].cast<float>(),
+                                        vector[3].cast<float>());
+                }
+                material.SetVector4Array(name, native);
+            },
+            py::arg("name"), py::arg("values"), "Set a reflected vec4 array property")
         .def("set_texture_guid", &InxMaterial::SetTextureGuid, py::arg("name"), py::arg("texture_guid"),
              "Set a texture property by GUID")
+        .def("set_buffer", &InxMaterial::SetBuffer, py::arg("name"), py::arg("buffer"),
+             "Bind a reflected runtime storage buffer")
+        .def("get_buffer", &InxMaterial::GetBuffer, py::arg("name"), "Get a reflected runtime storage buffer binding")
         .def(
             "set_param",
             [](InxMaterial &mat, const std::string &name, py::object value) {
                 const MaterialProperty *prop = mat.GetProperty(name);
 
                 if ((prop && prop->type == MaterialPropertyType::Mat4) || py::isinstance<py::array>(value)) {
-                    mat.SetMatrix(name, binding::Matrix4FromPython(value, "Material matrix", true));
+                    mat.SetMatrix(name, binding::Matrix4FromPython(value, "Material matrix"));
                     return;
                 }
 
@@ -520,6 +541,23 @@ void RegisterResourceBindings(py::module_ &m)
                 if (py::isinstance<py::tuple>(value) || py::isinstance<py::list>(value)) {
                     py::sequence seq = value.cast<py::sequence>();
                     const auto len = py::len(seq);
+                    if (prop && prop->type == MaterialPropertyType::FloatArray) {
+                        mat.SetFloatArray(name, value.cast<std::vector<float>>());
+                        return;
+                    }
+                    if (prop && prop->type == MaterialPropertyType::Float4Array) {
+                        std::vector<glm::vec4> values;
+                        values.reserve(len);
+                        for (py::handle item : seq) {
+                            py::sequence vector = py::reinterpret_borrow<py::sequence>(item);
+                            if (py::len(vector) != 4)
+                                throw py::value_error("Float4Array values require four-component vectors");
+                            values.emplace_back(vector[0].cast<float>(), vector[1].cast<float>(),
+                                                vector[2].cast<float>(), vector[3].cast<float>());
+                        }
+                        mat.SetVector4Array(name, values);
+                        return;
+                    }
                     if (len == 2) {
                         mat.SetVector2(name, glm::vec2(seq[0].cast<float>(), seq[1].cast<float>()));
                         return;
@@ -539,14 +577,10 @@ void RegisterResourceBindings(py::module_ &m)
                         }
                         return;
                     }
-                    if (len == 16) {
-                        mat.SetMatrix(name, binding::Matrix4FromPython(value, "Material matrix", true));
-                        return;
-                    }
                 }
 
                 throw std::runtime_error(
-                    "set_param: unsupported value type. Expected int/float/bool, vec2/3/4 tuple, or 16-float matrix.");
+                    "set_param: unsupported value type. Expected int/float/bool, vec2/3/4 tuple, or a (4, 4) matrix.");
             },
             py::arg("name"), py::arg("value"), "Set a non-texture material property using value-shape/type dispatch")
         .def("clear_texture", &InxMaterial::ClearTexture, py::arg("name"),
@@ -693,6 +727,14 @@ void RegisterResourceBindings(py::module_ &m)
                 }
                 case MaterialPropertyType::Texture2D:
                     return py::cast(std::get<std::string>(prop->value));
+                case MaterialPropertyType::FloatArray:
+                    return py::cast(std::get<std::vector<float>>(prop->value));
+                case MaterialPropertyType::Float4Array: {
+                    py::list result;
+                    for (const auto &value : std::get<std::vector<glm::vec4>>(prop->value))
+                        result.append(py::make_tuple(value.x, value.y, value.z, value.w));
+                    return result;
+                }
                 }
                 return py::none();
             },
@@ -732,6 +774,16 @@ void RegisterResourceBindings(py::module_ &m)
                     case MaterialPropertyType::Texture2D:
                         result[py::str(name)] = std::get<std::string>(prop.value);
                         break;
+                    case MaterialPropertyType::FloatArray:
+                        result[py::str(name)] = py::cast(std::get<std::vector<float>>(prop.value));
+                        break;
+                    case MaterialPropertyType::Float4Array: {
+                        py::list values;
+                        for (const auto &value : std::get<std::vector<glm::vec4>>(prop.value))
+                            values.append(py::make_tuple(value.x, value.y, value.z, value.w));
+                        result[py::str(name)] = std::move(values);
+                        break;
+                    }
                     }
                 }
                 return result;

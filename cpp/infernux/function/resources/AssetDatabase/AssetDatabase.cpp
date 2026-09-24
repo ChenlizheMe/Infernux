@@ -1,4 +1,5 @@
 #include "AssetDatabase.h"
+#include "BuiltinSceneIconMetadata.h"
 
 #include <function/resources/AssetFormatRegistry.h>
 
@@ -908,6 +909,8 @@ bool AssetDatabase::RestoreCachedCatalog()
                 return false;
             }
         }
+        if (!HasCurrentBuiltinSceneIconMetadata(entry.metadata, path, entry.readOnly))
+            return false;
 
         restored.guidToPath.emplace(entry.guid, path);
         restored.pathToGuid.emplace(normalizedPath, entry.guid);
@@ -1473,6 +1476,7 @@ void AssetDatabase::PrepareMetadata(WorkerMetadataPrepare &item)
 
         if (metadata.GetGuid().empty())
             throw std::runtime_error("metadata preparation produced an empty GUID");
+        ApplyBuiltinSceneIconMetadata(metadata, item.file.path, item.file.readOnly);
         RequireUnchangedFingerprint(item.file.path, item.file.source);
         item.metadata = std::move(metadata);
     } catch (const std::exception &exception) {
@@ -1540,7 +1544,8 @@ bool AssetDatabase::CommitScanArtifact(AssetScanArtifact artifact, uint64_t expe
             (!file.readOnly && file.meta.size == 0) || pathMapping == m_pathToGuid.end() ||
             pathMapping->second != indexed->guid || fileState == m_fileStates.end() ||
             fileState->second.source != file.source || fileState->second.meta != file.meta ||
-            fileState->second.readOnly != file.readOnly) {
+            fileState->second.readOnly != file.readOnly ||
+            !HasCurrentBuiltinSceneIconMetadata(indexed->metadata, file.path, file.readOnly)) {
             unchanged = false;
             break;
         }
@@ -1599,7 +1604,8 @@ bool AssetDatabase::CommitScanArtifact(AssetScanArtifact artifact, uint64_t expe
         if (indexed && indexed->resourceType == type && indexed->source == file.source && indexed->meta == file.meta &&
             indexed->readOnly == file.readOnly && indexed->importSucceeded &&
             HasReusableRuntimeArtifact(*indexed, type, ToFsPath(m_projectRoot)) &&
-            (file.readOnly || file.meta.size > 0)) {
+            (file.readOnly || file.meta.size > 0) &&
+            HasCurrentBuiltinSceneIconMetadata(indexed->metadata, file.path, file.readOnly)) {
             m_metas[indexed->guid] = std::make_shared<InxResourceMeta>(indexed->metadata);
             updateScannedMapping(indexed->guid, file);
             restoredDependencies.emplace(indexed->guid, indexed->dependencies);
@@ -2436,6 +2442,10 @@ void AssetDatabase::BeginModelReimport(const std::string &path, const nlohmann::
     if (GetResourceTypeForPath(sourcePath) != ResourceType::Mesh || !settings.is_object())
         throw std::invalid_argument("Model Apply requires a model path and settings object");
 
+    m_lastModelReimportWorkerMilliseconds = 0.0;
+    m_lastModelReimportPrepareMilliseconds = 0.0;
+    m_lastModelReimportPersistenceMilliseconds = 0.0;
+    m_lastModelReimportLivePublicationMilliseconds = 0.0;
     auto pending = std::make_shared<PendingModelReimport>();
     if (!PrepareReimportInput(sourcePath, pending->metadata, pending->result))
         throw std::runtime_error(pending->result.error);
@@ -2463,7 +2473,10 @@ void AssetDatabase::BeginModelReimport(const std::string &path, const nlohmann::
             if (!textureGuid.empty())
                 ApplyModelTextureSettings(*pending->metadata.metadata, textureGuid, pending->settings);
             worker.request.metadata = std::move(*pending->metadata.metadata);
+            const auto importStarted = std::chrono::steady_clock::now();
             worker.artifact = worker.importer->Reimport(worker.request);
+            pending->workerMilliseconds =
+                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - importStarted).count();
         } catch (const std::exception &exception) {
             worker.error = exception.what();
         } catch (...) {
@@ -2501,8 +2514,14 @@ std::optional<AssetMutationResult> AssetDatabase::TryCommitModelReimport()
         if (metadataExists != pending->metadataExists ||
             (metadataExists && !(currentMetadata == pending->metadataFingerprint)))
             throw std::runtime_error("Model import settings changed outside this Apply");
-        PublishImportArtifact(worker.request, std::move(*worker.artifact), true);
+        m_lastModelReimportWorkerMilliseconds = pending->workerMilliseconds;
+        PublishImportArtifact(worker.request, std::move(*worker.artifact), true,
+                              &m_lastModelReimportPrepareMilliseconds, &m_lastModelReimportPersistenceMilliseconds,
+                              &m_lastModelReimportLivePublicationMilliseconds);
+        const auto livePublicationStart = std::chrono::steady_clock::now();
         FinishReimport(result);
+        m_lastModelReimportLivePublicationMilliseconds +=
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - livePublicationStart).count();
     } catch (const std::exception &exception) {
         result.errorCode = AssetMutationErrorCode::ImportFailed;
         result.error = exception.what();
@@ -2875,7 +2894,20 @@ bool AssetDatabase::IsIgnoredImportPath(const std::filesystem::path &path)
     }
 
     const std::string extension = lowercase(FromFsPath(path.extension()));
-    return extension == ".pyc" || extension == ".pyo";
+    if (extension == ".pyc" || extension == ".pyo")
+        return true;
+
+    // Blender's normal save flow keeps numbered copies beside the source
+    // (Model.blend1, Model.blend2, ...). They are file-history generations,
+    // not importable assets. Registering one can move the live model GUID to
+    // the backup when Blender atomically replaces Model.blend.
+    const std::string filename = lowercase(FromFsPath(path.filename()));
+    const size_t marker = filename.rfind(".blend");
+    if (marker != std::string::npos && marker + 6 < filename.size() &&
+        std::all_of(filename.begin() + static_cast<std::ptrdiff_t>(marker + 6), filename.end(),
+                    [](unsigned char character) { return std::isdigit(character) != 0; }))
+        return true;
+    return false;
 }
 
 bool AssetDatabase::IsMetaFile(const std::filesystem::path &path) const
@@ -2962,11 +2994,10 @@ bool AssetDatabase::RunImporter(const std::string &guid, const std::string &path
     if (metaIt == m_metas.end() || !metaIt->second)
         throw std::logic_error("AssetDatabase importer request has no metadata snapshot");
 
-    const ImportRequest request =
-        MakeImportRequest(guid, path, isReimport, candidateMetadata ? *candidateMetadata : *metaIt->second);
-
     std::string error;
     try {
+        const ImportRequest request =
+            MakeImportRequest(guid, path, isReimport, candidateMetadata ? *candidateMetadata : *metaIt->second);
         // Ordinary scripts publish only their source metadata here; their
         // compiler and dependency transaction are owned by Python.
         ImportArtifact artifact = (!importer || request.resourceType == ResourceType::Script)
@@ -3032,7 +3063,9 @@ ImportRequest AssetDatabase::MakeImportRequest(const std::string &guid, const st
     return request;
 }
 
-void AssetDatabase::PublishImportArtifact(const ImportRequest &request, ImportArtifact artifact, bool persistMetadata)
+void AssetDatabase::PublishImportArtifact(const ImportRequest &request, ImportArtifact artifact, bool persistMetadata,
+                                          double *prepareMilliseconds, double *persistenceMilliseconds,
+                                          double *livePublicationMilliseconds)
 {
     const auto prepareStart = std::chrono::steady_clock::now();
     const auto &guid = request.guid;
@@ -3055,6 +3088,10 @@ void AssetDatabase::PublishImportArtifact(const ImportRequest &request, ImportAr
         TakeRuntimeArtifactWrites(artifact.runtimeCpuArtifacts, guid, request.resourceType, m_projectRoot);
     for (auto &runtimeArtifactWrite : runtimeArtifactWrites)
         writes.push_back(std::move(runtimeArtifactWrite));
+    if (prepareMilliseconds)
+        *prepareMilliseconds =
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - prepareStart).count();
+    const auto persistenceStart = std::chrono::steady_clock::now();
     if (!writes.empty()) {
         if (IsFilesystemPathWithin(path, m_projectRoot)) {
             (void)DocumentTransaction::Commit(m_projectRoot, m_assetTransactionJournalPath, std::move(writes),
@@ -3078,12 +3115,19 @@ void AssetDatabase::PublishImportArtifact(const ImportRequest &request, ImportAr
                                          indexError.message());
         }
     }
+    if (persistenceMilliseconds)
+        *persistenceMilliseconds =
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - persistenceStart).count();
+    const auto livePublicationStart = std::chrono::steady_clock::now();
     if (artifact.dependenciesAuthoritative) {
         const std::unordered_set<std::string> dependencies(artifact.dependencies.begin(), artifact.dependencies.end());
         AssetDependencyGraph::Instance().SetAssetDependencies(guid, dependencies);
     }
     metaIt->second = std::make_shared<InxResourceMeta>(std::move(artifact.metadata));
     m_importResults[guid] = {true, {}};
+    if (livePublicationMilliseconds)
+        *livePublicationMilliseconds =
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - livePublicationStart).count();
 }
 
 // ============================================================================
@@ -3244,6 +3288,7 @@ std::string AssetDatabase::CreateOrLoadMetadata(const std::string &filePath, Res
         }
         if (type == ResourceType::Mesh)
             MeshImportSettings::InitializeDefaults(metaFile);
+        ApplyBuiltinSceneIconMetadata(metaFile, filePath, readOnly);
         if (!readOnly && persistMetadata) {
             if (!metaFile.SaveToFile(metaFilePath))
                 throw std::runtime_error("Failed to persist asset metadata: " + metaFilePath);

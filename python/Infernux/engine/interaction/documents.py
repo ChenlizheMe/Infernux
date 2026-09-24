@@ -69,7 +69,11 @@ class DocumentKind(str, Enum):
     GENERIC = "generic"
 
 
-_REGISTERED_ASSET_DOCUMENT_KINDS = frozenset({DocumentKind.SCENE})
+_REGISTERED_ASSET_DOCUMENT_KINDS = frozenset(
+    kind
+    for kind in DocumentKind
+    if kind not in {DocumentKind.PROJECT_SETTINGS, DocumentKind.GENERIC}
+)
 
 
 def is_registered_asset_document_kind(kind: DocumentKind) -> bool:

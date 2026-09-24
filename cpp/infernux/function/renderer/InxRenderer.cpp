@@ -1413,6 +1413,7 @@ void InxRenderer::DrawFrame()
             gizmoCtx.selectedObjectId = m_selectedObjectId;
             gizmoCtx.activeScene = SceneManager::Instance().GetActiveScene();
             gizmoCtx.cameraPos = glm::vec3(m_cameraPos[0], m_cameraPos[1], m_cameraPos[2]);
+            gizmoCtx.iconDpiScale = m_gui ? m_gui->GetDisplayScale() : 1.0f;
         }
 
         // ---- Scene View: always use editor camera ----
@@ -2389,6 +2390,18 @@ size_t InxRenderer::GetRetiredMeshGpuLeaseCount() const
 uint64_t InxRenderer::GetMeshGpuEvictionCount() const
 {
     return m_vkCore ? m_vkCore->GetMeshGpuEvictionCount() : 0;
+}
+
+MeshIndexFormat InxRenderer::GetObjectMeshIndexFormat(uint64_t objectId) const
+{
+    if (!m_vkCore)
+        throw std::logic_error("Cannot inspect a GPU mesh before renderer initialization");
+    return m_vkCore->GetObjectIndexFormat(objectId);
+}
+
+uint64_t InxRenderer::GetObjectMeshIndexBufferBytes(uint64_t objectId) const
+{
+    return m_vkCore ? m_vkCore->GetObjectIndexBufferBytes(objectId) : 0;
 }
 
 void InxRenderer::SetMeshGpuBudgetBytes(uint64_t bytes)
@@ -4848,24 +4861,15 @@ void InxRenderer::SetGameCameraEnabled(bool enabled)
     if (m_gameCameraEnabled == enabled)
         return;
     m_gameCameraEnabled = enabled;
-    if (enabled) {
-        // Match Scene-view show: drop any leftover Game cache and rebuild
-        // particle views on the next submit instead of reusing retired buffers.
-        for (auto &[cameraId, graph] : m_gameRenderGraphs) {
-            (void)cameraId;
-            graph->ClearCachedViewSubmission();
-            graph->InvalidateParticleViews();
-            graph->MarkDirty();
-        }
-        INXLOG_DEBUG("Game camera rendering enabled");
-        return;
-    }
-
+    // Panel visibility invalidates camera submissions, not graphics resources.
+    // Scene/target replacement and particle registry revisions own those
+    // invalidations. Rebuilding here reallocated every transient attachment
+    // and particle view whenever the user returned to the Game tab.
     for (auto &[cameraId, graph] : m_gameRenderGraphs) {
         (void)cameraId;
         graph->ClearCachedViewSubmission();
     }
-    INXLOG_DEBUG("Game camera rendering disabled");
+    INXLOG_DEBUG("Game camera rendering {}", enabled ? "enabled" : "disabled");
 }
 
 InxScreenUIRenderer *InxRenderer::GetScreenUIRenderer()

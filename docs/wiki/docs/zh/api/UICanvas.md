@@ -30,6 +30,7 @@ UI 画布组件。所有 UI 元素的根容器——UI 的舞台。
 | match_width_or_height | `float` |  |
 | pixel_perfect | `bool` |  |
 | reference_pixels_per_unit | `float` |  |
+| input_logical_size | `tuple[float, float]` |  *(只读)* |
 
 <!-- USER CONTENT START --> properties
 
@@ -39,12 +40,13 @@ UI 画布组件。所有 UI 元素的根容器——UI 的舞台。
 
 | 方法 | 描述 |
 |------|------|
+| `set_input_logical_size(width: float, height: float) → None` |  |
 | `compute_scale(screen_w: float, screen_h: float) → Tuple[float, float, float]` | Compute ``(scale_x, scale_y, text_scale)`` for a viewport size. |
 | `compute_logical_size(screen_w: float, screen_h: float) → Tuple[float, float]` | Return the live logical Canvas extent for the viewport. |
 | `invalidate_element_cache() → None` | Mark the cached element list as stale. |
 | `iter_ui_elements() → Iterator[InxUIScreenComponent]` | Yield all screen-space UI components on child GameObjects (depth-first). |
-| `raycast(canvas_x: float, canvas_y: float, tolerance: float = ...) → Optional[InxUIScreenComponent]` | Return the front-most element hit at ``(canvas_x, canvas_y)``, or ``None``. |
-| `raycast_all(canvas_x: float, canvas_y: float, tolerance: float = ...) → List[InxUIScreenComponent]` | Return all elements hit at the given point, front-to-back order. |
+| `raycast(canvas_x: float, canvas_y: float, tolerance: float = ..., layout_width: float | None = ..., layout_height: float | None = ...) → Optional[InxUIScreenComponent]` | Return the front-most element hit at ``(canvas_x, canvas_y)``, or ``None``. |
+| `raycast_all(canvas_x: float, canvas_y: float, tolerance: float = ..., layout_width: float | None = ..., layout_height: float | None = ...) → List[InxUIScreenComponent]` | Return all elements hit at the given point, front-to-back order. |
 
 <!-- USER CONTENT START --> public_methods
 

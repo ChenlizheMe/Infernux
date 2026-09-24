@@ -1221,7 +1221,7 @@ class Engine():
         self._engine.hide()
 
     def is_window_minimized(self) -> bool:
-        """Return whether the editor window is minimized or occluded."""
+        """Return whether native presentation is suspended by window state."""
         return bool(self._engine and self._engine.is_window_minimized())
 
     def set_window_icon(self, icon_path):

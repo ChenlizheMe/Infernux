@@ -3726,6 +3726,8 @@ def test_generated_gpu_particle_kernels_compile_to_vulkan_spirv(tmp_path):
             ],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             check=False,
         )
         assert result.returncode == 0, result.stdout + result.stderr

@@ -29,7 +29,7 @@ def test_code_file_open_refreshes_ides_and_uses_preference(tmp_path, monkeypatch
         project_utils,
         "open_in_vscode",
         lambda path, line=0, project_root="": launches.append(
-            ("vscode", path, project_root)
+            ("vscode", path, project_root, line)
         )
         or True,
     )
@@ -42,7 +42,31 @@ def test_code_file_open_refreshes_ides_and_uses_preference(tmp_path, monkeypatch
     assert project_utils.open_file_with_system(str(script), project_root=str(tmp_path)) is True
 
     assert refreshes == [True]
-    assert launches == [("vscode", str(script), str(tmp_path))]
+    assert launches == [("vscode", str(script), str(tmp_path), 0)]
+
+
+def test_code_file_open_forwards_source_line_to_ide(tmp_path, monkeypatch):
+    script = tmp_path / "player.py"
+    script.write_text("pass\n", encoding="utf-8")
+    launches = []
+    monkeypatch.setattr(project_utils, "get_ide", lambda: "vscode")
+    monkeypatch.setattr(
+        project_utils,
+        "detect_available_ides",
+        lambda force_refresh=False: ["vscode"],
+    )
+    monkeypatch.setattr(
+        project_utils,
+        "open_in_vscode",
+        lambda path, line=0, project_root="": launches.append(
+            (path, project_root, line)
+        ) or True,
+    )
+
+    assert project_utils.open_file_with_system(
+        str(script), project_root=str(tmp_path), line=37
+    ) is True
+    assert launches == [(str(script), str(tmp_path), 37)]
 
 
 def test_vscode_launch_failure_is_not_hidden(tmp_path, monkeypatch):

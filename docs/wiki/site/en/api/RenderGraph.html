@@ -256,7 +256,7 @@
                             <span class="ns-arr">&#9654;</span>
                             <span class="ns-nm">Infernux.jit</span>
                         </button>
-                        <div class="ns-ch"><a href="/wiki/site/en/api/njit.html" class="">njit</a><a href="/wiki/site/en/api/warmup.html" class="">warmup</a></div>
+                        <div class="ns-ch"><a href="/wiki/site/en/api/compile.html" class="">compile</a><a href="/wiki/site/en/api/statistics.html" class="">statistics</a><a href="/wiki/site/en/api/warmup.html" class="">warmup</a></div>
                     </div><div class="ns-group">
                         <button type="button" class="ns-hd" aria-expanded="false">
                             <span class="ns-arr">&#9654;</span>
@@ -354,8 +354,8 @@ class in <b>Infernux.rendergraph</b>
 </thead>
 <tbody>
 <tr>
-<td><code>RenderGraph.__init__(name: str = ..., *, output_samples: int = 0) → None</code></td>
-<td>A fixed Camera target supplies the output sample contract; zero leaves screen sampling to the pipeline.</td>
+<td><code>RenderGraph.__init__(name: str = ..., output_samples: int = 0) → None</code></td>
+<td></td>
 </tr>
 </tbody>
 </table>
@@ -449,20 +449,12 @@ class in <b>Infernux.rendergraph</b>
 </thead>
 <tbody>
 <tr>
-<td><code>set_msaa_samples(samples: int) → int</code></td>
-<td>Set the screen preference and return effective sampling. Use this value for attachments and resolve topology.</td>
-</tr>
-<tr>
-<td><code>import_texture(name: str, texture: RenderTexture, *, attachment: str = "color") → TextureHandle</code></td>
-<td>Import a persistent color, depth or resolve attachment without transferring resource ownership.</td>
-</tr>
-<tr>
-<td><code>create_temporal_history(name: str, *, format: Format = ..., size: tuple[int, int] \| None = None, size_divisor: int = 0) → tuple[TextureHandle, TextureHandle]</code></td>
-<td>Create per-view previous/current history handles. The first read after invalidation is zero.</td>
-</tr>
-<tr>
 <td><code>set_temporal_jitter(enabled: bool = True) → None</code></td>
-<td>Request camera jitter separately from history allocation.</td>
+<td></td>
+</tr>
+<tr>
+<td><code>set_msaa_samples(samples: int) → int</code></td>
+<td>Set screen MSAA preference; return the effective Camera target sample count.</td>
 </tr>
 <tr>
 <td><code>create_texture(name: str, format: Format = ..., camera_target: bool = ..., size: Optional[Tuple[int, int]] = ..., size_divisor: int = ..., samples: Optional[int] = ...) → TextureHandle</code></td>
@@ -471,6 +463,14 @@ class in <b>Infernux.rendergraph</b>
 <tr>
 <td><code>get_texture(name: str) → Optional[TextureHandle]</code></td>
 <td>Get a texture handle by name, or None if not found.</td>
+</tr>
+<tr>
+<td><code>import_texture(name: str, texture: RenderTexture, attachment: str = 'color') → TextureHandle</code></td>
+<td>Import the color, depth, or resolve attachment of a persistent target.</td>
+</tr>
+<tr>
+<td><code>create_temporal_history(name: str, format: Format = Format.RGBA16_SFLOAT, size: Optional[Tuple[int, int]] = None, size_divisor: int = 0) → Tuple[TextureHandle, TextureHandle]</code></td>
+<td></td>
 </tr>
 <tr>
 <td><code>name_scope(prefix: str) → AbstractContextManager[RenderGraph]</code></td>
@@ -525,7 +525,7 @@ class in <b>Infernux.rendergraph</b>
 <td>Pipeline-author shorthand for <code>effect_stage</code>.</td>
 </tr>
 <tr>
-<td><code>screen_ui_section(resources: set | None = ...) → None</code></td>
+<td><code>screen_ui_section(resources: set | None = ..., world_ui_layer_mask: int = ...) → None</code></td>
 <td>Declare a screen UI section in the graph topology.</td>
 </tr>
 <tr>
@@ -557,7 +557,7 @@ class in <b>Infernux.rendergraph</b>
 <td></td>
 </tr>
 <tr>
-<td><code>camera_ui_section(resources: set | None = ...) → None</code></td>
+<td><code>camera_ui_section(resources: set | None = ..., world_ui_layer_mask: int = ...) → None</code></td>
 <td>Draw Camera UI and declare the after-camera-UI effect stage.</td>
 </tr>
 <tr>

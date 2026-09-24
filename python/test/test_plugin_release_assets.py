@@ -90,7 +90,7 @@ def _write_source(root: Path, name: str, reference: str, repository: str) -> dic
         "repository": repository,
         "revision": "040/multiplatform_build",
         "subdirectory": f"external/plugins/{name}",
-        "category": "Platform",
+        "category": "platform_build",
         "targets": [reference.rsplit("/", 1)[-1]],
         "default": False,
     }

@@ -62,6 +62,7 @@ void AssetRegistry::Shutdown()
     m_runtimeMeshSerial = 0;
     m_assetMutationGenerations.clear();
     m_assetRuntimeVersions.clear();
+    m_meshGpuViewResidency.clear();
     m_assetRuntimeTypes.clear();
     m_pendingLoads.clear();
     m_pendingTextureStagingLoads.clear();
@@ -135,6 +136,7 @@ RuntimeAssetPayload AssetRegistry::LoadAssetInternal(const std::string &filePath
 
 uint64_t AssetRegistry::NextRuntimeVersion(const std::string &guid)
 {
+    m_meshGpuViewResidency.erase(guid);
     uint64_t &version = m_assetRuntimeVersions[guid];
     if (version == std::numeric_limits<uint64_t>::max())
         throw std::overflow_error("Asset runtime version overflow for GUID: " + guid);
@@ -160,6 +162,7 @@ void AssetRegistry::RemoveEntry(AssetEntryMap::iterator entry)
         return;
     if (entry->second.cpuBytes > m_totalCpuBytes)
         throw std::logic_error("AssetRegistry CPU residency total is corrupted");
+    m_meshGpuViewResidency.erase(entry->first);
     m_totalCpuBytes -= entry->second.cpuBytes;
     m_loadedAssets.erase(entry);
 }
@@ -215,6 +218,7 @@ void AssetRegistry::UpdateMeshPositions(const std::string &guid, size_t first, c
     if (entry == m_loadedAssets.end() || entry->second.type != ResourceType::Mesh)
         throw std::invalid_argument("Mesh publication requires a loaded mesh GUID");
     auto mesh = entry->second.payload.Get<InxMesh>();
+    mesh->RequireCpuReadable("Mesh.update_vertices");
     const auto &source = mesh->GetVertices();
     if (first > source.size() || positions.size() > source.size() - first)
         throw std::invalid_argument("Mesh position range exceeds vertex count");
@@ -268,6 +272,7 @@ std::shared_ptr<InxMesh> AssetRegistry::CloneRuntimeMesh(const std::string &guid
     auto source = GetAsset<InxMesh>(guid);
     if (!source)
         throw std::invalid_argument("Mesh copy requires a loaded Mesh GUID");
+    source->RequireCpuReadable("Mesh.copy");
     auto copy = CreateRuntimeMesh(name.empty() ? source->GetName() + " Copy" : name);
     const std::string runtimeGuid = copy->GetGuid();
     InxMesh candidate = *source;
@@ -720,6 +725,60 @@ uint64_t AssetRegistry::GetAssetVersion(const std::string &guid) const
 {
     const auto found = m_assetRuntimeVersions.find(guid);
     return found != m_assetRuntimeVersions.end() ? found->second : 0;
+}
+
+void AssetRegistry::MarkMeshGpuViewResident(const std::string &guid, uint64_t runtimeVersion, MeshGeometryView view)
+{
+    if (std::this_thread::get_id() != m_ownerThread)
+        throw std::logic_error("Mesh GPU residency publication requires the AssetRegistry owner thread");
+    const auto asset = m_loadedAssets.find(guid);
+    if (asset == m_loadedAssets.end() || asset->second.type != ResourceType::Mesh ||
+        asset->second.version != runtimeVersion)
+        return;
+    const uint8_t bit = view == MeshGeometryView::MergedModelSpace ? uint8_t{1} : uint8_t{2};
+    auto &residency = m_meshGpuViewResidency[guid];
+    if (residency.runtimeVersion != runtimeVersion)
+        residency = {runtimeVersion, 0};
+    residency.mask = static_cast<uint8_t>(residency.mask | bit);
+}
+
+uint8_t AssetRegistry::GetMeshGpuViewResidencyMask(const std::string &guid, uint64_t runtimeVersion) const
+{
+    const auto found = m_meshGpuViewResidency.find(guid);
+    return found != m_meshGpuViewResidency.end() && found->second.runtimeVersion == runtimeVersion ? found->second.mask
+                                                                                                   : 0;
+}
+
+bool AssetRegistry::IsMeshGpuResidencyRequired(const std::string &guid, uint64_t runtimeVersion) const
+{
+    const auto found = m_loadedAssets.find(guid);
+    if (found == m_loadedAssets.end() || found->second.type != ResourceType::Mesh ||
+        found->second.version != runtimeVersion)
+        return false;
+    const auto mesh = found->second.payload.Get<InxMesh>();
+    return mesh && !mesh->HasCpuGeometry();
+}
+
+size_t AssetRegistry::ReleaseMeshCpuGeometry(const std::string &guid, uint64_t runtimeVersion)
+{
+    if (std::this_thread::get_id() != m_ownerThread)
+        throw std::logic_error("Mesh CPU geometry release requires the AssetRegistry owner thread");
+    auto found = m_loadedAssets.find(guid);
+    if (found == m_loadedAssets.end() || found->second.type != ResourceType::Mesh ||
+        GetAssetVersion(guid) != runtimeVersion)
+        return 0;
+    auto mesh = found->second.payload.Get<InxMesh>();
+    if (!mesh || mesh->IsCpuReadable())
+        return 0;
+    const uint8_t requiredMask = mesh->GetModelSourceGeometry() ? uint8_t{3} : uint8_t{1};
+    if ((GetMeshGpuViewResidencyMask(guid, runtimeVersion) & requiredMask) != requiredMask)
+        return 0;
+    const size_t released = mesh->ReleaseCpuGeometry();
+    if (released > found->second.cpuBytes || released > m_totalCpuBytes)
+        throw std::logic_error("Mesh CPU geometry release exceeded AssetRegistry accounting");
+    found->second.cpuBytes -= released;
+    m_totalCpuBytes -= released;
+    return released;
 }
 
 std::string AssetRegistry::GetAssetRuntimeTypeName(const std::string &guid) const

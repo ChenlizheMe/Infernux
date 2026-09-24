@@ -1,4 +1,5 @@
 """Public author tools share the Editor's native objects and action journal."""
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -339,11 +340,25 @@ def test_public_build_scene_list_shares_settings_and_undo(authoring, monkeypatch
     from Infernux.engine import project_context
     from Infernux.engine.interaction.project_settings import ensure_project_settings_document
     monkeypatch.setattr(project_context, "get_project_root", lambda: str(tmp_path))
-    authoring.project_assets.configure(str(tmp_path))
     assets = tmp_path / "Assets"
     assets.mkdir()
     for name in ("Start.scene", "Level.scene"):
         (assets / name).touch()
+    scene_guids = {
+        str((assets / "Start.scene").resolve()).casefold(): "start-guid",
+        str((assets / "Level.scene").resolve()).casefold(): "level-guid",
+    }
+    scene_paths = {
+        "start-guid": str((assets / "Start.scene").resolve()),
+        "level-guid": str((assets / "Level.scene").resolve()),
+    }
+    database = SimpleNamespace(
+        get_guid_from_path=lambda path: scene_guids.get(
+            str(Path(path).resolve()).casefold(), ""
+        ),
+        get_path_from_guid=lambda guid: scene_paths.get(guid, ""),
+    )
+    authoring.project_assets.configure(str(tmp_path), database)
     controller = ensure_project_settings_document(str(tmp_path))
     before = controller.capture_document()
     assert editor.set_build_scenes([assets / "Level.scene", "Assets/Start.scene"])
@@ -543,6 +558,46 @@ def test_revert_native_and_explicit_root_transform_properties(property_prefab):
     assert root.transform.local_position.x == 2
     editor.undo(defer=False)
     assert root.transform.local_position.x == 10
+
+
+def test_rect_gizmo_override_revert_apply_and_undo_share_one_authoring_history(
+    property_prefab,
+):
+    """A Scene Rect gesture is a normal Prefab property edit, not a side channel."""
+    from Infernux.engine.ui.scene_view_panel import SceneViewPanel, TOOL_RECT
+
+    _path, root = property_prefab
+    panel = SceneViewPanel(engine=None)
+    panel._gizmo_drag_obj_id = int(root.id)
+    panel._gizmo_drag_items = {
+        int(root.id): panel._snapshot_gizmo_object(root),
+    }
+
+    root.transform.position = Vector3(8, 9, 10)
+    root.transform.local_scale = Vector3(2, 3, 4)
+    assert panel._record_gizmo_undo(TOOL_RECT)
+    assert editor.is_property_override(root.transform, "local_scale")
+    assert tuple(root.transform.local_scale) == (2, 3, 4)
+
+    editor.undo(defer=False)
+    assert tuple(root.transform.local_scale) == (1, 1, 1)
+    assert not editor.is_property_override(root.transform, "local_scale")
+    editor.redo(defer=False)
+    assert tuple(root.transform.local_scale) == (2, 3, 4)
+    assert editor.is_property_override(root.transform, "local_scale")
+
+    assert editor.revert_property_override(root.transform, "local_scale")
+    assert tuple(root.transform.local_scale) == (1, 1, 1)
+    assert not editor.is_property_override(root.transform, "local_scale")
+    editor.undo(defer=False)
+    assert tuple(root.transform.local_scale) == (2, 3, 4)
+    assert editor.is_property_override(root.transform, "local_scale")
+
+    assert editor.apply_prefab(root)
+    assert tuple(root.transform.local_scale) == (2, 3, 4)
+    assert not editor.is_property_override(root.transform, "local_scale")
+    editor.undo(defer=False)
+    assert editor.is_property_override(root.transform, "local_scale")
 
 
 @pytest.mark.parametrize("field", ["unknown_field", "locked"])

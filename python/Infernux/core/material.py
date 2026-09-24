@@ -522,7 +522,6 @@ class Material:
         """Set a matrix from a NumPy (4,4) array indexed [row, column].
 
         Camera matrices can be passed directly, with no transpose or flatten.
-        A legacy flat 16-number sequence remains column-major.
         """
         self._native.set_matrix(name, value)
         self._auto_save()

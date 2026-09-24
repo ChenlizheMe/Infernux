@@ -59,9 +59,11 @@ enum class ScreenUIList
 /**
  * Stable material contract attached to one retained UI draw command.
  *
- * The GUID and generation select a published UI shader artifact. The text
+ * The GUID and generation select a
+ * published UI shader artifact. The text
  * pipeline key is diagnostic only; it never
- * chooses Vulkan code or resources.
+ * chooses Vulkan code or
+ * resources.
  * Screen/world depth rules remain owned by the UI renderer.
  */
 struct UIShaderMaterialBinding

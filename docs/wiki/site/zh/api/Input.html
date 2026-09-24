@@ -256,7 +256,7 @@
                             <span class="ns-arr">&#9654;</span>
                             <span class="ns-nm">Infernux.jit</span>
                         </button>
-                        <div class="ns-ch"><a href="/wiki/site/zh/api/njit.html" class="">njit</a><a href="/wiki/site/zh/api/warmup.html" class="">warmup</a></div>
+                        <div class="ns-ch"><a href="/wiki/site/zh/api/compile.html" class="">compile</a><a href="/wiki/site/zh/api/statistics.html" class="">statistics</a><a href="/wiki/site/zh/api/warmup.html" class="">warmup</a></div>
                     </div><div class="ns-group">
                         <button type="button" class="ns-hd" aria-expanded="false">
                             <span class="ns-arr">&#9654;</span>
@@ -372,6 +372,11 @@
 <td>当前鼠标在游戏视口坐标中的位置。</td>
 </tr>
 <tr>
+<td>game_viewport_size</td>
+<td><code>Tuple[float, float]</code></td>
+<td>The current game viewport size in pixels.</td>
+</tr>
+<tr>
 <td>mouse_scroll_delta</td>
 <td><code>Tuple[float, float]</code></td>
 <td>当前帧的鼠标滚轮增量。</td>
@@ -460,6 +465,10 @@
 <td>设置游戏视口原点的屏幕坐标。</td>
 </tr>
 <tr>
+<td><code>static Input.set_game_viewport_size(width: float, height: float) → None</code></td>
+<td>Set the game viewport size in pixels.</td>
+</tr>
+<tr>
 <td><code>static Input.is_game_focused() → bool</code></td>
 <td>游戏视口是否获得输入焦点。</td>
 </tr>
@@ -518,6 +527,26 @@
 <tr>
 <td><code>static Input.is_cursor_locked() → bool</code></td>
 <td>Returns True if the cursor is currently locked.</td>
+</tr>
+<tr>
+<td><code>static Input.set_cursor_visible(visible: bool) → None</code></td>
+<td>Show or hide the cursor without changing relative mouse mode.</td>
+</tr>
+<tr>
+<td><code>static Input.is_cursor_visible() → bool</code></td>
+<td>Return the requested cursor visibility.</td>
+</tr>
+<tr>
+<td><code>static Input.set_cursor_confined(confined: bool) → None</code></td>
+<td>Confine or release the visible cursor without locking it.</td>
+</tr>
+<tr>
+<td><code>static Input.is_cursor_confined() → bool</code></td>
+<td>Return whether visible cursor confinement is requested.</td>
+</tr>
+<tr>
+<td><code>static Input.warp_cursor(x: float, y: float) → bool</code></td>
+<td>Warp the visible cursor in logical window coordinates.</td>
 </tr>
 <tr>
 <td><code>static Input.get_axis(axis_name: str) → float</code></td>

@@ -27,7 +27,6 @@ from Infernux.engine.path_utils import (
 from Infernux.lifecycle import InxPreload, PreloadContext
 
 from .registry import PluginRegistry
-from .package import package_migration_error
 from .project_index import project_guid_paths
 
 
@@ -383,8 +382,6 @@ class PreloadManager:
         role_checked: bool = False,
     ) -> tuple[_ClassDeclaration, ...]:
         reference = self._package_for_path(path)
-        if package_migration_error(reference):
-            return ()
         owner = self.registry.installed_record(reference) if reference else None
         if owner is not None and not bool(owner.get("enabled", True)):
             return ()

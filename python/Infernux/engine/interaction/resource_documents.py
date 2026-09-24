@@ -510,11 +510,15 @@ def ensure_editable_resource_document(
         raise ValueError("editable resource document requires a file path")
     kind = DocumentKind(document_kind)
     asset_guid = str(guid or getattr(resource, "guid", "") or "").strip()
-    key = (
-        DocumentKey.asset(kind, asset_guid)
-        if asset_guid
-        else DocumentKey.resource(kind, path)
-    )
+    if not asset_guid:
+        from Infernux.core.assets import AssetManager
+
+        asset_guid = str(
+            AssetManager.require_asset_database().get_guid_from_path(path) or ""
+        ).strip()
+    if not asset_guid:
+        raise LookupError(f"editable resource is not registered: {path}")
+    key = DocumentKey.asset(kind, asset_guid)
     registry = DocumentRegistry.instance()
     document = registry.get_by_key(key)
     controller = document.controller if document is not None else None

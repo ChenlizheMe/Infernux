@@ -12,3 +12,6 @@ layout(location = 3) in vec3 v_Color;
 layout(location = 4) in vec2 v_TexCoord;
 layout(location = 5) in float v_ViewDepth;
 layout(location = 6) in vec4 v_LineColor;
+// Authored secondary UV. This is the lightmap coordinate contract; generation
+// is intentionally not synthesized by the runtime importer.
+layout(location = 7) in vec2 v_TexCoord1;

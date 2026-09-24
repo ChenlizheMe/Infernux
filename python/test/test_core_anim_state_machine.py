@@ -272,11 +272,19 @@ def test_state_exit_time_out_of_range_is_rejected(value):
         AnimState.from_dict(document)
 
 
-def test_state_timeline_reference_round_trip():
-    s = AnimState(name="T", kind="timeline", timeline_guid="abc", timeline_path="x.animtimeline")
-    s2 = AnimState.from_dict(s.to_dict())
-    assert s2.timeline_guid == "abc"
-    assert s2.timeline_path == "x.animtimeline"
+def test_state_ignores_legacy_path_hints():
+    document = AnimState(name="T", kind="timeline", timeline_guid="abc").to_dict()
+    document.update(
+        clip_path="obsolete.animclip2d",
+        clip_b_path="obsolete-b.animclip2d",
+        timeline_path="obsolete.animtimeline",
+    )
+    state = AnimState.from_dict(document)
+    assert state.timeline_guid == "abc"
+    assert not hasattr(state, "clip_path")
+    assert not hasattr(state, "clip_b_path")
+    assert not hasattr(state, "timeline_path")
+    assert set(state.to_dict()).isdisjoint({"clip_path", "clip_b_path", "timeline_path"})
 
 
 def test_state_three_channel_header_color_is_rejected():
