@@ -376,6 +376,8 @@ jobs:
       - name: Build Web Player fixture
         run: |
           conda activate infernux
+          python -m pytest python/test/test_web_exporter_plugin.py python/test/test_web_jit_fixture.py \
+            -q -k 'web_dependency_gate or web_jit_fixture_verifier'
           rm -rf out/ci-projects/web out/acceptance/web
           mkdir -p out/ci-projects/web out/test-results
           cp -a tests/fixtures/multiplatform_player/. out/ci-projects/web/
@@ -384,6 +386,10 @@ jobs:
             --report out/test-results/web-player-build.json \
             --plugin-editor-root "$INFERNUX_WEB_WORK_PLUGIN_ROOT/package/editor" \
             --option "build_cache_root=\"$INFERNUX_WEB_BUILD_CACHE\""
+          python scripts/acceptance/verify_web_jit_fixture.py \
+            out/acceptance/web \
+            --build-report out/test-results/web-player-build.json \
+            --report out/test-results/web-jit-cook.json
 
       - name: Upload Web Player for visual acceptance
         uses: actions/upload-artifact@v4
@@ -465,6 +471,7 @@ jobs:
               --require-diagnostic "INFERNUX_PLATFORM_FIXTURE_PACKAGE_RESOURCE_READY value=Package resource reached UIText on every Player target." `
               --require-diagnostic "INFERNUX_PLATFORM_FIXTURE_PRELOAD_RESOURCE_READY value=Package resource reached UIText on every Player target." `
               --require-diagnostic "INFERNUX_PLATFORM_FIXTURE_MANAGED_GUID_READ_READY guid=8b7148eba8303c90b0589315c16f7cba" `
+              --require-diagnostic "INFERNUX_PLATFORM_FIXTURE_CPU_COOK_READY value=84" `
               --require-diagnostic "INFERNUX_PLATFORM_FIXTURE_UI_CLICK_READY" `
               --report out/test-results/web-browser-player-smoke.json
           } finally {

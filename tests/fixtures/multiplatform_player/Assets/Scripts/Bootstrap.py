@@ -6,6 +6,14 @@ import os
 import infernux as inx
 
 
+@inx.jit.compile(auto_parallel=False)
+def cpu_jit_probe(count):
+    total = 0
+    for index in range(count):
+        total += (index + 1) * 3
+    return total
+
+
 class PlatformFixtureBootstrap(inx.InxComponent):
     """Exercise authored input, physics, rendering, LineRenderer, and Screen UI."""
 
@@ -38,6 +46,11 @@ class PlatformFixtureBootstrap(inx.InxComponent):
         self._back_reported = False
 
     def start(self):
+        inx.jit.warmup(cpu_jit_probe, 7)
+        cpu_result = cpu_jit_probe(7)
+        if cpu_result != 84:
+            raise RuntimeError(f"Platform CPU cook returned {cpu_result}, expected 84")
+        inx.Debug.log(f"INFERNUX_PLATFORM_FIXTURE_CPU_COOK_READY value={cpu_result}")
         if os.environ.get("_INFERNUX_FIXTURE_LOCAL_AUTHOR_MESSAGE") != (
             "Local author package reached Player preload."
         ):

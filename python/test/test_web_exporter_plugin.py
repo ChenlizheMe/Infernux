@@ -61,6 +61,44 @@ def test_web_exporter_contributes_only_webgpu_target(monkeypatch):
     } <= capabilities.features
 
 
+def test_web_dependency_gate_accepts_public_cpu_jit_fixture(monkeypatch):
+    _web_module(monkeypatch)
+    exporter = importlib.import_module("infernux_web.exporter")
+    script = (
+        ROOT / "tests/fixtures/multiplatform_player/Assets/Scripts/Bootstrap.py"
+    )
+    source = script.read_text(encoding="utf-8")
+    assert "@inx.jit.compile" in source
+    assert "inx.jit.warmup(" in source
+    exporter._reject_unshipped_web_dependencies((script,))
+
+
+@pytest.mark.parametrize(
+    ("source", "diagnostic"),
+    (
+        ("import numba\n", "numba"),
+        ("from llvmlite import binding\n", "llvmlite"),
+        (
+            "import infernux as inx\n@inx.compute.kernel\ndef sample():\n    pass\n",
+            "GPU compute declarations",
+        ),
+        (
+            "import infernux as inx\n@inx.compute.function\ndef sample():\n    pass\n",
+            "GPU compute declarations",
+        ),
+    ),
+)
+def test_web_dependency_gate_rejects_compiler_imports_and_gpu_declarations(
+    monkeypatch, tmp_path, source, diagnostic
+):
+    _web_module(monkeypatch)
+    exporter = importlib.import_module("infernux_web.exporter")
+    script = tmp_path / "invalid.py"
+    script.write_text(source, encoding="utf-8")
+    with pytest.raises(ValueError, match=diagnostic):
+        exporter._reject_unshipped_web_dependencies((script,))
+
+
 def test_web_build_cache_is_project_owned_by_default(monkeypatch, tmp_path):
     _web_module(monkeypatch)
     exporter = importlib.import_module("infernux_web.exporter")
