@@ -413,6 +413,57 @@ def test_android_compute_aot_is_requested_from_shared_cook(monkeypatch, tmp_path
     assert captured["gpu_compute_aot"] is True
 
 
+@pytest.mark.parametrize(
+    "import_source, missing_package",
+    [
+        ("import numba as nb\n", "numba"),
+        ("from llvmlite import binding\n", "llvmlite"),
+    ],
+)
+def test_android_rejects_direct_jit_imports_in_selected_sources(
+    monkeypatch, tmp_path, import_source, missing_package
+):
+    _android_module(monkeypatch)
+    exporter_module = importlib.import_module("infernux_android.exporter")
+    platform_cook = importlib.import_module("Infernux.engine.platform_content_cook")
+    selected = tmp_path / "Assets" / "Scripts" / "Gameplay.py"
+    selected.parent.mkdir(parents=True)
+    selected.write_text(import_source, encoding="utf-8")
+    cooked = platform_cook.PlatformContentCookResult(
+        "TestGame", tmp_path / "cooked", {}, (selected,)
+    )
+    cooked.data_directory.mkdir()
+    monkeypatch.setattr(platform_cook, "cook_platform_content", lambda *args, **kwargs: cooked)
+    request = BuildRequest(
+        str(tmp_path / "project"), "android-arm64", str(tmp_path / "output"),
+        BuildProfile(options={"build_settings": {}}),
+    )
+
+    with pytest.raises(ValueError, match=rf"{missing_package}.*Android runtime has no CPU JIT"):
+        exporter_module._cook_player_content(
+            request, tmp_path / "staging", tmp_path / "engine-package", "arm64-v8a"
+        )
+    assert not (tmp_path / "staging/app/src/main/assets/player").exists()
+
+
+def test_android_jit_import_scan_uses_only_selected_sources(monkeypatch, tmp_path):
+    _android_module(monkeypatch)
+    exporter_module = importlib.import_module("infernux_android.exporter")
+    selected = tmp_path / "Assets" / "Scripts" / "Gameplay.py"
+    selected.parent.mkdir(parents=True)
+    selected.write_text(
+        "import infernux as inx\n"
+        "@inx.jit.compile(parallel_policy='required')\n"
+        "def update(value):\n    return value + 1\n",
+        encoding="utf-8",
+    )
+    editor_only = tmp_path / "Assets" / "Editor" / "Bake.py"
+    editor_only.parent.mkdir(parents=True)
+    editor_only.write_text("import numba\n", encoding="utf-8")
+
+    exporter_module._reject_android_jit_imports((selected,))
+
+
 def test_android_exporter_doctor_rejects_wrong_runtime_abi(monkeypatch, tmp_path):
     module = _android_module(monkeypatch)
     for name, value in _toolchain(tmp_path).items():
