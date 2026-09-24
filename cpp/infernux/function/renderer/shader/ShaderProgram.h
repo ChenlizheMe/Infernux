@@ -398,6 +398,9 @@ class ShaderProgramCache
     uint64_t m_deviceContractKey = 0;
     std::unordered_map<ShaderProgramVariantKey, ShaderProgramPublication, ShaderProgramVariantKeyHash> m_programs;
     std::unordered_set<ShaderProgramVariantKey, ShaderProgramVariantKeyHash> m_failedPrograms;
+    // Publications can outlive their cache entries through materials and
+    // frame retirement. The device owns their Vulkan handles until shutdown.
+    std::vector<std::weak_ptr<ShaderProgram>> m_devicePrograms;
 };
 
 } // namespace infernux

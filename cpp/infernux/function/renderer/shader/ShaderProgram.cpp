@@ -690,6 +690,15 @@ void ShaderProgramCache::Initialize(VkDevice device)
 
 void ShaderProgramCache::Shutdown()
 {
+    // Shared publications may still be held by scene materials after the
+    // cache and render-data maps release their own references. Destroy the
+    // Vulkan objects while the device is valid; the later shared_ptr
+    // destructors then perform an idempotent no-op.
+    for (auto &weakProgram : m_devicePrograms) {
+        if (auto program = weakProgram.lock())
+            program->Destroy();
+    }
+    m_devicePrograms.clear();
     Clear();
     m_device = VK_NULL_HANDLE;
 }
@@ -725,6 +734,12 @@ ShaderProgramPublication ShaderProgramCache::GetOrCreateProgram(const ShaderProg
         return nullptr;
     }
 
+    if (m_devicePrograms.size() == m_devicePrograms.capacity()) {
+        m_devicePrograms.erase(std::remove_if(m_devicePrograms.begin(), m_devicePrograms.end(),
+                                              [](const auto &weakProgram) { return weakProgram.expired(); }),
+                               m_devicePrograms.end());
+    }
+    m_devicePrograms.emplace_back(program);
     ShaderProgramPublication publication = std::move(program);
     m_programs[canonicalKey] = publication;
     return publication;
