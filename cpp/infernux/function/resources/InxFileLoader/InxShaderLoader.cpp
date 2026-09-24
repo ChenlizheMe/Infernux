@@ -380,6 +380,19 @@ void ValidateReflectedUIStage(const ShaderReflection &reflection, const ShaderPr
             errors.push_back("UI " + stageName + " requires " + kind + " location " + std::to_string(location) +
                              " with the fixed vertex interface format");
     };
+    auto requireOptionalIO = [&](const std::vector<ShaderIOVariable> &io, uint32_t location, VkFormat format,
+                                 const char *kind) {
+        const auto found =
+            std::find_if(io.begin(), io.end(), [location](const auto &entry) { return entry.location == location; });
+        if (found != io.end() && found->format != format)
+            errors.push_back("UI " + stageName + " optional " + kind + " location " + std::to_string(location) +
+                             " has an incompatible fixed interface format");
+    };
+    auto hasOnlyLocations = [](const std::vector<ShaderIOVariable> &io, std::initializer_list<uint32_t> locations) {
+        return std::all_of(io.begin(), io.end(), [&](const auto &entry) {
+            return std::find(locations.begin(), locations.end(), entry.location) != locations.end();
+        });
+    };
     if (vertex) {
         requireIO(reflection.GetInputs(), 0, world ? VK_FORMAT_R32G32B32_SFLOAT : VK_FORMAT_R32G32_SFLOAT, "input");
         requireIO(reflection.GetInputs(), 1, VK_FORMAT_R32G32_SFLOAT, "input");
@@ -393,16 +406,21 @@ void ValidateReflectedUIStage(const ShaderReflection &reflection, const ShaderPr
         requireIO(reflection.GetOutputs(), 0, VK_FORMAT_R32G32B32A32_SFLOAT, "output");
         requireIO(reflection.GetOutputs(), 1, VK_FORMAT_R32G32_SFLOAT, "output");
         if (world)
-            requireIO(reflection.GetOutputs(), 2, VK_FORMAT_R32G32_SFLOAT, "output");
-        if (reflection.GetInputs().size() != (world ? 7u : 3u) || reflection.GetOutputs().size() != (world ? 3u : 2u))
+            requireOptionalIO(reflection.GetOutputs(), 2, VK_FORMAT_R32G32_SFLOAT, "output");
+        if (!hasOnlyLocations(reflection.GetInputs(), world ? std::initializer_list<uint32_t>{0, 1, 2, 3, 4, 5, 6}
+                                                            : std::initializer_list<uint32_t>{0, 1, 2}) ||
+            !hasOnlyLocations(reflection.GetOutputs(),
+                              world ? std::initializer_list<uint32_t>{0, 1, 2} : std::initializer_list<uint32_t>{0, 1}))
             errors.push_back("UI vertex declares locations outside the fixed UI vertex/varying ABI");
     } else {
         requireIO(reflection.GetInputs(), 0, VK_FORMAT_R32G32B32A32_SFLOAT, "input");
         requireIO(reflection.GetInputs(), 1, VK_FORMAT_R32G32_SFLOAT, "input");
         if (world)
-            requireIO(reflection.GetInputs(), 2, VK_FORMAT_R32G32_SFLOAT, "input");
+            requireOptionalIO(reflection.GetInputs(), 2, VK_FORMAT_R32G32_SFLOAT, "input");
         requireIO(reflection.GetOutputs(), 0, VK_FORMAT_R32G32B32A32_SFLOAT, "output");
-        if (reflection.GetInputs().size() != (world ? 3u : 2u) || reflection.GetOutputs().size() != 1u)
+        if (!hasOnlyLocations(reflection.GetInputs(), world ? std::initializer_list<uint32_t>{0, 1, 2}
+                                                            : std::initializer_list<uint32_t>{0, 1}) ||
+            !hasOnlyLocations(reflection.GetOutputs(), {0}))
             errors.push_back("UI fragment declares locations outside the fixed UI varying/output ABI");
     }
     if (!reflection.GetStorageBuffers().empty() || !reflection.GetStorageImages().empty() ||

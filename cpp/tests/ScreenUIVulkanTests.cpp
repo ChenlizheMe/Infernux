@@ -320,6 +320,22 @@ void main() {
                            [](const auto &error) { return error.find("same program domain") != std::string::npos; }));
     }
     if (world && !alternate) {
+        auto minimalFragment = authoredFragment;
+        const size_t optionalVarying = minimalFragment.find("layout(location=2) in vec2 inLocalPosition");
+        const size_t optionalUse =
+            minimalFragment.find("\n               + vec4(inLocalPosition, 0.0, 0.0) * 0.000001");
+        assert(optionalVarying != std::string::npos && optionalUse != std::string::npos);
+        const size_t varyingLineEnd = minimalFragment.find('\n', optionalVarying);
+        const size_t expressionEnd = minimalFragment.find(';', optionalUse);
+        assert(varyingLineEnd != std::string::npos && expressionEnd != std::string::npos);
+        minimalFragment.erase(optionalUse, expressionEnd - optionalUse);
+        minimalFragment.erase(optionalVarying, varyingLineEnd + 1 - optionalVarying);
+        const auto optionalVaryingOmitted =
+            compiler.CompileLinkedProgramArtifact(vertex, "UITest.vert", minimalFragment, "UITest.frag");
+        for (const auto &error : optionalVaryingOmitted.errors)
+            std::cerr << "Optional WorldUI varying validation: " << error << std::endl;
+        assert(optionalVaryingOmitted.IsValid());
+
         auto badFragment = authoredFragment;
         const size_t localVarying = badFragment.find("layout(location=2) in vec2 inLocalPosition");
         assert(localVarying != std::string::npos);
