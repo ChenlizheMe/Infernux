@@ -42,6 +42,73 @@ def _player_render_scale() -> float:
     return max(0.25, min(1.0, scale))
 
 
+class _FrameProfileWindow:
+    """Collect native simulation work only while Player frame profiling is enabled."""
+
+    def __init__(self):
+        self._last_runtime_frame = None
+        self._start_runtime_frame = None
+        self._start_fixed_time = None
+        self._start_scheduler_counters = None
+        self._fixed_steps = 0
+
+    def sample(self, scene_manager, scheduler) -> None:
+        frame = int(scene_manager.runtime_frame_count)
+        if self._last_runtime_frame is None or frame < self._last_runtime_frame:
+            self._last_runtime_frame = frame
+            self._start_runtime_frame = frame
+            self._start_fixed_time = float(scene_manager.fixed_time)
+            self._start_scheduler_counters = scheduler.profiler_snapshot()
+            self._fixed_steps = 0
+            return
+        if frame == self._last_runtime_frame:
+            return
+        self._fixed_steps += int(scene_manager.get_last_frame_profile()["fixed_steps"])
+        self._last_runtime_frame = frame
+
+    def finish(self, scene_manager, scheduler) -> dict:
+        frame = int(scene_manager.runtime_frame_count)
+        fixed_time = float(scene_manager.fixed_time)
+        phases = scheduler.phase_plan_snapshot()
+        counters = scheduler.profiler_snapshot()
+        counter_names = (
+            "native_frame_begins",
+            "native_frame_ends",
+            "native_barriers",
+            "native_barriers_without_frame",
+            "native_phase_dispatches",
+            "phase_dispatches",
+            "phase_errors",
+        )
+        result = {
+            "runtime_frame_count": frame,
+            "runtime_frames_window": frame - self._start_runtime_frame,
+            "fixed_steps_window": self._fixed_steps,
+            "fixed_seconds_window": fixed_time - self._start_fixed_time,
+            "fixed_seconds_total": fixed_time,
+            "fixed_time_step": float(scene_manager.get_fixed_time_step()),
+            "playing": bool(scene_manager.is_playing()),
+            "paused": bool(scene_manager.is_paused()),
+            "time_scale": float(scene_manager.time_scale),
+            "scheduler_phase_counts": {
+                phase: len(components) for phase, components in phases.items()
+            },
+            "scheduler_plan_has_work": any(phases.values()),
+            "scheduler_counters": {
+                name: counters.get(name, 0) for name in counter_names
+            },
+            "scheduler_counters_window": {
+                name: counters.get(name, 0) - self._start_scheduler_counters.get(name, 0)
+                for name in counter_names
+            },
+        }
+        self._start_runtime_frame = frame
+        self._start_fixed_time = fixed_time
+        self._start_scheduler_counters = counters
+        self._fixed_steps = 0
+        return result
+
+
 class PlayerGUI(InxGUIRenderable):
     """Renders the game camera output fullscreen with screen-space UI overlay."""
 
@@ -66,6 +133,7 @@ class PlayerGUI(InxGUIRenderable):
         self._profile_frames = os.environ.get(
             "_INFERNUX_PLAYER_PROFILE_FRAMES", ""
         ).strip() == "1"
+        self._profile_window = _FrameProfileWindow() if self._profile_frames else None
         self._next_profile_time = time.monotonic() + 2.0
 
         # Splash
@@ -183,12 +251,20 @@ class PlayerGUI(InxGUIRenderable):
                 native.confirm_close()
                 return
 
-            if self._profile_frames and time.monotonic() >= self._next_profile_time:
-                self._next_profile_time = time.monotonic() + 2.0
+            if self._profile_frames:
                 try:
+                    from Infernux.lib import SceneManager
+
+                    scene_manager = SceneManager.instance()
+                    scheduler = self._engine.get_runtime_execution_scheduler()
+                    self._profile_window.sample(scene_manager, scheduler)
+                    if time.monotonic() < self._next_profile_time:
+                        return
+                    self._next_profile_time = time.monotonic() + 2.0
                     from Infernux.engine.player_bootstrap import _plog
 
                     snapshot = dict(native.renderer_frame_snapshot) if native else {}
+                    snapshot.update(self._profile_window.finish(scene_manager, scheduler))
                     _plog(f"[FrameProfile] {snapshot}")
                 except Exception as exc:
                     Debug.log_suppressed("player_gui.frame_profile", exc)
