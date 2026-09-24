@@ -7,8 +7,8 @@
  */
 
 #include "Infernux.h"
-#include <function/resources/InxMesh/ModelMeshReference.h>
 #include <function/renderer/rhi/RhiComputeHost.h>
+#include <function/resources/InxMesh/ModelMeshReference.h>
 // Explicit includes for types now only forward-declared in InxRenderer.h
 #include <algorithm>
 #include <array>
@@ -286,7 +286,7 @@ void ComputeBoundsFromIndexRange(const std::vector<Vertex> &vertices, const std:
 }
 
 std::shared_ptr<InxMaterial> BuildPreviewMaterialFromModel(const InxMesh *mesh, uint32_t slot,
-                                                          const std::shared_ptr<InxMaterial> &defaultMat)
+                                                           const std::shared_ptr<InxMaterial> &defaultMat)
 {
     if (!mesh || slot >= mesh->GetMaterialSlotData().size())
         return defaultMat;
@@ -607,6 +607,7 @@ struct LinkedShaderProgramLoadTicket::State
         std::string fragmentSource;
         uint64_t sourceStamp = 0;
         bool directStructuredStage = false;
+        bool skipScenePrewarm = false;
         ShaderDescriptor fragmentDescriptor;
         LinkedShaderProgramArtifactCompilation compilation;
         std::string error;
@@ -811,6 +812,10 @@ Infernux::BeginPrepareLinkedShaderPrograms(const std::vector<std::string> &mater
                 const ShaderDescriptor vertexDescriptor =
                     compiler.ParseShaderSource(work.vertexSource, vertexCompilePath);
                 work.fragmentDescriptor = compiler.ParseShaderSource(work.fragmentSource, fragmentCompilePath);
+                if (!ShaderStageLinker::ShouldPrewarmSceneMaterial(vertexDescriptor, work.fragmentDescriptor)) {
+                    work.skipScenePrewarm = true;
+                    continue;
+                }
                 if (IsDirectStructuredStage(vertexDescriptor) || IsDirectStructuredStage(work.fragmentDescriptor)) {
                     work.directStructuredStage = true;
                     continue;
@@ -864,6 +869,8 @@ bool Infernux::TryCommitLinkedShaderPrograms(const std::shared_ptr<LinkedShaderP
         return false;
 
     for (auto &work : state.work) {
+        if (work.skipScenePrewarm)
+            continue;
         if (work.directStructuredStage) {
             m_linkedShaderProgramCache.erase(work.stages);
             continue;
@@ -877,6 +884,8 @@ bool Infernux::TryCommitLinkedShaderPrograms(const std::shared_ptr<LinkedShaderP
         }
 
         ShaderProgramArtifact artifact = work.compilation.CreateRuntimeArtifact();
+        if (!ShaderStageLinker::ShouldPublishScenePrewarmArtifact(artifact))
+            continue;
         if (!artifact.IsValid() || artifact.key.stages != work.stages ||
             !m_renderer->PublishShaderProgramArtifact(artifact)) {
             auto &entry = m_linkedShaderProgramCache[work.stages];
@@ -911,7 +920,17 @@ Infernux::Infernux(std::string dllPath, RuntimeMode mode) : m_runtimeMode(mode),
     if (m_runtimeMode == RuntimeMode::Graphical) {
         INXLOG_DEBUG("Create Infernux Renderer.");
         m_renderer = std::make_unique<InxRenderer>();
-        m_renderer->SetShaderProgramArtifactResolver([this](const std::shared_ptr<InxMaterial> &material) {
+        m_renderer->SetShaderProgramArtifactResolver([this](const std::shared_ptr<InxMaterial> &material,
+                                                            std::optional<ShaderProgramDomain> expectedDomain) {
+            const auto declaredDomain = InspectMaterialShaderDomain(material);
+            if (declaredDomain &&
+                (*declaredDomain == ShaderProgramDomain::ScreenUI || *declaredDomain == ShaderProgramDomain::WorldUI ||
+                 (expectedDomain && *declaredDomain != *expectedDomain))) {
+                throw std::runtime_error(
+                    "Material shader domain mismatch before publication: expected " +
+                    std::string(expectedDomain ? ShaderProgramDomainName(*expectedDomain) : "Mesh/ParticleSprite") +
+                    ", got " + ShaderProgramDomainName(*declaredDomain));
+            }
             const LinkedShaderProgramPreparation prepared = EnsureLinkedShaderProgramArtifact(material);
             if (prepared.usesLinkedArtifact && !prepared.success) {
                 static std::unordered_set<std::string> reportedFailures;
@@ -927,6 +946,29 @@ Infernux::Infernux(std::string dllPath, RuntimeMode mode) : m_runtimeMode(mode),
                                  "until the shader inputs change.");
                 }
             }
+        });
+        m_renderer->SetUIMaterialShaderValidator([this](const std::shared_ptr<InxMaterial> &material,
+                                                        ShaderProgramDomain expectedDomain) {
+            // A material GUID does not imply a custom UI program. Existing
+            // Standard/Unlit and ordinary mesh materials still use the fixed
+            // UI vertex format, texture descriptor and tint pipeline.
+            const auto declaredDomain = InspectMaterialShaderDomain(material);
+            if (!declaredDomain ||
+                (*declaredDomain != ShaderProgramDomain::ScreenUI && *declaredDomain != ShaderProgramDomain::WorldUI))
+                return false;
+            // Check the requested Screen/World domain *before* compiling or
+            // publishing. A cross-domain first draw must not leave an
+            // ownerless artifact or Forward program in VkShaderCache.
+            if (*declaredDomain != expectedDomain)
+                throw std::runtime_error("UI material shader domain mismatch: expected " +
+                                         std::string(ShaderProgramDomainName(expectedDomain)) + ", got " +
+                                         std::string(ShaderProgramDomainName(*declaredDomain)));
+            const LinkedShaderProgramPreparation prepared = EnsureLinkedShaderProgramArtifact(material, true);
+            if (!prepared.usesLinkedArtifact || !prepared.success)
+                throw std::runtime_error(
+                    "UI material shader publication failed: " +
+                    (prepared.error.empty() ? std::string("linked UI program is unavailable") : prepared.error));
+            return true;
         });
         m_renderer->SetShaderAssetResolver([this](const std::string &shaderId, const std::string &shaderType) {
             return EnsureShaderLoaded(shaderId, shaderType);
@@ -2217,7 +2259,9 @@ void Infernux::PumpPreviewTasks()
                 }
             } else if (!completedLoad) {
                 auto *database = AssetRegistry::Instance().GetAssetDatabase();
-                const std::string guid = database ? database->GetGuidFromPath(SplitModelMeshReference(request.meshFilePath).first) : std::string();
+                const std::string guid =
+                    database ? database->GetGuidFromPath(SplitModelMeshReference(request.meshFilePath).first)
+                             : std::string();
                 if (guid.empty()) {
                     markMeshPreviewFailed(request.resourceKey);
                 } else {
@@ -2244,7 +2288,9 @@ void Infernux::PumpPreviewTasks()
                 }
             } else {
                 auto *database = AssetRegistry::Instance().GetAssetDatabase();
-                const std::string guid = database ? database->GetGuidFromPath(SplitModelMeshReference(request.meshFilePath).first) : std::string();
+                const std::string guid =
+                    database ? database->GetGuidFromPath(SplitModelMeshReference(request.meshFilePath).first)
+                             : std::string();
                 if (!guid.empty())
                     mesh = AssetRegistry::Instance().GetAsset<InxMesh>(guid);
             }
@@ -2796,7 +2842,7 @@ void Infernux::PumpTimelineCubePreviewIfDirty()
 }
 
 uint64_t Infernux::RenderModelAnimationPreview(const std::shared_ptr<InxMesh> &mesh, const std::string &take,
-                                              float seconds, int size, uint64_t dependencyRevision)
+                                               float seconds, int size, uint64_t dependencyRevision)
 {
     return m_renderer ? m_renderer->RenderModelAnimationPreview(mesh, take, seconds, size, dependencyRevision) : 0;
 }
@@ -3214,7 +3260,8 @@ void Infernux::InitRenderer(int width, int height, const std::string &projectPat
         auto resolveMaterial = [](const std::string &matGuid) -> std::shared_ptr<InxMaterial> {
             auto &registry = AssetRegistry::Instance();
             auto mat = registry.GetAssetType(matGuid) == ResourceType::Material
-                ? registry.GetAsset<InxMaterial>(matGuid) : nullptr;
+                           ? registry.GetAsset<InxMaterial>(matGuid)
+                           : nullptr;
             if (mat)
                 return mat;
             auto *adb = AssetRegistry::Instance().GetAssetDatabase();
@@ -3852,7 +3899,7 @@ bool Infernux::EnsureShaderLoaded(const std::string &shaderId, const std::string
 }
 
 Infernux::LinkedShaderProgramPreparation
-Infernux::EnsureLinkedShaderProgramArtifact(const std::shared_ptr<InxMaterial> &material)
+Infernux::EnsureLinkedShaderProgramArtifact(const std::shared_ptr<InxMaterial> &material, bool requireCurrentSource)
 {
     if (!material)
         return {};
@@ -3879,7 +3926,7 @@ Infernux::EnsureLinkedShaderProgramArtifact(const std::shared_ptr<InxMaterial> &
     const ShaderStagePair stages{material->GetVertShaderName(), material->GetFragShaderName()};
     const std::string vertexPath = resolvePath(material->GetVertShaderReference(), "vertex");
     const std::string fragmentPath = resolvePath(material->GetFragShaderReference(), "fragment");
-    return EnsureLinkedShaderProgramArtifact(stages, vertexPath, fragmentPath);
+    return EnsureLinkedShaderProgramArtifact(stages, vertexPath, fragmentPath, requireCurrentSource);
 }
 
 Infernux::LinkedShaderProgramPreparation Infernux::EnsureLinkedShaderProgramArtifact(const ShaderStagePair &stages)
@@ -3894,28 +3941,32 @@ Infernux::LinkedShaderProgramPreparation Infernux::EnsureLinkedShaderProgramArti
 
 Infernux::LinkedShaderProgramPreparation Infernux::EnsureLinkedShaderProgramArtifact(const ShaderStagePair &stages,
                                                                                      const std::string &vertexPath,
-                                                                                     const std::string &fragmentPath)
+                                                                                     const std::string &fragmentPath,
+                                                                                     bool requireCurrentSource)
 {
     LinkedShaderProgramPreparation result;
     if (!m_renderer || !stages.IsValid())
         return result;
 
     const auto cached = m_linkedShaderProgramCache.find(stages);
-    if (cached != m_linkedShaderProgramCache.end()) {
+    if (cached != m_linkedShaderProgramCache.end() && !requireCurrentSource) {
         result.usesLinkedArtifact = true;
-        if (cached->second.sourceStamp != 0 && cached->second.programKey.IsValid() &&
-            m_renderer->HasShaderProgramArtifact(cached->second.programKey)) {
-            return result;
-        }
         if (cached->second.failedSourceStamp != 0) {
             result.success = false;
             result.error = cached->second.lastError;
             return result;
         }
+        if (cached->second.sourceStamp != 0 && cached->second.programKey.IsValid() &&
+            m_renderer->HasShaderProgramArtifact(cached->second.programKey)) {
+            return result;
+        }
     }
 
-    if (vertexPath.empty() || fragmentPath.empty())
+    if (vertexPath.empty() || fragmentPath.empty()) {
+        if (requireCurrentSource)
+            return {true, false, "UI material shader GUID does not resolve to both imported stages"};
         return result;
+    }
 
     auto *adb = GetAssetDatabase();
     if (!adb)
@@ -3933,11 +3984,22 @@ Infernux::LinkedShaderProgramPreparation Infernux::EnsureLinkedShaderProgramArti
 
     std::string vertexSource;
     std::string fragmentSource;
-    if (!readSource(vertexPath, vertexSource) || !readSource(fragmentPath, fragmentSource))
+    if (!readSource(vertexPath, vertexSource) || !readSource(fragmentPath, fragmentSource)) {
+        if (requireCurrentSource)
+            return {true, false, "UI material shader source could not be read from its imported GUID"};
         return result;
+    }
 
     const uint64_t sourceStamp =
         ComputeShaderProgramRevision(vertexSource, fragmentSource, ShaderCompileTarget::Forward, 0);
+    if (requireCurrentSource && cached != m_linkedShaderProgramCache.end()) {
+        result.usesLinkedArtifact = true;
+        if (cached->second.failedSourceStamp == sourceStamp)
+            return {true, false, cached->second.lastError};
+        if (cached->second.sourceStamp == sourceStamp && cached->second.programKey.IsValid() &&
+            m_renderer->HasShaderProgramArtifact(cached->second.programKey))
+            return result;
+    }
     auto rememberFailure = [&](const std::string &error) {
         auto &entry = m_linkedShaderProgramCache[stages];
         entry.failedSourceStamp = sourceStamp;
@@ -4016,6 +4078,62 @@ Infernux::LinkedShaderProgramPreparation Infernux::EnsureLinkedShaderProgramArti
     return result;
 }
 
+std::optional<ShaderProgramDomain>
+Infernux::InspectMaterialShaderDomain(const std::shared_ptr<InxMaterial> &material) const
+{
+    auto *database = GetAssetDatabase();
+    if (!database || !material)
+        throw std::runtime_error("UI material shader classification requires a material and AssetDatabase");
+
+    InxShaderLoader parser(true, false, false, false, false, true, false, false, false, false);
+    unsigned int sourceCount = 0;
+    const auto stageFlags = [&](const ShaderAssetReference &reference, const char *stage) {
+        std::string path;
+        if (!reference.guid.empty())
+            path = database->GetPathFromGuid(reference.guid);
+        else if (reference.pathHint.empty() && !reference.shaderId.empty())
+            path = database->FindShaderPathById(reference.shaderId, stage);
+        if (path.empty()) {
+            if (!reference.guid.empty())
+                throw std::runtime_error("UI material shader GUID cannot be resolved: " + reference.guid);
+            return 0u;
+        }
+        std::vector<char> bytes;
+        if (!database->ReadFile(path, bytes) || bytes.empty())
+            throw std::runtime_error("UI material shader source cannot be read: " + path);
+        ++sourceCount;
+        if (bytes.back() == '\0')
+            bytes.pop_back();
+        const auto descriptor = parser.ParseShaderSource(std::string(bytes.begin(), bytes.end()), path);
+        unsigned int flags = 0;
+        for (std::string capability : descriptor.capabilities) {
+            std::transform(capability.begin(), capability.end(), capability.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            if (capability == "screenui")
+                flags |= 1u;
+            else if (capability == "worldui")
+                flags |= 2u;
+            else if (capability == "particlesprite")
+                flags |= 4u;
+        }
+        return flags;
+    };
+    const unsigned int vertexFlags = stageFlags(material->GetVertShaderReference(), "vertex");
+    const unsigned int fragmentFlags = stageFlags(material->GetFragShaderReference(), "fragment");
+    const unsigned int flags = vertexFlags | fragmentFlags;
+    if ((flags & 3u) == 1u && (flags & 4u) == 0)
+        return ShaderProgramDomain::ScreenUI;
+    if ((flags & 3u) == 2u && (flags & 4u) == 0)
+        return ShaderProgramDomain::WorldUI;
+    if ((flags & 3u) != 0)
+        throw std::runtime_error("UI material shader stages declare conflicting UI or particle domains");
+    if (vertexFlags & 4u)
+        return ShaderProgramDomain::ParticleSprite;
+    if (sourceCount == 2)
+        return ShaderProgramDomain::Mesh;
+    return std::nullopt;
+}
+
 bool Infernux::RefreshMaterialPipeline(std::shared_ptr<InxMaterial> material)
 {
     INXLOG_DEBUG("Infernux::RefreshMaterialPipeline called");
@@ -4038,6 +4156,21 @@ bool Infernux::RefreshMaterialPipeline(std::shared_ptr<InxMaterial> material)
     // Get shader names from material
     const std::string &vertName = material->GetVertShaderName();
     const std::string &fragName = material->GetFragShaderName();
+
+    const ShaderStagePair stages{vertName, fragName};
+    try {
+        const auto declared = InspectMaterialShaderDomain(material);
+        if (declared && (*declared == ShaderProgramDomain::ScreenUI || *declared == ShaderProgramDomain::WorldUI)) {
+            // Inspector/bootstrap may refresh a UI material before it is ever
+            // drawn. The draw owns publication, pipeline creation and release.
+            m_renderer->InvalidateUIMaterialProgram(stages);
+            return true;
+        }
+    } catch (const std::exception &error) {
+        m_renderer->InvalidateUIMaterialProgram(stages);
+        INXLOG_ERROR("Infernux::RefreshMaterialPipeline: ", error.what());
+        return false;
+    }
 
     const LinkedShaderProgramPreparation linkedProgram = EnsureLinkedShaderProgramArtifact(material);
     if (linkedProgram.usesLinkedArtifact) {
@@ -4097,6 +4230,16 @@ std::string Infernux::ReloadShaderRuntime(const std::string &shaderPath, const s
     if (ext != ".vert" && ext != ".frag") {
         INXLOG_ERROR("Infernux::ReloadShaderRuntime: unsupported shader extension: ", ext);
         return "Unsupported shader extension: " + ext;
+    }
+
+    // A failed edit must not leave a previously cached UI pipeline serving
+    // pixels from an obsolete shader. The next UI draw validates the edited
+    // source and fails explicitly if publication cannot succeed.
+    if (!previousShaderId.empty()) {
+        for (const auto &[stages, entry] : m_linkedShaderProgramCache) {
+            if (stages.UsesShader(previousShaderId))
+                m_renderer->InvalidateUIMaterialProgram(stages);
+        }
     }
 
     const std::string guid = adb->GetGuidFromPath(shaderPath);
@@ -4167,24 +4310,72 @@ std::string Infernux::ReloadShaderRuntime(const std::string &shaderPath, const s
         std::unordered_set<ShaderStagePair, ShaderStagePairHash> preparedPairs;
         std::string firstError;
         bool foundMaterial = false;
-        for (const auto &stages : affectedPairs) {
-            const LinkedShaderProgramPreparation prepared = EnsureLinkedShaderProgramArtifact(stages);
-            preparedPairs.insert(stages);
+        const auto materials = registry.GetAllMaterials();
+        std::unordered_map<ShaderStagePair, std::shared_ptr<InxMaterial>, ShaderStagePairHash> materialForPair;
+        for (const auto &material : materials) {
+            if (!material)
+                continue;
+            const ShaderStagePair stages{material->GetVertShaderName(), material->GetFragShaderName()};
+            if (stages.UsesShader(changedShaderId))
+                materialForPair.try_emplace(stages, material);
+        }
+        // A linked UI program is published only by an actual UI draw, which
+        // also acquires its owner. Reload must inspect source domain without
+        // calling EnsureLinkedShaderProgramArtifact or RefreshMaterialPipeline
+        // for that pair: both publish ownerless artifacts.
+        const auto isUIProgramPair = [&](const ShaderStagePair &stages, const std::shared_ptr<InxMaterial> &material) {
+            const auto parseStage = [&](const std::string &shaderId, const char *stage,
+                                        const ShaderAssetReference *reference) {
+                if (shaderId == changedShaderId && ext == (std::string(stage) == "vertex" ? ".vert" : ".frag"))
+                    return changedDescriptor;
+                std::string stagePath;
+                if (reference && !reference->guid.empty())
+                    stagePath = adb->GetPathFromGuid(reference->guid);
+                else if (!reference || reference->pathHint.empty())
+                    stagePath = adb->FindShaderPathById(shaderId, stage);
+                std::vector<char> bytes;
+                if (stagePath.empty() || !adb->ReadFile(stagePath, bytes) || bytes.empty())
+                    return ShaderDescriptor{};
+                if (bytes.back() == '\0')
+                    bytes.pop_back();
+                return sourceParser.ParseShaderSource(std::string(bytes.begin(), bytes.end()), stagePath);
+            };
+            const auto vertex =
+                parseStage(stages.vertexShaderId, "vertex", material ? &material->GetVertShaderReference() : nullptr);
+            const auto fragment = parseStage(stages.fragmentShaderId, "fragment",
+                                             material ? &material->GetFragShaderReference() : nullptr);
+            return ShaderStageLinker::IsUIStagePair(vertex, fragment);
+        };
+        std::unordered_map<ShaderStagePair, bool, ShaderStagePairHash> uiPairs;
+        const auto preparePair = [&](const ShaderStagePair &stages) {
+            if (!preparedPairs.insert(stages).second)
+                return;
+            const auto materialIt = materialForPair.find(stages);
+            const auto material = materialIt != materialForPair.end() ? materialIt->second : nullptr;
+            const bool isUI = isUIProgramPair(stages, material);
+            uiPairs.emplace(stages, isUI);
+            if (isUI) {
+                m_renderer->InvalidateUIMaterialProgram(stages);
+                return;
+            }
+            const LinkedShaderProgramPreparation prepared =
+                material ? EnsureLinkedShaderProgramArtifact(material) : EnsureLinkedShaderProgramArtifact(stages);
             if (!prepared.success && firstError.empty())
                 firstError = prepared.error;
+        };
+        for (const auto &stages : affectedPairs) {
+            preparePair(stages);
         }
-        for (auto &material : registry.GetAllMaterials()) {
+        for (auto &material : materials) {
             if (!material)
                 continue;
             const ShaderStagePair stages{material->GetVertShaderName(), material->GetFragShaderName()};
             if (!stages.UsesShader(changedShaderId))
                 continue;
             foundMaterial = true;
-            if (preparedPairs.insert(stages).second) {
-                const LinkedShaderProgramPreparation prepared = EnsureLinkedShaderProgramArtifact(material);
-                if (!prepared.success && firstError.empty())
-                    firstError = prepared.error;
-            }
+            preparePair(stages);
+            if (uiPairs.at(stages))
+                continue;
             // This refresh consumes either the newly published artifact or the
             // previous last-known-good artifact when compilation failed.
             m_renderer->RefreshMaterialPipeline(material);

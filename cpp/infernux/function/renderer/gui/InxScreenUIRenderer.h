@@ -21,6 +21,7 @@
 #include "../rhi/GpuRetirementQueue.h"
 #include "../rhi/RhiRenderTexture.h"
 #include "WorldUIOcclusionPlan.h"
+#include <core/types/ShaderProgramArtifact.h>
 #include <function/scene/TransformECSStore.h>
 
 #include <array>
@@ -30,6 +31,8 @@
 #include <imgui.h>
 #include <memory>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include <vk_mem_alloc.h>
 #include <vulkan/vulkan.h>
@@ -50,18 +53,17 @@ enum class ScreenUIList
 /**
  * Stable material contract attached to one retained UI draw command.
  *
- * This is deliberately an asset identity contract, not a path or a native
- * pointer.  The current fixed UI pipelines still own the actual screen/world
- * depth rules; consumers must not infer a new depth policy from this record.
+ * The GUID and generation select a published UI shader artifact. The text
+ * pipeline key is diagnostic only; it never
+ * chooses Vulkan code or resources.
+ * Screen/world depth rules remain owned by the UI renderer.
  */
 struct UIShaderMaterialBinding
 {
     std::string materialGuid;
     uint64_t generation = 0;
     std::string pipelineKey;
-    // The fixed UI shader consumes the standard authored material contract
-    // directly in its fragment stage.  Keeping these values command-aligned
-    // makes retained packets deterministic and avoids a second material ABI.
+    // Fixed push-constant values shared by built-in and authored UI programs.
     std::array<float, 4> baseColor{1.0f, 1.0f, 1.0f, 1.0f};
     float alphaClipThreshold = 0.0f;
     bool alphaClipEnabled = false;
@@ -91,6 +93,8 @@ struct UIShaderMaterialBinding
  */
 class InxScreenUIRenderer
 {
+    friend struct ScreenUIVulkanTestAccess;
+
   public:
     InxScreenUIRenderer();
     ~InxScreenUIRenderer();
@@ -126,6 +130,33 @@ class InxScreenUIRenderer
     void SetTextureColorSpaceQuery(std::function<bool(uint64_t)> query)
     {
         m_textureColorSpaceQuery = std::move(query);
+    }
+    void SetMaterialProgramResolver(
+        std::function<std::shared_ptr<const ShaderProgramArtifact>(const std::string &, uint64_t, ShaderProgramDomain)>
+            resolver)
+    {
+        m_materialProgramResolver = std::move(resolver);
+    }
+    void SetMaterialIdentityValidator(std::function<bool(const std::string &, uint64_t)> validator)
+    {
+        m_materialIdentityValidator = std::move(validator);
+    }
+    void SetMaterialProgramRelease(std::function<void(const ShaderProgramKey &)> release)
+    {
+        m_materialProgramRelease = std::move(release);
+    }
+    void SetMaterialProgramAcquire(std::function<void(const ShaderProgramKey &)> acquire)
+    {
+        m_materialProgramAcquire = std::move(acquire);
+    }
+    void SetMaterialProgramReleaseSweep(std::function<void()> sweep)
+    {
+        m_materialProgramReleaseSweep = std::move(sweep);
+    }
+    void InvalidateMaterialProgram(const ShaderStagePair &stages);
+    [[nodiscard]] size_t GetMaterialPipelineVariantCount() const noexcept
+    {
+        return m_materialPipelineVariants.size();
     }
     std::vector<std::shared_ptr<rhi::RenderTexture>> GetRenderTextureReads(ScreenUIList list,
                                                                            uint32_t cullingMask = 0xffffffffu) const;
@@ -324,10 +355,16 @@ class InxScreenUIRenderer
      * @brief Create Vulkan pipeline objects (shader modules, layouts, pipeline)
      */
     bool CreatePipeline();
+    bool CreateScreenPipeline(VkShaderModule vertex, VkShaderModule fragment, VkPipeline &pipeline);
     bool CreateWorldPipeline();
     bool CreateWorldPipeline(const rhi::GraphicsRenderingSignature &target, VkPipeline &pipeline,
-                             bool alwaysOnTop = false);
+                             bool alwaysOnTop = false, VkShaderModule vertex = VK_NULL_HANDLE,
+                             VkShaderModule fragment = VK_NULL_HANDLE);
     VkPipeline GetWorldPipeline(const rhi::GraphicsRenderingSignature &target, bool alwaysOnTop = false);
+    VkPipeline GetMaterialPipeline(const UIShaderMaterialBinding &binding, ShaderProgramDomain domain,
+                                   const rhi::GraphicsRenderingSignature *target = nullptr, bool alwaysOnTop = false);
+    void RetireMaterialPipelineVariants(const ShaderProgramKey &key);
+    void PruneUnusedMaterialPrograms();
 
     // Independent per-list buffers in each engine frame slot. Cameras share
     // immutable geometry within a frame; the next frame cannot overwrite it.
@@ -458,6 +495,40 @@ class InxScreenUIRenderer
         VkPipeline pipeline = VK_NULL_HANDLE;
     };
     std::vector<WorldPipelineVariant> m_worldPipelineVariants;
+    struct MaterialPipelineKey
+    {
+        ShaderProgramKey key;
+        ShaderProgramDomain domain = ShaderProgramDomain::ScreenUI;
+        rhi::GraphicsRenderingSignature target{};
+        bool alwaysOnTop = false;
+        bool operator==(const MaterialPipelineKey &other) const noexcept
+        {
+            return key == other.key && domain == other.domain && target == other.target &&
+                   alwaysOnTop == other.alwaysOnTop;
+        }
+    };
+    struct MaterialPipelineKeyHash
+    {
+        size_t operator()(const MaterialPipelineKey &value) const noexcept;
+    };
+    std::unordered_map<MaterialPipelineKey, VkPipeline, MaterialPipelineKeyHash> m_materialPipelineVariants;
+    struct ResolvedMaterialProgram
+    {
+        uint64_t generation = 0;
+        uint64_t validatedRender = 0;
+        std::shared_ptr<const ShaderProgramArtifact> artifact;
+    };
+    std::unordered_map<std::string, ResolvedMaterialProgram> m_resolvedMaterialPrograms;
+    std::unordered_set<ShaderProgramKey, ShaderProgramKeyHash> m_ownedMaterialPrograms;
+    std::function<std::shared_ptr<const ShaderProgramArtifact>(const std::string &, uint64_t, ShaderProgramDomain)>
+        m_materialProgramResolver;
+    std::function<bool(const std::string &, uint64_t)> m_materialIdentityValidator;
+    std::function<void(const ShaderProgramKey &)> m_materialProgramRelease;
+    std::function<void(const ShaderProgramKey &)> m_materialProgramAcquire;
+    std::function<void()> m_materialProgramReleaseSweep;
+    uint64_t m_materialRenderSerial = 0;
+    uint64_t m_materialBindingsRevision = 0;
+    uint64_t m_prunedMaterialBindingsRevision = 0;
 
     // Font atlas descriptor (points to ImGui's font atlas)
     VkDescriptorSet m_fontDescriptorSet = VK_NULL_HANDLE;

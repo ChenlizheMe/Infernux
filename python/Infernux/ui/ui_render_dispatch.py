@@ -116,12 +116,7 @@ def material_visual_state(elem, slot: str = "material") -> dict:
 
 
 def _ui_material_pipeline_key(native) -> str:
-    """Return the deterministic pipeline identity for one UI material.
-
-    This is intentionally a descriptive key, not a process-randomized hash or
-    a path.  The native renderer will later use it to select a UI shader
-    variant; until then it is retained as an explicit per-command contract.
-    """
+    """Return a diagnostic key; native UI pipeline selection uses shader artifacts."""
     shader = str(getattr(native, "shader_name", "") or "")
     vert = str(getattr(native, "vert_shader_name", "") or "")
     frag = str(getattr(native, "frag_shader_name", "") or "")

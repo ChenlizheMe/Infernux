@@ -238,6 +238,7 @@ class MaterialPipelineManager
     void InvalidateMaterialsUsingShader(const std::string &shaderId);
 
     void InvalidateMaterialsUsingProgramPair(const ShaderStagePair &stages);
+    [[nodiscard]] bool HasMaterialProgramOwner(const ShaderProgramKey &key) const;
 
     /**
      * @brief Refresh descriptor publications for materials referencing a texture.

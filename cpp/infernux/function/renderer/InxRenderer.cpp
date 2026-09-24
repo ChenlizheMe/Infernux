@@ -2562,7 +2562,26 @@ void InxRenderer::SetShaderAssetResolver(std::function<bool(const std::string &,
 
 bool InxRenderer::PublishShaderProgramArtifact(const ShaderProgramArtifact &artifact)
 {
-    return m_vkCore && m_vkCore->PublishShaderProgramArtifact(artifact);
+    if (!m_vkCore)
+        return false;
+    const bool unchanged = m_vkCore->HasShaderProgramArtifact(artifact.key);
+    if (!m_vkCore->PublishShaderProgramArtifact(artifact))
+        return false;
+    if (!unchanged && m_screenUIRenderer)
+        m_screenUIRenderer->InvalidateMaterialProgram(artifact.key.stages);
+    return true;
+}
+
+void InxRenderer::InvalidateUIMaterialProgram(const ShaderStagePair &stages)
+{
+    // Reload can touch a UI pair that was never drawn. Such a pair has no UI
+    // renderer owner, so invalidating draw caches alone would retain its
+    // artifact and Forward modules until engine shutdown.
+    const auto oldProgram = m_vkCore ? m_vkCore->ShareShaderProgramArtifact(stages) : nullptr;
+    if (m_screenUIRenderer)
+        m_screenUIRenderer->InvalidateMaterialProgram(stages);
+    if (oldProgram)
+        m_vkCore->ReleaseUIShaderProgramArtifact(oldProgram->key);
 }
 
 bool InxRenderer::HasShaderProgramArtifact(const ShaderProgramKey &programKey) const
@@ -2571,20 +2590,35 @@ bool InxRenderer::HasShaderProgramArtifact(const ShaderProgramKey &programKey) c
 }
 
 std::shared_ptr<const ShaderProgramArtifact>
-InxRenderer::ResolveShaderProgramArtifact(const std::shared_ptr<InxMaterial> &material)
+InxRenderer::ResolveShaderProgramArtifact(const std::shared_ptr<InxMaterial> &material,
+                                          std::optional<ShaderProgramDomain> expectedDomain)
 {
     if (!m_vkCore || !material)
         return nullptr;
     if (m_shaderProgramArtifactResolver)
-        m_shaderProgramArtifactResolver(material);
-    return m_vkCore->CopyShaderProgramArtifact({material->GetVertShaderName(), material->GetFragShaderName()});
+        m_shaderProgramArtifactResolver(material, expectedDomain);
+    auto artifact =
+        m_vkCore->ShareShaderProgramArtifact({material->GetVertShaderName(), material->GetFragShaderName()});
+    if (artifact &&
+        (artifact->domain == ShaderProgramDomain::ScreenUI || artifact->domain == ShaderProgramDomain::WorldUI ||
+         (expectedDomain && artifact->domain != *expectedDomain))) {
+        throw std::runtime_error("Material shader domain mismatch before non-UI resolution");
+    }
+    return artifact;
 }
 
-void InxRenderer::SetShaderProgramArtifactResolver(std::function<void(const std::shared_ptr<InxMaterial> &)> resolver)
+void InxRenderer::SetShaderProgramArtifactResolver(
+    std::function<void(const std::shared_ptr<InxMaterial> &, std::optional<ShaderProgramDomain>)> resolver)
 {
     m_shaderProgramArtifactResolver = std::move(resolver);
     if (m_vkCore)
         m_vkCore->SetShaderProgramArtifactResolver(m_shaderProgramArtifactResolver);
+}
+
+void InxRenderer::SetUIMaterialShaderValidator(
+    std::function<bool(const std::shared_ptr<InxMaterial> &, ShaderProgramDomain)> validator)
+{
+    m_uiMaterialShaderValidator = std::move(validator);
 }
 
 void InxRenderer::StoreShaderRenderMeta(const std::string &shaderId, const std::string &cullMode,
@@ -4034,7 +4068,7 @@ bool InxRenderer::RefreshMaterialPipeline(std::shared_ptr<InxMaterial> material)
         return false;
     }
 
-    const auto shaderProgram = ResolveShaderProgramArtifact(material);
+    const auto shaderProgram = ResolveShaderProgramArtifact(material, std::nullopt);
 
     // Get shader names from material
     const std::string &vertName = material->GetVertShaderName();
@@ -4069,7 +4103,7 @@ InxRenderer::BeginMaterialPreviewGPU(const std::shared_ptr<InxMaterial> &materia
     if (!m_vkCore || !material)
         return nullptr;
     if (m_shaderProgramArtifactResolver)
-        m_shaderProgramArtifactResolver(material);
+        m_shaderProgramArtifactResolver(material, ShaderProgramDomain::Mesh);
     return m_vkCore->BeginMaterialPreviewGPU(material, size, texturePending);
 }
 
@@ -4090,7 +4124,7 @@ InxRenderer::BeginMeshPreviewGPU(const InxMesh &mesh, const std::vector<std::sha
     if (m_shaderProgramArtifactResolver) {
         for (const auto &material : materials) {
             if (material)
-                m_shaderProgramArtifactResolver(material);
+                m_shaderProgramArtifactResolver(material, ShaderProgramDomain::Mesh);
         }
     }
     return m_vkCore->BeginMeshPreviewGPU(mesh, materials, size);
@@ -4681,6 +4715,37 @@ void InxRenderer::SetSceneViewVisible(bool visible)
     }
 }
 
+void InxRenderer::ConfigureScreenUIMaterialResolver(InxScreenUIRenderer &renderer)
+{
+    renderer.SetMaterialProgramAcquire([this](const ShaderProgramKey &key) {
+        if (m_vkCore)
+            m_vkCore->AcquireUIShaderProgramOwner(key);
+    });
+    renderer.SetMaterialProgramRelease([this](const ShaderProgramKey &key) {
+        if (m_vkCore)
+            m_vkCore->ReleaseUIShaderProgramOwner(key);
+    });
+    renderer.SetMaterialProgramReleaseSweep([this] {
+        if (m_vkCore)
+            m_vkCore->SweepReleasedUIShaderProgramArtifacts();
+    });
+    renderer.SetMaterialIdentityValidator([](const std::string &guid, uint64_t generation) {
+        const auto material = AssetRegistry::Instance().GetAsset<InxMaterial>(guid);
+        return material && !material->IsDeleted() && material->GetVersion() == generation;
+    });
+    renderer.SetMaterialProgramResolver([this](const std::string &guid, uint64_t generation,
+                                               ShaderProgramDomain expectedDomain) {
+        auto material = AssetRegistry::Instance().GetAsset<InxMaterial>(guid);
+        if (!material || material->IsDeleted() || material->GetVersion() != generation)
+            throw std::runtime_error("UI material GUID is missing or its retained generation is stale: " + guid);
+        if (!m_uiMaterialShaderValidator)
+            throw std::runtime_error("UI material shader publication validator is unavailable for GUID " + guid);
+        if (!m_uiMaterialShaderValidator(material, expectedDomain))
+            return std::shared_ptr<const ShaderProgramArtifact>{}; // Ordinary UI material uses the built-in pipeline.
+        return m_vkCore->ShareShaderProgramArtifact({material->GetVertShaderName(), material->GetFragShaderName()});
+    });
+}
+
 void InxRenderer::EnsureScreenUIRenderer()
 {
     if (m_screenUIRenderer)
@@ -4701,6 +4766,7 @@ void InxRenderer::EnsureScreenUIRenderer()
         [this](uint64_t textureId) { return m_gui->ResolveImGuiRenderTexture(textureId); });
     renderer->SetTextureColorSpaceQuery(
         [this](uint64_t textureId) { return m_gui->ImGuiTextureNeedsDisplayEncoding(textureId); });
+    ConfigureScreenUIMaterialResolver(*renderer);
     m_screenUIRenderer = std::move(renderer);
     if (m_sceneRenderGraph)
         m_sceneRenderGraph->SetScreenUIRenderer(m_screenUIRenderer.get());
@@ -4839,6 +4905,7 @@ bool InxRenderer::ApplyMsaaSamples(int samples, const char *source)
             [this](uint64_t textureId) { return m_gui->ResolveImGuiRenderTexture(textureId); });
         replacementScreenUI->SetTextureColorSpaceQuery(
             [this](uint64_t textureId) { return m_gui->ImGuiTextureNeedsDisplayEncoding(textureId); });
+        ConfigureScreenUIMaterialResolver(*replacementScreenUI);
     }
 
     if (replacementSceneTarget && m_outlineRenderer) {

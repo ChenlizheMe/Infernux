@@ -1,10 +1,15 @@
 #include <SDL3/SDL.h>
+#include <function/renderer/InxVkCoreModular.h>
+#include <function/renderer/VkShaderCache.h>
 #include <function/renderer/gui/InxScreenUIRenderer.h>
 #include <function/renderer/gui/InxTextLayout.h>
 #include <function/renderer/rhi/RhiRenderTexture.h>
 #include <function/renderer/vk/RenderGraph.h>
 #include <function/renderer/vk/VkDeviceContext.h>
 #include <function/renderer/vk/VulkanRhiDevice.h>
+#include <function/resources/InxFileLoader/InxShaderLoader.hpp>
+#include <function/resources/InxMaterial/InxMaterial.h>
+#include <function/resources/ShaderAsset/ShaderStageLinker.h>
 #include <function/scene/SceneManager.h>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
@@ -15,8 +20,280 @@
 #include <cassert>
 #include <chrono>
 #include <iostream>
+#include <unordered_map>
 
 using namespace infernux;
+
+namespace infernux
+{
+struct ScreenUIVulkanTestAccess
+{
+    static VkPipeline ResolveMaterialPipeline(InxScreenUIRenderer &renderer, const UIShaderMaterialBinding &binding,
+                                              ShaderProgramDomain domain, const rhi::GraphicsRenderingSignature *target)
+    {
+        return renderer.GetMaterialPipeline(binding, domain, target);
+    }
+};
+} // namespace infernux
+
+static std::shared_ptr<const ShaderProgramArtifact> CompileUiProgram(bool world, bool alternate, bool reload = false)
+{
+    const std::string domain = world ? "WorldUI" : "ScreenUI";
+    const std::string vertex = "ShaderInfo { Name \"Tests/" + domain + "Vertex\" Capabilities [" + domain + "] }\n" +
+                               (world ? R"glsl(
+#version 450
+layout(location=0) in vec3 aPosition;
+layout(location=1) in vec2 aUV;
+layout(location=2) in vec4 aColor;
+layout(location=3) in vec2 aLocalPosition;
+layout(location=4) in vec3 aAnchor;
+layout(location=5) in vec2 aLocalOffset;
+layout(location=6) in float aPolicy;
+layout(push_constant) uniform WorldUIConstants {
+    mat4 viewProjection;
+    vec4 materialColor;
+    float alphaClipThreshold;
+    float alphaClipEnabled;
+    vec2 screenScale;
+    vec4 cameraRight;
+    vec4 cameraUp;
+} pc;
+layout(location=0) out vec4 outColor;
+layout(location=1) out vec2 outUV;
+layout(location=2) out vec2 outLocalPosition;
+void main() {
+    vec3 position = aPosition;
+    if (aPolicy > 0.5)
+        position = aAnchor + pc.cameraRight.xyz * aLocalOffset.x + pc.cameraUp.xyz * aLocalOffset.y +
+                   vec3(aLocalPosition * pc.screenScale, 0.0);
+    gl_Position = pc.viewProjection * vec4(position, 1.0);
+    outColor = aColor;
+    outUV = aUV;
+    outLocalPosition = aLocalPosition;
+}
+)glsl"
+                                      : R"glsl(
+#version 450
+layout(location=0) in vec2 aPosition;
+layout(location=1) in vec2 aUV;
+layout(location=2) in vec4 aColor;
+layout(push_constant) uniform ScreenUIConstants {
+    vec2 scale;
+    vec2 translate;
+    float encodeSample;
+    float _pad0;
+    float _pad1;
+    float _pad2;
+    vec4 materialColor;
+    float alphaClipThreshold;
+    float alphaClipEnabled;
+    vec2 _tailPadding;
+} pc;
+layout(location=0) out vec4 outColor;
+layout(location=1) out vec2 outUV;
+void main() {
+    gl_Position = vec4(aPosition * pc.scale + pc.translate, 0.0, 1.0);
+    outColor = aColor;
+    outUV = aUV;
+}
+)glsl");
+    const std::string fragment = "ShaderInfo { Name \"Tests/" + domain +
+                                 (alternate && !reload ? "Alternate" : "Default") + "Fragment\" Capabilities [" +
+                                 domain + "] }\n" +
+                                 (world ? R"glsl(
+#version 450
+layout(location=0) in vec4 inColor;
+layout(location=1) in vec2 inUV;
+layout(location=2) in vec2 inLocalPosition;
+layout(set=0,binding=0) uniform sampler2D uiTexture;
+layout(push_constant) uniform WorldUIConstants {
+    mat4 viewProjection;
+    vec4 materialColor;
+    float alphaClipThreshold;
+    float alphaClipEnabled;
+    vec2 screenScale;
+    vec4 cameraRight;
+    vec4 cameraUp;
+} pc;
+layout(location=0) out vec4 outColor;
+void main() {
+    outColor = texture(uiTexture, inUV) * inColor * pc.materialColor * vec4(MULTIPLIER, 1.0)
+               + vec4(inLocalPosition, 0.0, 0.0) * 0.000001;
+    if ((pc.alphaClipEnabled > 0.5 && outColor.a < pc.alphaClipThreshold) || outColor.a <= 0.0)
+        discard;
+}
+)glsl"
+                                        : R"glsl(
+#version 450
+layout(location=0) in vec4 inColor;
+layout(location=1) in vec2 inUV;
+layout(set=0,binding=0) uniform sampler2D uiTexture;
+layout(push_constant) uniform ScreenUIConstants {
+    vec2 scale;
+    vec2 translate;
+    float encodeSample;
+    float _pad0;
+    float _pad1;
+    float _pad2;
+    vec4 materialColor;
+    float alphaClipThreshold;
+    float alphaClipEnabled;
+    vec2 _tailPadding;
+} pc;
+layout(location=0) out vec4 outColor;
+void main() {
+    outColor = texture(uiTexture, inUV) * inColor * pc.materialColor * vec4(MULTIPLIER, 1.0);
+    if (pc.alphaClipEnabled > 0.5 && outColor.a < pc.alphaClipThreshold)
+        discard;
+}
+)glsl");
+    std::string authoredFragment = fragment;
+    const size_t multiplier = authoredFragment.find("MULTIPLIER");
+    assert(multiplier != std::string::npos);
+    authoredFragment.replace(multiplier, sizeof("MULTIPLIER") - 1, alternate ? "0.125, 0.5, 1.0" : "1.0, 1.0, 1.0");
+    InxShaderLoader compiler(true, false, false, false, false, true, false, false, false, false);
+    const auto vertexDescriptor = compiler.ParseShaderSource(vertex, "UITest.vert");
+    const auto fragmentDescriptor = compiler.ParseShaderSource(authoredFragment, "UITest.frag");
+    assert(!ShaderStageLinker::ShouldPrewarmSceneMaterial(vertexDescriptor, fragmentDescriptor));
+    const auto compiled = compiler.CompileLinkedProgramArtifact(vertex, "UITest.vert", authoredFragment, "UITest.frag");
+    for (const auto &error : compiled.errors)
+        std::cerr << error << '\n';
+    assert(compiled.IsValid());
+    auto artifact = std::make_shared<ShaderProgramArtifact>(compiled.CreateRuntimeArtifact());
+    assert(artifact->IsValid());
+    assert(artifact->domain == (world ? ShaderProgramDomain::WorldUI : ShaderProgramDomain::ScreenUI));
+    assert(!ShaderStageLinker::ShouldPublishScenePrewarmArtifact(*artifact));
+    if (!alternate) {
+        auto conflictingFragment = authoredFragment;
+        const std::string domainCapability = "Capabilities [" + domain + "]";
+        const auto capabilityPosition = conflictingFragment.find(domainCapability);
+        assert(capabilityPosition != std::string::npos);
+        conflictingFragment.replace(capabilityPosition, domainCapability.size(),
+                                    "Capabilities [" + domain + ", BindlessTextures]");
+        const auto conflicting =
+            compiler.CompileLinkedProgramArtifact(vertex, "UITest.vert", conflictingFragment, "UITest.frag");
+        assert(!conflicting.IsValid());
+        assert(std::any_of(conflicting.errors.begin(), conflicting.errors.end(),
+                           [](const auto &error) { return error.find("cannot combine") != std::string::npos; }));
+    }
+    if (!world && !alternate) {
+        auto badFragment = authoredFragment;
+        const size_t descriptor = badFragment.find("layout(set=0,binding=0)");
+        assert(descriptor != std::string::npos);
+        badFragment.replace(descriptor, sizeof("layout(set=0,binding=0)") - 1, "layout(set=1,binding=0)");
+        const auto wrongDescriptor =
+            compiler.CompileLinkedProgramArtifact(vertex, "UITest.vert", badFragment, "UITest.frag");
+        assert(!wrongDescriptor.IsValid());
+        assert(std::any_of(wrongDescriptor.errors.begin(), wrongDescriptor.errors.end(),
+                           [](const auto &error) { return error.find("set 0 binding 0") != std::string::npos; }));
+
+        badFragment = authoredFragment;
+        const size_t image = badFragment.find("layout(set=0,binding=0) uniform sampler2D uiTexture;");
+        const size_t sample = badFragment.find("texture(uiTexture, inUV)");
+        assert(image != std::string::npos && sample != std::string::npos);
+        badFragment.replace(sample, sizeof("texture(uiTexture, inUV)") - 1,
+                            "texture(uiTexture, inUV) + subpassLoad(extraInput)");
+        badFragment.insert(image,
+                           "layout(input_attachment_index=0,set=0,binding=1) uniform subpassInput extraInput;\n");
+        const auto inputAttachment =
+            compiler.CompileLinkedProgramArtifact(vertex, "UITest.vert", badFragment, "UITest.frag");
+        assert(!inputAttachment.IsValid());
+        assert(std::any_of(inputAttachment.errors.begin(), inputAttachment.errors.end(), [](const auto &error) {
+            return error.find("descriptors outside the UI image ABI") != std::string::npos;
+        }));
+
+        badFragment = authoredFragment;
+        const size_t imageDecl = badFragment.find("uniform sampler2D uiTexture;");
+        assert(imageDecl != std::string::npos);
+        badFragment.replace(imageDecl, sizeof("uniform sampler2D uiTexture;") - 1, "uniform sampler2D uiTexture[2];");
+        const size_t imageSample = badFragment.find("texture(uiTexture, inUV)");
+        assert(imageSample != std::string::npos);
+        badFragment.replace(imageSample, sizeof("texture(uiTexture, inUV)") - 1, "texture(uiTexture[0], inUV)");
+        const auto arrayImage =
+            compiler.CompileLinkedProgramArtifact(vertex, "UITest.vert", badFragment, "UITest.frag");
+        assert(!arrayImage.IsValid());
+        assert(std::any_of(arrayImage.errors.begin(), arrayImage.errors.end(),
+                           [](const auto &error) { return error.find("one non-arrayed 2D") != std::string::npos; }));
+
+        badFragment = authoredFragment;
+        const size_t nestedImageDecl = badFragment.find("uniform sampler2D uiTexture;");
+        const size_t nestedImageSample = badFragment.find("texture(uiTexture, inUV)");
+        assert(nestedImageDecl != std::string::npos && nestedImageSample != std::string::npos);
+        badFragment.replace(nestedImageSample, sizeof("texture(uiTexture, inUV)") - 1,
+                            "texture(uiTexture[0][0], inUV)");
+        badFragment.replace(nestedImageDecl, sizeof("uniform sampler2D uiTexture;") - 1,
+                            "uniform sampler2D uiTexture[1][2];");
+        const auto nestedArrayImage =
+            compiler.CompileLinkedProgramArtifact(vertex, "UITest.vert", badFragment, "UITest.frag");
+        assert(!nestedArrayImage.IsValid());
+        assert(std::any_of(nestedArrayImage.errors.begin(), nestedArrayImage.errors.end(),
+                           [](const auto &error) { return error.find("one non-arrayed 2D") != std::string::npos; }));
+
+        badFragment = authoredFragment;
+        const size_t msDecl = badFragment.find("uniform sampler2D uiTexture;");
+        const size_t msSample = badFragment.find("texture(uiTexture, inUV)");
+        assert(msDecl != std::string::npos && msSample != std::string::npos);
+        badFragment.replace(msSample, sizeof("texture(uiTexture, inUV)") - 1,
+                            "texelFetch(uiTexture, ivec2(inUV * 128.0), 0)");
+        badFragment.replace(msDecl, sizeof("uniform sampler2D uiTexture;") - 1, "uniform sampler2DMS uiTexture;");
+        const auto msImage = compiler.CompileLinkedProgramArtifact(vertex, "UITest.vert", badFragment, "UITest.frag");
+        assert(!msImage.IsValid());
+        assert(std::any_of(msImage.errors.begin(), msImage.errors.end(),
+                           [](const auto &error) { return error.find("one non-arrayed 2D") != std::string::npos; }));
+
+        for (const auto *samplerType : {"samplerCube", "sampler3D", "sampler2DArray"}) {
+            badFragment = authoredFragment;
+            const size_t typePosition = badFragment.find("sampler2D uiTexture");
+            const size_t samplePosition = badFragment.find("texture(uiTexture, inUV)");
+            assert(typePosition != std::string::npos && samplePosition != std::string::npos);
+            badFragment.replace(samplePosition, sizeof("texture(uiTexture, inUV)") - 1,
+                                "texture(uiTexture, vec3(inUV, 0.0))");
+            badFragment.replace(typePosition, sizeof("sampler2D uiTexture") - 1,
+                                std::string(samplerType) + " uiTexture");
+            const auto wrongDimension =
+                compiler.CompileLinkedProgramArtifact(vertex, "UITest.vert", badFragment, "UITest.frag");
+            assert(!wrongDimension.IsValid());
+            assert(std::any_of(wrongDimension.errors.begin(), wrongDimension.errors.end(),
+                               [](const auto &error) { return error.find("non-arrayed 2D") != std::string::npos; }));
+        }
+
+        auto badVertex = vertex;
+        const size_t vertexUV = badVertex.find("layout(location=1) in vec2 aUV");
+        assert(vertexUV != std::string::npos);
+        badVertex.replace(vertexUV, sizeof("layout(location=1) in vec2 aUV") - 1, "layout(location=4) in vec2 aUV");
+        const auto wrongVertex =
+            compiler.CompileLinkedProgramArtifact(badVertex, "UITest.vert", authoredFragment, "UITest.frag");
+        assert(!wrongVertex.IsValid());
+        assert(std::any_of(wrongVertex.errors.begin(), wrongVertex.errors.end(),
+                           [](const auto &error) { return error.find("input location 1") != std::string::npos; }));
+
+        badFragment = authoredFragment;
+        const size_t capability = badFragment.find("Capabilities [ScreenUI]");
+        assert(capability != std::string::npos);
+        badFragment.replace(capability, sizeof("Capabilities [ScreenUI]") - 1, "Capabilities [WorldUI]");
+        const auto wrongDomain =
+            compiler.CompileLinkedProgramArtifact(vertex, "UITest.vert", badFragment, "UITest.frag");
+        assert(!wrongDomain.IsValid());
+        assert(std::any_of(wrongDomain.errors.begin(), wrongDomain.errors.end(),
+                           [](const auto &error) { return error.find("same program domain") != std::string::npos; }));
+    }
+    if (world && !alternate) {
+        auto badFragment = authoredFragment;
+        const size_t localVarying = badFragment.find("layout(location=2) in vec2 inLocalPosition");
+        assert(localVarying != std::string::npos);
+        badFragment.replace(localVarying, sizeof("layout(location=2) in vec2 inLocalPosition") - 1,
+                            "layout(location=2) in vec3 inLocalPosition");
+        const size_t localUse = badFragment.find("vec4(inLocalPosition, 0.0, 0.0)");
+        assert(localUse != std::string::npos);
+        badFragment.replace(localUse, sizeof("vec4(inLocalPosition, 0.0, 0.0)") - 1, "vec4(inLocalPosition, 0.0)");
+        const auto wrongVarying =
+            compiler.CompileLinkedProgramArtifact(vertex, "UITest.vert", badFragment, "UITest.frag");
+        assert(!wrongVarying.IsValid());
+        assert(std::any_of(wrongVarying.errors.begin(), wrongVarying.errors.end(),
+                           [](const auto &error) { return error.find("input location 2") != std::string::npos; }));
+    }
+    return artifact;
+}
 
 int main(int argc, char **argv)
 {
@@ -122,6 +399,8 @@ int main(int argc, char **argv)
     assert(renderer.Initialize(context.GetDevice(), context.GetVmaAllocator(), VK_FORMAT_R8G8B8A8_UNORM,
                                VK_FORMAT_D32_SFLOAT, VK_SAMPLE_COUNT_1_BIT, 4));
     renderer.SetRetirementQueue(&retirement);
+    std::vector<ShaderProgramKey> releasedProgramKeys;
+    renderer.SetMaterialProgramRelease([&](const ShaderProgramKey &key) { releasedProgramKeys.push_back(key); });
     std::shared_ptr<InxScreenUIRenderer::CommandPacket> shutdownPacket;
     {
         rhi::RenderTextureDesc desc;
@@ -139,6 +418,186 @@ int main(int argc, char **argv)
         readback.memory = rhi::BufferMemory::Readback;
         const auto output = device.CreateBuffer(readback);
         ScreenUIList list = ScreenUIList::Overlay;
+        const auto screenProgram = CompileUiProgram(false, false);
+        const auto screenAlternate = CompileUiProgram(false, true);
+        const auto worldProgram = CompileUiProgram(true, false);
+        const auto worldAlternate = CompileUiProgram(true, true);
+        // Both cross-domain first draws reject before publication and before
+        // an artifact can enter the material resolver's retained cache.
+        for (const auto &declaredProgram : {screenProgram, worldProgram}) {
+            VkShaderCache crossDomainCache;
+            crossDomainCache.GetProgramCache().Initialize(context.GetDevice());
+            renderer.SetMaterialProgramResolver(
+                [&](const std::string &, uint64_t,
+                    ShaderProgramDomain requestedDomain) -> std::shared_ptr<const ShaderProgramArtifact> {
+                    if (requestedDomain != declaredProgram->domain)
+                        throw std::runtime_error("UI material shader domain mismatch before publication");
+                    assert(crossDomainCache.PublishProgramArtifact(*declaredProgram).accepted);
+                    return crossDomainCache.ShareProgramArtifact(declaredProgram->key.stages);
+                });
+            UIShaderMaterialBinding crossDomainBinding;
+            crossDomainBinding.materialGuid = declaredProgram->domain == ShaderProgramDomain::ScreenUI
+                                                  ? "screen-material-in-world"
+                                                  : "world-material-in-screen";
+            crossDomainBinding.generation = 1;
+            crossDomainBinding.pipelineKey = crossDomainBinding.materialGuid;
+            const auto requestedDomain = declaredProgram->domain == ShaderProgramDomain::ScreenUI
+                                             ? ShaderProgramDomain::WorldUI
+                                             : ShaderProgramDomain::ScreenUI;
+            bool rejectedCrossDomain = false;
+            try {
+                (void)ScreenUIVulkanTestAccess::ResolveMaterialPipeline(renderer, crossDomainBinding, requestedDomain,
+                                                                        &signature);
+            } catch (const std::runtime_error &) {
+                rejectedCrossDomain = true;
+            }
+            assert(rejectedCrossDomain);
+            assert(!crossDomainCache.ShareProgramArtifact(declaredProgram->key.stages));
+            assert(!crossDomainCache.GetProgramCache().HasProgram(declaredProgram->key));
+            crossDomainCache.GetProgramCache().Shutdown();
+            crossDomainCache.Clear();
+        }
+        VkShaderCache scenePrewarmCache;
+        scenePrewarmCache.GetProgramCache().Initialize(context.GetDevice());
+        for (const auto &uiProgram : {screenProgram, worldProgram}) {
+            if (ShaderStageLinker::ShouldPublishScenePrewarmArtifact(*uiProgram))
+                assert(scenePrewarmCache.PublishProgramArtifact(*uiProgram).accepted);
+            assert(!scenePrewarmCache.ShareProgramArtifact(uiProgram->key.stages));
+            assert(!scenePrewarmCache.GetProgramCache().HasProgram(uiProgram->key));
+        }
+        scenePrewarmCache.GetProgramCache().Shutdown();
+        scenePrewarmCache.Clear();
+        // Published UI stage pairs have an explicit owner-release path, not
+        // an unbounded process-lifetime artifact/Forward-program cache.
+        VkShaderCache ownershipCache;
+        ownershipCache.GetProgramCache().Initialize(context.GetDevice());
+        size_t retiredOwnedPrograms = 0;
+        for (int index = 0; index < 24; ++index) {
+            ShaderProgramArtifact candidate = *screenProgram;
+            candidate.key.stages.vertexShaderId += "/owned-" + std::to_string(index);
+            candidate.key.stages.fragmentShaderId += "/owned-" + std::to_string(index);
+            candidate.key.revision = ComputeShaderProgramArtifactRevision(candidate);
+            assert(candidate.IsValid());
+            assert(ownershipCache.PublishProgramArtifact(candidate).accepted);
+            assert(ownershipCache.ShareProgramArtifact(candidate.key.stages));
+            assert(ownershipCache.GetProgramCache().HasProgram(candidate.key));
+            auto released = ownershipCache.TakeUIProgramArtifact(candidate.key);
+            assert(released && !ownershipCache.ShareProgramArtifact(candidate.key.stages));
+            auto programs = ownershipCache.GetProgramCache().TakePrograms(candidate.key);
+            assert(!programs.empty() && !ownershipCache.GetProgramCache().HasProgram(candidate.key));
+            for (auto &program : programs) {
+                retirement.Retire([owned = std::move(program), &retiredOwnedPrograms]() mutable {
+                    owned.reset();
+                    ++retiredOwnedPrograms;
+                });
+            }
+            retirement.Retire([owned = std::move(released)]() mutable { owned.reset(); });
+        }
+        assert(retirement.Collect(epoch - 1) == 0);
+        assert(retirement.GetStats().pending >= 48);
+        begin();
+        finish();
+        assert(retiredOwnedPrograms == 24);
+
+        for (const auto domain : {ShaderProgramDomain::Mesh, ShaderProgramDomain::ParticleSprite}) {
+            ShaderProgramArtifact shared = *screenProgram;
+            shared.domain = domain;
+            shared.key.stages.vertexShaderId += domain == ShaderProgramDomain::Mesh ? "/mesh" : "/particle";
+            shared.key.stages.fragmentShaderId += domain == ShaderProgramDomain::Mesh ? "/mesh" : "/particle";
+            shared.key.revision = ComputeShaderProgramArtifactRevision(shared);
+            assert(ownershipCache.PublishProgramArtifact(shared).accepted);
+            assert(!ownershipCache.TakeUIProgramArtifact(shared.key));
+            assert(ownershipCache.ShareProgramArtifact(shared.key.stages));
+            assert(ownershipCache.GetProgramCache().HasProgram(shared.key));
+        }
+        ownershipCache.GetProgramCache().Shutdown();
+        ownershipCache.Clear();
+        // Core owns a program across UI renderer generations. Only the last
+        // renderer owner may evict its artifact and Forward program.
+        auto ownerCore = std::make_unique<InxVkCoreModular>();
+        ownerCore->GetRetirementQueue().BindSerialSource([&] { return epoch; });
+        auto &coreShaderCache = ownerCore->GetShaderCache();
+        coreShaderCache.GetProgramCache().Initialize(context.GetDevice());
+        // The real mesh-filter and particle-output entry points both use the
+        // Core resolver with an expected non-UI domain. A rejected UI source
+        // must not publish either an artifact or a Forward program.
+        auto wrongDomainMaterial = std::make_shared<InxMaterial>("UIOnNonUIDraw");
+        wrongDomainMaterial->SetVertShader(screenProgram->key.stages.vertexShaderId);
+        wrongDomainMaterial->SetFragShader(screenProgram->key.stages.fragmentShaderId);
+        size_t rejectedNonUIResolutions = 0;
+        ownerCore->SetShaderProgramArtifactResolver(
+            [&](const std::shared_ptr<InxMaterial> &, std::optional<ShaderProgramDomain> expected) {
+                assert(expected &&
+                       (*expected == ShaderProgramDomain::Mesh || *expected == ShaderProgramDomain::ParticleSprite));
+                ++rejectedNonUIResolutions;
+                throw std::runtime_error("UI shader cannot be published for non-UI draw");
+            });
+        for (const auto expected : {ShaderProgramDomain::Mesh, ShaderProgramDomain::ParticleSprite}) {
+            bool rejected = false;
+            try {
+                (void)ownerCore->ResolveShaderProgramArtifact(wrongDomainMaterial, screenProgram->key.stages, expected);
+            } catch (const std::runtime_error &) {
+                rejected = true;
+            }
+            assert(rejected);
+            assert(!coreShaderCache.ShareProgramArtifact(screenProgram->key.stages));
+            assert(!coreShaderCache.GetProgramCache().HasProgram(screenProgram->key));
+        }
+        assert(rejectedNonUIResolutions == 2);
+        assert(coreShaderCache.PublishProgramArtifact(*screenProgram).accepted);
+        bool rejectedCachedUI = false;
+        try {
+            (void)ownerCore->ResolveShaderProgramArtifact(wrongDomainMaterial, screenProgram->key.stages,
+                                                          ShaderProgramDomain::Mesh);
+        } catch (const std::runtime_error &) {
+            rejectedCachedUI = true;
+        }
+        assert(rejectedCachedUI);
+        assert(coreShaderCache.GetProgramCache().HasProgram(screenProgram->key));
+        ownerCore->AcquireUIShaderProgramOwner(screenProgram->key);
+        ownerCore->AcquireUIShaderProgramOwner(screenProgram->key);
+        assert(!ownerCore->ReleaseUIShaderProgramArtifact(screenProgram->key));
+        ownerCore->ReleaseUIShaderProgramOwner(screenProgram->key);
+        assert(coreShaderCache.ShareProgramArtifact(screenProgram->key.stages));
+        ownerCore->ReleaseUIShaderProgramOwner(screenProgram->key);
+        assert(!coreShaderCache.ShareProgramArtifact(screenProgram->key.stages));
+        assert(!coreShaderCache.GetProgramCache().HasProgram(screenProgram->key));
+        // A reload of a never-drawn UI material has no owner; even if an
+        // artifact was published before this policy, invalidation evicts it.
+        assert(coreShaderCache.PublishProgramArtifact(*worldProgram).accepted);
+        assert(ownerCore->ReleaseUIShaderProgramArtifact(worldProgram->key));
+        assert(!coreShaderCache.ShareProgramArtifact(worldProgram->key.stages));
+        assert(!coreShaderCache.GetProgramCache().HasProgram(worldProgram->key));
+        // A drawn UI material releases the old revision before the next draw
+        // publishes and acquires the edited revision.
+        const auto reloadedOwnedProgram = CompileUiProgram(false, true, true);
+        assert(reloadedOwnedProgram->key.stages == screenProgram->key.stages);
+        assert(coreShaderCache.PublishProgramArtifact(*reloadedOwnedProgram).accepted);
+        ownerCore->AcquireUIShaderProgramOwner(reloadedOwnedProgram->key);
+        assert(!ownerCore->ReleaseUIShaderProgramArtifact(reloadedOwnedProgram->key));
+        ownerCore->ReleaseUIShaderProgramOwner(reloadedOwnedProgram->key);
+        assert(!coreShaderCache.ShareProgramArtifact(reloadedOwnedProgram->key.stages));
+        assert(!coreShaderCache.GetProgramCache().HasProgram(reloadedOwnedProgram->key));
+        assert(ownerCore->GetRetirementQueue().Collect(epoch - 1) == 0);
+        assert(ownerCore->GetRetirementQueue().Collect(epoch) > 0);
+        coreShaderCache.GetProgramCache().Shutdown();
+        coreShaderCache.Clear();
+        ownerCore.reset();
+        auto activeScreenProgram = screenProgram;
+        size_t materialResolutions = 0;
+        const auto resolveMaterialProgram =
+            [&](const std::string &guid, uint64_t generation,
+                ShaderProgramDomain requestedDomain) -> std::shared_ptr<const ShaderProgramArtifact> {
+            assert(!guid.empty() && generation != 0);
+            ++materialResolutions;
+            if (guid == "ui-ordinary-guid")
+                return std::shared_ptr<const ShaderProgramArtifact>{};
+            const bool alternate = guid == "ui-alternate-guid" || guid == "world-ui-alternate-guid";
+            if (requestedDomain == ShaderProgramDomain::WorldUI)
+                return alternate ? worldAlternate : worldProgram;
+            return alternate ? screenAlternate : activeScreenProgram;
+        };
+        renderer.SetMaterialProgramResolver(resolveMaterialProgram);
         glm::mat4 camera(1.f);
         glm::mat4 cameraView(1.f);
         glm::mat4 cameraProjection(1.f);
@@ -147,6 +606,7 @@ int main(int argc, char **argv)
         bool isolateSlots = false;
         float clearDepth = 1.0f;
         double renderMs = 0;
+        InxScreenUIRenderer *activeRenderer = &renderer;
         vk::RenderGraph graph;
         vk::ResourceHandle color;
         auto buildGraph = [&] {
@@ -166,19 +626,19 @@ int main(int argc, char **argv)
                     if (isolateSlots) {
                         // Both draws are recorded before either executes on the GPU.
                         // A shared writable buffer makes the red quad disappear.
-                        renderer.BeginFrame(128, 128);
-                        renderer.AddFilledRect(list, 8, 8, 56, 120, 1, 0, 0, 1);
-                        renderer.Render(ctx.GetCommandBuffer(), list, 128, 128, 0);
-                        renderer.BeginFrame(128, 128);
-                        renderer.AddFilledRect(list, 72, 8, 120, 120, 0, 1, 0, 1);
-                        renderer.Render(ctx.GetCommandBuffer(), list, 128, 128, 3);
+                        activeRenderer->BeginFrame(128, 128);
+                        activeRenderer->AddFilledRect(list, 8, 8, 56, 120, 1, 0, 0, 1);
+                        activeRenderer->Render(ctx.GetCommandBuffer(), list, 128, 128, 0);
+                        activeRenderer->BeginFrame(128, 128);
+                        activeRenderer->AddFilledRect(list, 72, 8, 120, 120, 0, 1, 0, 1);
+                        activeRenderer->Render(ctx.GetCommandBuffer(), list, 128, 128, 3);
                         return;
                     }
                     if (list == ScreenUIList::World)
-                        renderer.RenderWorld(ctx.GetCommandBuffer(), 128, 128, camera, signature, frameSlot,
-                                             cullingMask, cameraView, cameraProjection);
+                        activeRenderer->RenderWorld(ctx.GetCommandBuffer(), 128, 128, camera, signature, frameSlot,
+                                                    cullingMask, cameraView, cameraProjection);
                     else
-                        renderer.Render(ctx.GetCommandBuffer(), list, 128, 128, frameSlot);
+                        activeRenderer->Render(ctx.GetCommandBuffer(), list, 128, 128, frameSlot);
                     renderMs =
                         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
                 };
@@ -401,8 +861,9 @@ int main(int argc, char **argv)
             for (bool clip : {false, true}) {
                 renderer.BeginFrame(128, 128);
                 renderer.BeginCommandPacket();
-                renderer.SetMaterialBinding(list, "ui-authored-guid", 1, "ui-authored",
-                                            {0.25f, 0.75f, 0.5f, clip ? 0.25f : 1.f}, clip, 0.5f);
+                renderer.SetMaterialBinding(list,
+                                            list == ScreenUIList::World ? "world-ui-authored-guid" : "ui-authored-guid",
+                                            1, "ui-authored", {0.25f, 0.75f, 0.5f, clip ? 0.25f : 1.f}, clip, 0.5f);
                 if (list == ScreenUIList::World) {
                     glm::mat4 matrix(1.f);
                     matrix[3].z = .5f;
@@ -429,6 +890,128 @@ int main(int argc, char **argv)
                 }
             }
         }
+
+        // A normal Standard/Unlit material still has a GUID and tint, but no
+        // UI ShaderInfo domain. It must draw with the fixed pipeline on all
+        // three UI passes instead of being mistaken for a custom program.
+        for (auto kind : {ScreenUIList::Camera, ScreenUIList::Overlay, ScreenUIList::World}) {
+            list = kind;
+            buildGraph();
+            renderer.BeginFrame(128, 128);
+            renderer.BeginCommandPacket();
+            renderer.SetMaterialBinding(list, "ui-ordinary-guid", 1, "ordinary-material", {0.5f, 0.25f, 0.75f, 1.f});
+            if (list == ScreenUIList::World) {
+                glm::mat4 matrix(1.f);
+                matrix[3].z = .5f;
+                std::array<float, 16> pose{};
+                std::copy_n(glm::value_ptr(matrix), 16, pose.begin());
+                renderer.BeginWorldElement(pose, 50, 50);
+            }
+            renderer.AddFilledRect(list, 0, 0, 100, 100, 1, 1, 1, 1);
+            if (list == ScreenUIList::World)
+                renderer.EndWorldElement();
+            renderer.AppendCommandPackets({renderer.EndCommandPacket()});
+            frame();
+            std::vector<uint8_t> pixels(128 * 128 * 4);
+            assert(device.ReadBuffer(output, 0, pixels.data(), pixels.size()));
+            const size_t sample = (64 * 128 + 64) * 4;
+            assert(pixels[sample] >= 127 && pixels[sample] <= 128);
+            assert(pixels[sample + 1] >= 63 && pixels[sample + 1] <= 64);
+            assert(pixels[sample + 2] >= 191 && pixels[sample + 2] <= 192);
+        }
+
+        // The same GUID-bound command must execute authored SPIR-V. The two
+        // programs share material color and the image descriptor but produce
+        // different pixels in Camera, Overlay and World UI.
+        for (auto kind : {ScreenUIList::Camera, ScreenUIList::Overlay, ScreenUIList::World}) {
+            list = kind;
+            buildGraph();
+            for (bool alternate : {false, true}) {
+                renderer.BeginFrame(128, 128);
+                renderer.BeginCommandPacket();
+                const char *materialGuid = list == ScreenUIList::World
+                                               ? (alternate ? "world-ui-alternate-guid" : "world-ui-authored-guid")
+                                               : (alternate ? "ui-alternate-guid" : "ui-authored-guid");
+                renderer.SetMaterialBinding(list, materialGuid, 1, "test-ui-program", {1.f, 1.f, 1.f, 1.f});
+                if (list == ScreenUIList::World) {
+                    glm::mat4 matrix(1.f);
+                    matrix[3].z = .5f;
+                    std::array<float, 16> pose{};
+                    std::copy_n(glm::value_ptr(matrix), 16, pose.begin());
+                    renderer.BeginWorldElement(pose, 50, 50);
+                }
+                renderer.AddFilledRect(list, 0, 0, 100, 100, 1, 1, 1, 1);
+                if (list == ScreenUIList::World)
+                    renderer.EndWorldElement();
+                renderer.AppendCommandPackets({renderer.EndCommandPacket()});
+                frame();
+                std::array<uint8_t, 128 * 128 * 4> pixels{};
+                assert(device.ReadBuffer(output, 0, pixels.data(), pixels.size()));
+                const size_t sample = (64 * 128 + 64) * 4;
+                if (alternate) {
+                    assert(pixels[sample] >= 31 && pixels[sample] <= 32);
+                    assert(pixels[sample + 1] >= 127 && pixels[sample + 1] <= 128);
+                    assert(pixels[sample + 2] == 255);
+                } else {
+                    assert(pixels[sample] == 255 && pixels[sample + 1] == 255 && pixels[sample + 2] == 255);
+                }
+            }
+        }
+
+        // A retained command resolves once per GUID/generation, not per draw.
+        list = ScreenUIList::Overlay;
+        buildGraph();
+        renderer.BeginFrame(128, 128);
+        renderer.BeginCommandPacket();
+        renderer.SetMaterialBinding(list, "ui-authored-guid", 1, "test-ui-program");
+        renderer.AddFilledRect(list, 0, 0, 100, 100, 1, 1, 1, 1);
+        const auto reloadPacket = renderer.EndCommandPacket();
+        renderer.AppendCommandPackets({reloadPacket});
+        frame();
+        const size_t resolvedBeforeRetained = materialResolutions;
+        frame();
+        assert(materialResolutions == resolvedBeforeRetained);
+
+        // A new shader revision retires obsolete Vulkan pipelines by GPU
+        // submission serial and re-resolves the retained command exactly once.
+        const auto reloadedScreen = CompileUiProgram(false, true, true);
+        assert(reloadedScreen->key.stages == screenProgram->key.stages);
+        assert(reloadedScreen->key != screenProgram->key);
+        activeScreenProgram = reloadedScreen;
+        const auto variantsBeforeReload = renderer.GetMaterialPipelineVariantCount();
+        const auto retirementsBeforeReload = retirement.GetStats().pushed;
+        renderer.InvalidateMaterialProgram(screenProgram->key.stages);
+        assert(renderer.GetMaterialPipelineVariantCount() < variantsBeforeReload);
+        assert(retirement.GetStats().pushed > retirementsBeforeReload);
+        frame();
+        assert(materialResolutions == resolvedBeforeRetained + 1);
+
+        assert(renderer.GetMaterialPipelineVariantCount() <= variantsBeforeReload);
+        std::array<uint8_t, 128 * 128 * 4> hotPixels{};
+        assert(device.ReadBuffer(output, 0, hotPixels.data(), hotPixels.size()));
+        const size_t hotSample = (64 * 128 + 64) * 4;
+        assert(hotPixels[hotSample] >= 31 && hotPixels[hotSample] <= 32);
+        assert(hotPixels[hotSample + 2] == 255);
+        frame();
+        assert(materialResolutions == resolvedBeforeRetained + 1);
+
+        // Removing the last GUID reference retires its pipeline after the
+        // current submission serial. An earlier completed serial cannot free
+        // a pipeline that a recorded/in-flight frame could still reference.
+        const auto retirementsBeforeRemoval = retirement.GetStats().pushed;
+        renderer.BeginFrame(128, 128);
+        begin();
+        graph.Execute(command);
+        assert(renderer.GetMaterialPipelineVariantCount() == 0);
+        assert(retirement.GetStats().pushed > retirementsBeforeRemoval);
+        assert(std::find(releasedProgramKeys.begin(), releasedProgramKeys.end(), reloadedScreen->key) !=
+               releasedProgramKeys.end());
+        const auto pendingBeforeCompletion = retirement.GetStats().pending;
+        assert(pendingBeforeCompletion > 0);
+        assert(retirement.Collect(epoch - 1) == 0);
+        assert(retirement.GetStats().pending == pendingBeforeCompletion);
+        finish();
+        assert(retirement.GetStats().pending == 0);
 
         // Changed content forces a real rebuild, unlike the static benchmark.
         // Distinct descriptor sets deliberately prevent texture batching.
@@ -931,6 +1514,87 @@ int main(int argc, char **argv)
         textlayout::ClearFontCache();
         assert(renderer.GetCommandPacketEpoch() != fontEpoch);
         assert(!renderer.BeginFrameCached(128, 128, 7788));
+        renderer.InvalidateMaterialProgram(activeScreenProgram->key.stages);
+        renderer.InvalidateMaterialProgram(worldProgram->key.stages);
+        assert(renderer.GetMaterialPipelineVariantCount() == 0);
+        // Mirror an MSAA renderer generation cutover: the replacement and the
+        // retired renderer may own the same key until the old submission ends.
+        std::unordered_map<ShaderProgramKey, size_t, ShaderProgramKeyHash> uiOwners;
+        std::vector<ShaderProgramKey> lastOwnerReleased;
+        auto acquireUI = [&](const ShaderProgramKey &key) { ++uiOwners[key]; };
+        auto releaseUI = [&](const ShaderProgramKey &key) {
+            const auto owner = uiOwners.find(key);
+            assert(owner != uiOwners.end() && owner->second != 0);
+            if (--owner->second == 0) {
+                uiOwners.erase(owner);
+                lastOwnerReleased.push_back(key);
+            }
+        };
+        renderer.SetMaterialProgramAcquire(acquireUI);
+        renderer.SetMaterialProgramRelease(releaseUI);
+        list = ScreenUIList::Overlay;
+        buildGraph();
+        renderer.BeginFrame(128, 128);
+        renderer.BeginCommandPacket();
+        renderer.SetMaterialBinding(list, "ui-authored-guid", 1, "test-ui-program");
+        renderer.AddFilledRect(list, 0, 0, 100, 100, 1, 1, 1, 1);
+        renderer.AppendCommandPackets({renderer.EndCommandPacket()});
+        frame();
+        const auto sharedKey = activeScreenProgram->key;
+        assert(uiOwners.at(sharedKey) == 1);
+
+        auto replacementUI = std::make_unique<InxScreenUIRenderer>();
+        assert(replacementUI->Initialize(context.GetDevice(), context.GetVmaAllocator(), VK_FORMAT_R8G8B8A8_UNORM,
+                                         VK_FORMAT_D32_SFLOAT, VK_SAMPLE_COUNT_1_BIT, 4));
+        replacementUI->SetRetirementQueue(&retirement);
+        replacementUI->SetMaterialProgramAcquire(acquireUI);
+        replacementUI->SetMaterialProgramRelease(releaseUI);
+        replacementUI->SetMaterialProgramResolver([&](const std::string &guid, uint64_t generation,
+                                                      ShaderProgramDomain requestedDomain) {
+            assert(generation == 1);
+            assert(requestedDomain == ShaderProgramDomain::ScreenUI || requestedDomain == ShaderProgramDomain::WorldUI);
+            return guid == "world-ui-authored-guid" ? worldProgram : activeScreenProgram;
+        });
+        activeRenderer = replacementUI.get();
+        replacementUI->BeginFrame(128, 128);
+        replacementUI->BeginCommandPacket();
+        replacementUI->SetMaterialBinding(list, "ui-authored-guid", 1, "test-ui-program");
+        replacementUI->AddFilledRect(list, 0, 0, 100, 100, 1, 1, 1, 1);
+        replacementUI->AppendCommandPackets({replacementUI->EndCommandPacket()});
+        frame();
+        assert(uiOwners.at(sharedKey) == 2);
+        const auto pendingBeforeOldDestroy = retirement.GetStats().pending;
+        renderer.Destroy();
+        assert(uiOwners.at(sharedKey) == 1);
+        assert(lastOwnerReleased.empty());
+        assert(retirement.GetStats().pending > pendingBeforeOldDestroy);
+        assert(retirement.Collect(epoch - 1) == 0);
+        begin();
+        finish();
+
+        list = ScreenUIList::World;
+        buildGraph();
+        replacementUI->BeginFrame(128, 128);
+        replacementUI->BeginCommandPacket();
+        replacementUI->SetMaterialBinding(ScreenUIList::Overlay, "ui-authored-guid", 1, "test-ui-program");
+        replacementUI->AddFilledRect(ScreenUIList::Overlay, 0, 0, 100, 100, 1, 1, 1, 1);
+        replacementUI->AppendCommandPackets({replacementUI->EndCommandPacket()});
+        replacementUI->BeginCommandPacket();
+        replacementUI->SetMaterialBinding(list, "world-ui-authored-guid", 1, "test-ui-program");
+        replacementUI->BeginWorldElement(pose, 50, 50);
+        replacementUI->AddFilledRect(list, 0, 0, 100, 100, 1, 1, 1, 1);
+        replacementUI->EndWorldElement();
+        replacementUI->AppendCommandPackets({replacementUI->EndCommandPacket()});
+        frame();
+        assert(uiOwners.at(worldProgram->key) == 1);
+        assert(uiOwners.at(sharedKey) == 1 && lastOwnerReleased.empty());
+        replacementUI->Destroy();
+        assert(uiOwners.empty());
+        assert(std::find(lastOwnerReleased.begin(), lastOwnerReleased.end(), sharedKey) != lastOwnerReleased.end());
+        assert(std::find(lastOwnerReleased.begin(), lastOwnerReleased.end(), worldProgram->key) !=
+               lastOwnerReleased.end());
+        begin();
+        finish();
         graph.Destroy();
         device.Release(output);
     }

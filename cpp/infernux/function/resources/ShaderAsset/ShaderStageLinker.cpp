@@ -1,4 +1,5 @@
 #include "ShaderStageLinker.h"
+#include <core/types/ShaderProgramArtifact.h>
 
 #include <algorithm>
 #include <array>
@@ -246,14 +247,76 @@ bool ShaderProgramInterfaceArtifact::IsValid() const noexcept
     });
 }
 
+bool ShaderStageLinker::IsUIStagePair(const ShaderDescriptor &vertex, const ShaderDescriptor &fragment)
+{
+    const auto uiStage = [](const ShaderDescriptor &stage) {
+        return HasCapability(stage, "ScreenUI") || HasCapability(stage, "WorldUI");
+    };
+    return uiStage(vertex) || uiStage(fragment);
+}
+
+bool ShaderStageLinker::ShouldPrewarmSceneMaterial(const ShaderDescriptor &vertex, const ShaderDescriptor &fragment)
+{
+    return !IsUIStagePair(vertex, fragment);
+}
+
+bool ShaderStageLinker::ShouldPublishScenePrewarmArtifact(const ShaderProgramArtifact &artifact) noexcept
+{
+    return artifact.domain != ShaderProgramDomain::ScreenUI && artifact.domain != ShaderProgramDomain::WorldUI;
+}
+
 ShaderProgramInterfaceArtifact ShaderStageLinker::Link(const ShaderDescriptor &vertex, const ShaderDescriptor &fragment,
                                                        const ShaderStageLinkOptions &options)
 {
     ShaderProgramInterfaceArtifact artifact;
     artifact.vertex = {vertex.shaderId, vertex.filePath};
     artifact.fragment = {fragment.shaderId, fragment.filePath};
-    artifact.domain =
-        HasCapability(vertex, "ParticleSprite") ? ShaderProgramDomain::ParticleSprite : ShaderProgramDomain::Mesh;
+    const auto stageDomain = [](const ShaderDescriptor &stage) {
+        if (HasCapability(stage, "ScreenUI"))
+            return ShaderProgramDomain::ScreenUI;
+        if (HasCapability(stage, "WorldUI"))
+            return ShaderProgramDomain::WorldUI;
+        if (HasCapability(stage, "ParticleSprite"))
+            return ShaderProgramDomain::ParticleSprite;
+        return ShaderProgramDomain::Mesh;
+    };
+    artifact.domain = stageDomain(vertex);
+    const auto fragmentDomain = stageDomain(fragment);
+    if ((artifact.domain == ShaderProgramDomain::ScreenUI || artifact.domain == ShaderProgramDomain::WorldUI ||
+         fragmentDomain == ShaderProgramDomain::ScreenUI || fragmentDomain == ShaderProgramDomain::WorldUI) &&
+        artifact.domain != fragmentDomain) {
+        artifact.diagnostics.push_back(
+            MakeDiagnostic(ShaderLinkDiagnosticCode::DomainMismatch,
+                           "vertex and fragment ShaderInfo Capabilities must declare the same program domain",
+                           fragment.filePath, {}, vertex.filePath));
+    }
+    if (artifact.domain == ShaderProgramDomain::ScreenUI || artifact.domain == ShaderProgramDomain::WorldUI) {
+        const auto incompatibleCapability = [](const ShaderDescriptor &stage) {
+            return HasCapability(stage, "BindlessTextures") || HasCapability(stage, "ParticleSprite") ||
+                   (HasCapability(stage, "ScreenUI") && HasCapability(stage, "WorldUI"));
+        };
+        if (incompatibleCapability(vertex) || incompatibleCapability(fragment)) {
+            artifact.diagnostics.push_back(
+                MakeDiagnostic(ShaderLinkDiagnosticCode::UnsupportedUIProperty,
+                               "UI ShaderInfo Capabilities cannot combine ScreenUI/WorldUI with BindlessTextures, "
+                               "ParticleSprite, or another UI domain",
+                               fragment.filePath, {}));
+        }
+        if (!vertex.hasMainFunc || !fragment.hasMainFunc || !vertex.outputs.empty() || !fragment.inputs.empty()) {
+            artifact.diagnostics.push_back(
+                MakeDiagnostic(ShaderLinkDiagnosticCode::MissingEntryPoint,
+                               "UI shader stages require explicit main() and fixed engine vertex/varying locations",
+                               fragment.filePath, {}));
+        }
+        if (!vertex.properties.empty() || !vertex.textureProperties.empty() || !fragment.properties.empty() ||
+            !fragment.textureProperties.empty()) {
+            artifact.diagnostics.push_back(
+                MakeDiagnostic(ShaderLinkDiagnosticCode::UnsupportedUIProperty,
+                               "UI shader properties use the fixed push-constant and set 0 image contract; "
+                               "ShaderInfo Properties are not supported by this UI domain",
+                               fragment.filePath, {}));
+        }
+    }
     artifact.shadingModel = fragment.shadingModel;
     artifact.firstUserVaryingLocation = options.firstUserVaryingLocation;
 

@@ -61,6 +61,25 @@ std::string ReadText(const std::string &path)
 
 int main()
 {
+    infernux::ShaderDescriptor meshVertex;
+    infernux::ShaderDescriptor meshFragment;
+    assert(infernux::ShaderStageLinker::ShouldPrewarmSceneMaterial(meshVertex, meshFragment));
+    assert(!infernux::ShaderStageLinker::IsUIStagePair(meshVertex, meshFragment));
+    meshVertex.capabilities = {"ParticleSprite"};
+    meshFragment.capabilities = {"ParticleSprite"};
+    assert(infernux::ShaderStageLinker::ShouldPrewarmSceneMaterial(meshVertex, meshFragment));
+    for (const char *uiDomain : {"ScreenUI", "WorldUI"}) {
+        meshVertex.capabilities = {uiDomain};
+        meshFragment.capabilities = {uiDomain};
+        assert(infernux::ShaderStageLinker::IsUIStagePair(meshVertex, meshFragment));
+        assert(!infernux::ShaderStageLinker::ShouldPrewarmSceneMaterial(meshVertex, meshFragment));
+        meshVertex.capabilities.clear();
+        // A mismatched UI/mesh binding is still deferred, never published
+        // without a UI owner during shader reload.
+        assert(infernux::ShaderStageLinker::IsUIStagePair(meshVertex, meshFragment));
+        assert(!infernux::ShaderStageLinker::ShouldPrewarmSceneMaterial(meshVertex, meshFragment));
+    }
+
     assert(infernux::ShaderCompileTargetUsesInstanceAuxiliary(infernux::ShaderCompileTarget::Forward));
     assert(infernux::ShaderCompileTargetUsesInstanceAuxiliary(infernux::ShaderCompileTarget::ForwardPlus));
     assert(infernux::ShaderCompileTargetUsesInstanceAuxiliary(infernux::ShaderCompileTarget::GBuffer));
@@ -127,6 +146,7 @@ void surface(out SurfaceData s)
 
     const auto vertex = compiler.ParseShaderSource(waveVertex, "WaveDeform.vert");
     const auto fragment = compiler.ParseShaderSource(oceanFragment, "OceanSurface.frag");
+    assert(infernux::ShaderStageLinker::ShouldPrewarmSceneMaterial(vertex, fragment));
     const auto artifact = infernux::ShaderStageLinker::Link(vertex, fragment);
     assert(artifact.IsValid());
     assert(artifact.vertex.shaderId == "Tests/WaveDeform");
@@ -279,6 +299,7 @@ void surface(out SurfaceData s)
     assert(completeCompilation.pendingTargets.empty());
     const auto completeArtifact = completeCompilation.CreateRuntimeArtifact();
     assert(completeArtifact.IsValid());
+    assert(infernux::ShaderStageLinker::ShouldPublishScenePrewarmArtifact(completeArtifact));
     assert(completeArtifact.variants.size() == 9);
     assert(completeArtifact.FindVariant(infernux::ShaderCompileTarget::Forward) != nullptr);
     assert(completeArtifact.FindVariant(infernux::ShaderCompileTarget::ForwardPlus) != nullptr);
@@ -781,9 +802,9 @@ void surface(out SurfaceData s) {
 )";
     for (bool bindless : {false, true}) {
         infernux::InxShaderLoader::SetBindlessTextureABIEnabled(bindless);
-        const auto runtimeCutout = compiler.CompileLinkedProgramArtifact(
-            ReadText(shaderRoot + "/standard.vert"), shaderRoot + "/standard.vert",
-            runtimeCutoutFragment, "RuntimeCutout.frag");
+        const auto runtimeCutout = compiler.CompileLinkedProgramArtifact(ReadText(shaderRoot + "/standard.vert"),
+                                                                         shaderRoot + "/standard.vert",
+                                                                         runtimeCutoutFragment, "RuntimeCutout.frag");
         if (!runtimeCutout.IsValid()) {
             for (const auto &error : runtimeCutout.errors)
                 std::cerr << error << '\n';
@@ -791,25 +812,29 @@ void surface(out SurfaceData s) {
         assert(runtimeCutout.IsValid());
         for (const auto target : {infernux::ShaderCompileTarget::Shadow, infernux::ShaderCompileTarget::Depth,
                                   infernux::ShaderCompileTarget::Picking}) {
-            const auto variant = std::find_if(runtimeCutout.compiledVariants.begin(), runtimeCutout.compiledVariants.end(),
-                                             [target](const auto &value) { return value.target == target; });
+            const auto variant =
+                std::find_if(runtimeCutout.compiledVariants.begin(), runtimeCutout.compiledVariants.end(),
+                             [target](const auto &value) { return value.target == target; });
             assert(variant != runtimeCutout.compiledVariants.end());
             assert(variant->generatedFragmentSource.find("surface(s);") != std::string::npos);
-            assert(variant->generatedFragmentSource.find("s.alpha < material._AlphaClipThreshold") != std::string::npos);
+            assert(variant->generatedFragmentSource.find("s.alpha < material._AlphaClipThreshold") !=
+                   std::string::npos);
             if (target == infernux::ShaderCompileTarget::Shadow) {
                 assert(variant->usesBindlessTextureABI == bindless);
-                assert(variant->generatedFragmentSource.find("sampleAlbedoAlpha(opacityTexture).r * material.opacity") !=
-                       std::string::npos);
+                assert(variant->generatedFragmentSource.find(
+                           "sampleAlbedoAlpha(opacityTexture).r * material.opacity") != std::string::npos);
                 infernux::ShaderReflection reflection;
                 assert(reflection.Reflect(variant->fragmentSpirv, VK_SHADER_STAGE_FRAGMENT_BIT));
                 assert(std::any_of(reflection.GetUniformBuffers().begin(), reflection.GetUniformBuffers().end(),
                                    [](const auto &buffer) {
-                                       return buffer.name == "MaterialProperties" && buffer.set == 2 && buffer.binding == 8;
+                                       return buffer.name == "MaterialProperties" && buffer.set == 2 &&
+                                              buffer.binding == 8;
                                    }));
                 if (!bindless)
                     assert(std::any_of(reflection.GetSampledImages().begin(), reflection.GetSampledImages().end(),
                                        [](const auto &texture) {
-                                           return texture.name == "opacityTexture" && texture.set == 2 && texture.binding == 1;
+                                           return texture.name == "opacityTexture" && texture.set == 2 &&
+                                                  texture.binding == 1;
                                        }));
             }
         }

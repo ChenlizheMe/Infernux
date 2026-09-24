@@ -548,7 +548,12 @@ std::string ResolveGpuParticleOutputPrograms(InxRenderer &renderer,
         for (auto &output : program.outputs) {
             if (!output.material)
                 continue;
-            output.shaderProgram = renderer.ResolveShaderProgramArtifact(output.material);
+            try {
+                output.shaderProgram =
+                    renderer.ResolveShaderProgramArtifact(output.material, ShaderProgramDomain::ParticleSprite);
+            } catch (const std::exception &error) {
+                return "particle output '" + output.stableId + "' shader resolution failed: " + error.what();
+            }
             if (output.shaderProgram && output.shaderProgram->domain != ShaderProgramDomain::ParticleSprite) {
                 return "particle output '" + output.stableId +
                        "' shader is incompatible with the particle Surface domain";

@@ -364,6 +364,85 @@ void ValidateReflectedMaterial(const ShaderReflection &reflection, const ShaderP
         }
     }
 }
+
+void ValidateReflectedUIStage(const ShaderReflection &reflection, ShaderProgramDomain domain,
+                              ShaderStageVisibility stage, std::vector<std::string> &errors)
+{
+    const bool world = domain == ShaderProgramDomain::WorldUI;
+    const bool vertex = stage == ShaderStageVisibility::Vertex;
+    const std::string stageName = vertex ? "vertex" : "fragment";
+    auto requireIO = [&](const std::vector<ShaderIOVariable> &io, uint32_t location, VkFormat format,
+                         const char *kind) {
+        const auto found =
+            std::find_if(io.begin(), io.end(), [location](const auto &entry) { return entry.location == location; });
+        if (found == io.end() || found->format != format)
+            errors.push_back("UI " + stageName + " requires " + kind + " location " + std::to_string(location) +
+                             " with the fixed vertex interface format");
+    };
+    if (vertex) {
+        requireIO(reflection.GetInputs(), 0, world ? VK_FORMAT_R32G32B32_SFLOAT : VK_FORMAT_R32G32_SFLOAT, "input");
+        requireIO(reflection.GetInputs(), 1, VK_FORMAT_R32G32_SFLOAT, "input");
+        requireIO(reflection.GetInputs(), 2, VK_FORMAT_R32G32B32A32_SFLOAT, "input");
+        if (world) {
+            requireIO(reflection.GetInputs(), 3, VK_FORMAT_R32G32_SFLOAT, "input");
+            requireIO(reflection.GetInputs(), 4, VK_FORMAT_R32G32B32_SFLOAT, "input");
+            requireIO(reflection.GetInputs(), 5, VK_FORMAT_R32G32_SFLOAT, "input");
+            requireIO(reflection.GetInputs(), 6, VK_FORMAT_R32_SFLOAT, "input");
+        }
+        requireIO(reflection.GetOutputs(), 0, VK_FORMAT_R32G32B32A32_SFLOAT, "output");
+        requireIO(reflection.GetOutputs(), 1, VK_FORMAT_R32G32_SFLOAT, "output");
+        if (world)
+            requireIO(reflection.GetOutputs(), 2, VK_FORMAT_R32G32_SFLOAT, "output");
+        if (reflection.GetInputs().size() != (world ? 7u : 3u) || reflection.GetOutputs().size() != (world ? 3u : 2u))
+            errors.push_back("UI vertex declares locations outside the fixed UI vertex/varying ABI");
+    } else {
+        requireIO(reflection.GetInputs(), 0, VK_FORMAT_R32G32B32A32_SFLOAT, "input");
+        requireIO(reflection.GetInputs(), 1, VK_FORMAT_R32G32_SFLOAT, "input");
+        if (world)
+            requireIO(reflection.GetInputs(), 2, VK_FORMAT_R32G32_SFLOAT, "input");
+        requireIO(reflection.GetOutputs(), 0, VK_FORMAT_R32G32B32A32_SFLOAT, "output");
+        if (reflection.GetInputs().size() != (world ? 3u : 2u) || reflection.GetOutputs().size() != 1u)
+            errors.push_back("UI fragment declares locations outside the fixed UI varying/output ABI");
+    }
+    if (!reflection.GetUniformBuffers().empty() || !reflection.GetStorageBuffers().empty() ||
+        !reflection.GetStorageImages().empty() || !reflection.GetUnsupportedDescriptorResources().empty())
+        errors.push_back("UI " + stageName + " declares descriptors outside the UI image ABI");
+    const auto &images = reflection.GetSampledImages();
+    if (vertex ? !images.empty()
+               : images.size() != 1 || images[0].set != 0 || images[0].binding != 0 ||
+                     images[0].descriptorType != VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER ||
+                     images[0].arraySize != 1 || images[0].hasArrayDimension || images[0].multisampled ||
+                     images[0].dimension != ReflectedImageDimension::D2 || images[0].arrayed)
+        errors.push_back("UI " + stageName +
+                         " must sample only one non-arrayed 2D non-multisampled engine image at set 0 binding 0");
+    const auto &push = reflection.GetPushConstants();
+    if (push.size() != 1 || push[0].offset != 0 || push[0].size != (world ? 128u : 64u)) {
+        errors.push_back("UI " + stageName + " push constants do not match the engine UI ABI");
+        return;
+    }
+    const auto requireMember = [&](const char *name, uint32_t offset, uint32_t size) {
+        const auto found = std::find_if(push[0].members.begin(), push[0].members.end(),
+                                        [name](const auto &member) { return member.name == name; });
+        if (found == push[0].members.end() || found->offset != offset || found->size != size)
+            errors.push_back("UI " + stageName + " push constant '" + name + "' has an invalid offset");
+    };
+    if (world) {
+        requireMember("viewProjection", 0, 64);
+        requireMember("materialColor", 64, 16);
+        requireMember("alphaClipThreshold", 80, 4);
+        requireMember("alphaClipEnabled", 84, 4);
+        requireMember("screenScale", 88, 8);
+        requireMember("cameraRight", 96, 16);
+        requireMember("cameraUp", 112, 16);
+    } else {
+        requireMember("scale", 0, 8);
+        requireMember("translate", 8, 8);
+        requireMember("encodeSample", 16, 4);
+        requireMember("materialColor", 32, 16);
+        requireMember("alphaClipThreshold", 48, 4);
+        requireMember("alphaClipEnabled", 52, 4);
+    }
+}
 } // namespace
 
 void InxShaderLoader::InvalidateDirectoryCache(const std::string &dir)
@@ -688,9 +767,14 @@ ShaderDescriptor InxShaderLoader::ParseShaderSource(const std::string &source, c
             else
                 desc.warnings.push_back(message);
         }
-        if (const auto layout = FindShaderLayoutDeclaration(source)) {
-            desc.errors.push_back(filePath + ":" + std::to_string(layout->line) + ":" + std::to_string(layout->column) +
-                                  ": ShaderInfo source must not declare layout(...); the stage linker owns Vulkan ABI");
+        const bool explicitUIInterface =
+            DescriptorHasCapability(desc, "ScreenUI") || DescriptorHasCapability(desc, "WorldUI");
+        if (!explicitUIInterface) {
+            if (const auto layout = FindShaderLayoutDeclaration(source)) {
+                desc.errors.push_back(
+                    filePath + ":" + std::to_string(layout->line) + ":" + std::to_string(layout->column) +
+                    ": ShaderInfo source must not declare layout(...); the stage linker owns Vulkan ABI");
+            }
         }
     }
 
@@ -910,6 +994,15 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
                                           const ShaderProgramInterfaceArtifact *linkedInterface,
                                           const std::string &deferredShadingRegistry) const
 {
+    if (linkedInterface && (linkedInterface->domain == ShaderProgramDomain::ScreenUI ||
+                            linkedInterface->domain == ShaderProgramDomain::WorldUI)) {
+        if (target != ShaderCompileTarget::Forward)
+            return {};
+        // UI stages provide the fixed engine vertex, push-constant and image
+        // declarations explicitly. Reflection below validates that ABI before
+        // the program may be published; no geometry/lighting injection applies.
+        return resolvedSource;
+    }
     const auto hasCapability = [&](std::string_view capability) { return DescriptorHasCapability(desc, capability); };
     const bool particleSpriteDomain =
         DescriptorHasCapability(desc, "ParticleSprite") ||
@@ -920,8 +1013,8 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
     const bool requestsEngineGlobals = hasCapability("EngineGlobals");
     const bool particleBindlessTarget =
         !particleSpriteDomain || target == ShaderCompileTarget::Forward || target == ShaderCompileTarget::ForwardPlus;
-    const bool shadowAlphaClipTarget = target == ShaderCompileTarget::Shadow && desc.isFragmentShader &&
-                                       desc.hasSurfaceFunc && !desc.hasMainFunc;
+    const bool shadowAlphaClipTarget =
+        target == ShaderCompileTarget::Shadow && desc.isFragmentShader && desc.hasSurfaceFunc && !desc.hasMainFunc;
     const bool bindlessTextureABI =
         hasCapability("BindlessTextures") && IsBindlessTextureABIEnabled() && desc.isFragmentShader &&
         (target != ShaderCompileTarget::Shadow || shadowAlphaClipTarget) && particleBindlessTarget;
@@ -1906,8 +1999,8 @@ InxShaderLoader::CompileLinkedProgramVariant(const std::string &vertexSource, co
     const bool particleBindlessTarget = interfaceArtifact.domain != ShaderProgramDomain::ParticleSprite ||
                                         target == ShaderCompileTarget::Forward ||
                                         target == ShaderCompileTarget::ForwardPlus;
-    const bool shadowAlphaClipTarget = target == ShaderCompileTarget::Shadow &&
-                                       fragmentDescriptor.hasSurfaceFunc && !fragmentDescriptor.hasMainFunc;
+    const bool shadowAlphaClipTarget =
+        target == ShaderCompileTarget::Shadow && fragmentDescriptor.hasSurfaceFunc && !fragmentDescriptor.hasMainFunc;
     const bool bindlessTextureABI =
         DescriptorHasCapability(fragmentDescriptor, "BindlessTextures") && IsBindlessTextureABIEnabled() &&
         (target != ShaderCompileTarget::Shadow || shadowAlphaClipTarget) && particleBindlessTarget;
@@ -1928,8 +2021,13 @@ InxShaderLoader::CompileLinkedProgramVariant(const std::string &vertexSource, co
 
     ShaderReflection vertexReflection;
     ShaderReflection fragmentReflection;
+    const bool uiDomain = interfaceArtifact.domain == ShaderProgramDomain::ScreenUI ||
+                          interfaceArtifact.domain == ShaderProgramDomain::WorldUI;
     if (!vertexReflection.Reflect(compilation.vertexSpirv, VK_SHADER_STAGE_VERTEX_BIT)) {
         compilation.errors.push_back("failed to reflect linked vertex SPIR-V");
+    } else if (uiDomain) {
+        ValidateReflectedUIStage(vertexReflection, interfaceArtifact.domain, ShaderStageVisibility::Vertex,
+                                 compilation.errors);
     } else {
         ValidateReflectedVaryings(vertexReflection.GetOutputs(), compilation.interfaceArtifact, "vertex",
                                   compilation.errors);
@@ -1938,6 +2036,9 @@ InxShaderLoader::CompileLinkedProgramVariant(const std::string &vertexSource, co
     }
     if (!fragmentReflection.Reflect(compilation.fragmentSpirv, VK_SHADER_STAGE_FRAGMENT_BIT)) {
         compilation.errors.push_back("failed to reflect linked fragment SPIR-V");
+    } else if (uiDomain) {
+        ValidateReflectedUIStage(fragmentReflection, interfaceArtifact.domain, ShaderStageVisibility::Fragment,
+                                 compilation.errors);
     } else {
         ValidateReflectedVaryings(fragmentReflection.GetInputs(), compilation.interfaceArtifact, "fragment",
                                   compilation.errors);

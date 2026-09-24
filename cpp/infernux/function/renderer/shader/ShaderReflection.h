@@ -48,6 +48,18 @@ struct UniformBufferInfo
     std::vector<UniformMember> members;
 };
 
+enum class ReflectedImageDimension : uint8_t
+{
+    Unknown,
+    D1,
+    D2,
+    D3,
+    Cube,
+    Rect,
+    Buffer,
+    SubpassData,
+};
+
 /**
  * @brief A sampled image (texture) descriptor
  */
@@ -60,6 +72,9 @@ struct SampledImageInfo
     VkShaderStageFlags stageFlags;
     VkDescriptorType descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     bool multisampled = false;
+    ReflectedImageDimension dimension = ReflectedImageDimension::Unknown;
+    bool arrayed = false;
+    bool hasArrayDimension = false; // Descriptor arrays, including [1] and multidimensional arrays.
 };
 
 struct StorageBufferInfo
@@ -151,6 +166,10 @@ class ShaderReflection
     {
         return m_storageImages;
     }
+    [[nodiscard]] const std::vector<std::string> &GetUnsupportedDescriptorResources() const
+    {
+        return m_unsupportedDescriptorResources;
+    }
     [[nodiscard]] const std::vector<PushConstantInfo> &GetPushConstants() const
     {
         return m_pushConstants;
@@ -198,6 +217,7 @@ class ShaderReflection
     std::vector<SampledImageInfo> m_sampledImages;
     std::vector<StorageBufferInfo> m_storageBuffers;
     std::vector<StorageImageInfo> m_storageImages;
+    std::vector<std::string> m_unsupportedDescriptorResources;
     std::vector<PushConstantInfo> m_pushConstants;
     std::vector<ShaderIOVariable> m_inputs;
     std::vector<ShaderIOVariable> m_outputs;

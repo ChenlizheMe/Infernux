@@ -962,6 +962,20 @@ void MaterialPipelineManager::InvalidateMaterialsUsingProgramPair(const ShaderSt
     INXLOG_INFO("Invalidated ", materialsToRemove.size(), " materials using shader program '", stages.ToString(), "'");
 }
 
+bool MaterialPipelineManager::HasMaterialProgramOwner(const ShaderProgramKey &key) const
+{
+    for (const auto &[name, data] : m_renderDataMap) {
+        (void)name;
+        if (data && data->programKey == key)
+            return true;
+    }
+    for (const auto &[passKey, data] : m_passRenderDataMap) {
+        if (data && passKey.programKey.program == key)
+            return true;
+    }
+    return false;
+}
+
 uint32_t MaterialPipelineManager::RefreshMaterialsUsingTexture(const std::string &textureGuid)
 {
     // Texture2D properties hold validated GUIDs or builtin tokens, so equality is sufficient.

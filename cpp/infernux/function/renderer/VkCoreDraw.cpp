@@ -843,11 +843,8 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
             if (const MaterialRenderData *committed =
                     m_materialPipelineManager.GetRenderData(material->GetMaterialKey()))
                 stages = committed->programKey.stages;
-            const ShaderProgramArtifact *artifact = m_shaderCache.FindProgramArtifact(stages);
-            if (!artifact && m_shaderProgramArtifactResolver) {
-                m_shaderProgramArtifactResolver(*materialOwner);
-                artifact = m_shaderCache.FindProgramArtifact(stages);
-            }
+            const ShaderProgramArtifact *artifact =
+                ResolveShaderProgramArtifact(*materialOwner, stages, ShaderProgramDomain::Mesh);
             const bool deferredCompatible = artifact && artifact->FindVariant(ShaderCompileTarget::GBuffer);
             if ((materialFilter == GraphMaterialFilter::DeferredCompatible && !deferredCompatible) ||
                 (materialFilter == GraphMaterialFilter::DeferredUnsupported && deferredCompatible))
@@ -1309,7 +1306,7 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
         const ShaderStagePair requestedStages{owner->GetVertShaderName(), owner->GetFragShaderName()};
         const ShaderProgramArtifact *requestedArtifact = m_shaderCache.FindProgramArtifact(requestedStages);
         if (!requestedArtifact && m_shaderProgramArtifactResolver) {
-            m_shaderProgramArtifactResolver(owner);
+            m_shaderProgramArtifactResolver(owner, ShaderProgramDomain::Mesh);
             requestedArtifact = m_shaderCache.FindProgramArtifact(requestedStages);
         }
         if (requestedArtifact && requestedArtifact->domain != ShaderProgramDomain::Mesh) {
@@ -1349,8 +1346,8 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
             // so resolving from the mutable asset fields would mix two ABIs.
             const ShaderStagePair &stages = forward->programKey.stages;
             const ShaderProgramArtifact *artifact = m_shaderCache.FindProgramArtifact(stages);
-            if (!artifact && m_shaderProgramArtifactResolver) {
-                m_shaderProgramArtifactResolver(owner);
+            if (!artifact && m_shaderProgramArtifactResolver && stages == requestedStages) {
+                m_shaderProgramArtifactResolver(owner, ShaderProgramDomain::Mesh);
                 artifact = m_shaderCache.FindProgramArtifact(stages);
             }
             if (!artifact || !artifact->FindVariant(activePass.target)) {

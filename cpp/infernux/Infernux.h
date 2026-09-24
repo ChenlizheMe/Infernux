@@ -10,6 +10,7 @@
 #include <iostream>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <queue>
 #include <tuple>
 #include <unordered_map>
@@ -372,8 +373,8 @@ class Infernux
 
     /// @brief Execute a pending Timeline cube preview render if one was queued this frame.
     void PumpTimelineCubePreviewIfDirty();
-    uint64_t RenderModelAnimationPreview(const std::shared_ptr<InxMesh> &mesh, const std::string &take,
-                                         float seconds, int size, uint64_t dependencyRevision);
+    uint64_t RenderModelAnimationPreview(const std::shared_ptr<InxMesh> &mesh, const std::string &take, float seconds,
+                                         int size, uint64_t dependencyRevision);
     /// Process queued material preview renders (returns uploads consumed).
     int PumpMaterialPreviewUploads(int uploadBudget, bool ignoreCooldown);
 
@@ -437,9 +438,12 @@ class Infernux
     [[nodiscard]] LinkedShaderProgramPreparation EnsureLinkedShaderProgramArtifact(const ShaderStagePair &stages);
     [[nodiscard]] LinkedShaderProgramPreparation EnsureLinkedShaderProgramArtifact(const ShaderStagePair &stages,
                                                                                    const std::string &vertexPath,
-                                                                                   const std::string &fragmentPath);
+                                                                                   const std::string &fragmentPath,
+                                                                                   bool requireCurrentSource = false);
     [[nodiscard]] LinkedShaderProgramPreparation
-    EnsureLinkedShaderProgramArtifact(const std::shared_ptr<InxMaterial> &material);
+    EnsureLinkedShaderProgramArtifact(const std::shared_ptr<InxMaterial> &material, bool requireCurrentSource = false);
+    [[nodiscard]] std::optional<ShaderProgramDomain>
+    InspectMaterialShaderDomain(const std::shared_ptr<InxMaterial> &material) const;
 
     std::unordered_map<ShaderStagePair, LinkedShaderProgramCacheEntry, ShaderStagePairHash> m_linkedShaderProgramCache;
 

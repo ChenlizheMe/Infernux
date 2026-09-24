@@ -9,6 +9,7 @@
 
 namespace infernux
 {
+struct ShaderProgramArtifact;
 
 enum class ShaderStageVisibility : uint8_t
 {
@@ -54,6 +55,8 @@ enum class ShaderLinkDiagnosticCode : uint8_t
     LocationLimitExceeded,
     TextureBindingLimitExceeded,
     PropertyContractMismatch,
+    DomainMismatch,
+    UnsupportedUIProperty,
 };
 
 struct ShaderLinkDiagnostic
@@ -126,6 +129,10 @@ struct ShaderStageLinkOptions
 class ShaderStageLinker final
 {
   public:
+    [[nodiscard]] static bool IsUIStagePair(const ShaderDescriptor &vertex, const ShaderDescriptor &fragment);
+    [[nodiscard]] static bool ShouldPrewarmSceneMaterial(const ShaderDescriptor &vertex,
+                                                         const ShaderDescriptor &fragment);
+    [[nodiscard]] static bool ShouldPublishScenePrewarmArtifact(const ShaderProgramArtifact &artifact) noexcept;
     [[nodiscard]] static ShaderProgramInterfaceArtifact
     Link(const ShaderDescriptor &vertex, const ShaderDescriptor &fragment, const ShaderStageLinkOptions &options = {});
 };

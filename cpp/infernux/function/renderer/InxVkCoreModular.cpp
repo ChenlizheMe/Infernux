@@ -581,6 +581,7 @@ bool InxVkCoreModular::PublishShaderProgramArtifact(const ShaderProgramArtifact 
     }
 
     if (publish.replacedProgram) {
+        m_pendingUIProgramRelease.erase(*publish.replacedProgram);
         auto previousPrograms = m_shaderCache.GetProgramCache().TakePrograms(*publish.replacedProgram);
         for (auto &previous : previousPrograms) {
             m_deletionQueue.Retire([retired = std::move(previous)]() mutable { retired.reset(); });
@@ -598,21 +599,80 @@ bool InxVkCoreModular::HasShaderProgramArtifact(const ShaderProgramKey &programK
 }
 
 std::shared_ptr<const ShaderProgramArtifact>
-InxVkCoreModular::CopyShaderProgramArtifact(const ShaderStagePair &stages) const
+InxVkCoreModular::ShareShaderProgramArtifact(const ShaderStagePair &stages) const
 {
-    const auto *artifact = m_shaderCache.FindProgramArtifact(stages);
-    return artifact ? std::make_shared<const ShaderProgramArtifact>(*artifact) : nullptr;
+    return m_shaderCache.ShareProgramArtifact(stages);
+}
+
+bool InxVkCoreModular::ReleaseUIShaderProgramArtifact(const ShaderProgramKey &key)
+{
+    if (m_uiProgramOwners.find(key) != m_uiProgramOwners.end())
+        return false;
+    const auto current = m_shaderCache.ShareProgramArtifact(key.stages);
+    if (!current || current->key != key) {
+        m_pendingUIProgramRelease.erase(key);
+        return false;
+    }
+    if (current->domain != ShaderProgramDomain::ScreenUI && current->domain != ShaderProgramDomain::WorldUI)
+        return false;
+    if (m_materialPipelineManagerInitialized && m_materialPipelineManager.HasMaterialProgramOwner(key)) {
+        m_pendingUIProgramRelease.insert(key);
+        return false;
+    }
+    m_pendingUIProgramRelease.erase(key);
+    auto artifact = m_shaderCache.TakeUIProgramArtifact(key);
+    if (!artifact)
+        return false;
+    auto programs = m_shaderCache.GetProgramCache().TakePrograms(key);
+    for (auto &program : programs) {
+        m_deletionQueue.Retire([retired = std::move(program)]() mutable { retired.reset(); });
+        ++m_shaderHotReloadRetirementCount;
+    }
+    // The UI pipeline is retired by its renderer on the same submission serial.
+    // Shader modules and the last CPU SPIR-V owner follow that serial too.
+    m_deletionQueue.Retire([retired = std::move(artifact)]() mutable { retired.reset(); });
+    return true;
+}
+
+void InxVkCoreModular::AcquireUIShaderProgramOwner(const ShaderProgramKey &key)
+{
+    if (!key.IsValid())
+        throw std::invalid_argument("UI shader program owner requires a valid program key");
+    ++m_uiProgramOwners[key];
+    m_pendingUIProgramRelease.erase(key);
+}
+
+void InxVkCoreModular::ReleaseUIShaderProgramOwner(const ShaderProgramKey &key)
+{
+    const auto owner = m_uiProgramOwners.find(key);
+    if (owner == m_uiProgramOwners.end())
+        throw std::logic_error("UI shader program released without an owner");
+    if (--owner->second != 0)
+        return;
+    m_uiProgramOwners.erase(owner);
+    (void)ReleaseUIShaderProgramArtifact(key);
+}
+
+void InxVkCoreModular::SweepReleasedUIShaderProgramArtifacts()
+{
+    if (m_pendingUIProgramRelease.empty())
+        return;
+    const std::vector<ShaderProgramKey> pending(m_pendingUIProgramRelease.begin(), m_pendingUIProgramRelease.end());
+    for (const auto &key : pending)
+        (void)ReleaseUIShaderProgramArtifact(key);
 }
 
 const ShaderProgramArtifact *
 InxVkCoreModular::ResolveShaderProgramArtifact(const std::shared_ptr<InxMaterial> &material,
-                                               const ShaderStagePair &stages)
+                                               const ShaderStagePair &stages, ShaderProgramDomain expectedDomain)
 {
     const auto *artifact = m_shaderCache.FindProgramArtifact(stages);
     if (!artifact && material && m_shaderProgramArtifactResolver) {
-        m_shaderProgramArtifactResolver(material);
+        m_shaderProgramArtifactResolver(material, expectedDomain);
         artifact = m_shaderCache.FindProgramArtifact(stages);
     }
+    if (artifact && artifact->domain != expectedDomain)
+        throw std::runtime_error("Material shader domain mismatch before non-UI resolution");
     return artifact;
 }
 

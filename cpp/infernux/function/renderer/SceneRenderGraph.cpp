@@ -2138,7 +2138,8 @@ void SceneRenderGraph::RefreshMaterialTextureReads()
                 if (const auto *committed =
                         m_vkCore->GetMaterialPipelineManager().GetRenderData(material->GetMaterialKey()))
                     stages = committed->programKey.stages;
-                const auto *artifact = m_vkCore->ResolveShaderProgramArtifact(material, stages);
+                const auto *artifact =
+                    m_vkCore->ResolveShaderProgramArtifact(material, stages, ShaderProgramDomain::Mesh);
                 const bool deferred = artifact && artifact->FindVariant(ShaderCompileTarget::GBuffer);
                 if ((command->materialFilter == GraphMaterialFilter::DeferredCompatible && !deferred) ||
                     (command->materialFilter == GraphMaterialFilter::DeferredUnsupported && deferred))
@@ -2263,14 +2264,15 @@ void SceneRenderGraph::EnsureGraphBuilt()
                 if (const auto *committed =
                         m_vkCore->GetMaterialPipelineManager().GetRenderData(material->GetMaterialKey()))
                     stages = committed->programKey.stages;
-                const auto *artifact = m_vkCore->ResolveShaderProgramArtifact(material, stages);
+                const auto *artifact =
+                    m_vkCore->ResolveShaderProgramArtifact(material, stages, ShaderProgramDomain::Mesh);
                 if (!artifact) {
                     m_vkCore->RefreshMaterialPipeline(material, material->GetVertShaderName(),
                                                       material->GetFragShaderName());
                     if (const auto *committed =
                             m_vkCore->GetMaterialPipelineManager().GetRenderData(material->GetMaterialKey()))
                         stages = committed->programKey.stages;
-                    artifact = m_vkCore->ResolveShaderProgramArtifact(material, stages);
+                    artifact = m_vkCore->ResolveShaderProgramArtifact(material, stages, ShaderProgramDomain::Mesh);
                 }
                 if (!state.depthTestEnable || state.stencilTestEnable || !artifact ||
                     !artifact->FindVariant(ShaderCompileTarget::Depth)) {

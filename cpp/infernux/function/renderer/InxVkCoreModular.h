@@ -62,6 +62,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -226,10 +227,17 @@ class InxVkCoreModular
     bool PublishShaderProgramArtifact(const ShaderProgramArtifact &artifact);
     [[nodiscard]] bool HasShaderProgramArtifact(const ShaderProgramKey &programKey) const;
     [[nodiscard]] std::shared_ptr<const ShaderProgramArtifact>
-    CopyShaderProgramArtifact(const ShaderStagePair &stages) const;
+    ShareShaderProgramArtifact(const ShaderStagePair &stages) const;
+    /// Retire the exact UI-only publication when its final UI command owner releases it.
+    bool ReleaseUIShaderProgramArtifact(const ShaderProgramKey &key);
+    void AcquireUIShaderProgramOwner(const ShaderProgramKey &key);
+    void ReleaseUIShaderProgramOwner(const ShaderProgramKey &key);
+    void SweepReleasedUIShaderProgramArtifacts();
     [[nodiscard]] const ShaderProgramArtifact *
-    ResolveShaderProgramArtifact(const std::shared_ptr<InxMaterial> &material, const ShaderStagePair &stages);
-    void SetShaderProgramArtifactResolver(std::function<void(const std::shared_ptr<InxMaterial> &)> resolver)
+    ResolveShaderProgramArtifact(const std::shared_ptr<InxMaterial> &material, const ShaderStagePair &stages,
+                                 ShaderProgramDomain expectedDomain);
+    void SetShaderProgramArtifactResolver(
+        std::function<void(const std::shared_ptr<InxMaterial> &, std::optional<ShaderProgramDomain>)> resolver)
     {
         m_shaderProgramArtifactResolver = std::move(resolver);
     }
@@ -1288,7 +1296,10 @@ class InxVkCoreModular
 
     // Shader cache (modules, SPIR-V code, render-state annotations, program cache)
     VkShaderCache m_shaderCache;
-    std::function<void(const std::shared_ptr<InxMaterial> &)> m_shaderProgramArtifactResolver;
+    std::unordered_set<ShaderProgramKey, ShaderProgramKeyHash> m_pendingUIProgramRelease;
+    std::unordered_map<ShaderProgramKey, size_t, ShaderProgramKeyHash> m_uiProgramOwners;
+    std::function<void(const std::shared_ptr<InxMaterial> &, std::optional<ShaderProgramDomain>)>
+        m_shaderProgramArtifactResolver;
     std::function<bool(const std::string &, const std::string &)> m_shaderAssetResolver;
 
     // Reflection-based material pipeline manager

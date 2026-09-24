@@ -36,6 +36,7 @@
 #include <numeric>
 #include <stdexcept>
 #include <type_traits>
+#include <unordered_set>
 #include <utility>
 
 namespace infernux
@@ -688,6 +689,7 @@ void InxScreenUIRenderer::AppendCommandPackets(const std::vector<std::shared_ptr
 {
     if (!m_initialized || m_recordingPacket || m_worldElementStart >= 0)
         throw std::logic_error("UI packets require an initialized renderer outside element capture");
+    ++m_materialBindingsRevision;
     for (const auto &packet : packets) {
         if (!packet)
             throw std::invalid_argument("UI command packets must not be null");
@@ -850,6 +852,14 @@ void InxScreenUIRenderer::Destroy()
         m_worldDrawList = nullptr;
     }
 
+    // The renderer can be replaced while VkCore stays alive (notably on an
+    // MSAA change). Release every distinct UI shader owner even if no pipeline
+    // was built for its resolved artifact; the GPU pipelines retire by serial.
+    std::vector<ShaderProgramKey> ownedPrograms(m_ownedMaterialPrograms.begin(), m_ownedMaterialPrograms.end());
+    for (const auto &key : ownedPrograms)
+        RetireMaterialPipelineVariants(key);
+    m_resolvedMaterialPrograms.clear();
+
     if (m_device != VK_NULL_HANDLE) {
         for (auto &frame : m_frameBuffers) {
             for (auto &buf : frame) {
@@ -861,6 +871,9 @@ void InxScreenUIRenderer::Destroy()
         }
         if (m_pipeline)
             vkDestroyPipeline(m_device, m_pipeline, nullptr);
+        for (const auto &[key, pipeline] : m_materialPipelineVariants)
+            m_deletionQueue->Retire([device = m_device, pipeline] { vkDestroyPipeline(device, pipeline, nullptr); });
+        m_materialPipelineVariants.clear();
         for (const auto &variant : m_worldPipelineVariants)
             vkDestroyPipeline(m_device, variant.pipeline, nullptr);
         m_worldPipelineVariants.clear();
@@ -916,6 +929,7 @@ void InxScreenUIRenderer::BeginFrame(uint32_t width, uint32_t height)
         return;
     if (m_recordingPacket)
         throw std::logic_error("UI packet capture must finish before beginning a frame");
+    ++m_materialBindingsRevision;
     m_cachedWidth = width;
     m_cachedHeight = height;
 
@@ -1306,8 +1320,10 @@ void InxScreenUIRenderer::Render(VkCommandBuffer cmdBuf, ScreenUIList list, uint
     const int listIndex = ListIndex(list);
     m_lastSubmittedDrawCounts[listIndex] = 0;
     m_lastSubmittedIndexCounts[listIndex] = 0;
+    PruneUnusedMaterialPrograms();
     if (!m_initialized || !m_pipeline || width == 0 || height == 0 || !m_enabled)
         return;
+    ++m_materialRenderSerial;
 
     ImDrawList *dl = GetDrawList(list);
     if (!dl || dl->VtxBuffer.Size == 0 || dl->IdxBuffer.Size == 0)
@@ -1396,8 +1412,9 @@ void InxScreenUIRenderer::Render(VkCommandBuffer cmdBuf, ScreenUIList list, uint
     if (!UploadGeometry(buf, list, gpuVertices.data(), static_cast<size_t>(vtxSize)))
         return;
 
-    // ---- Bind pipeline ----
-    vkCmdBindPipeline(cmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipeline);
+    // The program is selected per command because a retained packet may
+    // interleave several authored materials and default text geometry.
+    VkPipeline lastPipeline = VK_NULL_HANDLE;
 
     // ---- Bind vertex/index buffers ----
     const VkBuffer vertexBuffer = buf.vertexBuffer;
@@ -1447,6 +1464,14 @@ void InxScreenUIRenderer::Render(VkCommandBuffer cmdBuf, ScreenUIList list, uint
             // User callbacks are not supported in scene render passes
             continue;
         }
+        const auto binding = (static_cast<size_t>(cmdI) < m_commandBindings[listIndex].size())
+                                 ? m_commandBindings[listIndex][static_cast<size_t>(cmdI)]
+                                 : UIShaderMaterialBinding{};
+        const VkPipeline pipeline = GetMaterialPipeline(binding, ShaderProgramDomain::ScreenUI);
+        if (pipeline != lastPipeline) {
+            vkCmdBindPipeline(cmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+            lastPipeline = pipeline;
+        }
 
         // Per-command texture (usually font atlas)
         VkDescriptorSet texDescSet = reinterpret_cast<VkDescriptorSet>(static_cast<uintptr_t>(cmd.GetTexID()));
@@ -1490,9 +1515,6 @@ void InxScreenUIRenderer::Render(VkCommandBuffer cmdBuf, ScreenUIList list, uint
 
         vkCmdSetScissor(cmdBuf, 0, 1, &scissor);
 
-        const auto binding = (static_cast<size_t>(cmdI) < m_commandBindings[listIndex].size())
-                                 ? m_commandBindings[listIndex][static_cast<size_t>(cmdI)]
-                                 : UIShaderMaterialBinding{};
         ScreenUIPushConstants pushConstants = projection;
         pushConstants.materialColor = binding.baseColor;
         pushConstants.alphaClipEnabled = binding.alphaClipEnabled ? 1.0f : 0.0f;
@@ -1550,10 +1572,15 @@ bool InxScreenUIRenderer::CreatePipeline()
     if (!CreatePipelineLayout(m_device, m_descriptorSetLayout, pushConstRange, m_pipelineLayout))
         return false;
 
+    return CreateScreenPipeline(m_vertShader, m_fragShader, m_pipeline);
+}
+
+bool InxScreenUIRenderer::CreateScreenPipeline(VkShaderModule vertex, VkShaderModule fragment, VkPipeline &pipeline)
+{
     // ---- Graphics pipeline (replicates ImGui's pipeline for scene render target) ----
     const std::array<VkPipelineShaderStageCreateInfo, 2> stages = {
-        MakeShaderStageInfo(VK_SHADER_STAGE_VERTEX_BIT, m_vertShader),
-        MakeShaderStageInfo(VK_SHADER_STAGE_FRAGMENT_BIT, m_fragShader),
+        MakeShaderStageInfo(VK_SHADER_STAGE_VERTEX_BIT, vertex),
+        MakeShaderStageInfo(VK_SHADER_STAGE_FRAGMENT_BIT, fragment),
     };
 
     VkVertexInputBindingDescription bindingDesc{};
@@ -1603,7 +1630,7 @@ bool InxScreenUIRenderer::CreatePipeline()
     pipeInfo.renderPass = VK_NULL_HANDLE;
     pipeInfo.subpass = 0;
 
-    return vkCreateGraphicsPipelines(m_device, VK_NULL_HANDLE, 1, &pipeInfo, nullptr, &m_pipeline) == VK_SUCCESS;
+    return vkCreateGraphicsPipelines(m_device, VK_NULL_HANDLE, 1, &pipeInfo, nullptr, &pipeline) == VK_SUCCESS;
 }
 
 bool InxScreenUIRenderer::CreateWorldPipeline()
@@ -1639,12 +1666,17 @@ bool InxScreenUIRenderer::CreateWorldPipeline()
 }
 
 bool InxScreenUIRenderer::CreateWorldPipeline(const rhi::GraphicsRenderingSignature &target, VkPipeline &result,
-                                              bool alwaysOnTop)
+                                              bool alwaysOnTop, VkShaderModule vertex, VkShaderModule fragment)
 {
 
+    if (vertex == VK_NULL_HANDLE)
+        vertex = m_worldVertShader;
+    if (fragment == VK_NULL_HANDLE)
+        fragment = m_worldFragShader;
+
     const std::array<VkPipelineShaderStageCreateInfo, 2> stages = {
-        MakeShaderStageInfo(VK_SHADER_STAGE_VERTEX_BIT, m_worldVertShader),
-        MakeShaderStageInfo(VK_SHADER_STAGE_FRAGMENT_BIT, m_worldFragShader),
+        MakeShaderStageInfo(VK_SHADER_STAGE_VERTEX_BIT, vertex),
+        MakeShaderStageInfo(VK_SHADER_STAGE_FRAGMENT_BIT, fragment),
     };
     VkVertexInputBindingDescription bindingDescription{};
     bindingDescription.stride = sizeof(WorldGPUVertex);
@@ -1728,6 +1760,222 @@ VkPipeline InxScreenUIRenderer::GetWorldPipeline(const rhi::GraphicsRenderingSig
     if (!CreateWorldPipeline(target, pipeline, alwaysOnTop))
         throw std::runtime_error("Failed to create World UI pipeline for the actual target attachments");
     m_worldPipelineVariants.push_back({target, alwaysOnTop, pipeline});
+    return pipeline;
+}
+
+size_t InxScreenUIRenderer::MaterialPipelineKeyHash::operator()(const MaterialPipelineKey &value) const noexcept
+{
+    size_t hash = ShaderProgramKeyHash{}(value.key);
+    const auto mix = [&](size_t part) { hash ^= part + size_t{0x9e3779b9} + (hash << 6) + (hash >> 2); };
+    mix(static_cast<size_t>(value.domain));
+    mix(static_cast<size_t>(value.alwaysOnTop));
+    mix(value.target.colorFormatCount);
+    for (const auto format : value.target.colorFormats)
+        mix(static_cast<size_t>(format));
+    mix(static_cast<size_t>(value.target.depthFormat));
+    mix(static_cast<size_t>(value.target.stencilFormat));
+    mix(static_cast<size_t>(value.target.samples));
+    mix(value.target.viewMask);
+    return hash;
+}
+
+void InxScreenUIRenderer::RetireMaterialPipelineVariants(const ShaderProgramKey &key)
+{
+    if (!m_deletionQueue)
+        throw std::logic_error("UI shader pipeline retirement requires a GPU submission queue");
+    const VkDevice device = m_device;
+    for (auto it = m_materialPipelineVariants.begin(); it != m_materialPipelineVariants.end();) {
+        if (it->first.key != key) {
+            ++it;
+            continue;
+        }
+        const VkPipeline pipeline = it->second;
+        m_deletionQueue->Retire([device, pipeline] { vkDestroyPipeline(device, pipeline, nullptr); });
+        it = m_materialPipelineVariants.erase(it);
+    }
+    if (m_ownedMaterialPrograms.erase(key) != 0 && m_materialProgramRelease)
+        m_materialProgramRelease(key);
+}
+
+void InxScreenUIRenderer::InvalidateMaterialProgram(const ShaderStagePair &stages)
+{
+    for (auto it = m_resolvedMaterialPrograms.begin(); it != m_resolvedMaterialPrograms.end();) {
+        if (!it->second.artifact || it->second.artifact->key.stages == stages)
+            it = m_resolvedMaterialPrograms.erase(it);
+        else
+            ++it;
+    }
+    std::vector<ShaderProgramKey> staleKeys;
+    for (const auto &key : m_ownedMaterialPrograms) {
+        if (key.stages == stages)
+            staleKeys.push_back(key);
+    }
+    for (const auto &[pipelineKey, pipeline] : m_materialPipelineVariants) {
+        if (pipelineKey.key.stages == stages &&
+            std::find(staleKeys.begin(), staleKeys.end(), pipelineKey.key) == staleKeys.end())
+            staleKeys.push_back(pipelineKey.key);
+    }
+    for (const auto &key : staleKeys)
+        RetireMaterialPipelineVariants(key);
+}
+
+void InxScreenUIRenderer::PruneUnusedMaterialPrograms()
+{
+    if (m_materialProgramReleaseSweep)
+        m_materialProgramReleaseSweep();
+    if (m_prunedMaterialBindingsRevision == m_materialBindingsRevision)
+        return;
+    m_prunedMaterialBindingsRevision = m_materialBindingsRevision;
+    std::unordered_set<std::string> activeGuids;
+    for (const auto &bindings : m_commandBindings) {
+        for (const auto &binding : bindings) {
+            if (!binding.materialGuid.empty())
+                activeGuids.insert(binding.materialGuid);
+        }
+    }
+    std::vector<ShaderProgramKey> removedKeys;
+    for (auto it = m_resolvedMaterialPrograms.begin(); it != m_resolvedMaterialPrograms.end();) {
+        if (activeGuids.find(it->first) != activeGuids.end()) {
+            ++it;
+            continue;
+        }
+        if (it->second.artifact)
+            removedKeys.push_back(it->second.artifact->key);
+        it = m_resolvedMaterialPrograms.erase(it);
+    }
+    for (const auto &key : removedKeys) {
+        const bool retained =
+            std::any_of(m_resolvedMaterialPrograms.begin(), m_resolvedMaterialPrograms.end(),
+                        [&](const auto &entry) { return entry.second.artifact && entry.second.artifact->key == key; });
+        if (!retained)
+            RetireMaterialPipelineVariants(key);
+    }
+}
+
+VkPipeline InxScreenUIRenderer::GetMaterialPipeline(const UIShaderMaterialBinding &binding, ShaderProgramDomain domain,
+                                                    const rhi::GraphicsRenderingSignature *target, bool alwaysOnTop)
+{
+    if (binding.materialGuid.empty())
+        return domain == ShaderProgramDomain::ScreenUI ? m_pipeline : GetWorldPipeline(*target, alwaysOnTop);
+    if (!binding.IsValid() || !m_materialProgramResolver)
+        throw std::runtime_error("UI material binding has no valid GUID, generation or shader resolver");
+
+    const auto resolveForDomain = [&] {
+        auto artifact = m_materialProgramResolver(binding.materialGuid, binding.generation, domain);
+        if (artifact && !artifact->IsValid())
+            throw std::runtime_error("UI material shader program is invalid for GUID " + binding.materialGuid);
+        if (artifact && artifact->domain != domain)
+            throw std::runtime_error("UI material shader domain mismatch for GUID " + binding.materialGuid +
+                                     ": expected " + ShaderProgramDomainName(domain) + ", got " +
+                                     ShaderProgramDomainName(artifact->domain));
+        if (artifact &&
+            (!artifact->properties.empty() || artifact->materialBufferSize != 0 || artifact->usesBindlessTextureABI))
+            throw std::runtime_error("UI material shader declares unsupported descriptors for GUID " +
+                                     binding.materialGuid);
+        return artifact;
+    };
+
+    // A retained draw command repeats across cameras and frames. Resolve its
+    // immutable artifact once per material generation, not once per draw.
+    auto cached = m_resolvedMaterialPrograms.find(binding.materialGuid);
+    if (cached != m_resolvedMaterialPrograms.end() && cached->second.generation != binding.generation) {
+        const ShaderProgramKey previousKey =
+            cached->second.artifact ? cached->second.artifact->key : ShaderProgramKey{};
+        m_resolvedMaterialPrograms.erase(cached);
+        std::shared_ptr<const ShaderProgramArtifact> replacement;
+        try {
+            replacement = resolveForDomain();
+        } catch (...) {
+            const bool stillReferenced = std::any_of(
+                m_resolvedMaterialPrograms.begin(), m_resolvedMaterialPrograms.end(),
+                [&](const auto &entry) { return entry.second.artifact && entry.second.artifact->key == previousKey; });
+            if (previousKey.IsValid() && !stillReferenced)
+                RetireMaterialPipelineVariants(previousKey);
+            throw;
+        }
+        cached = m_resolvedMaterialPrograms
+                     .emplace(binding.materialGuid, ResolvedMaterialProgram{binding.generation, m_materialRenderSerial,
+                                                                            std::move(replacement)})
+                     .first;
+        const bool stillReferenced =
+            std::any_of(m_resolvedMaterialPrograms.begin(), m_resolvedMaterialPrograms.end(), [&](const auto &entry) {
+                return entry.second.artifact && entry.second.artifact->key == previousKey;
+            });
+        if (previousKey.IsValid() && !stillReferenced)
+            RetireMaterialPipelineVariants(previousKey);
+    }
+    if (cached == m_resolvedMaterialPrograms.end()) {
+        auto artifact = resolveForDomain();
+        cached = m_resolvedMaterialPrograms
+                     .emplace(binding.materialGuid,
+                              ResolvedMaterialProgram{binding.generation, m_materialRenderSerial, std::move(artifact)})
+                     .first;
+    }
+    if (m_materialIdentityValidator && cached->second.validatedRender != m_materialRenderSerial) {
+        if (!m_materialIdentityValidator(binding.materialGuid, binding.generation)) {
+            const ShaderProgramKey staleKey =
+                cached->second.artifact ? cached->second.artifact->key : ShaderProgramKey{};
+            m_resolvedMaterialPrograms.erase(cached);
+            const bool stillReferenced = std::any_of(
+                m_resolvedMaterialPrograms.begin(), m_resolvedMaterialPrograms.end(),
+                [&](const auto &entry) { return entry.second.artifact && entry.second.artifact->key == staleKey; });
+            if (staleKey.IsValid() && !stillReferenced)
+                RetireMaterialPipelineVariants(staleKey);
+            throw std::runtime_error("UI material GUID was deleted or changed during retained rendering: " +
+                                     binding.materialGuid);
+        }
+        cached->second.validatedRender = m_materialRenderSerial;
+    }
+    const auto &artifact = cached->second.artifact;
+    if (!artifact)
+        return domain == ShaderProgramDomain::ScreenUI ? m_pipeline : GetWorldPipeline(*target, alwaysOnTop);
+    if (artifact->domain != domain)
+        throw std::runtime_error("UI material shader domain mismatch for GUID " + binding.materialGuid + ": expected " +
+                                 ShaderProgramDomainName(domain) + ", got " +
+                                 ShaderProgramDomainName(artifact->domain));
+    if (!artifact->properties.empty() || artifact->materialBufferSize != 0 || artifact->usesBindlessTextureABI)
+        throw std::runtime_error("UI material shader declares unsupported descriptors for GUID " +
+                                 binding.materialGuid);
+    if (m_ownedMaterialPrograms.insert(artifact->key).second && m_materialProgramAcquire) {
+        try {
+            m_materialProgramAcquire(artifact->key);
+        } catch (...) {
+            m_ownedMaterialPrograms.erase(artifact->key);
+            throw;
+        }
+    }
+    MaterialPipelineKey pipelineKey{};
+    pipelineKey.key = artifact->key;
+    pipelineKey.domain = domain;
+    pipelineKey.alwaysOnTop = alwaysOnTop;
+    if (target)
+        pipelineKey.target = *target;
+    if (const auto found = m_materialPipelineVariants.find(pipelineKey); found != m_materialPipelineVariants.end())
+        return found->second;
+    const auto *forward = artifact->FindVariant(ShaderCompileTarget::Forward);
+    if (!forward || !forward->IsValid())
+        throw std::runtime_error("UI material shader is missing its Forward variant for GUID " + binding.materialGuid);
+
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    VkShaderModule vertex = VK_NULL_HANDLE;
+    VkShaderModule fragment = VK_NULL_HANDLE;
+    const bool created = CreateShaderModule(m_device, reinterpret_cast<const uint32_t *>(forward->vertexSpirv.data()),
+                                            forward->vertexSpirv.size(), vertex) &&
+                         CreateShaderModule(m_device, reinterpret_cast<const uint32_t *>(forward->fragmentSpirv.data()),
+                                            forward->fragmentSpirv.size(), fragment) &&
+                         (domain == ShaderProgramDomain::ScreenUI
+                              ? CreateScreenPipeline(vertex, fragment, pipeline)
+                              : CreateWorldPipeline(*target, pipeline, alwaysOnTop, vertex, fragment));
+    if (vertex)
+        vkDestroyShaderModule(m_device, vertex, nullptr);
+    if (fragment)
+        vkDestroyShaderModule(m_device, fragment, nullptr);
+    if (!created) {
+        if (pipeline)
+            vkDestroyPipeline(m_device, pipeline, nullptr);
+        throw std::runtime_error("Vulkan rejected UI material shader pipeline for GUID " + binding.materialGuid);
+    }
+    m_materialPipelineVariants.emplace(std::move(pipelineKey), pipeline);
     return pipeline;
 }
 
@@ -1821,6 +2069,8 @@ void InxScreenUIRenderer::RenderWorld(VkCommandBuffer cmdBuf, uint32_t width, ui
     }
     if (!m_initialized || !m_worldPipeline || width == 0 || height == 0 || !m_enabled)
         return;
+    PruneUnusedMaterialPrograms();
+    ++m_materialRenderSerial;
     if (m_worldElementStart >= 0)
         throw std::logic_error("World UI element submission was not closed before rendering");
 
@@ -1962,7 +2212,14 @@ void InxScreenUIRenderer::RenderWorld(VkCommandBuffer cmdBuf, uint32_t width, ui
         VkDescriptorSet descriptor = reinterpret_cast<VkDescriptorSet>(static_cast<uintptr_t>(command.GetTexID()));
         if (descriptor == VK_NULL_HANDLE)
             return;
-        const VkPipeline pipeline = alwaysOnTop ? topPipeline : depthPipeline;
+        const auto binding = (commandIndex >= 0 && static_cast<size_t>(commandIndex) <
+                                                       m_commandBindings[ListIndex(ScreenUIList::World)].size())
+                                 ? m_commandBindings[ListIndex(ScreenUIList::World)][static_cast<size_t>(commandIndex)]
+                                 : UIShaderMaterialBinding{};
+        const VkPipeline pipeline =
+            binding.materialGuid.empty()
+                ? (alwaysOnTop ? topPipeline : depthPipeline)
+                : GetMaterialPipeline(binding, ShaderProgramDomain::WorldUI, &target, alwaysOnTop);
         if (pipeline != lastPipeline) {
             vkCmdBindPipeline(cmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
             lastPipeline = pipeline;
@@ -1976,10 +2233,6 @@ void InxScreenUIRenderer::RenderWorld(VkCommandBuffer cmdBuf, uint32_t width, ui
                                                   &descriptor, 0, nullptr);
             lastDescriptor = descriptor;
         }
-        const auto binding = (commandIndex >= 0 && static_cast<size_t>(commandIndex) <
-                                                       m_commandBindings[ListIndex(ScreenUIList::World)].size())
-                                 ? m_commandBindings[ListIndex(ScreenUIList::World)][static_cast<size_t>(commandIndex)]
-                                 : UIShaderMaterialBinding{};
         WorldUIPushConstants constants{};
         constants.viewProjection = viewProjection;
         constants.materialColor =

@@ -7,6 +7,8 @@ enum class ShaderProgramDomain : unsigned char
 {
     Mesh = 0,
     ParticleSprite,
+    ScreenUI,
+    WorldUI,
 
     Count,
 };
@@ -18,6 +20,10 @@ enum class ShaderProgramDomain : unsigned char
         return "Mesh";
     case ShaderProgramDomain::ParticleSprite:
         return "ParticleSprite";
+    case ShaderProgramDomain::ScreenUI:
+        return "ScreenUI";
+    case ShaderProgramDomain::WorldUI:
+        return "WorldUI";
     case ShaderProgramDomain::Count:
         return "Count";
     }

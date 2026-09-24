@@ -19,12 +19,14 @@
 #include <functional>
 #include <glm/glm.hpp>
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
 namespace infernux
 {
+enum class ShaderProgramDomain : uint8_t;
 // ============================================================================
 // Forward declarations for private subsystem types.
 // Full definitions are in InxRenderer.cpp. Keeping them out of this header
@@ -63,6 +65,7 @@ class TransientResourcePool;
 class InxGUIContext;
 class InxScreenUIRenderer;
 struct ShaderProgramArtifact;
+struct ShaderStagePair;
 struct ShaderProgramKey;
 namespace vk
 {
@@ -331,10 +334,15 @@ class InxRenderer
     void LoadShader(const char *name, const std::vector<char> &code, const char *type);
     void SetShaderAssetResolver(std::function<bool(const std::string &, const std::string &)> resolver);
     bool PublishShaderProgramArtifact(const ShaderProgramArtifact &artifact);
+    void InvalidateUIMaterialProgram(const ShaderStagePair &stages);
     [[nodiscard]] bool HasShaderProgramArtifact(const ShaderProgramKey &programKey) const;
     [[nodiscard]] std::shared_ptr<const ShaderProgramArtifact>
-    ResolveShaderProgramArtifact(const std::shared_ptr<InxMaterial> &material);
-    void SetShaderProgramArtifactResolver(std::function<void(const std::shared_ptr<InxMaterial> &)> resolver);
+    ResolveShaderProgramArtifact(const std::shared_ptr<InxMaterial> &material,
+                                 std::optional<ShaderProgramDomain> expectedDomain);
+    void SetShaderProgramArtifactResolver(
+        std::function<void(const std::shared_ptr<InxMaterial> &, std::optional<ShaderProgramDomain>)> resolver);
+    void SetUIMaterialShaderValidator(
+        std::function<bool(const std::shared_ptr<InxMaterial> &, ShaderProgramDomain)> validator);
     bool HasShader(const std::string &name, const std::string &type) const;
 
     /// @brief Store shader render-state annotations (forwarded to InxVkCoreModular)
@@ -472,8 +480,8 @@ class InxRenderer
 
     /// Currently-published live mesh preview descriptor id (0 when absent).
     [[nodiscard]] uint64_t GetMeshPreviewDisplayTextureId() const;
-    uint64_t RenderModelAnimationPreview(const std::shared_ptr<InxMesh> &mesh, const std::string &take,
-                                         float seconds, int size, uint64_t dependencyRevision);
+    uint64_t RenderModelAnimationPreview(const std::shared_ptr<InxMesh> &mesh, const std::string &take, float seconds,
+                                         int size, uint64_t dependencyRevision);
 
     // Refresh all materials using a specific shader
     bool RefreshMaterialsUsingShader(const std::string &shaderId);
@@ -685,6 +693,7 @@ class InxRenderer
     void InvalidateGpuViewStateForSceneBoundary();
     void RecreateSceneRenderGraph();
     void EnsureScreenUIRenderer();
+    void ConfigureScreenUIMaterialResolver(InxScreenUIRenderer &renderer);
 
     InxAppMetadata m_appMetadata;
     InxAppMetadata m_rendererMetadata;
@@ -704,7 +713,9 @@ class InxRenderer
 
     std::unique_ptr<InxVkCoreModular> m_vkCore;
     size_t m_computeHostLeases = 0;
-    std::function<void(const std::shared_ptr<InxMaterial> &)> m_shaderProgramArtifactResolver;
+    std::function<void(const std::shared_ptr<InxMaterial> &, std::optional<ShaderProgramDomain>)>
+        m_shaderProgramArtifactResolver;
+    std::function<bool(const std::shared_ptr<InxMaterial> &, ShaderProgramDomain)> m_uiMaterialShaderValidator;
     std::unique_ptr<InxGUI> m_gui;
     std::unique_ptr<InxView> m_view;
     bool m_guiPlayerMode = false;
