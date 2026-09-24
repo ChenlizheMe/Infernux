@@ -187,7 +187,7 @@ static void CheckRendererParameterBuffer(vk::VkDeviceContext &context, vk::Vulka
         [](const MergedDescriptorBinding &binding) {
             return binding.set == 0 && binding.binding == 0 && binding.type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         });
-    assert(storageBinding != program->GetDescriptorBindings().end() && !storageBinding->name.empty());
+    assert(storageBinding != program->GetDescriptorBindings().end() && storageBinding->name == "RendererParameters");
     rhi::ComputePipelineDesc computeDesc;
     computeDesc.computeShader = computeShader;
     computeDesc.bindingLayouts[0] = computeLayout;

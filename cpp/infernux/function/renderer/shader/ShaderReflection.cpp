@@ -11,6 +11,7 @@
 #endif
 
 #include <cstring>
+#include <stdexcept>
 
 namespace infernux
 {
@@ -213,9 +214,12 @@ bool ShaderReflection::Reflect(const std::vector<uint32_t> &spirvCode, VkShaderS
 
         for (const auto &buffer : resources.storage_buffers) {
             StorageBufferInfo info;
-            info.name = buffer.name;
             info.binding = compiler.get_decoration(buffer.id, spv::DecorationBinding);
             info.set = compiler.get_decoration(buffer.id, spv::DecorationDescriptorSet);
+            info.name = compiler.get_name(buffer.base_type_id);
+            if (info.name.empty())
+                throw std::runtime_error("Storage buffer interface block at set " + std::to_string(info.set) +
+                                         ", binding " + std::to_string(info.binding) + " has no declared name");
             info.stageFlags = stage;
             const auto &type = compiler.get_type(buffer.type_id);
             info.arraySize = type.array.empty() ? 1 : type.array[0];

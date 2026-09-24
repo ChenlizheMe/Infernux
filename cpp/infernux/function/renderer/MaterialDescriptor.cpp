@@ -467,13 +467,14 @@ MaterialDescriptorSet *MaterialDescriptorManager::GetOrCreateDescriptorSet(const
     // before accepting a cached descriptor so first-use ordering never turns
     // an invalid binding into a silently ignored value.
     for (const auto &[name, buffer] : material.GetBuffers()) {
-        const auto binding =
-            std::find_if(program.GetDescriptorBindings().begin(), program.GetDescriptorBindings().end(),
-                         [&](const MergedDescriptorBinding &candidate) {
-                             return candidate.set == 0 && candidate.name == name &&
-                                    candidate.type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-                         });
-        if (!buffer || binding == program.GetDescriptorBindings().end() || binding->descriptorCount != 1) {
+        const MergedDescriptorBinding *binding = nullptr;
+        for (const auto &candidate : program.GetDescriptorBindings()) {
+            if (candidate.set == 0 && candidate.name == name && candidate.type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) {
+                binding = &candidate;
+                break;
+            }
+        }
+        if (!buffer || !binding || binding->descriptorCount != 1) {
             INXLOG_ERROR("Material buffer '", name, "' does not match one reflected set-0 storage binding");
             return nullptr;
         }
@@ -854,11 +855,14 @@ MaterialDescriptorSet *MaterialDescriptorManager::GetOrCreateRendererDescriptorS
     }
 
     for (const auto &[name, buffer] : parameters->buffers) {
-        const auto declaredBinding =
-            std::find_if(descriptor->bindings.begin(), descriptor->bindings.end(), [&](const auto &binding) {
-                return binding.set == 0 && binding.type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER && binding.name == name;
-            });
-        if (declaredBinding == descriptor->bindings.end() || declaredBinding->descriptorCount != 1) {
+        const MergedDescriptorBinding *declaredBinding = nullptr;
+        for (const auto &binding : descriptor->bindings) {
+            if (binding.set == 0 && binding.type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER && binding.name == name) {
+                declaredBinding = &binding;
+                break;
+            }
+        }
+        if (!declaredBinding || declaredBinding->descriptorCount != 1) {
             INXLOG_ERROR("Renderer parameter buffer '", name, "' does not match one reflected storage binding");
             RetireDescriptorSet(std::shared_ptr<MaterialDescriptorSet>(std::move(descriptor)));
             return nullptr;
