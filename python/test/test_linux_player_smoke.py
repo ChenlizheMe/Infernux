@@ -200,6 +200,19 @@ def test_linux_smoke_reports_the_selected_sdl_video_backend(text, expected):
     assert module._selected_video_driver(text) == expected
 
 
+def test_linux_smoke_backend_evidence_is_emitted_at_info_level():
+    source = (ROOT / "cpp" / "infernux" / "platform" / "window" / "InxView.cpp").read_text(
+        encoding="utf-8"
+    )
+
+    marker = '", selected backend=", videoDriver.empty() ? "<none>" : videoDriver'
+    marker_index = source.index(marker)
+    info_index = source.rfind("INXLOG_INFO", 0, marker_index)
+    debug_index = source.rfind("INXLOG_DEBUG", 0, marker_index)
+    assert info_index > debug_index
+    assert source[info_index:marker_index].count("INXLOG_INFO") == 1
+
+
 def test_linux_smoke_captures_only_after_renderer_submission_is_ready():
     module = _module()
     source = inspect.getsource(module._run)
