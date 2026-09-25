@@ -60,8 +60,11 @@ Release-candidate artifacts and JSON smoke results can be bound to one source
 commit with `build_evidence_manifest.py`. Every `--artifact` and `--result`
 uses `ID=PATH`; paths must live below `--root`, directory hashes are stable over
 sorted relative file names, and `--require-clean` rejects an uncommitted source
-tree. The manifest timestamp comes from the source commit rather than wall-clock
-time so the same release inputs reproduce the same provenance record.
+tree. Add `--require-passed` for a release gate that rejects any acceptance
+result whose status is not `passed` (older reports without a `success` field are
+accepted; an explicit `success: false` is rejected). The manifest timestamp
+comes from the source commit rather than wall-clock time so the same release
+inputs reproduce the same provenance record.
 
 Android CPython prefixes are accepted only when they carry a complete
 `infernux-android-python.json` provenance manifest. After preparing a prefix,
