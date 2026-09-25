@@ -348,6 +348,29 @@ def test_surface_destroy_wait_is_observed_before_resume(monkeypatch):
     assert log.count("INFERNUX_ANDROID_SURFACE_DESTROY_WAIT_COMPLETE") == 2
 
 
+def test_surface_creation_is_observed_before_next_suspend(monkeypatch):
+    module = _module()
+    logs = iter(
+        (
+            "INFERNUX_VULKAN_SURFACE extent=2400x1080",
+            "INFERNUX_VULKAN_SURFACE extent=2400x1080\n"
+            "INFERNUX_VULKAN_SURFACE extent=2400x1080",
+        )
+    )
+
+    class FakeAdb:
+        def run(self, *arguments, **options):
+            assert arguments == ("logcat", "-d", "-v", "brief")
+            assert options == {"check": False}
+            return next(logs)
+
+    monkeypatch.setattr(module.time, "sleep", lambda _seconds: None)
+
+    log = module._wait_for_surface_creation(FakeAdb(), 2, 5.0)
+
+    assert len(module.vulkan_surface_extents(log)) == 2
+
+
 def test_wait_for_player_pid_accepts_a_legal_activity_restart(monkeypatch):
     module = _module()
 

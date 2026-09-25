@@ -584,6 +584,29 @@ def _wait_for_log_count(
     )
 
 
+def _wait_for_surface_creation(
+    adb: Adb,
+    expected_count: int,
+    timeout: float,
+) -> str:
+    """Wait until Android has recreated the Player's Vulkan surface."""
+
+    deadline = time.monotonic() + timeout
+    last_log = ""
+    observed = 0
+    while time.monotonic() < deadline:
+        last_log = adb.run("logcat", "-d", "-v", "brief", check=False)
+        observed = len(vulkan_surface_extents(last_log))
+        if observed >= expected_count:
+            return last_log
+        time.sleep(0.25)
+    raise RuntimeError(
+        f"Android Player recreated {observed}/{expected_count} Vulkan surfaces "
+        f"within {timeout:.1f}s\n"
+        + "\n".join(last_log.splitlines()[-120:])
+    )
+
+
 def _wait_for_foreground(adb: Adb, package: str, timeout: float = 10.0) -> None:
     deadline = time.monotonic() + timeout
     last_state = ""
@@ -725,6 +748,7 @@ def run_smoke(arguments: argparse.Namespace) -> SmokeResult:
                 + repr(arguments.expect_back_log)
             )
 
+    surface_creation_baseline = len(vulkan_surface_extents(log))
     surface_destroy_marker = "INFERNUX_ANDROID_SURFACE_DESTROY_WAIT_COMPLETE"
     surface_destroy_baseline = adb.run(
         "logcat", "-d", "-v", "brief", check=False
@@ -740,6 +764,11 @@ def run_smoke(arguments: argparse.Namespace) -> SmokeResult:
         adb.run("shell", "am", "start", "-n", arguments.activity)
         _wait_for_foreground(adb, arguments.package)
         pid = _wait_for_player_pid(adb, arguments.package, expected=pid)
+        log = _wait_for_surface_creation(
+            adb,
+            surface_creation_baseline + cycle,
+            arguments.startup_timeout,
+        )
 
     required_logs = tuple(dict.fromkeys(arguments.require_log))
     if required_logs:
