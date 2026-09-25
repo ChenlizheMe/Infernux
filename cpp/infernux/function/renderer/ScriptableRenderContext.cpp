@@ -377,16 +377,23 @@ void ScriptableRenderContext::SubmitCulling(CullingResults &culling)
 #endif
         glm::vec3 cameraRight(1.0f, 0.0f, 0.0f);
         glm::vec3 cameraUp(0.0f, 1.0f, 0.0f);
+        glm::vec3 iconCameraPosition = m_gizmoCtx.cameraPos;
         if (m_activeCamera) {
             const auto cameraToWorld = m_activeCamera->GetCameraToWorldMatrix();
             cameraRight = glm::normalize(glm::vec3(cameraToWorld[0]));
             cameraUp = glm::normalize(glm::vec3(cameraToWorld[1]));
+            // Use the same camera transform for icon scale and billboard axes.
+            // The context position is refreshed by the renderer, but can lag
+            // one frame while SceneView navigation or a graph rebuild is in
+            // flight. Mixing the two produces a visible icon whose projected
+            // hit rectangle is computed from a different distance.
+            iconCameraPosition = glm::vec3(cameraToWorld[3]);
         }
         const GizmosDrawCallBuffer::IconMaterials iconMaterials{
             m_gizmoCtx.componentGizmoIconMaterial, m_gizmoCtx.cameraGizmoIconMaterial,
             m_gizmoCtx.lightGizmoIconMaterial, m_gizmoCtx.particleGizmoIconMaterial};
         DrawCallResult iconResult = m_gizmoCtx.componentGizmos->GetIconDrawCalls(
-            iconMaterials, m_gizmoCtx.cameraPos, cameraRight, cameraUp, m_cachedProj,
+            iconMaterials, iconCameraPosition, cameraRight, cameraUp, m_cachedProj,
             m_graph ? m_graph->GetRenderViewContext().height : 1u, m_gizmoCtx.iconDpiScale);
         if (!iconResult.drawCalls.empty())
             submittedDomains |= RenderDomainBit(RenderDomain::ComponentGizmo);
