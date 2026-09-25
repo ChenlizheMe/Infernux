@@ -416,9 +416,17 @@ def _fatal_lines(text: str) -> list[str]:
 
 
 def _selected_video_driver(text: str) -> str:
-    """Return the last SDL backend reported while creating the Vulkan surface."""
+    """Return the last SDL backend reported while creating the Vulkan surface.
+
+    SDL emits its own startup line (``SDL chose video backend 'x11'``), while
+    the engine emits the stricter ``selected backend=x11`` contract marker.
+    Both describe the same selected backend; accepting both keeps the smoke
+    gate tied to the runtime's authoritative startup evidence instead of
+    depending on which logger reaches the captured Player stream first.
+    """
 
     matches = re.findall(r"(?:selected )?backend=([^,\s]+)", text)
+    matches.extend(re.findall(r"SDL chose video backend ['\"]([^'\"]+)['\"]", text))
     return matches[-1] if matches else ""
 
 

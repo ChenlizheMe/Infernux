@@ -191,6 +191,7 @@ def test_linux_smoke_recognizes_the_selected_display_server(environment, expecte
     (
         ("SDL/Vulkan window backend contract accepted: backend=x11, extensions=2", "x11"),
         ("selected backend=wayland, extensions=2\nselected backend=x11, extensions=2", "x11"),
+        ("SDL chose video backend 'x11'", "x11"),
         ("SDL initialized without a Vulkan window", ""),
     ),
 )
