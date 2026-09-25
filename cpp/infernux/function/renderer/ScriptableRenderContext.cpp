@@ -379,14 +379,14 @@ void ScriptableRenderContext::SubmitCulling(CullingResults &culling)
         glm::vec3 cameraUp(0.0f, 1.0f, 0.0f);
         glm::vec3 iconCameraPosition = m_gizmoCtx.cameraPos;
         if (m_activeCamera) {
-            const auto cameraToWorld = m_activeCamera->GetCameraToWorldMatrix();
+            // The icon quad is submitted with the cached view/projection pair.
+            // Derive its billboard frame from that same view rather than from
+            // a live camera transform which may have advanced during a graph
+            // rebuild.  This keeps the rendered quad and its pick projection
+            // in the same frame of reference.
+            const auto cameraToWorld = glm::inverse(m_cachedView);
             cameraRight = glm::normalize(glm::vec3(cameraToWorld[0]));
             cameraUp = glm::normalize(glm::vec3(cameraToWorld[1]));
-            // Use the same camera transform for icon scale and billboard axes.
-            // The context position is refreshed by the renderer, but can lag
-            // one frame while SceneView navigation or a graph rebuild is in
-            // flight. Mixing the two produces a visible icon whose projected
-            // hit rectangle is computed from a different distance.
             iconCameraPosition = glm::vec3(cameraToWorld[3]);
         }
         const GizmosDrawCallBuffer::IconMaterials iconMaterials{
