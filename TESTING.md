@@ -227,6 +227,15 @@ build` followed by the workflow's emulator and `smoke` stage. Physical-device
 acceptance remains explicit: record model/API/driver, never equate emulator
 success with that device passing.
 
+Audio acceptance has the same boundary. `scripts/acceptance/audio_report_gate.py`
+is the release report gate for Windows/Linux Player evidence. A report must
+include an `audio` object with `verification: "hardware"`,
+`hardware_verified: true`, the selected driver and output device, sample rate,
+channel count, and a probe timestamp. Reports from SDL's `dummy`, `null`,
+`disk`, or disabled drivers are rejected, as are reports with no audio evidence.
+The native `infernux.audio_playback` test remains a software mixer/device-clock
+test and must never be presented as physical-device acceptance.
+
 Before release, also download the selected wheel through Hub on each actual host,
 install it into a clean runtime, and build with installed platform plugins using
 `build_player.py --installed`. Check that package TXT/JSON reads reach UI, sibling
