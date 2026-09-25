@@ -80,8 +80,12 @@ const char *const *InxView::GetVkExtensions(uint32_t *count)
     const char *requestedDriver = std::getenv("SDL_VIDEODRIVER");
     const char *selectedDriver = SDL_GetCurrentVideoDriver();
     const std::string_view videoDriver = selectedDriver ? selectedDriver : "";
-    INXLOG_DEBUG("Get Vulkan Extensions: SDL_VIDEODRIVER=", requestedDriver ? requestedDriver : "<default>",
-                 ", selected backend=", videoDriver.empty() ? "<none>" : videoDriver);
+    // The selected backend is part of the platform acceptance contract.  Keep
+    // this one line at Info so release/development Players expose the actual
+    // SDL backend even when Debug logging is disabled; the per-extension detail
+    // below remains Debug-only.
+    INXLOG_INFO("Get Vulkan Extensions: SDL_VIDEODRIVER=", requestedDriver ? requestedDriver : "<default>",
+                ", selected backend=", videoDriver.empty() ? "<none>" : videoDriver);
 
     unsigned int extensionCount = 0;
     const char *const *extensions = SDL_Vulkan_GetInstanceExtensions(&extensionCount);
