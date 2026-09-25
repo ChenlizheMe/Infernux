@@ -249,6 +249,69 @@ def test_forward_pass_buffers_have_current_view_producers_and_resolved_inputs(pi
     }
 
 
+@pytest.mark.parametrize(
+    ("pipeline_type", "terminal_source", "samples"),
+    [
+        (DefaultForwardPipeline, "opaque", 1),
+        (DefaultForwardPipeline, "opaque", 4),
+        (DefaultForwardPlusPipeline, "opaque", 1),
+        (DefaultForwardPlusPipeline, "opaque", 4),
+        (DefaultDeferredPipeline, "gbuffer", 1),
+    ],
+)
+def test_all_builtin_pipelines_publish_same_view_normal_motion_depth(
+    pipeline_type, terminal_source, samples
+):
+    """Normal/motion/depth must be one source-scoped View contract.
+
+    Forward, Forward+ and Deferred use different geometry routes, but a
+    consumer at the opaque stage must receive buffers produced for that same
+    graph/View.  In particular, Deferred's private GBuffer normal is not
+    exposed as the public normal resource and both derived buffers read the
+    graph's depth attachment.
+    """
+    graph = RenderGraph(f"{pipeline_type.__name__} View contract", output_samples=samples)
+    graph.set_geometry_buffer_requirements({"normal", "motion"})
+    pipeline_type().define_topology(graph)
+
+    result = graph.get_pass_result(terminal_source)
+    assert result is not None
+    assert {"color", "depth", "normal", "motion"} <= set(result.snapshot)
+    assert result.sample("depth") is graph.get_texture("depth")
+    assert result.sample("normal") is not result.sample("motion")
+    assert result.sample("normal").samples == 1
+    assert result.sample("motion").samples == 1
+    assert result.sample("normal").name.startswith(f"_result/{terminal_source}/normal")
+    assert result.sample("motion").name.startswith(f"_result/{terminal_source}/motion")
+
+    passes = graph._passes
+    for semantic, material_pass in (("normal", "normal"), ("motion", "motion")):
+        producer = next(item for item in passes if item._material_pass == material_pass)
+        assert producer._reads == ["depth"]
+        assert producer._write_depth is None
+        if samples > 1:
+            assert producer._resolve_color == result.sample(semantic).name
+        else:
+            assert producer._write_colors[0] == result.sample(semantic).name
+
+
+def test_view_geometry_results_do_not_cross_graph_boundaries():
+    """Two camera/View graph builds keep equal aliases but distinct resources."""
+    graphs = []
+    for label in ("Scene View", "Game View"):
+        graph = RenderGraph(label)
+        graph.set_geometry_buffer_requirements({"normal", "motion"})
+        DefaultDeferredPipeline().define_topology(graph)
+        graphs.append(graph)
+
+    scene_result = graphs[0].get_pass_result("gbuffer")
+    game_result = graphs[1].get_pass_result("gbuffer")
+    assert scene_result is not None and game_result is not None
+    for semantic in ("depth", "normal", "motion"):
+        assert scene_result.sample(semantic) is not game_result.sample(semantic)
+        assert scene_result.sample(semantic).name == game_result.sample(semantic).name
+
+
 def test_fullscreen_effect_shadow_binding_reports_missing_source():
     class ShadowEffect(FullScreenEffect):
         name = "shadow_sample"
