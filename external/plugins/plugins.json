@@ -9,6 +9,13 @@
       "default": true
     },
     {
+      "path": "infernux_taichi",
+      "repository": "https://github.com/ChenlizheMe/infernux_taichi",
+      "category": "compute",
+      "targets": [],
+      "default": false
+    },
+    {
       "path": "infernux_windows",
       "repository": "https://github.com/ChenlizheMe/infernux_windows",
       "category": "platform_build",

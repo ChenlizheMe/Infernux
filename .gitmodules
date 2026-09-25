@@ -50,3 +50,6 @@
 [submodule "external/MikkTSpace"]
 	path = external/MikkTSpace
 	url = https://github.com/mmikk/MikkTSpace.git
+[submodule "external/plugins/infernux_taichi"]
+	path = external/plugins/infernux_taichi
+	url = https://github.com/ChenlizheMe/infernux_taichi.git
