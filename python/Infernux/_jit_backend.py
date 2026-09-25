@@ -223,9 +223,11 @@ def compilation_statistics(implementations, *, function_name, selected_mode, las
                     not cache_hit and metadata.get("llvm_pass_timings") is not None
                 ),
                 evidence=(
-                    "compiled result reports nopython/objectmode=False"
-                    if nopython
-                    else "compiled result reports object mode; Python object access remains",
+                    (
+                        "compiled result reports nopython/objectmode=False"
+                        if nopython
+                        else "compiled result reports object mode; Python object access remains"
+                    ),
                 ),
             )
             rows.append(CpuSpecializationStatistics(
