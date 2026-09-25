@@ -67,9 +67,58 @@ def _compute_decorator_names(tree: ast.Module) -> set[str]:
     return names
 
 
+def _kernel_source_diagnostic(
+    source_path: Path,
+    qualified: str,
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+    reason: str,
+    advice: str,
+    *,
+    target: str,
+) -> str:
+    return (
+        f"GPU kernel '{qualified}' at {source_path}:{node.lineno}:"
+        f"{node.col_offset + 1} is invalid for target '{target}': {reason}. "
+        f"Rewrite: {advice}"
+    )
+
+
+def _validate_class_kernel_source(
+    source_path: Path,
+    qualified: str,
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+    *,
+    target: str,
+) -> None:
+    """Reject implicit Python receivers before AOT artifact lookup.
+
+    A class method decorated directly with ``@inx.compute.kernel`` cannot be
+    represented by the fixed GPU ABI: ``Kernel`` is intentionally not a
+    descriptor and no implicit ``self`` value can be serialized.  A
+    ``@staticmethod`` declaration is explicit and remains legal.  Performing
+    this validation from source gives Android/Web build diagnostics the same
+    identity and location as Editor compilation.
+    """
+    if not any(
+        _attribute_name(item.func if isinstance(item, ast.Call) else item) == "staticmethod"
+        for item in node.decorator_list
+    ):
+        first = node.args.args[0].arg if node.args.args else "<missing>"
+        raise ComputeAotBuildError(_kernel_source_diagnostic(
+            source_path,
+            qualified,
+            node,
+            f"class-contained kernels cannot use an implicit instance receiver '{first}'",
+            "put @staticmethod above @inx.compute.kernel (decorator order: @staticmethod, then @inx.compute.kernel) or move the kernel to module scope",
+            target=target,
+        ), missing=(qualified,))
+
+
 def declared_kernel_names(
     source_paths: tuple[str | Path, ...],
     project_root: str | Path,
+    *,
+    target: str = "Player/AOT",
 ) -> tuple[str, ...]:
     """Return runtime-qualified kernels in the selected Python closure."""
 
@@ -109,7 +158,12 @@ def declared_kernel_names(
                         if is_function:
                             qualified.append("<locals>")
                     qualified.append(node.name)
-                    names.add(f"{module_name}.{'.'.join(qualified)}")
+                    runtime_name = f"{module_name}.{'.'.join(qualified)}"
+                    if any(not is_function for _, is_function in self.scope):
+                        _validate_class_kernel_source(
+                            source_path, runtime_name, node, target=target
+                        )
+                    names.add(runtime_name)
                 self.scope.append((node.name, True))
                 self.generic_visit(node)
                 self.scope.pop()

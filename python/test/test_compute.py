@@ -673,6 +673,53 @@ def internal(values):
     assert "def internal(values)" in frontend._function_source(namespace["internal"])
 
 
+def test_class_kernel_diagnostics_identify_receiver_and_rewrite():
+    from Infernux._compiler.taichi import frontend
+
+    class InvalidKernel:
+        @inx.compute.kernel
+        def step(self, domain):
+            i = inx.compute.index(domain)
+            domain[i] = 1
+
+    with pytest.raises(TypeError) as error:
+        frontend.compile_kernel(InvalidKernel.step.function, (None, None))
+    message = str(error.value)
+    assert "InvalidKernel.step" in message
+    assert "implicit instance receiver 'self'" in message
+    assert "@staticmethod" in message
+    assert "test_compute.py:" in message
+
+
+def test_kernel_closure_diagnostic_identifies_captured_value():
+    from Infernux._compiler.taichi import frontend
+
+    factor = 2
+
+    @inx.compute.kernel
+    def invalid(domain):
+        i = inx.compute.index(domain)
+        domain[i] = factor
+
+    with pytest.raises(TypeError) as error:
+        frontend.compile_kernel(invalid.function, (None,))
+    message = str(error.value)
+    assert "invalid" in message
+    assert "arbitrary Python closure capture" in message
+    assert "factor" in message
+    assert "test_compute.py:" in message
+
+
+def test_kernel_rejects_staticmethod_descriptor_in_wrong_decorator_order():
+    with pytest.raises(TypeError, match="put @staticmethod above @inx.compute.kernel"):
+        class WrongOrder:
+            @inx.compute.kernel
+            @staticmethod
+            def step(domain):
+                i = inx.compute.index(domain)
+                domain[i] = 1
+
+
 def test_gpu_kernel_rejects_cpu_buffers_without_fallback():
     values = inx.buffer(shape=4, dtype=np.float32, device="cpu")
 

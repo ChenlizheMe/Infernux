@@ -1243,6 +1243,12 @@ def _release_engine_resources() -> None:
 
 def kernel(function) -> Kernel:
     """Declare a GPU kernel; the function describes one logical work item."""
+    if isinstance(function, staticmethod):
+        raise TypeError(
+            "@inx.compute.kernel received a staticmethod descriptor; put "
+            "@staticmethod above @inx.compute.kernel so the kernel decorator "
+            "receives the underlying function"
+        )
     return Kernel(function)
 
 

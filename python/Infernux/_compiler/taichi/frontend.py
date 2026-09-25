@@ -38,6 +38,75 @@ _CACHE_FILE_LIMIT = 128
 _CACHE_BYTE_LIMIT = 256 * 1024 * 1024
 
 
+def _kernel_qualified_name(function) -> str:
+    """Return the stable source identity shown in kernel diagnostics."""
+    module = str(getattr(function, "__module__", "") or "<module>")
+    qualified = str(
+        getattr(function, "__qualname__", None)
+        or getattr(function, "__name__", "<kernel>")
+    )
+    return f"{module}.{qualified}"
+
+
+def _kernel_target() -> str:
+    """Describe the active compiler target without importing the engine eagerly."""
+    explicit = os.environ.get("INFERNUX_COMPUTE_TARGET", "").strip()
+    if explicit:
+        return explicit
+    try:
+        from Infernux.application import Application
+
+        return "Player/Desktop" if Application.is_player() else "Editor/Desktop"
+    except Exception:
+        return "Editor/Desktop"
+
+
+def _kernel_diagnostic(function, reason: str, advice: str, *, target: str | None = None) -> str:
+    code = getattr(function, "__code__", None)
+    path = str(getattr(code, "co_filename", "<unknown>"))
+    line = int(getattr(code, "co_firstlineno", 0) or 0)
+    qualified = _kernel_qualified_name(function)
+    compiler_target = target or _kernel_target()
+    return (
+        f"GPU kernel '{qualified}' at {path}:{line}:1 is invalid for "
+        f"target '{compiler_target}': {reason}. Rewrite: {advice}"
+    )
+
+
+def _is_class_qualified(function) -> bool:
+    qualified = str(getattr(function, "__qualname__", ""))
+    parts = qualified.split(".")
+    # ``test.<locals>.Kernel.step`` is still a class method; only a plain
+    # nested function has ``<locals>`` as the component immediately before
+    # the function name.
+    return len(parts) >= 2 and parts[-2] != "<locals>"
+
+
+def _validate_kernel_method(function, definition: ast.FunctionDef, *, target: str | None = None) -> None:
+    """Enforce the explicit receiver contract for class-contained kernels.
+
+    ``Kernel`` deliberately is not a descriptor: an instance method would make
+    Python inject an implicit ``self`` that cannot be represented in the GPU
+    argument ABI.  Static methods are explicit and keep the runtime identity
+    (``Class.method``), so they remain fully supported.
+    """
+    if not _is_class_qualified(function):
+        return
+    staticmethod_decorator = any(
+        _attribute_name(item.func if isinstance(item, ast.Call) else item) == "staticmethod"
+        for item in definition.decorator_list
+    )
+    if staticmethod_decorator:
+        return
+    first = definition.args.args[0].arg if definition.args.args else "<missing>"
+    raise TypeError(_kernel_diagnostic(
+        function,
+        f"class-contained kernels cannot use an implicit instance receiver '{first}'",
+        "put @staticmethod above @inx.compute.kernel (decorator order: @staticmethod, then @inx.compute.kernel) or move the kernel to module scope",
+        target=target,
+    ))
+
+
 class _IntrinsicLowering(ast.NodeTransformer):
     """Map the small public kernel intrinsic surface to compiler intrinsics."""
 
@@ -566,12 +635,18 @@ def compile_kernel(function, params) -> CompilerArtifact:
         raise TypeError(f"GPU kernel requires {len(signature.parameters)} parameters, got {len(params)}")
 
     if function.__closure__:
-        raise TypeError("GPU kernel cannot capture Python closure values")
+        captured = ", ".join(str(name) for name in getattr(function.__code__, "co_freevars", ()))
+        raise TypeError(_kernel_diagnostic(
+            function,
+            f"arbitrary Python closure capture is not part of the GPU ABI ({captured or 'unknown value'})",
+            "pass buffers or numeric scalars as explicit parameters; do not close over Python locals",
+        ))
     source = _function_source(function)
     tree = ast.parse(source)
     definition = next((node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))), None)
     if not isinstance(definition, ast.FunctionDef):
         raise TypeError("GPU kernel must be a synchronous Python function")
+    _validate_kernel_method(function, definition)
     definition.decorator_list = []
     if any(isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
            and node.func.id == function.__name__ for node in ast.walk(definition)):
