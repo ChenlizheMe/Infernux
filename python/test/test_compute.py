@@ -689,6 +689,8 @@ def test_class_kernel_diagnostics_identify_receiver_and_rewrite():
     assert "implicit instance receiver 'self'" in message
     assert "@staticmethod" in message
     assert "test_compute.py:" in message
+    assert " is invalid for target 'Editor/Desktop'" in message
+    assert ":2:1 is invalid for target" in message
 
 
 def test_kernel_closure_diagnostic_identifies_captured_value():

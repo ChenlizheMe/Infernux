@@ -11,6 +11,11 @@ import struct
 
 from Infernux.engine.path_utils import resolved_path
 from Infernux.engine.project_context import get_script_module_name
+from Infernux._compiler.kernel_contract import (
+    attribute_name,
+    implicit_receiver_name,
+    kernel_diagnostic,
+)
 
 
 _ARTIFACT_MAGIC = b"INXGPU\x01"
@@ -31,14 +36,7 @@ class ComputeAotResult:
 
 
 def _attribute_name(node: ast.expr) -> str:
-    parts: list[str] = []
-    while isinstance(node, ast.Attribute):
-        parts.append(node.attr)
-        node = node.value
-    if isinstance(node, ast.Name):
-        parts.append(node.id)
-        return ".".join(reversed(parts))
-    return ""
+    return attribute_name(node)
 
 
 def _compute_decorator_names(tree: ast.Module) -> set[str]:
@@ -76,10 +74,13 @@ def _kernel_source_diagnostic(
     *,
     target: str,
 ) -> str:
-    return (
-        f"GPU kernel '{qualified}' at {source_path}:{node.lineno}:"
-        f"{node.col_offset + 1} is invalid for target '{target}': {reason}. "
-        f"Rewrite: {advice}"
+    return kernel_diagnostic(
+        source_path,
+        qualified,
+        node,
+        target=target,
+        reason=reason,
+        advice=advice,
     )
 
 
@@ -99,11 +100,8 @@ def _validate_class_kernel_source(
     this validation from source gives Android/Web build diagnostics the same
     identity and location as Editor compilation.
     """
-    if not any(
-        _attribute_name(item.func if isinstance(item, ast.Call) else item) == "staticmethod"
-        for item in node.decorator_list
-    ):
-        first = node.args.args[0].arg if node.args.args else "<missing>"
+    first = implicit_receiver_name(node, in_class=True)
+    if first is not None:
         raise ComputeAotBuildError(_kernel_source_diagnostic(
             source_path,
             qualified,

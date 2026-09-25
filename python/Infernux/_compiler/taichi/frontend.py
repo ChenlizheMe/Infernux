@@ -26,6 +26,10 @@ import threading
 import numpy as np
 
 from . import CompilerInstallationError, _vendor_dir, load_native
+from ..kernel_contract import (
+    attribute_name,
+    implicit_receiver_name,
+)
 from ..cache import compiler_cache_root, prune_cache_files
 
 
@@ -61,14 +65,22 @@ def _kernel_target() -> str:
         return "Editor/Desktop"
 
 
-def _kernel_diagnostic(function, reason: str, advice: str, *, target: str | None = None) -> str:
+def _kernel_diagnostic(
+    function,
+    reason: str,
+    advice: str,
+    *,
+    target: str | None = None,
+    line: int | None = None,
+    column: int = 1,
+) -> str:
     code = getattr(function, "__code__", None)
     path = str(getattr(code, "co_filename", "<unknown>"))
-    line = int(getattr(code, "co_firstlineno", 0) or 0)
+    line = int(line if line is not None else getattr(code, "co_firstlineno", 0) or 0)
     qualified = _kernel_qualified_name(function)
     compiler_target = target or _kernel_target()
     return (
-        f"GPU kernel '{qualified}' at {path}:{line}:1 is invalid for "
+        f"GPU kernel '{qualified}' at {path}:{line}:{column} is invalid for "
         f"target '{compiler_target}': {reason}. Rewrite: {advice}"
     )
 
@@ -92,18 +104,16 @@ def _validate_kernel_method(function, definition: ast.FunctionDef, *, target: st
     """
     if not _is_class_qualified(function):
         return
-    staticmethod_decorator = any(
-        _attribute_name(item.func if isinstance(item, ast.Call) else item) == "staticmethod"
-        for item in definition.decorator_list
-    )
-    if staticmethod_decorator:
+    first = implicit_receiver_name(definition, in_class=True)
+    if first is None:
         return
-    first = definition.args.args[0].arg if definition.args.args else "<missing>"
     raise TypeError(_kernel_diagnostic(
         function,
         f"class-contained kernels cannot use an implicit instance receiver '{first}'",
         "put @staticmethod above @inx.compute.kernel (decorator order: @staticmethod, then @inx.compute.kernel) or move the kernel to module scope",
         target=target,
+        line=definition.lineno,
+        column=definition.col_offset + 1,
     ))
 
 
@@ -406,14 +416,8 @@ def _load_vendor():
 
 
 def _attribute_name(node: ast.expr) -> str | None:
-    parts: list[str] = []
-    while isinstance(node, ast.Attribute):
-        parts.append(node.attr)
-        node = node.value
-    if isinstance(node, ast.Name):
-        parts.append(node.id)
-        return ".".join(reversed(parts))
-    return None
+    value = attribute_name(node)
+    return value or None
 
 
 def _index_declaration(statement: ast.stmt) -> tuple[str, str] | None:
@@ -646,7 +650,7 @@ def compile_kernel(function, params) -> CompilerArtifact:
     definition = next((node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))), None)
     if not isinstance(definition, ast.FunctionDef):
         raise TypeError("GPU kernel must be a synchronous Python function")
-    _validate_kernel_method(function, definition)
+    _validate_kernel_method(function, definition, target=_kernel_target())
     definition.decorator_list = []
     if any(isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
            and node.func.id == function.__name__ for node in ast.walk(definition)):

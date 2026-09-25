@@ -97,6 +97,34 @@ def test_declared_kernel_names_reports_implicit_class_receiver_with_location(tmp
     assert "@staticmethod" in message
 
 
+@pytest.mark.parametrize(
+    "target",
+    ("Editor/Desktop", "Player/Windows", "Player/Linux", "Android/AOT"),
+)
+def test_kernel_contract_fixture_reports_the_same_identity_for_native_targets(target):
+    fixture_root = Path(__file__).resolve().parents[2] / "tests" / "fixtures" / "compute_kernel_contract"
+    source = fixture_root / "Assets/Scripts/InvalidInstance.py"
+    with pytest.raises(ComputeAotBuildError) as error:
+        declared_kernel_names((source,), fixture_root, target=target)
+    message = str(error.value)
+    assert "Scripts.InvalidInstance.JellyKernel.step" in message
+    assert f"{source}:8:5" in message
+    assert f"target '{target}'" in message
+    assert "implicit instance receiver 'self'" in message
+
+
+@pytest.mark.parametrize(
+    "target",
+    ("Editor/Desktop", "Player/Windows", "Player/Linux", "Android/AOT"),
+)
+def test_kernel_contract_fixture_accepts_the_same_static_kernel_for_native_targets(target):
+    fixture_root = Path(__file__).resolve().parents[2] / "tests" / "fixtures" / "compute_kernel_contract"
+    source = fixture_root / "Assets/Scripts/ValidStatic.py"
+    assert declared_kernel_names((source,), fixture_root, target=target) == (
+        "Scripts.ValidStatic.JellyKernel.step",
+    )
+
+
 def test_stage_compute_artifacts_seals_selected_and_engine_kernels(tmp_path):
     source = _write_kernel(tmp_path)
     cache = tmp_path / "Library/Artifacts/Compute"
