@@ -13,6 +13,7 @@ from Infernux.engine.path_utils import resolved_path
 from Infernux.engine.project_context import get_script_module_name
 from Infernux._compiler.kernel_contract import (
     attribute_name,
+    implicit_receiver_attribute,
     implicit_receiver_name,
     kernel_diagnostic,
 )
@@ -73,6 +74,8 @@ def _kernel_source_diagnostic(
     advice: str,
     *,
     target: str,
+    line: int | None = None,
+    column: int | None = None,
 ) -> str:
     return kernel_diagnostic(
         source_path,
@@ -81,6 +84,8 @@ def _kernel_source_diagnostic(
         target=target,
         reason=reason,
         advice=advice,
+        line=line,
+        column=column,
     )
 
 
@@ -109,6 +114,19 @@ def _validate_class_kernel_source(
             f"class-contained kernels cannot use an implicit instance receiver '{first}'",
             "put @staticmethod above @inx.compute.kernel (decorator order: @staticmethod, then @inx.compute.kernel) or move the kernel to module scope",
             target=target,
+        ), missing=(qualified,))
+    access = implicit_receiver_attribute(node)
+    if access is not None:
+        receiver, attribute = access
+        raise ComputeAotBuildError(_kernel_source_diagnostic(
+            source_path,
+            qualified,
+            node,
+            f"class-contained kernels cannot access unbound receiver field '{receiver}.{attribute.attr}'",
+            "pass the required scalar or inx.buffer explicitly, or put @staticmethod above @inx.compute.kernel",
+            target=target,
+            line=attribute.lineno,
+            column=attribute.col_offset + 1,
         ), missing=(qualified,))
 
 

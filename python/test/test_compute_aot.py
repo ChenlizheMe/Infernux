@@ -114,6 +114,28 @@ def test_declared_kernel_names_reports_positional_only_class_receiver(tmp_path):
         declared_kernel_names((source,), tmp_path, target="Android/AOT")
 
 
+def test_declared_kernel_names_reports_unbound_class_field_with_attribute_location(tmp_path):
+    source = tmp_path / "Assets/Scripts/Jelly.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        "import Infernux as inx\n"
+        "class Jelly:\n"
+        "    @inx.compute.kernel\n"
+        "    def step(domain):\n"
+        "        i = inx.compute.index(domain)\n"
+        "        domain[i] = self.scale\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ComputeAotBuildError) as error:
+        declared_kernel_names((source,), tmp_path, target="Web/Player")
+    message = str(error.value)
+    assert f"{source}:6:21" in message
+    assert "unbound receiver field 'self.scale'" in message
+    assert "target 'Web/Player'" in message
+    assert "pass the required scalar or inx.buffer explicitly" in message
+
+
 @pytest.mark.parametrize(
     "target",
     ("Editor/Desktop", "Player/Windows", "Player/Linux", "Android/AOT"),

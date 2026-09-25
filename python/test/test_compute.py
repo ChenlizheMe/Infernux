@@ -693,6 +693,24 @@ def test_class_kernel_diagnostics_identify_receiver_and_rewrite():
     assert ":2:1 is invalid for target" in message
 
 
+def test_class_kernel_diagnostics_reject_unbound_receiver_field():
+    from Infernux._compiler.taichi import frontend
+
+    class InvalidFieldKernel:
+        @inx.compute.kernel
+        def step(domain):
+            i = inx.compute.index(domain)
+            domain[i] = self.scale
+
+    with pytest.raises(TypeError) as error:
+        frontend.compile_kernel(InvalidFieldKernel.step.function, (None,))
+    message = str(error.value)
+    assert "InvalidFieldKernel.step" in message
+    assert "unbound receiver field 'self.scale'" in message
+    assert "pass the required scalar or inx.buffer explicitly" in message
+    assert " is invalid for target 'Editor/Desktop'" in message
+
+
 def test_kernel_closure_diagnostic_identifies_captured_value():
     from Infernux._compiler.taichi import frontend
 

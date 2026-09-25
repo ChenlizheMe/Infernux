@@ -28,6 +28,7 @@ import numpy as np
 from . import CompilerInstallationError, _vendor_dir, load_native
 from ..kernel_contract import (
     attribute_name,
+    implicit_receiver_attribute,
     implicit_receiver_name,
 )
 from ..cache import compiler_cache_root, prune_cache_files
@@ -105,16 +106,26 @@ def _validate_kernel_method(function, definition: ast.FunctionDef, *, target: st
     if not _is_class_qualified(function):
         return
     first = implicit_receiver_name(definition, in_class=True)
-    if first is None:
-        return
-    raise TypeError(_kernel_diagnostic(
-        function,
-        f"class-contained kernels cannot use an implicit instance receiver '{first}'",
-        "put @staticmethod above @inx.compute.kernel (decorator order: @staticmethod, then @inx.compute.kernel) or move the kernel to module scope",
-        target=target,
-        line=definition.lineno,
-        column=definition.col_offset + 1,
-    ))
+    if first is not None:
+        raise TypeError(_kernel_diagnostic(
+            function,
+            f"class-contained kernels cannot use an implicit instance receiver '{first}'",
+            "put @staticmethod above @inx.compute.kernel (decorator order: @staticmethod, then @inx.compute.kernel) or move the kernel to module scope",
+            target=target,
+            line=definition.lineno,
+            column=definition.col_offset + 1,
+        ))
+    access = implicit_receiver_attribute(definition)
+    if access is not None:
+        receiver, attribute = access
+        raise TypeError(_kernel_diagnostic(
+            function,
+            f"class-contained kernels cannot access unbound receiver field '{receiver}.{attribute.attr}'",
+            "pass the required scalar or inx.buffer explicitly, or put @staticmethod above @inx.compute.kernel",
+            target=target,
+            line=attribute.lineno,
+            column=attribute.col_offset + 1,
+        ))
 
 
 class _IntrinsicLowering(ast.NodeTransformer):

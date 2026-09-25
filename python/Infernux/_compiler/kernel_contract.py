@@ -81,6 +81,26 @@ def implicit_receiver_name(
     return first if first in {"self", "cls"} else None
 
 
+def implicit_receiver_attribute(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> tuple[str, ast.Attribute] | None:
+    """Return the first access through an unbindable ``self``/``cls`` name.
+
+    A class kernel may use an explicit buffer/scalar parameter as its first
+    argument, but it must not smuggle an engine object through a free
+    ``self.foo``/``cls.foo`` access.  Keeping this check in the shared source
+    contract makes Editor compilation and source-only platform cooks report
+    the same failure instead of diverging during lowering.
+    """
+
+    for item in ast.walk(node):
+        if not isinstance(item, ast.Attribute) or not isinstance(item.value, ast.Name):
+            continue
+        if item.value.id in {"self", "cls"}:
+            return item.value.id, item
+    return None
+
+
 def kernel_diagnostic(
     source_path: str | Path,
     qualified: str,
@@ -89,10 +109,14 @@ def kernel_diagnostic(
     target: str,
     reason: str,
     advice: str,
+    line: int | None = None,
+    column: int | None = None,
 ) -> str:
+    location_line = int(line if line is not None else node.lineno)
+    location_column = int(column if column is not None else node.col_offset + 1)
     return (
-        f"GPU kernel '{qualified}' at {source_path}:{node.lineno}:"
-        f"{node.col_offset + 1} is invalid for target '{target}': {reason}. "
+        f"GPU kernel '{qualified}' at {source_path}:{location_line}:"
+        f"{location_column} is invalid for target '{target}': {reason}. "
         f"Rewrite: {advice}"
     )
 
@@ -100,6 +124,7 @@ def kernel_diagnostic(
 __all__ = [
     "attribute_name",
     "has_decorator",
+    "implicit_receiver_attribute",
     "implicit_receiver_name",
     "kernel_diagnostic",
     "qualified_kernel_name",
