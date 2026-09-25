@@ -216,10 +216,6 @@ jobs:
       - name: Install Linux build and software Vulkan dependencies
         run: |
           scripts/setup/install_linux_dependencies.sh
-          sudo apt-get install --yes --no-install-recommends \
-            mesa-vulkan-drivers \
-            vulkan-validationlayers \
-            xvfb
           test -f "$VK_ICD_FILENAMES"
 
       - name: Install Python dependencies
