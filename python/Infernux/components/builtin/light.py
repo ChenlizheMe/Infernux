@@ -62,7 +62,14 @@ def _light_gizmo_color(light):
     # Gizmo vertices are consumed in the linear scene pipeline and encoded once
     # on presentation. Feeding display/sRGB values here would brighten every
     # non-white light icon a second time.
-    rgba = light.effective_linear_color
+    # Native Light wrappers expose ``effective_linear_color``.  Keep icon
+    # collection independent from wrapper construction however: a component
+    # proxy can be intentionally minimal while a scene is being refreshed
+    # (and test doubles use the same contract).  In that case the authored
+    # gizmo tint is already linear and is the correct deterministic value.
+    rgba = getattr(light, "effective_linear_color", None)
+    if rgba is None:
+        rgba = getattr(light, "_gizmo_icon_color", (1.0, 1.0, 1.0))
     r = float(rgba[0]) if len(rgba) > 0 else 1.0
     g = float(rgba[1]) if len(rgba) > 1 else 1.0
     b = float(rgba[2]) if len(rgba) > 2 else 1.0
