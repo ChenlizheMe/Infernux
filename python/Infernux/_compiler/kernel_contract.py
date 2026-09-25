@@ -72,7 +72,8 @@ def implicit_receiver_name(
 
     if not in_class or has_decorator(node, "staticmethod"):
         return None
-    first = node.args.args[0].arg if node.args.args else "<missing>"
+    positional = (*node.args.posonlyargs, *node.args.args)
+    first = positional[0].arg if positional else "<missing>"
     # A Kernel object is intentionally not a descriptor.  A class function
     # whose first argument is the actual domain therefore does not receive an
     # implicit Python receiver.  Reserve the diagnostic for conventional

@@ -97,6 +97,23 @@ def test_declared_kernel_names_reports_implicit_class_receiver_with_location(tmp
     assert "@staticmethod" in message
 
 
+def test_declared_kernel_names_reports_positional_only_class_receiver(tmp_path):
+    source = tmp_path / "Assets/Scripts/Jelly.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        "import Infernux as inx\n"
+        "class Jelly:\n"
+        "    @inx.compute.kernel\n"
+        "    def step(self, /, domain):\n"
+        "        i = inx.compute.index(domain)\n"
+        "        domain[i] = 1\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ComputeAotBuildError, match="implicit instance receiver 'self'"):
+        declared_kernel_names((source,), tmp_path, target="Android/AOT")
+
+
 @pytest.mark.parametrize(
     "target",
     ("Editor/Desktop", "Player/Windows", "Player/Linux", "Android/AOT"),
