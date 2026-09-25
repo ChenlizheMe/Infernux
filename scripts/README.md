@@ -88,9 +88,12 @@ the cached Web toolchain.
 Dawn dependency identities are pinned in
 `setup/dawn_dependencies.lock.json`. Fifteen dependencies are fetched from the
 canonical GitHub repositories named by Dawn's DEPS file. The four
-Chromium-vendored dependencies must be prepared on a trusted host from their
-official `chromium.googlesource.com` repositories and supplied through
-`INFERNUX_DAWN_OFFICIAL_SNAPSHOT_DIR`. That directory must contain one
+Chromium-vendored dependencies must be prepared from their official
+`chromium.googlesource.com` repositories and supplied through
+`INFERNUX_DAWN_OFFICIAL_SNAPSHOT_DIR`. CI uses
+`setup/prepare_dawn_official_snapshots.py` to create and cache this directory
+from the locked commits; an offline release build may provide the same
+directory from a trusted host. It must contain one
 uncompressed, Git-worktree `.tar` per dependency plus `manifest.json`; the
 manifest records `schema: infernux.dawn_official_snapshots`, `version: 1`, the
 locked Dawn revision, and for every archive its dependency `path`, filename,
