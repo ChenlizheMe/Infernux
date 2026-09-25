@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Callable
 from Infernux.jit_runtime import (
     CpuCompilationStatistics as Statistics,
+    CpuOptimizationReport as OptimizationReport,
     CpuPassTiming as PassTiming,
     CpuSpecializationStatistics as SpecializationStatistics,
 )

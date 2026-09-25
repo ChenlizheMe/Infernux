@@ -73,6 +73,12 @@ def test_report_cold_specializations_and_json_snapshot():
         assert row.pipeline_timings
         assert all(timing.total_ms >= 0 for timing in row.pipeline_timings)
         assert any("lowering" in timing.name for timing in row.pipeline_timings)
+        assert row.optimization_report is not None
+        assert row.optimization_report.nopython
+        assert row.optimization_report.python_object_access_eliminated
+        assert row.optimization_report.native_lowering_observed
+        assert row.optimization_report.llvm_pass_timings_observed
+        assert "compiled result reports nopython/objectmode=False" in row.optimization_report.evidence
     json.dumps(asdict(report), allow_nan=False)
     with pytest.raises(FrozenInstanceError):
         report.selected_mode = "unknown"

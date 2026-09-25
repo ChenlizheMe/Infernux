@@ -17,7 +17,12 @@ from numba.core.cpu import CPUContext
 from numba.core.registry import CPUDispatcher, CPUTarget, cpu_target
 from numba.core.runtime import rtsys
 
-from Infernux.jit_runtime import CpuCompilationStatistics, CpuPassTiming, CpuSpecializationStatistics
+from Infernux.jit_runtime import (
+    CpuCompilationStatistics,
+    CpuOptimizationReport,
+    CpuPassTiming,
+    CpuSpecializationStatistics,
+)
 
 
 _MAX_CPU_SPECIALIZATIONS = 64
@@ -197,14 +202,38 @@ def compilation_statistics(implementations, *, function_name, selected_mode, las
             memory = engine.memory_statistics if available else None
             # A loaded object file did not execute the optimizer in this
             # process; do not present cached timings as this run's work.
-            pipelines = () if cache_hit else (result.metadata or {}).get("pipeline_times", {}).items()
+            metadata = result.metadata or {}
+            pipelines = () if cache_hit else metadata.get("pipeline_times", {}).items()
             timings = tuple(CpuPassTiming(pipeline, name, (value.init + value.run + value.finalize) * 1000)
                             for pipeline, passes in pipelines for name, value in passes.items())
+            observed_passes = tuple(timing.name for timing in timings)
+            nopython = not bool(result.objectmode)
+            optimization_report = CpuOptimizationReport(
+                nopython=nopython,
+                # Numba only sets objectmode for Python object execution;
+                # this fact comes from the published compile result, not from
+                # the requested optimization level or a duplicated pass list.
+                python_object_access_eliminated=nopython,
+                native_lowering_observed=(
+                    not cache_hit
+                    and any("native_lowering" in name for name in observed_passes)
+                ),
+                observed_passes=observed_passes,
+                llvm_pass_timings_observed=(
+                    not cache_hit and metadata.get("llvm_pass_timings") is not None
+                ),
+                evidence=(
+                    "compiled result reports nopython/objectmode=False"
+                    if nopython
+                    else "compiled result reports object mode; Python object access remains",
+                ),
+            )
             rows.append(CpuSpecializationStatistics(
                 label, str(result.signature), elapsed, succeeded, cache_hit, level,
                 bool(result.objectmode), timings,
                 memory["mapped_bytes"] if memory is not None else None,
                 memory["peak_mapped_bytes"] if memory is not None else None,
+                optimization_report,
             ))
     return CpuCompilationStatistics(
         function_name, selected_mode, last_diagnostic, tuple(decisions), tuple(rows),

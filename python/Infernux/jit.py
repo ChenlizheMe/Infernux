@@ -24,6 +24,7 @@ from Infernux._jit_kernels import (
 )
 from Infernux.jit_runtime import (
     CpuCompilationStatistics as Statistics,
+    CpuOptimizationReport as OptimizationReport,
     CpuPassTiming as PassTiming,
     CpuSpecializationStatistics as SpecializationStatistics,
 )
@@ -266,4 +267,7 @@ def statistics(fn) -> Statistics:
                                   selected_mode=mode, last_diagnostic=diagnostic, decisions=decisions)
 
 
-__all__ = ["JIT_AVAILABLE", "compile", "warmup", "statistics", "Statistics", "PassTiming", "SpecializationStatistics"]
+__all__ = [
+    "JIT_AVAILABLE", "compile", "warmup", "statistics", "Statistics",
+    "PassTiming", "SpecializationStatistics", "OptimizationReport",
+]

@@ -543,6 +543,26 @@ class CpuPassTiming:
 
 
 @dataclass(frozen=True, slots=True)
+class CpuOptimizationReport:
+    """Observed optimization evidence for one published specialization.
+
+    This is deliberately a report of facts emitted by the compiler result,
+    rather than a hand-written list of passes that we intend to run.  In
+    particular, ``python_object_access_eliminated`` is only true for a
+    nopython result (Numba's object mode flag is false); it is never inferred
+    from the requested optimization level.  A cache hit can therefore still
+    report the nopython proof while exposing no cold pass timings.
+    """
+
+    nopython: bool
+    python_object_access_eliminated: bool
+    native_lowering_observed: bool
+    observed_passes: tuple[str, ...]
+    llvm_pass_timings_observed: bool
+    evidence: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class CpuSpecializationStatistics:
     implementation: str
     signature: str
@@ -554,6 +574,7 @@ class CpuSpecializationStatistics:
     pipeline_timings: tuple[CpuPassTiming, ...]
     mapped_bytes: int | None
     peak_mapped_bytes: int | None
+    optimization_report: CpuOptimizationReport | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -575,6 +596,10 @@ __all__ = [
     "BoundedLRU",
     "DispatchDecision",
     "StaticCostDecision",
+    "CpuOptimizationReport",
+    "CpuPassTiming",
+    "CpuSpecializationStatistics",
+    "CpuCompilationStatistics",
     "calls_equivalent",
     "clone_call_arguments",
     "compiler_fingerprint",
