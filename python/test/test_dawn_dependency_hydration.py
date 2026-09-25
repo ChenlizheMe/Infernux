@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from scripts.setup import hydrate_dawn_dependencies as hydrate
+from scripts.setup import prepare_dawn_official_snapshots as prepare_snapshots
 
 
 DAWN_REVISION = "1" * 40
@@ -104,6 +105,32 @@ def _write_snapshot_manifest(
     (snapshot_dir / "manifest.json").write_text(
         json.dumps(payload), encoding="utf-8"
     )
+
+
+def test_prepare_official_snapshots_builds_and_reuses_verified_worktree_cache(
+    tmp_path: Path,
+):
+    source = tmp_path / "official-source"
+    commit, tree = _repository(source, "official")
+    dependency = _dependency(
+        "third_party/official",
+        "official_gitiles_snapshot",
+        str(source.resolve()),
+        commit,
+        tree,
+    )
+    lock_path = _write_lock(tmp_path / "lock.json", [dependency])
+    output = tmp_path / "snapshots"
+
+    prepare_snapshots.prepare(lock_path, output)
+    manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["dependencies"][0]["path"] == dependency["path"]
+    assert (output / manifest["dependencies"][0]["archive"]).is_file()
+    # A second invocation must use the verified cache instead of replacing it.
+    archive = output / manifest["dependencies"][0]["archive"]
+    before = archive.stat().st_mtime_ns
+    prepare_snapshots.prepare(lock_path, output)
+    assert archive.stat().st_mtime_ns == before
 
 
 def test_hydrate_places_only_fully_verified_dependencies_and_quarantines_bad_cache(
