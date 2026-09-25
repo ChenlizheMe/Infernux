@@ -453,6 +453,11 @@ def test_web_player_job_assembles_an_out_of_source_working_plugin():
         in workflow
     )
     assert (
+        "-k 'web_dependency_gate or web_jit_fixture_verifier or "
+        "web_fixture_public_jit_cooks' --noconftest"
+        in workflow
+    )
+    assert (
         "-DINFERNUX_WEB_TOOLS_OUTPUT_DIR=$INFERNUX_WEB_WORK_PLUGIN_ROOT/"
         "package/editor/infernux_web/tools"
         in workflow
