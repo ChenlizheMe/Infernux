@@ -93,9 +93,9 @@ def _validate_class_kernel_source(
 ) -> None:
     """Reject implicit Python receivers before AOT artifact lookup.
 
-    A class method decorated directly with ``@inx.compute.kernel`` cannot be
+    A class method using the conventional ``self``/``cls`` receiver cannot be
     represented by the fixed GPU ABI: ``Kernel`` is intentionally not a
-    descriptor and no implicit ``self`` value can be serialized.  A
+    descriptor and no implicit receiver value can be serialized.  A
     ``@staticmethod`` declaration is explicit and remains legal.  Performing
     this validation from source gives Android/Web build diagnostics the same
     identity and location as Editor compilation.

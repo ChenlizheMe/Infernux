@@ -62,7 +62,13 @@ def implicit_receiver_name(
     *,
     in_class: bool,
 ) -> str | None:
-    """Return an illegal implicit receiver, if this is a class kernel."""
+    """Return a conventionally implicit receiver for a class kernel.
+
+    ``inx.compute.kernel`` creates a non-descriptor ``Kernel`` object, so a
+    class nesting alone does not inject an argument.  Only the conventional
+    ``self``/``cls`` names claim a receiver and violate the source-less GPU
+    ABI; other first parameters remain explicit kernel arguments.
+    """
 
     if not in_class or has_decorator(node, "staticmethod"):
         return None

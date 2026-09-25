@@ -97,10 +97,10 @@ def _is_class_qualified(function) -> bool:
 def _validate_kernel_method(function, definition: ast.FunctionDef, *, target: str | None = None) -> None:
     """Enforce the explicit receiver contract for class-contained kernels.
 
-    ``Kernel`` deliberately is not a descriptor: an instance method would make
-    Python inject an implicit ``self`` that cannot be represented in the GPU
-    argument ABI.  Static methods are explicit and keep the runtime identity
-    (``Class.method``), so they remain fully supported.
+    ``Kernel`` deliberately is not a descriptor: a conventional ``self`` or
+    ``cls`` method would make Python inject an implicit receiver that cannot be
+    represented in the GPU argument ABI.  Static methods are explicit and keep
+    the runtime identity (``Class.method``), so they remain fully supported.
     """
     if not _is_class_qualified(function):
         return
