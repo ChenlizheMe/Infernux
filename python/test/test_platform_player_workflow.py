@@ -143,6 +143,7 @@ def test_platform_workflow_reuses_repository_build_and_acceptance_entry_points()
     assert "scripts/acceptance/build_player.py" in text
     assert "scripts\\acceptance\\windows_player_smoke.py" in text
     assert "scripts/acceptance/linux_player_smoke.py" in text
+    assert "--video-driver x11" in text
     assert "scripts/acceptance/web_mobile_input_smoke.cjs" in text
     assert "scripts/acceptance/android_player_smoke.py" in text
     assert "scripts/acceptance/android_multitouch_smoke.py" in text

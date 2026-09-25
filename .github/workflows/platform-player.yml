@@ -251,6 +251,7 @@ jobs:
             --report out/test-results/linux-player-smoke.json \
             --artifact-root out/test-results/linux-player-artifacts \
             --xvfb always \
+            --video-driver x11 \
             --vk-driver-files "$VK_ICD_FILENAMES" \
             --validation \
             --object "Render Probe" \

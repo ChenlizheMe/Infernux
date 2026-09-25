@@ -160,6 +160,7 @@ def test_linux_smoke_parser_defaults_to_managed_cleanup():
     arguments = module._parser().parse_args(["Balance"])
 
     assert arguments.xvfb == "auto"
+    assert arguments.video_driver == "default"
     assert arguments.object == "PlayerBall"
     assert arguments.press_scancode == 26
     assert arguments.axis == "z"
@@ -183,6 +184,20 @@ def test_linux_smoke_recognizes_the_selected_display_server(environment, expecte
     module = _module()
 
     assert module._display_server_available(environment) is expected
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    (
+        ("SDL/Vulkan window backend contract accepted: backend=x11, extensions=2", "x11"),
+        ("selected backend=wayland, extensions=2\nselected backend=x11, extensions=2", "x11"),
+        ("SDL initialized without a Vulkan window", ""),
+    ),
+)
+def test_linux_smoke_reports_the_selected_sdl_video_backend(text, expected):
+    module = _module()
+
+    assert module._selected_video_driver(text) == expected
 
 
 def test_linux_smoke_captures_only_after_renderer_submission_is_ready():

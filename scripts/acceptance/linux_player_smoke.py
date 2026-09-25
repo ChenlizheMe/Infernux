@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import secrets
 import shutil
 import signal
@@ -64,6 +65,7 @@ class SmokeResult:
     final_position: tuple[float, float, float]
     axis_delta: float
     validation: bool
+    video_driver: str
     vk_driver_files: str
     fatal_count: int
     elapsed_seconds: float
@@ -413,12 +415,28 @@ def _fatal_lines(text: str) -> list[str]:
     ]
 
 
+def _selected_video_driver(text: str) -> str:
+    """Return the last SDL backend reported while creating the Vulkan surface."""
+
+    matches = re.findall(r"(?:selected )?backend=([^,\s]+)", text)
+    return matches[-1] if matches else ""
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("player", help="Path to a built Linux Player executable")
     parser.add_argument("--report", help="Write atomic JSON acceptance evidence")
     parser.add_argument("--artifact-root", help="Directory for logs and control files")
     parser.add_argument("--xvfb", choices=("auto", "always", "never"), default="auto")
+    parser.add_argument(
+        "--video-driver",
+        choices=("default", "x11", "wayland"),
+        default="default",
+        help=(
+            "Force SDL's Linux video backend and require the runtime to report "
+            "the same backend. Wayland requires an existing WAYLAND_DISPLAY."
+        ),
+    )
     parser.add_argument("--display", default=":98")
     parser.add_argument("--vk-driver-files", default="")
     parser.add_argument("--validation", action="store_true")
@@ -499,10 +517,16 @@ def _run(args: argparse.Namespace, artifact_root: Path) -> SmokeResult:
         )
     if args.validation:
         environment["VK_INSTANCE_LAYERS"] = "VK_LAYER_KHRONOS_validation"
+    if args.video_driver != "default":
+        environment["SDL_VIDEODRIVER"] = args.video_driver
+    if args.video_driver == "wayland" and args.xvfb == "always":
+        raise ValueError("--video-driver=wayland cannot be combined with --xvfb=always")
 
     display_server_available = _display_server_available(environment)
-    use_xvfb = args.xvfb == "always" or (
+    use_xvfb = args.video_driver != "wayland" and (
+        args.xvfb == "always" or (
         args.xvfb == "auto" and not display_server_available
+        )
     )
     xvfb_process: subprocess.Popen[str] | None = None
     player_process: subprocess.Popen[str] | None = None
@@ -657,6 +681,12 @@ def _run(args: argparse.Namespace, artifact_root: Path) -> SmokeResult:
         fatals = _fatal_lines(combined)
         if fatals:
             raise RuntimeError("Linux Player emitted fatal or Vulkan validation diagnostics")
+        selected_driver = _selected_video_driver(combined)
+        if args.video_driver != "default" and selected_driver != args.video_driver:
+            raise RuntimeError(
+                "SDL selected video backend "
+                f"{selected_driver or '<none>'!r}; expected {args.video_driver!r}"
+            )
         return SmokeResult(
             player=str(player),
             game=game,
@@ -667,6 +697,7 @@ def _run(args: argparse.Namespace, artifact_root: Path) -> SmokeResult:
             final_position=final,
             axis_delta=delta,
             validation=bool(args.validation),
+            video_driver=selected_driver,
             vk_driver_files=str(environment.get("VK_DRIVER_FILES", "")),
             fatal_count=0,
             elapsed_seconds=time.monotonic() - started,
