@@ -548,10 +548,18 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
             if gpu_compute_aot:
                 from Infernux.engine.build.compute_aot import stage_compute_artifacts
 
+                platform_name = str(platform_host.get("platform", "")).strip().casefold()
+                target_name = {
+                    "android": "Android/AOT",
+                    "web": "Web/Player",
+                    "windows": "Player/Windows",
+                    "linux": "Player/Linux",
+                }.get(platform_name, "Player/AOT")
                 stage_compute_artifacts(
                     self.project_path,
                     self.cooked_python_source_paths(),
                     os.path.join(final_dir, "Data"),
+                    target=target_name,
                 )
             self._write_runtime_asset_records(
                 final_dir,

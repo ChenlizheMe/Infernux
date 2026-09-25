@@ -174,6 +174,28 @@ def test_stage_compute_artifacts_rejects_incomplete_selected_closure(tmp_path):
     assert not (tmp_path / "build/Data/Library/Artifacts/Compute").exists()
 
 
+def test_stage_compute_artifacts_uses_platform_target_for_source_diagnostics(tmp_path):
+    source = tmp_path / "Assets/Scripts/Jelly.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        "import Infernux as inx\n"
+        "class Jelly:\n"
+        "    @inx.compute.kernel\n"
+        "    def step(self, domain):\n"
+        "        i = inx.compute.index(domain)\n"
+        "        domain[i] = 1\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ComputeAotBuildError, match="target 'Android/AOT'"):
+        stage_compute_artifacts(
+            tmp_path,
+            (source,),
+            tmp_path / "build/Data",
+            target="Android/AOT",
+        )
+
+
 def _runtime_missing_kernel(domain):
     i = compute.index(domain)
     domain[i] = 1

@@ -213,6 +213,8 @@ def stage_compute_artifacts(
     project_root: str | Path,
     source_paths: tuple[str | Path, ...],
     data_directory: str | Path,
+    *,
+    target: str = "Player/AOT",
 ) -> ComputeAotResult:
     """Stage the exact selected kernel set plus engine compute primitives.
 
@@ -222,7 +224,7 @@ def stage_compute_artifacts(
     """
 
     root = Path(resolved_path(Path(project_root).expanduser()))
-    expected = declared_kernel_names(source_paths, root)
+    expected = declared_kernel_names(source_paths, root, target=target)
     destination = (
         Path(resolved_path(Path(data_directory).expanduser()))
         / "Library"
