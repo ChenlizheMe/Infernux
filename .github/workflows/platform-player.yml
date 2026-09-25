@@ -278,6 +278,7 @@ jobs:
       INFERNUX_SOURCE_ROOT: ${{ github.workspace }}
       INFERNUX_WEB_TOOLCHAIN_ROOT: ${{ github.workspace }}/out/toolchains/web
       INFERNUX_WEB_NUMPY_RUNTIME_ROOT: ${{ github.workspace }}/out/toolchains/web-numpy-static
+      INFERNUX_DAWN_OFFICIAL_SNAPSHOT_DIR: ${{ github.workspace }}/out/toolchains/web-official-snapshots
       INFERNUX_WEB_BUILD_CACHE: ${{ github.workspace }}/out/cache/web
       INFERNUX_WEB_WORK_PLUGIN_ROOT: ${{ github.workspace }}/out/work/web-plugin
     steps:
@@ -296,10 +297,11 @@ jobs:
         with:
           path: |
             out/toolchains/web
+            out/toolchains/web-official-snapshots
             out/toolchains/web-numpy-static
             out/cache/web
             out/build/linux-clang-headless
-          key: web-player-${{ runner.os }}-${{ hashFiles('scripts/setup/build_web_toolchain.sh', 'external/plugins/infernux_web/native/python_runtime/**', 'external/plugins/infernux_web/package/editor/infernux_web/native_payload.py', 'cmake/**', 'CMakeLists.txt') }}
+          key: web-player-${{ runner.os }}-${{ hashFiles('scripts/setup/build_web_toolchain.sh', 'scripts/setup/prepare_dawn_official_snapshots.py', 'scripts/setup/dawn_dependencies.lock.json', 'external/plugins/infernux_web/native/python_runtime/**', 'external/plugins/infernux_web/package/editor/infernux_web/native_payload.py', 'cmake/**', 'CMakeLists.txt') }}
           restore-keys: |
             web-player-${{ runner.os }}-
 
@@ -320,6 +322,9 @@ jobs:
       - name: Prepare pinned Web toolchain
         run: |
           conda activate infernux
+          python scripts/setup/prepare_dawn_official_snapshots.py \
+            --lock scripts/setup/dawn_dependencies.lock.json \
+            --output "$INFERNUX_DAWN_OFFICIAL_SNAPSHOT_DIR"
           scripts/setup/build_web_toolchain.sh "$INFERNUX_WEB_TOOLCHAIN_ROOT"
           echo "INFERNUX_EMSDK_ROOT=$INFERNUX_WEB_TOOLCHAIN_ROOT/emsdk" >> "$GITHUB_ENV"
           echo "INFERNUX_WEB_CPYTHON_ROOT=$INFERNUX_WEB_TOOLCHAIN_ROOT/src/Python-3.13.15" >> "$GITHUB_ENV"
