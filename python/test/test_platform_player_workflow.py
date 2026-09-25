@@ -444,6 +444,13 @@ def test_web_player_job_assembles_an_out_of_source_working_plugin():
     ).read_text(encoding="utf-8")
 
     assert "INFERNUX_WEB_NUMPY_RUNTIME_ROOT" in workflow
+    # The cache must be invalidated by Web plugin source changes.  Otherwise
+    # a changed native renderer/exporter can silently reuse an older Player
+    # while the browser job still reports that stale binary as accepted.
+    assert "'external/plugins/infernux_web/native/**'" in workflow
+    assert "'external/plugins/infernux_web/package/editor/infernux_web/**'" in workflow
+    assert "'external/plugins/infernux_web/native/python_runtime/**'" not in workflow
+    assert "'external/plugins/infernux_web/package/editor/infernux_web/native_payload.py'" not in workflow
     assert "Prepare pinned Web NumPy runtime" in workflow
     assert '--python-runtime-manifest "$INFERNUX_WEB_PYTHON_RUNTIME_MANIFEST"' in workflow
     assert '--numpy-payload-root "$INFERNUX_WEB_NUMPY_PAYLOAD_ROOT"' in workflow

@@ -298,7 +298,7 @@ jobs:
             out/toolchains/web-numpy-static
             out/cache/web
             out/build/linux-clang-headless
-          key: web-player-${{ runner.os }}-${{ hashFiles('scripts/setup/build_web_toolchain.sh', 'scripts/setup/prepare_dawn_official_snapshots.py', 'scripts/setup/dawn_dependencies.lock.json', 'external/plugins/infernux_web/native/python_runtime/**', 'external/plugins/infernux_web/package/editor/infernux_web/native_payload.py', 'cmake/**', 'CMakeLists.txt') }}
+          key: web-player-${{ runner.os }}-${{ hashFiles('scripts/setup/build_web_toolchain.sh', 'scripts/setup/prepare_dawn_official_snapshots.py', 'scripts/setup/dawn_dependencies.lock.json', 'external/plugins/infernux_web/native/**', 'external/plugins/infernux_web/package/editor/infernux_web/**', 'cmake/**', 'CMakeLists.txt') }}
           restore-keys: |
             web-player-${{ runner.os }}-
 
