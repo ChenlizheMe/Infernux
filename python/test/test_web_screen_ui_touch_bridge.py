@@ -33,7 +33,13 @@ def test_web_screen_ui_forwards_same_frame_touch_and_mouse(monkeypatch):
         reference_height=720,
         set_input_logical_size=lambda *_: None,
     )
-    scene = object()
+    # The event processor queries scene roots while collecting world-space
+    # canvases.  Use the smallest scene contract rather than an opaque object
+    # so this fixture exercises the same path as the runtime.
+    scene = SimpleNamespace(
+        get_root_objects=lambda: (),
+        effective_game_camera=None,
+    )
     bootstrap["_player_scene_manager"] = SimpleNamespace(
         get_active_scene=lambda: scene,
         get_runtime_persistent_scene=lambda: None,
@@ -42,7 +48,8 @@ def test_web_screen_ui_forwards_same_frame_touch_and_mouse(monkeypatch):
     bootstrap["_screen_height"] = 720
     captured = []
     bootstrap["_screen_ui_event_processor"] = SimpleNamespace(
-        process_pointers=lambda *args: captured.append(args)
+        process_pointers=lambda *args: captured.append(args),
+        reset=lambda: None,
     )
     monkeypatch.setattr(
         canvas_snapshot,
@@ -51,6 +58,11 @@ def test_web_screen_ui_forwards_same_frame_touch_and_mouse(monkeypatch):
     )
     monkeypatch.setattr(
         runtime_screen_ui, "_canvas_metrics", lambda *_: (2.0, 2.0, 0.0, 640, 360)
+    )
+    monkeypatch.setattr(
+        runtime_screen_ui,
+        "collect_runtime_ui_input_surfaces",
+        lambda active, persistent: (canvas,),
     )
 
     touch = SimpleNamespace(
@@ -72,7 +84,7 @@ def test_web_screen_ui_forwards_same_frame_touch_and_mouse(monkeypatch):
     bootstrap["_process_screen_ui_events"](0.016)
 
     canvases, pointers, dt = captured.pop()
-    assert canvases == [canvas]
+    assert canvases == (canvas,)
     assert dt == 0.016
     assert len(pointers) == 2
     assert pointers[0].pointer_type is PointerType.Mouse

@@ -390,7 +390,7 @@ def test_light_automation_schema_uses_native_serialized_names(scene, monkeypatch
     schema = host.scene_component_schema(owner.id, light.component_id)
     fields = {field["name"]: field for field in schema["fields"]}
 
-    assert len(fields) == 15
+    assert len(fields) == 18
     assert fields["lightType"]["enum"][0] == {"name": "Directional", "value": 0}
     assert fields["intensity"]["range"] == [0.0, 10.0]
     assert fields["color"]["type"] == "vec3"

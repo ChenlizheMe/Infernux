@@ -2,6 +2,23 @@
 
 const fs = require("fs");
 const path = require("path");
+
+// Validate engine selection before loading optional browser dependencies.  A
+// malformed CI invocation must report its actionable configuration error even
+// on machines that do not have Playwright installed.
+const preflightBrowserEngine = (
+  process.env.INFERNUX_WEB_BROWSER_ENGINE?.trim() || "chromium"
+).toLowerCase();
+if (!["chromium", "firefox"].includes(preflightBrowserEngine)) {
+  throw new Error(
+    "INFERNUX_WEB_BROWSER_ENGINE must be 'chromium' or 'firefox'",
+  );
+}
+const preflightCdpIndex = process.argv.indexOf("--cdp-endpoint");
+if (preflightCdpIndex >= 0 && preflightBrowserEngine !== "chromium") {
+  throw new Error("--cdp-endpoint is only supported by the Chromium engine");
+}
+
 const { chromium, firefox } = require("playwright");
 const { PNG } = require("pngjs");
 

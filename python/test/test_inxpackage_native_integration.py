@@ -436,9 +436,9 @@ def test_official_mcp_default_install_uninstall_reinstalls_on_restart(
         for item in authoring_result["data"]["operations"]
     )
     assert capabilities_result["ok"] is True
-    # 34 engine-owned authoring operations plus 70 MCP operations, matching
+    # 34 engine-owned authoring operations plus 71 MCP operations, matching
     # the source catalog checked by test_mcp_server.
-    assert capabilities_result["data"]["operation_count"] == 104
+    assert capabilities_result["data"]["operation_count"] == 105
 
     manager.uninstall("infernux/mcp")
     assert manager.registry.installed() == ()

@@ -15,7 +15,10 @@ inline bool IsBuiltinSceneIcon(const std::string &path, bool readOnly)
 {
     if (!readOnly)
         return false;
-    const auto source = ToFsPath(path).lexically_normal();
+    // Keep filesystem canonicalization in the InxPath owner layer.  Scene
+    // icon metadata is queried from several resource backends; duplicating
+    // lexical normalization here bypasses the platform path policy.
+    const auto source = ToFsPath(NormalizeFilesystemPathLexically(path));
     const auto name = FromFsPath(source.filename());
     const auto icons = source.parent_path();
     const auto resources = icons.parent_path();

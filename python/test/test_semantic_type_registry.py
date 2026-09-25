@@ -253,8 +253,13 @@ def test_light_declaration_owns_serialized_shape_and_wrapper_metadata(scene):
     descriptor = native._semantic_catalog_snapshot().type_document("native:infernux.Light")
     fields = {field["attributes"]["field_id"]: field for field in descriptor["fields"]}
 
-    assert len(fields) == 15
-    assert {field["attributes"]["serialized_name"] for field in descriptor["fields"]} == (
+    assert len(fields) == 18
+    serialized_names = {
+        field["attributes"]["serialized_name"]
+        for field in descriptor["fields"]
+        if field["attributes"].get("serialized", True)
+    }
+    assert serialized_names == (
         set(document) - {
             "type", "typeId", "componentId", "enabled", "executionOrder",
             "component_id", "execution_order",

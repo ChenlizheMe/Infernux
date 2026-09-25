@@ -68,8 +68,8 @@ def test_default_mcp_surface_is_schema_gateway_not_flat_tools(tmp_path):
     try:
         state = register_gateways(mcp, str(tmp_path), {})
 
-        assert state["operation_count"] == 104
-        assert state["owned_operation_count"] == 70
+        assert state["operation_count"] == 105
+        assert state["owned_operation_count"] == 71
         assert state["gateway_count"] == 14
         assert 0.0 < state["registration_ms"] < 5000.0
         assert 0 < state["compact_schema_bytes"] < 128 * 1024
@@ -107,7 +107,7 @@ def test_default_mcp_surface_is_schema_gateway_not_flat_tools(tmp_path):
             "availability",
             "phase",
         }
-        assert len(documents) == 104
+        assert len(documents) == 105
         assert all(required <= set(document) for document in documents)
         operation_ids = {document["id"] for document in documents}
         assert {
