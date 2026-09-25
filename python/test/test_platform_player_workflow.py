@@ -139,6 +139,7 @@ def test_scheduled_android_acceptance_does_not_restore_build_intermediates():
 
 def test_platform_workflow_reuses_repository_build_and_acceptance_entry_points():
     text = _text() + "\n" + _android_driver_text()
+    linux_job = text.split("  linux-player:", 1)[1].split("  web-player:", 1)[0]
 
     assert "scripts/acceptance/build_player.py" in text
     assert "scripts\\acceptance\\windows_player_smoke.py" in text
@@ -149,6 +150,8 @@ def test_platform_workflow_reuses_repository_build_and_acceptance_entry_points()
     assert "scripts/acceptance/android_multitouch_smoke.py" in text
     assert "scripts/setup/build_web_toolchain.sh" in text
     assert "scripts/setup/build_android_python_runtime.sh" in text
+    assert "scripts/setup/install_linux_dependencies.sh" in linux_job
+    assert "sudo apt-get install" not in linux_job
 
 
 def test_android_runtime_builder_creates_build_python_before_cross_build():
