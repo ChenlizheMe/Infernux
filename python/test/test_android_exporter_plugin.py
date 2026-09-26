@@ -143,6 +143,26 @@ def _write_native_payload(root: Path, *, abi: str) -> Path:
     java = root / "java/org/libsdl/app/SDLActivity.java"
     java.parent.mkdir(parents=True)
     java.write_text("// SDL fixture", encoding="utf-8")
+    (java.parent / "SDLInputConnection.java").write_text(
+        """class SDLInputConnection extends BaseInputConnection {
+    public boolean sendKeyEvent(KeyEvent event) {
+        if (event.getKeyCode() == KeyEvent.KEYCODE_ENTER) {
+            if (SDLActivity.onNativeSoftReturnKey()) {
+                return true;
+            }
+        }
+        return super.sendKeyEvent(event);
+    }
+    public boolean deleteSurroundingText(int beforeLength, int afterLength) {
+        while (beforeLength-- > 0) {
+            nativeGenerateScancodeForUnichar('\\b');
+        }
+        return true;
+    }
+}
+""",
+        encoding="utf-8",
+    )
     return root
 
 
@@ -163,6 +183,10 @@ def test_android_native_payload_stages_without_build_tools(monkeypatch, tmp_path
     assert {p.name for p in native.iterdir()} == set(module.NATIVE_LIBRARIES) | {"libpython3.13.so"}
     assert (native / "libpython3.13.so").read_bytes() == b"Hub-owned"
     assert (staging / "app/src/main/java/org/libsdl/app/SDLActivity.java").is_file()
+    input_connection = staging / "app/src/main/java/org/libsdl/app/SDLInputConnection.java"
+    input_text = input_connection.read_text(encoding="utf-8")
+    assert "if (keyCode == KeyEvent.KEYCODE_DEL)" in input_text
+    assert "SDLActivity.onNativeKeyDown(keyCode)" in input_text
 
 
 @pytest.mark.parametrize("failure", [
