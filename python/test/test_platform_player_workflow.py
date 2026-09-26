@@ -201,14 +201,16 @@ def test_windows_native_build_can_load_the_vulkan_linked_module():
 
 def test_windows_publisher_has_a_system_loader_independent_of_sdk_cache():
     # Publication imports a staged wheel outside the source/build DLL folders.
+    # The SDK installer is intentionally not run as a separate Vulkan runtime
+    # installer: the workflow supplies the pinned loader to the build and the
+    # published wheel/player closure explicitly.
     for name in ("ci.yml", "platform-player.yml"):
         text = (ROOT / ".github/workflows" / name).read_text(encoding="utf-8")
-        step = text.split("- name: Install Vulkan Runtime", 1)[1].split("- name:", 1)[0]
-        assert "if:" not in step
-        assert "VulkanRT-$env:VULKAN_SDK_VERSION-Installer.exe" in step
-        assert "-WindowStyle Hidden" in step
-        assert "ExitCode -ne 0" in step
-        assert "-ArgumentList '/auto'" in step
+        assert "- name: Install Vulkan Runtime" not in text
+        assert "Cache Vulkan SDK" in text
+        assert "Install Vulkan SDK" in text
+        assert "vulkan-1.dll" in text
+        assert "windows_software_vulkan.cmake" in text
 
 
 def test_platform_workflow_keeps_product_graphics_contracts_explicit():
